@@ -215,7 +215,7 @@ def test_cli_run_tiles_allowed_with_process(monkeypatch):
     monkeypatch.setattr(cli, '_resolve_filters', lambda flt, fo: ['f200w'])
     monkeypatch.setattr(cli, 'run_process',
                         lambda *a, **k: calls.setdefault('tiles', k.get('tiles')))
-    monkeypatch.setattr(cli, 'run_align', lambda *a, **k: None)
+    monkeypatch.setattr(cli, 'run_step', lambda *a, **k: None)  # align is a step now
     monkeypatch.setattr(cli, 'run_combine', lambda *a, **k: None)
 
     out = CliRunner().invoke(

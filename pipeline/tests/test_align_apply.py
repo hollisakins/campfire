@@ -186,19 +186,19 @@ def test_overwrite_does_not_double_correct(tmp_path):
         assert _reload_residual(m.path, xy[m.detector], refcat) < 0.05
 
 
-# --- adaptive end-to-end ----------------------------------------------------
+# --- fine per-detector fit end-to-end ---------------------------------------
 
-def test_adaptive_dof_recorded(tmp_path):
-    # Detector 4 carries a 0.6" per-detector offset — large enough that the
-    # all-source shared refine sigma-clips it (rather than tilting the whole
-    # exposure to absorb it), so its residual survives above tolerance and the
-    # adaptive shift-only refit frees it. match_radius=0.8 keeps its sources
+def test_fine_dof_recorded(tmp_path):
+    # Detector 4 carries a 0.6" per-detector offset — large enough that after the
+    # pooled coarse fit its residual survives above tolerance, so the gated fine
+    # fit frees it (default ceiling rshift). match_radius=0.8 keeps its sources
     # matchable at that offset.
     members, refcat, _ = _make_exposure(
         tmp_path, n_det=5, offset=(2.0, 0.0), per_det_extra={4: (0.0, 0.6)})
     align_exposure_group(members, refcat,
                          config={'tolerance': 0.15, 'match_radius': 0.8})
-    # detectors 0-3 stay on the shared solution; detector 4 (nrcb1) is freed
-    for m in members[:4]:
-        assert 'dof=shared' in _cfp_algn(m.path)
-    assert 'dof=shift' in _cfp_algn(members[4].path)
+    # detector 4 (nrcb1)'s 0.6" offset trips tolerance; the gated fine fit frees
+    # it (default ceiling rshift). The fit is per-detector, not a global re-fit,
+    # so unperturbed good detectors keep the pooled coarse attitude.
+    assert 'dof=rshift' in _cfp_algn(members[4].path)
+    assert any('dof=coarse' in _cfp_algn(m.path) for m in members[:4])

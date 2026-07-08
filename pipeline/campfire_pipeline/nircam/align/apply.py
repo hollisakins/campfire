@@ -44,13 +44,13 @@ NOT_ALIGNED_SENTINEL = cfp.NOT_ALIGNED
 # Solve/detection knobs threaded from [<field>.align]; the orchestration passes
 # a resolved dict, these are the fallbacks. Per-filter PSF FWHM
 # (``psf_fwhm_by_filter``) is resolved per member below, not passed through
-# these keys. ``bootstrap_max`` and the ``refine_*`` knobs are solve keys (the
-# triangle-vertex cap moved to the bootstrap; detection is no longer count-
-# capped, so ``brightest`` is gone from the align path).
-_SOLVE_KEYS = ('fitgeom', 'minobj', 'nclip', 'sigma', 'tolerance', 'adaptive',
-               'adaptive_min_matches', 'match_radius', 'min_matched',
-               'ref_border_arcmin', 'bootstrap_max', 'refine_searchrad',
-               'refine_tolerance', 'refine_niter')
+# these keys. ``pool_modules`` is an orchestration key (it decides how detectors
+# are pooled before the solve is called), so it is deliberately NOT a solve key.
+_SOLVE_KEYS = ('coarse_searchrad', 'coarse_tolerance', 'coarse_separation',
+               'refine_niter', 'fine_fitgeom', 'fine_min_general',
+               'fine_min_rshift', 'fine_min_shift', 'tolerance', 'match_radius',
+               'min_matched', 'min_coverage_arcsec', 'ref_border_arcmin',
+               'nclip', 'sigma')
 _DETECT_KEYS = ('fwhm', 'nsigma', 'edge', 'snr_min', 'objmag_lim',
                 'sharplo', 'sharphi', 'roundlo', 'roundhi')
 
@@ -83,11 +83,22 @@ def _stamp_algn(path, value):
     os.replace(tmp, path)
 
 
-def _format_algn_value(det):
+def _algn_rc(value):
+    """The ``rc=`` refcat-hash token from a CFP_ALGN value string, or None."""
+    for tok in str(value or '').split():
+        if tok.startswith('rc='):
+            return tok[3:]
+    return None
+
+
+def _format_algn_value(det, refcat_hash=None):
     # Per-detector provenance, kept short so the value + card comment fit one
-    # 80-char FITS card. The shared shift/rot is group-level (same for every
-    # detector) and is logged once per group, not stamped on each card.
-    return f'dof={det.dof} res={det.residual_arcsec:.3g} n={det.n_matched}'
+    # 80-char FITS card. The coarse shift/rot is pool-level (same for every
+    # detector) and is logged once per pool, not stamped on each card. The ``rc=``
+    # token records which reference catalog produced the solve — read back by the
+    # orchestration skip check to re-solve when the refcat changes.
+    base = f'dof={det.dof} res={det.residual_arcsec:.3g} n={det.n_matched}'
+    return f'{base} rc={refcat_hash}' if refcat_hash else base
 
 
 def _exposure_mid_mjd(path):
@@ -235,15 +246,22 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
     if key is None:
         key = exposure_key(members[0].path)
     config = dict(config or {})
+    refcat_hash = config.get('_refcat_hash')   # provenance/staleness (orchestration)
 
     def _aligned_ok(path):
         # A detector counts as done only if it carries a *completed, non-rejected*
-        # alignment. A NOT_ALIGNED exposure is re-attempted on a normal re-run
-        # (no --overwrite) so the user can retune [<field>.align] params and try
-        # again without force-re-solving everything that already succeeded.
+        # alignment produced by the *current* refcat. A NOT_ALIGNED exposure — or
+        # one solved against a now-changed refcat (rc mismatch) — is re-attempted
+        # on a normal re-run (no --overwrite) so the user can retune params /
+        # swap the refcat without force-re-solving everything that succeeded.
         stamped = (status.has(path, 'CFP_ALGN') if status is not None
                    else cfp.has_step(path, 'CFP_ALGN'))
-        return stamped and cfp.step_value(path, 'CFP_ALGN') != NOT_ALIGNED_SENTINEL
+        if not stamped:
+            return False
+        value = cfp.step_value(path, 'CFP_ALGN')
+        if value == NOT_ALIGNED_SENTINEL:
+            return False
+        return refcat_hash is None or _algn_rc(value) == refcat_hash
 
     if not overwrite and all(_aligned_ok(m.path) for m in members):
         log(f"align[{key}]: all {len(members)} detectors already aligned; "
@@ -268,7 +286,7 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
     # Reading + solving one exposure must never abort a whole field's align. Any
     # unexpected failure (a corrupt canonical, an unforeseen solver error the
     # in-solve guards missed) degrades this exposure to NOT_ALIGNED — surfaced
-    # loudly by run_align and quarantined from combine — rather than crashing.
+    # loudly by the align step and quarantined from combine — not crashing.
     try:
         detectors = []
         for m in members:
@@ -295,7 +313,7 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
         det_sol = by_detector.get(m.detector)
         if solution.status == 'SOLVED' and det_sol is not None:
             _write_solution(m.path, det_sol.wcs,
-                            _format_algn_value(det_sol),
+                            _format_algn_value(det_sol, refcat_hash),
                             ImageModel, update_fits_wcsinfo)
         else:
             _stamp_algn(m.path, NOT_ALIGNED_SENTINEL)

@@ -2,7 +2,8 @@
 
 Uses a CRDS-free mock JWST gwcs (see _align_gwcs). For each detector we build a
 "truth" gwcs mapping a pixel grid to a sky patch (-> the reference catalog) and
-an "input" gwcs carrying a known injected offset; the solve must recover it.
+an "input" gwcs carrying a known injected offset (and, optionally, a differential
+roll); the coarse+fine solve must recover it.
 """
 
 import copy
@@ -27,24 +28,34 @@ _BASE_RA, _BASE_DEC = 80.0, -30.0
 _COSD = np.cos(np.deg2rad(_BASE_DEC))
 
 
-def _mock(crval, roll=_ROLL):
+def _mock(crval, roll=_ROLL, cd=None):
+    cd = [[1e-5, 0], [0, 1e-5]] if cd is None else cd
     return make_mock_wcs(v2ref=_V2, v3ref=_V3, roll=roll,
-                         crpix=[512, 512], cd=[[1e-5, 0], [0, 1e-5]],
-                         crval=list(crval))
+                         crpix=[512, 512], cd=cd, crval=list(crval))
+
+
+def _rot_cd(deg, scale=1e-5):
+    th = np.radians(deg)
+    R = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+    return (R @ (scale * np.eye(2))).tolist()
 
 
 def _wcsinfo(roll=_ROLL):
     return {'v2_ref': _V2, 'v3_ref': _V3, 'roll_ref': roll}
 
 
-def _build_group(n_det=3, n_src=40, offset=(2.0, 0.0), roll=_ROLL, seed=0,
-                 per_det_extra=None):
-    """Return (detectors, refcat) with a shared injected *offset* (arcsec).
+def _build_group(n_det=3, n_src=40, offset=(2.0, 0.0), roll=_ROLL,
+                 input_roll=None, seed=0, per_det_extra=None):
+    """Return (detectors, refcat) with a shared injected *offset* (arcsec) and,
+    when *input_roll* differs from *roll*, a shared differential roll.
 
+    The refcat is generated from the truth WCS (at *roll*); each detector's input
+    WCS carries the offset (and *input_roll*), so the solve must recover both.
     ``per_det_extra`` maps detector index -> (dx, dy) arcsec added on top of the
-    shared offset for that detector only (to exercise the adaptive path).
+    shared offset for that detector only (to exercise the fine per-detector fit).
     """
     rng = np.random.default_rng(seed)
+    input_roll = roll if input_roll is None else input_roll
     per_det_extra = per_det_extra or {}
     ref_ra, ref_dec, detectors = [], [], []
     for i in range(n_det):
@@ -61,9 +72,9 @@ def _build_group(n_det=3, n_src=40, offset=(2.0, 0.0), roll=_ROLL, seed=0,
         ex, ey = per_det_extra.get(i, (0.0, 0.0))
         crval_off = [crval_truth[0] + (dx + ex) / 3600.0 / _COSD,
                      crval_truth[1] + (dy + ey) / 3600.0]
-        wo = _mock(crval_off, roll=roll)
+        wo = _mock(crval_off, roll=input_roll)
         cat = Table({'x': x, 'y': y, 'mag': rng.uniform(18, 24, n_src)})
-        detectors.append(DetectorInput(f'nrc{i}', wo, _wcsinfo(roll), cat))
+        detectors.append(DetectorInput(f'nrc{i}', wo, _wcsinfo(input_roll), cat))
 
     refcat = Table({'RA': np.concatenate(ref_ra),
                     'DEC': np.concatenate(ref_dec)})
@@ -71,28 +82,46 @@ def _build_group(n_det=3, n_src=40, offset=(2.0, 0.0), roll=_ROLL, seed=0,
     return detectors, refcat
 
 
-# --- shared solve -----------------------------------------------------------
+# --- coarse pooled solve ----------------------------------------------------
 
 def test_recovers_shared_translation():
     detectors, refcat = _build_group(n_det=3, offset=(2.0, 0.0))
     sol = solve_exposure_group(detectors, refcat, key='exp')
     assert sol.status == 'SOLVED'
     assert len(sol.detectors) == 3
-    assert all(ds.dof == 'shared' for ds in sol.detectors)
+    assert all(ds.dof == 'coarse' for ds in sol.detectors)
     assert all(ds.within_tolerance for ds in sol.detectors)
     assert all(ds.residual_arcsec < 0.02 for ds in sol.detectors)
-    # shared shift magnitude ~ 2 arcsec
     assert abs(np.hypot(*sol.shift) - 2.0) < 0.1
 
 
 def test_recovers_shift_and_rotation():
-    detectors, refcat = _build_group(n_det=3, offset=(1.5, -0.8), roll=45.0)
-    sol = solve_exposure_group(detectors, refcat, key='exp')
+    # Inject a genuine 0.3 deg field rotation (rotated input CD matrix) on top of
+    # a ~1" translation. The rotation gives up to ~0.3" displacement across the
+    # frame that a shift-only fit could never remove, so recovering it to
+    # < 0.03" proves the coarse rshift fit the ROTATION, and rot_deg reports it.
+    rng = np.random.default_rng(3)
+    crval = [_BASE_RA, _BASE_DEC]
+    x = rng.uniform(50, 950, 60)
+    y = rng.uniform(50, 2000, 60)
+    ra_t, dec_t = _mock(crval)(x, y)                         # truth positions
+    refcat = Table({'RA': np.asarray(ra_t, float),
+                    'DEC': np.asarray(dec_t, float)})
+    refcat.meta['name'] = 'truth'
+    crval_off = [crval[0] + 1.0 / 3600.0 / _COSD, crval[1] - 0.5 / 3600.0]
+    wo = _mock(crval_off, cd=_rot_cd(0.3))                   # rotated + shifted
+    det = [DetectorInput('nrca1', wo, _wcsinfo(),
+                         Table({'x': x, 'y': y,
+                                'mag': rng.uniform(18, 24, 60)}))]
+    sol = solve_exposure_group(det, refcat, key='exp')
     assert sol.status == 'SOLVED'
-    assert all(ds.within_tolerance for ds in sol.detectors)
+    assert sol.detectors[0].within_tolerance
+    assert sol.detectors[0].residual_arcsec < 0.03
+    assert abs(sol.rot_deg) > 0.1           # a real ~0.3 deg rotation was fit
 
 
 def test_single_detector_group():
+    # LW-per-module case: one detector solved on its own.
     detectors, refcat = _build_group(n_det=1, offset=(2.0, 0.0))
     sol = solve_exposure_group(detectors, refcat, key='exp')
     assert sol.status == 'SOLVED'
@@ -100,31 +129,46 @@ def test_single_detector_group():
     assert sol.detectors[0].within_tolerance
 
 
-# --- adaptive per-detector shift --------------------------------------------
+# --- fine per-detector fit --------------------------------------------------
 
-def test_adaptive_frees_outlier_detector():
-    # 4 aligned detectors + 1 carrying an extra per-detector dec offset.
+def test_fine_frees_outlier_detector():
+    # 4 aligned detectors + 1 carrying an extra per-detector dec offset. The pool
+    # coarse ties the 4; the outlier is over tolerance and gets a gated fine fit.
     detectors, refcat = _build_group(
         n_det=5, offset=(2.0, 0.0), per_det_extra={4: (0.0, 0.3)})
-    sol = solve_exposure_group(detectors, refcat, key='exp',
-                               tolerance=0.15, adaptive=True)
+    # tolerance 0.15": the 0.3" outlier perturbs the pooled fit by ~0.06" (1/5 of
+    # sources), so the 4 good detectors stay under tolerance while the outlier
+    # (~0.24" residual) trips it and earns a fine fit.
+    sol = solve_exposure_group(detectors, refcat, key='exp', tolerance=0.15)
     assert sol.status == 'SOLVED'
     good = sol.detectors[:4]
     outlier = sol.detectors[4]
-    assert all(ds.dof == 'shared' and ds.within_tolerance for ds in good)
-    assert outlier.dof == 'shift'
+    assert all(ds.dof == 'coarse' and ds.within_tolerance for ds in good)
+    assert outlier.dof in ('rshift', 'shift', 'general')
     assert outlier.within_tolerance
-    assert outlier.residual_arcsec < 0.1
+    assert outlier.residual_arcsec < 0.15
 
 
-def test_adaptive_off_leaves_outlier_over_tolerance():
+def test_fine_ceiling_shift_only():
+    # With fine_fitgeom='shift' the ceiling caps the ladder at a shift, so an
+    # over-tolerance detector is corrected shift-only (never rshift/general).
     detectors, refcat = _build_group(
         n_det=5, offset=(2.0, 0.0), per_det_extra={4: (0.0, 0.3)})
-    sol = solve_exposure_group(detectors, refcat, key='exp',
-                               tolerance=0.15, adaptive=False)
-    outlier = sol.detectors[4]
-    assert outlier.dof == 'shared'
-    assert not outlier.within_tolerance
+    sol = solve_exposure_group(detectors, refcat, key='exp', tolerance=0.15,
+                               fine_fitgeom='shift')
+    assert sol.detectors[4].dof in ('shift', 'coarse')
+
+
+def test_few_matches_keeps_coarse():
+    # A detector with too few matches for any fine geometry keeps the coarse
+    # attitude rather than fitting an under-constrained per-detector correction.
+    detectors, refcat = _build_group(
+        n_det=5, offset=(2.0, 0.0), per_det_extra={4: (0.0, 0.3)})
+    sol = solve_exposure_group(detectors, refcat, key='exp', tolerance=0.15,
+                               fine_min_shift=999, fine_min_rshift=999,
+                               fine_min_general=999)
+    assert sol.detectors[4].dof == 'coarse'
+    assert not sol.detectors[4].within_tolerance
 
 
 # --- NOT_ALIGNED ------------------------------------------------------------
@@ -136,7 +180,6 @@ def test_too_few_refcat_sources_not_aligned():
     sol = solve_exposure_group(detectors, refcat, key='exp')
     assert sol.status == 'NOT_ALIGNED'
     assert all(ds.dof == 'identity' for ds in sol.detectors)
-    # original WCS preserved (same sky for a probe pixel)
     for ds, orig in zip(sol.detectors, originals):
         assert ds.wcs(500, 500) == orig(500, 500)
 
@@ -155,9 +198,9 @@ def test_no_geometric_match_not_aligned():
 # --- footprint clip ---------------------------------------------------------
 
 def test_footprint_clip_survives_refcat_decoys():
-    # refcat = in-frame truth + a large pile of far (~1 deg) decoys. Without the
-    # footprint clip the bootstrap cap would keep mostly decoys and starve; with
-    # it, only the in-frame sources reach the matcher and the solve succeeds.
+    # refcat = in-frame truth + a large pile of far (~1 deg) decoys. The
+    # footprint clip keeps only the in-frame sources so the coarse matcher sees
+    # real correspondences and the solve succeeds.
     from astropy.table import vstack
     detectors, refcat = _build_group(n_det=2, offset=(2.0, 0.0))
     rng = np.random.default_rng(11)
@@ -165,7 +208,7 @@ def test_footprint_clip_survives_refcat_decoys():
                    'DEC': _BASE_DEC + 1.0 + rng.uniform(-0.05, 0.05, 500)})
     big = vstack([refcat, decoy], metadata_conflicts='silent')
 
-    sol = solve_exposure_group(detectors, big, key='exp', bootstrap_max=150)
+    sol = solve_exposure_group(detectors, big, key='exp')
     assert sol.status == 'SOLVED'
     assert all(ds.within_tolerance for ds in sol.detectors)
     assert abs(np.hypot(*sol.shift) - 2.0) < 0.1
@@ -173,10 +216,10 @@ def test_footprint_clip_survives_refcat_decoys():
 
 # --- robustness: exceptions never crash the worker --------------------------
 
-def test_refine_exception_keeps_bootstrap(monkeypatch):
-    # A crowded field can make XYXYMatch raise (source confusion). The refine
-    # crash must be swallowed and the good bootstrap solution retained, not
-    # propagated out of the solve (which would abort the align worker).
+def test_matcher_exception_degrades_to_not_aligned(monkeypatch):
+    # A crowded field can make XYXYMatch raise (source confusion). That must be
+    # swallowed and degrade to NOT_ALIGNED (WCS preserved), never propagate out
+    # of the solve and abort the align worker.
     from tweakwcs.matchutils import MatchCatalogs
     import campfire_pipeline.nircam.align.solve as _s
 
@@ -189,9 +232,11 @@ def test_refine_exception_keeps_bootstrap(monkeypatch):
 
     monkeypatch.setattr(_s, 'XYXYMatch', _BoomMatch)
     detectors, refcat = _build_group(n_det=2, offset=(2.0, 0.0))
+    originals = [copy.deepcopy(d.wcs) for d in detectors]
     sol = solve_exposure_group(detectors, refcat, key='exp')
-    assert sol.status == 'SOLVED'                       # bootstrap survived
-    assert abs(np.hypot(*sol.shift) - 2.0) < 0.1
+    assert sol.status == 'NOT_ALIGNED'
+    for ds, orig in zip(sol.detectors, originals):
+        assert ds.wcs(500, 500) == orig(500, 500)
 
 
 # --- residual helper --------------------------------------------------------

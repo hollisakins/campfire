@@ -1,412 +1,367 @@
-# NIRCam `align` — hierarchical joint-solve design
+# NIRCam `align` — coarse-per-pool + gated fine
 
-**Status:** proposal, not yet built. Targets the NIRCam field-level astrometric
-`align` phase (`campfire_pipeline/nircam/align/`). Written for implementation and
-review.
+**Status:** implemented. Opt-in per field, **default off** — a field enables it
+in `fields.toml` (`[<field>.align].enabled = true` + `refcat = "<file>.ecsv"`);
+otherwise the reduction is byte-for-byte the JHAT path. Lives in
+`campfire_pipeline/nircam/align/` (`detect.py`, `footprint.py`, `solve.py`,
+`apply.py`), driven from `nircam/orchestrate.py` and enumerated by
+`nircam/association.py`.
 
-**Supersedes** the earlier *serial LW-anchor cascade* proposal (see §4 — it was
-considered and rejected after an adversarial review). **Scope of the change:** the
-**solve** and **orchestration** layers (`solve.py`, `apply.py`,
-`orchestrate.run_align`), the refcat schema/handling, additive detection changes,
-and a combine-side quarantine. The blind matcher (`matcher.py`, `tristars`) is
-reused but reframed honestly (§6).
-
----
-
-## 1. Where this sits in the align PR series
-
-The align phase replaces the JHAT-based `jhat` / `wcs_shift` alignment and ships
-**opt-in, default-off** (`[<field>.align].enabled = true`). When a field opts in the
-process phase skips `jhat` + `wcs_shift` — exactly one alignment path per field — and
-JHAT stays the default while align is validated.
-
-| PR | Branch | What it added |
-|----|--------|---------------|
-| #322 | `nircam-align-foundation` | `CFP_ALGN` key, `[nircam.align]` config, deps |
-| #323 | `nircam-align-association` | exposure-association (`association.py`: `ExposureGroup`, SW/LW/module helpers) |
-| #324 | `nircam-align-matcher` | `TriangleMatch` — `tristars` triangle matcher |
-| #325 | `nircam-align-detect` | centroid-only detection (`detect.py`, DAOStarFinder) |
-| #326 | `nircam-align-solve` | per-exposure solve core (`solve.py`) |
-| #327 | `nircam-align-apply` | exposure I/O + `CFP_ALGN` + `WCS_BAK` (`apply.py`) |
-| #328 | `nircam-align-run` | `run_align` + CLI |
-| #329 | `nircam-tiles-prefilter` | `--tiles` pre-filter; A/B astrometry harness |
-| *(this branch)* | `cfpipe-nircam-import-error-d6034o` | matcher spread fix (unmerged) + this doc |
-
-This document proposes the next step: replace the single pooled whole-focal-plane
-solve with a **hierarchical joint solve** — one shared exposure attitude plus gated
-per-detector residual shifts — carrying the matcher/refcat repairs everyone agrees on.
+This document describes the code that exists. It **supersedes** an earlier
+"hierarchical joint solve" proposal (Layer 1/2/3, one cross-filter attitude)
+that was *not* built — that design is gone; do not re-derive from it.
 
 ---
 
-## 2. What exists today (the pooled solve) and why it needs work
+## 1. What it is, and why it replaces `jhat`
 
-For each exposure, `run_align` groups every detector on disk across filter dirs (≤8
-SW + 2 LW) and fits **one shared shift+rotation** via `tweakwcs` against the field
-refcat, matched by `TriangleMatch`, then an adaptive per-detector shift for stragglers.
+`align` is a field-level astrometric step that ties every NIRCam exposure to a
+Gaia-tied reference catalog. It replaces the JHAT-based `jhat` step while keeping
+what jhat got right — careful matching against a good refcat, a robust rigid fit,
+per-detector correction — and fixing where jhat is fragile (SW detectors with few
+sources, no footprint clip on the refcat, a soft count-only acceptance).
 
-Defects found:
+**What jhat actually does, from reading its source.** jhat's per-detector
+correction is a **linear** `rshift` (shift + rotation, no scale skew) computed by
+`jwst`'s `TweakRegStep`, followed by a `to_fits_sip` **serialization** of the
+already-linear GWCS into FITS SIP keywords. jhat does **not** fit per-detector
+distortion — the SIP terms it writes are just the JWST distortion model
+re-expressed as a polynomial, not a new fit. So the honest target for `align` is:
+reproduce jhat's *linear per-detector fit*, not invent a distortion solve.
 
-- **Refcat never footprint-filtered.** The full field refcat (e.g. 550k rows for
-  COSMOS) reaches the matcher and is capped to the 150 *globally* brightest, almost
-  all outside the frame (verified in `campfire_pipeline` + `tweakwcs`).
-- **The brightest-N cap bounded the fit, not just the bootstrap.** `tristars`
-  enumerates every `C(N,3)` triangle, so a cap is needed — but it was allowed to gate
-  the final fit; the solution rests on ~17–30 pairs.
-- **Pooled-catalog starvation** (the `mag`-strip bug; fixed on this branch by an even
-  spread, and made moot by the redesign).
-- **Weak acceptance.** `_match` uses `SkyCoord.match_to_catalog_sky` (solve.py:102),
-  which is **not one-to-one** — `n_matched` can count several detections onto one
-  reference, so `n_match`+RMSE is a soft gate.
+**Distortion stays with CRDS/SIAF.** `align` never touches the detector
+distortion model; it corrects only the rigid placement (the same thing jhat
+corrects). The SIAF distortion rides through `tweakwcs`'s `JWSTWCSCorrector`
+untouched, and `apply.py` writes FITS SIP keywords via `jwst`'s
+`update_fits_wcsinfo` — the identical `to_fits_sip` serialization jhat produces,
+so the on-disk WCS keyword contract is unchanged. This matches the whole JWST
+ecosystem (distortion is a calibration product, not a per-exposure fit); jhat's
+SIP *serialization* is the only ecosystem-wide idiom `align` deliberately mirrors.
 
-These are **matcher/refcat defects, not proof that pooling is wrong** — a key point
-from review (§4).
+What `align` adds over jhat is a **pooled coarse solve** for robustness: instead
+of asking each small SW detector to find its own solution against a field-wide
+catalog, it clips the refcat to the frame and fits one rigid transform per module
+pool first, then only frees a per-detector fit where the residual demands it.
 
 ---
 
-## 3. Corrected physics: what constrains the solution
+## 2. Where it sits: per-filter = per-channel, inside the process loop
 
-Rotation uncertainty for a rigid fit is roughly
+`align` runs as a per-filter step **inside the NIRCam process loop**, in the slot
+`jhat` used (last, on post-`image2` cal data). `_active_process_steps`
+(`orchestrate.py`) swaps `jhat → align` for align-enabled fields and leaves
+everything else — including `wcs_shift` — in place:
+
+- **`wcs_shift` is kept.** It still applies manual per-exposure offsets for
+  exposures with corrupted pointing metadata, and feeds a good input WCS into
+  `align`. `align` supersedes only jhat's *automatic* solve, not the manual lever.
+- **Per-filter is per-channel for free.** Canonical files are channel-segregated
+  by directory — SW filter dirs hold SW detectors, LW dirs hold LW — so running
+  `align` on one filter's exposures already yields one channel's detectors. There
+  is **no cross-filter reach**: `_run_align` builds groups from the single filter
+  it was handed. This is what retired the old joint solve's cross-filter
+  concurrency race and its tile-union gap at filter boundaries — a per-filter step
+  can't race a sibling filter it never touches.
+
+One exposure token (`rootname` minus the `_<detector>` suffix,
+`association.exposure_key`) still identifies one physical dither across both
+channels, but each channel is solved in its own per-filter invocation against the
+**same shared refcat** (§7), so SW and LW register to one frame anyway.
+
+---
+
+## 3. Architecture: coarse per pool → group gate → fine ladder
+
+```
+per FILTER (one channel), per EXPOSURE (build_exposure_groups)
+        │  split_pools: pool_modules=false → module A, module B are SEPARATE pools
+        ▼                pool_modules=true  → both modules are one pool
+┌──────────────────────────────────────────────────────────────────────┐
+│ PER DETECTOR (detect.py)                                               │
+│  • DAOStarFinder centroids on the SCI image (0-indexed px), per-filter │
+│    PSF fwhm; DQ mask = DO_NOT_USE | SATURATED | NO_LIN_CORR; snr_min,  │
+│    objmag_lim, shape + edge cuts. mag rides along only as a rank proxy.│
+└──────────────────────────────────────────────────────────────────────┘
+        ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ PER POOL (solve.solve_exposure_group)                                  │
+│  1. FOOTPRINT-CLIP the field refcat to this pool's detector union +    │
+│     border (footprint.py, gnomonic tangent plane).                     │
+│  2. COARSE — ONE pooled rigid `rshift`, all the pool's detectors on one │
+│     group_id, matched by tweakwcs XYXYMatch(use2dhist=True) 2-D        │
+│     pairwise-offset histogram, iterated match→fit→rematch to converge  │
+│     (pass 0 grabs the gross translation; later passes peel off roll).  │
+│  3. GROUP GATE — recompute one-to-one (mutual-NN) matches DIRECTLY;    │
+│     accept the pool only if ≥ min_matched matches AND they span        │
+│     ≥ min_coverage_arcsec of sky; else → NOT_ALIGNED (WCS preserved).  │
+│  4. FINE — each detector over `tolerance` gets an individual fit down  │
+│     the ladder general → rshift → shift → keep-coarse, geometry chosen │
+│     by its unique-match count + coverage, ACCEPTED only if it reduces  │
+│     the residual.                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+        ▼
+   ACCEPTED → write corrected gwcs + CFP_ALGN + WCS_BAK (apply.py)
+   REJECTED → CFP_ALGN = NOT_ALIGNED  →  quarantined from combine (§6)
+```
+
+### 3.1 Pools and the shared-attitude argument
+
+A **pool** is the set of detectors sharing one coarse rigid fit (`split_pools`).
+The default (`pool_modules = false`) makes module A and module B **separate**
+pools; `pool_modules = true` pools both into one fit.
+
+The physics that justifies pooling *within* a pool: every detector of one NIRCam
+exposure shares one spacecraft attitude — a single (Δx, Δy, roll) — so a rigid
+fit is best estimated from **all** of a pool's sources at once. For a rigid fit
+the rotation uncertainty scales as
 
 ```
 σ_θ  ≈  σ_centroid / (√N · R)          (R = spatial spread of matched sources)
 ```
 
-- **SW and LW image the same field of view**, so `R` is the same between channels —
-  there is no "SW wide baseline" (an earlier draft claimed this; it was wrong).
-- **The exposure attitude is a single 3-parameter quantity** (Δx, Δy, roll θ) shared
-  by all 10 detectors — one spacecraft pointing. It is best estimated from **all**
-  usable sources across both modules and both channels at once (maximal `N`, full `R`).
-- **A single small detector is a poor place to fit rotation.** One SW detector spans
-  ~half the module's linear extent; a handful of clustered matches gives a
-  well-fit-looking but badly-conditioned θ.
-- **SIAF placement residuals are stable in time.** They belong in a calibration layer
-  estimated across many exposures, not re-fit (degenerate with attitude) every exposure.
+so a single small SW detector — half a module's linear extent, a handful of
+clustered matches — is a badly-conditioned place to fit roll, while the pooled
+catalog maximizes both `N` and `R`. That is exactly why the coarse solve pools
+and the group gate demands `min_coverage_arcsec` of spread before it trusts a
+rotation.
 
-These four facts drive the architecture: solve the attitude **jointly and globally**,
-demote per-detector freedom to **gated shifts**, and push persistent detector offsets
-into a **calibration** layer.
+The **A/B split** (the default) trades a little roll leverage — the long A–B
+baseline — for isolation: a spurious per-module SIAF offset then cannot
+cross-contaminate the other module's solution, and each SW module (a 2×2 mosaic,
+~130″) still has enough sources and lever arm to condition its own rotation. A
+per-module LW "pool" is a single detector — precisely the jhat-equivalent
+single-chip solve. Set `pool_modules = true` to recover the full A–B baseline when
+a field wants it.
 
----
+Mechanically: all of a pool's detectors get one `group_id`, so `tweakwcs`
+`align_wcs` fits and applies one rigid transform to them; distinct per-pool
+`group_id`s + a static refcat + `expand_refcat=False` keep pools independent.
 
-## 4. Rejected alternative: the serial LW-anchor cascade
+### 3.2 Coarse solve (`solve._coarse`)
 
-An intermediate proposal solved modules A/B independently, anchored each on its LW
-detector to the external refcat, then aligned each SW detector (full shift+rotation)
-to the LW-derived catalog. An adversarial review (GPT/Codex) plus source cross-checks
-retired it. Recorded here so it isn't re-proposed:
+Pass 0 uses `XYXYMatch(use2dhist=True, searchrad=coarse_searchrad, ...)` — a 2-D
+pairwise-offset histogram that grabs the gross translation over the full search
+radius. Later passes start from the corrected WCS, match by nearest neighbour
+(`use2dhist=False`) around the now-small residual, and the rigid `rshift` peels
+off the roll; the loop stops when a pass moves the WCS by < 0.01″ (well below a
+NIRCam pixel) or after `refine_niter` passes. A matcher/fit crash degrades the
+pool to NOT_ALIGNED — it never aborts the worker or the field.
 
-- **A and B share one attitude** — independent per-module rotations discard the
-  strongest roll constraint (the A–B baseline) and permit mosaic shear across the
-  module gap. A module offset is a *calibration* term, not per-exposure attitude.
-- **Per-SW-detector rotation is under-conditioned** — half the lever arm, few
-  cross-band common sources, and an acceptance gate (`n_match`+RMSE, non-one-to-one)
-  too weak to catch a wrong-but-low-RMSE θ.
-- **"LW is the better anchor" is field-dependent** — false for blue/stellar fields,
-  narrow/medium LW filters (F430M/F460M/F466N/F470N/F480M), nebulous star-forming
-  regions, and dropout fields where SW∩LW is tiny.
-- **"SW→LW guarantees mutual registration" is false** — cross-band centroids shift
-  (galaxy color gradients, blends splitting, emission-line-only objects), so the
-  serial fit propagates LW centroid bias coherently into all four SW detectors.
-- **Serial state is brittle** — channel ordering, LW-final/SW-stale coupling,
-  `--filters`/`--tiles` selection deciding astrometry, mixed-generation crashes.
+Provenance: pass 0's fit is the gross shift/rot the input WCS was off by (stored
+for logging); the converged pass's RMSE is the reported quality.
 
-The joint solve below keeps the *good* parts (footprint filter, bootstrap-only cap,
-all-source robust refine) and drops the cascade.
+### 3.3 Group acceptance gate (`solve`, step 3)
 
----
+`align_wcs` reports `status='SUCCESS'` even for a geometrically wrong fit, so
+acceptance never rests on it. The gate **recomputes** matches directly:
+`solve._match` transforms each detector's sources through the corrected gwcs and
+pairs them to the refcat by **mutual nearest neighbour** (a source and a reference
+match only if each is the other's closest, within `match_radius`). The pool is
+accepted only if the pooled one-to-one count ≥ `min_matched` **and** the matched
+references span ≥ `min_coverage_arcsec` — a rotation you can't condition is a
+rotation you don't trust. This is the substantive fix over the old count-only gate
+(which could count several detections onto one reference and pass a wrong-θ fit).
 
-## 5. Architecture: hierarchical joint solve
+### 3.4 Fine per-detector ladder (`solve._choose_fitgeom`, `solve._fine_fit`)
 
-```
-per exposure (one dither — every detector on disk, both modules, SW + LW)
-        │
-        ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ PREP  (per detector)                                                   │
-│  • detect sources: SNR / sharpness / roundness + magnitude-range cuts, │
-│    per-filter PSF fwhm, saturation & nonlinearity masked from DQ       │
-│  • project pixels → v2/v3 (SIAF) → common tangent plane (arcsec)       │
-│  • footprint-filter refcat to the exposure's detector-union + border,  │
-│    epoch/proper-motion propagated to the exposure mid-time             │
-└──────────────────────────────────────────────────────────────────────┘
-        │
-        ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ LAYER 1 — shared exposure attitude   (Δx, Δy, roll θ : 3 params)       │
-│   bootstrap  : tristars — hypothesis generator, scale+roll CONSTRAINED │
-│                (uses the pipeline WCS as the prior; see §6)             │
-│        ↓ coarse (Δx, Δy, θ)                                            │
-│   refine     : ALL unique 1-to-1 matches, robust (RANSAC / σ-clip),    │
-│                iterate match→fit to convergence                        │
-│   → ONE attitude for all detectors, weighted by centroid precision;    │
-│     whichever channel is informative drives it (no hard LW/SW anchor)  │
-└──────────────────────────────────────────────────────────────────────┘
-        │
-        ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ LAYER 2 — per-detector SHIFT residuals   (SIAF placement, shift-only)  │
-│   each detector: 1-to-1 NN to refcat around the Layer-1 WCS,           │
-│   accept a shift ONLY if gated: normal-matrix condition number,        │
-│   unique-match count, radial coverage, held-out residual improves.     │
-│   NO per-detector rotation per exposure.                               │
-└──────────────────────────────────────────────────────────────────────┘
-        │
-        ▼
-   quality gate ─► ACCEPTED : write corrected gwcs + CFP_ALGN + WCS_BAK
-        │          REJECTED : NOT_ALIGNED  →  QUARANTINED from combine (§9.1)
-        ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ LAYER 3 — persistent calibration  (offline / cross-exposure, later)    │
-│   pool Layer-2 residual vector fields over many dithers → stable       │
-│   per-detector & A↔B-module offsets → SIAF-residual/distortion term,   │
-│   rather than per-exposure freedom.                                    │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-**One-line summary:** *fit the exposure attitude once from everything; correct
-per-detector placement with gated shifts; learn the stable offsets as calibration.*
+Only detectors whose one-to-one residual exceeds `tolerance` are refit. Each picks
+a geometry down the ladder `general → rshift → shift → keep-coarse`, starting from
+the `fine_fitgeom` **ceiling** and dropping when it has too few unique matches for
+the current geometry, skipping rotating geometries (`general`, `rshift`) when its
+own matched sources don't span `min_coverage_arcsec` (an unconditioned rotation).
+The default ceiling is `rshift` — **exactly what jhat fits per detector**. The
+detector is refit against a *distractor-free local refcat* (only the references it
+matched), on a deep-copied corrector so a rejected trial never touches the shared
+solution, and the new WCS is **accepted only if it measurably reduces** the
+one-to-one residual. The chosen geometry is recorded per detector as the `dof`
+(`coarse` | `shift` | `rshift` | `general` | `identity`).
 
 ---
 
-## 6. The matcher, described honestly
+## 4. Detection (`detect.py`)
 
-Cross-checking `tristars 0.1` corrected our understanding: with `TriangleMatch`'s
-defaults `ignore_scale=True, ignore_rot=True`, the hash uses **absolute side lengths**
-(scale *constrained*) and the **longest-edge position angle** (rotation *constrained*).
-So it is **translation-invariant only** — it assumes both catalogs are already at the
-same scale and roll, which for JWST they are (assign_wcs gives scale and roll to
-≪1°). tristars' own docs warn the fully scale/rotation-free mode "doesn't work well."
+`detect_star_centroids` runs `photutils.DAOStarFinder` on the SCI image and
+returns `(x, y)` centroids (0-indexed detector pixels, the gwcs / `tweakwcs`
+convention) plus a `mag = -2.5·log10(flux)` **rank proxy** — used only to order
+sources, never as a match constraint. Deliberately centroid-only, no aperture
+photometry: jhat's aperture annulus on CAMPFIRE's sky-subtracted frames averages
+negative and trips a `-99.99` sentinel that floods the matcher; a PSF-fit finder
+has no sky annulus and structurally cannot hit that bug.
 
-Implications:
-
-- The matcher is **not** "blind / rotation-invariant / no offset prior" — it *relies
-  on the pipeline WCS prior*. The `matcher.py` and old-doc language saying otherwise is
-  wrong and should be corrected (a one-line docstring fix can land now).
-- Because we *have* a roll+scale prior, exotic rotation-invariance is unnecessary; the
-  bootstrap's job is only to seed Layer 1.
-- `tristars` with `auto_keep=False` returns vertices from a few top triangle-hash
-  pairs — **not** RANSAC, **not** one-to-one, **not** inlier-validated. Treat it as a
-  **hypothesis generator only**: never trust raw top-triangle pairs as matches. Layer-1
-  refine (robust, all unique matches) is what earns trust.
-- If a mode with large roll error is ever supported, `ignore_rot` must go `False`
-  (true invariance, less robust) — an explicit, tested decision, not a silent default.
-
----
-
-## 7. Detailed design
-
-### 7.1 Detection (`detect.py`) — quality selection, not a count cap
-
-Return the full quality-cut catalog; the only cap left is `bootstrap_max` on the
-triangle stage. Cuts (configurable; DAOStarFinder emits the needed columns):
-
-- `snr_min`; `sharpness_lim`; `roundness1_lim`; `objmag_lim=(bright,faint)` magnitude
-  **range** (drops saturated-bright and low-SNR-faint).
-- **Per-filter PSF `fwhm`** — a single `fwhm=2.5` is wrong across F070W→F480M; key
-  DAOStarFinder off the filter's PSF. (Note `flux`/`mag` here are a kernel matched-
-  filter estimate, adequate only for *ranking* the bootstrap subset — not photometry.)
-- **Saturation/nonlinearity masked from DQ + ramp**, not inferred from a mag cut
-  (saturation corrupts the measured flux).
-- The old `brightest` count cap is **removed**.
-
-### 7.2 Reference catalog — footprint + epoch (the two real gaps)
-
-- **Schema** grows an epoch/motion contract: `source_id, ref_epoch, pmra, pmdec,
-  parallax` (where available) + uncertainties, alongside `RA, DEC, mag, mag_err`.
-  Distinguish stationary extragalactic anchors from stars; for survey-derived galaxy
-  positions record the effective coadd epoch.
-- **Propagate to the exposure mid-time** (`apply_space_motion`) **before** footprint
-  clipping and projection. Today's schema (`RA/DEC/mag/mag_err`) silently assumes zero
-  motion — fine for a pure-galaxy anchor, wrong for stars or mixed HSC/LS/Gaia rows.
-- **Footprint clip** to the exposure's detector-union sky polygon + `ref_border_arcmin`
-  (default 0.5′), using actual GWCS bounding boxes and spherical polygons. Because the
-  footprint derives from the (possibly offset) input WCS, the border **is** an implicit
-  pointing prior: size it for the max supported acquisition error and fail
-  `outside-acquisition-bound` distinctly from `source-starved`.
-
-### 7.3 Layer 1 — shared attitude
-
-Bootstrap (`tristars`, §6) → coarse (Δx, Δy, θ). Refine with `tweakwcs.XYXYMatch`
-against the footprint-filtered refcat, but specified exactly to avoid footguns:
-**immutable baseline corrector, transformed catalogs each iteration, one-to-one
-rematch, robust refit (`fitgeom='rshift'`, σ-clip), convergence test, one final WCS
-application.** Do *not* re-run the 2-D histogram acquisition once a good transform
-exists (it composes corrections); rebuild fresh correctors per outer iteration.
-Attitude is fit from all detectors sharing one `group_id`, weighted by centroid
-precision.
-
-### 7.4 Layer 2 — gated per-detector shifts
-
-For each detector: one-to-one NN to the refcat around the Layer-1 WCS; propose a
-shift-only correction; **accept only if gated** on normal-matrix condition number,
-unique-match count, radial coverage, and a held-out residual that actually improves.
-No per-detector rotation. Rejected detectors keep the Layer-1 attitude
-(`dof=attitude`).
-
-### 7.5 Layer 3 — persistent calibration (later)
-
-Aggregate Layer-2 residual vector fields across many dithers to estimate stable
-per-detector and A↔B-module offsets; fold into a SIAF-residual/distortion term. Out
-of scope for the first build, but the parametrization above is chosen so it can be
-added without rework.
-
-### 7.6 Acceptance & provenance
-
-- **Acceptance** never rests on `n_match`+RMSE alone (they hide the non-one-to-one
-  and conditioning problems). Use unique matches, condition number, predicted edge
-  displacement, radial coverage, held-out residuals; reject-to-identity otherwise.
-- **Provenance**: a short **solution ID** in the `CFP_ALGN` card, backed by a
-  structured per-exposure/module record — refcat content hash + epoch, source counts
-  at every cut, transform + covariance, residual quantiles/vector diagnostics, and
-  code/CRDS/config baseline + parent generation. (Full record is phaseable; the card
-  ID + counts + rmse land first.)
-
-### 7.7 Config (`[nircam.align]`)
-
-| Knob | Default | Controls | Status |
-|------|---------|----------|--------|
-| `ref_border_arcmin` | `0.5` | Footprint margin (sized for acquisition error) | new |
-| `snr_min` | — | Detection SNR floor | new |
-| `sharpness_lim` / `roundness1_lim` | windows | DAOStarFinder shape cuts | new |
-| `objmag_lim` | `(bright, faint)` | Detection magnitude range | new |
-| `psf_fwhm_by_filter` | table | Per-filter detection PSF FWHM | new |
-| `bootstrap_max` | `150` | Density-matched vertex cap — **bootstrap only** | changed |
-| `refine_searchrad` / `refine_tolerance` / `refine_niter` | arcsec / arcsec / `3` | Layer-1 refine | new |
-| `detector_shift` | `gated` | Layer-2: `off` / `gated` | new |
-| `brightest` | — | **removed** | changed |
+- **Per-filter PSF FWHM.** NIRCam's core width runs from ~F070W to ~F480M, so one
+  `fwhm` is wrong across an exposure's SW+LW channels; `apply.py` keys detection
+  off each member's filter via `psf_fwhm_by_filter`, falling back to the scalar
+  `fwhm`.
+- **DQ masking, not a magnitude guess.** `DETECT_DQ_BITS = DO_NOT_USE | SATURATED
+  | NO_LIN_CORR` are masked before detection — a saturated or nonlinearity-
+  uncorrected core corrupts both the centroid and the kernel flux, and those are
+  exactly the bright-star failures a magnitude cut can't catch.
+- **Quality cuts:** `snr_min` (peak / background RMS, above the kernel `nsigma`
+  threshold), `objmag_lim` (a coarse per-run trim, not a calibrated cut),
+  sharpness/roundness windows, and an `edge` reject. No `brightest` count cap on
+  the align path — the full quality-selected catalog reaches the solve.
 
 ---
 
-## 8. What stays the same
+## 5. Provenance, idempotency, and staleness (`apply.py` + `orchestrate.py`)
 
-`association.py` (already module/channel-aware); `tristars` bootstrap; `tweakwcs`
-correctors + tangent-plane machinery; `CFP_ALGN` + `WCS_BAK` + reject-to-identity;
-opt-in/default-off; `--tiles` and multiprocessing dispatch; the matcher spread-fix.
+**`CFP_ALGN` stamp.** Each accepted detector's primary header gets
+`CFP_ALGN = "dof=<geom> res=<median-resid-arcsec> n=<n_matched> rc=<refcat-hash>"`
+— per-detector and short enough to fit one 80-char FITS card (the pool-level
+coarse shift/rot is logged once per pool, not stamped on every card). A rejected
+exposure gets the sentinel `CFP_ALGN = NOT_ALIGNED`.
 
----
+**`rc=` refcat hash.** `orchestrate._refcat_hash` is the first 8 hex of the refcat
+file's SHA-256 — cheap, computed before the catalog is even loaded. Stamping it on
+every solution makes the alignment self-describing about *which* reference produced
+it.
 
-## 9. Correctness gaps to close (independent of the layering)
+**`WCS_BAK`.** On first apply, the original (un-aligned) gwcs is stashed as an
+ASDF-in-FITS `WCS_BAK` image extension. An `--overwrite` re-solve reads *from*
+`WCS_BAK`, so re-running never composes a second correction on top of the first —
+the solve is idempotent. (Mirrors the `steps/wcs_shift.py` contract; replicated
+here because `align` supersedes and will remove `wcs_shift`'s automatic path.)
 
-### 9.1 `NOT_ALIGNED` must be quarantined from combine
+**Skip / re-solve.** The orchestration skip check (`_pending_pools`) + apply's
+`_aligned_ok` treat a detector as done only if it carries a *completed,
+non-rejected* `CFP_ALGN` whose `rc=` matches the **current** refcat hash. So on a
+normal re-run (no `--overwrite`):
 
-Confirmed: combine enumerates canonicals unconditionally with no `CFP_ALGN` check, so
-a reject-to-identity exposure drizzles with its raw WCS (doubled sources, CR-rejection
-failure). Pre-existing (JHAT shares it) and usually ≲0.5″ for JWST, but real. For
-align-enabled fields, exclude `NOT_ALIGNED` from combine (or require an accepted
-alignment), with an explicit `--include-unaligned` opt-in — never implicit inclusion.
+- an already-solved pool against the same refcat is **skipped**;
+- a `NOT_ALIGNED` pool is **re-attempted** (the user may have retuned
+  `[<field>.align]`) — the loud end-of-run warning (`_warn_not_aligned`) hands
+  them the levers;
+- a pool solved against a now-changed refcat (rc mismatch) or by an older,
+  `rc=`-less generation is **re-solved**.
 
-### 9.2 Cross-filter / tile dependency closure
-
-`run_align` builds associations only from the *selected* filters, so `--filters f200w`
-can't see its paired F444W, and per-filter tile selection can split a physical
-exposure at a tile edge. Resolve the physical-exposure membership across **all** field
-filters before applying the write scope; select tiles on the cross-filter exposure
-union; log any out-of-selection file read as input.
-
-### 9.3 Observing-mode gating
-
-Grouping by filename doesn't validate `EXP_TYPE`, aperture, or subarray, or compute
-real SW∩LW overlap. Define supported modes; unsupported (subarray/coronagraph/TSO/dead
-detector) stop or take a separately-validated path rather than falling through generic
-per-detector logic.
-
-### 9.4 State & staleness
-
-A single FITS keyword can't encode a dependency graph. Even in the joint solve, an
-exposure re-solved when more channels/filters arrive (or after `--overwrite`, a new
-refcat, or new CRDS) needs a **generation ID + content hash**; children/derived
-products mark **stale** when a parent changes; write a module/exposure solution
-transactionally with `PENDING/ACCEPTED/REJECTED/STALE` states. Phaseable, but the
-generation ID should exist from the first build.
+No `--overwrite` needed to retune params or swap the refcat; already-good work is
+left alone.
 
 ---
 
-## 10. Partial processing (LW present, SW not — etc.)
+## 6. Combine quarantine (`field.py::_quarantine_not_aligned`)
 
-The joint solve removes the serial LW→SW coupling, but partial data still matters:
-solve the attitude from whatever usable detectors are present, stamp its **generation**
-(§9.4), and re-solve when more arrive if the new data would change it (staleness-
-gated), rather than silently leaving a mixed-generation exposure. An exposure with too
-few usable detectors/sources rejects to identity and is quarantined (§9.1).
+For an align-enabled field, only exposures carrying a real align solution (a
+`dof=…` `CFP_ALGN`) enter the drizzle. Two failure modes are quarantined from the
+combine working tree — both would otherwise drizzle with a raw WCS, doubling
+sources and defeating CR rejection:
 
----
+- `CFP_ALGN = NOT_ALIGNED` — align tried and could not tie the exposure; retune
+  and re-run, or force it in.
+- **no `CFP_ALGN` at all** — align never solved it (never run, run over a
+  different filter/tile subset, or the worker died). Because an align-enabled
+  field skips jhat/wcs_shift's automatic solve, such an exposure has *no*
+  astrometric correction.
 
-## 11. Open questions — validate on real data before committing parametrization
-
-The layer *structure* is settled; the *parametrization* (how much per-detector
-freedom) is an empirical question. **Shared-attitude-first is the safe default;**
-enable Layer-2 shifts only where the data support them. Before finalizing, measure on
-the `cosmos_align` A4 harness and a spread of regimes:
-
-1. **Unique 1-to-1 matches and weighted radial leverage per detector**, after real
-   quality/saturation/blend/morphology cuts — the quantity that decides whether any
-   per-detector freedom is justified.
-2. **A↔B closure** and **shared-attitude residual vector fields** — do residuals show
-   real per-detector/module structure, or just noise?
-3. Regimes: COSMOS/CEERS broad-band pairs; an F070W/F090W field; a crowded stellar
-   field; a nebulous star-forming field; a narrow/medium LW pairing; tile-edge and
-   missing-detector cases.
-
-If residuals are noise, ship Layer 1 only. If they show stable structure, that's a
-Layer-3 calibration signal, not per-exposure freedom.
+Quarantine is the single gate into the working tree every combine step reads.
+Omitting data is never silent (it is surfaced with the fix), and never automatic:
+`combine --include-unaligned` is the explicit opt-in to drizzle the raw-WCS
+exposures anyway.
 
 ---
 
-## 12. Affected files (implementation sketch)
+## 7. Reference catalog (`nircam/refcat/`)
 
-- `orchestrate.py::run_align` — cross-filter exposure membership + tile union; drive
-  Layer 1 → Layer 2; generation stamping; NOT_ALIGNED quarantine hand-off.
-- `solve.py` — replace pooled `solve_exposure_group` with a joint attitude fit +
-  gated per-detector shift; robust one-to-one refine; conditioning-based acceptance.
-- `apply.py` — extend `CFP_ALGN` provenance (solution ID + counts + rmse); structured
-  record hook.
-- `detect.py` — SNR/shape/mag-range cuts, per-filter PSF fwhm, DQ saturation masking;
-  drop `brightest`.
-- `matcher.py` — correct the invariance docstring now; density-matched bootstrap subset
-  (spread fix stays as fallback).
-- `refcat/{io,query}.py` — epoch/PM schema + `apply_space_motion`.
-- combine path — `NOT_ALIGNED` exclusion + `--include-unaligned`.
-- config defaults + `tests/test_align_*`.
+One **shared, Gaia-tied** refcat per field (`[<field>.align].refcat`, a
+`campfire-refcat-v1` ECSV in the field's astrometric-catalog dir), resolved once
+by `_resolve_align_refcat` — there is no per-filter mapping. This is the mechanism
+that makes SW and LW register to the *same* frame: both channels' per-filter
+invocations tie to one catalog, so cross-band registration comes for free from the
+shared reference rather than from any SW↔LW coupling.
+
+Positions are **proper-motion propagated to the exposure mid-time**
+(`apply._propagate_refcat`, `refcat/motion.py`) before the footprint clip, when
+the catalog carries the optional `ref_epoch`/`pmra`/`pmdec` columns; a pure-galaxy
+(stationary) catalog and rows with non-finite PM are left in place per-row.
+Exposure epoch comes from `EXPMID`/`MJD-AVG` or the mean of `EXPSTART`/`EXPEND`;
+propagation fails open (align against catalog positions rather than reject).
+
+The **footprint clip** (`footprint.clip_refcat_to_exposure`) restricts the
+field-wide catalog (~550k rows for COSMOS) to the pool's detector-union sky polygon
+plus a `ref_border_arcmin` margin, in a local gnomonic tangent plane. It is
+deliberately a superset — the border doubles as an implicit pointing prior, so it
+must exceed the acquisition error to be recovered (default 1.2′ ≥
+`coarse_searchrad`). Over-inclusion is harmless (the robust fit rejects extras);
+under-inclusion starves the solve. The clip fails open (keeps the full catalog) on
+any geometry error — a per-pool worker must never crash the field.
 
 ---
 
-## 13. Staged rollout (PR plan)
+## 8. Configuration (`[nircam.align]`)
 
-Sequenced so that **nothing waits on the empirical question that isn't blocked by it.**
-Align is opt-in/default-off, so every stage has a small blast radius and each carries
-its own `## Unreleased` changelog entry. Stages 1–3 are improvements to the *current
-pooled* solve and can land (and be validated on real data) before the architecture
-pivot; the pieces they build (footprint filter, robust refine, quality detection) are
-reused by the joint solve, not thrown away.
+All knobs live in `config_default.toml`; per-field overrides go in
+`fields.toml [<field>.align]`.
 
-```
-S1 ─┐
-S2 ─┼─► S4 (Layer 1 joint attitude) ─► S5 (measure) ─► S6 (Layer 2) ─► S7 (Layer 3)
-S3 ─┘
-(S1/S2/S3 independent, any order/parallel; S4 needs S1; S6 needs S4 + S5's verdict)
-```
+| Knob | Default | Controls |
+|------|---------|----------|
+| `enabled` | `false` | Opt-in; off ⇒ the JHAT path runs unchanged |
+| `refcat` | — | Field's Gaia-tied refcat filename (required when enabled; set in `fields.toml`) |
+| `pool_modules` | `false` | `false`: coarse fit per module (A, B separate); `true`: pool both modules |
+| `coarse_searchrad` | `70.0` | arcsec — 2-D-hist search radius (≥ max acquisition offset) |
+| `coarse_tolerance` | `2.0` | arcsec — coarse pair-accept tolerance |
+| `coarse_separation` | `1.0` | arcsec — min in-catalog source separation |
+| `refine_niter` | `3` | coarse match→fit→rematch iterations (recovers roll) |
+| `fine_fitgeom` | `"rshift"` | per-detector fine ceiling: `general` \| `rshift` \| `shift` |
+| `fine_min_general` | `10` | ≥ this many 1-to-1 matches ⇒ allow `general` |
+| `fine_min_rshift` | `4` | ≥ this ⇒ allow `rshift` |
+| `fine_min_shift` | `2` | ≥ this ⇒ allow `shift`; below ⇒ keep coarse |
+| `tolerance` | `0.05` | arcsec — a fine fit must beat this to read "within" |
+| `match_radius` | `0.5` | arcsec — 1-to-1 NN radius for residuals + fine match |
+| `min_matched` | `6` | per-pool reject-to-NOT_ALIGNED floor (1-to-1 count) |
+| `min_coverage_arcsec` | `5.0` | matched sources must span ≥ this (conditions rotation) |
+| `ref_border_arcmin` | `1.2` | refcat footprint margin (≥ `coarse_searchrad`); arcmin |
+| `nsigma` | `5.0` | detection threshold (convolved-background σ) |
+| `snr_min` | `5.0` | drop detections below this peak SNR |
+| `fwhm` | `2.5` | fallback detection PSF FWHM (px) |
+| `edge` | `8` | drop detections within this many px of a border |
+| `psf_fwhm_by_filter` | table | per-filter detection PSF FWHM (F070W→F480M) |
 
-| # | PR | Scope / files | Ships alone? | Depends on | Changelog |
-|---|----|---------------|--------------|-----------|-----------|
-| **S1** | **Refcat footprint + robust refine** | Footprint-clip the refcat to the exposure/detector union + border (GWCS bboxes, spherical polygons); density-matched **bootstrap-only** cap; specified `XYXYMatch` all-source robust refine (immutable baseline, 1-to-1 rematch, σ-clip, convergence). Slots into the *current* pooled solve. `matcher.py`, `solve.py`, new refcat-footprint helper, tests | yes | — | Algorithm |
-| **S2** | **Detection quality selection** | SNR/sharpness/roundness + magnitude-range cuts, per-filter PSF `fwhm`, DQ saturation/nonlinearity masking; drop the `brightest` count cap. `detect.py`, config, tests | yes | — | Algorithm |
-| **S3a** | **`NOT_ALIGNED` combine quarantine** | Exclude reject-to-identity exposures from combine for align-enabled fields; explicit `--include-unaligned`. combine path, tests | yes | — | Algorithm |
-| **S3b** | **Refcat epoch/PM contract** | Schema gains `source_id/ref_epoch/pmra/pmdec/parallax` + errors; `apply_space_motion` to exposure mid-time before clip/projection; stationary-vs-star handling. `refcat/{io,query}.py`, tests | yes | — | Calibration |
-| **S3c** | **Dependency closure + mode gating** | Resolve physical-exposure membership across **all** field filters before the write scope; tile selection on the cross-filter union; `EXP_TYPE`/aperture/subarray gating; real SW∩LW overlap. `orchestrate.py`, `association.py`, tests | yes | — | Infrastructure |
-| **S4** | **Layer 1 — hierarchical joint attitude** | Replace pooled `solve_exposure_group` with the single-attitude joint fit (all detectors, precision-weighted), reusing S1's footprint+refine; conditioning-based acceptance (condition #, unique matches, held-out residual); **generation ID** + solution-ID provenance. `solve.py`, `apply.py`, `orchestrate.py`, tests | yes (Layer-1-only, shared-attitude default) | S1 (S2/S3 recommended) | Algorithm |
-| **S5** | **Data validation** *(measurement, not a PR)* | On the A4 harness + regimes in §11: unique 1-to-1 SW∩LW matches & radial leverage per detector, A↔B closure, shared-attitude residual vector fields. Decides whether Layer 2 is justified | — | S4 | — |
-| **S6** | **Layer 2 — gated per-detector shifts** | Shift-only per-detector residual, accepted only on the §7.4 gate. *Only if S5 shows real per-detector structure.* `solve.py`, config, tests | yes | S4 + S5 verdict | Algorithm |
-| **S7** | **Layer 3 + structured provenance** *(later)* | Cross-exposure per-detector/A↔B offset estimation → SIAF-residual/distortion term; full transactional solution records + staleness. Out of first scope | yes | S6 | Calibration/Infra |
+(`nclip=3`, `sigma=3.0` are the σ-clip params passed through to `tweakwcs`.)
 
-**Guidance.** Land S1–S3 first (biggest correctness wins, reusable pieces, real-data
-feedback early). S4 is the pivot but ships as *Layer-1-only* — shared-attitude-first is
-the safe default. Do **not** build S6 before S5's measurement justifies per-detector
-freedom. If S5 shows only noise, stop at S4 and defer any structure to S7 calibration.
+---
 
-## 14. Versioning / changelog
+## 9. Retired vs jhat / tristars
 
-**Algorithm** change (alters which sources match → the fitted WCS) → MINOR. Opt-in and
-default-off, so no existing (JHAT) reduction changes. Each stage above carries its own
-`## Unreleased` entry in the category shown. The refcat epoch/PM change (S3b) is
-**Calibration** (it moves reference positions → the fitted WCS); the dependency/mode
-closure (S3c) is **Infrastructure**.
+- **jhat's automatic solve.** Replaced by `align` for opted-in fields; jhat's
+  linear per-detector `rshift` behavior is reproduced (`fine_fitgeom="rshift"`
+  default), and its `to_fits_sip` GWCS serialization is preserved via
+  `update_fits_wcsinfo`.
+- **The triangle matcher (`tristars`) — retired.** The earlier `align` drafts
+  bootstrapped correspondences with a `tristars` triangle/asterism matcher
+  (`matcher.py`); the coarse-matcher bake-off (`scripts/align_matcher_bakeoff.py`)
+  showed the 2-D-histogram + iterate config recovers offsets to tens of arcsec and
+  roll to ~1° at **97–100%** correct in realistic (contaminated) fields, while the
+  `stimage` triangle matcher hard-crashes on sparse input. `matcher.py` was
+  **deleted** and no code path uses `tristars` anymore (the pin lingers in
+  `pyproject.toml` and can be dropped).
+- **The rotation-scan wrapper (jhat's approach) — retired.** A brute-force roll
+  scan around `XYXYMatch` (bake-off config C, what jhat does) was *worse* and
+  ~**17× slower** than the plain 2-D-hist + iterate; the iterated rigid fit
+  recovers the ~1° roll on its own.
+- **The old "hierarchical joint solve".** The Layer-1/2/3 single cross-filter
+  attitude design was never built. Its concurrency race across filters and its
+  tile-union gap are moot: a per-filter (= per-channel) step has no cross-filter
+  reach.
+
+---
+
+## 10. Open / future work
+
+- **Real-data jhat A/B validation — still to run.** The bake-off that fixed the
+  coarse defaults is *synthetic* (tangent-plane catalogs, no gwcs). The
+  side-by-side comparison against jhat on real reductions is the remaining
+  validation: per-detector RMS to Gaia, SW↔LW registration (do the two channels
+  land on the same frame?), and source-doubling in the combined mosaic. Reference
+  the intended harness `scripts/nircam_ab_astrometry.py` alongside the existing
+  `scripts/align_matcher_bakeoff.py`. Until this is run on a spread of regimes
+  (COSMOS/CEERS broad-band pairs, an F070W/F090W field, a crowded stellar field, a
+  nebulous star-forming region, a narrow/medium LW pairing, tile-edge and
+  missing-detector cases), `align` stays opt-in.
+- **Per-detector distortion fitting — deliberately not built.** A genuine SIP
+  distortion solve (`fit_wcs_from_points(sip_degree=…)`) was considered and
+  rejected: jhat doesn't do it (its SIP is a serialization, not a fit, §1), and a
+  real distortion fit needs many well-distributed sources per detector — exactly
+  what SW chips lack. Distortion stays a CRDS/SIAF calibration product. If
+  cross-exposure residuals ever show stable per-detector/A↔B structure, that is a
+  *calibration* signal (a SIAF-residual term learned across many dithers), not
+  per-exposure freedom to add here.

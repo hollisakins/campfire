@@ -16,6 +16,7 @@ remain in place for now but are not invoked from the new CLI.
 import functools
 import os
 import warnings
+import hashlib
 from importlib import import_module
 
 from astropy.io import fits
@@ -65,7 +66,10 @@ COMBINE_STEPS = [
 ]
 
 ALL_STEPS = PROCESS_STEPS + COMBINE_STEPS
-STEP_NAMES = [name for name, _ in ALL_STEPS]
+# 'align' is not a static PROCESS_STEP (it is substituted for 'jhat' at runtime
+# by _active_process_steps for align-enabled fields), but it is a valid target
+# for `run_step` / the `align` CLI command, so it joins the known step names.
+STEP_NAMES = [name for name, _ in ALL_STEPS] + ['align']
 
 # Combine steps that read/write the disposable working copies rather than the
 # frozen canonical (apply_mask is excluded — it writes the canonical's CFMASK).
@@ -631,19 +635,22 @@ def _scan_status(field, filters, overwrite=False):
 
 
 def _active_process_steps(config, field):
-    """``PROCESS_STEPS`` with ``jhat``+``wcs_shift`` removed when the field has
-    opted into the astrometric ``align`` phase.
+    """``PROCESS_STEPS`` with the ``jhat`` step swapped for ``align`` when the
+    field has opted into the astrometric ``align`` step.
 
-    Decision D6 coexistence: a field that runs ``align``
-    (``[<field>.align].enabled = true``) must NOT also run the JHAT-based
-    ``jhat``/``wcs_shift`` steps — exactly one alignment path per field. When
-    align is off (the default), the full ``PROCESS_STEPS`` list runs unchanged.
+    A field that runs ``align`` (``[<field>.align].enabled = true``) uses exactly
+    one alignment engine, so ``jhat`` is replaced by ``align`` in place (it runs
+    where jhat did — last, on post-``image2`` cal data). ``wcs_shift`` is
+    **kept**: it applies manual per-exposure offsets for corrupted-metadata
+    exposures and feeds a good input WCS into align. When align is off (the
+    default), the full ``PROCESS_STEPS`` list runs unchanged.
     """
     align_mode = get_nircam_step_config('align', config, field).get(
         'enabled', False)
     if not align_mode:
         return PROCESS_STEPS
-    return [(n, k) for n, k in PROCESS_STEPS if n not in ('wcs_shift', 'jhat')]
+    return [('align', 'CFP_ALGN') if n == 'jhat' else (n, k)
+            for n, k in PROCESS_STEPS]
 
 
 def _prefetch_wisp_templates(field, filters):
@@ -729,8 +736,31 @@ def _resolve_align_refcat(align_cfg, refcat_dir):
     return os.path.join(refcat_dir, name)
 
 
+def _refcat_hash(path):
+    """Short content hash of the refcat file, for align-solution provenance and
+    staleness detection. Hashing the bytes (not the loaded table) is cheap and
+    lets the skip check run before the refcat is even loaded.
+    """
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()[:8]
+
+
+def _algn_refcat_hash(value):
+    """The ``rc=`` refcat-hash token from a ``CFP_ALGN`` value string, or None
+    (older solutions, or a NOT_ALIGNED sentinel, carry no ``rc=``)."""
+    if not value:
+        return None
+    for tok in str(value).split():
+        if tok.startswith('rc='):
+            return tok[3:]
+    return None
+
+
 def _align_group_worker(key, members, *, refcat, config, overwrite, status):
-    """``dispatch`` worker: align one exposure group. Module-level for pickling."""
+    """``dispatch`` worker: align one pool. Module-level for pickling."""
     from campfire_pipeline.nircam.align.apply import align_exposure_group
     return align_exposure_group(members, refcat, key=key, config=config,
                                 overwrite=overwrite, status=status)
@@ -759,7 +789,8 @@ def _warn_not_aligned(field, failed_groups):
     log('')
     log("To retry: retune [<field>.align] in fields.toml (e.g. widen "
         "ref_border_arcmin,")
-    log("  lower snr_min, raise match_radius / refine_searchrad), then re-run")
+    log("  lower snr_min, raise match_radius / coarse_searchrad, lower "
+        "min_matched / min_coverage_arcsec), then re-run")
     log("  `cfpipe nircam align` — NOT_ALIGNED exposures are re-attempted "
         "automatically")
     log("  (no --overwrite needed; already-aligned exposures are left alone).")
@@ -769,134 +800,118 @@ def _warn_not_aligned(field, failed_groups):
     log('')
 
 
-def run_align(field, config, filters=None, n_processes=1, overwrite=False,
-              tiles=None):
-    """Field-level astrometric align phase (runs between process and combine).
+def _pending_pools(pools, status, overwrite, refcat_hash):
+    """Return ``(pending, retry_count)`` — the pools still needing a solve.
 
-    Groups all detectors of each exposure across the SW+LW filter dirs, ties
-    each exposure to the field's Gaia-tied reference catalog with one shared
-    shift+rotation (plus an adaptive per-detector shift), and writes the
-    corrected gwcs back with a ``CFP_ALGN`` stamp. Opt-in per field via
-    ``[<field>.align].enabled`` — a no-op otherwise, so ``run --all`` on a
-    jhat-aligned field skips it and the process phase keeps running
-    ``jhat``/``wcs_shift`` instead (decision D6).
-
-    ``tiles`` restricts to exposure groups overlapping the named tile(s)
-    (exposure-union, so each solved dither keeps its full detector complement).
+    A pool is skipped only when every member carries a *completed, non-rejected*
+    ``CFP_ALGN`` **produced by the current refcat** (its stamped ``rc=`` hash
+    matches *refcat_hash*). Re-solved on a normal re-run (no ``--overwrite``):
+    NOT_ALIGNED pools (the user may have retuned ``[<field>.align]``) and pools
+    solved against a now-changed refcat (or by an older, ``rc=``-less
+    generation). *retry_count* is how many pending pools are such re-attempts of
+    already-stamped work.
     """
-    filters = _resolve_filters(filters, field)
+    if overwrite:
+        return list(pools), 0
+    pending, retry = [], 0
+    for p in pools:
+        stamped = all(status.has(m.path, 'CFP_ALGN') for m in p.members)
+        value = (cfp.step_value(p.members[0].path, 'CFP_ALGN')
+                 if stamped else None)
+        done = (stamped and value != cfp.NOT_ALIGNED
+                and _algn_refcat_hash(value) == refcat_hash)
+        if done:
+            continue
+        pending.append(p)
+        if stamped:
+            retry += 1              # NOT_ALIGNED, stale refcat, or old generation
+    return pending, retry
+
+
+def _run_align(field, config, filtname, n_processes, overwrite, status,
+               tiles=None):
+    """Per-filter astrometric align step (replaces ``jhat`` for align-enabled
+    fields; runs inside the process loop).
+
+    Because filter directories are channel-segregated (SW filters hold SW
+    detectors, LW filters LW), grouping this filter's exposures already yields
+    one channel. Each exposure is split into module **pools** (unless
+    ``pool_modules``), and each pool is tied to the field's Gaia-tied reference
+    catalog with a coarse ``rshift`` + gated per-detector fine fit, its corrected
+    gwcs written back with a ``CFP_ALGN`` stamp. A no-op when align is disabled.
+
+    ``tiles`` restricts to exposures overlapping the named tile(s) — the
+    per-filter exposure-union gate keeps a dither's full detector complement in
+    this channel, so pools stay complete at tile edges.
+    """
     align_cfg = get_nircam_step_config('align', config, field)
     if not align_cfg.get('enabled', False):
-        log(f"align: disabled for field '{field.name}' "
-            f"(set [{field.name}.align].enabled = true to run); skipping.")
         return
 
     from campfire_pipeline.nircam.association import (
-        build_exposure_groups, unsupported_mode_reason,
+        build_exposure_groups, split_pools, unsupported_mode_reason,
     )
     from campfire_pipeline.nircam.refcat.io import read_refcat
 
-    refcat_path = _resolve_align_refcat(align_cfg, field.refcat_dir)
-    refcat = read_refcat(refcat_path)
-    log(f"=== Align phase: field={field.name}, filters={filters}, "
-        f"refcat={os.path.basename(refcat_path)} ({len(refcat)} sources) ===")
-
-    # Cross-filter dependency closure (§9.2): pool the FULL physical exposure —
-    # every detector across ALL field filters — even when a filter subset is
-    # requested, so a `--filters f200w` solve still sees its paired LW (F444W)
-    # complement and the tile gate can't split a dither at a tile edge. Status is
-    # scanned over all filters too, since a solved exposure is written across its
-    # whole SW+LW complement (one attitude corrects every detector).
-    all_filters = list(field.filters)
-    status = _scan_status(field, all_filters, overwrite=overwrite)
-    groups = build_exposure_groups(field, all_filters, tiles=tiles)
+    groups = build_exposure_groups(field, [filtname], status=status, tiles=tiles)
     if not groups:
-        log("align: no exposure groups found; nothing to do.")
+        log(f"align: no exposures for {filtname}")
         return
 
-    # Restrict the processed set to exposures with a member in the selected
-    # filters; each is then solved and written across its full complement.
-    if set(filters) != set(all_filters):
-        n_all = len(groups)
-        groups = [g for g in groups if g.filters & set(filters)]
-        log(f"align: --filters {filters} selects {len(groups)}/{n_all} "
-            f"exposure(s); each is solved and written across its full SW+LW "
-            f"complement.")
-        if not groups:
-            log("align: no exposures match the selected filters/tiles.")
-            return
-
-    # Observing-mode gating (§9.3): stop before solving if any exposure in scope
-    # is in an unsupported mode (subarray / coronagraph / TSO / WFSS). These need
-    # a separately-validated path, so the user must exclude them explicitly
-    # rather than have align silently feed them through generic imaging logic.
+    # Observing-mode gating: stop before solving if any exposure in scope is in
+    # a mode align does not support (subarray / coronagraph / TSO / WFSS).
     unsupported = [(g, r) for g in groups
                    for r in (unsupported_mode_reason(g.members[0].path),) if r]
     if unsupported:
         listing = "\n".join(f"  {g.key}: {reason}" for g, reason in unsupported)
         raise RuntimeError(
-            f"align: {len(unsupported)} exposure(s) are in an observing mode the "
-            f"align phase does not support:\n{listing}\n\n"
-            f"Exclude them (fields.toml [{field.name}].skip, or the reviewer "
+            f"align: {len(unsupported)} exposure(s) in {filtname} are in an "
+            f"observing mode align does not support:\n{listing}\n\nExclude them "
+            f"(fields.toml [{field.name}].skip, or the reviewer "
             f"excluded_exposures list) and re-run, or select a supported subset "
             f"with --filters / --tiles.")
 
-    if overwrite:
-        pending = groups
-    else:
-        # A group is "done" (skippable) only if every detector carries a
-        # completed, non-rejected alignment. NOT_ALIGNED exposures are
-        # re-attempted on a normal re-run — the user may have retuned
-        # [<field>.align] params and wants another try without force-re-solving
-        # everything that already succeeded. Groups are homogeneous (a whole
-        # exposure solves or rejects together), so one stamped member classifies
-        # a fully-stamped group.
-        pending, retry = [], 0
-        for g in groups:
-            stamped = all(status.has(m.path, 'CFP_ALGN') for m in g.members)
-            if stamped and (cfp.step_value(g.members[0].path, 'CFP_ALGN')
-                            != cfp.NOT_ALIGNED):
-                continue                        # already solved -> skip
-            pending.append(g)
-            if stamped:
-                retry += 1                      # stamped but NOT_ALIGNED -> retry
-        skipped = len(groups) - len(pending)
-        if skipped:
-            log(f"align: {skipped}/{len(groups)} exposures already aligned; "
-                f"skipping those (--overwrite to re-solve)")
-        if retry:
-            log(f"align: re-attempting {retry} previously NOT_ALIGNED "
-                f"exposure(s)")
+    pools = split_pools(groups, pool_modules=align_cfg.get('pool_modules', False))
+    refcat_path = _resolve_align_refcat(align_cfg, field.refcat_dir)
+    refcat_hash = _refcat_hash(refcat_path)   # cheap; drives the staleness skip
+    pending, retry = _pending_pools(pools, status, overwrite, refcat_hash)
+    skipped = len(pools) - len(pending)
+    if skipped:
+        log(f"align: {skipped}/{len(pools)} pool(s) already aligned for "
+            f"{filtname}; skipping (--overwrite to re-solve)")
+    if retry:
+        log(f"align[{filtname}]: re-attempting {retry} previously-stamped "
+            f"pool(s) (NOT_ALIGNED or changed refcat)")
     if not pending:
         return
 
-    log(f"align: solving {len(pending)} exposure(s)")
-    tasks = [(g.key, list(g.members)) for g in pending]
+    refcat = read_refcat(refcat_path)
+    log(f"align[{filtname}]: refcat={os.path.basename(refcat_path)} "
+        f"({len(refcat)} sources, rc={refcat_hash}); solving {len(pending)} "
+        f"pool(s)")
+    worker_cfg = {**align_cfg, '_refcat_hash': refcat_hash}
+    tasks = [(p.key, list(p.members)) for p in pending]
     results = dispatch(_align_group_worker, tasks, n_processes=n_processes,
-                       use_starmap=True, refcat=refcat, config=align_cfg,
+                       use_starmap=True, refcat=refcat, config=worker_cfg,
                        overwrite=overwrite, status=status)
 
     # Workers stamped CFP_ALGN on disk in child processes; sync the parent cache
-    # so a later phase in the same run sees the fresh stamps.
-    for g in pending:
-        status.mark_all([m.path for m in g.members], 'CFP_ALGN')
+    # so a later step/phase in the same run sees the fresh stamps.
+    for p in pending:
+        status.mark_all([m.path for m in p.members], 'CFP_ALGN')
 
-    counts = {}
-    for r in results:
-        st = getattr(r, 'status', 'UNKNOWN')
-        counts[st] = counts.get(st, 0) + 1
-    log(f"=== Align phase done for {field.name}: "
-        f"{dict(sorted(counts.items()))} ===")
-
-    # Failing to align an exposure quietly drops it from every future mosaic
-    # (the combine quarantine). That must never be silent: surface it loudly at
-    # the end of the command and hand the user the tools to resolve it.
-    pending_by_key = {g.key: g for g in pending}
-    failed = [pending_by_key[r.key] for r in results
+    # A NOT_ALIGNED pool is quarantined from every future mosaic (the combine
+    # quarantine). That must never be silent — surface it loudly with the levers
+    # to resolve it.
+    by_key = {p.key: p for p in pending}
+    failed = [by_key[r.key] for r in results
               if r is not None and getattr(r, 'status', None) == 'NOT_ALIGNED'
-              and getattr(r, 'key', None) in pending_by_key]
+              and getattr(r, 'key', None) in by_key]
     if failed:
         _warn_not_aligned(field, failed)
+
+
+_RUNNERS['align'] = _run_align
 
 
 def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
@@ -907,8 +922,8 @@ def run_combine(field, config, filters=None, n_processes=1, overwrite=False,
     named tile(s): apply_mask, bad_pixel, outlier, and resample all see only
     the overlapping subset. This is what lets a single tile be combined without
     touching the rest of the field (e.g. an A/B reduction), and it pairs with a
-    tile-scoped ``run_process``/``run_align`` that only ever produced the subset
-    canonicals. **Caveat:** restricting the ensemble steps truncates outlier's
+    tile-scoped ``run_process`` (whose align step only ever produced the subset
+    canonicals). **Caveat:** restricting the ensemble steps truncates outlier's
     cross-visit median pool and bad_pixel's per-detector stacks, so a
     tile-scoped mosaic may differ at tile boundaries from the same tile built
     with the whole field — a tile-scoped run is a distinct input set by design.

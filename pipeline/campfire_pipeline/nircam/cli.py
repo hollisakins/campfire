@@ -29,7 +29,7 @@ from campfire_pipeline.common import cfp as cfp_mod
 from campfire_pipeline.common.cli import VariadicOption
 from campfire_pipeline.nircam.orchestrate import (
     STEP_NAMES, ALL_STEPS, PROCESS_STEPS, COMBINE_STEPS,
-    run_process, run_align, run_combine, run_step,
+    run_process, run_combine, run_step,
 )
 from campfire_pipeline.nircam.refcat.cli import refcat as refcat_group
 
@@ -182,17 +182,19 @@ def process(config, field, filters, processes, overwrite, tiles):
 @processing_options
 @tile_option
 def align(config, field, filters, processes, overwrite, tiles):
-    """Run the field-level astrometric align phase (between process and combine).
+    """Re-run the per-filter astrometric align step.
 
-    Opt-in per field via [<field>.align].enabled = true in fields.toml;
-    a no-op for fields that still use jhat. ``--tiles`` restricts to exposures
-    overlapping the named tile(s).
+    Align runs automatically inside the process phase for align-enabled fields
+    (it replaces jhat); this command re-runs just the align step — e.g. after
+    retuning [<field>.align] in fields.toml. Opt-in per field via
+    [<field>.align].enabled = true; a no-op for fields that still use jhat.
+    ``--tiles`` restricts to exposures overlapping the named tile(s).
     """
     cfg, field_obj = _setup(config, field)
-    run_align(field_obj, cfg,
-              filters=_resolve_filters(filters, field_obj),
-              n_processes=processes, overwrite=overwrite,
-              tiles=list(tiles) if tiles else None)
+    run_step('align', field_obj, cfg,
+             filters=_resolve_filters(filters, field_obj),
+             n_processes=processes, overwrite=overwrite,
+             tiles=list(tiles) if tiles else None)
 
 
 @main.command()
@@ -225,14 +227,17 @@ def combine(config, field, filters, processes, overwrite, tiles, epoch,
 @tile_option
 @epoch_option
 @click.option('--process', 'do_process', is_flag=True,
-              help='Run the process phase.')
+              help='Run the process phase (includes align for align-enabled '
+                   'fields, where it replaces jhat).')
 @click.option('--align', 'do_align', is_flag=True,
-              help='Run the astrometric align phase (between process and '
-                   'combine; opt-in via [<field>.align].enabled).')
+              help='Re-run only the per-filter align step (opt-in via '
+                   '[<field>.align].enabled; align otherwise runs inside '
+                   'process).')
 @click.option('--combine', 'do_combine', is_flag=True,
               help='Run the combine phase.')
 @click.option('--all', 'do_all', is_flag=True,
-              help='Run all phases (process, align, combine).')
+              help='Run all phases (process — which includes align — then '
+                   'combine).')
 @click.option('--include-unaligned', is_flag=True,
               help='Include NOT_ALIGNED exposures in the combine (default: '
                    'quarantine them for align-enabled fields).')
@@ -240,11 +245,13 @@ def run(config, field, filters, processes, overwrite, tiles, epoch,
         do_process, do_align, do_combine, do_all, include_unaligned):
     """Run process, align, and/or combine in one invocation.
 
-    ``--epoch`` applies only to the combine phase (process/align produce the
+    Align runs inside the process phase for align-enabled fields, so ``--all``
+    is process (incl. align) then combine; ``--align`` re-runs only the align
+    step. ``--epoch`` applies only to the combine phase (process produces the
     shared canonical exposures every epoch draws from).
     """
     if do_all:
-        do_process = do_align = do_combine = True
+        do_process = do_combine = True   # align runs inside process
     if not (do_process or do_align or do_combine):
         raise click.UsageError(
             "Specify --process, --align, --combine, or --all."
@@ -260,9 +267,9 @@ def run(config, field, filters, processes, overwrite, tiles, epoch,
                     n_processes=processes, overwrite=overwrite,
                     tiles=tile_list)
     if do_align:
-        run_align(field_obj, cfg, filters=filter_list,
-                  n_processes=processes, overwrite=overwrite,
-                  tiles=tile_list)
+        run_step('align', field_obj, cfg, filters=filter_list,
+                 n_processes=processes, overwrite=overwrite,
+                 tiles=tile_list)
     if do_combine:
         run_combine(field_obj, cfg, filters=filter_list,
                     n_processes=processes, overwrite=overwrite,
@@ -288,10 +295,11 @@ def _make_step_command(step_name):
     return _cmd
 
 
-# resample is the only per-tile step, so it carries the extra --tiles option
-# and is registered explicitly below rather than through _make_step_command.
+# resample and align carry the extra --tiles option (and align has a bespoke
+# help string), so they are registered explicitly above/below rather than
+# through the generic _make_step_command.
 for _step_name in STEP_NAMES:
-    if _step_name == 'resample':
+    if _step_name in ('resample', 'align'):
         continue
     main.add_command(_make_step_command(_step_name))
 

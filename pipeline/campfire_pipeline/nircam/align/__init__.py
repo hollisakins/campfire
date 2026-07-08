@@ -17,7 +17,6 @@ from campfire_pipeline.nircam.align.detect import (
     detect_in_exposure,
     detect_star_centroids,
 )
-from campfire_pipeline.nircam.align.matcher import TriangleMatch
 from campfire_pipeline.nircam.align.solve import (
     DetectorInput,
     DetectorSolution,
@@ -26,7 +25,6 @@ from campfire_pipeline.nircam.align.solve import (
 )
 
 __all__ = [
-    'TriangleMatch',
     'detect_star_centroids',
     'detect_in_exposure',
     'solve_exposure_group',
