@@ -299,7 +299,7 @@ def main():
     # The key interaction: N x contamination, for the primary config.
     primary = '2dhist+iter' if '2dhist+iter' in configs else configs[0]
     print(f"\nN x CONTAM grid for '{primary}'  (% correct)")
-    print(f"  {'N \\\\ contam':<12}" + "".join(f"{c:>9}" for c in CONTAMS))
+    print(f"  {'N \\ contam':<12}" + "".join(f"{c:>9}" for c in CONTAMS))
     for n in COUNTS:
         row = f"  {n:<12}"
         for c in CONTAMS:

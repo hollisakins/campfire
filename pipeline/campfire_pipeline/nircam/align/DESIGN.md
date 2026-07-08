@@ -216,11 +216,15 @@ file's SHA-256 — cheap, computed before the catalog is even loaded. Stamping i
 every solution makes the alignment self-describing about *which* reference produced
 it.
 
-**`WCS_BAK`.** On first apply, the original (un-aligned) gwcs is stashed as an
-ASDF-in-FITS `WCS_BAK` image extension. An `--overwrite` re-solve reads *from*
-`WCS_BAK`, so re-running never composes a second correction on top of the first —
-the solve is idempotent. (Mirrors the `steps/wcs_shift.py` contract; replicated
-here because `align` supersedes and will remove `wcs_shift`'s automatic path.)
+**`ALGN_BAK`.** On first apply, the pre-align gwcs is stashed as an
+ASDF-in-FITS `ALGN_BAK` image extension. An `--overwrite` re-solve reads *from*
+`ALGN_BAK`, so re-running never composes a second correction on top of the first —
+the solve is idempotent. align deliberately uses its **own** backup extension
+rather than `wcs_shift`'s `WCS_BAK`: `wcs_shift` runs before align and backs up
+the pre-*shift* WCS in `WCS_BAK`, so solving from `WCS_BAK` would discard the
+manual offset. align solves from the current (post-`wcs_shift`) WCS and leaves
+`WCS_BAK` untouched (the gwcs↔ASDF-in-FITS technique is shared with
+`steps/wcs_shift.py`).
 
 **Skip / re-solve.** The orchestration skip check (`_pending_pools`) + apply's
 `_aligned_ok` treat a detector as done only if it carries a *completed,
@@ -250,8 +254,8 @@ sources and defeating CR rejection:
   and re-run, or force it in.
 - **no `CFP_ALGN` at all** — align never solved it (never run, run over a
   different filter/tile subset, or the worker died). Because an align-enabled
-  field skips jhat/wcs_shift's automatic solve, such an exposure has *no*
-  astrometric correction.
+  field replaces jhat's automatic solve, such an exposure has no automatic
+  astrometric correction (at most a manual `wcs_shift` offset).
 
 Quarantine is the single gate into the working tree every combine step reads.
 Omitting data is never silent (it is surfaced with the fix), and never automatic:
@@ -332,8 +336,8 @@ All knobs live in `config_default.toml`; per-field overrides go in
   showed the 2-D-histogram + iterate config recovers offsets to tens of arcsec and
   roll to ~1° at **97–100%** correct in realistic (contaminated) fields, while the
   `stimage` triangle matcher hard-crashes on sparse input. `matcher.py` was
-  **deleted** and no code path uses `tristars` anymore (the pin lingers in
-  `pyproject.toml` and can be dropped).
+  **deleted**, no code path uses `tristars` anymore, and the `pyproject.toml`
+  pin is removed.
 - **The rotation-scan wrapper (jhat's approach) — retired.** A brute-force roll
   scan around `XYXYMatch` (bake-off config C, what jhat does) was *worse* and
   ~**17× slower** than the plain 2-D-hist + iterate; the iterated rigid fit
