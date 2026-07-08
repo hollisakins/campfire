@@ -28,8 +28,8 @@ from campfire_pipeline.common.io import log
 from campfire_pipeline.common import cfp as cfp_mod
 from campfire_pipeline.common.cli import VariadicOption
 from campfire_pipeline.nircam.orchestrate import (
-    STEP_NAMES, ALL_STEPS, PROCESS_STEPS, COMBINE_STEPS,
-    run_process, run_combine, run_step,
+    STEP_NAMES, ALL_STEPS, CFP_STEPS, PROCESS_STEPS, COMBINE_STEPS,
+    _active_process_steps, run_process, run_combine, run_step,
 )
 from campfire_pipeline.nircam.refcat.cli import refcat as refcat_group
 
@@ -55,8 +55,11 @@ _STEP_LABELS = {
     'image2':      'img2',
     'edge':        'edge',
     'bkg':         'bkg',
+    'diag_striping': 'strp',
+    'wcs_shift':   'shft',
     'preview':     'prev',
     'jhat':        'jhat',
+    'align':       'algn',
     'apply_mask':  'mask',
     'bad_pixel':   'bpix',
     'outlier':     'out',
@@ -469,8 +472,11 @@ def status(config, field, filters):
     cfg, field_obj = _setup(config, field)
     filter_list = _resolve_filters(filters, field_obj)
 
-    # Steps that stamp a CFP key (resample doesn't — it produces mosaics)
-    steps_with_cfp = [(n, k) for n, k in ALL_STEPS if k is not None]
+    # Steps that stamp a CFP key (resample doesn't — it produces mosaics). Use
+    # the field's ACTIVE process steps so an align-enabled field shows the
+    # CFP_ALGN column (and jhat-fields show CFP_JHAT) rather than a dead column.
+    active = _active_process_steps(cfg, field_obj) + COMBINE_STEPS
+    steps_with_cfp = [(n, k) for n, k in active if k is not None]
     col_width = 5
 
     for filt in filter_list:
@@ -648,8 +654,11 @@ def reset(config, field, filters, from_step, uncal, yes):
 
 
 def _step_to_cfp_key(step_name):
-    """Look up the CFP_* key for a step (raises if it has none, e.g. resample)."""
-    for name, key in ALL_STEPS:
+    """Look up the CFP_* key for a step (raises if it has none, e.g. resample).
+
+    Uses ``CFP_STEPS`` so both ``jhat`` and ``align`` resolve (a field runs one
+    or the other; ``reset --from`` on the absent one clears nothing)."""
+    for name, key in CFP_STEPS:
         if name == step_name:
             if key is None:
                 raise click.ClickException(

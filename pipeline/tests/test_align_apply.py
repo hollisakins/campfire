@@ -108,11 +108,35 @@ def test_srcmask_preserved(tmp_path):
             assert 'SRCMASK' in h
 
 
-def test_wcs_bak_written(tmp_path):
+def test_algn_bak_written(tmp_path):
     members, refcat, _ = _make_exposure(tmp_path, n_det=1)
     align_exposure_group(members, refcat, config={})
     with fits.open(members[0].path) as h:
-        assert 'WCS_BAK' in h
+        assert 'ALGN_BAK' in h          # align's own pre-align backup
+
+
+def test_ignores_and_preserves_wcs_shift_bak(tmp_path):
+    # wcs_shift runs before align and stashes the pre-*shift* WCS in WCS_BAK.
+    # align must solve from the current (wcs_shift-corrected) meta.wcs — NOT
+    # WCS_BAK — and leave WCS_BAK intact. Inject a far-off bogus WCS_BAK: if align
+    # wrongly solved from it the footprint clip would starve -> NOT_ALIGNED.
+    from campfire_pipeline.nircam.align.apply import (
+        _serialize_gwcs_to_hdu, WCS_BAK_EXTNAME)
+    members, refcat, _ = _make_exposure(tmp_path, n_det=1)
+    bogus = make_persistable_wcs(ra_ref=90.0, dec_ref=-10.0)   # far from the frame
+    bogus_hdu = _serialize_gwcs_to_hdu(bogus, name=WCS_BAK_EXTNAME)
+    bogus_bytes = bytes(bogus_hdu.data)
+    with fits.open(members[0].path) as h:
+        h.append(bogus_hdu)
+        h.writeto(members[0].path, overwrite=True)
+
+    align_exposure_group(members, refcat, config={})
+
+    assert _cfp_algn(members[0].path).startswith('dof=')  # solved from meta.wcs
+    with fits.open(members[0].path) as h:
+        assert 'ALGN_BAK' in h                            # align's backup written
+        assert 'WCS_BAK' in h                             # wcs_shift's preserved
+        assert bytes(h['WCS_BAK'].data) == bogus_bytes    # ... byte-for-byte
 
 
 # --- NOT_ALIGNED ------------------------------------------------------------

@@ -70,6 +70,11 @@ ALL_STEPS = PROCESS_STEPS + COMBINE_STEPS
 # by _active_process_steps for align-enabled fields), but it is a valid target
 # for `run_step` / the `align` CLI command, so it joins the known step names.
 STEP_NAMES = [name for name, _ in ALL_STEPS] + ['align']
+# Ordered (step, cfp_key) list that includes BOTH `jhat` and `align` (mutually
+# exclusive per field) at the same process position, for the CLI `status`
+# columns and `reset --from <step>` key lookup. Clearing an absent key is a
+# no-op, so listing both is safe; align sits right after jhat (its runtime slot).
+CFP_STEPS = PROCESS_STEPS + [('align', 'CFP_ALGN')] + COMBINE_STEPS
 
 # Combine steps that read/write the disposable working copies rather than the
 # frozen canonical (apply_mask is excluded — it writes the canonical's CFMASK).

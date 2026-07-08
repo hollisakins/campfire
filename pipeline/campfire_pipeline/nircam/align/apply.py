@@ -7,11 +7,14 @@ the corrected gwcs back onto each canonical with a ``CFP_ALGN`` provenance stamp
 — or a ``NOT_ALIGNED`` sentinel when the exposure can't be tied to the reference
 (WCS preserved, never retried).
 
-Idempotency: the original (un-aligned) gwcs is stashed in a ``WCS_BAK``
-extension on first apply; on ``overwrite`` the solve runs from that original, so
-re-running never composes a second correction on top of the first. Mirrors the
-``steps/wcs_shift.py`` write-back contract (the ``WCS_BAK`` helpers are
-replicated here because ``align`` supersedes and will remove ``wcs_shift``).
+Idempotency: the pre-align gwcs is stashed in an ``ALGN_BAK`` extension on first
+apply; on ``overwrite`` the solve runs from that baseline, so re-running never
+composes a second correction on top of the first. ``align`` uses its OWN backup
+extension (not ``wcs_shift``'s ``WCS_BAK``) because both steps run in the process
+loop: ``wcs_shift`` applies manual offsets first and backs up the pre-*shift* WCS
+in ``WCS_BAK``, so ``align`` must solve from the wcs_shift-corrected WCS and leave
+``WCS_BAK`` intact. The gwcs<->ASDF-in-FITS backup technique is shared with
+``steps/wcs_shift.py``.
 
 The reference catalog and config knobs arrive already resolved — refcat
 resolution / loading and ``[<field>.align]`` parsing live in the field-level
@@ -38,7 +41,13 @@ from campfire_pipeline.nircam.align.solve import (
 )
 from campfire_pipeline.nircam.association import exposure_key
 
-WCS_BAK_EXTNAME = 'WCS_BAK'
+# align's OWN gwcs backup — the pre-align input WCS. Deliberately distinct from
+# wcs_shift's ``WCS_BAK`` (which holds the pre-*shift* WCS): wcs_shift runs before
+# align in the process loop, so if align solved from ``WCS_BAK`` it would discard
+# the manual offset wcs_shift applied. align solves from the current (post-shift)
+# WCS, backs it up here, and preserves wcs_shift's ``WCS_BAK`` untouched.
+ALGN_BAK_EXTNAME = 'ALGN_BAK'
+WCS_BAK_EXTNAME = 'WCS_BAK'          # wcs_shift's backup — preserved, never solved from
 NOT_ALIGNED_SENTINEL = cfp.NOT_ALIGNED
 
 # Solve/detection knobs threaded from [<field>.align]; the orchestration passes
@@ -55,9 +64,9 @@ _DETECT_KEYS = ('fwhm', 'nsigma', 'edge', 'snr_min', 'objmag_lim',
                 'sharplo', 'sharphi', 'roundlo', 'roundhi')
 
 
-# --- WCS_BAK gwcs <-> ASDF-in-FITS (replicated from steps/wcs_shift.py) ------
+# --- gwcs <-> ASDF-in-FITS backup (technique shared with steps/wcs_shift.py) --
 
-def _serialize_gwcs_to_hdu(wcs, name=WCS_BAK_EXTNAME):
+def _serialize_gwcs_to_hdu(wcs, name=ALGN_BAK_EXTNAME):
     import asdf
     af = asdf.AsdfFile({'wcs': wcs})
     buf = io.BytesIO()
@@ -157,7 +166,7 @@ def _detect_mask(model):
 
 
 def _load_detector(path, detector, detect_cfg, ImageModel):
-    """Open a canonical, pick the ORIGINAL gwcs (from WCS_BAK if this file was
+    """Open a canonical, pick the pre-align gwcs (from ALGN_BAK if this file was
     aligned before), detect sources, and return a :class:`DetectorInput`."""
     model = ImageModel(path, memmap=False)
     try:
@@ -170,11 +179,14 @@ def _load_detector(path, detector, detect_cfg, ImageModel):
     finally:
         model.close()
 
-    # A prior align stashed the un-aligned gwcs; solve from it so an overwrite
-    # re-run corrects the original, never the already-corrected WCS.
+    # A prior ALIGN stashed the pre-align gwcs in ALGN_BAK; solve from it so an
+    # overwrite re-run corrects the original input WCS, never the already-aligned
+    # one. First-time solve uses the current meta.wcs above — which, when a field
+    # also runs wcs_shift, is the wcs_shift-CORRECTED WCS (we deliberately do NOT
+    # read wcs_shift's WCS_BAK here, or the manual offset would be discarded).
     with fits.open(path, memmap=False) as hdul:
-        if WCS_BAK_EXTNAME in hdul:
-            orig_wcs = _deserialize_gwcs_from_hdu(hdul[WCS_BAK_EXTNAME])
+        if ALGN_BAK_EXTNAME in hdul:
+            orig_wcs = _deserialize_gwcs_from_hdu(hdul[ALGN_BAK_EXTNAME])
 
     return DetectorInput(detector=detector, wcs=orig_wcs, wcsinfo=wcsinfo,
                          catalog=cat)
@@ -182,16 +194,23 @@ def _load_detector(path, detector, detect_cfg, ImageModel):
 
 def _write_solution(path, corrected_wcs, cfp_value, ImageModel,
                     update_fits_wcsinfo):
-    """Write *corrected_wcs* back onto the canonical + stamp CFP_ALGN, keeping
-    SRCMASK and stashing the original gwcs in WCS_BAK."""
-    existing_wcs_bak = None
+    """Write *corrected_wcs* back onto the canonical + stamp CFP_ALGN, stashing
+    the pre-align gwcs in ALGN_BAK and preserving SRCMASK and any wcs_shift
+    ``WCS_BAK``."""
+    existing_algn_bak = None
+    wcs_shift_bak = None
     srcmask_hdu = None
     with fits.open(path, memmap=False) as hdul:
-        if WCS_BAK_EXTNAME in hdul:
+        if ALGN_BAK_EXTNAME in hdul:
+            ab = hdul[ALGN_BAK_EXTNAME]
+            existing_algn_bak = fits.ImageHDU(data=ab.data.copy(),
+                                              header=ab.header.copy(),
+                                              name=ALGN_BAK_EXTNAME)
+        if WCS_BAK_EXTNAME in hdul:            # wcs_shift's backup — keep intact
             wb = hdul[WCS_BAK_EXTNAME]
-            existing_wcs_bak = fits.ImageHDU(data=wb.data.copy(),
-                                             header=wb.header.copy(),
-                                             name=WCS_BAK_EXTNAME)
+            wcs_shift_bak = fits.ImageHDU(data=wb.data.copy(),
+                                          header=wb.header.copy(),
+                                          name=WCS_BAK_EXTNAME)
         if 'SRCMASK' in hdul:
             sm = hdul['SRCMASK']
             srcmask_hdu = fits.ImageHDU(data=sm.data.copy(),
@@ -199,10 +218,11 @@ def _write_solution(path, corrected_wcs, cfp_value, ImageModel,
 
     model = ImageModel(path, memmap=False)
     try:
-        # Preserve the true original: keep an existing WCS_BAK, else the current
-        # (still un-aligned) WCS becomes the baseline.
-        wcs_bak = (existing_wcs_bak if existing_wcs_bak is not None
-                   else _serialize_gwcs_to_hdu(model.meta.wcs))
+        # Preserve the pre-align baseline: keep an existing ALGN_BAK across
+        # re-solves, else the current (pre-align, wcs_shift-corrected) WCS
+        # becomes it.
+        algn_bak = (existing_algn_bak if existing_algn_bak is not None
+                    else _serialize_gwcs_to_hdu(model.meta.wcs))
         model.meta.wcs = corrected_wcs
         try:
             update_fits_wcsinfo(model)
@@ -210,7 +230,11 @@ def _write_solution(path, corrected_wcs, cfp_value, ImageModel,
             log(f"align: update_fits_wcsinfo failed on {os.path.basename(path)} "
                 f"({type(e).__name__}); FITS SIP keywords not refreshed.")
 
-        extra_hdus = [wcs_bak] + ([srcmask_hdu] if srcmask_hdu is not None else [])
+        extra_hdus = [algn_bak]
+        if wcs_shift_bak is not None:
+            extra_hdus.append(wcs_shift_bak)
+        if srcmask_hdu is not None:
+            extra_hdus.append(srcmask_hdu)
         atomic_save(model, path,
                     header_updates=cfp.format(CFP_ALGN=cfp_value),
                     extra_hdus=extra_hdus)

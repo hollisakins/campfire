@@ -66,6 +66,18 @@ def test_active_process_steps_swaps_jhat_for_align():
     assert 'bkg' in on and 'detector1' in on
 
 
+def test_align_cfp_key_resolves_and_shows_in_status():
+    # `reset --from align` and the `status` CFP_ALGN column must work now that
+    # align is a process-loop step (it's not in the static ALL_STEPS list).
+    from campfire_pipeline.nircam.cli import _step_to_cfp_key
+    from campfire_pipeline.nircam.orchestrate import CFP_STEPS
+    assert _step_to_cfp_key('align') == 'CFP_ALGN'
+    assert _step_to_cfp_key('jhat') == 'CFP_JHAT'      # jhat still resolvable
+    assert ('align', 'CFP_ALGN') in CFP_STEPS
+    on = [k for n, k in _active_process_steps({}, _field(True)) if k]
+    assert 'CFP_ALGN' in on and 'CFP_JHAT' not in on   # align field's status column
+
+
 # --- pool splitting (fast, no FITS) -----------------------------------------
 
 def _mem(det, filt='f200w'):
