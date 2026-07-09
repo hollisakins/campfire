@@ -14,6 +14,15 @@ Supporting: `supabase/` (migrations), `scripts/` (one-off utilities)
 
 **Editable install order** (in the `campfire` conda env): `pip install -e ./layout && pip install -e ./pipeline && pip install -e ./python` — `campfire-layout` must precede the two packages that depend on it.
 
+**FitsGL co-development** (epic #337): the `campfire[fitsgl]` extra depends on [FitsGL](https://github.com/hollisakins/fitsgl)'s `fitsgl-py` producer, which isn't on PyPI and lives in that repo's `fitsgl-py/` subdirectory. The extra pins a git dependency as the reproducible fallback (`pip install -e "./python[fitsgl]"`), but the dev convention is to check `fitsgl` out **as a sibling of this repo** and install it editable *before* the base client, so local FitsGL edits stay live and pip never fetches from git:
+
+```bash
+pip install -e ../fitsgl/fitsgl-py[deploy]   # sibling checkout, editable
+pip install -e ./python                      # base client leaves fitsgl untouched
+```
+
+The web side consumes FitsGL as the published npm package `@fitsgl/core` (a plain version range in `web/package.json`); use `npm link` against a local `fitsgl-core` checkout only when co-editing. See `python/README.md` and `docs/design-fitsgl-integration.md` §4.
+
 ## Pipeline
 
 ### Running

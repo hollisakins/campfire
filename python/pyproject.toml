@@ -62,6 +62,18 @@ plotting = [
 specutils = [
     "specutils>=1.13",
 ]
+fitsgl = [
+    # FitsGL producer (build + deploy the FITS tile-pyramid datasets that back
+    # the map/cutout service — epic #337). Not on PyPI and lives in the
+    # `fitsgl-py` subdirectory of a separate repo, so this extra pins the git
+    # dependency as the reproducible fallback. For local co-development, install
+    # the package editable from a side-by-side checkout FIRST, then the base
+    # client (which leaves this URL untriggered):
+    #     pip install -e ../fitsgl/fitsgl-py[deploy]
+    #     pip install -e .
+    # See python/README.md and AGENTS.md for the convention.
+    "fitsgl[deploy] @ git+https://github.com/hollisakins/fitsgl@main#subdirectory=fitsgl-py",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
