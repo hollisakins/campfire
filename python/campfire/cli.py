@@ -165,6 +165,21 @@ def _register_deploy_group():
             sys.exit(1)
 
 
+def _register_fitsgl_group():
+    """Register the fitsgl subgroup lazily (epic #337). The group itself needs no
+    producer deps — it imports FitsGL only inside `build` — so registration rarely
+    fails; the stub guards a genuinely broken/absent subpackage."""
+    try:
+        from campfire.fitsgl.cli import fitsgl_group
+        cli.add_command(fitsgl_group, name='fitsgl')
+    except ImportError:
+        @cli.command('fitsgl', hidden=False)
+        def fitsgl_stub():
+            """Build & deploy FitsGL tile-pyramid datasets. (Requires: pip install campfire[fitsgl])"""
+            click.echo("FitsGL dependencies not installed. Run: pip install campfire[fitsgl]")
+            sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Authentication commands
 # ---------------------------------------------------------------------------
@@ -915,6 +930,7 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
 def main():
     """Entry point for the CLI."""
     _register_deploy_group()
+    _register_fitsgl_group()
     cli()
 
 

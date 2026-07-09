@@ -29,6 +29,15 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- NIRCam fields gain an optional field-level `fiducial_tiles = ["A1", "A2", …]`
+  declaration in `fields.toml` — the subset of a field's tiles that share a
+  tangent point + rotation and span the field, forming the FitsGL field-composite
+  map view (epic #337). `Field.load` parses and validates the names against the
+  declared tiles, and a new `Field.fiducial_tile_set()` returns the set (honoring a
+  per-tile `fiducial = true` fallback) after asserting the tiles co-grid (shared
+  `crval`/rotation), so an off-grid tile mistakenly included fails fast. Additive
+  and opt-in — fields without the key are unchanged; no effect on pixel values
+  (`nircam/field.py`).
 - Install docs: `pip install` instructions now pull the unpublished
   `campfire-layout` sibling package from the monorepo alongside the pipeline, so
   a fresh `pip install "git+…#subdirectory=pipeline"` (and `conda env create`)
