@@ -23,6 +23,43 @@ pip install -e ".[all]"
 To install straight from GitHub without cloning the repo, see
 [Getting Started](https://campfire.hollisakins.com/docs/api/getting-started).
 
+### FitsGL producer (`campfire[fitsgl]`)
+
+The `fitsgl` extra pulls in [FitsGL](https://github.com/hollisakins/fitsgl)'s
+`fitsgl-py` producer, used by the map/cutout tile-pyramid deploy path (epic #337).
+FitsGL isn't on PyPI and lives in the repo's `fitsgl-py/` subdirectory, so the
+extra pins a git dependency as the reproducible fallback:
+
+```bash
+# Reproducible / standalone (pulls fitsgl-py from git):
+pip install -e ".[fitsgl]"
+```
+
+**Local co-development (recommended when editing FitsGL too):** check both repos
+out side by side and install `fitsgl-py` editable *first*, then the base client —
+pip then treats the `fitsgl` requirement as already satisfied and never fetches
+from git, so your local edits stay live:
+
+```
+parent/
+├── campfire/          # this repo
+└── fitsgl/            # https://github.com/hollisakins/fitsgl
+    └── fitsgl-py/
+```
+
+```bash
+pip install -e ../fitsgl/fitsgl-py[deploy]   # editable, from the sibling checkout
+pip install -e .                             # base client (leaves fitsgl untouched)
+```
+
+Confirm the library imports resolve:
+
+```python
+from fitsgl.build import build_dataset
+from fitsgl.build_pyramid import build_pyramid
+from fitsgl.deploy import deploy_dataset
+```
+
 ## Authentication
 
 ```bash
