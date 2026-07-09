@@ -224,7 +224,11 @@ rather than `wcs_shift`'s `WCS_BAK`: `wcs_shift` runs before align and backs up
 the pre-*shift* WCS in `WCS_BAK`, so solving from `WCS_BAK` would discard the
 manual offset. align solves from the current (post-`wcs_shift`) WCS and leaves
 `WCS_BAK` untouched (the gwcs↔ASDF-in-FITS technique is shared with
-`steps/wcs_shift.py`).
+`steps/wcs_shift.py`). The dependency also runs the other way: whenever
+`wcs_shift` rewrites a WCS (a retuned rule re-applied with `--overwrite`, or a
+new rule matching an already-aligned exposure), it scrubs `CFP_JHAT`/`CFP_ALGN`
+and drops `ALGN_BAK` in the same write — the alignment was solved from the old
+WCS, so it must re-solve rather than survive as a stale, trusted-looking stamp.
 
 **Skip / re-solve.** The orchestration skip check (`_pending_pools`) + apply's
 `_aligned_ok` treat a detector as done only if it carries a *completed,

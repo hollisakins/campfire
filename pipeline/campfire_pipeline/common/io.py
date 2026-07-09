@@ -38,6 +38,11 @@ def atomic_save(model_or_hdul, path, header_updates=None, extra_hdus=None):
         with the same ``EXTNAME`` is removed first (replace-or-append). Used
         for ``SRCMASK`` (algorithmic source mask) and ``CFMASK`` (user region
         mask) extensions that aren't part of the JWST datamodel schema.
+
+    Note: to *remove* a non-schema extension from a datamodel save, scrub it
+    from ``model.extra_fits`` before calling this — deleting the HDU from the
+    written file would leave a dangling reference in the embedded ASDF
+    extension and break the next datamodel load.
     """
     # Insert .tmp before the file extension. JWST datamodels dispatch
     # save format on the extension, so e.g. `path + '.tmp'` would error

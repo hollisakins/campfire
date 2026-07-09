@@ -387,7 +387,11 @@ def _run_wcs_shift(field, config, filtname, n_processes, overwrite, status,
     dispatch(wcs_shift_step, pending, n_processes=n_processes,
              field=field, step_config=cfg, overwrite=overwrite,
              status=status)
-    status.mark_all(pending, 'CFP_SHFT')
+    # Rescan (not mark_all): the workers stamped CFP_SHFT but also SCRUBBED any
+    # stale CFP_JHAT/CFP_ALGN (the WCS they described no longer exists), and
+    # mark_all can only add keys — a same-run jhat/align skip check must see
+    # the scrub, not the phase-start snapshot.
+    status.rescan(pending)
 
 
 def _run_bad_pixel(field, config, filtname, n_processes, overwrite, status,

@@ -46,6 +46,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   removed). `CFP_ALGN` now records the refcat content hash (`rc=`) so a changed
   refcat re-solves instead of silently keeping a stale WCS. `campfire_pipeline/
   nircam/align/`, `association.py`, `orchestrate.py`, `config_default.toml`.
+- NIRCam `wcs_shift` now invalidates downstream alignment state whenever it
+  rewrites a WCS: the `CFP_JHAT`/`CFP_ALGN` stamps and align's `ALGN_BAK`
+  baseline are scrubbed in the same atomic write, so re-applying a retuned
+  manual offset forces jhat/align to re-solve on the next run. Previously the
+  stale stamp survived the rewrite and read as a current solution — the skip
+  checks and the combine quarantine would trust it and drizzle the exposure
+  with an unaligned WCS, silently. `campfire_pipeline/nircam/steps/wcs_shift.py`.
 
 ### Calibration
 - NIRCam align refcat robustness: proper-motion propagation now reads masked
