@@ -45,17 +45,23 @@ def select_mosaics(dirs, field, filters, *, pixel_scale, tiles=None):
     """Discover the mosaics to feed FitsGL for a field at one pixel scale.
 
     Wraps :func:`campfire.deploy.nircam.discover_mosaics` and keeps one mosaic per
-    (filter, tile): those matching ``pixel_scale`` (the string form, e.g.
-    ``'30mas'``) and — when ``tiles`` is given — whose tile is in that set. Within a
-    (filter, tile) the science image is chosen by :data:`_EXTENSION_PREFERENCE`
-    (``sci`` then ``i2d``). Returns a list of ``{path, filter, tile, pixel_scale,
-    extension}`` dicts.
+    (filter, tile): full-field mosaics matching ``pixel_scale`` (the string form,
+    e.g. ``'30mas'``) and — when ``tiles`` is given — whose tile is in that set.
+    Within a (filter, tile) the science image is chosen by
+    :data:`_EXTENSION_PREFERENCE` (``sci`` then ``i2d``). Returns a list of
+    ``{path, filter, tile, pixel_scale, extension}`` dicts.
     """
     from campfire.deploy.nircam import discover_mosaics
 
     tileset = set(tiles) if tiles is not None else None
     best: dict[tuple[str, str], dict] = {}
     for m in discover_mosaics(dirs, field, filters):
+        # Skip epoch subset mosaics (`cfpipe nircam combine --epoch`): they share a
+        # (filter, tile) with the full-field mosaic but cover only part of it, so
+        # they'd yield an incomplete map. `epoch == ''` is the full-field mosaic —
+        # the only input the map pyramid should ever use.
+        if m.get('epoch'):
+            continue
         if m['pixel_scale'] != pixel_scale:
             continue
         if tileset is not None and m['tile'] not in tileset:

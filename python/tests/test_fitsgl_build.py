@@ -92,15 +92,25 @@ def test_derive_viewer_empty_bands():
 
 # --- select_mosaics / group_bands (real discover_mosaics on a fake tree) -----
 
-def _write_mosaic(products, field, filt, tile, scale, exts):
-    """Create a version-free mosaic slot (manifest + given extension files)."""
+def _write_mosaic(products, field, filt, tile, scale, exts, epoch=""):
+    """Create a version-free mosaic slot (manifest + given extension files).
+
+    ``epoch`` non-empty writes a subset epoch mosaic (``..._<epoch>``, as
+    ``cfpipe nircam combine --epoch`` produces), which `discover_mosaics`
+    reconstructs from the manifest's ``epoch`` field.
+    """
     fdir = products / filt
     fdir.mkdir(parents=True, exist_ok=True)
     base = f"mosaic_nircam_{filt}_{field}_{scale}_{tile}"
-    (fdir / f"{base}_manifest.json").write_text(json.dumps({
+    if epoch:
+        base += f"_{epoch}"
+    manifest = {
         "mosaic_name": base, "field": field, "filter": filt,
         "tile": tile, "pixel_scale": scale,
-    }))
+    }
+    if epoch:
+        manifest["epoch"] = epoch
+    (fdir / f"{base}_manifest.json").write_text(json.dumps(manifest))
     for suffix in exts:
         (fdir / f"{base}{suffix}").write_bytes(b"\x00")
 
@@ -118,6 +128,10 @@ def _fake_field(tmp_path):
     _write_mosaic(products, "cosmos", "f444w", "PRIMER", "30mas", ("_i2d.fits",))
     # a coarser scale that must be filtered out
     _write_mosaic(products, "cosmos", "f444w", "A1", "60mas", ("_i2d.fits",))
+    # an epoch subset of f444w/A1: same (filter, tile) as the full-field mosaic,
+    # sorts BEFORE it (`A1_CW_manifest` < `A1_manifest`), so absent an epoch filter
+    # it would win the (filter, tile) slot and yield an incomplete map.
+    _write_mosaic(products, "cosmos", "f444w", "A1", "30mas", ("_sci.fits",), epoch="CW")
     return {"products": products}
 
 
@@ -133,6 +147,17 @@ def test_select_mosaics_filters_scale_and_tiles(tmp_path):
     ext = {(m["filter"], m["tile"]): m["extension"] for m in picked}
     assert ext[("f444w", "A1")] == "sci"
     assert ext[("f444w", "B2")] == "i2d"
+
+
+def test_select_mosaics_skips_epoch_subsets(tmp_path):
+    dirs = _fake_field(tmp_path)
+    picked = select_mosaics(dirs, "cosmos", ["f150w", "f444w"],
+                            pixel_scale="30mas", tiles={"A1", "B2"})
+    # the epoch mosaic must not appear at all, and the f444w/A1 slot must be the
+    # full-field mosaic (no `_CW`) despite the epoch mosaic sorting first
+    assert all("_CW" not in str(m["path"]) for m in picked)
+    a1_f444 = next(m for m in picked if m["filter"] == "f444w" and m["tile"] == "A1")
+    assert a1_f444["path"].name == "mosaic_nircam_f444w_cosmos_30mas_A1_sci.fits"
 
 
 def test_group_bands_composite_lists_per_filter(tmp_path):
