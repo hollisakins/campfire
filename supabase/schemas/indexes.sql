@@ -579,5 +579,18 @@ CREATE INDEX IF NOT EXISTS idx_programs_is_public_slug
     ON public.programs USING btree (is_public, slug) WHERE (is_public = true);
 
 
+-- =============================================================================
+-- fitsgl_datasets (epic #337, Phase 3)
+-- =============================================================================
+
+-- Map query: fetch a field's datasets (then pick the default composite).
+CREATE INDEX IF NOT EXISTS idx_fitsgl_datasets_field
+    ON public.fitsgl_datasets USING btree (field);
+
+-- At most one default (fiducial composite) dataset per field.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_fitsgl_datasets_field_default
+    ON public.fitsgl_datasets USING btree (field) WHERE (is_default = true);
+
+
 -- NOTE: Materialized view indexes (mv_programs_overview, mv_filter_options)
 -- are defined in views.sql alongside the view definitions.

@@ -97,6 +97,35 @@ $$;
 GRANT EXECUTE ON FUNCTION public.accessible_program_slugs() TO authenticated;
 
 
+-- Whether a FitsGL dataset (epic #337, Phase 3) is public: every backing mosaic it
+-- was built from is published. The pyramid in the public tiles bucket is built from
+-- ALL of the dataset's on-disk mosaics, so a composite that mixes published + draft
+-- mosaics must stay hidden until they ALL publish (a plain EXISTS-any-published would
+-- leak the draft imagery). SECURITY DEFINER so it sees draft nircam_images rows the
+-- caller's own RLS would hide — otherwise the "NOT EXISTS unpublished" check can never
+-- fire for a non-admin. Requires ≥1 backing mosaic present AND none unpublished.
+CREATE OR REPLACE FUNCTION public.fitsgl_dataset_is_public(
+  p_field text, p_tiles text[], p_bands text[], p_pixel_scale text
+) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM nircam_images ni
+    WHERE ni.field = p_field AND ni.tile = ANY (p_tiles)
+      AND ni.filter = ANY (p_bands) AND ni.pixel_scale = p_pixel_scale
+      AND ni.epoch = '' AND ni.deploy_status = 'published'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM nircam_images ni
+    WHERE ni.field = p_field AND ni.tile = ANY (p_tiles)
+      AND ni.filter = ANY (p_bands) AND ni.pixel_scale = p_pixel_scale
+      AND ni.epoch = '' AND ni.deploy_status <> 'published'
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION public.fitsgl_dataset_is_public(text, text[], text[], text) TO authenticated;
+
+
 -- =============================================================================
 -- object_scoped_aggregates
 -- =============================================================================
