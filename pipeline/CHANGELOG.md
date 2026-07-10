@@ -29,6 +29,17 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- NIRCam per-exposure triage previews (`{rootname}_preview.png` /
+  `{rootname}_full.png`) now render per-pixel **SNR** (`SCI/ERR`) instead of raw
+  SCI, with a fixed σ-unit stretch (`[nircam.preview].snr_vmin`/`snr_vmax`,
+  defaults `-2`/`10`). The `jump` step drops snowball/cosmic-ray groups from the
+  ramp fit, inflating `VAR_RNOISE`→`ERR` on those pixels, so an SNR view sinks a
+  correctly error-weighted snowball back into the noise floor while leaving
+  residuals the error model under-weights visibly significant — surfacing the
+  pixels that actually warrant a hand mask rather than every bright-but-already-
+  downweighted artifact. Quick-look only; no change to FITS pixel values, DQ, or
+  the `_preview.png`/`_full.png` filenames the web mask editor consumes
+  (`nircam/steps/preview.py`, `data/config_default.toml`).
 - NIRCam fields gain an optional field-level `fiducial_tiles = ["A1", "A2", …]`
   declaration in `fields.toml` — the subset of a field's tiles that share a
   tangent point + rotation and span the field, forming the FitsGL field-composite
