@@ -415,8 +415,10 @@ export function MapViewer({
           markerCount={markers.length}
           onCursorCoords={setCursorCoords}
           onContextMenu={handleContextMenu}
+          onOpenFilters={onOpenFilters}
+          hasActiveFilters={hasActiveFilters}
         />
-        <CoordinateOverlay coords={cursorCoords} />
+        {/* Cursor readout is the FitsGL StatusPill (bottom-center); no separate overlay. */}
         {contextMenu && (
           <MapContextMenu
             coords={contextMenu.coords}

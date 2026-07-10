@@ -1,16 +1,19 @@
 'use client';
 
 /**
- * FitsGL map surface (epic #337, Phase 4). Renders a deployed FitsGL tile-pyramid
+ * FitsGL map surface (epic #337, Phase 4.5). Renders a deployed FitsGL tile-pyramid
  * dataset in `<FitsViewer>` as the map for a field that has one, replacing the
- * Leaflet + PNG-tile path (`MapViewer` dispatches to it per field). Self-contained:
- * loads the dataset's `fitsgl.json`, owns band/RGB switching, pushes NIRSpec object
- * markers through the viewer's ref handle (FitsGL owns culling/hit-test/tooltip —
- * no `CanvasMarkerLayer` here), and feeds the shared `CoordinateOverlay` /
- * `MapContextMenu` via callbacks. Shutters are Phase 4b (the region primitive).
+ * Leaflet + PNG-tile path (`MapViewer` dispatches to it per field). The full CAMPFIRE
+ * "cloud DS9" control surface (`docs/design-fitsgl-map-ux.md`): the map is the hero,
+ * full-bleed, with glass/blur chrome floating over it — a top-center band rail
+ * (field + band/RGB) and a collapsible right dock (Display panel). Object markers go
+ * through the viewer's ref handle (FitsGL owns culling/hit-test), and the shared
+ * `CoordinateOverlay` / `MapContextMenu` are fed via callbacks. Shutters + the Layers
+ * panel + tool rail + status pill land in later chunks; the NIRSpec Filters slide-over
+ * reuses the existing `AdvancedFiltersPanel`.
  *
- * `onCursor`/`onFrame` are fixed at viewer construction, so everything they touch
- * is read through refs (never stale closures).
+ * `onCursor`/`onFrame` are fixed at viewer construction, so everything they touch is
+ * read through refs (never stale closures).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -30,6 +33,8 @@ import {
 import {
   pixToSky,
   skyToPix,
+  type ColormapName,
+  type StretchMode,
   type CursorInfo,
   type MarkerEvent,
   type MarkerInput,
@@ -39,6 +44,21 @@ import {
 import type { FitsglDataset, MapObjectMarker } from '@/lib/actions/map';
 import { MARKER_QUALITY_COLORS, QUALITY_LABELS } from '@/lib/types';
 import { makeFitsglWorker } from '@/lib/fits/fitsglWorker';
+import { BandRail } from './fitsgl/BandRail';
+import { DisplayPanel } from './fitsgl/DisplayPanel';
+import { LayersPanel } from './fitsgl/LayersPanel';
+import { ToolRail } from './fitsgl/ToolRail';
+import { StatusPill } from './fitsgl/StatusPill';
+import { FitsglOverlays, type FitsglOverlaysHandle } from './fitsgl/FitsglOverlays';
+import { useDisplayStretch, type ChannelKey } from './fitsgl/useDisplayStretch';
+import { useColormap } from './fitsgl/useColormap';
+import type { RulerMeasurement } from './fitsgl/ruler';
+import { GLASS } from './fitsgl/glass';
+
+/** Ruler/graticule colours drawn over the always-dark map well (theme-independent). */
+const RULER_ACCENT = '#fb923c';
+const GRID_LINE = 'rgba(148,163,184,0.35)';
+const GRID_LABEL = 'rgba(203,213,225,0.8)';
 
 interface FitsGLMapSurfaceProps {
   dataset: FitsglDataset;
@@ -58,6 +78,9 @@ interface FitsGLMapSurfaceProps {
   onCursorCoords: (coords: { ra: number; dec: number } | null) => void;
   /** Right-click at a sky position → shared MapContextMenu. */
   onContextMenu: (data: { coords: { ra: number; dec: number }; position: { x: number; y: number } }) => void;
+  /** Opens the shared NIRSpec-filters slide-over (page-level AdvancedFiltersPanel). */
+  onOpenFilters?: () => void;
+  hasActiveFilters?: boolean;
 }
 
 function hexToRgba(hex: string, a: number): [number, number, number, number] {
@@ -79,6 +102,22 @@ function updateMapUrl(params: Record<string, string | undefined>) {
   window.history.replaceState(null, '', url.toString());
 }
 
+/** Strict-3 rainbow: reddest→R, bluest→B, middle→G by pivot wavelength (falls back
+ *  to declaration order when wavelengths are absent). The >3-band weighted-trilogy
+ *  rainbow is a later refinement (needs the core trilogy-weight primitives). */
+function rainbowRgb(bands: ExplorerBand[]): { r: string; g: string; b: string } | null {
+  if (bands.length < 3) return null;
+  const withWl = bands.filter((b) => b.wavelengthMicron != null);
+  const pool = withWl.length >= 3
+    ? [...withWl].sort((a, b) => a.wavelengthMicron! - b.wavelengthMicron!)
+    : bands;
+  return {
+    b: pool[0].name,
+    g: pool[Math.floor((pool.length - 1) / 2)].name,
+    r: pool[pool.length - 1].name,
+  };
+}
+
 export function FitsGLMapSurface({
   dataset,
   markers,
@@ -94,13 +133,30 @@ export function FitsGLMapSurface({
   markerCount,
   onCursorCoords,
   onContextMenu,
+  onOpenFilters,
+  hasActiveFilters,
 }: FitsGLMapSurfaceProps) {
   const [config, setConfig] = useState<FitsglConfig | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [bands, setBands] = useState<ExplorerBand[]>([]);
   const [viewState, setViewState] = useState<ExplorerState | null>(null);
+  const [dockOpen, setDockOpen] = useState(true);
+  const [readyTick, setReadyTick] = useState(0);
+  // Colormap is driven imperatively (reverse needs a LUT, which the controlled
+  // config can't carry), so it lives outside `viewState` (whose `colormap` stays
+  // pinned to 'gray' to keep deriveViewerConfig off the colormap path).
+  const [colormapName, setColormapName] = useState<ColormapName>('gray');
+  const [colormapReversed, setColormapReversed] = useState(false);
+  // Layers + cursor tools + live readouts (status pill).
+  const [graticule, setGraticule] = useState(false);
+  const [tool, setTool] = useState<'pan' | 'ruler'>('pan');
+  const [cursor, setCursor] = useState<{ ra: number | null; dec: number | null; values: ReadonlyArray<number | null> | null; native: boolean } | null>(null);
+  const [zoom, setZoom] = useState<number | null>(null);
+  const [rulerMeasure, setRulerMeasure] = useState<RulerMeasurement | null>(null);
 
   const handleRef = useRef<FitsViewerHandle | null>(null);
+  const overlaysRef = useRef<FitsglOverlaysHandle | null>(null);
+  const lastZoom = useRef(0);
   const lastCursorSky = useRef<{ ra: number; dec: number } | null>(null);
   const initialApplied = useRef(false);
   // Popup: the clicked marker + its world position (repositioned every frame).
@@ -108,25 +164,52 @@ export function FitsGLMapSurface({
   const [popup, setPopup] = useState<{ marker: MapObjectMarker; x: number; y: number } | null>(null);
   const urlDebounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // Latest prop callbacks read through refs (onCursor/onFrame are fixed at
+  // Display (stretch / limits / trilogy) imperative bridge.
+  const display = useDisplayStretch({ handleRef, bands, state: viewState, readyTick });
+
+  // Colormap is applied imperatively (single-band only; reverse → reversed LUT).
+  const sourceKey = viewState
+    ? viewState.mode === 'rgb'
+      ? `rgb:${viewState.rgb.r}|${viewState.rgb.g}|${viewState.rgb.b}`
+      : `single:${viewState.band}`
+    : 'none';
+  useColormap({
+    handleRef,
+    name: colormapName,
+    reversed: colormapReversed,
+    single: viewState?.mode !== 'rgb',
+    sourceKey,
+    readyTick,
+  });
+
+  // Latest prop/hook callbacks read through refs (onCursor/onFrame are fixed at
   // construction, so their closures must never capture stale props).
   const onCursorCoordsRef = useRef(onCursorCoords);
   const onContextMenuRef = useRef(onContextMenu);
+  const seedFromFrameRef = useRef(display.seedFromFrame);
   useEffect(() => { onCursorCoordsRef.current = onCursorCoords; }, [onCursorCoords]);
   useEffect(() => { onContextMenuRef.current = onContextMenu; }, [onContextMenu]);
+  useEffect(() => { seedFromFrameRef.current = display.seedFromFrame; }, [display.seedFromFrame]);
 
   // Load fitsgl.json → inventory + default view → initial explorer state.
+  // North-up is forced on and not exposed (locked decision 4).
   useEffect(() => {
     let cancelled = false;
     setConfig(null);
     setLoadError(null);
+    initialApplied.current = false;
     loadFitsglConfig(dataset.fitsgl_json_url)
       .then((cfg) => {
         if (cancelled) return;
         const b = explorerBandsFromConfig(cfg);
+        const dv = defaultViewFromConfig(cfg);
         setConfig(cfg);
         setBands(b);
-        setViewState(defaultExplorerState(b, defaultViewFromConfig(cfg)));
+        // north-up forced on (decision 4); colormap pinned to 'gray' so it is driven
+        // imperatively (useColormap) rather than through the config.
+        setViewState({ ...defaultExplorerState(b, dv), northUp: true, colormap: 'gray' });
+        setColormapName(dv.colormap ?? 'gray');
+        setColormapReversed(false);
       })
       .catch((e) => { if (!cancelled) setLoadError(String(e?.message ?? e)); });
     return () => { cancelled = true; };
@@ -173,6 +256,7 @@ export function FitsGLMapSurface({
   const onReady = useCallback((handle: FitsViewerHandle) => {
     handleRef.current = handle;
     handle.setMarkers(showMarkers ? markerInputs : []);
+    setReadyTick((t) => t + 1);
     if (!initialApplied.current) {
       initialApplied.current = true;
       handle.fitToImage();
@@ -190,10 +274,21 @@ export function FitsGLMapSurface({
     const sky = info && info.ra !== null && info.dec !== null ? { ra: info.ra, dec: info.dec } : null;
     lastCursorSky.current = sky;
     onCursorCoordsRef.current(sky);
+    setCursor(info ? { ra: info.ra, dec: info.dec, values: info.values, native: info.native } : null);
   }, []);
 
   const onFrame = useCallback((info: ViewerFrameInfo) => {
     const h = handleRef.current;
+    // Seed the Display histogram handles from the viewer's auto-stretch once a
+    // freshly-switched source has drawn (no-op until a seed is pending).
+    seedFromFrameRef.current();
+    // Reproject the Canvas2D overlays (graticule / ruler) for the new view.
+    overlaysRef.current?.redraw();
+    // Track zoom for the status pill (only on meaningful change → fewer renders).
+    if (!lastZoom.current || Math.abs(info.zoom - lastZoom.current) / info.zoom > 0.01) {
+      lastZoom.current = info.zoom;
+      setZoom(info.zoom);
+    }
     // Reposition the open popup to track its marker across pan/zoom.
     if (popupWorld.current && h) {
       const s = h.imageToScreen(popupWorld.current.worldX, popupWorld.current.worldY);
@@ -239,13 +334,43 @@ export function FitsGLMapSurface({
     });
   }, []);
 
-  // Band control model.
-  const single = viewState?.mode !== 'rgb';
-  const canRgb = bands.length >= 3;
-  const setSingleBand = (name: string) =>
-    setViewState((s) => (s ? { ...s, mode: 'single', band: name } : s));
-  const toggleRgb = () =>
-    setViewState((s) => (s ? { ...s, mode: s.mode === 'rgb' ? 'single' : 'rgb' } : s));
+  // Band-rail intent handlers (all pure state updates → deriveViewerConfig).
+  // trilogy is RGB-only, so leaving RGB coerces the curve back to a single-band one.
+  const canComposite = bands.length >= 2;
+  const leaveTrilogy = (stretch: StretchMode): StretchMode => (stretch === 'trilogy' ? 'asinh' : stretch);
+  const onSelectBand = useCallback((name: string) =>
+    setViewState((s) => (s ? { ...s, mode: 'single', band: name, stretch: leaveTrilogy(s.stretch) } : s)), []);
+  const onToggleRgb = useCallback(() =>
+    setViewState((s) => {
+      if (!s) return s;
+      const mode = s.mode === 'rgb' ? 'single' : 'rgb';
+      return { ...s, mode, stretch: mode === 'single' ? leaveTrilogy(s.stretch) : s.stretch };
+    }), []);
+  const onSetRgbRole = useCallback((role: 'r' | 'g' | 'b', band: string) =>
+    setViewState((s) => (s ? { ...s, rgb: { ...s.rgb, [role]: band } } : s)), []);
+  const onRainbow = useCallback(() =>
+    setViewState((s) => {
+      if (!s) return s;
+      const rgb = rainbowRgb(bands);
+      return rgb ? { ...s, mode: 'rgb', rgb } : s;
+    }), [bands]);
+
+  // Display-panel intent handlers.
+  const onSetStretch = useCallback((mode: StretchMode) =>
+    setViewState((s) => (s ? { ...s, stretch: mode } : s)), []);
+  const onSetHandle = useCallback((key: ChannelKey, min: number, max: number) =>
+    display.setHandle(key, min, max), [display]);
+
+  // Tool-rail actions.
+  const onFit = useCallback(() => handleRef.current?.fitToImage(), []);
+  const onExport = useCallback(() => {
+    const url = handleRef.current?.exportPNG();
+    if (!url) return;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${selectedField}-fitsgl.png`;
+    a.click();
+  }, [selectedField]);
 
   if (loadError) {
     return (
@@ -259,7 +384,7 @@ export function FitsGLMapSurface({
   }
 
   return (
-    <div className="relative h-full w-full" onContextMenu={handleContextMenu}>
+    <div className="fitsgl-chrome relative h-full w-full" onContextMenu={handleContextMenu}>
       {viewerConfig && (
         <FitsViewer
           config={viewerConfig}
@@ -273,58 +398,107 @@ export function FitsGLMapSurface({
           style={{ background: 'var(--header)' }}
         />
       )}
+      {viewerConfig && (
+        <FitsglOverlays
+          ref={overlaysRef}
+          handleRef={handleRef}
+          graticule={graticule}
+          tool={tool}
+          readyTick={readyTick}
+          accent={RULER_ACCENT}
+          gridLine={GRID_LINE}
+          gridLabel={GRID_LABEL}
+          onMeasure={setRulerMeasure}
+        />
+      )}
       {!config && !loadError && (
         <div className="absolute inset-0 flex items-center justify-center bg-surface-2 text-text-secondary">
           Loading FitsGL map…
         </div>
       )}
 
-      {/* Control panel: field switcher + band/RGB switcher + marker toggle. */}
-      <div className="absolute top-3 left-3 z-[500] w-56 space-y-2 rounded-lg border border-border bg-card/90 p-2 backdrop-blur">
-        <div className="flex items-center gap-2">
-          <select
-            value={selectedField}
-            onChange={(e) => onFieldChange(e.target.value)}
-            className="min-w-0 flex-1 rounded border border-border bg-card px-2 py-1 text-xs"
-          >
-            {fields.map((f) => (
-              <option key={f} value={f}>{f}</option>
-            ))}
-          </select>
-          <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-text-tertiary">FitsGL</span>
-        </div>
+      {/* Left tool rail — modal tools + actions + filters launcher. */}
+      {viewState && (
+        <ToolRail
+          tool={tool}
+          onSetTool={setTool}
+          onFit={onFit}
+          onExport={onExport}
+          onOpenFilters={onOpenFilters}
+          hasActiveFilters={hasActiveFilters}
+        />
+      )}
 
-        {bands.length > 1 && viewState && (
-          <div className="flex flex-wrap items-center gap-1">
-            {canRgb && (
-              <button
-                onClick={toggleRgb}
-                className={`rounded px-2 py-1 text-xs font-medium ${!single ? 'bg-primary text-on-primary' : 'text-text-secondary hover:bg-card-hover'}`}
-              >
-                RGB
-              </button>
-            )}
-            {bands.map((b) => (
-              <button
-                key={b.name}
-                onClick={() => setSingleBand(b.name)}
-                className={`rounded px-2 py-1 font-mono text-xs ${single && viewState.band === b.name ? 'bg-primary text-on-primary' : 'text-text-secondary hover:bg-card-hover'}`}
-              >
-                {b.label ?? b.name}
-              </button>
-            ))}
-          </div>
-        )}
+      {/* Band rail — merged field select + band/RGB (top-center). */}
+      {viewState && (fields.length > 1 || bands.length > 1) && (
+        <BandRail
+          fields={fields}
+          selectedField={selectedField}
+          onFieldChange={onFieldChange}
+          bands={bands}
+          state={viewState}
+          canComposite={canComposite}
+          onSelectBand={onSelectBand}
+          onToggleRgb={onToggleRgb}
+          onSetRgbRole={onSetRgbRole}
+          onRainbow={onRainbow}
+        />
+      )}
 
-        <label className="flex items-center justify-between text-xs text-text-secondary">
-          <span>Objects ({markerCount})</span>
-          <input
-            type="checkbox"
-            checked={showMarkers}
-            onChange={(e) => onToggleMarkers(e.target.checked)}
+      {/* Right control dock — Display panel (+ objects toggle placeholder until the
+          Layers panel lands in chunk 3). Collapsible via the edge chevron. */}
+      {viewState && dockOpen && (
+        <div className={`absolute right-0 top-16 bottom-16 z-[500] w-72 overflow-y-auto rounded-l-xl ${GLASS} p-3`}>
+          <DisplayPanel
+            state={viewState}
+            channels={display.channels}
+            hasZscale={display.hasZscale}
+            hasTrilogy={display.hasTrilogy}
+            colormap={colormapName}
+            colormapReversed={colormapReversed}
+            onSetStretch={onSetStretch}
+            onSetColormap={setColormapName}
+            onToggleReverseColormap={setColormapReversed}
+            onSetHandle={onSetHandle}
+            onApplyPreset={display.applyPreset}
           />
-        </label>
-      </div>
+          <div className="mt-3 border-t border-border pt-3">
+            <LayersPanel
+              showMarkers={showMarkers}
+              onToggleMarkers={onToggleMarkers}
+              markerCount={markerCount}
+              graticule={graticule}
+              onToggleGraticule={setGraticule}
+            />
+          </div>
+        </div>
+      )}
+      {viewState && (
+        <button
+          type="button"
+          onClick={() => setDockOpen((o) => !o)}
+          className={`absolute top-20 z-[501] flex h-11 w-4 items-center justify-center rounded-l-lg ${GLASS} text-text-tertiary hover:text-text-primary`}
+          style={{ right: dockOpen ? '18rem' : 0 }}
+          aria-label={dockOpen ? 'Collapse controls' : 'Expand controls'}
+          title={dockOpen ? 'Collapse controls' : 'Expand controls'}
+        >
+          {dockOpen ? '›' : '‹'}
+        </button>
+      )}
+
+      {/* Status pill — dual RA/Dec + value + zoom + band·stretch (+ ruler). */}
+      {viewState && (
+        <StatusPill
+          ra={cursor?.ra ?? null}
+          dec={cursor?.dec ?? null}
+          values={cursor?.values ?? null}
+          native={cursor?.native ?? false}
+          zoom={zoom}
+          bandLabel={viewState.mode === 'rgb' ? 'RGB' : viewState.band}
+          stretch={viewState.stretch}
+          ruler={tool === 'ruler' ? rulerMeasure : null}
+        />
+      )}
 
       {/* Clicked-marker popup (custom; FitsGL has no Leaflet Popup). */}
       {popup && (() => {

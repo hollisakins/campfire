@@ -285,3 +285,29 @@ pre code.hljs {
 .hljs-strong {
   font-weight: bold;
 }
+
+/* FitsGL map chrome (epic #337) — the glass panels float over always-dark
+   imagery, so their colours are pinned to the dusk palette regardless of the
+   app theme (redeclaring the tokens here overrides the inherited :root/.dark
+   values for all descendants). Combined with the more opaque glass surface,
+   text stays legible even over a white/grey colormap stretch. */
+.fitsgl-chrome {
+  --background: #16131c;
+  --card: #1f1b27;
+  --card-hover: #2a2435;
+  --surface-2: #241f2e;
+  --border: #332c40;
+  --border-strong: #423a52;
+  --text-primary: #f1ecf6;
+  --text-secondary: #b8aec6;
+  --text-tertiary: #8b8398;
+  --primary: #fb923c;
+  --primary-hover: #fdba74;
+  --primary-text: #fb923c;
+  --primary-soft: rgba(251, 146, 60, 0.14);
+  --on-primary: #1a1206;
+  /* Pre-composed translucent panel fill — the `/opacity` utility modifier isn't
+     supported on these var-based colour tokens, so the glass surface uses this
+     directly (opaque enough to stay legible over a white/grey stretch). */
+  --glass-bg: rgba(28, 24, 36, 0.88);
+}
