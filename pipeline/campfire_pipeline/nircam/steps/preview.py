@@ -18,11 +18,10 @@ reviewer's eye is drawn to what actually warrants a hand mask, not to every
 bright-but-already-downweighted artifact. See the module change in
 ``pipeline/CHANGELOG.md``.
 
-Both PNGs use the same **fixed** SNR stretch (``snr_vmin``/``snr_vmax`` from
-``[nircam.preview]``) so contrast is in absolute σ units and comparable across
-exposures, and both are ``origin='lower'`` so PNG row 0 corresponds to
-``data[H-1, :]`` — the polygon editor's canvas inverts ``y`` accordingly when
-round-tripping to DS9 ``image`` coords.
+Both PNGs use the same ZScale stretch computed on the downsampled SNR map (so
+the editor and the thumbnail look identical), and both are ``origin='lower'`` so
+PNG row 0 corresponds to ``data[H-1, :]`` — the polygon editor's canvas inverts
+``y`` accordingly when round-tripping to DS9 ``image`` coords.
 
 Runs as the penultimate process step, just before ``jhat``: the preview
 captures the data state after all per-exposure SCI mutations (wisp, 1/f,
@@ -40,7 +39,7 @@ import numpy as np
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
-from campfire_pipeline.nircam.steps._plots import _block_reduce
+from campfire_pipeline.nircam.steps._plots import _block_reduce, _zscale_limits
 
 
 def preview_step(exposure_file, field, step_config, overwrite=False,
@@ -64,21 +63,19 @@ def preview_step(exposure_file, field, step_config, overwrite=False,
 
     max_dim = int(step_config.get('max_dim', 1024))
     cmap = step_config.get('cmap', 'Greys')
-    # Fixed stretch in σ units so snowball residuals read at their true
-    # significance and contrast is comparable across exposures.
-    vmin = float(step_config.get('snr_vmin', -2.0))
-    vmax = float(step_config.get('snr_vmax', 10.0))
 
     with ImageModel(exposure_file) as model:
         snr = _snr_map(np.asarray(model.data, dtype=np.float64),
                        np.asarray(model.err, dtype=np.float64))
 
-        # Full-res render is the mask-editor canvas; the thumbnail is a
-        # block-mean downsample of the same SNR map. Both share the fixed
-        # stretch so the editor and the table thumbnail look identical.
+        # ZScale is computed on the downsampled SNR map (fast, robust) and
+        # reused for the full-res render so both PNGs share contrast. The
+        # full-res render is the mask-editor canvas; the thumbnail is a
+        # block-mean downsample of the same SNR map.
         long_axis = max(snr.shape)
         block_size = max(1, int(np.ceil(long_axis / max_dim)))
         snr_d = _block_reduce(snr, block_size)
+        vmin, vmax = _zscale_limits(snr_d)
 
         _atomic_imsave(thumb_path, snr_d, cmap=cmap, vmin=vmin, vmax=vmax)
         _atomic_imsave(full_path,  snr,   cmap=cmap, vmin=vmin, vmax=vmax)
