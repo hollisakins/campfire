@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { LogIn } from 'lucide-react';
-import { getMapLayers } from '@/lib/actions/map';
+import { getMapLayers, getFitsglDatasets } from '@/lib/actions/map';
 import { MapPageContent } from './MapPageContent';
 
 export const dynamic = 'force-dynamic';
@@ -23,8 +23,12 @@ export default async function MapPage({ searchParams }: MapPageProps) {
 
   const initialCenter = ra !== undefined && dec !== undefined ? { ra, dec } : undefined;
 
-  // Fetch available map layers
-  const { layers, isAuthenticated } = await getMapLayers();
+  // Fetch available map layers + FitsGL datasets (the map prefers FitsGL for a
+  // field that has one; RLS keeps draft-backed datasets admin-only).
+  const [{ layers, isAuthenticated }, fitsglDatasets] = await Promise.all([
+    getMapLayers(),
+    getFitsglDatasets(),
+  ]);
 
   if (!isAuthenticated) {
     return (
@@ -54,6 +58,7 @@ export default async function MapPage({ searchParams }: MapPageProps) {
   return (
     <MapPageContent
       layers={layers}
+      fitsglDatasets={fitsglDatasets}
       initialField={field}
       initialFilter={filter}
       initialCenter={initialCenter}

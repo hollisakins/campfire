@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useSearchParams, usePathname } from 'next/navigation';
-import type { MapLayer, MapObjectMarker } from '@/lib/actions/map';
+import type { MapLayer, MapObjectMarker, FitsglDataset } from '@/lib/actions/map';
 import { MapViewerWrapper } from '@/components/map/MapViewerWrapper';
 import { AdvancedFiltersPanel } from '@/components/spectra/AdvancedFiltersPanel';
 import type { FilterOptions } from '@/lib/actions/filter-params';
@@ -13,6 +13,7 @@ import { useFilteredObjectIds } from '@/lib/hooks/useFilteredObjectIds';
 
 interface MapPageContentProps {
   layers: MapLayer[];
+  fitsglDatasets: FitsglDataset[];
   initialField?: string;
   initialFilter?: string;
   initialCenter?: { ra: number; dec: number };
@@ -22,6 +23,7 @@ interface MapPageContentProps {
 
 export function MapPageContent({
   layers,
+  fitsglDatasets,
   initialField,
   initialFilter,
   initialCenter,
@@ -139,6 +141,7 @@ export function MapPageContent({
     <div className="h-[calc(100vh-72px)] relative">
       <MapViewerWrapper
         layers={layers}
+        fitsglDatasets={fitsglDatasets}
         initialField={initialField}
         initialFilter={initialFilter}
         initialCenter={initialCenter}
