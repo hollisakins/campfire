@@ -622,6 +622,17 @@ export const QUALITY_LABELS: FlagDefinition[] = REDSHIFT_QUALITY.map(q => ({
   description: q.description,
 }));
 
+// Map-marker fill/stroke color per redshift_quality (0–4), shared by the Leaflet
+// (CanvasMarkerLayer) and FitsGL (FitsGLMapSurface) marker renderers so both map
+// engines color objects identically.
+export const MARKER_QUALITY_COLORS: Record<number, string> = {
+  0: '#9ca3af', // Not inspected - gray
+  1: '#ef4444', // Impossible - red
+  2: '#f97316', // Tentative - orange
+  3: '#f59e0b', // Probable - amber
+  4: '#22c55e', // Secure - green
+};
+
 export const GRATINGS = ['PRISM', 'G140H', 'G140M', 'G235H', 'G235M', 'G395H', 'G395M'] as const;
 
 // D3 category10 palette for coloring member targets in object detail views

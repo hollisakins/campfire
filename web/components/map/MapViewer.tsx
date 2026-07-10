@@ -10,7 +10,8 @@ import {
   useMapEvents,
 } from 'react-leaflet';
 import Link from 'next/link';
-import type { MapLayer, MapObjectMarker } from '@/lib/actions/map';
+import type { MapLayer, MapObjectMarker, FitsglDataset } from '@/lib/actions/map';
+import { FitsGLMapSurface } from './FitsGLMapSurface';
 import { useFieldObjectMarkers } from '@/lib/hooks/useFieldObjectMarkers';
 import { useFieldSlits } from '@/lib/hooks/useFieldSlits';
 import type { WCSParams } from '@/lib/utils/wcs';
@@ -165,6 +166,7 @@ function MapUpdater({ activeLayer, bounds }: { activeLayer: MapLayer; bounds: L.
 
 interface MapViewerProps {
   layers: MapLayer[];
+  fitsglDatasets?: FitsglDataset[];
   initialField?: string;
   initialFilter?: string;
   initialCenter?: { ra: number; dec: number };
@@ -179,6 +181,7 @@ interface MapViewerProps {
 
 export function MapViewer({
   layers,
+  fitsglDatasets = [],
   initialField,
   initialFilter,
   initialCenter,
@@ -208,7 +211,29 @@ export function MapViewer({
     return groups;
   }, [layers]);
 
-  const fields = useMemo(() => Object.keys(fieldGroups).sort(), [fieldGroups]);
+  // The field's default FitsGL composite dataset, keyed by field.
+  const fitsglByField = useMemo(() => {
+    const map = new Map<string, FitsglDataset>();
+    for (const d of fitsglDatasets) {
+      if (d.kind === 'field') map.set(d.field, d);
+    }
+    return map;
+  }, [fitsglDatasets]);
+
+  // Fields = union of PNG-layer fields and FitsGL-dataset fields (a field may be
+  // FitsGL-only once its PNG tiles are retired — Phase 5).
+  const fields = useMemo(() => {
+    const set = new Set([...Object.keys(fieldGroups), ...fitsglByField.keys()]);
+    return [...set].sort();
+  }, [fieldGroups, fitsglByField]);
+
+  // Per-field flag: prefer FitsGL when the field has a dataset. `?engine=leaflet`
+  // forces the legacy Leaflet path (side-by-side comparison during cutover).
+  const forceLeaflet = useMemo(
+    () => typeof window !== 'undefined'
+      && new URLSearchParams(window.location.search).get('engine') === 'leaflet',
+    [],
+  );
 
   // State
   const [selectedField, setSelectedField] = useState<string>(
@@ -364,6 +389,44 @@ export function MapViewer({
   }, []);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  // --- FitsGL surface (per-field flag, epic #337 Phase 4) -------------------
+  // Chosen before the Leaflet null-guard: a FitsGL field may have no PNG layer.
+  const activeDataset = fitsglByField.get(selectedField);
+  if (activeDataset && !forceLeaflet) {
+    return (
+      <div ref={mapWrapperRef} className="relative h-full w-full">
+        <FitsGLMapSurface
+          dataset={activeDataset}
+          markers={markers}
+          showMarkers={showMarkers}
+          highlightObjectId={highlightObjectId}
+          markerFilter={markerFilter}
+          initialCenter={
+            initialCenter && (!initialField || initialField === selectedField)
+              ? initialCenter
+              : undefined
+          }
+          initialZoom={initialZoom}
+          fields={fields}
+          selectedField={selectedField}
+          onFieldChange={handleFieldChange}
+          onToggleMarkers={setShowMarkers}
+          markerCount={markers.length}
+          onCursorCoords={setCursorCoords}
+          onContextMenu={handleContextMenu}
+        />
+        <CoordinateOverlay coords={cursorCoords} />
+        {contextMenu && (
+          <MapContextMenu
+            coords={contextMenu.coords}
+            position={contextMenu.position}
+            onClose={closeContextMenu}
+          />
+        )}
+      </div>
+    );
+  }
 
   if (!activeLayer || !mapConfig) {
     if (layers.length === 0) {

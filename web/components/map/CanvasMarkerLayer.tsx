@@ -6,18 +6,7 @@ import { useMap } from 'react-leaflet';
 import type { MapObjectMarker } from '@/lib/actions/map';
 import type { WCSParams } from '@/lib/utils/wcs';
 import { skyToPixel } from '@/lib/utils/wcs';
-
-// ============================================
-// Quality color mapping (shared with MapViewer)
-// ============================================
-
-const QUALITY_COLORS: Record<number, string> = {
-  0: '#9ca3af', // Not inspected - gray
-  1: '#ef4444', // Impossible - red
-  2: '#f97316', // Tentative - orange
-  3: '#f59e0b', // Probable - amber
-  4: '#22c55e', // Secure - green
-};
+import { MARKER_QUALITY_COLORS as QUALITY_COLORS } from '@/lib/types';
 
 // Draw order: bottom → top (higher quality drawn on top)
 const QUALITY_DRAW_ORDER = [0, 1, 2, 3, 4];
