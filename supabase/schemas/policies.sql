@@ -889,6 +889,44 @@ CREATE POLICY "Service role has full access to map layers"
 
 
 -- =============================================================================
+-- fitsgl_datasets (epic #337, Phase 3)
+-- =============================================================================
+
+ALTER TABLE fitsgl_datasets ENABLE ROW LEVEL SECURITY;
+
+-- Visibility DERIVES from the backing mosaics — the table carries no
+-- deploy_status of its own. A dataset is public iff EVERY nircam_images mosaic it
+-- was built from (same field, one of its `tiles`, one of its `bands`, same
+-- pixel_scale, full-field epoch) is published — the pyramid in the public tiles
+-- bucket is built from all of them, so a composite mixing published + draft mosaics
+-- must stay hidden until they all publish. The all-published check lives in the
+-- SECURITY DEFINER fitsgl_dataset_is_public() so it can see the draft rows a
+-- non-admin's own RLS would hide (mirrors how the PNG map only shows deliberately-
+-- published tiles). Admins see every dataset.
+DROP POLICY IF EXISTS "authenticated_select_fitsgl_datasets" ON fitsgl_datasets;
+CREATE POLICY "authenticated_select_fitsgl_datasets"
+  ON fitsgl_datasets FOR SELECT TO authenticated
+  USING (
+    (SELECT public.is_admin())
+    OR public.fitsgl_dataset_is_public(field, tiles, bands, pixel_scale)
+  );
+
+-- Admins have full access (login-mode deploy CLI upserts through RLS).
+DROP POLICY IF EXISTS "admin_fitsgl_datasets_all" ON fitsgl_datasets;
+CREATE POLICY "admin_fitsgl_datasets_all"
+  ON fitsgl_datasets FOR ALL TO authenticated
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
+
+-- Service role has full access (service-role / local deploy mode).
+DROP POLICY IF EXISTS "service_role_fitsgl_datasets_all" ON fitsgl_datasets;
+CREATE POLICY "service_role_fitsgl_datasets_all"
+  ON fitsgl_datasets FOR ALL TO service_role
+  USING (true)
+  WITH CHECK (true);
+
+
+-- =============================================================================
 -- slit_regions
 -- =============================================================================
 

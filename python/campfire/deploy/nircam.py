@@ -764,6 +764,16 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
             items=len(records), draft=draft,
             fits_uploaded=len(osn_uploaded), fits_skipped=n_skipped))
 
+    # If the field's FitsGL map pyramid is missing or its mosaics changed, print a
+    # suggested `campfire fitsgl build/deploy` — a hint only, never an auto-build
+    # (pyramid builds are expensive; epic #337, Phase 3). Best-effort + fully guarded
+    # so a missing fitsgl extra / dataset table never touches the deploy result.
+    try:
+        from campfire.fitsgl.deploy import suggest_fitsgl_rebuild
+        suggest_fitsgl_rebuild(client, field)
+    except Exception:
+        pass
+
 
 def _upsert_exposures(client, records, batch_size=500):
     """Upsert exposure records, preserving web-triage fields for existing rows.

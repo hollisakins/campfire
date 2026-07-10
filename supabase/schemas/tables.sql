@@ -276,6 +276,37 @@ ALTER SEQUENCE "public"."map_layers_id_seq" OWNED BY "public"."map_layers"."id";
 
 
 
+-- FitsGL tile-pyramid datasets (epic #337, Phase 3). One row per *scoped* dataset
+-- deployed to the campfire-tiles bucket: a field's fiducial composite
+-- (kind='field') or a single standalone tile (kind='tile') — NOT one per
+-- nircam_images extension. Thin pointer table the map viewer reads; the pyramid
+-- itself (per-band manifest.json + .fits.fz supertiles + fitsgl.json) lives under
+-- `prefix` in R2. `bands`/`tiles` record what the dataset spans; `source_hashes`
+-- maps each backing mosaic (tile→filter→sha256, from storage_objects.content_hash)
+-- so a rebuild can skip byte-identical inputs. Deliberately carries NO
+-- deploy_status/deployment_id: public visibility DERIVES from the backing
+-- nircam_images (RLS in policies.sql), so a deploy against draft mosaics never
+-- exposes a manifest.
+CREATE TABLE IF NOT EXISTS "public"."fitsgl_datasets" (
+    "prefix" "text" NOT NULL,
+    "field" "text" NOT NULL,
+    "kind" "text" NOT NULL CONSTRAINT "fitsgl_datasets_kind_check" CHECK (("kind" = ANY (ARRAY['field'::"text", 'tile'::"text"]))),
+    "tile" "text",
+    "tiles" "text"[] NOT NULL,
+    "pixel_scale" "text" NOT NULL,
+    "fitsgl_json_url" "text" NOT NULL,
+    "bands" "text"[] NOT NULL,
+    "source_hashes" "jsonb" NOT NULL,
+    "is_default" boolean DEFAULT false NOT NULL,
+    "schema_version" integer DEFAULT 1 NOT NULL,
+    "deployed_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."fitsgl_datasets" OWNER TO "postgres";
+
+
+
 CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "id" integer NOT NULL,
     "grating" "text" NOT NULL,
@@ -1566,6 +1597,11 @@ ALTER TABLE ONLY "public"."map_layers"
 
 
 
+ALTER TABLE ONLY "public"."fitsgl_datasets"
+    ADD CONSTRAINT "fitsgl_datasets_pkey" PRIMARY KEY ("prefix");
+
+
+
 ALTER TABLE ONLY "public"."nircam_images"
     ADD CONSTRAINT "nircam_images_pkey" PRIMARY KEY ("id");
 
@@ -2068,6 +2104,12 @@ GRANT ALL ON TABLE "public"."flag_definitions" TO "service_role";
 GRANT ALL ON TABLE "public"."map_layers" TO "anon";
 GRANT ALL ON TABLE "public"."map_layers" TO "authenticated";
 GRANT ALL ON TABLE "public"."map_layers" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "anon";
+GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "authenticated";
+GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "service_role";
 
 
 
