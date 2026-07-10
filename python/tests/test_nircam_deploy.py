@@ -274,3 +274,28 @@ def test_discover_mosaics_multiunderscore_field(tmp_path):
     assert found[0]["tile"] == "t2"
     assert found[0]["storage_key"].endswith(
         "ember_egs_p1/f356w/mosaic_nircam_f356w_ember_egs_p1_30mas_t2_i2d.fits")
+
+
+# --- parallel sci_dq hashing + upload-worker tuning (deploy speed) -----------
+
+def test_compute_sci_dq_hashes_matches_serial(tmp_path):
+    sci = np.arange(16, dtype="float32").reshape(4, 4)
+    dq = np.zeros((4, 4), dtype="int32")
+    tasks = []
+    for i in range(5):
+        p = _make_exposure(tmp_path / f"jw_{i}.fits", sci + i, dq)
+        tasks.append(UploadTask(local_path=p, r2_key=f"k{i}", content_type="application/fits"))
+    serial = {t.r2_key: nc._sci_dq_hash(t.local_path) for t in tasks}
+    assert nc._compute_sci_dq_hashes(tasks) == serial
+    assert nc._compute_sci_dq_hashes([]) == {}
+
+
+def test_upload_workers_env_override(monkeypatch):
+    monkeypatch.delenv("CAMPFIRE_DEPLOY_UPLOAD_WORKERS", raising=False)
+    assert nc._upload_workers() == 16
+    monkeypatch.setenv("CAMPFIRE_DEPLOY_UPLOAD_WORKERS", "24")
+    assert nc._upload_workers() == 24
+    monkeypatch.setenv("CAMPFIRE_DEPLOY_UPLOAD_WORKERS", "0")
+    assert nc._upload_workers() == 1            # clamped to >= 1
+    monkeypatch.setenv("CAMPFIRE_DEPLOY_UPLOAD_WORKERS", "not-a-number")
+    assert nc._upload_workers() == 16           # falls back to default

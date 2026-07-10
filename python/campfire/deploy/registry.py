@@ -78,6 +78,41 @@ def hash_file(path: Path) -> tuple[str, int]:
     return f"sha256:{h.hexdigest()}", size
 
 
+def default_hash_workers() -> int:
+    """Thread count for parallel local-file hashing.
+
+    Whole-file (and NIRCam SCI+DQ) hashing of a field's worth of exposures is
+    I/O-bound — the reads overlap well across threads, so a small pool cuts the
+    serial hash time to a fraction. Sized off the CPU count and capped so we
+    don't thrash a spinning disk with too many concurrent large reads.
+    """
+    return min(16, (os.cpu_count() or 4) * 2)
+
+
+def hash_files_parallel(
+    paths: Iterable[Path], *, max_workers: Optional[int] = None,
+) -> dict[Path, tuple[str, int]]:
+    """Hash many local files concurrently → ``{path: ('sha256:<hex>', size)}``.
+
+    Order-independent (callers key by path). De-duplicates repeated paths so a
+    file is hashed once. Falls back to a serial loop for a single file.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    unique = list({Path(p) for p in paths})
+    if not unique:
+        return {}
+    workers = max(1, min(max_workers or default_hash_workers(), len(unique)))
+    if workers == 1:
+        return {p: hash_file(p) for p in unique}
+    out: dict[Path, tuple[str, int]] = {}
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(hash_file, p): p for p in unique}
+        for fut in as_completed(futures):
+            out[futures[fut]] = fut.result()
+    return out
+
+
 def normalize_sha256(file_hash: str | None) -> str | None:
     """Coerce a stored file hash to a single ``'sha256:<hex>'`` content_hash token.
 
@@ -231,6 +266,7 @@ def build_registry_rows(
     cfpipe_version: Optional[str] = None,
     succeeded_keys: Optional[set[str]] = None,
     sci_dq_hashes: Optional[dict[str, str]] = None,
+    max_workers: Optional[int] = None,
 ) -> list[dict]:
     """Build ``storage_objects`` rows for the objects an upload actually landed.
 
@@ -238,20 +274,30 @@ def build_registry_rows(
     all, if ``succeeded_keys`` is None), hashes the local file and maps the key
     to a row via :func:`row_for_key`. Tiles and non-cloud products are skipped.
 
+    The whole-file hashing runs across a thread pool (``max_workers``, default
+    :func:`default_hash_workers`) — for a field's worth of exposures this
+    registration read is I/O-bound and was a serial bottleneck after upload.
+
     ``sci_dq_hashes`` optionally supplies a precomputed ``sha256:<hex>`` science-only
     digest per storage key (NIRCam exposures, epic #261) — the ``content_hash`` is
     still the whole-file sha256, but ``sci_dq_hash`` carries the science-only digest
     that change-detection compares against.
     """
     sci_dq_hashes = sci_dq_hashes or {}
-    rows: list[dict] = []
+    selected: list[tuple[UploadTask, Path]] = []
     for task in tasks:
         if succeeded_keys is not None and task.r2_key not in succeeded_keys:
             continue
         local = Path(task.local_path)
         if not local.exists():
             continue
-        content_hash, size_bytes = hash_file(local)
+        selected.append((task, local))
+
+    hashed = hash_files_parallel((local for _, local in selected), max_workers=max_workers)
+
+    rows: list[dict] = []
+    for task, local in selected:
+        content_hash, size_bytes = hashed[local]
         row = row_for_key(
             task.r2_key,
             backend=backend,

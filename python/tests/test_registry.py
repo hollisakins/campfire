@@ -255,3 +255,23 @@ def test_reconcile_matches_legacy_pointer_to_canonical_registry_key():
     rep3 = reg.compute_reconcile([legacy, other], [canonical])
     assert rep3.missing == {other}
     assert not rep3.covered
+
+
+# --- parallel hashing (deploy speed, no behaviour change) --------------------
+
+def test_hash_files_parallel_matches_serial(tmp_path):
+    paths = []
+    for i in range(6):
+        p = tmp_path / f"f{i}.bin"
+        p.write_bytes(bytes([i]) * (1000 * (i + 1)))
+        paths.append(p)
+    serial = {p: reg.hash_file(p) for p in paths}
+    parallel = reg.hash_files_parallel(paths, max_workers=4)
+    assert parallel == serial
+    # de-duplicates repeated paths and hashes each once
+    assert reg.hash_files_parallel([paths[0], paths[0]]) == {paths[0]: serial[paths[0]]}
+    assert reg.hash_files_parallel([]) == {}
+
+
+def test_default_hash_workers_positive():
+    assert reg.default_hash_workers() >= 1
