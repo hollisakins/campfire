@@ -305,8 +305,13 @@
 
 [nircam.preview]
     # Per-exposure quick-look PNG for the web admin triage UI. Read-only:
-    # downsamples SCI to ``max_dim`` long-axis pixels, ZScale-stretches,
-    # writes ``{rootname}_preview.png`` next to the canonical FITS.
+    # renders per-pixel SNR (SCI/ERR) — not raw SCI — downsampled to
+    # ``max_dim`` long-axis pixels, ZScale-stretches, and writes
+    # ``{rootname}_preview.png`` (thumbnail) + ``{rootname}_full.png``
+    # (mask-editor canvas) next to the canonical FITS. SNR keeps the reviewer's
+    # eye on residuals the error model under-weights (real mask candidates)
+    # rather than on snowballs the jump step has already error-inflated and
+    # down-weighted.
     max_dim = 1024
     cmap = "Greys"
 
