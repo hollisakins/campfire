@@ -1,0 +1,90 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{--bg:#080a0f;--glass:rgba(22,27,36,.62);--bd:rgba(255,255,255,.09);--tx:#e7eaf0;--tx2:#9aa3b2;--tx3:#69707e;
+  --acc:#f5a524;--accbg:rgba(245,165,36,.16)}
+*{box-sizing:border-box;margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif}
+body{background:var(--bg);color:var(--tx);overflow:hidden}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.glass{background:var(--glass);backdrop-filter:blur(14px);border:1px solid var(--bd);box-shadow:0 8px 32px rgba(0,0,0,.45)}
+.hdr{height:52px;display:flex;align-items:center;gap:26px;padding:0 22px;background:rgba(8,10,15,.95);border-bottom:1px solid var(--bd);position:relative;z-index:5}
+.logo{font-weight:800;letter-spacing:.3px;display:flex;align-items:center;gap:9px;font-size:15px}
+.nav{display:flex;gap:20px;color:var(--tx2);font-size:13.5px}.nav .on{color:var(--tx);border-bottom:2px solid var(--acc);padding-bottom:15px}
+.spacer{flex:1}.who{color:var(--tx2);font-size:13px;display:flex;gap:16px}
+.stage{position:absolute;inset:52px 0 0 0;overflow:hidden;background:radial-gradient(1200px 700px at 55% 42%,#0e1524,#080a0f 72%)}
+.stars{position:absolute;inset:0;background-image:radial-gradient(1.4px 1.4px at 20% 30%,#cdd6e6 40%,transparent),radial-gradient(1.1px 1.1px at 70% 60%,#aeb8cc 40%,transparent),radial-gradient(1.6px 1.6px at 45% 75%,#fff 40%,transparent),radial-gradient(1px 1px at 85% 20%,#9aa3b2 40%,transparent),radial-gradient(2px 2px at 55% 45%,#fff 40%,transparent),radial-gradient(1.2px 1.2px at 62% 22%,#ccd 40%,transparent);opacity:.8}
+.footprint{position:absolute;left:30%;top:12%;width:46%;height:70%;transform:rotate(-11deg);border:1px dashed rgba(160,180,220,.18);background:radial-gradient(60% 60% at 50% 45%,rgba(120,140,180,.10),transparent 70%)}
+.marker{position:absolute;width:12px;height:12px;border-radius:50%;border:2px solid;transform:translate(-50%,-50%)}
+/* field pill */
+.field{position:absolute;left:16px;top:66px;display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:12px;z-index:4}
+.field select{background:transparent;border:1px solid var(--bd);color:var(--tx);border-radius:7px;padding:4px 8px;font-size:12.5px}
+.badge{font-size:10px;padding:2px 6px;border-radius:5px;background:rgba(255,255,255,.08);color:var(--tx2)}
+/* band rail */
+.bandrail{position:absolute;top:66px;left:50%;transform:translateX(-50%);display:flex;gap:4px;padding:6px;border-radius:12px;z-index:4}
+.b{padding:6px 10px;border-radius:8px;font-size:12px;color:var(--tx2)}
+.b.on{background:var(--accbg);color:var(--acc);box-shadow:inset 0 0 0 1px rgba(245,165,36,.4)}
+.b.rgb{color:var(--tx);margin-left:6px;border-left:1px solid var(--bd);padding-left:14px}
+/* LEFT tool rail — docked flush, rounded right, collapse chevron */
+.tools{position:absolute;left:0;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:3px;padding:8px 7px;
+  border-radius:0 14px 14px 0;border-left:0;z-index:4}
+.t{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:9px;color:var(--tx2);font-size:17px}
+.t.on{background:var(--accbg);color:var(--acc)}.t.sep{height:1px;width:22px;margin:5px auto;background:var(--bd)}
+.chev{position:absolute;width:16px;height:44px;display:flex;align-items:center;justify-content:center;color:var(--tx3);font-size:12px;
+  background:var(--glass);border:1px solid var(--bd);z-index:4}
+.chevL{left:53px;top:50%;transform:translateY(-50%);border-radius:0 8px 8px 0;border-left:0}
+/* RIGHT dock — docked flush, rounded left, collapse chevron */
+.dock{position:absolute;right:0;top:110px;bottom:64px;width:250px;padding:14px;border-radius:14px 0 0 14px;border-right:0;overflow:auto;z-index:4}
+.chevR{right:251px;top:130px;border-radius:8px 0 0 8px;border-right:0}
+.sect{border-bottom:1px solid var(--bd);padding:13px 0}.sect:first-child{padding-top:0}
+.sect h4{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tx3);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+.seg{display:flex;background:rgba(255,255,255,.05);border-radius:8px;padding:2px;font-size:11px}
+.seg span{padding:3px 10px;border-radius:6px;color:var(--tx2)}.seg .on{background:var(--acc);color:#111;font-weight:600}
+.chips{display:flex;gap:5px;flex-wrap:wrap;margin:10px 0}
+.chip{padding:5px 8px;border-radius:7px;font-size:11px;background:rgba(255,255,255,.05);color:var(--tx2)}.chip.on{background:var(--accbg);color:var(--acc)}
+.row{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;color:var(--tx2);padding:6px 0}
+.slider{height:4px;border-radius:2px;background:linear-gradient(90deg,var(--acc),rgba(245,165,36,.15));margin:9px 0;position:relative}
+.knob{position:absolute;top:50%;width:12px;height:12px;border-radius:50%;background:#fff;transform:translate(-50%,-50%)}
+.cmap{display:flex;gap:5px;margin-top:6px}.cm{flex:1;height:15px;border-radius:4px}
+.tog{width:34px;height:19px;border-radius:10px;background:rgba(255,255,255,.12);position:relative}.tog.on{background:var(--acc)}
+.tog i{position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff}.tog.on i{left:17px}
+.legend{display:flex;gap:8px;font-size:10px;color:var(--tx3);flex-wrap:wrap;margin-top:2px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:3px}
+.status{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:14px;padding:8px 16px;border-radius:12px;font-size:12.5px;z-index:4}
+.status .k{color:var(--tx3)}.status b{color:var(--tx);font-weight:500}
+.cap{position:absolute;bottom:14px;left:16px;font-size:11px;color:var(--tx3);z-index:6}
+.note{position:absolute;font-size:10px;color:var(--acc);opacity:.85;font-style:italic;z-index:6}
+</style></head><body>
+<div class="hdr"><div class="logo">🔥 CAMPFIRE</div><div class="nav"><a>Home</a><a>NIRCam</a><a>NIRSpec</a><a class="on">Map</a><a>Docs</a></div><div class="spacer"></div><div class="who"><span>🛡 Admin</span><span>Admin User</span></div></div>
+<div class="stage"><div class="stars"></div><div class="footprint"></div>
+  <div class="marker" style="left:45%;top:38%;border-color:#22c55e;background:rgba(34,197,94,.15)"></div>
+  <div class="marker" style="left:52%;top:52%;border-color:#f59e0b;background:rgba(245,158,11,.15)"></div>
+  <div class="marker" style="left:39%;top:60%;border-color:#ef4444;background:rgba(239,68,68,.15)"></div>
+
+  <div class="field glass"><select><option>rj0911</option></select><span class="badge">FitsGL</span></div>
+  <div class="bandrail glass"><span class="b">F090W</span><span class="b">F115W</span><span class="b">F150W</span><span class="b">F200W</span><span class="b">F277W</span><span class="b">F356W</span><span class="b on">F444W</span><span class="b rgb">RGB</span></div>
+
+  <div class="tools glass"><div class="t on" title="Pan">✥</div><div class="t" title="Ruler">📏</div><div class="t" title="Fit">⤢</div><div class="t" title="North up">🧭</div>
+    <div class="t sep"></div><div class="t on" title="Display">◐</div><div class="t on" title="Layers">▦</div><div class="t" title="Filters">⛃</div><div class="t" title="Coord search">⌖</div><div class="t" title="Export">▣</div></div>
+  <div class="chev chevL glass">‹</div>
+
+  <div class="dock glass">
+    <div class="sect"><h4>Display <span class="mono" style="color:var(--tx3);font-size:10px">F444W</span></h4>
+      <div class="seg"><span class="on">Single</span><span>RGB</span></div>
+      <div class="chips"><span class="chip on">asinh</span><span class="chip">log</span><span class="chip">sqrt</span><span class="chip">linear</span><span class="chip">zscale</span></div>
+      <div class="row"><span>Black / White</span></div>
+      <div class="slider"><span class="knob" style="left:18%"></span><span class="knob" style="left:82%"></span></div>
+      <div class="row"><span>Colormap</span><span class="mono" style="color:var(--tx3);font-size:11px">gray</span></div>
+      <div class="cmap"><span class="cm" style="background:linear-gradient(90deg,#000,#fff)"></span><span class="cm" style="background:linear-gradient(90deg,#440154,#21918c,#fde725)"></span><span class="cm" style="background:linear-gradient(90deg,#000004,#b73779,#fcfdbf)"></span><span class="cm" style="background:linear-gradient(90deg,#000,#f57d15,#fff)"></span></div></div>
+    <div class="sect"><h4>Layers</h4>
+      <div class="row"><span>NIRSpec objects</span><span class="tog on"><i></i></span></div>
+      <div class="legend"><span><span class="dot" style="background:#22c55e"></span>secure</span><span><span class="dot" style="background:#f59e0b"></span>probable</span><span><span class="dot" style="background:#ef4444"></span>impossible</span></div>
+      <div class="row"><span>MSA shutters</span><span class="tog on"><i></i></span></div>
+      <div class="row"><span>Graticule</span><span class="tog"><i></i></span></div>
+      <div class="row"><span>North up</span><span class="tog"><i></i></span></div></div>
+  </div>
+  <div class="chev chevR glass">›</div>
+
+  <div class="status glass mono"><span><span class="k">RA</span> <b>09:11:13.2</b></span><span><span class="k">Dec</span> <b>+17:47:59</b></span><span><span class="k">z</span> <b>0.045</b></span><span><span class="k">px</span> <b>1.24e3</b></span><span class="k">F444W · asinh</span></div>
+
+  <div class="note" style="left:78px;top:40%">‹ collapse rail</div>
+  <div class="note" style="right:270px;top:96px;text-align:right">collapse dock ›</div>
+  <div class="cap">Variant B — refined · docked glass panels (collapsible via edge arrows) · full-height Filters slide-over is separate · Display holds Single↔RGB</div>
+</div></body></html>

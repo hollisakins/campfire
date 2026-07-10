@@ -1,0 +1,93 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{
+  --bg:#080a0f; --glass:rgba(20,25,34,.9); --bd:rgba(255,255,255,.09);
+  --tx:#e7eaf0; --tx2:#9aa3b2; --tx3:#69707e; --acc:#f5a524; --accbg:rgba(245,165,36,.16);
+}
+*{box-sizing:border-box;margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif}
+body{background:var(--bg);color:var(--tx);overflow:hidden}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.hdr{height:52px;display:flex;align-items:center;gap:26px;padding:0 22px;background:rgba(8,10,15,.95);
+  border-bottom:1px solid var(--bd);z-index:5}
+.logo{font-weight:800;letter-spacing:.3px;display:flex;align-items:center;gap:9px;font-size:15px}
+.nav{display:flex;gap:20px;color:var(--tx2);font-size:13.5px}.nav .on{color:var(--tx);border-bottom:2px solid var(--acc);padding-bottom:15px}
+.spacer{flex:1}.who{color:var(--tx2);font-size:13px;display:flex;gap:16px}
+/* fixed regions */
+.wrap{position:absolute;inset:52px 0 0 0}
+.bandrail{height:44px;display:flex;align-items:center;gap:4px;padding:0 14px;background:var(--glass);
+  border-bottom:1px solid var(--bd)}
+.b{padding:6px 10px;border-radius:8px;font-size:12px;color:var(--tx2)}
+.b.on{background:var(--accbg);color:var(--acc);box-shadow:inset 0 0 0 1px rgba(245,165,36,.4)}
+.b.rgb{color:var(--tx);margin-left:6px;border-left:1px solid var(--bd);padding-left:14px}
+.mid{position:absolute;inset:44px 0 34px 0;display:flex}
+.toolrail{width:50px;background:var(--glass);border-right:1px solid var(--bd);display:flex;flex-direction:column;
+  align-items:center;gap:3px;padding:8px 0}
+.t{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:9px;color:var(--tx2);font-size:17px}
+.t.on{background:var(--accbg);color:var(--acc)}.t.sep{height:1px;width:22px;margin:5px auto;background:var(--bd)}
+.map{flex:1;position:relative;overflow:hidden;background:radial-gradient(900px 600px at 55% 42%,#0e1524,#080a0f 72%)}
+.stars{position:absolute;inset:0;background-image:
+  radial-gradient(1.4px 1.4px at 20% 30%,#cdd6e6 40%,transparent),radial-gradient(1.1px 1.1px at 70% 60%,#aeb8cc 40%,transparent),
+  radial-gradient(1.6px 1.6px at 45% 75%,#fff 40%,transparent),radial-gradient(1px 1px at 85% 20%,#9aa3b2 40%,transparent),
+  radial-gradient(2px 2px at 55% 45%,#fff 40%,transparent),radial-gradient(1.2px 1.2px at 62% 22%,#ccd 40%,transparent);opacity:.8}
+.footprint{position:absolute;left:26%;top:12%;width:48%;height:70%;transform:rotate(-11deg);
+  border:1px dashed rgba(160,180,220,.18);background:radial-gradient(60% 60% at 50% 45%,rgba(120,140,180,.10),transparent 70%)}
+.inspector{width:288px;background:var(--glass);border-left:1px solid var(--bd);padding:14px;overflow:auto}
+.sect{border-bottom:1px solid var(--bd);padding:12px 0}
+.sect:first-child{padding-top:0}
+.sect h4{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tx3);margin-bottom:10px;display:flex;justify-content:space-between}
+.chips{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px}
+.chip{padding:5px 8px;border-radius:7px;font-size:11px;background:rgba(255,255,255,.05);color:var(--tx2)}.chip.on{background:var(--accbg);color:var(--acc)}
+.row{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;color:var(--tx2);padding:6px 0}
+.slider{height:4px;border-radius:2px;background:linear-gradient(90deg,var(--acc),rgba(245,165,36,.15));margin:9px 0;position:relative}
+.knob{position:absolute;top:50%;width:12px;height:12px;border-radius:50%;background:#fff;transform:translate(-50%,-50%)}
+.cmap{display:flex;gap:5px;margin-top:6px}.cm{flex:1;height:15px;border-radius:4px}
+.tog{width:34px;height:19px;border-radius:10px;background:rgba(255,255,255,.12);position:relative}
+.tog.on{background:var(--acc)}.tog i{position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff}.tog.on i{left:17px}
+.legend{display:flex;gap:8px;font-size:10px;color:var(--tx3);flex-wrap:wrap;margin-top:2px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:3px}
+.status{position:absolute;bottom:0;left:0;right:0;height:34px;display:flex;align-items:center;gap:16px;padding:0 16px;
+  background:var(--glass);border-top:1px solid var(--bd);font-size:12px}
+.status .k{color:var(--tx3)}.status b{color:var(--tx);font-weight:500}
+.cap{position:absolute;bottom:44px;left:64px;font-size:11px;color:var(--tx3);z-index:6}
+.note{position:absolute;font-size:10px;color:#ef6a6a;opacity:.9;z-index:6;font-style:italic}
+</style></head><body>
+<div class="hdr"><div class="logo">🔥 CAMPFIRE</div>
+  <div class="nav"><a>Home</a><a>NIRCam</a><a>NIRSpec</a><a class="on">Map</a><a>Docs</a></div>
+  <div class="spacer"></div><div class="who"><span>🛡 Admin</span><span>Admin User</span></div></div>
+<div class="wrap">
+  <div class="bandrail"><span class="b">F090W</span><span class="b">F115W</span><span class="b">F150W</span>
+    <span class="b">F200W</span><span class="b">F277W</span><span class="b">F356W</span><span class="b on">F444W</span>
+    <span class="b rgb">RGB</span><span style="flex:1"></span><span class="mono" style="color:var(--tx3);font-size:12px">rj0911 ▾</span></div>
+  <div class="mid">
+    <div class="toolrail"><div class="t on">✥</div><div class="t">📏</div><div class="t">⤢</div><div class="t">🧭</div>
+      <div class="t sep"></div><div class="t">⌖</div><div class="t">▣</div></div>
+    <div class="map"><div class="stars"></div><div class="footprint"></div>
+      <div class="note" style="left:50%;top:6px;transform:translateX(-50%)">↑ band rail (fixed)  ·  ← tools (fixed)  ·  inspector (fixed) →  ·  status (fixed) ↓</div>
+      <div class="note" style="left:50%;top:48%;transform:translate(-50%,-50%);font-size:12px;color:#ef6a6a">map is boxed into the center well —<br>shrinks as controls grow</div>
+    </div>
+    <div class="inspector">
+      <div class="sect"><h4>Display</h4>
+        <div class="chips"><span class="chip on">asinh</span><span class="chip">log</span><span class="chip">sqrt</span><span class="chip">linear</span><span class="chip">zscale</span></div>
+        <div class="row"><span>Black / White</span></div>
+        <div class="slider"><span class="knob" style="left:18%"></span><span class="knob" style="left:82%"></span></div>
+        <div class="row"><span>Colormap</span></div>
+        <div class="cmap"><span class="cm" style="background:linear-gradient(90deg,#000,#fff)"></span>
+          <span class="cm" style="background:linear-gradient(90deg,#440154,#21918c,#fde725)"></span>
+          <span class="cm" style="background:linear-gradient(90deg,#000004,#b73779,#fcfdbf)"></span>
+          <span class="cm" style="background:linear-gradient(90deg,#000,#f57d15,#fff)"></span></div>
+        <div class="row" style="margin-top:6px"><span>North up</span><span class="tog"><i></i></span></div></div>
+      <div class="sect"><h4>Layers</h4>
+        <div class="row"><span>NIRSpec objects</span><span class="tog on"><i></i></span></div>
+        <div class="legend"><span><span class="dot" style="background:#22c55e"></span>secure</span><span><span class="dot" style="background:#f59e0b"></span>probable</span><span><span class="dot" style="background:#ef4444"></span>impossible</span></div>
+        <div class="row"><span>MSA shutters</span><span class="tog on"><i></i></span></div>
+        <div class="row"><span>Graticule</span><span class="tog"><i></i></span></div></div>
+      <div class="sect"><h4>NIRSpec Filters</h4>
+        <div class="row"><span>Program</span><span class="k">all ▾</span></div>
+        <div class="row"><span>Redshift q ≥</span><span class="k">2 ▾</span></div>
+        <div class="row"><span>Grating</span><span class="k">any ▾</span></div></div>
+    </div>
+  </div>
+  <div class="status mono"><span><span class="k">RA</span> <b>09:11:13.2</b></span><span><span class="k">Dec</span> <b>+17:47:59</b></span>
+    <span><span class="k">z</span> <b>0.045</b></span><span><span class="k">px</span> <b>1.24e3</b></span><span class="k">F444W · asinh</span></div>
+  <div class="cap">Variant A — “Docked” (FitsExplorer-faithful): fixed band rail / tool rail / inspector / status — with the CAMPFIRE header + filters added</div>
+</div>
+</body></html>
