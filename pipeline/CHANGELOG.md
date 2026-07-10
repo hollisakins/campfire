@@ -38,7 +38,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   surfacing the pixels that actually warrant a hand mask rather than every
   bright-but-already-downweighted artifact. Quick-look only; no change to FITS
   pixel values, DQ, or the `_preview.png`/`_full.png` filenames the web mask
-  editor consumes (`nircam/steps/preview.py`, `data/config_default.toml`).
+  editor consumes. Existing reductions upgrade automatically: `CFP_PREV` now
+  records a render-format marker (`snr`) and the skip check requires it, so a
+  normal `cfpipe nircam process` re-renders exposures whose stamp predates this
+  change without needing `--overwrite` (`nircam/steps/preview.py`,
+  `data/config_default.toml`).
 - NIRCam fields gain an optional field-level `fiducial_tiles = ["A1", "A2", …]`
   declaration in `fields.toml` — the subset of a field's tiles that share a
   tangent point + rotation and span the field, forming the FitsGL field-composite

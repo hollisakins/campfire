@@ -30,7 +30,12 @@ pixels they are deciding to keep or drop without alignment-related warps
 hiding artifacts.
 
 Read-only with respect to pixel data — no SCI/DQ/ERR mutation. Stamps
-``CFP_PREV`` with an ISO timestamp.
+``CFP_PREV`` with the render-format marker ``snr`` (not a bare timestamp).
+The skip check requires that marker, so a canonical file carrying an *old*
+``CFP_PREV`` value (an ISO timestamp from the pre-SNR raw-SCI renderer) is
+treated as stale and re-rendered on the next ``process`` run — no
+``--overwrite`` needed. Bumping this marker is how a future preview-format
+change forces regeneration.
 """
 
 import os
@@ -41,6 +46,12 @@ from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
 from campfire_pipeline.nircam.steps._plots import _block_reduce, _zscale_limits
 
+# Render-format marker stamped into ``CFP_PREV``. The skip check requires it, so
+# a canonical file whose ``CFP_PREV`` predates the SNR renderer (a bare ISO
+# timestamp) is regenerated rather than served stale. Bump this on any future
+# preview-format change to force a one-time regeneration.
+_PREVIEW_KIND = 'snr'
+
 
 def preview_step(exposure_file, field, step_config, overwrite=False,
                  status=None):
@@ -50,12 +61,22 @@ def preview_step(exposure_file, field, step_config, overwrite=False,
     thumb_path = os.path.join(out_dir, f'{rootname}_preview.png')
     full_path = os.path.join(out_dir, f'{rootname}_full.png')
 
-    # Both the header stamp and *both* PNGs must exist for a skip — if either
-    # was deleted out-of-band, regenerate.
-    if (os.path.exists(thumb_path) and os.path.exists(full_path)
-            and cfp.should_skip(exposure_file, 'CFP_PREV', rootname,
-                                'preview', status, overwrite)):
-        return
+    # Skip only when NOT overwriting, *both* PNGs exist (regenerate if either was
+    # deleted out-of-band), and the recorded CFP_PREV marks the current render
+    # format. A pre-SNR stamp (ISO timestamp) fails the marker test and falls
+    # through to re-render, so upgrading and re-running `process` replaces stale
+    # raw-SCI previews without `--overwrite`. The status cache only tracks key
+    # *presence*, so the one value read happens solely on genuine re-runs (both
+    # PNGs already present), not on fresh exposures.
+    if not overwrite and os.path.exists(thumb_path) and os.path.exists(full_path):
+        has_prev = (status.has(exposure_file, 'CFP_PREV') if status is not None
+                    else cfp.has_step(exposure_file, 'CFP_PREV'))
+        if has_prev and str(
+                cfp.step_value(exposure_file, 'CFP_PREV')).startswith(
+                    _PREVIEW_KIND):
+            log(f"Skipping preview on {rootname}: CFP_PREV ({_PREVIEW_KIND}) "
+                f"already set")
+            return
 
     log(f"Rendering SNR preview for {rootname}")
 
@@ -82,7 +103,7 @@ def preview_step(exposure_file, field, step_config, overwrite=False,
 
         atomic_save(
             model, exposure_file,
-            header_updates=cfp.format(CFP_PREV=None),
+            header_updates=cfp.format(CFP_PREV=_PREVIEW_KIND),
         )
 
     h_d, w_d = snr_d.shape
