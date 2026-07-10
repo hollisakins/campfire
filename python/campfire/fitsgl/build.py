@@ -48,8 +48,10 @@ def select_mosaics(dirs, field, filters, *, pixel_scale, tiles=None):
     (filter, tile): full-field mosaics matching ``pixel_scale`` (the string form,
     e.g. ``'30mas'``) and — when ``tiles`` is given — whose tile is in that set.
     Within a (filter, tile) the science image is chosen by
-    :data:`_EXTENSION_PREFERENCE` (``sci`` then ``i2d``). Returns a list of
-    ``{path, filter, tile, pixel_scale, extension}`` dicts.
+    :data:`_EXTENSION_PREFERENCE` (``sci`` then ``i2d``). Returns the underlying
+    ``discover_mosaics`` dicts unchanged — ``{path, filter, tile, pixel_scale, epoch,
+    extension, storage_key}`` (``storage_key`` is consumed by the deploy source-hash
+    path, so keep it on the passthrough).
     """
     from campfire.deploy.nircam import discover_mosaics
 
