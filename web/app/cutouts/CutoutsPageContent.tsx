@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Download, ImageIcon, Loader2, Map as MapIcon, Scissors } from 'lucide-react';
 import type { FitsglDataset } from '@/lib/actions/map';
+import { MAX_PIXELS_PER_BAND, MAX_PIXELS_TOTAL } from '@/lib/cutout/science';
 import { parseCoordinates } from '@/lib/utils/coordinate-parser';
 
 const STRETCHES = ['linear', 'log', 'sqrt', 'asinh'] as const;
@@ -139,12 +140,17 @@ export const CutoutsPageContent: React.FC<CutoutsPageContentProps> = ({ datasets
     }
   }, [initial.ra, initial.dec, ready, generatePreview]);
 
-  // Estimated native FITS extent for the current request.
+  // Estimated native FITS extent for the current request, mirroring BOTH server
+  // budgets (per-band and total across bands) so the FITS button never links to
+  // a request the API would 400.
   const scaleAs = pixelScaleArcsec(dataset.pixel_scale);
   const nativePx = scaleAs && fovValid ? Math.round(fovNum / scaleAs) : null;
   const estMb =
     nativePx !== null ? (nativePx * nativePx * 4 * selectedBands.length) / 1024 ** 2 : null;
-  const overBudget = nativePx !== null && nativePx > 4096;
+  const overBandBudget = nativePx !== null && nativePx * nativePx > MAX_PIXELS_PER_BAND;
+  const overTotalBudget =
+    nativePx !== null && nativePx * nativePx * selectedBands.length > MAX_PIXELS_TOTAL;
+  const overBudget = overBandBudget || overTotalBudget;
 
   const inputCls =
     'w-full px-3 py-2 bg-surface-2 border border-border rounded-lg text-sm text-text-primary ' +
@@ -343,7 +349,9 @@ export const CutoutsPageContent: React.FC<CutoutsPageContentProps> = ({ datasets
                 FITS at native scale: ~{nativePx}×{nativePx} px × {selectedBands.length} band
                 {selectedBands.length > 1 ? 's' : ''}
                 {estMb !== null && ` ≈ ${estMb < 1 ? estMb.toFixed(2) : estMb.toFixed(1)} MB`}
-                {overBudget && ' — over the 4096² budget; reduce the FOV'}
+                {overBandBudget && ' — over the 4096² per-band budget; reduce the FOV'}
+                {!overBandBudget && overTotalBudget &&
+                  ' — over the total pixel budget; reduce the FOV or deselect bands'}
               </p>
             )}
             <p className="text-xs text-text-tertiary">
