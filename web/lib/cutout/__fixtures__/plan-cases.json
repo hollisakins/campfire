@@ -1,0 +1,618 @@
+[
+  {
+    "name": "on_source_small",
+    "center": [
+      137.788282,
+      17.78216
+    ],
+    "fov": 6.0,
+    "outputSize": 512,
+    "targetScaleArcsec": null,
+    "rounding": "nearest",
+    "expected": {
+      "levelIndex": 0,
+      "outputScaleArcsec": 0.01171875,
+      "bbox": {
+        "x0": 5758,
+        "y0": 3579,
+        "x1": 5959,
+        "y1": 3780
+      },
+      "tiles": [
+        {
+          "tileX": 22,
+          "tileY": 13,
+          "supertileIndex": 0,
+          "localX": 22,
+          "localY": 13
+        },
+        {
+          "tileX": 23,
+          "tileY": 13,
+          "supertileIndex": 0,
+          "localX": 23,
+          "localY": 13
+        },
+        {
+          "tileX": 22,
+          "tileY": 14,
+          "supertileIndex": 0,
+          "localX": 22,
+          "localY": 14
+        },
+        {
+          "tileX": 23,
+          "tileY": 14,
+          "supertileIndex": 0,
+          "localX": 23,
+          "localY": 14
+        }
+      ],
+      "missing": []
+    }
+  },
+  {
+    "name": "on_source_mid",
+    "center": [
+      137.788282,
+      17.78216
+    ],
+    "fov": 30.0,
+    "outputSize": 512,
+    "targetScaleArcsec": null,
+    "rounding": "nearest",
+    "expected": {
+      "levelIndex": 1,
+      "outputScaleArcsec": 0.05859375,
+      "bbox": {
+        "x0": 2679,
+        "y0": 1589,
+        "x1": 3180,
+        "y1": 2090
+      },
+      "tiles": [
+        {
+          "tileX": 10,
+          "tileY": 6,
+          "supertileIndex": 0,
+          "localX": 10,
+          "localY": 6
+        },
+        {
+          "tileX": 11,
+          "tileY": 6,
+          "supertileIndex": 0,
+          "localX": 11,
+          "localY": 6
+        },
+        {
+          "tileX": 12,
+          "tileY": 6,
+          "supertileIndex": 0,
+          "localX": 12,
+          "localY": 6
+        },
+        {
+          "tileX": 10,
+          "tileY": 7,
+          "supertileIndex": 0,
+          "localX": 10,
+          "localY": 7
+        },
+        {
+          "tileX": 11,
+          "tileY": 7,
+          "supertileIndex": 0,
+          "localX": 11,
+          "localY": 7
+        },
+        {
+          "tileX": 12,
+          "tileY": 7,
+          "supertileIndex": 0,
+          "localX": 12,
+          "localY": 7
+        },
+        {
+          "tileX": 10,
+          "tileY": 8,
+          "supertileIndex": 0,
+          "localX": 10,
+          "localY": 8
+        },
+        {
+          "tileX": 11,
+          "tileY": 8,
+          "supertileIndex": 0,
+          "localX": 11,
+          "localY": 8
+        },
+        {
+          "tileX": 12,
+          "tileY": 8,
+          "supertileIndex": 0,
+          "localX": 12,
+          "localY": 8
+        }
+      ],
+      "missing": []
+    }
+  },
+  {
+    "name": "on_source_wide",
+    "center": [
+      137.788282,
+      17.78216
+    ],
+    "fov": 120.0,
+    "outputSize": 400,
+    "targetScaleArcsec": null,
+    "rounding": "nearest",
+    "expected": {
+      "levelIndex": 3,
+      "outputScaleArcsec": 0.3,
+      "bbox": {
+        "x0": 482,
+        "y0": 209,
+        "x1": 983,
+        "y1": 710
+      },
+      "tiles": [
+        {
+          "tileX": 1,
+          "tileY": 0,
+          "supertileIndex": 0,
+          "localX": 1,
+          "localY": 0
+        },
+        {
+          "tileX": 2,
+          "tileY": 0,
+          "supertileIndex": 0,
+          "localX": 2,
+          "localY": 0
+        },
+        {
+          "tileX": 3,
+          "tileY": 0,
+          "supertileIndex": 0,
+          "localX": 3,
+          "localY": 0
+        },
+        {
+          "tileX": 1,
+          "tileY": 1,
+          "supertileIndex": 0,
+          "localX": 1,
+          "localY": 1
+        },
+        {
+          "tileX": 2,
+          "tileY": 1,
+          "supertileIndex": 0,
+          "localX": 2,
+          "localY": 1
+        },
+        {
+          "tileX": 3,
+          "tileY": 1,
+          "supertileIndex": 0,
+          "localX": 3,
+          "localY": 1
+        },
+        {
+          "tileX": 1,
+          "tileY": 2,
+          "supertileIndex": 0,
+          "localX": 1,
+          "localY": 2
+        },
+        {
+          "tileX": 2,
+          "tileY": 2,
+          "supertileIndex": 0,
+          "localX": 2,
+          "localY": 2
+        },
+        {
+          "tileX": 3,
+          "tileY": 2,
+          "supertileIndex": 0,
+          "localX": 3,
+          "localY": 2
+        }
+      ],
+      "missing": []
+    }
+  },
+  {
+    "name": "center_gap",
+    "center": [
+      137.805142,
+      17.799882
+    ],
+    "fov": 20.0,
+    "outputSize": 256,
+    "targetScaleArcsec": null,
+    "rounding": "nearest",
+    "expected": {
+      "levelIndex": 1,
+      "outputScaleArcsec": 0.078125,
+      "bbox": {
+        "x0": 1799,
+        "y0": 2736,
+        "x1": 2133,
+        "y1": 3070
+      },
+      "tiles": [
+        {
+          "tileX": 7,
+          "tileY": 10,
+          "supertileIndex": 0,
+          "localX": 7,
+          "localY": 10
+        },
+        {
+          "tileX": 8,
+          "tileY": 10,
+          "supertileIndex": 0,
+          "localX": 8,
+          "localY": 10
+        },
+        {
+          "tileX": 7,
+          "tileY": 11,
+          "supertileIndex": 0,
+          "localX": 7,
+          "localY": 11
+        },
+        {
+          "tileX": 8,
+          "tileY": 11,
+          "supertileIndex": 0,
+          "localX": 8,
+          "localY": 11
+        }
+      ],
+      "missing": []
+    }
+  },
+  {
+    "name": "anisotropic",
+    "center": [
+      137.788282,
+      17.78216
+    ],
+    "fov": [
+      60.0,
+      20.0
+    ],
+    "outputSize": [
+      600,
+      200
+    ],
+    "targetScaleArcsec": null,
+    "rounding": "nearest",
+    "expected": {
+      "levelIndex": 2,
+      "outputScaleArcsec": 0.1,
+      "bbox": {
+        "x0": 1214,
+        "y0": 836,
+        "x1": 1715,
+        "y1": 1004
+      },
+      "tiles": [
+        {
+          "tileX": 4,
+          "tileY": 3,
+          "supertileIndex": 0,
+          "localX": 4,
+          "localY": 3
+        },
+        {
+          "tileX": 5,
+          "tileY": 3,
+          "supertileIndex": 0,
+          "localX": 5,
+          "localY": 3
+        },
+        {
+          "tileX": 6,
+          "tileY": 3,
+          "supertileIndex": 0,
+          "localX": 6,
+          "localY": 3
+        }
+      ],
+      "missing": []
+    }
+  },
+  {
+    "name": "target_scale",
+    "center": [
+      137.788282,
+      17.78216
+    ],
+    "fov": 30.0,
+    "outputSize": null,
+    "targetScaleArcsec": 0.06,
+    "rounding": "nearest",
+    "expected": {
+      "levelIndex": 1,
+      "outputScaleArcsec": 0.06,
+      "bbox": {
+        "x0": 2679,
+        "y0": 1589,
+        "x1": 3180,
+        "y1": 2090
+      },
+      "tiles": [
+        {
+          "tileX": 10,
+          "tileY": 6,
+          "supertileIndex": 0,
+          "localX": 10,
+          "localY": 6
+        },
+        {
+          "tileX": 11,
+          "tileY": 6,
+          "supertileIndex": 0,
+          "localX": 11,
+          "localY": 6
+        },
+        {
+          "tileX": 12,
+          "tileY": 6,
+          "supertileIndex": 0,
+          "localX": 12,
+          "localY": 6
+        },
+        {
+          "tileX": 10,
+          "tileY": 7,
+          "supertileIndex": 0,
+          "localX": 10,
+          "localY": 7
+        },
+        {
+          "tileX": 11,
+          "tileY": 7,
+          "supertileIndex": 0,
+          "localX": 11,
+          "localY": 7
+        },
+        {
+          "tileX": 12,
+          "tileY": 7,
+          "supertileIndex": 0,
+          "localX": 12,
+          "localY": 7
+        },
+        {
+          "tileX": 10,
+          "tileY": 8,
+          "supertileIndex": 0,
+          "localX": 10,
+          "localY": 8
+        },
+        {
+          "tileX": 11,
+          "tileY": 8,
+          "supertileIndex": 0,
+          "localX": 11,
+          "localY": 8
+        },
+        {
+          "tileX": 12,
+          "tileY": 8,
+          "supertileIndex": 0,
+          "localX": 12,
+          "localY": 8
+        }
+      ],
+      "missing": []
+    }
+  },
+  {
+    "name": "rounding_finer",
+    "center": [
+      137.788282,
+      17.78216
+    ],
+    "fov": 30.0,
+    "outputSize": 300,
+    "targetScaleArcsec": null,
+    "rounding": "finer",
+    "expected": {
+      "levelIndex": 1,
+      "outputScaleArcsec": 0.1,
+      "bbox": {
+        "x0": 2679,
+        "y0": 1589,
+        "x1": 3180,
+        "y1": 2090
+      },
+      "tiles": [
+        {
+          "tileX": 10,
+          "tileY": 6,
+          "supertileIndex": 0,
+          "localX": 10,
+          "localY": 6
+        },
+        {
+          "tileX": 11,
+          "tileY": 6,
+          "supertileIndex": 0,
+          "localX": 11,
+          "localY": 6
+        },
+        {
+          "tileX": 12,
+          "tileY": 6,
+          "supertileIndex": 0,
+          "localX": 12,
+          "localY": 6
+        },
+        {
+          "tileX": 10,
+          "tileY": 7,
+          "supertileIndex": 0,
+          "localX": 10,
+          "localY": 7
+        },
+        {
+          "tileX": 11,
+          "tileY": 7,
+          "supertileIndex": 0,
+          "localX": 11,
+          "localY": 7
+        },
+        {
+          "tileX": 12,
+          "tileY": 7,
+          "supertileIndex": 0,
+          "localX": 12,
+          "localY": 7
+        },
+        {
+          "tileX": 10,
+          "tileY": 8,
+          "supertileIndex": 0,
+          "localX": 10,
+          "localY": 8
+        },
+        {
+          "tileX": 11,
+          "tileY": 8,
+          "supertileIndex": 0,
+          "localX": 11,
+          "localY": 8
+        },
+        {
+          "tileX": 12,
+          "tileY": 8,
+          "supertileIndex": 0,
+          "localX": 12,
+          "localY": 8
+        }
+      ],
+      "missing": []
+    }
+  },
+  {
+    "name": "rounding_coarser",
+    "center": [
+      137.788282,
+      17.78216
+    ],
+    "fov": 30.0,
+    "outputSize": 300,
+    "targetScaleArcsec": null,
+    "rounding": "coarser",
+    "expected": {
+      "levelIndex": 2,
+      "outputScaleArcsec": 0.1,
+      "bbox": {
+        "x0": 1339,
+        "y0": 794,
+        "x1": 1590,
+        "y1": 1045
+      },
+      "tiles": [
+        {
+          "tileX": 5,
+          "tileY": 3,
+          "supertileIndex": 0,
+          "localX": 5,
+          "localY": 3
+        },
+        {
+          "tileX": 6,
+          "tileY": 3,
+          "supertileIndex": 0,
+          "localX": 6,
+          "localY": 3
+        },
+        {
+          "tileX": 5,
+          "tileY": 4,
+          "supertileIndex": 0,
+          "localX": 5,
+          "localY": 4
+        },
+        {
+          "tileX": 6,
+          "tileY": 4,
+          "supertileIndex": 0,
+          "localX": 6,
+          "localY": 4
+        }
+      ],
+      "missing": []
+    }
+  },
+  {
+    "name": "native_no_hint",
+    "center": [
+      137.788282,
+      17.78216
+    ],
+    "fov": 4.0,
+    "outputSize": null,
+    "targetScaleArcsec": null,
+    "rounding": "nearest",
+    "expected": {
+      "levelIndex": 0,
+      "outputScaleArcsec": 0.02999999999999999,
+      "bbox": {
+        "x0": 5791,
+        "y0": 3612,
+        "x1": 5926,
+        "y1": 3747
+      },
+      "tiles": [
+        {
+          "tileX": 22,
+          "tileY": 14,
+          "supertileIndex": 0,
+          "localX": 22,
+          "localY": 14
+        },
+        {
+          "tileX": 23,
+          "tileY": 14,
+          "supertileIndex": 0,
+          "localX": 23,
+          "localY": 14
+        }
+      ],
+      "missing": []
+    }
+  },
+  {
+    "name": "out_of_field",
+    "center": [
+      200.0,
+      -10.0
+    ],
+    "fov": 20.0,
+    "outputSize": 256,
+    "targetScaleArcsec": null,
+    "rounding": "nearest",
+    "expected": {
+      "levelIndex": 1,
+      "outputScaleArcsec": 0.078125,
+      "bbox": {
+        "x0": 0,
+        "y0": 0,
+        "x1": -7788995,
+        "y1": -2731568
+      },
+      "tiles": [],
+      "missing": []
+    }
+  }
+]
