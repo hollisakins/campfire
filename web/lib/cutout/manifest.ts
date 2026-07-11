@@ -95,8 +95,12 @@ export function parseManifest(json: unknown): Manifest {
 }
 
 /** Fetch + parse a band `manifest.json` from a URL. */
-export async function loadManifest(url: string, signal?: AbortSignal): Promise<Manifest> {
-  const res = await fetch(url, { signal });
+export async function loadManifest(
+  url: string,
+  signal?: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Manifest> {
+  const res = await fetchImpl(url, { signal });
   if (!res.ok) throw new Error(`manifest fetch failed (${res.status}) for ${url}`);
   return parseManifest(await res.json());
 }

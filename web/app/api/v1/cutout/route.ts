@@ -7,13 +7,17 @@ import {
   type MapLayerInfo,
 } from '@/lib/utils/tile-compositing';
 import type { WCSParams } from '@/lib/utils/wcs';
+import { resolveFieldCutoutSource } from '@/lib/cutout/source';
+import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 
 /**
  * GET /api/v1/cutout?object_id=<id>&size=<px>&fov=<arcsec>
  *
- * Returns a PNG cutout image centered on the object, composited from
- * pre-generated RGB map tiles. No shutter overlays — clients render
- * those as vectors (SVG in browser, matplotlib patches in Python).
+ * Returns a PNG cutout image centered on the object. Fields with a deployed
+ * FitsGL pyramid render North-up from the FITS tiles (epic #337, Phase 5);
+ * others composite from the legacy pre-generated RGB map tiles. No shutter
+ * overlays — clients render those as vectors (SVG in browser, matplotlib
+ * patches in Python).
  *
  * Query parameters:
  * - object_id (required): Object identifier (IAU name from objects.object_id)
@@ -91,7 +95,55 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Get RGB map layer for this field
+    // Requested size, validated once; the default (native resolution for the
+    // FOV) depends on which tile stack serves the field, so it's applied below.
+    const sizeParam = params.get('size');
+    let requestedSize: number | null = null;
+    if (sizeParam !== null) {
+      requestedSize = parseInt(sizeParam, 10);
+      if (!Number.isFinite(requestedSize)) {
+        return NextResponse.json(
+          { error: 'Invalid parameter: size must be a number' },
+          { status: 400 }
+        );
+      }
+    }
+    const clampSize = (px: number) => Math.min(2048, Math.max(16, px));
+
+    // FitsGL path (epic #337, Phase 5). Service-role client bypasses RLS, so
+    // non-admins mirror the fitsgl_datasets policy via requirePublic; admins
+    // may render from draft-backed pyramids (matching the map).
+    const fitsglSrc = await resolveFieldCutoutSource(supabase, obj.field, {
+      requirePublic: !isAdmin,
+    });
+    if (fitsglSrc) {
+      try {
+        const outputSize = clampSize(
+          requestedSize ?? Math.round(fov / fitsglSrc.nativeScaleArcsec),
+        );
+        const png = await renderDisplayCutoutPng(fitsglSrc, {
+          ra: obj.ra,
+          dec: obj.dec,
+          fovArcsec: fov,
+          outputSize,
+        });
+        return new Response(new Uint8Array(png), {
+          status: 200,
+          headers: {
+            'Content-Type': 'image/png',
+            // A draft-backed render (admin API key) must never enter a shared
+            // cache keyed on the URL alone.
+            'Cache-Control': fitsglSrc.isPublic
+              ? 'public, max-age=604800, stale-while-revalidate=86400'
+              : 'private, no-store',
+          },
+        });
+      } catch (err) {
+        console.error('FitsGL cutout render failed; falling back to PNG tiles:', err);
+      }
+    }
+
+    // Legacy path: composite from pre-generated RGB map tiles.
     const { data: layers, error: layerErr } = await supabase
       .from('map_layers')
       .select('tile_base_url, min_zoom, max_zoom, tile_size, wcs_params, tile_version, is_default, filter')
@@ -111,26 +163,10 @@ export async function GET(request: NextRequest) {
       || layers[0]
     ) as MapLayerInfo;
 
-    // Compute native resolution (pixels in FOV at the tile's pixel scale)
+    // Native resolution (pixels in FOV at the tile's pixel scale)
     const wcs = layer.wcs_params as WCSParams;
     const pixPerArcsec = 1 / (Math.abs(wcs.cd2_2) * 3600);
-    const nativeSize = Math.round(fov * pixPerArcsec);
-
-    // Use requested size or native resolution, clamped to 16–2048
-    const sizeParam = params.get('size');
-    let outputSize: number;
-    if (sizeParam !== null) {
-      const parsedSize = parseInt(sizeParam, 10);
-      if (!Number.isFinite(parsedSize)) {
-        return NextResponse.json(
-          { error: 'Invalid parameter: size must be a number' },
-          { status: 400 }
-        );
-      }
-      outputSize = Math.min(2048, Math.max(16, parsedSize));
-    } else {
-      outputSize = Math.min(2048, Math.max(16, nativeSize));
-    }
+    const outputSize = clampSize(requestedSize ?? Math.round(fov * pixPerArcsec));
 
     // Composite the thumbnail
     const png = await compositeTileThumbnail({

@@ -5,12 +5,16 @@ import {
   TRANSPARENT_GIF,
   type MapLayerInfo,
 } from '@/lib/utils/tile-compositing';
+import { resolveFieldCutoutSource } from '@/lib/cutout/source';
+import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 
 /**
  * GET /api/tile-thumbnail?target_id=<id>&size=<px>&fov=<arcsec>
  *
- * Composites map tiles into a thumbnail PNG centered on the object.
- * Returns a clean RGB cutout without shutter overlays.
+ * Thumbnail PNG centered on the object — a clean RGB (or single-band) cutout
+ * without shutter overlays. Fields with a deployed FitsGL pyramid render
+ * North-up from the FITS tiles (epic #337, Phase 5); others keep the legacy
+ * PNG-tile compositing until it is retired per-field.
  */
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
@@ -63,6 +67,34 @@ export async function GET(request: NextRequest) {
         status: 404,
         headers: { 'Content-Type': 'image/gif' },
       });
+    }
+
+    // FitsGL path: render from the field's FITS pyramid when one is deployed
+    // (RLS scopes draft-backed datasets to admins). Falls through to the
+    // legacy PNG tiles on any render failure while both stacks coexist.
+    const fitsglSrc = await resolveFieldCutoutSource(supabase, obj.field);
+    if (fitsglSrc) {
+      try {
+        const png = await renderDisplayCutoutPng(fitsglSrc, {
+          ra: obj.ra,
+          dec: obj.dec,
+          fovArcsec: fov,
+          outputSize: size,
+        });
+        return new Response(new Uint8Array(png), {
+          status: 200,
+          headers: {
+            'Content-Type': 'image/png',
+            // A draft-backed render only an admin's RLS could see must never
+            // enter a shared cache keyed on the URL alone.
+            'Cache-Control': fitsglSrc.isPublic
+              ? 'public, max-age=604800, stale-while-revalidate=86400'
+              : 'private, no-store',
+          },
+        });
+      } catch (err) {
+        console.error('FitsGL thumbnail render failed; falling back to PNG tiles:', err);
+      }
     }
 
     // Get RGB map layer for this field
