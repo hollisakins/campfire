@@ -18,13 +18,9 @@ from .api.session import create_download_session
 from .exceptions import DownloadError
 
 
-def compute_file_hash(path: Path) -> str:
-    """Compute SHA-256 hash of a file, returning ``sha256:<hex>`` format."""
-    hasher = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(65536):
-            hasher.update(chunk)
-    return f"sha256:{hasher.hexdigest()}"
+# Single hashing implementation lives in the shared storage core; re-exported
+# here for the established import path (store.verify_local_objects, tests).
+from .storage.hashing import compute_file_hash  # noqa: E402  (re-export)
 
 
 def _make_progress(show, unit, desc, position=None):
@@ -386,30 +382,36 @@ def download_objects(
 
     dl_session = download_session or create_download_session(max_workers)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_obj = {
-            executor.submit(
-                _download_and_verify_key, r, urls[r["storage_key"]], products_dir, dl_session
-            ): r
-            for r in fetchable
-        }
-        with tqdm(total=len(fetchable), desc="Downloading", unit="file") as pbar:
-            for future in as_completed(future_to_obj):
-                obj = future_to_obj[future]
-                try:
-                    result = future.result()
-                    store.mark_object_synced(
-                        storage_key=result["storage_key"],
-                        local_path=result["local_path"],
-                        local_file_hash=result["local_file_hash"],
-                        local_file_size=result["local_file_size"],
-                        local_file_mtime=result["local_file_mtime"],
-                    )
-                    stats["downloaded"] += 1
-                except Exception as e:
-                    stats["failed"] += 1
-                    tqdm.write(f"  Failed: {obj['storage_key']}: {e}")
-                pbar.update(1)
+    # Shared transfer harness: workers only touch the network/disk; the
+    # mark_object_synced bookkeeping runs on this thread per completed file
+    # (the SQLite store is single-threaded), so an interrupted run resumes at
+    # file granularity on the next invocation.
+    from .storage.transfer import run_transfers
+
+    def _record(obj: dict, result: dict) -> None:
+        store.mark_object_synced(
+            storage_key=result["storage_key"],
+            local_path=result["local_path"],
+            local_file_hash=result["local_file_hash"],
+            local_file_size=result["local_file_size"],
+            local_file_mtime=result["local_file_mtime"],
+        )
+
+    def _report(obj: dict, e: Exception) -> None:
+        tqdm.write(f"  Failed: {obj['storage_key']}: {e}")
+
+    result = run_transfers(
+        fetchable,
+        lambda r: _download_and_verify_key(
+            r, urls[r["storage_key"]], products_dir, dl_session),
+        max_workers=max_workers,
+        desc="Downloading",
+        label=lambda r: r["storage_key"],
+        on_success=_record,
+        on_failure=_report,
+    )
+    stats["downloaded"] = result.succeeded
+    stats["failed"] = result.failed
 
     return stats
 
