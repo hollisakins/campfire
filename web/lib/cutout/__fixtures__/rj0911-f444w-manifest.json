@@ -1,0 +1,411 @@
+{
+  "version": 2,
+  "source_file": "mosaic_nircam_f444w_rj0911_30mas_venus_sci.fits",
+  "native_shape": [
+    11612,
+    7864
+  ],
+  "fpack_tile_size": 256,
+  "n_levels": 6,
+  "levels": [
+    {
+      "z": 0,
+      "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z0.fits.fz",
+      "compression": "RICE_1",
+      "lossless": false,
+      "shape": [
+        11612,
+        7864
+      ],
+      "fpack_tile_count": [
+        46,
+        31
+      ],
+      "pixel_scale_arcsec": 0.02999999999999999,
+      "wcs": {
+        "WCSAXES": 2,
+        "CRPIX1": 3932.5000000002,
+        "CRPIX2": 5806.5000000004,
+        "PC1_1": -1.0,
+        "CDELT1": 8.3333333333333e-06,
+        "CDELT2": 8.3333333333333e-06,
+        "CUNIT1": "deg",
+        "CUNIT2": "deg",
+        "CTYPE1": "RA---TAN",
+        "CTYPE2": "DEC--TAN",
+        "CRVAL1": 137.80514163602,
+        "CRVAL2": 17.79988187551,
+        "LONPOLE": 180.0,
+        "LATPOLE": 17.79988187551,
+        "MJDREF": 0.0,
+        "DATE-BEG": "2026-05-01T17:41:51.134",
+        "MJD-BEG": 61161.737397384,
+        "DATE-AVG": "2026-05-01T17:57:58.828",
+        "MJD-AVG": 61161.748597546,
+        "DATE-END": "2026-05-01T18:14:14.538",
+        "MJD-END": 61161.759890486,
+        "XPOSURE": 3349.872,
+        "TELAPSE": 3349.872,
+        "OBSGEO-X": -538753537.46593,
+        "OBSGEO-Y": -1363545070.5795,
+        "OBSGEO-Z": -689281081.7073,
+        "RADESYS": "ICRS"
+      },
+      "supertiles": [
+        {
+          "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z0.fits.fz",
+          "tile_origin": [
+            0,
+            0
+          ],
+          "tile_count": [
+            31,
+            46
+          ]
+        }
+      ]
+    },
+    {
+      "z": 1,
+      "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z1.fits.fz",
+      "compression": "RICE_1",
+      "lossless": false,
+      "shape": [
+        5806,
+        3932
+      ],
+      "fpack_tile_count": [
+        23,
+        16
+      ],
+      "pixel_scale_arcsec": 0.05999999999999998,
+      "wcs": {
+        "WCSAXES": 2,
+        "CRPIX1": 1966.5000000001,
+        "CRPIX2": 2903.5000000002,
+        "PC1_1": -1.0,
+        "CDELT1": 1.6666666666667e-05,
+        "CDELT2": 1.6666666666667e-05,
+        "CUNIT1": "deg",
+        "CUNIT2": "deg",
+        "CTYPE1": "RA---TAN",
+        "CTYPE2": "DEC--TAN",
+        "CRVAL1": 137.80514163602,
+        "CRVAL2": 17.79988187551,
+        "LONPOLE": 180.0,
+        "LATPOLE": 17.79988187551,
+        "MJDREF": 0.0,
+        "DATE-BEG": "2026-05-01T17:41:51.134",
+        "MJD-BEG": 61161.737397384,
+        "DATE-AVG": "2026-05-01T17:57:58.828",
+        "MJD-AVG": 61161.748597546,
+        "DATE-END": "2026-05-01T18:14:14.538",
+        "MJD-END": 61161.759890486,
+        "XPOSURE": 3349.872,
+        "TELAPSE": 3349.872,
+        "OBSGEO-X": -538753537.46593,
+        "OBSGEO-Y": -1363545070.5795,
+        "OBSGEO-Z": -689281081.7073,
+        "RADESYS": "ICRS"
+      },
+      "supertiles": [
+        {
+          "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z1.fits.fz",
+          "tile_origin": [
+            0,
+            0
+          ],
+          "tile_count": [
+            16,
+            23
+          ]
+        }
+      ]
+    },
+    {
+      "z": 2,
+      "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z2.fits.fz",
+      "compression": "RICE_1",
+      "lossless": false,
+      "shape": [
+        2903,
+        1966
+      ],
+      "fpack_tile_count": [
+        12,
+        8
+      ],
+      "pixel_scale_arcsec": 0.11999999999999995,
+      "wcs": {
+        "WCSAXES": 2,
+        "CRPIX1": 983.50000000006,
+        "CRPIX2": 1452.0000000001,
+        "PC1_1": -1.0,
+        "CDELT1": 3.3333333333333e-05,
+        "CDELT2": 3.3333333333333e-05,
+        "CUNIT1": "deg",
+        "CUNIT2": "deg",
+        "CTYPE1": "RA---TAN",
+        "CTYPE2": "DEC--TAN",
+        "CRVAL1": 137.80514163602,
+        "CRVAL2": 17.79988187551,
+        "LONPOLE": 180.0,
+        "LATPOLE": 17.79988187551,
+        "MJDREF": 0.0,
+        "DATE-BEG": "2026-05-01T17:41:51.134",
+        "MJD-BEG": 61161.737397384,
+        "DATE-AVG": "2026-05-01T17:57:58.828",
+        "MJD-AVG": 61161.748597546,
+        "DATE-END": "2026-05-01T18:14:14.538",
+        "MJD-END": 61161.759890486,
+        "XPOSURE": 3349.872,
+        "TELAPSE": 3349.872,
+        "OBSGEO-X": -538753537.46593,
+        "OBSGEO-Y": -1363545070.5795,
+        "OBSGEO-Z": -689281081.7073,
+        "RADESYS": "ICRS"
+      },
+      "supertiles": [
+        {
+          "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z2.fits.fz",
+          "tile_origin": [
+            0,
+            0
+          ],
+          "tile_count": [
+            8,
+            12
+          ]
+        }
+      ]
+    },
+    {
+      "z": 3,
+      "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z3.fits.fz",
+      "compression": "RICE_1",
+      "lossless": false,
+      "shape": [
+        1451,
+        983
+      ],
+      "fpack_tile_count": [
+        6,
+        4
+      ],
+      "pixel_scale_arcsec": 0.2399999999999999,
+      "wcs": {
+        "WCSAXES": 2,
+        "CRPIX1": 492.00000000003,
+        "CRPIX2": 726.25000000004,
+        "PC1_1": -1.0,
+        "CDELT1": 6.6666666666667e-05,
+        "CDELT2": 6.6666666666667e-05,
+        "CUNIT1": "deg",
+        "CUNIT2": "deg",
+        "CTYPE1": "RA---TAN",
+        "CTYPE2": "DEC--TAN",
+        "CRVAL1": 137.80514163602,
+        "CRVAL2": 17.79988187551,
+        "LONPOLE": 180.0,
+        "LATPOLE": 17.79988187551,
+        "MJDREF": 0.0,
+        "DATE-BEG": "2026-05-01T17:41:51.134",
+        "MJD-BEG": 61161.737397384,
+        "DATE-AVG": "2026-05-01T17:57:58.828",
+        "MJD-AVG": 61161.748597546,
+        "DATE-END": "2026-05-01T18:14:14.538",
+        "MJD-END": 61161.759890486,
+        "XPOSURE": 3349.872,
+        "TELAPSE": 3349.872,
+        "OBSGEO-X": -538753537.46593,
+        "OBSGEO-Y": -1363545070.5795,
+        "OBSGEO-Z": -689281081.7073,
+        "RADESYS": "ICRS"
+      },
+      "supertiles": [
+        {
+          "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z3.fits.fz",
+          "tile_origin": [
+            0,
+            0
+          ],
+          "tile_count": [
+            4,
+            6
+          ]
+        }
+      ]
+    },
+    {
+      "z": 4,
+      "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z4.fits.fz",
+      "compression": "RICE_1",
+      "lossless": false,
+      "shape": [
+        725,
+        491
+      ],
+      "fpack_tile_count": [
+        3,
+        2
+      ],
+      "pixel_scale_arcsec": 0.4799999999999998,
+      "wcs": {
+        "WCSAXES": 2,
+        "CRPIX1": 246.25000000001,
+        "CRPIX2": 363.37500000002,
+        "PC1_1": -1.0,
+        "CDELT1": 0.00013333333333333,
+        "CDELT2": 0.00013333333333333,
+        "CUNIT1": "deg",
+        "CUNIT2": "deg",
+        "CTYPE1": "RA---TAN",
+        "CTYPE2": "DEC--TAN",
+        "CRVAL1": 137.80514163602,
+        "CRVAL2": 17.79988187551,
+        "LONPOLE": 180.0,
+        "LATPOLE": 17.79988187551,
+        "MJDREF": 0.0,
+        "DATE-BEG": "2026-05-01T17:41:51.134",
+        "MJD-BEG": 61161.737397384,
+        "DATE-AVG": "2026-05-01T17:57:58.828",
+        "MJD-AVG": 61161.748597546,
+        "DATE-END": "2026-05-01T18:14:14.538",
+        "MJD-END": 61161.759890486,
+        "XPOSURE": 3349.872,
+        "TELAPSE": 3349.872,
+        "OBSGEO-X": -538753537.46593,
+        "OBSGEO-Y": -1363545070.5795,
+        "OBSGEO-Z": -689281081.7073,
+        "RADESYS": "ICRS"
+      },
+      "supertiles": [
+        {
+          "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z4.fits.fz",
+          "tile_origin": [
+            0,
+            0
+          ],
+          "tile_count": [
+            2,
+            3
+          ]
+        }
+      ]
+    },
+    {
+      "z": 5,
+      "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z5.fits.fz",
+      "compression": "RICE_1",
+      "lossless": false,
+      "shape": [
+        362,
+        245
+      ],
+      "fpack_tile_count": [
+        2,
+        1
+      ],
+      "pixel_scale_arcsec": 0.9599999999999996,
+      "wcs": {
+        "WCSAXES": 2,
+        "CRPIX1": 123.37500000001,
+        "CRPIX2": 181.93750000001,
+        "PC1_1": -1.0,
+        "CDELT1": 0.00026666666666667,
+        "CDELT2": 0.00026666666666667,
+        "CUNIT1": "deg",
+        "CUNIT2": "deg",
+        "CTYPE1": "RA---TAN",
+        "CTYPE2": "DEC--TAN",
+        "CRVAL1": 137.80514163602,
+        "CRVAL2": 17.79988187551,
+        "LONPOLE": 180.0,
+        "LATPOLE": 17.79988187551,
+        "MJDREF": 0.0,
+        "DATE-BEG": "2026-05-01T17:41:51.134",
+        "MJD-BEG": 61161.737397384,
+        "DATE-AVG": "2026-05-01T17:57:58.828",
+        "MJD-AVG": 61161.748597546,
+        "DATE-END": "2026-05-01T18:14:14.538",
+        "MJD-END": 61161.759890486,
+        "XPOSURE": 3349.872,
+        "TELAPSE": 3349.872,
+        "OBSGEO-X": -538753537.46593,
+        "OBSGEO-Y": -1363545070.5795,
+        "OBSGEO-Z": -689281081.7073,
+        "RADESYS": "ICRS"
+      },
+      "supertiles": [
+        {
+          "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z5.fits.fz",
+          "tile_origin": [
+            0,
+            0
+          ],
+          "tile_count": [
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "z": 6,
+      "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z6.fits.fz",
+      "compression": "RICE_1",
+      "lossless": false,
+      "shape": [
+        181,
+        122
+      ],
+      "fpack_tile_count": [
+        1,
+        1
+      ],
+      "pixel_scale_arcsec": 1.9199999999999993,
+      "wcs": {
+        "WCSAXES": 2,
+        "CRPIX1": 61.937500000004,
+        "CRPIX2": 91.218750000005,
+        "PC1_1": -1.0,
+        "CDELT1": 0.00053333333333333,
+        "CDELT2": 0.00053333333333333,
+        "CUNIT1": "deg",
+        "CUNIT2": "deg",
+        "CTYPE1": "RA---TAN",
+        "CTYPE2": "DEC--TAN",
+        "CRVAL1": 137.80514163602,
+        "CRVAL2": 17.79988187551,
+        "LONPOLE": 180.0,
+        "LATPOLE": 17.79988187551,
+        "MJDREF": 0.0,
+        "DATE-BEG": "2026-05-01T17:41:51.134",
+        "MJD-BEG": 61161.737397384,
+        "DATE-AVG": "2026-05-01T17:57:58.828",
+        "MJD-AVG": 61161.748597546,
+        "DATE-END": "2026-05-01T18:14:14.538",
+        "MJD-END": 61161.759890486,
+        "XPOSURE": 3349.872,
+        "TELAPSE": 3349.872,
+        "OBSGEO-X": -538753537.46593,
+        "OBSGEO-Y": -1363545070.5795,
+        "OBSGEO-Z": -689281081.7073,
+        "RADESYS": "ICRS"
+      },
+      "supertiles": [
+        {
+          "filename": "mosaic_nircam_f444w_rj0911_30mas_venus_sci_z6.fits.fz",
+          "tile_origin": [
+            0,
+            0
+          ],
+          "tile_count": [
+            1,
+            1
+          ]
+        }
+      ]
+    }
+  ]
+}
