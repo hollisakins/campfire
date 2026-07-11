@@ -19,17 +19,25 @@ The fiducial ``canonical`` map is undecorated — to a user it is simply *the*
 exposure map — while the reducer-only ``uncal`` quick-look keeps an explicit
 ``_uncal`` suffix (shown below as ``[_uncal]``):
 
-    <filter>/expmap_{field}_{filter}[_uncal].fits   float32, ``BUNIT='s'``, WCS in header
-    <filter>/expmap_{field}_{filter}[_uncal].pdf    diagnostic with RA/Dec gridlines + colorbar
+    <filter>/expmap_{field}_{filter}[_uncal].fits   float32, ``BUNIT='s'``, ``AREA`` header, WCS
+    <filter>/expmap_{field}_{filter}[_uncal].pdf    light diagnostic (RA/Dec grid + colorbar)
+    <filter>/expmap_{field}_{filter}[_uncal].png    dark web plot (same view, deployable)
+    {field}_layout[_uncal].png                      stacked-filter coverage + tile outlines (dark)
+    {field}_layout[_uncal].json                     coverage summary: exact area, per-filter areas
     footprints[_uncal].reg                          ds9 fk5 polygons across all filters
 
 The per-filter FITS sits in the canonical filter directory alongside the
 mosaics/exposures so the deployed coverage map carries a real filter in the
 registry (same key shape as every other per-filter NIRCam product).
 
-All per-filter PDFs in one invocation share the same colorbar
-``vmin``/``vmax`` (log-norm across the union of nonzero pixels) so the
-plots are identical apart from the data — easy to tab through.
+Both the per-filter ``.pdf`` (light, local diagnostic) and ``.png`` (dark,
+deployable) share the same colorbar ``vmin``/``vmax`` (log-norm across the
+union of nonzero pixels) so the plots are identical apart from the data —
+easy to tab through. The dark PNG matches CAMPFIRE's data wells, which stay
+dark in both app themes. The ``{field}_layout`` plot stacks every per-filter
+expmap (total exposure across filters) and overlays the tile footprints; the
+companion ``.json`` records the exact survey area (non-zero pixels of the
+stack × pixel area) for the deploy/DB layer.
 
 The .reg file only contains polygons for filters that were (re)built in this
 invocation. To regenerate a combined .reg after up-to-date FITS already exist,
@@ -54,6 +62,7 @@ import tqdm
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.wcs import WCS
+from astropy.wcs.utils import proj_plane_pixel_area
 from regions import PolygonSkyRegion
 
 from campfire_pipeline.common.io import log
@@ -179,25 +188,37 @@ def _write_fits(path, expmap, wcs, *, field_name, filter_name, stage, metas):
     hdr['NEXP'] = (len(metas), 'Number of contributing exposures')
     hdr['TEXPTOT'] = (float(sum(m.xposure for m in metas)),
                       'Sum of XPOSURE across all exposures [s]')
+    n_cov = int(np.count_nonzero(expmap > 0))
+    hdr['AREA'] = (round(n_cov * proj_plane_pixel_area(wcs) * 3600.0, 6),
+                   'Covered area [arcmin2] (nonzero pixels)')
     fits.writeto(path, expmap, header=hdr, overwrite=True)
 
 
-def _write_pdf(path, expmap, wcs, *, field_name, filter_name, stage, metas,
-               vmin=None, vmax=None):
-    """Render one filter's expmap as a log-norm PDF.
+def _render_expmap_figure(path, data, wcs, *, title, cbar_label,
+                          vmin=None, vmax=None, dark=False,
+                          tile_outlines=None):
+    """Render one exposure map (per-filter or stacked layout) to ``path``.
 
-    ``vmin``/``vmax`` default to the filter's own nonzero min/max. The
-    caller in ``run_expmap`` overrides both with values shared across
-    all filters in the invocation so the diagnostic PDFs are visually
-    identical except for the data itself.
+    ``vmin``/``vmax`` default to the map's own nonzero min/max; the per-filter
+    caller overrides both with values shared across all filters so the plots
+    are identical apart from the data.
+
+    ``dark=True`` produces the deployable web plot on a dark plot well
+    (matching CAMPFIRE's map + spectrum wells, which stay dark in both app
+    themes); ``dark=False`` keeps the light local-diagnostic look. Zeros are
+    masked so the off-footprint background renders via ``set_bad`` and stays
+    distinct from the lowest exposure values. ``tile_outlines`` is an optional
+    list of ``(name, [[ra, dec], ...])`` footprints drawn as thin polygons —
+    used by the field layout plot. Returns ``False`` (writing nothing) when the
+    map is all zero.
     """
     import matplotlib.pyplot as plt
     import matplotlib as mpl
 
-    nonzero = expmap[expmap > 0]
+    nonzero = data[data > 0]
     if nonzero.size == 0:
-        log('  expmap is all zero; skipping PDF')
-        return
+        log('  expmap is all zero; skipping plot')
+        return False
 
     if vmin is None:
         vmin = max(float(nonzero.min()), 1.0)
@@ -206,36 +227,57 @@ def _write_pdf(path, expmap, wcs, *, field_name, filter_name, stage, metas,
     if vmax <= vmin:
         vmax = vmin * 10
     norm = mpl.colors.LogNorm(vmin=vmin, vmax=vmax)
+    masked = np.ma.masked_where(data <= 0, data)
 
-    # Mask zeros so the off-footprint background renders via ``set_bad``
-    # (white) and remains visually distinct from the lowest exposure
-    # values, which sit at the bottom of the colormap.
-    masked = np.ma.masked_where(expmap <= 0, expmap)
+    bg = '#0d0b12' if dark else 'white'
+    fg = '#c9c4d6' if dark else 'black'
+    grid_c = '#4a4a5a' if dark else 'lightgray'
+    tile_c = '#e6e1f0' if dark else '#333333'
 
     fig = plt.figure(figsize=(7.5, 6.5), dpi=200, constrained_layout=True)
+    fig.patch.set_facecolor(bg)
     ax = fig.add_subplot(111, projection=wcs)
+    ax.set_facecolor(bg)
     cmap = mpl.colormaps['magma'].copy()
-    cmap.set_bad('w')
+    cmap.set_bad(bg if dark else 'w')
     im = ax.imshow(masked, origin='lower', cmap=cmap, norm=norm,
                    interpolation='nearest')
 
-    ax.set_xlabel('RA')
-    ax.set_ylabel('Dec')
     ax.coords[0].set_major_formatter('hh:mm:ss')
     ax.coords[1].set_major_formatter('dd:mm:ss')
-    ax.grid(color='lightgray', lw=0.4, alpha=0.6)
+    ax.coords[0].set_axislabel('RA', color=fg)
+    ax.coords[1].set_axislabel('Dec', color=fg)
+    ax.grid(color=grid_c, lw=0.4, alpha=0.6)
+    if dark:
+        for coord in ax.coords:
+            coord.set_ticklabel(color=fg)
+            coord.set_ticks(color=fg)
+        ax.coords.frame.set_color(fg)
 
-    ax.set_title(
-        f'{field_name} · {filter_name.upper()} · {stage} · N={len(metas)}',
-        fontsize=10,
-    )
+    if tile_outlines:
+        world = ax.get_transform('world')
+        for name, corners in tile_outlines:
+            ras = [c[0] for c in corners] + [corners[0][0]]
+            decs = [c[1] for c in corners] + [corners[0][1]]
+            ax.plot(ras, decs, transform=world, color=tile_c,
+                    lw=0.7, alpha=0.55)
+            ax.text(float(np.mean([c[0] for c in corners])),
+                    float(np.mean([c[1] for c in corners])),
+                    name, transform=world, color=tile_c, fontsize=6,
+                    ha='center', va='center', alpha=0.75)
 
+    ax.set_title(title, fontsize=10, color=fg)
     cbar = fig.colorbar(im, ax=ax, orientation='vertical',
                         shrink=0.85, pad=0.02)
-    cbar.set_label('Exposure time [s]')
+    cbar.set_label(cbar_label, color=fg)
+    if dark:
+        cbar.ax.yaxis.set_tick_params(color=fg)
+        cbar.outline.set_edgecolor(fg)
+        plt.setp(plt.getp(cbar.ax, 'yticklabels'), color=fg)
 
-    fig.savefig(path)
+    fig.savefig(path, facecolor=bg)
     plt.close(fig)
+    return True
 
 
 def _write_region_file(path, per_filter_metas):
@@ -410,16 +452,16 @@ def _expmap_stem(field_name, filter_name, stage):
 
 
 def _expmap_paths(base_dir, field_name, filter_name, stage):
-    """Per-filter FITS + PDF paths.
+    """Per-filter FITS + PDF + PNG paths.
 
     Expmaps live in the filter directory alongside the mosaics/exposures
-    (``<base_dir>/<filter>/``) so the deployed FITS carries a real filter in the
-    registry — same key shape as every other per-filter NIRCam product.
+    (``<base_dir>/<filter>/``) so the deployed FITS/PNG carry a real filter in
+    the registry — same key shape as every other per-filter NIRCam product.
     ``base_dir`` is the per-field products dir.
     """
     base = os.path.join(base_dir, filter_name,
                         _expmap_stem(field_name, filter_name, stage))
-    return base + '.fits', base + '.pdf'
+    return base + '.fits', base + '.pdf', base + '.png'
 
 
 def _nz_range(expmap):
@@ -441,7 +483,7 @@ def _accumulate_filter(args):
     (field, filter_name, stage, wcs, shape, metas,
      out_dir, overwrite) = args
 
-    fits_path, _ = _expmap_paths(out_dir, field.name, filter_name, stage)
+    fits_path, _, _ = _expmap_paths(out_dir, field.name, filter_name, stage)
 
     if not metas:
         log(f'[{filter_name}] no {stage} files found; skipping')
@@ -466,17 +508,106 @@ def _accumulate_filter(args):
     return filter_name, metas, fits_path, nz_min, nz_max
 
 
-def _render_pdf(field_name, filter_name, stage, metas, fits_path,
-                out_dir, wcs, vmin, vmax):
-    """Re-read FITS from disk and render PDF with the shared colorbar."""
-    _, pdf_path = _expmap_paths(out_dir, field_name, filter_name, stage)
+def _render_filter_plots(field_name, filter_name, stage, metas, fits_path,
+                         out_dir, wcs, vmin, vmax):
+    """Re-read the filter FITS and render the light PDF + dark PNG.
+
+    Both share the invocation-wide ``vmin``/``vmax`` so tabbing through
+    filters shows the same colour scale. The PDF is the local diagnostic
+    (kept), the PNG the deployable web plot.
+    """
+    _, pdf_path, png_path = _expmap_paths(out_dir, field_name, filter_name,
+                                          stage)
     with fits.open(fits_path, memmap=False) as hdul:
         expmap = np.asarray(hdul['EXPMAP'].data, dtype=np.float32)
-    _write_pdf(pdf_path, expmap, wcs,
-               field_name=field_name, filter_name=filter_name,
-               stage=stage, metas=metas, vmin=vmin, vmax=vmax)
-    log(f'[{filter_name}] wrote {os.path.basename(pdf_path)}')
+    title = f'{field_name} · {filter_name.upper()} · {stage} · N={len(metas)}'
+    _render_expmap_figure(pdf_path, expmap, wcs, title=title,
+                          cbar_label='Exposure time [s]',
+                          vmin=vmin, vmax=vmax, dark=False)
+    _render_expmap_figure(png_path, expmap, wcs, title=title,
+                          cbar_label='Exposure time [s]',
+                          vmin=vmin, vmax=vmax, dark=True)
+    log(f'[{filter_name}] wrote {os.path.basename(pdf_path)} + '
+        f'{os.path.basename(png_path)}')
     return pdf_path
+
+
+def _layout_paths(base_dir, field_name, stage):
+    """Field layout plot (PNG) + coverage summary (JSON) at the products root.
+
+    The fiducial ``canonical`` layout is undecorated (``<field>_layout.png``);
+    the reducer-only ``uncal`` quick-look keeps a ``_uncal`` suffix so the two
+    never collide and the deploy step picks up only the canonical one.
+    """
+    stem = f'{field_name}_layout'
+    if stage != 'canonical':
+        stem += f'_{stage}'
+    base = os.path.join(base_dir, stem)
+    return base + '.png', base + '.json'
+
+
+def _render_layout(out_dir, field, stage, results, wcs, pixel_scale,
+                   tile_outlines, texp_total):
+    """Stack every per-filter expmap into the field layout plot + JSON summary.
+
+    The stack is the per-pixel sum of exposure across all filters (the
+    "stacked exposure map"); the exact survey area is the area of its non-zero
+    pixels. Writes ``<field>_layout.png`` (dark, with tile outlines + axes +
+    colorbar so it stands alone as a cfpipe product) and ``<field>_layout.json``
+    (coverage area, per-filter areas, filters, total exposure) for the
+    deploy/DB layer to surface on the web.
+    """
+    built = [(name, metas, fp)
+             for name, metas, fp, *_ in results if fp and metas]
+    if not built:
+        return
+
+    pix_area_deg2 = proj_plane_pixel_area(wcs)
+    stack = None
+    per_filter_area = {}
+    for name, _metas, fp in built:
+        with fits.open(fp, memmap=False) as hdul:
+            arr = np.asarray(hdul['EXPMAP'].data, dtype=np.float64)
+            area = hdul['EXPMAP'].header.get('AREA')
+        if area is None:
+            # Cached FITS written before the AREA card existed: recompute the
+            # per-filter area from the array on the shared WCS rather than
+            # reporting a spurious zero.
+            area = int(np.count_nonzero(arr > 0)) * pix_area_deg2 * 3600.0
+        per_filter_area[name] = float(area)
+        stack = arr if stack is None else stack + arr
+
+    n_cov = int(np.count_nonzero(stack > 0))
+    area_deg2 = n_cov * pix_area_deg2
+    area_arcmin2 = area_deg2 * 3600.0
+
+    png_path, json_path = _layout_paths(out_dir, field.name, stage)
+    filters = [name for name, _, _ in built]
+    ok = _render_expmap_figure(
+        png_path, stack, wcs,
+        title=f'{field.name} · layout · {len(filters)} filters',
+        cbar_label='Total exposure [s]',
+        dark=True, tile_outlines=tile_outlines,
+    )
+
+    summary = {
+        'field': field.name,
+        'stage': stage,
+        'pixel_scale_arcsec': float(pixel_scale),
+        'n_filters': len(filters),
+        'filters': filters,
+        'n_tiles': len(tile_outlines),
+        'coverage_area_arcmin2': round(area_arcmin2, 6),
+        'coverage_area_deg2': round(area_deg2, 8),
+        'per_filter_area_arcmin2': {k: round(v, 6)
+                                    for k, v in per_filter_area.items()},
+        'texp_total_s': float(texp_total),
+    }
+    with open(json_path, 'w') as fh:
+        json.dump(summary, fh, indent=2)
+    log(f'wrote {os.path.basename(json_path)}'
+        + (f' + {os.path.basename(png_path)}' if ok else '')
+        + f' (area {area_arcmin2:.1f} arcmin², {len(filters)} filters)')
 
 
 def run_expmap(
@@ -589,14 +720,35 @@ def run_expmap(
     else:
         global_vmin = global_vmax = None
 
-    # Phase 3c: PDFs. Always regenerated (cheap; the shared norm is
-    # invocation-dependent so a cached PDF from a prior run with a
-    # different filter set would not match the current colorbar).
+    # Phase 3c: per-filter plots (light PDF + dark PNG). Always regenerated
+    # (cheap; the shared norm is invocation-dependent so a cached plot from a
+    # prior run with a different filter set would not match the colorbar).
     for filter_name, metas, fits_path, _, _ in results:
         if fits_path is None or not metas:
             continue
-        _render_pdf(field.name, filter_name, stage, metas, fits_path,
-                    out_dir, wcs, global_vmin, global_vmax)
+        _render_filter_plots(field.name, filter_name, stage, metas, fits_path,
+                             out_dir, wcs, global_vmin, global_vmax)
+
+    # Phase 3d: field layout — stack of every per-filter expmap with tile
+    # outlines + the exact survey area (non-zero pixels of the stack). Only a
+    # full-field run may (over)write the canonical layout + coverage area: a
+    # filtered rerun stacks a subset and would publish an under-reported survey
+    # area over the complete one, so partial runs skip the layout entirely.
+    if set(filter_list) >= set(field.filters):
+        # Tile outlines are decorative and a bad/missing tile config never
+        # blocks the plot; fields without a [tiles] block get coverage only.
+        tile_outlines = []
+        for tname in (getattr(field, 'tiles', None) or {}):
+            try:
+                tile_outlines.append((tname, field.get_tile_corners(tname)))
+            except Exception as e:  # noqa: BLE001 - decorative overlay, never fatal
+                log(f'  layout: skipping tile {tname} outline ({e})')
+        _render_layout(out_dir, field, stage, results, wcs, pixel_scale,
+                       tile_outlines, float(sum(m.xposure for m in all_metas)))
+    else:
+        missing = sorted(set(field.filters) - set(filter_list))
+        log(f'Partial filter run (field filters missing: {missing}); '
+            f'skipping {field.name}_layout to preserve the full-field coverage.')
 
     reg_metas = [(name, metas)
                  for name, metas, *_ in results if metas]
