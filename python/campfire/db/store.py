@@ -1372,104 +1372,215 @@ class LocalStore:
         observation: Optional[str] = None,
         product_types: Optional[List[str]] = None,
         show_progress: bool = False,
+        *,
+        observations: Optional[List[str]] = None,
+        fields: Optional[List[str]] = None,
+        deep: bool = False,
+        max_workers: Optional[int] = None,
     ) -> dict:
         """Reconcile the storage_objects mirror's local state with the filesystem.
 
-        Clears rows whose file vanished, re-hashes modified files, and re-discovers
-        already-present files (so a fresh mirror after a schema bump finds existing
-        downloads). Scoped to mirrored, downloadable product types.
+        Clears rows whose file vanished, re-checks files whose stat changed, and
+        discovers already-present files (a fresh mirror after a schema bump — or
+        a reducer tree the pipeline wrote — gets adopted into the ledger).
+        Scoped to mirrored, downloadable product types, and optionally to
+        ``observations`` (NIRSpec) / ``fields`` (field-scoped NIRCam rows).
+
+        Cheap by design (rsync-style quick check): filesystem state comes from
+        ONE bulk directory scan — candidate directories are derived from the
+        keys and listed with ``os.scandir`` (READDIRPLUS-friendly, threaded
+        across directories), so no per-file stat calls and, by default, **no
+        file reads**. A present file whose size matches the server's
+        ``size_bytes`` ADOPTS the server ``content_hash`` as its local hash —
+        a presumption, not a verification (accepted trade-off: same-size silent
+        corruption goes undetected; truncation/partials are caught by the size
+        check). A size mismatch clears/skips the row so the object shows as
+        pending and ``pull`` re-fetches it.
+
+        ``deep=True`` restores true content hashing (parallel) for files whose
+        stat changed or that were newly discovered — the explicit paranoid mode
+        behind ``campfire verify --deep``. Where hashing is load-bearing it
+        happens elsewhere regardless: downloads stream-hash against
+        ``content_hash``, push hashes changed candidates for dedup identity,
+        and ``drop-local --verify`` content-verifies before deleting.
         """
-        from ..config import products_relpath
-        from ..sync import compute_file_hash
+        import os as _os
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         from campfire_layout import LayoutError
+
+        from ..config import products_relpath
+        from ..storage.hashing import default_hash_workers, hash_files_parallel
 
         now = datetime.now(timezone.utc).isoformat()
         types = list(product_types or DOWNLOADABLE_PRODUCT_TYPES)
         type_ph = ",".join("?" * len(types))
         clauses = [f"product_type IN ({type_ph})", "status = 'active'"]
         params: list = list(types)
-        if observation:
-            clauses.append("observation = ?")
-            params.append(observation)
+        obs_list = list(observations or ([observation] if observation else []))
+        scope = []
+        if obs_list:
+            ph = ",".join("?" * len(obs_list))
+            scope.append(f"observation IN ({ph})")
+            params.extend(obs_list)
+        if fields:
+            ph = ",".join("?" * len(fields))
+            scope.append(f"field IN ({ph})")
+            params.extend(fields)
+        if scope:
+            clauses.append("(" + " OR ".join(scope) + ")")
         where = " AND ".join(clauses)
 
-        tracked = self._conn.execute(
-            f"""SELECT storage_key, local_path, local_file_mtime, local_file_size
+        rows = self._conn.execute(
+            f"""SELECT storage_key, content_hash, size_bytes, local_path,
+                       local_file_hash, local_file_mtime, local_file_size
                 FROM storage_objects
-                WHERE local_path IS NOT NULL AND {where}""",
-            params,
-        ).fetchall()
-        untracked = self._conn.execute(
-            f"""SELECT storage_key FROM storage_objects
-                WHERE local_path IS NULL AND {where}""",
+                WHERE {where}""",
             params,
         ).fetchall()
 
-        total = len(tracked) + len(untracked)
+        # Map each row to its canonical relpath (pure string work, no I/O) and
+        # collect the parent directories — the whole candidate set lives in
+        # ~(#observations + #field×filter) directories, so one listing per
+        # directory replaces one stat per file.
+        candidates: list = []  # (row, rel_path_str)
+        dirs: set = set()
+        for row in rows:
+            rel = row["local_path"]
+            if rel is None:
+                try:
+                    rel = products_relpath(row["storage_key"])
+                except (LayoutError, ValueError):
+                    continue
+            candidates.append((row, rel))
+            dirs.add(_os.path.dirname(rel))
+
+        # --- One bulk scan: {relpath: (size, mtime)} for every regular file in
+        # the candidate directories. scandir batches attributes per directory
+        # (NFS READDIRPLUS / macOS getattrlistbulk); directories scan in a
+        # thread pool so per-directory round-trips overlap.
+        def _scan(rel_dir: str) -> list:
+            out = []
+            try:
+                with _os.scandir(products_dir / rel_dir) as it:
+                    for entry in it:
+                        try:
+                            if entry.is_file(follow_symlinks=False):
+                                st = entry.stat(follow_symlinks=False)
+                                out.append((f"{rel_dir}/{entry.name}" if rel_dir else entry.name,
+                                            (st.st_size, st.st_mtime)))
+                        except OSError:
+                            continue
+            except OSError:
+                pass  # directory absent: every file in it is absent
+            return out
+
+        fs_stats: dict = {}
+        dir_list = sorted(dirs)
+        workers = max(1, min(max_workers or default_hash_workers(), len(dir_list) or 1))
         pbar = None
-        if show_progress and total > 0:
+        if show_progress and dir_list:
             from tqdm import tqdm
-            pbar = tqdm(total=total, desc="Verifying local files", unit="file")
-
-        cleared = rehashed = discovered = 0
-
-        for row in tracked:
-            full_path = products_dir / row["local_path"]
-            if not full_path.exists():
-                self._conn.execute(
-                    """UPDATE storage_objects SET local_path = NULL, local_file_hash = NULL,
-                       local_file_mtime = NULL, local_file_size = NULL, synced_at = NULL
-                       WHERE storage_key = ?""",
-                    (row["storage_key"],),
-                )
-                cleared += 1
-            else:
-                st = full_path.stat()
-                if (
-                    row["local_file_mtime"] is not None
-                    and row["local_file_size"] is not None
-                    and abs(st.st_mtime - row["local_file_mtime"]) < 0.001
-                    and st.st_size == row["local_file_size"]
-                ):
+            pbar = tqdm(total=len(dir_list), desc="Scanning local tree", unit="dir")
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for fut in as_completed([ex.submit(_scan, d) for d in dir_list]):
+                    fs_stats.update(fut.result())
                     if pbar:
                         pbar.update(1)
-                    continue
-                new_hash = compute_file_hash(full_path)
-                self._conn.execute(
-                    """UPDATE storage_objects SET local_file_hash = ?,
-                       local_file_mtime = ?, local_file_size = ? WHERE storage_key = ?""",
-                    (new_hash, st.st_mtime, st.st_size, row["storage_key"]),
-                )
-                rehashed += 1
+        finally:
             if pbar:
-                pbar.update(1)
+                pbar.close()
 
-        for row in untracked:
-            try:
-                rel_path = products_relpath(row["storage_key"])
-            except (LayoutError, ValueError):
-                if pbar:
-                    pbar.update(1)
+        # --- In-memory classification. Every SQLite write stays on this thread.
+        cleared = rehashed = discovered = mismatched = 0
+        to_hash: list = []  # deep mode: (row, rel, size, mtime, is_discovery)
+
+        def _adoptable(row, size: int) -> bool:
+            h = row["content_hash"]
+            return (row["size_bytes"] is not None and size == row["size_bytes"]
+                    and h is not None and h.startswith("sha256:"))
+
+        for row, rel in candidates:
+            stat = fs_stats.get(rel)
+            tracked = row["local_path"] is not None
+
+            if stat is None:
+                if tracked:
+                    # File vanished — clear the pull-side bookkeeping.
+                    self._conn.execute(
+                        """UPDATE storage_objects SET local_path = NULL,
+                           local_file_hash = NULL, local_file_mtime = NULL,
+                           local_file_size = NULL, synced_at = NULL
+                           WHERE storage_key = ?""",
+                        (row["storage_key"],),
+                    )
+                    cleared += 1
                 continue
-            local_path = products_dir / rel_path
-            if local_path.exists():
-                st = local_path.stat()
-                actual_hash = compute_file_hash(local_path)
+
+            size, mtime = stat
+            if (
+                tracked
+                and row["local_file_mtime"] is not None
+                and row["local_file_size"] is not None
+                and abs(mtime - row["local_file_mtime"]) < 0.001
+                and size == row["local_file_size"]
+            ):
+                continue  # unchanged since last recorded — nothing to do
+
+            # New file, or stat changed since recorded.
+            if deep:
+                to_hash.append((row, rel, size, mtime, not tracked))
+            elif _adoptable(row, size):
                 self._conn.execute(
                     """UPDATE storage_objects SET local_path = ?, local_file_hash = ?,
                        local_file_mtime = ?, local_file_size = ?, synced_at = ?
                        WHERE storage_key = ?""",
-                    (rel_path, actual_hash, st.st_mtime, st.st_size, now, row["storage_key"]),
+                    (rel, row["content_hash"], mtime, size, now, row["storage_key"]),
                 )
-                discovered += 1
-            if pbar:
-                pbar.update(1)
+                if tracked:
+                    rehashed += 1
+                else:
+                    discovered += 1
+            else:
+                # Size disagrees with the cloud object (or no authoritative
+                # hash to adopt): a partial/foreign file. Leave it out of the
+                # ledger so the object reads as pending and pull re-fetches.
+                mismatched += 1
+                if tracked:
+                    self._conn.execute(
+                        """UPDATE storage_objects SET local_path = NULL,
+                           local_file_hash = NULL, local_file_mtime = NULL,
+                           local_file_size = NULL, synced_at = NULL
+                           WHERE storage_key = ?""",
+                        (row["storage_key"],),
+                    )
+                    cleared += 1
 
-        if pbar:
-            pbar.close()
+        # --- deep mode: true content hashing, parallel, only what changed.
+        if to_hash:
+            hashes = hash_files_parallel(
+                [products_dir / rel for _, rel, _, _, _ in to_hash],
+                max_workers=max_workers,
+                progress_desc="Hashing changed/discovered files" if show_progress else None,
+            )
+            for row, rel, size, mtime, is_discovery in to_hash:
+                actual_hash = hashes[Path(products_dir / rel)][0]
+                self._conn.execute(
+                    """UPDATE storage_objects SET local_path = ?, local_file_hash = ?,
+                       local_file_mtime = ?, local_file_size = ?, synced_at = ?
+                       WHERE storage_key = ?""",
+                    (rel, actual_hash, mtime, size, now, row["storage_key"]),
+                )
+                if is_discovery:
+                    discovered += 1
+                else:
+                    rehashed += 1
+
         if cleared or discovered or rehashed:
             self._conn.commit()
-        return {"cleared": cleared, "rehashed": rehashed, "discovered": discovered}
+        return {"cleared": cleared, "rehashed": rehashed,
+                "discovered": discovered, "mismatched": mismatched}
 
     def remove_observation_objects(self, observation: str) -> int:
         """Clear local-download state for all storage objects in an observation."""
