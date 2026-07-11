@@ -721,6 +721,41 @@ CREATE TABLE IF NOT EXISTS "public"."programs" (
 ALTER TABLE "public"."programs" OWNER TO "postgres";
 
 
+-- First-class NIRCam field registry (issue #303) — the missing third leg of the
+-- cloud-as-source-of-truth config loop (programs / observations / fields),
+-- symmetric with `observations`. Synced from fields.toml, scoped to fields that
+-- already have deployed NIRCam data, so the cloud table reflects what is actually
+-- reduced. The full fields.toml section is mirrored losslessly into `config`
+-- (jsonb) so nothing — nested tile WCS, jhat, wcs_shift, epoch defs — is dropped;
+-- the commonly-queried bits are also lifted into typed columns. `latest_deployment_id`
+-- mirrors observations. `coverage_area_*` are deploy-computed from <field>_layout.json
+-- (exact survey area = non-zero pixels of the stacked exposure map x pixel area);
+-- sync-fields upserts only config columns so it never clobbers them. Read by
+-- get_nircam_fields / get_nircam_field_summary.
+CREATE TABLE IF NOT EXISTS "public"."fields" (
+    "name" "text" NOT NULL,
+    "display_name" "text",
+    "filters" "text"[] NOT NULL DEFAULT '{}',
+    "tiles" "text"[] NOT NULL DEFAULT '{}',
+    "fiducial_tiles" "text"[] NOT NULL DEFAULT '{}',
+    "epochs" "text"[] NOT NULL DEFAULT '{}',
+    "programs" "text"[] NOT NULL DEFAULT '{}',
+    "jwst_program_ids" integer[] NOT NULL DEFAULT '{}',
+    "file_globs" "text"[] NOT NULL DEFAULT '{}',
+    "center_ra" double precision,
+    "center_dec" double precision,
+    "config" "jsonb",
+    "coverage_area_arcmin2" double precision,
+    "coverage_area_deg2" double precision,
+    "latest_deployment_id" integer,
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    CONSTRAINT "fields_pkey" PRIMARY KEY ("name")
+);
+
+
+ALTER TABLE "public"."fields" OWNER TO "postgres";
+
+
 -- One logical mosaic per (field, tile, filter, pixel_scale, extension, epoch).
 -- The `version` axis is retired (epic #261, N2 / D3): the pipeline emits a
 -- single canonical mosaic name per slot and re-combine overwrites it in place.
@@ -1012,7 +1047,9 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
         'rgb'::"text", 'sed'::"text",
         'nircam_exposure'::"text", 'nircam_exposure_preview'::"text",
         'nircam_exposure_full'::"text", 'nircam_mosaic'::"text", 'nircam_rgb'::"text",
-        'nircam_expmap'::"text", 'tile'::"text", 'photometry_pz'::"text",
+        'nircam_expmap'::"text", 'nircam_expmap_plot'::"text",
+        'nircam_mosaic_thumbnail'::"text", 'nircam_layout'::"text",
+        'tile'::"text", 'photometry_pz'::"text",
         'nirspec_manual_mask'::"text", 'nirspec_stuck_shutters'::"text",
         'nirspec_bkg_override'::"text", 'nircam_mask'::"text", 'nircam_astrom_cat'::"text",
         'nircam_bad_pixel'::"text", 'nircam_flat'::"text", 'nircam_wisp'::"text"
@@ -1964,6 +2001,9 @@ ALTER TABLE ONLY "public"."observations"
 ALTER TABLE ONLY "public"."observations"
     ADD CONSTRAINT "observations_latest_deployment_fkey" FOREIGN KEY ("latest_deployment_id") REFERENCES "public"."deployments"("id");
 
+ALTER TABLE ONLY "public"."fields"
+    ADD CONSTRAINT "fields_latest_deployment_fkey" FOREIGN KEY ("latest_deployment_id") REFERENCES "public"."deployments"("id") ON DELETE SET NULL;
+
 
 
 ALTER TABLE ONLY "public"."password_reset_log"
@@ -2164,6 +2204,11 @@ GRANT ALL ON TABLE "public"."observations" TO "service_role";
 GRANT ALL ON TABLE "public"."programs" TO "anon";
 GRANT ALL ON TABLE "public"."programs" TO "authenticated";
 GRANT ALL ON TABLE "public"."programs" TO "service_role";
+
+
+GRANT ALL ON TABLE "public"."fields" TO "anon";
+GRANT ALL ON TABLE "public"."fields" TO "authenticated";
+GRANT ALL ON TABLE "public"."fields" TO "service_role";
 
 
 

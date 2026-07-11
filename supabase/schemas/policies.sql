@@ -120,6 +120,39 @@ CREATE POLICY "admin_programs_update"
 
 
 -- =============================================================================
+-- fields  (issue #303 — NIRCam field registry)
+-- =============================================================================
+
+ALTER TABLE fields ENABLE ROW LEVEL SECURITY;
+
+-- A field is visible once it has at least one published NIRCam mosaic — mirrors
+-- the deploy_status gate on nircam_images so a field's config (name, filters,
+-- tangent point) is not exposed while its data is still draft. Admins see all.
+DROP POLICY IF EXISTS "accessible_fields_select" ON fields;
+CREATE POLICY "accessible_fields_select"
+  ON fields FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM nircam_images ni
+      WHERE ni.field = fields.name AND ni.deploy_status = 'published'
+    )
+    OR (SELECT public.is_admin())
+  );
+
+-- Admins can insert/update fields (deploy CLI: sync-fields + nircam deploy).
+DROP POLICY IF EXISTS "admin_fields_insert" ON fields;
+CREATE POLICY "admin_fields_insert"
+  ON fields FOR INSERT TO authenticated
+  WITH CHECK ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_fields_update" ON fields;
+CREATE POLICY "admin_fields_update"
+  ON fields FOR UPDATE TO authenticated
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
+
+
+-- =============================================================================
 -- observations
 -- =============================================================================
 

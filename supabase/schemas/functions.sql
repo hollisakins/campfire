@@ -127,6 +127,114 @@ GRANT EXECUTE ON FUNCTION public.fitsgl_dataset_is_public(text, text[], text[], 
 
 
 -- =============================================================================
+-- NIRCam field summaries  (NIRCam page redesign; issue #303 fields table)
+-- =============================================================================
+-- Both are SECURITY INVOKER: nircam_images RLS (deploy_status = 'published' OR
+-- is_admin()) does the visibility gating, so non-admins get published-only
+-- aggregates and admins see everything with no manual deploy_status filter.
+-- Driven by nircam_images so only fields with visible mosaics appear; the fields
+-- table (LEFT JOIN) supplies display_name / center / coverage_area, and
+-- storage_objects supplies the deployed layout-plot key for the card preview.
+
+-- Landing grid: one row per field the caller can see any mosaic of.
+CREATE OR REPLACE FUNCTION public.get_nircam_fields()
+RETURNS TABLE(
+  field text,
+  display_name text,
+  center_ra double precision,
+  center_dec double precision,
+  coverage_area_arcmin2 double precision,
+  coverage_area_deg2 double precision,
+  n_filters integer,
+  n_tiles integer,
+  n_files bigint,
+  total_bytes bigint,
+  last_updated timestamp without time zone,
+  layout_key text
+)
+LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path = public
+AS $$
+  SELECT
+    ni.field,
+    COALESCE(f.display_name, upper(ni.field)) AS display_name,
+    f.center_ra,
+    f.center_dec,
+    f.coverage_area_arcmin2,
+    f.coverage_area_deg2,
+    COUNT(DISTINCT ni.filter)::integer AS n_filters,
+    COUNT(DISTINCT ni.tile)::integer   AS n_tiles,
+    COUNT(*)::bigint                    AS n_files,
+    COALESCE(SUM(ni.file_size), 0)::bigint AS total_bytes,
+    MAX(ni.created_at)                  AS last_updated,
+    (SELECT so.storage_key FROM storage_objects so
+       WHERE so.product_type = 'nircam_layout'
+         AND so.field = ni.field
+         AND so.status = 'active'
+       LIMIT 1)                         AS layout_key
+  FROM nircam_images ni
+  LEFT JOIN fields f ON f.name = ni.field
+  GROUP BY ni.field, f.display_name, f.center_ra, f.center_dec,
+           f.coverage_area_arcmin2, f.coverage_area_deg2
+  ORDER BY ni.field;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_nircam_fields() TO authenticated;
+
+
+-- Field detail page: the single-field version with the facet arrays.
+CREATE OR REPLACE FUNCTION public.get_nircam_field_summary(p_field text)
+RETURNS TABLE(
+  field text,
+  display_name text,
+  center_ra double precision,
+  center_dec double precision,
+  coverage_area_arcmin2 double precision,
+  coverage_area_deg2 double precision,
+  filters text[],
+  tiles text[],
+  pixel_scales text[],
+  extensions text[],
+  epochs text[],
+  n_files bigint,
+  total_bytes bigint,
+  last_updated timestamp without time zone,
+  layout_key text
+)
+LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path = public
+AS $$
+  SELECT
+    ni.field,
+    COALESCE(f.display_name, upper(ni.field)) AS display_name,
+    f.center_ra,
+    f.center_dec,
+    f.coverage_area_arcmin2,
+    f.coverage_area_deg2,
+    array_agg(DISTINCT ni.filter ORDER BY ni.filter)           AS filters,
+    array_agg(DISTINCT ni.tile ORDER BY ni.tile)               AS tiles,
+    array_agg(DISTINCT ni.pixel_scale ORDER BY ni.pixel_scale) AS pixel_scales,
+    array_agg(DISTINCT ni.extension ORDER BY ni.extension)     AS extensions,
+    array_agg(DISTINCT ni.epoch ORDER BY ni.epoch)             AS epochs,
+    COUNT(*)::bigint                       AS n_files,
+    COALESCE(SUM(ni.file_size), 0)::bigint AS total_bytes,
+    MAX(ni.created_at)                     AS last_updated,
+    (SELECT so.storage_key FROM storage_objects so
+       WHERE so.product_type = 'nircam_layout'
+         AND so.field = ni.field
+         AND so.status = 'active'
+       LIMIT 1)                            AS layout_key
+  FROM nircam_images ni
+  LEFT JOIN fields f ON f.name = ni.field
+  WHERE ni.field = p_field
+  GROUP BY ni.field, f.display_name, f.center_ra, f.center_dec,
+           f.coverage_area_arcmin2, f.coverage_area_deg2;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_nircam_field_summary(text) TO authenticated;
+
+
+-- =============================================================================
 -- object_scoped_aggregates
 -- =============================================================================
 -- Viewer-scoped recompute of an object's aggregate columns.
