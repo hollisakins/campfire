@@ -131,7 +131,11 @@ export async function GET(request: NextRequest) {
           status: 200,
           headers: {
             'Content-Type': 'image/png',
-            'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400',
+            // A draft-backed render (admin API key) must never enter a shared
+            // cache keyed on the URL alone.
+            'Cache-Control': fitsglSrc.isPublic
+              ? 'public, max-age=604800, stale-while-revalidate=86400'
+              : 'private, no-store',
           },
         });
       } catch (err) {
