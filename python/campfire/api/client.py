@@ -342,7 +342,10 @@ class APIClient:
         want a different one (e.g. the larger storage page); defaults to
         ``self._page_size``.
 
-        Returns (items, total_accessible_count).
+        Returns (items, total_accessible_count). Endpoints that carry no
+        ``total_accessible_count`` field (photometry) fall back to
+        ``pagination.total`` so callers still see a real count instead of a
+        false 0.
         """
         page_size = page_size or self._page_size
         all_items: List[dict] = []
@@ -370,7 +373,11 @@ class APIClient:
             items = data.get("data", [])
             if first_page:
                 total = data.get("pagination", {}).get("total", 0)
-                total_accessible_count = data.get("total_accessible_count", 0)
+                total_accessible_count = (
+                    data["total_accessible_count"]
+                    if "total_accessible_count" in data
+                    else total
+                )
                 first_page = False
             if not items:
                 break
@@ -456,10 +463,10 @@ class APIClient:
     ) -> Tuple[List[dict], int]:
         """Fetch all photometry records via the /sync/photometry endpoint.
 
-        Keyset cursor is the integer ``id`` (object_photometry PK). The second
-        return element is 0 here (the endpoint carries no accessible count) and
-        is ignored by the caller; kept for signature parity with the other
-        ``fetch_all_*`` streams.
+        Keyset cursor is the integer ``id`` (object_photometry PK). The
+        endpoint carries no accessible count, so the second return element is
+        ``pagination.total`` (the shared paginator's fallback); the internal
+        caller ignores it, but it's kept accurate for direct callers.
         """
         return self._paginate_sync_endpoint(
             "/sync/photometry", "id", updated_since, on_page_complete,

@@ -354,8 +354,12 @@ def test_fetch_all_photometry_uses_integer_id_cursor(monkeypatch):
     session, calls = _canned_session(pages)
     client = APIClient(session=session)
 
-    items, _ = client.fetch_all_photometry()
+    items, total = client.fetch_all_photometry()
 
     assert [i["id"] for i in items] == [10, 20, 30]
+    # Photometry carries no total_accessible_count field; the paginator falls
+    # back to pagination.total instead of reporting a false 0 (Codex review,
+    # PR #372).
+    assert total == 3
     assert calls[0].get("after") is None
     assert calls[1]["after"] == 20    # last id of the previous page
