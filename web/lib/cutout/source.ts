@@ -21,6 +21,11 @@ export interface FieldCutoutSource {
   bandNames: string[];
   /** Native (finest-level) pixel scale in arcsec/px, for native-size defaults. */
   nativeScaleArcsec: number;
+  /** Whether every backing mosaic is published (`fitsgl_dataset_is_public`).
+   *  `false` ⇒ this render is admin-only: the response must NOT be
+   *  shared-cacheable (`private, no-store`), or a CDN keyed only on the URL
+   *  would replay draft imagery to non-admins. */
+  isPublic: boolean;
 }
 
 /** `fetch` with Next data-cache revalidation, so a re-deployed dataset's
@@ -75,7 +80,7 @@ async function fetchFieldDataset(
   supabase: SupabaseClient,
   field: string,
   opts: { requirePublic?: boolean },
-): Promise<{ prefix: string; config: FitsglConfig } | null> {
+): Promise<{ prefix: string; config: FitsglConfig; isPublic: boolean } | null> {
   const { data: rows, error } = await supabase
     .from('fitsgl_datasets')
     .select('prefix, field, kind, tiles, bands, pixel_scale, fitsgl_json_url, is_default')
@@ -84,18 +89,23 @@ async function fetchFieldDataset(
   if (error || !rows || rows.length === 0) return null;
   const ds = rows.find((r) => r.is_default) ?? rows[0];
 
-  if (opts.requirePublic) {
-    const { data: isPublic, error: pubErr } = await supabase.rpc('fitsgl_dataset_is_public', {
-      p_field: ds.field,
-      p_tiles: ds.tiles,
-      p_bands: ds.bands,
-      p_pixel_scale: ds.pixel_scale,
-    });
-    if (pubErr || !isPublic) return null;
+  // Publicity is always evaluated (not only under requirePublic): callers that
+  // may render draft-backed pyramids (admin RLS / admin API) need it to pick a
+  // non-shared cache policy for the response.
+  const { data: isPublic, error: pubErr } = await supabase.rpc('fitsgl_dataset_is_public', {
+    p_field: ds.field,
+    p_tiles: ds.tiles,
+    p_bands: ds.bands,
+    p_pixel_scale: ds.pixel_scale,
+  });
+  if (pubErr) {
+    console.error(`fitsgl_dataset_is_public failed for field ${field}:`, pubErr);
+    return null;
   }
+  if (opts.requirePublic && !isPublic) return null;
 
   const config = await loadFitsglConfig(ds.fitsgl_json_url, cachingFetch);
-  return { prefix: ds.prefix, config };
+  return { prefix: ds.prefix, config, isPublic: Boolean(isPublic) };
 }
 
 /** Load a chosen band's manifest into an engine `BandSource`. */
@@ -126,6 +136,7 @@ export async function resolveFieldCutoutSource(
       bands,
       bandNames: chosen.map((b) => b.name),
       nativeScaleArcsec: bands[0].manifest.levels[0].pixelScaleArcsec,
+      isPublic: ds.isPublic,
     };
   } catch (err) {
     console.error(`FitsGL cutout source unavailable for field ${field}:`, err);

@@ -823,8 +823,11 @@ class Campfire:
 
         band_tag = f"_{'-'.join(bands)}" if bands else ""
         scale_tag = f"_s{format(scale, 'g')}" if scale is not None else ""
+        # repr() is the shortest lossless float text — rounded keys (e.g. .5f)
+        # would silently alias nearby centres (~a native pixel at 1e-5 deg)
+        # to the same cached cutout.
         filename = (
-            f"{field}_{ra:.5f}{dec:+.5f}_fov{format(fov, 'g')}{band_tag}{scale_tag}.fits"
+            f"{field}_{ra!r}_{dec!r}_fov{format(fov, 'g')}{band_tag}{scale_tag}.fits"
         )
 
         from .config import resolve_data_dir
@@ -891,8 +894,9 @@ class Campfire:
         """
         band_tag = f"_{'-'.join(bands)}" if bands else ""
         cols_tag = f"_c{cols}" if cols is not None else ""
+        # repr() keys: lossless coordinates, no near-centre cache aliasing.
         filename = (
-            f"{field}_{ra:.5f}{dec:+.5f}_fov{format(fov, 'g')}{band_tag}"
+            f"{field}_{ra!r}_{dec!r}_fov{format(fov, 'g')}{band_tag}"
             f"_p{size}{cols_tag}_{stretch}_{colormap}.png"
         )
 
