@@ -48,8 +48,9 @@ export interface CutoutRGBA {
   outputWcsHeader: Record<string, number | string>;
 }
 
-/** Reproject one band to the N-up output grid, returning its float pixels + WCS. */
-async function bandToOutput(band: BandSource, center: [number, number], fovArcsec: number, outputSize: number) {
+/** Reproject one band to the N-up output grid, returning its float pixels + WCS.
+ *  Exported for the multi-panel figure renderer (`./figure`). */
+export async function bandToOutput(band: BandSource, center: [number, number], fovArcsec: number, outputSize: number) {
   const plan = planCutout(band.manifest, center, fovArcsec, { outputSize, rounding: 'nearest' });
   const region = await assembleRegion(plan, band.baseUrl);
   const scale = fovArcsec / outputSize;

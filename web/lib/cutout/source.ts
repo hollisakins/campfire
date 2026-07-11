@@ -62,9 +62,8 @@ function chooseBands(config: FitsglConfig): FitsglBand[] {
 }
 
 /**
- * Resolve a field's FitsGL cutout source, or `null` when the field has no
- * (visible) pyramid — including on any fetch/parse failure, so callers can fall
- * back to the legacy path during the transition.
+ * Fetch the field's default `kind='field'` dataset row + its resolved
+ * `fitsgl.json`, or `null` when the field has no (visible) pyramid.
  *
  * `requirePublic` is for service-role callers, which bypass RLS: it mirrors the
  * `authenticated_select_fitsgl_datasets` policy via the same SECURITY DEFINER
@@ -72,14 +71,14 @@ function chooseBands(config: FitsglConfig): FitsglBand[] {
  * serves public/API cutouts. User-scoped clients rely on RLS instead (admins
  * intentionally see draft-backed datasets, matching the map).
  */
-export async function resolveFieldCutoutSource(
+async function fetchFieldDataset(
   supabase: SupabaseClient,
   field: string,
-  opts: { requirePublic?: boolean } = {},
-): Promise<FieldCutoutSource | null> {
+  opts: { requirePublic?: boolean },
+): Promise<{ prefix: string; config: FitsglConfig } | null> {
   const { data: rows, error } = await supabase
     .from('fitsgl_datasets')
-    .select('field, kind, tiles, bands, pixel_scale, fitsgl_json_url, is_default')
+    .select('prefix, field, kind, tiles, bands, pixel_scale, fitsgl_json_url, is_default')
     .eq('field', field)
     .eq('kind', 'field');
   if (error || !rows || rows.length === 0) return null;
@@ -95,18 +94,34 @@ export async function resolveFieldCutoutSource(
     if (pubErr || !isPublic) return null;
   }
 
+  const config = await loadFitsglConfig(ds.fitsgl_json_url, cachingFetch);
+  return { prefix: ds.prefix, config };
+}
+
+/** Load a chosen band's manifest into an engine `BandSource`. */
+async function toBandSource(band: FitsglBand): Promise<BandSource> {
+  const manifestUrl = band.tiles[0]; // absolute after loadFitsglConfig
+  return {
+    manifest: await loadManifest(manifestUrl, undefined, cachingFetch),
+    baseUrl: new URL('.', manifestUrl).toString(),
+  };
+}
+
+/**
+ * Resolve a field's *display* cutout source (the PR-B PNG routes), or `null`
+ * when the field has no (visible) pyramid — including on any fetch/parse
+ * failure, so callers can fall back to the legacy path during the transition.
+ */
+export async function resolveFieldCutoutSource(
+  supabase: SupabaseClient,
+  field: string,
+  opts: { requirePublic?: boolean } = {},
+): Promise<FieldCutoutSource | null> {
   try {
-    const config = await loadFitsglConfig(ds.fitsgl_json_url, cachingFetch);
-    const chosen = chooseBands(config);
-    const bands: BandSource[] = await Promise.all(
-      chosen.map(async (b) => {
-        const manifestUrl = b.tiles[0]; // absolute after loadFitsglConfig
-        return {
-          manifest: await loadManifest(manifestUrl, undefined, cachingFetch),
-          baseUrl: new URL('.', manifestUrl).toString(),
-        };
-      }),
-    );
+    const ds = await fetchFieldDataset(supabase, field, opts);
+    if (!ds) return null;
+    const chosen = chooseBands(ds.config);
+    const bands = await Promise.all(chosen.map(toBandSource));
     return {
       bands,
       bandNames: chosen.map((b) => b.name),
@@ -116,4 +131,59 @@ export async function resolveFieldCutoutSource(
     console.error(`FitsGL cutout source unavailable for field ${field}:`, err);
     return null;
   }
+}
+
+/** Requested band(s) not in the dataset — the science routes turn this into a 400. */
+export class UnknownBandError extends Error {
+  constructor(
+    public readonly unknown: string[],
+    public readonly available: string[],
+  ) {
+    super(`unknown band(s) ${unknown.join(', ')}; available: ${available.join(', ')}`);
+    this.name = 'UnknownBandError';
+  }
+}
+
+export interface FieldScienceSource {
+  /** One entry per requested band, in request (or inventory) order. */
+  bands: Array<BandSource & { name: string; label?: string; pivotUm?: number }>;
+  /** Dataset prefix, for provenance headers. */
+  datasetPrefix: string;
+}
+
+/**
+ * Resolve a field's *science* cutout source: every dataset band, or the
+ * requested subset (case-insensitive names), each with its manifest loaded.
+ * `null` ⇒ no (visible) pyramid for the field; throws {@link UnknownBandError}
+ * for names not in the inventory (a client error, not a fallback case).
+ */
+export async function resolveFieldScienceSource(
+  supabase: SupabaseClient,
+  field: string,
+  opts: { requirePublic?: boolean; bands?: string[] } = {},
+): Promise<FieldScienceSource | null> {
+  const ds = await fetchFieldDataset(supabase, field, opts).catch((err) => {
+    console.error(`FitsGL science source unavailable for field ${field}:`, err);
+    return null;
+  });
+  if (!ds) return null;
+
+  const inventory = ds.config.dataset.bands;
+  let chosen = inventory;
+  if (opts.bands && opts.bands.length > 0) {
+    const byName = new Map(inventory.map((b) => [b.name.toLowerCase(), b]));
+    const unknown = opts.bands.filter((n) => !byName.has(n.toLowerCase()));
+    if (unknown.length > 0) throw new UnknownBandError(unknown, inventory.map((b) => b.name));
+    chosen = opts.bands.map((n) => byName.get(n.toLowerCase())!);
+  }
+
+  const bands = await Promise.all(
+    chosen.map(async (b) => ({
+      ...(await toBandSource(b)),
+      name: b.name,
+      label: b.label,
+      pivotUm: b.pivotUm,
+    })),
+  );
+  return { bands, datasetPrefix: ds.prefix };
 }

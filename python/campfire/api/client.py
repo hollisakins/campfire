@@ -431,6 +431,93 @@ class APIClient:
         _handle_response_error(response, f"Cutout for {object_id}")
         return response.content
 
+    def get_fits_cutout(
+        self,
+        field: str,
+        ra: float,
+        dec: float,
+        fov: float = 10.0,
+        bands: Optional[List[str]] = None,
+        scale: Optional[float] = None,
+    ) -> bytes:
+        """Fetch a science FITS cutout from a field's FitsGL tile pyramid.
+
+        A direct crop of the tiles at the requested (default native) pyramid
+        level — no resampling, no stretch. Multi-extension FITS: one float32
+        IMAGE extension per band (EXTNAME = band), each carrying the level's
+        WCS. Pixels are the display pyramid's RICE-quantized values
+        (~0.03% photometry-faithful; flagged in the FITS headers).
+
+        Parameters
+        ----------
+        field : str
+            Field name (must have a deployed FitsGL dataset).
+        ra, dec : float
+            ICRS centre in degrees.
+        fov : float, optional
+            Square field of view in arcseconds (default 10, max 600).
+        bands : list of str, optional
+            Band subset (e.g. ``["f277w", "f444w"]``). Default: every band.
+        scale : float, optional
+            Output pixel scale in arcsec/px — selects a coarser pyramid level
+            for wide fields. Default: native.
+        """
+        params: Dict[str, Union[str, int, float]] = {
+            "field": field, "ra": ra, "dec": dec, "fov": fov,
+        }
+        if bands:
+            params["bands"] = ",".join(bands)
+        if scale is not None:
+            params["scale"] = scale
+        response = self._session.get("/cutout/fits", params=params, timeout=120)
+        _handle_response_error(response, f"FITS cutout at ({ra}, {dec}) in {field}")
+        return response.content
+
+    def get_cutout_figure(
+        self,
+        field: str,
+        ra: float,
+        dec: float,
+        fov: float = 10.0,
+        bands: Optional[List[str]] = None,
+        size: int = 300,
+        cols: Optional[int] = None,
+        stretch: str = "asinh",
+        colormap: str = "gray",
+    ) -> bytes:
+        """Fetch a multi-band cutout figure PNG (one labeled panel per band).
+
+        Parameters
+        ----------
+        field : str
+            Field name (must have a deployed FitsGL dataset).
+        ra, dec : float
+            ICRS centre in degrees.
+        fov : float, optional
+            Square field of view in arcseconds (default 10, max 600).
+        bands : list of str, optional
+            Band subset; default every band, in deployed inventory order.
+        size : int, optional
+            Panel edge in pixels (default 300, max 1024).
+        cols : int, optional
+            Panels per row (default: all in one row).
+        stretch : str, optional
+            One of ``linear``, ``log``, ``sqrt``, ``asinh`` (default).
+        colormap : str, optional
+            e.g. ``gray`` (default), ``viridis``, ``magma``, ``inferno``.
+        """
+        params: Dict[str, Union[str, int, float]] = {
+            "field": field, "ra": ra, "dec": dec, "fov": fov,
+            "size": size, "stretch": stretch, "colormap": colormap,
+        }
+        if bands:
+            params["bands"] = ",".join(bands)
+        if cols is not None:
+            params["cols"] = cols
+        response = self._session.get("/cutout/figure", params=params, timeout=120)
+        _handle_response_error(response, f"Cutout figure at ({ra}, {dec}) in {field}")
+        return response.content
+
     def fetch_all_photometry(
         self,
         updated_since: Optional[str] = None,

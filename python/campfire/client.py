@@ -773,6 +773,152 @@ class Campfire:
 
         return dest
 
+    def get_fits_cutout(
+        self,
+        field: str,
+        ra: float,
+        dec: float,
+        fov: float = 10.0,
+        bands: Optional[List[str]] = None,
+        scale: Optional[float] = None,
+        cache: bool = True,
+    ):
+        """Download a science FITS cutout from a field's FitsGL tile pyramid.
+
+        A direct crop of the tiles at the requested (default native) pyramid
+        level — no resampling, no stretch. The returned ``HDUList`` has one
+        float32 IMAGE extension per band (``EXTNAME`` = band, e.g.
+        ``hdul['F444W']``), each carrying the pyramid level's WCS. Pixels are
+        the display pyramid's RICE-quantized values (~0.03%
+        photometry-faithful; flagged in the FITS headers).
+
+        Parameters
+        ----------
+        field : str
+            Field name (must have a deployed FitsGL dataset).
+        ra, dec : float
+            ICRS centre in degrees.
+        fov : float, optional
+            Square field of view in arcseconds (default 10, max 600).
+        bands : list of str, optional
+            Band subset (e.g. ``["f277w", "f444w"]``). Default: every band.
+        scale : float, optional
+            Output pixel scale in arcsec/px — selects a coarser pyramid level
+            for wide fields. Default: native.
+        cache : bool, optional
+            Reuse a previously downloaded file when present (default True).
+
+        Returns
+        -------
+        astropy.io.fits.HDUList
+            Opened from the cached file (memory-mapped).
+
+        Examples
+        --------
+        >>> cf = Campfire()
+        >>> hdul = cf.get_fits_cutout('cosmos', ra=150.1, dec=2.2, fov=6)
+        >>> data, header = hdul['F444W'].data, hdul['F444W'].header
+        """
+        from astropy.io import fits
+
+        band_tag = f"_{'-'.join(bands)}" if bands else ""
+        scale_tag = f"_s{format(scale, 'g')}" if scale is not None else ""
+        filename = (
+            f"{field}_{ra:.5f}{dec:+.5f}_fov{format(fov, 'g')}{band_tag}{scale_tag}.fits"
+        )
+
+        from .config import resolve_data_dir
+        cutouts = resolve_data_dir() / "cutouts"
+
+        dest = _safe_cache_path(cutouts, filename, field)
+        if cache and dest.exists():
+            return fits.open(dest)
+
+        fits_data = self._api.get_fits_cutout(
+            field, ra, dec, fov=fov, bands=bands, scale=scale,
+        )
+
+        cutouts.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(".tmp")
+        try:
+            tmp.write_bytes(fits_data)
+            tmp.rename(dest)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+
+        return fits.open(dest)
+
+    def get_cutout_figure(
+        self,
+        field: str,
+        ra: float,
+        dec: float,
+        fov: float = 10.0,
+        bands: Optional[List[str]] = None,
+        size: int = 300,
+        cols: Optional[int] = None,
+        stretch: str = "asinh",
+        colormap: str = "gray",
+        cache: bool = True,
+    ) -> Path:
+        """Download a multi-band cutout figure PNG (one labeled panel per band).
+
+        Rendered server-side from the field's FitsGL pyramid with the same
+        transfer functions as the web map; per-panel percentile stretch.
+        Returns the path to the cached PNG.
+
+        Parameters
+        ----------
+        field : str
+            Field name (must have a deployed FitsGL dataset).
+        ra, dec : float
+            ICRS centre in degrees.
+        fov : float, optional
+            Square field of view in arcseconds (default 10, max 600).
+        bands : list of str, optional
+            Band subset; default every band, in deployed inventory order.
+        size : int, optional
+            Panel edge in pixels (default 300, max 1024).
+        cols : int, optional
+            Panels per row (default: all in one row).
+        stretch : str, optional
+            One of ``linear``, ``log``, ``sqrt``, ``asinh`` (default).
+        colormap : str, optional
+            e.g. ``gray`` (default), ``viridis``, ``magma``, ``inferno``.
+        cache : bool, optional
+            Reuse a previously downloaded file when present (default True).
+        """
+        band_tag = f"_{'-'.join(bands)}" if bands else ""
+        cols_tag = f"_c{cols}" if cols is not None else ""
+        filename = (
+            f"{field}_{ra:.5f}{dec:+.5f}_fov{format(fov, 'g')}{band_tag}"
+            f"_p{size}{cols_tag}_{stretch}_{colormap}.png"
+        )
+
+        from .config import resolve_data_dir
+        cutouts = resolve_data_dir() / "cutouts"
+
+        dest = _safe_cache_path(cutouts, filename, field)
+        if cache and dest.exists():
+            return dest
+
+        png_data = self._api.get_cutout_figure(
+            field, ra, dec, fov=fov, bands=bands, size=size, cols=cols,
+            stretch=stretch, colormap=colormap,
+        )
+
+        cutouts.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(".tmp")
+        try:
+            tmp.write_bytes(png_data)
+            tmp.rename(dest)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+
+        return dest
+
     def get_shutters(
         self,
         object_id: str,
