@@ -1,0 +1,417 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NIRCam Redesign — Landing + Field</title>
+<style>
+/* ===== CAMPFIRE tokens (from web/app/globals.css) ===== */
+:root{
+  --primary:#fb923c;--primary-hover:#fdba74;--primary-text:#fb923c;--on-primary:#1a1206;--primary-soft:rgba(251,146,60,.14);
+  --background:#16131c;--card:#1f1b27;--card-hover:#2a2435;--border:#332c40;--border-strong:#423a52;
+  --text-primary:#f1ecf6;--text-secondary:#b8aec6;--text-tertiary:#8b8398;--surface-2:#241f2e;--table-header:#221d2a;
+}
+body.light{
+  --primary:#c63f0c;--primary-hover:#ad3408;--primary-text:#b8390a;--on-primary:#fff;--primary-soft:rgba(198,63,12,.10);
+  --background:#fffefb;--card:#fefcfa;--card-hover:#f6f0ea;--border:#e6ddce;--border-strong:#d7cbb9;
+  --text-primary:#211c17;--text-secondary:#5c5346;--text-tertiary:#6c6150;--surface-2:#f3ede5;--table-header:#f6f0ea;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--background);color:var(--text-primary);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,system-ui,sans-serif;font-size:14px;line-height:1.5}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+a{color:var(--primary-text);text-decoration:none;cursor:pointer}
+h1{font-size:26px;font-weight:700;letter-spacing:-.02em}
+h2{font-size:16px;font-weight:650}
+h3{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-tertiary)}
+.container{max-width:1160px;margin:0 auto;padding:0 24px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px}
+.muted{color:var(--text-secondary)}.dim{color:var(--text-tertiary)}
+.spacer{flex:1}
+.btn{display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border-radius:9px;font-size:13px;font-weight:550;border:1px solid var(--border-strong);background:var(--surface-2);color:var(--text-primary);cursor:pointer;white-space:nowrap}
+.btn:hover{background:var(--card-hover)}
+.btn.pri{background:var(--primary);color:var(--on-primary);border-color:transparent}
+.btn.pri:hover{background:var(--primary-hover)}
+.btn.sm{padding:5px 10px;font-size:12px;border-radius:7px}
+.btn.ghost{background:transparent;border-color:var(--border)}
+.pchip{display:inline-block;font-size:11px;padding:2px 8px;border-radius:6px;background:var(--surface-2);border:1px solid var(--border);color:var(--text-secondary);margin:2px 3px 0 0}
+/* app nav */
+.appnav{border-bottom:1px solid var(--border);background:var(--card);position:sticky;top:0;z-index:30}
+.appnav .in{max-width:1160px;margin:0 auto;padding:12px 24px;display:flex;align-items:center;gap:26px}
+.appnav .logo{font-weight:800;display:flex;gap:8px;align-items:center}
+.appnav nav{display:flex;gap:20px;color:var(--text-secondary);font-size:13.5px}
+.appnav nav a.on{color:var(--text-primary);position:relative}
+.appnav nav a.on::after{content:"";position:absolute;left:0;right:0;bottom:-13px;height:2px;background:var(--primary)}
+.appnav .who{margin-left:auto;color:var(--text-tertiary);font-size:12.5px;display:flex;gap:14px;align-items:center}
+.tglbtn{border:1px solid var(--border);background:var(--surface-2);color:var(--text-secondary);border-radius:7px;width:28px;height:26px;cursor:pointer;font-size:13px}
+.crumb{font-size:12.5px;color:var(--text-tertiary);padding:18px 0 0;display:flex;gap:7px;align-items:center}
+/* dropdown (searchable single-select) */
+.dd{position:relative;display:inline-block}
+.dd-btn{display:inline-flex;align-items:center;gap:9px;padding:7px 12px;border-radius:9px;background:var(--surface-2);border:1px solid var(--border-strong);color:var(--text-primary);font-size:13px;font-weight:600;cursor:pointer}
+.dd-btn .lbl{color:var(--text-tertiary);font-weight:500;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em}
+.dd-btn .car{color:var(--text-tertiary);font-size:11px}
+.dd-menu{display:none;position:absolute;top:calc(100% + 6px);left:0;width:280px;background:var(--card);border:1px solid var(--border-strong);border-radius:11px;box-shadow:0 12px 34px rgba(0,0,0,.35);z-index:20;overflow:hidden}
+.dd.open .dd-menu{display:block}
+.dd-search{width:100%;border:0;border-bottom:1px solid var(--border);background:transparent;color:var(--text-primary);padding:11px 13px;font-size:13px;outline:none}
+.dd-list{max-height:280px;overflow:auto;padding:5px}
+.dd-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border-radius:7px;cursor:pointer;font-size:13px}
+.dd-item:hover{background:var(--card-hover)}
+.dd-item.on{background:var(--primary-soft);color:var(--primary-text)}
+.dd-item .sub{font-size:11px;color:var(--text-tertiary)}
+.dd-item.on .sub{color:var(--primary-text);opacity:.75}
+/* meta grid */
+.metagrid{display:grid;grid-template-columns:1fr}
+.metagrid .m{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px}
+.metagrid .m:last-child{border-bottom:0}
+.metagrid .m .k{color:var(--text-tertiary)}.metagrid .m .v{font-weight:550;text-align:right}
+/* exposure-map panel */
+.ov{display:grid;grid-template-columns:300px 1fr;gap:26px}
+.exp-body{display:flex;gap:0;background:var(--background);border:1px solid var(--border);border-radius:11px;overflow:hidden}
+.vtabs{width:86px;border-right:1px solid var(--border);padding:5px;overflow:auto;max-height:308px;outline:none;flex:none}
+.vtabs:focus{box-shadow:inset 0 0 0 2px var(--primary-soft)}
+.vtab{font-family:ui-monospace,Menlo,monospace;font-size:11px;padding:5px 8px;border-radius:6px;color:var(--text-secondary);cursor:pointer;white-space:nowrap}
+.vtab:hover{background:var(--card-hover)}
+.vtab.on{background:var(--primary-soft);color:var(--primary-text);font-weight:600}
+.exp-plot-wrap{flex:1;padding:12px}
+.kbd{font-family:ui-monospace,Menlo,monospace;font-size:10px;color:var(--text-tertiary);border:1px solid var(--border);border-radius:4px;padding:1px 5px}
+/* facets */
+.facets{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.facet{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;padding:6px 11px;border-radius:8px;background:var(--surface-2);border:1px solid var(--border);color:var(--text-secondary);cursor:pointer}
+.facet .cnt{font-size:10px;background:var(--primary-soft);color:var(--primary-text);border-radius:10px;padding:0 6px;font-weight:700}
+/* table */
+table{width:100%;border-collapse:collapse}
+thead th{text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-tertiary);padding:10px 12px;background:var(--table-header);border-bottom:1px solid var(--border)}
+tbody td{padding:8px 12px;border-bottom:1px solid var(--border);font-size:13px;white-space:nowrap;vertical-align:middle}
+tbody tr:hover{background:var(--card-hover)}
+.thumb{width:32px;height:32px;border-radius:6px;border:1px solid var(--border-strong);cursor:zoom-in;display:block;background:var(--background)}
+.tag{font-family:ui-monospace,Menlo,monospace;font-size:11px;padding:2px 7px;border-radius:5px;background:var(--surface-2);border:1px solid var(--border);color:var(--text-secondary)}
+.tag.ext{text-transform:uppercase}
+.act{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:550;color:var(--text-secondary);background:transparent;border:0;padding:4px 7px;border-radius:6px;cursor:pointer;font-family:inherit}
+.act:hover{background:var(--surface-2);color:var(--text-primary)}
+.act .g{font-family:ui-monospace,Menlo,monospace;color:var(--text-tertiary)}
+.act:hover .g{color:var(--primary-text)}
+.act[disabled]{opacity:.32;cursor:not-allowed}
+/* landing */
+.stat-strip{display:flex;gap:0;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--card);margin:20px 0 30px}
+.stat{flex:1;padding:16px 20px;border-right:1px solid var(--border)}
+.stat:last-child{border-right:0}
+.stat .n{font-size:22px;font-weight:700}
+.stat .l{font-size:11.5px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.05em;margin-top:2px}
+.field-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:18px}
+.field-card{background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden;cursor:pointer;transition:border-color .12s,transform .12s}
+.field-card:hover{border-color:var(--border-strong);transform:translateY(-2px)}
+.field-card .prev{height:150px;position:relative;border-bottom:1px solid var(--border)}
+.field-card .prev .fname{position:absolute;left:14px;bottom:10px;font-size:20px;font-weight:750;letter-spacing:-.01em;color:#fff;text-shadow:0 2px 10px rgba(0,0,0,.7)}
+.field-card .prev .coord{position:absolute;right:12px;top:10px;font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:rgba(255,255,255,.82);background:rgba(0,0,0,.42);padding:2px 7px;border-radius:5px}
+.field-card .body{padding:13px 15px}
+.fstats{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px}
+.fstats .s .n{font-weight:650;font-size:14px}.fstats .s .k{font-size:10.5px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.04em}
+.field-card .foot{display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--border);padding-top:9px;margin-top:2px;font-size:11.5px;color:var(--text-tertiary)}
+/* popup */
+.pop-bg{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;align-items:center;justify-content:center;z-index:60}
+.pop-bg.open{display:flex}
+.pop{background:var(--card);border:1px solid var(--border-strong);border-radius:14px;padding:14px;max-width:560px}
+.pop .cap{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.iconbtn{cursor:pointer;color:var(--text-tertiary);padding:4px 8px;border-radius:6px}.iconbtn:hover{background:var(--surface-2);color:var(--text-primary)}
+.hr{height:1px;background:var(--border);margin:34px 0}
+[hidden]{display:none!important}
+@media(max-width:860px){.metagrid,.ov{grid-template-columns:1fr}.stat-strip{flex-wrap:wrap}}
+</style></head>
+<body>
+
+<!-- ================= APP NAV ================= -->
+<div class="appnav"><div class="in">
+  <span class="logo">🔥 CAMPFIRE</span>
+  <nav><a>Home</a><a class="on" onclick="show('landing')">NIRCam</a><a>NIRSpec</a><a>Map</a><a>Docs</a></nav>
+  <span class="who">Hollis Akins <button class="tglbtn" title="Toggle theme" onclick="document.body.classList.toggle('light')">◐</button></span>
+</div></div>
+
+
+<!-- ==================================================================
+     SCREEN 1 — NIRCam LANDING (list of fields)
+     ================================================================== -->
+<div id="screen-landing" class="container">
+  <div class="crumb">CAMPFIRE <span>›</span> NIRCam</div>
+  <div style="margin:8px 0 6px"><h1>NIRCam Imaging</h1></div>
+
+  <div class="stat-strip">
+    <div class="stat"><div class="n">6</div><div class="l">Fields</div></div>
+    <div class="stat"><div class="n">21</div><div class="l">Filters</div></div>
+    <div class="stat"><div class="n">62</div><div class="l">Tiles</div></div>
+    <div class="stat"><div class="n">2,341</div><div class="l">Mosaic files</div></div>
+    <div class="stat"><div class="n">1.78 TB</div><div class="l">Total volume</div></div>
+  </div>
+
+  <div class="field-grid" id="fieldGrid"></div>
+</div>
+
+
+<!-- ==================================================================
+     SCREEN 2 — FIELD PAGE (COSMOS)
+     ================================================================== -->
+<div id="screen-field" class="container" hidden>
+  <div class="crumb">CAMPFIRE <span>›</span> <a onclick="show('landing')">NIRCam</a> <span>›</span> <span id="crumbField">COSMOS</span></div>
+
+  <!-- field selector — top-left, above the field header -->
+  <div style="margin:14px 0 12px">
+    <div class="dd" id="fieldDD">
+      <button class="dd-btn" onclick="toggleDD(event)"><span class="lbl">Field</span> <span id="ddCur">COSMOS</span> <span class="car">▾</span></button>
+      <div class="dd-menu">
+        <input class="dd-search" id="ddSearch" placeholder="Search fields…" oninput="filterDD()" autocomplete="off">
+        <div class="dd-list" id="ddList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- field-specific header + map bridge -->
+  <div style="display:flex;align-items:flex-start;gap:18px;flex-wrap:wrap;margin-bottom:22px">
+    <div>
+      <h1><span id="titleField">COSMOS</span> NIRCam Imaging</h1>
+      <div class="dim" style="font-size:12.5px;margin-top:4px">Last reduced 2025-07-30 · pipeline <span class="mono">v0.7</span> · CRDS <span class="mono">jwst_1322.pmap</span></div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn pri">Open field in Map <span class="mono">↗</span></button>
+  </div>
+
+  <!-- FIELD OVERVIEW -->
+  <div class="card" style="padding:20px;margin-bottom:26px">
+    <div class="ov">
+      <!-- metadata -->
+      <div>
+        <h3 style="margin-bottom:12px">Field overview</h3>
+        <div class="metagrid">
+          <div class="m"><span class="k">Filters</span><span class="v">17 <span class="dim">(7 SW · 10 LW)</span></span></div>
+          <div class="m"><span class="k">Tiles</span><span class="v">21</span></div>
+          <div class="m"><span class="k">Pixel scale</span><span class="v mono">30 mas</span></div>
+          <div class="m"><span class="k">Extensions</span><span class="v mono" style="font-size:12px">sci · err · wht · srcmask</span></div>
+          <div class="m"><span class="k">Epochs</span><span class="v">full field + 1</span></div>
+          <div class="m"><span class="k">Mosaic files</span><span class="v">986</span></div>
+          <div class="m"><span class="k">Sky coverage</span><span class="v">~0.54 deg²</span></div>
+          <div class="m"><span class="k">Data volume</span><span class="v">743.6 GB</span></div>
+        </div>
+      </div>
+
+      <!-- exposure map: left filter tabs + plot -->
+      <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:10px">
+          <h3 style="margin:0">Exposure map · filter coverage</h3>
+          <div style="display:flex;align-items:center;gap:14px">
+            <span class="dim" style="font-size:11px"><span class="kbd">↑</span> <span class="kbd">↓</span> to browse</span>
+            <label class="dim" style="font-size:11.5px;display:flex;gap:6px;align-items:center;cursor:pointer;user-select:none">
+              <input type="checkbox" id="covToggle" onchange="renderExp()"> all-filter overlay
+            </label>
+          </div>
+        </div>
+        <div class="exp-body">
+          <div class="vtabs" id="vtabs" tabindex="0"></div>
+          <div class="exp-plot-wrap" id="expPlot"></div>
+        </div>
+        <div class="dim" style="font-size:11.5px;margin-top:8px" id="expCaption"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DATA PRODUCTS -->
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+    <h2>Data products</h2>
+    <span class="dim" style="font-size:12.5px">990 files · 743.6 GB</span>
+    <div class="spacer"></div>
+    <button class="btn sm ghost">Bulk download script</button>
+  </div>
+  <div class="facets" style="margin-bottom:12px">
+    <span class="facet">Filter <span class="cnt">3</span></span>
+    <span class="facet">Tile <span class="cnt">2</span></span>
+    <span class="facet">Pixel scale</span>
+    <span class="facet">Extension <span class="cnt">1</span></span>
+    <span class="facet">Epoch</span>
+    <a style="font-size:12px;margin-left:4px">Clear all</a>
+    <div class="spacer"></div>
+    <span class="dim mono" style="font-size:12px">Selected 132 of 990 · 92.7 GB</span>
+  </div>
+  <div class="card" style="overflow:hidden">
+    <table>
+      <thead><tr>
+        <th style="width:44px"></th><th>Filter</th><th>Tile</th><th>Scale</th><th>Ext</th><th>Epoch</th><th>Size</th>
+        <th style="text-align:right;width:160px">Actions</th>
+      </tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- reduction notes (minimal, factual) -->
+  <div class="hr"></div>
+  <div style="padding-bottom:60px">
+    <h2 style="margin-bottom:8px">Reduction notes</h2>
+    <p class="muted" style="font-size:13px;max-width:760px">Drizzled to 30 mas per fiducial tile set with cfpipe <span class="mono">v0.7</span> (CRDS <span class="mono">jwst_1322.pmap</span>). <a>Full methodology →</a></p>
+  </div>
+</div>
+
+<!-- thumbnail popup -->
+<div class="pop-bg" id="popBg" onclick="if(event.target.id==='popBg')closePop()">
+  <div class="pop">
+    <div class="cap"><span class="mono" id="popTitle" style="font-size:13px"></span><span class="iconbtn" onclick="closePop()">✕</span></div>
+    <div id="popImg"></div>
+  </div>
+</div>
+
+<script>
+/* ---------- filters + coverage model ---------- */
+const SW=['F090W','F115W','F140M','F150W','F182M','F200W','F210M'];
+const LW=['F250M','F277W','F335M','F356W','F360M','F410M','F430M','F444W','F460M','F480M'];
+const FILTERS=[...SW,...LW];
+const REGIONS={WEB:[1,10,1,6],PRIMER:[4,7,3,5],C3D:[2,9,3,4]};
+const COV={F090W:['PRIMER'],F115W:['WEB','PRIMER','C3D'],F140M:['PRIMER'],F150W:['WEB','PRIMER','C3D'],
+  F182M:['PRIMER'],F200W:['PRIMER','C3D'],F210M:['PRIMER'],F250M:['PRIMER'],F277W:['WEB','PRIMER','C3D'],
+  F335M:['PRIMER'],F356W:['PRIMER','C3D'],F360M:['PRIMER'],F410M:['PRIMER'],F430M:['PRIMER'],
+  F444W:['WEB','PRIMER','C3D'],F460M:['PRIMER'],F480M:['PRIMER']};
+const NEXP={WEB:6,PRIMER:9,C3D:4};const GW=12,GH=8;
+function viridis(t){const s=[[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];t=Math.max(0,Math.min(1,t));
+  const x=t*(s.length-1),i=Math.floor(x),f=x-i,a=s[i],b=s[Math.min(i+1,s.length-1)];
+  return`rgb(${a.map((v,k)=>Math.round(v+(b[k]-v)*f)).join(',')})`;}
+function depthGrid(filter){const g=Array.from({length:GH},()=>Array(GW).fill(0));
+  for(const r of COV[filter]){const[x0,x1,y0,y1]=REGIONS[r];for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)g[y][x]+=NEXP[r];}return g;}
+function expSVG(filter,W,H,overlay,bare){
+  const pad=(overlay||bare)?4:26,cw=(W-2*pad)/GW,ch=(H-2*pad)/GH,cx=W/2,cy=H/2;let cells='';
+  if(overlay){const g=Array.from({length:GH},()=>Array(GW).fill(0));
+    for(const f of FILTERS){const d=depthGrid(f);for(let y=0;y<GH;y++)for(let x=0;x<GW;x++)if(d[y][x]>0)g[y][x]++;}
+    const mx=Math.max(...g.flat(),1);
+    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++)if(g[y][x]>0)
+      cells+=`<rect x="${pad+x*cw}" y="${pad+y*ch}" width="${cw+.6}" height="${ch+.6}" fill="${viridis(g[y][x]/mx)}" opacity="${.35+.6*g[y][x]/mx}"/>`;
+  }else{const d=depthGrid(filter),mx=Math.max(...depthGrid(filter).flat(),1);
+    for(let y=0;y<GH;y++)for(let x=0;x<GW;x++)if(d[y][x]>0)
+      cells+=`<rect x="${pad+x*cw}" y="${pad+y*ch}" width="${cw+.6}" height="${ch+.6}" fill="${viridis(d[y][x]/mx)}"/>`;}
+  const axis=(overlay||bare)?'':`
+    <rect x="${pad}" y="${pad}" width="${W-2*pad}" height="${H-2*pad}" fill="none" stroke="#5c5c6e" stroke-width="1"/>
+    ${[0,1,2,3].map(i=>`<line x1="${pad+i*(W-2*pad)/3}" y1="${H-pad}" x2="${pad+i*(W-2*pad)/3}" y2="${H-pad+4}" stroke="#8b8398"/>
+      <text x="${pad+i*(W-2*pad)/3}" y="${H-pad+15}" fill="#8b8398" font-size="8" text-anchor="middle" font-family="monospace">${(150.30-i*0.14).toFixed(2)}</text>`).join('')}
+    ${[0,1,2].map(i=>`<text x="${pad-6}" y="${pad+6+i*(H-2*pad)/2}" fill="#8b8398" font-size="8" text-anchor="end" font-family="monospace">${(2.55-i*0.18).toFixed(2)}</text>`).join('')}
+    <text x="${W/2}" y="${H-2}" fill="#8b8398" font-size="8" text-anchor="middle">RA [deg]</text>`;
+  const cb=(overlay||bare)?'':(()=>{const bx=W-pad+7,bw=6,bh=H-2*pad;let g='';for(let i=0;i<20;i++)g+=`<rect x="${bx}" y="${pad+i*bh/20}" width="${bw}" height="${bh/20+.5}" fill="${viridis(1-i/20)}"/>`;
+    return g+`<text x="${bx+bw+3}" y="${pad+7}" fill="#8b8398" font-size="7" font-family="monospace">hi</text><text x="${bx+bw+3}" y="${H-pad}" fill="#8b8398" font-size="7" font-family="monospace">lo</text>`;})();
+  return`<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;border-radius:6px;background:#0d0b12">
+    <g transform="rotate(-9 ${cx} ${cy})">${cells}</g>${axis}${cb}
+    ${overlay?`<text x="7" y="14" fill="#f1ecf6" font-size="9" font-family="monospace">all filters · union coverage</text>`:''}</svg>`;
+}
+
+/* ---------- exposure-map panel (left tabs + keyboard) ---------- */
+let curFilter='F444W';
+function renderExp(){
+  const overlay=document.getElementById('covToggle').checked;
+  document.getElementById('expPlot').innerHTML=expSVG(curFilter,300,220,overlay);
+  document.getElementById('vtabs').innerHTML=FILTERS.map(f=>
+    `<div class="vtab ${f===curFilter&&!overlay?'on':''}" onclick="pickFilter('${f}')">${f}</div>`).join('');
+  const d=depthGrid(curFilter),frac=Math.round(100*d.flat().filter(v=>v>0).length/(GW*GH));
+  document.getElementById('expCaption').innerHTML=overlay
+    ?'Union of all 17 filters — brighter where more filters overlap. Toggle off to inspect one filter.'
+    :`<b class="mono" style="color:var(--text-secondary)">${curFilter}</b> · ${frac}% field coverage · ${Math.max(...d.flat())} max exposures · colour = exposure time (s)`;
+}
+function pickFilter(f){curFilter=f;document.getElementById('covToggle').checked=false;renderExp();}
+document.getElementById('vtabs').addEventListener('keydown',e=>{
+  if(e.key!=='ArrowDown'&&e.key!=='ArrowUp')return;e.preventDefault();
+  let i=FILTERS.indexOf(curFilter);i=(i+(e.key==='ArrowDown'?1:-1)+FILTERS.length)%FILTERS.length;
+  pickFilter(FILTERS[i]);document.querySelector('.vtab.on')?.scrollIntoView({block:'nearest'});
+});
+
+/* ---------- data products table ---------- */
+// [filter, tile, scale, ext, epoch, size]  — thumb+View only on ext==='sci'
+const ROWS=[
+  ['F090W','A3','30 mas','sci','','621.4 MB'],
+  ['F090W','A3','30 mas','err','','598.1 MB'],
+  ['F115W','A3','30 mas','sci','','654.1 MB'],
+  ['F150W','A3','30 mas','sci','','651.8 MB'],
+  ['F277W','A3','30 mas','sci','','712.0 MB'],
+  ['F444W','A3','30 mas','sci','','743.6 MB'],
+  ['F444W','A3','30 mas','err','','698.2 MB'],
+  ['F444W','A3','30 mas','wht','','690.0 MB'],
+  ['F444W','A3','30 mas','srcmask','','4.1 MB'],
+  ['F356W','A5','30 mas','sci','ep1','89.4 MB'],
+  ['F115W','—','—','exp','','12.4 MB'],
+  ['F150W','—','—','exp','','12.4 MB'],
+  ['F277W','—','—','exp','','12.4 MB'],
+  ['F444W','—','—','exp','','12.4 MB'],
+];
+function sciThumb(flt){const c=viridis(FILTERS.indexOf(flt)/FILTERS.length);
+  return`<svg width="32" height="32"><rect width="32" height="32" fill="#0d0b12"/><circle cx="16" cy="16" r="8.5" fill="${c}" opacity="0.85"/><circle cx="11" cy="12" r="2.4" fill="#fff" opacity="0.7"/><circle cx="21" cy="20" r="1.6" fill="#fff" opacity="0.55"/></svg>`;}
+function renderTable(){
+  document.getElementById('tbody').innerHTML=ROWS.map(r=>{
+    const[flt,tile,scale,ext,ep,size]=r,isSci=ext==='sci';
+    const thumb=isSci?`<span class="thumb" onclick="openPop('${flt} · ${tile} · sci',' ${flt}')">${sciThumb(flt)}</span>`:'';
+    const view=isSci?`<button class="act" title="Open ${flt} tile ${tile} in the FitsGL map"><span class="g">↗</span> View</button>`:'';
+    return`<tr>
+      <td>${thumb}</td>
+      <td class="mono">${flt}</td>
+      <td class="mono ${tile==='—'?'dim':''}">${tile}</td>
+      <td class="mono dim">${scale}</td>
+      <td><span class="tag ext">${ext}</span></td>
+      <td>${ep?`<span class="tag">${ep}</span>`:'<span class="dim">full field</span>'}</td>
+      <td class="mono">${size}</td>
+      <td style="text-align:right">${view}<button class="act" title="Download FITS"><span class="g">↓</span> FITS</button></td>
+    </tr>`;}).join('');
+}
+function openPop(title,flt){document.getElementById('popTitle').textContent=title;
+  const stars=Array.from({length:70},()=>`<circle cx="${Math.random()*520}" cy="${Math.random()*320}" r="${Math.random()*1.8}" fill="#fff" opacity="${Math.random()*.7}"/>`).join('');
+  document.getElementById('popImg').innerHTML=`<svg width="100%" viewBox="0 0 520 320" style="border-radius:8px"><rect width="520" height="320" fill="#0d0b12"/>${stars}<circle cx="260" cy="160" r="52" fill="${viridis(FILTERS.indexOf(flt.trim())/FILTERS.length)}" opacity="0.5"/><circle cx="260" cy="160" r="19" fill="#fff" opacity="0.9"/></svg>`;
+  document.getElementById('popBg').classList.add('open');}
+function closePop(){document.getElementById('popBg').classList.remove('open');}
+
+/* ---------- field selector dropdown ---------- */
+const FIELDS=[
+  {name:'COSMOS',ra:'150.12',dec:'+2.21',filters:17,tiles:21,area:'0.54 deg²',vol:'743.6 GB',progs:['COSMOS-Web','PRIMER','COSMOS-3D','+3'],updated:'2025-07-30'},
+  {name:'UDS',ra:'34.41',dec:'−5.20',filters:9,tiles:12,area:'0.09 deg²',vol:'248 GB',progs:['PRIMER','MegaScience'],updated:'2025-06-10'},
+  {name:'EGS',ra:'214.83',dec:'+52.83',filters:10,tiles:10,area:'0.07 deg²',vol:'196 GB',progs:['CEERS','EMBER'],updated:'2025-05-22'},
+  {name:'GOODS-S',ra:'53.12',dec:'−27.80',filters:14,tiles:9,area:'0.06 deg²',vol:'312 GB',progs:['JADES','FRESCO','JEMS'],updated:'2025-04-18'},
+  {name:'GOODS-N',ra:'189.23',dec:'+62.24',filters:11,tiles:8,area:'0.05 deg²',vol:'254 GB',progs:['JADES','FRESCO'],updated:'2025-04-02'},
+  {name:'Abell 2744',ra:'3.58',dec:'−30.39',filters:7,tiles:6,area:'0.04 deg²',vol:'118 GB',progs:['UNCOVER','MegaScience'],updated:'2025-03-11'},
+];
+function toggleDD(e){e.stopPropagation();const dd=document.getElementById('fieldDD');dd.classList.toggle('open');
+  if(dd.classList.contains('open')){document.getElementById('ddSearch').value='';filterDD();document.getElementById('ddSearch').focus();}}
+function filterDD(){const q=document.getElementById('ddSearch').value.toLowerCase();
+  document.getElementById('ddList').innerHTML=FIELDS.filter(f=>f.name.toLowerCase().includes(q)).map(f=>
+    `<div class="dd-item ${f.name===curField?'on':''}" onclick="chooseField('${f.name}')">
+      <span>${f.name}</span><span class="sub mono">${f.filters} filt · ${f.vol}</span></div>`).join('')
+    ||`<div class="dd-item dim" style="cursor:default">No match</div>`;}
+let curField='COSMOS';
+function chooseField(n){curField=n;document.getElementById('ddCur').textContent=n;
+  document.getElementById('titleField').textContent=n;document.getElementById('crumbField').textContent=n;
+  document.getElementById('fieldDD').classList.remove('open');}
+document.addEventListener('click',e=>{const dd=document.getElementById('fieldDD');if(dd&&!dd.contains(e.target))dd.classList.remove('open');});
+
+/* ---------- landing field cards ---------- */
+function rng(seed){let s=seed>>>0;return()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296;};}
+function hash(str){let h=2166136261;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
+// field "layout" preview = stack of all expmaps (union coverage) + tile outlines — mirrors the pipeline's <field>_layout.png
+function layoutPreview(name){const r=rng(hash(name)),rot=(-15+r()*22).toFixed(1),W=340,H=150,pad=14;
+  const g=Array.from({length:GH},()=>Array(GW).fill(0));
+  for(const f of FILTERS){const d=depthGrid(f);for(let y=0;y<GH;y++)for(let x=0;x<GW;x++)if(d[y][x]>0)g[y][x]++;}
+  const mx=Math.max(...g.flat(),1),cw=(W-2*pad)/GW,ch=(H-2*pad)/GH;
+  let cells='';for(let y=0;y<GH;y++)for(let x=0;x<GW;x++)if(g[y][x]>0)
+    cells+=`<rect x="${pad+x*cw}" y="${pad+y*ch}" width="${cw+.5}" height="${ch+.5}" fill="${viridis(g[y][x]/mx)}" opacity="${(.4+.55*g[y][x]/mx).toFixed(2)}"/>`;
+  const ntx=3+Math.floor(r()*3),nty=2+Math.floor(r()*2),tw=(W-2*pad)/ntx,thh=(H-2*pad)/nty;let tiles='';
+  for(let i=0;i<ntx;i++)for(let j=0;j<nty;j++)
+    tiles+=`<rect x="${pad+i*tw}" y="${pad+j*thh}" width="${tw}" height="${thh}" fill="none" stroke="rgba(255,255,255,.26)" stroke-width="0.7"/>`;
+  return`<svg width="100%" height="100%" viewBox="0 0 340 150" preserveAspectRatio="xMidYMid slice" style="display:block">
+    <defs><linearGradient id="sc${hash(name)}" x1="0" y1="0" x2="0" y2="1"><stop offset="0.5" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.72"/></linearGradient></defs>
+    <rect width="340" height="150" fill="#0b0a10"/>
+    <g transform="rotate(${rot} 170 75)">${cells}${tiles}</g>
+    <rect width="340" height="150" fill="url(#sc${hash(name)})"/></svg>`;}
+function renderLanding(){
+  document.getElementById('fieldGrid').innerHTML=FIELDS.map(f=>`
+    <div class="field-card" onclick="chooseField('${f.name}');show('field')">
+      <div class="prev">${layoutPreview(f.name)}<span class="coord mono">α ${f.ra} · δ ${f.dec}</span><span class="fname">${f.name}</span></div>
+      <div class="body">
+        <div class="fstats">
+          <div class="s"><div class="n">${f.filters}</div><div class="k">Filters</div></div>
+          <div class="s"><div class="n">${f.tiles}</div><div class="k">Tiles</div></div>
+          <div class="s"><div class="n">${f.area}</div><div class="k">Coverage</div></div>
+          <div class="s"><div class="n">${f.vol}</div><div class="k">Volume</div></div>
+        </div>
+        <div class="foot"><span>Last reduced ${f.updated}</span><span class="mono" style="color:var(--primary-text)">Open →</span></div>
+      </div>
+    </div>`).join('');
+}
+
+/* ---------- screen switching ---------- */
+function show(which){
+  document.getElementById('screen-landing').hidden=which!=='landing';
+  document.getElementById('screen-field').hidden=which!=='field';
+  window.scrollTo(0,0);
+}
+renderLanding();renderExp();renderTable();
+show('landing');
+</script>
+</body></html>
