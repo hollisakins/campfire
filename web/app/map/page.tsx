@@ -18,7 +18,10 @@ export default async function MapPage({ searchParams }: MapPageProps) {
   const ra = typeof params.ra === 'string' ? parseFloat(params.ra) : undefined;
   const dec = typeof params.dec === 'string' ? parseFloat(params.dec) : undefined;
   const zoomRaw = typeof params.z === 'string' ? params.z : typeof params.zoom === 'string' ? params.zoom : undefined;
-  const zoom = zoomRaw !== undefined ? parseInt(zoomRaw, 10) : undefined;
+  // parseFloat (not parseInt): the FitsGL map writes fractional zoom (e.g. 0.43),
+  // and Leaflet's integer levels parse identically as floats.
+  const zoomParsed = zoomRaw !== undefined ? parseFloat(zoomRaw) : undefined;
+  const zoom = zoomParsed !== undefined && Number.isFinite(zoomParsed) ? zoomParsed : undefined;
   const highlight = typeof params.highlight === 'string' ? params.highlight : undefined;
 
   const initialCenter = ra !== undefined && dec !== undefined ? { ra, dec } : undefined;

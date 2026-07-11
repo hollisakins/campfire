@@ -156,7 +156,14 @@ export function FitsGLMapSurface({
 
   const handleRef = useRef<FitsViewerHandle | null>(null);
   const overlaysRef = useRef<FitsglOverlaysHandle | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const lastZoom = useRef(0);
+  // Initial view read through refs: onReady is fixed at construction but re-fires
+  // on a dataset reload (field switch), so it must see the CURRENT initial props.
+  const initialCenterRef = useRef(initialCenter);
+  const initialZoomRef = useRef(initialZoom);
+  useEffect(() => { initialCenterRef.current = initialCenter; }, [initialCenter]);
+  useEffect(() => { initialZoomRef.current = initialZoom; }, [initialZoom]);
   const lastCursorSky = useRef<{ ra: number; dec: number } | null>(null);
   const initialApplied = useRef(false);
   // Popup: the clicked marker + its world position (repositioned every frame).
@@ -260,12 +267,14 @@ export function FitsGLMapSurface({
     if (!initialApplied.current) {
       initialApplied.current = true;
       handle.fitToImage();
+      const center = initialCenterRef.current;
+      const zoom = initialZoomRef.current;
       const wcs = handle.getViewer()?.getWcs() ?? null;
-      if (initialCenter && wcs) {
-        const p = skyToPix(wcs, initialCenter.ra, initialCenter.dec);
+      if (center && wcs) {
+        const p = skyToPix(wcs, center.ra, center.dec);
         handle.setCenter(p.x, p.y);
       }
-      if (initialZoom !== undefined) handle.setZoom(initialZoom);
+      if (zoom !== undefined) handle.setZoom(zoom);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -289,10 +298,13 @@ export function FitsGLMapSurface({
       lastZoom.current = info.zoom;
       setZoom(info.zoom);
     }
-    // Reposition the open popup to track its marker across pan/zoom.
+    // Reposition the open popup to track its marker across pan/zoom. imageToScreen
+    // returns viewport-client coords; the popup is absolute inside the map root, so
+    // localise to the root (matching the canvas-relative click position).
     if (popupWorld.current && h) {
       const s = h.imageToScreen(popupWorld.current.worldX, popupWorld.current.worldY);
-      setPopup((prev) => (prev && s ? { ...prev, x: s.x, y: s.y } : prev));
+      const rect = rootRef.current?.getBoundingClientRect();
+      setPopup((prev) => (prev && s && rect ? { ...prev, x: s.x - rect.left, y: s.y - rect.top } : prev));
     }
     // Debounced URL sync (centre → sky via the manifest WCS + FitsGL zoom).
     const wcs = h?.getViewer()?.getWcs() ?? null;
@@ -384,7 +396,7 @@ export function FitsGLMapSurface({
   }
 
   return (
-    <div className="fitsgl-chrome relative h-full w-full" onContextMenu={handleContextMenu}>
+    <div ref={rootRef} className="fitsgl-chrome relative h-full w-full" onContextMenu={handleContextMenu}>
       {viewerConfig && (
         <FitsViewer
           config={viewerConfig}

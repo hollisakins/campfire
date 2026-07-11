@@ -407,7 +407,11 @@ export function MapViewer({
               ? initialCenter
               : undefined
           }
-          initialZoom={initialZoom}
+          initialZoom={
+            initialCenter && (!initialField || initialField === selectedField)
+              ? initialZoom
+              : undefined
+          }
           fields={fields}
           selectedField={selectedField}
           onFieldChange={handleFieldChange}
