@@ -33,20 +33,16 @@ rootnames. The DB is the source of truth; the JSON file is a generated,
 fully-overwritten artifact — don't hand-edit it.
 """
 
-import hashlib
 import os
 import sys
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
 from astropy.io import fits
-from tqdm import tqdm
 
 from campfire_layout import KeyScheme, Scope, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
-from campfire.deploy.registry import default_hash_workers
 from campfire.deploy.supabase import (
     claim_deploy_scope, deploy_event_metadata, get_deploy_scope_version,
     get_supabase_client, get_user_id_from_token, insert_deployment, log_deploy_event,
@@ -95,84 +91,34 @@ def _stage_from_header(header):
     return stage
 
 
-def _sci_dq_hash(path):
-    """Return ``'sha256:<hex>'`` over the SCI+DQ+CFMASK arrays, or None.
-
-    The science-only change-detection digest for the deploy dedup (epic #261, D1).
-    Reproduces ``campfire_pipeline.nircam.manifest.compute_file_hash`` deploy-side
-    (deploy must not import the pipeline): ``do_not_scale_image_data=True`` hashes
-    the raw stored bytes regardless of BZERO/BSCALE, ``memmap=False`` forces a real
-    read. Whole-file hashes churn on every pipeline re-save (header timestamps), so
-    they can't drive dedup; the SCI+DQ+CFMASK digest is stable across a
-    science-identical re-save.
-
-    CFMASK (the user manual-mask extension) is included so a mask edit — which the
-    N7 freeze records as CFMASK on the canonical without touching SCI/DQ — still
-    re-uploads the exposure. It is hashed *last*, and the ``not in hdul`` guard
-    skips it when absent, so an un-masked exposure hashes byte-identically to the
-    old SCI+DQ-only digest (no spurious re-upload on the first post-N7 deploy).
-
-    Returns None if none of the arrays are present (never dedup on an empty hash).
-    """
-    h = hashlib.sha256()
-    hashed_any = False
-    try:
-        with fits.open(path, memmap=False, do_not_scale_image_data=True) as hdul:
-            for extname in ('SCI', 'DQ', 'CFMASK'):
-                if extname not in hdul:
-                    continue
-                data = hdul[extname].data
-                if data is not None:
-                    h.update(data.tobytes())
-                    hashed_any = True
-    except Exception:
-        return None
-    return f'sha256:{h.hexdigest()}' if hashed_any else None
+# The science-only change-detection digest (SCI+DQ+CFMASK; epic #261, D1) lives
+# in the shared storage core — it is the push-dedup identity for NIRCam
+# exposures on every access point. Re-exported under the established name.
+from campfire.storage.hashing import sci_dq_hash as _sci_dq_hash  # noqa: E402
 
 
 def _compute_sci_dq_hashes(fits_tasks, *, max_workers=None):
     """Return ``{r2_key: sci_dq_hash}`` for *fits_tasks*, hashed in parallel.
 
-    Computing the SCI+DQ+CFMASK digest for every candidate exposure is the
-    dominant cost *before* any upload starts — each :func:`_sci_dq_hash` reads
-    tens of MB off disk, and a field carries hundreds of exposures. Serially
-    this is the long pause before the first byte uploads. The reads are
-    I/O-bound and overlap across threads, so a pool cuts it to a fraction of the
-    serial time. A per-file read failure records ``None`` (never dedup on it),
-    matching the serial behaviour.
+    Computing the SCI+DQ+CFMASK digest for candidate exposures is the dominant
+    local cost before any upload starts; the shared parallel hasher overlaps
+    the I/O-bound reads. A per-file read failure records ``None`` (never dedup
+    on it).
     """
+    from campfire.storage.hashing import sci_dq_hashes_parallel
+
     if not fits_tasks:
         return {}
-    workers = max(1, min(max_workers or default_hash_workers(), len(fits_tasks)))
-    out: dict[str, str | None] = {}
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(_sci_dq_hash, t.local_path): t.r2_key for t in fits_tasks}
-        with tqdm(total=len(futures), desc='Hashing exposures', unit='file') as pbar:
-            for fut in as_completed(futures):
-                key = futures[fut]
-                try:
-                    out[key] = fut.result()
-                except Exception:
-                    out[key] = None
-                pbar.update(1)
-    return out
+    by_path = sci_dq_hashes_parallel(
+        [t.local_path for t in fits_tasks], max_workers=max_workers,
+        progress_desc='Hashing exposures',
+    )
+    return {t.r2_key: by_path.get(Path(t.local_path)) for t in fits_tasks}
 
 
-def _upload_workers():
-    """Parallel upload streams for NIRCam OSN uploads.
-
-    Overridable via ``CAMPFIRE_DEPLOY_UPLOAD_WORKERS``. Defaults to 16 (up from
-    the shared upload helper's 12): NIRCam ships many ~20-40 MB exposure/PNG
-    files whose upload is network-bound, so extra concurrent streams help fill
-    the uplink. Clamped to a sane range.
-    """
-    raw = os.environ.get('CAMPFIRE_DEPLOY_UPLOAD_WORKERS')
-    if raw:
-        try:
-            return max(1, min(64, int(raw)))
-        except ValueError:
-            pass
-    return 16
+# Parallel upload streams (CAMPFIRE_DEPLOY_UPLOAD_WORKERS-tunable) — the shared
+# push-side default; kept under the established local name.
+from campfire.deploy.push import default_upload_workers as _upload_workers  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -615,10 +561,10 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         print("Dry run — no changes made.")
         return
 
-    from campfire.deploy.registry import (
-        build_registry_rows, fetch_active_content_hashes, fetch_active_sci_dq_hashes,
-        hash_files_parallel, set_active_deployment, upsert_storage_objects,
+    from campfire.deploy.push import (
+        open_reducer_store, plan_remote_push, registration_flusher,
     )
+    from campfire.deploy.registry import set_active_deployment
 
     client = get_supabase_client(config)
     user_id = get_user_id_from_token(config)
@@ -642,103 +588,61 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     print(f"Deployment #{deployment_id} recorded "
           f"({'draft — admin-only' if draft else 'published — public'})")
 
-    # --- Content-hash dedup for the canonical FITS (D1) ---------------------
-    # Compare each exposure's local sha256(SCI+DQ) to the digest already stored in
-    # the registry; skip the upload when the science is unchanged (a pipeline
-    # re-save with fresh header timestamps shifts the whole-file hash but not this).
-    # Hashed in parallel — this is the dominant "pause before uploading" cost.
-    local_sci_dq = _compute_sci_dq_hashes(fits_tasks)
-    existing_sci_dq = fetch_active_sci_dq_hashes(client, [t.r2_key for t in fits_tasks])
-    fits_to_upload = [
-        t for t in fits_tasks
-        if not (local_sci_dq.get(t.r2_key)
-                and existing_sci_dq.get(t.r2_key) == local_sci_dq[t.r2_key])
-    ]
-    n_skipped = len(fits_tasks) - len(fits_to_upload)
-    if n_skipped:
-        print(f"\nSkipping {n_skipped} unchanged exposure(s) (SCI+DQ hash match)")
+    # --- Plan the exposure/expmap/PNG push (D1 dedup, unified) ---------------
+    # One plan over every OSN-bound tree product: the differ compares NIRCam
+    # exposures on the science-only sci_dq identity (a pipeline re-save with
+    # fresh header timestamps shifts the whole-file hash but not this) and
+    # expmaps/PNGs on the whole-file hash. Files this machine already confirmed
+    # against the same cloud identity skip via the pushed_* stat fast path —
+    # without reading a byte — so an unchanged re-deploy no longer pays the
+    # "hash every exposure" pause before uploading.
+    png_upload_list = [t[0] for t in png_tasks]
+    osn_tasks = fits_tasks + expmap_tasks + png_upload_list
+    store = open_reducer_store()
+    plan, _server_rows = plan_remote_push(
+        client, store, osn_tasks, backend=_CANONICAL_BACKEND)
+    print(f"\nPlan: {plan.summary()}")
 
-    # --- Upload canonical FITS + expmaps to OSN ----------------------------
+    # --- Upload new/changed products to OSN, registering per batch -----------
+    # Visibility rides deployment.status via the storage_objects gate: published
+    # -> public to everyone, draft -> admin-only. The FITS carry a science-only
+    # sci_dq_hash for change detection; content_hash stays the authoritative
+    # whole-file digest for download/copy verification. Registration is durable
+    # per batch (registration_flusher), so an interrupted deploy resumes at file
+    # granularity instead of re-uploading everything already landed.
     upload_workers = _upload_workers()
     n_failed = 0
-    osn_tasks = fits_to_upload + expmap_tasks
     osn_uploaded: set[str] = set()
-    if osn_tasks:
-        print(f"\nUploading {len(osn_tasks)} canonical FITS/expmap(s) to OSN...")
+    flusher = registration_flusher(
+        client, store, plan, backend=_CANONICAL_BACKEND,
+        deployment_id=deployment_id, uploaded_by=user_id,
+        cfpipe_version=cfpipe_version, max_workers=upload_workers)
+    if plan.to_upload:
+        print(f"Uploading {len(plan.to_upload)} canonical FITS/expmap/PNG(s) to OSN...")
         success, failed, failures = upload_files_parallel(
-            config, osn_tasks, desc='OSN uploads', max_workers=upload_workers,
-            succeeded_out=osn_uploaded, backend=_CANONICAL_BACKEND)
+            config, plan.to_upload, desc='OSN uploads', max_workers=upload_workers,
+            succeeded_out=osn_uploaded, backend=_CANONICAL_BACKEND,
+            on_success=flusher.add)
+        flusher.flush()
         n_failed += failed
         print(f"  Uploaded: {success}, Failed: {failed}")
         for msg in failures:
             print(f"  Error: {msg}")
-
-    # --- Upload preview PNGs to OSN (canonical keys, epic #261 N5) ----------
-    # Content-hash dedup (mirrors the FITS/mosaic paths): every deploy previously
-    # re-uploaded *all* preview + native-res PNGs, which dominates a re-deploy's
-    # upload time. Skip the ones whose bytes are unchanged; the nircam_exposures
-    # png_path columns are set from the task keys regardless of upload, so a
-    # skipped PNG stays correctly referenced.
-    png_upload_list = [t[0] for t in png_tasks]
-    existing_png = fetch_active_content_hashes(client, [t.r2_key for t in png_upload_list])
-    png_hashes = hash_files_parallel([t.local_path for t in png_upload_list])
-    local_png = {t.r2_key: png_hashes.get(t.local_path, (None, 0))[0] for t in png_upload_list}
-    png_to_upload = [
-        t for t in png_upload_list
-        if not (local_png.get(t.r2_key)
-                and existing_png.get(t.r2_key) == local_png[t.r2_key])
-    ]
-    n_png_skipped = len(png_upload_list) - len(png_to_upload)
-    png_uploaded: set[str] = set()
-    if png_to_upload:
-        if n_png_skipped:
-            print(f"\nSkipping {n_png_skipped} unchanged preview PNG(s) (content-hash match)")
-        print("Uploading preview PNGs to OSN...")
-        success, failed, failures = upload_files_parallel(
-            config, png_to_upload, desc='Uploading PNGs', max_workers=upload_workers,
-            succeeded_out=png_uploaded, backend=_CANONICAL_BACKEND)
-        n_failed += failed
-        print(f"  Uploaded: {success}, Failed: {failed}")
-        for msg in failures:
-            print(f"  Error: {msg}")
-    elif n_png_skipped:
-        print(f"\nSkipping {n_png_skipped} unchanged preview PNG(s) (content-hash match)")
+    if flusher.flushed:
+        print(f"  Registered {flusher.flushed} storage object(s)")
 
     print("\nUpserting exposures to Supabase...")
     _upsert_exposures(client, records)
     print(f"  Upserted {len(records)} exposures")
 
-    # --- Register storage objects, tagged with the field deployment ---------
-    # Visibility rides deployment.status via the storage_objects gate: published ->
-    # public to everyone, draft -> admin-only. The FITS carry a science-only
-    # sci_dq_hash for change detection; content_hash stays the authoritative
-    # whole-file digest for download/copy verification.
-    n_reg = 0
-    if osn_uploaded:
-        reg_rows = build_registry_rows(
-            osn_tasks, backend=_CANONICAL_BACKEND, deployment_id=deployment_id,
-            uploaded_by=user_id, cfpipe_version=cfpipe_version,
-            succeeded_keys=osn_uploaded, sci_dq_hashes=local_sci_dq,
-            max_workers=upload_workers)
-        n_reg += upsert_storage_objects(client, reg_rows)
-    if png_uploaded:
-        reg_rows = build_registry_rows(
-            png_to_upload, backend=_CANONICAL_BACKEND, cfpipe_version=cfpipe_version,
-            deployment_id=deployment_id, uploaded_by=user_id, succeeded_keys=png_uploaded,
-            max_workers=upload_workers)
-        n_reg += upsert_storage_objects(client, reg_rows)
-    if n_reg:
-        print(f"  Registered {n_reg} storage object(s)")
-
     # Re-point dedup-skipped objects (unchanged bytes, not re-registered) to this
     # deployment so a PUBLISHED re-deploy flips the whole field consistently. NOT on
     # a --draft re-deploy: draft is staging — leave already-published unchanged
     # objects on their published deployment (only the new/changed ones stage as
-    # draft), else the whole live field goes dark. Covers both the canonical FITS
-    # and the now-deduped preview PNGs.
+    # draft), else the whole live field goes dark. Covers the canonical FITS,
+    # expmaps, and preview PNGs alike.
     if deployment_id and not draft:
-        skipped_keys = [t.r2_key for t in fits_tasks if t.r2_key not in osn_uploaded]
-        skipped_keys += [t.r2_key for t in png_upload_list if t.r2_key not in png_uploaded]
+        skipped_keys = [t.r2_key for t in plan.unchanged]
     else:
         skipped_keys = []
     if skipped_keys:
@@ -746,9 +650,13 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         if n_moved:
             print(f"  Re-pointed {n_moved} unchanged object(s) to deployment #{deployment_id}")
 
+    # Exposure-only skip count for the audit-event metadata (fits_skipped).
+    _fits_keys = {t.r2_key for t in fits_tasks}
+    n_skipped = sum(1 for t in plan.unchanged if t.r2_key in _fits_keys)
+
     # --- Mosaics: deploy under the same field deployment (epic #261, N2) ----
     _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
-                          draft, user_id)
+                          draft, user_id, store=store)
 
     # --- Multi-reducer scope claim + audit (epic #210, B4 / D12) -----------
     claim = claim_deploy_scope(client, 'field', field, scope_version, actor=user_id)
@@ -935,61 +843,67 @@ def discover_mosaics(dirs, field, filters):
 
 
 def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
-                          draft, user_id):
+                          draft, user_id, store=None):
     """Deploy this field's mosaics under the field deployment (epic #261, N2).
 
     Called from :func:`deploy_nircam` so ``campfire deploy --field`` ships exposures
     and mosaics as one field deployment. Uploads each mosaic product (the ``_i2d``
     cube + any split ``_sci/_err/_wht/_srcmask`` extensions) to OSN under canonical
-    keys — whole-file content-hash deduped — upserts one ``nircam_images`` row per
+    keys — whole-file content-hash deduped via the push planner (with the pushed_*
+    stat fast path, so an unchanged multi-GB mosaic is skipped without re-hashing)
+    — upserts one ``nircam_images`` row per
     ``(field, tile, filter, pixel_scale, extension)`` carrying ``deploy_status``
     (draft/published to match the deployment) + ``deployment_id``, and registers
     ``nircam_mosaic`` storage objects tagged with the deployment. Re-combine
     overwrites the same key in place (stable, version-free — D3/D4); visibility
     rides the deployment (published => public to everyone).
     """
-    from campfire.deploy.registry import (
-        fetch_active_content_hashes, hash_files_parallel, row_for_key,
-        set_active_deployment, upsert_storage_objects,
+    from campfire.deploy.push import (
+        open_reducer_store, plan_remote_push, registration_flusher,
     )
+    from campfire.deploy.registry import set_active_deployment
+
     mosaics = discover_mosaics(dirs, field, filters)
     if not mosaics:
         return
     print(f"\nMosaics: {len(mosaics)} product(s)")
 
-    # Whole-file content-hash dedup: skip re-uploading a byte-identical mosaic.
-    # Mosaics are multi-GB, so hash them in parallel rather than one at a time.
-    existing = fetch_active_content_hashes(client, [m['storage_key'] for m in mosaics])
-    mosaic_hashes = hash_files_parallel([m['path'] for m in mosaics])
-    upload_tasks = []
+    if store is None:
+        store = open_reducer_store()
+
+    mosaic_tasks = [UploadTask(local_path=m['path'], r2_key=m['storage_key'],
+                               content_type=_FITS_CONTENT_TYPE) for m in mosaics]
+    plan, server_rows = plan_remote_push(
+        client, store, mosaic_tasks, backend=_CANONICAL_BACKEND)
+    unchanged_keys = {t.r2_key for t in plan.unchanged}
+    if plan.unchanged:
+        print(f"  Skipping {len(plan.unchanged)} unchanged mosaic file(s)")
+
+    # Local file size for nircam_images.file_size: the plan stat()s every file.
     for m in mosaics:
-        local_hash, local_size = mosaic_hashes[m['path']]
-        m['content_hash'] = local_hash
-        m['size'] = local_size
-        if existing.get(m['storage_key']) != local_hash:
-            upload_tasks.append(UploadTask(local_path=m['path'],
-                                           r2_key=m['storage_key'],
-                                           content_type=_FITS_CONTENT_TYPE))
-    n_skipped = len(mosaics) - len(upload_tasks)
-    if n_skipped:
-        print(f"  Skipping {n_skipped} unchanged mosaic file(s)")
+        m['size'] = plan.stats.get(m['storage_key'], (None, None))[1]
 
     uploaded: set[str] = set()
-    if upload_tasks:
-        print(f"  Uploading {len(upload_tasks)} mosaic file(s) to OSN...")
+    flusher = registration_flusher(
+        client, store, plan, backend=_CANONICAL_BACKEND,
+        deployment_id=deployment_id, uploaded_by=user_id,
+        max_workers=_upload_workers())
+    if plan.to_upload:
+        print(f"  Uploading {len(plan.to_upload)} mosaic file(s) to OSN...")
         success, failed, failures = upload_files_parallel(
-            config, upload_tasks, desc='OSN mosaic uploads', max_workers=_upload_workers(),
-            succeeded_out=uploaded, backend=_CANONICAL_BACKEND)
+            config, plan.to_upload, desc='OSN mosaic uploads', max_workers=_upload_workers(),
+            succeeded_out=uploaded, backend=_CANONICAL_BACKEND,
+            on_success=flusher.add)
+        flusher.flush()
         print(f"    Uploaded: {success}, Failed: {failed}")
         for msg in failures:
             print(f"    Error: {msg}")
+        if flusher.flushed:
+            print(f"  Registered {flusher.flushed} mosaic storage object(s)")
 
     # A failed upload must NOT get a nircam_images row (it would advertise a
     # file_path with no object + no registry row; the slot 404s). A re-run heals.
-    present = set(uploaded) | {
-        m['storage_key'] for m in mosaics
-        if existing.get(m['storage_key']) == m['content_hash']
-    }
+    present = set(uploaded) | unchanged_keys
     # PUBLISHED: (re-)index every present mosaic under this deployment. DRAFT is
     # staging — only index the NEW/CHANGED (uploaded) mosaics as draft; leave
     # unchanged, already-published mosaics on their live deployment so the field
@@ -1009,27 +923,11 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     if n_failed:
         print(f"  ({n_failed} mosaic(s) not indexed — upload failed; re-run to retry)")
 
-    # Register landed objects, reusing the dedup hash (no re-hash of multi-GB files).
-    reg_rows = []
-    for m in mosaics:
-        if m['storage_key'] not in uploaded:
-            continue
-        row = row_for_key(
-            m['storage_key'], backend=_CANONICAL_BACKEND,
-            content_hash=m['content_hash'], size_bytes=m['size'],
-            content_type=_FITS_CONTENT_TYPE, deployment_id=deployment_id,
-            uploaded_by=user_id)
-        if row is not None:
-            reg_rows.append(row)
-    if reg_rows:
-        print(f"  Registered {upsert_storage_objects(client, reg_rows)} mosaic storage object(s)")
-
     # Re-point unchanged (skipped) mosaics to the current deployment — only on a
     # PUBLISHED deploy. On --draft, leave unchanged mosaics on their live deployment
     # (staging: don't take the published field dark).
     if not draft:
-        skipped_keys = [m['storage_key'] for m in mosaics
-                        if m['storage_key'] in present and m['storage_key'] not in uploaded]
+        skipped_keys = sorted(unchanged_keys - uploaded)
         if skipped_keys:
             set_active_deployment(client, skipped_keys, deployment_id)
 

@@ -314,20 +314,39 @@ def _deploy_intermediates_only(
                                   scheme=KeyScheme.CANONICAL), 'application/fits')
         for p in rate_files
     ]
-    uploaded_keys: set[str] = set()
-    print(f"Uploading {len(upload_tasks)} intermediates "
-          f"({len(exposure_files)} spectrum-exposures + {len(rate_files)} rate files) to OSN...")
-    success, failed, failed_msgs = upload_files_parallel(
-        config, upload_tasks, desc="OSN uploads", succeeded_out=uploaded_keys,
-        backend='osn')
-    print(f"Uploaded {success}/{len(upload_tasks)} files")
-
     # Best-effort provenance from the first exposure header (Phase 3): the
     # intermediates carry whatever cards the reduction stamped. Absent → NULL.
     # For a rate-only deploy (stage 1 done, stage 2 not yet) there are no
     # spectrum-exposures, so fall back to a rate header for provenance.
     cfpipe_version, jwst_version, crds_context = _read_exposure_provenance(
         exposure_files or rate_files)
+
+    # Push plan: dedup against the server registry (with the local mirror's
+    # stat fast path), then upload only new/changed bytes, registering per
+    # batch so an interrupted run resumes at file granularity.
+    from campfire.deploy.push import (
+        open_reducer_store, plan_remote_push, registration_flusher,
+    )
+    store = open_reducer_store()
+    plan, _server_rows = plan_remote_push(sb, store, upload_tasks, backend='osn')
+    print(f"Plan: {plan.summary()}")
+
+    uploaded_keys: set[str] = set()
+    success, failed, failed_msgs = 0, 0, []
+    flusher = registration_flusher(
+        sb, store, plan, backend='osn', deployment_id=None,
+        uploaded_by=user_id, cfpipe_version=cfpipe_version)
+    if plan.to_upload:
+        print(f"Uploading {len(plan.to_upload)} of {len(upload_tasks)} intermediates "
+              f"({len(exposure_files)} spectrum-exposures + {len(rate_files)} rate files) to OSN...")
+        success, failed, failed_msgs = upload_files_parallel(
+            config, plan.to_upload, desc="OSN uploads", succeeded_out=uploaded_keys,
+            backend='osn', on_success=flusher.add)
+        flusher.flush()
+        print(f"Uploaded {success}/{len(plan.to_upload)} files "
+              f"({len(plan.unchanged)} unchanged skipped)")
+    else:
+        print("Cloud already matches local intermediates — nothing to upload.")
 
     deployment_id = insert_deployment(
         sb, observation=obs_name, deployed_by=user_id, status='draft',
@@ -342,20 +361,15 @@ def _deploy_intermediates_only(
             observation=obs_name, affected_count=success,
             metadata=deploy_event_metadata(
                 'nirspec', observation=obs_name, planned=len(upload_tasks),
-                succeeded=success, failed=failed, items=len(upload_tasks),
-                draft=True, intermediates_only=True))
-
-    if uploaded_keys:
-        from campfire.deploy.registry import (
-            build_registry_rows, upsert_storage_objects,
-        )
-        # NIRSpec products are homed on OSN under canonical keys (epic #210 / #216).
-        reg_rows = build_registry_rows(
-            upload_tasks, backend='osn',
-            deployment_id=deployment_id, uploaded_by=user_id,
-            cfpipe_version=cfpipe_version, succeeded_keys=uploaded_keys)
-        n_reg = upsert_storage_objects(sb, reg_rows)
-        print(f"Registered {n_reg} storage objects")
+                succeeded=success, failed=failed, skipped=len(plan.unchanged),
+                items=len(upload_tasks), draft=True, intermediates_only=True))
+        # Attach this deploy's landed objects to the deployment (rows were
+        # registered durably per batch, before the deployment row existed).
+        # Draft semantics: only the uploaded objects stage as draft; unchanged
+        # objects stay on their prior (possibly published) deployment.
+        if uploaded_keys:
+            from campfire.deploy.registry import set_active_deployment
+            set_active_deployment(sb, sorted(uploaded_keys), deployment_id)
 
     # Rate-mask triage rows (P2, design §3.2): one per (obs, exposure, detector),
     # split-ownership upsert so re-deploy never clobbers web review state.
@@ -663,7 +677,13 @@ def deploy_observation(
         uploaded_keys: set[str] = set()  # r2_keys that actually landed (for the registry)
         rate_files: list = []  # populated in the not-supabase_only block; drives P2 triage upsert
         exposure_files: list = []  # canonical spectrum-exposures; drives the P4 nods grid
+        push_plan = None  # set in the not-supabase_only block; drives deployment attach
+        # Initialized here so a --supabase-only deploy (which skips the upload
+        # block entirely) can still evaluate the audit-event metadata below —
+        # previously a latent NameError on that path.
+        total_tasks, success, failed = 0, 0, 0
         scope = Scope(obs=obs_name)
+        user_id = get_user_id_from_token(config)
 
         # NIRSpec science products are homed on OSN under CANONICAL keys (epic #210 /
         # #216 — deploy → OSN); rgb/sed are dead products that stay on R2 under legacy
@@ -718,12 +738,33 @@ def deploy_observation(
             if rate_files:
                 print(f"  + {len(rate_files)} detector rate files")
 
-            total_tasks = len(upload_tasks) + len(legacy_tasks)
-            print(f"Uploading {total_tasks} files ({len(upload_tasks)} NIRSpec → OSN)...")
-            success, failed, failed_msgs = upload_files_parallel(
-                config, upload_tasks, desc="OSN uploads", succeeded_out=uploaded_keys,
-                backend='osn',
+            # Push plan (storage unification): dedup the OSN-bound products
+            # against the server registry — pipeline-written FITS that a prior
+            # `campfire push` (or deploy) already landed skip entirely, and the
+            # local mirror's stat fast path means unchanged files are skipped
+            # without re-reading them. Registration is durable per batch, so an
+            # interrupted deploy resumes at file granularity.
+            from campfire.deploy.push import (
+                open_reducer_store, plan_remote_push, registration_flusher,
             )
+            store = open_reducer_store()
+            push_plan, _server_rows = plan_remote_push(
+                sb, store, upload_tasks, backend='osn')
+            print(f"Plan: {push_plan.summary()}")
+            flusher = registration_flusher(
+                sb, store, push_plan, backend='osn', deployment_id=None,
+                uploaded_by=user_id,
+                cfpipe_version=summary.meta.get('cfpipe_version'))
+
+            total_tasks = len(upload_tasks) + len(legacy_tasks)
+            print(f"Uploading {len(push_plan.to_upload)} of {len(upload_tasks)} "
+                  f"NIRSpec file(s) → OSN "
+                  f"({len(push_plan.unchanged)} unchanged skipped)...")
+            success, failed, failed_msgs = upload_files_parallel(
+                config, push_plan.to_upload, desc="OSN uploads",
+                succeeded_out=uploaded_keys, backend='osn', on_success=flusher.add,
+            )
+            flusher.flush()
             if legacy_tasks:
                 s2, f2, m2 = upload_files_parallel(
                     config, legacy_tasks, desc="R2 uploads (rgb/sed)",
@@ -876,7 +917,6 @@ def deploy_observation(
         # Record deployment provenance
         config_snapshot = _load_config_snapshot(obs_dir, obs_name)
         stuck_shutters = _load_stuck_shutters(resolve_reference_obs_dir(obs_name))
-        user_id = get_user_id_from_token(config)
 
         deployment_id = insert_deployment(
             sb,
@@ -933,24 +973,25 @@ def deploy_observation(
             print("   Both deploys' writes are present; re-check the result and "
                   "re-deploy if a re-reduction was clobbered.")
 
-        # Storage registry (#214): index the objects that actually landed in this
-        # deploy. Shadow index — additive, nothing reads it as authoritative yet.
-        if uploaded_keys:
-            from campfire.deploy.registry import (
-                build_registry_rows, upsert_storage_objects,
-            )
-            # upload_tasks are the NIRSpec products, homed on OSN under canonical
-            # keys (rgb/sed are in legacy_tasks and never register). backend='osn'.
-            reg_rows = build_registry_rows(
-                upload_tasks,
-                backend='osn',
-                deployment_id=deployment_id,
-                uploaded_by=user_id,
-                cfpipe_version=summary.meta.get('cfpipe_version'),
-                succeeded_keys=uploaded_keys,
-            )
-            n_reg = upsert_storage_objects(sb, reg_rows)
-            print(f"Registered {n_reg} storage objects")
+        # Storage registry (#214): rows were registered durably PER BATCH during
+        # the upload (registration_flusher), before this deployment row existed.
+        # Attach them now: everything uploaded this run, plus — on a published
+        # deploy — the unchanged dedup-skipped objects, so deployment-gated
+        # intermediates ride the current deployment's visibility. On --draft,
+        # unchanged objects stay on their prior (possibly published) deployment
+        # (staging must not take live data dark). rgb/sed legacy keys have no
+        # registry rows, so their presence in uploaded_keys is a no-op here.
+        if deployment_id and push_plan is not None:
+            from campfire.deploy.registry import set_active_deployment
+            osn_keys = {t.r2_key for t in upload_tasks}
+            attach = set(uploaded_keys) & osn_keys
+            if not draft:
+                attach |= {t.r2_key for t in push_plan.unchanged}
+            if attach:
+                n_att = set_active_deployment(sb, sorted(attach), deployment_id)
+                if n_att:
+                    print(f"Attached {n_att} storage object(s) to deployment "
+                          f"#{deployment_id}")
 
         # Rate-mask triage rows (P2, design §3.2): split-ownership upsert so a
         # re-deploy refreshes render columns without clobbering web review state.
@@ -1039,7 +1080,8 @@ def deploy_rgb(
         return
 
     tasks = [UploadTask(p, storage_key('rgb', Scope(obs=obs_name), p.name), 'image/png') for p in rgb_files]
-    success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="RGB images")
+    # rgb is a dead legacy product: R2 is correct here (data products live on OSN).
+    success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="RGB images", backend='r2')
 
     if failed_msgs:
         print(f"\n  {failed} failed:")
@@ -1092,7 +1134,8 @@ def deploy_sed(
         return
 
     tasks = [UploadTask(p, storage_key('sed', Scope(obs=obs_name), p.name), 'application/pdf') for p in sed_files]
-    success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="SED plots")
+    # sed is a dead legacy product: R2 is correct here (data products live on OSN).
+    success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="SED plots", backend='r2')
 
     if failed_msgs:
         print(f"\n  {failed} failed:")
