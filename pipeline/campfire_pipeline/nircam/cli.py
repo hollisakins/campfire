@@ -372,15 +372,18 @@ def rgb(config, field, tiles, pixel_scale, preview_max_dim, processes, overwrite
 @click.option('--padding', type=float, default=30.0, show_default=True,
               help='Sky padding around the union footprint, arcsec.')
 @click.option('--out-dir', default=None,
-              help='Base products dir; per-filter FITS/PDFs land in '
-                   '<out-dir>/<filter>/ (default: {products}/nircam/<field>/).')
+              help='Base products dir; per-filter FITS/PDF/PNG land in '
+                   '<out-dir>/<filter>/, the field layout + footprints at its '
+                   'root (default: {products}/nircam/<field>/).')
 @click.option('--processes', '-p', default=1, type=int, show_default=True,
               help='Per-filter parallelism (one filter per worker).')
 @click.option('--overwrite', is_flag=True,
-              help='Rebuild even if FITS + PDF already exist.')
+              help='Rebuild even if the expmap FITS already exists '
+                   '(plots + layout are always re-rendered).')
 def expmap(config, field, filters, stage, pixel_scale, padding,
            out_dir, processes, overwrite):
-    """Build per-filter exposure maps, footprint regions, and diagnostic plots."""
+    """Build per-filter exposure maps (FITS + light PDF + dark PNG), the field
+    layout plot + coverage JSON, and footprint regions."""
     _, field_obj = _setup(config, field)
     from campfire_pipeline.nircam.expmap import run_expmap
     run_expmap(

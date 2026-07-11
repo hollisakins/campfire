@@ -70,6 +70,19 @@ Release procedure: edit the `## Unreleased` section below, then run
   fiducial map (the `_uncal`/legacy `_canonical` variants are skipped) and it is now
   surfaced for download on the web NIRCam page. Pure output-file naming change with
   no effect on pixel values (`nircam/expmap.py`).
+- NIRCam exposure maps now emit web-ready plots + a coverage summary (for the
+  NIRCam page redesign). Each per-filter map gains a **dark PNG**
+  (`expmap_<field>_<filter>[_uncal].png`) beside the existing light PDF —
+  rendered on a dark plot well to match CAMPFIRE's data surfaces (map/spectrum
+  wells stay dark in both app themes); the PDF is kept as the local diagnostic.
+  A new **field layout** plot (`<field>_layout[_uncal].png`) stacks every
+  per-filter expmap (total exposure across filters) with tile-footprint
+  outlines + axes + colorbar so it stands alone as a coverage/tiling product,
+  and a companion `<field>_layout.json` records the **exact survey area**
+  (non-zero pixels of the stack × pixel area) + per-filter areas for the
+  deploy/DB layer. Each per-filter expmap FITS also gains an `AREA` header
+  (covered arcmin²). Plots + metadata only — no change to expmap pixel values
+  (`nircam/expmap.py`, `nircam/cli.py`).
 - NIRCam wisp templates are now fetched from a public HTTPS host into
   `$CAMPFIRE_ROOT/cache/wisps/` against a checksummed manifest shipped with the
   package (`data/wisp_manifest.toml`), instead of being manually copied into the
