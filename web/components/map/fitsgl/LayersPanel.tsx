@@ -3,7 +3,8 @@
 /**
  * Layers panel (epic #337, Phase 4.5) — docked-right toggles for what's drawn OVER
  * the imagery (`docs/design-fitsgl-map-ux.md` §4): NIRSpec objects, MSA shutters
- * (Phase 4b), and the RA/Dec graticule. No quality legend (locked decision 5).
+ * (Phase 4b, rendered as FitsGL regions), and the RA/Dec graticule. No quality
+ * legend (locked decision 5).
  */
 
 import { PANEL_CAP } from './glass';
@@ -40,10 +41,11 @@ interface LayersPanelProps {
   markerCount: number;
   graticule: boolean;
   onToggleGraticule: (on: boolean) => void;
-  /** MSA shutters — the region overlay lands in Phase 4b; the row is inert until then. */
+  /** MSA shutters (Phase 4b) — disabled when the field carries none. */
   shuttersAvailable?: boolean;
   showShutters?: boolean;
   onToggleShutters?: (on: boolean) => void;
+  shutterCount?: number;
 }
 
 export function LayersPanel({
@@ -55,17 +57,17 @@ export function LayersPanel({
   shuttersAvailable = false,
   showShutters = false,
   onToggleShutters,
+  shutterCount = 0,
 }: LayersPanelProps) {
   return (
     <div className="space-y-1">
       <h4 className={PANEL_CAP}>Layers</h4>
       <ToggleRow label={`NIRSpec objects (${markerCount})`} on={showMarkers} onToggle={onToggleMarkers} />
       <ToggleRow
-        label="MSA shutters"
+        label={`MSA shutters (${shutterCount})`}
         on={shuttersAvailable ? showShutters : false}
         onToggle={onToggleShutters ?? (() => {})}
         disabled={!shuttersAvailable}
-        hint={shuttersAvailable ? undefined : 'soon'}
       />
       <ToggleRow label="Graticule" on={graticule} onToggle={onToggleGraticule} />
     </div>

@@ -417,6 +417,10 @@ export function MapViewer({
           onFieldChange={handleFieldChange}
           onToggleMarkers={setShowMarkers}
           markerCount={markers.length}
+          shutters={slits}
+          showShutters={showSlits}
+          onToggleShutters={setShowSlits}
+          shutterFilter={slitFilter}
           onCursorCoords={setCursorCoords}
           onContextMenu={handleContextMenu}
           onOpenFilters={onOpenFilters}
