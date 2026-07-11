@@ -75,8 +75,6 @@ from campfire.deploy.deploy import (
     deploy_json,
     deploy_observation,
     deploy_pointings,
-    deploy_rgb,
-    deploy_sed,
     deploy_shutters,
     deploy_slits,
     deploy_thumbnails,
@@ -222,8 +220,6 @@ def source_ids_option(f):
 @click.option('--supabase-only', is_flag=True, help='Skip R2 uploads, only update Supabase.')
 @click.option('--force-overwrite', is_flag=True, help='Reset inspection data for existing objects.')
 @click.option('--auto-approve', is_flag=True, help='Skip confirmation prompts.')
-@click.option('--rgb', is_flag=True, help='Include RGB image deployment (skipped by default).')
-@click.option('--no-sed', is_flag=True, help='Skip SED plot deployment.')
 @click.option('--no-shutters', is_flag=True, help='Skip shutter deployment.')
 @click.option('--no-photometry', is_flag=True,
               help='Skip photometry upsert after objects reconcile.')
@@ -242,7 +238,7 @@ def source_ids_option(f):
                    'Equivalent to CAMPFIRE_DEPLOY_MODE=service-role.')
 @click.pass_context
 def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids,
-                 supabase_only, force_overwrite, auto_approve, rgb, no_sed,
+                 supabase_only, force_overwrite, auto_approve,
                  no_shutters, no_photometry, skip_astrometry, draft, local,
                  service_role):
     """Deploy CAMPFIRE pipeline products to Supabase + object storage.
@@ -304,8 +300,6 @@ def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids
                 dry_run=dry_run,
                 supabase_only=supabase_only,
                 force_overwrite=force_overwrite,
-                include_rgb=rgb,
-                include_sed=not no_sed,
                 include_shutters=not no_shutters,
                 include_photometry=not no_photometry,
                 skip_astrometry=skip_astrometry,
@@ -423,40 +417,6 @@ def push_cmd(ctx, config_path, obs, fields, filter_names, source_ids, dry_run,
 # ---------------------------------------------------------------------------
 # Subcommands
 # ---------------------------------------------------------------------------
-
-@deploy_group.command()
-@shared_options
-@source_ids_option
-@click.option('--overwrite', is_flag=True, help='Regenerate files even if they exist.')
-@click.pass_context
-def rgb(ctx, config_path, obs, dry_run, local, source_ids, overwrite):
-    """Generate and deploy RGB images to R2."""
-    config = load_config(config_path, local=_resolve_local(ctx, local))
-    for obs_name in obs:
-        deploy_rgb(
-            obs_name, config,
-            dry_run=dry_run,
-            source_ids=list(source_ids) if source_ids else None,
-            overwrite=overwrite,
-        )
-
-
-@deploy_group.command()
-@shared_options
-@source_ids_option
-@click.option('--overwrite', is_flag=True, help='Regenerate files even if they exist.')
-@click.pass_context
-def sed(ctx, config_path, obs, dry_run, local, source_ids, overwrite):
-    """Generate and deploy SED plots to R2 and update has_sed_plot."""
-    config = load_config(config_path, local=_resolve_local(ctx, local))
-    for obs_name in obs:
-        deploy_sed(
-            obs_name, config,
-            dry_run=dry_run,
-            source_ids=list(source_ids) if source_ids else None,
-            overwrite=overwrite,
-        )
-
 
 @deploy_group.command('json')
 @shared_options

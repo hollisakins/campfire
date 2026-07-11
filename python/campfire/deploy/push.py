@@ -385,7 +385,20 @@ def push_field(
         return {'planned': 0, 'pushed': 0, 'failed': 0, 'skipped': 0}
 
     available = _discover_filters(dirs)
-    filters = [f for f in (filters or available) if f in available] or available
+    if filters:
+        # An explicit selection stays a selection: unknown filters are dropped
+        # with a warning, and an all-unknown selection pushes NOTHING — falling
+        # back to every filter here would turn a typo (--filter f999w) into an
+        # unintended full-field transfer.
+        missing = [f for f in filters if f not in available]
+        if missing:
+            print(f"Warning: no products for filter(s): {', '.join(missing)}")
+        filters = [f for f in filters if f in available]
+        if not filters:
+            print("No matching filters — nothing to push.")
+            return {'planned': 0, 'pushed': 0, 'failed': 0, 'skipped': 0}
+    else:
+        filters = available
 
     exposures = discover_exposures(dirs, filters)
     tasks: list[UploadTask] = list(build_fits_upload_tasks(field, exposures))

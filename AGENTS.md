@@ -204,7 +204,6 @@ lifecycle. Part of the unified `campfire` CLI (install from `python/`):
 cd python && pip install -e .
 campfire deploy --obs <obs_name>                         # full deploy
 campfire deploy --obs <obs_name> --dry-run               # validate only
-campfire deploy rgb --obs <obs_name>                     # RGB cutouts only
 campfire deploy pointings --obs <obs_name>               # pointings JSONB backfill
 campfire deploy tiles --field cosmos --filter f444w      # map tiles
 campfire deploy sync-programs                            # upsert from programs.toml
@@ -216,7 +215,10 @@ A1/A2 storage migrations complete. `deploy registry budget` is gone — the
 number shows in `campfire status` (admins). Registry↔bucket verification is
 `campfire verify --cloud`. The `deploy nircam pull*` / `deploy nirspec pull-*`
 annotation round-trips are folded into `campfire pull` (hidden but working
-individually).
+individually). RGB/SED static cutouts are fully deprecated (superseded by the
+on-the-fly `/api/v1/cutout` API): deploy neither generates nor uploads them,
+and the `deploy rgb`/`deploy sed` subcommands are removed — their legacy R2
+remnants retire with A2.
 
 **Deploy auth (issue #250).** Two decisions, kept independent:
 

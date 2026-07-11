@@ -945,7 +945,9 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
         store.close()
         # Annotations are not hash-tracked — regenerate them even when the
         # products are current (an inspector may have edited masks since).
-        _maybe_pull_annotations(obs_filter, target_fields, no_annotations)
+        # target_obs is the RESOLVED observation set (--obs, --program, a
+        # NIRSpec --field, --stale all land here), not just the literal --obs.
+        _maybe_pull_annotations(target_obs, target_fields, no_annotations)
         return
 
     if dry_run:
@@ -989,7 +991,9 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
 
     store.close()
 
-    _maybe_pull_annotations(obs_filter, target_fields, no_annotations)
+    # Resolved observations (not just literal --obs): --program, NIRSpec
+    # --field, and --stale selections regenerate their annotations too.
+    _maybe_pull_annotations(target_obs, target_fields, no_annotations)
 
 
 # Back-compat alias: `campfire download` ≡ `campfire pull`.

@@ -19,14 +19,10 @@ from tqdm import tqdm
 from campfire.deploy.config import load_observations, load_programs, resolve_field, resolve_imaging_config, resolve_obs_dir, resolve_reference_obs_dir, validate_program_slug
 from campfire.deploy.discover import (
     discover_pointings_ecsv,
-    discover_rgb_images,
-    discover_sed_plots,
     discover_rate_files,
     discover_shutters_ecsv,
     discover_spectrum_exposures,
     discover_slits_json,
-    extract_object_ids_from_files,
-    filter_files_by_source_ids,
     load_pointings_ecsv,
     load_shutters_ecsv,
     load_slits_json,
@@ -57,7 +53,6 @@ from campfire.deploy.supabase import (
     recompute_target_aggregates,
     refresh_filter_options,
     refresh_programs_overview,
-    update_has_sed_plot,
     update_latest_deployment,
     update_observation_pointings,
     upsert_observation,
@@ -412,8 +407,6 @@ def deploy_observation(
     dry_run: bool = False,
     supabase_only: bool = False,
     force_overwrite: bool = False,
-    include_rgb: bool = False,
-    include_sed: bool = True,
     include_shutters: bool = True,
     include_photometry: bool = True,
     skip_astrometry: bool = False,
@@ -518,37 +511,10 @@ def deploy_observation(
                 print("Aborted.")
                 return {'field': field, 'needs_reconcile': False}
 
-    # Generate RGB/SED if requested (skips existing files)
-    if not dry_run:
-        if include_rgb:
-            from campfire.deploy.generate_rgb import generate_rgb_images
-            n = generate_rgb_images(obs_name, obs_dir, field,
-                                    source_ids=source_ids)
-            if n:
-                print(f"  Generated {n} RGB images")
-        if include_sed:
-            from campfire.deploy.generate_sed import generate_sed_plots
-            n = generate_sed_plots(obs_name, obs_dir, field,
-                                   source_ids=source_ids)
-            if n:
-                print(f"  Generated {n} SED plots")
-
-    # Discover optional file types
-    rgb_files = discover_rgb_images(obs_dir) if include_rgb else []
-    sed_files = discover_sed_plots(obs_dir) if include_sed else []
-
-    if source_ids:
-        rgb_files = filter_files_by_source_ids(rgb_files, source_ids, obs_name)
-        sed_files = filter_files_by_source_ids(sed_files, source_ids, obs_name)
-
-    if rgb_files:
-        print(f"  RGB images: {len(rgb_files)}")
-    if sed_files:
-        print(f"  SED plots: {len(sed_files)}")
+    # RGB/SED static cutouts are fully deprecated: superseded by the on-the-fly
+    # /api/v1/cutout API, never registered, not served anywhere. Deploy no
+    # longer generates or uploads them (legacy R2 remnants retire with A2).
     print()
-
-    # Build set of object_ids with SED plots
-    objects_with_sed = extract_object_ids_from_files(sed_files, '_sed.pdf') if sed_files else set()
 
     # --- Dry run ---
     if dry_run:
@@ -561,12 +527,6 @@ def deploy_observation(
             print(f"  {len(spec_paths)} spectrum JSON files")
             if zfit_paths:
                 print(f"  {len(zfit_paths)} zfit JSON files")
-            if rgb_files or sed_files:
-                print(f"Would upload to R2 (dead rgb/sed, legacy keys):")
-                if rgb_files:
-                    print(f"  {len(rgb_files)} RGB images")
-                if sed_files:
-                    print(f"  {len(sed_files)} SED plots")
         print(f"Would upsert to Supabase:")
         print(f"  Program: {program_slug}")
         print(f"  {len(objects)} object(s)")
@@ -759,21 +719,13 @@ def deploy_observation(
             if fits_name in thumb_map:
                 rec.update(thumb_map[fits_name])
 
-        # NIRSpec science products are homed on OSN under CANONICAL keys (epic #210 /
-        # #216 — deploy → OSN); rgb/sed are dead products that stay on R2 under legacy
-        # keys (unregistered, 404, not migrated). They upload in separate batches.
-        legacy_tasks: list[UploadTask] = []
+        # NIRSpec science products are homed on OSN under CANONICAL keys
+        # (epic #210 / #216 — deploy → OSN).
         if not supabase_only:
             # Zfit JSONs
             for zfit_path in zfit_paths:
                 zfit_json = generate_zfit_json(zfit_path, temp_dir)
                 upload_tasks.append(UploadTask(zfit_json, storage_key('zfit', scope, zfit_json.name, scheme=KeyScheme.CANONICAL), 'application/json'))
-
-            # RGB images / SED plots — dead products (kept on R2/legacy, unchanged).
-            for rgb_path in rgb_files:
-                legacy_tasks.append(UploadTask(rgb_path, storage_key('rgb', scope, rgb_path.name), 'image/png'))
-            for sed_path in sed_files:
-                legacy_tasks.append(UploadTask(sed_path, storage_key('sed', scope, sed_path.name), 'application/pdf'))
 
             # Canonical spectrum-exposure intermediates (epic #210, B5): uploaded on
             # EVERY deploy (cloud-as-source-of-truth + delete-local→restore), filtered
@@ -824,7 +776,7 @@ def deploy_observation(
                 uploaded_by=user_id,
                 cfpipe_version=summary.meta.get('cfpipe_version'))
 
-            total_tasks = len(upload_tasks) + len(legacy_tasks)
+            total_tasks = len(upload_tasks)
             print(f"Uploading {len(push_plan.to_upload)} of {len(upload_tasks)} "
                   f"NIRSpec file(s) → OSN "
                   f"({len(push_plan.unchanged)} unchanged skipped)...")
@@ -833,24 +785,15 @@ def deploy_observation(
                 succeeded_out=uploaded_keys, backend='osn', on_success=flusher.add,
             )
             flusher.flush()
-            if legacy_tasks:
-                s2, f2, m2 = upload_files_parallel(
-                    config, legacy_tasks, desc="R2 uploads (rgb/sed)",
-                    succeeded_out=uploaded_keys, backend='r2',
-                )
-                success += s2
-                failed += f2
-                failed_msgs = failed_msgs + m2
-
             if failed_msgs:
                 print(f"\n  {failed} uploads failed:")
                 for msg in failed_msgs[:10]:
                     print(f"    - {msg}")
                 if len(failed_msgs) > 10:
                     print(f"    ... and {len(failed_msgs) - 10} more")
-            # `success` counts only the files that were actually transferred
-            # (planned uploads + rgb/sed legacy); unchanged files were never
-            # candidates, so they are reported as skipped — not as failures.
+            # `success` counts only the files that were actually transferred;
+            # unchanged files were never candidates, so they are reported as
+            # skipped — not as failures.
             print(f"Uploaded {success}"
                   + (f", failed {failed}" if failed else "")
                   + f" ({len(push_plan.unchanged)} unchanged skipped)")
@@ -858,7 +801,7 @@ def deploy_observation(
 
         # Supabase upserts
         print("Upserting objects...")
-        n_obj, new_object_ids, _n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite, objects_with_sed)
+        n_obj, new_object_ids, _n_quality_reset = batch_upsert_objects(sb, objects, field, force_overwrite)
         print(f"  {n_obj} objects")
         # Backfill the deployment row's new-target count — the row is recorded
         # up front (parity with deploy_nircam), before this number exists.
@@ -1032,10 +975,6 @@ def deploy_observation(
         extras = []
         if zfit_paths:
             extras.append(f"{len(zfit_paths)} zfit")
-        if rgb_files:
-            extras.append(f"{len(rgb_files)} RGB")
-        if sed_files:
-            extras.append(f"{len(sed_files)} SED")
         if n_shutters:
             extras.append(f"{n_shutters} shutters")
         print()
@@ -1063,117 +1002,6 @@ def deploy_observation(
 # ---------------------------------------------------------------------------
 # Standalone subcommand handlers
 # ---------------------------------------------------------------------------
-
-def deploy_rgb(
-    obs_name: str,
-    config: dict,
-    *,
-    dry_run: bool = False,
-    source_ids: list[int] | None = None,
-    overwrite: bool = False,
-) -> None:
-    """Generate and deploy RGB images to R2."""
-    obs_dir = resolve_obs_dir(obs_name)
-
-    # Generate RGB images (skips existing unless overwrite=True)
-    if not dry_run:
-        field = resolve_field(obs_name)
-        if field:
-            from campfire.deploy.generate_rgb import generate_rgb_images
-            n = generate_rgb_images(obs_name, obs_dir, field,
-                                    overwrite=overwrite, source_ids=source_ids)
-            if n:
-                print(f"Generated {n} RGB images")
-
-    rgb_files = discover_rgb_images(obs_dir)
-
-    if source_ids:
-        rgb_files = filter_files_by_source_ids(rgb_files, source_ids, obs_name)
-
-    if not rgb_files:
-        print("No RGB images found.")
-        return
-
-    print(f"Found {len(rgb_files)} RGB images")
-
-    if dry_run:
-        print("=== DRY RUN ===")
-        for path in rgb_files[:5]:
-            print(f"  {path.name} -> {storage_key('rgb', Scope(obs=obs_name), path.name)}")
-        if len(rgb_files) > 5:
-            print(f"  ... and {len(rgb_files) - 5} more")
-        return
-
-    tasks = [UploadTask(p, storage_key('rgb', Scope(obs=obs_name), p.name), 'image/png') for p in rgb_files]
-    # rgb is a dead legacy product: R2 is correct here (data products live on OSN).
-    success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="RGB images", backend='r2')
-
-    if failed_msgs:
-        print(f"\n  {failed} failed:")
-        for msg in failed_msgs[:5]:
-            print(f"    - {msg}")
-
-    print(f"Uploaded {success}/{len(rgb_files)} RGB images")
-
-
-def deploy_sed(
-    obs_name: str,
-    config: dict,
-    *,
-    dry_run: bool = False,
-    source_ids: list[int] | None = None,
-    overwrite: bool = False,
-) -> None:
-    """Generate and deploy SED plots to R2 and update has_sed_plot in Supabase."""
-    obs_dir = resolve_obs_dir(obs_name)
-
-    # Generate SED plots (skips existing unless overwrite=True)
-    if not dry_run:
-        field = resolve_field(obs_name)
-        if field:
-            from campfire.deploy.generate_sed import generate_sed_plots
-            n = generate_sed_plots(obs_name, obs_dir, field,
-                                   overwrite=overwrite, source_ids=source_ids)
-            if n:
-                print(f"Generated {n} SED plots")
-
-    sed_files = discover_sed_plots(obs_dir)
-
-    if source_ids:
-        sed_files = filter_files_by_source_ids(sed_files, source_ids, obs_name)
-
-    if not sed_files:
-        print("No SED plots found.")
-        return
-
-    objects_with_sed = extract_object_ids_from_files(sed_files, '_sed.pdf')
-    print(f"Found {len(sed_files)} SED plots ({len(objects_with_sed)} objects)")
-
-    if dry_run:
-        print("=== DRY RUN ===")
-        for path in sed_files[:5]:
-            print(f"  {path.name} -> {storage_key('sed', Scope(obs=obs_name), path.name)}")
-        if len(sed_files) > 5:
-            print(f"  ... and {len(sed_files) - 5} more")
-        print(f"Would set has_sed_plot=true for {len(objects_with_sed)} objects")
-        return
-
-    tasks = [UploadTask(p, storage_key('sed', Scope(obs=obs_name), p.name), 'application/pdf') for p in sed_files]
-    # sed is a dead legacy product: R2 is correct here (data products live on OSN).
-    success, failed, failed_msgs = upload_files_parallel(config, tasks, desc="SED plots", backend='r2')
-
-    if failed_msgs:
-        print(f"\n  {failed} failed:")
-        for msg in failed_msgs[:5]:
-            print(f"    - {msg}")
-
-    print(f"Uploaded {success}/{len(sed_files)} SED plots")
-
-    # Update database
-    sb = get_supabase_client(config)
-    n = update_has_sed_plot(sb, objects_with_sed)
-    print(f"Updated has_sed_plot for {n} objects")
-
 
 def deploy_json(
     obs_name: str,

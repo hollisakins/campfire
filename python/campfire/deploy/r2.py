@@ -16,10 +16,9 @@ fallback (issue #250):
    URLs structurally cannot express.
 
 Destinations are explicit: **data products live on OSN** under canonical keys;
-map tiles are the sole R2 exception (CDN edge); rgb/sed are dead legacy R2
-products awaiting retirement. ``backend`` is therefore a REQUIRED argument on
-the upload entry points — encoding an ``'r2'`` default was the "surely this
-deploys to R2" trap.
+map tiles are the sole R2 exception (CDN edge). ``backend`` is therefore a
+REQUIRED argument on the upload entry points — encoding an ``'r2'`` default
+was the "surely this deploys to R2" trap.
 
 Transport details shared with the download side via ``campfire.storage``:
 pooled sessions with retry (PUT is idempotent, so it retries safely),
@@ -109,8 +108,7 @@ def request_presigned_urls(
         Cache-Control header to set on uploaded objects.
     backend : str
         Storage backend to sign against — REQUIRED. 'osn' for data products
-        (canonical keys, epic #210 / #216); 'r2' only for tiles and the dead
-        legacy rgb/sed products.
+        (canonical keys, epic #210 / #216); 'r2' only for map tiles.
 
     Returns
     -------
@@ -399,8 +397,7 @@ def upload_files_parallel(
         the caller can register exactly what landed (used for storage_objects).
     backend : str
         Destination backend — REQUIRED, no default. 'osn' for all data products
-        (canonical keys; epic #210 / #216). 'r2' is correct ONLY for map tiles
-        and the dead legacy rgb/sed products.
+        (canonical keys; epic #210 / #216). 'r2' is correct ONLY for map tiles.
     on_success : callable, optional
         ``on_success(task)`` runs on the calling thread as each upload lands —
         the hook for durable mid-transfer bookkeeping (per-batch registry
