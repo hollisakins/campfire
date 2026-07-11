@@ -217,3 +217,55 @@ class TestImagingMethods:
             client.get_shutters("CAMPFIRE-J0001+0001", fov=3.0, cache=False)
         params = mock_api_session.get.call_args.kwargs.get("params", {})
         assert params["object_id"] == "CAMPFIRE-J0001+0001"
+
+    def test_get_fits_cutout_params_and_open(self, mock_api_session, tmp_path):
+        # The response must be real FITS bytes: the client caches then opens it.
+        import io
+        import numpy as np
+        from astropy.io import fits as afits
+
+        hdul = afits.HDUList([
+            afits.PrimaryHDU(),
+            afits.ImageHDU(data=np.zeros((2, 2), dtype=np.float32), name="F444W"),
+        ])
+        buf = io.BytesIO()
+        hdul.writeto(buf)
+
+        mock_api_session.get.return_value = _make_mock_response()
+        mock_api_session.get.return_value.content = buf.getvalue()
+        with patch("campfire.config.resolve_data_dir", return_value=tmp_path), \
+                warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            client = Campfire()
+            result = client.get_fits_cutout(
+                "cosmos", ra=150.1, dec=2.2, fov=6.0,
+                bands=["f277w", "f444w"], scale=0.06, cache=False,
+            )
+        path, = mock_api_session.get.call_args.args
+        assert path == "/cutout/fits"
+        params = mock_api_session.get.call_args.kwargs.get("params", {})
+        assert params["field"] == "cosmos"
+        assert params["ra"] == 150.1 and params["dec"] == 2.2
+        assert params["fov"] == 6.0
+        assert params["bands"] == "f277w,f444w"
+        assert params["scale"] == 0.06
+        assert result["F444W"].data.shape == (2, 2)
+        result.close()
+
+    def test_get_cutout_figure_params(self, mock_api_session, tmp_path):
+        mock_api_session.get.return_value = _make_mock_response()
+        mock_api_session.get.return_value.content = b"PNGDATA"
+        with patch("campfire.config.resolve_data_dir", return_value=tmp_path), \
+                warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            client = Campfire()
+            dest = client.get_cutout_figure(
+                "cosmos", ra=150.1, dec=2.2, fov=6.0,
+                size=200, cols=3, stretch="log", colormap="viridis", cache=False,
+            )
+        path, = mock_api_session.get.call_args.args
+        assert path == "/cutout/figure"
+        params = mock_api_session.get.call_args.kwargs.get("params", {})
+        assert params["size"] == 200 and params["cols"] == 3
+        assert params["stretch"] == "log" and params["colormap"] == "viridis"
+        assert dest.read_bytes() == b"PNGDATA"
