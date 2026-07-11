@@ -186,7 +186,7 @@ campfire sync                          # refresh the local index (never touches 
 campfire status [--obs X | --field Y]  # bidirectional diff; scoped = push-side dry run
 campfire pull --obs X [--intermediate] # cloud→local products (+ review annotations, admins)
 campfire push --obs X | --field Y      # local→cloud bytes ONLY — no catalog, no publication
-campfire verify [--cloud] [--json]     # tree↔index; --cloud adds registry↔bucket (CI-able)
+campfire verify [--cloud] [--deep]     # tree↔index (bulk scan, size-match quick check); --cloud adds registry↔bucket
 campfire drop-local --obs X --yes      # delete local files verified in cloud
 ```
 

@@ -650,16 +650,23 @@ def sync_cmd(full: bool, base_url: Optional[str], migrate_layout: Optional[bool]
         if result.get("purged_spectra"):
             click.echo(f"  Removed {result['purged_spectra']} spectra deleted from server.")
 
-        # Verify local files so status reports correct counts immediately
+        # Verify local files so status reports correct counts immediately.
+        # Cheap: one bulk directory scan + size-match adoption, no file reads —
+        # frequent drift-checking is the point, so this must stay fast even on
+        # a reducer tree over NFS (run `campfire verify --deep` for true
+        # content hashing).
         pd = _products_dir()
         if pd.exists():
             verify = store.verify_local_objects(pd, show_progress=True)
             if verify["cleared"]:
                 click.echo(f"  Detected {verify['cleared']} missing local file(s).")
             if verify["rehashed"]:
-                click.echo(f"  Re-verified {verify['rehashed']} modified local file(s).")
+                click.echo(f"  Refreshed {verify['rehashed']} modified local file(s).")
             if verify["discovered"]:
                 click.echo(f"  Found {verify['discovered']} existing local file(s).")
+            if verify.get("mismatched"):
+                click.echo(f"  {verify['mismatched']} local file(s) don't match the "
+                           f"cloud object (partial/foreign) — left as pending.")
 
         if result["stale_count"] > 0:
             click.echo(f"\n⚠ {result['stale_count']} local file(s) have been updated on the server.")
@@ -891,9 +898,12 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
         click.echo("Note: --filters scopes NIRCam field products; this selection "
                    "has no NIRCam field, so it has no effect.")
 
-    # Reconcile DB with filesystem before planning
+    # Reconcile DB with filesystem before planning — scoped to this pull's
+    # selection so the pre-flight stays O(selection), not O(tree).
     verify = store.verify_local_objects(
-        _products_dir(), product_types=product_types, show_progress=True
+        _products_dir(), product_types=product_types, show_progress=True,
+        observations=list(target_obs) or None,
+        fields=list(target_fields) or None,
     )
     if verify["cleared"]:
         click.echo(f"  Detected {verify['cleared']} missing local file(s), will re-download.")
@@ -901,6 +911,9 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
         click.echo(f"  Re-verified {verify['rehashed']} modified local file(s).")
     if verify["discovered"]:
         click.echo(f"  Found {verify['discovered']} existing local file(s), skipping download.")
+    if verify.get("mismatched"):
+        click.echo(f"  {verify['mismatched']} local file(s) don't match the cloud object "
+                   f"(partial/foreign); will re-download.")
 
     # Compute download plan locally (no HTTP requests)
     grating_list = list(grating_filter) if grating_filter else None
@@ -1043,16 +1056,21 @@ def _maybe_pull_annotations(obs_names, nircam_fields, disabled: bool) -> None:
 @click.option("--cloud", "cloud", is_flag=True,
               help="Also verify the cloud registry against the actual buckets "
                    "(admin; needs S3 LIST credentials — OSN primary, legacy R2)")
+@click.option("--deep", is_flag=True,
+              help="Content-hash changed/discovered files instead of the "
+                   "size-match quick check (reads every such file)")
 @click.option("--json", "as_json", is_flag=True,
               help="Machine-readable report (for CI); exit 1 on drift")
 @click.option("--local", is_flag=True,
               help="--cloud against local Supabase (127.0.0.1:54321)")
-def verify(obs_filter, cloud, as_json, local):
+def verify(obs_filter, cloud, deep, as_json, local):
     """Verify local tree ↔ index, and optionally index ↔ cloud buckets.
 
     Without --cloud: reconciles the local products tree against the storage
-    index (stat fast-path; re-hashes only files whose size/mtime changed;
-    clears vanished files; adopts files that appeared).
+    index via one bulk directory scan (no file reads): clears vanished files,
+    and adopts present files whose size matches the cloud object (rsync-style
+    quick check — the server hash is presumed, not re-computed). --deep
+    additionally content-hashes every changed/discovered file.
 
     With --cloud (admin): additionally compares live DB pointers vs the
     registry vs actual bucket LISTs — OSN first (the data home), then the
@@ -1068,19 +1086,22 @@ def verify(obs_filter, cloud, as_json, local):
     if not as_json:
         click.echo("Verifying local tree against the index...")
     store = _open_store()
-    local_totals = {"cleared": 0, "rehashed": 0, "discovered": 0}
-    scopes = list(obs_filter) or [None]
-    for scope in scopes:
-        res = store.verify_local_objects(
-            _products_dir(), observation=scope, show_progress=not as_json)
-        for k in local_totals:
-            local_totals[k] += res.get(k, 0)
+    local_totals = store.verify_local_objects(
+        _products_dir(),
+        observations=list(obs_filter) or None,
+        deep=deep,
+        show_progress=not as_json,
+    )
     store.close()
     payload["local"] = local_totals
     if not as_json:
         click.echo(f"  cleared (file vanished): {local_totals['cleared']}")
-        click.echo(f"  re-hashed (file changed): {local_totals['rehashed']}")
+        click.echo(f"  {'re-hashed' if deep else 'refreshed'} (file changed): "
+                   f"{local_totals['rehashed']}")
         click.echo(f"  discovered (already present): {local_totals['discovered']}")
+        if local_totals.get("mismatched"):
+            click.echo(f"  mismatched (size ≠ cloud object; left pending): "
+                       f"{local_totals['mismatched']}")
 
     drift = False
     if cloud:
