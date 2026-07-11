@@ -1,0 +1,67 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{--bg:#080a0f;--glass:rgba(22,27,36,.72);--bd:rgba(255,255,255,.09);--tx:#e7eaf0;--tx2:#9aa3b2;--tx3:#69707e;--acc:#f5a524;--accbg:rgba(245,165,36,.16)}
+*{box-sizing:border-box;margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif}
+body{background:radial-gradient(900px 600px at 40% 30%,#0e1524,#080a0f 72%);color:var(--tx);padding:34px;display:flex;gap:40px;align-items:flex-start}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.glass{background:var(--glass);backdrop-filter:blur(14px);border:1px solid var(--bd);box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.lbl{font-size:11px;color:var(--acc);font-style:italic;margin-bottom:9px}
+.panel{width:262px;padding:15px;border-radius:14px}
+h4{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--tx3);margin-bottom:11px;display:flex;justify-content:space-between;align-items:center}
+.x{color:var(--tx3);font-size:15px}
+.seg{display:flex;background:rgba(255,255,255,.05);border-radius:8px;padding:2px;font-size:11px;margin-bottom:12px}
+.seg span{padding:4px 12px;border-radius:6px;color:var(--tx2)}.seg .on{background:var(--acc);color:#111;font-weight:600}
+.chips{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}
+.chip{padding:5px 8px;border-radius:7px;font-size:11px;background:rgba(255,255,255,.05);color:var(--tx2)}.chip.on{background:var(--accbg);color:var(--acc)}
+.ch{display:flex;align-items:center;gap:9px;margin:9px 0}
+.sw{width:12px;height:12px;border-radius:3px}
+.dd{flex:1;display:flex;justify-content:space-between;background:rgba(255,255,255,.05);border:1px solid var(--bd);border-radius:7px;padding:5px 9px;font-size:12px;color:var(--tx)}
+.dd .a{color:var(--tx3)}
+.mini{height:4px;flex:1;border-radius:2px;background:linear-gradient(90deg,var(--acc),rgba(245,165,36,.15));position:relative}
+.knob{position:absolute;top:50%;width:11px;height:11px;border-radius:50%;background:#fff;transform:translate(-50%,-50%)}
+.row{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;color:var(--tx2);padding:6px 0}
+.btn{width:100%;text-align:center;padding:7px;border-radius:8px;background:var(--accbg);color:var(--acc);font-size:12px;margin-top:6px}
+.cmap{display:flex;gap:5px;margin-top:6px}.cm{flex:1;height:15px;border-radius:4px}
+.sep{border-top:1px solid var(--bd);margin:12px 0}
+/* filters slide-over is taller */
+.slide{width:300px;height:560px;padding:16px;border-radius:14px;overflow:auto}
+.field{display:flex;justify-content:space-between;background:rgba(255,255,255,.05);border:1px solid var(--bd);border-radius:8px;padding:8px 10px;font-size:12.5px;margin:6px 0;color:var(--tx)}
+.qchip{padding:4px 9px;border-radius:14px;font-size:11px;border:1px solid var(--bd);color:var(--tx2)}
+.qchip.on{border-color:transparent}
+.search{width:100%;background:rgba(255,255,255,.05);border:1px solid var(--bd);border-radius:9px;padding:9px 11px;color:var(--tx2);font-size:12.5px;margin-bottom:12px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}
+</style></head><body>
+<div>
+  <div class="lbl">Display panel — RGB mode (③ folds in; no new panel)</div>
+  <div class="panel glass">
+    <h4>Display <span class="mono" style="color:var(--tx3);font-size:10px">trilogy</span></h4>
+    <div class="seg"><span>Single</span><span class="on">RGB</span></div>
+    <div class="ch"><span class="sw" style="background:#ef4444"></span><span class="dd">F444W <span class="a">▾</span></span><span class="mini" style="max-width:54px"><span class="knob" style="left:70%"></span></span></div>
+    <div class="ch"><span class="sw" style="background:#22c55e"></span><span class="dd">F277W <span class="a">▾</span></span><span class="mini" style="max-width:54px"><span class="knob" style="left:55%"></span></span></div>
+    <div class="ch"><span class="sw" style="background:#3b82f6"></span><span class="dd">F150W <span class="a">▾</span></span><span class="mini" style="max-width:54px"><span class="knob" style="left:60%"></span></span></div>
+    <div class="btn">✦ Rainbow auto-assign</div>
+    <div class="sep"></div>
+    <div class="row" style="padding-top:0"><span>Stretch</span></div>
+    <div class="chips"><span class="chip on">trilogy</span><span class="chip">asinh</span><span class="chip">log</span><span class="chip">sqrt</span></div>
+  </div>
+</div>
+<div>
+  <div class="lbl">NIRSpec Filters — full-height slide-over (② kept distinct)</div>
+  <div class="slide glass">
+    <h4>NIRSpec Filters <span class="x">×</span></h4>
+    <input class="search" placeholder="🔍  Search name / RA Dec / cone…">
+    <div class="row" style="color:var(--tx3);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Redshift quality</div>
+    <div class="chips"><span class="qchip on" style="background:rgba(239,68,68,.18);color:#ef4444">1</span><span class="qchip on" style="background:rgba(249,115,22,.18);color:#f97316">2</span><span class="qchip on" style="background:rgba(245,158,11,.18);color:#f59e0b">3</span><span class="qchip on" style="background:rgba(34,197,94,.18);color:#22c55e">4</span></div>
+    <div class="sep"></div>
+    <div class="row" style="color:var(--tx3);font-size:11px;text-transform:uppercase;letter-spacing:.5px">Program</div>
+    <div class="field">all programs <span style="color:var(--tx3)">▾</span></div>
+    <div class="row" style="color:var(--tx3);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-top:6px">Redshift</div>
+    <div style="display:flex;gap:8px"><div class="field" style="flex:1">z min</div><div class="field" style="flex:1">z max</div></div>
+    <div class="row" style="color:var(--tx3);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-top:6px">Grating</div>
+    <div class="chips"><span class="chip">PRISM</span><span class="chip">G140M</span><span class="chip">G235M</span><span class="chip">G395M</span><span class="chip">G395H</span></div>
+    <div class="sep"></div>
+    <div class="row"><span>Max SNR</span><span class="mono" style="color:var(--tx3)">any</span></div>
+    <div class="row"><span>Exposure time</span><span class="mono" style="color:var(--tx3)">any</span></div>
+    <div class="btn" style="margin-top:14px;background:var(--acc);color:#111;font-weight:600">Apply · 128 objects</div>
+  </div>
+</div>
+</body></html>
