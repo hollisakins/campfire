@@ -1,0 +1,119 @@
+// Per-field cutout dispatch (epic #337, Phase 5): resolve a field's deployed
+// FitsGL tile pyramid into the `BandSource[]` the cutout engine consumes. A field
+// with a `kind='field'` row in `fitsgl_datasets` renders display cutouts from the
+// FITS pyramid; a `null` return means "no (visible) pyramid" and the caller falls
+// back to the legacy PNG-tile compositing (retired per-field in the follow-up PR).
+//
+// Kept free of `sharp`/route coupling so the science-FITS route can share it;
+// PNG-flattening display helpers live in `./display`.
+
+import { loadFitsglConfig, type FitsglConfig } from '@fitsgl/core';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { loadManifest } from './manifest';
+import type { BandSource } from './index';
+
+type FitsglBand = FitsglConfig['dataset']['bands'][number];
+
+export interface FieldCutoutSource {
+  /** 1 band (single-band colormap) or 3 ordered `[R, G, B]` (composite). */
+  bands: BandSource[];
+  /** Band names matching `bands`, for labeling/provenance. */
+  bandNames: string[];
+  /** Native (finest-level) pixel scale in arcsec/px, for native-size defaults. */
+  nativeScaleArcsec: number;
+}
+
+/** `fetch` with Next data-cache revalidation, so a re-deployed dataset's
+ *  `fitsgl.json`/`manifest.json` refresh within an hour (mirrors the legacy
+ *  PNG tile fetcher's `revalidate: 3600`). */
+const cachingFetch: typeof fetch = (input, init) =>
+  fetch(input, { ...init, next: { revalidate: 3600 } });
+
+/**
+ * Pick the display bands from a dataset inventory.
+ *
+ * Producer default view first (`mode:'rgb'` with named channels); otherwise a
+ * wavelength-ordered composite — reddest→R, middle→G, bluest→B — when the field
+ * has ≥3 bands, else the default single band. Grid-group compatibility is NOT
+ * required here (unlike the live viewer's composite): every band reprojects
+ * independently onto the same North-up output grid.
+ */
+function chooseBands(config: FitsglConfig): FitsglBand[] {
+  const { bands } = config.dataset;
+  const dv = config.defaultView;
+
+  if (dv.mode === 'rgb' && dv.r && dv.g && dv.b) {
+    const byName = new Map(bands.map((b) => [b.name, b]));
+    const rgb = [dv.r, dv.g, dv.b].map((n) => byName.get(n));
+    if (rgb.every(Boolean)) return rgb as FitsglBand[];
+  }
+
+  if (bands.length >= 3) {
+    // Blue→red by pivot wavelength; producers omit pivotUm ⇒ declaration order.
+    const ordered = bands.every((b) => b.pivotUm != null)
+      ? [...bands].sort((a, b) => a.pivotUm! - b.pivotUm!)
+      : bands;
+    const mid = Math.floor((ordered.length - 1) / 2);
+    return [ordered[ordered.length - 1], ordered[mid], ordered[0]];
+  }
+
+  const single = (dv.band && bands.find((b) => b.name === dv.band)) || bands[0];
+  return [single];
+}
+
+/**
+ * Resolve a field's FitsGL cutout source, or `null` when the field has no
+ * (visible) pyramid — including on any fetch/parse failure, so callers can fall
+ * back to the legacy path during the transition.
+ *
+ * `requirePublic` is for service-role callers, which bypass RLS: it mirrors the
+ * `authenticated_select_fitsgl_datasets` policy via the same SECURITY DEFINER
+ * `fitsgl_dataset_is_public()` check, so an unpublished-backed dataset never
+ * serves public/API cutouts. User-scoped clients rely on RLS instead (admins
+ * intentionally see draft-backed datasets, matching the map).
+ */
+export async function resolveFieldCutoutSource(
+  supabase: SupabaseClient,
+  field: string,
+  opts: { requirePublic?: boolean } = {},
+): Promise<FieldCutoutSource | null> {
+  const { data: rows, error } = await supabase
+    .from('fitsgl_datasets')
+    .select('field, kind, tiles, bands, pixel_scale, fitsgl_json_url, is_default')
+    .eq('field', field)
+    .eq('kind', 'field');
+  if (error || !rows || rows.length === 0) return null;
+  const ds = rows.find((r) => r.is_default) ?? rows[0];
+
+  if (opts.requirePublic) {
+    const { data: isPublic, error: pubErr } = await supabase.rpc('fitsgl_dataset_is_public', {
+      p_field: ds.field,
+      p_tiles: ds.tiles,
+      p_bands: ds.bands,
+      p_pixel_scale: ds.pixel_scale,
+    });
+    if (pubErr || !isPublic) return null;
+  }
+
+  try {
+    const config = await loadFitsglConfig(ds.fitsgl_json_url, cachingFetch);
+    const chosen = chooseBands(config);
+    const bands: BandSource[] = await Promise.all(
+      chosen.map(async (b) => {
+        const manifestUrl = b.tiles[0]; // absolute after loadFitsglConfig
+        return {
+          manifest: await loadManifest(manifestUrl, undefined, cachingFetch),
+          baseUrl: new URL('.', manifestUrl).toString(),
+        };
+      }),
+    );
+    return {
+      bands,
+      bandNames: chosen.map((b) => b.name),
+      nativeScaleArcsec: bands[0].manifest.levels[0].pixelScaleArcsec,
+    };
+  } catch (err) {
+    console.error(`FitsGL cutout source unavailable for field ${field}:`, err);
+    return null;
+  }
+}

@@ -4,6 +4,8 @@ import {
   compositeTileThumbnail,
   type MapLayerInfo,
 } from '@/lib/utils/tile-compositing';
+import { resolveFieldCutoutSource } from '@/lib/cutout/source';
+import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 
 /**
  * GET /api/og-image/[id]
@@ -51,6 +53,30 @@ export async function GET(
 
     if (!obj) {
       return new Response('Image not found', { status: 404 });
+    }
+
+    // FitsGL path (epic #337, Phase 5). Service-role client bypasses RLS, so
+    // requirePublic mirrors the fitsgl_datasets policy — an unpublished-backed
+    // pyramid never serves this public route.
+    const fitsglSrc = await resolveFieldCutoutSource(supabase, obj.field, { requirePublic: true });
+    if (fitsglSrc) {
+      try {
+        const png = await renderDisplayCutoutPng(fitsglSrc, {
+          ra: obj.ra,
+          dec: obj.dec,
+          fovArcsec: 5,
+          outputSize: 300,
+        });
+        return new Response(new Uint8Array(png), {
+          status: 200,
+          headers: {
+            'Content-Type': 'image/png',
+            'Cache-Control': 'public, max-age=604800', // 1 week
+          },
+        });
+      } catch (err) {
+        console.error('FitsGL OG-image render failed; falling back to PNG tiles:', err);
+      }
     }
 
     // Get RGB map layer for this field
