@@ -56,14 +56,23 @@ export function parseManifest(json: unknown): Manifest {
   if (!Array.isArray(rawLevels) || rawLevels.length === 0) throw new Error('manifest has no levels');
   const levels: LevelInfo[] = rawLevels.map((lv) => {
     const l = lv as Record<string, unknown>;
-    const supertiles = (l.supertiles as unknown[]).map((st) => {
-      const s = st as Record<string, unknown>;
-      return {
-        filename: String(s.filename),
-        tileOrigin: pair(s.tile_origin, 'supertile.tile_origin'),
-        tileCount: pair(s.tile_count, 'supertile.tile_count'),
-      } satisfies SupertileInfo;
-    });
+    let supertiles: SupertileInfo[];
+    if (l.supertiles == null) {
+      // v1 shim (mirrors `fitsgl.manifest.LevelInfo.from_dict`): a legacy level
+      // has no `supertiles[]` — synthesize the one full-grid supertile from the
+      // level's single file ([n_ty, n_tx] → tile_count [n_tx, n_ty]).
+      const [nTy, nTx] = pair(l.fpack_tile_count, 'level.fpack_tile_count');
+      supertiles = [{ filename: String(l.filename), tileOrigin: [0, 0], tileCount: [nTx, nTy] }];
+    } else {
+      supertiles = (l.supertiles as unknown[]).map((st) => {
+        const s = st as Record<string, unknown>;
+        return {
+          filename: String(s.filename),
+          tileOrigin: pair(s.tile_origin, 'supertile.tile_origin'),
+          tileCount: pair(s.tile_count, 'supertile.tile_count'),
+        } satisfies SupertileInfo;
+      });
+    }
     return {
       z: Number(l.z),
       filename: String(l.filename),

@@ -41,10 +41,12 @@ export interface CutoutRequest {
 }
 
 export interface CutoutRGBA {
+  /** Raster order (row 0 = top = North) — ready for `sharp`/canvas encoding. */
   rgba: Uint8ClampedArray;
   width: number;
   height: number;
-  /** The N-up output WCS (flat FITS header) — carried through for the FITS path. */
+  /** The N-up output WCS (flat FITS header). NB: describes the underlying
+   *  FITS bottom-up float array, NOT the row-flipped `rgba` raster. */
   outputWcsHeader: Record<string, number | string>;
 }
 
