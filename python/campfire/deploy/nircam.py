@@ -515,12 +515,10 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         (filtname, basename): _read_full_png_dimensions(task.local_path)
         for task, basename, filtname, kind in png_tasks if kind == 'full'
     }
-    print(f"Preview PNGs to upload: {len(png_tasks)} "
+    print(f"Preview PNGs: {len(png_tasks)} "
           f"({len(thumb_r2_keys)} thumb, {len(full_r2_keys)} full)")
 
     fits_tasks = build_fits_upload_tasks(field, exposures)
-    print(f"→ OSN: {len(fits_tasks)} exposure(s), {len(expmap_tasks)} expmap(s), "
-          f"{n_mosaics} mosaic(s)")
 
     records = []
     for (filtname, basename), info in sorted(exposures.items()):
@@ -655,8 +653,8 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     n_skipped = sum(1 for t in plan.unchanged if t.r2_key in _fits_keys)
 
     # --- Mosaics: deploy under the same field deployment (epic #261, N2) ----
-    _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
-                          draft, user_id, store=store)
+    mosaic_stats = _deploy_field_mosaics(dirs, field, config, client, filters,
+                                         deployment_id, draft, user_id, store=store)
 
     # --- Multi-reducer scope claim + audit (epic #210, B4 / D12) -----------
     claim = claim_deploy_scope(client, 'field', field, scope_version, actor=user_id)
@@ -681,6 +679,22 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         suggest_fitsgl_rebuild(client, field)
     except Exception:
         pass
+
+    # Closing summary — one block stating what happened, after the stage output.
+    print()
+    print(f"Deploy complete: {field}")
+    print(f"  deployment:  #{deployment_id} "
+          f"({'draft — admin-only' if draft else 'published'})")
+    print(f"  catalog:     {len(records)} exposures"
+          + (f", {mosaic_stats['indexed']} mosaic rows" if mosaic_stats else ""))
+    files_line = (f"  files:       {len(osn_uploaded)} uploaded, "
+                  f"{len(plan.unchanged)} unchanged skipped")
+    if mosaic_stats:
+        files_line += (f"; mosaics: {mosaic_stats['uploaded']} uploaded, "
+                       f"{mosaic_stats['unchanged']} unchanged")
+    if n_failed:
+        files_line += f", {n_failed} FAILED — re-run to retry"
+    print(files_line)
 
 
 def _upsert_exposures(client, records, batch_size=500):
@@ -865,7 +879,7 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
 
     mosaics = discover_mosaics(dirs, field, filters)
     if not mosaics:
-        return
+        return None
     print(f"\nMosaics: {len(mosaics)} product(s)")
 
     if store is None:
@@ -876,8 +890,7 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     plan, server_rows = plan_remote_push(
         client, store, mosaic_tasks, backend=_CANONICAL_BACKEND)
     unchanged_keys = {t.r2_key for t in plan.unchanged}
-    if plan.unchanged:
-        print(f"  Skipping {len(plan.unchanged)} unchanged mosaic file(s)")
+    print(f"  Plan: {plan.summary()}")
 
     # Local file size for nircam_images.file_size: the plan stat()s every file.
     for m in mosaics:
@@ -895,9 +908,9 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
             succeeded_out=uploaded, backend=_CANONICAL_BACKEND,
             on_success=flusher.add)
         flusher.flush()
-        print(f"    Uploaded: {success}, Failed: {failed}")
+        print(f"  Uploaded: {success}, Failed: {failed}")
         for msg in failures:
-            print(f"    Error: {msg}")
+            print(f"  Error: {msg}")
         if flusher.flushed:
             print(f"  Registered {flusher.flushed} mosaic storage object(s)")
 
@@ -930,6 +943,9 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
         skipped_keys = sorted(unchanged_keys - uploaded)
         if skipped_keys:
             set_active_deployment(client, skipped_keys, deployment_id)
+
+    return {'uploaded': len(uploaded), 'unchanged': len(unchanged_keys),
+            'indexed': n_img}
 
 
 def _upsert_nircam_images(client, rows, batch_size=500):

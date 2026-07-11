@@ -259,6 +259,7 @@ def push_observation(
     source_ids: Optional[list[int]] = None,
     dry_run: bool = False,
     workers: Optional[int] = None,
+    dry_run_note: bool = True,
 ) -> dict:
     """Push a NIRSpec observation's tree products to OSN (bytes only).
 
@@ -318,9 +319,9 @@ def push_observation(
         print(f"    missing locally: {t.local_path}")
 
     if dry_run or not plan.to_upload:
-        if dry_run:
+        if dry_run and dry_run_note:
             print("Dry run — no changes made.")
-        else:
+        elif not dry_run:
             print("  Cloud already matches local products.")
         return {'planned': len(tasks), 'pushed': 0, 'failed': 0,
                 'skipped': len(plan.unchanged)}
@@ -361,6 +362,7 @@ def push_field(
     filters: Optional[list[str]] = None,
     dry_run: bool = False,
     workers: Optional[int] = None,
+    dry_run_note: bool = True,
 ) -> dict:
     """Push a NIRCam field's tree products to OSN (bytes only).
 
@@ -405,9 +407,9 @@ def push_field(
     print(f"  Plan: {plan.summary()}")
 
     if dry_run or not plan.to_upload:
-        if dry_run:
+        if dry_run and dry_run_note:
             print("Dry run — no changes made.")
-        else:
+        elif not dry_run:
             print("  Cloud already matches local products.")
         return {'planned': len(tasks), 'pushed': 0, 'failed': 0,
                 'skipped': len(plan.unchanged)}

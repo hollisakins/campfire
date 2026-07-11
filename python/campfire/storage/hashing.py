@@ -59,23 +59,36 @@ def default_hash_workers() -> int:
 
 def hash_files_parallel(
     paths: Iterable[Path], *, max_workers: Optional[int] = None,
+    progress_desc: Optional[str] = None,
 ) -> dict[Path, tuple[str, int]]:
     """Hash many local files concurrently → ``{path: ('sha256:<hex>', size)}``.
 
     Order-independent (callers key by path). De-duplicates repeated paths so a
     file is hashed once. Falls back to a serial loop for a single file.
+    ``progress_desc`` shows a tqdm bar — hashing hundreds of GB off NFS takes
+    minutes, and silence there is indistinguishable from a hang.
     """
     unique = list({Path(p) for p in paths})
     if not unique:
         return {}
     workers = max(1, min(max_workers or default_hash_workers(), len(unique)))
-    if workers == 1:
+    if workers == 1 and not progress_desc:
         return {p: hash_file(p) for p in unique}
+    pbar = None
+    if progress_desc:
+        from tqdm import tqdm
+        pbar = tqdm(total=len(unique), desc=progress_desc, unit='file')
     out: dict[Path, tuple[str, int]] = {}
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(hash_file, p): p for p in unique}
-        for fut in as_completed(futures):
-            out[futures[fut]] = fut.result()
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {ex.submit(hash_file, p): p for p in unique}
+            for fut in as_completed(futures):
+                out[futures[fut]] = fut.result()
+                if pbar:
+                    pbar.update(1)
+    finally:
+        if pbar:
+            pbar.close()
     return out
 
 

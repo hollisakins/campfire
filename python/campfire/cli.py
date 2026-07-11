@@ -573,11 +573,11 @@ def status(obs_scope, field_scope, base_url: Optional[str]):
         except Exception as e:
             click.echo(f"\n✗ Push-side status unavailable: {e}")
             return
-        click.echo("\nPush-side diff (dry run):")
+        click.echo("\nPush-side diff (what `campfire push` would transfer):")
         for name in obs_scope:
-            push_observation(name, config, dry_run=True)
+            push_observation(name, config, dry_run=True, dry_run_note=False)
         for name in field_scope:
-            push_field(name, config, dry_run=True)
+            push_field(name, config, dry_run=True, dry_run_note=False)
 
 
 # ---------------------------------------------------------------------------

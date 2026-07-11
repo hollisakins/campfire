@@ -780,7 +780,12 @@ def deploy_observation(
                     print(f"    - {msg}")
                 if len(failed_msgs) > 10:
                     print(f"    ... and {len(failed_msgs) - 10} more")
-            print(f"Uploaded {success}/{total_tasks} files")
+            # `success` counts only the files that were actually transferred
+            # (planned uploads + rgb/sed legacy); unchanged files were never
+            # candidates, so they are reported as skipped — not as failures.
+            print(f"Uploaded {success}"
+                  + (f", failed {failed}" if failed else "")
+                  + f" ({len(push_plan.unchanged)} unchanged skipped)")
             print()
 
         # Generate thumbnails and enrich spectra records
@@ -1014,17 +1019,29 @@ def deploy_observation(
                 sb, build_spectrum_exposure_records(exposure_files, observation=obs_name, scope=scope))
             print(f"Upserted {n_grid} spectrum-exposure grid rows")
 
-        print()
-        msg = f"Deployed {len(spectra)} spectra from {len(objects)} objects"
+        # Closing summary — the wall of stage output above scrolls away; the
+        # last block states what actually happened, in one place.
+        extras = []
         if zfit_paths:
-            msg += f" + {len(zfit_paths)} zfit files"
+            extras.append(f"{len(zfit_paths)} zfit")
         if rgb_files:
-            msg += f" + {len(rgb_files)} RGB images"
+            extras.append(f"{len(rgb_files)} RGB")
         if sed_files:
-            msg += f" + {len(sed_files)} SED plots"
+            extras.append(f"{len(sed_files)} SED")
         if n_shutters:
-            msg += f" + {n_shutters} shutters"
-        print(msg)
+            extras.append(f"{n_shutters} shutters")
+        print()
+        print(f"Deploy complete: {obs_name}")
+        if deployment_id:
+            print(f"  deployment:  #{deployment_id} ({'draft — admin-only' if draft else 'published'})")
+        print(f"  catalog:     {len(spectra)} spectra, {len(objects)} objects"
+              + (f"  (+ {', '.join(extras)})" if extras else ""))
+        if supabase_only:
+            print("  files:       none (--supabase-only)")
+        elif push_plan is not None:
+            print(f"  files:       {success} uploaded, "
+                  f"{len(push_plan.unchanged)} unchanged skipped"
+                  + (f", {failed} FAILED — re-run to retry" if failed else ""))
 
         # Phase C: any successful deploy potentially affected member spectra
         # or membership; the deferred multi-obs path always wants to reconcile.

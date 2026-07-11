@@ -196,10 +196,12 @@ def plan_push(
 
     sci_dq_local = sci_dq_hashes_parallel(
         sci_dq_paths, max_workers=max_workers,
-        progress_desc='Hashing exposures' if progress else None,
+        progress_desc='Hashing exposures (SCI+DQ)' if progress else None,
     ) if sci_dq_paths else {}
     whole_local = hash_files_parallel(
-        whole_paths, max_workers=max_workers) if whole_paths else {}
+        whole_paths, max_workers=max_workers,
+        progress_desc='Hashing changed candidates' if progress else None,
+    ) if whole_paths else {}
 
     for task, kind, identity, st in undecided:
         key = task.r2_key
