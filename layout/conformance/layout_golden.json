@@ -132,6 +132,36 @@
       "tree_class": "cloud-backed-product"
     },
     {
+      "product_type": "nircam_expmap_plot",
+      "scope": {"field": "cosmos", "filt": "f444w"},
+      "filename": "expmap_cosmos_f444w.png",
+      "relpath": "products/nircam/cosmos/f444w/expmap_cosmos_f444w.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nircam_mosaic_thumbnail",
+      "scope": {"field": "cosmos", "filt": "f444w"},
+      "filename": "mosaic_cosmos_f444w_30mas_thumb.png",
+      "relpath": "products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_thumb.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_thumb.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nircam_layout",
+      "scope": {"field": "cosmos"},
+      "filename": "cosmos_layout.png",
+      "relpath": "products/nircam/cosmos/cosmos_layout.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/nircam/cosmos/cosmos_layout.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
       "product_type": "tile",
       "scope": {"field": "cosmos", "filt": "f444w", "zoom": 3, "x": 1, "y": 2},
       "filename": null,
@@ -303,7 +333,10 @@
     "nircam/exposures/cosmos/f444w/jw01727028001_04101_00003_nrcalong_preview.png",
     "photometry/cosmos/12345_pz.json",
     "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_15182.fits",
-    "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_rate.fits"
+    "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_rate.fits",
+    "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w.png",
+    "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_thumb.png",
+    "data/products/nircam/cosmos/cosmos_layout.png"
   ],
   "unknown_keys": [
     "spectra/../etc/passwd",

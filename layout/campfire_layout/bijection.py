@@ -44,6 +44,7 @@ _NIRSPEC_OBS_SUFFIXES = (
 _NIRCAM_FILTER_SUFFIXES = (
     ("_preview.png", "nircam_exposure_preview"),
     ("_full.png", "nircam_exposure_full"),
+    ("_thumb.png", "nircam_mosaic_thumbnail"),  # before the 'mosaic' prefix check
 )
 _EXPOSURE_RE = re.compile(r"_nrs[12]_\d+\.fits$")
 _TILE_RE = re.compile(r"^(?P<field>[^/]+)/(?P<filt>[^/]+)/(?P<z>\d+)/(?P<x>\d+)/(?P<y>\d+)\.png$")
@@ -99,6 +100,8 @@ def parse_relpath(relpath: str) -> ParsedKey:
         field = seg[2]
         if len(seg) == 4 and seg[3].endswith("_rgb.png"):
             return ParsedKey("nircam_rgb", Scope(field=field), seg[3])
+        if len(seg) == 4 and seg[3].endswith("_layout.png"):
+            return ParsedKey("nircam_layout", Scope(field=field), seg[3])
         if len(seg) == 5:
             filt, fname = seg[3], seg[4]
             scope = Scope(field=field, filt=filt)
@@ -108,7 +111,10 @@ def parse_relpath(relpath: str) -> ParsedKey:
             if fname.startswith("mosaic"):
                 return ParsedKey("nircam_mosaic", scope, fname)
             if fname.startswith("expmap"):
-                return ParsedKey("nircam_expmap", scope, fname)
+                # '.png' is the dark web plot; '.fits' is the coverage map.
+                return ParsedKey(
+                    "nircam_expmap_plot" if fname.endswith(".png")
+                    else "nircam_expmap", scope, fname)
             if fname.endswith(".fits"):
                 return ParsedKey("nircam_exposure", scope, fname)
 

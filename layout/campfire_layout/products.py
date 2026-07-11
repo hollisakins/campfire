@@ -186,6 +186,30 @@ _register(ProductSpec(
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
     subdir=_nircam_field_filter_dir, suffix=None, legacy_prefix=None,
 ))
+# Web-ready dark PNG render of the expmap (``expmap_<field>_<filter>.png``),
+# sibling of the expmap FITS in the filter dir. Prefix-dispatched like the FITS
+# (``expmap_``); the ``.png`` extension tells the two apart in the bijection, so
+# ``suffix`` stays None (there is no clean filename suffix to dispatch on).
+_register(ProductSpec(
+    name="nircam_expmap_plot", instrument=NC, tree="products", bucket="data",
+    lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
+    subdir=_nircam_field_filter_dir, suffix=None, legacy_prefix=None,
+))
+# Per-mosaic science thumbnail (``mosaic_..._thumb.png``), sibling of the mosaic
+# FITS. Suffix-dispatched on ``_thumb.png`` (matched before the ``mosaic`` prefix).
+_register(ProductSpec(
+    name="nircam_mosaic_thumbnail", instrument=NC, tree="products", bucket="data",
+    lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
+    subdir=_nircam_field_filter_dir, suffix="_thumb.png", legacy_prefix=None,
+))
+# Field layout plot (``<field>_layout.png``): stacked-filter coverage + tile
+# outlines. Field-scoped, in the field root beside nircam_rgb; the landing-page
+# preview. Suffix-dispatched on ``_layout.png``.
+_register(ProductSpec(
+    name="nircam_layout", instrument=NC, tree="products", bucket="data",
+    lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field",), subdir=_nircam_field_dir,
+    suffix="_layout.png", legacy_prefix=None,
+))
 
 # --- Map tiles (separate 'tiles' bucket, scheme-invariant, stays on R2) ---------
 
