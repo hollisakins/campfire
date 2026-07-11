@@ -2,6 +2,12 @@
 // own transfer functions from `@fitsgl/core` (`scaleValue` normalize+clamp+stretch,
 // `colormapRGB` LUT) so a server cutout matches the interactive map exactly. NaN
 // (no-data) pixels are written transparent so the cutout composites over the page.
+//
+// Row order: the input arrays are FITS bottom-up (row 0 = south — `reproject.ts`
+// keeps the standard N-up WCS with CD2_2 > 0), while RGBA consumers (`sharp`,
+// canvas) are raster top-down (row 0 = top). The renderers flip rows here so the
+// encoded image is actually North-up — the same convention boundary the legacy
+// stack handles in `tile-compositing.ts`'s `fitsToWorldPixel`.
 
 import { applyStretch, colormapRGB, COLORMAP_SIZE, type StretchMode, type ColormapName } from '@fitsgl/core';
 
@@ -34,7 +40,8 @@ export function percentileLimits(data: Float32Array, loPct = 0.5, hiPct = 99.5):
   return { lo, hi };
 }
 
-/** Single-band → RGBA via a stretch + colormap LUT. NaN → transparent. */
+/** Single-band → RGBA via a stretch + colormap LUT. NaN → transparent.
+ *  Input rows are FITS bottom-up; output RGBA rows are raster top-down. */
 export function renderSingleBand(
   data: Float32Array,
   width: number,
@@ -45,21 +52,26 @@ export function renderSingleBand(
   const lut = colormapRGB(colormap);
   const rgba = new Uint8ClampedArray(width * height * 4);
   const maxIdx = COLORMAP_SIZE - 1;
-  for (let i = 0; i < data.length; i++) {
-    const v = data[i];
-    const o = i * 4;
-    if (Number.isNaN(v)) continue; // leave transparent (rgba is zero-filled)
-    const norm = scaleValue(v, limits.lo, limits.hi, stretch, trilogyK);
-    const idx = Math.min(maxIdx, Math.max(0, Math.round(norm * maxIdx))) * 3;
-    rgba[o] = lut[idx];
-    rgba[o + 1] = lut[idx + 1];
-    rgba[o + 2] = lut[idx + 2];
-    rgba[o + 3] = 255;
+  for (let y = 0; y < height; y++) {
+    const src = y * width;
+    const dst = (height - 1 - y) * width; // FITS bottom-up → raster top-down
+    for (let x = 0; x < width; x++) {
+      const v = data[src + x];
+      if (Number.isNaN(v)) continue; // leave transparent (rgba is zero-filled)
+      const o = (dst + x) * 4;
+      const norm = scaleValue(v, limits.lo, limits.hi, stretch, trilogyK);
+      const idx = Math.min(maxIdx, Math.max(0, Math.round(norm * maxIdx))) * 3;
+      rgba[o] = lut[idx];
+      rgba[o + 1] = lut[idx + 1];
+      rgba[o + 2] = lut[idx + 2];
+      rgba[o + 3] = 255;
+    }
   }
   return rgba;
 }
 
-/** Per-channel RGB composite (R←band0, G←band1, B←band2), each with its own stretch. */
+/** Per-channel RGB composite (R←band0, G←band1, B←band2), each with its own stretch.
+ *  Input rows are FITS bottom-up; output RGBA rows are raster top-down. */
 export function renderRGB(
   channels: readonly [Float32Array, Float32Array, Float32Array],
   width: number,
@@ -68,17 +80,20 @@ export function renderRGB(
 ): Uint8ClampedArray {
   const { limits, stretch, trilogyK } = opts;
   const rgba = new Uint8ClampedArray(width * height * 4);
-  const n = width * height;
-  for (let i = 0; i < n; i++) {
-    const o = i * 4;
-    let any = false;
-    for (let c = 0; c < 3; c++) {
-      const v = channels[c][i];
-      if (Number.isNaN(v)) continue;
-      any = true;
-      rgba[o + c] = Math.round(scaleValue(v, limits[c].lo, limits[c].hi, stretch, trilogyK) * 255);
+  for (let y = 0; y < height; y++) {
+    const src = y * width;
+    const dst = (height - 1 - y) * width; // FITS bottom-up → raster top-down
+    for (let x = 0; x < width; x++) {
+      const o = (dst + x) * 4;
+      let any = false;
+      for (let c = 0; c < 3; c++) {
+        const v = channels[c][src + x];
+        if (Number.isNaN(v)) continue;
+        any = true;
+        rgba[o + c] = Math.round(scaleValue(v, limits[c].lo, limits[c].hi, stretch, trilogyK) * 255);
+      }
+      if (any) rgba[o + 3] = 255; // opaque where at least one band has data
     }
-    if (any) rgba[o + 3] = 255; // opaque where at least one band has data
   }
   return rgba;
 }
