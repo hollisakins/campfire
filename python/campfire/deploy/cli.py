@@ -1338,6 +1338,42 @@ def sync_programs(ctx, config_path, dry_run, local):
 
 
 # ---------------------------------------------------------------------------
+# sync-fields subcommand  (issue #303)
+# ---------------------------------------------------------------------------
+
+@deploy_group.command('sync-fields')
+@click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
+@click.option('--field', default=None,
+              help='Sync a single field (default: every field with deployed data).')
+@click.option('--dry-run', is_flag=True, help='Show what would happen without making changes.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def sync_fields_cmd(ctx, config_path, field, dry_run, local):
+    """Upsert fields.toml config into the cloud `fields` table (issue #303).
+
+    Scoped to fields that already have deployed NIRCam data (or a single
+    ``--field``). Only the config columns are written — the deploy-computed
+    coverage area and latest_deployment_id (owned by ``campfire deploy --field``)
+    are left untouched.
+    """
+    from campfire.deploy.fields import load_fields_toml, sync_fields
+
+    if not load_fields_toml():
+        print("No fields.toml found (or empty) at $CAMPFIRE_ROOT/config/.")
+        return
+
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    sb = get_supabase_client(config)
+
+    field_names = [field] if field else None
+    print("Syncing fields.toml -> fields table"
+          + (f" (field={field})" if field else " (all deployed fields)"))
+    n = sync_fields(sb, field_names, dry_run=dry_run)
+    print("\nDry run — no changes made." if dry_run else f"\nDone. Synced {n} field(s).")
+
+
+# ---------------------------------------------------------------------------
 # fetch-config subcommand
 # ---------------------------------------------------------------------------
 

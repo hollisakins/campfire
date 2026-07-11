@@ -53,6 +53,7 @@ from campfire.deploy.supabase import (
 # also land here under canonical keys (served via presigned OSN GET URLs).
 _CANONICAL_BACKEND = 'osn'
 _FITS_CONTENT_TYPE = 'application/fits'
+_PNG_CONTENT_TYPE = 'image/png'
 
 
 # ---------------------------------------------------------------------------
@@ -356,20 +357,31 @@ def build_fits_upload_tasks(field, exposures):
 # raw quick-look, and ``_canonical`` is the pre-rename legacy name for what is now
 # the undecorated fiducial (a stale copy may still sit on a reducer's disk). Deploy
 # ships only the fiducial map so users download a single, unqualified exposure map.
-_EXPMAP_NONFIDUCIAL_SUFFIXES = ('_uncal.fits', '_canonical.fits')
+# Reducer-only quick-look / pre-rename leftovers, keyed on the filename *stem*
+# so the check covers both the .fits map and its .png plot.
+_EXPMAP_NONFIDUCIAL_STEMS = ('_uncal', '_canonical')
+
+# The per-filter expmap products deployed together: the coverage FITS and the
+# dark web plot PNG (NIRCam page redesign). product_type is key-derived at
+# registration, so each just needs its canonical key + content type.
+_EXPMAP_DEPLOY = (
+    ('expmap_*.fits', 'nircam_expmap', _FITS_CONTENT_TYPE),
+    ('expmap_*.png', 'nircam_expmap_plot', _PNG_CONTENT_TYPE),
+)
 
 
 def discover_expmap_tasks(dirs, field, filters):
-    """Build canonical-key OSN upload tasks for the per-filter fiducial expmap files.
+    """Build canonical-key OSN upload tasks for the per-filter fiducial expmaps.
 
     Expmaps are per-``(field, filter)`` coverage maps written into the canonical
-    filter directory (``products/nircam/<field>/<filter>/expmap_*.fits``),
-    alongside the mosaics/exposures. Only the **fiducial** map
-    (``expmap_<field>_<filter>.fits``, no stage suffix) is deployed; the reducer-only
-    ``_uncal`` quick-look (and any pre-rename ``_canonical`` leftover) is skipped so a
-    user downloads a single, unqualified exposure map. They are produced at combine
-    time, so a process-only field may have none yet — deploy is idempotent and picks
-    them up on a later run. Returns a list of ``UploadTask`` (empty if none found).
+    filter directory (``products/nircam/<field>/<filter>/expmap_*``), alongside the
+    mosaics/exposures. Deploys both the coverage **FITS** and its dark web **PNG**
+    plot; only the **fiducial** map (``expmap_<field>_<filter>.{fits,png}``, no stage
+    suffix) is shipped — the reducer-only ``_uncal`` quick-look (and any pre-rename
+    ``_canonical`` leftover) is skipped so a user gets a single, unqualified map. The
+    light-mode ``.pdf`` diagnostic stays local. Produced at combine time, so a
+    process-only field may have none yet — deploy is idempotent and picks them up on
+    a later run. Returns a list of ``UploadTask`` (empty if none found).
     """
     products = dirs['products']
     tasks = []
@@ -377,14 +389,32 @@ def discover_expmap_tasks(dirs, field, filters):
         filter_dir = products / filtname
         if not filter_dir.exists():
             continue
-        for path in sorted(filter_dir.glob('expmap_*.fits')):
-            if path.name.endswith(_EXPMAP_NONFIDUCIAL_SUFFIXES):
-                continue
-            key = storage_key('nircam_expmap', Scope(field=field, filt=filtname),
-                              path.name, scheme=KeyScheme.CANONICAL)
-            tasks.append(UploadTask(local_path=path, r2_key=key,
-                                    content_type=_FITS_CONTENT_TYPE))
+        for pattern, ptype, content_type in _EXPMAP_DEPLOY:
+            for path in sorted(filter_dir.glob(pattern)):
+                if path.stem.endswith(_EXPMAP_NONFIDUCIAL_STEMS):
+                    continue
+                key = storage_key(ptype, Scope(field=field, filt=filtname),
+                                  path.name, scheme=KeyScheme.CANONICAL)
+                tasks.append(UploadTask(local_path=path, r2_key=key,
+                                        content_type=content_type))
     return tasks
+
+
+def discover_layout_tasks(dirs, field):
+    """Canonical-key OSN upload task for the field layout plot, if present.
+
+    ``<field>_layout.png`` (stacked-filter coverage + tile outlines) lives at the
+    per-field products root and is the landing-page card preview. Only the fiducial
+    (undecorated) plot is deployed; the ``_uncal`` quick-look and the ``.json``
+    coverage sidecar (read locally by the field-registry upsert) stay off OSN.
+    """
+    path = dirs['products'] / f'{field}_layout.png'
+    if not path.exists():
+        return []
+    key = storage_key('nircam_layout', Scope(field=field), path.name,
+                      scheme=KeyScheme.CANONICAL)
+    return [UploadTask(local_path=path, r2_key=key,
+                       content_type=_PNG_CONTENT_TYPE)]
 
 
 # ---------------------------------------------------------------------------
@@ -489,13 +519,15 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
 
     exposures = discover_exposures(dirs, filters)
     expmap_tasks = discover_expmap_tasks(dirs, field, filters)
+    layout_tasks = discover_layout_tasks(dirs, field)
     n_mosaics = len(discover_mosaics(dirs, field, filters))
     print(f"Discovered {len(exposures)} canonical exposure(s), "
-          f"{len(expmap_tasks)} expmap(s), {n_mosaics} mosaic(s)")
+          f"{len(expmap_tasks)} expmap file(s), {n_mosaics} mosaic(s), "
+          f"{len(layout_tasks)} layout plot(s)")
     # Deploy whatever the field has — mosaics/expmaps are independent of the
     # per-exposure FITS (a field can keep its science mosaics after the large cal
     # exposures are pruned). Only bail if there is genuinely nothing to ship.
-    if not exposures and not expmap_tasks and not n_mosaics:
+    if not exposures and not expmap_tasks and not n_mosaics and not layout_tasks:
         print("Nothing to deploy for this field.")
         return
 
@@ -554,8 +586,10 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
             print(f"  with masks: {mask_count}")
         print(f"\nWould record a {'draft' if draft else 'published'} field "
               f"deployment and upload {len(fits_tasks)} canonical FITS + "
-              f"{len(expmap_tasks)} expmap(s) + {n_mosaics} mosaic(s) to OSN "
-              f"(subject to content-hash dedup), and {len(png_tasks)} preview PNG(s) to OSN.")
+              f"{len(expmap_tasks)} expmap file(s) + {n_mosaics} mosaic(s) + "
+              f"{len(layout_tasks)} layout plot(s) to OSN (subject to content-hash "
+              f"dedup), and {len(png_tasks)} preview PNG(s) to OSN, then upsert the "
+              f"fields registry row for '{field}'.")
         print("Dry run — no changes made.")
         return
 
@@ -595,7 +629,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     # without reading a byte — so an unchanged re-deploy no longer pays the
     # "hash every exposure" pause before uploading.
     png_upload_list = [t[0] for t in png_tasks]
-    osn_tasks = fits_tasks + expmap_tasks + png_upload_list
+    osn_tasks = fits_tasks + expmap_tasks + png_upload_list + layout_tasks
     store = open_reducer_store()
     plan, _server_rows = plan_remote_push(
         client, store, osn_tasks, backend=_CANONICAL_BACKEND)
@@ -655,6 +689,17 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     # --- Mosaics: deploy under the same field deployment (epic #261, N2) ----
     mosaic_stats = _deploy_field_mosaics(dirs, field, config, client, filters,
                                          deployment_id, draft, user_id, store=store)
+
+    # --- Field registry: upsert the fields.toml config + deploy-computed survey
+    # area (issue #303). Rides the deploy so a field row exists exactly for fields
+    # with deployed data; coverage_area comes from <field>_layout.json, and
+    # latest_deployment_id points at this deployment. Best-effort — a missing
+    # fields.toml section or layout.json never fails the deploy.
+    try:
+        from campfire.deploy.fields import upsert_field_on_deploy
+        upsert_field_on_deploy(client, dirs['products'], field, deployment_id)
+    except Exception as e:  # noqa: BLE001 - registry upsert must never sink a deploy
+        print(f"  fields: registry upsert skipped ({e})")
 
     # --- Multi-reducer scope claim + audit (epic #210, B4 / D12) -----------
     claim = claim_deploy_scope(client, 'field', field, scope_version, actor=user_id)
@@ -852,8 +897,37 @@ def discover_mosaics(dirs, field, filters):
                     'path': fpath, 'filter': mfilter, 'tile': tile,
                     'pixel_scale': pixel_scale, 'epoch': epoch,
                     'extension': ext, 'storage_key': key,
+                    'mosaic_name': base,
                 })
     return out
+
+
+def discover_mosaic_thumbnail_tasks(mosaics, field):
+    """One ``nircam_mosaic_thumbnail`` upload task per mosaic base.
+
+    The pipeline writes a single ``<base>_thumb.png`` per mosaic (derived from the
+    i2d), so this dedups the per-extension ``mosaics`` list to one task per base
+    and only emits it when the thumbnail exists. The scope filter is the mosaic's
+    own directory name, so the thumbnail key sits beside its mosaic FITS. Returns
+    ``[]`` when no thumbnails are present (a field reduced before thumbnails).
+    """
+    tasks = []
+    seen = set()
+    for m in mosaics:
+        filt = m['path'].parent.name
+        key_id = (filt, m['mosaic_name'])
+        if key_id in seen:
+            continue
+        seen.add(key_id)
+        thumb_path = m['path'].parent / f"{m['mosaic_name']}_thumb.png"
+        if thumb_path.exists():
+            tasks.append(UploadTask(
+                local_path=thumb_path,
+                r2_key=storage_key('nircam_mosaic_thumbnail',
+                                   Scope(field=field, filt=filt),
+                                   thumb_path.name, scheme=KeyScheme.CANONICAL),
+                content_type=_PNG_CONTENT_TYPE))
+    return tasks
 
 
 def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
@@ -887,8 +961,17 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
 
     mosaic_tasks = [UploadTask(local_path=m['path'], r2_key=m['storage_key'],
                                content_type=_FITS_CONTENT_TYPE) for m in mosaics]
+
+    # Per-mosaic science thumbnails ride the same plan/registration (see
+    # discover_mosaic_thumbnail_tasks): they get a nircam_mosaic_thumbnail
+    # storage_objects row (key-derived product_type) but NO nircam_images row —
+    # the web shows them on the sci extension row.
+    thumb_tasks = discover_mosaic_thumbnail_tasks(mosaics, field)
+    if thumb_tasks:
+        print(f"  Thumbnails: {len(thumb_tasks)}")
+
     plan, server_rows = plan_remote_push(
-        client, store, mosaic_tasks, backend=_CANONICAL_BACKEND)
+        client, store, mosaic_tasks + thumb_tasks, backend=_CANONICAL_BACKEND)
     unchanged_keys = {t.r2_key for t in plan.unchanged}
     print(f"  Plan: {plan.summary()}")
 
@@ -932,7 +1015,11 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     } for m in mosaics if m['storage_key'] in indexable]
     n_img = _upsert_nircam_images(client, img_rows)
     print(f"  Indexed {n_img} nircam_images row(s) ({img_status})")
-    n_failed = len(present) - len(img_rows) if not draft else 0
+    # Only mosaic FITS get nircam_images rows — thumbnails (also in `present`) do
+    # not, so count failures against mosaic keys alone or every thumb reads as a
+    # non-indexed mosaic.
+    mosaic_keys = {m['storage_key'] for m in mosaics}
+    n_failed = len(present & mosaic_keys) - len(img_rows) if not draft else 0
     if n_failed:
         print(f"  ({n_failed} mosaic(s) not indexed — upload failed; re-run to retry)")
 
