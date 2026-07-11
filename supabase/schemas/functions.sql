@@ -2615,6 +2615,7 @@ BEGIN
         'bucket', m.bucket,
         'storage_key', m.storage_key,
         'content_hash', m.content_hash,
+        'sci_dq_hash', m.sci_dq_hash,
         'size_bytes', m.size_bytes,
         'content_type', m.content_type,
         'product_type', m.product_type,

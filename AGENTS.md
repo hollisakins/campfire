@@ -170,19 +170,55 @@ cd web && npm run build && cd ..
 - **Auth**: Supabase Auth with email/password
 - **CI/CD**: Supabase GitHub integration (branching + migration checks) + Vercel (preview deploys)
 
-### Deploy CLI
+### Storage plane (push / pull / verify)
 
-Deploy commands are part of the unified `campfire` CLI (install from `python/`):
+The local products tree and cloud storage are two ends of one sync relationship,
+mediated by the `storage_objects` registry (server) and its local mirror
+(`$CAMPFIRE_ROOT/meta/campfire.db`). One engine (`python/campfire/storage/` +
+`campfire/deploy/push.py`) serves both directions with content-identity dedup
+(sci_dq for NIRCam exposures, whole-file otherwise), a stat fast-path (unchanged
+files are never re-read), and per-batch registration (interrupted transfers
+resume at file granularity). **All data products live on OSN; map tiles are the
+sole R2 exception.**
+
+```bash
+campfire sync                          # refresh the local index (never touches the tree)
+campfire status [--obs X | --field Y]  # bidirectional diff; scoped = push-side dry run
+campfire pull --obs X [--intermediate] # cloud→local products (+ review annotations, admins)
+campfire push --obs X | --field Y      # local→cloud bytes ONLY — no catalog, no publication
+campfire verify [--cloud] [--json]     # tree↔index; --cloud adds registry↔bucket (CI-able)
+campfire drop-local --obs X --yes      # delete local files verified in cloud
+```
+
+Slow-link workflow (CANDIDE→OSN): `campfire push` for the heavy bytes
+(re-runnable until clean), then `campfire deploy` — it dedup-skips everything
+already landed and attaches it to the new deployment. `download` remains an
+alias of `pull`.
+
+### Deploy CLI (publication)
+
+`campfire deploy` = push (via the shared engine) + catalog upserts + deployment
+lifecycle. Part of the unified `campfire` CLI (install from `python/`):
 
 ```bash
 cd python && pip install -e .
 campfire deploy --obs <obs_name>                         # full deploy
 campfire deploy --obs <obs_name> --dry-run               # validate only
-campfire deploy rgb --obs <obs_name>                     # RGB cutouts only
 campfire deploy pointings --obs <obs_name>               # pointings JSONB backfill
 campfire deploy tiles --field cosmos --filter f444w      # map tiles
 campfire deploy sync-programs                            # upsert from programs.toml
 ```
+
+Migration-era one-time tools (`deploy registry backfill/copy/prune`, `deploy
+nircam import-*`) are hidden from `--help` but still work; they retire once the
+A1/A2 storage migrations complete. `deploy registry budget` is gone — the
+number shows in `campfire status` (admins). Registry↔bucket verification is
+`campfire verify --cloud`. The `deploy nircam pull*` / `deploy nirspec pull-*`
+annotation round-trips are folded into `campfire pull` (hidden but working
+individually). RGB/SED static cutouts are fully deprecated (superseded by the
+on-the-fly `/api/v1/cutout` API): deploy neither generates nor uploads them,
+and the `deploy rgb`/`deploy sed` subcommands are removed — their legacy R2
+remnants retire with A2.
 
 **Deploy auth (issue #250).** Two decisions, kept independent:
 

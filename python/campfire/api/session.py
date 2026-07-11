@@ -9,8 +9,6 @@ import threading
 from typing import Optional
 
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 from ..auth.tokens import TokenManager
 from ..exceptions import AuthenticationError
@@ -156,22 +154,9 @@ class APISession:
 def create_download_session(max_workers: int = 4) -> requests.Session:
     """Create a requests.Session with connection pooling and retry for downloads.
 
-    Presigned R2 URLs are self-authenticating, so no auth headers are needed.
-    The pool is sized to match the number of workers so each thread gets a
-    persistent connection without contention.
+    Presigned URLs are self-authenticating, so no auth headers are needed.
+    Thin wrapper over the shared transfer-session factory (GET-only retry);
+    kept under this name for the established import path.
     """
-    session = requests.Session()
-    retry = Retry(
-        total=4,
-        backoff_factor=2,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-        raise_on_status=False,
-    )
-    adapter = HTTPAdapter(
-        max_retries=retry,
-        pool_connections=max_workers,
-        pool_maxsize=max_workers,
-    )
-    session.mount("https://", adapter)
-    return session
+    from ..storage.session import create_transfer_session
+    return create_transfer_session(max_workers, methods=("GET",))

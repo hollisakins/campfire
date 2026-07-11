@@ -75,8 +75,6 @@ from campfire.deploy.deploy import (
     deploy_json,
     deploy_observation,
     deploy_pointings,
-    deploy_rgb,
-    deploy_sed,
     deploy_shutters,
     deploy_slits,
     deploy_thumbnails,
@@ -222,8 +220,6 @@ def source_ids_option(f):
 @click.option('--supabase-only', is_flag=True, help='Skip R2 uploads, only update Supabase.')
 @click.option('--force-overwrite', is_flag=True, help='Reset inspection data for existing objects.')
 @click.option('--auto-approve', is_flag=True, help='Skip confirmation prompts.')
-@click.option('--rgb', is_flag=True, help='Include RGB image deployment (skipped by default).')
-@click.option('--no-sed', is_flag=True, help='Skip SED plot deployment.')
 @click.option('--no-shutters', is_flag=True, help='Skip shutter deployment.')
 @click.option('--no-photometry', is_flag=True,
               help='Skip photometry upsert after objects reconcile.')
@@ -242,7 +238,7 @@ def source_ids_option(f):
                    'Equivalent to CAMPFIRE_DEPLOY_MODE=service-role.')
 @click.pass_context
 def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids,
-                 supabase_only, force_overwrite, auto_approve, rgb, no_sed,
+                 supabase_only, force_overwrite, auto_approve,
                  no_shutters, no_photometry, skip_astrometry, draft, local,
                  service_role):
     """Deploy CAMPFIRE pipeline products to Supabase + object storage.
@@ -304,8 +300,6 @@ def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids
                 dry_run=dry_run,
                 supabase_only=supabase_only,
                 force_overwrite=force_overwrite,
-                include_rgb=rgb,
-                include_sed=not no_sed,
                 include_shutters=not no_shutters,
                 include_photometry=not no_photometry,
                 skip_astrometry=skip_astrometry,
@@ -352,42 +346,77 @@ def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids
 
 
 # ---------------------------------------------------------------------------
-# Subcommands
+# push — bytes-only transfer (registered TOP-LEVEL as `campfire push`)
 # ---------------------------------------------------------------------------
 
-@deploy_group.command()
-@shared_options
-@source_ids_option
-@click.option('--overwrite', is_flag=True, help='Regenerate files even if they exist.')
+@click.command('push')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--obs', multiple=True, type=str, cls=_VariadicOption,
+              help='NIRSpec observation name(s) to push.')
+@click.option('--field', 'fields', multiple=True, type=str, cls=_VariadicOption,
+              help='NIRCam field(s) to push.')
+@click.option('--filter', 'filter_names', multiple=True, type=str, cls=_VariadicOption,
+              help='NIRCam: limit a field push to these filters.')
+@click.option('--source-ids', multiple=True, type=str, default=None,
+              cls=_VariadicOption, callback=_parse_source_ids,
+              help='NIRSpec: push only specific source IDs.')
+@click.option('--dry-run', is_flag=True,
+              help='Plan only: show new/changed/unchanged counts.')
+@click.option('--workers', type=int, default=None,
+              help='Parallel upload streams (default 16; '
+                   'env CAMPFIRE_DEPLOY_UPLOAD_WORKERS).')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.option('--service-role', 'service_role', is_flag=True,
+              help='Explicit service-role mode for unattended pushes.')
 @click.pass_context
-def rgb(ctx, config_path, obs, dry_run, local, source_ids, overwrite):
-    """Generate and deploy RGB images to R2."""
-    config = load_config(config_path, local=_resolve_local(ctx, local))
+def push_cmd(ctx, config_path, obs, fields, filter_names, source_ids, dry_run,
+             workers, local, service_role):
+    """Push local tree products to cloud storage (bytes only — no publication).
+
+    The local→cloud half of the storage plane (mirror image of `campfire
+    pull`): discovers the scope's pipeline-written products, diffs them against
+    the cloud registry (content-identity dedup + a stat fast path via the
+    local mirror), uploads only new/changed files, and registers each landed
+    object durably per batch — so an interrupted push resumes at file
+    granularity instead of restarting.
+
+    Nothing is published: no catalog rows are written and no deployment is
+    recorded. The intended slow-link workflow is `campfire push` for the heavy
+    bytes (re-runnable until clean), then `campfire deploy`, which dedup-skips
+    everything already landed and completes in minutes.
+
+    \b
+    Examples:
+      campfire push --obs ember_uds_p4 --dry-run
+      campfire push --obs ember_uds_p4 ember_uds_p5
+      campfire push --field cosmos --filter f444w
+    """
+    if not obs and not fields:
+        raise click.UsageError('Provide --obs and/or --field to scope the push.')
+    config = load_config(
+        config_path, local=_resolve_local(ctx, local),
+        service_role=bool(service_role) or _resolve_service_role(ctx))
+    _gate_admin(config)
+    _announce_auth_mode(config)
+
+    from campfire.deploy.push import push_field, push_observation
     for obs_name in obs:
-        deploy_rgb(
+        push_observation(
             obs_name, config,
-            dry_run=dry_run,
             source_ids=list(source_ids) if source_ids else None,
-            overwrite=overwrite,
-        )
+            dry_run=dry_run, workers=workers)
+    for field in fields:
+        push_field(
+            field, config,
+            filters=list(filter_names) if filter_names else None,
+            dry_run=dry_run, workers=workers)
 
 
-@deploy_group.command()
-@shared_options
-@source_ids_option
-@click.option('--overwrite', is_flag=True, help='Regenerate files even if they exist.')
-@click.pass_context
-def sed(ctx, config_path, obs, dry_run, local, source_ids, overwrite):
-    """Generate and deploy SED plots to R2 and update has_sed_plot."""
-    config = load_config(config_path, local=_resolve_local(ctx, local))
-    for obs_name in obs:
-        deploy_sed(
-            obs_name, config,
-            dry_run=dry_run,
-            source_ids=list(source_ids) if source_ids else None,
-            overwrite=overwrite,
-        )
-
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
 
 @deploy_group.command('json')
 @shared_options
@@ -872,9 +901,13 @@ def objects_rebuild(ctx, config_path, field, all_fields, dry_run, radius, force,
 @deploy_group.group(invoke_without_command=True)
 @click.pass_context
 def registry(ctx):
-    """Manage the storage_objects registry (backfill / reconcile / budget).
+    """storage_objects registry maintenance (migration-era tools, hidden).
 
-    Bare `campfire deploy registry` defaults to `reconcile`.
+    Day-to-day verification moved to `campfire verify --cloud`; the storage
+    budget shows in `campfire status` (admins). The hidden subcommands
+    (backfill / reconcile / copy / prune) are one-time migration tools kept
+    until their migrations (A1/A2) complete. Bare invocation runs the legacy
+    reconcile report.
     """
     if ctx.invoked_subcommand is None:
         ctx.invoke(registry_reconcile)
@@ -890,7 +923,7 @@ def _fmt_bytes(n: int | float) -> str:
     return f"{n:.2f} PB"
 
 
-@registry.command('backfill')
+@registry.command('backfill', hidden=True)
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--dry-run', is_flag=True,
@@ -981,7 +1014,7 @@ def registry_backfill(ctx, config_path, dry_run, orphans, local):
     print("Backfill complete.")
 
 
-@registry.command('reconcile')
+@registry.command('reconcile', hidden=True)
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--no-bucket', is_flag=True,
@@ -1038,34 +1071,7 @@ def registry_reconcile(ctx, config_path, no_bucket, local):
         print("\n  Coverage gate: PASS (registry covers all live pointers).")
 
 
-@registry.command('budget')
-@click.option('--config', 'config_path', default=None,
-              help='Path to deploy config TOML.')
-@click.option('--local', is_flag=True,
-              help='Use local Supabase (127.0.0.1:54321).')
-@click.pass_context
-def registry_budget(ctx, config_path, local):
-    """Show bytes-at-rest against the 20 TB cap (via get_storage_budget RPC)."""
-    config = load_config(config_path, local=_resolve_local(ctx, local))
-    _gate_admin(config)
-    sb = get_supabase_client(config)
-
-    resp = sb.rpc('get_storage_budget').execute()
-    b = resp.data or {}
-    total = b.get('total_bytes', 0)
-    cap = b.get('cap_bytes', 0)
-    print(f"Storage budget: {_fmt_bytes(total)} / {_fmt_bytes(cap)} "
-          f"({b.get('pct_used', 0)}%)")
-    print(f"  registry (data): {_fmt_bytes(b.get('registry_bytes', 0))}")
-    print(f"  tiles (map_layers): {_fmt_bytes(b.get('tile_bytes', 0))}")
-    by_pt = b.get('by_product_type') or {}
-    if by_pt:
-        print("  by product_type:")
-        for pt, n in sorted(by_pt.items(), key=lambda kv: -kv[1]):
-            print(f"    {pt:28} {_fmt_bytes(n)}")
-
-
-@registry.command('copy')
+@registry.command('copy', hidden=True)
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--obs', 'observations', default=None, multiple=True, type=str,
@@ -1179,7 +1185,7 @@ def registry_copy(ctx, config_path, observations, fields, product_types, limit,
     print("Copy complete.")
 
 
-@registry.command('prune')
+@registry.command('prune', hidden=True)
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--duplicates/--no-duplicates', default=True,
@@ -1378,7 +1384,7 @@ def nircam():
     pass
 
 
-@nircam.command('import-masks')
+@nircam.command('import-masks', hidden=True)
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--field', required=True, help='Field name (e.g. cosmos).')
@@ -1399,7 +1405,7 @@ def nircam_import_masks(ctx, config_path, field, dry_run, local):
     import_masks(field, config, dry_run=dry_run)
 
 
-@nircam.command('pull-masks')
+@nircam.command('pull-masks', hidden=True)
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--field', required=True, help='Field name (e.g. cosmos).')
@@ -1434,7 +1440,7 @@ def nirspec():
     pass
 
 
-@nirspec.command('pull-rate-masks')
+@nirspec.command('pull-rate-masks', hidden=True)
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
@@ -1455,7 +1461,7 @@ def nirspec_pull_rate_masks(ctx, config_path, obs, dry_run, local):
     pull_rate_masks(obs, config, dry_run=dry_run)
 
 
-@nirspec.command('pull-stuck-shutters')
+@nirspec.command('pull-stuck-shutters', hidden=True)
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
@@ -1476,7 +1482,7 @@ def nirspec_pull_stuck_shutters(ctx, config_path, obs, dry_run, local):
     pull_stuck_shutters(obs, config, dry_run=dry_run)
 
 
-@nirspec.command('pull-bkg-overrides')
+@nirspec.command('pull-bkg-overrides', hidden=True)
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
@@ -1496,7 +1502,7 @@ def nirspec_pull_bkg_overrides(ctx, config_path, obs, dry_run, local):
     pull_bkg_overrides(obs, config, dry_run=dry_run)
 
 
-@nircam.command('pull')
+@nircam.command('pull', hidden=True)
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--field', required=True, help='Field name (e.g. cosmos).')
@@ -1521,7 +1527,7 @@ def nircam_pull(ctx, config_path, field, dry_run, local):
         mask_drift_report(field, config)
 
 
-@nircam.command('import-skip')
+@nircam.command('import-skip', hidden=True)
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--field', required=True, help='Field name (e.g. cosmos).')

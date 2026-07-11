@@ -20,7 +20,11 @@ from typing import Dict, List, Optional, Tuple
 #   local-download bookkeeping moved to the storage_objects mirror.
 #   v7: storage_objects.filter — per-filter NIRCam scope column (mirrors the
 #   server registry), so `campfire download --filters` scopes without key parsing.
-SCHEMA_VERSION = 7
+#   v8 (storage unification): storage_objects.sci_dq_hash mirrors the server's
+#   science-only NIRCam identity, and the pushed_* columns carry the PUSH-side
+#   bookkeeping (`campfire push` / deploy dedup) — the mirror now serves both
+#   transfer directions.
+SCHEMA_VERSION = 8
 
 
 # Product-type classes the client download engine understands. Finals are the
@@ -178,16 +182,22 @@ CREATE INDEX IF NOT EXISTS idx_spectra_crds_context ON spectra(crds_context);
 CREATE INDEX IF NOT EXISTS idx_spectra_cfpipe_version ON spectra(cfpipe_version);
 
 -- storage_objects: local mirror of the server registry (epic #210). The single
--- download/availability layer for every product type — finals, intermediates,
--- and future NIRCam share one engine. Server columns mirror /api/v1/sync/storage
--- (content_hash is the server's authoritative hash); the local_* columns track
--- what's materialized on disk and are preserved across metadata refreshes.
+-- local↔cloud availability layer for every product type and BOTH transfer
+-- directions. Server columns mirror /api/v1/sync/storage (content_hash is the
+-- server's authoritative whole-file hash; sci_dq_hash the science-only NIRCam
+-- identity). The local_* columns track what's materialized on disk (pull side);
+-- the pushed_* columns track what this machine last confirmed in the cloud
+-- (push side: pushed_identity is the content identity — sci_dq for NIRCam
+-- exposures, whole-file otherwise — at last successful push, pushed_mtime/size
+-- the file stat at that moment, giving the rsync-style skip-without-rehashing
+-- fast path). Both families are preserved across metadata refreshes.
 CREATE TABLE IF NOT EXISTS storage_objects (
     storage_key TEXT PRIMARY KEY,
     id INTEGER,
     backend TEXT,
     bucket TEXT,
     content_hash TEXT,
+    sci_dq_hash TEXT,
     size_bytes INTEGER,
     content_type TEXT,
     product_type TEXT,
@@ -207,6 +217,10 @@ CREATE TABLE IF NOT EXISTS storage_objects (
     local_file_mtime REAL,
     local_file_size INTEGER,
     synced_at TEXT,
+    pushed_identity TEXT,
+    pushed_mtime REAL,
+    pushed_size INTEGER,
+    pushed_at TEXT,
     _synced_at TEXT
 );
 
@@ -1088,9 +1102,11 @@ class LocalStore:
     def upsert_storage_objects(self, rows: List[dict]) -> int:
         """Insert/update the local storage_objects mirror from /sync/storage.
 
-        Preserves the local_* download bookkeeping on conflict — those track
-        on-disk state and must survive a metadata refresh. ``content_hash`` is
-        the server's authoritative hash (the staleness reference).
+        Preserves the local_* (pull) and pushed_* (push) bookkeeping on
+        conflict — those track this machine's state and must survive a metadata
+        refresh. ``content_hash`` is the server's authoritative whole-file hash
+        (the staleness reference); ``sci_dq_hash`` the server's science-only
+        NIRCam identity (the push-dedup reference).
         """
         now = datetime.now(timezone.utc).isoformat()
         count = 0
@@ -1098,16 +1114,17 @@ class LocalStore:
             self._conn.execute(
                 """
                 INSERT INTO storage_objects
-                    (storage_key, id, backend, bucket, content_hash, size_bytes,
-                     content_type, product_type, instrument, status, observation,
-                     field, filter, spectrum_id, exposure_ref, deployment_id, cfpipe_version,
-                     created_at, updated_at, _synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (storage_key, id, backend, bucket, content_hash, sci_dq_hash,
+                     size_bytes, content_type, product_type, instrument, status,
+                     observation, field, filter, spectrum_id, exposure_ref,
+                     deployment_id, cfpipe_version, created_at, updated_at, _synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(storage_key) DO UPDATE SET
                     id=excluded.id,
                     backend=excluded.backend,
                     bucket=excluded.bucket,
                     content_hash=excluded.content_hash,
+                    sci_dq_hash=excluded.sci_dq_hash,
                     size_bytes=excluded.size_bytes,
                     content_type=excluded.content_type,
                     product_type=excluded.product_type,
@@ -1130,6 +1147,7 @@ class LocalStore:
                     r.get("backend"),
                     r.get("bucket"),
                     r.get("content_hash"),
+                    r.get("sci_dq_hash"),
                     r.get("size_bytes"),
                     r.get("content_type"),
                     r.get("product_type"),
@@ -1150,6 +1168,62 @@ class LocalStore:
             count += 1
         self._conn.commit()
         return count
+
+    # ------------------------------------------------------------------
+    # Push-side bookkeeping (`campfire push` / deploy dedup)
+    # ------------------------------------------------------------------
+
+    def get_storage_rows_by_keys(self, keys: List[str]) -> Dict[str, dict]:
+        """Fetch mirror rows for specific storage keys → ``{storage_key: row}``.
+
+        The push planner's read: candidate keys come from local discovery, and
+        the returned rows carry both the server identities (content_hash /
+        sci_dq_hash) and this machine's pushed_* fast-path state.
+        """
+        out: Dict[str, dict] = {}
+        CHUNK = 500
+        for i in range(0, len(keys), CHUNK):
+            chunk = keys[i:i + CHUNK]
+            ph = ",".join("?" * len(chunk))
+            rows = self._conn.execute(
+                f"SELECT * FROM storage_objects WHERE storage_key IN ({ph})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                d = dict(row)
+                out[d["storage_key"]] = d
+        return out
+
+    def mark_object_pushed(
+        self,
+        storage_key: str,
+        identity: Optional[str],
+        mtime: Optional[float],
+        size: Optional[int],
+        *,
+        commit: bool = True,
+    ) -> None:
+        """Record that the local file for ``storage_key`` is confirmed in-cloud.
+
+        ``identity`` is the content identity that was pushed (sci_dq hash for
+        NIRCam exposures, whole-file sha256 otherwise); ``mtime``/``size`` are
+        the file's stat at that moment — together they are the next run's
+        skip-without-rehashing fast path. Also called for dedup-skipped files
+        whose identity matched the cloud (refreshing the stat), so a
+        science-identical re-save takes the fast path from then on.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            """UPDATE storage_objects SET pushed_identity = ?, pushed_mtime = ?,
+               pushed_size = ?, pushed_at = ? WHERE storage_key = ?""",
+            (identity, mtime, size, now, storage_key),
+        )
+        if commit:
+            self._conn.commit()
+
+    def commit(self) -> None:
+        """Flush pending writes (for callers batching mark_object_* calls)."""
+        self._conn.commit()
 
     def get_max_storage_updated_at(self) -> Optional[str]:
         row = self._conn.execute(

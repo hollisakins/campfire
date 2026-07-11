@@ -128,6 +128,9 @@ def upload_tiles(
             config, tasks, bucket_id='tiles', max_workers=max_workers,
             desc=f"{field}/{fname}",
             cache_control='public, max-age=31536000, immutable',
+            # Map tiles are the SOLE product that lives on R2 (CDN edge);
+            # everything else deploys to OSN.
+            backend='r2',
         )
 
         if failed:

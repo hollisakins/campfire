@@ -28,14 +28,14 @@ def test_login_mode_no_presign_raises_not_fallback(monkeypatch):
 
     config = {"supabase": {"_auth_mode": "login"}}
     with pytest.raises(RuntimeError, match="presigned"):
-        upload_files_parallel(config, [_task()])
+        upload_files_parallel(config, [_task()], backend="osn")
 
 
 def test_untagged_mode_treated_as_presigned_only(monkeypatch):
     # A config with no explicit direct mode is treated like login: presigned only.
     monkeypatch.setattr(r2, "request_presigned_urls", lambda *a, **k: None)
     with pytest.raises(RuntimeError, match="presigned"):
-        upload_files_parallel({"supabase": {}}, [_task()])
+        upload_files_parallel({"supabase": {}}, [_task()], backend="osn")
 
 
 def test_service_role_mode_skips_presign_goes_direct(monkeypatch):
@@ -50,10 +50,18 @@ def test_service_role_mode_skips_presign_goes_direct(monkeypatch):
 
     config = {"supabase": {"_auth_mode": "service_role"}}  # no 'r2' section
     with pytest.raises(ValueError, match="No storage credentials"):
-        upload_files_parallel(config, [_task()])
+        upload_files_parallel(config, [_task()], backend="osn")
     assert called["presign"] is False
 
 
 def test_no_tasks_short_circuits():
     # Empty task list returns cleanly regardless of mode (no presign, no boto3).
-    assert upload_files_parallel({"supabase": {"_auth_mode": "login"}}, []) == (0, 0, [])
+    assert upload_files_parallel(
+        {"supabase": {"_auth_mode": "login"}}, [], backend="osn") == (0, 0, [])
+
+
+def test_backend_is_required():
+    # Data lives on OSN; tiles are the sole R2 exception. There is deliberately
+    # no default backend — every call site must say where bytes land.
+    with pytest.raises(TypeError):
+        upload_files_parallel({"supabase": {"_auth_mode": "login"}}, [_task()])
