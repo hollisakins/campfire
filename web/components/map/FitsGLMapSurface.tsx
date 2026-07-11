@@ -38,12 +38,15 @@ import {
   type CursorInfo,
   type MarkerEvent,
   type MarkerInput,
+  type RegionInput,
+  type ResolvedRegion,
   type ViewerConfig,
   type ViewerFrameInfo,
 } from '@fitsgl/core';
-import type { FitsglDataset, MapObjectMarker } from '@/lib/actions/map';
+import type { FitsglDataset, MapObjectMarker, SlitRegion, Shutter } from '@/lib/actions/map';
 import { MARKER_QUALITY_COLORS, QUALITY_LABELS } from '@/lib/types';
 import { makeFitsglWorker } from '@/lib/fits/fitsglWorker';
+import { getObservationColor } from './observation-colors';
 import { BandRail } from './fitsgl/BandRail';
 import { DisplayPanel } from './fitsgl/DisplayPanel';
 import { LayersPanel } from './fitsgl/LayersPanel';
@@ -60,6 +63,13 @@ const RULER_ACCENT = '#fb923c';
 const GRID_LINE = 'rgba(148,163,184,0.35)';
 const GRID_LABEL = 'rgba(203,213,225,0.8)';
 
+/** Default MSA shutter extents (arcsec); fixed slits carry their own aperture dims.
+ *  Mirrors CanvasSlitLayer's constants so the two map surfaces render identically. */
+const SHUTTER_WIDTH_ARCSEC = 0.22;
+const SHUTTER_HEIGHT_ARCSEC = 0.46;
+/** Stuck-closed shutters read red-dashed on both surfaces. */
+const SHUTTER_STUCK_COLOR = '#ef4444';
+
 interface FitsGLMapSurfaceProps {
   dataset: FitsglDataset;
   markers: MapObjectMarker[];
@@ -74,6 +84,12 @@ interface FitsGLMapSurfaceProps {
   onFieldChange: (field: string) => void;
   onToggleMarkers: (visible: boolean) => void;
   markerCount: number;
+  /** NIRSpec MSA shutters for the field (rendered as FitsGL sky-polygon regions). */
+  shutters: (SlitRegion | Shutter)[];
+  showShutters: boolean;
+  onToggleShutters: (visible: boolean) => void;
+  /** Restricts the drawn shutters to those whose target belongs to a filtered object. */
+  shutterFilter?: (shutter: SlitRegion | Shutter) => boolean;
   /** Live RA/Dec under the cursor → shared CoordinateOverlay (null on leave). */
   onCursorCoords: (coords: { ra: number; dec: number } | null) => void;
   /** Right-click at a sky position → shared MapContextMenu. */
@@ -118,6 +134,87 @@ function rainbowRgb(bands: ExplorerBand[]): { r: string; g: string; b: string } 
   };
 }
 
+/**
+ * The four sky corners (ICRS deg) of a shutter, from its centre + position angle +
+ * full angular extents. Worked in a local tangent plane of (East, North) arcsec
+ * offsets: the along-slit (height) axis points `paDeg` East of North, the across-slit
+ * (width) axis is perpendicular; East offsets divide by cos(dec) to become ΔRA.
+ * Returned CCW, non-self-intersecting.
+ */
+function shutterCorners(
+  ra: number,
+  dec: number,
+  paDeg: number,
+  widthArcsec: number,
+  heightArcsec: number,
+): Array<{ ra: number; dec: number }> {
+  const pa = (paDeg * Math.PI) / 180;
+  const sinPa = Math.sin(pa);
+  const cosPa = Math.cos(pa);
+  const hw = widthArcsec / 2;
+  const hh = heightArcsec / 2;
+  const cosDec = Math.cos((dec * Math.PI) / 180) || 1e-8;
+  // width axis û_w = (cosPa, -sinPa); height axis û_h = (sinPa, cosPa) in (East, North).
+  return [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+  ].map(([i, j]) => {
+    const dEast = i * hw * cosPa + j * hh * sinPa;
+    const dNorth = -i * hw * sinPa + j * hh * cosPa;
+    return { ra: ra + dEast / 3600 / cosDec, dec: dec + dNorth / 3600 };
+  });
+}
+
+/**
+ * Map NIRSpec shutters to FitsGL sky-polygon regions (epic #337, Phase 4b). Each
+ * shutter is a `center_ra`/`center_dec` + `position_angle` (deg East of North) +
+ * angular extents; we project its four corners to ICRS `vertices` and let FitsGL
+ * place them through the mosaic WCS (a footprint that scales with zoom / rotates with
+ * the display). Colour matches the Leaflet `CanvasSlitLayer`: per-observation stroke
+ * with a faint fill, stuck-closed = red dashed. Non-matching shutters are dropped.
+ *
+ * Polygons (not the instanced sky-*rect* path) because `@fitsgl/core` 0.2.0's sky-rect
+ * `skyBasis` guard mis-measures the East pixel scale by a factor of cos(dec) and drops
+ * every rect on a field more than a few degrees off the equator (bug reported upstream;
+ * a sky polygon projects each vertex independently and is unaffected).
+ */
+function shuttersToRegions(
+  shutters: readonly (SlitRegion | Shutter)[],
+  filter?: (s: SlitRegion | Shutter) => boolean,
+): RegionInput[] {
+  const visible = filter ? shutters.filter(filter) : shutters;
+  // Stable per-observation colours from the FULL set (so a filter never reshuffles them).
+  const observations = [...new Set(shutters.map((s) => s.observation))].sort();
+  return visible.map((s, i): RegionInput => {
+    const isShutter = 'shutter_state' in s;
+    const stuck = isShutter && (s as Shutter).shutter_state === 'stuck_closed';
+    const color = stuck ? SHUTTER_STUCK_COLOR : getObservationColor(s.observation, observations);
+    const sh = s as Shutter;
+    return {
+      id: `shutter-${i}`,
+      shape: 'polygon',
+      vertices: shutterCorners(
+        s.center_ra,
+        s.center_dec,
+        s.position_angle,
+        sh.aperture_width_arcsec ?? SHUTTER_WIDTH_ARCSEC,
+        sh.aperture_height_arcsec ?? SHUTTER_HEIGHT_ARCSEC,
+      ),
+      stroke: color,
+      fill: `${color}22`, // ~13% — the faint footprint tint (CanvasSlitLayer uses 0.08 alpha)
+      strokeWidth: stuck ? 1.5 : 1,
+      dash: stuck ? ([3, 2] as const) : undefined,
+      data: {
+        targetId: s.object_id,
+        observation: s.observation,
+        state: isShutter ? sh.shutter_state : 'slit',
+      },
+    };
+  });
+}
+
 export function FitsGLMapSurface({
   dataset,
   markers,
@@ -131,6 +228,10 @@ export function FitsGLMapSurface({
   onFieldChange,
   onToggleMarkers,
   markerCount,
+  shutters,
+  showShutters,
+  onToggleShutters,
+  shutterFilter,
   onCursorCoords,
   onContextMenu,
   onOpenFilters,
@@ -254,6 +355,30 @@ export function FitsGLMapSurface({
     h.setMarkers(showMarkers ? markerInputs : []);
   }, [markerInputs, showMarkers]);
 
+  // Shutter region inputs (sky-polygon footprints; FitsGL projects via the manifest WCS).
+  const shutterRegions = useMemo<RegionInput[]>(
+    () => shuttersToRegions(shutters, shutterFilter),
+    [shutters, shutterFilter],
+  );
+
+  // Push shutter regions on change, mirroring the marker path.
+  useEffect(() => {
+    const h = handleRef.current;
+    if (!h) return;
+    h.setRegions(showShutters ? shutterRegions : []);
+  }, [shutterRegions, showShutters]);
+
+  // Re-apply both overlays after a (re)ready. onReady is fixed at construction and
+  // re-fires on every band reload; reading the latest marker/shutter state through a
+  // ref keeps a reload (e.g. an RGB toggle) from restoring stale overlay visibility.
+  const applyOverlaysRef = useRef<(h: FitsViewerHandle) => void>(() => {});
+  useEffect(() => {
+    applyOverlaysRef.current = (h) => {
+      h.setMarkers(showMarkers ? markerInputs : []);
+      h.setRegions(showShutters ? shutterRegions : []);
+    };
+  }, [showMarkers, markerInputs, showShutters, shutterRegions]);
+
   const markerById = useMemo(() => {
     const map = new Map<string, MapObjectMarker>();
     for (const m of markers) map.set(m.object_id, m);
@@ -262,7 +387,7 @@ export function FitsGLMapSurface({
 
   const onReady = useCallback((handle: FitsViewerHandle) => {
     handleRef.current = handle;
-    handle.setMarkers(showMarkers ? markerInputs : []);
+    applyOverlaysRef.current(handle);
     setReadyTick((t) => t + 1);
     if (!initialApplied.current) {
       initialApplied.current = true;
@@ -276,7 +401,6 @@ export function FitsGLMapSurface({
       }
       if (zoom !== undefined) handle.setZoom(zoom);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onCursor = useCallback((info: CursorInfo | null) => {
@@ -384,6 +508,14 @@ export function FitsGLMapSurface({
     a.click();
   }, [selectedField]);
 
+  // Hover tooltip for a shutter region (FitsGL's built-in popup).
+  const regionTooltip = useCallback((r: ResolvedRegion) => {
+    const d = r.data as { targetId?: string; observation?: string; state?: string };
+    if (!d?.targetId) return null;
+    const stuck = d.state === 'stuck_closed';
+    return `${d.targetId} · ${d.observation ?? ''}${stuck ? ' · stuck' : ''}`;
+  }, []);
+
   if (loadError) {
     return (
       <div className="flex items-center justify-center h-full bg-surface-2">
@@ -405,6 +537,7 @@ export function FitsGLMapSurface({
           onCursor={onCursor}
           onFrame={onFrame}
           onMarkerClick={onMarkerClick}
+          regionTooltip={regionTooltip}
           onError={(err) => setLoadError(String((err as Error)?.message ?? err))}
           className="h-full w-full"
           style={{ background: 'var(--header)' }}
@@ -481,6 +614,10 @@ export function FitsGLMapSurface({
               markerCount={markerCount}
               graticule={graticule}
               onToggleGraticule={setGraticule}
+              shuttersAvailable={shutters.length > 0}
+              showShutters={showShutters}
+              onToggleShutters={onToggleShutters}
+              shutterCount={shutters.length}
             />
           </div>
         </div>
