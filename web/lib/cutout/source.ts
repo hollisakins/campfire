@@ -80,7 +80,7 @@ async function fetchFieldDataset(
   supabase: SupabaseClient,
   field: string,
   opts: { requirePublic?: boolean },
-): Promise<{ prefix: string; config: FitsglConfig } | null> {
+): Promise<{ prefix: string; config: FitsglConfig; isPublic: boolean } | null> {
   const { data: rows, error } = await supabase
     .from('fitsgl_datasets')
     .select('prefix, field, kind, tiles, bands, pixel_scale, fitsgl_json_url, is_default')
@@ -105,7 +105,7 @@ async function fetchFieldDataset(
   if (opts.requirePublic && !isPublic) return null;
 
   const config = await loadFitsglConfig(ds.fitsgl_json_url, cachingFetch);
-  return { prefix: ds.prefix, config };
+  return { prefix: ds.prefix, config, isPublic: Boolean(isPublic) };
 }
 
 /** Load a chosen band's manifest into an engine `BandSource`. */
@@ -136,7 +136,7 @@ export async function resolveFieldCutoutSource(
       bands,
       bandNames: chosen.map((b) => b.name),
       nativeScaleArcsec: bands[0].manifest.levels[0].pixelScaleArcsec,
-      isPublic: Boolean(isPublic),
+      isPublic: ds.isPublic,
     };
   } catch (err) {
     console.error(`FitsGL cutout source unavailable for field ${field}:`, err);
