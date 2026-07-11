@@ -562,16 +562,21 @@ def _render_layout(out_dir, field, stage, results, wcs, pixel_scale,
     if not built:
         return
 
+    pix_area_deg2 = proj_plane_pixel_area(wcs)
     stack = None
     per_filter_area = {}
     for name, _metas, fp in built:
         with fits.open(fp, memmap=False) as hdul:
             arr = np.asarray(hdul['EXPMAP'].data, dtype=np.float64)
-            per_filter_area[name] = float(hdul['EXPMAP'].header.get('AREA',
-                                                                    0.0))
+            area = hdul['EXPMAP'].header.get('AREA')
+        if area is None:
+            # Cached FITS written before the AREA card existed: recompute the
+            # per-filter area from the array on the shared WCS rather than
+            # reporting a spurious zero.
+            area = int(np.count_nonzero(arr > 0)) * pix_area_deg2 * 3600.0
+        per_filter_area[name] = float(area)
         stack = arr if stack is None else stack + arr
 
-    pix_area_deg2 = proj_plane_pixel_area(wcs)
     n_cov = int(np.count_nonzero(stack > 0))
     area_deg2 = n_cov * pix_area_deg2
     area_arcmin2 = area_deg2 * 3600.0
@@ -725,17 +730,25 @@ def run_expmap(
                              out_dir, wcs, global_vmin, global_vmax)
 
     # Phase 3d: field layout — stack of every per-filter expmap with tile
-    # outlines + the exact survey area (non-zero pixels of the stack). Tile
-    # outlines are decorative and a bad/missing tile config never blocks the
-    # plot; fields without a [tiles] block simply get coverage, no outlines.
-    tile_outlines = []
-    for tname in (getattr(field, 'tiles', None) or {}):
-        try:
-            tile_outlines.append((tname, field.get_tile_corners(tname)))
-        except Exception as e:  # noqa: BLE001 - decorative overlay, never fatal
-            log(f'  layout: skipping tile {tname} outline ({e})')
-    _render_layout(out_dir, field, stage, results, wcs, pixel_scale,
-                   tile_outlines, float(sum(m.xposure for m in all_metas)))
+    # outlines + the exact survey area (non-zero pixels of the stack). Only a
+    # full-field run may (over)write the canonical layout + coverage area: a
+    # filtered rerun stacks a subset and would publish an under-reported survey
+    # area over the complete one, so partial runs skip the layout entirely.
+    if set(filter_list) >= set(field.filters):
+        # Tile outlines are decorative and a bad/missing tile config never
+        # blocks the plot; fields without a [tiles] block get coverage only.
+        tile_outlines = []
+        for tname in (getattr(field, 'tiles', None) or {}):
+            try:
+                tile_outlines.append((tname, field.get_tile_corners(tname)))
+            except Exception as e:  # noqa: BLE001 - decorative overlay, never fatal
+                log(f'  layout: skipping tile {tname} outline ({e})')
+        _render_layout(out_dir, field, stage, results, wcs, pixel_scale,
+                       tile_outlines, float(sum(m.xposure for m in all_metas)))
+    else:
+        missing = sorted(set(field.filters) - set(filter_list))
+        log(f'Partial filter run (field filters missing: {missing}); '
+            f'skipping {field.name}_layout to preserve the full-field coverage.')
 
     reg_metas = [(name, metas)
                  for name, metas, *_ in results if metas]

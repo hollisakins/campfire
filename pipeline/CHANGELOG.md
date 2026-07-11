@@ -81,8 +81,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   and a companion `<field>_layout.json` records the **exact survey area**
   (non-zero pixels of the stack × pixel area) + per-filter areas for the
   deploy/DB layer. Each per-filter expmap FITS also gains an `AREA` header
-  (covered arcmin²). Plots + metadata only — no change to expmap pixel values
-  (`nircam/expmap.py`, `nircam/cli.py`).
+  (covered arcmin²). The layout + coverage summary is written only on full-field
+  runs: a `cfpipe nircam expmap --filters <subset>` rerun skips it so a partial
+  stack never overwrites the complete survey area, and a cached expmap FITS
+  predating the `AREA` header has its per-filter area recomputed from the array
+  rather than reported as zero. Plots + metadata only — no change to expmap pixel
+  values (`nircam/expmap.py`, `nircam/cli.py`).
 - NIRCam wisp templates are now fetched from a public HTTPS host into
   `$CAMPFIRE_ROOT/cache/wisps/` against a checksummed manifest shipped with the
   package (`data/wisp_manifest.toml`), instead of being manually copied into the

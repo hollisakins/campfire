@@ -141,6 +141,68 @@ def test_render_layout_stack_and_area(tmp_path):
     assert summary['coverage_area_arcmin2'] == pytest.approx(expect, rel=1e-6)
 
 
+def test_render_layout_backfills_area_when_header_missing(tmp_path):
+    # A cached FITS from before the AREA card existed must not report a
+    # spurious zero per-filter area — it's recomputed from the array.
+    metas, wcs, _shape, arr = _synthetic_expmap()
+    results = []
+    for filt in ('f200w', 'f444w'):
+        fdir = tmp_path / filt
+        fdir.mkdir()
+        fp = fdir / f'expmap_cosmos_{filt}.fits'
+        em._write_fits(str(fp), arr, wcs, field_name='cosmos',
+                       filter_name=filt, stage='canonical', metas=metas)
+        with fits.open(fp, mode='update') as hdul:
+            del hdul['EXPMAP'].header['AREA']       # simulate a pre-AREA FITS
+        results.append((filt, metas, str(fp), None, None))
+
+    ff = tmp_path / 'fields.toml'
+    ff.write_text(textwrap.dedent(_FIELDS_TOML))
+    field = Field.load('cosmos', fields_file=str(ff))
+    tile_outlines = [(t, field.get_tile_corners(t)) for t in field.tiles]
+
+    em._render_layout(str(tmp_path), field, 'canonical', results, wcs,
+                      0.5, tile_outlines, texp_total=3000.0)
+
+    summary = json.loads((tmp_path / 'cosmos_layout.json').read_text())
+    single = int(np.count_nonzero(arr > 0))
+    expect = single * proj_plane_pixel_area(wcs) * 3600
+    for filt in ('f200w', 'f444w'):
+        area = summary['per_filter_area_arcmin2'][filt]
+        assert area > 0
+        assert area == pytest.approx(expect, rel=1e-6)
+
+
+def test_run_expmap_skips_layout_on_partial_filter_run(tmp_path, monkeypatch):
+    # A filtered rerun must not overwrite the full-field layout/coverage; a
+    # full run (covering every field filter) still writes it.
+    metas, wcs, shape, _arr = _synthetic_expmap()
+
+    ff = tmp_path / 'fields.toml'
+    ff.write_text(textwrap.dedent(_FIELDS_TOML))    # cosmos: [f200w, f444w]
+    field = Field.load('cosmos', fields_file=str(ff))
+
+    monkeypatch.setattr(em, '_load_metadata_cache', lambda *a, **k: {})
+    monkeypatch.setattr(em, '_save_metadata_cache', lambda *a, **k: None)
+    monkeypatch.setattr(em, '_collect_metas',
+                        lambda field, filt, stage, cache=None: [metas[0]])
+    monkeypatch.setattr(em, '_auto_wcs', lambda ms, ps, pad: (wcs, shape))
+    monkeypatch.setattr(em, '_accumulate_filter',
+                        lambda w: (w[1], w[5], f'/fake/{w[1]}.fits', 1.0, 10.0))
+    monkeypatch.setattr(em, '_render_filter_plots', lambda *a, **k: None)
+    monkeypatch.setattr(em, '_write_region_file', lambda *a, **k: None)
+
+    calls = []
+    monkeypatch.setattr(em, '_render_layout',
+                        lambda *a, **k: calls.append(a))
+
+    em.run_expmap(field, filters=['f444w'], out_dir=str(tmp_path))
+    assert calls == []                              # partial → skipped
+
+    em.run_expmap(field, filters=['f200w', 'f444w'], out_dir=str(tmp_path))
+    assert len(calls) == 1                          # full → rendered
+
+
 def test_render_layout_no_built_results_noop(tmp_path):
     _metas, wcs, _shape, _arr = _synthetic_expmap()
     # results with empty metas / no FITS path → nothing written
