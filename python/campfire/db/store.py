@@ -1531,7 +1531,36 @@ class LocalStore:
             # New file, or stat changed since recorded.
             if deep:
                 to_hash.append((row, rel, size, mtime, not tracked))
-            elif _adoptable(row, size):
+                continue
+
+            prior = row["local_file_hash"]
+            if tracked and prior is not None and prior != row["content_hash"]:
+                # Known-stale row (the cloud object changed since this file was
+                # last verified). Adopting the new server hash here would mark
+                # old bytes as current and pull would skip the update — the one
+                # drift this ledger exists to surface. Keep the honest prior
+                # hash while the file looks like the same bytes; void it once
+                # the size disagrees.
+                if size == row["local_file_size"]:
+                    self._conn.execute(
+                        """UPDATE storage_objects SET local_file_mtime = ?
+                           WHERE storage_key = ?""",
+                        (mtime, row["storage_key"]),
+                    )
+                    rehashed += 1
+                else:
+                    mismatched += 1
+                    cleared += 1
+                    self._conn.execute(
+                        """UPDATE storage_objects SET local_path = NULL,
+                           local_file_hash = NULL, local_file_mtime = NULL,
+                           local_file_size = NULL, synced_at = NULL
+                           WHERE storage_key = ?""",
+                        (row["storage_key"],),
+                    )
+                continue
+
+            if _adoptable(row, size):
                 self._conn.execute(
                     """UPDATE storage_objects SET local_path = ?, local_file_hash = ?,
                        local_file_mtime = ?, local_file_size = ?, synced_at = ?

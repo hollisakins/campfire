@@ -143,6 +143,48 @@ def test_stat_change_new_size_clears(store, products):
     assert _row(store, key)["local_path"] is None
 
 
+def test_stale_row_touch_never_adopts_new_server_hash(store, products):
+    # Codex P1 on #375: cloud object re-deployed (new hash, same size — FITS
+    # block padding makes this common) + any local mtime change must NOT
+    # promote the old bytes to "current", or pull skips the update forever.
+    key, rel = _seed_row(store, content=b"x" * 100)
+    h_old = _row(store, key)["content_hash"]
+    p = _materialize(products, rel)
+    store.verify_local_objects(products)
+
+    _seed_row(store, content=b"y" * 100)  # cloud update: same size, new hash
+    os.utime(p, (2e9, 2e9))  # local touch
+
+    res = store.verify_local_objects(products)
+    row = _row(store, key)
+    assert row["local_file_hash"] == h_old  # honest prior hash kept
+    assert row["local_file_hash"] != row["content_hash"]
+    assert any(s["storage_key"] == key for s in store.get_stale_objects())
+    # mtime bookkeeping refreshed so the next verify no-ops:
+    assert store.verify_local_objects(products) == {
+        "cleared": 0, "rehashed": 0, "discovered": 0, "mismatched": 0}
+
+
+def test_stale_row_rewritten_clears_to_pending(store, products):
+    # Cloud updated to a new size AND the local file rewritten to exactly that
+    # size: the prior hash is void and there's no evidence for the new one —
+    # clear to pending rather than adopt.
+    key, rel = _seed_row(store, content=b"x" * 100)
+    p = _materialize(products, rel)
+    store.verify_local_objects(products)
+
+    _seed_row(store, content=b"y" * 80)  # cloud update: 80 bytes
+    p.write_bytes(b"z" * 80)  # local rewrite, coincidentally matching size
+
+    res = store.verify_local_objects(products)
+    assert res["mismatched"] == 1 and res["cleared"] == 1
+    row = _row(store, key)
+    assert row["local_path"] is None  # pending → pull re-fetches
+    pending = store.get_pending_objects(observations=["obs1"],
+                                        product_types=["nirspec_spec"])
+    assert any(r["storage_key"] == key for r in pending.get("obs1", []))
+
+
 # --- deep mode ------------------------------------------------------------------
 
 def test_deep_hashes_real_content(store, products):
