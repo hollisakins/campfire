@@ -205,7 +205,7 @@ class APIClient:
     ) -> Tuple[List[dict], int]:
         """Fetch all objects via the lightweight /sync/objects endpoint."""
         return self._paginate_sync_endpoint(
-            "/sync/objects", updated_since, on_page_complete,
+            "/sync/objects", "object_id", updated_since, on_page_complete,
         )
 
     # ------------------------------------------------------------------
@@ -248,7 +248,7 @@ class APIClient:
     ) -> Tuple[List[dict], int]:
         """Fetch all spectra via the /sync/spectra endpoint."""
         return self._paginate_sync_endpoint(
-            "/sync/spectra", updated_since, on_page_complete,
+            "/sync/spectra", "spectrum_id", updated_since, on_page_complete,
         )
 
     # ------------------------------------------------------------------
@@ -289,10 +289,11 @@ class APIClient:
         """Fetch the storage_objects mirror via /sync/storage (program-scoped).
 
         Paginates with the larger storage page size (``_storage_page_size``) since
-        storage_objects is the biggest sync catalog.
+        storage_objects is the biggest sync catalog. Cursor is the integer ``id``
+        (storage_key is not uniquely constrained alone; see the RPC).
         """
         return self._paginate_sync_endpoint(
-            "/sync/storage", updated_since, on_page_complete,
+            "/sync/storage", "id", updated_since, on_page_complete,
             page_size=self._storage_page_size,
         )
 
@@ -323,11 +324,19 @@ class APIClient:
     def _paginate_sync_endpoint(
         self,
         path: str,
+        cursor_key: str,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
         page_size: Optional[int] = None,
     ) -> Tuple[List[dict], int]:
-        """Paginate through a /sync/* endpoint.
+        """Keyset-paginate through a /sync/* endpoint.
+
+        Walks forward with a cursor on ``cursor_key`` — the endpoint's unique,
+        btree-indexed ordering column (e.g. ``"object_id"``, ``"spectrum_id"``,
+        or ``"id"``). Each page sends the previous page's last value as
+        ``after``, so the server seeks the index instead of scanning ``offset``
+        rows first: O(log N + limit) per page instead of O(offset + limit). This
+        keeps deep ``--full`` sync pages flat as the catalog grows (issue #103).
 
         ``page_size`` overrides the shared per-client page size for endpoints that
         want a different one (e.g. the larger storage page); defaults to
@@ -339,7 +348,8 @@ class APIClient:
         all_items: List[dict] = []
         total_accessible_count = 0
         total = 0
-        offset = 0
+        fetched = 0
+        cursor = None
         first_page = True
         while True:
             self._session._ensure_valid_token()
@@ -348,24 +358,32 @@ class APIClient:
             # subsequent page.
             params: dict = {
                 "limit": page_size,
-                "offset": offset,
                 "include_counts": "true" if first_page else "false",
             }
+            if cursor is not None:
+                params["after"] = cursor
             if updated_since:
                 params["updated_since"] = updated_since
             response = self._session.get(path, params=params, timeout=60)
             _handle_response_error(response, f"fetching {path}")
             data = response.json()
             items = data.get("data", [])
-            all_items.extend(items)
             if first_page:
                 total = data.get("pagination", {}).get("total", 0)
                 total_accessible_count = data.get("total_accessible_count", 0)
                 first_page = False
-            offset += len(items)
+            if not items:
+                break
+            all_items.extend(items)
+            fetched += len(items)
+            cursor = items[-1][cursor_key]
             if on_page_complete:
-                on_page_complete(offset, total)
-            if offset >= total or not items:
+                on_page_complete(fetched, total)
+            # A short page means the server has no more matching rows: stop
+            # without an extra empty round-trip. An exactly-full final page
+            # falls through and the next request returns an empty page (handled
+            # by the `not items` break above).
+            if len(items) < page_size:
                 break
         return all_items, total_accessible_count
 
@@ -436,28 +454,16 @@ class APIClient:
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
     ) -> Tuple[List[dict], int]:
-        """Fetch all photometry records via the /sync/photometry endpoint."""
-        all_items: List[dict] = []
-        offset = 0
-        total_count = 0
-        while True:
-            self._session._ensure_valid_token()
-            params: dict = {"limit": self._page_size, "offset": offset}
-            if updated_since:
-                params["updated_since"] = updated_since
-            response = self._session.get("/sync/photometry", params=params, timeout=60)
-            _handle_response_error(response, "fetching photometry")
-            data = response.json()
-            items = data.get("data", [])
-            all_items.extend(items)
-            total = data.get("pagination", {}).get("total", 0)
-            total_count = total
-            offset += len(items)
-            if on_page_complete:
-                on_page_complete(offset, total)
-            if offset >= total or not items:
-                break
-        return all_items, total_count
+        """Fetch all photometry records via the /sync/photometry endpoint.
+
+        Keyset cursor is the integer ``id`` (object_photometry PK). The second
+        return element is 0 here (the endpoint carries no accessible count) and
+        is ignored by the caller; kept for signature parity with the other
+        ``fetch_all_*`` streams.
+        """
+        return self._paginate_sync_endpoint(
+            "/sync/photometry", "id", updated_since, on_page_complete,
+        )
 
     def fetch_tags(self) -> List[dict]:
         """Fetch all tag metadata via the /sync/lists endpoint."""

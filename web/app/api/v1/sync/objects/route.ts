@@ -14,7 +14,10 @@ import { getAccessibleProgramsCached, isAdminUserCached } from '@/lib/api-helper
  * Query parameters:
  * - updated_since: ISO 8601 timestamp (only return objects updated after this)
  * - limit: page size (default 1000)
- * - offset: pagination offset (default 0)
+ * - after: keyset cursor — object_id of the previous page's last row (#103).
+ *          Preferred over offset; O(log N + limit) per page. When set, offset
+ *          is ignored by the RPC's cursor predicate.
+ * - offset: legacy pagination offset (default 0); kept for old clients.
  * - include_counts: 'false' to skip total_count / total_accessible_count (default true)
  */
 export async function GET(request: NextRequest) {
@@ -40,6 +43,7 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const limit = parseInt(searchParams.get('limit') || '1000', 10);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
+    const afterObjectId = searchParams.get('after') || null;
     const updatedSince = searchParams.get('updated_since') || null;
     const includeCounts = searchParams.get('include_counts') !== 'false';
 
@@ -60,6 +64,7 @@ export async function GET(request: NextRequest) {
       p_offset: offset,
       p_include_counts: includeCounts,
       p_include_unpublished: includeUnpublished,
+      p_after_object_id: afterObjectId,
     });
 
     if (error) {
