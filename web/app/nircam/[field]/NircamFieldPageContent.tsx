@@ -296,16 +296,9 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
         <>
           {/* Field header + map bridge */}
           <div className="flex items-start gap-4 flex-wrap mb-6">
-            <div>
-              <h1 className="text-2xl font-bold text-text-primary">
-                {displayName} NIRCam Imaging
-              </h1>
-              {summary.last_updated && (
-                <p className="text-xs text-text-tertiary mt-1">
-                  Last reduced {summary.last_updated.slice(0, 10)}
-                </p>
-              )}
-            </div>
+            <h1 className="text-2xl font-bold text-text-primary">
+              {displayName} NIRCam Imaging
+            </h1>
             <div className="flex-1" />
             <div className="flex items-center gap-2">
               {hasCutouts && (
@@ -373,6 +366,34 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
                       ['Mosaic files', summary.n_files.toLocaleString()],
                       ['Sky coverage', formatCoverage(summary)],
                       ['Data volume', formatVolume(summary.total_bytes)],
+                      // Reduction provenance (latest published deployment)
+                      ...(summary.last_updated
+                        ? [['Last reduced', summary.last_updated.slice(0, 10)]]
+                        : []),
+                      ...(summary.cfpipe_version
+                        ? [[
+                            'Pipeline',
+                            <span key="cfp" className="font-mono text-xs break-all">
+                              cfpipe {summary.cfpipe_version}
+                            </span>,
+                          ]]
+                        : []),
+                      ...(summary.jwst_version
+                        ? [[
+                            'jwst',
+                            <span key="jwst" className="font-mono text-xs">
+                              {summary.jwst_version}
+                            </span>,
+                          ]]
+                        : []),
+                      ...(summary.crds_context
+                        ? [[
+                            'CRDS context',
+                            <span key="crds" className="font-mono text-xs">
+                              {summary.crds_context}
+                            </span>,
+                          ]]
+                        : []),
                     ] as [string, React.ReactNode][]
                   ).map(([k, v], i, arr) => (
                     <div

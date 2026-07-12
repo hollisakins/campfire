@@ -328,6 +328,11 @@ export interface NircamFieldSummary extends Omit<NircamFieldCard, 'layout_url'> 
   pixel_scales: string[];
   extensions: string[];
   epochs: string[];
+  /** Provenance of the latest published deployment (deployments table);
+   *  null when no deployment row is visible. */
+  cfpipe_version: string | null;
+  jwst_version: string | null;
+  crds_context: string | null;
 }
 
 // One row of the field-page data-products table: a mosaic (from nircam_images)

@@ -279,13 +279,35 @@ export async function getNircamFieldSummary(field: string): Promise<NircamFieldS
       return { summary: null, error: error.message, isAuthenticated: true };
     }
 
-    const row = ((data ?? []) as (NircamFieldSummary & { layout_key: string | null })[])[0];
+    const row = ((data ?? []) as (Omit<NircamFieldSummary,
+      'cfpipe_version' | 'jwst_version' | 'crds_context'> & { layout_key: string | null })[])[0];
     if (!row) return { summary: null, isAuthenticated: true };
 
     // layout_key is presigned separately by getNircamFieldImages; strip it.
-    const { layout_key: _lk, ...summary } = row as NircamFieldSummary & { layout_key: string | null };
+    const { layout_key: _lk, ...base } = row;
     void _lk;
-    return { summary, isAuthenticated: true };
+
+    // Reduction provenance from the latest published deployment (the
+    // deployments log is readable by all authenticated users). Fail open —
+    // a missing row just leaves the provenance rows off the overview.
+    let provenance = { cfpipe_version: null as string | null,
+                       jwst_version: null as string | null,
+                       crds_context: null as string | null };
+    try {
+      const { data: dep } = await supabase
+        .from('deployments')
+        .select('cfpipe_version, jwst_version, crds_context')
+        .eq('field', field)
+        .eq('status', 'published')
+        .order('deployed_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (dep) provenance = dep;
+    } catch (err) {
+      console.error('Error fetching deployment provenance (continuing):', err);
+    }
+
+    return { summary: { ...base, ...provenance }, isAuthenticated: true };
   } catch (err) {
     console.error('Unexpected error fetching NIRCam field summary:', err);
     return { summary: null, error: 'An unexpected error occurred', isAuthenticated: true };
