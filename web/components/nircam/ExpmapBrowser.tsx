@@ -86,9 +86,12 @@ export const ExpmapBrowser: React.FC<ExpmapBrowserProps> = ({
         })}
       </div>
 
-      {/* Square plot well — matches the exported PNG aspect */}
+      {/* Plot well — the panel's height comes from the PLOT's intrinsic
+          aspect at the well's width (the grid cell minus the tab rail), so
+          the plot always fills the region edge-to-edge with no letterboxing.
+          Square only as the placeholder fallback. */}
       <div
-        className="flex-1 aspect-square flex items-center justify-center p-2"
+        className={`flex-1 min-w-0 flex items-center justify-center ${imgOk ? '' : 'aspect-square'}`}
         style={{ background: WELL_BG }}
       >
         {imgOk ? (
@@ -97,7 +100,7 @@ export const ExpmapBrowser: React.FC<ExpmapBrowserProps> = ({
           <img
             src={shownUrl as string}
             alt={`${current?.toUpperCase()} exposure map`}
-            className="max-w-full max-h-full"
+            className="block w-full h-auto"
             onError={() =>
               setFailedUrls((prev) => new Set(prev).add(shownUrl as string))
             }
