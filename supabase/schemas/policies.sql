@@ -682,6 +682,23 @@ CREATE POLICY "authenticated_select_nircam"
   ON nircam_images FOR SELECT TO authenticated
   USING (deploy_status = 'published' OR (SELECT public.is_admin()));
 
+-- Admins write the mosaic index. The NIRCam mosaic deploy (`campfire deploy
+-- --field`) runs in login mode through RLS and upserts these rows
+-- (_upsert_nircam_images = INSERT ... ON CONFLICT DO UPDATE), so BOTH an INSERT
+-- and an UPDATE policy are required. Mirrors nircam_exposures / fields. Publish
+-- and revoke flip deploy_status via the SECURITY DEFINER set_deployment_status
+-- RPC, which bypasses RLS and so is unaffected.
+DROP POLICY IF EXISTS "admin_insert_nircam" ON nircam_images;
+CREATE POLICY "admin_insert_nircam"
+  ON nircam_images FOR INSERT TO authenticated
+  WITH CHECK ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_update_nircam" ON nircam_images;
+CREATE POLICY "admin_update_nircam"
+  ON nircam_images FOR UPDATE TO authenticated
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
+
 
 -- =============================================================================
 -- nircam_exposures (admin-only)
