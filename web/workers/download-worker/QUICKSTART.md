@@ -17,7 +17,7 @@ Edit `web/.env.local`:
 ```bash
 # Add these lines
 WORKER_JWT_SECRET=<paste_your_secret_here>
-NEXT_PUBLIC_WORKER_DOWNLOAD_URL=https://download.campfire.hollisakins.com
+NEXT_PUBLIC_WORKER_DOWNLOAD_URL=https://campfire-download.hollisakins.com
 ```
 
 ## 3. Set Worker Secret (1 minute)
@@ -34,16 +34,11 @@ wrangler secret put JWT_SECRET
 npm install
 ```
 
-## 5. Configure DNS in Cloudflare (2 minutes)
+## 5. Custom Domain (0 minutes)
 
-1. Go to https://dash.cloudflare.com/
-2. Select `hollisakins.com` domain
-3. DNS → Add record:
-   - Type: `AAAA`
-   - Name: `download.campfire`
-   - IPv6: `100::`
-   - Proxy: ✅ Enabled (orange cloud)
-4. Save
+Nothing to do — `wrangler.toml` pins `campfire-download.hollisakins.com` as a
+custom domain; deploying attaches it and Cloudflare manages DNS + certificate.
+Do not create a DNS record for it by hand.
 
 ## 6. Deploy Worker (1 minute)
 
