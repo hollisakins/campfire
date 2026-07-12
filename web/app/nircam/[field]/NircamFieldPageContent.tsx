@@ -391,7 +391,6 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
               <ExpmapBrowser
                 filters={summary.filters}
                 expmapPlots={fieldImages.expmapPlots}
-                layoutUrl={fieldImages.layoutUrl}
               />
             </div>
           </div>
