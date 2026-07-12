@@ -29,6 +29,16 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- NIRCam expmap/layout plot styling: the deployable dark PNGs (per-filter
+  `expmap_*.png` and `<field>_layout.png`) no longer carry a title — the web
+  page embedding them already labels field/filter, so it was duplicated
+  information. The light per-filter PDF keeps its title but drops the
+  `canonical` stage label (the fiducial map is undecorated, matching the
+  filename convention; `uncal` quick-looks still label their stage). Tile
+  outlines and labels on the layout plot are heavier/larger and stroked with
+  the background colour so they stay legible over both the bright and dark
+  ends of the colormap. Plots only; no change to FITS pixel values or
+  filenames (`nircam/expmap.py`).
 - NIRCam per-exposure triage previews (`{rootname}_preview.png` /
   `{rootname}_full.png`) now render per-pixel **SNR** (`SCI/ERR`) instead of raw
   SCI (still ZScale-stretched). The `jump` step drops snowball/cosmic-ray groups

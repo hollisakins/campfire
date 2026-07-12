@@ -32,9 +32,11 @@ registry (same key shape as every other per-filter NIRCam product).
 
 Both the per-filter ``.pdf`` (light, local diagnostic) and ``.png`` (dark,
 deployable) share the same colorbar ``vmin``/``vmax`` (log-norm across the
-union of nonzero pixels) so the plots are identical apart from the data —
-easy to tab through. The dark PNG matches CAMPFIRE's data wells, which stay
-dark in both app themes. The ``{field}_layout`` plot stacks every per-filter
+union of nonzero pixels) so the plots show the same colour scale — easy to
+tab through. The PDF carries a title (stage labelled only for ``uncal``);
+the deployable PNGs carry no title at all, since the web page embedding
+them already labels field/filter. The dark PNG matches CAMPFIRE's data
+wells, which stay dark in both app themes. The ``{field}_layout`` plot stacks every per-filter
 expmap (total exposure across filters) and overlays the tile footprints; the
 companion ``.json`` records the exact survey area (non-zero pixels of the
 stack × pixel area) for the deploy/DB layer.
@@ -201,7 +203,8 @@ def _render_expmap_figure(path, data, wcs, *, title, cbar_label,
 
     ``vmin``/``vmax`` default to the map's own nonzero min/max; the per-filter
     caller overrides both with values shared across all filters so the plots
-    are identical apart from the data.
+    are identical apart from the data. ``title=None`` omits the title entirely
+    — used by the deployable PNGs, where the web page already labels the plot.
 
     ``dark=True`` produces the deployable web plot on a dark plot well
     (matching CAMPFIRE's map + spectrum wells, which stay dark in both app
@@ -255,18 +258,25 @@ def _render_expmap_figure(path, data, wcs, *, title, cbar_label,
         ax.coords.frame.set_color(fg)
 
     if tile_outlines:
+        import matplotlib.patheffects as path_effects
+
+        # Stroke outlines/labels with the background colour so they stay
+        # readable over both the bright (pale) and dark ends of the colormap.
+        stroke = [path_effects.withStroke(linewidth=2.5, foreground=bg)]
         world = ax.get_transform('world')
         for name, corners in tile_outlines:
             ras = [c[0] for c in corners] + [corners[0][0]]
             decs = [c[1] for c in corners] + [corners[0][1]]
             ax.plot(ras, decs, transform=world, color=tile_c,
-                    lw=0.7, alpha=0.55)
+                    lw=1.5, path_effects=stroke)
             ax.text(float(np.mean([c[0] for c in corners])),
                     float(np.mean([c[1] for c in corners])),
-                    name, transform=world, color=tile_c, fontsize=6,
-                    ha='center', va='center', alpha=0.75)
+                    name, transform=world, color=tile_c, fontsize=10,
+                    fontweight='bold', ha='center', va='center',
+                    path_effects=stroke)
 
-    ax.set_title(title, fontsize=10, color=fg)
+    if title:
+        ax.set_title(title, fontsize=10, color=fg)
     cbar = fig.colorbar(im, ax=ax, orientation='vertical',
                         shrink=0.85, pad=0.02)
     cbar.set_label(cbar_label, color=fg)
@@ -514,17 +524,22 @@ def _render_filter_plots(field_name, filter_name, stage, metas, fits_path,
 
     Both share the invocation-wide ``vmin``/``vmax`` so tabbing through
     filters shows the same colour scale. The PDF is the local diagnostic
-    (kept), the PNG the deployable web plot.
+    (kept) and carries a title; the fiducial canonical stage is undecorated
+    there too, so only the reducer-only ``uncal`` quick-look labels its
+    stage. The PNG is the deployable web plot and carries no title at all —
+    the web page it's embedded in already says field/filter.
     """
     _, pdf_path, png_path = _expmap_paths(out_dir, field_name, filter_name,
                                           stage)
     with fits.open(fits_path, memmap=False) as hdul:
         expmap = np.asarray(hdul['EXPMAP'].data, dtype=np.float32)
-    title = f'{field_name} · {filter_name.upper()} · {stage} · N={len(metas)}'
+    title = f'{field_name} · {filter_name.upper()} · N={len(metas)}'
+    if stage != 'canonical':
+        title = f'{field_name} · {filter_name.upper()} · {stage} · N={len(metas)}'
     _render_expmap_figure(pdf_path, expmap, wcs, title=title,
                           cbar_label='Exposure time [s]',
                           vmin=vmin, vmax=vmax, dark=False)
-    _render_expmap_figure(png_path, expmap, wcs, title=title,
+    _render_expmap_figure(png_path, expmap, wcs, title=None,
                           cbar_label='Exposure time [s]',
                           vmin=vmin, vmax=vmax, dark=True)
     log(f'[{filter_name}] wrote {os.path.basename(pdf_path)} + '
@@ -584,8 +599,7 @@ def _render_layout(out_dir, field, stage, results, wcs, pixel_scale,
     png_path, json_path = _layout_paths(out_dir, field.name, stage)
     filters = [name for name, _, _ in built]
     ok = _render_expmap_figure(
-        png_path, stack, wcs,
-        title=f'{field.name} · layout · {len(filters)} filters',
+        png_path, stack, wcs, title=None,
         cbar_label='Total exposure [s]',
         dark=True, tile_outlines=tile_outlines,
     )
