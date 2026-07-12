@@ -5,15 +5,14 @@ Top-level commands:
 
     cfpipe nircam process    # per-exposure phase (detector1 → jhat)
     cfpipe nircam combine    # ensemble phase    (apply_mask → resample)
-    cfpipe nircam <step>     # any of the 14 individual steps
+    cfpipe nircam <step>     # any individual step
     cfpipe nircam run --all  # whole pipeline
     cfpipe nircam check      # tile-staleness probe
-    cfpipe nircam status     # per-exposure CFP_* completion table  (TODO)
-    cfpipe nircam reset      # clear CFP_* keys / wipe canonical files (TODO)
+    cfpipe nircam status     # per-exposure CFP_* completion table
+    cfpipe nircam reset      # clear CFP_* keys / wipe canonical files
 
-Status and reset land in a follow-up commit. Per-step commands are
-registered programmatically from ``orchestrate.STEP_NAMES`` so the
-top-level help auto-includes them.
+Per-step commands are registered programmatically from
+``orchestrate.STEP_NAMES`` so the top-level help auto-includes them.
 """
 
 from campfire_pipeline import _thread_caps  # noqa: F401  (must precede numpy/matplotlib)

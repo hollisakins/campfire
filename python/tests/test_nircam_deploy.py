@@ -243,6 +243,30 @@ def test_discover_mosaics_manifest_based_version_free_keys(tmp_path):
     assert row["field"] == "cosmos"
 
 
+def test_deployable_mosaics_drops_i2d(tmp_path):
+    # i2d stays *discoverable* — provenance stamping and the FitsGL pyramid read
+    # it locally — but it must never reach the cloud upload / nircam_images index
+    # set. deployable_mosaics is the filter every cloud-bound path applies.
+    fdir = tmp_path / "products" / "nircam" / "cosmos" / "f444w"
+    fdir.mkdir(parents=True)
+    base = "mosaic_nircam_f444w_cosmos_30mas_A1"
+    _write_manifest(fdir, base, field="cosmos", filt="f444w", tile="A1", scale="30mas")
+    for suffix in ("_i2d.fits", "_sci.fits", "_err.fits", "_wht.fits"):
+        (fdir / f"{base}{suffix}").write_bytes(b"\x00")
+
+    dirs = {"products": tmp_path / "products" / "nircam" / "cosmos"}
+    found = nc.discover_mosaics(dirs, "cosmos", ["f444w"])
+    # discovery still surfaces i2d (local consumers depend on it)...
+    assert "i2d" in {m["extension"] for m in found}
+    # ...but the deploy set excludes it, keeping the split extensions.
+    deployable = nc.deployable_mosaics(found)
+    assert sorted(m["extension"] for m in deployable) == ["err", "sci", "wht"]
+    assert all(m["extension"] != "i2d" for m in deployable)
+    # a mosaic with only an i2d on disk deploys nothing (no split science product)
+    assert nc.deployable_mosaics(
+        [{"extension": "i2d", "path": "x", "storage_key": "k"}]) == []
+
+
 def test_discover_mosaics_skips_stale_versioned_manifest(tmp_path):
     # A field re-reduced after N2 keeps its pre-N2 `..._v0_1_..._manifest.json`
     # on disk next to the new version-free one. discover_mosaics must accept ONLY

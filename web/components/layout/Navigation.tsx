@@ -87,7 +87,6 @@ export const Navigation: React.FC = () => {
     },
     { href: '/map', label: 'Map' },
     { href: '/cutouts', label: 'Cutouts' },
-    { href: '/updates', label: 'Updates' },
     { href: '/docs', label: 'Docs' },
   ];
 

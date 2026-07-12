@@ -82,6 +82,17 @@ def test_render_figure(tmp_path, dark):
     assert out.exists() and out.stat().st_size > 0
 
 
+def test_render_figure_no_title(tmp_path):
+    # Deployable PNGs (per-filter + layout) pass title=None — the web page
+    # embedding them already labels the plot.
+    _metas, wcs, _shape, arr = _synthetic_expmap()
+    out = tmp_path / 'untitled.png'
+    ok = em._render_expmap_figure(str(out), arr, wcs, title=None,
+                                  cbar_label='Exposure time [s]', dark=True)
+    assert ok is True
+    assert out.exists() and out.stat().st_size > 0
+
+
 def test_render_figure_all_zero_writes_nothing(tmp_path):
     _metas, wcs, shape, _arr = _synthetic_expmap()
     out = tmp_path / 'zero.png'
