@@ -113,4 +113,31 @@ describe('proxy handler upstream fetch', () => {
 
     expect(res.status).toBe(502);
   });
+
+  it('forwards upstream Content-Disposition (direct downloads would otherwise save as "proxy")', async () => {
+    vi.stubGlobal('fetch', async () =>
+      new Response('FITSDATA', {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/fits',
+          'Content-Disposition': 'attachment; filename="mosaic_nircam_f444w_egs_30mas_A1_sci.fits"',
+        },
+      }));
+
+    const res = await worker.fetch(await proxyRequest(), ENV);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Disposition')).toBe(
+      'attachment; filename="mosaic_nircam_f444w_egs_30mas_A1_sci.fits"');
+  });
+
+  it('omits Content-Disposition when upstream has none (zip fetches name files client-side)', async () => {
+    vi.stubGlobal('fetch', async () =>
+      new Response('FITSDATA', { status: 200, headers: { 'Content-Type': 'application/octet-stream' } }));
+
+    const res = await worker.fetch(await proxyRequest(), ENV);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Disposition')).toBeNull();
+  });
 });

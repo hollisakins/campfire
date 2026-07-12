@@ -8,7 +8,9 @@ This guide will walk you through deploying the CAMPFIRE download worker to Cloud
 - Wrangler CLI installed
 - FITS objects on R2 (`campfire`) and/or OSN — the Worker fetches presigned URLs,
   so it needs **no** bucket binding and holds no object-store credentials
-- Domain: `download.campfire.hollisakins.com`
+- Domain: `campfire-download.hollisakins.com` (custom domain pinned in
+  `wrangler.toml`; a first-level subdomain so the free Universal SSL wildcard
+  covers it — deeper names like `download.campfire.…` get no certificate)
 - Free Workers plan is sufficient (one subrequest, ~0 CPU per request)
 
 ## Step 1: Install Worker Dependencies
@@ -64,25 +66,21 @@ Add to `.env.local`:
 ```bash
 # Cloudflare Worker Configuration
 WORKER_JWT_SECRET=YOUR_SECRET_HERE
-NEXT_PUBLIC_WORKER_DOWNLOAD_URL=https://download.campfire.hollisakins.com
+NEXT_PUBLIC_WORKER_DOWNLOAD_URL=https://campfire-download.hollisakins.com
 ```
 
 **Important:** Use the SAME secret value from Step 2!
 
-## Step 5: Configure DNS in Cloudflare
+## Step 5: Custom Domain
 
-Before deploying, set up the subdomain in Cloudflare:
-
-1. Go to Cloudflare Dashboard: https://dash.cloudflare.com/
-2. Select your domain: `hollisakins.com`
-3. Go to **DNS** > **Records**
-4. Click **Add record**
-5. Configure:
-   - **Type:** `AAAA`
-   - **Name:** `download.campfire` (will create `download.campfire.hollisakins.com`)
-   - **IPv6 address:** `100::` (Cloudflare Workers placeholder)
-   - **Proxy status:** ✅ Proxied (orange cloud)
-6. Click **Save**
+Nothing manual: `wrangler.toml` pins the custom domain
+(`campfire-download.hollisakins.com`, `custom_domain = true`), so `wrangler
+deploy` attaches it and Cloudflare manages the DNS record and certificate.
+Do NOT create a DNS record for it by hand — a manually-created record
+conflicts with the custom-domain attachment (an earlier manual `AAAA 100::`
+record for `download.campfire.…` is how the old, never-working domain came
+about). The `campfire-download.<account>.workers.dev` hostname keeps serving
+the same Worker, so builds baked with the old URL don't break.
 
 ## Step 6: Test Worker Locally
 
@@ -113,7 +111,7 @@ You should see output like:
 Total Upload: XX.XX KiB / gzip: XX.XX KiB
 Uploaded campfire-download (X.XX sec)
 Published campfire-download (X.XX sec)
-  https://download.campfire.hollisakins.com
+  https://campfire-download.hollisakins.com
 Current Deployment ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
@@ -123,7 +121,7 @@ The Worker has no R2 binding — it proxies presigned URLs. Confirm it's up and
 rejecting unsigned requests:
 
 ```bash
-curl -i 'https://download.campfire.hollisakins.com/proxy'
+curl -i 'https://campfire-download.hollisakins.com/proxy'
 # expect: HTTP/1.1 400  Missing url or sig parameter
 ```
 
@@ -234,7 +232,7 @@ Changes take effect immediately (no need to restart).
 Before going to production:
 
 - [ ] JWT secret generated and set in both Next.js and Worker
-- [ ] DNS record created for `download.campfire.hollisakins.com`
+- [ ] Custom domain serving (`curl -i https://campfire-download.hollisakins.com/proxy` → 400)
 - [ ] Worker deployed successfully
 - [ ] Proxy smoke test passes (`GET /proxy` → 400) and `ALLOWED_FETCH_HOSTS` lists OSN + R2
 - [ ] Test download with small dataset (1-5 objects)

@@ -28,24 +28,27 @@ const epochLabel = (e: string) => (e === '' ? 'Full field' : e);
 interface NircamFilterBarProps {
   filterState: NircamFilterOptions;
   onFiltersChange: (filters: NircamFilterOptions) => void;
-  availableFields: string[];
+  availableFields?: string[];
   availableTiles: string[];
   availableFilters: string[];
   availablePixelScales: string[];
   availableExtensions: string[];
   availableEpochs: string[];
+  /** Hide the Field facet on the field-scoped detail page. */
+  hideFieldFacet?: boolean;
   className?: string;
 }
 
 export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
   filterState,
   onFiltersChange,
-  availableFields,
+  availableFields = [],
   availableTiles,
   availableFilters,
   availablePixelScales,
   availableExtensions,
   availableEpochs,
+  hideFieldFacet = false,
   className = '',
 }) => {
   const updateFilter = <K extends keyof NircamFilterOptions>(
@@ -107,13 +110,15 @@ export const NircamFilterBar: React.FC<NircamFilterBarProps> = ({
     <div className={`space-y-3 ${className}`}>
       {/* Filter chips */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* Field filter */}
-        <FilterChip
-          label="Field"
-          options={fieldOptions}
-          selected={filterState.fields}
-          onChange={(selected) => updateFilter('fields', selected as string[])}
-        />
+        {/* Field filter (hidden on the field-scoped detail page) */}
+        {!hideFieldFacet && (
+          <FilterChip
+            label="Field"
+            options={fieldOptions}
+            selected={filterState.fields}
+            onChange={(selected) => updateFilter('fields', selected as string[])}
+          />
+        )}
 
         {/* Filter (wavelength) filter */}
         <FilterChip

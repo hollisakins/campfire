@@ -67,7 +67,7 @@ Secret (via `wrangler secret put`):
 ```bash
 npm install
 wrangler dev        # local, http://localhost:8787
-wrangler deploy     # production, download.campfire.hollisakins.com
+wrangler deploy     # production, campfire-download.hollisakins.com
 wrangler tail       # logs
 npm test            # runs the unit tests via the web app's vitest
 ```

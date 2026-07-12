@@ -286,7 +286,10 @@ export interface NircamImage {
   extension: string;  // sci, err, rms, srcmask
   epoch?: string;     // exposure-subset name ('' = full field)
   file_path: string;
-  file_size?: number; // in bytes, if available
+  file_size?: number; // logical (uncompressed) bytes, if available
+  /** Bytes as stored in the bucket for gzipped mosaics (registry
+   *  stored_size_bytes); undefined = stored verbatim or not yet recorded. */
+  file_size_stored?: number;
 }
 
 // A per-(field, filter) exposure-coverage map (product_type 'nircam_expmap',
@@ -297,6 +300,56 @@ export interface NircamExpmap {
   filter: string;
   storage_key: string;
   file_size?: number; // size_bytes from the registry, if available
+}
+
+// One row of the /nircam landing grid (get_nircam_fields RPC + a presigned
+// layout-plot URL). Coverage areas and center come from the `fields` table
+// and are null until the field's first post-redesign deploy.
+export interface NircamFieldCard {
+  field: string;
+  display_name: string;
+  center_ra: number | null;
+  center_dec: number | null;
+  coverage_area_arcmin2: number | null;
+  coverage_area_deg2: number | null;
+  n_filters: number;
+  n_tiles: number;
+  n_files: number;
+  total_bytes: number;
+  last_updated: string | null;
+  layout_url: string | null;  // presigned <field>_layout.png GET, if deployed
+}
+
+// The /nircam/[field] overview (get_nircam_field_summary RPC): the card fields
+// plus the per-field facet arrays that drive the metadata grid.
+export interface NircamFieldSummary extends Omit<NircamFieldCard, 'layout_url'> {
+  filters: string[];
+  tiles: string[];
+  pixel_scales: string[];
+  extensions: string[];
+  epochs: string[];
+  /** Provenance of the latest published deployment (deployments table);
+   *  null when no deployment row is visible. */
+  cfpipe_version: string | null;
+  jwst_version: string | null;
+  crds_context: string | null;
+}
+
+// One row of the field-page data-products table: a mosaic (from nircam_images)
+// or an exposure map folded in as a synthetic `extension: 'exp'` row with no
+// tile/scale axes. `file_path` doubles as the canonical storage key for both
+// kinds — the download action routes on `kind`.
+export interface NircamProductRow {
+  kind: 'mosaic' | 'expmap';
+  field: string;
+  filter: string;
+  tile: string | null;        // null on expmap rows
+  pixel_scale: string | null; // null on expmap rows
+  extension: string;          // sci, err, wht, srcmask, ... or 'exp'
+  epoch?: string;             // '' = full field (mosaics only)
+  file_path: string;          // canonical storage key
+  file_size?: number;         // logical (uncompressed) bytes
+  file_size_stored?: number;  // bucket bytes for gzipped mosaics (else undefined)
 }
 
 // NIRCam pipeline step names. Matches campfire_pipeline.common.cfp.CFP_KEYS

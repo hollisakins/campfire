@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
+import Link from 'next/link';
 import {
   useReactTable,
   getCoreRowModel,
@@ -11,17 +12,29 @@ import {
   SortingState,
   ColumnDef,
 } from '@tanstack/react-table';
-import { ArrowUpDown, ArrowUp, ArrowDown, Download } from 'lucide-react';
-import type { NircamImage } from '@/lib/types';
+import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import type { NircamProductRow } from '@/lib/types';
 import type { NircamFilterOptions } from './NircamFilterBar';
 import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
-import { generateNircamMosaicDownloadUrls } from '@/lib/actions/download';
+import { ThumbnailPopup } from './ThumbnailPopup';
+import { mosaicBase } from '@/lib/nircam-product-keys';
+import {
+  generateNircamMosaicDownloadUrls,
+  generateNircamExpmapDownloadUrls,
+} from '@/lib/actions/download';
 
 interface NircamTableProps {
-  images: NircamImage[];
+  /** Field-scoped product rows: mosaics + expmaps (extension 'exp'). */
+  products: NircamProductRow[];
   filters: NircamFilterOptions;
-  onSelectionChange?: (selectedImages: NircamImage[]) => void;
+  /** mosaic base key -> presigned thumbnail URL (sci rows). */
+  thumbnails: Record<string, string>;
+  /** mosaic base key -> presigned large quick-look URL (popup). */
+  quicklooks: Record<string, string>;
+  /** Filters covered by a FitsGL dataset — enables the per-row map View. */
+  viewableFilters: Set<string>;
+  onSelectionChange?: (selected: NircamProductRow[]) => void;
 }
 
 // Column header component with sort indicator
@@ -58,28 +71,55 @@ const formatFileSize = (bytes: number | undefined): string => {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 };
 
-// Per-row download button: authorizes + presigns the mosaic key server-side,
-// then navigates the browser to the credential-free proxy URL to start the
-// download. Kept as a small component so each row owns its loading state.
-const DownloadCell: React.FC<{ image: NircamImage }> = ({ image }) => {
+// Extension sort priority (exp = the folded-in exposure maps, sorted last).
+const EXT_ORDER = ['sci', 'err', 'wht', 'rms', 'srcmask', 'exp'];
+const extRank = (ext: string): number => {
+  const i = EXT_ORDER.indexOf(ext.toLowerCase());
+  return i === -1 ? EXT_ORDER.length - 1 : i; // unknowns before 'exp'
+};
+
+// Alphanumeric tile sort (A1, A2, A10, B1 …); null (exp rows) sorts last.
+const compareTiles = (a: string | null, b: string | null): number => {
+  if (a === b) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  const aMatch = a.match(/^([A-Z]+)(\d+)$/);
+  const bMatch = b.match(/^([A-Z]+)(\d+)$/);
+  if (aMatch && bMatch) {
+    const [, aLetter, aNumber] = aMatch;
+    const [, bLetter, bNumber] = bMatch;
+    if (aLetter !== bLetter) return aLetter.localeCompare(bLetter);
+    return parseInt(aNumber, 10) - parseInt(bNumber, 10);
+  }
+  return a.localeCompare(b);
+};
+
+
+// Per-row FITS download: authorizes + presigns the key server-side (routed by
+// product kind), then navigates the browser to the credential-free proxy URL.
+// Text-glyph action per the design (↓ FITS), not an icon button.
+const DownloadCell: React.FC<{ row: NircamProductRow }> = ({ row }) => {
   const [busy, setBusy] = useState(false);
 
   const handleDownload = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      const { urls } = await generateNircamMosaicDownloadUrls([image.file_path]);
-      const proxyUrl = urls[image.file_path];
+      const { urls } =
+        row.kind === 'expmap'
+          ? await generateNircamExpmapDownloadUrls([row.file_path])
+          : await generateNircamMosaicDownloadUrls([row.file_path]);
+      const proxyUrl = urls[row.file_path];
       if (proxyUrl) {
         const link = document.createElement('a');
         link.href = proxyUrl;
-        link.download = image.file_path.split('/').pop() || image.file_path;
+        link.download = row.file_path.split('/').pop() || row.file_path;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
       }
     } catch (err) {
-      console.error('Failed to start NIRCam mosaic download:', err);
+      console.error('Failed to start NIRCam FITS download:', err);
     } finally {
       setBusy(false);
     }
@@ -90,73 +130,114 @@ const DownloadCell: React.FC<{ image: NircamImage }> = ({ image }) => {
       type="button"
       onClick={handleDownload}
       disabled={busy}
-      className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary-hover hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+      title="Download FITS"
+      className="group/act inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-surface-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
     >
-      <Download className="w-4 h-4" />
-      <span>{busy ? 'Preparing…' : 'Download'}</span>
+      <span className="font-mono text-text-tertiary group-hover/act:text-primary">↓</span>
+      <span>{busy ? 'Preparing…' : 'FITS'}</span>
     </button>
   );
 };
 
 export const NircamTable: React.FC<NircamTableProps> = ({
-  images,
+  products,
   filters,
+  thumbnails,
+  quicklooks,
+  viewableFilters,
   onSelectionChange,
 }) => {
   const [sorting, setSorting] = useState<SortingState>([
-    { id: 'field', desc: false },
+    { id: 'filter', desc: false },
   ]);
   const [pagination, setPagination] = useState({
     pageIndex: 0,
     pageSize: 25,
   });
+  const [popup, setPopup] = useState<{ url: string; title: string } | null>(null);
 
-  // Filter images based on filter state
-  const filteredImages = useMemo(() => {
-    return images.filter((image) => {
-      if (filters.fields.length > 0 && !filters.fields.includes(image.field)) {
+  // Apply the facet selections. Facets are strict: an exp row (no tile/scale/
+  // epoch axis) drops out when one of those facets is active.
+  const filteredProducts = useMemo(() => {
+    return products.filter((p) => {
+      if (filters.filters.length > 0 && !filters.filters.includes(p.filter)) {
         return false;
       }
-      if (filters.tiles.length > 0 && !filters.tiles.includes(image.tile)) {
+      if (filters.tiles.length > 0 && (p.tile === null || !filters.tiles.includes(p.tile))) {
         return false;
       }
-      if (filters.filters.length > 0 && !filters.filters.includes(image.filter)) {
+      if (
+        filters.pixel_scales.length > 0 &&
+        (p.pixel_scale === null || !filters.pixel_scales.includes(p.pixel_scale))
+      ) {
         return false;
       }
-      if (filters.pixel_scales.length > 0 && !filters.pixel_scales.includes(image.pixel_scale)) {
+      if (filters.extensions.length > 0 && !filters.extensions.includes(p.extension)) {
         return false;
       }
-      if (filters.extensions.length > 0 && !filters.extensions.includes(image.extension)) {
-        return false;
-      }
-      if (filters.epochs.length > 0 && !filters.epochs.includes(image.epoch ?? '')) {
+      if (filters.epochs.length > 0 && (p.epoch === undefined || !filters.epochs.includes(p.epoch))) {
         return false;
       }
       return true;
     });
-  }, [images, filters]);
+  }, [products, filters]);
 
   // Notify parent of selection changes
   React.useEffect(() => {
     if (onSelectionChange) {
-      onSelectionChange(filteredImages);
+      onSelectionChange(filteredProducts);
     }
-  }, [filteredImages, onSelectionChange]);
+  }, [filteredProducts, onSelectionChange]);
+
+  // Epoch is an axis only when the field actually has named epochs — mirror
+  // the filter bar, which hides its Epoch facet in the same case.
+  const hasNamedEpochs = useMemo(
+    () => products.some((p) => (p.epoch ?? '') !== ''),
+    [products],
+  );
 
   // Define columns
-  const columns = useMemo<ColumnDef<NircamImage>[]>(
+  const columns = useMemo<ColumnDef<NircamProductRow>[]>(
     () => [
       {
-        accessorKey: 'field',
-        header: ({ column }) => (
-          <SortableHeader column={column}>Field</SortableHeader>
-        ),
-        cell: ({ row }) => (
-          <span className="text-sm font-medium text-text-primary uppercase">
-            {row.original.field}
-          </span>
-        ),
-        sortingFn: 'alphanumeric',
+        id: 'thumb',
+        header: () => null,
+        enableSorting: false,
+        cell: ({ row }) => {
+          const p = row.original;
+          if (p.extension !== 'sci') return null;
+          const base = mosaicBase(p);
+          const url = base ? thumbnails[base] : undefined;
+          if (!url) return null;
+          // Popup shows the large quick-look when deployed; the thumbnail is
+          // the fallback for fields reduced before the pair existed.
+          const popupUrl = (base ? quicklooks[base] : undefined) ?? url;
+          return (
+            <button
+              type="button"
+              onClick={() =>
+                setPopup({
+                  url: popupUrl,
+                  title: `${p.filter.toUpperCase()} · ${p.tile ?? ''} · ${p.extension}`,
+                })
+              }
+              className="block w-8 h-8 rounded-md border border-border-strong overflow-hidden cursor-zoom-in bg-[#0d0b12]"
+              title="Enlarge thumbnail"
+            >
+              {/* Presigned cross-origin PNG; plain <img> (see NircamFieldCard). */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={url}
+                alt=""
+                className="w-full h-full object-cover"
+                loading="lazy"
+                onError={(e) => {
+                  (e.currentTarget.parentElement as HTMLElement).style.display = 'none';
+                }}
+              />
+            </button>
+          );
+        },
       },
       {
         accessorKey: 'filter',
@@ -175,106 +256,123 @@ export const NircamTable: React.FC<NircamTableProps> = ({
         header: ({ column }) => (
           <SortableHeader column={column}>Tile</SortableHeader>
         ),
-        cell: ({ row }) => (
-          <span className="text-sm font-mono text-text-primary">
-            {row.original.tile}
-          </span>
-        ),
-        sortingFn: (rowA, rowB) => {
-          // Sort tiles alphanumerically (A1, A2, A10, B1, etc.)
-          const a = rowA.original.tile;
-          const b = rowB.original.tile;
-          const aMatch = a.match(/^([A-Z]+)(\d+)$/);
-          const bMatch = b.match(/^([A-Z]+)(\d+)$/);
-
-          if (aMatch && bMatch) {
-            const [, aLetter, aNumber] = aMatch;
-            const [, bLetter, bNumber] = bMatch;
-
-            if (aLetter !== bLetter) {
-              return aLetter.localeCompare(bLetter);
-            }
-            return parseInt(aNumber, 10) - parseInt(bNumber, 10);
-          }
-          return a.localeCompare(b);
-        },
+        cell: ({ row }) =>
+          row.original.tile === null ? (
+            <span className="text-sm font-mono text-text-tertiary">—</span>
+          ) : (
+            <span className="text-sm font-mono text-text-primary">
+              {row.original.tile}
+            </span>
+          ),
+        sortingFn: (rowA, rowB) => compareTiles(rowA.original.tile, rowB.original.tile),
       },
       {
         accessorKey: 'pixel_scale',
         header: ({ column }) => (
-          <SortableHeader column={column}>Pixel Scale</SortableHeader>
+          <SortableHeader column={column}>Scale</SortableHeader>
         ),
-        cell: ({ row }) => (
-          <span className="text-sm font-mono text-text-primary">
-            {row.original.pixel_scale}
-          </span>
-        ),
+        cell: ({ row }) =>
+          row.original.pixel_scale === null ? (
+            <span className="text-sm font-mono text-text-tertiary">—</span>
+          ) : (
+            <span className="text-sm font-mono text-text-primary">
+              {row.original.pixel_scale}
+            </span>
+          ),
         sortingFn: 'alphanumeric',
       },
       {
         accessorKey: 'extension',
         header: ({ column }) => (
-          <SortableHeader column={column}>Extension</SortableHeader>
+          <SortableHeader column={column}>Ext</SortableHeader>
         ),
         cell: ({ row }) => (
-          <span className="text-sm font-mono text-text-primary uppercase">
+          <span className="inline-flex items-center rounded border border-border px-1.5 py-0.5 text-[11px] font-mono uppercase bg-surface-2 text-text-secondary">
             {row.original.extension}
           </span>
         ),
-        sortingFn: (rowA, rowB) => {
-          // Sort extensions by priority: sci > err > rms > srcmask
-          const order = ['sci', 'err', 'rms', 'srcmask'];
-          const aIdx = order.indexOf(rowA.original.extension.toLowerCase());
-          const bIdx = order.indexOf(rowB.original.extension.toLowerCase());
-          if (aIdx === -1 && bIdx === -1) {
-            return rowA.original.extension.localeCompare(rowB.original.extension);
-          }
-          if (aIdx === -1) return 1;
-          if (bIdx === -1) return -1;
-          return aIdx - bIdx;
-        },
-      },
-      {
-        accessorKey: 'epoch',
-        header: ({ column }) => (
-          <SortableHeader column={column}>Epoch</SortableHeader>
-        ),
-        cell: ({ row }) => {
-          const epoch = row.original.epoch ?? '';
-          return epoch === '' ? (
-            <span className="text-sm text-text-secondary">Full field</span>
-          ) : (
-            <span className="inline-flex items-center rounded border border-border px-1.5 py-0.5 text-xs font-mono font-medium bg-surface-2 text-text-primary">
-              {epoch}
-            </span>
-          );
-        },
         sortingFn: (rowA, rowB) =>
-          (rowA.original.epoch ?? '').localeCompare(rowB.original.epoch ?? ''),
+          extRank(rowA.original.extension) - extRank(rowB.original.extension) ||
+          rowA.original.extension.localeCompare(rowB.original.extension),
       },
+      ...(hasNamedEpochs
+        ? [{
+            accessorKey: 'epoch',
+            header: ({ column }) => (
+              <SortableHeader column={column}>Epoch</SortableHeader>
+            ),
+            cell: ({ row }) => {
+              const { kind, epoch } = row.original;
+              if (kind === 'expmap') {
+                return <span className="text-sm text-text-tertiary">—</span>;
+              }
+              return (epoch ?? '') === '' ? (
+                <span className="text-sm text-text-secondary">Full field</span>
+              ) : (
+                <span className="inline-flex items-center rounded border border-border px-1.5 py-0.5 text-xs font-mono font-medium bg-surface-2 text-text-primary">
+                  {epoch}
+                </span>
+              );
+            },
+            sortingFn: (rowA, rowB) =>
+              (rowA.original.epoch ?? '').localeCompare(rowB.original.epoch ?? ''),
+          } satisfies ColumnDef<NircamProductRow>]
+        : []),
       {
         accessorKey: 'file_size',
         header: ({ column }) => (
-          <SortableHeader column={column}>Size</SortableHeader>
+          <SortableHeader column={column}>Size (compressed)</SortableHeader>
         ),
-        cell: ({ row }) => (
-          <span className="text-sm text-text-secondary">
-            {formatFileSize(row.original.file_size)}
-          </span>
-        ),
+        cell: ({ row }) => {
+          const { file_size, file_size_stored } = row.original;
+          return (
+            <span
+              className="text-sm text-text-secondary"
+              title={
+                file_size_stored != null
+                  ? `${formatFileSize(file_size)} uncompressed · ${formatFileSize(file_size_stored)} stored gzipped`
+                  : undefined
+              }
+            >
+              {formatFileSize(file_size)}
+              {file_size_stored != null && (
+                <span className="text-text-tertiary"> ({formatFileSize(file_size_stored)})</span>
+              )}
+            </span>
+          );
+        },
         sortingFn: 'basic',
       },
       {
-        id: 'download',
-        header: () => <span>Download</span>,
-        cell: ({ row }) => <DownloadCell image={row.original} />,
+        id: 'actions',
+        header: () => <span className="block text-right">Actions</span>,
+        enableSorting: false,
+        cell: ({ row }) => {
+          const p = row.original;
+          const canView = p.extension === 'sci' && viewableFilters.has(p.filter);
+          return (
+            <div className="flex items-center justify-end gap-1">
+              {canView && (
+                <Link
+                  href={`/map?field=${encodeURIComponent(p.field)}&filter=${encodeURIComponent(p.filter)}`}
+                  title={`Open ${p.filter.toUpperCase()} in the map`}
+                  className="group/act inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-surface-2 transition-colors"
+                >
+                  <span className="font-mono text-text-tertiary group-hover/act:text-primary">↗</span>
+                  <span>View</span>
+                </Link>
+              )}
+              <DownloadCell row={p} />
+            </div>
+          );
+        },
       },
     ],
-    []
+    [thumbnails, quicklooks, viewableFilters, hasNamedEpochs]
   );
 
   const table = useReactTable({
-    data: filteredImages,
+    data: filteredProducts,
     columns,
     state: {
       sorting,
@@ -315,7 +413,7 @@ export const NircamTable: React.FC<NircamTableProps> = ({
                 className="hover:bg-card-hover transition-colors"
               >
                 {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="px-4 py-3 whitespace-nowrap">
+                  <td key={cell.id} className="px-4 py-2.5 whitespace-nowrap">
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}
@@ -325,16 +423,16 @@ export const NircamTable: React.FC<NircamTableProps> = ({
         </table>
       </div>
 
-      {filteredImages.length === 0 ? (
+      {filteredProducts.length === 0 ? (
         <div className="text-center py-12 text-text-secondary">
-          No images found matching the current filters.
+          No products found matching the current filters.
         </div>
       ) : (
         <div className="border-t border-border">
           <TablePagination
             pageIndex={table.getState().pagination.pageIndex}
             pageSize={table.getState().pagination.pageSize}
-            totalRows={filteredImages.length}
+            totalRows={filteredProducts.length}
             onPageChange={(pageIndex) => {
               setPagination((prev) => ({ ...prev, pageIndex }));
             }}
@@ -344,6 +442,12 @@ export const NircamTable: React.FC<NircamTableProps> = ({
           />
         </div>
       )}
+
+      <ThumbnailPopup
+        url={popup?.url ?? null}
+        title={popup?.title ?? ''}
+        onClose={() => setPopup(null)}
+      />
     </Card>
   );
 };

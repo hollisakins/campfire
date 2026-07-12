@@ -2,12 +2,15 @@
 
 import React, { useState, useMemo } from 'react';
 import { ChevronDown, ChevronUp, Download, Copy, Check } from 'lucide-react';
-import type { NircamImage } from '@/lib/types';
+import type { NircamProductRow } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
-import { generateNircamMosaicDownloadUrls } from '@/lib/actions/download';
+import {
+  generateNircamMosaicDownloadUrls,
+  generateNircamExpmapDownloadUrls,
+} from '@/lib/actions/download';
 
 interface CurlScriptGeneratorProps {
-  selectedImages: NircamImage[];
+  selectedImages: NircamProductRow[];
   className?: string;
 }
 
@@ -29,23 +32,39 @@ export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
   const [script, setScript] = useState('');
   const [generating, setGenerating] = useState(false);
 
-  // Calculate total size
+  // Transfer estimate: stored (gzipped) bytes when recorded, logical otherwise
+  // — this is what the curl downloads actually move.
   const totalSize = useMemo(() => {
-    return selectedImages.reduce((sum, img) => sum + (img.file_size || 0), 0);
+    return selectedImages.reduce(
+      (sum, img) => sum + (img.file_size_stored ?? img.file_size ?? 0), 0);
   }, [selectedImages]);
 
-  // Build the curl script. Presigned + HMAC-authorized proxy URLs come from the
-  // server action (authorized per-viewer against nircam_images RLS), so the
-  // script carries no credentials — just `curl` against the proxy URL. Async
-  // because it awaits the presign round-trip.
+  // Build the curl script. Presigned + HMAC-authorized proxy URLs come from
+  // the server actions (authorized per-viewer under RLS — mosaics against
+  // nircam_images, expmaps against storage_objects), so the script carries no
+  // credentials — just `curl` against the proxy URL. Async because it awaits
+  // the presign round-trip.
   const buildScript = React.useCallback(async (): Promise<string> => {
     if (selectedImages.length === 0) return '';
 
-    const { urls } = await generateNircamMosaicDownloadUrls(
-      selectedImages.map((img) => img.file_path)
-    );
+    const mosaicPaths = selectedImages
+      .filter((p) => p.kind !== 'expmap')
+      .map((p) => p.file_path);
+    const expmapKeys = selectedImages
+      .filter((p) => p.kind === 'expmap')
+      .map((p) => p.file_path);
 
-    // Only include images we were authorized to presign.
+    const [mosaicRes, expmapRes] = await Promise.all([
+      mosaicPaths.length > 0
+        ? generateNircamMosaicDownloadUrls(mosaicPaths)
+        : Promise.resolve({ urls: {} as Record<string, string>, error: null }),
+      expmapKeys.length > 0
+        ? generateNircamExpmapDownloadUrls(expmapKeys)
+        : Promise.resolve({ urls: {} as Record<string, string>, error: null }),
+    ]);
+    const urls = { ...mosaicRes.urls, ...expmapRes.urls };
+
+    // Only include products we were authorized to presign.
     const images = selectedImages.filter((img) => urls[img.file_path]);
     if (images.length === 0) return '';
 
