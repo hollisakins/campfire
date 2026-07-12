@@ -18,6 +18,7 @@ import type { NircamFilterOptions } from './NircamFilterBar';
 import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
 import { ThumbnailPopup } from './ThumbnailPopup';
+import { mosaicBase } from '@/lib/nircam-product-keys';
 import {
   generateNircamMosaicDownloadUrls,
   generateNircamExpmapDownloadUrls,
@@ -91,13 +92,6 @@ const compareTiles = (a: string | null, b: string | null): number => {
   return a.localeCompare(b);
 };
 
-// The mosaic base key (file_path minus `_<ext>.fits`) — the thumbnail map key.
-const mosaicBase = (row: NircamProductRow): string | null => {
-  const suffix = `_${row.extension}.fits`;
-  return row.file_path.endsWith(suffix)
-    ? row.file_path.slice(0, -suffix.length)
-    : null;
-};
 
 // Per-row FITS download: authorizes + presigns the key server-side (routed by
 // product kind), then navigates the browser to the credential-free proxy URL.

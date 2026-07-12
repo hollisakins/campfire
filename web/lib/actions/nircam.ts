@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { paginateQuery } from '@/lib/supabase/paginate';
 import { generateDownloadUrls } from '@/lib/r2';
+import { thumbnailBase } from '@/lib/nircam-product-keys';
 import type {
   NircamImage, NircamExpmap, NircamFieldCard, NircamFieldSummary,
 } from '@/lib/types';
@@ -294,9 +295,9 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
       } else if (row.product_type === 'nircam_expmap_plot' && row.filter) {
         result.expmapPlots[row.filter] = url;
       } else if (row.product_type === 'nircam_mosaic_thumbnail') {
-        // Key thumbnails by mosaic base so the table can match a mosaic row
-        // via its own file_path minus `_<ext>.fits`.
-        result.thumbnails[row.storage_key.replace(/_thumb\.png$/, '')] = url;
+        // Keyed by mosaic base — the shared contract with the table's
+        // mosaicBase() lives in lib/nircam-product-keys.ts.
+        result.thumbnails[thumbnailBase(row.storage_key)] = url;
       }
     }
 
