@@ -299,6 +299,50 @@ export interface NircamExpmap {
   file_size?: number; // size_bytes from the registry, if available
 }
 
+// One row of the /nircam landing grid (get_nircam_fields RPC + a presigned
+// layout-plot URL). Coverage areas and center come from the `fields` table
+// and are null until the field's first post-redesign deploy.
+export interface NircamFieldCard {
+  field: string;
+  display_name: string;
+  center_ra: number | null;
+  center_dec: number | null;
+  coverage_area_arcmin2: number | null;
+  coverage_area_deg2: number | null;
+  n_filters: number;
+  n_tiles: number;
+  n_files: number;
+  total_bytes: number;
+  last_updated: string | null;
+  layout_url: string | null;  // presigned <field>_layout.png GET, if deployed
+}
+
+// The /nircam/[field] overview (get_nircam_field_summary RPC): the card fields
+// plus the per-field facet arrays that drive the metadata grid.
+export interface NircamFieldSummary extends Omit<NircamFieldCard, 'layout_url'> {
+  filters: string[];
+  tiles: string[];
+  pixel_scales: string[];
+  extensions: string[];
+  epochs: string[];
+}
+
+// One row of the field-page data-products table: a mosaic (from nircam_images)
+// or an exposure map folded in as a synthetic `extension: 'exp'` row with no
+// tile/scale axes. `file_path` doubles as the canonical storage key for both
+// kinds — the download action routes on `kind`.
+export interface NircamProductRow {
+  kind: 'mosaic' | 'expmap';
+  field: string;
+  filter: string;
+  tile: string | null;        // null on expmap rows
+  pixel_scale: string | null; // null on expmap rows
+  extension: string;          // sci, err, wht, srcmask, ... or 'exp'
+  epoch?: string;             // '' = full field (mosaics only)
+  file_path: string;          // canonical storage key
+  file_size?: number;
+}
+
 // NIRCam pipeline step names. Matches campfire_pipeline.common.cfp.CFP_KEYS
 // order: 'uncal' means raw exists but no canonical file yet; each subsequent
 // value is the name of the highest-completed step (process phase →
