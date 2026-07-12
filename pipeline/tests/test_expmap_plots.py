@@ -93,6 +93,97 @@ def test_render_figure_no_title(tmp_path):
     assert out.exists() and out.stat().st_size > 0
 
 
+def test_render_figure_square_inticks_and_zorder(tmp_path, monkeypatch):
+    # Change set: the main panel is forced square (predictable web layout),
+    # its ticks point inward, and the imshow sits behind the axes so the grid,
+    # ticks, and tile outlines render on top of the map. Capture the figure
+    # before it is closed and introspect it.
+    import warnings
+
+    import matplotlib.pyplot as plt
+
+    captured = {}
+    real_close = plt.close
+    monkeypatch.setattr(plt, 'close', lambda fig: captured.setdefault('fig', fig))
+
+    _metas, wcs, _shape, arr = _synthetic_expmap()
+    out = tmp_path / 'sq.png'
+    ok = em._render_expmap_figure(str(out), arr, wcs, title=None,
+                                  cbar_label='Exposure time [s]', dark=True)
+    assert ok is True
+
+    fig = captured['fig']
+    ax = fig.axes[0]                       # main panel; colorbar is a later axes
+    assert ax.get_box_aspect() == 1.0      # forced square
+    images = ax.get_images()
+    assert images and all(im.get_zorder() < 0 for im in images)  # behind axes
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')    # .ticks accessor is deprecated
+        # get_tick_out() is False for direction='in'; both RA and Dec.
+        assert ax.coords[0].ticks.get_tick_out() is False
+        assert ax.coords[1].ticks.get_tick_out() is False
+    real_close(fig)
+
+
+def test_render_filter_plots_forward_tiles(tmp_path, monkeypatch):
+    # Per-filter maps now carry the tile outlines too (both the light PDF and
+    # the dark PNG), matching the layout plot.
+    metas, wcs, _shape, arr = _synthetic_expmap()
+    fdir = tmp_path / 'f444w'
+    fdir.mkdir()
+    fp = fdir / 'expmap_cosmos_f444w.fits'
+    em._write_fits(str(fp), arr, wcs, field_name='cosmos',
+                   filter_name='f444w', stage='canonical', metas=metas)
+
+    calls = []
+
+    def _fake_render(path, data, wcs_, *, title, cbar_label, vmin=None,
+                     vmax=None, dark=False, tile_outlines=None):
+        calls.append((dark, tile_outlines))
+        return True
+
+    monkeypatch.setattr(em, '_render_expmap_figure', _fake_render)
+    tiles = [('A1', [[150.0, 2.0], [150.01, 2.0],
+                     [150.01, 2.01], [150.0, 2.01]])]
+    em._render_filter_plots('cosmos', 'f444w', 'canonical', metas, str(fp),
+                            str(tmp_path), wcs, 1.0, 10.0, tile_outlines=tiles)
+
+    # both renders (light PDF dark=False, dark PNG dark=True) get the tiles
+    assert len(calls) == 2
+    assert sorted(dark for dark, _ in calls) == [False, True]
+    assert all(passed == tiles for _, passed in calls)
+
+
+def test_run_expmap_passes_tiles_to_filter_plots(tmp_path, monkeypatch):
+    # End-to-end: the field's tile (A1) flows through _collect_tile_outlines
+    # into every per-filter render, even though this stubs out the heavy work.
+    metas, wcs, shape, _arr = _synthetic_expmap()
+
+    ff = tmp_path / 'fields.toml'
+    ff.write_text(textwrap.dedent(_FIELDS_TOML))    # cosmos has tile A1
+    field = Field.load('cosmos', fields_file=str(ff))
+
+    monkeypatch.setattr(em, '_load_metadata_cache', lambda *a, **k: {})
+    monkeypatch.setattr(em, '_save_metadata_cache', lambda *a, **k: None)
+    monkeypatch.setattr(em, '_collect_metas',
+                        lambda field, filt, stage, cache=None: [metas[0]])
+    monkeypatch.setattr(em, '_auto_wcs', lambda ms, ps, pad: (wcs, shape))
+    monkeypatch.setattr(em, '_accumulate_filter',
+                        lambda w: (w[1], w[5], f'/fake/{w[1]}.fits', 1.0, 10.0))
+    monkeypatch.setattr(em, '_render_layout', lambda *a, **k: None)
+    monkeypatch.setattr(em, '_write_region_file', lambda *a, **k: None)
+
+    captured = []
+    monkeypatch.setattr(em, '_render_filter_plots',
+                        lambda *a, **k: captured.append(k.get('tile_outlines')))
+
+    em.run_expmap(field, filters=['f200w', 'f444w'], out_dir=str(tmp_path))
+
+    assert captured                                 # per-filter plots rendered
+    for tiles in captured:
+        assert [name for name, _ in tiles] == ['A1']
+
+
 def test_render_figure_all_zero_writes_nothing(tmp_path):
     _metas, wcs, shape, _arr = _synthetic_expmap()
     out = tmp_path / 'zero.png'
