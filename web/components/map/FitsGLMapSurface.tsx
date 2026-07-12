@@ -270,6 +270,7 @@ export function FitsGLMapSurface({
   const initialBandRef = useRef(initialBand);
   useEffect(() => { initialCenterRef.current = initialCenter; }, [initialCenter]);
   useEffect(() => { initialZoomRef.current = initialZoom; }, [initialZoom]);
+  useEffect(() => { initialBandRef.current = initialBand; }, [initialBand]);
   const lastCursorSky = useRef<{ ra: number; dec: number } | null>(null);
   const initialApplied = useRef(false);
   // Popup: the clicked marker + its world position (repositioned every frame).
