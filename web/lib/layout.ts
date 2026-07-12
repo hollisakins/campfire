@@ -90,6 +90,7 @@ reg(spec({ name: 'nircam_rgb', tree: 'products', bucket: 'data', scopeKeys: ['fi
 reg(spec({ name: 'nircam_expmap', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null }));
 reg(spec({ name: 'nircam_expmap_plot', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null }));
 reg(spec({ name: 'nircam_mosaic_thumbnail', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_thumb.png' }));
+reg(spec({ name: 'nircam_mosaic_quicklook', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_quicklook.png' }));
 reg(spec({ name: 'nircam_layout', tree: 'products', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}`, suffix: '_layout.png' }));
 
 // --- Map tiles (separate bucket, scheme-invariant) ---
@@ -205,6 +206,7 @@ const NIRCAM_FILTER_SUFFIXES: [string, string][] = [
   ['_preview.png', 'nircam_exposure_preview'],
   ['_full.png', 'nircam_exposure_full'],
   ['_thumb.png', 'nircam_mosaic_thumbnail'], // before the 'mosaic' prefix check
+  ['_quicklook.png', 'nircam_mosaic_quicklook'],
 ];
 const TILE_RE = /^([^/]+)\/([^/]+)\/(\d+)\/(\d+)\/(\d+)\.png$/;
 

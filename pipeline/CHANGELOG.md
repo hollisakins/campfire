@@ -29,6 +29,19 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- NIRCam mosaics now get a size-capped **thumbnail pair** instead of one
+  fixed-/4-downsampled PNG: `<base>_thumb.png` (long side ≤
+  `thumbnail_max_dim`, default 500 px — the web table rendition) and a new
+  `<base>_quicklook.png` (long side ≤ `quicklook_max_dim`, default 4096 px —
+  the click-to-enlarge popup). The fixed /4 factor scaled with the mosaic (a
+  wide 30 mas strip produced a ~10k-px, tens-of-MB "thumbnail"); the caps
+  bound both renditions regardless of field geometry, and mosaics smaller
+  than a cap are saved at native size. Named `quicklook` (not
+  `_preview`/`_full`) because those suffixes already mean the per-exposure
+  triage PNGs in the same directory. Display PNGs only, no change to FITS
+  pixel values (`nircam/steps/_plots.py`, `nircam/steps/resample.py`,
+  `data/config_default.toml`; layout contract + deploy + `storage_objects`
+  CHECK gain the `nircam_mosaic_quicklook` product type).
 - NIRCam expmap/layout plot styling: the deployable dark PNGs (per-filter
   `expmap_*.png` and `<field>_layout.png`) no longer carry a title — the web
   page embedding them already labels field/filter, so it was duplicated
