@@ -398,6 +398,13 @@ export function MapViewer({
       <div ref={mapWrapperRef} className="relative h-full w-full">
         <FitsGLMapSurface
           dataset={activeDataset}
+          initialBand={
+            // Honor ?filter= for the deep-linked field only (same rule as
+            // initialCenter): a manual field switch starts from the default.
+            !initialField || initialField === selectedField
+              ? initialFilter
+              : undefined
+          }
           markers={markers}
           showMarkers={showMarkers}
           highlightObjectId={highlightObjectId}
