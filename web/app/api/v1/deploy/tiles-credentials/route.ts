@@ -44,13 +44,22 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Resolve the tiles-bucket backend from the server's S3_TILES_* env.
+    // Resolve the tiles-bucket backend from the server's S3_TILES_* env. Surface the
+    // underlying reason (which env var is missing / unresolvable) so the admin-gated
+    // caller — and Vercel logs — can tell *what* to configure. `resolveBackend` only
+    // reports missing/unresolvable config here, never secret values, so this is safe to
+    // return to the (admin-only) client.
     let b;
     try {
       b = resolveBackend('tiles');
-    } catch {
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error('tiles-credentials: resolveBackend("tiles") failed:', reason);
       return NextResponse.json(
-        { error: 'server_error', error_description: 'Tiles storage credentials not configured' },
+        {
+          error: 'server_error',
+          error_description: `Tiles storage not configured on the server: ${reason}`,
+        },
         { status: 500 }
       );
     }

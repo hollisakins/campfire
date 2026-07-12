@@ -146,8 +146,34 @@ def resolve_tiles_creds(config):
     }
 
 
+def _server_error_detail(resp):
+    """Best-effort human-readable detail from a web-API error response body.
+
+    The deploy routes answer errors as ``{"error": ..., "error_description": ...}``.
+    Falls back to a trimmed raw body when the response isn't that JSON (e.g. an HTML
+    502 from a proxy), so a non-JSON failure still yields *something* actionable rather
+    than being silently dropped. Returns ``None`` when there's nothing usable.
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        text = (resp.text or '').strip()
+        return text[:200] if text else None
+    if isinstance(body, dict):
+        return body.get('error_description') or body.get('error')
+    return None
+
+
 def fetch_tiles_credentials(config):
-    """GET the R2 tiles creds from the admin-gated web endpoint (login mode)."""
+    """GET the R2 tiles creds from the admin-gated web endpoint (login mode).
+
+    Surfaces the server's own error text on failure (the deploy routes return a JSON
+    ``error_description``) instead of a bare ``raise_for_status`` traceback, and — for a
+    5xx, which for this endpoint means the web app's tiles storage isn't configured —
+    points at the ``--service-role`` / ``--local`` fallback that reads local
+    ``CAMPFIRE_S3_TILES_*`` creds directly. Raises ``click.ClickException`` so the CLI
+    prints a clean ``Error: …`` line, never a stack trace.
+    """
     import requests
     from campfire.api.session import resolve_base_url
     from campfire.auth.tokens import TokenManager
@@ -155,25 +181,44 @@ def fetch_tiles_credentials(config):
     base_url = resolve_base_url()
     tm = TokenManager(base_url=base_url)
     if not tm.is_oauth():
-        raise RuntimeError(
+        raise click.ClickException(
             "not logged in — run `campfire login` (or use --service-role with "
             "CAMPFIRE_S3_TILES_* for unattended deploys)."
         )
     token = tm.get_valid_token()
     if not token:
-        raise RuntimeError("login session expired — run `campfire login`.")
-    resp = requests.get(
-        f"{base_url}/deploy/tiles-credentials",
-        headers={'Authorization': f'Bearer {token}'}, timeout=30,
-    )
+        raise click.ClickException("login session expired — run `campfire login`.")
+    try:
+        resp = requests.get(
+            f"{base_url}/deploy/tiles-credentials",
+            headers={'Authorization': f'Bearer {token}'}, timeout=30,
+        )
+    except requests.RequestException as e:
+        raise click.ClickException(
+            f"could not reach the tiles-credentials endpoint at {base_url}: {e}"
+        )
     if resp.status_code == 403:
-        raise RuntimeError("tiles credentials require admin access.")
+        raise click.ClickException("tiles credentials require admin access.")
     if resp.status_code == 404:
-        raise RuntimeError(
+        raise click.ClickException(
             "tiles-credentials endpoint not found — the web app may predate Phase 3; "
             "use --service-role with CAMPFIRE_S3_TILES_* instead."
         )
-    resp.raise_for_status()
+    if not resp.ok:
+        detail = _server_error_detail(resp)
+        # A 5xx here is a server misconfiguration, not a client error: the endpoint
+        # returns 500 when the web app can't resolve its tiles bucket (missing/partial
+        # S3_TILES_*/R2_TILES_* on the server). The deployer can't fix the server's env
+        # from here, so point them at the local-creds path that skips this endpoint.
+        hint = (
+            " The web app's tiles storage may not be configured (server-side "
+            "S3_TILES_*/R2_TILES_* env). Configure it, or deploy with --service-role "
+            "(or --local) using local CAMPFIRE_S3_TILES_* credentials."
+        ) if resp.status_code >= 500 else ""
+        raise click.ClickException(
+            f"tiles-credentials endpoint returned HTTP {resp.status_code}"
+            f"{f': {detail}' if detail else ''}.{hint}"
+        )
     return resp.json()
 
 
