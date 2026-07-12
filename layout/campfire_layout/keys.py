@@ -62,7 +62,16 @@ def key_prefix(product_type: str, scope: Scope, *,
 
 def storage_key(product_type: str, scope: Scope, filename: Optional[str] = None, *,
                 scheme: KeyScheme = KeyScheme.LEGACY) -> str:
-    """Full storage key for a single object."""
+    """Full storage key for a single object.
+
+    Products with ``compressed_suffixes`` are stored gzipped in the bucket: the
+    key gains a ``.gz`` extension for any filename ending in one of those
+    suffixes (the local relpath, built from the same *plain* filename, does not
+    — the bijection strips ``.gz`` on the way back). See
+    :func:`bijection.parse_relpath`.
+    """
     spec = products.get(product_type)
     fname = spec.resolve_filename(scope, filename)
+    if any(fname.endswith(sfx) for sfx in spec.compressed_suffixes):
+        fname = f"{fname}.gz"
     return f"{key_prefix(product_type, scope, scheme=scheme)}/{fname}"

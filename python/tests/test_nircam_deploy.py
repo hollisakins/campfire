@@ -229,12 +229,16 @@ def test_discover_mosaics_manifest_based_version_free_keys(tmp_path):
     assert exts == ["err", "i2d", "sci", "wht"]
     i2d = next(m for m in found if m["extension"] == "i2d")
     assert i2d["tile"] == "A1" and i2d["pixel_scale"] == "30mas"
+    # Mosaic FITS are stored gzipped: the cloud key gains '.gz' and the task
+    # carries application/gzip (the local .fits path is unchanged).
     assert i2d["storage_key"] == \
-        "data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_A1_i2d.fits"
-    # every discovered key registers as nircam_mosaic (no version segment)
+        "data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_A1_i2d.fits.gz"
+    assert i2d["content_type"] == "application/gzip"
+    # every discovered key registers as nircam_mosaic (no version segment); the
+    # registry parses the .fits.gz cloud key back to the mosaic product.
     row = reg.row_for_key(i2d["storage_key"], backend="osn",
                           content_hash="sha256:" + "a" * 64, size_bytes=1,
-                          content_type="application/fits")
+                          content_type="application/gzip")
     assert row["product_type"] == "nircam_mosaic"
     assert row["field"] == "cosmos"
 
@@ -256,7 +260,7 @@ def test_discover_mosaics_skips_stale_versioned_manifest(tmp_path):
     dirs = {"products": tmp_path / "products" / "nircam" / "cosmos"}
     found = nc.discover_mosaics(dirs, "cosmos", ["f444w"])
     assert len(found) == 1
-    assert found[0]["storage_key"].endswith(f"{canon}_i2d.fits")
+    assert found[0]["storage_key"].endswith(f"{canon}_i2d.fits.gz")
     # no version segment leaked into any discovered key
     assert all("_v0_1_" not in m["storage_key"] for m in found)
 
@@ -273,7 +277,7 @@ def test_discover_mosaics_multiunderscore_field(tmp_path):
     assert len(found) == 1
     assert found[0]["tile"] == "t2"
     assert found[0]["storage_key"].endswith(
-        "ember_egs_p1/f356w/mosaic_nircam_f356w_ember_egs_p1_30mas_t2_i2d.fits")
+        "ember_egs_p1/f356w/mosaic_nircam_f356w_ember_egs_p1_30mas_t2_i2d.fits.gz")
 
 
 # --- parallel sci_dq hashing + upload-worker tuning (deploy speed) -----------

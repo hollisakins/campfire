@@ -17,6 +17,7 @@ from __future__ import annotations
 from .bijection import (
     ParsedKey,
     derive_sibling,
+    is_compressed_key,
     is_known_key,
     key_to_relpath,
     parse_key,
@@ -64,7 +65,7 @@ __all__ = [
     "bucket_for", "key_prefix", "storage_key",
     # bijection
     "ParsedKey", "parse_key", "parse_relpath", "key_to_relpath", "relpath_to_key",
-    "derive_sibling", "is_known_key",
+    "derive_sibling", "is_known_key", "is_compressed_key",
     # lifecycle
     "tree_class",
     # migration (#212 one-time layout re-org)

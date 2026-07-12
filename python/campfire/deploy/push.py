@@ -404,7 +404,7 @@ def push_field(
     tasks: list[UploadTask] = list(build_fits_upload_tasks(field, exposures))
     tasks += list(discover_expmap_tasks(dirs, field, filters))
     tasks += [t[0] for t in build_upload_tasks(dirs, field, filters)]
-    tasks += [UploadTask(m['path'], m['storage_key'], 'application/fits')
+    tasks += [UploadTask(m['path'], m['storage_key'], m['content_type'])
               for m in discover_mosaics(dirs, field, filters)]
 
     print(f"Field: {field}")

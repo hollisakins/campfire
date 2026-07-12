@@ -11,6 +11,7 @@ import {
   parseKey,
   deriveSibling,
   isKnownKey,
+  isCompressedKey,
   PRODUCTS,
   type Scope,
 } from './layout';
@@ -86,6 +87,21 @@ describe('presign allowlist', () => {
     }
     expect(isKnownKey('spectra/ember/../../secret.fits')).toBe(false);
     expect(isKnownKey('data/../../../etc/passwd')).toBe(false);
+  });
+});
+
+describe('compressed keys', () => {
+  const gz = 'data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits.gz';
+  it('flags a gzipped mosaic FITS key', () => {
+    expect(isCompressedKey(gz)).toBe(true);
+  });
+  it('is false for the plain .fits key and non-FITS mosaic siblings', () => {
+    expect(isCompressedKey(gz.slice(0, -'.gz'.length))).toBe(false);
+    expect(isCompressedKey('data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_thumb.png')).toBe(false);
+    expect(isCompressedKey('data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_manifest.json')).toBe(false);
+  });
+  it('is false for unknown/unsafe keys', () => {
+    expect(isCompressedKey('totally/made/up/key.gz')).toBe(false);
   });
 });
 

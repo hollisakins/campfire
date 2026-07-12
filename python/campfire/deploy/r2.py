@@ -28,17 +28,61 @@ presign TTL), and per-item success callbacks that run on the calling thread
 (safe for registry/mirror bookkeeping mid-transfer).
 """
 
+import gzip
+import os
+import shutil
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, NamedTuple, Optional
 
 import requests as http_requests  # module-global: patchable seam for tests
 from urllib.parse import urlparse
 
+from campfire_layout import is_compressed_key
 from campfire.storage.session import create_transfer_session
 from campfire.storage.transfer import run_transfers
 
 # A returned presigned URL on this host means the web route signed R2, not OSN.
 _R2_PRESIGN_HOST_FRAGMENT = 'r2.cloudflarestorage.com'
+
+# gzip level for compressed products (nircam_mosaic FITS). Level 1 matches
+# level 6's ratio on float32 FITS (the win is NaN-run collapse, not entropy
+# coding) at ~40% less CPU — measured on a 55%-NaN f444w mosaic.
+_GZIP_LEVEL = 1
+
+
+@contextmanager
+def _upload_body(local_path: Path, *, compress: bool):
+    """Yield the path whose bytes to PUT for ``local_path``.
+
+    For a compressed product (a ``.fits.gz`` key — see
+    ``campfire_layout.is_compressed_key``) this gzips ``local_path`` to a sibling
+    temp file and yields that, removing it afterwards; otherwise it yields
+    ``local_path`` unchanged. Compression is deterministic (``mtime=0``) so a
+    re-deploy of an unchanged mosaic produces byte-identical output. A temp
+    *file* (not an on-the-fly stream) is deliberate: it preserves a known
+    Content-Length for the single-PUT presigned path (a streamed generator would
+    force chunked transfer-encoding, which presigned S3/OSN PutObject rejects)
+    and lets boto3's managed transfer multipart large mosaics.
+
+    The registry still records the *uncompressed* content hash and size (the
+    local plain ``.fits``), so identity/dedup/verify are unaffected by the gzip.
+    """
+    if not compress:
+        yield local_path
+        return
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(local_path.parent), prefix=local_path.name + '.', suffix='.gz.tmp')
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, 'wb') as raw, open(local_path, 'rb') as src:
+            with gzip.GzipFile(fileobj=raw, mode='wb',
+                               compresslevel=_GZIP_LEVEL, mtime=0) as gz:
+                shutil.copyfileobj(src, gz, length=8 << 20)
+        yield tmp
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 class UploadTask(NamedTuple):
@@ -174,22 +218,27 @@ def _assert_presigned_backend_osn(urls: dict[str, str]) -> None:
 
 
 def _upload_to_presigned_url(
-    session, url: str, local_path: Path, content_type: str,
+    session, url: str, local_path: Path, content_type: str, *, compress: bool = False,
 ) -> None:
     """Upload a single file to a presigned PutObject URL via a pooled session.
 
     The shared session gives each worker a persistent connection (one TCP+TLS
     handshake per thread, not per file) and retries transient failures —
     presigned PutObject is idempotent, so a retried PUT can only converge.
+
+    ``compress`` gzips the body first (compressed products only); the presign was
+    minted for the ``.fits.gz`` key with a matching ``application/gzip``
+    Content-Type, so the header stays consistent with the signed request.
     """
-    with open(local_path, 'rb') as f:
-        resp = session.put(
-            url,
-            data=f,
-            headers={'Content-Type': content_type},
-            timeout=300,
-        )
-        resp.raise_for_status()
+    with _upload_body(local_path, compress=compress) as body:
+        with open(body, 'rb') as f:
+            resp = session.put(
+                url,
+                data=f,
+                headers={'Content-Type': content_type},
+                timeout=300,
+            )
+            resp.raise_for_status()
 
 
 def upload_files_presigned(
@@ -248,7 +297,9 @@ def upload_files_presigned(
 
     result = run_transfers(
         runnable,
-        lambda t: _upload_to_presigned_url(session, urls[t.r2_key], t.local_path, t.content_type),
+        lambda t: _upload_to_presigned_url(
+            session, urls[t.r2_key], t.local_path, t.content_type,
+            compress=is_compressed_key(t.r2_key)),
         max_workers=max_workers,
         desc=desc,
         label=lambda t: t.local_path.name,
@@ -290,20 +341,27 @@ def upload_to_r2(
     r2_key: str,
     content_type: str | None = None,
     cache_control: str | None = None,
+    *,
+    compress: bool = False,
 ) -> None:
-    """Upload a single file via boto3 (any S3-compatible backend)."""
+    """Upload a single file via boto3 (any S3-compatible backend).
+
+    ``compress`` gzips the body first (compressed products only); the caller's
+    ``content_type`` should already be ``application/gzip`` for those.
+    """
     extra_args = {}
     if content_type:
         extra_args['ContentType'] = content_type
     if cache_control:
         extra_args['CacheControl'] = cache_control
 
-    client.upload_file(
-        str(local_path),
-        bucket,
-        r2_key,
-        ExtraArgs=extra_args or None,
-    )
+    with _upload_body(local_path, compress=compress) as body:
+        client.upload_file(
+            str(body),
+            bucket,
+            r2_key,
+            ExtraArgs=extra_args or None,
+        )
 
 
 def upload_files_direct(
@@ -340,7 +398,8 @@ def upload_files_direct(
     result = run_transfers(
         tasks,
         lambda t: upload_to_r2(client, bucket, t.local_path, t.r2_key,
-                               t.content_type, cache_control),
+                               t.content_type, cache_control,
+                               compress=is_compressed_key(t.r2_key)),
         max_workers=max_workers,
         desc=desc,
         label=lambda t: t.local_path.name,
