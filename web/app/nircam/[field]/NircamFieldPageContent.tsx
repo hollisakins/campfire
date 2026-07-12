@@ -26,7 +26,7 @@ import type {
   NircamFieldSummary,
   NircamProductRow,
 } from '@/lib/types';
-import { LogIn, Loader2, ImageIcon, ExternalLink } from 'lucide-react';
+import { LogIn, Loader2, ImageIcon, ExternalLink, Scissors } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
 const formatVolume = (bytes: number): string => {
@@ -101,6 +101,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
     thumbnails: {},
   });
   const [viewableFilters, setViewableFilters] = useState<Set<string>>(new Set());
+  const [hasCutouts, setHasCutouts] = useState(false);
   const [filters, setFilters] = useState<NircamFilterOptions>(DEFAULT_NIRCAM_FILTERS);
   const [selectedProducts, setSelectedProducts] = useState<NircamProductRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -160,12 +161,14 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
       setProducts([...mosaicRows, ...expmapRows]);
       if (imagesRes.error) setError(imagesRes.error);
 
-      // Filters covered by a FitsGL dataset enable the per-row map View.
+      // Filters covered by a FitsGL dataset enable the per-row map View; a
+      // field-composite dataset also unlocks the cutout tool.
       const bands = new Set<string>();
       for (const ds of fitsglDatasets) {
         for (const b of ds.bands ?? []) bands.add(b.toLowerCase());
       }
       setViewableFilters(bands);
+      setHasCutouts(fitsglDatasets.some((ds) => ds.kind === 'field'));
     } catch (err) {
       setError('Failed to fetch data');
       console.error(err);
@@ -300,13 +303,24 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
               )}
             </div>
             <div className="flex-1" />
-            <Link
-              href={`/map?field=${encodeURIComponent(field)}`}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors"
-            >
-              Open field in Map
-              <ExternalLink className="w-3.5 h-3.5" />
-            </Link>
+            <div className="flex items-center gap-2">
+              {hasCutouts && (
+                <Link
+                  href={`/nircam/${encodeURIComponent(field)}/cutouts`}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-surface-2 border border-border-strong text-text-primary rounded-lg text-sm font-medium hover:bg-card-hover transition-colors"
+                >
+                  <Scissors className="w-3.5 h-3.5" />
+                  Cutouts
+                </Link>
+              )}
+              <Link
+                href={`/map?field=${encodeURIComponent(field)}`}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors"
+              >
+                Open field in Map
+                <ExternalLink className="w-3.5 h-3.5" />
+              </Link>
+            </div>
           </div>
 
           {/* Field overview: metadata + exposure-map browser */}

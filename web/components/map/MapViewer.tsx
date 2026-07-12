@@ -431,6 +431,7 @@ export function MapViewer({
           <MapContextMenu
             coords={contextMenu.coords}
             position={contextMenu.position}
+            cutoutField={selectedField}
             onClose={closeContextMenu}
           />
         )}

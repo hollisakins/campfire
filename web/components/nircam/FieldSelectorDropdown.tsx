@@ -18,17 +18,21 @@ interface FieldSelectorDropdownProps {
   fields: NircamFieldCard[];
   /** The currently-open field (route param). */
   current: string;
+  /** Route for a chosen field; defaults to the field detail page. Lets
+   *  sub-routes (e.g. cutouts) switch fields without leaving the tool. */
+  linkTo?: (field: string) => string;
   className?: string;
 }
 
 /**
  * Searchable single-select field switcher for /nircam/[field] — sits top-left,
  * above the field header (wireframe: "Field COSMOS ▾"). Choosing a field
- * navigates to its detail route.
+ * navigates to its detail route (or a sub-route via `linkTo`).
  */
 export const FieldSelectorDropdown: React.FC<FieldSelectorDropdownProps> = ({
   fields,
   current,
+  linkTo = (field) => `/nircam/${encodeURIComponent(field)}`,
   className = '',
 }) => {
   const router = useRouter();
@@ -71,7 +75,7 @@ export const FieldSelectorDropdown: React.FC<FieldSelectorDropdownProps> = ({
 
   const choose = (field: string) => {
     setOpen(false);
-    if (field !== current) router.push(`/nircam/${encodeURIComponent(field)}`);
+    if (field !== current) router.push(linkTo(field));
   };
 
   return (

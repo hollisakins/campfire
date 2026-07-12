@@ -7,10 +7,13 @@ import { formatCoordinates } from '@/lib/utils/coordinates';
 interface MapContextMenuProps {
   coords: { ra: number; dec: number };
   position: { x: number; y: number };
+  /** Field whose cutout tool covers this position; omit to hide the entry
+   *  (fields without a deployed cutout source). */
+  cutoutField?: string;
   onClose: () => void;
 }
 
-export function MapContextMenu({ coords, position, onClose }: MapContextMenuProps) {
+export function MapContextMenu({ coords, position, cutoutField, onClose }: MapContextMenuProps) {
   const router = useRouter();
   const menuRef = useRef<HTMLDivElement>(null);
   const [copiedItem, setCopiedItem] = useState<string | null>(null);
@@ -89,6 +92,19 @@ export function MapContextMenu({ coords, position, onClose }: MapContextMenuProp
     onClose();
   }, [coords, router, onClose]);
 
+  // Open the field's cutout tool prefilled with this position; the shareable
+  // ra/dec params auto-generate the figure on arrival.
+  const handleCutout = useCallback(() => {
+    if (!cutoutField) return;
+    const params = new URLSearchParams({
+      ra: coords.ra.toFixed(6),
+      dec: coords.dec.toFixed(6),
+      fov: '10',
+    });
+    router.push(`/nircam/${encodeURIComponent(cutoutField)}/cutouts?${params.toString()}`);
+    onClose();
+  }, [coords, cutoutField, router, onClose]);
+
   return (
     <div
       ref={menuRef}
@@ -118,6 +134,12 @@ export function MapContextMenu({ coords, position, onClose }: MapContextMenuProp
       <div className="my-1 border-t border-white/10" />
 
       {/* Navigate */}
+      {cutoutField && (
+        <MenuItem
+          label="Cutout at this position"
+          onClick={handleCutout}
+        />
+      )}
       <MenuItem
         label="Search spectra near here"
         onClick={handleSearchSpectra}
