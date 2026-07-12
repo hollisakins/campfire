@@ -1013,6 +1013,11 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- no partial digest (everything except nircam_exposure today).
     "sci_dq_hash" "text",
     "size_bytes" bigint NOT NULL,
+    -- Bytes as stored in the bucket for transport-compressed products (gzipped
+    -- mosaic FITS, epic #261 / PR #383); NULL = stored verbatim. size_bytes
+    -- stays the LOGICAL (uncompressed) size that client-side dedup and the
+    -- stat fast-path compare against local plain files.
+    "stored_size_bytes" bigint,
     "content_type" "text" NOT NULL,
     "product_type" "text" NOT NULL,
     "instrument" "text",

@@ -219,7 +219,7 @@ def _assert_presigned_backend_osn(urls: dict[str, str]) -> None:
 
 def _upload_to_presigned_url(
     session, url: str, local_path: Path, content_type: str, *, compress: bool = False,
-) -> None:
+) -> Optional[int]:
     """Upload a single file to a presigned PutObject URL via a pooled session.
 
     The shared session gives each worker a persistent connection (one TCP+TLS
@@ -229,8 +229,13 @@ def _upload_to_presigned_url(
     ``compress`` gzips the body first (compressed products only); the presign was
     minted for the ``.fits.gz`` key with a matching ``application/gzip``
     Content-Type, so the header stays consistent with the signed request.
+
+    Returns the **stored** byte count for a compressed upload (the gzipped
+    body actually PUT — the registry's ``stored_size_bytes``), or None for a
+    verbatim upload (stored bytes == the logical ``size_bytes``).
     """
     with _upload_body(local_path, compress=compress) as body:
+        stored_size = body.stat().st_size if compress else None
         with open(body, 'rb') as f:
             resp = session.put(
                 url,
@@ -239,6 +244,7 @@ def _upload_to_presigned_url(
                 timeout=300,
             )
             resp.raise_for_status()
+    return stored_size
 
 
 def upload_files_presigned(
@@ -250,6 +256,7 @@ def upload_files_presigned(
     *,
     session=None,
     on_success: Optional[Callable[[UploadTask], None]] = None,
+    stored_sizes_out: Optional[dict[str, int]] = None,
 ) -> tuple[int, int, list[str]]:
     """
     Upload files using presigned URLs.
@@ -289,7 +296,11 @@ def upload_files_presigned(
     if session is None:
         session = create_transfer_session(max_workers, methods=("GET", "PUT"))
 
-    def _success(task: UploadTask, _result) -> None:
+    def _success(task: UploadTask, result) -> None:
+        # Stored-byte capture must precede on_success: the registration
+        # flusher may build this task's registry row inside that callback.
+        if stored_sizes_out is not None and result is not None:
+            stored_sizes_out[task.r2_key] = result
         if succeeded_out is not None:
             succeeded_out.add(task.r2_key)
         if on_success is not None:
@@ -343,11 +354,12 @@ def upload_to_r2(
     cache_control: str | None = None,
     *,
     compress: bool = False,
-) -> None:
+) -> Optional[int]:
     """Upload a single file via boto3 (any S3-compatible backend).
 
     ``compress`` gzips the body first (compressed products only); the caller's
-    ``content_type`` should already be ``application/gzip`` for those.
+    ``content_type`` should already be ``application/gzip`` for those. Returns
+    the stored (gzipped) byte count for a compressed upload, else None.
     """
     extra_args = {}
     if content_type:
@@ -356,12 +368,14 @@ def upload_to_r2(
         extra_args['CacheControl'] = cache_control
 
     with _upload_body(local_path, compress=compress) as body:
+        stored_size = body.stat().st_size if compress else None
         client.upload_file(
             str(body),
             bucket,
             r2_key,
             ExtraArgs=extra_args or None,
         )
+    return stored_size
 
 
 def upload_files_direct(
@@ -374,6 +388,7 @@ def upload_files_direct(
     *,
     cache_control: Optional[str] = None,
     on_success: Optional[Callable[[UploadTask], None]] = None,
+    stored_sizes_out: Optional[dict[str, int]] = None,
 ) -> tuple[int, int, list[str]]:
     """
     Upload multiple files via boto3 in parallel with progress bar.
@@ -389,7 +404,9 @@ def upload_files_direct(
     if not tasks:
         return 0, 0, []
 
-    def _success(task: UploadTask, _result) -> None:
+    def _success(task: UploadTask, result) -> None:
+        if stored_sizes_out is not None and result is not None:
+            stored_sizes_out[task.r2_key] = result
         if succeeded_out is not None:
             succeeded_out.add(task.r2_key)
         if on_success is not None:
@@ -423,6 +440,7 @@ def upload_files_parallel(
     *,
     backend: str,
     on_success: Optional[Callable[[UploadTask], None]] = None,
+    stored_sizes_out: Optional[dict[str, int]] = None,
 ) -> tuple[int, int, list[str]]:
     """
     Upload files to the object store, dispatching on the resolved deploy auth mode.
@@ -503,6 +521,7 @@ def upload_files_parallel(
             s, f, msgs = upload_files_presigned(
                 urls, batch, max_workers=max_workers, desc=desc,
                 succeeded_out=succeeded_out, session=session, on_success=on_success,
+                stored_sizes_out=stored_sizes_out,
             )
             total_success += s
             total_failed += f
@@ -535,5 +554,5 @@ def upload_files_parallel(
     return upload_files_direct(
         client, backend_cfg.bucket, tasks, max_workers=max_workers, desc=desc,
         succeeded_out=succeeded_out, cache_control=cache_control,
-        on_success=on_success,
+        on_success=on_success, stored_sizes_out=stored_sizes_out,
     )

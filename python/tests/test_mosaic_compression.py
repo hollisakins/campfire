@@ -87,3 +87,92 @@ def test_upload_body_cleans_up_temp_on_error(tmp_path):
     assert leaked is not None and not leaked.exists()  # finally-unlinked
     # no stray .gz.tmp left in the dir
     assert not any(f.name.endswith(".gz.tmp") for f in tmp_path.iterdir())
+
+
+# --- stored_size_bytes capture (registry transport-size column) -------------
+
+class _FakeS3:
+    """Captures upload_file calls; records the staged body's size."""
+    def __init__(self):
+        self.calls = []
+
+    def upload_file(self, filename, bucket, key, ExtraArgs=None):
+        self.calls.append((Path(filename).stat().st_size, bucket, key))
+
+
+def test_upload_to_r2_returns_stored_gz_size(tmp_path):
+    from campfire.deploy.r2 import upload_to_r2
+    src = tmp_path / "mosaic_x_sci.fits"
+    src.write_bytes(b"\x00" * 100_000)  # highly compressible
+
+    fake = _FakeS3()
+    stored = upload_to_r2(fake, "bucket", src, _key("mosaic_x_sci.fits"),
+                          "application/gzip", compress=True)
+    # returned value == the gz body actually PUT, and much smaller than source
+    assert stored == fake.calls[0][0]
+    assert 0 < stored < 100_000
+
+    # verbatim upload: no stored size (stored bytes == logical size_bytes)
+    assert upload_to_r2(fake, "bucket", src, "data/x.fits",
+                        "application/fits", compress=False) is None
+
+
+def test_direct_wrapper_collects_stored_sizes(tmp_path):
+    from campfire.deploy.r2 import UploadTask, upload_files_direct
+    fits = tmp_path / "mosaic_x_sci.fits"
+    fits.write_bytes(b"\x00" * 50_000)
+    png = tmp_path / "mosaic_x_thumb.png"
+    png.write_bytes(b"\x01" * 500)
+
+    gz_key = _key("mosaic_x_sci.fits")  # .fits.gz -> compressed
+    png_key = _key("mosaic_x_thumb.png", product="nircam_mosaic_thumbnail")
+
+    stored: dict[str, int] = {}
+    ok, failed, _ = upload_files_direct(
+        _FakeS3(), "bucket",
+        [UploadTask(fits, gz_key, "application/gzip"),
+         UploadTask(png, png_key, "image/png")],
+        max_workers=2, stored_sizes_out=stored)
+    assert (ok, failed) == (2, 0)
+    assert set(stored) == {gz_key}          # only the compressed product
+    assert 0 < stored[gz_key] < 50_000
+
+
+def test_registry_row_carries_stored_size_bytes(tmp_path):
+    from campfire.deploy.r2 import UploadTask
+    from campfire.deploy.registry import build_registry_rows, row_for_key
+
+    row = row_for_key(_key("mosaic_x_sci.fits"), backend="osn",
+                      content_hash="sha256:0", size_bytes=100,
+                      content_type="application/gzip", stored_size_bytes=42)
+    assert row["stored_size_bytes"] == 42
+    assert row["size_bytes"] == 100  # logical size untouched
+
+    # default: NULL (stored verbatim)
+    row = row_for_key(_key("mosaic_x_sci.fits"), backend="osn",
+                      content_hash="sha256:0", size_bytes=100,
+                      content_type="application/gzip")
+    assert row["stored_size_bytes"] is None
+
+    # build_registry_rows threads the per-key map through
+    fits = tmp_path / "mosaic_x_sci.fits"
+    fits.write_bytes(b"\x00" * 10)
+    gz_key = _key("mosaic_x_sci.fits")
+    rows = build_registry_rows(
+        [UploadTask(fits, gz_key, "application/gzip")],
+        backend="osn", stored_sizes={gz_key: 7})
+    assert rows[0]["stored_size_bytes"] == 7
+
+
+def test_push_paths_wire_stored_sizes(monkeypatch):
+    """The slow-link workflow (`campfire push` first; deploy dedup-skips) must
+    record stored_size_bytes too — deploy never re-uploads those bytes, so a
+    push-side registration is the only chance (Codex review on #386)."""
+    import inspect
+
+    from campfire.deploy import push as push_mod
+
+    for fn in (push_mod.push_observation, push_mod.push_field):
+        src = inspect.getsource(fn)
+        assert 'stored_sizes=stored_sizes' in src, fn.__name__
+        assert 'stored_sizes_out=stored_sizes' in src, fn.__name__
