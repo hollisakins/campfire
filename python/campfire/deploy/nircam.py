@@ -435,13 +435,17 @@ def _provenance_from_header(path):
 def _read_field_provenance(dirs, field, filters):
     """Best-effort ``(cfpipe_version, jwst_version, crds_context)`` for a field.
 
-    Prefer a deployed mosaic's ``i2d`` header (the combined science product);
-    fall back to any canonical exposure header. Both now carry the CAMPFIRE
-    ``CMPFRVER`` — the mosaic from ``resample.py``, the exposure from
-    ``detector1`` at creation — plus the jwst-native ``CAL_VER`` / ``CRDS_CTX``.
-    So a mid-reduction ``--draft`` exposure deploy (no mosaic yet) now records
-    real provenance instead of NULL (audit B2). Returns ``(None, None, None)``
-    only when the field has neither a mosaic nor a readable exposure.
+    Prefer the local ``i2d`` mosaic header (the combined science product) — the
+    i2d is no longer uploaded to the cloud, but ``discover_mosaics`` still
+    surfaces it locally, and it is the only mosaic product that carries the
+    provenance cards (the split ``_sci/_err/_wht`` extensions inherit the SCI
+    *extension* header and carry none). Fall back to any canonical exposure
+    header. Both carry the CAMPFIRE ``CMPFRVER`` — the mosaic from
+    ``resample.py``, the exposure from ``detector1`` at creation — plus the
+    jwst-native ``CAL_VER`` / ``CRDS_CTX``. So a mid-reduction ``--draft``
+    exposure deploy (no mosaic yet) now records real provenance instead of NULL
+    (audit B2). Returns ``(None, None, None)`` only when the field has neither a
+    readable i2d nor a readable exposure.
     """
     try:
         mosaics = discover_mosaics(dirs, field, filters)
@@ -520,7 +524,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     exposures = discover_exposures(dirs, filters)
     expmap_tasks = discover_expmap_tasks(dirs, field, filters)
     layout_tasks = discover_layout_tasks(dirs, field)
-    n_mosaics = len(discover_mosaics(dirs, field, filters))
+    n_mosaics = len(deployable_mosaics(discover_mosaics(dirs, field, filters)))
     print(f"Discovered {len(exposures)} canonical exposure(s), "
           f"{len(expmap_tasks)} expmap file(s), {n_mosaics} mosaic(s), "
           f"{len(layout_tasks)} layout plot(s)")
@@ -837,9 +841,38 @@ _MOSAIC_EXTENSIONS = (
     ('_srcmask.fits', 'srcmask'),
 )
 
+# The i2d cube is the multi-extension science product the split _sci/_err/_wht
+# extensions are carved from — heavy, and redundant for users, who download the
+# split extensions. It stays *discovered* (discover_mosaics still returns it)
+# because local consumers depend on it: the deployment provenance stamp reads its
+# primary-header CMPFRVER/CAL_VER/CRDS_CTX cards (the split extensions inherit
+# only the SCI *extension* header and carry none of them — see resample.py), and
+# the FitsGL map pyramid falls back to it when a tile has no split sci. It is
+# simply never uploaded to the cloud or indexed in nircam_images. Every
+# cloud-bound path runs discovered mosaics through `deployable_mosaics` first.
+_UNDEPLOYED_MOSAIC_EXTENSIONS = frozenset({'i2d'})
+
+
+def deployable_mosaics(mosaics):
+    """Discovered mosaics minus the extensions we don't ship to the cloud (i2d).
+
+    ``discover_mosaics`` intentionally returns every extension on disk because
+    local consumers need i2d (provenance stamping, the FitsGL pyramid fallback);
+    the deploy and ``campfire deploy push`` paths run its output through this
+    filter so i2d bytes never leave the reducer and no ``nircam_images`` i2d row
+    is written.
+    """
+    return [m for m in mosaics
+            if m['extension'] not in _UNDEPLOYED_MOSAIC_EXTENSIONS]
+
 
 def discover_mosaics(dirs, field, filters):
-    """Discover deployable mosaic products via their manifests.
+    """Discover mosaic products via their manifests.
+
+    Returns every extension present on disk, including the ``i2d`` cube — local
+    consumers (deployment provenance, the FitsGL pyramid) read it. The cloud
+    upload/index paths drop i2d via :func:`deployable_mosaics`; discovery itself
+    stays complete.
 
     Each ``mosaic_*_manifest.json`` (written by the resample step) carries the
     authoritative ``(mosaic_name, filter, tile, pixel_scale, epoch)`` — read from
@@ -935,8 +968,9 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     """Deploy this field's mosaics under the field deployment (epic #261, N2).
 
     Called from :func:`deploy_nircam` so ``campfire deploy --field`` ships exposures
-    and mosaics as one field deployment. Uploads each mosaic product (the ``_i2d``
-    cube + any split ``_sci/_err/_wht/_srcmask`` extensions) to OSN under canonical
+    and mosaics as one field deployment. Uploads each deployable mosaic product (the
+    split ``_sci/_err/_wht/_srcmask`` extensions — the heavy ``_i2d`` cube is
+    discovered but filtered out by :func:`deployable_mosaics`) to OSN under canonical
     keys — whole-file content-hash deduped via the push planner (with the pushed_*
     stat fast path, so an unchanged multi-GB mosaic is skipped without re-hashing)
     — upserts one ``nircam_images`` row per
@@ -951,7 +985,9 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     )
     from campfire.deploy.registry import set_active_deployment
 
-    mosaics = discover_mosaics(dirs, field, filters)
+    # discover_mosaics returns i2d too (provenance / FitsGL read it locally); the
+    # cloud deploy ships only the deployable extensions, so filter it out here.
+    mosaics = deployable_mosaics(discover_mosaics(dirs, field, filters))
     if not mosaics:
         return None
     print(f"\nMosaics: {len(mosaics)} product(s)")
