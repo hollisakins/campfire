@@ -30,6 +30,8 @@ interface NircamTableProps {
   filters: NircamFilterOptions;
   /** mosaic base key -> presigned thumbnail URL (sci rows). */
   thumbnails: Record<string, string>;
+  /** mosaic base key -> presigned large quick-look URL (popup). */
+  quicklooks: Record<string, string>;
   /** Filters covered by a FitsGL dataset — enables the per-row map View. */
   viewableFilters: Set<string>;
   onSelectionChange?: (selected: NircamProductRow[]) => void;
@@ -141,6 +143,7 @@ export const NircamTable: React.FC<NircamTableProps> = ({
   products,
   filters,
   thumbnails,
+  quicklooks,
   viewableFilters,
   onSelectionChange,
 }) => {
@@ -199,12 +202,15 @@ export const NircamTable: React.FC<NircamTableProps> = ({
           const base = mosaicBase(p);
           const url = base ? thumbnails[base] : undefined;
           if (!url) return null;
+          // Popup shows the large quick-look when deployed; the thumbnail is
+          // the fallback for fields reduced before the pair existed.
+          const popupUrl = (base ? quicklooks[base] : undefined) ?? url;
           return (
             <button
               type="button"
               onClick={() =>
                 setPopup({
-                  url,
+                  url: popupUrl,
                   title: `${p.filter.toUpperCase()} · ${p.tile ?? ''} · ${p.extension}`,
                 })
               }
@@ -340,7 +346,7 @@ export const NircamTable: React.FC<NircamTableProps> = ({
         },
       },
     ],
-    [thumbnails, viewableFilters]
+    [thumbnails, quicklooks, viewableFilters]
   );
 
   const table = useReactTable({

@@ -99,6 +99,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
     layoutUrl: null,
     expmapPlots: {},
     thumbnails: {},
+    quicklooks: {},
   });
   const [viewableFilters, setViewableFilters] = useState<Set<string>>(new Set());
   const [hasCutouts, setHasCutouts] = useState(false);
@@ -432,6 +433,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
               products={products}
               filters={filters}
               thumbnails={fieldImages.thumbnails}
+              quicklooks={fieldImages.quicklooks}
               viewableFilters={viewableFilters}
               onSelectionChange={handleSelectionChange}
             />

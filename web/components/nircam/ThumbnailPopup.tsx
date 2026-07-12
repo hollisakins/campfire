@@ -35,7 +35,7 @@ export const ThumbnailPopup: React.FC<ThumbnailPopupProps> = ({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-card border border-border-strong rounded-xl p-3.5 max-w-xl w-full">
+      <div className="bg-card border border-border-strong rounded-xl p-3.5 w-fit max-w-[min(64rem,92vw)]">
         <div className="flex items-center justify-between mb-2.5">
           <span className="font-mono text-[13px] text-text-primary">{title}</span>
           <button
@@ -49,7 +49,11 @@ export const ThumbnailPopup: React.FC<ThumbnailPopupProps> = ({
         </div>
         {/* Presigned cross-origin PNG; plain <img> (see NircamFieldCard). */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={url} alt={title} className="w-full rounded-lg bg-[#0d0b12]" />
+        <img
+          src={url}
+          alt={title}
+          className="block max-w-full max-h-[82vh] rounded-lg bg-[#0d0b12]"
+        />
       </div>
     </div>
   );

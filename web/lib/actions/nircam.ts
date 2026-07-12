@@ -3,7 +3,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { paginateQuery } from '@/lib/supabase/paginate';
 import { generateDownloadUrls } from '@/lib/r2';
-import { thumbnailBase } from '@/lib/nircam-product-keys';
+import { thumbnailBase, quicklookBase } from '@/lib/nircam-product-keys';
 import type {
   NircamImage, NircamExpmap, NircamFieldCard, NircamFieldSummary,
 } from '@/lib/types';
@@ -45,6 +45,8 @@ export interface NircamFieldImagesResult {
   expmapPlots: Record<string, string>;
   /** mosaic base key (thumb key minus `_thumb.png`) -> presigned GET. */
   thumbnails: Record<string, string>;
+  /** mosaic base key -> presigned GET for the large popup quick-look. */
+  quicklooks: Record<string, string>;
   error?: string;
 }
 
@@ -257,7 +259,7 @@ export async function getNircamFieldSummary(field: string): Promise<NircamFieldS
  * admin exposure previews).
  */
 export async function getNircamFieldImages(field: string): Promise<NircamFieldImagesResult> {
-  const empty: NircamFieldImagesResult = { layoutUrl: null, expmapPlots: {}, thumbnails: {} };
+  const empty: NircamFieldImagesResult = { layoutUrl: null, expmapPlots: {}, thumbnails: {}, quicklooks: {} };
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -272,7 +274,7 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
         .select('storage_key, product_type, filter')
         .eq('field', field)
         .eq('status', 'active')
-        .in('product_type', ['nircam_layout', 'nircam_expmap_plot', 'nircam_mosaic_thumbnail'])
+        .in('product_type', ['nircam_layout', 'nircam_expmap_plot', 'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook'])
         .order('storage_key'),
     );
 
@@ -286,7 +288,7 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
     const urls = await generateDownloadUrls(keys, IMG_PRESIGN_TTL_SECONDS);
     const urlByKey = new Map(keys.map((k, i) => [k, urls[i]]));
 
-    const result: NircamFieldImagesResult = { layoutUrl: null, expmapPlots: {}, thumbnails: {} };
+    const result: NircamFieldImagesResult = { layoutUrl: null, expmapPlots: {}, thumbnails: {}, quicklooks: {} };
     for (const row of data) {
       const url = urlByKey.get(row.storage_key);
       if (!url) continue;
@@ -298,6 +300,8 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
         // Keyed by mosaic base — the shared contract with the table's
         // mosaicBase() lives in lib/nircam-product-keys.ts.
         result.thumbnails[thumbnailBase(row.storage_key)] = url;
+      } else if (row.product_type === 'nircam_mosaic_quicklook') {
+        result.quicklooks[quicklookBase(row.storage_key)] = url;
       }
     }
 

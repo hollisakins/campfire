@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mosaicBase, thumbnailBase } from './nircam-product-keys';
+import { mosaicBase, thumbnailBase, quicklookBase } from './nircam-product-keys';
 
 // Pins the thumbnail↔mosaic key contract. Production mosaics are gzipped
 // (`_sci.fits.gz`) — the original matcher only stripped `_sci.fits`, so no
@@ -39,6 +39,14 @@ describe('mosaicBase', () => {
         extension: 'sci',
       }),
     ).toBeNull();
+  });
+});
+
+describe('quicklookBase', () => {
+  it('reduces a quick-look key to the same base as its thumbnail', () => {
+    const base = 'data/products/nircam/egs/f444w/mosaic_nircam_f444w_egs_30mas_NE';
+    expect(quicklookBase(`${base}_quicklook.png`)).toBe(base);
+    expect(quicklookBase(`${base}_quicklook.png`)).toBe(thumbnailBase(`${base}_thumb.png`));
   });
 });
 

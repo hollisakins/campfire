@@ -23,3 +23,9 @@ export function mosaicBase(row: { file_path: string; extension: string }): strin
 export function thumbnailBase(storageKey: string): string {
   return storageKey.replace(/_thumb\.png$/, '');
 }
+
+/** Registered quick-look storage key minus `_quicklook.png` (the popup
+ *  rendition of the thumbnail pair; same base as the mosaic + thumb). */
+export function quicklookBase(storageKey: string): string {
+  return storageKey.replace(/_quicklook\.png$/, '');
+}
