@@ -78,6 +78,9 @@ interface FitsGLMapSurfaceProps {
   markerFilter?: (marker: MapObjectMarker) => boolean;
   initialCenter?: { ra: number; dec: number };
   initialZoom?: number;
+  /** Band to open on (e.g. from /map?filter=...); falls back to the dataset
+   *  default view when absent or not in the band inventory. */
+  initialBand?: string;
   /** Field switcher (shared across the Leaflet + FitsGL surfaces). */
   fields: string[];
   selectedField: string;
@@ -223,6 +226,7 @@ export function FitsGLMapSurface({
   markerFilter,
   initialCenter,
   initialZoom,
+  initialBand,
   fields,
   selectedField,
   onFieldChange,
@@ -263,6 +267,7 @@ export function FitsGLMapSurface({
   // on a dataset reload (field switch), so it must see the CURRENT initial props.
   const initialCenterRef = useRef(initialCenter);
   const initialZoomRef = useRef(initialZoom);
+  const initialBandRef = useRef(initialBand);
   useEffect(() => { initialCenterRef.current = initialCenter; }, [initialCenter]);
   useEffect(() => { initialZoomRef.current = initialZoom; }, [initialZoom]);
   const lastCursorSky = useRef<{ ra: number; dec: number } | null>(null);
@@ -315,7 +320,16 @@ export function FitsGLMapSurface({
         setBands(b);
         // north-up forced on (decision 4); colormap pinned to 'gray' so it is driven
         // imperatively (useColormap) rather than through the config.
-        setViewState({ ...defaultExplorerState(b, dv), northUp: true, colormap: 'gray' });
+        let state: ExplorerState = { ...defaultExplorerState(b, dv), northUp: true, colormap: 'gray' };
+        // Deep link: /map?filter=<band> opens single-band on that band instead
+        // of the dataset default (which may be RGB or a different band).
+        const wanted = initialBandRef.current?.toLowerCase();
+        const match = wanted ? b.find((bb) => bb.name.toLowerCase() === wanted) : undefined;
+        if (match) {
+          state = { ...state, mode: 'single', band: match.name,
+                    stretch: state.stretch === 'trilogy' ? 'asinh' : state.stretch };
+        }
+        setViewState(state);
         setColormapName(dv.colormap ?? 'gray');
         setColormapReversed(false);
       })

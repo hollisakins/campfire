@@ -108,13 +108,20 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchData = useCallback(async () => {
+  // Field-scoped fetch. The dropdown switches fields on the SAME mounted
+  // component (prop change, no remount), so the effect guards against a
+  // stale response: a slower field-A reply resolving after field-B must not
+  // overwrite B's rendered state (claude-review on #379).
+  useEffect(() => {
     if (authLoading) return;
-    setLoading(true);
-    setError(null);
-    setFilters(DEFAULT_NIRCAM_FILTERS);
+    let stale = false;
 
-    try {
+    const fetchData = async () => {
+      setLoading(true);
+      setError(null);
+      setFilters(DEFAULT_NIRCAM_FILTERS);
+
+      try {
       const [summaryRes, imagesRes, expmapsRes, imagesUrlsRes, fieldsRes, fitsglDatasets] =
         await Promise.all([
           getNircamFieldSummary(field),
@@ -124,6 +131,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
           getNircamFields(),
           getFitsglDatasets(field).catch(() => []),
         ]);
+      if (stale) return;
 
       if (summaryRes.error) {
         setError(summaryRes.error);
@@ -171,17 +179,20 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
       }
       setViewableFilters(bands);
       setHasCutouts(fitsglDatasets.some((ds) => ds.kind === 'field'));
-    } catch (err) {
-      setError('Failed to fetch data');
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  }, [authLoading, field]);
+      } catch (err) {
+        if (stale) return;
+        setError('Failed to fetch data');
+        console.error(err);
+      } finally {
+        if (!stale) setLoading(false);
+      }
+    };
 
-  useEffect(() => {
     fetchData();
-  }, [fetchData, user]);
+    return () => {
+      stale = true;
+    };
+  }, [authLoading, field, user]);
 
   const handleSelectionChange = useCallback((selected: NircamProductRow[]) => {
     setSelectedProducts(selected);
