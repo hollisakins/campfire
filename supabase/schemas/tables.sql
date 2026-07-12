@@ -1013,6 +1013,11 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- no partial digest (everything except nircam_exposure today).
     "sci_dq_hash" "text",
     "size_bytes" bigint NOT NULL,
+    -- Bytes as stored in the bucket for transport-compressed products (gzipped
+    -- mosaic FITS, epic #261 / PR #383); NULL = stored verbatim. size_bytes
+    -- stays the LOGICAL (uncompressed) size that client-side dedup and the
+    -- stat fast-path compare against local plain files.
+    "stored_size_bytes" bigint,
     "content_type" "text" NOT NULL,
     "product_type" "text" NOT NULL,
     "instrument" "text",
@@ -1048,7 +1053,7 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
         'nircam_exposure'::"text", 'nircam_exposure_preview'::"text",
         'nircam_exposure_full'::"text", 'nircam_mosaic'::"text", 'nircam_rgb'::"text",
         'nircam_expmap'::"text", 'nircam_expmap_plot'::"text",
-        'nircam_mosaic_thumbnail'::"text", 'nircam_layout'::"text",
+        'nircam_mosaic_thumbnail'::"text", 'nircam_mosaic_quicklook'::"text", 'nircam_layout'::"text",
         'tile'::"text", 'photometry_pz'::"text",
         'nirspec_manual_mask'::"text", 'nirspec_stuck_shutters'::"text",
         'nirspec_bkg_override'::"text", 'nircam_mask'::"text", 'nircam_astrom_cat'::"text",

@@ -471,3 +471,5 @@
     split_extensions = true
     plot = true
     plot_downsample = 4
+    thumbnail_max_dim = 500   # table thumbnail PNG: long-side cap (px)
+    quicklook_max_dim = 4096  # popup quick-look PNG: long-side cap (px)

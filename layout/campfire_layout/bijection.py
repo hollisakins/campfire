@@ -45,6 +45,7 @@ _NIRCAM_FILTER_SUFFIXES = (
     ("_preview.png", "nircam_exposure_preview"),
     ("_full.png", "nircam_exposure_full"),
     ("_thumb.png", "nircam_mosaic_thumbnail"),  # before the 'mosaic' prefix check
+    ("_quicklook.png", "nircam_mosaic_quicklook"),
 )
 _EXPOSURE_RE = re.compile(r"_nrs[12]_\d+\.fits$")
 _TILE_RE = re.compile(r"^(?P<field>[^/]+)/(?P<filt>[^/]+)/(?P<z>\d+)/(?P<x>\d+)/(?P<y>\d+)\.png$")

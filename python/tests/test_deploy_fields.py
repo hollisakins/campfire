@@ -275,15 +275,30 @@ def test_discover_mosaic_thumbnail_tasks(tmp_path):
     base = "mosaic_nircam_f444w_cosmos_30mas_A1"
     (fdir / f"{base}_i2d.fits").write_bytes(b"\x00")
     (fdir / f"{base}_thumb.png").write_bytes(b"\x00")
-    # two extensions of the same mosaic base -> still ONE thumbnail task
+    (fdir / f"{base}_quicklook.png").write_bytes(b"\x00")
+    # two extensions of the same mosaic base -> still ONE task per rendition
     mosaics = [
         {"path": fdir / f"{base}_i2d.fits", "mosaic_name": base},
         {"path": fdir / f"{base}_sci.fits", "mosaic_name": base},
     ]
     tasks = nc.discover_mosaic_thumbnail_tasks(mosaics, "cosmos")
     assert [t.r2_key for t in tasks] == [
+        f"data/products/nircam/cosmos/f444w/{base}_thumb.png",
+        f"data/products/nircam/cosmos/f444w/{base}_quicklook.png"]
+    assert all(t.content_type == "image/png" for t in tasks)
+
+
+def test_discover_mosaic_thumbnail_tasks_thumb_only(tmp_path):
+    # A field reduced before the quicklook existed ships just the thumbnail.
+    fdir = tmp_path / "products" / "nircam" / "cosmos" / "f444w"
+    fdir.mkdir(parents=True)
+    base = "mosaic_nircam_f444w_cosmos_30mas_A1"
+    (fdir / f"{base}_i2d.fits").write_bytes(b"\x00")
+    (fdir / f"{base}_thumb.png").write_bytes(b"\x00")
+    mosaics = [{"path": fdir / f"{base}_i2d.fits", "mosaic_name": base}]
+    tasks = nc.discover_mosaic_thumbnail_tasks(mosaics, "cosmos")
+    assert [t.r2_key for t in tasks] == [
         f"data/products/nircam/cosmos/f444w/{base}_thumb.png"]
-    assert tasks[0].content_type == "image/png"
 
 
 def test_discover_mosaic_thumbnail_tasks_empty_when_absent(tmp_path):

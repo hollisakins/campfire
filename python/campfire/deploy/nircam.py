@@ -992,14 +992,23 @@ def scope_mosaics_to_fields_toml(mosaics, field):
     return kept
 
 
-def discover_mosaic_thumbnail_tasks(mosaics, field):
-    """One ``nircam_mosaic_thumbnail`` upload task per mosaic base.
+# The thumbnail pair the pipeline writes per mosaic base (derived from the
+# i2d): a small table rendition + a large quick-look for the web popup.
+_MOSAIC_PNG_RENDITIONS = (
+    ('_thumb.png', 'nircam_mosaic_thumbnail'),
+    ('_quicklook.png', 'nircam_mosaic_quicklook'),
+)
 
-    The pipeline writes a single ``<base>_thumb.png`` per mosaic (derived from the
-    i2d), so this dedups the per-extension ``mosaics`` list to one task per base
-    and only emits it when the thumbnail exists. The scope filter is the mosaic's
-    own directory name, so the thumbnail key sits beside its mosaic FITS. Returns
-    ``[]`` when no thumbnails are present (a field reduced before thumbnails).
+
+def discover_mosaic_thumbnail_tasks(mosaics, field):
+    """Upload tasks for each mosaic base's PNG renditions (thumbnail pair).
+
+    The pipeline writes ``<base>_thumb.png`` (small, table) and
+    ``<base>_quicklook.png`` (large, popup) per mosaic, so this dedups the
+    per-extension ``mosaics`` list to one pass per base and emits a task per
+    rendition that exists on disk. The scope filter is the mosaic's own
+    directory name, so the keys sit beside their mosaic FITS. Fields reduced
+    before a rendition existed simply skip it.
     """
     tasks = []
     seen = set()
@@ -1009,14 +1018,15 @@ def discover_mosaic_thumbnail_tasks(mosaics, field):
         if key_id in seen:
             continue
         seen.add(key_id)
-        thumb_path = m['path'].parent / f"{m['mosaic_name']}_thumb.png"
-        if thumb_path.exists():
-            tasks.append(UploadTask(
-                local_path=thumb_path,
-                r2_key=storage_key('nircam_mosaic_thumbnail',
-                                   Scope(field=field, filt=filt),
-                                   thumb_path.name, scheme=KeyScheme.CANONICAL),
-                content_type=_PNG_CONTENT_TYPE))
+        for suffix, product in _MOSAIC_PNG_RENDITIONS:
+            png_path = m['path'].parent / f"{m['mosaic_name']}{suffix}"
+            if png_path.exists():
+                tasks.append(UploadTask(
+                    local_path=png_path,
+                    r2_key=storage_key(product,
+                                       Scope(field=field, filt=filt),
+                                       png_path.name, scheme=KeyScheme.CANONICAL),
+                    content_type=_PNG_CONTENT_TYPE))
     return tasks
 
 
@@ -1077,16 +1087,19 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
         m['size'] = plan.stats.get(m['storage_key'], (None, None))[1]
 
     uploaded: set[str] = set()
+    # Gzipped mosaic uploads report the bytes actually PUT; the flusher writes
+    # them to registry.stored_size_bytes (size_bytes stays the logical size).
+    stored_sizes: dict[str, int] = {}
     flusher = registration_flusher(
         client, store, plan, backend=_CANONICAL_BACKEND,
         deployment_id=deployment_id, uploaded_by=user_id,
-        max_workers=_upload_workers())
+        max_workers=_upload_workers(), stored_sizes=stored_sizes)
     if plan.to_upload:
         print(f"  Uploading {len(plan.to_upload)} mosaic file(s) to OSN...")
         success, failed, failures = upload_files_parallel(
             config, plan.to_upload, desc='OSN mosaic uploads', max_workers=_upload_workers(),
             succeeded_out=uploaded, backend=_CANONICAL_BACKEND,
-            on_success=flusher.add)
+            on_success=flusher.add, stored_sizes_out=stored_sizes)
         flusher.flush()
         print(f"  Uploaded: {success}, Failed: {failed}")
         for msg in failures:
