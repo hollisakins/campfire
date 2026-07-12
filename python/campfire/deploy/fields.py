@@ -26,6 +26,45 @@ from .config import _load_toml
 # JWST rootname program id: jwPPPPP... (the leading 5-digit program number).
 _PID_RE = re.compile(r"jw(\d{5})")
 
+# A pixel-scale WCS subsection key, e.g. ``30mas``.
+_PIXEL_SCALE_RE = re.compile(r"^\d+mas$")
+
+
+def _is_tile_section(value: dict) -> bool:
+    """True if a ``[<field>.<key>]`` sub-table is a tile definition.
+
+    Mirrors the pipeline's tile gate (``campfire_pipeline.nircam.field``): a tile
+    declares explicit sky ``corners`` or at least one ``<N>mas`` subsection with
+    ``crpix``+``naxis``. Deploy must not import the pipeline, so the gate is
+    reproduced here. This is what distinguishes a real tile from a step-override
+    table (``[<field>.jhat]``, ``[<field>.align]``, …), which are also dicts but
+    carry no WCS — so those are *not* tiles.
+    """
+    if not isinstance(value, dict):
+        return False
+    if "corners" in value:
+        return True
+    return any(
+        _PIXEL_SCALE_RE.match(k) and isinstance(v, dict)
+        and "crpix" in v and "naxis" in v
+        for k, v in value.items()
+    )
+
+
+def declared_tiles_and_epochs(section: dict) -> tuple[set[str], set[str]]:
+    """The tile + epoch names a fields.toml ``[<field>]`` section declares.
+
+    The single authority for "what did the *current* config ask the pipeline to
+    produce" — used both to lift the `fields` registry columns and to scope
+    mosaic discovery at deploy time (drop stray on-disk products from a former
+    config). Tiles pass :func:`_is_tile_section` (so step-override tables are
+    excluded); epochs are the ``[<field>.epochs.<name>]`` sub-tables.
+    """
+    tiles = {k for k, v in section.items()
+             if k != "epochs" and _is_tile_section(v)}
+    epochs = set((section.get("epochs") or {}).keys())
+    return tiles, epochs
+
 
 def _fields_toml_path() -> Path:
     root = os.environ.get("CAMPFIRE_ROOT")
@@ -50,25 +89,24 @@ def field_config_row(field: str, section: dict) -> dict:
     """Map a fields.toml ``[<field>]`` section to the `fields` config columns.
 
     Lossless: the whole section rides in ``config`` (jsonb); the rest are lifted
-    for querying. Tile names are the section's dict-valued sub-tables minus the
-    reserved ``epochs`` table. Program ids are the 5-digit ids embedded in the
-    ``files`` globs (``jwPPPPP*``). Program *slugs* are left empty — programs.toml
-    carries no program-id map, so slug resolution is deferred (issue #303).
+    for querying. Tile names come from :func:`declared_tiles_and_epochs` (WCS-bearing
+    sub-tables only — step-override tables like ``jhat``/``align`` are excluded).
+    Program ids are the 5-digit ids embedded in the ``files`` globs (``jwPPPPP*``).
+    Program *slugs* are left empty — programs.toml carries no program-id map, so
+    slug resolution is deferred (issue #303).
     """
     tp = _as_list(section.get("tangent_point"))
     globs = _as_list(section.get("files"))
     pids = sorted({int(m.group(1)) for g in globs
                    for m in [_PID_RE.search(g)] if m})
-    tiles = sorted(k for k, v in section.items()
-                   if isinstance(v, dict) and k != "epochs")
-    epochs = sorted((section.get("epochs") or {}).keys())
+    tiles, epochs = declared_tiles_and_epochs(section)
     return {
         "name": field,
         "display_name": section.get("display_name"),  # None -> RPC derives upper()
         "filters": _as_list(section.get("filters")),
-        "tiles": tiles,
+        "tiles": sorted(tiles),
         "fiducial_tiles": _as_list(section.get("fiducial_tiles")),
-        "epochs": epochs,
+        "epochs": sorted(epochs),
         "programs": [],  # slug resolution deferred (no program-id map in programs.toml)
         "jwst_program_ids": pids,
         "file_globs": globs,
