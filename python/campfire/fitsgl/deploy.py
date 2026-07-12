@@ -69,9 +69,11 @@ def build_deploy_config(creds, prefix, *, viewer_origin='*'):
     """
     base = creds.get('public_url_base')
     if not base:
+        # Pure-layer guard: state the fact only. The mode-specific remediation (which
+        # env var / where) lives in resolve_tiles_creds, which knows the auth mode.
         raise ValueError(
-            "tiles storage has no public_url_base — set CAMPFIRE_S3_TILES_PUBLIC_URL_BASE "
-            "(the CDN origin serving the tiles bucket) so the viewer can fetch the pyramid."
+            "tiles storage has no public_url_base (the CDN origin serving the tiles "
+            "bucket) — the viewer needs it to fetch the pyramid."
         )
     public_url = f"{base.rstrip('/')}/{prefix}"
     return {
@@ -126,6 +128,42 @@ def dataset_row(*, field, tile, prefix, pixel_scale, fitsgl_json, bands, tiles,
 # Credentials + source hashes (touch the registry / web API)
 # ---------------------------------------------------------------------------
 
+def _local_tiles_public_url(config):
+    """Locally-configured tiles CDN origin (non-secret), if the deployer set one.
+
+    Used as a login-mode fallback when the web app didn't supply ``public_url_base``, and
+    it's what ``service-role`` / ``local`` already read. Env first (so a shell override
+    wins), then the ``[r2_tiles]`` deploy.toml block.
+    """
+    return (
+        os.environ.get('CAMPFIRE_S3_TILES_PUBLIC_URL_BASE')
+        or os.environ.get('CAMPFIRE_R2_TILES_PUBLIC_URL_BASE')
+        or os.environ.get('CAMPFIRE_R2_TILES_PUBLIC_URL')
+        or (config.get('r2_tiles') or {}).get('public_url_base')
+    )
+
+
+def _missing_tiles_public_url_msg(mode):
+    """Actionable, auth-mode-correct message for a tiles backend with no public_url_base.
+
+    ``public_url_base`` is the (non-secret) CDN origin, not a key, so in ``login`` mode
+    it can come from the web app *or* a local override; under ``service-role`` / ``local``
+    it's purely local. The message names the right knobs for each mode.
+    """
+    lead = ("the tiles bucket has no public URL base (the CDN origin serving the tiles "
+            "bucket), so the map viewer can't fetch the pyramid — ")
+    if mode == 'login':
+        return lead + (
+            "set S3_TILES_PUBLIC_URL_BASE (or R2_TILES_PUBLIC_URL_BASE) on the web "
+            "deployment and redeploy so Vercel picks it up, or set "
+            "CAMPFIRE_S3_TILES_PUBLIC_URL_BASE locally to override it for this deploy."
+        )
+    return lead + (
+        "set CAMPFIRE_S3_TILES_PUBLIC_URL_BASE, or add public_url_base to the [r2_tiles] "
+        "block in deploy.toml."
+    )
+
+
 def resolve_tiles_creds(config):
     """Resolve tiles-bucket creds as a plain dict, per the resolved auth mode.
 
@@ -133,17 +171,32 @@ def resolve_tiles_creds(config):
     ``service_role`` / ``local``: read local ``CAMPFIRE_S3_TILES_*`` via ``resolve_backend``.
     Returns ``{endpoint, region, bucket, access_key_id, secret_access_key,
     force_path_style, public_url_base}``.
+
+    ``public_url_base`` is validated here (where the auth mode is known). Because it's a
+    non-secret CDN URL rather than a key, a locally-configured value is accepted as a
+    login-mode fallback when the web app didn't supply one — so a server env that hasn't
+    propagated (e.g. a Vercel var added without a redeploy) is recoverable without keys on
+    the deploy box. Only when neither source has it does this fail, with mode-correct
+    guidance instead of build_deploy_config's generic message.
     """
     mode = config.get('supabase', {}).get('_auth_mode', 'login')
     if mode == 'login':
-        return fetch_tiles_credentials(config)
-    from campfire.deploy.backend import resolve_backend
-    b = resolve_backend(config, 'tiles')
-    return {
-        'endpoint': b.endpoint, 'region': b.region, 'bucket': b.bucket,
-        'access_key_id': b.access_key_id, 'secret_access_key': b.secret_access_key,
-        'force_path_style': b.force_path_style, 'public_url_base': b.public_url_base,
-    }
+        creds = fetch_tiles_credentials(config)
+    else:
+        from campfire.deploy.backend import resolve_backend
+        b = resolve_backend(config, 'tiles')
+        creds = {
+            'endpoint': b.endpoint, 'region': b.region, 'bucket': b.bucket,
+            'access_key_id': b.access_key_id, 'secret_access_key': b.secret_access_key,
+            'force_path_style': b.force_path_style, 'public_url_base': b.public_url_base,
+        }
+    if not creds.get('public_url_base'):
+        local = _local_tiles_public_url(config)
+        if local:
+            creds['public_url_base'] = local
+        else:
+            raise click.ClickException(_missing_tiles_public_url_msg(mode))
+    return creds
 
 
 def _server_error_detail(resp):

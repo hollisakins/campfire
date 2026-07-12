@@ -20,6 +20,7 @@ from campfire.fitsgl.deploy import (
     dataset_row,
     fetch_tiles_credentials,
     fitsgl_json_url,
+    resolve_tiles_creds,
 )
 
 
@@ -244,3 +245,82 @@ def test_fetch_tiles_credentials_requires_login(monkeypatch):
     with pytest.raises(click.ClickException) as exc:
         fetch_tiles_credentials({})
     assert "campfire login" in exc.value.message
+
+
+# --- public_url_base resolution (resolve_tiles_creds) -----------------------
+#
+# The tiles CDN origin (public_url_base) is non-secret, so login mode accepts a local
+# override as a fallback when the web app didn't supply it; a genuinely-missing value
+# must fail with mode-correct guidance.
+
+_TILES_PUBLIC_ENVS = (
+    "CAMPFIRE_S3_TILES_PUBLIC_URL_BASE",
+    "CAMPFIRE_R2_TILES_PUBLIC_URL_BASE",
+    "CAMPFIRE_R2_TILES_PUBLIC_URL",
+)
+
+
+def _clear_local_tiles_public_url(monkeypatch):
+    """Drop any ambient CAMPFIRE_*_TILES_PUBLIC_URL* so the local fallback is empty."""
+    for v in _TILES_PUBLIC_ENVS:
+        monkeypatch.delenv(v, raising=False)
+
+
+def test_resolve_tiles_creds_login_returns_server_creds(monkeypatch):
+    server = {"bucket": "campfire-tiles", "endpoint": "https://e",
+              "access_key_id": "k", "secret_access_key": "s",
+              "public_url_base": "https://tiles.cdn"}
+    monkeypatch.setattr("campfire.fitsgl.deploy.fetch_tiles_credentials",
+                        lambda cfg: server)
+    assert resolve_tiles_creds({"supabase": {"_auth_mode": "login"}}) == server
+
+
+def test_resolve_tiles_creds_login_missing_public_url_points_at_server(monkeypatch):
+    _clear_local_tiles_public_url(monkeypatch)  # no local fallback -> must raise
+    monkeypatch.setattr("campfire.fitsgl.deploy.fetch_tiles_credentials",
+                        lambda cfg: {"bucket": "b", "endpoint": "e",
+                                     "public_url_base": None})
+    with pytest.raises(click.ClickException) as exc:
+        resolve_tiles_creds({"supabase": {"_auth_mode": "login"}})
+    msg = exc.value.message
+    assert "S3_TILES_PUBLIC_URL_BASE" in msg          # server-side var named
+    assert "web deployment" in msg
+    assert "redeploy" in msg                          # the Vercel gotcha
+    assert "override" in msg                          # local fallback offered
+
+
+def test_resolve_tiles_creds_login_falls_back_to_local_env(monkeypatch):
+    # Web app returned public_url_base: null, but the deployer set it locally — use it,
+    # so a server env that hasn't propagated (Vercel var added w/o redeploy) is recoverable.
+    _clear_local_tiles_public_url(monkeypatch)
+    monkeypatch.setenv("CAMPFIRE_S3_TILES_PUBLIC_URL_BASE", "https://tiles.local.cdn")
+    monkeypatch.setattr("campfire.fitsgl.deploy.fetch_tiles_credentials",
+                        lambda cfg: {"bucket": "b", "endpoint": "e", "public_url_base": None})
+    creds = resolve_tiles_creds({"supabase": {"_auth_mode": "login"}})
+    assert creds["public_url_base"] == "https://tiles.local.cdn"
+
+
+def test_resolve_tiles_creds_login_falls_back_to_config_r2_tiles(monkeypatch):
+    _clear_local_tiles_public_url(monkeypatch)  # env empty -> config wins
+    monkeypatch.setattr("campfire.fitsgl.deploy.fetch_tiles_credentials",
+                        lambda cfg: {"bucket": "b", "endpoint": "e", "public_url_base": None})
+    cfg = {"supabase": {"_auth_mode": "login"},
+           "r2_tiles": {"public_url_base": "https://cfg.cdn"}}
+    assert resolve_tiles_creds(cfg)["public_url_base"] == "https://cfg.cdn"
+
+
+def test_resolve_tiles_creds_service_role_missing_public_url_points_at_local(monkeypatch):
+    _clear_local_tiles_public_url(monkeypatch)
+
+    class _B:
+        endpoint = "https://e"; region = "auto"; bucket = "b"
+        access_key_id = "k"; secret_access_key = "s"
+        force_path_style = False; public_url_base = None
+
+    import campfire.deploy.backend as backend
+    monkeypatch.setattr(backend, "resolve_backend", lambda cfg, purpose: _B())
+    with pytest.raises(click.ClickException) as exc:
+        resolve_tiles_creds({"supabase": {"_auth_mode": "service_role"}})
+    msg = exc.value.message
+    assert "CAMPFIRE_S3_TILES_PUBLIC_URL_BASE" in msg   # local var
+    assert "deploy.toml" in msg
