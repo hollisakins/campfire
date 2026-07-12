@@ -29,6 +29,14 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- NIRCam expmap plots gain tile footprints + a squared, in-ticked panel: the
+  per-filter maps (`expmap_*.png`/`.pdf`) now overlay the same tile outlines as
+  `<field>_layout.png`, so a single filter's coverage reads against the tile
+  grid; the main panel of every expmap/layout plot is forced square (predictable
+  web layout, WCS aspect preserved so a non-square field pads rather than
+  stretches), its tick marks point inward (colorbar unchanged), and the imshow
+  sits behind the axes so grid, ticks, and outlines render on top. Plots only;
+  no change to FITS pixel values or filenames (`nircam/expmap.py`).
 - NIRCam mosaics now get a size-capped **thumbnail pair** instead of one
   fixed-/4-downsampled PNG: `<base>_thumb.png` (long side ≤
   `thumbnail_max_dim`, default 500 px — the web table rendition) and a new

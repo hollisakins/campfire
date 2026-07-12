@@ -20,8 +20,8 @@ exposure map — while the reducer-only ``uncal`` quick-look keeps an explicit
 ``_uncal`` suffix (shown below as ``[_uncal]``):
 
     <filter>/expmap_{field}_{filter}[_uncal].fits   float32, ``BUNIT='s'``, ``AREA`` header, WCS
-    <filter>/expmap_{field}_{filter}[_uncal].pdf    light diagnostic (RA/Dec grid + colorbar)
-    <filter>/expmap_{field}_{filter}[_uncal].png    dark web plot (same view, deployable)
+    <filter>/expmap_{field}_{filter}[_uncal].pdf    light diagnostic (RA/Dec grid + tiles + colorbar)
+    <filter>/expmap_{field}_{filter}[_uncal].png    dark web plot (same view + tiles, deployable)
     {field}_layout[_uncal].png                      stacked-filter coverage + tile outlines (dark)
     {field}_layout[_uncal].json                     coverage summary: exact area, per-filter areas
     footprints[_uncal].reg                          ds9 fk5 polygons across all filters
@@ -36,10 +36,13 @@ union of nonzero pixels) so the plots show the same colour scale — easy to
 tab through. The PDF carries a title (stage labelled only for ``uncal``);
 the deployable PNGs carry no title at all, since the web page embedding
 them already labels field/filter. The dark PNG matches CAMPFIRE's data
-wells, which stay dark in both app themes. The ``{field}_layout`` plot stacks every per-filter
-expmap (total exposure across filters) and overlays the tile footprints; the
-companion ``.json`` records the exact survey area (non-zero pixels of the
-stack × pixel area) for the deploy/DB layer.
+wells, which stay dark in both app themes. Every plot — per-filter and layout
+— has a square main panel (predictable web layout, WCS aspect preserved),
+tick marks pointing inward, and the tile footprints overlaid so a single
+filter's coverage reads against the tile grid. The ``{field}_layout`` plot
+stacks every per-filter expmap (total exposure across filters) with the same
+tile footprints; the companion ``.json`` records the exact survey area
+(non-zero pixels of the stack × pixel area) for the deploy/DB layer.
 
 The .reg file only contains polygons for filters that were (re)built in this
 invocation. To regenerate a combined .reg after up-to-date FITS already exist,
@@ -243,14 +246,24 @@ def _render_expmap_figure(path, data, wcs, *, title, cbar_label,
     ax.set_facecolor(bg)
     cmap = mpl.colormaps['magma'].copy()
     cmap.set_bad(bg if dark else 'w')
+    # zorder behind the axes so the grid, in-pointing ticks, frame, and tile
+    # outlines all render on top of the map rather than being covered by it.
     im = ax.imshow(masked, origin='lower', cmap=cmap, norm=norm,
-                   interpolation='nearest')
+                   interpolation='nearest', zorder=-1)
+    # Force the main panel square regardless of field geometry so the deployed
+    # web layout stays predictable. The WCS aspect stays equal (no stretching);
+    # a non-square field simply pads with background above/below or left/right.
+    ax.set_box_aspect(1)
 
     ax.coords[0].set_major_formatter('hh:mm:ss')
     ax.coords[1].set_major_formatter('dd:mm:ss')
     ax.coords[0].set_axislabel('RA', color=fg)
     ax.coords[1].set_axislabel('Dec', color=fg)
     ax.grid(color=grid_c, lw=0.4, alpha=0.6)
+    # Tick direction 'in' on the main panel only — the colorbar keeps its
+    # default outward ticks.
+    for coord in ax.coords:
+        coord.set_ticks(direction='in')
     if dark:
         for coord in ax.coords:
             coord.set_ticklabel(color=fg)
@@ -519,7 +532,7 @@ def _accumulate_filter(args):
 
 
 def _render_filter_plots(field_name, filter_name, stage, metas, fits_path,
-                         out_dir, wcs, vmin, vmax):
+                         out_dir, wcs, vmin, vmax, tile_outlines=None):
     """Re-read the filter FITS and render the light PDF + dark PNG.
 
     Both share the invocation-wide ``vmin``/``vmax`` so tabbing through
@@ -527,7 +540,9 @@ def _render_filter_plots(field_name, filter_name, stage, metas, fits_path,
     (kept) and carries a title; the fiducial canonical stage is undecorated
     there too, so only the reducer-only ``uncal`` quick-look labels its
     stage. The PNG is the deployable web plot and carries no title at all —
-    the web page it's embedded in already says field/filter.
+    the web page it's embedded in already says field/filter. ``tile_outlines``
+    (the same footprints drawn on ``<field>_layout.png``) are overlaid on both
+    so a single filter's coverage can be read against the tile grid.
     """
     _, pdf_path, png_path = _expmap_paths(out_dir, field_name, filter_name,
                                           stage)
@@ -538,10 +553,12 @@ def _render_filter_plots(field_name, filter_name, stage, metas, fits_path,
         title = f'{field_name} · {filter_name.upper()} · {stage} · N={len(metas)}'
     _render_expmap_figure(pdf_path, expmap, wcs, title=title,
                           cbar_label='Exposure time [s]',
-                          vmin=vmin, vmax=vmax, dark=False)
+                          vmin=vmin, vmax=vmax, dark=False,
+                          tile_outlines=tile_outlines)
     _render_expmap_figure(png_path, expmap, wcs, title=None,
                           cbar_label='Exposure time [s]',
-                          vmin=vmin, vmax=vmax, dark=True)
+                          vmin=vmin, vmax=vmax, dark=True,
+                          tile_outlines=tile_outlines)
     log(f'[{filter_name}] wrote {os.path.basename(pdf_path)} + '
         f'{os.path.basename(png_path)}')
     return pdf_path
@@ -559,6 +576,22 @@ def _layout_paths(base_dir, field_name, stage):
         stem += f'_{stage}'
     base = os.path.join(base_dir, stem)
     return base + '.png', base + '.json'
+
+
+def _collect_tile_outlines(field):
+    """Tile footprints as ``[(name, corners), ...]`` for the plot overlays.
+
+    Decorative and best-effort: a bad or missing ``[tiles]`` entry never blocks
+    a plot, so a broken tile is logged and skipped rather than raised. Fields
+    without a ``[tiles]`` block yield an empty list (coverage only).
+    """
+    tile_outlines = []
+    for tname in (getattr(field, 'tiles', None) or {}):
+        try:
+            tile_outlines.append((tname, field.get_tile_corners(tname)))
+        except Exception as e:  # noqa: BLE001 - decorative overlay, never fatal
+            log(f'  expmap: skipping tile {tname} outline ({e})')
+    return tile_outlines
 
 
 def _render_layout(out_dir, field, stage, results, wcs, pixel_scale,
@@ -734,6 +767,12 @@ def run_expmap(
     else:
         global_vmin = global_vmax = None
 
+    # Tile footprints overlaid on every plot (per-filter maps + the layout),
+    # matching how the layout draws them. Collected once, up front, so a
+    # partial-filter rerun still shows tiles on the per-filter maps even though
+    # it skips the full-field layout below.
+    tile_outlines = _collect_tile_outlines(field)
+
     # Phase 3c: per-filter plots (light PDF + dark PNG). Always regenerated
     # (cheap; the shared norm is invocation-dependent so a cached plot from a
     # prior run with a different filter set would not match the colorbar).
@@ -741,7 +780,8 @@ def run_expmap(
         if fits_path is None or not metas:
             continue
         _render_filter_plots(field.name, filter_name, stage, metas, fits_path,
-                             out_dir, wcs, global_vmin, global_vmax)
+                             out_dir, wcs, global_vmin, global_vmax,
+                             tile_outlines=tile_outlines)
 
     # Phase 3d: field layout — stack of every per-filter expmap with tile
     # outlines + the exact survey area (non-zero pixels of the stack). Only a
@@ -749,14 +789,6 @@ def run_expmap(
     # filtered rerun stacks a subset and would publish an under-reported survey
     # area over the complete one, so partial runs skip the layout entirely.
     if set(filter_list) >= set(field.filters):
-        # Tile outlines are decorative and a bad/missing tile config never
-        # blocks the plot; fields without a [tiles] block get coverage only.
-        tile_outlines = []
-        for tname in (getattr(field, 'tiles', None) or {}):
-            try:
-                tile_outlines.append((tname, field.get_tile_corners(tname)))
-            except Exception as e:  # noqa: BLE001 - decorative overlay, never fatal
-                log(f'  layout: skipping tile {tname} outline ({e})')
         _render_layout(out_dir, field, stage, results, wcs, pixel_scale,
                        tile_outlines, float(sum(m.xposure for m in all_metas)))
     else:
