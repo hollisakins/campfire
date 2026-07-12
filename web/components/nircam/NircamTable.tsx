@@ -189,6 +189,13 @@ export const NircamTable: React.FC<NircamTableProps> = ({
     }
   }, [filteredProducts, onSelectionChange]);
 
+  // Epoch is an axis only when the field actually has named epochs — mirror
+  // the filter bar, which hides its Epoch facet in the same case.
+  const hasNamedEpochs = useMemo(
+    () => products.some((p) => (p.epoch ?? '') !== ''),
+    [products],
+  );
+
   // Define columns
   const columns = useMemo<ColumnDef<NircamProductRow>[]>(
     () => [
@@ -288,27 +295,29 @@ export const NircamTable: React.FC<NircamTableProps> = ({
           extRank(rowA.original.extension) - extRank(rowB.original.extension) ||
           rowA.original.extension.localeCompare(rowB.original.extension),
       },
-      {
-        accessorKey: 'epoch',
-        header: ({ column }) => (
-          <SortableHeader column={column}>Epoch</SortableHeader>
-        ),
-        cell: ({ row }) => {
-          const { kind, epoch } = row.original;
-          if (kind === 'expmap') {
-            return <span className="text-sm text-text-tertiary">—</span>;
-          }
-          return (epoch ?? '') === '' ? (
-            <span className="text-sm text-text-secondary">Full field</span>
-          ) : (
-            <span className="inline-flex items-center rounded border border-border px-1.5 py-0.5 text-xs font-mono font-medium bg-surface-2 text-text-primary">
-              {epoch}
-            </span>
-          );
-        },
-        sortingFn: (rowA, rowB) =>
-          (rowA.original.epoch ?? '').localeCompare(rowB.original.epoch ?? ''),
-      },
+      ...(hasNamedEpochs
+        ? [{
+            accessorKey: 'epoch',
+            header: ({ column }) => (
+              <SortableHeader column={column}>Epoch</SortableHeader>
+            ),
+            cell: ({ row }) => {
+              const { kind, epoch } = row.original;
+              if (kind === 'expmap') {
+                return <span className="text-sm text-text-tertiary">—</span>;
+              }
+              return (epoch ?? '') === '' ? (
+                <span className="text-sm text-text-secondary">Full field</span>
+              ) : (
+                <span className="inline-flex items-center rounded border border-border px-1.5 py-0.5 text-xs font-mono font-medium bg-surface-2 text-text-primary">
+                  {epoch}
+                </span>
+              );
+            },
+            sortingFn: (rowA, rowB) =>
+              (rowA.original.epoch ?? '').localeCompare(rowB.original.epoch ?? ''),
+          } satisfies ColumnDef<NircamProductRow>]
+        : []),
       {
         accessorKey: 'file_size',
         header: ({ column }) => (
@@ -359,7 +368,7 @@ export const NircamTable: React.FC<NircamTableProps> = ({
         },
       },
     ],
-    [thumbnails, quicklooks, viewableFilters]
+    [thumbnails, quicklooks, viewableFilters, hasNamedEpochs]
   );
 
   const table = useReactTable({
