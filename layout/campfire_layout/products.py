@@ -210,6 +210,15 @@ _register(ProductSpec(
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
     subdir=_nircam_field_filter_dir, suffix="_thumb.png", legacy_prefix=None,
 ))
+# Mosaic quick-look (``<mosaic>_quicklook.png``): the larger rendition of the
+# thumbnail pair (long side ~4k, for the web popup). A distinct suffix on
+# purpose — ``_preview.png``/``_full.png`` in this directory already mean the
+# per-exposure triage PNGs.
+_register(ProductSpec(
+    name="nircam_mosaic_quicklook", instrument=NC, tree="products", bucket="data",
+    lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
+    subdir=_nircam_field_filter_dir, suffix="_quicklook.png", legacy_prefix=None,
+))
 # Field layout plot (``<field>_layout.png``): stacked-filter coverage + tile
 # outlines. Field-scoped, in the field root beside nircam_rgb; the landing-page
 # preview. Suffix-dispatched on ``_layout.png``.

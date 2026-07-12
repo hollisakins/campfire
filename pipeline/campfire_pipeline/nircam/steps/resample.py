@@ -431,12 +431,21 @@ def resample_step(filtname, exposure_files, field, step_config,
             )
             downsample = int(step_config.get('plot_downsample', 4))
 
+            # Thumbnail pair: a small table rendition + a large quick-look
+            # for the web popup, both size-capped (see plot_mosaic_thumbnail).
             thumb_png = mosaic_file.replace('_i2d.fits', '_thumb.png')
             plot_mosaic_thumbnail(
-                sci, thumb_png, downsample=downsample,
-                max_dim=int(step_config.get('thumbnail_max_dim', 1024)),
+                sci, thumb_png,
+                max_dim=int(step_config.get('thumbnail_max_dim', 500)),
             )
             log(f"  saved {os.path.basename(thumb_png)}")
+
+            quicklook_png = mosaic_file.replace('_i2d.fits', '_quicklook.png')
+            plot_mosaic_thumbnail(
+                sci, quicklook_png,
+                max_dim=int(step_config.get('quicklook_max_dim', 4096)),
+            )
+            log(f"  saved {os.path.basename(quicklook_png)}")
 
             if step_config.get('background_subtract', True):
                 pre_bkg_path = mosaic_file.replace(

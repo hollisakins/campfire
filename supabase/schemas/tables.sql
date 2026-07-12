@@ -1048,7 +1048,7 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
         'nircam_exposure'::"text", 'nircam_exposure_preview'::"text",
         'nircam_exposure_full'::"text", 'nircam_mosaic'::"text", 'nircam_rgb'::"text",
         'nircam_expmap'::"text", 'nircam_expmap_plot'::"text",
-        'nircam_mosaic_thumbnail'::"text", 'nircam_layout'::"text",
+        'nircam_mosaic_thumbnail'::"text", 'nircam_mosaic_quicklook'::"text", 'nircam_layout'::"text",
         'tile'::"text", 'photometry_pz'::"text",
         'nirspec_manual_mask'::"text", 'nirspec_stuck_shutters'::"text",
         'nirspec_bkg_override'::"text", 'nircam_mask'::"text", 'nircam_astrom_cat'::"text",
