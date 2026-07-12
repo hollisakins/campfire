@@ -145,6 +145,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
           epoch: img.epoch ?? '',
           file_path: img.file_path,
           file_size: img.file_size,
+          file_size_stored: img.file_size_stored,
         }),
       );
       const expmapRows: NircamProductRow[] = (expmapsRes.error ? [] : expmapsRes.expmaps).map(
@@ -198,8 +199,10 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
     };
   }, [products]);
 
+  // Transfer estimate: what a download actually moves — stored (gzipped)
+  // bytes when recorded, logical bytes otherwise.
   const selectedBytes = useMemo(
-    () => selectedProducts.reduce((s, p) => s + (p.file_size || 0), 0),
+    () => selectedProducts.reduce((s, p) => s + (p.file_size_stored ?? p.file_size ?? 0), 0),
     [selectedProducts],
   );
 

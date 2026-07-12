@@ -93,7 +93,7 @@ export async function getNircamImages(field?: string): Promise<NircamImagesResul
     }
 
     return {
-      images: data,
+      images: await attachStoredSizes(supabase, data, field),
       isAuthenticated: true,
     };
   } catch (err) {
@@ -103,6 +103,51 @@ export async function getNircamImages(field?: string): Promise<NircamImagesResul
       error: 'An unexpected error occurred',
       isAuthenticated: true,
     };
+  }
+}
+
+/**
+ * Attach the registry's stored (gzipped) byte counts to mosaic rows.
+ *
+ * `nircam_images.file_size` is the logical (uncompressed) size; the bytes a
+ * download actually transfers live on `storage_objects.stored_size_bytes`
+ * (NULL for verbatim objects). Fails OPEN: any error (including a DB that
+ * predates the column) just returns the rows without stored sizes, so the
+ * page renders plain sizes rather than breaking.
+ */
+async function attachStoredSizes(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  images: NircamImage[],
+  field?: string,
+): Promise<NircamImage[]> {
+  if (images.length === 0) return images;
+  try {
+    const { data, error } = await paginateQuery<{
+      storage_key: string; stored_size_bytes: number | null;
+    }>(
+      () => {
+        let q = supabase
+          .from('storage_objects')
+          .select('storage_key, stored_size_bytes')
+          .eq('product_type', 'nircam_mosaic')
+          .eq('status', 'active')
+          .not('stored_size_bytes', 'is', null);
+        if (field) q = q.eq('field', field);
+        return q.order('storage_key');
+      },
+    );
+    if (error || !data || data.length === 0) return images;
+
+    const storedByKey = new Map(
+      data.map((r) => [r.storage_key, r.stored_size_bytes as number]),
+    );
+    return images.map((img) => {
+      const stored = storedByKey.get(img.file_path);
+      return stored != null ? { ...img, file_size_stored: stored } : img;
+    });
+  } catch (err) {
+    console.error('Error attaching stored sizes (continuing without):', err);
+    return images;
   }
 }
 

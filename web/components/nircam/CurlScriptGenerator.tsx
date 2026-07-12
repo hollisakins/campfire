@@ -32,9 +32,11 @@ export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
   const [script, setScript] = useState('');
   const [generating, setGenerating] = useState(false);
 
-  // Calculate total size
+  // Transfer estimate: stored (gzipped) bytes when recorded, logical otherwise
+  // — this is what the curl downloads actually move.
   const totalSize = useMemo(() => {
-    return selectedImages.reduce((sum, img) => sum + (img.file_size || 0), 0);
+    return selectedImages.reduce(
+      (sum, img) => sum + (img.file_size_stored ?? img.file_size ?? 0), 0);
   }, [selectedImages]);
 
   // Build the curl script. Presigned + HMAC-authorized proxy URLs come from

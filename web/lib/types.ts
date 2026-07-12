@@ -286,7 +286,10 @@ export interface NircamImage {
   extension: string;  // sci, err, rms, srcmask
   epoch?: string;     // exposure-subset name ('' = full field)
   file_path: string;
-  file_size?: number; // in bytes, if available
+  file_size?: number; // logical (uncompressed) bytes, if available
+  /** Bytes as stored in the bucket for gzipped mosaics (registry
+   *  stored_size_bytes); undefined = stored verbatim or not yet recorded. */
+  file_size_stored?: number;
 }
 
 // A per-(field, filter) exposure-coverage map (product_type 'nircam_expmap',
@@ -340,7 +343,8 @@ export interface NircamProductRow {
   extension: string;          // sci, err, wht, srcmask, ... or 'exp'
   epoch?: string;             // '' = full field (mosaics only)
   file_path: string;          // canonical storage key
-  file_size?: number;
+  file_size?: number;         // logical (uncompressed) bytes
+  file_size_stored?: number;  // bucket bytes for gzipped mosaics (else undefined)
 }
 
 // NIRCam pipeline step names. Matches campfire_pipeline.common.cfp.CFP_KEYS

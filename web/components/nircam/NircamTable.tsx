@@ -312,13 +312,26 @@ export const NircamTable: React.FC<NircamTableProps> = ({
       {
         accessorKey: 'file_size',
         header: ({ column }) => (
-          <SortableHeader column={column}>Size</SortableHeader>
+          <SortableHeader column={column}>Size (compressed)</SortableHeader>
         ),
-        cell: ({ row }) => (
-          <span className="text-sm text-text-secondary">
-            {formatFileSize(row.original.file_size)}
-          </span>
-        ),
+        cell: ({ row }) => {
+          const { file_size, file_size_stored } = row.original;
+          return (
+            <span
+              className="text-sm text-text-secondary"
+              title={
+                file_size_stored != null
+                  ? `${formatFileSize(file_size)} uncompressed · ${formatFileSize(file_size_stored)} stored gzipped`
+                  : undefined
+              }
+            >
+              {formatFileSize(file_size)}
+              {file_size_stored != null && (
+                <span className="text-text-tertiary"> ({formatFileSize(file_size_stored)})</span>
+              )}
+            </span>
+          );
+        },
         sortingFn: 'basic',
       },
       {
