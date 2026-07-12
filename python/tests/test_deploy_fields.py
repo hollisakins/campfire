@@ -107,6 +107,69 @@ def test_field_config_row_coerces_string_scalars():
     assert row["center_ra"] is None and row["center_dec"] is None
 
 
+def test_field_config_row_excludes_step_override_tables():
+    # Step-override sub-tables (jhat/align/…) are dicts but carry no WCS, so they
+    # must NOT be counted as tiles. Only NE (a `<N>mas` WCS table) is a tile.
+    section = {
+        "filters": "f444w", "files": "jw01345*",
+        "jhat": {"refcat": "egs_ref.ecsv"},
+        "align": {"enabled": True, "refcat": "egs_ref.ecsv"},
+        "NE": {"rotation": -49.7, "30mas": {"crpix": [1, 2], "naxis": [3, 4]}},
+        "epochs": {"spam": {"files": ["jw08559*"]}},
+    }
+    row = F.field_config_row("egs", section)
+    assert row["tiles"] == ["NE"]
+    assert row["epochs"] == ["spam"]
+
+
+# --- declared_tiles_and_epochs ----------------------------------------------
+
+def test_declared_tiles_and_epochs():
+    section = {
+        "jhat": {"refcat": "x"},                          # step table -> not a tile
+        "A1": {"30mas": {"crpix": [1, 1], "naxis": [2, 2]}},   # WCS tile
+        "legacy": {"corners": [[0, 0], [1, 1]]},               # explicit-corners tile
+        "epochs": {"cy1": {"files": ["jw01*"]}, "spam": {"files": ["jw08*"]}},
+    }
+    tiles, epochs = F.declared_tiles_and_epochs(section)
+    assert tiles == {"A1", "legacy"}
+    assert epochs == {"cy1", "spam"}
+
+
+# --- scope_mosaics_to_fields_toml -------------------------------------------
+
+def _mos(tile, epoch=""):
+    return {"tile": tile, "epoch": epoch, "storage_key": f"k/{tile}/{epoch}"}
+
+
+def test_scope_mosaics_keeps_declared_drops_stray(tmp_path, monkeypatch, capsys):
+    _write_root(tmp_path, monkeypatch)   # cosmos declares tiles A1, A2 + epoch CW
+    mosaics = [
+        _mos("A1"), _mos("A2"),          # declared full-field tiles -> kept
+        _mos("A1", "CW"),                # declared tile + declared epoch -> kept
+        _mos("full"),                    # stray tile -> dropped
+        _mos("A2", "bogus"),             # declared tile, undeclared epoch -> dropped
+    ]
+    kept = nc.scope_mosaics_to_fields_toml(mosaics, "cosmos")
+    assert sorted((m["tile"], m["epoch"]) for m in kept) == [
+        ("A1", ""), ("A1", "CW"), ("A2", "")]
+    out = capsys.readouterr().out
+    assert "tile 'full'" in out and "tile not declared" in out
+    assert "epoch 'bogus'" in out
+
+
+def test_scope_mosaics_raises_when_field_absent(tmp_path, monkeypatch):
+    _write_root(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="no \\[ghost\\] section in fields.toml"):
+        nc.scope_mosaics_to_fields_toml([_mos("t1")], "ghost")
+
+
+def test_scope_mosaics_empty_is_noop_without_fields_toml(tmp_path, monkeypatch):
+    # No mosaics -> nothing to scope, so a missing section never bites.
+    _write_root(tmp_path, monkeypatch)
+    assert nc.scope_mosaics_to_fields_toml([], "ghost") == []
+
+
 # --- read_layout_coverage ---------------------------------------------------
 
 def test_read_layout_coverage(tmp_path):

@@ -525,7 +525,16 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     exposures = discover_exposures(dirs, filters)
     expmap_tasks = discover_expmap_tasks(dirs, field, filters)
     layout_tasks = discover_layout_tasks(dirs, field)
-    n_mosaics = len(deployable_mosaics(discover_mosaics(dirs, field, filters)))
+    # Scope mosaic discovery to what the current fields.toml declares — a stray
+    # on-disk tile/epoch from a former config must not ride into the cloud (this is
+    # the guard; the count + the actual upload both use this same scoped list).
+    try:
+        mosaics_to_deploy = scope_mosaics_to_fields_toml(
+            deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    n_mosaics = len(mosaics_to_deploy)
     print(f"Discovered {len(exposures)} canonical exposure(s), "
           f"{len(expmap_tasks)} expmap file(s), {n_mosaics} mosaic(s), "
           f"{len(layout_tasks)} layout plot(s)")
@@ -692,8 +701,11 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     n_skipped = sum(1 for t in plan.unchanged if t.r2_key in _fits_keys)
 
     # --- Mosaics: deploy under the same field deployment (epic #261, N2) ----
+    # Reuse the fields.toml-scoped list computed up front (single discovery +
+    # single skip-log; stray tiles/epochs were already filtered out above).
     mosaic_stats = _deploy_field_mosaics(dirs, field, config, client, filters,
-                                         deployment_id, draft, user_id, store=store)
+                                         deployment_id, draft, user_id, store=store,
+                                         mosaics=mosaics_to_deploy)
 
     # --- Field registry: upsert the fields.toml config + deploy-computed survey
     # area (issue #303). Rides the deploy so a field row exists exactly for fields
@@ -938,6 +950,48 @@ def discover_mosaics(dirs, field, filters):
     return out
 
 
+def scope_mosaics_to_fields_toml(mosaics, field):
+    """Drop discovered mosaics whose ``(tile, epoch)`` the current fields.toml
+    does not declare for ``field``.
+
+    ``discover_mosaics`` walks the products tree and returns whatever mosaic
+    manifests are physically present — including stray products left over from a
+    former config (a commented-out tile, a renamed or removed epoch). fields.toml
+    is the source of truth for what the *current* config asks the pipeline to
+    build, so the cloud-bound paths (``campfire deploy --field`` / ``campfire
+    push``) run discovery through this filter: a mosaic whose tile isn't a declared
+    tile — or whose epoch isn't a declared epoch — is skipped (logged, not silently
+    dropped) and never uploaded to OSN or indexed in ``nircam_images``.
+
+    Raises ``ValueError`` if the field has mosaics on disk but no ``[<field>]``
+    section in fields.toml: we can't tell declared from stray, so refuse to deploy
+    unscoped rather than blindly ship the tree (that is exactly the footgun this
+    guards against).
+    """
+    if not mosaics:
+        return mosaics
+    from campfire.deploy.fields import declared_tiles_and_epochs, load_fields_toml
+    section = load_fields_toml().get(field)
+    if section is None:
+        raise ValueError(
+            f"field '{field}' has {len(mosaics)} mosaic product(s) on disk but no "
+            f"[{field}] section in fields.toml — refusing to deploy unscoped. Add "
+            f"the [{field}] section, or remove the stray products from the tree.")
+    tiles, epochs = declared_tiles_and_epochs(section)
+    kept, dropped = [], []
+    for m in mosaics:
+        tile_ok = m['tile'] in tiles
+        epoch_ok = (not m.get('epoch')) or m['epoch'] in epochs
+        (kept if tile_ok and epoch_ok else dropped).append(m)
+    for tile, epoch in sorted({(m['tile'], m.get('epoch') or '') for m in dropped}):
+        why = ("tile not declared" if tile not in tiles
+               else f"epoch '{epoch}' not declared")
+        label = f"tile '{tile}'" + (f" epoch '{epoch}'" if epoch else "")
+        print(f"  mosaics: skipping {label} — {why} in fields.toml "
+              f"(stray on-disk product, not deployed)")
+    return kept
+
+
 def discover_mosaic_thumbnail_tasks(mosaics, field):
     """One ``nircam_mosaic_thumbnail`` upload task per mosaic base.
 
@@ -967,7 +1021,7 @@ def discover_mosaic_thumbnail_tasks(mosaics, field):
 
 
 def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
-                          draft, user_id, store=None):
+                          draft, user_id, store=None, mosaics=None):
     """Deploy this field's mosaics under the field deployment (epic #261, N2).
 
     Called from :func:`deploy_nircam` so ``campfire deploy --field`` ships exposures
@@ -989,8 +1043,12 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     from campfire.deploy.registry import set_active_deployment
 
     # discover_mosaics returns i2d too (provenance / FitsGL read it locally); the
-    # cloud deploy ships only the deployable extensions, so filter it out here.
-    mosaics = deployable_mosaics(discover_mosaics(dirs, field, filters))
+    # cloud deploy ships only the deployable extensions AND only the tiles/epochs
+    # the current fields.toml declares. deploy_nircam passes that scoped list in;
+    # fall back to computing it here for any direct caller.
+    if mosaics is None:
+        mosaics = scope_mosaics_to_fields_toml(
+            deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
     if not mosaics:
         return None
     print(f"\nMosaics: {len(mosaics)} product(s)")
