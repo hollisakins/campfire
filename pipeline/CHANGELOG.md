@@ -29,6 +29,15 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- NIRCam mosaic thumbnails (`*_thumb.png`) are now size-capped: the long side
+  of the PNG is at most `thumbnail_max_dim` pixels (default 1024; new
+  `[nircam.resample]` config key). The previous fixed /4 downsample scaled
+  with the mosaic — a wide 30 mas strip produced a ~10k-px, tens-of-MB
+  "thumbnail", which the NIRCam web page then served as a table preview. The
+  factor is raised only when needed, so small mosaics are byte-identical to
+  before; quick-look PNG only, no change to FITS pixel values
+  (`nircam/steps/_plots.py`, `nircam/steps/resample.py`,
+  `data/config_default.toml`).
 - NIRCam expmap/layout plot styling: the deployable dark PNGs (per-filter
   `expmap_*.png` and `<field>_layout.png`) no longer carry a title — the web
   page embedding them already labels field/filter, so it was duplicated

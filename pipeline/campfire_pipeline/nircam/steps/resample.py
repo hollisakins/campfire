@@ -432,7 +432,10 @@ def resample_step(filtname, exposure_files, field, step_config,
             downsample = int(step_config.get('plot_downsample', 4))
 
             thumb_png = mosaic_file.replace('_i2d.fits', '_thumb.png')
-            plot_mosaic_thumbnail(sci, thumb_png, downsample=downsample)
+            plot_mosaic_thumbnail(
+                sci, thumb_png, downsample=downsample,
+                max_dim=int(step_config.get('thumbnail_max_dim', 1024)),
+            )
             log(f"  saved {os.path.basename(thumb_png)}")
 
             if step_config.get('background_subtract', True):

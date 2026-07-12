@@ -191,15 +191,26 @@ def _block_reduce(arr, block_size):
         return block_reduce(arr, block_size=block_size, func=np.nanmean)
 
 
-def plot_mosaic_thumbnail(sci, save_file, downsample=4, cmap='Greys'):
+def plot_mosaic_thumbnail(sci, save_file, downsample=4, cmap='Greys',
+                          max_dim=1024):
     """Save a downsampled PNG of a mosaic SCI with no axes/borders.
 
     Uses ``plt.imsave`` so the output PNG has exactly the downsampled
-    array's pixel dimensions — small files at native resolution, no
-    matplotlib decoration to scale.
+    array's pixel dimensions — no matplotlib decoration to scale.
+
+    ``downsample`` is a floor, not the final factor: it is raised so the
+    output's long side is at most ``max_dim`` pixels. A fixed /4 alone
+    scales with the mosaic — a wide 30 mas strip came out ~10k px / tens
+    of MB, which the web page then pulled into a 32 px thumbnail. 1024 px
+    stays crisp in the table's click-to-enlarge popup at ~1/100 the bytes.
+    Pass ``max_dim=None`` for the old fixed-factor behavior.
     """
+    import math
+
     import matplotlib.pyplot as plt
 
+    if max_dim:
+        downsample = max(downsample, math.ceil(max(sci.shape) / max_dim))
     thumb = _block_reduce(sci, downsample)
     vmin, vmax = _zscale_limits(thumb)
     plt.imsave(save_file, thumb, cmap=cmap, vmin=vmin, vmax=vmax,

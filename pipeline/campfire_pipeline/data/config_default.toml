@@ -471,3 +471,4 @@
     split_extensions = true
     plot = true
     plot_downsample = 4
+    thumbnail_max_dim = 1024  # cap the thumbnail PNG's long side (px)
