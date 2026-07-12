@@ -58,6 +58,20 @@ function ActionBadge({ status, label }: { status: string; label: string }) {
   );
 }
 
+// "Masked" is derived state — a non-empty mask_regions is the sole signal
+// (the redundant `masking` status column was dropped). Read-only: masks are
+// drawn in the exposure detail view, not toggled here.
+function MaskedBadge({ regions }: { regions: NircamExposure['mask_regions'] }) {
+  if ((regions?.polygons?.length ?? 0) === 0) {
+    return <span className="text-xs text-text-secondary">&mdash;</span>;
+  }
+  return (
+    <span className="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-300">
+      masked
+    </span>
+  );
+}
+
 function StageBadge({ stage }: { stage: string }) {
   return (
     <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full font-mono ${stageBadgeClasses(stage)}`}>
@@ -119,7 +133,6 @@ function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
             <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary uppercase">Total</th>
             <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary uppercase w-1/3">Stage distribution</th>
             <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary uppercase">Pending</th>
-            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary uppercase">Masking</th>
             <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary uppercase">Correction</th>
           </tr>
         </thead>
@@ -139,18 +152,6 @@ function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
                     className="text-yellow-600 dark:text-yellow-400 font-medium hover:underline"
                   >
                     {row.pending_review}
-                  </Link>
-                ) : (
-                  <span className="text-text-secondary">0</span>
-                )}
-              </td>
-              <td className="px-3 py-2 text-right">
-                {row.needs_masking > 0 ? (
-                  <Link
-                    href={`/admin/nircam?field=${encodeURIComponent(row.field)}&filter=${encodeURIComponent(row.filter)}&masking=needed`}
-                    className="text-orange-600 dark:text-orange-400 font-medium hover:underline"
-                  >
-                    {row.needs_masking}
                   </Link>
                 ) : (
                   <span className="text-text-secondary">0</span>
@@ -254,7 +255,7 @@ function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
 // see lib/nircam-exposure-nav.ts.
 // ---------------------------------------------------------------------------
 
-const FILTER_KEYS = ['field', 'filter', 'detector', 'review', 'stage', 'masking', 'correction'] as const;
+const FILTER_KEYS = ['field', 'filter', 'detector', 'review', 'stage', 'correction'] as const;
 const codec = flatFilterCodec(FILTER_KEYS);
 const DEFAULT_SORT: SortState = { column: 'filename', direction: 'asc' };
 
@@ -294,7 +295,6 @@ function AdminNircamPageInner() {
         detector: f.detector || undefined,
         reviewStatus: f.review || undefined,
         stage: f.stage || undefined,
-        masking: f.masking || undefined,
         correction: f.correction || undefined,
         sortColumn: state.sort.column,
         sortDirection: state.sort.direction,
@@ -374,9 +374,9 @@ function AdminNircamPageInner() {
       meta: { sortKey: 'review_status' },
     },
     {
-      id: 'masking',
-      header: 'Masking',
-      cell: ({ row }) => <ActionBadge status={row.original.masking} label="mask" />,
+      id: 'masked',
+      header: 'Masked',
+      cell: ({ row }) => <MaskedBadge regions={row.original.mask_regions} />,
     },
     {
       id: 'correction',
@@ -440,7 +440,6 @@ function AdminNircamPageInner() {
             options: NIRCAM_STAGES.map((s) => ({ value: s, label: s })),
           },
           { kind: 'select', key: 'review', label: 'Review', options: REVIEW_OPTIONS },
-          { kind: 'select', key: 'masking', label: 'Masking', options: ACTION_STATE_OPTIONS },
           { kind: 'select', key: 'correction', label: 'Correction', options: ACTION_STATE_OPTIONS },
         ]}
         values={state.filters}

@@ -185,7 +185,7 @@ def import_masks(field, config, dry_run=False):
 
         payload = {'version': 1, 'polygons': polygons}
         resp = (client.table('nircam_exposures')
-                .update({'mask_regions': payload, 'masking': 'done'})
+                .update({'mask_regions': payload})
                 .eq('field', field)
                 .eq('filter', filtname)
                 .eq('filename', basename)

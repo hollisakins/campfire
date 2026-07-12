@@ -8,7 +8,7 @@ import type { RateFilters, RateSort } from '@/lib/actions/nirspec-rate';
 import { NIRSPEC_RATE_SORT_KEYS } from '@/lib/admin/sort-keys';
 
 export const RATE_FILTER_PARAM_KEYS = [
-  'observation', 'detector', 'review', 'masking', 'grating',
+  'observation', 'detector', 'review', 'grating',
 ] as const;
 
 export type RateFilterParams = Record<
@@ -26,7 +26,6 @@ export function parseRateNavParams(
     observation: sp.get('observation') || undefined,
     detector: sp.get('detector') || undefined,
     reviewStatus: sp.get('review') || undefined,
-    masking: sp.get('masking') || undefined,
     grating: sp.get('grating') || undefined,
     sortColumn:
       sort && (NIRSPEC_RATE_SORT_KEYS as readonly string[]).includes(sort) ? sort : undefined,

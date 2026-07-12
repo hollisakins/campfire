@@ -352,7 +352,6 @@ export interface NircamExposure {
   dec_center: number | null;
   stage: NircamStage;
   review_status: 'pending' | 'approved' | 'excluded';
-  masking: 'none' | 'needed' | 'done';
   correction: 'none' | 'needed' | 'done';
   png_path: string | null;
   full_png_path: string | null;
@@ -379,7 +378,6 @@ export interface NirspecRateExposure {
   storage_key: string | null;     // canonical nirspec_rate key for the FITS proxy
   stage: string;
   review_status: 'pending' | 'approved' | 'excluded';
-  masking: 'none' | 'needed' | 'done';
   mask_regions: MaskRegionsPayload | null;
   notes: string | null;
   created_at: string;
@@ -406,7 +404,6 @@ export interface SpectrumExposure {
   image_height: number | null;
   stage: string;
   review_status: 'pending' | 'approved' | 'excluded';
-  masking: 'none' | 'needed' | 'done';
   notes: string | null;
   created_at: string;
   updated_at: string;

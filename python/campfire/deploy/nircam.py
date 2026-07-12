@@ -240,16 +240,6 @@ def _read_exposure_metadata(path):
     return info
 
 
-def _detect_masking(dirs, basename, filtname):
-    """Return 'done' if a .reg mask file exists, else None.
-
-    Pipeline reads masks from ``masks/<filter>/<rootname>.reg`` (no ``_cal``
-    suffix in the new canonical layout).
-    """
-    reg_path = dirs['masks'] / filtname / f'{basename}.reg'
-    return 'done' if reg_path.exists() else None
-
-
 # ---------------------------------------------------------------------------
 # Preview PNG discovery
 # ---------------------------------------------------------------------------
@@ -568,7 +558,6 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
 
     records = []
     for (filtname, basename), info in sorted(exposures.items()):
-        masking = _detect_masking(dirs, basename, filtname)
         dims = full_dims.get((filtname, basename))
         record = {
             'field': field,
@@ -585,8 +574,6 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
             'image_width': dims[0] if dims else None,
             'image_height': dims[1] if dims else None,
         }
-        if masking:
-            record['masking'] = masking
         records.append(record)
 
     if dry_run:
@@ -595,9 +582,6 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
         for _, stage in _CFP_TO_STAGE:
             if stage in stage_counts:
                 print(f"  {stage}: {stage_counts[stage]}")
-        mask_count = sum(1 for r in records if r.get('masking') == 'done')
-        if mask_count:
-            print(f"  with masks: {mask_count}")
         print(f"\nWould record a {'draft' if draft else 'published'} field "
               f"deployment and upload {len(fits_tasks)} canonical FITS + "
               f"{len(expmap_tasks)} expmap file(s) + {n_mosaics} mosaic(s) + "
@@ -762,11 +746,10 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
 def _upsert_exposures(client, records, batch_size=500):
     """Upsert exposure records, preserving web-triage fields for existing rows.
 
-    New rows get default ``review_status='pending'``, ``masking='none'``,
-    ``correction='none'``. Existing rows: update pipeline-derived columns
-    only (``stage``, ``png_path``, metadata, ``masking='done'`` when a
-    ``.reg`` file is present). Preserve ``review_status``, ``correction``,
-    ``notes``.
+    New rows get default ``review_status='pending'``, ``correction='none'``.
+    Existing rows: update pipeline-derived columns only (``stage``,
+    ``png_path``, metadata). Preserve web-owned ``review_status``,
+    ``correction``, ``mask_regions``, ``notes``.
     """
     if not records:
         return
@@ -813,8 +796,6 @@ def _upsert_exposures(client, records, batch_size=500):
                 update['ra_center'] = r['ra_center']
             if r.get('dec_center') is not None:
                 update['dec_center'] = r['dec_center']
-            if r.get('masking') == 'done':
-                update['masking'] = 'done'
             update_records.append(update)
         else:
             new = {
@@ -824,8 +805,6 @@ def _upsert_exposures(client, records, batch_size=500):
                 'created_at': now,
                 'updated_at': now,
             }
-            if 'masking' not in new:
-                new['masking'] = 'none'
             new_records.append(new)
 
     for i in range(0, len(new_records), batch_size):

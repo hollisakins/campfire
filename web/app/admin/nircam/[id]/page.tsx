@@ -60,7 +60,6 @@ function ExposureDetailPageInner() {
 
   // Editable fields
   const [reviewStatus, setReviewStatus] = useState<string>('pending');
-  const [masking, setMasking] = useState<string>('none');
   const [correction, setCorrection] = useState<string>('none');
   const [notes, setNotes] = useState<string>('');
 
@@ -98,7 +97,6 @@ function ExposureDetailPageInner() {
     setExposureForId(id);
     setExposure(cached);
     setReviewStatus(cached?.review_status || 'pending');
-    setMasking(cached?.masking || 'none');
     setCorrection(cached?.correction || 'none');
     setNotes(cached?.notes || '');
     setLoading(!cached);
@@ -123,7 +121,6 @@ function ExposureDetailPageInner() {
         setCachedExposure(result.exposure);
         setExposure(result.exposure);
         setReviewStatus(result.exposure.review_status);
-        setMasking(result.exposure.masking);
         setCorrection(result.exposure.correction);
         setNotes(result.exposure.notes || '');
       }
@@ -193,14 +190,13 @@ function ExposureDetailPageInner() {
 
   const hasChanges = !!(exposure && (
     reviewStatus !== exposure.review_status ||
-    masking !== exposure.masking ||
     correction !== exposure.correction ||
     notes !== (exposure.notes || '')
   ));
 
   // Latest-state ref so the keyboard handler doesn't capture stale closures.
-  const stateRef = useRef({ reviewStatus, masking, correction, notes, hasChanges });
-  stateRef.current = { reviewStatus, masking, correction, notes, hasChanges };
+  const stateRef = useRef({ reviewStatus, correction, notes, hasChanges });
+  stateRef.current = { reviewStatus, correction, notes, hasChanges };
 
   const handleSave = useCallback(async (): Promise<{ ok: boolean }> => {
     const s = stateRef.current;
@@ -209,7 +205,6 @@ function ExposureDetailPageInner() {
     setError(null);
     const result = await updateExposureReview(id, {
       review_status: s.reviewStatus as NircamExposure['review_status'],
-      masking: s.masking as NircamExposure['masking'],
       correction: s.correction as NircamExposure['correction'],
       notes: s.notes || undefined,
     });
@@ -535,21 +530,6 @@ function ExposureDetailPageInner() {
                   <option value="pending">Pending</option>
                   <option value="approved">Approved</option>
                   <option value="excluded">Excluded</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-text-secondary mb-1">
-                  Masking
-                </label>
-                <select
-                  value={masking}
-                  onChange={(e) => setMasking(e.target.value)}
-                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary"
-                >
-                  <option value="none">None</option>
-                  <option value="needed">Needed</option>
-                  <option value="done">Done</option>
                 </select>
               </div>
 

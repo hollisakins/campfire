@@ -3,11 +3,9 @@
 Populates the ``nirspec_rate_exposures`` table — the detector-grain analogue of
 ``nircam_exposures`` — from the rate files ``discover_rate_files`` finds. Split
 ownership mirrors ``nircam._upsert_exposures``: a re-deploy UPDATE writes ONLY the
-identity/render columns and OMITS ``review_status``/``masking``/``mask_regions``/
-``notes`` so it never clobbers web triage; new rows seed ``review_status='pending'``,
-``masking='none'``. Unlike NIRCam, deploy has no ``.reg`` knowledge here (the
-mask-pull is P3b), so ``masking`` is entirely web-owned and never set to ``'done'``
-by deploy.
+identity/render columns and OMITS ``review_status``/``mask_regions``/``notes`` so
+it never clobbers web triage; new rows seed ``review_status='pending'``. Mask state
+is entirely web-owned — it lives in ``mask_regions`` and deploy never touches it.
 
 Pure helpers (``parse_rate_filename``, ``partition_rate_records``) are unit-tested
 without a DB; the full insert/upsert round-trip is exercised live against local
@@ -91,9 +89,9 @@ def partition_rate_records(
 ) -> tuple[list[dict], list[dict]]:
     """Split into (new_rows, update_rows) with split ownership.
 
-    New rows seed ``review_status='pending'``/``masking='none'``. Update rows carry
-    ONLY identity + non-null render columns (+ ``updated_at``) — never the
-    web-owned triage columns — so a re-deploy leaves reviewer decisions intact.
+    New rows seed ``review_status='pending'``. Update rows carry ONLY identity +
+    non-null render columns (+ ``updated_at``) — never the web-owned triage
+    columns — so a re-deploy leaves reviewer decisions intact.
     """
     new_records, update_records = [], []
     for r in records:
@@ -109,7 +107,6 @@ def partition_rate_records(
             new_records.append({
                 **r,
                 "review_status": "pending",
-                "masking": "none",
                 "created_at": now,
                 "updated_at": now,
             })
