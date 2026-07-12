@@ -329,7 +329,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
 
           {/* Field overview: metadata + exposure-map browser */}
           <div className="bg-card border border-border rounded-xl p-5 mb-7">
-            <div className="grid gap-6 md:grid-cols-[280px_1fr]">
+            <div className="grid gap-6 md:grid-cols-2">
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-text-tertiary mb-3">
                   Field overview

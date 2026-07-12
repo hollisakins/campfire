@@ -54,7 +54,7 @@ export const ExpmapBrowser: React.FC<ExpmapBrowserProps> = ({
   const imgOk = shownUrl && !failedUrls.has(shownUrl);
 
   return (
-    <div className="flex h-[380px] w-fit max-w-full rounded-lg overflow-hidden border border-border bg-[#161320]">
+    <div className="flex w-full rounded-lg overflow-hidden border border-border bg-[#161320]">
       {/* Vertical filter tabs — selected tab merges into the plot well */}
       <div
         ref={tabsRef}
@@ -62,7 +62,7 @@ export const ExpmapBrowser: React.FC<ExpmapBrowserProps> = ({
         role="tablist"
         aria-orientation="vertical"
         onKeyDown={onKeyDown}
-        className="w-[86px] flex-none h-full overflow-y-auto py-1.5 outline-none focus:ring-1 focus:ring-inset focus:ring-primary/40"
+        className="w-[86px] flex-none overflow-y-auto py-1.5 outline-none focus:ring-1 focus:ring-inset focus:ring-primary/40"
       >
         {filters.map((f) => {
           const active = f === current;
@@ -88,7 +88,7 @@ export const ExpmapBrowser: React.FC<ExpmapBrowserProps> = ({
 
       {/* Square plot well — matches the exported PNG aspect */}
       <div
-        className="aspect-square h-full flex-none flex items-center justify-center p-2"
+        className="flex-1 aspect-square flex items-center justify-center p-2"
         style={{ background: WELL_BG }}
       >
         {imgOk ? (
