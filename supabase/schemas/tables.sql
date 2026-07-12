@@ -814,7 +814,6 @@ CREATE TABLE IF NOT EXISTS "public"."nircam_exposures" (
     "dec_center" double precision,
     "stage" "text" NOT NULL DEFAULT 'uncal'::"text",
     "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
-    "masking" "text" NOT NULL DEFAULT 'none'::"text",
     "correction" "text" NOT NULL DEFAULT 'none'::"text",
     "png_path" "text",
     "full_png_path" "text",
@@ -860,7 +859,6 @@ CREATE TABLE IF NOT EXISTS "public"."nirspec_rate_exposures" (
     "storage_key" "text",
     "stage" "text" NOT NULL DEFAULT 'rate'::"text",
     "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
-    "masking" "text" NOT NULL DEFAULT 'none'::"text",
     "mask_regions" "jsonb",
     "notes" "text",
     "created_at" timestamp with time zone NOT NULL DEFAULT "now"(),
@@ -898,7 +896,7 @@ ALTER SEQUENCE "public"."nirspec_rate_exposures_id_seq" OWNED BY "public"."nirsp
 -- header stamp. Admin-only: reduction intermediates, never user-facing science. The
 -- physical object (key/hash/size/backend) lives in storage_objects (product_type
 -- 'nirspec_spectrum_exposure'); this table owns render columns + reviewer lifecycle
--- state (review_status, masking, notes — the last two set by the web, not deploy).
+-- state (review_status, notes — set by the web, not deploy).
 CREATE TABLE IF NOT EXISTS "public"."spectrum_exposures" (
     "id" integer NOT NULL,
     "observation" "text" NOT NULL,
@@ -914,7 +912,6 @@ CREATE TABLE IF NOT EXISTS "public"."spectrum_exposures" (
     "image_height" integer,
     "stage" "text" NOT NULL DEFAULT 'cal'::"text",
     "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
-    "masking" "text" NOT NULL DEFAULT 'none'::"text",
     "notes" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL

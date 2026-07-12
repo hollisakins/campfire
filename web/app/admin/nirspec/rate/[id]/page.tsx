@@ -44,7 +44,6 @@ function RateDetailPageInner() {
 
   // Editable triage fields
   const [reviewStatus, setReviewStatus] = useState<string>('pending');
-  const [masking, setMasking] = useState<string>('none');
   const [notes, setNotes] = useState<string>('');
 
   const [nav, setNav] = useState<RateNeighbors | null>(null);
@@ -67,7 +66,6 @@ function RateDetailPageInner() {
     setExposureForId(id);
     setExposure(cached);
     setReviewStatus(cached?.review_status || 'pending');
-    setMasking(cached?.masking || 'none');
     setNotes(cached?.notes || '');
     setLoading(!cached);
     setError(null);
@@ -89,7 +87,6 @@ function RateDetailPageInner() {
         setCachedRate(result.exposure);
         setExposure(result.exposure);
         setReviewStatus(result.exposure.review_status);
-        setMasking(result.exposure.masking);
         setNotes(result.exposure.notes || '');
       }
       setLoading(false);
@@ -110,12 +107,11 @@ function RateDetailPageInner() {
 
   const hasChanges = !!(exposure && (
     reviewStatus !== exposure.review_status ||
-    masking !== exposure.masking ||
     notes !== (exposure.notes || '')
   ));
 
-  const stateRef = useRef({ reviewStatus, masking, notes, hasChanges });
-  stateRef.current = { reviewStatus, masking, notes, hasChanges };
+  const stateRef = useRef({ reviewStatus, notes, hasChanges });
+  stateRef.current = { reviewStatus, notes, hasChanges };
 
   const handleSave = useCallback(async (): Promise<{ ok: boolean }> => {
     const s = stateRef.current;
@@ -124,7 +120,6 @@ function RateDetailPageInner() {
     setError(null);
     const result = await updateNirspecRateReview(id, {
       review_status: s.reviewStatus as NirspecRateExposure['review_status'],
-      masking: s.masking as NirspecRateExposure['masking'],
       notes: s.notes || undefined,
     });
     setSaving(false);
@@ -373,21 +368,6 @@ function RateDetailPageInner() {
                   <option value="pending">Pending</option>
                   <option value="approved">Approved</option>
                   <option value="excluded">Excluded</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-text-secondary mb-1">
-                  Masking
-                </label>
-                <select
-                  value={masking}
-                  onChange={(e) => setMasking(e.target.value)}
-                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary"
-                >
-                  <option value="none">None</option>
-                  <option value="needed">Needed</option>
-                  <option value="done">Done</option>
                 </select>
               </div>
 

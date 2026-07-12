@@ -98,7 +98,6 @@ export default function AdminDashboardPage() {
 
   const progress = progressResult?.progress ?? [];
   const pendingReview = progress.reduce((s, r) => s + (r.pending_review ?? 0), 0);
-  const needsMasking = progress.reduce((s, r) => s + (r.needs_masking ?? 0), 0);
   const needsCorrection = progress.reduce((s, r) => s + (r.needs_correction ?? 0), 0);
   const attention = progress.filter((r) => r.pending_review > 0);
 
@@ -123,13 +122,6 @@ export default function AdminDashboardPage() {
           label="Exposures pending review"
           value={pendingReview}
           accent={pendingReview > 0}
-        />
-        <StatTile
-          href="/admin/nircam?masking=needed"
-          icon={Camera}
-          label="Needs masking"
-          value={needsMasking}
-          accent={needsMasking > 0}
         />
         <StatTile
           href="/admin/nircam?correction=needed"

@@ -169,7 +169,6 @@ SELECT
     count(*) FILTER (WHERE review_status = 'pending')  AS pending_review,
     count(*) FILTER (WHERE review_status = 'approved') AS approved,
     count(*) FILTER (WHERE review_status = 'excluded') AS excluded,
-    count(*) FILTER (WHERE masking = 'needed')         AS needs_masking,
     count(*) FILTER (WHERE correction = 'needed')      AS needs_correction
 FROM public.nircam_exposures
 GROUP BY field, filter;

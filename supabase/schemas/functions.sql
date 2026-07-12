@@ -3656,7 +3656,6 @@ CREATE OR REPLACE FUNCTION public.get_admin_exposures(
   p_detector text DEFAULT NULL,
   p_review_status text DEFAULT NULL,
   p_stage text DEFAULT NULL,
-  p_masking text DEFAULT NULL,
   p_correction text DEFAULT NULL,
   p_sort_column text DEFAULT 'filename',   -- 'filename' = the compound (field, filter, filename) list order
   p_sort_direction text DEFAULT 'asc',
@@ -3675,7 +3674,6 @@ RETURNS TABLE (
   dec_center double precision,
   stage text,
   review_status text,
-  masking text,
   correction text,
   png_path text,
   full_png_path text,
@@ -3705,7 +3703,7 @@ BEGIN
 
   RETURN QUERY
   SELECT e.id, e.field, e.filter, e.detector, e.filename, e.visit, e.date_obs,
-         e.ra_center, e.dec_center, e.stage, e.review_status, e.masking,
+         e.ra_center, e.dec_center, e.stage, e.review_status,
          e.correction, e.png_path, e.full_png_path, e.image_width,
          e.image_height, e.mask_regions, e.notes, e.created_at, e.updated_at,
          count(*) OVER ()
@@ -3715,7 +3713,6 @@ BEGIN
     AND (p_detector IS NULL OR e.detector = p_detector)
     AND (p_review_status IS NULL OR e.review_status = p_review_status)
     AND (p_stage IS NULL OR e.stage = p_stage)
-    AND (p_masking IS NULL OR e.masking = p_masking)
     AND (p_correction IS NULL OR e.correction = p_correction)
   ORDER BY
     -- Keep in lockstep with get_admin_exposure_neighbors.
@@ -3758,7 +3755,6 @@ CREATE OR REPLACE FUNCTION public.get_admin_exposure_neighbors(
   p_detector text DEFAULT NULL,
   p_review_status text DEFAULT NULL,
   p_stage text DEFAULT NULL,
-  p_masking text DEFAULT NULL,
   p_correction text DEFAULT NULL,
   p_sort_column text DEFAULT 'filename',
   p_sort_direction text DEFAULT 'asc',
@@ -3818,8 +3814,7 @@ BEGIN
       AND (p_detector IS NULL OR e.detector = p_detector)
       AND (p_review_status IS NULL OR e.review_status = p_review_status)
       AND (p_stage IS NULL OR e.stage = p_stage)
-      AND (p_masking IS NULL OR e.masking = p_masking)
-      AND (p_correction IS NULL OR e.correction = p_correction)
+        AND (p_correction IS NULL OR e.correction = p_correction)
   ),
   cur AS (
     SELECT r.rn AS rn0 FROM ranked r WHERE r.exp_id = p_current_id

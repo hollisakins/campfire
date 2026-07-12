@@ -27,7 +27,6 @@ export interface RateFilters {
   observation?: string;
   detector?: string;
   reviewStatus?: string;
-  masking?: string;
   grating?: string;
 }
 
@@ -66,7 +65,6 @@ function applyRateFilters(query: any, f: RateFilters) {
   if (f.observation) query = query.eq('observation', f.observation);
   if (f.detector) query = query.eq('detector', f.detector);
   if (f.reviewStatus) query = query.eq('review_status', f.reviewStatus);
-  if (f.masking) query = query.eq('masking', f.masking);
   if (f.grating) query = query.eq('grating', f.grating);
   return query;
 }
@@ -201,7 +199,6 @@ export async function updateNirspecRateReview(
   id: number,
   updates: {
     review_status?: 'pending' | 'approved' | 'excluded';
-    masking?: 'none' | 'needed' | 'done';
     notes?: string;
   },
 ): Promise<{ exposure: NirspecRateExposure | null; error?: string }> {
@@ -228,8 +225,8 @@ export async function updateNirspecRateReview(
  *
  * Vertices are stored as DS9 ``image`` 1-indexed coords so the payload round-trips
  * through ``campfire deploy nirspec pull-rate-masks`` (P3b) and ``apply_mask_dq``
- * without further transform. ``masking`` flips to ``'done'`` iff ≥1 polygon,
- * mirroring the local-file-exists semantic the deploy code uses.
+ * without further transform. "Masked" is derived state: a non-empty
+ * ``mask_regions`` is the sole signal; clearing all polygons nulls it.
  */
 export async function saveRateMaskRegions(
   id: number,
@@ -242,7 +239,6 @@ export async function saveRateMaskRegions(
       .from('nirspec_rate_exposures')
       .update({
         mask_regions: hasPolygons ? regions : null,
-        masking: hasPolygons ? 'done' : 'none',
         updated_at: new Date().toISOString(),
       })
       .eq('id', id)

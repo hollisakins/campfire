@@ -9,8 +9,8 @@ reconstructed here — it depends on the whole exposure set's dither pattern).
 
 Split ownership mirrors ``rate_exposures`` / ``nircam._upsert_exposures``: a
 re-deploy UPDATE writes ONLY identity/render columns and OMITS
-``review_status``/``masking``/``notes`` so web triage is never clobbered; new rows
-seed ``review_status='pending'``, ``masking='none'``.
+``review_status``/``notes`` so web triage is never clobbered; new rows
+seed ``review_status='pending'``.
 
 Terminology note: ``spectrum_exposures.exposure_root`` is the pipeline's 2-token
 root (``jw07076020001_04101``) with the exposure token broken out as ``nod`` — this
@@ -117,9 +117,9 @@ def partition_spectrum_records(
 ) -> tuple[list[dict], list[dict]]:
     """Split into (new_rows, update_rows) with split ownership.
 
-    New rows seed ``review_status='pending'``/``masking='none'``. Update rows carry
-    ONLY identity + non-null render columns (+ ``updated_at``) — never the web-owned
-    triage columns — so a re-deploy leaves reviewer decisions intact.
+    New rows seed ``review_status='pending'``. Update rows carry ONLY identity +
+    non-null render columns (+ ``updated_at``) — never the web-owned triage
+    columns — so a re-deploy leaves reviewer decisions intact.
     """
     new_records, update_records = [], []
     for r in records:
@@ -135,7 +135,6 @@ def partition_spectrum_records(
             new_records.append({
                 **r,
                 "review_status": "pending",
-                "masking": "none",
                 "created_at": now,
                 "updated_at": now,
             })
