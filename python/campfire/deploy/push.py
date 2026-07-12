@@ -169,6 +169,7 @@ def registration_flusher(
     cfpipe_version: Optional[str] = None,
     max_workers: Optional[int] = None,
     batch_size: int = REGISTRATION_BATCH,
+    stored_sizes: Optional[dict[str, int]] = None,
 ) -> BatchFlusher:
     """Build the per-batch registration hook for an upload pass.
 
@@ -209,7 +210,7 @@ def registration_flusher(
             batch, backend=backend, deployment_id=deployment_id,
             uploaded_by=uploaded_by, cfpipe_version=cfpipe_version,
             sci_dq_hashes=sci_dq, precomputed=plan.whole_file,
-            max_workers=max_workers,
+            max_workers=max_workers, stored_sizes=stored_sizes,
         )
         upsert_storage_objects(client, rows)
 

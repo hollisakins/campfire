@@ -1029,16 +1029,19 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
         m['size'] = plan.stats.get(m['storage_key'], (None, None))[1]
 
     uploaded: set[str] = set()
+    # Gzipped mosaic uploads report the bytes actually PUT; the flusher writes
+    # them to registry.stored_size_bytes (size_bytes stays the logical size).
+    stored_sizes: dict[str, int] = {}
     flusher = registration_flusher(
         client, store, plan, backend=_CANONICAL_BACKEND,
         deployment_id=deployment_id, uploaded_by=user_id,
-        max_workers=_upload_workers())
+        max_workers=_upload_workers(), stored_sizes=stored_sizes)
     if plan.to_upload:
         print(f"  Uploading {len(plan.to_upload)} mosaic file(s) to OSN...")
         success, failed, failures = upload_files_parallel(
             config, plan.to_upload, desc='OSN mosaic uploads', max_workers=_upload_workers(),
             succeeded_out=uploaded, backend=_CANONICAL_BACKEND,
-            on_success=flusher.add)
+            on_success=flusher.add, stored_sizes_out=stored_sizes)
         flusher.flush()
         print(f"  Uploaded: {success}, Failed: {failed}")
         for msg in failures:

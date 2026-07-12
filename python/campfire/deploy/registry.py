@@ -152,6 +152,7 @@ def row_for_key(
     status: str = 'active',
     bucket: Optional[str] = None,
     sci_dq_hash: Optional[str] = None,
+    stored_size_bytes: Optional[int] = None,
 ) -> dict | None:
     """Build one ``storage_objects`` row dict from a storage key + integrity info.
 
@@ -191,6 +192,11 @@ def row_for_key(
         # canonical exposures carry one today; None leaves the column NULL.
         'sci_dq_hash': sci_dq_hash,
         'size_bytes': int(size_bytes),
+        # Bytes as stored in the bucket for transport-compressed products
+        # (gzipped mosaic FITS); NULL = stored verbatim (== size_bytes, which
+        # stays the LOGICAL uncompressed size the sync engine's dedup and stat
+        # fast-path compare against local plain files).
+        'stored_size_bytes': stored_size_bytes,
         'content_type': content_type,
         'product_type': product_type,
         'instrument': instrument,
@@ -224,6 +230,7 @@ def build_registry_rows(
     sci_dq_hashes: Optional[dict[str, str]] = None,
     max_workers: Optional[int] = None,
     precomputed: Optional[dict[str, tuple[str, int]]] = None,
+    stored_sizes: Optional[dict[str, int]] = None,
 ) -> list[dict]:
     """Build ``storage_objects`` rows for the objects an upload actually landed.
 
@@ -246,6 +253,7 @@ def build_registry_rows(
     """
     sci_dq_hashes = sci_dq_hashes or {}
     precomputed = precomputed or {}
+    stored_sizes = stored_sizes or {}
     selected: list[tuple[UploadTask, Path]] = []
     for task in tasks:
         if succeeded_keys is not None and task.r2_key not in succeeded_keys:
@@ -273,6 +281,7 @@ def build_registry_rows(
             uploaded_by=uploaded_by,
             cfpipe_version=cfpipe_version,
             sci_dq_hash=sci_dq_hashes.get(task.r2_key),
+            stored_size_bytes=stored_sizes.get(task.r2_key),
         )
         if row is not None:
             rows.append(row)
