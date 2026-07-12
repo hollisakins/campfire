@@ -41,7 +41,7 @@ from pathlib import Path
 
 from astropy.io import fits
 
-from campfire_layout import KeyScheme, Scope, storage_key
+from campfire_layout import KeyScheme, Scope, is_compressed_key, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
     claim_deploy_scope, deploy_event_metadata, get_deploy_scope_version,
@@ -53,6 +53,7 @@ from campfire.deploy.supabase import (
 # also land here under canonical keys (served via presigned OSN GET URLs).
 _CANONICAL_BACKEND = 'osn'
 _FITS_CONTENT_TYPE = 'application/fits'
+_GZIP_CONTENT_TYPE = 'application/gzip'  # compressed mosaic FITS (stored as .fits.gz)
 _PNG_CONTENT_TYPE = 'image/png'
 
 
@@ -930,6 +931,8 @@ def discover_mosaics(dirs, field, filters):
                     'path': fpath, 'filter': mfilter, 'tile': tile,
                     'pixel_scale': pixel_scale, 'epoch': epoch,
                     'extension': ext, 'storage_key': key,
+                    'content_type': (_GZIP_CONTENT_TYPE if is_compressed_key(key)
+                                     else _FITS_CONTENT_TYPE),
                     'mosaic_name': base,
                 })
     return out
@@ -996,7 +999,7 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
         store = open_reducer_store()
 
     mosaic_tasks = [UploadTask(local_path=m['path'], r2_key=m['storage_key'],
-                               content_type=_FITS_CONTENT_TYPE) for m in mosaics]
+                               content_type=m['content_type']) for m in mosaics]
 
     # Per-mosaic science thumbnails ride the same plan/registration (see
     # discover_mosaic_thumbnail_tasks): they get a nircam_mosaic_thumbnail

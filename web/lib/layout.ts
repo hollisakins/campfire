@@ -48,6 +48,7 @@ interface ProductSpec {
   filename: Builder | null;
   mirrored: boolean;
   schemeInvariant: boolean;
+  compressedSuffixes: string[]; // filenames ending in these are stored gzipped ('.gz' key); local file stays plain
 }
 
 function spec(p: Partial<ProductSpec> & Pick<ProductSpec, 'name' | 'tree' | 'scopeKeys' | 'subdir'>): ProductSpec {
@@ -58,6 +59,7 @@ function spec(p: Partial<ProductSpec> & Pick<ProductSpec, 'name' | 'tree' | 'sco
     filename: null,
     mirrored: true,
     schemeInvariant: false,
+    compressedSuffixes: [],
     ...p,
   };
 }
@@ -83,7 +85,7 @@ reg(spec({ name: 'sed', tree: 'products', bucket: 'data', scopeKeys: ['obs'], su
 reg(spec({ name: 'nircam_exposure', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '.fits' }));
 reg(spec({ name: 'nircam_exposure_preview', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_preview.png', legacyPrefix: (s) => `nircam/exposures/${s.field}/${s.filt}` }));
 reg(spec({ name: 'nircam_exposure_full', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_full.png', legacyPrefix: (s) => `nircam/exposures/${s.field}/${s.filt}` }));
-reg(spec({ name: 'nircam_mosaic', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null }));
+reg(spec({ name: 'nircam_mosaic', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null, compressedSuffixes: ['.fits'] }));
 reg(spec({ name: 'nircam_rgb', tree: 'products', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}`, suffix: '_rgb.png' }));
 reg(spec({ name: 'nircam_expmap', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null }));
 reg(spec({ name: 'nircam_expmap_plot', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null }));
@@ -170,7 +172,11 @@ export function keyPrefix(productType: string, scope: Scope, scheme: KeyScheme =
 
 export function storageKey(productType: string, scope: Scope, filename?: string, scheme: KeyScheme = 'legacy'): string {
   const s = get(productType);
-  return `${keyPrefix(productType, scope, scheme)}/${resolveFilename(s, scope, filename)}`;
+  // Compressed products (nircam_mosaic FITS) are stored gzipped: the key gains
+  // '.gz'; the plain local relpath does not. parseRelpath strips it back.
+  let fname = resolveFilename(s, scope, filename);
+  if (s.compressedSuffixes.some((sfx) => fname.endsWith(sfx))) fname = `${fname}.gz`;
+  return `${keyPrefix(productType, scope, scheme)}/${fname}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +213,18 @@ function dispatch(fname: string, table: [string, string][]): string | null {
   return null;
 }
 
+// Strip a trailing '.gz' for a compressed product's compressed file. The
+// bijection carries the plain (local) filename; storageKey reapplies '.gz'.
+// No-op for local relpaths (never gzipped) and non-compressed filenames.
+function plainFilename(productType: string, fname: string): string {
+  if (fname.endsWith('.gz')) {
+    const base = fname.slice(0, -'.gz'.length);
+    const s = PRODUCTS[productType];
+    if (s && s.compressedSuffixes.some((sfx) => base.endsWith(sfx))) return base;
+  }
+  return fname;
+}
+
 function nirspecObsProduct(fname: string): string {
   const pt = dispatch(fname, NIRSPEC_OBS_SUFFIXES);
   if (pt) return pt;
@@ -238,7 +256,7 @@ export function parseRelpath(relpath: string): ParsedKey {
       const fname = seg[4];
       const pt = dispatch(fname, NIRCAM_FILTER_SUFFIXES);
       if (pt) return { productType: pt, scope: { field, filt }, filename: fname };
-      if (fname.startsWith('mosaic')) return { productType: 'nircam_mosaic', scope: { field, filt }, filename: fname };
+      if (fname.startsWith('mosaic')) return { productType: 'nircam_mosaic', scope: { field, filt }, filename: plainFilename('nircam_mosaic', fname) };
       // '.png' is the dark web plot; '.fits' is the coverage map.
       if (fname.startsWith('expmap')) return { productType: fname.endsWith('.png') ? 'nircam_expmap_plot' : 'nircam_expmap', scope: { field, filt }, filename: fname };
       if (fname.endsWith('.fits')) return { productType: 'nircam_exposure', scope: { field, filt }, filename: fname };
@@ -342,6 +360,23 @@ export function toCanonicalKey(key: string, opts?: { bucket?: Bucket }): string 
 export function toLegacyKey(key: string, opts?: { bucket?: Bucket }): string {
   const pk = parseKey(key, opts);
   return storageKey(pk.productType, pk.scope, pk.filename, 'legacy');
+}
+
+/** True iff *key* addresses an object stored gzipped in the bucket (nircam_mosaic
+ * FITS). Compression is a layout property (`compressedSuffixes`): the key ends in
+ * `.gz` and its product declares the underlying suffix. The web download layer
+ * serves such keys as-is (a `.fits.gz` attachment); the local file is always the
+ * plain form. False for unknown/unsafe keys and uncompressed products. */
+export function isCompressedKey(key: string, opts?: { bucket?: Bucket }): boolean {
+  if (!key.endsWith('.gz')) return false;
+  let pk: ParsedKey;
+  try {
+    pk = parseKey(key, opts);
+  } catch {
+    return false;
+  }
+  const s = PRODUCTS[pk.productType];
+  return !!s && s.compressedSuffixes.some((sfx) => pk.filename.endsWith(sfx));
 }
 
 /** True iff *key* parses to a cloud-backed product — the presign/proxy allowlist.

@@ -45,6 +45,9 @@ class ProductSpec:
     filename: Optional[_Builder] = None  # builder for fully-scoped products (tile, photometry)
     mirrored: bool = True                # has a local relpath (False = key-only, e.g. photometry)
     scheme_invariant: bool = False       # key identical across schemes (tiles stay on R2)
+    compressed_suffixes: tuple[str, ...] = ()  # filenames ending in these are stored gzipped
+    #   (cloud key gains '.gz'); the local file stays uncompressed. See design
+    #   note in keys.storage_key / bijection.parse_relpath.
 
     def validate(self, scope: Scope) -> None:
         scope.require(*self.scope_keys)
@@ -165,11 +168,16 @@ _register(ProductSpec(
     subdir=_nircam_field_filter_dir, suffix="_full.png",
     legacy_prefix=lambda s: f"nircam/exposures/{s.field}/{s.filt}",
 ))
-# Drizzled mosaic outputs + their JSON manifests (mosaic_*). Reserved key.
+# Drizzled mosaic outputs + their JSON manifests (mosaic_*). Reserved key. The
+# FITS extensions (_i2d/_sci/_err/_wht/_srcmask) are stored gzipped in the cloud
+# ('.fits.gz' key) so high-NaN mosaics transfer smaller; the local tree keeps the
+# plain '.fits' (pull decompresses). The '_manifest.json' sibling isn't a '.fits'
+# so it stays uncompressed; the '_thumb.png' is a separate product.
 _register(ProductSpec(
     name="nircam_mosaic", instrument=NC, tree="products", bucket="data",
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("field", "filt"),
     subdir=_nircam_field_filter_dir, suffix=None, legacy_prefix=None,
+    compressed_suffixes=(".fits",),
 ))
 # Field-tile RGB (distinct product from the per-object 'rgb' above).
 _register(ProductSpec(

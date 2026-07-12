@@ -6,6 +6,7 @@ Session creation and manifest fetching are delegated to the ``api`` subpackage.
 
 import hashlib
 import sys
+import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -284,14 +285,29 @@ def _download_and_verify_key(
     The destination is derived from the object's storage key via the shared
     layout contract (``products_relpath``), so every product type lands in the
     same tree the pipeline writes and deploy reads (``products/nirspec/<obs>/…``).
+
+    Compressed products (nircam_mosaic FITS, a ``.fits.gz`` key) are gzipped in
+    the bucket but stored *plain* on disk: the stream is decompressed on the way
+    in, so the local tree is uniformly uncompressed and the bytes we write+hash
+    are the decompressed content — matching the registry ``content_hash`` /
+    ``size_bytes`` (both describe the plain ``.fits``). ``products_relpath``
+    already strips the ``.gz`` from the destination path.
     """
     from .config import products_relpath
+    from campfire_layout import is_compressed_key
 
     key = obj["storage_key"]
     rel = products_relpath(key)
     local_path = products_dir / rel
     local_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = local_path.with_name(local_path.name + ".tmp")
+
+    # Decompress in-flight for a gzipped object. We stored it with content-type
+    # application/gzip (NOT Content-Encoding: gzip), so requests does not
+    # transparently inflate it — iter_content yields the raw gzip bytes and this
+    # decompressor is the only inflate in the path.
+    decompressor = (zlib.decompressobj(16 + zlib.MAX_WBITS)
+                    if is_compressed_key(key) else None)
 
     expected = obj.get("content_hash")
     try:
@@ -301,8 +317,17 @@ def _download_and_verify_key(
         hasher = hashlib.sha256()
         with open(tmp_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=65536):
+                if decompressor is not None:
+                    chunk = decompressor.decompress(chunk)
+                    if not chunk:
+                        continue
                 f.write(chunk)
                 hasher.update(chunk)
+            if decompressor is not None:
+                tail = decompressor.flush()
+                if tail:
+                    f.write(tail)
+                    hasher.update(tail)
 
         computed_hash = f"sha256:{hasher.hexdigest()}"
 

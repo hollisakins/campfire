@@ -127,7 +127,7 @@
       "filename": "mosaic_cosmos_f444w_30mas_sci.fits",
       "relpath": "products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits",
       "key_legacy": null,
-      "key_canonical": "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits",
+      "key_canonical": "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits.gz",
       "bucket": "data",
       "tree_class": "cloud-backed-product"
     },
@@ -336,6 +336,7 @@
     "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_rate.fits",
     "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w.png",
     "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_thumb.png",
+    "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits.gz",
     "data/products/nircam/cosmos/cosmos_layout.png"
   ],
   "unknown_keys": [
