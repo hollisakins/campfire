@@ -162,3 +162,17 @@ def test_registry_row_carries_stored_size_bytes(tmp_path):
         [UploadTask(fits, gz_key, "application/gzip")],
         backend="osn", stored_sizes={gz_key: 7})
     assert rows[0]["stored_size_bytes"] == 7
+
+
+def test_push_paths_wire_stored_sizes(monkeypatch):
+    """The slow-link workflow (`campfire push` first; deploy dedup-skips) must
+    record stored_size_bytes too — deploy never re-uploads those bytes, so a
+    push-side registration is the only chance (Codex review on #386)."""
+    import inspect
+
+    from campfire.deploy import push as push_mod
+
+    for fn in (push_mod.push_observation, push_mod.push_field):
+        src = inspect.getsource(fn)
+        assert 'stored_sizes=stored_sizes' in src, fn.__name__
+        assert 'stored_sizes_out=stored_sizes' in src, fn.__name__

@@ -328,9 +328,15 @@ def push_observation(
                 'skipped': len(plan.unchanged)}
 
     user_id = get_user_id_from_token(config)
+    # Transport-compressed uploads (gzipped mosaics) report their stored byte
+    # count; the flusher writes it to registry.stored_size_bytes. Wired here as
+    # well as in deploy so the slow-link workflow (push heavy bytes first, then
+    # deploy dedup-skips them) records it too — deploy never re-uploads.
+    stored_sizes: dict[str, int] = {}
     flusher = registration_flusher(
         client, store, plan, backend='osn', deployment_id=None,
-        uploaded_by=user_id, cfpipe_version=cfpipe_version)
+        uploaded_by=user_id, cfpipe_version=cfpipe_version,
+        stored_sizes=stored_sizes)
 
     upload_workers = workers or default_upload_workers()
     total_bytes = sum(plan.stats[t.r2_key][1] for t in plan.to_upload
@@ -339,7 +345,8 @@ def push_observation(
           f"({total_bytes / 1e9:.2f} GB) to OSN...")
     success, failed, failures = upload_files_parallel(
         config, plan.to_upload, desc='Pushing to OSN',
-        max_workers=upload_workers, backend='osn', on_success=flusher.add)
+        max_workers=upload_workers, backend='osn', on_success=flusher.add,
+        stored_sizes_out=stored_sizes)
     flusher.flush()
 
     print(f"  Pushed: {success}, Failed: {failed}, "
@@ -430,9 +437,15 @@ def push_field(
 
     cfpipe_version, _jwst, _crds = _read_field_provenance(dirs, field, filters)
     user_id = get_user_id_from_token(config)
+    # Transport-compressed uploads (gzipped mosaics) report their stored byte
+    # count; the flusher writes it to registry.stored_size_bytes. Wired here as
+    # well as in deploy so the slow-link workflow (push heavy bytes first, then
+    # deploy dedup-skips them) records it too — deploy never re-uploads.
+    stored_sizes: dict[str, int] = {}
     flusher = registration_flusher(
         client, store, plan, backend='osn', deployment_id=None,
-        uploaded_by=user_id, cfpipe_version=cfpipe_version)
+        uploaded_by=user_id, cfpipe_version=cfpipe_version,
+        stored_sizes=stored_sizes)
 
     upload_workers = workers or default_upload_workers()
     total_bytes = sum(plan.stats[t.r2_key][1] for t in plan.to_upload
@@ -441,7 +454,8 @@ def push_field(
           f"({total_bytes / 1e9:.2f} GB) to OSN...")
     success, failed, failures = upload_files_parallel(
         config, plan.to_upload, desc='Pushing to OSN',
-        max_workers=upload_workers, backend='osn', on_success=flusher.add)
+        max_workers=upload_workers, backend='osn', on_success=flusher.add,
+        stored_sizes_out=stored_sizes)
     flusher.flush()
 
     print(f"  Pushed: {success}, Failed: {failed}, "
