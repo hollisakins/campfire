@@ -62,6 +62,20 @@ plotting = [
 specutils = [
     "specutils>=1.13",
 ]
+deploy = [
+    # Deploy machines always carry the pipeline — there's no use deploying data
+    # you can't reduce. The annotation round-trips (stuck-shutter TOML writer,
+    # skip-glob Field loader, .reg→DB mask import via jwst WCS) reuse pipeline
+    # code directly, and campfire-pipeline transitively provides jwst + regions.
+    # Like campfire-layout above, campfire-pipeline is not on PyPI: a plain name
+    # so the editable dev workflow (pip install -e ./layout ./pipeline) resolves
+    # it locally. See the repo-root install.py, which installs this profile in
+    # the right order.
+    "campfire-pipeline",
+    # calibration.py prefers spectres for flux-conserving resampling (falls back
+    # to interpolation without it); deploy-side stacking should have the real thing.
+    "spectres>=2.2",
+]
 fitsgl = [
     # FitsGL producer (build + deploy the FITS tile-pyramid datasets that back
     # the map/cutout service — epic #337). Not on PyPI and lives in the
@@ -81,7 +95,10 @@ dev = [
     "mypy>=1.0",
     "plotly>=5.18.0",
     "specutils>=1.13",
+    "spectres>=2.2",
 ]
+# Client-side extras only — [deploy] is an operator concern and drags in the
+# full pipeline, so it is deliberately not part of [all].
 all = [
     "campfire[plotting,specutils]",
 ]

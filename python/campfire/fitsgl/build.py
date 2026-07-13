@@ -262,10 +262,7 @@ def resolve_fiducial_tiles(field, *, pixel_scale='30mas'):
 
 def _fields_toml_table(field):
     """The ``[<field>]`` table from ``$CAMPFIRE_ROOT/config/fields.toml``, or ``None``."""
-    try:
-        import tomllib
-    except ModuleNotFoundError:  # pragma: no cover - py<3.11
-        import tomli as tomllib  # type: ignore
+    import tomllib
     root = os.environ.get('CAMPFIRE_ROOT')
     if not root:
         return None

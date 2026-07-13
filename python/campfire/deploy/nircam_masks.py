@@ -119,6 +119,8 @@ def import_masks(field, config, dry_run=False):
         print("\nDry run — no changes made.")
         return
 
+    from campfire.deploy import require_pipeline
+    require_pipeline("import-masks (needs jwst WCS + regions parsing)")
     from regions import Regions, PolygonSkyRegion, PolygonPixelRegion
     from jwst.datamodels import ImageModel
     import warnings

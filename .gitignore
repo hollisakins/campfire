@@ -75,3 +75,6 @@ web/.ds-sync-styles.css
 
 # Periodic /campfire-review output (local triage artifacts)
 reports/
+
+# install.py state (per-machine answers; its log is covered by *.log above)
+.campfire-install.json

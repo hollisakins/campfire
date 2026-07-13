@@ -4,6 +4,10 @@ Python package for querying, downloading, and analyzing NIRSpec spectroscopic da
 
 ## Installation
 
+The easiest path is the repo-root installer, which handles ordering, extras,
+and the conda environment for you: `python3 install.py` (see the top-level
+README). Manually:
+
 `campfire` depends on `campfire-layout` — a zero-dependency sibling package in
 the same repository that isn't on PyPI. From the repo root, install it first,
 then the client (editable):
@@ -22,6 +26,21 @@ pip install -e ".[all]"
 
 To install straight from GitHub without cloning the repo, see
 [Getting Started](https://campfire.hollisakins.com/docs/api/getting-started).
+
+### Deploy machines (`campfire[deploy]`)
+
+The `deploy` extra covers publication workflows (`campfire deploy`, the
+annotation round-trips in `campfire pull`). It depends on `campfire-pipeline` —
+deploy machines always carry the pipeline, since several deploy paths reuse
+pipeline code directly (the stuck-shutter TOML writer, the `Field` skip-glob
+loader, jwst-based WCS for mask imports). Like `campfire-layout`, the pipeline
+isn't on PyPI, so install it editable first:
+
+```bash
+pip install -e ./layout -e ./pipeline -e "./python[deploy]"
+```
+
+(`install.py --profiles deploy` does exactly this, in this order.)
 
 ### FitsGL producer (`campfire[fitsgl]`)
 
