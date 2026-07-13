@@ -71,13 +71,13 @@ export function TrilogyWeights({ bands, state, onApply, onRainbow }: TrilogyWeig
 
   return (
     <div className="space-y-1">
-      <div className="flex items-center justify-between">
-        <span className={PANEL_CAP}>Band weights</span>
-        <div className="flex gap-1">
+      <div className="flex items-center justify-between gap-1">
+        <span className={PANEL_CAP}>Weights</span>
+        <div className="flex shrink-0 gap-1">
           <button
             type="button"
             onClick={onRainbow}
-            className={chipClass(false)}
+            className={`${chipClass(false)} whitespace-nowrap`}
             title="Spread the group's bands blue→red across B→R"
           >
             ✦ rainbow

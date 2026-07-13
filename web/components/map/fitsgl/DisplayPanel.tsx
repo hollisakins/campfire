@@ -92,7 +92,7 @@ function SliderRow({
 }) {
   return (
     <label className="flex items-center gap-2">
-      <span className="w-16 shrink-0 font-mono text-[10px] text-text-tertiary">{label}</span>
+      <span className="w-14 shrink-0 font-mono text-[10px] text-text-tertiary">{label}</span>
       <input
         type="range"
         min={min}
@@ -101,10 +101,10 @@ function SliderRow({
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
         onDoubleClick={() => onChange(neutral)}
-        className="h-1 flex-1 accent-[var(--primary)]"
+        className="h-1 min-w-0 flex-1 accent-[var(--primary)]"
         title={`${label} (double-click to reset)`}
       />
-      <span className="w-9 shrink-0 text-right font-mono text-[10px] tabular-nums text-text-secondary">
+      <span className="w-8 shrink-0 text-right font-mono text-[10px] tabular-nums text-text-secondary">
         {value.toFixed(2)}
       </span>
     </label>
@@ -144,9 +144,9 @@ export function DisplayPanel({
   const sharedHist = channels.find((c) => c.key === 'g')?.histogram ?? channels[0]?.histogram;
 
   const presetRow = (
-    <div className="flex items-center justify-between">
+    <div className="space-y-1.5">
       <span className={PANEL_CAP}>Limits</span>
-      <div className="flex gap-1">
+      <div className="flex flex-wrap gap-1">
         <button type="button" onClick={() => onApplyPreset('auto')} className={chipClass(false)} title="Auto-stretch to the data in view">auto</button>
         {hasZscale && (
           <button type="button" onClick={() => onApplyPreset('zscale')} className={chipClass(false)} title="Whole-image DS9/IRAF zscale cuts">zscale</button>
@@ -246,7 +246,9 @@ export function DisplayPanel({
             onApply={onApplyWeights}
             onRainbow={onRainbowWeights}
           />
-          <div className="fgl-embed">
+          {/* Range inputs carry an intrinsic ~129px minimum; let them shrink to
+              the narrow dock, and trim the fgl label/value reserves to match. */}
+          <div className="fgl-embed [&_.fgl-tri-lbl]:min-w-[52px] [&_.fgl-tri-range]:w-full [&_.fgl-tri-range]:min-w-0 [&_.fgl-tri-val]:min-w-[34px]">
             <TrilogyControls params={state.trilogyParams} missing={!hasTrilogy} onChange={onSetTrilogyParams} />
           </div>
         </div>
