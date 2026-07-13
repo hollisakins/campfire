@@ -11,6 +11,8 @@ import json
 import toml
 
 from campfire.fitsgl.build import (
+    _load_rgb_config,
+    _rgb_config_from_fields_toml,
     build_fitsgl_toml,
     derive_viewer,
     group_bands,
@@ -70,6 +72,28 @@ def test_derive_viewer_rgb_from_color_weights():
     assert v["default"] == "rgb"
     assert v["r"] == "f444w" and v["g"] == "f277w" and v["b"] == "f150w"
     assert v["stretch"] == "trilogy"
+    # the FULL weight table ships (faithful weighted composite), band order kept
+    assert v["weights"] == {
+        "f150w": [0.0, 0.0, 1.0],
+        "f277w": [0.0, 1.0, 0.0],
+        "f444w": [1.0, 0.0, 0.0],
+    }
+    assert "trilogy" not in v  # no knobs -> viewer defaults
+
+
+def test_derive_viewer_rescales_weights_and_passes_trilogy_knobs():
+    rgb = {"f444w": (2.0, 0.0, 0.0), "f277w": (0.0, 1.0, 0.0), "f150w": (0.0, 0.0, 1.0)}
+    v = derive_viewer(rgb, ["f150w", "f277w", "f444w"],
+                      trilogy={"noiselum": 0.12, "satpercent": 0.01, "noisesig": 2.0})
+    # global max 2.0 rescales everything into the knob UI's [0,1]
+    assert v["weights"]["f444w"] == [1.0, 0.0, 0.0]
+    assert v["weights"]["f277w"] == [0.0, 0.5, 0.0]
+    assert v["trilogy"] == {"noiselum": 0.12, "satpercent": 0.01, "noisesig": 2.0}
+    # nested tables land AFTER the scalar keys so the serialized TOML is valid
+    keys = list(v)
+    assert keys.index("weights") > keys.index("stretch")
+    reparsed = toml.loads(toml.dumps({"viewer": v}))
+    assert reparsed["viewer"]["trilogy"]["noiselum"] == 0.12
 
 
 def test_derive_viewer_single_band_fallback_without_rgb():
@@ -88,6 +112,91 @@ def test_derive_viewer_single_when_fewer_than_three_rgb_filters():
 def test_derive_viewer_empty_bands():
     v = derive_viewer(None, [])
     assert v["default"] == "single" and "band" not in v
+
+
+# --- _rgb_channels_from_fields_toml / _load_rgb_channels ---------------------
+
+def _write_fields_toml(tmp_path, monkeypatch, body):
+    """A $CAMPFIRE_ROOT with config/fields.toml containing ``body``."""
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "fields.toml").write_text(body)
+    monkeypatch.setenv("CAMPFIRE_ROOT", str(tmp_path))
+
+
+def test_rgb_channels_from_fields_toml(tmp_path, monkeypatch):
+    _write_fields_toml(tmp_path, monkeypatch, """
+[egs]
+fiducial_tiles = ["A1"]
+
+[egs.rgb]
+noiselum = 0.12
+
+[egs.rgb.channels]
+f115w = [0.0, 0.0, 1.0]
+F444W = [1.0, 0.0, 0.0]
+f277w = [0.0, 1.0, 0.0]
+""")
+    ch, knobs = _rgb_config_from_fields_toml("egs")
+    # weights parsed as float tuples; filter keys lowercased to match band names
+    assert ch == {
+        "f115w": (0.0, 0.0, 1.0),
+        "f444w": (1.0, 0.0, 0.0),
+        "f277w": (0.0, 1.0, 0.0),
+    }
+    assert knobs == {"noiselum": 0.12}
+    # end-to-end: this is exactly what derive_viewer needs for an RGB default
+    v = derive_viewer(ch, ["f115w", "f277w", "f444w"], trilogy=knobs)
+    assert v["default"] == "rgb" and v["stretch"] == "trilogy"
+    assert v["trilogy"] == {"noiselum": 0.12}
+
+
+def test_rgb_channels_from_fields_toml_skips_malformed_entries(tmp_path, monkeypatch):
+    _write_fields_toml(tmp_path, monkeypatch, """
+[egs.rgb.channels]
+f115w = [0.0, 0.0, 1.0]
+f277w = [0.0, 1.0]
+f444w = "red"
+""")
+    assert _rgb_config_from_fields_toml("egs") == ({"f115w": (0.0, 0.0, 1.0)}, None)
+
+
+def test_rgb_channels_from_fields_toml_missing(tmp_path, monkeypatch):
+    # no rgb block at all
+    _write_fields_toml(tmp_path, monkeypatch, "[egs]\nfiducial_tiles = ['A1']\n")
+    assert _rgb_config_from_fields_toml("egs") == (None, None)
+    # no field table
+    assert _rgb_config_from_fields_toml("cosmos") == (None, None)
+    # no CAMPFIRE_ROOT
+    monkeypatch.delenv("CAMPFIRE_ROOT")
+    assert _rgb_config_from_fields_toml("egs") == (None, None)
+
+
+def test_load_rgb_channels_prefers_fields_toml(tmp_path, monkeypatch):
+    """fields.toml wins without ever touching the legacy imaging.toml path."""
+    _write_fields_toml(tmp_path, monkeypatch, """
+[egs.rgb.channels]
+f115w = [0.0, 0.0, 1.0]
+f277w = [0.0, 1.0, 0.0]
+f444w = [1.0, 0.0, 0.0]
+""")
+
+    def boom(field):
+        raise AssertionError("legacy imaging.toml path must not be consulted")
+
+    monkeypatch.setattr("campfire.fitsgl.build._rgb_config_from_imaging_toml", boom)
+    ch, _knobs = _load_rgb_config("egs")
+    assert set(ch) == {"f115w", "f277w", "f444w"}
+
+
+def test_load_rgb_channels_none_when_no_config(tmp_path, monkeypatch, capsys):
+    """No fields.toml block and no imaging.toml → None, but never silent."""
+    _write_fields_toml(tmp_path, monkeypatch, "[egs]\n")
+    monkeypatch.setattr(
+        "campfire.fitsgl.build._rgb_config_from_imaging_toml", lambda field: (None, None)
+    )
+    assert _load_rgb_config("egs") == (None, None)
+    out = capsys.readouterr().out
+    assert "no RGB config" in out and "[egs.rgb.channels]" in out
 
 
 # --- select_mosaics / group_bands (real discover_mosaics on a fake tree) -----
@@ -177,3 +286,45 @@ def test_group_bands_single_tile_scalar_path(tmp_path):
     bands = group_bands(picked, single_tile=True)
     assert set(bands) == {"f444w"}
     assert not isinstance(bands["f444w"], list)  # single path, not a list
+
+
+def test_generated_viewer_block_parses_through_fitsgl(tmp_path):
+    """The [viewer] dict derive_viewer emits must survive toml serialization AND
+    fitsgl's own load_config validation (the real producer-contract seam)."""
+    import pytest
+    fitsgl_config = pytest.importorskip("fitsgl.config")
+
+    for n in ("f115w", "f277w", "f444w"):
+        (tmp_path / f"{n}.fits").write_bytes(b"\x00")
+    rgb = {"f444w": (1.0, 0.0, 0.0), "f277w": (0.0, 1.0, 0.0), "f115w": (0.0, 0.0, 1.0)}
+    viewer = derive_viewer(rgb, ["f115w", "f277w", "f444w"],
+                           trilogy={"noiselum": 0.12, "satpercent": 0.01})
+    d = build_fitsgl_toml(
+        "egs",
+        bands={n: [tmp_path / f"{n}.fits"] for n in ("f115w", "f277w", "f444w")},
+        viewer=viewer, pixel_scale="30mas", single_tile=False,
+    )
+    p = tmp_path / "egs.toml"
+    p.write_text(toml.dumps(d))
+    cfg = fitsgl_config.load_config(p)
+    assert cfg.viewer.mode == "rgb" and cfg.viewer.stretch == "trilogy"
+    assert cfg.viewer.weights == {
+        "f115w": (0.0, 0.0, 1.0),
+        "f277w": (0.0, 1.0, 0.0),
+        "f444w": (1.0, 0.0, 0.0),
+    }
+    assert cfg.viewer.trilogy == {"noiselum": 0.12, "satpercent": 0.01}
+
+
+def test_derive_viewer_caps_weights_at_fitsgl_composite_max(capsys):
+    """>12 usable filters: keep the strongest by total weight (FitsGL rejects a
+    longer [viewer.weights]), preserve wavelength order, and say what dropped."""
+    filters = [f"f{100 + 10 * i}w" for i in range(14)]  # wavelength-ordered
+    # total weight rises with wavelength, so the two bluest are the weakest
+    rgb = {f: (0.1 * (i + 1), 0.0, 0.0) for i, f in enumerate(filters)}
+    v = derive_viewer(rgb, filters)
+    assert v["default"] == "rgb"
+    assert len(v["weights"]) == 12
+    assert list(v["weights"]) == filters[2:]  # weakest two dropped, order kept
+    out = capsys.readouterr().out
+    assert "cap at 12" in out and "f100w" in out and "f110w" in out

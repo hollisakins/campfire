@@ -24,10 +24,19 @@ export async function renderDisplayCutoutPng(
   src: FieldCutoutSource,
   args: DisplayCutoutArgs,
 ): Promise<Buffer> {
+  // The producer's default stretch (trilogy levels solved from precomputed
+  // stats + knobs upstream in `displayDefaults`) — so the cutout opens on the
+  // same transfer the map does; absent ⇒ the engine default (asinh + auto).
+  const display = src.display;
   const cutout = await renderCutout(src.bands, {
     center: [args.ra, args.dec],
     fovArcsec: args.fovArcsec,
     outputSize: args.outputSize,
+    ...(display !== null && {
+      stretch: display.stretch,
+      ...(display.limits !== undefined && { limits: display.limits }),
+      ...(display.trilogyK !== undefined && { trilogyK: display.trilogyK }),
+    }),
   });
   // No-coverage (NaN) pixels render transparent; flatten onto black like the
   // legacy compositor's opaque canvas.

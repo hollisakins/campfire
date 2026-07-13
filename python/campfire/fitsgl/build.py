@@ -113,28 +113,53 @@ def group_bands(mosaics, *, single_tile):
     return bands
 
 
-def derive_viewer(rgb_channels, band_filters):
+def derive_viewer(rgb_channels, band_filters, trilogy=None):
     """Derive the fitsgl.toml ``[viewer]`` default from CAMPFIRE's RGB config.
 
-    ``rgb_channels`` maps filter → (r, g, b) color weights (from
-    ``get_rgb_configs``), or ``None`` when no imaging config is available.
-    ``band_filters`` is the list of filters that became bands. When ≥3 of the RGB
-    config's filters are present, the default is an RGB view with ``stretch =
-    "trilogy"`` and r/g/b assigned to the filter carrying the most weight in each
-    channel (mirroring the roles, not the exact trilogy normalization — the live
-    viewer restretches). Otherwise a single-band view on the reddest present filter.
-    Every filter is a band regardless; this only sets the initial view.
+    ``rgb_channels`` maps filter → (r, g, b) color weights (from fields.toml
+    ``[<field>.rgb.channels]`` or legacy imaging.toml), or ``None`` when no RGB
+    config is available. ``band_filters`` is the list of filters that became
+    bands. When ≥3 of the RGB config's filters are present, the default is an RGB
+    view with ``stretch = "trilogy"``, r/g/b roles assigned to the filter carrying
+    the most weight in each channel, and the FULL per-filter weight table emitted
+    as ``[viewer.weights]`` — so the viewer opens on the faithful weighted
+    composite that mirrors the old PNG tiles, not just a 3-band triple. Weights
+    are rescaled by the global max so they land in the knob UI's [0, 1] range
+    (only channel ratios matter — the composite normalizes by the weight sum).
+    ``trilogy`` (optional dict of noiselum/satpercent/noisesig/noisesig0) passes
+    through as ``[viewer.trilogy]``. Otherwise a single-band view on the reddest
+    present filter. Every filter is a band regardless; this only sets the
+    initial view. Nested tables are placed last so the TOML serializes cleanly.
     """
     usable = [f for f in band_filters if rgb_channels and f in rgb_channels]
+    if len(usable) > _MAX_COMPOSITE_BANDS:
+        # FitsGL caps a composite at 12 bands and its parser rejects a longer
+        # [viewer.weights]; keep the strongest contributors (by total weight),
+        # preserving wavelength order for the survivors.
+        keep = set(sorted(usable, key=lambda f: sum(rgb_channels[f]), reverse=True)
+                   [:_MAX_COMPOSITE_BANDS])
+        dropped = [f for f in usable if f not in keep]
+        usable = [f for f in usable if f in keep]
+        click.echo(
+            f"Note: the RGB config lists {len(usable) + len(dropped)} filters; "
+            f"FitsGL composites cap at {_MAX_COMPOSITE_BANDS} — dropping the "
+            f"lowest-weight: {', '.join(dropped)}."
+        )
     if len(usable) >= 3:
         pick = lambda ch: max(usable, key=lambda f: rgb_channels[f][ch])
-        return {
+        peak = max((w for f in usable for w in rgb_channels[f]), default=1.0)
+        scale = peak if peak > 1.0 else 1.0
+        viewer = {
             'default': 'rgb',
             'r': pick(0),
             'g': pick(1),
             'b': pick(2),
             'stretch': 'trilogy',
+            'weights': {f: [w / scale for w in rgb_channels[f]] for f in usable},
         }
+        if trilogy:
+            viewer['trilogy'] = dict(trilogy)
+        return viewer
     if not band_filters:
         return {'default': 'single', 'stretch': 'asinh'}
     return {
@@ -235,31 +260,90 @@ def resolve_fiducial_tiles(field, *, pixel_scale='30mas'):
     return Field.load(field).fiducial_tile_set(pixel_scale=pixel_scale)
 
 
-def _fiducial_tiles_from_toml(field):
-    """Fallback: read ``[<field>].fiducial_tiles`` straight from fields.toml (no WCS check)."""
+def _fields_toml_table(field):
+    """The ``[<field>]`` table from ``$CAMPFIRE_ROOT/config/fields.toml``, or ``None``."""
     try:
         import tomllib
     except ModuleNotFoundError:  # pragma: no cover - py<3.11
         import tomli as tomllib  # type: ignore
     root = os.environ.get('CAMPFIRE_ROOT')
     if not root:
-        return []
+        return None
     path = Path(root) / 'config' / 'fields.toml'
     if not path.is_file():
-        return []
+        return None
     with path.open('rb') as f:
         data = tomllib.load(f)
-    raw = (data.get(field) or {}).get('fiducial_tiles', [])
+    table = data.get(field)
+    return table if isinstance(table, dict) else None
+
+
+def _fiducial_tiles_from_toml(field):
+    """Fallback: read ``[<field>].fiducial_tiles`` straight from fields.toml (no WCS check)."""
+    raw = (_fields_toml_table(field) or {}).get('fiducial_tiles', [])
     if isinstance(raw, str):
         raw = [raw]
     return list(raw) if isinstance(raw, list) else []
 
 
-def _load_rgb_channels(field):
-    """Filter → (r,g,b) color weights from imaging.toml, or ``None`` if unavailable.
+# fields.toml [<field>.rgb] stretch keys → fitsgl [viewer.trilogy] knobs. Same
+# names pass through; campfire's legacy `noisesig` (black-point multiplier in the
+# old PNG stretch) maps onto fitsgl's `noisesig` — the algorithms are cousins,
+# not twins, so treat the value as a starting point and tune in fields.toml.
+_TRILOGY_KNOBS = ('noiselum', 'satpercent', 'noisesig', 'noisesig0')
 
-    Best-effort: any missing config / parse error yields ``None`` so the build
-    proceeds with a single-band default view rather than failing.
+# FitsGL's composite cap (fitsgl-core MAX_BANDS / fitsgl-py MAX_COMPOSITE_BANDS):
+# a longer [viewer.weights] is rejected by the producer's parser.
+_MAX_COMPOSITE_BANDS = 12
+
+
+def _knobs_from_block(block):
+    """The trilogy knob dict carried by an rgb config block, or ``None``."""
+    knobs = {}
+    for key in _TRILOGY_KNOBS:
+        v = block.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            knobs[key] = float(v)
+    return knobs or None
+
+
+def _rgb_config_from_fields_toml(field):
+    """``(channels, knobs)`` from fields.toml ``[<field>.rgb]``, or ``(None, None)``.
+
+    The same block ``cfpipe nircam rgb`` consumes: ``channels`` (filter → [r,g,b]
+    weights) plus the stretch knobs (noiselum/satpercent/noisesig[0]). Pure TOML —
+    no mosaic files are resolved, so this works on any machine that can see
+    fields.toml. Filter keys are lowercased to match the discovered band names;
+    malformed weight entries are skipped.
+    """
+    table = _fields_toml_table(field)
+    block = (table or {}).get('rgb') or {}
+    raw = block.get('channels')
+    if not isinstance(raw, dict):
+        return None, None
+    out = {}
+    for filt, weights in raw.items():
+        try:
+            r, g, b = (float(x) for x in weights)
+        except (TypeError, ValueError):
+            click.echo(
+                f"Warning: [{field}.rgb.channels.{filt}] is not a 3-element "
+                f"[r,g,b] list — skipping that filter."
+            )
+            continue
+        out[str(filt).lower()] = (r, g, b)
+    if not out:
+        return None, None
+    return out, _knobs_from_block(block)
+
+
+def _rgb_config_from_imaging_toml(field):
+    """Legacy: ``(channels, knobs)`` via imaging.toml, or ``(None, None)``.
+
+    PNG-tile-era path kept for fields not yet migrated to fields.toml. Note
+    ``get_rgb_configs`` resolves mosaic file globs on the local filesystem and
+    drops filters whose files are missing — prefer ``[<field>.rgb]`` in
+    fields.toml, which has no filesystem dependency.
     """
     try:
         from campfire.deploy.config import resolve_imaging_config
@@ -267,16 +351,53 @@ def _load_rgb_channels(field):
 
         path = resolve_imaging_config()
         if path is None:
-            return None
+            return None, None
         rgbs = get_rgb_configs(load_imaging_config(path), fields=[field])
         if not rgbs:
-            return None
-        return {
+            return None, None
+        channels = {
             filt: tuple(float(x) for x in info['color'])
             for filt, info in rgbs[0].filter_channels.items()
         }
+        knobs = _knobs_from_block({
+            'noiselum': rgbs[0].noiselum,
+            'satpercent': rgbs[0].satpercent,
+            'noisesig': rgbs[0].noisesig,
+        })
+        return channels, knobs
     except Exception:
-        return None
+        return None, None
+
+
+def _load_rgb_config(field):
+    """``(channels, knobs)`` for the default view, or ``(None, None)``.
+
+    Sources, in order: fields.toml ``[<field>.rgb]`` (preferred), then the legacy
+    imaging.toml. Always says which source won — or why none did — so a
+    single-band fallback is never silent (the failure mode that shipped EGS
+    with a single-band default).
+    """
+    channels, knobs = _rgb_config_from_fields_toml(field)
+    if channels:
+        click.echo(
+            f"RGB default view from fields.toml [{field}.rgb]: "
+            f"{len(channels)} filter(s)."
+        )
+        return channels, knobs
+    channels, knobs = _rgb_config_from_imaging_toml(field)
+    if channels:
+        click.echo(
+            f"RGB default view from legacy imaging.toml [{field}.rgb]: "
+            f"{len(channels)} filter(s). Consider moving this block to "
+            f"fields.toml [{field}.rgb]."
+        )
+        return channels, knobs
+    click.echo(
+        f"Note: no RGB config for '{field}' — the dataset will open in a "
+        f"single-band view. Add [{field}.rgb.channels] (filter → [r,g,b] "
+        f"weights) to $CAMPFIRE_ROOT/config/fields.toml to set an RGB default."
+    )
+    return None, None
 
 
 def run_build(field, *, pixel_scale='30mas', tile=None, processes=None,
@@ -330,7 +451,14 @@ def run_build(field, *, pixel_scale='30mas', tile=None, processes=None,
         f"'{field}' at {pixel_scale}: {len(bands)} band(s) / {n_inputs} mosaic(s)."
     )
 
-    viewer = derive_viewer(_load_rgb_channels(field), list(bands))
+    rgb_channels, trilogy_knobs = _load_rgb_config(field)
+    viewer = derive_viewer(rgb_channels, list(bands), trilogy=trilogy_knobs)
+    if rgb_channels and viewer.get('default') != 'rgb':
+        usable = sorted(f for f in bands if f in rgb_channels)
+        click.echo(
+            f"Note: only {len(usable)} of the RGB config's filters are among the "
+            f"built bands (need 3) — defaulting to single-band {viewer.get('band')}."
+        )
     toml_dict = build_fitsgl_toml(
         field, bands=bands, viewer=viewer, pixel_scale=pixel_scale,
         single_tile=single_tile, tile=tile,

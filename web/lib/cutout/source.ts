@@ -7,12 +7,31 @@
 // Kept free of `sharp`/route coupling so the science-FITS route can share it;
 // PNG-flattening display helpers live in `./display`.
 
-import { loadFitsglConfig, type FitsglConfig } from '@fitsgl/core';
+import {
+  DEFAULT_TRILOGY_PARAMS,
+  loadFitsglConfig,
+  trilogyLevels,
+  type FitsglConfig,
+  type StretchMode,
+  type TrilogyParams,
+} from '@fitsgl/core';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { loadManifest } from './manifest';
 import type { BandSource } from './index';
+import type { Limits } from './render';
 
 type FitsglBand = FitsglConfig['dataset']['bands'][number];
+
+/** The producer's default stretch, resolved for the chosen display bands so a
+ *  server cutout opens on the same transfer the map does. */
+export interface DisplayStretchDefaults {
+  stretch: StretchMode;
+  /** Per-band display interval, aligned with the chosen bands (trilogy only:
+   *  `[x0, x2]` from the precomputed stats + knobs). Absent ⇒ auto percentile. */
+  limits?: Limits[];
+  /** Per-band trilogy softening `k`, aligned with `limits` (trilogy only). */
+  trilogyK?: number[];
+}
 
 export interface FieldCutoutSource {
   /** 1 band (single-band colormap) or 3 ordered `[R, G, B]` (composite). */
@@ -21,6 +40,8 @@ export interface FieldCutoutSource {
   bandNames: string[];
   /** Native (finest-level) pixel scale in arcsec/px, for native-size defaults. */
   nativeScaleArcsec: number;
+  /** Producer default stretch for `bands`, or `null` (engine default: asinh + auto). */
+  display: DisplayStretchDefaults | null;
   /** Whether every backing mosaic is published (`fitsgl_dataset_is_public`).
    *  `false` ⇒ this render is admin-only: the response must NOT be
    *  shared-cacheable (`private, no-store`), or a CDN keyed only on the URL
@@ -64,6 +85,36 @@ function chooseBands(config: FitsglConfig): FitsglBand[] {
 
   const single = (dv.band && bands.find((b) => b.name === dv.band)) || bands[0];
   return [single];
+}
+
+/**
+ * Resolve the producer's default stretch for the chosen bands (exported for
+ * tests). Trilogy needs precomputed `stats.trilogy` on EVERY chosen band —
+ * levels derive server-side from those stats + the producer's knobs, exactly
+ * as the map's `applyTrilogy` does, so cutout and map match by construction.
+ * Any band missing stats ⇒ `null` (engine default: asinh + auto percentile),
+ * matching the viewer's own fallback. Producer knobs (`defaultView.trilogy`)
+ * arrive with @fitsgl/core ≥ 0.3.0 — an older validator strips the key and we
+ * fall back to the library defaults.
+ */
+export function displayDefaults(
+  config: FitsglConfig,
+  chosen: FitsglBand[],
+): DisplayStretchDefaults | null {
+  const dv = config.defaultView;
+  const mode = dv.stretch?.mode;
+  if (mode === undefined) return null;
+  if (mode !== 'trilogy') return { stretch: mode };
+  const stats = chosen.map((b) => b.stats?.trilogy);
+  if (stats.some((s) => s === undefined)) return null;
+  const knobs = (dv as { trilogy?: Partial<TrilogyParams> }).trilogy;
+  const params: TrilogyParams = { ...DEFAULT_TRILOGY_PARAMS, ...knobs };
+  const levels = stats.map((s) => trilogyLevels(s!, params));
+  return {
+    stretch: 'trilogy',
+    limits: levels.map((l) => ({ lo: l.x0, hi: l.x2 })),
+    trilogyK: levels.map((l) => l.k),
+  };
 }
 
 /**
@@ -136,6 +187,7 @@ export async function resolveFieldCutoutSource(
       bands,
       bandNames: chosen.map((b) => b.name),
       nativeScaleArcsec: bands[0].manifest.levels[0].pixelScaleArcsec,
+      display: displayDefaults(ds.config, chosen),
       isPublic: ds.isPublic,
     };
   } catch (err) {

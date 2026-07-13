@@ -18,6 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isTrilogyComposite, trilogyComposite } from '@fitsgl/core/react';
 import type { ExplorerBand, ExplorerState, FitsViewerHandle } from '@fitsgl/core/react';
 
 export type ChannelKey = 'single' | 'r' | 'g' | 'b';
@@ -118,17 +119,29 @@ export function useDisplayStretch({ handleRef, bands, state, readyTick }: UseDis
     }
   }, [handleRef, trilogy]);
 
-  // Apply precomputed trilogy levels when the trilogy curve is active.
+  // Apply precomputed trilogy levels (with the live knobs) when the trilogy
+  // curve is active. A weighted composite takes one stats per participating
+  // band, in `trilogyComposite` order — the same order `deriveViewerConfig`
+  // builds the multiband view from, so it matches the viewer's band managers.
+  // The try/catch absorbs the one-frame race where the viewer's source hasn't
+  // caught up with the state yet (the readyTick pass re-applies).
   useEffect(() => {
     if (!trilogy || !state) return;
     const v = handleRef.current?.getViewer();
     if (!v) return;
-    if (state.mode === 'rgb') {
-      const stats = (['r', 'g', 'b'] as const).map((role) => bandByName.get(state.rgb[role])?.trilogy);
-      if (stats.every((s): s is NonNullable<typeof s> => !!s)) v.applyTrilogy(stats);
-    } else {
-      const stat = bandByName.get(state.band)?.trilogy;
-      if (stat) v.applyTrilogy(stat);
+    try {
+      if (isTrilogyComposite(state)) {
+        const comp = trilogyComposite(state);
+        const stats = comp.map((e) => bandByName.get(e.band)?.trilogy);
+        if (stats.every((s): s is NonNullable<typeof s> => !!s)) {
+          v.applyTrilogy(stats, state.trilogyParams);
+        }
+      } else {
+        const stat = bandByName.get(state.band)?.trilogy;
+        if (stat) v.applyTrilogy(stat, state.trilogyParams);
+      }
+    } catch {
+      // source/state transient mismatch — the next ready/frame pass re-applies
     }
   }, [trilogy, state, bandByName, handleRef, readyTick]);
 
@@ -144,22 +157,58 @@ export function useDisplayStretch({ handleRef, bands, state, readyTick }: UseDis
     [handleRef],
   );
 
+  /** Simple-RGB shared limits: one [min, max] pushed to all three channels — no
+   *  independent per-band stretch (that's what keeps a simple composite
+   *  interpretable; the bands share flux units, so shared cuts are physical). */
+  const setSharedHandle = useCallback(
+    (min: number, max: number) => {
+      const v = handleRef.current?.getViewer();
+      if (!v) return;
+      for (const role of ['r', 'g', 'b'] as const) v.setChannelStretch(role, min, max);
+      setRanges((prev) => ({
+        ...prev,
+        r: { min, max },
+        g: { min, max },
+        b: { min, max },
+      }));
+    },
+    [handleRef],
+  );
+
+  /** The one range shown by the simple-RGB shared control: after any shared op
+   *  all channels agree; before one (fresh source auto-stretch), merge to the
+   *  envelope (min of mins / max of maxes) so every band's data stays visible. */
+  const sharedRange = useMemo<{ min: number; max: number } | null>(() => {
+    if (!state || state.mode !== 'rgb') return null;
+    const rs = (['r', 'g', 'b'] as const).map(
+      (role) => ranges[role] ?? fallbackRange(bandByName.get(state.rgb[role]) ?? bands[0]),
+    );
+    return {
+      min: Math.min(...rs.map((r) => r.min)),
+      max: Math.max(...rs.map((r) => r.max)),
+    };
+  }, [state, ranges, bandByName, bands]);
+
   const applyPreset = useCallback(
     async (preset: LimitPreset) => {
       const h = handleRef.current;
       const v = h?.getViewer();
       if (!h || !v || !state) return;
+      // Simple RGB shares one range across channels; merge per-channel results
+      // to their envelope so no band's data is cut off.
+      const shareRgb = (per: Array<{ min: number; max: number } | undefined>): void => {
+        const got = per.filter((r): r is { min: number; max: number } => !!r);
+        if (got.length === 0) return;
+        setSharedHandle(Math.min(...got.map((r) => r.min)), Math.max(...got.map((r) => r.max)));
+      };
       if (preset === 'zscale') {
         if (state.mode === 'rgb') {
-          const next: Partial<Record<ChannelKey, { min: number; max: number }>> = {};
-          for (const role of ['r', 'g', 'b'] as const) {
-            const z = bandByName.get(state.rgb[role])?.zscale;
-            if (z) {
-              v.setChannelStretch(role, z[0], z[1]);
-              next[role] = { min: z[0], max: z[1] };
-            }
-          }
-          setRanges((prev) => ({ ...prev, ...next }));
+          shareRgb(
+            (['r', 'g', 'b'] as const).map((role) => {
+              const z = bandByName.get(state.rgb[role])?.zscale;
+              return z ? { min: z[0], max: z[1] } : undefined;
+            }),
+          );
         } else {
           const z = bandByName.get(state.band)?.zscale;
           if (z) {
@@ -179,18 +228,27 @@ export function useDisplayStretch({ handleRef, bands, state, readyTick }: UseDis
       const res = await v.autoStretch(pLo, pHi);
       if (!res) return;
       if (res.mode === 'rgb') {
-        const next: Partial<Record<ChannelKey, { min: number; max: number }>> = {};
-        for (const role of ['r', 'g', 'b'] as const) {
-          const r = res[role];
-          if (r) next[role] = { min: r[0], max: r[1] };
-        }
-        setRanges((prev) => ({ ...prev, ...next }));
+        shareRgb(
+          (['r', 'g', 'b'] as const).map((role) => {
+            const r = res[role];
+            return r ? { min: r[0], max: r[1] } : undefined;
+          }),
+        );
       } else {
         setRanges((prev) => ({ ...prev, single: { min: res.min, max: res.max } }));
       }
     },
-    [handleRef, state, bandByName],
+    [handleRef, state, bandByName, setSharedHandle],
   );
 
-  return { channels, hasZscale, hasTrilogy, setHandle, applyPreset, seedFromFrame };
+  return {
+    channels,
+    hasZscale,
+    hasTrilogy,
+    sharedRange,
+    setHandle,
+    setSharedHandle,
+    applyPreset,
+    seedFromFrame,
+  };
 }
