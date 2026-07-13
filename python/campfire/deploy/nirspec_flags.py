@@ -125,6 +125,8 @@ def pull_stuck_shutters(obs, config, dry_run=False):
     tag-emitting ``write_stuck_shutters_toml`` so the file stays byte-compatible
     with what the auto-detector writes.
     """
+    from campfire.deploy import require_pipeline
+    require_pipeline("Pulling stuck shutters (byte-compatible TOML writer)")
     from campfire_pipeline.nirspec.stuck_shutters import (
         load_stuck_shutters_tagged, write_stuck_shutters_toml,
     )

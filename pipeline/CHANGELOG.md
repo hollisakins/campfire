@@ -29,6 +29,13 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- Dependency declarations now match actual imports (#330): added `requests`,
+  `h5py`, and `Pillow` (previously satisfied only transitively) plus the
+  directly-imported JWST-stack packages (`crds`, `asdf`, `stdatamodels`,
+  `stcal`, `drizzle`, `gwcs` — versions still ride the `jwst` pin); dropped the
+  never-imported `tomlkit`. No change to resolved environments in practice —
+  every added package was already installed via `jwst`. Ships alongside the new
+  repo-root `install.py` interactive installer.
 - NIRCam expmap plots gain tile footprints + a squared, in-ticked panel: the
   per-filter maps (`expmap_*.png`/`.pdf`) now overlay the same tile outlines as
   `<field>_layout.png`, so a single filter's coverage reads against the tile

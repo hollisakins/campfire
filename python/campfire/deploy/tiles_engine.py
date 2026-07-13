@@ -37,10 +37,7 @@ logging.getLogger('reproject').setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
+import tomllib
 
 try:
     from tqdm import tqdm
