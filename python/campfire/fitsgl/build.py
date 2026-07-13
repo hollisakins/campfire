@@ -132,6 +132,19 @@ def derive_viewer(rgb_channels, band_filters, trilogy=None):
     initial view. Nested tables are placed last so the TOML serializes cleanly.
     """
     usable = [f for f in band_filters if rgb_channels and f in rgb_channels]
+    if len(usable) > _MAX_COMPOSITE_BANDS:
+        # FitsGL caps a composite at 12 bands and its parser rejects a longer
+        # [viewer.weights]; keep the strongest contributors (by total weight),
+        # preserving wavelength order for the survivors.
+        keep = set(sorted(usable, key=lambda f: sum(rgb_channels[f]), reverse=True)
+                   [:_MAX_COMPOSITE_BANDS])
+        dropped = [f for f in usable if f not in keep]
+        usable = [f for f in usable if f in keep]
+        click.echo(
+            f"Note: the RGB config lists {len(usable) + len(dropped)} filters; "
+            f"FitsGL composites cap at {_MAX_COMPOSITE_BANDS} — dropping the "
+            f"lowest-weight: {', '.join(dropped)}."
+        )
     if len(usable) >= 3:
         pick = lambda ch: max(usable, key=lambda f: rgb_channels[f][ch])
         peak = max((w for f in usable for w in rgb_channels[f]), default=1.0)
@@ -278,6 +291,10 @@ def _fiducial_tiles_from_toml(field):
 # old PNG stretch) maps onto fitsgl's `noisesig` — the algorithms are cousins,
 # not twins, so treat the value as a starting point and tune in fields.toml.
 _TRILOGY_KNOBS = ('noiselum', 'satpercent', 'noisesig', 'noisesig0')
+
+# FitsGL's composite cap (fitsgl-core MAX_BANDS / fitsgl-py MAX_COMPOSITE_BANDS):
+# a longer [viewer.weights] is rejected by the producer's parser.
+_MAX_COMPOSITE_BANDS = 12
 
 
 def _knobs_from_block(block):

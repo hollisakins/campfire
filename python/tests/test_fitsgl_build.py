@@ -314,3 +314,17 @@ def test_generated_viewer_block_parses_through_fitsgl(tmp_path):
         "f444w": (1.0, 0.0, 0.0),
     }
     assert cfg.viewer.trilogy == {"noiselum": 0.12, "satpercent": 0.01}
+
+
+def test_derive_viewer_caps_weights_at_fitsgl_composite_max(capsys):
+    """>12 usable filters: keep the strongest by total weight (FitsGL rejects a
+    longer [viewer.weights]), preserve wavelength order, and say what dropped."""
+    filters = [f"f{100 + 10 * i}w" for i in range(14)]  # wavelength-ordered
+    # total weight rises with wavelength, so the two bluest are the weakest
+    rgb = {f: (0.1 * (i + 1), 0.0, 0.0) for i, f in enumerate(filters)}
+    v = derive_viewer(rgb, filters)
+    assert v["default"] == "rgb"
+    assert len(v["weights"]) == 12
+    assert list(v["weights"]) == filters[2:]  # weakest two dropped, order kept
+    out = capsys.readouterr().out
+    assert "cap at 12" in out and "f100w" in out and "f110w" in out
