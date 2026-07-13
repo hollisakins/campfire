@@ -235,31 +235,66 @@ def resolve_fiducial_tiles(field, *, pixel_scale='30mas'):
     return Field.load(field).fiducial_tile_set(pixel_scale=pixel_scale)
 
 
-def _fiducial_tiles_from_toml(field):
-    """Fallback: read ``[<field>].fiducial_tiles`` straight from fields.toml (no WCS check)."""
+def _fields_toml_table(field):
+    """The ``[<field>]`` table from ``$CAMPFIRE_ROOT/config/fields.toml``, or ``None``."""
     try:
         import tomllib
     except ModuleNotFoundError:  # pragma: no cover - py<3.11
         import tomli as tomllib  # type: ignore
     root = os.environ.get('CAMPFIRE_ROOT')
     if not root:
-        return []
+        return None
     path = Path(root) / 'config' / 'fields.toml'
     if not path.is_file():
-        return []
+        return None
     with path.open('rb') as f:
         data = tomllib.load(f)
-    raw = (data.get(field) or {}).get('fiducial_tiles', [])
+    table = data.get(field)
+    return table if isinstance(table, dict) else None
+
+
+def _fiducial_tiles_from_toml(field):
+    """Fallback: read ``[<field>].fiducial_tiles`` straight from fields.toml (no WCS check)."""
+    raw = (_fields_toml_table(field) or {}).get('fiducial_tiles', [])
     if isinstance(raw, str):
         raw = [raw]
     return list(raw) if isinstance(raw, list) else []
 
 
-def _load_rgb_channels(field):
-    """Filter → (r,g,b) color weights from imaging.toml, or ``None`` if unavailable.
+def _rgb_channels_from_fields_toml(field):
+    """Filter → (r,g,b) weights from fields.toml ``[<field>.rgb.channels]``, or ``None``.
 
-    Best-effort: any missing config / parse error yields ``None`` so the build
-    proceeds with a single-band default view rather than failing.
+    The same block ``cfpipe nircam rgb`` consumes; only the color weights matter
+    for the default view (the stretch tunables wait on defaultView support in the
+    fitsgl.json contract). Pure TOML — no mosaic files are resolved, so this works
+    on any machine that can see fields.toml. Filter keys are lowercased to match
+    the discovered band names; malformed weight entries are skipped.
+    """
+    table = _fields_toml_table(field)
+    raw = ((table or {}).get('rgb') or {}).get('channels')
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for filt, weights in raw.items():
+        try:
+            r, g, b = (float(x) for x in weights)
+        except (TypeError, ValueError):
+            click.echo(
+                f"Warning: [{field}.rgb.channels.{filt}] is not a 3-element "
+                f"[r,g,b] list — skipping that filter."
+            )
+            continue
+        out[str(filt).lower()] = (r, g, b)
+    return out or None
+
+
+def _rgb_channels_from_imaging_toml(field):
+    """Legacy: filter → (r,g,b) weights via imaging.toml, or ``None`` if unavailable.
+
+    PNG-tile-era path kept for fields not yet migrated to fields.toml. Note
+    ``get_rgb_configs`` resolves mosaic file globs on the local filesystem and
+    drops filters whose files are missing — prefer ``[<field>.rgb]`` in
+    fields.toml, which has no filesystem dependency.
     """
     try:
         from campfire.deploy.config import resolve_imaging_config
@@ -277,6 +312,37 @@ def _load_rgb_channels(field):
         }
     except Exception:
         return None
+
+
+def _load_rgb_channels(field):
+    """Filter → (r,g,b) color weights for the default view, or ``None``.
+
+    Sources, in order: fields.toml ``[<field>.rgb.channels]`` (preferred), then
+    the legacy imaging.toml. Always says which source won — or why none did — so
+    a single-band fallback is never silent (the failure mode that shipped EGS
+    with a single-band default).
+    """
+    channels = _rgb_channels_from_fields_toml(field)
+    if channels:
+        click.echo(
+            f"RGB default view from fields.toml [{field}.rgb]: "
+            f"{len(channels)} filter(s)."
+        )
+        return channels
+    channels = _rgb_channels_from_imaging_toml(field)
+    if channels:
+        click.echo(
+            f"RGB default view from legacy imaging.toml [{field}.rgb]: "
+            f"{len(channels)} filter(s). Consider moving this block to "
+            f"fields.toml [{field}.rgb]."
+        )
+        return channels
+    click.echo(
+        f"Note: no RGB config for '{field}' — the dataset will open in a "
+        f"single-band view. Add [{field}.rgb.channels] (filter → [r,g,b] "
+        f"weights) to $CAMPFIRE_ROOT/config/fields.toml to set an RGB default."
+    )
+    return None
 
 
 def run_build(field, *, pixel_scale='30mas', tile=None, processes=None,
@@ -330,7 +396,14 @@ def run_build(field, *, pixel_scale='30mas', tile=None, processes=None,
         f"'{field}' at {pixel_scale}: {len(bands)} band(s) / {n_inputs} mosaic(s)."
     )
 
-    viewer = derive_viewer(_load_rgb_channels(field), list(bands))
+    rgb_channels = _load_rgb_channels(field)
+    viewer = derive_viewer(rgb_channels, list(bands))
+    if rgb_channels and viewer.get('default') != 'rgb':
+        usable = sorted(f for f in bands if f in rgb_channels)
+        click.echo(
+            f"Note: only {len(usable)} of the RGB config's filters are among the "
+            f"built bands (need 3) — defaulting to single-band {viewer.get('band')}."
+        )
     toml_dict = build_fitsgl_toml(
         field, bands=bands, viewer=viewer, pixel_scale=pixel_scale,
         single_tile=single_tile, tile=tile,

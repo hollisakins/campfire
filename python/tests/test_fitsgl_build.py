@@ -11,6 +11,8 @@ import json
 import toml
 
 from campfire.fitsgl.build import (
+    _load_rgb_channels,
+    _rgb_channels_from_fields_toml,
     build_fitsgl_toml,
     derive_viewer,
     group_bands,
@@ -88,6 +90,89 @@ def test_derive_viewer_single_when_fewer_than_three_rgb_filters():
 def test_derive_viewer_empty_bands():
     v = derive_viewer(None, [])
     assert v["default"] == "single" and "band" not in v
+
+
+# --- _rgb_channels_from_fields_toml / _load_rgb_channels ---------------------
+
+def _write_fields_toml(tmp_path, monkeypatch, body):
+    """A $CAMPFIRE_ROOT with config/fields.toml containing ``body``."""
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "fields.toml").write_text(body)
+    monkeypatch.setenv("CAMPFIRE_ROOT", str(tmp_path))
+
+
+def test_rgb_channels_from_fields_toml(tmp_path, monkeypatch):
+    _write_fields_toml(tmp_path, monkeypatch, """
+[egs]
+fiducial_tiles = ["A1"]
+
+[egs.rgb]
+noiselum = 0.12
+
+[egs.rgb.channels]
+f115w = [0.0, 0.0, 1.0]
+F444W = [1.0, 0.0, 0.0]
+f277w = [0.0, 1.0, 0.0]
+""")
+    ch = _rgb_channels_from_fields_toml("egs")
+    # weights parsed as float tuples; filter keys lowercased to match band names
+    assert ch == {
+        "f115w": (0.0, 0.0, 1.0),
+        "f444w": (1.0, 0.0, 0.0),
+        "f277w": (0.0, 1.0, 0.0),
+    }
+    # end-to-end: this is exactly what derive_viewer needs for an RGB default
+    v = derive_viewer(ch, ["f115w", "f277w", "f444w"])
+    assert v["default"] == "rgb" and v["stretch"] == "trilogy"
+
+
+def test_rgb_channels_from_fields_toml_skips_malformed_entries(tmp_path, monkeypatch):
+    _write_fields_toml(tmp_path, monkeypatch, """
+[egs.rgb.channels]
+f115w = [0.0, 0.0, 1.0]
+f277w = [0.0, 1.0]
+f444w = "red"
+""")
+    assert _rgb_channels_from_fields_toml("egs") == {"f115w": (0.0, 0.0, 1.0)}
+
+
+def test_rgb_channels_from_fields_toml_missing(tmp_path, monkeypatch):
+    # no rgb block at all
+    _write_fields_toml(tmp_path, monkeypatch, "[egs]\nfiducial_tiles = ['A1']\n")
+    assert _rgb_channels_from_fields_toml("egs") is None
+    # no field table
+    assert _rgb_channels_from_fields_toml("cosmos") is None
+    # no CAMPFIRE_ROOT
+    monkeypatch.delenv("CAMPFIRE_ROOT")
+    assert _rgb_channels_from_fields_toml("egs") is None
+
+
+def test_load_rgb_channels_prefers_fields_toml(tmp_path, monkeypatch):
+    """fields.toml wins without ever touching the legacy imaging.toml path."""
+    _write_fields_toml(tmp_path, monkeypatch, """
+[egs.rgb.channels]
+f115w = [0.0, 0.0, 1.0]
+f277w = [0.0, 1.0, 0.0]
+f444w = [1.0, 0.0, 0.0]
+""")
+
+    def boom(field):
+        raise AssertionError("legacy imaging.toml path must not be consulted")
+
+    monkeypatch.setattr("campfire.fitsgl.build._rgb_channels_from_imaging_toml", boom)
+    ch = _load_rgb_channels("egs")
+    assert set(ch) == {"f115w", "f277w", "f444w"}
+
+
+def test_load_rgb_channels_none_when_no_config(tmp_path, monkeypatch, capsys):
+    """No fields.toml block and no imaging.toml → None, but never silent."""
+    _write_fields_toml(tmp_path, monkeypatch, "[egs]\n")
+    monkeypatch.setattr(
+        "campfire.fitsgl.build._rgb_channels_from_imaging_toml", lambda field: None
+    )
+    assert _load_rgb_channels("egs") is None
+    out = capsys.readouterr().out
+    assert "no RGB config" in out and "[egs.rgb.channels]" in out
 
 
 # --- select_mosaics / group_bands (real discover_mosaics on a fake tree) -----
