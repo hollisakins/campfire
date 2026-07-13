@@ -343,24 +343,33 @@ export function FitsGLMapSurface({
     [bands, viewState],
   );
 
-  // Marker inputs (sky-positioned; FitsGL projects via the manifest WCS). A filter
-  // dims non-matching objects rather than hiding them; the highlighted object gets
-  // a larger white glyph, matching the Leaflet layer's emphasis.
+  // Marker inputs (sky-positioned; FitsGL projects via the manifest WCS). Hollow
+  // circles — an unfilled ring keeps the object itself visible — with the border
+  // colored by redshift quality. A filter dims non-matching objects rather than
+  // hiding them; the highlighted object gets a larger white ring, matching the
+  // Leaflet layer's emphasis. FitsGL draws (and hit-tests topmost) in input order,
+  // so sort dimmed non-matches to the bottom, then ascending quality (secure on
+  // top), with the highlighted object above everything.
   const markerInputs = useMemo<MarkerInput[]>(() => {
-    return markers.map((m) => {
+    const entries = markers.map((m) => {
       const matches = !markerFilter || markerFilter(m);
       const highlighted = m.object_id === highlightObjectId;
       const base = MARKER_QUALITY_COLORS[m.redshift_quality] ?? MARKER_QUALITY_COLORS[0];
-      return {
+      const input: MarkerInput = {
         id: m.object_id,
         ra: m.ra,
         dec: m.dec,
-        shape: 'point',
+        shape: 'circle',
         size: highlighted ? 16 : matches ? 10 : 6,
+        edgeWidth: highlighted ? 2.5 : 1.5,
         color: highlighted ? '#ffffff' : matches ? base : hexToRgba(base, 0.25),
         data: { objectId: m.object_id },
       };
+      const zOrder = highlighted ? 100 : (matches ? 10 : 0) + m.redshift_quality;
+      return { input, zOrder };
     });
+    entries.sort((a, b) => a.zOrder - b.zOrder);
+    return entries.map((e) => e.input);
   }, [markers, markerFilter, highlightObjectId]);
 
   // Push markers whenever they (or the toggle) change and the viewer is ready.
@@ -459,10 +468,16 @@ export function FitsGLMapSurface({
     }, 300);
   }, []);
 
+  // FitsGL fires onMarkerClick on mouseup; the browser then delivers the DOM
+  // `click` for the same gesture to the root handler, which must not close the
+  // popup it just opened. Consumed (or overwritten) by the very next click.
+  const suppressNextRootClick = useRef(false);
+
   const onMarkerClick = useCallback((e: MarkerEvent) => {
     const objectId = e.marker.data?.objectId as string | undefined;
     const marker = objectId ? markerById.get(objectId) : undefined;
     if (!marker) return;
+    suppressNextRootClick.current = true;
     popupWorld.current = { worldX: e.worldX, worldY: e.worldY };
     setPopup({ marker, x: e.screenX, y: e.screenY });
   }, [markerById]);
@@ -471,6 +486,29 @@ export function FitsGLMapSurface({
     popupWorld.current = null;
     setPopup(null);
   }, []);
+
+  // Pointer cursor over a clickable marker (the canvas only sets its own cursor
+  // for modal tools, so the root style shows through in pan mode).
+  const onMarkerHover = useCallback((e: MarkerEvent | null) => {
+    const root = rootRef.current;
+    if (root) root.style.cursor = e ? 'pointer' : '';
+  }, []);
+
+  // Click anywhere (that isn't the marker click that opened it, and isn't the
+  // tail end of a pan drag) dismisses the popup.
+  const pointerDownPos = useRef<{ x: number; y: number } | null>(null);
+  const handleRootPointerDown = useCallback((ev: React.PointerEvent<HTMLDivElement>) => {
+    pointerDownPos.current = { x: ev.clientX, y: ev.clientY };
+  }, []);
+  const handleRootClick = useCallback((ev: React.MouseEvent<HTMLDivElement>) => {
+    if (suppressNextRootClick.current) {
+      suppressNextRootClick.current = false;
+      return;
+    }
+    const down = pointerDownPos.current;
+    if (down && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > 5) return;
+    closePopup();
+  }, [closePopup]);
 
   // Right-click → context menu at the cursor's sky position. Passes ABSOLUTE
   // client coords; the parent (MapViewer.handleContextMenu) subtracts the map
@@ -586,7 +624,13 @@ export function FitsGLMapSurface({
   }
 
   return (
-    <div ref={rootRef} className="fitsgl-chrome relative h-full w-full overflow-hidden" onContextMenu={handleContextMenu}>
+    <div
+      ref={rootRef}
+      className="fitsgl-chrome relative h-full w-full overflow-hidden"
+      onContextMenu={handleContextMenu}
+      onPointerDown={handleRootPointerDown}
+      onClick={handleRootClick}
+    >
       {viewerConfig && (
         <FitsViewer
           config={viewerConfig}
@@ -595,6 +639,7 @@ export function FitsGLMapSurface({
           onCursor={onCursor}
           onFrame={onFrame}
           onMarkerClick={onMarkerClick}
+          onMarkerHover={onMarkerHover}
           regionTooltip={regionTooltip}
           onError={(err) => setLoadError(String((err as Error)?.message ?? err))}
           className="h-full w-full"
@@ -728,8 +773,11 @@ export function FitsGLMapSurface({
         const q = QUALITY_LABELS.find((l) => l.value === popup.marker.redshift_quality);
         return (
           <div
-            className="absolute z-[600] min-w-[200px] -translate-x-1/2 -translate-y-full rounded-lg border border-border bg-card p-3 text-sm shadow-lg"
+            // text-text-primary is explicit (not inherited): the chrome's card is
+            // pinned dark in both themes, but the inherited body color is not.
+            className="absolute z-[600] min-w-[200px] -translate-x-1/2 -translate-y-full rounded-lg border border-border bg-card p-3 text-sm text-text-primary shadow-lg"
             style={{ left: popup.x, top: popup.y - 12 }}
+            onClick={(ev) => ev.stopPropagation()}
           >
             <button
               onClick={closePopup}
