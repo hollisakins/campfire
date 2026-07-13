@@ -209,16 +209,16 @@ campfire deploy tiles --field cosmos --filter f444w      # map tiles
 campfire deploy sync-programs                            # upsert from programs.toml
 ```
 
-Migration-era one-time tools (`deploy registry backfill/copy/prune`, `deploy
-nircam import-*`) are hidden from `--help` but still work; they retire once the
-A1/A2 storage migrations complete. `deploy registry budget` is gone — the
-number shows in `campfire status` (admins). Registry↔bucket verification is
-`campfire verify --cloud`. The `deploy nircam pull*` / `deploy nirspec pull-*`
-annotation round-trips are folded into `campfire pull` (hidden but working
-individually). RGB/SED static cutouts are fully deprecated (superseded by the
-on-the-fly `/api/v1/cutout` API): deploy neither generates nor uploads them,
-and the `deploy rgb`/`deploy sed` subcommands are removed — their legacy R2
-remnants retire with A2.
+Migration-era one-time tools (the `deploy registry` subgroup —
+backfill/reconcile/copy/prune — and `deploy nircam import-*`) are deleted (A1/A2
+complete, issue #371). The storage budget shows in `campfire status` (admins);
+registry↔bucket verification is `campfire verify --cloud`. The `deploy nircam
+pull*` / `deploy nirspec pull-*` annotation round-trips are folded into
+`campfire pull` (hidden but working individually). RGB/SED static cutouts are
+fully deprecated (superseded by the on-the-fly `/api/v1/cutout` API): deploy
+neither generates nor uploads them, the `deploy rgb`/`deploy sed` subcommands
+and their generators are removed, and the `targets.has_sed_plot` column is
+dropped — their legacy R2 remnants retire with A2.
 
 **Deploy auth (issue #250).** Two decisions, kept independent:
 

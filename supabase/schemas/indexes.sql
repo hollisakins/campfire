@@ -18,9 +18,6 @@ CREATE INDEX IF NOT EXISTS idx_targets_coords
 CREATE INDEX IF NOT EXISTS idx_targets_field_observation
     ON public.targets USING btree (field, observation);
 
-CREATE INDEX IF NOT EXISTS idx_targets_has_sed_plot
-    ON public.targets USING btree (has_sed_plot) WHERE (has_sed_plot = true);
-
 CREATE INDEX IF NOT EXISTS idx_targets_target_id_trgm
     ON public.targets USING gin (target_id public.gin_trgm_ops);
 

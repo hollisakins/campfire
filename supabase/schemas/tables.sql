@@ -414,7 +414,6 @@ CASE
     WHEN ("redshift_quality" = 1) THEN NULL::double precision
     ELSE COALESCE(("redshift_inspected")::double precision, "redshift_auto")
 END) STORED,
-    "has_sed_plot" boolean DEFAULT false NOT NULL,
     "max_exposure_time" double precision,
     "program_slug" "text" NOT NULL,
     "observation" "text" NOT NULL,
@@ -431,8 +430,6 @@ END) STORED,
 
 ALTER TABLE "public"."targets" OWNER TO "postgres";
 
-
-COMMENT ON COLUMN "public"."targets"."has_sed_plot" IS 'Indicates whether an SED plot PDF exists in R2. Set during deployment to avoid runtime R2 HeadObject calls.';
 
 -- ---------------------------------------------------------------------------
 -- DEPRECATED target-tier inspection columns

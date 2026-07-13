@@ -132,50 +132,6 @@ def test_pull_exclusions_dry_run_writes_nothing(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# import_skip: fields.toml skip globs → DB review_status='excluded'
-# ---------------------------------------------------------------------------
-
-def _patch_field_skip(monkeypatch, skip):
-    fake_field = types.SimpleNamespace(skip=skip)
-    monkeypatch.setattr('campfire_pipeline.nircam.field.Field',
-                        types.SimpleNamespace(load=lambda name: fake_field))
-
-
-def test_import_skip_matches_globs_additive(monkeypatch):
-    _patch_field_skip(monkeypatch, ['jw1_04101_'])  # prefix glob, like fields.toml
-    rows = [
-        {'field': 'cosmos', 'filter': 'f444w', 'filename': 'jw1_04101_00003_nrcalong', 'review_status': 'pending'},
-        {'field': 'cosmos', 'filter': 'f444w', 'filename': 'jw1_04101_00001_nrcalong', 'review_status': 'excluded'},  # already
-        {'field': 'cosmos', 'filter': 'f200w', 'filename': 'jw1_02101_00002_nrca1', 'review_status': 'approved'},  # no match
-    ]
-    client = _patch_client(monkeypatch, rows)
-    nx.import_skip('cosmos', config={})
-    # Only the pending, matching one is newly excluded (additive; skips the
-    # already-excluded and the non-matching approved row).
-    assert len(client.upserts) == 1
-    batch = client.upserts[0]
-    assert [r['filename'] for r in batch] == ['jw1_04101_00003_nrcalong']
-    assert batch[0]['review_status'] == 'excluded'
-
-
-def test_import_skip_dry_run_no_write(monkeypatch):
-    _patch_field_skip(monkeypatch, ['jw1_04101_'])
-    rows = [{'field': 'cosmos', 'filter': 'f444w',
-             'filename': 'jw1_04101_00003_nrcalong', 'review_status': 'pending'}]
-    client = _patch_client(monkeypatch, rows)
-    nx.import_skip('cosmos', config={}, dry_run=True)
-    assert client.upserts == []
-
-
-def test_import_skip_no_patterns_noop(monkeypatch):
-    _patch_field_skip(monkeypatch, [])
-    client = _patch_client(monkeypatch, [{'filter': 'f444w', 'filename': 'x',
-                                          'review_status': 'pending'}])
-    nx.import_skip('cosmos', config={})
-    assert client.upserts == []
-
-
-# ---------------------------------------------------------------------------
 # Part C — inspection state survives re-reduction (_upsert_exposures)
 # ---------------------------------------------------------------------------
 

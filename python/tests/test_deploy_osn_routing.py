@@ -143,7 +143,7 @@ def test_canonical_rate_row_carries_osn_key_and_exposure_ref():
 
 
 def test_canonical_photometry_pz_registers_as_osn_field_scoped():
-    # photometry_pz is a migrated (DEFAULT_COPY_PRODUCT_TYPES) data-bucket product;
+    # photometry_pz is a migrated (A1-copied) data-bucket product;
     # deploy_field_photometry must write it canonical+osn like the NIRSpec paths,
     # else `campfire deploy [photometry]` silently re-creates a stale r2/legacy row.
     canon = storage_key("photometry_pz", Scope(field="egs", object_id="egs_12345"),

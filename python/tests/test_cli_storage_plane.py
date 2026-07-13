@@ -1,7 +1,7 @@
 """CLI wiring tests for the storage-plane restructure.
 
 The seven-verb surface: pull (alias download) / push / verify / drop-local /
-status / sync, with the deploy group's migration-era commands hidden. These
+status / sync, with the deploy group's migration-era commands deleted (#371). These
 tests exercise registration and help rendering — the engine itself is covered
 by test_storage_plan / test_registry / test_download_objects.
 """
@@ -46,31 +46,23 @@ def test_push_requires_scope():
     assert '--obs' in res.output and '--field' in res.output
 
 
-def test_migration_era_commands_hidden_but_working():
+def test_migration_era_commands_deleted():
+    """A1/A2 completed → the one-time migration tools are gone (issue #371)."""
     from campfire.deploy.cli import deploy_group
 
-    registry = deploy_group.commands['registry']
-    for name in ('backfill', 'copy', 'prune', 'reconcile'):
-        assert registry.commands[name].hidden, name
-    # budget is retired outright (campfire status carries the number).
-    assert 'budget' not in registry.commands
+    # The whole registry subgroup (backfill / reconcile / copy / prune) is deleted;
+    # day-to-day verification is `campfire verify --cloud`.
+    assert 'registry' not in deploy_group.commands
 
     nircam = deploy_group.commands['nircam']
-    for name in ('import-masks', 'import-skip', 'pull', 'pull-masks'):
+    for name in ('import-masks', 'import-skip'):
+        assert name not in nircam.commands, name
+    # The annotation round-trips survive (hidden; folded into `campfire pull`).
+    for name in ('pull', 'pull-masks'):
         assert nircam.commands[name].hidden, name
     nirspec = deploy_group.commands['nirspec']
     for name in ('pull-rate-masks', 'pull-stuck-shutters', 'pull-bkg-overrides'):
         assert nirspec.commands[name].hidden, name
-
-
-def test_hidden_commands_absent_from_help():
-    cli = _cli()
-    runner = CliRunner()
-    res = runner.invoke(cli, ['deploy', 'registry', '--help'])
-    assert res.exit_code == 0
-    # Every registry subcommand is hidden, so click renders no Commands section
-    # (the docstring may mention their names; the listing must not).
-    assert 'Commands:' not in res.output
 
 
 def test_status_accepts_scope_flags():
