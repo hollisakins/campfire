@@ -586,7 +586,7 @@ export function FitsGLMapSurface({
   }
 
   return (
-    <div ref={rootRef} className="fitsgl-chrome relative h-full w-full" onContextMenu={handleContextMenu}>
+    <div ref={rootRef} className="fitsgl-chrome relative h-full w-full overflow-hidden" onContextMenu={handleContextMenu}>
       {viewerConfig && (
         <FitsViewer
           config={viewerConfig}
@@ -645,10 +645,16 @@ export function FitsGLMapSurface({
         />
       )}
 
-      {/* Right control dock — Display panel (+ objects toggle placeholder until the
-          Layers panel lands in chunk 3). Collapsible via the edge chevron. */}
-      {viewState && dockOpen && (
-        <div className={`absolute right-0 top-16 bottom-16 z-[500] w-72 overflow-y-auto rounded-l-xl ${GLASS} p-3`}>
+      {/* Right control dock — Display + Layers panels. Height hugs the content
+          (up to the old fixed extent, then scrolls); collapse slides it off the
+          right edge (kept mounted so the panel state survives + animates). */}
+      {viewState && (
+        <div
+          className={`absolute right-0 top-16 z-[500] max-h-[calc(100%-8rem)] w-[13.5rem] overflow-y-auto rounded-l-xl ${GLASS} p-3 transition-transform duration-200 ease-out ${
+            dockOpen ? 'translate-x-0' : 'pointer-events-none translate-x-full'
+          }`}
+          aria-hidden={!dockOpen}
+        >
           <DisplayPanel
             state={viewState}
             bands={bands}
@@ -693,8 +699,8 @@ export function FitsGLMapSurface({
         <button
           type="button"
           onClick={() => setDockOpen((o) => !o)}
-          className={`absolute top-20 z-[501] flex h-11 w-4 items-center justify-center rounded-l-lg ${GLASS} text-text-tertiary hover:text-text-primary`}
-          style={{ right: dockOpen ? '18rem' : 0 }}
+          className={`absolute top-20 z-[501] flex h-11 w-4 items-center justify-center rounded-l-lg ${GLASS} text-text-tertiary transition-[right] duration-200 ease-out hover:text-text-primary`}
+          style={{ right: dockOpen ? '13.5rem' : 0 }}
           aria-label={dockOpen ? 'Collapse controls' : 'Expand controls'}
           title={dockOpen ? 'Collapse controls' : 'Expand controls'}
         >
@@ -713,6 +719,7 @@ export function FitsGLMapSurface({
           bandLabel={viewState.mode === 'rgb' ? 'RGB' : viewState.band}
           stretch={viewState.stretch}
           ruler={tool === 'ruler' ? rulerMeasure : null}
+          showValue={!(viewState.mode === 'rgb' && viewState.stretch === 'trilogy')}
         />
       )}
 

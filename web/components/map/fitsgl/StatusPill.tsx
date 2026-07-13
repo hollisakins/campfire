@@ -22,6 +22,8 @@ interface StatusPillProps {
   bandLabel: string;
   stretch: string;
   ruler: RulerMeasurement | null;
+  /** Hide the per-band pixel value readout (e.g. a many-band trilogy composite). */
+  showValue?: boolean;
 }
 
 function fmtVal(v: number | null): string {
@@ -40,7 +42,7 @@ function Item({ k, children }: { k: string; children: React.ReactNode }) {
   );
 }
 
-export function StatusPill({ ra, dec, values, native, zoom, bandLabel, stretch, ruler }: StatusPillProps) {
+export function StatusPill({ ra, dec, values, native, zoom, bandLabel, stretch, ruler, showValue = true }: StatusPillProps) {
   const hasVal = !!values && values.some((v) => v !== null && Number.isFinite(v));
   const valStr = hasVal ? values!.map(fmtVal).join(' ') + (native ? '' : '*') : '—';
   return (
@@ -53,7 +55,7 @@ export function StatusPill({ ra, dec, values, native, zoom, bandLabel, stretch, 
         {ra !== null && dec !== null ? `(${ra.toFixed(5)}, ${dec.toFixed(5)})` : ''}
       </span>
       <span className="h-3.5 w-px bg-border" aria-hidden />
-      <Item k="val">{valStr}</Item>
+      {showValue && <Item k="val">{valStr}</Item>}
       <Item k="zoom">{zoom !== null ? `${zoom.toFixed(2)}×` : '—'}</Item>
       <span className="text-text-tertiary">{bandLabel} · {stretch}</span>
       {ruler && (
