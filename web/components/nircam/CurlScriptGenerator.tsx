@@ -4,7 +4,6 @@ import React, { useState, useMemo } from 'react';
 import Link from 'next/link';
 import { ChevronDown, ChevronUp, Download, Copy, Check, Info } from 'lucide-react';
 import type { NircamProductRow } from '@/lib/types';
-import { Button } from '@/components/ui/Button';
 import {
   generateNircamMosaicDownloadUrls,
   generateNircamExpmapDownloadUrls,
@@ -207,12 +206,12 @@ echo "Files saved in: $(pwd)"
               <div className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700">
                 <span className="text-sm text-gray-400 font-mono">download_nircam_data.sh</span>
                 <div className="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
+                  {/* Plain buttons: the code panel is always dark, so the
+                      theme-aware Button ghost variant is unreadable here. */}
+                  <button
                     onClick={handleCopy}
                     disabled={generating || !script}
-                    className="text-gray-400 hover:text-white"
+                    className="inline-flex items-center rounded-md px-2.5 py-1.5 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:pointer-events-none"
                   >
                     {copied ? (
                       <>
@@ -225,17 +224,15 @@ echo "Files saved in: $(pwd)"
                         Copy
                       </>
                     )}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
+                  </button>
+                  <button
                     onClick={handleDownload}
                     disabled={generating || !script}
-                    className="text-gray-400 hover:text-white"
+                    className="inline-flex items-center rounded-md px-2.5 py-1.5 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:pointer-events-none"
                   >
                     <Download className="w-4 h-4 mr-1.5" />
                     Download
-                  </Button>
+                  </button>
                 </div>
               </div>
               <pre className="p-4 text-sm text-gray-300 font-mono overflow-x-auto max-h-96 overflow-y-auto">
