@@ -24,9 +24,10 @@
  */
 
 import { COLORMAP_NAMES, type BandWeight, type ColormapName, type StretchMode, type TrilogyParams } from '@fitsgl/core';
-import { TrilogyControls, TrilogyWeightMatrix } from '@fitsgl/core/react';
+import { TrilogyControls } from '@fitsgl/core/react';
 import type { ExplorerBand, ExplorerState } from '@fitsgl/core/react';
 import { StretchHistogram } from './StretchHistogram';
+import { TrilogyWeights } from './TrilogyWeights';
 import { ColormapControl } from './ColormapControl';
 import { PANEL_CAP, chipClass, INSET } from './glass';
 import type { DisplayChannel, LimitPreset } from './useDisplayStretch';
@@ -236,16 +237,18 @@ export function DisplayPanel({
           </div>
         </>
       ) : trilogy ? (
-        /* RGB · trilogy — FitsGL's own weight matrix + tuning sliders, embedded
-           in campfire chrome (`fgl-embed` carries the explorer design tokens). */
-        <div className="fgl-embed space-y-1">
-          <TrilogyWeightMatrix
+        /* RGB · trilogy — campfire's weight matrix (minimized to active bands by
+           default) + FitsGL's tuning sliders (`fgl-embed` carries their tokens). */
+        <div className="space-y-2">
+          <TrilogyWeights
             bands={bands}
             state={state}
             onApply={onApplyWeights}
             onRainbow={onRainbowWeights}
           />
-          <TrilogyControls params={state.trilogyParams} missing={!hasTrilogy} onChange={onSetTrilogyParams} />
+          <div className="fgl-embed">
+            <TrilogyControls params={state.trilogyParams} missing={!hasTrilogy} onChange={onSetTrilogyParams} />
+          </div>
         </div>
       ) : (
         /* RGB · simple — 3 channel picks + ONE shared stretch. */
@@ -287,10 +290,6 @@ export function DisplayPanel({
                 onChange={onSetSharedRange}
               />
             )}
-            <p className="text-[10px] italic leading-snug text-text-tertiary">
-              One shared range for all three bands — relative channel brightness
-              stays physical.
-            </p>
           </div>
 
           <div className="space-y-1.5">

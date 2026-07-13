@@ -51,7 +51,7 @@ import type { FitsglDataset, MapObjectMarker, SlitRegion, Shutter } from '@/lib/
 import { MARKER_QUALITY_COLORS, QUALITY_LABELS } from '@/lib/types';
 import { makeFitsglWorker } from '@/lib/fits/fitsglWorker';
 import { getObservationColor } from './observation-colors';
-import { BandRail } from './fitsgl/BandRail';
+import { BandRail, RGB_OPTION } from './fitsgl/BandRail';
 import { DisplayPanel } from './fitsgl/DisplayPanel';
 import { LayersPanel } from './fitsgl/LayersPanel';
 import { ToolRail } from './fitsgl/ToolRail';
@@ -485,17 +485,16 @@ export function FitsGLMapSurface({
     });
   }, []);
 
-  // Band-rail intent handlers (all pure state updates → deriveViewerConfig).
-  // trilogy is RGB-only, so leaving RGB coerces the curve back to a single-band one.
+  // Band-rail intent handler (a pure state update → deriveViewerConfig): the
+  // band dropdown's RGB_OPTION enters composite mode, a band name drops to
+  // single mode on it. trilogy is RGB-only, so leaving RGB coerces the curve.
   const canComposite = bands.length >= 2;
   const leaveTrilogy = (stretch: StretchMode): StretchMode => (stretch === 'trilogy' ? 'asinh' : stretch);
-  const onSelectBand = useCallback((name: string) =>
-    setViewState((s) => (s ? { ...s, mode: 'single', band: name, stretch: leaveTrilogy(s.stretch) } : s)), []);
-  const onToggleRgb = useCallback(() =>
+  const onSelectDisplay = useCallback((value: string) =>
     setViewState((s) => {
       if (!s) return s;
-      const mode = s.mode === 'rgb' ? 'single' : 'rgb';
-      return { ...s, mode, stretch: mode === 'single' ? leaveTrilogy(s.stretch) : s.stretch };
+      if (value === RGB_OPTION) return s.mode === 'rgb' ? s : { ...s, mode: 'rgb' };
+      return { ...s, mode: 'single', band: value, stretch: leaveTrilogy(s.stretch) };
     }), []);
   // Display-panel intent handlers. RGB construction lives entirely in the panel
   // (revised decision 1): channel assignment, simple|trilogy sub-mode, weights,
@@ -642,8 +641,7 @@ export function FitsGLMapSurface({
           bands={bands}
           state={viewState}
           canComposite={canComposite}
-          onSelectBand={onSelectBand}
-          onToggleRgb={onToggleRgb}
+          onSelectDisplay={onSelectDisplay}
         />
       )}
 

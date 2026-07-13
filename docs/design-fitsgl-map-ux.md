@@ -87,10 +87,10 @@ disclosure (only the slim spine is always visible; panels collapse), group by fu
 ## 4. Component spec
 
 ### Band rail (top-center pill)
-- `[<field> ▾] | [F090W][F115W]…[F444W]  [RGB]`. Field `<select>` merged in.
-- A band chip → `{mode:'single', band}` (always leaves RGB); the `RGB` toggle →
-  composite mode, tuned in the Display panel (revised decision 1).
-- Hidden entirely when the field has a single band.
+- `[<field> ▾] | [band ▾]` — two dropdowns, nothing else. `RGB` is the FIRST
+  option of the band dropdown: picking it enters composite mode (tuned in the
+  Display panel, revised decision 1); picking a band name → `{mode:'single', band}`.
+- The band dropdown is hidden when the field has a single band.
 
 ### Display panel (docked-right, collapsible)
 - **Single mode**: stretch chips (asinh / log / sqrt / linear), limit presets
@@ -102,10 +102,12 @@ disclosure (only the slim spine is always visible; panels collapse), group by fu
     deliberately no per-band stretch, so relative channel brightness stays
     physical), **contrast** (scales the shared limits about their midpoint) and
     **saturation** (the viewer's post-stretch composite uniform) sliders.
-  - **trilogy**: `@fitsgl/core/react`'s `TrilogyWeightMatrix` (per-band R/G/B
-    weight knobs + Rainbow) and `TrilogyControls` (noiselum / saturate % /
-    noise σ / black σ), embedded under the `fgl-embed` token class; levels derive
-    live from each band's `stats.trilogy` + the knobs.
+  - **trilogy**: campfire's `TrilogyWeights` matrix (per-band R/G/B weight
+    `Knob`s + Rainbow; **minimized by default** to the participating bands, a
+    single `+`/`−` button expands to the full co-gridded group with
+    participation checkboxes) and `@fitsgl/core/react`'s `TrilogyControls`
+    (noiselum / saturate % / noise σ / black σ) under the `fgl-embed` token
+    class; levels derive live from each band's `stats.trilogy` + the knobs.
 - **Histogram fine-adjust** (FitsExplorer-style): draw the band's `stats.histogram`
   (128 bins, `lo`/`hi`) with **draggable black/white handles**; live-drives the stretch.
 - No north-up control (forced true).

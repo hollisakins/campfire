@@ -1,19 +1,20 @@
 'use client';
 
 /**
- * Band rail (epic #337, Phase 4.5) — the top-center glass pill that merges the
- * field selector with band selection (`docs/design-fitsgl-map-ux.md` §4). The
- * rail stays deliberately simple (revised decision 1): one chip per band plus an
- * `RGB` toggle. Clicking a band chip always selects single-band mode on that
- * band; everything about *how* an RGB composite is built (channel assignment,
- * simple vs trilogy, weights, stretch) lives in the Display panel.
+ * Band rail (epic #337, Phase 4.5) — the top-center glass pill: a field dropdown
+ * and a band dropdown, nothing else (revised decision 1). `RGB` rides as the
+ * FIRST option of the band dropdown; picking it enters composite mode (tuned in
+ * the Display panel), picking a band name drops to single-band mode on it.
  *
  * Purely presentational — the parent owns the `ExplorerState` and derives the
  * `ViewerConfig`; this only renders the model and calls back on intent.
  */
 
 import type { ExplorerBand, ExplorerState } from '@fitsgl/core/react';
-import { GLASS_PILL, chipClass, INSET } from './glass';
+import { GLASS_PILL, INSET } from './glass';
+
+/** Sentinel option value for the composite entry (no band may collide with it). */
+export const RGB_OPTION = '__rgb__';
 
 interface BandRailProps {
   fields: string[];
@@ -23,8 +24,8 @@ interface BandRailProps {
   state: ExplorerState;
   /** Whether an RGB composite is possible (≥2 co-gridded bands). */
   canComposite: boolean;
-  onSelectBand: (name: string) => void;
-  onToggleRgb: () => void;
+  /** `RGB_OPTION` → composite mode; a band name → single mode on that band. */
+  onSelectDisplay: (value: string) => void;
 }
 
 export function BandRail({
@@ -34,10 +35,9 @@ export function BandRail({
   bands,
   state,
   canComposite,
-  onSelectBand,
-  onToggleRgb,
+  onSelectDisplay,
 }: BandRailProps) {
-  const rgb = state.mode === 'rgb';
+  const value = state.mode === 'rgb' ? RGB_OPTION : state.band;
   const showBands = bands.length > 1;
 
   return (
@@ -63,35 +63,17 @@ export function BandRail({
       {showBands && (
         <>
           <span className="mx-0.5 h-5 w-px bg-border" aria-hidden />
-
-          {/* One chip per band — a chip is active only in single mode; clicking
-              one always drops out of RGB onto that band. */}
-          <div className="flex flex-wrap items-center gap-1">
+          <select
+            value={value}
+            onChange={(e) => onSelectDisplay(e.target.value)}
+            className={`${INSET} font-mono`}
+            aria-label="Band"
+          >
+            {canComposite && <option value={RGB_OPTION}>RGB</option>}
             {bands.map((b) => (
-              <button
-                key={b.name}
-                type="button"
-                onClick={() => onSelectBand(b.name)}
-                className={`${chipClass(!rgb && state.band === b.name)} font-mono`}
-              >
-                {b.label ?? b.name}
-              </button>
+              <option key={b.name} value={b.name}>{b.label ?? b.name}</option>
             ))}
-          </div>
-
-          {canComposite && (
-            <>
-              <span className="mx-0.5 h-5 w-px bg-border" aria-hidden />
-              <button
-                type="button"
-                onClick={onToggleRgb}
-                className={chipClass(rgb)}
-                title={rgb ? 'Back to single-band' : 'Compose an RGB image (tune it in the Display panel)'}
-              >
-                RGB
-              </button>
-            </>
-          )}
+          </select>
         </>
       )}
     </div>
