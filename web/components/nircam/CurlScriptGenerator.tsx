@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { ChevronDown, ChevronUp, Download, Copy, Check } from 'lucide-react';
+import Link from 'next/link';
+import { ChevronDown, ChevronUp, Download, Copy, Check, Info } from 'lucide-react';
 import type { NircamProductRow } from '@/lib/types';
-import { Button } from '@/components/ui/Button';
 import {
   generateNircamMosaicDownloadUrls,
   generateNircamExpmapDownloadUrls,
@@ -189,7 +189,7 @@ echo "Files saved in: $(pwd)"
             <ChevronDown className="w-4 h-4 text-text-secondary" />
           )}
           <span className="text-sm font-medium text-text-primary">
-            Generate curl script to download {selectedImages.length} files
+            Bulk download {selectedImages.length} file{selectedImages.length === 1 ? '' : 's'}
           </span>
           <span className="text-sm text-text-secondary">
             ({formatFileSize(totalSize)} total)
@@ -206,12 +206,12 @@ echo "Files saved in: $(pwd)"
               <div className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700">
                 <span className="text-sm text-gray-400 font-mono">download_nircam_data.sh</span>
                 <div className="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
+                  {/* Plain buttons: the code panel is always dark, so the
+                      theme-aware Button ghost variant is unreadable here. */}
+                  <button
                     onClick={handleCopy}
                     disabled={generating || !script}
-                    className="text-gray-400 hover:text-white"
+                    className="inline-flex items-center rounded-md px-2.5 py-1.5 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:pointer-events-none"
                   >
                     {copied ? (
                       <>
@@ -224,17 +224,15 @@ echo "Files saved in: $(pwd)"
                         Copy
                       </>
                     )}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
+                  </button>
+                  <button
                     onClick={handleDownload}
                     disabled={generating || !script}
-                    className="text-gray-400 hover:text-white"
+                    className="inline-flex items-center rounded-md px-2.5 py-1.5 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:pointer-events-none"
                   >
                     <Download className="w-4 h-4 mr-1.5" />
                     Download
-                  </Button>
+                  </button>
                 </div>
               </div>
               <pre className="p-4 text-sm text-gray-300 font-mono overflow-x-auto max-h-96 overflow-y-auto">
@@ -243,16 +241,17 @@ echo "Files saved in: $(pwd)"
             </div>
           </div>
 
-          {/* Usage instructions */}
+          {/* Programmatic access pointer */}
           <div className="px-4 pb-4">
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-              <h4 className="text-sm font-medium text-blue-900 mb-1">Usage</h4>
-              <p className="text-sm text-blue-800">
-                Download the script and run it in your terminal:
+            <div className="flex items-start gap-2 bg-background border border-border rounded-lg p-3">
+              <Info className="w-4 h-4 text-text-secondary mt-0.5 shrink-0" />
+              <p className="text-sm text-text-secondary">
+                Regularly bulk-downloading CAMPFIRE data? See{' '}
+                <Link href="/docs/api" className="text-primary hover:underline">
+                  programmatic access
+                </Link>{' '}
+                for the CLI and Python client.
               </p>
-              <pre className="mt-2 text-sm font-mono text-blue-900 bg-blue-100 rounded px-2 py-1">
-                chmod +x download_nircam_data.sh && ./download_nircam_data.sh
-              </pre>
             </div>
           </div>
         </div>
