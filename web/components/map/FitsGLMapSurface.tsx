@@ -25,6 +25,8 @@ import {
   defaultViewFromConfig,
   defaultExplorerState,
   loadFitsglConfig,
+  rainbowAction,
+  rgbActiveGroup,
   type FitsViewerHandle,
   type ExplorerBand,
   type ExplorerState,
@@ -33,6 +35,7 @@ import {
 import {
   pixToSky,
   skyToPix,
+  type BandWeight,
   type ColormapName,
   type StretchMode,
   type CursorInfo,
@@ -40,6 +43,7 @@ import {
   type MarkerInput,
   type RegionInput,
   type ResolvedRegion,
+  type TrilogyParams,
   type ViewerConfig,
   type ViewerFrameInfo,
 } from '@fitsgl/core';
@@ -53,7 +57,7 @@ import { LayersPanel } from './fitsgl/LayersPanel';
 import { ToolRail } from './fitsgl/ToolRail';
 import { StatusPill } from './fitsgl/StatusPill';
 import { FitsglOverlays, type FitsglOverlaysHandle } from './fitsgl/FitsglOverlays';
-import { useDisplayStretch, type ChannelKey } from './fitsgl/useDisplayStretch';
+import { useDisplayStretch, type ChannelKey, type LimitPreset } from './fitsgl/useDisplayStretch';
 import { useColormap } from './fitsgl/useColormap';
 import type { RulerMeasurement } from './fitsgl/ruler';
 import { GLASS } from './fitsgl/glass';
@@ -121,21 +125,6 @@ function updateMapUrl(params: Record<string, string | undefined>) {
   window.history.replaceState(null, '', url.toString());
 }
 
-/** Strict-3 rainbow: reddest→R, bluest→B, middle→G by pivot wavelength (falls back
- *  to declaration order when wavelengths are absent). The >3-band weighted-trilogy
- *  rainbow is a later refinement (needs the core trilogy-weight primitives). */
-function rainbowRgb(bands: ExplorerBand[]): { r: string; g: string; b: string } | null {
-  if (bands.length < 3) return null;
-  const withWl = bands.filter((b) => b.wavelengthMicron != null);
-  const pool = withWl.length >= 3
-    ? [...withWl].sort((a, b) => a.wavelengthMicron! - b.wavelengthMicron!)
-    : bands;
-  return {
-    b: pool[0].name,
-    g: pool[Math.floor((pool.length - 1) / 2)].name,
-    r: pool[pool.length - 1].name,
-  };
-}
 
 /**
  * The four sky corners (ICRS deg) of a shutter, from its centre + position angle +
@@ -252,6 +241,14 @@ export function FitsGLMapSurface({
   // pinned to 'gray' to keep deriveViewerConfig off the colormap path).
   const [colormapName, setColormapName] = useState<ColormapName>('gray');
   const [colormapReversed, setColormapReversed] = useState(false);
+  // Simple-RGB color tuning, driven imperatively like the colormap: contrast
+  // narrows/widens the shared limits about their midpoint; saturation is the
+  // viewer's post-stretch composite uniform. Both reset on a source change.
+  const [contrast, setContrast] = useState(1);
+  const [saturation, setSaturation] = useState(1);
+  // The contrast=1 baseline the slider scales from (null ⇒ the hook's current
+  // shared range, i.e. whatever the last preset/auto-stretch produced).
+  const rgbBaseRef = useRef<{ min: number; max: number } | null>(null);
   // Layers + cursor tools + live readouts (status pill).
   const [graticule, setGraticule] = useState(false);
   const [tool, setTool] = useState<'pan' | 'ruler'>('pan');
@@ -333,6 +330,9 @@ export function FitsGLMapSurface({
         setViewState(state);
         setColormapName(dv.colormap ?? 'gray');
         setColormapReversed(false);
+        setContrast(1);
+        setSaturation(1);
+        rgbBaseRef.current = null;
       })
       .catch((e) => { if (!cancelled) setLoadError(String(e?.message ?? e)); });
     return () => { cancelled = true; };
@@ -497,20 +497,64 @@ export function FitsGLMapSurface({
       const mode = s.mode === 'rgb' ? 'single' : 'rgb';
       return { ...s, mode, stretch: mode === 'single' ? leaveTrilogy(s.stretch) : s.stretch };
     }), []);
+  // Display-panel intent handlers. RGB construction lives entirely in the panel
+  // (revised decision 1): channel assignment, simple|trilogy sub-mode, weights,
+  // trilogy knobs, and the simple-mode shared range / contrast / saturation.
   const onSetRgbRole = useCallback((role: 'r' | 'g' | 'b', band: string) =>
     setViewState((s) => (s ? { ...s, rgb: { ...s.rgb, [role]: band } } : s)), []);
-  const onRainbow = useCallback(() =>
-    setViewState((s) => {
-      if (!s) return s;
-      const rgb = rainbowRgb(bands);
-      return rgb ? { ...s, mode: 'rgb', rgb } : s;
-    }), [bands]);
-
-  // Display-panel intent handlers.
   const onSetStretch = useCallback((mode: StretchMode) =>
     setViewState((s) => (s ? { ...s, stretch: mode } : s)), []);
+  const onSetRgbSubMode = useCallback((m: 'simple' | 'trilogy') =>
+    setViewState((s) => {
+      if (!s) return s;
+      const stretch = m === 'trilogy' ? 'trilogy' : leaveTrilogy(s.stretch);
+      return stretch === s.stretch ? s : { ...s, stretch };
+    }), []);
+  const onApplyWeights = useCallback((entries: Array<{ band: string; weight: BandWeight }>) =>
+    setViewState((s) => {
+      if (!s) return s;
+      const weights: Record<string, BandWeight> = {};
+      for (const e of entries) weights[e.band] = e.weight;
+      return { ...s, weights, weightBands: entries.map((e) => e.band) };
+    }), []);
+  const onRainbowWeights = useCallback(() =>
+    setViewState((s) => (s ? { ...s, ...rainbowAction(bands, rgbActiveGroup(bands, s.rgb)) } : s)), [bands]);
+  const onSetTrilogyParams = useCallback((patch: Partial<TrilogyParams>) =>
+    setViewState((s) => (s ? { ...s, trilogyParams: { ...s.trilogyParams, ...patch } } : s)), []);
   const onSetHandle = useCallback((key: ChannelKey, min: number, max: number) =>
     display.setHandle(key, min, max), [display]);
+
+  // Simple-RGB shared range + contrast + saturation. Dragging the shared handles
+  // establishes a new contrast=1 baseline; the contrast slider then scales the
+  // limits about their midpoint; presets reset both to the fresh envelope.
+  const onSetSharedRange = useCallback((min: number, max: number) => {
+    rgbBaseRef.current = { min, max };
+    setContrast(1);
+    display.setSharedHandle(min, max);
+  }, [display]);
+  const onSetContrast = useCallback((c: number) => {
+    setContrast(c);
+    const base = rgbBaseRef.current ?? display.sharedRange;
+    if (!base) return;
+    const mid = (base.min + base.max) / 2;
+    const half = (base.max - base.min) / 2 / Math.max(c, 1e-6);
+    display.setSharedHandle(mid - half, mid + half);
+  }, [display]);
+  const onApplyPreset = useCallback(async (preset: LimitPreset) => {
+    await display.applyPreset(preset);
+    rgbBaseRef.current = null; // next contrast change scales the fresh envelope
+    setContrast(1);
+  }, [display]);
+  // Saturation is a live viewer uniform (identity for single-band); re-pushed
+  // after every viewer (re)ready since a rebuilt viewer starts at 1.
+  useEffect(() => {
+    handleRef.current?.getViewer()?.setSaturation(saturation);
+  }, [saturation, readyTick]);
+  // A source-identity change invalidates the simple-RGB tuning baseline.
+  useEffect(() => {
+    rgbBaseRef.current = null;
+    setContrast(1);
+  }, [sourceKey]);
 
   // Tool-rail actions.
   const onFit = useCallback(() => handleRef.current?.fitToImage(), []);
@@ -600,8 +644,6 @@ export function FitsGLMapSurface({
           canComposite={canComposite}
           onSelectBand={onSelectBand}
           onToggleRgb={onToggleRgb}
-          onSetRgbRole={onSetRgbRole}
-          onRainbow={onRainbow}
         />
       )}
 
@@ -611,16 +653,28 @@ export function FitsGLMapSurface({
         <div className={`absolute right-0 top-16 bottom-16 z-[500] w-72 overflow-y-auto rounded-l-xl ${GLASS} p-3`}>
           <DisplayPanel
             state={viewState}
+            bands={bands}
             channels={display.channels}
             hasZscale={display.hasZscale}
             hasTrilogy={display.hasTrilogy}
             colormap={colormapName}
             colormapReversed={colormapReversed}
+            sharedRange={display.sharedRange}
+            contrast={contrast}
+            saturation={saturation}
             onSetStretch={onSetStretch}
+            onSetRgbSubMode={onSetRgbSubMode}
+            onSetRgbRole={onSetRgbRole}
+            onApplyWeights={onApplyWeights}
+            onRainbowWeights={onRainbowWeights}
+            onSetTrilogyParams={onSetTrilogyParams}
             onSetColormap={setColormapName}
             onToggleReverseColormap={setColormapReversed}
             onSetHandle={onSetHandle}
-            onApplyPreset={display.applyPreset}
+            onSetSharedRange={onSetSharedRange}
+            onSetContrast={onSetContrast}
+            onSetSaturation={setSaturation}
+            onApplyPreset={onApplyPreset}
           />
           <div className="mt-3 border-t border-border pt-3">
             <LayersPanel

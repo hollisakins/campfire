@@ -58,10 +58,17 @@ disclosure (only the slim spine is always visible; panels collapse), group by fu
 
 ## 3. Locked design decisions (Hollis, 2026-07-10)
 
-1. **No `Single | RGB` toggle.** Mode is implicit from band selection. RGB channel
-   assignment lives **in the band rail** (single chip → single mode; an `RGB` affordance
-   → three R/G/B band-pickers + a "rainbow" auto-assign). The Display panel is *only*
-   stretch + histogram + colormap.
+1. **The band rail stays simple; ALL RGB construction lives in the Display panel.**
+   *(Revised 2026-07-13 — the map-RGB-defaults follow-up; originally RGB channel
+   assignment lived in the rail.)* The rail is one chip per band + an `RGB` toggle:
+   a band chip → single mode on that band; `RGB` → composite mode. The Display
+   panel owns channel assignment and splits RGB into two sub-modes:
+   **simple** (three band pickers, ONE shared limit range — no per-band stretch —
+   a shared transfer curve, contrast + color-saturation sliders) and **trilogy**
+   (FitsGL's weighted matrix: per-band R/G/B knobs + rainbow, plus
+   noiselum / saturate % / noise σ / black σ sliders over precomputed stats).
+   The dataset's `fitsgl.json` defaultView opens the map on the weighted trilogy
+   composite when the producer shipped one.
 2. **Field selector merged into the band rail**; drop the FitsGL badge.
 3. **Colormap = a dropdown** (not a swatch row).
 4. **North-up = always on, not exposed.** `config.northUp: true` always; no control.
@@ -81,18 +88,26 @@ disclosure (only the slim spine is always visible; panels collapse), group by fu
 
 ### Band rail (top-center pill)
 - `[<field> ▾] | [F090W][F115W]…[F444W]  [RGB]`. Field `<select>` merged in.
-- Single mode: click a band chip → `config.view = {mode:'single', band}`.
-- RGB mode: `RGB` toggle flips the rail to three channel pickers (R/G/B → band dropdowns)
-  + a **Rainbow** button (auto-assign blue→red by `pivotUm`). `config.view = {mode:'rgb', r,g,b}`.
-  Default interaction chosen by us; iterate on sight. Cross-grid bands greyed via
-  `isBandSelectableForRgb`.
+- A band chip → `{mode:'single', band}` (always leaves RGB); the `RGB` toggle →
+  composite mode, tuned in the Display panel (revised decision 1).
 - Hidden entirely when the field has a single band.
 
 ### Display panel (docked-right, collapsible)
-- **Stretch mode** chips: asinh / log / sqrt / linear / zscale (+ trilogy in RGB).
+- **Single mode**: stretch chips (asinh / log / sqrt / linear), limit presets
+  (auto / zscale / minmax / 99.5%), the histogram fine-adjust, colormap dropdown.
+- **RGB mode**: a `simple | trilogy` sub-mode toggle (trilogy disabled without
+  precomputed stats).
+  - **simple**: three R/G/B band `<select>`s, stretch chips, limit presets +
+    ONE shared histogram control (one `[min,max]` pushed to all three channels —
+    deliberately no per-band stretch, so relative channel brightness stays
+    physical), **contrast** (scales the shared limits about their midpoint) and
+    **saturation** (the viewer's post-stretch composite uniform) sliders.
+  - **trilogy**: `@fitsgl/core/react`'s `TrilogyWeightMatrix` (per-band R/G/B
+    weight knobs + Rainbow) and `TrilogyControls` (noiselum / saturate % /
+    noise σ / black σ), embedded under the `fgl-embed` token class; levels derive
+    live from each band's `stats.trilogy` + the knobs.
 - **Histogram fine-adjust** (FitsExplorer-style): draw the band's `stats.histogram`
   (128 bins, `lo`/`hi`) with **draggable black/white handles**; live-drives the stretch.
-- **Colormap dropdown** (gray / viridis / magma / … ).
 - No north-up control (forced true).
 
 ### Layers panel (docked-right, collapsible)
