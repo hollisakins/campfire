@@ -38,6 +38,9 @@ export interface CutoutRequest {
   colormap?: ColormapName;
   /** Display limits: `'auto'` (per-band percentile) or explicit per band. */
   limits?: 'auto' | Limits | Limits[];
+  /** Trilogy softening `k`: one shared value or per-band, aligned with `bands`
+   *  (used when `stretch` is `'trilogy'`; solved from stats + knobs upstream). */
+  trilogyK?: number | number[];
 }
 
 export interface CutoutRGBA {
@@ -83,11 +86,13 @@ export async function renderCutout(bands: BandSource[], req: CutoutRequest): Pro
       limits: limitFor(0),
       stretch,
       colormap: req.colormap ?? 'gray',
+      trilogyK: typeof req.trilogyK === 'number' ? req.trilogyK : req.trilogyK?.[0],
     });
   } else {
     rgba = renderRGB([outs[0].data, outs[1].data, outs[2].data], width, height, {
       limits: [limitFor(0), limitFor(1), limitFor(2)],
       stretch,
+      trilogyK: req.trilogyK,
     });
   }
   return { rgba, width, height, outputWcsHeader };

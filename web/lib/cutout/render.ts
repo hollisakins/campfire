@@ -76,9 +76,17 @@ export function renderRGB(
   channels: readonly [Float32Array, Float32Array, Float32Array],
   width: number,
   height: number,
-  opts: { limits: readonly [Limits, Limits, Limits]; stretch: StretchMode; trilogyK?: number },
+  opts: {
+    limits: readonly [Limits, Limits, Limits];
+    stretch: StretchMode;
+    /** Trilogy softening: one shared `k`, or per-channel `[kR, kG, kB]` (each
+     *  band's levels solve its own `k`, matching the viewer's applyTrilogy). */
+    trilogyK?: number | readonly number[];
+  },
 ): Uint8ClampedArray {
   const { limits, stretch, trilogyK } = opts;
+  const kFor = (c: number): number | undefined =>
+    typeof trilogyK === 'number' ? trilogyK : trilogyK?.[c];
   const rgba = new Uint8ClampedArray(width * height * 4);
   for (let y = 0; y < height; y++) {
     const src = y * width;
@@ -90,7 +98,7 @@ export function renderRGB(
         const v = channels[c][src + x];
         if (Number.isNaN(v)) continue;
         any = true;
-        rgba[o + c] = Math.round(scaleValue(v, limits[c].lo, limits[c].hi, stretch, trilogyK) * 255);
+        rgba[o + c] = Math.round(scaleValue(v, limits[c].lo, limits[c].hi, stretch, kFor(c)) * 255);
       }
       if (any) rgba[o + 3] = 255; // opaque where at least one band has data
     }

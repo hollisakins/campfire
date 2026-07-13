@@ -39,6 +39,43 @@ describe('renderSingleBand', () => {
 });
 
 describe('renderRGB', () => {
+  it('applies per-channel trilogy softening k (each band its own curve)', () => {
+    // One pixel, all channels the same mid-scale value: a large k lifts the
+    // output far above linear; k = 0 stays linear. Distinct per-channel ks
+    // must produce distinct channel outputs from identical inputs.
+    const half = new Float32Array([0.5]);
+    const rgba = renderRGB([half, half, half], 1, 1, {
+      limits: [
+        { lo: 0, hi: 1 },
+        { lo: 0, hi: 1 },
+        { lo: 0, hi: 1 },
+      ],
+      stretch: 'trilogy',
+      trilogyK: [100, 0, 100],
+    });
+    const [r, g, b] = px(rgba, 0, 0, 1);
+    expect(r).toBe(b); // same k, same output
+    expect(g).toBe(128); // k = 0 → linear (0.5 * 255 rounded)
+    expect(r).toBeGreaterThan(200); // strong softening lifts the faint end
+  });
+
+  it('a scalar trilogyK still applies to every channel', () => {
+    const half = new Float32Array([0.5]);
+    const rgba = renderRGB([half, half, half], 1, 1, {
+      limits: [
+        { lo: 0, hi: 1 },
+        { lo: 0, hi: 1 },
+        { lo: 0, hi: 1 },
+      ],
+      stretch: 'trilogy',
+      trilogyK: 100,
+    });
+    const [r, g, b] = px(rgba, 0, 0, 1);
+    expect(r).toBe(g);
+    expect(g).toBe(b);
+    expect(r).toBeGreaterThan(200);
+  });
+
   it('flips rows and maps channels R/G/B in the flipped order', () => {
     // 1×2 column: south px has r=0, north px has r=1 (g/b constant 0)
     const r = new Float32Array([0, 1]);
