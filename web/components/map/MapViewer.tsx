@@ -53,6 +53,14 @@ const mapChromeStyle = `
 .leaflet-popup-close-button:hover {
   color: var(--text-primary) !important;
 }
+/* Leaflet's stock ".leaflet-container a" blue outranks the Tailwind color
+   utilities on popup links; re-theme it onto the design tokens. */
+.leaflet-container .leaflet-popup-content a {
+  color: var(--primary-text);
+}
+.leaflet-container .leaflet-popup-content a:hover {
+  color: var(--primary);
+}
 .leaflet-bar a,
 .leaflet-bar a:hover {
   background: var(--card);
@@ -516,6 +524,7 @@ export function MapViewer({
           highlightObjectId={highlightObjectId}
           markerFilter={markerFilter}
           onMarkerClick={(marker, latLng) => setPopupState({ marker, latLng })}
+          onBackgroundClick={() => setPopupState(null)}
         />
 
         {/* Popup for clicked marker (standalone, rendered by React) */}
