@@ -292,6 +292,22 @@ def list_products_batched(filesets, batch_size=25, token=None, workers=4,
             f"the download command, or wait and retry when MAST is less loaded."
         )
 
+    # Every batch reported success (HTTP 200), yet not one product came back
+    # for filesets that the search just confirmed exist. That's not a genuine
+    # "no products" result — a fileset always has products — so MAST returned
+    # 200 with an empty `products` list, which it does intermittently when the
+    # endpoint is loaded (large programs whose product lists take ~30s to
+    # build). Treat it as the transient failure it is rather than silently
+    # reporting "no matching files."
+    if not all_products:
+        raise RuntimeError(
+            f"MAST /list_products returned 0 products for {len(fileset_names)} "
+            f"fileset(s) that the search matched — a fileset always has "
+            f"products, so this is a transient MAST failure (an empty 200 "
+            f"response), not an empty result. Try re-running the download "
+            f"command, or wait and retry when MAST is less loaded."
+        )
+
     return all_products
 
 

@@ -239,6 +239,11 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
                 "is rejected by MAST's resolver."
             )
         raise click.ClickException(msg)
+    except RuntimeError as e:
+        # Transient MAST /list_products failures (batches that never stopped
+        # timing out, or an empty 200 for filesets that exist) surface as
+        # RuntimeError with a re-run hint — show it cleanly, not as a traceback.
+        raise click.ClickException(str(e))
     except KeyboardInterrupt:
         click.echo("\n\nInterrupted. Re-run to resume (existing files will be skipped).")
         sys.exit(130)

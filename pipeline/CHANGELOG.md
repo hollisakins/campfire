@@ -29,6 +29,15 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Infrastructure
+- `cfpipe download` no longer silently reports "No matching files found" when
+  MAST's `/list_products` returns an empty `200` for filesets the search just
+  matched. Under load (large programs whose product lists take ~30s to build),
+  MAST intermittently answers `200` with an empty `products` array instead of a
+  429/5xx; the batch was counted as a success and the run exited claiming zero
+  products. `list_products_batched` now raises a re-run-hint `RuntimeError` when
+  a non-empty set of filesets yields zero products, and the `download` CLI
+  catches `RuntimeError` to print it cleanly (this also fixes the pre-existing
+  "batches kept timing out" `RuntimeError` dumping a bare traceback).
 - Dependency declarations now match actual imports (#330): added `requests`,
   `h5py`, and `Pillow` (previously satisfied only transitively) plus the
   directly-imported JWST-stack packages (`crds`, `asdf`, `stdatamodels`,
