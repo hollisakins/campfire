@@ -145,6 +145,26 @@ export function useDisplayStretch({ handleRef, bands, state, readyTick }: UseDis
     }
   }, [trilogy, state, bandByName, handleRef, readyTick]);
 
+  // Push per-band trilogy weights imperatively (like the stretch handles). The
+  // viewer deliberately EXCLUDES the multiband weights from its source-rebuild
+  // signature (`viewSignature` in @fitsgl/core) — only a change to the *set* of
+  // bands forces a `setSource` — so a pure weight tweak on the same band set never
+  // reaches the GPU through the controlled `deriveViewerConfig` config. Mirror
+  // FitsGL's own <FitsExplorer> shell and re-push the weights here. `setBandWeights`
+  // requires the count to match the resident band set, so guard on the `multiband`
+  // source mode and absorb the one-frame race where a band-set change hasn't
+  // rebuilt the source yet (that pending `setSource` then carries the new weights).
+  useEffect(() => {
+    if (!state || !isTrilogyComposite(state)) return;
+    const v = handleRef.current?.getViewer();
+    if (!v || v.sourceMode !== 'multiband') return;
+    try {
+      v.setBandWeights(trilogyComposite(state).map((e) => e.weight));
+    } catch {
+      // band set mid-rebuild — the pending source swap carries the right weights
+    }
+  }, [state, handleRef, readyTick]);
+
   /** Fine-adjust: push one channel's black/white point to the GPU + store it. */
   const setHandle = useCallback(
     (key: ChannelKey, min: number, max: number) => {
