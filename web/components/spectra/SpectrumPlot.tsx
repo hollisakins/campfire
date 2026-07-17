@@ -157,6 +157,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     const handler = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
       if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return;
+      // Only plain F/Y are ours; let modifier combos (Ctrl/Cmd+F browser find,
+      // Cmd+Y, etc.) through untouched.
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key === 'f' || e.key === 'F') {
         e.preventDefault();
         setFluxUnit(prev => (prev === 'fnu' ? 'flambda' : 'fnu'));
