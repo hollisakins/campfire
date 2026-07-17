@@ -21,6 +21,11 @@ function safeRedirectPath(param: string | null): string {
     const url = new URL(param, window.location.origin);
     if (url.origin !== window.location.origin) return '/';
     const path = `${url.pathname}${url.search}${url.hash}`;
+    // A reconstructed path starting with "//" is protocol-relative (e.g. from
+    // redirect=https://<same-host>//evil.com, whose pathname is "//evil.com");
+    // navigating to it escapes the origin, so reject anything not a clean
+    // single-slash absolute path.
+    if (!path.startsWith('/') || path.startsWith('//')) return '/';
     if (
       path === '/login' ||
       path.startsWith('/login?') ||
