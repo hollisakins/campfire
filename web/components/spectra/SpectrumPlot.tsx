@@ -120,6 +120,11 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   const [redshift, setRedshift] = useState(initialRedshift ?? 0);
   const [colorMin, setColorMin] = useState(spectrumPreferences.snrMin);
   const [colorMax, setColorMax] = useState(spectrumPreferences.snrMax);
+  // Auto-scale the 1D y-axis to real spectral features (computeYRange). On by
+  // default; toggling it off falls back to Plotly's full autorange so noise
+  // spikes and the full flux range are visible. The 'y' key toggles it in
+  // inspection mode (issue #245).
+  const [autoStretch, setAutoStretch] = useState(true);
 
   // Track observed wavelength range for rest-frame axis tick computation
   // null = full range (autorange), [min, max] = user-zoomed range in μm
@@ -142,6 +147,27 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       setRedshift(initialRedshift);
     }
   }, [initialRedshift]);
+
+  // Inspection-mode plot shortcuts (issue #245): 'f' toggles flux units
+  // (fν ↔ fλ), 'y' toggles the 1D y-axis auto-stretch. Only wired in
+  // inspection mode, where exactly one SpectrumPlot is mounted; the remaining
+  // inspection shortcuts live in InspectionModeOverlay.
+  useEffect(() => {
+    if (!inspectionMode) return;
+    const handler = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement;
+      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return;
+      if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        setFluxUnit(prev => (prev === 'fnu' ? 'flambda' : 'fnu'));
+      } else if (e.key === 'y' || e.key === 'Y') {
+        e.preventDefault();
+        setAutoStretch(prev => !prev);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [inspectionMode]);
 
   // Get current plot colors based on theme
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -516,8 +542,13 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         exponentformat: 'e' as const,
         domain: [0, 0.7],
         anchor: 'x' as const,
-        uirevision: 'constant',
-        ...(yAxisRange && { range: yAxisRange }),
+        // Tie the y-axis uirevision to autoStretch so toggling it forces Plotly
+        // to re-apply the range/autorange below. A stable uirevision would
+        // otherwise preserve the user's current y-zoom and ignore the change.
+        uirevision: autoStretch ? 'y-auto' : 'y-full',
+        ...(autoStretch && yAxisRange
+          ? { range: yAxisRange, autorange: false as const }
+          : { autorange: true as const }),
       },
       // Y-axis for 2D heatmap (top-left)
       yaxis2: {
@@ -569,7 +600,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     };
 
     return { traces, layout };
-  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, showEmissionLines, redshift, grating, showModel, obsRange]);
+  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, showEmissionLines, redshift, grating, showModel, obsRange, autoStretch]);
 
   // χ²(z) panel data — only built when the user toggles the Model overlay on.
   const chi2PlotData = useMemo(() => {
@@ -797,6 +828,22 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
               className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary"
             />
             <span className="text-sm text-text-secondary">Model</span>
+          </label>
+        </div>
+
+        {/* y-axis auto-stretch toggle (inspection shortcut: y) */}
+        <div className="flex items-center gap-2">
+          <label
+            className="flex items-center gap-2 cursor-pointer"
+            title="Auto-scale the y-axis to real spectral features; off shows the full flux range (press y in inspection mode)"
+          >
+            <input
+              type="checkbox"
+              checked={autoStretch}
+              onChange={(e) => setAutoStretch(e.target.checked)}
+              className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary"
+            />
+            <span className="text-sm text-text-secondary">Auto-y</span>
           </label>
         </div>
 

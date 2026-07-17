@@ -27,8 +27,8 @@ export interface QualityDef {
 export const REDSHIFT_QUALITY: QualityDef[] = [
   { value: 0, label: 'Not Inspected', short: 'None', icon: '⚪', color: '#e0e0e0', description: 'Not yet visually inspected' },
   { value: 1, label: 'Impossible', short: 'Bad', icon: '🔴', color: '#dc3545', description: 'Impossible to determine redshift from available data' },
-  { value: 2, label: 'Tentative', short: 'Tent.', icon: '🟠', color: '#ffc107', description: 'Redshift uncertain but plausible (~50% confidence)' },
-  { value: 3, label: 'Probable', short: 'Prob.', icon: '🟡', color: '#ff9800', description: 'Redshift likely correct (~80% confidence)' },
+  { value: 2, label: 'Tentative', short: 'Tent.', icon: '🟠', color: '#ff9800', description: 'Redshift uncertain but plausible (~50% confidence)' },
+  { value: 3, label: 'Probable', short: 'Prob.', icon: '🟡', color: '#ffc107', description: 'Redshift likely correct (~80% confidence)' },
   { value: 4, label: 'Secure', short: 'Secure', icon: '🟢', color: '#28a745', description: 'Redshift definitely correct (>95% confidence)' },
 ];
 
