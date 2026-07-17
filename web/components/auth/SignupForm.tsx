@@ -21,7 +21,7 @@ export const SignupForm: React.FC = () => {
   // If an already-authenticated user lands here, send them onward.
   useEffect(() => {
     if (!authLoading && user) {
-      router.push(needsProfileSetup ? '/welcome' : '/nirspec');
+      router.push(needsProfileSetup ? '/welcome' : '/');
     }
   }, [authLoading, user, needsProfileSetup, router]);
 

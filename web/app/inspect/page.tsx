@@ -33,7 +33,12 @@ function InspectPageInner() {
   }, [startId, router]);
 
   useEffect(() => {
-    if (!authLoading && !user) router.replace('/login');
+    if (!authLoading && !user) {
+      // Preserve the full inspect URL (start object + filters) so the user
+      // returns to this view after signing in.
+      const returnTo = window.location.pathname + window.location.search;
+      router.replace('/login?redirect=' + encodeURIComponent(returnTo));
+    }
   }, [authLoading, user, router]);
 
   useEffect(() => {

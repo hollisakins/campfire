@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
+import { SignInLink } from '@/components/auth/SignInLink';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { NircamTable } from '@/components/nircam/NircamTable';
 import {
@@ -240,13 +241,12 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
             Access to NIRCam imaging data requires authentication. Please sign in with your
             CAMPFIRE account to browse and download images.
           </p>
-          <Link
-            href="/login"
+          <SignInLink
             className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             <LogIn className="w-5 h-5" />
             Sign In
-          </Link>
+          </SignInLink>
         </div>
       </div>
     );
