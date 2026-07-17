@@ -2,6 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
+import { SignInLink } from '@/components/auth/SignInLink';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { Shield, KeyRound, Users, Loader2, AlertTriangle, FolderOpen, Activity, Telescope, Download, Camera, Database, GitBranch, LayoutDashboard } from 'lucide-react';
@@ -79,12 +80,11 @@ export default function AdminLayout({
           <p className="text-text-secondary mb-6">
             Please sign in to access the admin area.
           </p>
-          <Link
-            href="/login"
+          <SignInLink
             className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             Sign In
-          </Link>
+          </SignInLink>
         </div>
       </div>
     );

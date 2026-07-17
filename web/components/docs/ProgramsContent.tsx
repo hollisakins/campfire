@@ -2,6 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
+import { SignInLink } from '@/components/auth/SignInLink';
 import { Card } from '@/components/ui/Card';
 import type { ProgramOverview } from '@/lib/actions/programs';
 import { useProgramsOverviewQuery } from '@/lib/hooks/useProgramsQuery';
@@ -103,13 +104,12 @@ export default function ProgramsContent() {
           Access to JWST program information requires authentication. Please sign in with your
           CAMPFIRE account to browse programs.
         </p>
-        <Link
-          href="/login"
+        <SignInLink
           className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
         >
           <LogIn className="w-5 h-5" />
           Sign In
-        </Link>
+        </SignInLink>
       </div>
     );
   }

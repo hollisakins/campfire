@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import { SignInLink } from '@/components/auth/SignInLink';
 import { LogIn } from 'lucide-react';
 import { getMapLayers, getFitsglDatasets } from '@/lib/actions/map';
 import { MapPageContent } from './MapPageContent';
@@ -46,13 +46,12 @@ export default async function MapPage({ searchParams }: MapPageProps) {
           <p className="text-text-secondary mb-6 max-w-md">
             Access to the image map viewer requires authentication.
           </p>
-          <Link
-            href="/login"
+          <SignInLink
             className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             <LogIn className="w-5 h-5" />
             Sign In
-          </Link>
+          </SignInLink>
         </div>
       </div>
     );

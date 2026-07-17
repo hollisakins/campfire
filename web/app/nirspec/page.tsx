@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useMemo, Suspense, useTransition } from 'react';
 import Link from 'next/link';
+import { SignInLink } from '@/components/auth/SignInLink';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { SpectraTable } from '@/components/spectra/SpectraTable';
@@ -175,13 +176,12 @@ function SpectraPageContent() {
             Access to NIRSpec spectra requires authentication. Please sign in with your
             CAMPFIRE account to browse the catalog.
           </p>
-          <Link
-            href="/login"
+          <SignInLink
             className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             <LogIn className="w-5 h-5" />
             Sign In
-          </Link>
+          </SignInLink>
         </div>
       </div>
     );
