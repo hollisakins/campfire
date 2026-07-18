@@ -337,8 +337,13 @@ def _fit_template(exposure_file, field, step_config, rootname, detector,
         model.close()
         return
 
+    # NaN (not 0) the masked pixels: _calc_variance takes MAD with
+    # ignore_nan=True, so NaNs drop out of the objective entirely. Zeroing only
+    # the data left the template nonzero there, turning every masked source
+    # pixel into a spurious ``-c * template`` residual that biased the scale
+    # downward — an effect the dilated/lower-sigma mask would amplify.
     masked = fit_data.copy()
-    masked[mask] = 0
+    masked[mask] = np.nan
     x1, x2, y1, y2 = WISP_BBOX[detector]
     im_seg = masked[y1:y2, x1:x2]
 
