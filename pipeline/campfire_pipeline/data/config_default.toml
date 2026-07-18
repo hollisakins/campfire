@@ -152,7 +152,23 @@
     # No tunable parameters; reserved for future snowblind config.
 
 [nircam.wisp]
-    apply_flat = true
+    # Subtraction method: "nmf" (multi-component NMF, Wu et al. 2026 /
+    # arXiv:2601.15958, via the nmfwisp package) or "template" (legacy scaled
+    # STScI template). "nmf" automatically falls back to "template" for any
+    # (detector, filter) nmfwisp ships no template for (e.g. F140M).
+    method = "nmf"
+    nmf_correct_1f = false     # let nmfwisp iterate 1/f during the fit; off because
+                               # campfire removes striping in the later bkg step
+    mask_nsigma = 3            # detection threshold (sigma) for the source mask used
+                               # in the wisp fit. Lower masks fainter source wings that
+                               # would otherwise be fit as wisp flux (a sweep showed the
+                               # old 5.5 inflated the wisp amplitude ~20%). Applies to
+                               # both methods.
+    mask_dilate = 8            # binary-dilation iterations grown onto the source mask
+                               # before fitting, to swallow wings past the nsigma
+                               # isophote (0 disables). Secondary to mask_nsigma;
+                               # nsigma=3 + dilate=8 sit on the converged plateau.
+    apply_flat = true          # template method: flat-field the fitting copy
     use_custom_flat = false
     plot = true
 

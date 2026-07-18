@@ -29,6 +29,22 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Calibration
+- NIRCam wisp subtraction now defaults to the multi-component non-negative
+  matrix factorization model of Wu et al. 2026 (JADES DR5, arXiv:2601.15958),
+  via the new `nmfwisp` dependency (templates ship in the wheel). Per-exposure
+  wisps are fit as a non-negative linear combination of filter/detector-specific
+  components (NNLS, inverse-variance weighted, sources masked) rather than a
+  single scaled STScI template, capturing exposure-to-exposure morphology.
+  Controlled by `[nircam.wisp].method` (`"nmf"` default, `"template"` for the
+  legacy path); `"nmf"` falls back to the template method for any
+  `(detector, filter)` nmfwisp ships no template for (e.g. F140M, F162M). The
+  method used is recorded per exposure in `CFP_WISP` (`nmf <version>`). Changes
+  wisp-region pixel values for the same input. The shared source mask used by
+  the fit (both methods) now grows source footprints — `[nircam.wisp].mask_nsigma`
+  (default 3) and `mask_dilate` (default 8, binary-dilation iterations) — so
+  faint source wings past the detection isophote aren't fit as wisp flux; an
+  nsigma x dilate sweep showed the old (5.5-sigma, no-dilate) mask inflated the
+  fitted wisp amplitude by ~20% where a bright source overlapped the wisp region.
 - Two-fit 2-D background architecture in the unified `bkg` step (adapted
   from R. Endsley's cluster reduction; validated on synthetic scenes +
   rj0911 F444W). (1) A **conditioning detrend** (`[nircam.bkg.detrend]`,
