@@ -38,6 +38,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.stats import median_absolute_deviation
 from photutils.segmentation import detect_sources, detect_threshold
+from scipy.ndimage import binary_dilation
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
@@ -108,19 +109,33 @@ def _calc_variance(data, template, coeff):
     return mad ** 2
 
 
-def _source_mask(data, nsigma=5.5, npixels=55):
+def _source_mask(data, nsigma=3.0, npixels=55, dilate=8):
     """Boolean mask (True = exclude): sources + non-finite pixels.
 
     Shared by both methods. ``detect_*`` need finite input, so detection runs
     on a NaN-zeroed copy while the returned mask still flags the original NaNs.
+
+    ``detect_sources`` masks each source only down to its ``nsigma`` isophote;
+    the fainter wings past that threshold otherwise leak into the wisp fit and
+    bias the amplitude (NNLS) / scale (MAD) high where a bright source overlaps
+    the wisp region. Two levers push those wings out of the fit: a lower
+    ``nsigma`` detects them directly, and ``dilate`` grows the segmentation
+    footprint by that many binary-dilation iterations. An nsigma x dilate sweep
+    (nrcb4 F200W) showed the fitted wisp amplitude was inflated ~20% at the old
+    (5.5-sigma, no-dilate) default by source flux, and converged once masking
+    was adequate — nsigma is the stronger lever (dilation grows isotropically
+    from bright cores and can't fully catch faint wings). Defaults nsigma=3,
+    dilate=8 sit on that plateau; ``dilate=0`` disables growth.
     """
     finite = np.nan_to_num(data, nan=0.0)
-    mask = ~np.isfinite(data)
+    src = np.zeros(data.shape, dtype=bool)
     segm = detect_sources(finite, detect_threshold(finite, nsigma=nsigma),
                           npixels=npixels)
     if segm is not None:
-        mask[segm.data > 0] = True
-    return mask, (segm is not None)
+        src = segm.data > 0
+        if dilate:
+            src = binary_dilation(src, iterations=dilate)
+    return (src | ~np.isfinite(data)), (segm is not None)
 
 
 def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
@@ -190,12 +205,14 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
 
     plot = step_config.get('plot', True)
     correct_1f = step_config.get('nmf_correct_1f', False)
+    nsigma = step_config.get('mask_nsigma', 3.0)
+    dilate = step_config.get('mask_dilate', 8)
 
     log(f"Running NMF wisp subtraction on {rootname}")
     model = ImageModel(exposure_file, memmap=False)
     sci_before = model.data.copy()
 
-    mask, found = _source_mask(model.data)
+    mask, found = _source_mask(model.data, nsigma=nsigma, dilate=dilate)
     if not found:
         log(f"Source detection found nothing for {rootname}; "
             "fitting NMF without a source mask")
@@ -309,16 +326,16 @@ def _fit_template(exposure_file, field, step_config, rootname, detector,
         fit_model = apply_flat_with_retry(fit_model, flatfile)
 
     fit_data = fit_model.data
-    mask = np.zeros(fit_data.shape, dtype=bool)
-    mask[np.isnan(fit_data)] = True
-    threshold = detect_threshold(fit_data, nsigma=5.5)
-    segm = detect_sources(fit_data, threshold, npixels=55)
-    if segm is None:
+    mask, found = _source_mask(
+        fit_data,
+        nsigma=step_config.get('mask_nsigma', 3.0),
+        dilate=step_config.get('mask_dilate', 8),
+    )
+    if not found:
         log(f"Source detection found nothing for {rootname}; skipping")
         fit_model.close()
         model.close()
         return
-    mask[segm.data > 0] = True
 
     masked = fit_data.copy()
     masked[mask] = 0
