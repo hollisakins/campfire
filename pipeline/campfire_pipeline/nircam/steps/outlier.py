@@ -56,6 +56,87 @@ from campfire_pipeline.nircam.manifest import (
 EXTRA_EXT_NAMES = ('SRCMASK', 'CFMASK')
 
 
+def grow_outlier_regions(sci, dq, min_area=100, expand_nsigma=1.5,
+                         max_factor=40, fallback_radius=12.0, smooth=2.0,
+                         skirt=2.0):
+    """Waterfall (hysteresis) expansion of large OUTLIER DQ regions.
+
+    Detector-fixed artifacts (scattered-light arcs, glints) move on-sky
+    between dithers, so outlier detection flags their bright cores — but
+    their wings survive below the per-pixel threshold and drizzle into the
+    mosaic. Two-threshold ("waterfall") masking, SExtractor-isophote style:
+    outlier detection provides the high-threshold seeds (connected OUTLIER
+    components with area >= ``min_area`` px; cosmic-ray hits and galaxy-core
+    speckles stay untouched), and each seed is flooded outward
+    (morphological reconstruction) through connected pixels of the lightly
+    smoothed science residual above ``expand_nsigma``·sigma — so the mask
+    follows the artifact's actual morphology and stops at the background.
+    Requires a flat background (the bkg step's conditioning/applied chain
+    provides it), since the expansion threshold is global.
+
+    Two guards:
+
+    * **Growth cap** — a seed on a bright star floods the star's own PSF
+      halo. Any expanded component larger than ``max_factor`` x its seed
+      area is discarded and replaced by a plain EDT dilation of the seed by
+      ``fallback_radius`` px (artifact wings measured ~5-15x their seeds on
+      rj0911; star halos above threshold run far beyond ``max_factor``).
+    * **Skirt** — a final ``skirt`` px dilation covers the sub-threshold
+      edge of the expansion.
+
+    Grown pixels are flagged OUTLIER|DO_NOT_USE in ``dq`` (in place).
+    Returns ``(n_large_seeds, n_added_px)``.
+    """
+    from astropy.stats import mad_std
+    from jwst.datamodels.dqflags import pixel as pf
+    from scipy.ndimage import (binary_propagation, distance_transform_edt,
+                               gaussian_filter, label)
+
+    outlier = (dq & pf['OUTLIER']) != 0
+    lab, nlab = label(outlier)
+    if nlab == 0:
+        return 0, 0
+    areas = np.bincount(lab.ravel())[1:]
+    large_ids = np.flatnonzero(areas >= min_area) + 1
+    if large_ids.size == 0:
+        return 0, 0
+    seeds = np.isin(lab, large_ids)
+
+    work = gaussian_filter(
+        np.nan_to_num(sci - np.nanmedian(sci), nan=0.0), smooth)
+    sig = mad_std(work, ignore_nan=True)
+    above = (work > expand_nsigma * sig) | seeds
+    expanded = binary_propagation(seeds, mask=above)
+
+    # per-component growth cap
+    elab, en = label(expanded)
+    final = np.zeros_like(expanded)
+    for cid in range(1, en + 1):
+        comp = elab == cid
+        seed_area = np.count_nonzero(comp & seeds)
+        if seed_area == 0:
+            continue
+        if np.count_nonzero(comp) > max_factor * seed_area:
+            comp = distance_transform_edt(~(comp & seeds)) <= fallback_radius
+        final |= comp
+    if skirt > 0:
+        final = distance_transform_edt(~final) <= skirt
+
+    added = final & ~outlier
+    dq[added] |= (pf['OUTLIER'] | pf['DO_NOT_USE'])
+    return int(large_ids.size), int(added.sum())
+
+
+def _grow_kwargs(step_config):
+    """Waterfall-growth parameters from a ``[nircam.outlier]`` config dict."""
+    return dict(
+        min_area=int(step_config.get('grow_min_area', 100)),
+        expand_nsigma=float(step_config.get('grow_expand_nsigma', 1.5)),
+        max_factor=float(step_config.get('grow_max_factor', 40)),
+        fallback_radius=float(step_config.get('grow_radius', 12)),
+    )
+
+
 def _capture_extras(canonical):
     extras = []
     with fits.open(canonical, memmap=False) as hdul:
@@ -309,9 +390,18 @@ def outlier_step(visit, visit_files, filter_files, sregions,
                     dq_before = hdul['DQ'].data.copy()
 
             with ImageModel(scratch_out) as model:
+                cfp_val = None
+                if step_config.get('grow_large_regions', False):
+                    n_large, n_added = grow_outlier_regions(
+                        model.data, model.dq, **_grow_kwargs(step_config))
+                    cfp_val = (f'grow_large_regions: {n_large} regions, '
+                               f'+{n_added} px')
+                    if n_large:
+                        log(f"  outlier grow: {rootname} — {n_large} large "
+                            f"regions, +{n_added} px flagged")
                 atomic_save(
                     model, canonical,
-                    header_updates=cfp.format(CFP_OUT=None),
+                    header_updates=cfp.format(CFP_OUT=cfp_val),
                     extra_hdus=saved_extras.get(rootname),
                 )
             log(f"  outlier promoted: {rootname}")
@@ -387,6 +477,9 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
     snr = tuple(float(x) for x in snr_str.split())
     scale = tuple(float(x) for x in scale_str.split())
 
+    grow = (_grow_kwargs(step_config)
+            if step_config.get('grow_large_regions', False) else None)
+
     outlier_detect_for_visit(
         all_inputs, visit_files,
         snr=snr, scale=scale,
@@ -398,6 +491,7 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
         in_memory=bool(step_config.get('in_memory', False)),
         extras_per_visit=saved_extras,
         plot=do_plot,
+        grow=grow,
     )
 
     _write_outlier_manifest(visit, field, filtname, all_inputs, manifest_path)

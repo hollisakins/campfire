@@ -57,6 +57,26 @@ Release procedure: edit the `## Unreleased` section below, then run
   as separate planes) driven through the real `bkg_step`, with
   aperture-to-aperture flux-conservation metrics on the correction-error
   map, plus a real-exposure amp-seam flatness sweep.
+
+### Algorithm
+- Waterfall growth of large OUTLIER DQ regions (opt-in,
+  `[nircam.outlier].grow_large_regions`, default off). Detector-fixed
+  artifacts (scattered-light arcs/glints) move on-sky between dithers, so
+  outlier detection flags their bright cores while the sub-threshold wings
+  drizzle into the mosaic. Connected OUTLIER components above
+  `grow_min_area` seed a hysteresis expansion through connected pixels of
+  the smoothed residual above `grow_expand_nsigma`·σ (SExtractor-isophote
+  style, following the artifact's actual morphology), with a
+  `grow_max_factor` growth cap that falls back to plain dilation when a
+  seed floods a bright star's own PSF halo. Cosmic-ray hits and
+  galaxy-core speckles are untouched by construction (rj0911 F444W: ~5
+  large vs ~13000 small components per frame; <1% of frame masked; the
+  mosaic A/B shows arc contributions removed at their per-dither sky
+  positions with only local one-dither depth cost). Wired in both outlier
+  implementations; growth stats stamped into `CFP_OUT`. Additive: default
+  off leaves existing outputs unchanged.
+
+### Infrastructure
 - Dependency declarations now match actual imports (#330): added `requests`,
   `h5py`, and `Pillow` (previously satisfied only transitively) plus the
   directly-imported JWST-stack packages (`crds`, `asdf`, `stdatamodels`,

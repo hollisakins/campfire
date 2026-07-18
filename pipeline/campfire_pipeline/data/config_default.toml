@@ -470,6 +470,26 @@
     threshold = 0.8
 
 [nircam.outlier]
+    # Waterfall growth of large OUTLIER DQ regions (opt-in). Detector-fixed
+    # artifacts (scattered-light arcs/glints) move on-sky between dithers so
+    # outlier detection flags their bright cores, but the sub-threshold
+    # wings survive into the mosaic. When enabled, connected OUTLIER
+    # components with area >= grow_min_area px seed a hysteresis expansion
+    # ("waterfall", SExtractor-isophote style): each seed floods through
+    # connected pixels of the smoothed residual above grow_expand_nsigma
+    # sigma, so the mask follows the artifact's actual morphology and stops
+    # at the (flat, post-bkg) background. Small components (cosmic rays,
+    # galaxy-core speckles) are untouched — rj0911 F444W: ~5 large vs
+    # ~13000 small components/frame. Guards: components expanding beyond
+    # grow_max_factor x their seed area (bright-star halos flooding their
+    # own PSF wings) fall back to a plain grow_radius px dilation of the
+    # seed. Grown px are flagged OUTLIER|DO_NOT_USE; depth cost is one
+    # dither, confined to artifact neighbourhoods (<1% of frame).
+    grow_large_regions = false
+    grow_min_area = 100
+    grow_expand_nsigma = 1.5
+    grow_max_factor = 40
+    grow_radius = 12
     # implementation = "jwst" routes outlier detection through
     # `jwst.pipeline.calwebb_image3.Image3Pipeline` per visit (with
     # intra-program cross-visit overlap padding). "campfire" runs the
