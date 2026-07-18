@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
+import { SignInLink } from '@/components/auth/SignInLink';
 import { usePathname, useRouter } from 'next/navigation';
 import { LogOut, User, Shield, Sun, Moon, Monitor, ChevronDown, Github } from 'lucide-react';
 import { Logo } from '@/components/brand/Logo';
@@ -176,12 +177,11 @@ export const Navigation: React.FC = () => {
                 </button>
               </div>
             ) : (
-              <Link
-                href="/login"
+              <SignInLink
                 className="text-sm font-medium text-header-muted hover:text-header-foreground transition-colors ml-4 pl-4 border-l border-header-border"
               >
                 Sign In
-              </Link>
+              </SignInLink>
             )}
           </div>
         </div>

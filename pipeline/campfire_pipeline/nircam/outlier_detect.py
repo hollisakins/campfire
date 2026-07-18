@@ -85,6 +85,7 @@ def outlier_detect_for_visit(
     tempdir=None,
     extras_per_visit=None,
     plot=False,
+    grow=None,
 ):
     """Per-visit campfire-native outlier across ``all_inputs``, flag ``visit_files``.
 
@@ -211,9 +212,22 @@ def outlier_detect_for_visit(
             n_visit_flagged += 1
 
             rootname = os.path.basename(crf).removesuffix('.fits')
+            cfp_val = None
+            if grow is not None:
+                # lazy import: steps.outlier imports this module
+                from campfire_pipeline.nircam.steps.outlier import (
+                    grow_outlier_regions,
+                )
+                n_large, n_added = grow_outlier_regions(
+                    model.data, model.dq, **grow)
+                cfp_val = (f'grow_large_regions: {n_large} regions, '
+                           f'+{n_added} px')
+                if n_large:
+                    log(f"  outlier grow: {rootname} — {n_large} large "
+                        f"regions, +{n_added} px flagged")
             atomic_save(
                 model, crf,
-                header_updates=cfp.format(CFP_OUT=None),
+                header_updates=cfp.format(CFP_OUT=cfp_val),
                 extra_hdus=extras_per_visit.get(rootname),
             )
 

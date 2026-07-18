@@ -165,13 +165,21 @@
 
 [nircam.bkg]
     # Unified background step (replaces striping + sky + variance). Builds ONE
-    # source mask (SubtractBackground, mask-only — NO 2-D background subtraction;
-    # the astrophysical sky is left for the mosaic) and shares it across an
-    # iterative per-amp chain: per-amp pedestal (owns the per-exposure DC) ->
-    # column median -> amp-row GP rho~5 (fine 1/f) -> amp-row GP rho~20 (amp-row
-    # banding). See docs/design-nircam-unified-background.md.
+    # source mask (SubtractBackground, mask-only by default — the astrophysical
+    # sky is left for the mosaic) and shares it across an iterative per-amp
+    # chain: per-amp pedestal (owns the per-exposure DC) -> column median ->
+    # amp-row GP rho~5 (fine 1/f) -> amp-row GP rho~20 (amp-row banding).
+    # See docs/design-nircam-unified-background.md.
     n_iterations = 3
     plot = true
+    # Opt-in applied 2-D background per exposure (fields with strongly varying
+    # backgrounds — lensing clusters). Each iteration fits Background2D on the
+    # running residual (see [nircam.bkg.bkg2d]) and subtracts the model. A
+    # fine-box fit removes ICL and bright-galaxy wings by construction — an
+    # accepted trade for cluster fields; leave false for blank fields. NOTE:
+    # the per-exposure skip is CFP_BKG-presence-based, so flipping this on
+    # already-processed exposures needs --overwrite (or reset --from image2).
+    subtract_2d = false
 
     [nircam.bkg.mask]
         # SubtractBackground mask config (mask only). Mosaic-like depth: the
@@ -200,10 +208,16 @@
             lw = 0.5
 
     [nircam.bkg.pedestal]
-        # Per-amp DC pedestal owns the per-exposure DC (skymatch): there is no
+        # DC pedestal owns the per-exposure DC (skymatch): there is no
         # inter-exposure SkyMatchStep, so this term zeroes each frame to a
         # common level before drizzle. Its frame mean is meta.background.level.
-        scope = "per_amp"
+        # scope: "auto" (default) = per-amp normally, one full-frame DC when
+        # subtract_2d is on — a per-amp pedestal turns a smooth sky gradient
+        # into a sawtooth the Background2D mesh can't reproduce (amp-boundary
+        # ringing); with the 2-D fit owning the gradient, real per-amp DC
+        # steps are left to the per-amp amp-row GP. Explicit "per_amp" /
+        # "frame" override the auto resolution.
+        scope = "auto"
         sigma = 3.0
 
     [nircam.bkg.striping]
@@ -233,6 +247,58 @@
     [nircam.bkg.variance]
         # VAR_RNOISE rescale (folded in; uses the shared final source mask).
         block_size = 7
+
+    [nircam.bkg.detrend]
+        # CONDITIONING detrend: a fit-only, zero-median 2-D structure model
+        # subtracted from the measurement copies so the pedestal / 1/f terms
+        # never see sky gradients or diffuse (scattered-light) structure —
+        # the per-amp terms would otherwise absorb them asymmetrically and
+        # imprint seams at the amp boundaries (cols 512/1024/1536). Never
+        # subtracted from SCI, so flux conservation cannot constrain it.
+        # COARSE box (R. Endsley's design, confirmed by the rj0911
+        # detrend-box A/B 2026-07-17): a coarse mesh conditions the smooth
+        # component — the actual seam driver — while being structurally
+        # unable to absorb banding/amp-DC detail; fine boxes were slightly
+        # WORSE on real frames despite the provisional-1/f theft protection.
+        # box_size is an angular scale in px at SW native ~31 mas,
+        # channel-scaled like the mask params (256 -> 128 px LW native,
+        # matching Endsley's bw=128).
+        enabled = true
+        box_size = 256
+        filter_size = 3
+        sigma = 3.0
+        exclude_percentile = 90
+
+    [nircam.bkg.bkg2d]
+        # APPLIED 2-D background fit (only used when subtract_2d = true):
+        # the sky-match / ICL-removal subtraction. Deliberately SMOOTH —
+        # its parameters are set by flux conservation, not flatness (the
+        # detrend above owns flatness for the 1/f fit). Length params
+        # (box_size, extra_dilate, reject_dilate) are angular scales in px
+        # tuned at SW native ~31 mas; rescaled per channel via
+        # [nircam.bkg.mask.pixel_scale_factor] like the mask params.
+        # box_size 64 px SW (~2") + extra_dilate 20 chosen by the synthetic
+        # cluster sweep (experiments/bkg2d_synthetic, arm b64_d20): zero
+        # median aperture-flux loss for compact, extended AND bright
+        # galaxies simultaneously, ICL removal ~0.6.
+        box_size = 64
+        filter_size = 5
+        sigma = 3.0
+        exclude_percentile = 90
+        # Grow the source tiers (not off-detector/DQ) by this many px for the
+        # 2-D fit only; the 1/f chain keeps the ungrown mask. >~80 px starts
+        # to hurt: interpolation across the huge holes biases bright sources
+        # low, and >~150 px degrades the sky fit itself.
+        extra_dilate = 20
+        # Background-map outlier rejection: refit once with map regions beyond
+        # med + hi*sigma / med - lo*sigma masked (sigma from the lowest
+        # reject_percentile of map values), grown by reject_dilate px. Guards
+        # against source flux leaking through the mask into the fine-box fit.
+        reject = true
+        reject_sigma_hi = 4.0
+        reject_sigma_lo = 3.0
+        reject_percentile = 60.0
+        reject_dilate = 40
 
 [nircam.image2]
     use_custom_flat = false
@@ -411,6 +477,26 @@
     threshold = 0.8
 
 [nircam.outlier]
+    # Waterfall growth of large OUTLIER DQ regions (opt-in). Detector-fixed
+    # artifacts (scattered-light arcs/glints) move on-sky between dithers so
+    # outlier detection flags their bright cores, but the sub-threshold
+    # wings survive into the mosaic. When enabled, connected OUTLIER
+    # components with area >= grow_min_area px seed a hysteresis expansion
+    # ("waterfall", SExtractor-isophote style): each seed floods through
+    # connected pixels of the smoothed residual above grow_expand_nsigma
+    # sigma, so the mask follows the artifact's actual morphology and stops
+    # at the (flat, post-bkg) background. Small components (cosmic rays,
+    # galaxy-core speckles) are untouched — rj0911 F444W: ~5 large vs
+    # ~13000 small components/frame. Guards: components expanding beyond
+    # grow_max_factor x their seed area (bright-star halos flooding their
+    # own PSF wings) fall back to a plain grow_radius px dilation of the
+    # seed. Grown px are flagged OUTLIER|DO_NOT_USE; depth cost is one
+    # dither, confined to artifact neighbourhoods (<1% of frame).
+    grow_large_regions = false
+    grow_min_area = 100
+    grow_expand_nsigma = 1.5
+    grow_max_factor = 40
+    grow_radius = 12
     # implementation = "jwst" routes outlier detection through
     # `jwst.pipeline.calwebb_image3.Image3Pipeline` per visit (with
     # intra-program cross-visit overlap padding). "campfire" runs the
@@ -475,6 +561,23 @@
     bg_exclude_percentile = 90
     bg_sigma = 3
     bg_interpolator = "zoom"
+    # Background-map outlier rejection for the MOSAIC-level fit (same guard
+    # as [nircam.bkg.bkg2d].reject; see SubtractBackground.bg_reject*).
+    # Default off: existing mosaics stay byte-identical and keep their
+    # config_hash. Enabling it per field changes the tile hash, forcing a
+    # rebuild. rj0911 F444W A/B (2026-07-17): extended residual-ICL removal
+    # was IDENTICAL either way (too smooth to trip the threshold) and the
+    # guard conserved compact BCG-envelope light — but it flagged a large
+    # contiguous scattered-light patch (~5% of coverage) and the refit
+    # imprinted box-scale steps at the reject-region boundary, visibly
+    # degrading the mosaic. The guard suits compact-bump leakage (bright
+    # stars on blank fields), not frames with large contiguous artifacts.
+    # A/B per field before adopting.
+    bg_reject = false
+    bg_reject_sigma_hi = 4.0
+    bg_reject_sigma_lo = 3.0
+    bg_reject_percentile = 60.0
+    bg_reject_dilate = 40.0
     split_extensions = true
     plot = true
     plot_downsample = 4

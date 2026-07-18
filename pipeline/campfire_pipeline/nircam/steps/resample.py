@@ -332,6 +332,14 @@ def resample_step(filtname, exposure_files, field, step_config,
                         'bg_exclude_percentile', 90),
                     bg_sigma=step_config.get('bg_sigma', 3),
                     bg_interpolator=step_config.get('bg_interpolator', 'zoom'),
+                    bg_reject=step_config.get('bg_reject', False),
+                    bg_reject_sigma_hi=step_config.get(
+                        'bg_reject_sigma_hi', 4.0),
+                    bg_reject_sigma_lo=step_config.get(
+                        'bg_reject_sigma_lo', 3.0),
+                    bg_reject_percentile=step_config.get(
+                        'bg_reject_percentile', 60.0),
+                    bg_reject_dilate=step_config.get('bg_reject_dilate', 40.0),
                     suffix='bkgsub',
                     replace_sci=True,
                 )

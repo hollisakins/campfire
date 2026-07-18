@@ -40,6 +40,52 @@ Release procedure: edit the `## Unreleased` section below, then run
   `(detector, filter)` nmfwisp ships no template for (e.g. F140M, F162M). The
   method used is recorded per exposure in `CFP_WISP` (`nmf <version>`). Changes
   wisp-region pixel values for the same input.
+- Two-fit 2-D background architecture in the unified `bkg` step (adapted
+  from R. Endsley's cluster reduction; validated on synthetic scenes +
+  rj0911 F444W). (1) A **conditioning detrend** (`[nircam.bkg.detrend]`,
+  on by default): a fit-only, zero-median coarse-box `Background2D` model
+  subtracted from the measurement copies so the pedestal and per-amp-row
+  1/f terms never see sky gradients or diffuse scattered-light structure —
+  which they otherwise absorb per-amp-asymmetrically, imprinting seams at
+  the amp boundaries (the real-exposure flatness sweep's headline finding).
+  Never subtracted from SCI. (2) An opt-in **applied** subtraction
+  (`[nircam.bkg].subtract_2d`, per-field — lensing clusters): a smooth
+  `Background2D` (`[nircam.bkg.bkg2d]`: box 64 px SW ≈ 2", source tiers
+  grown by `extra_dilate = 20`, background-map outlier reject via the new
+  `SubtractBackground.bg_reject*` guard) for sky-matching / ICL removal,
+  with parameters set by flux conservation (zero median aperture loss in
+  the synthetic cluster sweep). Pedestal `scope = "auto"` resolves to the
+  incumbent per-amp (safe under gradients once conditioned); a full-frame
+  fallback covers the detrend-off escape hatch. **Calibration (MINOR): the
+  default-on conditioning detrend changes 1/f/pedestal solutions (and hence
+  pixel values) for all NIRCam exposures**, materially where frames carry
+  gradients or diffuse artifacts. The applied subtraction stays opt-in
+  (default `subtract_2d = false`), and the mosaic path defaults
+  `bg_reject = false` (wired under `[nircam.resample]` with the tile
+  config-hash extended only when enabled, so existing tiles keep their
+  hash). Validated by a synthetic harness
+  (`experiments/bkg2d_synthetic/`): layered truth scenes (galaxies vs ICL
+  as separate planes) driven through the real `bkg_step`, with
+  aperture-to-aperture flux-conservation metrics on the correction-error
+  map, plus a real-exposure amp-seam flatness sweep.
+
+### Algorithm
+- Waterfall growth of large OUTLIER DQ regions (opt-in,
+  `[nircam.outlier].grow_large_regions`, default off). Detector-fixed
+  artifacts (scattered-light arcs/glints) move on-sky between dithers, so
+  outlier detection flags their bright cores while the sub-threshold wings
+  drizzle into the mosaic. Connected OUTLIER components above
+  `grow_min_area` seed a hysteresis expansion through connected pixels of
+  the smoothed residual above `grow_expand_nsigma`·σ (SExtractor-isophote
+  style, following the artifact's actual morphology), with a
+  `grow_max_factor` growth cap that falls back to plain dilation when a
+  seed floods a bright star's own PSF halo. Cosmic-ray hits and
+  galaxy-core speckles are untouched by construction (rj0911 F444W: ~5
+  large vs ~13000 small components per frame; <1% of frame masked; the
+  mosaic A/B shows arc contributions removed at their per-dither sky
+  positions with only local one-dither depth cost). Wired in both outlier
+  implementations; growth stats stamped into `CFP_OUT`. Additive: default
+  off leaves existing outputs unchanged.
 
 ### Infrastructure
 - Dependency declarations now match actual imports (#330): added `requests`,
