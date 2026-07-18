@@ -90,6 +90,18 @@ class SubtractBackground:
     bg_sigma: float = 3
     bg_interpolator: str = "zoom"
 
+    # -- Background-map outlier rejection (opt-in refit guard) -----------------
+    # After the first Background2D fit, regions where the background *map*
+    # itself is an outlier (source flux leaking through the mask shows up as
+    # source-shaped bumps in the map) are dilated into the mask and the map is
+    # refit once. sigma is measured on the lowest bg_reject_percentile of map
+    # values so the outliers being hunted don't inflate their own threshold.
+    bg_reject: bool = False
+    bg_reject_sigma_hi: float = 4.0
+    bg_reject_sigma_lo: float = 3.0
+    bg_reject_percentile: float = 60.0
+    bg_reject_dilate: float = 40.0
+
     # -- Output options --------------------------------------------------------
     plot_smooth: int = 0
     suffix: str = "bkgsub"
@@ -319,10 +331,10 @@ class SubtractBackground:
     # Background estimation
     # ------------------------------------------------------------------
 
-    def estimate_background(
+    def _fit_background2d(
         self, img: np.ndarray, mask: np.ndarray
     ) -> Background2D:
-        """Compute a smooth 2-D background on unmasked pixels."""
+        """Single Background2D fit on unmasked pixels (no rejection pass)."""
         if self.bg_interpolator == "zoom":
             interpolator = BkgZoomInterpolator()
         elif self.bg_interpolator == "IDW":
@@ -340,6 +352,59 @@ class SubtractBackground:
             mask=mask,
             interpolator=interpolator,
         )
+
+    def reject_background_outliers(
+        self, img: np.ndarray, mask: np.ndarray, bkg: Background2D
+    ) -> Optional[np.ndarray]:
+        """Return a grown mask of background-map outlier regions, or None.
+
+        Source flux leaking through the source mask imprints source-shaped
+        bumps on the background map; a genuinely smooth sky does not. Flag map
+        pixels beyond ``med + hi*sigma`` / ``med - lo*sigma`` — with sigma
+        measured on the lowest ``bg_reject_percentile`` of map values so the
+        bumps don't inflate their own threshold — and grow them by
+        ``bg_reject_dilate`` px. Returns None when nothing is flagged (or the
+        stats are degenerate) so the caller can skip the refit.
+        """
+        bmap = bkg.background
+        vals = bmap[~mask & np.isfinite(bmap)]
+        if vals.size == 0:
+            return None
+        med = np.median(vals)
+        cut = np.percentile(vals, self.bg_reject_percentile)
+        std = np.std(vals[vals < cut])
+        if not np.isfinite(std) or std <= 0:
+            return None
+        outliers = (bmap > med + self.bg_reject_sigma_hi * std) | (
+            bmap < med - self.bg_reject_sigma_lo * std
+        )
+        if not outliers.any():
+            return None
+        if self.bg_reject_dilate > 0:
+            outliers = (
+                distance_transform_edt(~outliers) <= self.bg_reject_dilate
+            )
+        return outliers
+
+    def estimate_background(
+        self, img: np.ndarray, mask: np.ndarray
+    ) -> Background2D:
+        """Compute a smooth 2-D background on unmasked pixels.
+
+        With ``bg_reject`` enabled, regions where the first-pass background
+        map is itself an outlier are folded into the mask and the map is
+        refit once (see :meth:`reject_background_outliers`).
+        """
+        bkg = self._fit_background2d(img, mask)
+        if not self.bg_reject:
+            return bkg
+        outliers = self.reject_background_outliers(img, mask, bkg)
+        if outliers is None:
+            return bkg
+        n_new = int((outliers & ~mask).sum())
+        log(f"bg_reject: refitting with {n_new} background-map outlier "
+            f"pixels added to the mask")
+        return self._fit_background2d(img, mask | outliers)
 
     # ------------------------------------------------------------------
     # Evaluation / diagnostics

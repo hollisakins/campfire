@@ -141,7 +141,8 @@ def gp_amprow_offsets(data, mask, rho, kernel_sigma=None,
                       kernel_sigma_factor=1.0, amplitude_data=None,
                       q=1.0 / np.sqrt(2.0),
                       sigma_clip_sigma=2.0, maxiters=3,
-                      ref_border=_REF_BORDER, weak_frac=0.5):
+                      ref_border=_REF_BORDER, weak_frac=0.5,
+                      zero_dc=False):
     """Per-amp, per-row 1/f offset via 1-D GP smoothing along the slow axis.
 
     Drop-in replacement for the per-amp-row median + full-row fallback in
@@ -279,7 +280,7 @@ def gp_amprow_offsets(data, mask, rho, kernel_sigma=None,
             # Not enough anchors to fit a GP: hold the amp at its DC level
             # (robust median of whatever measured), or 0 if nothing did.
             dc = float(np.nanmedian(y_r[good])) if n_anchor else 0.0
-            horizontal[:, colstart:colstop] = dc
+            horizontal[:, colstart:colstop] = 0.0 if zero_dc else dc
             diagnostics.append(f'{amp}:{n_anchor}/--/-- (DC-only)')
             continue
 
@@ -292,12 +293,21 @@ def gp_amprow_offsets(data, mask, rho, kernel_sigma=None,
         yerr = _MEDIAN_SE_FACTOR * s_use / np.sqrt(n_r[good])
 
         # Per-amp DC mean term: robust median of the well-measured rows.
+        # With ``zero_dc`` the DC is still the GP's prior mean (so weakly
+        # anchored rows relax to the amp level, not to 0) but is removed
+        # from the returned offsets: the output is zero-DC per amp and the
+        # pedestal remains the chain's ONLY per-amp DC carrier. Without
+        # this, each GP pass re-fits a per-amp DC from row medians —
+        # a second (and third) structure-polluted estimator of the same
+        # degree of freedom, whose disagreements land as amp-edge steps.
         dc = float(np.median(y_r[good]))
 
         mu, var = _gp_predict_amp(
             rows_sci[good], y_r[good], yerr, dc,
             kernel_sigma_eff, rho, q, rows_all,
         )
+        if zero_dc:
+            mu = mu - dc
         horizontal[:, colstart:colstop] = mu[:, None]
 
         post_sigma = np.sqrt(np.clip(var, 0.0, None))
