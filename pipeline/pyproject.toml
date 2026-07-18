@@ -33,6 +33,7 @@ dependencies = [
     "snowblind",
     "shapely",
     "photutils>=1.13",
+    "nmfwisp>=1.1.4",  # NIRCam NMF wisp templates + fit_wisp (Wu et al. 2026, arXiv:2601.15958)
     "celerite2>=0.2",  # CPU O(n) 1-D GP for the NIRCam striping estimator="gp" path
     "regions>=0.6",
     "JWST_FOV_plotter>=0.4",

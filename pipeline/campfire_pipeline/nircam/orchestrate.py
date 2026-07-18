@@ -646,7 +646,7 @@ def _active_process_steps(config, field):
     return [(n, k) for n, k in PROCESS_STEPS if n not in ('wcs_shift', 'jhat')]
 
 
-def _prefetch_wisp_templates(field, filters):
+def _prefetch_wisp_templates(field, filters, method='nmf'):
     """Fetch every wisp template the pending work needs, before the fan-out.
 
     A single-process warm-up so the parallel per-exposure workers read templates
@@ -655,12 +655,19 @@ def _prefetch_wisp_templates(field, filters):
     filenames (no header reads), matching the ``rootname.split('_')[3]`` detector
     convention the wisp step itself uses.
 
+    Only the *template*-method pairs are warmed: under ``method='nmf'`` the NMF
+    templates ship inside the ``nmfwisp`` wheel, so pairs NMF covers are skipped
+    here (fetching the ~16 MB STScI templates for them would download reference
+    data the run never reads). Pairs NMF can't cover fall back to the template
+    method and are still warmed.
+
     A template the manifest says should exist but that can't be fetched raises
     ``WispTemplateError`` here and aborts the phase — 'wisp enabled + template
     missing' must never degrade to a silently unsubtracted mosaic, which is the
     exact failure this whole cache path exists to kill.
     """
     from campfire_pipeline.nircam import wisp_cache
+    from campfire_pipeline.nircam.steps.wisp import _nmf_supports
     pairs = set()
     for filt in filters:
         try:
@@ -671,7 +678,10 @@ def _prefetch_wisp_templates(field, filters):
         for f in uncals:
             parts = os.path.basename(f).removesuffix('_uncal.fits').split('_')
             if len(parts) > 3 and parts[3].lower() in wisp_cache.WISP_DETECTORS:
-                pairs.add((parts[3], filt))
+                det = parts[3]
+                if method == 'nmf' and _nmf_supports(det, filt):
+                    continue  # served by the bundled nmfwisp template
+                pairs.add((det, filt))
     if not pairs:
         return
     n = wisp_cache.ensure_for_pairs(pairs, legacy_dir=field.wisp_dir)
@@ -706,7 +716,9 @@ def run_process(field, config, filters=None, n_processes=1, overwrite=False,
                                overwrite=overwrite)
     active_steps = _active_process_steps(config, field)
     if any(name == 'wisp' for name, _ in active_steps):
-        _prefetch_wisp_templates(field, filters)
+        wisp_method = get_nircam_step_config('wisp', config, field).get(
+            'method', 'nmf')
+        _prefetch_wisp_templates(field, filters, method=wisp_method)
     for filt in filters:
         log(f"--- Process: {filt} ---")
         for step_name, _ in active_steps:

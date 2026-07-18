@@ -1,21 +1,32 @@
 """
-wisp: subtract a fitted wisp template from a canonical exposure file.
+wisp: subtract a fitted wisp model from a canonical exposure file.
 
 Per-exposure step. Only ``nrca3``, ``nrca4``, ``nrcb3``, ``nrcb4`` carry
 significant wisp features in the short-wavelength channel; other detectors
 get ``CFP_WISP = 'skipped (detector <name>)'`` so the status command shows
 them as "ran but n/a" rather than "not yet run".
 
-For each of four candidate templates (different smoothing kernels) the step
-fits a scale coefficient by minimizing the median absolute deviation of
-``data - c * template`` inside a detector-specific bbox, picks the template
-with the smallest minimum, and subtracts ``c * template`` from SCI.
+Two subtraction methods are available (``[nircam.wisp].method``):
 
-No backup file is written — the diagnostic PDFs (one for the fit residuals,
-one for before/after) are generated in-memory while both arrays are live and
-saved alongside the canonical FITS in the filter's flat products directory.
-The pre-mutation SCI snapshot also makes the source-detection-on-flat-fielded
-copy idiom from the legacy implementation work without re-reading from disk.
+* ``nmf`` (default) — the multi-component non-negative matrix factorization
+  model of Wu et al. 2026 (JADES DR5, arXiv:2601.15958), via the ``nmfwisp``
+  package. Per-detector/filter templates (a small basis of components) are fit
+  to each exposure with non-negative least squares, capturing exposure-to-
+  exposure morphological variation that a single scaled template cannot.
+  Templates ship inside the ``nmfwisp`` wheel; coverage is irregular (not every
+  filter exists for every detector), so a ``(detector, filter)`` NMF has no
+  template for automatically falls back to the ``template`` method below.
+* ``template`` — the legacy scaled-template subtraction. For each of four
+  candidate templates (different smoothing kernels) a scale coefficient is fit
+  by minimizing the median absolute deviation of ``data - c * template`` inside
+  a detector-specific bbox; the template with the smallest minimum is picked and
+  ``c * template`` subtracted from SCI. Templates are fetched via the checksummed
+  manifest (see ``wisp_cache``).
+
+Both methods operate in the rate frame (before ``image2``/flat/photom), mutate
+SCI in place, and rewrite the same canonical file. No backup file is written —
+the diagnostic PDFs are generated in-memory while both arrays are live and saved
+alongside the canonical FITS in the filter's flat products directory.
 """
 
 import copy
@@ -39,8 +50,8 @@ from campfire_pipeline.nircam.steps._flat import (
 WISP_DETECTORS = {'nrca3', 'nrca4', 'nrcb3', 'nrcb4'}
 
 # Detector-specific bbox where the wisps are most prominent — used as the
-# fitting region so faint sources outside the wisp region don't influence
-# the variance minimization.
+# fitting region for the legacy ``template`` method so faint sources outside
+# the wisp region don't influence the variance minimization.
 WISP_BBOX = {
     'nrca3': (100, 1300, 1100, 2046),
     'nrca4': (300, 1450, 0, 900),
@@ -49,10 +60,28 @@ WISP_BBOX = {
 }
 
 
-def _calc_variance(data, template, coeff):
-    """MAD^2 of (data - coeff * template), nan-safe."""
-    mad = median_absolute_deviation(data - coeff * template, ignore_nan=True)
-    return mad ** 2
+@functools.lru_cache(maxsize=None)
+def _nmf_supports(detector, filtname):
+    """Does the installed ``nmfwisp`` ship a template for this pair?
+
+    Probed by file existence rather than a hardcoded list because the bundled
+    coverage is irregular *and* version-dependent: e.g. F162M is absent for all
+    detectors, nrca3 lacks F090W, and the nrcb4 SW templates live only in the
+    full-resolution ``nrcb4_org/`` directory (the loader prefers ``<det>_org/``
+    over the 4x-downsampled ``<det>/``). We therefore check both directories.
+    Returns ``False`` if ``nmfwisp`` isn't importable so the caller falls back
+    to the legacy template method.
+    """
+    if detector.lower() not in WISP_DETECTORS:
+        return False
+    det = detector.lower()
+    fname = f'{det}_{filtname.lower()}_wisp.fits.gz'
+    try:
+        import importlib.resources as ir
+        base = ir.files('nmfwisp') / 'templates'
+    except (ModuleNotFoundError, ImportError):
+        return False
+    return (base / det / fname).is_file() or (base / f'{det}_org' / fname).is_file()
 
 
 @functools.lru_cache(maxsize=8)
@@ -73,8 +102,29 @@ def _load_template(path):
     return data
 
 
+def _calc_variance(data, template, coeff):
+    """MAD^2 of (data - coeff * template), nan-safe."""
+    mad = median_absolute_deviation(data - coeff * template, ignore_nan=True)
+    return mad ** 2
+
+
+def _source_mask(data, nsigma=5.5, npixels=55):
+    """Boolean mask (True = exclude): sources + non-finite pixels.
+
+    Shared by both methods. ``detect_*`` need finite input, so detection runs
+    on a NaN-zeroed copy while the returned mask still flags the original NaNs.
+    """
+    finite = np.nan_to_num(data, nan=0.0)
+    mask = ~np.isfinite(data)
+    segm = detect_sources(finite, detect_threshold(finite, nsigma=nsigma),
+                          npixels=npixels)
+    if segm is not None:
+        mask[segm.data > 0] = True
+    return mask, (segm is not None)
+
+
 def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
-    """Subtract a fitted wisp template from a single canonical exposure.
+    """Subtract a fitted wisp model from a single canonical exposure.
 
     Parameters
     ----------
@@ -83,15 +133,15 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
     field : Field
     step_config : dict
         ``[nircam.wisp]`` block (legacy ``[nircam.stage1.remove_wisp]`` is
-        equivalent in shape).
+        equivalent in shape). ``method`` selects ``nmf`` (default) or
+        ``template``; ``nmf`` transparently falls back to ``template`` for a
+        ``(detector, filter)`` nmfwisp has no template for.
     overwrite : bool
         Re-run even when ``CFP_WISP`` is already set.
     status : StepStatus, optional
         Pre-scanned CFP_* status cache.
     """
-    plot = step_config.get('plot', True)
-    apply_flat = step_config.get('apply_flat', True)
-    use_custom_flat = step_config.get('use_custom_flat', False)
+    method = step_config.get('method', 'nmf')
 
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
     filtname = exposure_file.split('/')[-2]
@@ -112,6 +162,91 @@ def wisp_step(exposure_file, field, step_config, overwrite=False, status=None):
                 ),
             )
         return
+
+    # NMF where the package ships a template; otherwise fall through to the
+    # legacy template method (which itself stamps a visible skip when no
+    # manifest template exists either).
+    if method == 'nmf' and _nmf_supports(detector, filtname):
+        _fit_nmf(exposure_file, step_config, rootname, detector, filtname)
+        return
+
+    _fit_template(exposure_file, field, step_config, rootname, detector,
+                  filtname)
+
+
+def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
+    """Non-negative matrix factorization wisp subtraction (Wu et al. 2026).
+
+    Fits the bundled multi-component ``nmfwisp`` templates to this exposure's
+    rate-frame SCI with non-negative least squares (inverse-variance weighted,
+    sources masked) and subtracts the resulting model. Unlike the template
+    method there's no flat-fielded fitting copy: the NMF templates were built on
+    rate-frame data, so the fit and the subtraction share the same un-flat-
+    fielded frame.
+    """
+    import nmfwisp
+    from nmfwisp import fit_wisp
+    from jwst.datamodels import ImageModel
+
+    plot = step_config.get('plot', True)
+    correct_1f = step_config.get('nmf_correct_1f', False)
+
+    log(f"Running NMF wisp subtraction on {rootname}")
+    model = ImageModel(exposure_file, memmap=False)
+    sci_before = model.data.copy()
+
+    mask, found = _source_mask(model.data)
+    if not found:
+        log(f"Source detection found nothing for {rootname}; "
+            "fitting NMF without a source mask")
+
+    wisp, _wisp_e = fit_wisp(
+        sci_before, model.err, mask,
+        detector_name=detector, filter_name=filtname.upper(),
+        correct_1f=correct_1f,
+    )
+    wisp = np.nan_to_num(np.asarray(wisp, dtype=np.float64), nan=0.0)
+    wisp[sci_before == 0] = 0
+    model.data = (sci_before - wisp).astype(model.data.dtype)
+    sci_after = model.data.copy()
+
+    ver = getattr(nmfwisp, '__version__', '?')
+    from stdatamodels import util as stutil
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    model.history.append(stutil.create_history_entry(
+        f'Removed wisps (NMFwisp {ver}, Wu et al. 2026, '
+        f'arXiv:2601.15958) {now}'
+    ))
+
+    atomic_save(
+        model, exposure_file,
+        header_updates=cfp.format(CFP_WISP=f'nmf {ver}'),
+    )
+    model.close()
+    log(f"Wisp removed (NMF {ver}): {rootname}")
+
+    if plot:
+        from campfire_pipeline.nircam.steps._plots import plot_two
+        wisp_pdf = os.path.join(
+            os.path.dirname(exposure_file), f'{rootname}_wisp.pdf',
+        )
+        plot_two(sci_after, sci_before,
+                 title1='Wisp removed (NMF)', title2='Original',
+                 save_file=wisp_pdf)
+        log(f"Saved {os.path.basename(wisp_pdf)}")
+
+
+def _fit_template(exposure_file, field, step_config, rootname, detector,
+                  filtname):
+    """Legacy scaled-template wisp subtraction.
+
+    Also the automatic fallback for a ``(detector, filter)`` NMF has no template
+    for (e.g. F140M). Stamps a visible ``skipped (no template)`` when no manifest
+    template exists either — a mosaic must never silently look wisp-subtracted.
+    """
+    plot = step_config.get('plot', True)
+    apply_flat = step_config.get('apply_flat', True)
+    use_custom_flat = step_config.get('use_custom_flat', False)
 
     from campfire_pipeline.nircam import wisp_cache
 

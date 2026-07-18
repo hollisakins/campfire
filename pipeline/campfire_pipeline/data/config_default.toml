@@ -152,7 +152,14 @@
     # No tunable parameters; reserved for future snowblind config.
 
 [nircam.wisp]
-    apply_flat = true
+    # Subtraction method: "nmf" (multi-component NMF, Wu et al. 2026 /
+    # arXiv:2601.15958, via the nmfwisp package) or "template" (legacy scaled
+    # STScI template). "nmf" automatically falls back to "template" for any
+    # (detector, filter) nmfwisp ships no template for (e.g. F140M).
+    method = "nmf"
+    nmf_correct_1f = false     # let nmfwisp iterate 1/f during the fit; off because
+                               # campfire removes striping in the later bkg step
+    apply_flat = true          # template method: flat-field the fitting copy
     use_custom_flat = false
     plot = true
 
