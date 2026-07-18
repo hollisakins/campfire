@@ -28,7 +28,35 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
-### Infrastructure
+### Calibration
+- Two-fit 2-D background architecture in the unified `bkg` step (adapted
+  from R. Endsley's cluster reduction; validated on synthetic scenes +
+  rj0911 F444W). (1) A **conditioning detrend** (`[nircam.bkg.detrend]`,
+  on by default): a fit-only, zero-median coarse-box `Background2D` model
+  subtracted from the measurement copies so the pedestal and per-amp-row
+  1/f terms never see sky gradients or diffuse scattered-light structure —
+  which they otherwise absorb per-amp-asymmetrically, imprinting seams at
+  the amp boundaries (the real-exposure flatness sweep's headline finding).
+  Never subtracted from SCI. (2) An opt-in **applied** subtraction
+  (`[nircam.bkg].subtract_2d`, per-field — lensing clusters): a smooth
+  `Background2D` (`[nircam.bkg.bkg2d]`: box 64 px SW ≈ 2", source tiers
+  grown by `extra_dilate = 20`, background-map outlier reject via the new
+  `SubtractBackground.bg_reject*` guard) for sky-matching / ICL removal,
+  with parameters set by flux conservation (zero median aperture loss in
+  the synthetic cluster sweep). Pedestal `scope = "auto"` resolves to the
+  incumbent per-amp (safe under gradients once conditioned); a full-frame
+  fallback covers the detrend-off escape hatch. **Calibration (MINOR): the
+  default-on conditioning detrend changes 1/f/pedestal solutions (and hence
+  pixel values) for all NIRCam exposures**, materially where frames carry
+  gradients or diffuse artifacts. The applied subtraction stays opt-in
+  (default `subtract_2d = false`), and the mosaic path defaults
+  `bg_reject = false` (wired under `[nircam.resample]` with the tile
+  config-hash extended only when enabled, so existing tiles keep their
+  hash). Validated by a synthetic harness
+  (`experiments/bkg2d_synthetic/`): layered truth scenes (galaxies vs ICL
+  as separate planes) driven through the real `bkg_step`, with
+  aperture-to-aperture flux-conservation metrics on the correction-error
+  map, plus a real-exposure amp-seam flatness sweep.
 - Dependency declarations now match actual imports (#330): added `requests`,
   `h5py`, and `Pillow` (previously satisfied only transitively) plus the
   directly-imported JWST-stack packages (`crds`, `asdf`, `stdatamodels`,

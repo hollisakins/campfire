@@ -5,17 +5,37 @@ Per-exposure step. Runs **after** ``image2`` and ``edge``, on flat-fielded,
 flux-calibrated cal-stage data. One iterative chain, one shared source mask:
 
     for _ in range(n_iterations):
-        mask   = SubtractBackground.mask_from_arrays(residual)   # mask only
-        ped    = per-amp pedestal (owns the per-exposure DC — skymatch)
-        vcol   = per-column (vertical) 1/f
-        h      = amp-row 1/f: GP ρ≈5 (fine) then GP ρ≈20 (banding)
-        residual -= ped + vcol + h
-    rescale VAR_RNOISE on the final mask
+        mask    = SubtractBackground.mask_from_arrays(residual)  # mask only
+        detrend = FIT-ONLY coarse-box 2-D structure model (zero-median),
+                  fit directly on the residual — the coarse box is the
+                  protection against absorbing detector striping
+        ped     = pedestal on (residual - detrend)   # owns the DC (skymatch)
+        vcol    = per-column (vertical) 1/f, on the conditioned residual
+        h       = amp-row 1/f: GP ρ≈5 then ρ≈20, on the conditioned residual
+        b2d     = optional APPLIED smooth 2-D background (subtract_2d)
+        residual -= ped + vcol + h + b2d             # detrend NOT subtracted
+    rescale VAR_RNOISE on (residual - detrend), final mask
 
-The source mask is built by ``SubtractBackground`` (mask only — **no** 2-D
-background subtraction; the astrophysical sky is left for the mosaic), at a
-mosaic-like depth, with LW pixel-scaling. The per-amp pedestal carries the DC so
-the amp-row GPs are fit on a ~zero-per-amp-mean residual (design §4.5). The GP
+Two 2-D fits with opposite jobs (design realization 2026-07-17; the split
+mirrors both the retired striping step's fit-only ``skyfit`` detrend and
+R. Endsley's ``subtract_2d_before_1f``):
+
+* The **conditioning detrend** exists to make the 1/f fit well-posed: sky
+  gradients and diffuse (scattered-light) structure are per-amp-asymmetric,
+  so the per-amp pedestal / GP DC means absorb them differently per amp and
+  imprint seams at columns 512/1024/1536. The detrend is fit-only — never
+  subtracted — so it is free to follow structure aggressively (fine box, no
+  mask growth, no rejection; flux conservation cannot be harmed by a fit
+  that removes nothing). Always on by default; with it, the pedestal's
+  per-amp scope is safe even under strong gradients.
+* The **applied fit** (``subtract_2d``, opt-in per field) is the sky-match /
+  ICL-removal subtraction: a *smooth* model (coarse box, grown source mask,
+  map-outlier reject) whose parameters are set by flux conservation — zero
+  median aperture loss in the synthetic sweep — not by flatness, which the
+  detrend now owns.
+
+The source mask is built by ``SubtractBackground`` (mask only), at a
+mosaic-like depth, with LW pixel-scaling. The GP
 (`gp_striping.gp_amprow_offsets`) is unchanged and simply called twice.
 
 Writes the ``SRCMASK`` extension (consumed by ``diag_striping``), stamps
@@ -29,6 +49,7 @@ from datetime import datetime
 
 import numpy as np
 from astropy.io import fits
+from scipy.ndimage import distance_transform_edt
 
 from campfire_pipeline.common.io import log, atomic_save
 from campfire_pipeline.common import cfp
@@ -62,8 +83,16 @@ def _scale_mask_config(mask_cfg, channel, factors):
     return out
 
 
-def bkg_step(exposure_file, field, step_config, overwrite=False, status=None):
-    """Run the unified background step on a single canonical exposure."""
+def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
+             components_out=None):
+    """Run the unified background step on a single canonical exposure.
+
+    ``components_out``: optional dict — when passed, filled with the
+    accumulated per-component correction arrays (``before``, ``srcmask``,
+    ``ped``, ``vcol``, ``h``, ``b2d``, ``det_struct`` [last iteration,
+    fit-only], ``after``, ``fitmask``) for diagnostics harnesses. No effect
+    on processing.
+    """
     rootname = os.path.basename(exposure_file).removesuffix('.fits')
 
     if cfp.should_skip(exposure_file, 'CFP_BKG', rootname,
@@ -97,6 +126,10 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None):
     ped_cfg = step_config.get('pedestal', {})
     strp_cfg = step_config.get('striping', {})
     var_cfg = step_config.get('variance', {})
+    subtract_2d = bool(step_config.get('subtract_2d', False))
+    b2d_cfg = step_config.get('bkg2d', {})
+    det_cfg = step_config.get('detrend', {})
+    detrend_on = bool(det_cfg.get('enabled', True))
 
     estimator = strp_cfg.get('estimator', 'gp')
     _VALID = ('gp', 'median', 'none')
@@ -111,6 +144,22 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None):
     ped_sigma = ped_cfg.get('sigma', 3.0)
     block_size = var_cfg.get('block_size', 7)
 
+    # Pedestal scope. With the conditioning detrend on, the pedestal measures
+    # on a structure-free residual, so the per-amp scope is safe under any
+    # gradient (the sawtooth pathology needs structure to stairstep). 'auto'
+    # therefore resolves to per_amp — except in the detrend-off escape hatch
+    # with subtract_2d on, where the frame scope avoids the sawtooth.
+    ped_scope = ped_cfg.get('scope', 'auto')
+    _SCOPES = ('auto', 'per_amp', 'frame')
+    if ped_scope not in _SCOPES:
+        raise ValueError(
+            f"[nircam.bkg.pedestal].scope={ped_scope!r} not in {_SCOPES}")
+    if ped_scope == 'auto':
+        ped_scope = ('frame' if (subtract_2d and not detrend_on)
+                     else 'per_amp')
+    pedestal_fn = (oneoverf.frame_pedestal if ped_scope == 'frame'
+                   else oneoverf.peramp_pedestal)
+
     pix_factors = mask_cfg.pop('pixel_scale_factor', {'sw': 1.0, 'lw': 0.5})
     aggressive_dq = mask_cfg.pop('mask_aggressive_dq', True)
 
@@ -123,7 +172,37 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None):
                         or 'short').lower()
         channel = 'lw' if channel_meta.startswith('l') else 'sw'
         mcfg = _scale_mask_config(mask_cfg, channel, pix_factors)
+        f2 = float(pix_factors.get(channel, 1.0))
+        if subtract_2d:
+            # Applied-fit lengths are angular scales in px like the mask
+            # params: scale per channel, then route the fit + reject config
+            # through the same SubtractBackground instance the mask comes
+            # from.
+            b2d_box = max(1, int(round(b2d_cfg.get('box_size', 64) * f2)))
+            b2d_extra_dilate = float(b2d_cfg.get('extra_dilate', 20)) * f2
+            mcfg.update(
+                bg_box_size=b2d_box,
+                bg_filter_size=b2d_cfg.get('filter_size', 5),
+                bg_sigma=b2d_cfg.get('sigma', 3.0),
+                bg_exclude_percentile=b2d_cfg.get('exclude_percentile', 90),
+                bg_reject=b2d_cfg.get('reject', True),
+                bg_reject_sigma_hi=b2d_cfg.get('reject_sigma_hi', 4.0),
+                bg_reject_sigma_lo=b2d_cfg.get('reject_sigma_lo', 3.0),
+                bg_reject_percentile=b2d_cfg.get('reject_percentile', 60.0),
+                bg_reject_dilate=float(b2d_cfg.get('reject_dilate', 40)) * f2,
+            )
         sb = SubtractBackground.from_config(mcfg)
+
+        # Conditioning detrend fitter: fine box, undilated mask, no reject —
+        # fit-only, so flux conservation cannot constrain it (see docstring).
+        det_box = max(1, int(round(det_cfg.get('box_size', 32) * f2)))
+        sb_det = SubtractBackground(
+            bg_box_size=det_box,
+            bg_filter_size=det_cfg.get('filter_size', 3),
+            bg_sigma=det_cfg.get('sigma', 3.0),
+            bg_exclude_percentile=det_cfg.get('exclude_percentile', 90),
+            bg_reject=False,
+        )
 
         # DQ bits that mask the *fit* (not detection). DO_NOT_USE always;
         # transient classes too when aggressive (they carry residual signal
@@ -138,34 +217,68 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None):
         resid = sci0.astype(np.float64, copy=True)
         correction = np.zeros_like(resid)
         srcmask = None
+        srcbits = None
         ks_last = ''
         ampc_last = ''
+        if components_out is not None:
+            for k in ('ped', 'vcol', 'h', 'b2d'):
+                components_out[k] = np.zeros_like(resid)
 
         for it in range(n_iter):
             # (1) SOURCE MASK — rebuilt on the running residual (sharpens as the
             #     frame flattens). mask_from_arrays = mask only, no 2-D bg.
             if srcmask is None or remask:
-                srcmask, _ = sb.mask_from_arrays(resid, err, dq)
+                srcmask, srcbits = sb.mask_from_arrays(resid, err, dq)
             fitmask = srcmask | dq_fit
 
-            # (2) PER-AMP PEDESTAL — owns the DC (skymatch, §4.5)
-            ped, _ = oneoverf.peramp_pedestal(resid, fitmask,
-                                              sigma=ped_sigma, maxiters=maxiters)
+            # (2) CONDITIONING DETREND — fit-only, zero-median structure
+            #     model. Subtracted from the *measurement copies* below so
+            #     the pedestal / 1/f terms see a structure-free residual;
+            #     never enters the correction.
+            #
+            #     Fit DIRECTLY on the residual (Endsley's design: his
+            #     conditioning sep.Background is likewise fit with no 1/f
+            #     pre-removal) — the COARSE box is the theft protection, as
+            #     a 128-native-px mesh cannot follow ~20-row banding. Do NOT
+            #     pre-clean 1/f with a provisional row-median pass first:
+            #     that pass absorbs the row-collapse of large diffuse
+            #     structure (scattered light) before the detrend can see it,
+            #     blinding the conditioning and pushing the structure into
+            #     the per-amp h term as per-amp ramps — the within-amp
+            #     top/bottom gradient pathology (diagnosed on rj0911 F444W
+            #     NRCB, 2026-07-17, via the component harness).
+            if detrend_on:
+                det = sb_det.estimate_background(
+                    resid, fitmask).background.astype(resid.dtype)
+                good = ~fitmask & np.isfinite(resid)
+                det_struct = det - (float(np.median(det[good]))
+                                    if good.any() else 0.0)
+            else:
+                det_struct = 0.0
+            cond = resid - det_struct
 
-            # (3) VERTICAL + (4) HORIZONTAL 1/f
+            # (3) PEDESTAL — owns the DC (skymatch, §4.5), measured on the
+            #     conditioned residual so per-amp stays gradient-safe
+            ped, _ = pedestal_fn(cond, fitmask,
+                                 sigma=ped_sigma, maxiters=maxiters)
+
+            # (4) VERTICAL + HORIZONTAL 1/f, on the conditioned residual
             if estimator == 'none':
                 vcol = np.zeros_like(resid)
                 h = np.zeros_like(resid)
             elif estimator == 'gp':
                 from campfire_pipeline.nircam.gp_striping import gp_amprow_offsets
-                vcol = oneoverf.column_pattern(resid - ped, fitmask, maxiters)
-                base = resid - ped - vcol
+                vcol = oneoverf.column_pattern(cond - ped, fitmask, maxiters)
+                base = cond - ped - vcol
                 gp_kw = dict(
                     kernel_sigma_factor=gp_cfg.get('kernel_sigma_factor', 1.0),
                     q=gp_cfg.get('q', 1.0 / np.sqrt(2.0)),
                     sigma_clip_sigma=gp_cfg.get('sigma_clip', 2.0),
                     maxiters=maxiters,
                     weak_frac=gp_cfg.get('weak_frac', 0.5),
+                    # pedestal is the chain's only per-amp DC carrier: the
+                    # GP passes return zero-DC offsets (see gp_striping)
+                    zero_dc=True,
                 )
                 h5, _, ks5 = gp_amprow_offsets(base, fitmask, rho=rho_short, **gp_kw)
                 h20, _, ks20 = gp_amprow_offsets(base - h5, fitmask,
@@ -174,21 +287,47 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None):
                 ks_last = f'{ks5:.3e}/{ks20:.3e}'
             else:  # 'median' — legacy reference arm (h+v together)
                 h, vcol, ampc, _ = oneoverf.fit_residual_striping(
-                    resid - ped, fitmask, maxiters, estimator='median')
+                    cond - ped, fitmask, maxiters, estimator='median')
                 ampc_last = ','.join(ampc)
 
-            step = ped + vcol + h
+            # (5) APPLIED smooth background (subtract_2d) — the sky-match /
+            #     ICL subtraction, fit on the 1/f-corrected residual with the
+            #     source tiers grown by extra_dilate (bit 0 — off-detector/
+            #     DQ/NaN — is not grown, so detector edges don't cost a
+            #     dilated border band).
+            if subtract_2d:
+                src_only = (srcbits >> 1) != 0
+                if b2d_extra_dilate > 0:
+                    grown = (distance_transform_edt(~src_only)
+                             <= b2d_extra_dilate)
+                else:
+                    grown = src_only
+                b2d = sb.estimate_background(
+                    resid - ped - vcol - h, srcmask | grown | dq_fit
+                ).background.astype(resid.dtype)
+            else:
+                b2d = 0.0
+
+            step = ped + vcol + h + b2d
             resid -= step
             correction += step
+            if components_out is not None:
+                components_out['ped'] += ped
+                components_out['vcol'] += vcol
+                components_out['h'] += h
+                components_out['b2d'] += b2d
+                components_out['det_struct'] = (
+                    det_struct if detrend_on else np.zeros_like(resid))
 
-        # (5) VARIANCE rescale on the final mask. Measure the sky variance on
-        #     the *corrected* residual (sci0 - correction), not sci0: the old
-        #     variance step ran after striping + sky, so the pedestal/1f/banding
-        #     must be removed first or their structure biases VAR_RNOISE high.
-        factor = oneoverf.variance_rescale(resid, model.var_rnoise, srcmask,
+        # (6) VARIANCE rescale on the final mask. Measure the sky variance on
+        #     the *conditioned* corrected residual (resid - det_struct): when
+        #     the applied fit is off (or misses structure), retained sky
+        #     structure would otherwise inflate the noise estimate.
+        factor = oneoverf.variance_rescale(resid - det_struct,
+                                           model.var_rnoise, srcmask,
                                            block_size)
 
-        # (6) Write. SCI = original - accumulated correction.
+        # (7) Write. SCI = original - accumulated correction.
         outsci = sci0 - correction
         outsci[sci0 == 0] = 0
         wnan = np.isnan(outsci)
@@ -217,15 +356,33 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None):
 
         cfp_value = (
             f'estimator={estimator}, n_iter={n_iter}, channel={channel}, '
-            f'pedestal={bkg_level:.5e}, var_factor={factor:.3f}'
+            f'pedestal={bkg_level:.5e}, ped_scope={ped_scope}, '
+            f'var_factor={factor:.3f}, '
+            f'detrend={"box%d" % det_box if detrend_on else "off"}, '
+            f'subtract_2d={subtract_2d}'
         )
         if estimator == 'gp':
             cfp_value += (f', rho_short={rho_short}, rho_long={rho_long}, '
                           f'kernel_sigma[last]={ks_last}')
         elif estimator == 'median':
             cfp_value += f', fallbacks[last]={ampc_last}'
+        if subtract_2d:
+            # The per-exposure skip is CFP_BKG-presence-based (no config
+            # hash): record the 2-D fit knobs so a config flip on already-
+            # processed exposures is at least auditable.
+            cfp_value += (
+                f', bkg2d_box={b2d_box}, '
+                f'bkg2d_dilate={b2d_extra_dilate:.0f}, '
+                f'bkg2d_reject={sb.bg_reject}'
+            )
 
         sci_after = model.data.copy() if do_plot else None
+
+        if components_out is not None:
+            components_out['before'] = sci0.copy()
+            components_out['after'] = model.data.copy()
+            components_out['srcmask'] = srcmask.copy()
+            components_out['fitmask'] = (srcmask | dq_fit)
 
         srcmask_hdu = fits.ImageHDU(srcmask.astype('uint8'), name='SRCMASK')
         atomic_save(

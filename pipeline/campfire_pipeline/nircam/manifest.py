@@ -124,6 +124,33 @@ def build_mosaic_name(filtname, field_name, pixel_scale, tile, epoch=None,
     return name
 
 
+def _resample_config_hash(resample_cfg, pixel_scale):
+    """Hash the resample config fields that affect mosaic pixels.
+
+    Single source of truth for :func:`create_manifest` and
+    :func:`check_config_changed` so the two can never drift. The bg_reject
+    keys are folded in **only when the guard is enabled** (non-default):
+    existing tiles keep their historical hash (no spurious global rebuild),
+    while flipping ``bg_reject`` on a field hashes distinctly so
+    ``get_stale_tiles`` rebuilds its tiles.
+    """
+    cfg = {
+        'pixfrac': resample_cfg.get('pixfrac', 1),
+        'kernel': resample_cfg.get('kernel', 'square'),
+        'pixel_scale': pixel_scale,
+        'background_subtract': resample_cfg.get('background_subtract', True),
+    }
+    if resample_cfg.get('bg_reject', False):
+        cfg['bg_reject'] = True
+        cfg['bg_reject_sigma_hi'] = resample_cfg.get('bg_reject_sigma_hi', 4.0)
+        cfg['bg_reject_sigma_lo'] = resample_cfg.get('bg_reject_sigma_lo', 3.0)
+        cfg['bg_reject_percentile'] = resample_cfg.get(
+            'bg_reject_percentile', 60.0)
+        cfg['bg_reject_dilate'] = resample_cfg.get('bg_reject_dilate', 40.0)
+    config_str = json.dumps(cfg, sort_keys=True)
+    return f'sha256:{hashlib.sha256(config_str.encode()).hexdigest()}'
+
+
 # ---------------------------------------------------------------------------
 # Manifest creation / I/O
 # ---------------------------------------------------------------------------
@@ -176,13 +203,7 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
         inputs.append(input_entry(f, extra=extra))
 
     # Hash the relevant processing config so we can detect config changes too
-    config_str = json.dumps({
-        'pixfrac': resample_cfg.get('pixfrac', 1),
-        'kernel': resample_cfg.get('kernel', 'square'),
-        'pixel_scale': pixel_scale,
-        'background_subtract': resample_cfg.get('background_subtract', True),
-    }, sort_keys=True)
-    config_hash = f'sha256:{hashlib.sha256(config_str.encode()).hexdigest()}'
+    config_hash = _resample_config_hash(resample_cfg, pixel_scale)
 
     return {
         'mosaic_name': mosaic_name,
@@ -311,13 +332,7 @@ def check_config_changed(manifest_path, stage_config, pixel_scale):
         return True
 
     resample_cfg = stage_config.get('resample', {})
-    config_str = json.dumps({
-        'pixfrac': resample_cfg.get('pixfrac', 1),
-        'kernel': resample_cfg.get('kernel', 'square'),
-        'pixel_scale': pixel_scale,
-        'background_subtract': resample_cfg.get('background_subtract', True),
-    }, sort_keys=True)
-    current_hash = f'sha256:{hashlib.sha256(config_str.encode()).hexdigest()}'
+    current_hash = _resample_config_hash(resample_cfg, pixel_scale)
 
     return current_hash != manifest.get('config_hash')
 
