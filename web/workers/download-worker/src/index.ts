@@ -76,6 +76,13 @@ export default {
       headers.set('Content-Type', upstream.headers.get('Content-Type') || 'application/octet-stream');
       const len = upstream.headers.get('Content-Length');
       if (len) headers.set('Content-Length', len);
+      // Forward the filename. Vercel presigns downloads with a signed
+      // response-content-disposition override, so the object store answers with
+      // `attachment; filename="…"`. Without forwarding it, a browser navigating
+      // here directly falls back to the URL's last path segment and saves every
+      // file as "proxy" (the download attribute is ignored cross-origin).
+      const disposition = upstream.headers.get('Content-Disposition');
+      if (disposition) headers.set('Content-Disposition', disposition);
       headers.set('Access-Control-Allow-Origin', getAllowedOrigin(request, env));
       headers.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
       headers.set('Vary', 'Origin');

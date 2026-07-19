@@ -286,7 +286,10 @@ export interface NircamImage {
   extension: string;  // sci, err, rms, srcmask
   epoch?: string;     // exposure-subset name ('' = full field)
   file_path: string;
-  file_size?: number; // in bytes, if available
+  file_size?: number; // logical (uncompressed) bytes, if available
+  /** Bytes as stored in the bucket for gzipped mosaics (registry
+   *  stored_size_bytes); undefined = stored verbatim or not yet recorded. */
+  file_size_stored?: number;
 }
 
 // A per-(field, filter) exposure-coverage map (product_type 'nircam_expmap',
@@ -297,6 +300,56 @@ export interface NircamExpmap {
   filter: string;
   storage_key: string;
   file_size?: number; // size_bytes from the registry, if available
+}
+
+// One row of the /nircam landing grid (get_nircam_fields RPC + a presigned
+// layout-plot URL). Coverage areas and center come from the `fields` table
+// and are null until the field's first post-redesign deploy.
+export interface NircamFieldCard {
+  field: string;
+  display_name: string;
+  center_ra: number | null;
+  center_dec: number | null;
+  coverage_area_arcmin2: number | null;
+  coverage_area_deg2: number | null;
+  n_filters: number;
+  n_tiles: number;
+  n_files: number;
+  total_bytes: number;
+  last_updated: string | null;
+  layout_url: string | null;  // presigned <field>_layout.png GET, if deployed
+}
+
+// The /nircam/[field] overview (get_nircam_field_summary RPC): the card fields
+// plus the per-field facet arrays that drive the metadata grid.
+export interface NircamFieldSummary extends Omit<NircamFieldCard, 'layout_url'> {
+  filters: string[];
+  tiles: string[];
+  pixel_scales: string[];
+  extensions: string[];
+  epochs: string[];
+  /** Provenance of the latest published deployment (deployments table);
+   *  null when no deployment row is visible. */
+  cfpipe_version: string | null;
+  jwst_version: string | null;
+  crds_context: string | null;
+}
+
+// One row of the field-page data-products table: a mosaic (from nircam_images)
+// or an exposure map folded in as a synthetic `extension: 'exp'` row with no
+// tile/scale axes. `file_path` doubles as the canonical storage key for both
+// kinds — the download action routes on `kind`.
+export interface NircamProductRow {
+  kind: 'mosaic' | 'expmap';
+  field: string;
+  filter: string;
+  tile: string | null;        // null on expmap rows
+  pixel_scale: string | null; // null on expmap rows
+  extension: string;          // sci, err, wht, srcmask, ... or 'exp'
+  epoch?: string;             // '' = full field (mosaics only)
+  file_path: string;          // canonical storage key
+  file_size?: number;         // logical (uncompressed) bytes
+  file_size_stored?: number;  // bucket bytes for gzipped mosaics (else undefined)
 }
 
 // NIRCam pipeline step names. Matches campfire_pipeline.common.cfp.CFP_KEYS
@@ -352,7 +405,6 @@ export interface NircamExposure {
   dec_center: number | null;
   stage: NircamStage;
   review_status: 'pending' | 'approved' | 'excluded';
-  masking: 'none' | 'needed' | 'done';
   correction: 'none' | 'needed' | 'done';
   png_path: string | null;
   full_png_path: string | null;
@@ -379,7 +431,6 @@ export interface NirspecRateExposure {
   storage_key: string | null;     // canonical nirspec_rate key for the FITS proxy
   stage: string;
   review_status: 'pending' | 'approved' | 'excluded';
-  masking: 'none' | 'needed' | 'done';
   mask_regions: MaskRegionsPayload | null;
   notes: string | null;
   created_at: string;
@@ -406,7 +457,6 @@ export interface SpectrumExposure {
   image_height: number | null;
   stage: string;
   review_status: 'pending' | 'approved' | 'excluded';
-  masking: 'none' | 'needed' | 'done';
   notes: string | null;
   created_at: string;
   updated_at: string;
@@ -621,6 +671,17 @@ export const QUALITY_LABELS: FlagDefinition[] = REDSHIFT_QUALITY.map(q => ({
   color: q.color,
   description: q.description,
 }));
+
+// Map-marker fill/stroke color per redshift_quality (0–4), shared by the Leaflet
+// (CanvasMarkerLayer) and FitsGL (FitsGLMapSurface) marker renderers so both map
+// engines color objects identically.
+export const MARKER_QUALITY_COLORS: Record<number, string> = {
+  0: '#9ca3af', // Not inspected - gray
+  1: '#ef4444', // Impossible - red
+  2: '#f97316', // Tentative - orange
+  3: '#f59e0b', // Probable - amber
+  4: '#22c55e', // Secure - green
+};
 
 export const GRATINGS = ['PRISM', 'G140H', 'G140M', 'G235H', 'G235M', 'G395H', 'G395M'] as const;
 

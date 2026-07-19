@@ -1,98 +1,62 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import Link from 'next/link';
+import { SignInLink } from '@/components/auth/SignInLink';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
-import { NircamTable } from '@/components/nircam/NircamTable';
-import { NircamExpmapTable } from '@/components/nircam/NircamExpmapTable';
-import { NircamFilterBar, NircamFilterOptions, DEFAULT_NIRCAM_FILTERS } from '@/components/nircam/NircamFilterBar';
-import { CurlScriptGenerator } from '@/components/nircam/CurlScriptGenerator';
-import { getNircamImages, getNircamFilterOptions, getNircamExpmaps } from '@/lib/actions/nircam';
-import type { NircamImage, NircamExpmap } from '@/lib/types';
-import { LogIn, Loader2, ImageIcon, Layers } from 'lucide-react';
+import { NircamFieldCard } from '@/components/nircam/NircamFieldCard';
+import { getNircamFields } from '@/lib/actions/nircam';
+import type { NircamFieldCard as FieldCard } from '@/lib/types';
+import { LogIn, Loader2, ImageIcon } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
-export default function NircamPage() {
+const formatVolume = (bytes: number): string => {
+  if (!bytes) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+};
+
+export default function NircamLandingPage() {
   const { user, loading: authLoading } = useAuth();
 
-  const [images, setImages] = useState<NircamImage[]>([]);
-  const [expmaps, setExpmaps] = useState<NircamExpmap[]>([]);
-  const [filters, setFilters] = useState<NircamFilterOptions>(DEFAULT_NIRCAM_FILTERS);
-  const [selectedImages, setSelectedImages] = useState<NircamImage[]>([]);
+  const [fields, setFields] = useState<FieldCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Available filter options
-  const [availableFields, setAvailableFields] = useState<string[]>([]);
-  const [availableTiles, setAvailableTiles] = useState<string[]>([]);
-  const [availableFilters, setAvailableFilters] = useState<string[]>([]);
-  const [availablePixelScales, setAvailablePixelScales] = useState<string[]>([]);
-  const [availableExtensions, setAvailableExtensions] = useState<string[]>([]);
-  const [availableEpochs, setAvailableEpochs] = useState<string[]>([]);
-
-  // Fetch data
   const fetchData = useCallback(async () => {
     if (authLoading) return;
-
     setLoading(true);
     setError(null);
-
     try {
-      // Fetch images, expmaps, and filter options in parallel
-      const [imagesResult, expmapsResult, filterOptionsResult] = await Promise.all([
-        getNircamImages(),
-        getNircamExpmaps(),
-        getNircamFilterOptions(),
-      ]);
-
-      if (imagesResult.error) {
-        setError(imagesResult.error);
+      const result = await getNircamFields();
+      if (result.error) {
+        setError(result.error);
       } else {
-        setImages(imagesResult.images);
-      }
-
-      // Expmaps are a secondary product; a fetch error there shouldn't blank the
-      // whole page — just leave the section empty (it renders nothing when empty).
-      setExpmaps(expmapsResult.error ? [] : expmapsResult.expmaps);
-
-      if (!filterOptionsResult.error) {
-        setAvailableFields(filterOptionsResult.fields);
-        setAvailableTiles(filterOptionsResult.tiles);
-        setAvailableFilters(filterOptionsResult.filters);
-        setAvailablePixelScales(filterOptionsResult.pixel_scales);
-        setAvailableExtensions(filterOptionsResult.extensions);
-        setAvailableEpochs(filterOptionsResult.epochs);
+        setFields(result.fields);
       }
     } catch (err) {
-      setError('Failed to fetch data');
+      setError('Failed to fetch fields');
       console.error(err);
     } finally {
       setLoading(false);
     }
   }, [authLoading]);
 
-  // Fetch data on mount and when user logs in
   useEffect(() => {
     fetchData();
   }, [fetchData, user]);
 
-  const handleFilterChange = (newFilters: NircamFilterOptions) => {
-    setFilters(newFilters);
-  };
-
-  const handleSelectionChange = (selected: NircamImage[]) => {
-    setSelectedImages(selected);
-  };
-
-  // Expmaps share the field + filter axes with mosaics, so honor those two
-  // filter-bar selections here too (tile/scale/extension/epoch don't apply).
-  const filteredExpmaps = useMemo(() => {
-    return expmaps.filter((e) => {
-      if (filters.fields.length > 0 && !filters.fields.includes(e.field)) return false;
-      if (filters.filters.length > 0 && !filters.filters.includes(e.filter)) return false;
-      return true;
-    });
-  }, [expmaps, filters.fields, filters.filters]);
+  // Aggregate stat strip. Tiles and files are field-scoped, so sums are exact.
+  const totals = useMemo(
+    () => ({
+      fields: fields.length,
+      tiles: fields.reduce((s, f) => s + f.n_tiles, 0),
+      files: fields.reduce((s, f) => s + f.n_files, 0),
+      bytes: fields.reduce((s, f) => s + f.total_bytes, 0),
+    }),
+    [fields],
+  );
 
   // Show login prompt if not authenticated
   if (!authLoading && !user) {
@@ -117,13 +81,12 @@ export default function NircamPage() {
             Access to NIRCam imaging data requires authentication. Please sign in with your
             CAMPFIRE account to browse and download images.
           </p>
-          <Link
-            href="/login"
+          <SignInLink
             className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             <LogIn className="w-5 h-5" />
             Sign In
-          </Link>
+          </SignInLink>
         </div>
       </div>
     );
@@ -131,7 +94,6 @@ export default function NircamPage() {
 
   return (
     <div className="container mx-auto px-4 py-8">
-      {/* Breadcrumbs */}
       <Breadcrumbs
         items={[
           { label: 'CAMPFIRE', href: '/' },
@@ -140,36 +102,18 @@ export default function NircamPage() {
         className="mb-6"
       />
 
-      {/* Page Header */}
       <div className="mb-6">
-        <div className="flex items-center gap-3 mb-2">
+        <div className="flex items-center gap-3">
           <ImageIcon className="w-8 h-8 text-primary" />
           <h1 className="text-2xl font-bold text-text-primary">NIRCam Imaging</h1>
         </div>
-        <p className="text-text-secondary">
-          Browse and download NIRCam mosaic images from CAMPFIRE fields
-        </p>
-      </div>
-
-      {/* Filter Bar */}
-      <div className="mb-6">
-        <NircamFilterBar
-          filterState={filters}
-          onFiltersChange={handleFilterChange}
-          availableFields={availableFields}
-          availableTiles={availableTiles}
-          availableFilters={availableFilters}
-          availablePixelScales={availablePixelScales}
-          availableExtensions={availableExtensions}
-          availableEpochs={availableEpochs}
-        />
       </div>
 
       {/* Loading State */}
       {loading && (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <span className="ml-3 text-text-secondary">Loading images...</span>
+          <span className="ml-3 text-text-secondary">Loading fields...</span>
         </div>
       )}
 
@@ -180,53 +124,45 @@ export default function NircamPage() {
         </div>
       )}
 
-      {/* Results */}
       {!loading && !error && (
         <>
-          {/* Results Count */}
-          <div className="mb-4 flex items-center justify-between">
-            <span className="text-sm text-text-secondary">
-              {selectedImages.length.toLocaleString()} of {images.length.toLocaleString()} images selected
-            </span>
-          </div>
-
-          {/* Curl Script Generator */}
-          <div className="mb-4">
-            <CurlScriptGenerator selectedImages={selectedImages} />
-          </div>
-
-          {/* Empty State */}
-          {images.length === 0 ? (
+          {fields.length === 0 ? (
             <div className="text-center py-16 bg-card border border-border rounded-lg">
               <ImageIcon className="w-12 h-12 text-text-secondary mx-auto mb-4" />
-              <p className="text-text-secondary">
-                No NIRCam images available yet.
-              </p>
+              <p className="text-text-secondary">No NIRCam fields available yet.</p>
               <p className="text-text-secondary text-sm mt-2">
                 Check back later or contact the team if you expected to see data here.
               </p>
             </div>
           ) : (
-            <NircamTable
-              images={images}
-              filters={filters}
-              onSelectionChange={handleSelectionChange}
-            />
-          )}
-
-          {/* Exposure maps — per-(field, filter) coverage maps (seconds of
-              exposure per pixel), one fiducial map per field/filter. */}
-          {filteredExpmaps.length > 0 && (
-            <div className="mt-10">
-              <div className="flex items-center gap-2 mb-2">
-                <Layers className="w-5 h-5 text-primary" />
-                <h2 className="text-lg font-semibold text-text-primary">Exposure maps</h2>
+            <>
+              {/* Stat strip */}
+              <div className="flex flex-wrap bg-card border border-border rounded-xl overflow-hidden mb-8">
+                {[
+                  [totals.fields, 'Fields'],
+                  [totals.tiles, 'Tiles'],
+                  [totals.files.toLocaleString(), 'Mosaic files'],
+                  [formatVolume(totals.bytes), 'Total volume'],
+                ].map(([n, l], i) => (
+                  <div
+                    key={l as string}
+                    className={`flex-1 min-w-[130px] px-5 py-4 ${i > 0 ? 'border-l border-border' : ''}`}
+                  >
+                    <div className="text-xl font-bold text-text-primary">{n}</div>
+                    <div className="text-[11px] uppercase tracking-wide text-text-tertiary mt-0.5">
+                      {l}
+                    </div>
+                  </div>
+                ))}
               </div>
-              <p className="text-text-secondary text-sm mb-4">
-                Per-filter exposure-time coverage maps (pixel values in seconds).
-              </p>
-              <NircamExpmapTable expmaps={filteredExpmaps} />
-            </div>
+
+              {/* Field cards */}
+              <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(320px,1fr))]">
+                {fields.map((card) => (
+                  <NircamFieldCard key={card.field} card={card} />
+                ))}
+              </div>
+            </>
           )}
         </>
       )}

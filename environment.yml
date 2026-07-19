@@ -1,3 +1,6 @@
+# One-shot "everything" environment. For a guided, per-component setup
+# (client / reduction / deploy / web) use the installer instead:
+#   python3 install.py
 name: campfire
 channels:
   - conda-forge

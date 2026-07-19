@@ -5,6 +5,7 @@ to-download set, fetches + verifies, and records local state — the one path fo
 finals, intermediates, and (later) NIRCam.
 """
 
+import gzip
 import hashlib
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
@@ -196,6 +197,33 @@ def test_download_objects_filters_scope(store, tmp_path):
     assert (products / "nircam" / "egs" / "f444w" /
             "mosaic_nircam_f444w_egs_30mas_sci.fits").exists()
     assert not (products / "nircam" / "egs" / "f277w").exists()
+
+
+def test_downloads_compressed_mosaic_decompresses(store, tmp_path):
+    # A gzipped mosaic FITS: the bucket holds gzip bytes under a '.fits.gz' key,
+    # but content_hash/size_bytes describe the PLAIN content (identity lives in
+    # decompressed space). Pull must inflate the stream to a plain '.fits' on
+    # disk whose bytes + hash match content_hash — so the local tree is uniformly
+    # uncompressed and the differ/verify never see the gzip.
+    gz_key = "data/products/nircam/egs/f444w/mosaic_nircam_f444w_egs_30mas_sci.fits.gz"
+    row = _so(gz_key, "nircam_mosaic", CONTENT_SHA, observation=None,
+              field="egs", filter="f444w", instrument="nircam")
+    row["content_type"] = "application/gzip"
+    store.upsert_storage_objects([row])
+    products = tmp_path / "products"
+
+    # The bucket serves gzip(CONTENT); content_hash is sha256(CONTENT).
+    stats = download_objects(
+        _FakeAPI([gz_key]), [], ["nircam_mosaic"], store, products,
+        fields=["egs"], filters=["f444w"],
+        download_session=_fake_session(gzip.compress(CONTENT, mtime=0)),
+    )
+
+    assert stats["downloaded"] == 1 and stats["failed"] == 0
+    placed = products / "nircam" / "egs" / "f444w" / "mosaic_nircam_f444w_egs_30mas_sci.fits"
+    assert placed.exists(), "must land at the plain .fits path"
+    assert not (placed.parent / "mosaic_nircam_f444w_egs_30mas_sci.fits.gz").exists()
+    assert placed.read_bytes() == CONTENT  # inflated back to the original bytes
 
 
 def test_skips_already_local(store, tmp_path):

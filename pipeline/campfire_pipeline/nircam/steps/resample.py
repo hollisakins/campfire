@@ -332,6 +332,14 @@ def resample_step(filtname, exposure_files, field, step_config,
                         'bg_exclude_percentile', 90),
                     bg_sigma=step_config.get('bg_sigma', 3),
                     bg_interpolator=step_config.get('bg_interpolator', 'zoom'),
+                    bg_reject=step_config.get('bg_reject', False),
+                    bg_reject_sigma_hi=step_config.get(
+                        'bg_reject_sigma_hi', 4.0),
+                    bg_reject_sigma_lo=step_config.get(
+                        'bg_reject_sigma_lo', 3.0),
+                    bg_reject_percentile=step_config.get(
+                        'bg_reject_percentile', 60.0),
+                    bg_reject_dilate=step_config.get('bg_reject_dilate', 40.0),
                     suffix='bkgsub',
                     replace_sci=True,
                 )
@@ -431,9 +439,21 @@ def resample_step(filtname, exposure_files, field, step_config,
             )
             downsample = int(step_config.get('plot_downsample', 4))
 
+            # Thumbnail pair: a small table rendition + a large quick-look
+            # for the web popup, both size-capped (see plot_mosaic_thumbnail).
             thumb_png = mosaic_file.replace('_i2d.fits', '_thumb.png')
-            plot_mosaic_thumbnail(sci, thumb_png, downsample=downsample)
+            plot_mosaic_thumbnail(
+                sci, thumb_png,
+                max_dim=int(step_config.get('thumbnail_max_dim', 500)),
+            )
             log(f"  saved {os.path.basename(thumb_png)}")
+
+            quicklook_png = mosaic_file.replace('_i2d.fits', '_quicklook.png')
+            plot_mosaic_thumbnail(
+                sci, quicklook_png,
+                max_dim=int(step_config.get('quicklook_max_dim', 4096)),
+            )
+            log(f"  saved {os.path.basename(quicklook_png)}")
 
             if step_config.get('background_subtract', True):
                 pre_bkg_path = mosaic_file.replace(

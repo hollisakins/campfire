@@ -11,7 +11,7 @@ function row(over: Partial<SpectrumExposure>): SpectrumExposure {
     nod: '00001', detector: 'nrs1', source_id: 117757, exp_group: 0, grating: 'PRISM',
     filename: 'x.fits', storage_key: 'data/products/nirspec/o/x.fits',
     image_width: 40, image_height: 400, stage: 'cal', review_status: 'pending',
-    masking: 'none', notes: null, created_at: '', updated_at: '', ...over,
+    notes: null, created_at: '', updated_at: '', ...over,
   };
 }
 

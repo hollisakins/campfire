@@ -276,6 +276,37 @@ ALTER SEQUENCE "public"."map_layers_id_seq" OWNED BY "public"."map_layers"."id";
 
 
 
+-- FitsGL tile-pyramid datasets (epic #337, Phase 3). One row per *scoped* dataset
+-- deployed to the campfire-tiles bucket: a field's fiducial composite
+-- (kind='field') or a single standalone tile (kind='tile') — NOT one per
+-- nircam_images extension. Thin pointer table the map viewer reads; the pyramid
+-- itself (per-band manifest.json + .fits.fz supertiles + fitsgl.json) lives under
+-- `prefix` in R2. `bands`/`tiles` record what the dataset spans; `source_hashes`
+-- maps each backing mosaic (tile→filter→sha256, from storage_objects.content_hash)
+-- so a rebuild can skip byte-identical inputs. Deliberately carries NO
+-- deploy_status/deployment_id: public visibility DERIVES from the backing
+-- nircam_images (RLS in policies.sql), so a deploy against draft mosaics never
+-- exposes a manifest.
+CREATE TABLE IF NOT EXISTS "public"."fitsgl_datasets" (
+    "prefix" "text" NOT NULL,
+    "field" "text" NOT NULL,
+    "kind" "text" NOT NULL CONSTRAINT "fitsgl_datasets_kind_check" CHECK (("kind" = ANY (ARRAY['field'::"text", 'tile'::"text"]))),
+    "tile" "text",
+    "tiles" "text"[] NOT NULL,
+    "pixel_scale" "text" NOT NULL,
+    "fitsgl_json_url" "text" NOT NULL,
+    "bands" "text"[] NOT NULL,
+    "source_hashes" "jsonb" NOT NULL,
+    "is_default" boolean DEFAULT false NOT NULL,
+    "schema_version" integer DEFAULT 1 NOT NULL,
+    "deployed_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."fitsgl_datasets" OWNER TO "postgres";
+
+
+
 CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "id" integer NOT NULL,
     "grating" "text" NOT NULL,
@@ -690,6 +721,41 @@ CREATE TABLE IF NOT EXISTS "public"."programs" (
 ALTER TABLE "public"."programs" OWNER TO "postgres";
 
 
+-- First-class NIRCam field registry (issue #303) — the missing third leg of the
+-- cloud-as-source-of-truth config loop (programs / observations / fields),
+-- symmetric with `observations`. Synced from fields.toml, scoped to fields that
+-- already have deployed NIRCam data, so the cloud table reflects what is actually
+-- reduced. The full fields.toml section is mirrored losslessly into `config`
+-- (jsonb) so nothing — nested tile WCS, jhat, wcs_shift, epoch defs — is dropped;
+-- the commonly-queried bits are also lifted into typed columns. `latest_deployment_id`
+-- mirrors observations. `coverage_area_*` are deploy-computed from <field>_layout.json
+-- (exact survey area = non-zero pixels of the stacked exposure map x pixel area);
+-- sync-fields upserts only config columns so it never clobbers them. Read by
+-- get_nircam_fields / get_nircam_field_summary.
+CREATE TABLE IF NOT EXISTS "public"."fields" (
+    "name" "text" NOT NULL,
+    "display_name" "text",
+    "filters" "text"[] NOT NULL DEFAULT '{}',
+    "tiles" "text"[] NOT NULL DEFAULT '{}',
+    "fiducial_tiles" "text"[] NOT NULL DEFAULT '{}',
+    "epochs" "text"[] NOT NULL DEFAULT '{}',
+    "programs" "text"[] NOT NULL DEFAULT '{}',
+    "jwst_program_ids" integer[] NOT NULL DEFAULT '{}',
+    "file_globs" "text"[] NOT NULL DEFAULT '{}',
+    "center_ra" double precision,
+    "center_dec" double precision,
+    "config" "jsonb",
+    "coverage_area_arcmin2" double precision,
+    "coverage_area_deg2" double precision,
+    "latest_deployment_id" integer,
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    CONSTRAINT "fields_pkey" PRIMARY KEY ("name")
+);
+
+
+ALTER TABLE "public"."fields" OWNER TO "postgres";
+
+
 -- One logical mosaic per (field, tile, filter, pixel_scale, extension, epoch).
 -- The `version` axis is retired (epic #261, N2 / D3): the pipeline emits a
 -- single canonical mosaic name per slot and re-combine overwrites it in place.
@@ -748,7 +814,6 @@ CREATE TABLE IF NOT EXISTS "public"."nircam_exposures" (
     "dec_center" double precision,
     "stage" "text" NOT NULL DEFAULT 'uncal'::"text",
     "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
-    "masking" "text" NOT NULL DEFAULT 'none'::"text",
     "correction" "text" NOT NULL DEFAULT 'none'::"text",
     "png_path" "text",
     "full_png_path" "text",
@@ -794,7 +859,6 @@ CREATE TABLE IF NOT EXISTS "public"."nirspec_rate_exposures" (
     "storage_key" "text",
     "stage" "text" NOT NULL DEFAULT 'rate'::"text",
     "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
-    "masking" "text" NOT NULL DEFAULT 'none'::"text",
     "mask_regions" "jsonb",
     "notes" "text",
     "created_at" timestamp with time zone NOT NULL DEFAULT "now"(),
@@ -832,7 +896,7 @@ ALTER SEQUENCE "public"."nirspec_rate_exposures_id_seq" OWNED BY "public"."nirsp
 -- header stamp. Admin-only: reduction intermediates, never user-facing science. The
 -- physical object (key/hash/size/backend) lives in storage_objects (product_type
 -- 'nirspec_spectrum_exposure'); this table owns render columns + reviewer lifecycle
--- state (review_status, masking, notes — the last two set by the web, not deploy).
+-- state (review_status, notes — set by the web, not deploy).
 CREATE TABLE IF NOT EXISTS "public"."spectrum_exposures" (
     "id" integer NOT NULL,
     "observation" "text" NOT NULL,
@@ -848,7 +912,6 @@ CREATE TABLE IF NOT EXISTS "public"."spectrum_exposures" (
     "image_height" integer,
     "stage" "text" NOT NULL DEFAULT 'cal'::"text",
     "review_status" "text" NOT NULL DEFAULT 'pending'::"text",
-    "masking" "text" NOT NULL DEFAULT 'none'::"text",
     "notes" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
@@ -947,6 +1010,11 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- no partial digest (everything except nircam_exposure today).
     "sci_dq_hash" "text",
     "size_bytes" bigint NOT NULL,
+    -- Bytes as stored in the bucket for transport-compressed products (gzipped
+    -- mosaic FITS, epic #261 / PR #383); NULL = stored verbatim. size_bytes
+    -- stays the LOGICAL (uncompressed) size that client-side dedup and the
+    -- stat fast-path compare against local plain files.
+    "stored_size_bytes" bigint,
     "content_type" "text" NOT NULL,
     "product_type" "text" NOT NULL,
     "instrument" "text",
@@ -981,7 +1049,9 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
         'rgb'::"text", 'sed'::"text",
         'nircam_exposure'::"text", 'nircam_exposure_preview'::"text",
         'nircam_exposure_full'::"text", 'nircam_mosaic'::"text", 'nircam_rgb'::"text",
-        'nircam_expmap'::"text", 'tile'::"text", 'photometry_pz'::"text",
+        'nircam_expmap'::"text", 'nircam_expmap_plot'::"text",
+        'nircam_mosaic_thumbnail'::"text", 'nircam_mosaic_quicklook'::"text", 'nircam_layout'::"text",
+        'tile'::"text", 'photometry_pz'::"text",
         'nirspec_manual_mask'::"text", 'nirspec_stuck_shutters'::"text",
         'nirspec_bkg_override'::"text", 'nircam_mask'::"text", 'nircam_astrom_cat'::"text",
         'nircam_bad_pixel'::"text", 'nircam_flat'::"text", 'nircam_wisp'::"text"
@@ -1566,6 +1636,11 @@ ALTER TABLE ONLY "public"."map_layers"
 
 
 
+ALTER TABLE ONLY "public"."fitsgl_datasets"
+    ADD CONSTRAINT "fitsgl_datasets_pkey" PRIMARY KEY ("prefix");
+
+
+
 ALTER TABLE ONLY "public"."nircam_images"
     ADD CONSTRAINT "nircam_images_pkey" PRIMARY KEY ("id");
 
@@ -1928,6 +2003,9 @@ ALTER TABLE ONLY "public"."observations"
 ALTER TABLE ONLY "public"."observations"
     ADD CONSTRAINT "observations_latest_deployment_fkey" FOREIGN KEY ("latest_deployment_id") REFERENCES "public"."deployments"("id");
 
+ALTER TABLE ONLY "public"."fields"
+    ADD CONSTRAINT "fields_latest_deployment_fkey" FOREIGN KEY ("latest_deployment_id") REFERENCES "public"."deployments"("id") ON DELETE SET NULL;
+
 
 
 ALTER TABLE ONLY "public"."password_reset_log"
@@ -2071,6 +2149,12 @@ GRANT ALL ON TABLE "public"."map_layers" TO "service_role";
 
 
 
+GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "anon";
+GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "authenticated";
+GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "public"."spectra" TO "anon";
 GRANT ALL ON TABLE "public"."spectra" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectra" TO "service_role";
@@ -2122,6 +2206,11 @@ GRANT ALL ON TABLE "public"."observations" TO "service_role";
 GRANT ALL ON TABLE "public"."programs" TO "anon";
 GRANT ALL ON TABLE "public"."programs" TO "authenticated";
 GRANT ALL ON TABLE "public"."programs" TO "service_role";
+
+
+GRANT ALL ON TABLE "public"."fields" TO "anon";
+GRANT ALL ON TABLE "public"."fields" TO "authenticated";
+GRANT ALL ON TABLE "public"."fields" TO "service_role";
 
 
 

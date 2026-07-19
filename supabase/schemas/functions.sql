@@ -97,6 +97,143 @@ $$;
 GRANT EXECUTE ON FUNCTION public.accessible_program_slugs() TO authenticated;
 
 
+-- Whether a FitsGL dataset (epic #337, Phase 3) is public: every backing mosaic it
+-- was built from is published. The pyramid in the public tiles bucket is built from
+-- ALL of the dataset's on-disk mosaics, so a composite that mixes published + draft
+-- mosaics must stay hidden until they ALL publish (a plain EXISTS-any-published would
+-- leak the draft imagery). SECURITY DEFINER so it sees draft nircam_images rows the
+-- caller's own RLS would hide — otherwise the "NOT EXISTS unpublished" check can never
+-- fire for a non-admin. Requires ≥1 backing mosaic present AND none unpublished.
+CREATE OR REPLACE FUNCTION public.fitsgl_dataset_is_public(
+  p_field text, p_tiles text[], p_bands text[], p_pixel_scale text
+) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM nircam_images ni
+    WHERE ni.field = p_field AND ni.tile = ANY (p_tiles)
+      AND ni.filter = ANY (p_bands) AND ni.pixel_scale = p_pixel_scale
+      AND ni.epoch = '' AND ni.deploy_status = 'published'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM nircam_images ni
+    WHERE ni.field = p_field AND ni.tile = ANY (p_tiles)
+      AND ni.filter = ANY (p_bands) AND ni.pixel_scale = p_pixel_scale
+      AND ni.epoch = '' AND ni.deploy_status <> 'published'
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION public.fitsgl_dataset_is_public(text, text[], text[], text) TO authenticated;
+
+
+-- =============================================================================
+-- NIRCam field summaries  (NIRCam page redesign; issue #303 fields table)
+-- =============================================================================
+-- Both are SECURITY INVOKER: nircam_images RLS (deploy_status = 'published' OR
+-- is_admin()) does the visibility gating, so non-admins get published-only
+-- aggregates and admins see everything with no manual deploy_status filter.
+-- Driven by nircam_images so only fields with visible mosaics appear; the fields
+-- table (LEFT JOIN) supplies display_name / center / coverage_area, and
+-- storage_objects supplies the deployed layout-plot key for the card preview.
+
+-- Landing grid: one row per field the caller can see any mosaic of.
+CREATE OR REPLACE FUNCTION public.get_nircam_fields()
+RETURNS TABLE(
+  field text,
+  display_name text,
+  center_ra double precision,
+  center_dec double precision,
+  coverage_area_arcmin2 double precision,
+  coverage_area_deg2 double precision,
+  n_filters integer,
+  n_tiles integer,
+  n_files bigint,
+  total_bytes bigint,
+  last_updated timestamp without time zone,
+  layout_key text
+)
+LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path = public
+AS $$
+  SELECT
+    ni.field,
+    COALESCE(f.display_name, upper(ni.field)) AS display_name,
+    f.center_ra,
+    f.center_dec,
+    f.coverage_area_arcmin2,
+    f.coverage_area_deg2,
+    COUNT(DISTINCT ni.filter)::integer AS n_filters,
+    COUNT(DISTINCT ni.tile)::integer   AS n_tiles,
+    COUNT(*)::bigint                    AS n_files,
+    COALESCE(SUM(ni.file_size), 0)::bigint AS total_bytes,
+    MAX(ni.created_at)                  AS last_updated,
+    (SELECT so.storage_key FROM storage_objects so
+       WHERE so.product_type = 'nircam_layout'
+         AND so.field = ni.field
+         AND so.status = 'active'
+       LIMIT 1)                         AS layout_key
+  FROM nircam_images ni
+  LEFT JOIN fields f ON f.name = ni.field
+  GROUP BY ni.field, f.display_name, f.center_ra, f.center_dec,
+           f.coverage_area_arcmin2, f.coverage_area_deg2
+  ORDER BY ni.field;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_nircam_fields() TO authenticated;
+
+
+-- Field detail page: the single-field version with the facet arrays.
+CREATE OR REPLACE FUNCTION public.get_nircam_field_summary(p_field text)
+RETURNS TABLE(
+  field text,
+  display_name text,
+  center_ra double precision,
+  center_dec double precision,
+  coverage_area_arcmin2 double precision,
+  coverage_area_deg2 double precision,
+  filters text[],
+  tiles text[],
+  pixel_scales text[],
+  extensions text[],
+  epochs text[],
+  n_files bigint,
+  total_bytes bigint,
+  last_updated timestamp without time zone,
+  layout_key text
+)
+LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path = public
+AS $$
+  SELECT
+    ni.field,
+    COALESCE(f.display_name, upper(ni.field)) AS display_name,
+    f.center_ra,
+    f.center_dec,
+    f.coverage_area_arcmin2,
+    f.coverage_area_deg2,
+    array_agg(DISTINCT ni.filter ORDER BY ni.filter)           AS filters,
+    array_agg(DISTINCT ni.tile ORDER BY ni.tile)               AS tiles,
+    array_agg(DISTINCT ni.pixel_scale ORDER BY ni.pixel_scale) AS pixel_scales,
+    array_agg(DISTINCT ni.extension ORDER BY ni.extension)     AS extensions,
+    array_agg(DISTINCT ni.epoch ORDER BY ni.epoch)             AS epochs,
+    COUNT(*)::bigint                       AS n_files,
+    COALESCE(SUM(ni.file_size), 0)::bigint AS total_bytes,
+    MAX(ni.created_at)                     AS last_updated,
+    (SELECT so.storage_key FROM storage_objects so
+       WHERE so.product_type = 'nircam_layout'
+         AND so.field = ni.field
+         AND so.status = 'active'
+       LIMIT 1)                            AS layout_key
+  FROM nircam_images ni
+  LEFT JOIN fields f ON f.name = ni.field
+  WHERE ni.field = p_field
+  GROUP BY ni.field, f.display_name, f.center_ra, f.center_dec,
+           f.coverage_area_arcmin2, f.coverage_area_deg2;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_nircam_field_summary(text) TO authenticated;
+
+
 -- =============================================================================
 -- object_scoped_aggregates
 -- =============================================================================
@@ -254,6 +391,7 @@ GRANT ALL ON FUNCTION public.check_device_code_status(text) TO service_role;
 -- =============================================================================
 
 DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN);
+DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN);
 
 CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_program_slugs TEXT[],
@@ -262,18 +400,22 @@ CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_limit INTEGER DEFAULT 1000,
   p_offset INTEGER DEFAULT 0,
   p_include_counts BOOLEAN DEFAULT TRUE,
-  p_include_unpublished BOOLEAN DEFAULT false
+  p_include_unpublished BOOLEAN DEFAULT false,
+  -- Keyset cursor (#103): the object_id of the last row of the previous page.
+  -- When non-NULL the scan seeks straight to the next id via the
+  -- objects_object_id_key UNIQUE btree, so each page costs O(log N + limit)
+  -- instead of OFFSET's O(offset + limit). p_offset is kept for old clients.
+  p_after_object_id TEXT DEFAULT NULL
 )
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
--- OFFSET-based pagination is linear in offset: a deep-page request
--- (e.g. OFFSET 29000 on a 30k-row catalog) must materialize the ordered
--- scan up to that point plus run three aggregate CTEs, and started
--- tipping past the default service_role timeout around page ~29 of a
--- --full sync. Bumped to 120s so deep pages finish while the paginator
--- is still offset-based; a future change should switch this RPC to
--- keyset pagination (WHERE object_id > cursor) and then drop this SET.
+-- Keyset clients (p_after_object_id) never touch this timeout: each page is a
+-- shallow index range scan. It is retained only for legacy OFFSET clients,
+-- whose deep pages must materialize the ordered scan up to `offset` plus run
+-- three aggregate CTEs and were tipping past the default service_role timeout
+-- around page ~29 of a 30k-object --full sync. Drop this SET once offset
+-- clients are gone (see #103 follow-up).
 SET statement_timeout = '120s'
 AS $$
 BEGIN
@@ -300,6 +442,11 @@ BEGIN
       -- B1: drop objects with no published spectrum (fail-closed).
       AND (p_include_unpublished OR o.has_published_spectrum)
       AND (p_updated_since IS NULL OR o.updated_at > p_updated_since)
+      -- Keyset (#103): seek past the previous page's last object_id. object_id
+      -- is UNIQUE, so a strict > needs no (sort_col, id) tiebreaker. Any future
+      -- change to this ORDER BY must keep the ordering column UNIQUE (or switch
+      -- to a row-value cursor) or keyset will skip/duplicate rows.
+      AND (p_after_object_id IS NULL OR o.object_id > p_after_object_id)
     ORDER BY o.object_id
     LIMIT p_limit OFFSET p_offset
   ),
@@ -399,6 +546,11 @@ BEGIN
         'spectra',           COALESCE(sp.spectra,    '[]'::jsonb),
         'lists',             COALESCE(la.list_slugs, '[]'::jsonb)
       )
+      -- Keyset (#103): the client uses the LAST element's object_id as the next
+      -- page's cursor, so the page array MUST be in object_id order. matched is
+      -- ORDER BY object_id, but the LEFT JOINs below can reorder it, so pin the
+      -- aggregate order explicitly.
+      ORDER BY m.object_id
     ), '[]'::jsonb),
     COALESCE((SELECT cnt FROM total), 0)::BIGINT,
     COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
@@ -410,8 +562,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO service_role;
 
 
 -- =============================================================================
@@ -422,6 +574,7 @@ GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ,
 -- =============================================================================
 
 DROP FUNCTION IF EXISTS public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN);
+DROP FUNCTION IF EXISTS public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN);
 
 CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
   p_program_slugs TEXT[],
@@ -430,13 +583,18 @@ CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
   p_limit INTEGER DEFAULT 1000,
   p_offset INTEGER DEFAULT 0,
   p_include_counts BOOLEAN DEFAULT TRUE,
-  p_include_unpublished BOOLEAN DEFAULT false
+  p_include_unpublished BOOLEAN DEFAULT false,
+  -- Keyset cursor (#103): the spectrum_id of the last row of the previous page,
+  -- seeked via the idx_spectra_spectrum_id UNIQUE btree. See
+  -- get_objects_for_sync for the design. p_offset is kept for old clients.
+  p_after_spectrum_id TEXT DEFAULT NULL
 )
 RETURNS TABLE(spectra JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
--- Mirrors get_objects_for_sync: offset-based pagination is linear in
--- offset, so deep --full-sync pages can tip past the default timeout.
+-- Mirrors get_objects_for_sync: retained only for legacy OFFSET clients, whose
+-- deep --full-sync pages can tip past the default timeout. Keyset clients
+-- (p_after_spectrum_id) never reach it. Drop once offset clients are gone (#103).
 SET statement_timeout = '120s'
 AS $$
 BEGIN
@@ -457,6 +615,9 @@ BEGIN
       -- B1: fail-closed publish gate (this RPC always bypasses RLS).
       AND (p_include_unpublished OR s.deploy_status = 'published')
       AND (p_updated_since IS NULL OR s.updated_at > p_updated_since)
+      -- Keyset (#103): spectrum_id is UNIQUE (idx_spectra_spectrum_id), so a
+      -- strict > needs no tiebreaker; keep the ordering column UNIQUE.
+      AND (p_after_spectrum_id IS NULL OR s.spectrum_id > p_after_spectrum_id)
     ORDER BY s.spectrum_id
     LIMIT p_limit OFFSET p_offset
   ),
@@ -509,6 +670,9 @@ BEGIN
         'created_at', m.created_at,
         'updated_at', m.updated_at
       )
+      -- Keyset (#103): page array must be spectrum_id-ordered (client cursors on
+      -- the last element). matched has no post-ORDER joins, but pin it anyway.
+      ORDER BY m.spectrum_id
     ), '[]'::jsonb),
     COALESCE((SELECT cnt FROM total), 0)::BIGINT,
     COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
@@ -516,8 +680,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO service_role;
 
 
 -- =============================================================================
@@ -526,19 +690,27 @@ GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ,
 -- =============================================================================
 
 DROP FUNCTION IF EXISTS public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER);
+DROP FUNCTION IF EXISTS public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN);
 
 CREATE OR REPLACE FUNCTION public.get_photometry_for_sync(
   p_program_slugs TEXT[],
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
   p_offset INTEGER DEFAULT 0,
-  p_include_unpublished BOOLEAN DEFAULT false
+  p_include_unpublished BOOLEAN DEFAULT false,
+  -- Count gating (#103): only the keyset first page needs the count; skip the
+  -- COUNT(*) scan on every subsequent page, matching the other /sync/* RPCs.
+  p_include_counts BOOLEAN DEFAULT TRUE,
+  -- Keyset cursor (#103): the id of the last row of the previous page, seeked
+  -- via the object_photometry PK btree. p_offset is kept for old clients.
+  p_after_id INTEGER DEFAULT NULL
 )
 RETURNS TABLE(photometry_records JSONB, total_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
--- Mirrors get_objects_for_sync: offset-based pagination is linear in
--- offset, so deep --full-sync pages can tip past the default timeout.
+-- Mirrors get_objects_for_sync: retained only for legacy OFFSET clients whose
+-- deep --full-sync pages can tip past the default timeout. Keyset clients
+-- (p_after_id) never reach it. Drop once offset clients are gone (#103).
 SET statement_timeout = '120s'
 AS $$
 BEGIN
@@ -554,14 +726,19 @@ BEGIN
       -- B1: fail-closed publish gate (this RPC always bypasses RLS).
       AND (p_include_unpublished OR o.has_published_spectrum)
       AND (p_updated_since IS NULL OR op.updated_at > p_updated_since)
+      -- Keyset (#103): op.id is the PK, so a strict > needs no tiebreaker.
+      AND (p_after_id IS NULL OR op.id > p_after_id)
     ORDER BY op.id
     LIMIT p_limit OFFSET p_offset
   ),
+  -- Count CTE gated on p_include_counts; when FALSE the planner collapses it to
+  -- One-Time Filter: false and skips the scan/join.
   total AS (
     SELECT COUNT(*) AS cnt
     FROM object_photometry op
     JOIN objects o ON o.id = op.object_id
-    WHERE o.programs && p_program_slugs
+    WHERE p_include_counts
+      AND o.programs && p_program_slugs
       AND (p_include_unpublished OR o.has_published_spectrum)
       AND (p_updated_since IS NULL OR op.updated_at > p_updated_since)
   )
@@ -582,14 +759,17 @@ BEGIN
         'created_at', m.created_at,
         'updated_at', m.updated_at
       )
+      -- Keyset (#103): page array must be id-ordered (client cursors on the
+      -- last element).
+      ORDER BY m.id
     ), '[]'::jsonb),
     COALESCE((SELECT cnt FROM total), 0)::BIGINT
   FROM matched m;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, INTEGER) TO service_role;
 
 
 -- =============================================================================
@@ -2526,23 +2706,42 @@ GRANT EXECUTE ON FUNCTION public.get_observation_manifest TO authenticated;
 --     exposure/object-level rows follow their deployment's status. Drafts/revoked
 --     and out-of-program rows are excluded. Field-only products (NULL observation,
 --     e.g. NIRCam) are admin-only here until NIRCam client download lands.
+DROP FUNCTION IF EXISTS public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN);
+
 CREATE OR REPLACE FUNCTION public.get_storage_objects_for_sync(
   p_program_slugs TEXT[],
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
   p_offset INTEGER DEFAULT 0,
   p_include_counts BOOLEAN DEFAULT TRUE,
-  p_include_unpublished BOOLEAN DEFAULT FALSE
+  p_include_unpublished BOOLEAN DEFAULT FALSE,
+  -- Keyset cursor (#103): the id of the last row of the previous page, seeked
+  -- via the storage_objects_pkey btree. storage_key is NOT usable as a cursor
+  -- (only UNIQUE as (backend, bucket, storage_key)), and sync order is
+  -- irrelevant to the client (it upserts by key), so this orders by the PK.
+  -- p_offset is kept for old clients.
+  p_after_id BIGINT DEFAULT NULL
 )
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Retained only for legacy OFFSET clients; keyset clients (p_after_id) seek the
+-- PK index and never reach it. Unlike the other /sync RPCs, the scope predicate
+-- (published EXISTS checks) is itself an O(N) floor for OFFSET clients — keyset
+-- lets a page seek straight to id > cursor and evaluate scope on only ~p_limit
+-- rows. Drop this SET once offset clients are gone (#103).
 SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
+  -- `scoped` carries the full published-scope filter and feeds the count CTEs
+  -- only (gated on p_include_counts, so it is skipped entirely on keyset pages
+  -- 2+). `matched` re-states the SAME scope inline against the base table so its
+  -- keyset seek uses the PK index instead of reading a materialized full scan.
+  -- The two copies must stay in sync (same house pattern as get_objects_for_sync's
+  -- matched vs. total/accessible).
   WITH scoped AS (
-    SELECT so.*
+    SELECT so.updated_at
     FROM storage_objects so
     WHERE so.status = 'active'
       AND (
@@ -2564,9 +2763,28 @@ BEGIN
       )
   ),
   matched AS MATERIALIZED (
-    SELECT * FROM scoped
-    WHERE (p_updated_since IS NULL OR scoped.updated_at > p_updated_since)
-    ORDER BY scoped.storage_key
+    SELECT so.*
+    FROM storage_objects so
+    WHERE so.status = 'active'
+      AND (
+        p_include_unpublished
+        OR (so.spectrum_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM spectra s
+              JOIN targets t ON t.target_id = s.target_id
+              WHERE s.spectrum_id = so.spectrum_id
+                AND s.deploy_status = 'published'
+                AND t.program_slug = ANY(p_program_slugs)))
+        OR (so.spectrum_id IS NULL AND so.deployment_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM deployments d
+              LEFT JOIN observations o ON o.name = d.observation
+              WHERE d.id = so.deployment_id
+                AND d.status = 'published'
+                AND (d.field IS NOT NULL OR o.program_slug = ANY(p_program_slugs))))
+      )
+      AND (p_updated_since IS NULL OR so.updated_at > p_updated_since)
+      -- Keyset (#103): id is the PK, so a strict > needs no tiebreaker.
+      AND (p_after_id IS NULL OR so.id > p_after_id)
+    ORDER BY so.id
     LIMIT p_limit OFFSET p_offset
   ),
   total AS (
@@ -2586,6 +2804,7 @@ BEGIN
         'bucket', m.bucket,
         'storage_key', m.storage_key,
         'content_hash', m.content_hash,
+        'sci_dq_hash', m.sci_dq_hash,
         'size_bytes', m.size_bytes,
         'content_type', m.content_type,
         'product_type', m.product_type,
@@ -2601,6 +2820,9 @@ BEGIN
         'created_at', m.created_at,
         'updated_at', m.updated_at
       )
+      -- Keyset (#103): page array must be id-ordered (client cursors on the
+      -- last element).
+      ORDER BY m.id
     ), '[]'::jsonb),
     COALESCE((SELECT cnt FROM total), 0)::BIGINT,
     COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
@@ -2608,8 +2830,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, BIGINT) TO service_role;
 
 
 -- =============================================================================
@@ -3434,7 +3656,6 @@ CREATE OR REPLACE FUNCTION public.get_admin_exposures(
   p_detector text DEFAULT NULL,
   p_review_status text DEFAULT NULL,
   p_stage text DEFAULT NULL,
-  p_masking text DEFAULT NULL,
   p_correction text DEFAULT NULL,
   p_sort_column text DEFAULT 'filename',   -- 'filename' = the compound (field, filter, filename) list order
   p_sort_direction text DEFAULT 'asc',
@@ -3453,7 +3674,6 @@ RETURNS TABLE (
   dec_center double precision,
   stage text,
   review_status text,
-  masking text,
   correction text,
   png_path text,
   full_png_path text,
@@ -3483,7 +3703,7 @@ BEGIN
 
   RETURN QUERY
   SELECT e.id, e.field, e.filter, e.detector, e.filename, e.visit, e.date_obs,
-         e.ra_center, e.dec_center, e.stage, e.review_status, e.masking,
+         e.ra_center, e.dec_center, e.stage, e.review_status,
          e.correction, e.png_path, e.full_png_path, e.image_width,
          e.image_height, e.mask_regions, e.notes, e.created_at, e.updated_at,
          count(*) OVER ()
@@ -3493,7 +3713,6 @@ BEGIN
     AND (p_detector IS NULL OR e.detector = p_detector)
     AND (p_review_status IS NULL OR e.review_status = p_review_status)
     AND (p_stage IS NULL OR e.stage = p_stage)
-    AND (p_masking IS NULL OR e.masking = p_masking)
     AND (p_correction IS NULL OR e.correction = p_correction)
   ORDER BY
     -- Keep in lockstep with get_admin_exposure_neighbors.
@@ -3536,7 +3755,6 @@ CREATE OR REPLACE FUNCTION public.get_admin_exposure_neighbors(
   p_detector text DEFAULT NULL,
   p_review_status text DEFAULT NULL,
   p_stage text DEFAULT NULL,
-  p_masking text DEFAULT NULL,
   p_correction text DEFAULT NULL,
   p_sort_column text DEFAULT 'filename',
   p_sort_direction text DEFAULT 'asc',
@@ -3596,8 +3814,7 @@ BEGIN
       AND (p_detector IS NULL OR e.detector = p_detector)
       AND (p_review_status IS NULL OR e.review_status = p_review_status)
       AND (p_stage IS NULL OR e.stage = p_stage)
-      AND (p_masking IS NULL OR e.masking = p_masking)
-      AND (p_correction IS NULL OR e.correction = p_correction)
+        AND (p_correction IS NULL OR e.correction = p_correction)
   ),
   cur AS (
     SELECT r.rn AS rn0 FROM ranked r WHERE r.exp_id = p_current_id

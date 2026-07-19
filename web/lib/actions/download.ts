@@ -628,9 +628,13 @@ export async function generateNircamMosaicDownloadUrls(
       return { urls: {}, error: null };
     }
 
-    // Presign each authorized key against its home backend (dual-read), then
-    // HMAC-sign the presigned URL so the proxy only fetches URLs we authorized.
-    const signed = await generateDownloadUrls(authorizedKeys, PRESIGN_TTL_SECONDS);
+    // Presign each authorized key against its home backend (dual-read) with an
+    // attachment-filename override (these URLs are browser-NAVIGATED, so the
+    // filename must ride Content-Disposition), then HMAC-sign the presigned URL
+    // so the proxy only fetches URLs we authorized.
+    const signed = await generateDownloadUrls(authorizedKeys, PRESIGN_TTL_SECONDS, {
+      attachment: true,
+    });
     const urls: Record<string, string> = {};
     await Promise.all(
       authorizedKeys.map(async (key, i) => {
@@ -687,7 +691,10 @@ export async function generateNircamExpmapDownloadUrls(
       return { urls: {}, error: null };
     }
 
-    const signed = await generateDownloadUrls(authorizedKeys, PRESIGN_TTL_SECONDS);
+    // Attachment presign: browser-navigated URLs, filename via Content-Disposition.
+    const signed = await generateDownloadUrls(authorizedKeys, PRESIGN_TTL_SECONDS, {
+      attachment: true,
+    });
     const urls: Record<string, string> = {};
     await Promise.all(
       authorizedKeys.map(async (key, i) => {

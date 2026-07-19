@@ -229,14 +229,42 @@ def test_discover_mosaics_manifest_based_version_free_keys(tmp_path):
     assert exts == ["err", "i2d", "sci", "wht"]
     i2d = next(m for m in found if m["extension"] == "i2d")
     assert i2d["tile"] == "A1" and i2d["pixel_scale"] == "30mas"
+    # Mosaic FITS are stored gzipped: the cloud key gains '.gz' and the task
+    # carries application/gzip (the local .fits path is unchanged).
     assert i2d["storage_key"] == \
-        "data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_A1_i2d.fits"
-    # every discovered key registers as nircam_mosaic (no version segment)
+        "data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_A1_i2d.fits.gz"
+    assert i2d["content_type"] == "application/gzip"
+    # every discovered key registers as nircam_mosaic (no version segment); the
+    # registry parses the .fits.gz cloud key back to the mosaic product.
     row = reg.row_for_key(i2d["storage_key"], backend="osn",
                           content_hash="sha256:" + "a" * 64, size_bytes=1,
-                          content_type="application/fits")
+                          content_type="application/gzip")
     assert row["product_type"] == "nircam_mosaic"
     assert row["field"] == "cosmos"
+
+
+def test_deployable_mosaics_drops_i2d(tmp_path):
+    # i2d stays *discoverable* — provenance stamping and the FitsGL pyramid read
+    # it locally — but it must never reach the cloud upload / nircam_images index
+    # set. deployable_mosaics is the filter every cloud-bound path applies.
+    fdir = tmp_path / "products" / "nircam" / "cosmos" / "f444w"
+    fdir.mkdir(parents=True)
+    base = "mosaic_nircam_f444w_cosmos_30mas_A1"
+    _write_manifest(fdir, base, field="cosmos", filt="f444w", tile="A1", scale="30mas")
+    for suffix in ("_i2d.fits", "_sci.fits", "_err.fits", "_wht.fits"):
+        (fdir / f"{base}{suffix}").write_bytes(b"\x00")
+
+    dirs = {"products": tmp_path / "products" / "nircam" / "cosmos"}
+    found = nc.discover_mosaics(dirs, "cosmos", ["f444w"])
+    # discovery still surfaces i2d (local consumers depend on it)...
+    assert "i2d" in {m["extension"] for m in found}
+    # ...but the deploy set excludes it, keeping the split extensions.
+    deployable = nc.deployable_mosaics(found)
+    assert sorted(m["extension"] for m in deployable) == ["err", "sci", "wht"]
+    assert all(m["extension"] != "i2d" for m in deployable)
+    # a mosaic with only an i2d on disk deploys nothing (no split science product)
+    assert nc.deployable_mosaics(
+        [{"extension": "i2d", "path": "x", "storage_key": "k"}]) == []
 
 
 def test_discover_mosaics_skips_stale_versioned_manifest(tmp_path):
@@ -256,7 +284,7 @@ def test_discover_mosaics_skips_stale_versioned_manifest(tmp_path):
     dirs = {"products": tmp_path / "products" / "nircam" / "cosmos"}
     found = nc.discover_mosaics(dirs, "cosmos", ["f444w"])
     assert len(found) == 1
-    assert found[0]["storage_key"].endswith(f"{canon}_i2d.fits")
+    assert found[0]["storage_key"].endswith(f"{canon}_i2d.fits.gz")
     # no version segment leaked into any discovered key
     assert all("_v0_1_" not in m["storage_key"] for m in found)
 
@@ -273,4 +301,29 @@ def test_discover_mosaics_multiunderscore_field(tmp_path):
     assert len(found) == 1
     assert found[0]["tile"] == "t2"
     assert found[0]["storage_key"].endswith(
-        "ember_egs_p1/f356w/mosaic_nircam_f356w_ember_egs_p1_30mas_t2_i2d.fits")
+        "ember_egs_p1/f356w/mosaic_nircam_f356w_ember_egs_p1_30mas_t2_i2d.fits.gz")
+
+
+# --- parallel sci_dq hashing + upload-worker tuning (deploy speed) -----------
+
+def test_compute_sci_dq_hashes_matches_serial(tmp_path):
+    sci = np.arange(16, dtype="float32").reshape(4, 4)
+    dq = np.zeros((4, 4), dtype="int32")
+    tasks = []
+    for i in range(5):
+        p = _make_exposure(tmp_path / f"jw_{i}.fits", sci + i, dq)
+        tasks.append(UploadTask(local_path=p, r2_key=f"k{i}", content_type="application/fits"))
+    serial = {t.r2_key: nc._sci_dq_hash(t.local_path) for t in tasks}
+    assert nc._compute_sci_dq_hashes(tasks) == serial
+    assert nc._compute_sci_dq_hashes([]) == {}
+
+
+def test_upload_workers_env_override(monkeypatch):
+    monkeypatch.delenv("CAMPFIRE_DEPLOY_UPLOAD_WORKERS", raising=False)
+    assert nc._upload_workers() == 16
+    monkeypatch.setenv("CAMPFIRE_DEPLOY_UPLOAD_WORKERS", "24")
+    assert nc._upload_workers() == 24
+    monkeypatch.setenv("CAMPFIRE_DEPLOY_UPLOAD_WORKERS", "0")
+    assert nc._upload_workers() == 1            # clamped to >= 1
+    monkeypatch.setenv("CAMPFIRE_DEPLOY_UPLOAD_WORKERS", "not-a-number")
+    assert nc._upload_workers() == 16           # falls back to default

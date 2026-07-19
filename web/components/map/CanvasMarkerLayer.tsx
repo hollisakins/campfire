@@ -6,18 +6,7 @@ import { useMap } from 'react-leaflet';
 import type { MapObjectMarker } from '@/lib/actions/map';
 import type { WCSParams } from '@/lib/utils/wcs';
 import { skyToPixel } from '@/lib/utils/wcs';
-
-// ============================================
-// Quality color mapping (shared with MapViewer)
-// ============================================
-
-const QUALITY_COLORS: Record<number, string> = {
-  0: '#9ca3af', // Not inspected - gray
-  1: '#ef4444', // Impossible - red
-  2: '#f97316', // Tentative - orange
-  3: '#f59e0b', // Probable - amber
-  4: '#22c55e', // Secure - green
-};
+import { MARKER_QUALITY_COLORS as QUALITY_COLORS } from '@/lib/types';
 
 // Draw order: bottom → top (higher quality drawn on top)
 const QUALITY_DRAW_ORDER = [0, 1, 2, 3, 4];
@@ -29,7 +18,6 @@ const QUALITY_DRAW_ORDER = [0, 1, 2, 3, 4];
 interface PreparedMarker {
   marker: MapObjectMarker;
   latLng: L.LatLng;
-  color: string;
   isHighlighted: boolean;
 }
 
@@ -48,6 +36,8 @@ export interface CanvasMarkerLayerProps {
   highlightObjectId?: string;
   markerFilter?: (marker: MapObjectMarker) => boolean;
   onMarkerClick: (marker: MapObjectMarker, latLng: L.LatLng) => void;
+  /** Click that hit no marker (used to dismiss an open popup). */
+  onBackgroundClick?: () => void;
 }
 
 // ============================================
@@ -69,6 +59,7 @@ export function CanvasMarkerLayer({
   highlightObjectId,
   markerFilter,
   onMarkerClick,
+  onBackgroundClick,
 }: CanvasMarkerLayerProps) {
   const map = useMap();
 
@@ -80,7 +71,6 @@ export function CanvasMarkerLayer({
       return {
         marker: m,
         latLng: L.latLng(y, x), // Leaflet: lat=y, lng=x
-        color: QUALITY_COLORS[m.redshift_quality] || QUALITY_COLORS[0],
         isHighlighted: m.object_id === highlightObjectId,
       };
     });
@@ -92,6 +82,9 @@ export function CanvasMarkerLayer({
 
   const onMarkerClickRef = useRef(onMarkerClick);
   onMarkerClickRef.current = onMarkerClick;
+
+  const onBackgroundClickRef = useRef(onBackgroundClick);
+  onBackgroundClickRef.current = onBackgroundClick;
 
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
@@ -215,22 +208,12 @@ export function CanvasMarkerLayer({
         group.push(pt);
       }
 
-      // Batch draw in quality order (not inspected on bottom, secure on top)
+      // Batch draw in quality order (not inspected on bottom, secure on top).
+      // Hollow rings — no fill — so the object itself stays visible.
       for (const q of QUALITY_DRAW_ORDER) {
         const points = groups.get(q);
         if (!points) continue;
         const color = QUALITY_COLORS[q] || QUALITY_COLORS[0];
-        // Fill pass
-        ctx!.beginPath();
-        for (const pt of points) {
-          ctx!.moveTo(pt.x + 6, pt.y);
-          ctx!.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
-        }
-        ctx!.fillStyle = color;
-        ctx!.globalAlpha = 0.1;
-        ctx!.fill();
-
-        // Stroke pass
         ctx!.beginPath();
         for (const pt of points) {
           ctx!.moveTo(pt.x + 6, pt.y);
@@ -242,15 +225,10 @@ export function CanvasMarkerLayer({
         ctx!.stroke();
       }
 
-      // Draw highlighted marker last (on top)
+      // Draw highlighted marker last (on top) — a larger white ring, unfilled
+      // so the highlighted object itself stays visible.
       if (highlightItem) {
-        const { point: pt, prepared: item } = highlightItem;
-
-        ctx!.beginPath();
-        ctx!.arc(pt.x, pt.y, 10, 0, Math.PI * 2);
-        ctx!.fillStyle = item.color;
-        ctx!.globalAlpha = 0.5;
-        ctx!.fill();
+        const { point: pt } = highlightItem;
 
         ctx!.beginPath();
         ctx!.arc(pt.x, pt.y, 10, 0, Math.PI * 2);
@@ -317,6 +295,8 @@ export function CanvasMarkerLayer({
       const hit = hitTest(e.layerPoint);
       if (hit) {
         onMarkerClickRef.current(hit.marker, hit.latLng);
+      } else {
+        onBackgroundClickRef.current?.();
       }
     }
 

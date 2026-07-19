@@ -83,8 +83,7 @@ def make_meta(field, source, params=None, notes=None):
         center+radius, mosaic path, SEP thresholds, ...). Stored verbatim
         so a future invocation can be reconstructed.
     notes : str, optional
-        Free-form note shown by ``cfpipe nircam refcat info`` (TODO) and
-        in the YAML header of the .ecsv file.
+        Free-form note stored in the YAML header of the .ecsv file.
     """
     from campfire_pipeline import __version__ as cfpipe_version
 

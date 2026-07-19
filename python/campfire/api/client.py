@@ -205,7 +205,7 @@ class APIClient:
     ) -> Tuple[List[dict], int]:
         """Fetch all objects via the lightweight /sync/objects endpoint."""
         return self._paginate_sync_endpoint(
-            "/sync/objects", updated_since, on_page_complete,
+            "/sync/objects", "object_id", updated_since, on_page_complete,
         )
 
     # ------------------------------------------------------------------
@@ -248,7 +248,7 @@ class APIClient:
     ) -> Tuple[List[dict], int]:
         """Fetch all spectra via the /sync/spectra endpoint."""
         return self._paginate_sync_endpoint(
-            "/sync/spectra", updated_since, on_page_complete,
+            "/sync/spectra", "spectrum_id", updated_since, on_page_complete,
         )
 
     # ------------------------------------------------------------------
@@ -289,10 +289,11 @@ class APIClient:
         """Fetch the storage_objects mirror via /sync/storage (program-scoped).
 
         Paginates with the larger storage page size (``_storage_page_size``) since
-        storage_objects is the biggest sync catalog.
+        storage_objects is the biggest sync catalog. Cursor is the integer ``id``
+        (storage_key is not uniquely constrained alone; see the RPC).
         """
         return self._paginate_sync_endpoint(
-            "/sync/storage", updated_since, on_page_complete,
+            "/sync/storage", "id", updated_since, on_page_complete,
             page_size=self._storage_page_size,
         )
 
@@ -323,23 +324,35 @@ class APIClient:
     def _paginate_sync_endpoint(
         self,
         path: str,
+        cursor_key: str,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
         page_size: Optional[int] = None,
     ) -> Tuple[List[dict], int]:
-        """Paginate through a /sync/* endpoint.
+        """Keyset-paginate through a /sync/* endpoint.
+
+        Walks forward with a cursor on ``cursor_key`` — the endpoint's unique,
+        btree-indexed ordering column (e.g. ``"object_id"``, ``"spectrum_id"``,
+        or ``"id"``). Each page sends the previous page's last value as
+        ``after``, so the server seeks the index instead of scanning ``offset``
+        rows first: O(log N + limit) per page instead of O(offset + limit). This
+        keeps deep ``--full`` sync pages flat as the catalog grows (issue #103).
 
         ``page_size`` overrides the shared per-client page size for endpoints that
         want a different one (e.g. the larger storage page); defaults to
         ``self._page_size``.
 
-        Returns (items, total_accessible_count).
+        Returns (items, total_accessible_count). Endpoints that carry no
+        ``total_accessible_count`` field (photometry) fall back to
+        ``pagination.total`` so callers still see a real count instead of a
+        false 0.
         """
         page_size = page_size or self._page_size
         all_items: List[dict] = []
         total_accessible_count = 0
         total = 0
-        offset = 0
+        fetched = 0
+        cursor = None
         first_page = True
         while True:
             self._session._ensure_valid_token()
@@ -348,24 +361,36 @@ class APIClient:
             # subsequent page.
             params: dict = {
                 "limit": page_size,
-                "offset": offset,
                 "include_counts": "true" if first_page else "false",
             }
+            if cursor is not None:
+                params["after"] = cursor
             if updated_since:
                 params["updated_since"] = updated_since
             response = self._session.get(path, params=params, timeout=60)
             _handle_response_error(response, f"fetching {path}")
             data = response.json()
             items = data.get("data", [])
-            all_items.extend(items)
             if first_page:
                 total = data.get("pagination", {}).get("total", 0)
-                total_accessible_count = data.get("total_accessible_count", 0)
+                total_accessible_count = (
+                    data["total_accessible_count"]
+                    if "total_accessible_count" in data
+                    else total
+                )
                 first_page = False
-            offset += len(items)
+            if not items:
+                break
+            all_items.extend(items)
+            fetched += len(items)
+            cursor = items[-1][cursor_key]
             if on_page_complete:
-                on_page_complete(offset, total)
-            if offset >= total or not items:
+                on_page_complete(fetched, total)
+            # A short page means the server has no more matching rows: stop
+            # without an extra empty round-trip. An exactly-full final page
+            # falls through and the next request returns an empty page (handled
+            # by the `not items` break above).
+            if len(items) < page_size:
                 break
         return all_items, total_accessible_count
 
@@ -431,33 +456,108 @@ class APIClient:
         _handle_response_error(response, f"Cutout for {object_id}")
         return response.content
 
+    def get_fits_cutout(
+        self,
+        field: str,
+        ra: float,
+        dec: float,
+        fov: float = 10.0,
+        bands: Optional[List[str]] = None,
+        scale: Optional[float] = None,
+    ) -> bytes:
+        """Fetch a science FITS cutout from a field's FitsGL tile pyramid.
+
+        A direct crop of the tiles at the requested (default native) pyramid
+        level — no resampling, no stretch. Multi-extension FITS: one float32
+        IMAGE extension per band (EXTNAME = band), each carrying the level's
+        WCS. Pixels are the display pyramid's RICE-quantized values
+        (~0.03% photometry-faithful; flagged in the FITS headers).
+
+        Parameters
+        ----------
+        field : str
+            Field name (must have a deployed FitsGL dataset).
+        ra, dec : float
+            ICRS centre in degrees.
+        fov : float, optional
+            Square field of view in arcseconds (default 10, max 600).
+        bands : list of str, optional
+            Band subset (e.g. ``["f277w", "f444w"]``). Default: every band.
+        scale : float, optional
+            Output pixel scale in arcsec/px — selects a coarser pyramid level
+            for wide fields. Default: native.
+        """
+        params: Dict[str, Union[str, int, float]] = {
+            "field": field, "ra": ra, "dec": dec, "fov": fov,
+        }
+        if bands:
+            params["bands"] = ",".join(bands)
+        if scale is not None:
+            params["scale"] = scale
+        response = self._session.get("/cutout/fits", params=params, timeout=120)
+        _handle_response_error(response, f"FITS cutout at ({ra}, {dec}) in {field}")
+        return response.content
+
+    def get_cutout_figure(
+        self,
+        field: str,
+        ra: float,
+        dec: float,
+        fov: float = 10.0,
+        bands: Optional[List[str]] = None,
+        size: int = 300,
+        cols: Optional[int] = None,
+        stretch: str = "asinh",
+        colormap: str = "gray",
+    ) -> bytes:
+        """Fetch a multi-band cutout figure PNG (one labeled panel per band).
+
+        Parameters
+        ----------
+        field : str
+            Field name (must have a deployed FitsGL dataset).
+        ra, dec : float
+            ICRS centre in degrees.
+        fov : float, optional
+            Square field of view in arcseconds (default 10, max 600).
+        bands : list of str, optional
+            Band subset; default every band, in deployed inventory order.
+        size : int, optional
+            Panel edge in pixels (default 300, max 1024).
+        cols : int, optional
+            Panels per row (default: all in one row).
+        stretch : str, optional
+            One of ``linear``, ``log``, ``sqrt``, ``asinh`` (default).
+        colormap : str, optional
+            e.g. ``gray`` (default), ``viridis``, ``magma``, ``inferno``.
+        """
+        params: Dict[str, Union[str, int, float]] = {
+            "field": field, "ra": ra, "dec": dec, "fov": fov,
+            "size": size, "stretch": stretch, "colormap": colormap,
+        }
+        if bands:
+            params["bands"] = ",".join(bands)
+        if cols is not None:
+            params["cols"] = cols
+        response = self._session.get("/cutout/figure", params=params, timeout=120)
+        _handle_response_error(response, f"Cutout figure at ({ra}, {dec}) in {field}")
+        return response.content
+
     def fetch_all_photometry(
         self,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
     ) -> Tuple[List[dict], int]:
-        """Fetch all photometry records via the /sync/photometry endpoint."""
-        all_items: List[dict] = []
-        offset = 0
-        total_count = 0
-        while True:
-            self._session._ensure_valid_token()
-            params: dict = {"limit": self._page_size, "offset": offset}
-            if updated_since:
-                params["updated_since"] = updated_since
-            response = self._session.get("/sync/photometry", params=params, timeout=60)
-            _handle_response_error(response, "fetching photometry")
-            data = response.json()
-            items = data.get("data", [])
-            all_items.extend(items)
-            total = data.get("pagination", {}).get("total", 0)
-            total_count = total
-            offset += len(items)
-            if on_page_complete:
-                on_page_complete(offset, total)
-            if offset >= total or not items:
-                break
-        return all_items, total_count
+        """Fetch all photometry records via the /sync/photometry endpoint.
+
+        Keyset cursor is the integer ``id`` (object_photometry PK). The
+        endpoint carries no accessible count, so the second return element is
+        ``pagination.total`` (the shared paginator's fallback); the internal
+        caller ignores it, but it's kept accurate for direct callers.
+        """
+        return self._paginate_sync_endpoint(
+            "/sync/photometry", "id", updated_since, on_page_complete,
+        )
 
     def fetch_tags(self) -> List[dict]:
         """Fetch all tag metadata via the /sync/lists endpoint."""

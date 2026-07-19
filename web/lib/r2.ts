@@ -126,11 +126,31 @@ export async function resolveObjectBackends(keys: string[]): Promise<ResolvedObj
   }
 }
 
-/** Presign a GET against a resolved object's backend. */
-async function presignResolved(o: ResolvedObject, expiresIn: number): Promise<string> {
+/**
+ * Attachment filename for a key: its basename, restricted to a safe charset by
+ * construction (canonical keys already are; this guards header syntax anyway).
+ */
+function attachmentFilename(key: string): string {
+  const base = key.split('/').pop() || key;
+  return base.replace(/[^\w.+-]/g, '_');
+}
+
+/** Presign a GET against a resolved object's backend. When `attachmentName` is
+ * set, a signed `response-content-disposition` override makes the object store
+ * answer with `attachment; filename="…"` — required for browser-navigation
+ * downloads, where the anchor `download` attribute is ignored cross-origin and
+ * the proxy Worker's URL path would otherwise name every file "proxy". */
+async function presignResolved(
+  o: ResolvedObject,
+  expiresIn: number,
+  attachmentName?: string,
+): Promise<string> {
   const command = new GetObjectCommand({
     Bucket: getBucketNameForBackend(o.backend),
     Key: o.key,
+    ...(attachmentName
+      ? { ResponseContentDisposition: `attachment; filename="${attachmentName}"` }
+      : {}),
   });
   try {
     return await getSignedUrl(getS3ClientForBackend(o.backend), command, { expiresIn });
@@ -162,13 +182,23 @@ export async function generateDownloadUrl(
  * then signs in parallel. Use this for routes that presign many keys at once
  * (manifest, batch download, the client's storage presign) to avoid one DB
  * round-trip per key.
+ *
+ * Pass `attachment: true` for URLs a browser will NAVIGATE to (per-row
+ * downloads): the store then answers with `attachment; filename="<basename>"`
+ * and the proxy forwards it, so the save dialog gets the real product name.
+ * Leave it off for programmatic fetches (zip, JSON, <img> sources).
  */
 export async function generateDownloadUrls(
   keys: string[],
-  expiresIn: number = 3600
+  expiresIn: number = 3600,
+  opts: { attachment?: boolean } = {}
 ): Promise<string[]> {
   const resolved = await resolveObjectBackends(keys);
-  return Promise.all(resolved.map((o) => presignResolved(o, expiresIn)));
+  return Promise.all(
+    resolved.map((o) =>
+      presignResolved(o, expiresIn, opts.attachment ? attachmentFilename(o.key) : undefined),
+    ),
+  );
 }
 
 /**

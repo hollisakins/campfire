@@ -44,6 +44,8 @@ _NIRSPEC_OBS_SUFFIXES = (
 _NIRCAM_FILTER_SUFFIXES = (
     ("_preview.png", "nircam_exposure_preview"),
     ("_full.png", "nircam_exposure_full"),
+    ("_thumb.png", "nircam_mosaic_thumbnail"),  # before the 'mosaic' prefix check
+    ("_quicklook.png", "nircam_mosaic_quicklook"),
 )
 _EXPOSURE_RE = re.compile(r"_nrs[12]_\d+\.fits$")
 _TILE_RE = re.compile(r"^(?P<field>[^/]+)/(?P<filt>[^/]+)/(?P<z>\d+)/(?P<x>\d+)/(?P<y>\d+)\.png$")
@@ -54,6 +56,23 @@ def _dispatch(fname: str, table, fallback: Optional[str] = None) -> Optional[str
         if fname.endswith(suffix):
             return ptype
     return fallback
+
+
+def _plain_filename(product_type: str, fname: str) -> str:
+    """Strip a trailing ``.gz`` for a compressed product's compressed file.
+
+    The bijection always carries the *plain* (local) filename; the cloud key's
+    ``.gz`` is (re)applied only by :func:`keys.storage_key`. A local relpath is
+    never gzipped, so this is a no-op there; it fires only when a ``.gz`` cloud
+    key routes through :func:`parse_relpath` (via ``parse_key``'s ``data/``
+    delegation). Non-compressed filenames are returned untouched.
+    """
+    if fname.endswith(".gz"):
+        base = fname[: -len(".gz")]
+        spec = products.get(product_type)
+        if any(base.endswith(sfx) for sfx in spec.compressed_suffixes):
+            return base
+    return fname
 
 
 def _nirspec_obs_product(fname: str) -> str:
@@ -99,6 +118,8 @@ def parse_relpath(relpath: str) -> ParsedKey:
         field = seg[2]
         if len(seg) == 4 and seg[3].endswith("_rgb.png"):
             return ParsedKey("nircam_rgb", Scope(field=field), seg[3])
+        if len(seg) == 4 and seg[3].endswith("_layout.png"):
+            return ParsedKey("nircam_layout", Scope(field=field), seg[3])
         if len(seg) == 5:
             filt, fname = seg[3], seg[4]
             scope = Scope(field=field, filt=filt)
@@ -106,9 +127,12 @@ def parse_relpath(relpath: str) -> ParsedKey:
             if ptype:
                 return ParsedKey(ptype, scope, fname)
             if fname.startswith("mosaic"):
-                return ParsedKey("nircam_mosaic", scope, fname)
+                return ParsedKey("nircam_mosaic", scope, _plain_filename("nircam_mosaic", fname))
             if fname.startswith("expmap"):
-                return ParsedKey("nircam_expmap", scope, fname)
+                # '.png' is the dark web plot; '.fits' is the coverage map.
+                return ParsedKey(
+                    "nircam_expmap_plot" if fname.endswith(".png")
+                    else "nircam_expmap", scope, fname)
             if fname.endswith(".fits"):
                 return ParsedKey("nircam_exposure", scope, fname)
 
@@ -242,6 +266,28 @@ def derive_sibling(key: str, target_product_type: str, *, bucket: Optional[str] 
     new_fname = f"{base}{tgt.suffix}"
     prefix = key.rsplit("/", 1)[0]
     return f"{prefix}/{new_fname}"
+
+
+def is_compressed_key(key: str, *, bucket: Optional[str] = None) -> bool:
+    """True iff *key* addresses an object stored gzipped in the bucket.
+
+    Compression is a layout property (``ProductSpec.compressed_suffixes``): the
+    key ends in ``.gz`` and its product declares the underlying suffix as
+    compressed. This is the single source of truth for gzip-on-upload /
+    gunzip-on-pull — the local file is always the plain (decompressed) form, so
+    the registry ``content_hash``/``size_bytes`` describe that plain form.
+    False for unknown/unsafe keys and uncompressed products.
+    """
+    if not key.endswith(".gz"):
+        return False
+    try:
+        pk = parse_key(key, bucket=bucket)
+    except LayoutError:
+        return False
+    spec = products.get(pk.product_type)
+    # pk.filename is the plain (stripped) name; verify it matches a declared
+    # compressed suffix so a stray '.gz' key is not misclassified.
+    return any(pk.filename.endswith(sfx) for sfx in spec.compressed_suffixes)
 
 
 def is_known_key(key: str, *, bucket: Optional[str] = None) -> bool:

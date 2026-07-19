@@ -28,7 +28,6 @@ byte-aggregated in ``map_layers.total_size_bytes`` (the budget RPC unions both).
 
 from __future__ import annotations
 
-import hashlib
 import os
 import tempfile
 from dataclasses import dataclass, field
@@ -48,9 +47,6 @@ from campfire_layout.products import get as get_product
 
 from campfire.deploy.r2 import UploadTask, download_to_path, upload_to_r2
 
-# Streamed-hash chunk size (1 MiB).
-_HASH_CHUNK = 1 << 20
-
 # Supabase upsert batch size — matches batch_upsert_spectra.
 UPSERT_BATCH = 500
 
@@ -61,21 +57,16 @@ UNREGISTERED_PRODUCT_TYPES = frozenset({'rgb', 'sed'})
 
 
 # ---------------------------------------------------------------------------
-# Hashing
+# Hashing — single implementation lives in campfire.storage.hashing; these
+# names are re-exported here for the deploy-side callers (and tests) that
+# import them from the registry module.
 # ---------------------------------------------------------------------------
 
-def hash_file(path: Path) -> tuple[str, int]:
-    """Return ``('sha256:<hex>', size_bytes)`` for a local file, streamed."""
-    h = hashlib.sha256()
-    size = 0
-    with open(path, 'rb') as f:
-        while True:
-            chunk = f.read(_HASH_CHUNK)
-            if not chunk:
-                break
-            h.update(chunk)
-            size += len(chunk)
-    return f"sha256:{h.hexdigest()}", size
+from campfire.storage.hashing import (  # noqa: E402  (re-export)
+    default_hash_workers,
+    hash_file,
+    hash_files_parallel,
+)
 
 
 def normalize_sha256(file_hash: str | None) -> str | None:
@@ -161,6 +152,7 @@ def row_for_key(
     status: str = 'active',
     bucket: Optional[str] = None,
     sci_dq_hash: Optional[str] = None,
+    stored_size_bytes: Optional[int] = None,
 ) -> dict | None:
     """Build one ``storage_objects`` row dict from a storage key + integrity info.
 
@@ -200,6 +192,11 @@ def row_for_key(
         # canonical exposures carry one today; None leaves the column NULL.
         'sci_dq_hash': sci_dq_hash,
         'size_bytes': int(size_bytes),
+        # Bytes as stored in the bucket for transport-compressed products
+        # (gzipped mosaic FITS); NULL = stored verbatim (== size_bytes, which
+        # stays the LOGICAL uncompressed size the sync engine's dedup and stat
+        # fast-path compare against local plain files).
+        'stored_size_bytes': stored_size_bytes,
         'content_type': content_type,
         'product_type': product_type,
         'instrument': instrument,
@@ -231,6 +228,9 @@ def build_registry_rows(
     cfpipe_version: Optional[str] = None,
     succeeded_keys: Optional[set[str]] = None,
     sci_dq_hashes: Optional[dict[str, str]] = None,
+    max_workers: Optional[int] = None,
+    precomputed: Optional[dict[str, tuple[str, int]]] = None,
+    stored_sizes: Optional[dict[str, int]] = None,
 ) -> list[dict]:
     """Build ``storage_objects`` rows for the objects an upload actually landed.
 
@@ -238,20 +238,39 @@ def build_registry_rows(
     all, if ``succeeded_keys`` is None), hashes the local file and maps the key
     to a row via :func:`row_for_key`. Tiles and non-cloud products are skipped.
 
+    The whole-file hashing runs across a thread pool (``max_workers``, default
+    :func:`default_hash_workers`) — for a field's worth of exposures this
+    registration read is I/O-bound and was a serial bottleneck after upload.
+
     ``sci_dq_hashes`` optionally supplies a precomputed ``sha256:<hex>`` science-only
     digest per storage key (NIRCam exposures, epic #261) — the ``content_hash`` is
     still the whole-file sha256, but ``sci_dq_hash`` carries the science-only digest
     that change-detection compares against.
+
+    ``precomputed`` optionally supplies ``{r2_key: ('sha256:<hex>', size)}``
+    whole-file digests already computed upstream (the push planner hashes
+    changed files to decide the upload) — those files are not re-read here.
     """
     sci_dq_hashes = sci_dq_hashes or {}
-    rows: list[dict] = []
+    precomputed = precomputed or {}
+    stored_sizes = stored_sizes or {}
+    selected: list[tuple[UploadTask, Path]] = []
     for task in tasks:
         if succeeded_keys is not None and task.r2_key not in succeeded_keys:
             continue
         local = Path(task.local_path)
         if not local.exists():
             continue
-        content_hash, size_bytes = hash_file(local)
+        selected.append((task, local))
+
+    hashed = hash_files_parallel(
+        (local for task, local in selected if task.r2_key not in precomputed),
+        max_workers=max_workers,
+    )
+
+    rows: list[dict] = []
+    for task, local in selected:
+        content_hash, size_bytes = precomputed.get(task.r2_key) or hashed[local]
         row = row_for_key(
             task.r2_key,
             backend=backend,
@@ -262,6 +281,7 @@ def build_registry_rows(
             uploaded_by=uploaded_by,
             cfpipe_version=cfpipe_version,
             sci_dq_hash=sci_dq_hashes.get(task.r2_key),
+            stored_size_bytes=stored_sizes.get(task.r2_key),
         )
         if row is not None:
             rows.append(row)
@@ -663,9 +683,16 @@ def _osn_client_and_bucket(config: dict, *, max_pool_connections: Optional[int] 
             bcfg.bucket, bcfg.backend)
 
 
-def list_bucket_keys(config: dict, prefix: str = '') -> Iterator[str]:
-    """Yield every object key under ``prefix`` in the data bucket (paginated)."""
-    client, bucket, _ = _data_client_and_bucket(config)
+def list_bucket_keys(config: dict, prefix: str = '', *, purpose: str = 'data') -> Iterator[str]:
+    """Yield every object key under ``prefix`` in a data bucket (paginated).
+
+    ``purpose`` selects the backend block: ``'data'`` (the legacy R2 data
+    bucket) or ``'osn'`` (the OSN home of all current data products).
+    """
+    if purpose == 'osn':
+        client, bucket, _ = _osn_client_and_bucket(config)
+    else:
+        client, bucket, _ = _data_client_and_bucket(config)
     token = None
     while True:
         kwargs = {'Bucket': bucket, 'Prefix': prefix}
@@ -677,6 +704,61 @@ def list_bucket_keys(config: dict, prefix: str = '') -> Iterator[str]:
         if not resp.get('IsTruncated'):
             break
         token = resp.get('NextContinuationToken')
+
+
+def cloud_reconcile_report(config: dict, client, *, include_buckets: bool = True) -> dict:
+    """Multi-backend registry↔bucket↔DB verification (``campfire verify --cloud``).
+
+    Three vocabularies are compared: the live denormalized DB pointers, the
+    registry rows, and — per storage backend — the actual bucket contents.
+    **OSN is the primary data bucket** (all current data products live there;
+    map tiles are the sole R2 exception), so the OSN LIST is the one that
+    verifies current products; the legacy R2 data-bucket LIST covers pre-#216
+    remnants until A2 retires them. Each backend's ``dangling`` is computed
+    only over registry rows homed on that backend.
+
+    Returns a JSON-able dict; ``ok`` is False when live pointers lack registry
+    rows (``missing``) or registry rows lack bucket objects (``dangling``) —
+    the drift conditions a scheduled CI run should alarm on. A bucket whose
+    credentials are unavailable is reported under ``errors`` and does NOT fail
+    the report (coverage is still checked).
+    """
+    pointers = live_pointers(client)
+    live = pointers['spectra'] + pointers['nircam_images'] + pointers['nircam_exposures']
+    reg_keys = registry_keys(client)
+
+    base = compute_reconcile(live, reg_keys, None)
+    report: dict = {
+        'live_pointers': len({k for k in live if k}),
+        'registry_rows': len(set(reg_keys)),
+        'missing': sorted(base.missing),
+        'backends': {},
+        'errors': {},
+    }
+
+    if include_buckets:
+        # (purpose, registry backend label) — OSN first: it is the data home.
+        targets = [('osn', 'osn'), ('data', resolve_backend_label(config))]
+        for purpose, label in targets:
+            try:
+                bucket_keys = list(list_bucket_keys(config, purpose=purpose))
+            except Exception as e:
+                report['errors'][label] = str(e)
+                continue
+            danglable = registry_keys(client, backend=label)
+            rep = compute_reconcile(live, reg_keys, bucket_keys,
+                                    danglable_keys=danglable)
+            report['backends'][label] = {
+                'bucket_objects': len(bucket_keys),
+                'registry_rows': len(set(danglable)),
+                'dangling': sorted(rep.dangling),
+                'orphans': sorted(rep.orphans),
+                'adoptable': sorted(rep.adoptable),
+            }
+
+    any_dangling = any(b['dangling'] for b in report['backends'].values())
+    report['ok'] = not report['missing'] and not any_dangling
+    return report
 
 
 def head_object(config: dict, key: str) -> tuple[str | None, int | None]:

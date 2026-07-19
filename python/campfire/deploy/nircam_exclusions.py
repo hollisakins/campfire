@@ -92,6 +92,8 @@ def import_skip(field, config, dry_run=False):
 
     # Lazy import: reuse the exact, already-brace-expanded/validated skip globs
     # combine itself consumes (both packages are installed cluster-side).
+    from campfire.deploy import require_pipeline
+    require_pipeline("import-skip (reuses the pipeline's Field skip-glob loader)")
     from campfire_pipeline.nircam.field import Field
     skip_patterns = list(Field.load(field).skip)
     if not skip_patterns:

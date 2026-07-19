@@ -257,3 +257,109 @@ def test_fetch_all_storage_requests_storage_page_size(monkeypatch):
     # The first (and only) page is requested with the storage limit.
     _path, kwargs = session.get.call_args
     assert kwargs["params"]["limit"] == 6000
+
+
+# ---------------------------------------------------------------------------
+# Keyset pagination (#103)
+# ---------------------------------------------------------------------------
+def _canned_session(pages):
+    """A MagicMock session whose .get() returns ``pages`` in order and records
+    the params of each request in the returned ``calls`` list."""
+    calls = []
+
+    def fake_get(path, params=None, timeout=None):
+        calls.append(params)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = pages[len(calls) - 1]
+        return resp
+
+    session = MagicMock()
+    session.get.side_effect = fake_get
+    return session, calls
+
+
+def test_paginate_sync_endpoint_keyset_cursor_propagation(monkeypatch):
+    """The paginator seeks with ?after=<previous page's last cursor>, never
+    offset, and stops on a short page without an extra round-trip (#103)."""
+    monkeypatch.setenv("CAMPFIRE_SYNC_PAGE_SIZE", "3")
+    pages = [
+        {  # page 1: full — carries the counts
+            "data": [{"object_id": "A"}, {"object_id": "B"}, {"object_id": "C"}],
+            "pagination": {"total": 7},
+            "total_accessible_count": 42,
+        },
+        {  # page 2: full
+            "data": [{"object_id": "D"}, {"object_id": "E"}, {"object_id": "F"}],
+            "pagination": {"total": 0},
+            "total_accessible_count": 0,
+        },
+        {  # page 3: short → stop
+            "data": [{"object_id": "G"}],
+            "pagination": {"total": 0},
+            "total_accessible_count": 0,
+        },
+    ]
+    session, calls = _canned_session(pages)
+    client = APIClient(session=session)
+
+    items, accessible = client.fetch_all_objects()
+
+    # Every row, in page order; accessible count taken from the first page only.
+    assert [i["object_id"] for i in items] == ["A", "B", "C", "D", "E", "F", "G"]
+    assert accessible == 42
+    # Short final page stops the walk — three requests, no trailing empty fetch.
+    assert len(calls) == 3
+    # Keyset, not offset: no offset param anywhere.
+    assert all("offset" not in p for p in calls)
+    # First page: no cursor, counts requested at the honored page size.
+    assert "after" not in calls[0]
+    assert calls[0]["include_counts"] == "true"
+    assert calls[0]["limit"] == 3
+    # Later pages: cursor = previous page's last object_id; counts gated off.
+    assert calls[1]["after"] == "C" and calls[1]["include_counts"] == "false"
+    assert calls[2]["after"] == "F" and calls[2]["include_counts"] == "false"
+
+
+def test_paginate_sync_endpoint_stops_on_empty_after_exact_multiple(monkeypatch):
+    """An exactly-full final page falls through to one empty page, which stops
+    the walk (no infinite loop, no missed rows)."""
+    monkeypatch.setenv("CAMPFIRE_SYNC_PAGE_SIZE", "2")
+    pages = [
+        {
+            "data": [{"object_id": "A"}, {"object_id": "B"}],
+            "pagination": {"total": 2},
+            "total_accessible_count": 2,
+        },
+        {"data": [], "pagination": {"total": 0}, "total_accessible_count": 0},
+    ]
+    session, calls = _canned_session(pages)
+    client = APIClient(session=session)
+
+    items, _ = client.fetch_all_objects()
+
+    assert [i["object_id"] for i in items] == ["A", "B"]
+    assert len(calls) == 2            # exact-full page, then the empty terminator
+    assert calls[1]["after"] == "B"   # cursor advanced past the last row
+
+
+def test_fetch_all_photometry_uses_integer_id_cursor(monkeypatch):
+    """Photometry now folds into the shared keyset paginator, cursoring on the
+    integer ``id`` field (#103)."""
+    monkeypatch.setenv("CAMPFIRE_SYNC_PAGE_SIZE", "2")
+    pages = [
+        {"data": [{"id": 10}, {"id": 20}], "pagination": {"total": 3}},
+        {"data": [{"id": 30}], "pagination": {"total": 0}},
+    ]
+    session, calls = _canned_session(pages)
+    client = APIClient(session=session)
+
+    items, total = client.fetch_all_photometry()
+
+    assert [i["id"] for i in items] == [10, 20, 30]
+    # Photometry carries no total_accessible_count field; the paginator falls
+    # back to pagination.total instead of reporting a false 0 (Codex review,
+    # PR #372).
+    assert total == 3
+    assert calls[0].get("after") is None
+    assert calls[1]["after"] == 20    # last id of the previous page

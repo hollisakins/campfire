@@ -62,6 +62,20 @@ export interface MapLayersResult {
   isAuthenticated: boolean;
 }
 
+// FitsGL tile-pyramid dataset (epic #337, Phase 4). The thin per-field/tile
+// pointer the FitsGL map surface reads; row visibility is RLS-derived from the
+// backing mosaics' deploy_status (non-admins only see published-backed rows).
+export interface FitsglDataset {
+  prefix: string;
+  field: string;
+  kind: 'field' | 'tile';
+  tile: string | null;
+  pixel_scale: string;
+  fitsgl_json_url: string;
+  bands: string[];
+  is_default: boolean;
+}
+
 export interface MapMarkersResult {
   markers: MapMarker[];
   error?: string;
@@ -143,6 +157,29 @@ export async function getMapLayers(
   }
 
   return { layers: data || [], isAuthenticated: true };
+}
+
+/**
+ * Fetch the FitsGL datasets the caller may see (epic #337, Phase 4). RLS on
+ * `fitsgl_datasets` derives visibility from the backing mosaics' deploy_status,
+ * so this returns only datasets whose mosaics are published (plus everything for
+ * admins). The map picks the FitsGL surface for a field that has a `kind='field'`
+ * dataset; otherwise it falls back to Leaflet PNG tiles.
+ */
+export async function getFitsglDatasets(field?: string): Promise<FitsglDataset[]> {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+
+  let query = supabase
+    .from('fitsgl_datasets')
+    .select('prefix, field, kind, tile, pixel_scale, fitsgl_json_url, bands, is_default')
+    .order('field');
+  if (field) query = query.eq('field', field);
+
+  const { data, error } = await query;
+  if (error) return [];
+  return (data as FitsglDataset[]) || [];
 }
 
 /**

@@ -4,6 +4,10 @@ Python package for querying, downloading, and analyzing NIRSpec spectroscopic da
 
 ## Installation
 
+The easiest path is the repo-root installer, which handles ordering, extras,
+and the conda environment for you: `python3 install.py` (see the top-level
+README). Manually:
+
 `campfire` depends on `campfire-layout` — a zero-dependency sibling package in
 the same repository that isn't on PyPI. From the repo root, install it first,
 then the client (editable):
@@ -22,6 +26,58 @@ pip install -e ".[all]"
 
 To install straight from GitHub without cloning the repo, see
 [Getting Started](https://campfire.hollisakins.com/docs/api/getting-started).
+
+### Deploy machines (`campfire[deploy]`)
+
+The `deploy` extra covers publication workflows (`campfire deploy`, the
+annotation round-trips in `campfire pull`). It depends on `campfire-pipeline` —
+deploy machines always carry the pipeline, since several deploy paths reuse
+pipeline code directly (the stuck-shutter TOML writer, the `Field` skip-glob
+loader, jwst-based WCS for mask imports). Like `campfire-layout`, the pipeline
+isn't on PyPI, so install it editable first:
+
+```bash
+pip install -e ./layout -e ./pipeline -e "./python[deploy]"
+```
+
+(`install.py --profiles deploy` does exactly this, in this order.)
+
+### FitsGL producer (`campfire[fitsgl]`)
+
+The `fitsgl` extra pulls in [FitsGL](https://github.com/hollisakins/fitsgl)'s
+`fitsgl-py` producer, used by the map/cutout tile-pyramid deploy path (epic #337).
+FitsGL isn't on PyPI and lives in the repo's `fitsgl-py/` subdirectory, so the
+extra pins a git dependency as the reproducible fallback:
+
+```bash
+# Reproducible / standalone (pulls fitsgl-py from git):
+pip install -e ".[fitsgl]"
+```
+
+**Local co-development (recommended when editing FitsGL too):** check both repos
+out side by side and install `fitsgl-py` editable *first*, then the base client —
+pip then treats the `fitsgl` requirement as already satisfied and never fetches
+from git, so your local edits stay live:
+
+```
+parent/
+├── campfire/          # this repo
+└── fitsgl/            # https://github.com/hollisakins/fitsgl
+    └── fitsgl-py/
+```
+
+```bash
+pip install -e ../fitsgl/fitsgl-py[deploy]   # editable, from the sibling checkout
+pip install -e .                             # base client (leaves fitsgl untouched)
+```
+
+Confirm the library imports resolve:
+
+```python
+from fitsgl.build import build_dataset
+from fitsgl.build_pyramid import build_pyramid
+from fitsgl.deploy import deploy_dataset
+```
 
 ## Authentication
 

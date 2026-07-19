@@ -142,58 +142,63 @@ def read_spectrum_data(fits_path: Path) -> dict:
     and cross-dispersion profile data.
     """
     with fits.open(fits_path) as hdul:
-        spec1d = hdul['SPEC1D'].data
-        sci = hdul['SCI'].data
-        err = hdul['ERR'].data
-        prof1d = hdul['PROF1D'].data
+        return _spectrum_data_from_hdul(hdul)
 
-        # 1D spectrum
-        wave = [round(x, 6) for x in spec1d['wave'].tolist()]
-        fnu = [None if np.isnan(x) else round(float(x), 6) for x in spec1d['fnu']]
-        fnu_err = [None if np.isnan(x) or np.isinf(x) else round(float(x), 6) for x in spec1d['fnu_err']]
 
-        # 2D S/N
-        with np.errstate(divide='ignore', invalid='ignore'):
-            snr_2d = sci / err
-            snr_2d = np.where(np.isfinite(snr_2d), snr_2d, 0)
-        snr_2d_list = [[round(x, 2) for x in row] for row in snr_2d.tolist()]
+def _spectrum_data_from_hdul(hdul) -> dict:
+    """JSON-export payload from an already-open HDUList (single-read path)."""
+    spec1d = hdul['SPEC1D'].data
+    sci = hdul['SCI'].data
+    err = hdul['ERR'].data
+    prof1d = hdul['PROF1D'].data
 
-        # Cross-dispersion profile
-        with np.errstate(divide='ignore', invalid='ignore'):
-            collapsed = np.nanmedian(sci, axis=1)
+    # 1D spectrum
+    wave = [round(x, 6) for x in spec1d['wave'].tolist()]
+    fnu = [None if np.isnan(x) else round(float(x), 6) for x in spec1d['fnu']]
+    fnu_err = [None if np.isnan(x) or np.isinf(x) else round(float(x), 6) for x in spec1d['fnu_err']]
 
-        ypos = prof1d['ypos']
-        opt_weight = prof1d['opt']
+    # 2D S/N
+    with np.errstate(divide='ignore', invalid='ignore'):
+        snr_2d = sci / err
+        snr_2d = np.where(np.isfinite(snr_2d), snr_2d, 0)
+    snr_2d_list = [[round(x, 2) for x in row] for row in snr_2d.tolist()]
 
-        valid_opt = opt_weight > 0
-        if np.any(valid_opt):
-            cen = np.average(ypos[valid_opt], weights=opt_weight[valid_opt])
-        else:
-            cen = np.median(ypos)
+    # Cross-dispersion profile
+    with np.errstate(divide='ignore', invalid='ignore'):
+        collapsed = np.nanmedian(sci, axis=1)
 
-        pix_centered = ypos - cen
+    ypos = prof1d['ypos']
+    opt_weight = prof1d['opt']
 
-        with np.errstate(divide='ignore', invalid='ignore'):
-            collapsed_norm = collapsed / np.nanmax(np.abs(collapsed[valid_opt])) if np.any(valid_opt) else collapsed
-            collapsed_norm = np.where(np.isfinite(collapsed_norm), collapsed_norm, 0)
-            opt_norm = opt_weight / np.nanmax(opt_weight) if np.nanmax(opt_weight) > 0 else opt_weight
-            # opt weights can be non-finite at masked/edge pixels; a NaN here would
-            # be serialized as the bare token `NaN` (invalid JSON) and make the
-            # browser's JSON.parse reject the whole spectrum payload. Guard it the
-            # same way as snr_2d / collapsed_norm above.
-            opt_norm = np.where(np.isfinite(opt_norm), opt_norm, 0)
+    valid_opt = opt_weight > 0
+    if np.any(valid_opt):
+        cen = np.average(ypos[valid_opt], weights=opt_weight[valid_opt])
+    else:
+        cen = np.median(ypos)
 
-        return {
-            'wave': wave,
-            'fnu': fnu,
-            'fnu_err': fnu_err,
-            'snr_2d': snr_2d_list,
-            'n_spatial': sci.shape[0],
-            'n_wave': sci.shape[1],
-            'profile': [round(float(x), 3) for x in collapsed_norm.tolist()],
-            'profile_fit': [round(float(x), 3) for x in opt_norm.tolist()],
-            'profile_pix': [round(float(x), 2) for x in pix_centered.tolist()],
-        }
+    pix_centered = ypos - cen
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        collapsed_norm = collapsed / np.nanmax(np.abs(collapsed[valid_opt])) if np.any(valid_opt) else collapsed
+        collapsed_norm = np.where(np.isfinite(collapsed_norm), collapsed_norm, 0)
+        opt_norm = opt_weight / np.nanmax(opt_weight) if np.nanmax(opt_weight) > 0 else opt_weight
+        # opt weights can be non-finite at masked/edge pixels; a NaN here would
+        # be serialized as the bare token `NaN` (invalid JSON) and make the
+        # browser's JSON.parse reject the whole spectrum payload. Guard it the
+        # same way as snr_2d / collapsed_norm above.
+        opt_norm = np.where(np.isfinite(opt_norm), opt_norm, 0)
+
+    return {
+        'wave': wave,
+        'fnu': fnu,
+        'fnu_err': fnu_err,
+        'snr_2d': snr_2d_list,
+        'n_spatial': sci.shape[0],
+        'n_wave': sci.shape[1],
+        'profile': [round(float(x), 3) for x in collapsed_norm.tolist()],
+        'profile_fit': [round(float(x), 3) for x in opt_norm.tolist()],
+        'profile_pix': [round(float(x), 2) for x in pix_centered.tolist()],
+    }
 
 
 def generate_spectrum_json(fits_path: Path, output_dir: Path) -> Path:
@@ -209,6 +214,38 @@ def generate_spectrum_json(fits_path: Path, output_dir: Path) -> Path:
         # sanitized in read_spectrum_data().
         json.dump(data, f, allow_nan=False)
     return json_path
+
+
+def generate_spectrum_products(
+    fits_path: Path, output_dir: Path,
+) -> tuple[Path, dict[str, str]]:
+    """Generate BOTH per-final derivatives in a single FITS read.
+
+    One open yields the spectrum JSON (uploaded to storage) and the
+    fnu/flambda SVG thumbnails (embedded in the spectra rows). Deploy
+    previously ran two separate passes — 'Generating content' then
+    'Generating thumbnails' — each re-opening every final off NFS.
+
+    Returns ``(json_path, thumbnails_dict)``.
+    """
+    with fits.open(fits_path) as hdul:
+        spec1d = hdul['SPEC1D'].data
+        wave_raw = spec1d['wave'].tolist()
+        fnu_raw = spec1d['fnu'].tolist()
+        data = _spectrum_data_from_hdul(hdul)
+
+    json_path = output_dir / (fits_path.stem + '.json')
+    with open(json_path, 'w') as f:
+        # allow_nan=False — see generate_spectrum_json.
+        json.dump(data, f, allow_nan=False)
+
+    thumbs = {
+        'thumbnail_svg_fnu': generate_spectrum_thumbnail_svg(
+            wave_raw, fnu_raw, flux_unit='fnu'),
+        'thumbnail_svg_flambda': generate_spectrum_thumbnail_svg(
+            wave_raw, fnu_raw, flux_unit='flambda'),
+    }
+    return json_path, thumbs
 
 
 # ---------------------------------------------------------------------------

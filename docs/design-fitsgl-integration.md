@@ -194,8 +194,10 @@ Remaining prerequisite before the first render:
 1. Gather the field's per-filter mosaic FITS (native grid; a single FITS or a pre-tiled
    list/glob per band).
 2. Generate a `fitsgl.toml` programmatically — bands from deployed mosaics, `[viewer]`
-   RGB roles + stretch mirrored from CAMPFIRE's existing `get_rgb_configs`, catalog from a
-   NIRSpec export. **CAMPFIRE controls the FitsGL config; scientists never hand-edit toml.**
+   RGB roles + stretch from fields.toml `[<field>.rgb]` (the same block `cfpipe nircam rgb`
+   uses; pure TOML, no dependency on local mosaic paths — legacy imaging.toml is a
+   fallback), catalog from a NIRSpec export. **CAMPFIRE controls the FitsGL config;
+   scientists never hand-edit toml.**
 3. Call `build.build_dataset` → dataset dir under a scratch/out root.
 
 No `reproject_interp` / `OutputGrid` — the slowest current stage is gone, and skipping the

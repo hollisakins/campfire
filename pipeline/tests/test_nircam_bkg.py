@@ -55,6 +55,47 @@ def test_peramp_pedestal_ignores_masked_sources():
     assert abs(per_amp['B']) < 0.1  # source masked -> DC ~ 0
 
 
+def test_gp_zero_dc_returns_zero_median_offsets():
+    """With zero_dc the GP horizontal term carries NO per-amp DC — the
+    pedestal is the chain's only per-amp DC estimator (amp-seam fix)."""
+    pytest.importorskip('celerite2')
+    from campfire_pipeline.nircam.gp_striping import gp_amprow_offsets
+
+    rng = np.random.default_rng(11)
+    H = 512
+    data = rng.normal(0.0, 1.0, (H, COLS))
+    for amp, dc in zip('ABCD', (4.0, -2.0, 1.5, -3.0)):   # amp DC steps
+        c0, c1 = _amp_cols(amp)
+        data[:, c0:c1] += dc
+    mask = np.zeros_like(data, dtype=bool)
+
+    h_dc, _, _ = gp_amprow_offsets(data, mask, rho=5.0, maxiters=3)
+    h_z, _, _ = gp_amprow_offsets(data, mask, rho=5.0, maxiters=3,
+                                  zero_dc=True)
+    for amp in 'ABCD':
+        c0, c1 = _amp_cols(amp)
+        assert abs(np.median(h_z[4:-4, c0:c1])) < 0.05      # no DC carried
+        assert abs(np.median(h_dc[4:-4, c0:c1])) > 1.0      # legacy carries it
+    # zero_dc removes ONLY the DC: the row-varying parts are identical
+    assert np.allclose(h_dc - np.median(h_dc[4:-4], axis=0, keepdims=True),
+                       h_z - np.median(h_z[4:-4], axis=0, keepdims=True),
+                       atol=1e-9)
+
+
+def test_frame_pedestal_single_dc_across_amps():
+    """frame_pedestal (the subtract_2d scope) recovers one global DC and is
+    constant across amp boundaries — it must NOT stairstep a gradient."""
+    rng = np.random.default_rng(9)
+    data = 5.0 + rng.normal(0.0, 1.0, (256, COLS))
+    data += 0.5 * np.linspace(-1, 1, COLS)[None, :]     # smooth gradient
+    mask = np.zeros_like(data, dtype=bool)
+    ped, per_amp = oneoverf.frame_pedestal(data, mask)
+    assert len(set(per_amp.values())) == 1              # one DC, all amps
+    assert per_amp['A'] == pytest.approx(5.0, abs=0.05)
+    sci = ped[:, 4:2044]                                # science columns
+    assert np.all(sci == sci[0, 0])                     # no amp steps
+
+
 def test_column_pattern_shape_and_finite():
     rng = np.random.default_rng(2)
     data = rng.normal(0.0, 1.0, (128, COLS))
@@ -99,6 +140,99 @@ def test_mask_from_arrays_matches_compute():
         os.unlink(tmp)
     assert np.array_equal(mask_compute, mask_direct)
     assert np.array_equal(bit_compute, bit_direct)
+
+
+def _gradient_sky(shape, amplitude):
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+    return amplitude * (xx + yy) / (shape[0] + shape[1])
+
+
+def _gaussian_blob(shape, y0, x0, amp, sigma):
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+    return amp * np.exp(-((yy - y0) ** 2 + (xx - x0) ** 2) / (2 * sigma ** 2))
+
+
+def test_bg_reject_refits_leaked_source():
+    """Extended flux NOT in the source mask imprints on the background map
+    (broad enough to survive the mesh median filter); bg_reject flags the map
+    outlier region and the refit flattens it."""
+    rng = np.random.default_rng(6)
+    shape = (256, 256)
+    truth = 1.0 + _gradient_sky(shape, 0.1)
+    sci = truth + rng.normal(0, 0.05, shape)
+    sci += _gaussian_blob(shape, 128, 128, 1.0, 20.0)   # leaked diffuse source
+    mask = np.zeros(shape, dtype=bool)
+
+    kw = dict(bg_box_size=16, bg_filter_size=3,
+              bg_reject_sigma_hi=4.0, bg_reject_sigma_lo=3.0,
+              bg_reject_percentile=60.0, bg_reject_dilate=10.0)
+    plain = SubtractBackground(bg_reject=False, **kw)
+    guard = SubtractBackground(bg_reject=True, **kw)
+
+    bmap_plain = plain.estimate_background(sci, mask).background
+    bmap_guard = guard.estimate_background(sci, mask).background
+
+    near = _gaussian_blob(shape, 128, 128, 1.0, 20.0) > 0.05
+    err_plain = np.abs(bmap_plain - truth)[near].max()
+    err_guard = np.abs(bmap_guard - truth)[near].max()
+    assert err_plain > 0.3          # unguarded fit absorbs the diffuse flux
+    assert err_guard < 0.5 * err_plain
+    assert err_guard < 0.15         # guarded map ~ true sky under the source
+
+
+def test_bg_reject_harmless_on_clean_sky():
+    """With nothing leaking through the mask the reject pass is (near-)inert:
+    the trimmed-percentile sigma may flag a few noise boxes, but the refit
+    must not move the map. Degenerate (zero-variance) maps skip the refit."""
+    rng = np.random.default_rng(7)
+    shape = (256, 256)
+    sci = 1.0 + _gradient_sky(shape, 0.1) + rng.normal(0, 0.05, shape)
+    mask = np.zeros(shape, dtype=bool)
+    kw = dict(bg_box_size=16, bg_filter_size=3)
+    bmap_plain = SubtractBackground(bg_reject=False, **kw).estimate_background(
+        sci, mask).background
+    guard = SubtractBackground(bg_reject=True, **kw)
+    bmap_guard = guard.estimate_background(sci, mask).background
+    assert np.abs(bmap_guard - bmap_plain).max() < 0.02
+    # degenerate: constant sky -> zero-variance map -> no refit
+    const = np.full(shape, 1.0)
+    assert guard.reject_background_outliers(
+        const, mask, guard._fit_background2d(const, mask)) is None
+
+
+def test_bkg2d_grown_mask_recovers_gradient_without_bowl():
+    """The subtract_2d numerics: mask a bright source, grow the source tiers
+    (not bit 0) as the step does, fit the 2-D background — the gradient is
+    recovered and no negative bowl is carved around the source."""
+    from scipy.ndimage import distance_transform_edt
+
+    rng = np.random.default_rng(8)
+    shape = (256, 256)
+    truth = 1.0 + _gradient_sky(shape, 0.5)
+    sci = (truth + rng.normal(0, 0.05, shape)).astype(np.float32)
+    sci += _gaussian_blob(shape, 128, 128, 50.0, 4.0).astype(np.float32)
+    err = np.full(shape, 0.05, np.float32)
+    dq = np.zeros(shape, np.int32)
+
+    sb = SubtractBackground(
+        ring_radius_in=40, ring_width=3,
+        tier_kernel_size=[15, 5, 2], tier_npixels=[10, 5, 3],
+        tier_nsigma=[1.5, 1.5, 1.5], tier_dilate_size=[10, 5, 2],
+        bg_box_size=16, bg_filter_size=3, bg_reject=True,
+        bg_reject_dilate=10.0)
+    srcmask, srcbits = sb.mask_from_arrays(sci, err, dq)
+
+    # step logic: grow source tiers only (bit 0 untouched)
+    src_only = (srcbits >> 1) != 0
+    grown = distance_transform_edt(~src_only) <= 20
+    bmap = sb.estimate_background(sci, srcmask | grown).background
+
+    bg = ~(grown | srcmask)
+    assert np.abs(bmap - truth)[bg].mean() < 0.03   # gradient recovered
+    # no bowl: annulus around the source stays at the true sky level
+    rr = np.hypot(*(np.mgrid[0:256, 0:256] - 128))
+    annulus = (rr > 30) & (rr < 45)
+    assert np.mean((sci - bmap)[annulus]) == pytest.approx(0.0, abs=0.05)
 
 
 def test_skymatch_invariant_and_banding_removal():

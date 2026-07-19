@@ -337,6 +337,11 @@ class Field:
     # Parsed [<field>.epochs.<name>] tables (combine-time exposure subsets).
     # {name: {files: [globs] | None, date_range: (start, end) | None}}.
     epochs: dict = field(default_factory=dict)
+    # Field-level `fiducial_tiles = [...]`: the subset of tiles (sharing a tangent
+    # point + rotation, spanning the field) that forms the field-composite map view
+    # (FitsGL, epic #337). Empty when undeclared; `fiducial_tile_set()` also honors
+    # a per-tile `fiducial = true` fallback.
+    fiducial_tiles: List[str] = field(default_factory=list)
 
     # Populated by setup_workspace()
     campfire_root: Optional[str] = None
@@ -438,7 +443,7 @@ class Field:
         # — in the latter case corners are derived on demand from the WCS.
         tiles = {}
         reserved_keys = ({'filters', 'files', 'skip', 'tangent_point', 'rgb',
-                          'epochs'} | known_steps)
+                          'epochs', 'fiducial_tiles'} | known_steps)
         for key, value in fc.items():
             if key in reserved_keys:
                 continue
@@ -470,6 +475,25 @@ class Field:
         # Parse [<field>.epochs.<name>] tables (combine-time exposure subsets).
         epochs = _parse_epochs(name, fc.get('epochs'))
 
+        # Field-level fiducial tile set (FitsGL field-composite view, epic #337).
+        # A list of already-declared tile names; validated against `tiles` so a
+        # typo surfaces here rather than as an empty composite downstream.
+        raw_fiducial = fc.get('fiducial_tiles', [])
+        if isinstance(raw_fiducial, str):
+            raw_fiducial = [raw_fiducial]
+        if not (isinstance(raw_fiducial, list)
+                and all(isinstance(t, str) for t in raw_fiducial)):
+            raise ValueError(
+                f"Field '{name}': `fiducial_tiles` must be a list of tile-name "
+                f"strings, got {raw_fiducial!r}"
+            )
+        unknown = [t for t in raw_fiducial if t not in tiles]
+        if unknown:
+            raise ValueError(
+                f"Field '{name}': `fiducial_tiles` references undeclared tile(s) "
+                f"{unknown}. Declared tiles: {list(tiles.keys())}"
+            )
+
         return cls(
             name=name,
             filters=filters,
@@ -481,6 +505,7 @@ class Field:
             rgb=rgb_cfg,
             wcs_shift_rules=wcs_shift_rules,
             epochs=epochs,
+            fiducial_tiles=list(raw_fiducial),
         )
 
     @property
@@ -974,6 +999,45 @@ class Field:
             f"Tile '{tile_name}' on field '{self.name}' has no "
             f"`<scale>mas` subsection with `crpix` and `naxis`."
         )
+
+    def fiducial_tile_set(self, pixel_scale='30mas'):
+        """Ordered tile names forming the field-composite fiducial set (epic #337).
+
+        The field-level ``fiducial_tiles = [...]`` declaration wins; absent that,
+        any tile carrying a per-tile ``fiducial = true`` flag is included (in
+        declaration order). Returns ``[]`` when neither is declared — the caller
+        (``campfire fitsgl build``) decides whether that is an error.
+
+        The set must co-grid to composite in FitsGL, so a set of two or more tiles
+        is validated to share one tangent point (``crval``) and rotation; a
+        mismatch (e.g. an off-grid PRIMER tile mistakenly included) raises
+        ``ValueError``. Only the pipeline can see tile WCS, so the check lives
+        here rather than in the deploy client.
+        """
+        if self.fiducial_tiles:
+            names = list(self.fiducial_tiles)
+        else:
+            names = [name for name, t in self.tiles.items()
+                     if isinstance(t, dict) and t.get('fiducial') is True]
+        if len(names) <= 1:
+            return names
+
+        ref_crval = ref_rot = None
+        for tname in names:
+            _crpix, crval, _shape, rotation = self.get_tile_wcs(tname, pixel_scale)
+            if ref_crval is None:
+                ref_crval, ref_rot = crval, rotation
+                continue
+            if not (np.allclose(crval, ref_crval, atol=1e-6)
+                    and np.isclose(rotation, ref_rot, atol=1e-6)):
+                raise ValueError(
+                    f"Field '{self.name}': fiducial tiles must share a tangent "
+                    f"point and rotation to co-grid, but '{tname}' has "
+                    f"crval={crval}, rotation={rotation} vs {ref_crval}, {ref_rot}. "
+                    f"Off-grid tiles (e.g. PRIMER) need a standalone per-tile "
+                    f"dataset, not the composite."
+                )
+        return names
 
     def get_tile_corners(self, tile_name):
         """Get sky corners for a tile.

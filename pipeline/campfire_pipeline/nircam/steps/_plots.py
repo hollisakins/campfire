@@ -134,7 +134,7 @@ def plot_diag_striping(sci_before, diag_model, residual_model, sci_after,
     plt.close(fig)
 
 
-def plot_outlier(sci, new_outlier, save_file=None, title=None):
+def plot_outlier(sci, new_outlier, grown=None, save_file=None, title=None):
     """Outlier-step diagnostic: SCI plus a side-panel with newly flagged pixels.
 
     Parameters
@@ -143,13 +143,17 @@ def plot_outlier(sci, new_outlier, save_file=None, title=None):
         SCI snapshot taken before outlier flagging (the array itself is
         unchanged by the step; only DQ is updated).
     new_outlier : 2D bool array
-        ``(DQ_after & OUTLIER) & ~(DQ_before & OUTLIER)`` — pixels this
-        run flagged that weren't already marked as outliers.
+        Pixels flagged by outlier *detection* this run (excludes ``grown``)
+        that weren't already marked as outliers.
+    grown : 2D bool array, optional
+        Pixels added by waterfall growth (``grow_outlier_regions``), drawn
+        in a different color (magenta) from the detections (yellow).
     """
     import matplotlib.pyplot as plt
 
     norm = ImageNormalize(sci, interval=ZScaleInterval())
     n_new = int(new_outlier.sum())
+    n_grown = 0 if grown is None else int(grown.sum())
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
     ax1.imshow(sci, origin='lower', interpolation='none',
@@ -163,7 +167,13 @@ def plot_outlier(sci, new_outlier, save_file=None, title=None):
                                  np.ones_like(sci, dtype=float))
     ax2.imshow(overlay, origin='lower', interpolation='none',
                cmap='autumn', vmin=0, vmax=1, alpha=0.9)
-    ax2.set_title(f'New outliers ({n_new:,})')
+    panel_title = f'New outliers ({n_new:,})'
+    if grown is not None:
+        g = np.ma.masked_where(~grown, np.ones_like(sci, dtype=float))
+        ax2.imshow(g, origin='lower', interpolation='none',
+                   cmap='cool', vmin=0, vmax=1, alpha=0.9)
+        panel_title += f' + grown ({n_grown:,})'
+    ax2.set_title(panel_title)
     ax2.axis('off')
 
     if save_file is not None:
@@ -191,15 +201,25 @@ def _block_reduce(arr, block_size):
         return block_reduce(arr, block_size=block_size, func=np.nanmean)
 
 
-def plot_mosaic_thumbnail(sci, save_file, downsample=4, cmap='Greys'):
-    """Save a downsampled PNG of a mosaic SCI with no axes/borders.
+def plot_mosaic_thumbnail(sci, save_file, max_dim=500, cmap='Greys'):
+    """Save a size-capped PNG rendering of a mosaic SCI, no axes/borders.
 
-    Uses ``plt.imsave`` so the output PNG has exactly the downsampled
-    array's pixel dimensions — small files at native resolution, no
-    matplotlib decoration to scale.
+    Block-mean downsampled so the output's long side is at most ``max_dim``
+    pixels (a mosaic already smaller than that is saved at native size).
+    Uses ``plt.imsave`` so the PNG has exactly the downsampled array's pixel
+    dimensions — no matplotlib decoration to scale.
+
+    Written twice per mosaic with different caps: a small ``_thumb.png`` for
+    table rendering and a large ``_quicklook.png`` for the click-to-enlarge
+    popup. A fixed downsample factor is deliberately NOT used — it scales
+    with the mosaic (a wide 30 mas strip at /4 came out ~10k px / tens of
+    MB).
     """
+    import math
+
     import matplotlib.pyplot as plt
 
+    downsample = max(1, math.ceil(max(sci.shape) / max_dim))
     thumb = _block_reduce(sci, downsample)
     vmin, vmax = _zscale_limits(thumb)
     plt.imsave(save_file, thumb, cmap=cmap, vmin=vmin, vmax=vmax,

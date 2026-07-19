@@ -11,6 +11,16 @@ account_id = "2d136e3d61aca8a4ae08a2ea760f6d23"
 # so it holds no object-store credentials and works for either backend. This is
 # also what keeps it on the free Workers plan — one subrequest, ~0 CPU per request.
 
+# Custom domain (config-as-code): deploys assert the attachment, and Cloudflare
+# manages the DNS record + certificate for it. A FIRST-level subdomain of the
+# zone on purpose — the free Universal SSL wildcard (*.hollisakins.com) covers
+# it, where a deeper name (download.campfire.…) gets no certificate. The
+# workers.dev hostname keeps serving too, so older baked NEXT_PUBLIC_ builds
+# don't break.
+routes = [
+  { pattern = "campfire-download.hollisakins.com", custom_domain = true }
+]
+
 # Environment variables (non-secret)
 [vars]
 ALLOWED_ORIGINS = "https://campfire.hollisakins.com,https://dev.campfire.hollisakins.com,http://localhost:3000"

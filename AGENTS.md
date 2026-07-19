@@ -12,7 +12,16 @@ Monorepo with several main components — see each directory's README for detail
 
 Supporting: `supabase/` (migrations), `scripts/` (one-off utilities)
 
-**Editable install order** (in the `campfire` conda env): `pip install -e ./layout && pip install -e ./pipeline && pip install -e ./python` — `campfire-layout` must precede the two packages that depend on it.
+**Editable install order** (in the `campfire` conda env): `pip install -e ./layout && pip install -e ./pipeline && pip install -e ./python` — `campfire-layout` must precede the two packages that depend on it. The repo-root `install.py` automates this (component profiles, conda env management, ordering, verification — see `install.py --help`). `campfire[deploy]` additionally depends on `campfire-pipeline` (deploy machines always carry the pipeline), resolved the same editable-first way.
+
+**FitsGL co-development** (epic #337): the `campfire[fitsgl]` extra depends on [FitsGL](https://github.com/hollisakins/fitsgl)'s `fitsgl-py` producer, which isn't on PyPI and lives in that repo's `fitsgl-py/` subdirectory. The extra pins a git dependency as the reproducible fallback (`pip install -e "./python[fitsgl]"`), but the dev convention is to check `fitsgl` out **as a sibling of this repo** and install it editable *before* the base client, so local FitsGL edits stay live and pip never fetches from git:
+
+```bash
+pip install -e ../fitsgl/fitsgl-py[deploy]   # sibling checkout, editable
+pip install -e ./python                      # base client leaves fitsgl untouched
+```
+
+The web side consumes FitsGL as the published npm package `@fitsgl/core` (a plain version range in `web/package.json`); use `npm link` against a local `fitsgl-core` checkout only when co-editing. See `python/README.md` and `docs/design-fitsgl-integration.md` §4.
 
 ## Pipeline
 
@@ -161,19 +170,55 @@ cd web && npm run build && cd ..
 - **Auth**: Supabase Auth with email/password
 - **CI/CD**: Supabase GitHub integration (branching + migration checks) + Vercel (preview deploys)
 
-### Deploy CLI
+### Storage plane (push / pull / verify)
 
-Deploy commands are part of the unified `campfire` CLI (install from `python/`):
+The local products tree and cloud storage are two ends of one sync relationship,
+mediated by the `storage_objects` registry (server) and its local mirror
+(`$CAMPFIRE_ROOT/meta/campfire.db`). One engine (`python/campfire/storage/` +
+`campfire/deploy/push.py`) serves both directions with content-identity dedup
+(sci_dq for NIRCam exposures, whole-file otherwise), a stat fast-path (unchanged
+files are never re-read), and per-batch registration (interrupted transfers
+resume at file granularity). **All data products live on OSN; map tiles are the
+sole R2 exception.**
+
+```bash
+campfire sync                          # refresh the local index (never touches the tree)
+campfire status [--obs X | --field Y]  # bidirectional diff; scoped = push-side dry run
+campfire pull --obs X [--intermediate] # cloud→local products (+ review annotations, admins)
+campfire push --obs X | --field Y      # local→cloud bytes ONLY — no catalog, no publication
+campfire verify [--cloud] [--deep]     # tree↔index (bulk scan, size-match quick check); --cloud adds registry↔bucket
+campfire drop-local --obs X --yes      # delete local files verified in cloud
+```
+
+Slow-link workflow (CANDIDE→OSN): `campfire push` for the heavy bytes
+(re-runnable until clean), then `campfire deploy` — it dedup-skips everything
+already landed and attaches it to the new deployment. `download` remains an
+alias of `pull`.
+
+### Deploy CLI (publication)
+
+`campfire deploy` = push (via the shared engine) + catalog upserts + deployment
+lifecycle. Part of the unified `campfire` CLI (install from `python/`):
 
 ```bash
 cd python && pip install -e .
 campfire deploy --obs <obs_name>                         # full deploy
 campfire deploy --obs <obs_name> --dry-run               # validate only
-campfire deploy rgb --obs <obs_name>                     # RGB cutouts only
 campfire deploy pointings --obs <obs_name>               # pointings JSONB backfill
 campfire deploy tiles --field cosmos --filter f444w      # map tiles
 campfire deploy sync-programs                            # upsert from programs.toml
 ```
+
+Migration-era one-time tools (`deploy registry backfill/copy/prune`, `deploy
+nircam import-*`) are hidden from `--help` but still work; they retire once the
+A1/A2 storage migrations complete. `deploy registry budget` is gone — the
+number shows in `campfire status` (admins). Registry↔bucket verification is
+`campfire verify --cloud`. The `deploy nircam pull*` / `deploy nirspec pull-*`
+annotation round-trips are folded into `campfire pull` (hidden but working
+individually). RGB/SED static cutouts are fully deprecated (superseded by the
+on-the-fly `/api/v1/cutout` API): deploy neither generates nor uploads them,
+and the `deploy rgb`/`deploy sed` subcommands are removed — their legacy R2
+remnants retire with A2.
 
 **Deploy auth (issue #250).** Two decisions, kept independent:
 

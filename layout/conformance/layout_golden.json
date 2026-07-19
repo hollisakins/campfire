@@ -3,7 +3,9 @@
   "cases": [
     {
       "product_type": "nirspec_spec",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": "ember_egs_p1_prism_clear_15182_spec.fits",
       "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
       "key_legacy": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
@@ -13,7 +15,9 @@
     },
     {
       "product_type": "spectrum_json",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": "ember_egs_p1_prism_clear_15182_spec.json",
       "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.json",
       "key_legacy": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.json",
@@ -23,7 +27,9 @@
     },
     {
       "product_type": "zfit",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": "ember_egs_p1_prism_clear_15182_zfit.json",
       "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json",
       "key_legacy": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json",
@@ -33,7 +39,9 @@
     },
     {
       "product_type": "nirspec_spectrum_exposure",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": "jw07076020001_04101_00003_nrs1_15182.fits",
       "relpath": "products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_15182.fits",
       "key_legacy": null,
@@ -43,7 +51,9 @@
     },
     {
       "product_type": "nirspec_rate",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": "jw07076020001_04101_00003_nrs1_rate.fits",
       "relpath": "products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_rate.fits",
       "key_legacy": null,
@@ -53,7 +63,9 @@
     },
     {
       "product_type": "rgb",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": "ember_egs_p1_15182_rgb.png",
       "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_15182_rgb.png",
       "key_legacy": "rgb/ember_egs_p1/ember_egs_p1_15182_rgb.png",
@@ -63,7 +75,9 @@
     },
     {
       "product_type": "sed",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": "ember_egs_p1_15182_sed.pdf",
       "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_15182_sed.pdf",
       "key_legacy": "sed/ember_egs_p1/ember_egs_p1_15182_sed.pdf",
@@ -73,7 +87,10 @@
     },
     {
       "product_type": "nircam_exposure",
-      "scope": {"field": "cosmos", "filt": "f444w"},
+      "scope": {
+        "field": "cosmos",
+        "filt": "f444w"
+      },
       "filename": "jw01727028001_04101_00003_nrcalong.fits",
       "relpath": "products/nircam/cosmos/f444w/jw01727028001_04101_00003_nrcalong.fits",
       "key_legacy": null,
@@ -83,7 +100,10 @@
     },
     {
       "product_type": "nircam_exposure_preview",
-      "scope": {"field": "cosmos", "filt": "f444w"},
+      "scope": {
+        "field": "cosmos",
+        "filt": "f444w"
+      },
       "filename": "jw01727028001_04101_00003_nrcalong_preview.png",
       "relpath": "products/nircam/cosmos/f444w/jw01727028001_04101_00003_nrcalong_preview.png",
       "key_legacy": "nircam/exposures/cosmos/f444w/jw01727028001_04101_00003_nrcalong_preview.png",
@@ -93,7 +113,10 @@
     },
     {
       "product_type": "nircam_exposure_full",
-      "scope": {"field": "cosmos", "filt": "f444w"},
+      "scope": {
+        "field": "cosmos",
+        "filt": "f444w"
+      },
       "filename": "jw01727028001_04101_00003_nrcalong_full.png",
       "relpath": "products/nircam/cosmos/f444w/jw01727028001_04101_00003_nrcalong_full.png",
       "key_legacy": "nircam/exposures/cosmos/f444w/jw01727028001_04101_00003_nrcalong_full.png",
@@ -103,7 +126,9 @@
     },
     {
       "product_type": "nircam_rgb",
-      "scope": {"field": "cosmos"},
+      "scope": {
+        "field": "cosmos"
+      },
       "filename": "A1_30mas_rgb.png",
       "relpath": "products/nircam/cosmos/A1_30mas_rgb.png",
       "key_legacy": null,
@@ -113,7 +138,10 @@
     },
     {
       "product_type": "nircam_expmap",
-      "scope": {"field": "cosmos", "filt": "f444w"},
+      "scope": {
+        "field": "cosmos",
+        "filt": "f444w"
+      },
       "filename": "expmap_cosmos_f444w.fits",
       "relpath": "products/nircam/cosmos/f444w/expmap_cosmos_f444w.fits",
       "key_legacy": null,
@@ -123,17 +151,77 @@
     },
     {
       "product_type": "nircam_mosaic",
-      "scope": {"field": "cosmos", "filt": "f444w"},
+      "scope": {
+        "field": "cosmos",
+        "filt": "f444w"
+      },
       "filename": "mosaic_cosmos_f444w_30mas_sci.fits",
       "relpath": "products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits",
       "key_legacy": null,
-      "key_canonical": "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits",
+      "key_canonical": "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits.gz",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nircam_expmap_plot",
+      "scope": {
+        "field": "cosmos",
+        "filt": "f444w"
+      },
+      "filename": "expmap_cosmos_f444w.png",
+      "relpath": "products/nircam/cosmos/f444w/expmap_cosmos_f444w.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nircam_mosaic_thumbnail",
+      "scope": {
+        "field": "cosmos",
+        "filt": "f444w"
+      },
+      "filename": "mosaic_cosmos_f444w_30mas_thumb.png",
+      "relpath": "products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_thumb.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_thumb.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nircam_mosaic_quicklook",
+      "scope": {
+        "field": "cosmos",
+        "filt": "f444w"
+      },
+      "filename": "mosaic_cosmos_f444w_30mas_quicklook.png",
+      "relpath": "products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_quicklook.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_quicklook.png",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
+      "product_type": "nircam_layout",
+      "scope": {
+        "field": "cosmos"
+      },
+      "filename": "cosmos_layout.png",
+      "relpath": "products/nircam/cosmos/cosmos_layout.png",
+      "key_legacy": null,
+      "key_canonical": "data/products/nircam/cosmos/cosmos_layout.png",
       "bucket": "data",
       "tree_class": "cloud-backed-product"
     },
     {
       "product_type": "tile",
-      "scope": {"field": "cosmos", "filt": "f444w", "zoom": 3, "x": 1, "y": 2},
+      "scope": {
+        "field": "cosmos",
+        "filt": "f444w",
+        "zoom": 3,
+        "x": 1,
+        "y": 2
+      },
       "filename": null,
       "relpath": "tiles/cosmos/f444w/3/1/2.png",
       "key_legacy": "cosmos/f444w/3/1/2.png",
@@ -143,7 +231,10 @@
     },
     {
       "product_type": "photometry_pz",
-      "scope": {"field": "cosmos", "object_id": "12345"},
+      "scope": {
+        "field": "cosmos",
+        "object_id": "12345"
+      },
       "filename": null,
       "relpath": null,
       "key_legacy": "photometry/cosmos/12345_pz.json",
@@ -153,7 +244,9 @@
     },
     {
       "product_type": "nirspec_manual_mask",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": "jw07076020001_04101_00003_nrs1_rate.reg",
       "relpath": "products/nirspec/ember_egs_p1/manual_masks/jw07076020001_04101_00003_nrs1_rate.reg",
       "key_legacy": null,
@@ -163,7 +256,9 @@
     },
     {
       "product_type": "nirspec_stuck_shutters",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": null,
       "relpath": "reference/nirspec/ember_egs_p1/stuck_closed_shutters.toml",
       "key_legacy": null,
@@ -173,7 +268,9 @@
     },
     {
       "product_type": "nirspec_bkg_override",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": null,
       "relpath": "reference/nirspec/ember_egs_p1/nodded_background_overrides.toml",
       "key_legacy": null,
@@ -203,7 +300,9 @@
     },
     {
       "product_type": "nircam_mask",
-      "scope": {"field": "cosmos"},
+      "scope": {
+        "field": "cosmos"
+      },
       "filename": "cosmos_f444w_mask.reg",
       "relpath": "reference/nircam/cosmos/masks/cosmos_f444w_mask.reg",
       "key_legacy": null,
@@ -213,7 +312,9 @@
     },
     {
       "product_type": "nircam_astrom_cat",
-      "scope": {"field": "cosmos"},
+      "scope": {
+        "field": "cosmos"
+      },
       "filename": "gaia_cosmos.fits",
       "relpath": "reference/nircam/cosmos/astrom_cats/gaia_cosmos.fits",
       "key_legacy": null,
@@ -223,7 +324,9 @@
     },
     {
       "product_type": "nircam_bad_pixel",
-      "scope": {"field": "cosmos"},
+      "scope": {
+        "field": "cosmos"
+      },
       "filename": "badpix_nrcalong.fits",
       "relpath": "reference/nircam/cosmos/bad_pixels/badpix_nrcalong.fits",
       "key_legacy": null,
@@ -233,7 +336,9 @@
     },
     {
       "product_type": "raw_nirspec",
-      "scope": {"data_subdir": "7076"},
+      "scope": {
+        "data_subdir": "7076"
+      },
       "filename": "jw07076020001_04101_00003_nrs1_uncal.fits",
       "relpath": "raw/nirspec/7076/jw07076020001_04101_00003_nrs1_uncal.fits",
       "key_legacy": null,
@@ -243,7 +348,10 @@
     },
     {
       "product_type": "raw_nircam",
-      "scope": {"pid": "1727", "filt": "f444w"},
+      "scope": {
+        "pid": "1727",
+        "filt": "f444w"
+      },
       "filename": "jw01727028001_04101_00003_nrcalong_uncal.fits",
       "relpath": "raw/nircam/1727/f444w/jw01727028001_04101_00003_nrcalong_uncal.fits",
       "key_legacy": null,
@@ -253,7 +361,9 @@
     },
     {
       "product_type": "summary",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": null,
       "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_summary.ecsv",
       "key_legacy": null,
@@ -263,7 +373,9 @@
     },
     {
       "product_type": "pointings",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": null,
       "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_pointings.ecsv",
       "key_legacy": null,
@@ -273,7 +385,9 @@
     },
     {
       "product_type": "shutters",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": null,
       "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_shutters.ecsv",
       "key_legacy": null,
@@ -283,7 +397,9 @@
     },
     {
       "product_type": "nirspec_config",
-      "scope": {"obs": "ember_egs_p1"},
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
       "filename": null,
       "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_config.toml",
       "key_legacy": null,
@@ -293,9 +409,21 @@
     }
   ],
   "siblings": [
-    {"from": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits", "to": "zfit", "expect": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json"},
-    {"from": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits", "to": "spectrum_json", "expect": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.json"},
-    {"from": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits", "to": "zfit", "expect": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json"}
+    {
+      "from": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+      "to": "zfit",
+      "expect": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json"
+    },
+    {
+      "from": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+      "to": "spectrum_json",
+      "expect": "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.json"
+    },
+    {
+      "from": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+      "to": "zfit",
+      "expect": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json"
+    }
   ],
   "known_keys": [
     "spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
@@ -303,7 +431,12 @@
     "nircam/exposures/cosmos/f444w/jw01727028001_04101_00003_nrcalong_preview.png",
     "photometry/cosmos/12345_pz.json",
     "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_15182.fits",
-    "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_rate.fits"
+    "data/products/nirspec/ember_egs_p1/jw07076020001_04101_00003_nrs1_rate.fits",
+    "data/products/nircam/cosmos/f444w/expmap_cosmos_f444w.png",
+    "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_thumb.png",
+    "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_quicklook.png",
+    "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits.gz",
+    "data/products/nircam/cosmos/cosmos_layout.png"
   ],
   "unknown_keys": [
     "spectra/../etc/passwd",

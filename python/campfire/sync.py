@@ -6,6 +6,7 @@ Session creation and manifest fetching are delegated to the ``api`` subpackage.
 
 import hashlib
 import sys
+import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,13 +19,9 @@ from .api.session import create_download_session
 from .exceptions import DownloadError
 
 
-def compute_file_hash(path: Path) -> str:
-    """Compute SHA-256 hash of a file, returning ``sha256:<hex>`` format."""
-    hasher = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(65536):
-            hasher.update(chunk)
-    return f"sha256:{hasher.hexdigest()}"
+# Single hashing implementation lives in the shared storage core; re-exported
+# here for the established import path (store.verify_local_objects, tests).
+from .storage.hashing import compute_file_hash  # noqa: E402  (re-export)
 
 
 def _make_progress(show, unit, desc, position=None):
@@ -288,14 +285,29 @@ def _download_and_verify_key(
     The destination is derived from the object's storage key via the shared
     layout contract (``products_relpath``), so every product type lands in the
     same tree the pipeline writes and deploy reads (``products/nirspec/<obs>/…``).
+
+    Compressed products (nircam_mosaic FITS, a ``.fits.gz`` key) are gzipped in
+    the bucket but stored *plain* on disk: the stream is decompressed on the way
+    in, so the local tree is uniformly uncompressed and the bytes we write+hash
+    are the decompressed content — matching the registry ``content_hash`` /
+    ``size_bytes`` (both describe the plain ``.fits``). ``products_relpath``
+    already strips the ``.gz`` from the destination path.
     """
     from .config import products_relpath
+    from campfire_layout import is_compressed_key
 
     key = obj["storage_key"]
     rel = products_relpath(key)
     local_path = products_dir / rel
     local_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = local_path.with_name(local_path.name + ".tmp")
+
+    # Decompress in-flight for a gzipped object. We stored it with content-type
+    # application/gzip (NOT Content-Encoding: gzip), so requests does not
+    # transparently inflate it — iter_content yields the raw gzip bytes and this
+    # decompressor is the only inflate in the path.
+    decompressor = (zlib.decompressobj(16 + zlib.MAX_WBITS)
+                    if is_compressed_key(key) else None)
 
     expected = obj.get("content_hash")
     try:
@@ -305,8 +317,17 @@ def _download_and_verify_key(
         hasher = hashlib.sha256()
         with open(tmp_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=65536):
+                if decompressor is not None:
+                    chunk = decompressor.decompress(chunk)
+                    if not chunk:
+                        continue
                 f.write(chunk)
                 hasher.update(chunk)
+            if decompressor is not None:
+                tail = decompressor.flush()
+                if tail:
+                    f.write(tail)
+                    hasher.update(tail)
 
         computed_hash = f"sha256:{hasher.hexdigest()}"
 
@@ -386,30 +407,36 @@ def download_objects(
 
     dl_session = download_session or create_download_session(max_workers)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_obj = {
-            executor.submit(
-                _download_and_verify_key, r, urls[r["storage_key"]], products_dir, dl_session
-            ): r
-            for r in fetchable
-        }
-        with tqdm(total=len(fetchable), desc="Downloading", unit="file") as pbar:
-            for future in as_completed(future_to_obj):
-                obj = future_to_obj[future]
-                try:
-                    result = future.result()
-                    store.mark_object_synced(
-                        storage_key=result["storage_key"],
-                        local_path=result["local_path"],
-                        local_file_hash=result["local_file_hash"],
-                        local_file_size=result["local_file_size"],
-                        local_file_mtime=result["local_file_mtime"],
-                    )
-                    stats["downloaded"] += 1
-                except Exception as e:
-                    stats["failed"] += 1
-                    tqdm.write(f"  Failed: {obj['storage_key']}: {e}")
-                pbar.update(1)
+    # Shared transfer harness: workers only touch the network/disk; the
+    # mark_object_synced bookkeeping runs on this thread per completed file
+    # (the SQLite store is single-threaded), so an interrupted run resumes at
+    # file granularity on the next invocation.
+    from .storage.transfer import run_transfers
+
+    def _record(obj: dict, result: dict) -> None:
+        store.mark_object_synced(
+            storage_key=result["storage_key"],
+            local_path=result["local_path"],
+            local_file_hash=result["local_file_hash"],
+            local_file_size=result["local_file_size"],
+            local_file_mtime=result["local_file_mtime"],
+        )
+
+    def _report(obj: dict, e: Exception) -> None:
+        tqdm.write(f"  Failed: {obj['storage_key']}: {e}")
+
+    result = run_transfers(
+        fetchable,
+        lambda r: _download_and_verify_key(
+            r, urls[r["storage_key"]], products_dir, dl_session),
+        max_workers=max_workers,
+        desc="Downloading",
+        label=lambda r: r["storage_key"],
+        on_success=_record,
+        on_failure=_report,
+    )
+    stats["downloaded"] = result.succeeded
+    stats["failed"] = result.failed
 
     return stats
 

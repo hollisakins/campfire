@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import type { MapLayer, MapObjectMarker } from '@/lib/actions/map';
+import type { MapLayer, MapObjectMarker, FitsglDataset } from '@/lib/actions/map';
 
 // Dynamic import to avoid SSR issues with Leaflet (requires window/document)
 const MapViewer = dynamic(
@@ -18,6 +18,7 @@ const MapViewer = dynamic(
 
 interface MapViewerWrapperProps {
   layers: MapLayer[];
+  fitsglDatasets: FitsglDataset[];
   initialField?: string;
   initialFilter?: string;
   initialCenter?: { ra: number; dec: number };

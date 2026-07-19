@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { SignInLink } from '@/components/auth/SignInLink';
 import { useRouter } from 'next/navigation';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { Card } from '@/components/ui/Card';
@@ -182,13 +183,12 @@ export default function ProfilePage() {
           <p className="text-text-secondary mb-6 max-w-md">
             Please sign in to manage your profile and access codes.
           </p>
-          <Link
-            href="/login"
+          <SignInLink
             className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             <LogIn className="w-5 h-5" />
             Sign In
-          </Link>
+          </SignInLink>
         </div>
       </div>
     );

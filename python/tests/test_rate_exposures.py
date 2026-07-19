@@ -73,12 +73,11 @@ def _record(**over):
     return base
 
 
-def test_partition_new_row_seeds_pending_and_none():
+def test_partition_new_row_seeds_pending():
     new, upd = partition_rate_records([_record()], existing_keys=set(), now="T")
     assert upd == []
     assert len(new) == 1
     assert new[0]["review_status"] == "pending"
-    assert new[0]["masking"] == "none"
     assert new[0]["created_at"] == "T" and new[0]["updated_at"] == "T"
 
 
@@ -89,8 +88,7 @@ def test_partition_existing_row_omits_web_owned_columns():
     assert len(upd) == 1
     update = upd[0]
     # split ownership: the UPDATE must NOT carry any web-owned triage column
-    for web_col in ("review_status", "masking", "mask_regions", "notes",
-                    "created_at"):
+    for web_col in ("review_status", "mask_regions", "notes", "created_at"):
         assert web_col not in update, web_col
     # it DOES carry identity + render + updated_at
     assert update["updated_at"] == "T"

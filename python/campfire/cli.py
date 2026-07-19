@@ -27,6 +27,29 @@ from .auth.tokens import TokenManager
 from .exceptions import AuthenticationError
 
 
+class _VariadicOption(click.Option):
+    """Click option that consumes multiple space-separated values after a single flag.
+
+    Allows e.g. ``--obs obs1 obs2 obs3`` in addition to the standard
+    ``--obs obs1 --obs obs2 --obs obs3`` syntax.
+    """
+
+    def add_to_parser(self, parser, ctx):
+        super().add_to_parser(parser, ctx)
+        name = self.opts[-1]
+        opt = parser._long_opt.get(name)
+        if opt is None:
+            return
+        original_process = opt.process
+
+        def _eat_remaining(value, state):
+            original_process(value, state)
+            while state.rargs and not state.rargs[0].startswith('-'):
+                original_process(state.rargs.pop(0), state)
+
+        opt.process = _eat_remaining
+
+
 def _require_auth(base_url: str) -> APISession:
     """Verify credentials and return an APISession. Exits on failure."""
     try:
@@ -153,15 +176,45 @@ def cli():
 
 
 def _register_deploy_group():
-    """Register deploy subgroup. Imported lazily to avoid loading deploy deps for non-deploy commands."""
+    """Register the operator-side commands lazily (deploy deps stay optional).
+
+    ``deploy`` (publication), ``push`` (bytes-only local→cloud transfer), and
+    ``drop-local`` (delete local files verified in cloud) all live in the deploy
+    package; consumers without the extra get an install-hint stub instead.
+    """
     try:
-        from campfire.deploy.cli import deploy_group
+        from campfire.deploy.cli import delete_local, deploy_group, push_cmd
         cli.add_command(deploy_group, name='deploy')
+        cli.add_command(push_cmd, name='push')
+        # Same command as `campfire deploy delete-local`, surfaced top-level as
+        # the storage-plane verb paired with pull/push.
+        cli.add_command(delete_local, name='drop-local')
     except ImportError:
         @cli.command('deploy', hidden=False)
         def deploy_stub():
-            """Deploy CAMPFIRE pipeline products to Supabase + R2. (Requires: pip install campfire[deploy])"""
+            """Deploy CAMPFIRE pipeline products to Supabase + OSN. (Requires: pip install campfire[deploy])"""
             click.echo("Deploy dependencies not installed. Run: pip install campfire[deploy]")
+            sys.exit(1)
+
+        @cli.command('push', hidden=False)
+        def push_stub():
+            """Push local products to cloud storage. (Requires: pip install campfire[deploy])"""
+            click.echo("Deploy dependencies not installed. Run: pip install campfire[deploy]")
+            sys.exit(1)
+
+
+def _register_fitsgl_group():
+    """Register the fitsgl subgroup lazily (epic #337). The group itself needs no
+    producer deps — it imports FitsGL only inside `build` — so registration rarely
+    fails; the stub guards a genuinely broken/absent subpackage."""
+    try:
+        from campfire.fitsgl.cli import fitsgl_group
+        cli.add_command(fitsgl_group, name='fitsgl')
+    except ImportError:
+        @cli.command('fitsgl', hidden=False)
+        def fitsgl_stub():
+            """Build & deploy FitsGL tile-pyramid datasets. (Requires: pip install campfire[fitsgl])"""
+            click.echo("FitsGL dependencies not installed. Run: pip install campfire[fitsgl]")
             sys.exit(1)
 
 
@@ -377,9 +430,23 @@ def whoami(base_url: Optional[str]):
 
 
 @cli.command()
+@click.option("--obs", "obs_scope", multiple=True, cls=_VariadicOption,
+              help="Also show the push-side diff for these observation(s) "
+                   "(admin, deploy extra)")
+@click.option("--field", "field_scope", multiple=True, cls=_VariadicOption,
+              help="Also show the push-side diff for these NIRCam field(s)")
 @click.option("--base-url", default=None, help="API base URL")
-def status(base_url: Optional[str]):
-    """Check credentials, catalog, and download status."""
+def status(obs_scope, field_scope, base_url: Optional[str]):
+    """Check credentials, catalog, and the local↔cloud storage state.
+
+    Unscoped: consumer view — what the cloud has vs what is materialized
+    locally, plus staleness and (for admins) the storage budget.
+
+    Scoped with --obs/--field (operators): additionally runs the push planner
+    in dry mode and reports the other direction — how many local tree products
+    are new / changed / unchanged relative to the cloud registry (what
+    `campfire push` would transfer).
+    """
     base_url = base_url or resolve_base_url()
 
     try:
@@ -481,7 +548,7 @@ def status(base_url: Optional[str]):
     # Stale files (server hash != local hash, via the mirror)
     stale = store.get_stale_objects()
     if stale:
-        click.echo(f"\n⚠ {len(stale)} local file(s) updated on server. Run: campfire download --stale")
+        click.echo(f"\n⚠ {len(stale)} local file(s) updated on server. Run: campfire pull --stale")
 
     # Disk usage
     if data_dir.exists():
@@ -489,6 +556,28 @@ def status(base_url: Optional[str]):
         click.echo(f"\nDisk usage: {format_size(total)}")
 
     store.close()
+
+    # Push-side diff (operators): what `campfire push` would transfer for the
+    # requested scope — new / changed / unchanged local tree products vs the
+    # cloud registry (live key-scoped fetch + the mirror's stat fast path).
+    if obs_scope or field_scope:
+        try:
+            from campfire.deploy.config import load_config
+            from campfire.deploy.push import push_field, push_observation
+        except ImportError:
+            click.echo("\n✗ --obs/--field status needs the deploy extra: "
+                       "pip install campfire[deploy]")
+            return
+        try:
+            config = load_config(None)
+        except Exception as e:
+            click.echo(f"\n✗ Push-side status unavailable: {e}")
+            return
+        click.echo("\nPush-side diff (what `campfire push` would transfer):")
+        for name in obs_scope:
+            push_observation(name, config, dry_run=True, dry_run_note=False)
+        for name in field_scope:
+            push_field(name, config, dry_run=True, dry_run_note=False)
 
 
 # ---------------------------------------------------------------------------
@@ -561,16 +650,23 @@ def sync_cmd(full: bool, base_url: Optional[str], migrate_layout: Optional[bool]
         if result.get("purged_spectra"):
             click.echo(f"  Removed {result['purged_spectra']} spectra deleted from server.")
 
-        # Verify local files so status reports correct counts immediately
+        # Verify local files so status reports correct counts immediately.
+        # Cheap: one bulk directory scan + size-match adoption, no file reads —
+        # frequent drift-checking is the point, so this must stay fast even on
+        # a reducer tree over NFS (run `campfire verify --deep` for true
+        # content hashing).
         pd = _products_dir()
         if pd.exists():
             verify = store.verify_local_objects(pd, show_progress=True)
             if verify["cleared"]:
                 click.echo(f"  Detected {verify['cleared']} missing local file(s).")
             if verify["rehashed"]:
-                click.echo(f"  Re-verified {verify['rehashed']} modified local file(s).")
+                click.echo(f"  Refreshed {verify['rehashed']} modified local file(s).")
             if verify["discovered"]:
                 click.echo(f"  Found {verify['discovered']} existing local file(s).")
+            if verify.get("mismatched"):
+                click.echo(f"  {verify['mismatched']} local file(s) don't match the "
+                           f"cloud object (partial/foreign) — left as pending.")
 
         if result["stale_count"] > 0:
             click.echo(f"\n⚠ {result['stale_count']} local file(s) have been updated on the server.")
@@ -586,37 +682,14 @@ def sync_cmd(full: bool, base_url: Optional[str], migrate_layout: Optional[bool]
 
 
 # ---------------------------------------------------------------------------
-# Download command (FITS files)
+# Pull command (cloud→local data products; alias: download)
 # ---------------------------------------------------------------------------
 
 
-class _VariadicOption(click.Option):
-    """Click option that consumes multiple space-separated values after a single flag.
-
-    Allows e.g. ``--obs obs1 obs2 obs3`` in addition to the standard
-    ``--obs obs1 --obs obs2 --obs obs3`` syntax.
-    """
-
-    def add_to_parser(self, parser, ctx):
-        super().add_to_parser(parser, ctx)
-        name = self.opts[-1]
-        opt = parser._long_opt.get(name)
-        if opt is None:
-            return
-        original_process = opt.process
-
-        def _eat_remaining(value, state):
-            original_process(value, state)
-            while state.rargs and not state.rargs[0].startswith('-'):
-                original_process(state.rargs.pop(0), state)
-
-        opt.process = _eat_remaining
-
-
-@cli.command()
-@click.option("--obs", "obs_filter", multiple=True, cls=_VariadicOption, help="Download by observation name")
-@click.option("--program", "program_filter", multiple=True, cls=_VariadicOption, help="Download by program slug")
-@click.option("--field", "field_filter", multiple=True, cls=_VariadicOption, help="Download by field name")
+@cli.command(name="pull")
+@click.option("--obs", "obs_filter", multiple=True, cls=_VariadicOption, help="Pull by observation name")
+@click.option("--program", "program_filter", multiple=True, cls=_VariadicOption, help="Pull by program slug")
+@click.option("--field", "field_filter", multiple=True, cls=_VariadicOption, help="Pull by field name")
 @click.option("--grating", "grating_filter", multiple=True, cls=_VariadicOption,
               help="NIRSpec: narrow finals to these gratings (e.g. PRISM G395M)")
 @click.option("--filters", "filter_filter", multiple=True, cls=_VariadicOption,
@@ -628,15 +701,19 @@ class _VariadicOption(click.Option):
 @click.option("--workers", default=4, help="Parallel download workers")
 @click.option("--yes", is_flag=True, help="Skip confirmation")
 @click.option("--dry-run", is_flag=True, help="Show plan without downloading")
+@click.option("--no-annotations", "no_annotations", is_flag=True,
+              help="Skip regenerating review annotations (masks, stuck shutters, "
+                   "exclusions) for admins with the deploy extra installed")
 @click.option("--base-url", default=None, help="API base URL")
 def download(obs_filter, program_filter, field_filter, grating_filter, filter_filter,
-             stale, include_intermediate, download_all, workers, yes, dry_run, base_url):
-    """Download data products (NIRSpec spectra + NIRCam field products).
+             stale, include_intermediate, download_all, workers, yes, dry_run,
+             no_annotations, base_url):
+    """Pull cloud data products into the local tree (alias: download).
 
-    Requires a prior 'campfire sync' to populate the local catalog. Select what
-    to download with --obs / --program (NIRSpec) or --field (NIRSpec observations
-    in a field, or NIRCam field products), then optionally scope within a
-    selection:
+    The cloud→local half of the storage plane. Requires a prior 'campfire sync'
+    to populate the local catalog (run automatically here). Select what to pull
+    with --obs / --program (NIRSpec) or --field (NIRSpec observations in a
+    field, or NIRCam field products), then optionally scope within a selection:
 
     \b
       --grating   NIRSpec: narrow finals to these gratings (e.g. PRISM G395M)
@@ -647,16 +724,21 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
     exposures, NIRCam exposures + expmaps) so you can restore a deleted-local
     observation or inspect a stage-1/2 draft.
 
+    For admins with the deploy extra installed, a scoped pull also regenerates
+    the web-authored review annotations (NIRSpec rate masks / stuck shutters /
+    bkg overrides; NIRCam masks + exclusions) into reference/ — the pipeline
+    inputs for the next reduction. --no-annotations skips that step.
+
     \b
     Examples:
-      campfire download --obs ember_uds_p4
-      campfire download --obs ember_uds_p4 ember_uds_p5
-      campfire download --program EMBER-UDS --grating PRISM
-      campfire download --obs ember_egs_p1 --intermediate
-      campfire download --field egs --filters f277w f356w f444w --intermediate
-      campfire download --field cosmos
-      campfire download --stale
-      campfire download --all
+      campfire pull --obs ember_uds_p4
+      campfire pull --obs ember_uds_p4 ember_uds_p5
+      campfire pull --program EMBER-UDS --grating PRISM
+      campfire pull --obs ember_egs_p1 --intermediate
+      campfire pull --field egs --filters f277w f356w f444w --intermediate
+      campfire pull --field cosmos
+      campfire pull --stale
+      campfire pull --all
     """
     from .config import products_dir as _products_dir, meta_dir as _meta_dir
     from .sync import (
@@ -816,9 +898,12 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
         click.echo("Note: --filters scopes NIRCam field products; this selection "
                    "has no NIRCam field, so it has no effect.")
 
-    # Reconcile DB with filesystem before planning
+    # Reconcile DB with filesystem before planning — scoped to this pull's
+    # selection so the pre-flight stays O(selection), not O(tree).
     verify = store.verify_local_objects(
-        _products_dir(), product_types=product_types, show_progress=True
+        _products_dir(), product_types=product_types, show_progress=True,
+        observations=list(target_obs) or None,
+        fields=list(target_fields) or None,
     )
     if verify["cleared"]:
         click.echo(f"  Detected {verify['cleared']} missing local file(s), will re-download.")
@@ -826,6 +911,9 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
         click.echo(f"  Re-verified {verify['rehashed']} modified local file(s).")
     if verify["discovered"]:
         click.echo(f"  Found {verify['discovered']} existing local file(s), skipping download.")
+    if verify.get("mismatched"):
+        click.echo(f"  {verify['mismatched']} local file(s) don't match the cloud object "
+                   f"(partial/foreign); will re-download.")
 
     # Compute download plan locally (no HTTP requests)
     grating_list = list(grating_filter) if grating_filter else None
@@ -868,6 +956,11 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
     if total_files == 0:
         click.echo("\nAll files up to date.")
         store.close()
+        # Annotations are not hash-tracked — regenerate them even when the
+        # products are current (an inspector may have edited masks since).
+        # target_obs is the RESOLVED observation set (--obs, --program, a
+        # NIRSpec --field, --stale all land here), not just the literal --obs.
+        _maybe_pull_annotations(target_obs, target_fields, no_annotations)
         return
 
     if dry_run:
@@ -911,10 +1004,151 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
 
     store.close()
 
+    # Resolved observations (not just literal --obs): --program, NIRSpec
+    # --field, and --stale selections regenerate their annotations too.
+    _maybe_pull_annotations(target_obs, target_fields, no_annotations)
+
+
+# Back-compat alias: `campfire download` ≡ `campfire pull`.
+cli.add_command(cli.commands["pull"], name="download")
+
+
+def _maybe_pull_annotations(obs_names, nircam_fields, disabled: bool) -> None:
+    """Regenerate review annotations for a scoped pull (admins, deploy extra).
+
+    The annotation half of `campfire pull`: web-authored review state (masks,
+    stuck shutters, bkg overrides, exclusions) regenerated into reference/ for
+    the pipeline. Best-effort and quiet by design — consumers without the
+    deploy extra (or without admin) skip silently; a real failure prints a
+    note but never fails the pull.
+    """
+    if disabled or (not obs_names and not nircam_fields):
+        return
+    try:
+        from campfire.deploy.annotations import (
+            pull_field_annotations,
+            pull_observation_annotations,
+        )
+        from campfire.deploy.config import load_config
+        from campfire.deploy.supabase import get_supabase_client
+    except ImportError:
+        return  # consumer install — annotations are an operator concern
+
+    try:
+        config = load_config(None)
+        sb = get_supabase_client(config)
+        try:
+            if not sb.rpc("is_admin").execute().data:
+                return
+        except Exception:
+            return
+        for obs in obs_names:
+            pull_observation_annotations(obs, config)
+        for field in nircam_fields:
+            pull_field_annotations(field, config)
+    except Exception as e:
+        click.echo(f"  (annotations skipped: {e})")
+
+
+@cli.command()
+@click.option("--obs", "obs_filter", multiple=True, cls=_VariadicOption,
+              help="Limit to observation(s)")
+@click.option("--cloud", "cloud", is_flag=True,
+              help="Also verify the cloud registry against the actual buckets "
+                   "(admin; needs S3 LIST credentials — OSN primary, legacy R2)")
+@click.option("--deep", is_flag=True,
+              help="Content-hash changed/discovered files instead of the "
+                   "size-match quick check (reads every such file)")
+@click.option("--json", "as_json", is_flag=True,
+              help="Machine-readable report (for CI); exit 1 on drift")
+@click.option("--local", is_flag=True,
+              help="--cloud against local Supabase (127.0.0.1:54321)")
+def verify(obs_filter, cloud, deep, as_json, local):
+    """Verify local tree ↔ index, and optionally index ↔ cloud buckets.
+
+    Without --cloud: reconciles the local products tree against the storage
+    index via one bulk directory scan (no file reads): clears vanished files,
+    and adopts present files whose size matches the cloud object (rsync-style
+    quick check — the server hash is presumed, not re-computed). --deep
+    additionally content-hashes every changed/discovered file.
+
+    With --cloud (admin): additionally compares live DB pointers vs the
+    registry vs actual bucket LISTs — OSN first (the data home), then the
+    legacy R2 data bucket. Exits non-zero when live pointers lack registry
+    rows (missing) or registry rows lack bucket objects (dangling), so a
+    scheduled CI run can alarm on drift.
+    """
+    import json as _json
+
+    from .config import products_dir as _products_dir
+
+    payload = {}
+    if not as_json:
+        click.echo("Verifying local tree against the index...")
+    store = _open_store()
+    local_totals = store.verify_local_objects(
+        _products_dir(),
+        observations=list(obs_filter) or None,
+        deep=deep,
+        show_progress=not as_json,
+    )
+    store.close()
+    payload["local"] = local_totals
+    if not as_json:
+        click.echo(f"  cleared (file vanished): {local_totals['cleared']}")
+        click.echo(f"  {'re-hashed' if deep else 'refreshed'} (file changed): "
+                   f"{local_totals['rehashed']}")
+        click.echo(f"  discovered (already present): {local_totals['discovered']}")
+        if local_totals.get("mismatched"):
+            click.echo(f"  mismatched (size ≠ cloud object; left pending): "
+                       f"{local_totals['mismatched']}")
+
+    drift = False
+    if cloud:
+        try:
+            from campfire.deploy.config import load_config
+            from campfire.deploy.registry import cloud_reconcile_report
+            from campfire.deploy.supabase import get_supabase_client
+        except ImportError:
+            click.echo("✗ --cloud requires the deploy extra: pip install campfire[deploy]")
+            sys.exit(2)
+        config = load_config(None, local=local)
+        sb = get_supabase_client(config)
+        report = cloud_reconcile_report(config, sb)
+        payload["cloud"] = report
+        drift = not report.get("ok", False)
+        if not as_json:
+            click.echo(f"\nCloud registry: {report['registry_rows']} rows, "
+                       f"{report['live_pointers']} live DB pointers")
+            if report["missing"]:
+                click.echo(f"  ✗ {len(report['missing'])} live pointer(s) with NO registry row:")
+                for k in report["missing"][:10]:
+                    click.echo(f"      missing: {k}")
+            for label, b in report["backends"].items():
+                click.echo(f"  [{label}] bucket objects: {b['bucket_objects']}, "
+                           f"registry rows homed here: {b['registry_rows']}")
+                if b["dangling"]:
+                    click.echo(f"    ✗ {len(b['dangling'])} registry row(s) with no bucket object:")
+                    for k in b["dangling"][:10]:
+                        click.echo(f"        dangling: {k}")
+                if b["orphans"]:
+                    click.echo(f"    {len(b['orphans'])} orphan bucket object(s) "
+                               f"({len(b['adoptable'])} adoptable)")
+            for label, err in report.get("errors", {}).items():
+                click.echo(f"  [{label}] bucket LIST unavailable: {err}")
+            click.echo("\n  Cloud verification: "
+                       + ("PASS" if report.get("ok") else "DRIFT DETECTED"))
+
+    if as_json:
+        click.echo(_json.dumps(payload, indent=2))
+    if drift:
+        sys.exit(1)
+
 
 def main():
     """Entry point for the CLI."""
     _register_deploy_group()
+    _register_fitsgl_group()
     cli()
 
 

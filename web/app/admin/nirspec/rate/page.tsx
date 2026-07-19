@@ -34,15 +34,16 @@ function ReviewBadge({ status }: { status: string }) {
   );
 }
 
-function ActionBadge({ status, label }: { status: string; label: string }) {
-  if (status === 'none') return <span className="text-xs text-text-secondary">&mdash;</span>;
-  const colors: Record<string, string> = {
-    needed: 'bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-300',
-    done: 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-300',
-  };
+// "Masked" is derived state — a non-empty mask_regions is the sole signal
+// (the redundant `masking` status column was dropped). Read-only: masks are
+// drawn in the rate detail view, not toggled here.
+function MaskedBadge({ regions }: { regions: NirspecRateExposure['mask_regions'] }) {
+  if ((regions?.polygons?.length ?? 0) === 0) {
+    return <span className="text-xs text-text-secondary">&mdash;</span>;
+  }
   return (
-    <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${colors[status] || ''}`}>
-      {label}: {status}
+    <span className="inline-flex px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-300">
+      masked
     </span>
   );
 }
@@ -53,7 +54,7 @@ function ActionBadge({ status, label }: { status: string; label: string }) {
 // see lib/nirspec-rate-nav.ts.
 // ---------------------------------------------------------------------------
 
-const FILTER_KEYS = ['observation', 'detector', 'review', 'masking', 'grating'] as const;
+const FILTER_KEYS = ['observation', 'detector', 'review', 'grating'] as const;
 const codec = flatFilterCodec(FILTER_KEYS);
 const DEFAULT_SORT: SortState = { column: 'filename', direction: 'asc' };
 
@@ -61,11 +62,6 @@ const REVIEW_OPTIONS = [
   { value: 'pending', label: 'Pending' },
   { value: 'approved', label: 'Approved' },
   { value: 'excluded', label: 'Excluded' },
-];
-const ACTION_STATE_OPTIONS = [
-  { value: 'needed', label: 'Needed' },
-  { value: 'done', label: 'Done' },
-  { value: 'none', label: 'None' },
 ];
 const DETECTOR_OPTIONS = [
   { value: 'nrs1', label: 'nrs1' },
@@ -91,7 +87,6 @@ function AdminNirspecRatePageInner() {
         observation: f.observation || undefined,
         detector: f.detector || undefined,
         reviewStatus: f.review || undefined,
-        masking: f.masking || undefined,
         grating: f.grating || undefined,
         sortColumn: state.sort.column,
         sortDirection: state.sort.direction,
@@ -161,9 +156,9 @@ function AdminNirspecRatePageInner() {
       meta: { sortKey: 'review_status' },
     },
     {
-      id: 'masking',
-      header: 'Masking',
-      cell: ({ row }) => <ActionBadge status={row.original.masking} label="mask" />,
+      id: 'masked',
+      header: 'Masked',
+      cell: ({ row }) => <MaskedBadge regions={row.original.mask_regions} />,
     },
     {
       id: 'open',
@@ -203,7 +198,6 @@ function AdminNirspecRatePageInner() {
             options: (facets?.gratings ?? []).map((g) => ({ value: g, label: g })),
           },
           { kind: 'select', key: 'review', label: 'Review', options: REVIEW_OPTIONS },
-          { kind: 'select', key: 'masking', label: 'Masking', options: ACTION_STATE_OPTIONS },
         ]}
         values={state.filters}
         onChange={(key, value) => state.setFilters({ ...state.filters, [key]: value })}

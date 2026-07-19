@@ -5,15 +5,14 @@ Top-level commands:
 
     cfpipe nircam process    # per-exposure phase (detector1 → jhat)
     cfpipe nircam combine    # ensemble phase    (apply_mask → resample)
-    cfpipe nircam <step>     # any of the 14 individual steps
+    cfpipe nircam <step>     # any individual step
     cfpipe nircam run --all  # whole pipeline
     cfpipe nircam check      # tile-staleness probe
-    cfpipe nircam status     # per-exposure CFP_* completion table  (TODO)
-    cfpipe nircam reset      # clear CFP_* keys / wipe canonical files (TODO)
+    cfpipe nircam status     # per-exposure CFP_* completion table
+    cfpipe nircam reset      # clear CFP_* keys / wipe canonical files
 
-Status and reset land in a follow-up commit. Per-step commands are
-registered programmatically from ``orchestrate.STEP_NAMES`` so the
-top-level help auto-includes them.
+Per-step commands are registered programmatically from
+``orchestrate.STEP_NAMES`` so the top-level help auto-includes them.
 """
 
 from campfire_pipeline import _thread_caps  # noqa: F401  (must precede numpy/matplotlib)
@@ -383,15 +382,18 @@ def rgb(config, field, tiles, pixel_scale, preview_max_dim, processes, overwrite
 @click.option('--padding', type=float, default=30.0, show_default=True,
               help='Sky padding around the union footprint, arcsec.')
 @click.option('--out-dir', default=None,
-              help='Base products dir; per-filter FITS/PDFs land in '
-                   '<out-dir>/<filter>/ (default: {products}/nircam/<field>/).')
+              help='Base products dir; per-filter FITS/PDF/PNG land in '
+                   '<out-dir>/<filter>/, the field layout + footprints at its '
+                   'root (default: {products}/nircam/<field>/).')
 @click.option('--processes', '-p', default=1, type=int, show_default=True,
               help='Per-filter parallelism (one filter per worker).')
 @click.option('--overwrite', is_flag=True,
-              help='Rebuild even if FITS + PDF already exist.')
+              help='Rebuild even if the expmap FITS already exists '
+                   '(plots + layout are always re-rendered).')
 def expmap(config, field, filters, stage, pixel_scale, padding,
            out_dir, processes, overwrite):
-    """Build per-filter exposure maps, footprint regions, and diagnostic plots."""
+    """Build per-filter exposure maps (FITS + light PDF + dark PNG), the field
+    layout plot + coverage JSON, and footprint regions."""
     _, field_obj = _setup(config, field)
     from campfire_pipeline.nircam.expmap import run_expmap
     run_expmap(

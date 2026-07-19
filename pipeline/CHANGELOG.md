@@ -61,8 +61,161 @@ Release procedure: edit the `## Unreleased` section below, then run
   epoch is no longer silently read as a Julian year), and warns when a merge
   discards proper motions because the PM catalog wasn't listed first.
   `campfire_pipeline/nircam/refcat/{motion,merge}.py`.
+### Calibration
+- NIRCam wisp subtraction now defaults to the multi-component non-negative
+  matrix factorization model of Wu et al. 2026 (JADES DR5, arXiv:2601.15958),
+  via the new `nmfwisp` dependency (templates ship in the wheel). Per-exposure
+  wisps are fit as a non-negative linear combination of filter/detector-specific
+  components (NNLS, inverse-variance weighted, sources masked) rather than a
+  single scaled STScI template, capturing exposure-to-exposure morphology.
+  Controlled by `[nircam.wisp].method` (`"nmf"` default, `"template"` for the
+  legacy path); `"nmf"` falls back to the template method for any
+  `(detector, filter)` nmfwisp ships no template for (e.g. F140M, F162M). The
+  method used is recorded per exposure in `CFP_WISP` (`nmf <version>`). Changes
+  wisp-region pixel values for the same input. The shared source mask used by
+  the fit (both methods) now grows source footprints — `[nircam.wisp].mask_nsigma`
+  (default 3) and `mask_dilate` (default 8, binary-dilation iterations) — so
+  faint source wings past the detection isophote aren't fit as wisp flux; an
+  nsigma x dilate sweep showed the old (5.5-sigma, no-dilate) mask inflated the
+  fitted wisp amplitude by ~20% where a bright source overlapped the wisp region.
+- Two-fit 2-D background architecture in the unified `bkg` step (adapted
+  from R. Endsley's cluster reduction; validated on synthetic scenes +
+  rj0911 F444W). (1) A **conditioning detrend** (`[nircam.bkg.detrend]`,
+  on by default): a fit-only, zero-median coarse-box `Background2D` model
+  subtracted from the measurement copies so the pedestal and per-amp-row
+  1/f terms never see sky gradients or diffuse scattered-light structure —
+  which they otherwise absorb per-amp-asymmetrically, imprinting seams at
+  the amp boundaries (the real-exposure flatness sweep's headline finding).
+  Never subtracted from SCI. (2) An opt-in **applied** subtraction
+  (`[nircam.bkg].subtract_2d`, per-field — lensing clusters): a smooth
+  `Background2D` (`[nircam.bkg.bkg2d]`: box 64 px SW ≈ 2", source tiers
+  grown by `extra_dilate = 20`, background-map outlier reject via the new
+  `SubtractBackground.bg_reject*` guard) for sky-matching / ICL removal,
+  with parameters set by flux conservation (zero median aperture loss in
+  the synthetic cluster sweep). Pedestal `scope = "auto"` resolves to the
+  incumbent per-amp (safe under gradients once conditioned); a full-frame
+  fallback covers the detrend-off escape hatch. **Calibration (MINOR): the
+  default-on conditioning detrend changes 1/f/pedestal solutions (and hence
+  pixel values) for all NIRCam exposures**, materially where frames carry
+  gradients or diffuse artifacts. The applied subtraction stays opt-in
+  (default `subtract_2d = false`), and the mosaic path defaults
+  `bg_reject = false` (wired under `[nircam.resample]` with the tile
+  config-hash extended only when enabled, so existing tiles keep their
+  hash). Validated by a synthetic harness
+  (`experiments/bkg2d_synthetic/`): layered truth scenes (galaxies vs ICL
+  as separate planes) driven through the real `bkg_step`, with
+  aperture-to-aperture flux-conservation metrics on the correction-error
+  map, plus a real-exposure amp-seam flatness sweep.
+
+### Algorithm
+- Waterfall growth of large OUTLIER DQ regions (opt-in,
+  `[nircam.outlier].grow_large_regions`, default off). Detector-fixed
+  artifacts (scattered-light arcs/glints) move on-sky between dithers, so
+  outlier detection flags their bright cores while the sub-threshold wings
+  drizzle into the mosaic. Connected OUTLIER components above
+  `grow_min_area` seed a hysteresis expansion through connected pixels of
+  the smoothed residual above `grow_expand_nsigma`·σ (SExtractor-isophote
+  style, following the artifact's actual morphology), with a
+  `grow_max_factor` growth cap that falls back to plain dilation when a
+  seed floods a bright star's own PSF halo. Cosmic-ray hits and
+  galaxy-core speckles are untouched by construction (rj0911 F444W: ~5
+  large vs ~13000 small components per frame; <1% of frame masked; the
+  mosaic A/B shows arc contributions removed at their per-dither sky
+  positions with only local one-dither depth cost). Wired in both outlier
+  implementations; growth stats stamped into `CFP_OUT`. Additive: default
+  off leaves existing outputs unchanged. Two follow-up guards (both on by
+  default when growth is enabled): **deblend release**
+  (`grow_deblend`) — each expanded region is photutils-deblended
+  (multi-threshold watershed on the smoothed residual) and children that
+  contain no seed pixels *and* peak >2x above the seeded artifact are
+  released, so a neighbouring galaxy whose isophotes touch the artifact's
+  wings keeps its depth (the peak-ratio criterion keeps the artifact's own
+  noise-split wing chunks masked); and **negative growth**
+  (`grow_negative`) — seeds sitting on negative residuals (oversubtracted
+  wisp/background regions; the base detection thresholds `|sci − blot|`,
+  so both signs seed) expand through connected pixels *below*
+  −`grow_expand_nsigma`·σ instead of above, rejecting oversubtraction
+  wings the same way positive artifact wings are. Self-limiting: if every
+  dither is oversubtracted identically the median matches them and no
+  seed forms. Additionally, growth seeds now form only from
+  weight-carrying pixels: OUTLIER pixels that were already DO_NOT_USE
+  before detection (exposure-edge trim) are excluded from seeding —
+  detection flags near-contiguous strips along the trimmed frame edges
+  (blot/median mismatch), and on rj0911 f200w those weightless strips
+  were seeding floods into real galaxies touching the exposure edges.
+  A geometric companion guard, `grow_edge_buffer` (default 50 px),
+  additionally stops any OUTLIER pixel that close to the frame edge from
+  seeding — saturated star cores falling near the edge are
+  detection-flagged on weight-carrying pixels and would otherwise flood
+  the star's own PSF wings (per-pixel exclusion, so a large artifact
+  reaching the edge still seeds from its deeper interior part).
+  The `*_outlier.pdf` diagnostics now draw waterfall-grown
+  pixels as a separate magenta overlay (detections stay yellow) with both
+  counts in the panel title — the campfire implementation previously
+  omitted grown pixels from the plot entirely.
 
 ### Infrastructure
+- Dependency declarations now match actual imports (#330): added `requests`,
+  `h5py`, and `Pillow` (previously satisfied only transitively) plus the
+  directly-imported JWST-stack packages (`crds`, `asdf`, `stdatamodels`,
+  `stcal`, `drizzle`, `gwcs` — versions still ride the `jwst` pin); dropped the
+  never-imported `tomlkit`. No change to resolved environments in practice —
+  every added package was already installed via `jwst`. Ships alongside the new
+  repo-root `install.py` interactive installer.
+- NIRCam expmap plots gain tile footprints + a squared, in-ticked panel: the
+  per-filter maps (`expmap_*.png`/`.pdf`) now overlay the same tile outlines as
+  `<field>_layout.png`, so a single filter's coverage reads against the tile
+  grid; the main panel of every expmap/layout plot is forced square (predictable
+  web layout, WCS aspect preserved so a non-square field pads rather than
+  stretches), its tick marks point inward (colorbar unchanged), and the imshow
+  sits behind the axes so grid, ticks, and outlines render on top. Plots only;
+  no change to FITS pixel values or filenames (`nircam/expmap.py`).
+- NIRCam mosaics now get a size-capped **thumbnail pair** instead of one
+  fixed-/4-downsampled PNG: `<base>_thumb.png` (long side ≤
+  `thumbnail_max_dim`, default 500 px — the web table rendition) and a new
+  `<base>_quicklook.png` (long side ≤ `quicklook_max_dim`, default 4096 px —
+  the click-to-enlarge popup). The fixed /4 factor scaled with the mosaic (a
+  wide 30 mas strip produced a ~10k-px, tens-of-MB "thumbnail"); the caps
+  bound both renditions regardless of field geometry, and mosaics smaller
+  than a cap are saved at native size. Named `quicklook` (not
+  `_preview`/`_full`) because those suffixes already mean the per-exposure
+  triage PNGs in the same directory. Display PNGs only, no change to FITS
+  pixel values (`nircam/steps/_plots.py`, `nircam/steps/resample.py`,
+  `data/config_default.toml`; layout contract + deploy + `storage_objects`
+  CHECK gain the `nircam_mosaic_quicklook` product type).
+- NIRCam expmap/layout plot styling: the deployable dark PNGs (per-filter
+  `expmap_*.png` and `<field>_layout.png`) no longer carry a title — the web
+  page embedding them already labels field/filter, so it was duplicated
+  information. The light per-filter PDF keeps its title but drops the
+  `canonical` stage label (the fiducial map is undecorated, matching the
+  filename convention; `uncal` quick-looks still label their stage). Tile
+  outlines and labels on the layout plot are heavier/larger and stroked with
+  the background colour so they stay legible over both the bright and dark
+  ends of the colormap. Plots only; no change to FITS pixel values or
+  filenames (`nircam/expmap.py`).
+- NIRCam per-exposure triage previews (`{rootname}_preview.png` /
+  `{rootname}_full.png`) now render per-pixel **SNR** (`SCI/ERR`) instead of raw
+  SCI (still ZScale-stretched). The `jump` step drops snowball/cosmic-ray groups
+  from the ramp fit, inflating `VAR_RNOISE`→`ERR` on those pixels, so an SNR view
+  sinks a correctly error-weighted snowball back into the noise floor while
+  leaving residuals the error model under-weights visibly significant —
+  surfacing the pixels that actually warrant a hand mask rather than every
+  bright-but-already-downweighted artifact. Quick-look only; no change to FITS
+  pixel values, DQ, or the `_preview.png`/`_full.png` filenames the web mask
+  editor consumes. Existing reductions upgrade automatically: `CFP_PREV` now
+  records a render-format marker (`snr`) and the skip check requires it, so a
+  normal `cfpipe nircam process` re-renders exposures whose stamp predates this
+  change without needing `--overwrite` (`nircam/steps/preview.py`,
+  `data/config_default.toml`).
+- NIRCam fields gain an optional field-level `fiducial_tiles = ["A1", "A2", …]`
+  declaration in `fields.toml` — the subset of a field's tiles that share a
+  tangent point + rotation and span the field, forming the FitsGL field-composite
+  map view (epic #337). `Field.load` parses and validates the names against the
+  declared tiles, and a new `Field.fiducial_tile_set()` returns the set (honoring a
+  per-tile `fiducial = true` fallback) after asserting the tiles co-grid (shared
+  `crval`/rotation), so an off-grid tile mistakenly included fails fast. Additive
+  and opt-in — fields without the key are unchanged; no effect on pixel values
+  (`nircam/field.py`).
 - Install docs: `pip install` instructions now pull the unpublished
   `campfire-layout` sibling package from the monorepo alongside the pipeline, so
   a fresh `pip install "git+…#subdirectory=pipeline"` (and `conda env create`)
@@ -81,6 +234,23 @@ Release procedure: edit the `## Unreleased` section below, then run
   fiducial map (the `_uncal`/legacy `_canonical` variants are skipped) and it is now
   surfaced for download on the web NIRCam page. Pure output-file naming change with
   no effect on pixel values (`nircam/expmap.py`).
+- NIRCam exposure maps now emit web-ready plots + a coverage summary (for the
+  NIRCam page redesign). Each per-filter map gains a **dark PNG**
+  (`expmap_<field>_<filter>[_uncal].png`) beside the existing light PDF —
+  rendered on a dark plot well to match CAMPFIRE's data surfaces (map/spectrum
+  wells stay dark in both app themes); the PDF is kept as the local diagnostic.
+  A new **field layout** plot (`<field>_layout[_uncal].png`) stacks every
+  per-filter expmap (total exposure across filters) with tile-footprint
+  outlines + axes + colorbar so it stands alone as a coverage/tiling product,
+  and a companion `<field>_layout.json` records the **exact survey area**
+  (non-zero pixels of the stack × pixel area) + per-filter areas for the
+  deploy/DB layer. Each per-filter expmap FITS also gains an `AREA` header
+  (covered arcmin²). The layout + coverage summary is written only on full-field
+  runs: a `cfpipe nircam expmap --filters <subset>` rerun skips it so a partial
+  stack never overwrites the complete survey area, and a cached expmap FITS
+  predating the `AREA` header has its per-filter area recomputed from the array
+  rather than reported as zero. Plots + metadata only — no change to expmap pixel
+  values (`nircam/expmap.py`, `nircam/cli.py`).
 - NIRCam wisp templates are now fetched from a public HTTPS host into
   `$CAMPFIRE_ROOT/cache/wisps/` against a checksummed manifest shipped with the
   package (`data/wisp_manifest.toml`), instead of being manually copied into the

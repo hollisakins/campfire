@@ -2,7 +2,17 @@
 
 import { createClient } from '@/lib/supabase/server';
 import { paginateQuery } from '@/lib/supabase/paginate';
-import type { NircamImage, NircamExpmap } from '@/lib/types';
+import { generateDownloadUrls } from '@/lib/r2';
+import { thumbnailBase, quicklookBase } from '@/lib/nircam-product-keys';
+import type {
+  NircamImage, NircamExpmap, NircamFieldCard, NircamFieldSummary,
+} from '@/lib/types';
+
+// Presigned-GET lifetime for <img> sources (layout / expmap plots / thumbnails).
+// Raw presigned URLs go straight into <img> tags — no proxy hop, no CORS needed
+// (same pattern as the admin exposure previews) — so this just needs to outlive
+// a browsing session.
+const IMG_PRESIGN_TTL_SECONDS = 21600;
 
 export interface NircamImagesResult {
   images: NircamImage[];
@@ -16,22 +26,36 @@ export interface NircamExpmapsResult {
   isAuthenticated: boolean;
 }
 
-export interface NircamFilterOptionsResult {
-  fields: string[];
-  tiles: string[];
-  filters: string[];
-  pixel_scales: string[];
-  extensions: string[];
-  epochs: string[];  // exposure-subset names ('' = full field)
+export interface NircamFieldsResult {
+  fields: NircamFieldCard[];
+  error?: string;
+  isAuthenticated: boolean;
+}
+
+export interface NircamFieldSummaryResult {
+  summary: NircamFieldSummary | null;
+  error?: string;
+  isAuthenticated: boolean;
+}
+
+export interface NircamFieldImagesResult {
+  /** Presigned GET for the field's <field>_layout.png, if deployed. */
+  layoutUrl: string | null;
+  /** filter -> presigned GET for its dark expmap plot PNG. */
+  expmapPlots: Record<string, string>;
+  /** mosaic base key (thumb key minus `_thumb.png`) -> presigned GET. */
+  thumbnails: Record<string, string>;
+  /** mosaic base key -> presigned GET for the large popup quick-look. */
+  quicklooks: Record<string, string>;
   error?: string;
 }
 
 /**
- * Fetch all NIRCam images from the database.
+ * Fetch NIRCam images from the database, optionally scoped to one field.
  * Requires authentication but no program-based access control.
- * Returns all images for client-side filtering/sorting.
+ * Returns all matching images for client-side filtering/sorting.
  */
-export async function getNircamImages(): Promise<NircamImagesResult> {
+export async function getNircamImages(field?: string): Promise<NircamImagesResult> {
   const supabase = await createClient();
 
   // Check if user is authenticated
@@ -46,13 +70,17 @@ export async function getNircamImages(): Promise<NircamImagesResult> {
 
   try {
     const { data, error } = await paginateQuery<NircamImage>(
-      () => supabase
-        .from('nircam_images')
-        .select('*')
-        .order('field', { ascending: true })
-        .order('filter', { ascending: true })
-        .order('tile', { ascending: true })
-        .order('id', { ascending: true }),
+      () => {
+        let q = supabase
+          .from('nircam_images')
+          .select('*');
+        if (field) q = q.eq('field', field);
+        return q
+          .order('field', { ascending: true })
+          .order('filter', { ascending: true })
+          .order('tile', { ascending: true })
+          .order('id', { ascending: true });
+      },
     );
 
     if (error) {
@@ -65,7 +93,7 @@ export async function getNircamImages(): Promise<NircamImagesResult> {
     }
 
     return {
-      images: data,
+      images: await attachStoredSizes(supabase, data, field),
       isAuthenticated: true,
     };
   } catch (err) {
@@ -79,6 +107,51 @@ export async function getNircamImages(): Promise<NircamImagesResult> {
 }
 
 /**
+ * Attach the registry's stored (gzipped) byte counts to mosaic rows.
+ *
+ * `nircam_images.file_size` is the logical (uncompressed) size; the bytes a
+ * download actually transfers live on `storage_objects.stored_size_bytes`
+ * (NULL for verbatim objects). Fails OPEN: any error (including a DB that
+ * predates the column) just returns the rows without stored sizes, so the
+ * page renders plain sizes rather than breaking.
+ */
+async function attachStoredSizes(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  images: NircamImage[],
+  field?: string,
+): Promise<NircamImage[]> {
+  if (images.length === 0) return images;
+  try {
+    const { data, error } = await paginateQuery<{
+      storage_key: string; stored_size_bytes: number | null;
+    }>(
+      () => {
+        let q = supabase
+          .from('storage_objects')
+          .select('storage_key, stored_size_bytes')
+          .eq('product_type', 'nircam_mosaic')
+          .eq('status', 'active')
+          .not('stored_size_bytes', 'is', null);
+        if (field) q = q.eq('field', field);
+        return q.order('storage_key');
+      },
+    );
+    if (error || !data || data.length === 0) return images;
+
+    const storedByKey = new Map(
+      data.map((r) => [r.storage_key, r.stored_size_bytes as number]),
+    );
+    return images.map((img) => {
+      const stored = storedByKey.get(img.file_path);
+      return stored != null ? { ...img, file_size_stored: stored } : img;
+    });
+  } catch (err) {
+    console.error('Error attaching stored sizes (continuing without):', err);
+    return images;
+  }
+}
+
+/**
  * Fetch the per-(field, filter) exposure-coverage maps a user may see.
  *
  * Expmaps are registered in `storage_objects` (product_type `nircam_expmap`) and
@@ -87,7 +160,7 @@ export async function getNircamImages(): Promise<NircamImagesResult> {
  * active rows and let `select_storage_objects_by_access` do the gating — no
  * bespoke access logic here, mirroring how mosaics rely on `nircam_images` RLS.
  */
-export async function getNircamExpmaps(): Promise<NircamExpmapsResult> {
+export async function getNircamExpmaps(field?: string): Promise<NircamExpmapsResult> {
   const supabase = await createClient();
 
   const { data: { user } } = await supabase.auth.getUser();
@@ -100,13 +173,17 @@ export async function getNircamExpmaps(): Promise<NircamExpmapsResult> {
       field: string; filter: string | null; storage_key: string;
       size_bytes: number | null;
     }>(
-      () => supabase
-        .from('storage_objects')
-        .select('field, filter, storage_key, size_bytes')
-        .eq('product_type', 'nircam_expmap')
-        .eq('status', 'active')
-        .order('field', { ascending: true })
-        .order('filter', { ascending: true }),
+      () => {
+        let q = supabase
+          .from('storage_objects')
+          .select('field, filter, storage_key, size_bytes')
+          .eq('product_type', 'nircam_expmap')
+          .eq('status', 'active');
+        if (field) q = q.eq('field', field);
+        return q
+          .order('field', { ascending: true })
+          .order('filter', { ascending: true });
+      },
     );
 
     if (error) {
@@ -131,105 +208,173 @@ export async function getNircamExpmaps(): Promise<NircamExpmapsResult> {
 }
 
 /**
- * Fetch unique filter options from the NIRCam images table.
- * Used to populate filter dropdowns.
+ * The /nircam landing grid: one card per field the caller can see any mosaic
+ * of (get_nircam_fields RPC — SECURITY INVOKER, so nircam_images RLS scopes
+ * non-admins to published data). Each row's layout key is presigned into a
+ * ready-to-render <img> URL here so the client never handles storage keys.
  */
-export async function getNircamFilterOptions(): Promise<NircamFilterOptionsResult> {
+export async function getNircamFields(): Promise<NircamFieldsResult> {
   const supabase = await createClient();
 
-  // Check if user is authenticated
   const { data: { user } } = await supabase.auth.getUser();
-
   if (!user) {
-    return {
-      fields: [],
-      tiles: [],
-      filters: [],
-      pixel_scales: [],
-      extensions: [],
-      epochs: [],
-    };
+    return { fields: [], isAuthenticated: false };
   }
 
   try {
-    const { data: images, error } = await paginateQuery<{
-      field: string; tile: string; filter: string;
-      pixel_scale: string; extension: string; epoch: string | null;
+    const { data, error } = await supabase.rpc('get_nircam_fields');
+    if (error) {
+      console.error('Error fetching NIRCam fields:', error);
+      return { fields: [], error: error.message, isAuthenticated: true };
+    }
+
+    const rows = (data ?? []) as (Omit<NircamFieldCard, 'layout_url'> & {
+      layout_key: string | null;
+    })[];
+
+    // Presign the layout plots in one dual-read batch; a failed presign just
+    // leaves that card's preview null (the card renders a placeholder).
+    const keys = rows.map((r) => r.layout_key).filter(Boolean) as string[];
+    const urlByKey = new Map<string, string>();
+    if (keys.length > 0) {
+      try {
+        const urls = await generateDownloadUrls(keys, IMG_PRESIGN_TTL_SECONDS);
+        keys.forEach((k, i) => urlByKey.set(k, urls[i]));
+      } catch (err) {
+        console.error('Error presigning NIRCam layout plots:', err);
+      }
+    }
+
+    const fields: NircamFieldCard[] = rows.map(({ layout_key, ...r }) => ({
+      ...r,
+      layout_url: layout_key ? urlByKey.get(layout_key) ?? null : null,
+    }));
+
+    return { fields, isAuthenticated: true };
+  } catch (err) {
+    console.error('Unexpected error fetching NIRCam fields:', err);
+    return { fields: [], error: 'An unexpected error occurred', isAuthenticated: true };
+  }
+}
+
+/**
+ * The /nircam/[field] overview (get_nircam_field_summary RPC). Returns null
+ * for a field the caller can't see any mosaic of — the page treats unknown
+ * and unauthorized fields identically.
+ */
+export async function getNircamFieldSummary(field: string): Promise<NircamFieldSummaryResult> {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return { summary: null, isAuthenticated: false };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('get_nircam_field_summary', {
+      p_field: field,
+    });
+    if (error) {
+      console.error('Error fetching NIRCam field summary:', error);
+      return { summary: null, error: error.message, isAuthenticated: true };
+    }
+
+    const row = ((data ?? []) as (Omit<NircamFieldSummary,
+      'cfpipe_version' | 'jwst_version' | 'crds_context'> & { layout_key: string | null })[])[0];
+    if (!row) return { summary: null, isAuthenticated: true };
+
+    // layout_key is presigned separately by getNircamFieldImages; strip it.
+    const { layout_key: _lk, ...base } = row;
+    void _lk;
+
+    // Reduction provenance from the latest published deployment (the
+    // deployments log is readable by all authenticated users). Fail open —
+    // a missing row just leaves the provenance rows off the overview.
+    let provenance = { cfpipe_version: null as string | null,
+                       jwst_version: null as string | null,
+                       crds_context: null as string | null };
+    try {
+      const { data: dep } = await supabase
+        .from('deployments')
+        .select('cfpipe_version, jwst_version, crds_context')
+        .eq('field', field)
+        .eq('status', 'published')
+        .order('deployed_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (dep) provenance = dep;
+    } catch (err) {
+      console.error('Error fetching deployment provenance (continuing):', err);
+    }
+
+    return { summary: { ...base, ...provenance }, isAuthenticated: true };
+  } catch (err) {
+    console.error('Unexpected error fetching NIRCam field summary:', err);
+    return { summary: null, error: 'An unexpected error occurred', isAuthenticated: true };
+  }
+}
+
+/**
+ * Presigned <img> URLs for one field's plot products: the field layout PNG,
+ * the per-filter dark expmap plots, and the per-mosaic thumbnails.
+ *
+ * The key set is derived entirely server-side from `storage_objects` under the
+ * caller's RLS session (published deployments visible to all authed users,
+ * drafts admin-only), so no client-supplied key is ever presigned. Raw
+ * presigned GET URLs go straight into <img> tags — browsers don't apply CORS
+ * to image rendering, so no proxy hop is needed (the same pattern as the
+ * admin exposure previews).
+ */
+export async function getNircamFieldImages(field: string): Promise<NircamFieldImagesResult> {
+  const empty: NircamFieldImagesResult = { layoutUrl: null, expmapPlots: {}, thumbnails: {}, quicklooks: {} };
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return empty;
+
+  try {
+    const { data, error } = await paginateQuery<{
+      storage_key: string; product_type: string; filter: string | null;
     }>(
       () => supabase
-        .from('nircam_images')
-        .select('field, tile, filter, pixel_scale, extension, epoch')
-        .order('field')
-        .order('filter')
-        .order('tile'),
+        .from('storage_objects')
+        .select('storage_key, product_type, filter')
+        .eq('field', field)
+        .eq('status', 'active')
+        .in('product_type', ['nircam_layout', 'nircam_expmap_plot', 'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook'])
+        .order('storage_key'),
     );
 
     if (error) {
-      console.error('Error fetching NIRCam filter options:', error);
-      return {
-        fields: [],
-        tiles: [],
-        filters: [],
-        pixel_scales: [],
-        extensions: [],
-        epochs: [],
-        error: error.message,
-      };
+      console.error('Error fetching NIRCam field images:', error);
+      return { ...empty, error: error.message };
+    }
+    if (data.length === 0) return empty;
+
+    const keys = data.map((r) => r.storage_key);
+    const urls = await generateDownloadUrls(keys, IMG_PRESIGN_TTL_SECONDS);
+    const urlByKey = new Map(keys.map((k, i) => [k, urls[i]]));
+
+    const result: NircamFieldImagesResult = { layoutUrl: null, expmapPlots: {}, thumbnails: {}, quicklooks: {} };
+    for (const row of data) {
+      const url = urlByKey.get(row.storage_key);
+      if (!url) continue;
+      if (row.product_type === 'nircam_layout') {
+        result.layoutUrl = url;
+      } else if (row.product_type === 'nircam_expmap_plot' && row.filter) {
+        result.expmapPlots[row.filter] = url;
+      } else if (row.product_type === 'nircam_mosaic_thumbnail') {
+        // Keyed by mosaic base — the shared contract with the table's
+        // mosaicBase() lives in lib/nircam-product-keys.ts.
+        result.thumbnails[thumbnailBase(row.storage_key)] = url;
+      } else if (row.product_type === 'nircam_mosaic_quicklook') {
+        result.quicklooks[quicklookBase(row.storage_key)] = url;
+      }
     }
 
-    const fields = [...new Set(images.map(i => i.field))].sort();
-    const filters = [...new Set(images.map(i => i.filter))].sort();
-    const pixel_scales = [...new Set(images.map(i => i.pixel_scale))].sort();
-    // Epoch '' = full-field mosaic; keep it (sorts first) so the "Full field"
-    // option is always available alongside any named subset epochs.
-    const epochs = [...new Set(images.map(i => i.epoch ?? ''))].sort();
-    const extensions = [...new Set(images.map(i => i.extension))].sort((a, b) => {
-      // Sort extensions by priority: sci > err > rms > srcmask
-      const order = ['sci', 'err', 'rms', 'srcmask'];
-      const aIdx = order.indexOf(a.toLowerCase());
-      const bIdx = order.indexOf(b.toLowerCase());
-      if (aIdx === -1 && bIdx === -1) return a.localeCompare(b);
-      if (aIdx === -1) return 1;
-      if (bIdx === -1) return -1;
-      return aIdx - bIdx;
-    });
-
-    // Sort tiles alphanumerically (A1, A2, A10, B1, etc.)
-    const tiles = [...new Set(images.map(i => i.tile))].sort((a, b) => {
-      const aMatch = a.match(/^([A-Z]+)(\d+)$/);
-      const bMatch = b.match(/^([A-Z]+)(\d+)$/);
-
-      if (aMatch && bMatch) {
-        const [, aLetter, aNumber] = aMatch;
-        const [, bLetter, bNumber] = bMatch;
-
-        if (aLetter !== bLetter) {
-          return aLetter.localeCompare(bLetter);
-        }
-        return parseInt(aNumber, 10) - parseInt(bNumber, 10);
-      }
-
-      return a.localeCompare(b);
-    });
-
-    return {
-      fields,
-      tiles,
-      filters,
-      pixel_scales,
-      extensions,
-      epochs,
-    };
+    return result;
   } catch (err) {
-    console.error('Unexpected error fetching NIRCam filter options:', err);
-    return {
-      fields: [],
-      tiles: [],
-      filters: [],
-      pixel_scales: [],
-      extensions: [],
-      epochs: [],
-      error: 'An unexpected error occurred',
-    };
+    console.error('Unexpected error fetching NIRCam field images:', err);
+    return { ...empty, error: 'An unexpected error occurred' };
   }
 }

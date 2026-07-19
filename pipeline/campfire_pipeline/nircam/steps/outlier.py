@@ -56,6 +56,218 @@ from campfire_pipeline.nircam.manifest import (
 EXTRA_EXT_NAMES = ('SRCMASK', 'CFMASK')
 
 
+def _release_unseeded_children(work, expanded, seeds, npixels=25,
+                               nlevels=32, contrast=0.001, peak_ratio=2.0):
+    """Deblend expanded components and release distinct-source children.
+
+    Photutils multi-threshold watershed deblending on the (one-sign,
+    smoothed) residual: a neighbouring galaxy whose isophotes touch the
+    artifact's wings gets its own deblended child and is dropped from the
+    mask, while the artifact — whose peak owns the seed — is kept.
+
+    Watershed alone over-segments flat-topped elongated artifacts (noise
+    dips along a ridge create saddles), so unseeded children are NOT
+    released on segmentation alone: a child is released only when its peak
+    also exceeds ``peak_ratio`` x the brightest seeded child of the same
+    parent component. Artifact-wing chunks share the artifact's surface
+    brightness and stay masked; a distinct galaxy sticks out well above it
+    and is released. A galaxy fainter than the artifact stays masked — the
+    conservative direction (it was buried in the artifact anyway).
+    """
+    from scipy import ndimage
+
+    elab, en = ndimage.label(expanded)
+    if en == 0:
+        return expanded
+    data = np.where(expanded, np.maximum(work, 0.0), 0.0)
+    try:
+        from photutils.segmentation import SegmentationImage, deblend_sources
+        deb = deblend_sources(
+            data, SegmentationImage(elab), npixels=npixels, nlevels=nlevels,
+            contrast=contrast, mode='linear', progress_bar=False,
+        )
+    except Exception as exc:  # never let a deblend hiccup kill the step
+        log(f"  outlier grow: deblend failed ({exc}); keeping full expansion")
+        return expanded
+
+    child_ids = np.arange(1, deb.max_label + 1)
+    peaks = np.atleast_1d(ndimage.maximum(data, deb.data, child_ids))
+    # children partition parents, so elab is constant over each child
+    parent_of = np.atleast_1d(
+        ndimage.maximum(elab, deb.data, child_ids)).astype(int)
+    seeded = np.zeros(deb.max_label + 1, dtype=bool)
+    seeded[np.unique(deb.data[seeds & (deb.data > 0)])] = True
+
+    ref_peak = {}  # parent id -> brightest seeded-child peak
+    for i, cid in enumerate(child_ids):
+        if seeded[cid]:
+            p = parent_of[i]
+            ref_peak[p] = max(ref_peak.get(p, 0.0), peaks[i])
+
+    keep = seeded.copy()
+    for i, cid in enumerate(child_ids):
+        if not seeded[cid] and \
+                peaks[i] <= peak_ratio * ref_peak.get(parent_of[i], np.inf):
+            keep[cid] = True
+    return keep[deb.data]
+
+
+def _expand_seeds(work, sig, seeds, expand_nsigma, max_factor,
+                  fallback_radius, deblend):
+    """One-sign waterfall expansion with deblend release and growth cap.
+
+    Floods ``seeds`` through connected pixels of ``work`` above
+    ``expand_nsigma``·``sig`` (callers pass ``-work`` for negative seeds),
+    optionally releases deblended children that contain no seed pixels,
+    then applies the per-component ``max_factor`` growth cap with the
+    ``fallback_radius`` EDT-dilation fallback.
+    """
+    from scipy.ndimage import binary_propagation, distance_transform_edt, label
+
+    above = (work > expand_nsigma * sig) | seeds
+    expanded = binary_propagation(seeds, mask=above)
+    if deblend:
+        expanded = _release_unseeded_children(work, expanded, seeds)
+
+    elab, en = label(expanded)
+    final = np.zeros_like(expanded)
+    for cid in range(1, en + 1):
+        comp = elab == cid
+        seed_area = np.count_nonzero(comp & seeds)
+        if seed_area == 0:
+            continue
+        if np.count_nonzero(comp) > max_factor * seed_area:
+            comp = distance_transform_edt(~(comp & seeds)) <= fallback_radius
+        final |= comp
+    return final
+
+
+def grow_outlier_regions(sci, dq, min_area=100, expand_nsigma=1.5,
+                         max_factor=40, fallback_radius=12.0, smooth=2.0,
+                         skirt=2.0, negative=True, deblend=True,
+                         preexisting_dnu=None, edge_buffer=50):
+    """Waterfall (hysteresis) expansion of large OUTLIER DQ regions.
+
+    Detector-fixed artifacts (scattered-light arcs, glints) move on-sky
+    between dithers, so outlier detection flags their bright cores — but
+    their wings survive below the per-pixel threshold and drizzle into the
+    mosaic. Two-threshold ("waterfall") masking, SExtractor-isophote style:
+    outlier detection provides the high-threshold seeds (connected OUTLIER
+    components with area >= ``min_area`` px; cosmic-ray hits and galaxy-core
+    speckles stay untouched), and each seed is flooded outward
+    (morphological reconstruction) through connected pixels of the lightly
+    smoothed science residual above ``expand_nsigma``·sigma — so the mask
+    follows the artifact's actual morphology and stops at the background.
+    Requires a flat background (the bkg step's conditioning/applied chain
+    provides it), since the expansion threshold is global.
+
+    Seeds are split by the sign of the smoothed residual they sit on (the
+    base detection thresholds ``|sci - blot|``, so both signs seed): positive
+    seeds (scattered light, glints) expand through pixels *above*
+    +``expand_nsigma``·sigma, and — when ``negative`` is on — negative seeds
+    (oversubtracted wisp/background regions) expand through pixels *below*
+    −``expand_nsigma``·sigma. With ``negative=False`` all seeds expand on
+    the positive side (the pre-sign-split behavior).
+
+    Three guards:
+
+    * **Deblend release** (``deblend``) — each expanded component is
+      photutils-deblended on the smoothed residual; children that contain
+      no seed pixels *and* peak clearly above the seeded artifact
+      (neighbouring galaxies picked up by the flood) are released from the
+      mask. See ``_release_unseeded_children``.
+    * **Growth cap** — a seed on a bright star floods the star's own PSF
+      halo. Any expanded component larger than ``max_factor`` x its seed
+      area is discarded and replaced by a plain EDT dilation of the seed by
+      ``fallback_radius`` px (artifact wings measured ~5-15x their seeds on
+      rj0911; star halos above threshold run far beyond ``max_factor``).
+    * **Skirt** — a final ``skirt`` px dilation covers the sub-threshold
+      edge of the expansion.
+
+    ``preexisting_dnu`` (boolean mask) marks pixels that were DO_NOT_USE
+    *before* outlier detection ran (exposure-edge trim, bad pixels). Those
+    pixels carry no weight in the drizzle, so flagging them as OUTLIER
+    changes nothing in the mosaic — and they must not drive expansion:
+    outlier detection flags near-contiguous strips along the trimmed
+    exposure edges (blot/median mismatch at the frame boundary), and
+    without this exclusion any strip over ``min_area`` seeds a flood into
+    whatever real galaxy touches the frame edge. Seeds are therefore
+    formed only from weight-carrying OUTLIER pixels; a genuine artifact
+    overlapping the trim still seeds from its interior bulk, and its
+    flood can re-enter the trimmed zone through above-threshold wings.
+
+    ``edge_buffer`` extends the same idea geometrically: OUTLIER pixels
+    within ``edge_buffer`` px of the frame edge never seed. Saturated
+    star cores falling near the exposure edge get detection-flagged
+    (saturation is unstable between dithers) on weight-carrying pixels
+    the DNU exclusion can't catch, and would otherwise flood the star's
+    own PSF wings. Exclusion is per-pixel, so a large artifact reaching
+    the edge still seeds from the part of it deeper than the buffer.
+
+    Grown pixels are flagged OUTLIER|DO_NOT_USE in ``dq`` (in place).
+    Returns ``(n_large_seeds, n_added_px, added_mask)`` where ``added_mask``
+    is the boolean array of newly flagged pixels (None when no large seeds).
+    """
+    from astropy.stats import mad_std
+    from jwst.datamodels.dqflags import pixel as pf
+    from scipy.ndimage import distance_transform_edt, gaussian_filter, label
+
+    outlier = (dq & pf['OUTLIER']) != 0
+    seedable = outlier if preexisting_dnu is None \
+        else outlier & ~preexisting_dnu
+    if edge_buffer > 0:
+        b = int(edge_buffer)
+        interior = np.zeros_like(outlier)
+        interior[b:-b, b:-b] = True
+        seedable = seedable & interior
+    lab, nlab = label(seedable)
+    if nlab == 0:
+        return 0, 0, None
+    areas = np.bincount(lab.ravel())[1:]
+    large_ids = np.flatnonzero(areas >= min_area) + 1
+    if large_ids.size == 0:
+        return 0, 0, None
+
+    work = gaussian_filter(
+        np.nan_to_num(sci - np.nanmedian(sci), nan=0.0), smooth)
+    sig = mad_std(work, ignore_nan=True)
+
+    pos_seeds = np.zeros_like(outlier)
+    neg_seeds = np.zeros_like(outlier)
+    for cid in large_ids:
+        comp = lab == cid
+        if negative and np.median(work[comp]) < 0:
+            neg_seeds |= comp
+        else:
+            pos_seeds |= comp
+
+    final = np.zeros_like(outlier)
+    for w, seeds in ((work, pos_seeds), (-work, neg_seeds)):
+        if seeds.any():
+            final |= _expand_seeds(w, sig, seeds, expand_nsigma,
+                                   max_factor, fallback_radius, deblend)
+
+    if skirt > 0:
+        final = distance_transform_edt(~final) <= skirt
+
+    added = final & ~outlier
+    dq[added] |= (pf['OUTLIER'] | pf['DO_NOT_USE'])
+    return int(large_ids.size), int(added.sum()), added
+
+
+def _grow_kwargs(step_config):
+    """Waterfall-growth parameters from a ``[nircam.outlier]`` config dict."""
+    return dict(
+        min_area=int(step_config.get('grow_min_area', 100)),
+        expand_nsigma=float(step_config.get('grow_expand_nsigma', 1.5)),
+        max_factor=float(step_config.get('grow_max_factor', 40)),
+        fallback_radius=float(step_config.get('grow_radius', 12)),
+        negative=bool(step_config.get('grow_negative', True)),
+        deblend=bool(step_config.get('grow_deblend', True)),
+        edge_buffer=int(step_config.get('grow_edge_buffer', 50)),
+    )
+
+
 def _capture_extras(canonical):
     extras = []
     with fits.open(canonical, memmap=False) as hdul:
@@ -309,9 +521,28 @@ def outlier_step(visit, visit_files, filter_files, sregions,
                     dq_before = hdul['DQ'].data.copy()
 
             with ImageModel(scratch_out) as model:
+                cfp_val = None
+                grow_added = None
+                if step_config.get('grow_large_regions', False):
+                    # canonical on disk is still pre-outlier here: its DQ
+                    # gives the weight-carrying state before detection, so
+                    # grow seeds skip pixels already DO_NOT_USE (edge trim)
+                    from jwst.datamodels.dqflags import pixel as pf
+                    dnu_before = (
+                        (fits.getdata(canonical, 'DQ') & pf['DO_NOT_USE'])
+                        != 0
+                    )
+                    n_large, n_added, grow_added = grow_outlier_regions(
+                        model.data, model.dq, preexisting_dnu=dnu_before,
+                        **_grow_kwargs(step_config))
+                    cfp_val = (f'grow_large_regions: {n_large} regions, '
+                               f'+{n_added} px')
+                    if n_large:
+                        log(f"  outlier grow: {rootname} — {n_large} large "
+                            f"regions, +{n_added} px flagged")
                 atomic_save(
                     model, canonical,
-                    header_updates=cfp.format(CFP_OUT=None),
+                    header_updates=cfp.format(CFP_OUT=cfp_val),
                     extra_hdus=saved_extras.get(rootname),
                 )
             log(f"  outlier promoted: {rootname}")
@@ -324,11 +555,13 @@ def outlier_step(visit, visit_files, filter_files, sregions,
                     ((dq_after & OUTLIER_BIT) != 0)
                     & ~((dq_before & OUTLIER_BIT) != 0)
                 )
+                if grow_added is not None:
+                    new_outlier &= ~grow_added
                 out_pdf = os.path.join(
                     os.path.dirname(canonical), f'{rootname}_outlier.pdf',
                 )
                 plot_outlier(
-                    sci_before, new_outlier,
+                    sci_before, new_outlier, grown=grow_added,
                     save_file=out_pdf,
                     title=f'{rootname}: outlier (jwst)',
                 )
@@ -387,6 +620,9 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
     snr = tuple(float(x) for x in snr_str.split())
     scale = tuple(float(x) for x in scale_str.split())
 
+    grow = (_grow_kwargs(step_config)
+            if step_config.get('grow_large_regions', False) else None)
+
     outlier_detect_for_visit(
         all_inputs, visit_files,
         snr=snr, scale=scale,
@@ -398,6 +634,7 @@ def outlier_step_campfire(visit, visit_files, filter_files, sregions,
         in_memory=bool(step_config.get('in_memory', False)),
         extras_per_visit=saved_extras,
         plot=do_plot,
+        grow=grow,
     )
 
     _write_outlier_manifest(visit, field, filtname, all_inputs, manifest_path)

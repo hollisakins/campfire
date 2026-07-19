@@ -46,7 +46,6 @@ export interface ExposureFilters {
   detector?: string;
   reviewStatus?: string;
   stage?: string;
-  masking?: string;
   correction?: string;
 }
 
@@ -66,7 +65,6 @@ function rpcExposureParams(params?: ExposureFilters & ExposureSort) {
     p_detector: params?.detector ?? null,
     p_review_status: params?.reviewStatus ?? null,
     p_stage: params?.stage ?? null,
-    p_masking: params?.masking ?? null,
     p_correction: params?.correction ?? null,
     p_sort_column: params?.sortColumn ?? 'filename',
     p_sort_direction: params?.sortDirection ?? 'asc',
@@ -274,7 +272,6 @@ export async function updateExposureReview(
   id: number,
   updates: {
     review_status?: 'pending' | 'approved' | 'excluded';
-    masking?: 'none' | 'needed' | 'done';
     correction?: 'none' | 'needed' | 'done';
     notes?: string;
   },
@@ -314,9 +311,8 @@ export async function updateExposureReview(
  *
  * Vertices are stored as DS9 ``image`` 1-indexed coords so the same payload
  * round-trips through ``campfire deploy pull-masks`` and ``apply_masks_step``
- * without any further transform. ``masking`` is flipped to ``'done'`` iff
- * at least one polygon is present, mirroring the local-file-exists semantic
- * that the deploy code uses.
+ * without any further transform. "Masked" is derived state: a non-empty
+ * ``mask_regions`` is the sole signal; clearing all polygons nulls it.
  */
 export async function saveExposureMaskRegions(
   id: number,
@@ -330,7 +326,6 @@ export async function saveExposureMaskRegions(
       .from('nircam_exposures')
       .update({
         mask_regions: hasPolygons ? regions : null,
-        masking: hasPolygons ? 'done' : 'none',
         updated_at: new Date().toISOString(),
       })
       .eq('id', id)
@@ -377,7 +372,6 @@ export interface ReductionProgress {
   pending_review: number;
   approved: number;
   excluded: number;
-  needs_masking: number;
   needs_correction: number;
 }
 

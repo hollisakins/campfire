@@ -2,6 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
+import { SignInLink } from '@/components/auth/SignInLink';
 import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { MarkdownRenderer } from '@/components/docs';
@@ -42,13 +43,12 @@ export default function ProgramDetailContent({ programSlug }: { programSlug: str
         <p className="text-text-secondary mb-6 max-w-md">
           Access to program information requires authentication.
         </p>
-        <Link
-          href="/login"
+        <SignInLink
           className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
         >
           <LogIn className="w-5 h-5" />
           Sign In
-        </Link>
+        </SignInLink>
       </div>
     );
   }
