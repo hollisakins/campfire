@@ -54,9 +54,26 @@ jobs:
             the background. Run every sub-agent synchronously (run_in_background:
             false) and complete the entire review — posting all inline comments —
             before you end your turn.
-          # Strip the interactive-only tools the model reaches for in headless runs
-          # (anthropics/claude-code-action#1462) so it cannot defer work off-turn.
-          claude_args: '--disallowedTools "ScheduleWakeup,SendMessage,Monitor"'
+          # Tool configuration for the headless review run:
+          #
+          # --allowedTools enables inline PR review comments. Because this step
+          # passes an explicit `prompt`, the action runs in "agent mode", and in
+          # agent mode it only installs its `github_inline_comment` MCP server when
+          # an allowed tool matching `mcp__github_inline_comment__*` is present in
+          # claude_args (see install-mcp-server.ts + modes/agent/index.ts in
+          # anthropics/claude-code-action — the decision reads claude_args, NOT
+          # .claude/settings.json). Without this entry the server is never
+          # connected, the /code-review plugin can't call
+          # mcp__github_inline_comment__create_inline_comment, and it falls back to
+          # a single regular PR comment ("inline review comments aren't available
+          # from this session..."). Listing the tool here is what wires it up.
+          #
+          # --disallowedTools strips the interactive-only tools the model reaches
+          # for in headless runs (anthropics/claude-code-action#1462) so it cannot
+          # defer work off-turn.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment"
+            --disallowedTools "ScheduleWakeup,SendMessage,Monitor"
           # Post a single updating summary comment in addition to inline comments,
           # so the PR always gets visible feedback even when the review has no
           # line-specific inline nits to buffer.
