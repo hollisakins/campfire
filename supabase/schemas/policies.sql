@@ -1119,17 +1119,27 @@ CREATE POLICY "admin_delete_invites"
 
 ALTER TABLE access_codes ENABLE ROW LEVEL SECURITY;
 
--- Admins can manage all access codes (all operations).
+-- Admins can manage all access codes (all operations). Codes are secrets:
+-- there is deliberately NO broader SELECT policy — redemption goes through the
+-- SECURITY DEFINER redeem_access_code() RPC, so non-admins can never enumerate
+-- codes (a public "read active codes" policy previously allowed exactly that).
 DROP POLICY IF EXISTS "admin_manage_codes" ON access_codes;
 CREATE POLICY "admin_manage_codes"
   ON access_codes
   USING ((SELECT public.is_admin()));
 
--- Anyone can read active codes (for code redemption flow).
-DROP POLICY IF EXISTS "Anyone can read active codes" ON access_codes;
-CREATE POLICY "Anyone can read active codes"
+-- Users can read codes they have already redeemed (the profile page's
+-- redemption history embeds access_codes via code_redemptions). Redeeming
+-- required knowing the code, so this reveals nothing new; unredeemed codes
+-- stay invisible to non-admins.
+DROP POLICY IF EXISTS "Users can read own redeemed codes" ON access_codes;
+CREATE POLICY "Users can read own redeemed codes"
   ON access_codes FOR SELECT
-  USING (is_active = true);
+  USING (EXISTS (
+    SELECT 1 FROM code_redemptions
+    WHERE code_redemptions.code_id = access_codes.id
+      AND code_redemptions.user_id = (SELECT auth.uid())
+  ));
 
 
 -- =============================================================================

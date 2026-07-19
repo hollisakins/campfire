@@ -5,8 +5,8 @@ Data directory resolution order:
   2. ``~/campfire``
 
 Layout within the data directory:
-  - ``products/<obs>/``  — FITS files (mirrors pipeline structure)
-  - ``meta/``            — campfire.db, objects.csv, spectra.csv
+  - ``products/nirspec/<obs>/``  — FITS files (mirrors pipeline structure)
+  - ``meta/``  — campfire.db, objects.csv, spectra.csv, photometry.csv
 
 Credentials are stored separately in ``~/.campfire/credentials``.
 """
