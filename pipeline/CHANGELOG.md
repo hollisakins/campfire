@@ -47,17 +47,21 @@ Release procedure: edit the `## Unreleased` section below, then run
   f444w) that JHAT solved at 100%. Pooling is preserved and strengthened:
   all of a pool's detectors accumulate into one shared offset histogram. The
   pool is gated to `NOT_ALIGNED` unless enough one-to-one matches span enough
-  sky to condition a rotation, then each over-tolerance detector gets a fine
-  fit down a `general→rshift→shift→coarse` ladder (default ceiling `rshift`,
-  = jhat's per-detector geometry), fit on its own mutual-NN pairs as a
-  pre-matched list (`match=None` — jhat's `already_matched` design; no
-  `XYXYMatch` remains anywhere in align). Detection magnitudes are calibrated
-  AB whenever the frame carries `BUNIT=MJy/sr` + `PIXAR_SR` (Kron photometry
-  + jhat's zeropoint convention; see the SEP-detection entry below), making
-  jhat's `objmag_lim` and pair-level `delta_mag_lim` cuts available with
-  their COSMOS values (`[19, 28]` / `[-3, 4]`; both default-off,
-  `objmag_lim` is skipped loudly on zeropoint-less frames instead of cutting
-  on instrumental mags). Retires the pooled cross-filter joint
+  sky to condition a rotation, then EVERY detector with enough verified
+  matches gets a fine fit down a `general→rshift→shift→coarse` ladder
+  (default ceiling `rshift`, = jhat's per-detector geometry; jhat fits every
+  detector, always, so `tolerance` is a QA flag, not a gate — a sub-tolerance
+  systematic SIAF offset no longer survives), fit on its own mutual-NN pairs
+  as a pre-matched list (`match=None` — jhat's `already_matched` design; no
+  `XYXYMatch` remains anywhere in align; `fine_min_shift` floor = jhat's
+  `minobj` = 3, the guard against noise-chasing per-detector fits).
+  Detection magnitudes are calibrated AB whenever the frame carries
+  `BUNIT=MJy/sr` + `PIXAR_SR` (Kron photometry + jhat's zeropoint
+  convention; see the SEP-detection entry below), making jhat's `objmag_lim`
+  and pair-level `delta_mag_lim` cuts available with their COSMOS values
+  (`[19, 28]` / `[-3, 4]`; both default-off, `objmag_lim` is skipped loudly
+  on zeropoint-less frames instead of cutting on instrumental mags). Retires
+  the pooled cross-filter joint
   solve, the bootstrap triangle matcher, and the **`tristars` dependency**
   (`matcher.py` removed). `CFP_ALGN` now records the refcat content hash
   (`rc=`) so a changed refcat re-solves instead of silently keeping a stale

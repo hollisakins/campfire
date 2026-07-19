@@ -89,7 +89,9 @@ def test_recovers_shared_translation():
     sol = solve_exposure_group(detectors, refcat, key='exp')
     assert sol.status == 'SOLVED'
     assert len(sol.detectors) == 3
-    assert all(ds.dof == 'coarse' for ds in sol.detectors)
+    # the fine fit now always runs; a healthy detector either keeps the coarse
+    # attitude (no strict improvement) or accepts an rshift refinement
+    assert all(ds.dof in ('coarse', 'rshift') for ds in sol.detectors)
     assert all(ds.within_tolerance for ds in sol.detectors)
     assert all(ds.residual_arcsec < 0.02 for ds in sol.detectors)
     assert abs(np.hypot(*sol.shift) - 2.0) < 0.1
@@ -143,7 +145,7 @@ def test_fine_frees_outlier_detector():
     assert sol.status == 'SOLVED'
     good = sol.detectors[:4]
     outlier = sol.detectors[4]
-    assert all(ds.dof == 'coarse' and ds.within_tolerance for ds in good)
+    assert all(ds.within_tolerance for ds in good)
     assert outlier.dof in ('rshift', 'shift', 'general')
     assert outlier.within_tolerance
     assert outlier.residual_arcsec < 0.15
@@ -359,3 +361,20 @@ def test_delta_mag_lim_plumbs_through_solve():
     sol_bad = solve_exposure_group(detectors, refcat, key='exp',
                                    delta_mag_lim=(5.0, 6.0))
     assert sol_bad.status == 'NOT_ALIGNED'
+
+
+# --- fine fit is no longer gated on tolerance --------------------------------
+
+def test_fine_removes_subtolerance_systematic_offset():
+    # The motivating case for removing the tolerance gate: one detector carries
+    # a small systematic offset (0.03" ~ one SW pixel) that stays UNDER the
+    # 0.05" tolerance. Previously it kept the coarse attitude (gate never
+    # fired) and the offset shipped; now the always-on fine fit removes it.
+    detectors, refcat = _build_group(
+        n_det=3, offset=(2.0, 0.0), per_det_extra={2: (0.0, 0.03)})
+    sol = solve_exposure_group(detectors, refcat, key='exp')
+    assert sol.status == 'SOLVED'
+    biased = sol.detectors[2]
+    assert biased.dof in ('rshift', 'shift', 'general')
+    assert biased.residual_arcsec < 0.01
+    assert biased.within_tolerance

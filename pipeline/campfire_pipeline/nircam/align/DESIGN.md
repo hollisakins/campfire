@@ -96,7 +96,7 @@ per FILTER (one channel), per EXPOSURE (build_exposure_groups)
 │  3. GROUP GATE — recompute one-to-one (mutual-NN) matches DIRECTLY;    │
 │     accept the pool only if ≥ min_matched matches AND they span        │
 │     ≥ min_coverage_arcsec of sky; else → NOT_ALIGNED (WCS preserved).  │
-│  4. FINE — each detector over `tolerance` gets an individual fit down  │
+│  4. FINE — every detector with ≥ fine_min matches gets a fit down      │
 │     the ladder general → rshift → shift → keep-coarse, geometry chosen │
 │     by its unique-match count + coverage, ACCEPTED only if it reduces  │
 │     the residual.                                                      │
@@ -206,11 +206,19 @@ rotation you don't trust. This is the substantive fix over the old count-only ga
 
 ### 3.4 Fine per-detector ladder (`solve._choose_fitgeom`, `solve._fine_fit`)
 
-Only detectors whose one-to-one residual exceeds `tolerance` are refit. Each picks
-a geometry down the ladder `general → rshift → shift → keep-coarse`, starting from
-the `fine_fitgeom` **ceiling** and dropping when it has too few unique matches for
-the current geometry, skipping rotating geometries (`general`, `rshift`) when its
-own matched sources don't span `min_coverage_arcsec` (an unconditioned rotation).
+**Every** detector with enough verified matches is refit — jhat fits every
+detector, always, and a sub-tolerance systematic SIAF placement error (tens of
+mas — over an SW pixel) must not survive just because it is under a threshold;
+`tolerance` is a QA/reporting flag (`within_tolerance`), not a gate. Each
+detector picks a geometry down the ladder `general → rshift → shift →
+keep-coarse`, starting from the `fine_fitgeom` **ceiling** and dropping when it
+has too few unique matches for the current geometry, skipping rotating
+geometries (`general`, `rshift`) when its own matched sources don't span
+`min_coverage_arcsec` (an unconditioned rotation). These ladder floors are the
+real guard against noise-chasing: the residual-improvement acceptance below is
+nearly tautological (the fit minimizes the very pairs it is judged on), so
+`fine_min_shift = 3` — jhat's own `tweakreg.minobj` — is the line below which
+the pooled attitude is trusted as the better estimate.
 The default ceiling is `rshift` — **exactly what jhat fits per detector**. The
 refit consumes the detector's own mutual-NN pairs *as a pre-matched list*: the
 row-aligned pair catalogs go to `align_wcs` with `match=None` — precisely
@@ -394,8 +402,8 @@ All knobs live in `config_default.toml`; per-field overrides go in
 | `fine_fitgeom` | `"rshift"` | per-detector fine ceiling: `general` \| `rshift` \| `shift` |
 | `fine_min_general` | `10` | ≥ this many 1-to-1 matches ⇒ allow `general` |
 | `fine_min_rshift` | `4` | ≥ this ⇒ allow `rshift` |
-| `fine_min_shift` | `2` | ≥ this ⇒ allow `shift`; below ⇒ keep coarse |
-| `tolerance` | `0.05` | arcsec — a fine fit must beat this to read "within" |
+| `fine_min_shift` | `3` | ≥ this ⇒ allow `shift`; below ⇒ keep coarse (= jhat's `minobj`) |
+| `tolerance` | `0.05` | arcsec — QA/reporting only (`within_tolerance` flag); gates nothing |
 | `match_radius` | `0.5` | arcsec — 1-to-1 NN radius for residuals + fine match |
 | `min_matched` | `6` | per-pool reject-to-NOT_ALIGNED floor (1-to-1 count) |
 | `min_coverage_arcsec` | `5.0` | matched sources must span ≥ this (conditions rotation) |

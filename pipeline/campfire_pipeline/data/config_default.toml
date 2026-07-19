@@ -469,15 +469,22 @@
                                 # are heterogeneous across build backends, so
                                 # this stays off by default. Pairs missing
                                 # either mag are never cut.
-    # --- Fine: gated per-detector fit on top of the coarse ---------------------
-    # fine_fitgeom is the CEILING dof; each detector falls down the ladder
-    # (general -> rshift -> shift -> keep-coarse) by its unique-match count. jhat
-    # only ever fits rshift per detector, so rshift is the default ceiling.
+    # --- Fine: per-detector fit on top of the coarse ---------------------------
+    # EVERY detector with enough verified (mutual-NN) matches gets an
+    # individual fit on its pre-matched pairs — jhat fits every detector,
+    # always, and a sub-tolerance systematic SIAF offset must not survive just
+    # because it is small. fine_fitgeom is the CEILING dof; each detector
+    # falls down the ladder (general -> rshift -> shift -> keep-coarse) by its
+    # match count; the floors are the guard against noise-chasing fits
+    # (fine_min_shift = jhat's own minobj = 3). jhat only ever fits rshift per
+    # detector, so rshift is the default ceiling.
     fine_fitgeom      = "rshift"  # "general" | "rshift" | "shift"
     fine_min_general  = 10        # >= this many 1-to-1 matches -> allow general
     fine_min_rshift   = 4         # >= this -> allow rshift
-    fine_min_shift    = 2         # >= this -> allow shift; below -> keep coarse
-    tolerance         = 0.05      # arcsec; a fine fit must beat this to read "within"
+    fine_min_shift    = 3         # >= this -> allow shift; below -> keep coarse
+                                  # (= jhat's tweakreg minobj)
+    tolerance         = 0.05      # arcsec; QA/reporting only — flags a detector
+                                  # as within tolerance; gates nothing
     match_radius      = 0.5       # arcsec; 1-to-1 NN radius for residuals + fine match
     min_matched       = 6         # per-pool reject-to-NOT_ALIGNED floor (1-to-1)
     min_coverage_arcsec = 5.0     # matched sources must span >= this (conditions rot)
