@@ -32,6 +32,7 @@ from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import atomic_save, log
 from campfire_pipeline.nircam.align.detect import (
     DETECT_DQ_BITS,
+    ab_zeropoint_from_sci_header,
     detect_star_centroids,
 )
 from campfire_pipeline.nircam.align.solve import (
@@ -58,13 +59,13 @@ NOT_ALIGNED_SENTINEL = cfp.NOT_ALIGNED
 _SOLVE_KEYS = ('coarse_searchrad', 'refine_niter',
                'd2d_max', 'binsize_px', 'gaussian_sigma_px',
                'rough_cut_px_min', 'rough_cut_px_max', 'nfwhm', 'hist_nsigma',
-               'histocut_order', 'slope_max', 'slope_nsteps',
+               'histocut_order', 'slope_max', 'slope_nsteps', 'delta_mag_lim',
                'fine_fitgeom', 'fine_min_general',
                'fine_min_rshift', 'fine_min_shift', 'tolerance', 'match_radius',
                'min_matched', 'min_coverage_arcsec', 'ref_border_arcmin',
                'nclip', 'sigma')
 _DETECT_KEYS = ('fwhm', 'nsigma', 'edge', 'snr_min', 'objmag_lim',
-                'sharplo', 'sharphi', 'roundlo', 'roundhi')
+                'aper_radius_px', 'sharplo', 'sharphi', 'roundlo', 'roundhi')
 
 
 # --- gwcs <-> ASDF-in-FITS backup (technique shared with steps/wcs_shift.py) --
@@ -171,6 +172,11 @@ def _detect_mask(model):
 def _load_detector(path, detector, detect_cfg, ImageModel):
     """Open a canonical, pick the pre-align gwcs (from ALGN_BAK if this file was
     aligned before), detect sources, and return a :class:`DetectorInput`."""
+    # AB zeropoint for calibrated detection magnitudes (None -> uncalibrated
+    # fallback, objmag_lim skipped loudly) — read cheaply before the datamodel.
+    with fits.open(path, memmap=False) as hdul:
+        zeropoint = ab_zeropoint_from_sci_header(hdul['SCI'].header)
+
     model = ImageModel(path, memmap=False)
     try:
         wi = model.meta.wcsinfo.instance
@@ -178,7 +184,8 @@ def _load_detector(path, detector, detect_cfg, ImageModel):
                    'roll_ref': wi['roll_ref']}
         orig_wcs = model.meta.wcs
         cat = detect_star_centroids(np.asarray(model.data, dtype=float),
-                                    mask=_detect_mask(model), **detect_cfg)
+                                    mask=_detect_mask(model),
+                                    zeropoint=zeropoint, **detect_cfg)
     finally:
         model.close()
 

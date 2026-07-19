@@ -23,10 +23,12 @@ exposure reader/writer + ``CFP_ALGN`` stamp live in the orchestration layer).
    nothing here is enumerated and nothing can overflow.
 3. *Group gate* — accept the pool only if enough sources match one-to-one and
    span enough sky to condition a rotation; else reject to NOT_ALIGNED.
-4. *Fine* — each detector over tolerance gets an individual fit against a
-   distractor-free local refcat, its geometry chosen down a ladder
-   (``general`` → ``rshift`` → ``shift`` → keep-coarse) by its unique-match count
-   and coverage, accepted only if it measurably reduces the residual.
+4. *Fine* — each detector over tolerance gets an individual fit on its own
+   already-matched (mutual-NN) pairs — handed to ``align_wcs`` row-aligned
+   with ``match=None``, exactly JHAT's ``already_matched`` design — its
+   geometry chosen down a ladder (``general`` → ``rshift`` → ``shift`` →
+   keep-coarse) by its match count and coverage, accepted only if it
+   measurably reduces the residual.
 
 The pooled coarse is the mechanical expression of the pooling constraint: every
 detector of one pool shares one ``group_id`` so a single rigid rshift is fit from
@@ -44,9 +46,9 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 from astropy.coordinates import SkyCoord
+from astropy.table import Table
 from tweakwcs.correctors import JWSTWCSCorrector
 from tweakwcs.imalign import align_wcs
-from tweakwcs.matchutils import XYXYMatch
 
 from campfire_pipeline.common.io import log
 from campfire_pipeline.nircam.align.footprint import clip_refcat_to_exposure
@@ -61,10 +63,6 @@ _REFINE_CONVERGE_ARCSEC = 0.01
 _FINE_LADDER = ('general', 'rshift', 'shift')
 # Geometries that fit a rotation and so need spatial coverage to be conditioned.
 _ROTATING = ('general', 'rshift')
-
-# Min in-catalog source separation (arcsec) for the fine per-detector match.
-# Small (real sources closer than this are blends) but must be > 0 (tweakwcs).
-_FINE_SEPARATION = 0.1
 
 
 @dataclass
@@ -138,16 +136,16 @@ def _coverage_arcsec(ra, dec):
 
 def _match(corrector, catalog, ref_sky, match_radius):
     """One-to-one residual for one detector: ``(residual_arcsec, n_matched,
-    matched_ref_idx)``.
+    src_idx, ref_idx)``.
 
     Transform the detector's own sources through the (corrected) gwcs and match
     them to the reference positions by **mutual nearest neighbour** — a source
     and a reference pair up only if each is the other's closest — keeping pairs
-    within *match_radius* arcsec. ``matched_ref_idx`` is the set of reference
-    rows those sources landed on — reused both to build a distractor-free local
-    reference catalog for the fine fit and to measure coverage.
+    within *match_radius* arcsec. ``src_idx``/``ref_idx`` are the row-aligned
+    pairing (one-to-one by the mutuality); the fine fit consumes it directly as
+    a pre-matched list, and the group gate measures coverage from ``ref_idx``.
     """
-    empty = (float('nan'), 0, np.array([], dtype=int))
+    empty = (float('nan'), 0, np.array([], dtype=int), np.array([], dtype=int))
     x = np.asarray(catalog['x'], dtype=float)
     y = np.asarray(catalog['y'], dtype=float)
     if x.size == 0 or len(ref_sky) == 0:
@@ -164,7 +162,7 @@ def _match(corrector, catalog, ref_sky, match_radius):
     if not np.any(keep):
         return empty
     return (float(np.median(sep[keep])), int(np.count_nonzero(keep)),
-            np.unique(np.asarray(s2r)[keep]))
+            src_ix[keep], np.asarray(s2r)[keep])
 
 
 def _not_aligned(key, detectors, wcs_getter):
@@ -258,21 +256,25 @@ def _choose_fitgeom(n, coverage, ceiling, mins, min_coverage):
     return None
 
 
-def _fine_fit(corr, detector, local_refcat, geom, *, key, match_radius, nclip,
-              sigma):
-    """Individually refit one detector (geometry *geom*) against a
-    distractor-free local refcat; return ``(trial_corrector, fit_info)``.
+def _fine_fit(corr, detector, catalog, refcat, src_idx, ref_idx, geom, *,
+              key, nclip, sigma):
+    """Individually refit one detector (geometry *geom*) on its already-matched
+    pairs; return ``(trial_corrector, fit_info)``.
 
-    Deep-copies the pooled corrector so a rejected fit never touches the shared
-    solution. The detector is already coarse-aligned, so a nearest-neighbour
-    match (``use2dhist=False``) around the small residual re-pairs the sources.
+    Exactly JHAT's design (``already_matched=True``): the mutual-NN pairs from
+    the group gate are handed to ``align_wcs`` as row-aligned catalogs with
+    ``match=None`` — no matcher runs, the sigma-clipped fit alone decides the
+    transform. Deep-copies the pooled corrector so a rejected fit never touches
+    the shared solution.
     """
     trial = copy.deepcopy(corr)
     trial.meta['group_id'] = f'{key}:{detector}'   # distinct -> solo fit
-    match = XYXYMatch(use2dhist=False, searchrad=match_radius,
-                      tolerance=match_radius, separation=_FINE_SEPARATION)
-    align_wcs([trial], refcat=local_refcat, enforce_user_order=True,
-              expand_refcat=False, minobj=None, match=match,
+    trial.meta['catalog'] = Table({
+        'x': np.asarray(catalog['x'], dtype=float)[src_idx],
+        'y': np.asarray(catalog['y'], dtype=float)[src_idx],
+    })
+    align_wcs([trial], refcat=refcat[ref_idx], enforce_user_order=True,
+              expand_refcat=False, minobj=None, match=None,
               fitgeom=geom, nclip=nclip, sigma=(sigma, 'rmse'))
     return trial, trial.meta.get('fit_info', {})
 
@@ -283,6 +285,7 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                          rough_cut_px_min=2.5, rough_cut_px_max=2.5,
                          nfwhm=2.5, hist_nsigma=3.0, histocut_order='dxdy',
                          slope_max=10.0 / 2048.0, slope_nsteps=200,
+                         delta_mag_lim=None,
                          fine_fitgeom='rshift', fine_min_general=10,
                          fine_min_rshift=4, fine_min_shift=2, tolerance=0.05,
                          match_radius=0.5, min_matched=6, min_coverage_arcsec=5.0,
@@ -295,9 +298,12 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     offset-histogram consensus, iterated), gated on match count and sky
     coverage, then each over-tolerance detector gets a fine fit whose geometry
     is chosen down the ``fine_fitgeom`` ladder by its match count / coverage and
-    accepted only if it reduces the residual. The ``d2d_max`` … ``slope_nsteps``
-    knobs pass straight to :class:`OffsetHistogramMatch` (the ``*_px`` ones in
-    image pixels, mirroring the validated JHAT configuration).
+    accepted only if it reduces the residual. The ``d2d_max`` …
+    ``slope_nsteps`` / ``delta_mag_lim`` knobs pass straight to
+    :class:`OffsetHistogramMatch` (the ``*_px`` ones in image pixels,
+    mirroring the validated JHAT configuration); ``delta_mag_lim`` reads image
+    mags through the pool-unique ``id`` column assigned below, and judges only
+    pairs where both mags are finite and calibrated.
 
     ``pool_modules`` is accepted for config-passthrough symmetry but unused here
     (the orchestration layer decides pooling before calling this).
@@ -339,6 +345,21 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
 
     wcs_by_det = {d.detector: d.wcs for d in detectors}
 
+    # Pool-unique source ids + an id->mag lookup: tweakwcs' pooled group
+    # catalog keeps 'id' but drops every brightness column, so the matcher's
+    # delta_mag_lim pair cut reads image mags through this map. Only catalogs
+    # carrying CALIBRATED mags contribute (an uncalibrated mag vs a refcat AB
+    # mag would cut on garbage); their sources just pass the cut unjudged.
+    image_mags = {}
+    for i, d in enumerate(detectors):
+        ids = i * 10_000_000 + np.arange(len(d.catalog))
+        d.catalog['id'] = ids
+        if d.catalog.meta.get('mag_calibrated') and 'mag' in d.catalog.colnames:
+            mags = np.asarray(d.catalog['mag'], dtype=float)
+            image_mags.update(
+                (int(s), float(m)) for s, m in zip(ids, mags)
+                if np.isfinite(m))
+
     # 2. Coarse: one pooled rshift, iterated to convergence. Pass 0's matcher
     #    carries the gross-translation stage (acquisition-failure recovery);
     #    the iterate matcher drops it and re-pairs by pure 1-NN + consensus
@@ -348,7 +369,8 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
         gaussian_sigma_px=gaussian_sigma_px,
         rough_cut_px_min=rough_cut_px_min, rough_cut_px_max=rough_cut_px_max,
         nfwhm=nfwhm, nsigma=hist_nsigma, histocut_order=histocut_order,
-        slope_max=slope_max, slope_nsteps=slope_nsteps)
+        slope_max=slope_max, slope_nsteps=slope_nsteps,
+        delta_mag_lim=delta_mag_lim, image_mags=image_mags)
     correctors, last_info, first_info, wcs_by_det = _coarse(
         detectors, wcs_by_det, refcat, key,
         match0=OffsetHistogramMatch(searchrad=coarse_searchrad, **hist_kwargs),
@@ -374,9 +396,9 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     #    enough sources match AND they span enough sky to condition a rotation.
     prelim = [_match(corr, d.catalog, ref_sky, match_radius)
               for corr, d in zip(correctors, detectors)]
-    group_nmatched = sum(n for _, n, _ in prelim)
+    group_nmatched = sum(n for _, n, _, _ in prelim)
     matched_ref = np.unique(np.concatenate(
-        [idx for _, _, idx in prelim] + [np.array([], dtype=int)]))
+        [idx for _, _, _, idx in prelim] + [np.array([], dtype=int)]))
     coverage = _coverage_arcsec(ref_sky.ra.deg[matched_ref],
                                 ref_sky.dec.deg[matched_ref])
     if group_nmatched < min_matched or coverage < min_coverage_arcsec:
@@ -392,7 +414,8 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
 
     # 4. Fine: per-detector gated fit for any detector over tolerance.
     solutions = []
-    for corr, d, (resid, nmatch, ref_idx) in zip(correctors, detectors, prelim):
+    for corr, d, (resid, nmatch, src_idx, ref_idx) in zip(correctors, detectors,
+                                                          prelim):
         within = bool(np.isfinite(resid) and resid <= tolerance)
         dof, out_wcs = 'coarse', corr.wcs
 
@@ -403,9 +426,8 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                                    min_coverage_arcsec)
             if geom is not None:
                 try:
-                    trial, tfi = _fine_fit(corr, d.detector, refcat[ref_idx],
-                                           geom, key=key,
-                                           match_radius=match_radius,
+                    trial, tfi = _fine_fit(corr, d.detector, d.catalog, refcat,
+                                           src_idx, ref_idx, geom, key=key,
                                            nclip=nclip, sigma=sigma)
                 except Exception as e:  # noqa: BLE001 — keep the coarse solution
                     log(f"align solve[{key}]: fine {geom} fit for {d.detector} "
@@ -413,8 +435,8 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                     tfi = {}
                     trial = None
                 if trial is not None and _succeeded(tfi):
-                    new_resid, new_n, _ = _match(trial, d.catalog, ref_sky,
-                                                 match_radius)
+                    new_resid, new_n, _, _ = _match(trial, d.catalog, ref_sky,
+                                                    match_radius)
                     if np.isfinite(new_resid) and new_resid < resid:
                         out_wcs, dof = trial.wcs, geom
                         resid, nmatch = new_resid, new_n

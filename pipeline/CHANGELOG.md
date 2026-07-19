@@ -49,7 +49,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   pool is gated to `NOT_ALIGNED` unless enough one-to-one matches span enough
   sky to condition a rotation, then each over-tolerance detector gets a fine
   fit down a `general→rshift→shift→coarse` ladder (default ceiling `rshift`,
-  = jhat's per-detector geometry). Retires the pooled cross-filter joint
+  = jhat's per-detector geometry), fit on its own mutual-NN pairs as a
+  pre-matched list (`match=None` — jhat's `already_matched` design; no
+  `XYXYMatch` remains anywhere in align). Detection magnitudes are calibrated
+  AB whenever the frame carries `BUNIT=MJy/sr` + `PIXAR_SR` (annulus-free
+  2×FWHM aperture photometry — jhat's zeropoint convention, minus the sky
+  annulus that breaks on sky-subtracted frames), making jhat's `objmag_lim`
+  and pair-level `delta_mag_lim` cuts available with their COSMOS values
+  (`[19, 28]` / `[-3, 4]`; both default-off, `objmag_lim` is skipped loudly
+  on zeropoint-less frames instead of cutting on instrumental mags). Retires the pooled cross-filter joint
   solve, the bootstrap triangle matcher, and the **`tristars` dependency**
   (`matcher.py` removed). `CFP_ALGN` now records the refcat content hash
   (`rc=`) so a changed refcat re-solves instead of silently keeping a stale

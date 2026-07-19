@@ -191,13 +191,26 @@ class OffsetHistogramMatch(MatchCatalogs):
         ``10/2048`` px/px ≈ ±0.28°.
     slope_nsteps : int
         Number of slope-scan steps across ``[-slope_max, +slope_max]``.
+    delta_mag_lim : (float, float) or None
+        Keep a pair only if ``image_mag − refcat_mag`` lies in this window
+        (JHAT's ``delta_mag_lim``; its validated COSMOS value is ``[-3, 4]``).
+        Applied only to pairs where *both* mags are finite — a source or
+        reference without a magnitude is never punished for it. Requires
+        *image_mags* (``tweakwcs`` drops brightness columns when pooling, so
+        image mags ride the surviving ``id`` column via this lookup).
+    image_mags : dict or None
+        ``{id: calibrated AB mag}`` for the pooled image sources, keyed by the
+        ``id`` values the solve assigned to each detector catalog.
+    refcat_mag_col : str
+        Reference-catalog magnitude column (``'mag'`` in campfire-refcat-v1).
     """
 
     def __init__(self, *, searchrad=None, d2d_max=1.5, binsize_px=0.02,
                  gaussian_sigma_px=0.2, rough_cut_px_min=2.5,
                  rough_cut_px_max=2.5, nfwhm=2.5, nsigma=3.0,
                  histocut_order='dxdy', slope_max=10.0 / 2048.0,
-                 slope_nsteps=200):
+                 slope_nsteps=200, delta_mag_lim=None, image_mags=None,
+                 refcat_mag_col='mag'):
         if histocut_order not in ('dxdy', 'dydx'):
             raise ValueError(f"histocut_order must be 'dxdy' or 'dydx', "
                              f"got {histocut_order!r}")
@@ -212,6 +225,9 @@ class OffsetHistogramMatch(MatchCatalogs):
         self.histocut_order = histocut_order
         self.slope_max = float(slope_max)
         self.slope_nsteps = int(slope_nsteps)
+        self.delta_mag_lim = delta_mag_lim
+        self.image_mags = image_mags
+        self.refcat_mag_col = refcat_mag_col
 
     # -- gross translation (2-D offset histogram) ---------------------------
 
@@ -293,6 +309,31 @@ class OffsetHistogramMatch(MatchCatalogs):
             return rough_mask
         return _sigma_clip_median(d_rot, rough_mask, self.nsigma)
 
+    # -- pair-level brightness agreement (JHAT delta_mag_lim) ----------------
+
+    def _delta_mag_ok(self, refcat, imcat, nn):
+        """Boolean mask over image sources: pair passes the ``delta_mag_lim``
+        window, or lacks the information to be judged (missing mags / no
+        lookup / no ``id`` column — never punish a source for missing data).
+        """
+        ok = np.ones(len(imcat), dtype=bool)
+        if (self.delta_mag_lim is None or not self.image_mags
+                or self.refcat_mag_col not in refcat.colnames
+                or 'id' not in imcat.colnames):
+            return ok
+        im_mag = np.array([self.image_mags.get(int(i), np.nan)
+                           for i in np.asarray(imcat['id'])], dtype=float)
+        ref_col = refcat[self.refcat_mag_col]
+        if hasattr(ref_col, 'filled'):                 # MaskedColumn -> NaN
+            ref_mag = np.asarray(ref_col.filled(np.nan), dtype=float)
+        else:
+            ref_mag = np.asarray(ref_col, dtype=float)
+        dmag = im_mag - ref_mag[nn]
+        lo, hi = (float(self.delta_mag_lim[0]), float(self.delta_mag_lim[1]))
+        judged = np.isfinite(dmag)
+        ok[judged] = (dmag[judged] >= lo) & (dmag[judged] <= hi)
+        return ok
+
     # -- MatchCatalogs entry point ------------------------------------------
 
     def __call__(self, refcat, imcat, tp_pscale=1.0, tp_units=None, **kwargs):
@@ -336,6 +377,7 @@ class OffsetHistogramMatch(MatchCatalogs):
         mask = np.isfinite(d2d)
         if self.d2d_max is not None:
             mask &= d2d <= float(self.d2d_max)
+        mask &= self._delta_mag_ok(refcat, imcat, nn)
         if np.count_nonzero(mask) < _MIN_PAIRS:
             return _EMPTY
 

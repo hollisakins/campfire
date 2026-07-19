@@ -208,11 +208,14 @@ the `fine_fitgeom` **ceiling** and dropping when it has too few unique matches f
 the current geometry, skipping rotating geometries (`general`, `rshift`) when its
 own matched sources don't span `min_coverage_arcsec` (an unconditioned rotation).
 The default ceiling is `rshift` — **exactly what jhat fits per detector**. The
-detector is refit against a *distractor-free local refcat* (only the references it
-matched), on a deep-copied corrector so a rejected trial never touches the shared
-solution, and the new WCS is **accepted only if it measurably reduces** the
-one-to-one residual. The chosen geometry is recorded per detector as the `dof`
-(`coarse` | `shift` | `rshift` | `general` | `identity`).
+refit consumes the detector's own mutual-NN pairs *as a pre-matched list*: the
+row-aligned pair catalogs go to `align_wcs` with `match=None` — precisely
+JHAT's `already_matched=True` design (no matcher runs in the fit; the
+sigma-clipped fit alone decides) — on a deep-copied corrector so a rejected
+trial never touches the shared solution, and the new WCS is **accepted only if
+it measurably reduces** the one-to-one residual. The chosen geometry is
+recorded per detector as the `dof` (`coarse` | `shift` | `rshift` | `general` |
+`identity`). No `tweakwcs.XYXYMatch` remains anywhere in `align`.
 
 ---
 
@@ -220,11 +223,19 @@ one-to-one residual. The chosen geometry is recorded per detector as the `dof`
 
 `detect_star_centroids` runs `photutils.DAOStarFinder` on the SCI image and
 returns `(x, y)` centroids (0-indexed detector pixels, the gwcs / `tweakwcs`
-convention) plus a `mag = -2.5·log10(flux)` **rank proxy** — used only to order
-sources, never as a match constraint. Deliberately centroid-only, no aperture
-photometry: jhat's aperture annulus on CAMPFIRE's sky-subtracted frames averages
-negative and trips a `-99.99` sentinel that floods the matcher; a PSF-fit finder
-has no sky annulus and structurally cannot hit that bug.
+convention) plus **calibrated AB magnitudes** whenever the frame carries an AB
+zeropoint (`BUNIT = MJy/sr` + `PIXAR_SR`, i.e. every jwst cal product):
+annulus-free circular-aperture photometry (radius `2×FWHM`, jhat's
+`radii_Nfwhm=[2.0]`) on the median-subtracted frame, with
+`ZP = −2.5·log10(PIXAR_SR·1e6/3631)` — the same surface-brightness ×
+pixel-area conversion jhat uses. **No sky annulus, deliberately**: jhat's
+annulus on CAMPFIRE's already sky-subtracted frames averages negative and
+trips a `-99.99` sentinel that floods the matcher — the annulus is exactly the
+piece of jhat photometry that must not be ported. No aperture correction
+either (a ~0.2–0.4 mag point-source constant, irrelevant to the wide mag
+windows, ill-defined for galaxies). `table.meta['mag_calibrated']` records
+which regime a catalog is in; without a zeropoint, `mag` falls back to the
+uncalibrated DAO kernel estimate.
 
 - **Per-filter PSF FWHM.** NIRCam's core width runs from ~F070W to ~F480M, so one
   `fwhm` is wrong across an exposure's SW+LW channels; `apply.py` keys detection
@@ -235,9 +246,19 @@ has no sky annulus and structurally cannot hit that bug.
   uncorrected core corrupts both the centroid and the kernel flux, and those are
   exactly the bright-star failures a magnitude cut can't catch.
 - **Quality cuts:** `snr_min` (peak / background RMS, above the kernel `nsigma`
-  threshold), `objmag_lim` (a coarse per-run trim, not a calibrated cut),
-  sharpness/roundness windows, and an `edge` reject. No `brightest` count cap on
-  the align path — the full quality-selected catalog reaches the solve.
+  threshold), `objmag_lim` (**calibrated AB window**, jhat's COSMOS value
+  `[19, 28]`; skipped loudly when the frame has no zeropoint — an AB window on
+  instrumental mags would cut everything), sharpness/roundness windows, and an
+  `edge` reject. No `brightest` count cap on the align path — the full
+  quality-selected catalog reaches the solve.
+- **Pair-level brightness agreement** (`delta_mag_lim`, jhat's COSMOS value
+  `[-3, 4]`): the matcher can additionally drop 1-NN pairs whose
+  `image_mag − refcat_mag` falls outside the window. `tweakwcs` drops
+  brightness columns when pooling, so image mags ride the surviving `id`
+  column through an id→mag lookup the solve builds from calibrated catalogs.
+  Pairs missing either mag are never punished. Off by default: refcat `mag`
+  zeropoints are heterogeneous across build backends — enable per field when
+  the refcat's photometry is trusted.
 
 ---
 
@@ -354,6 +375,9 @@ All knobs live in `config_default.toml`; per-field overrides go in
 | `histocut_order` | `"dxdy"` | cut dx-vs-y first, or `"dydx"` |
 | `slope_max` | `10/2048` | rotation-scan half-range, dimensionless (≈ ±0.28°) |
 | `slope_nsteps` | `200` | rotation-scan steps |
+| `delta_mag_lim` | unset | pair cut: keep `image_mag − refcat_mag` in this AB window (jhat COSMOS: `[-3, 4]`) |
+| `objmag_lim` | unset | detection cut: keep this calibrated AB window (jhat COSMOS: `[19, 28]`) |
+| `aper_radius_px` | `2×fwhm` | aperture radius for calibrated detection mags |
 | `fine_fitgeom` | `"rshift"` | per-detector fine ceiling: `general` \| `rshift` \| `shift` |
 | `fine_min_general` | `10` | ≥ this many 1-to-1 matches ⇒ allow `general` |
 | `fine_min_rshift` | `4` | ≥ this ⇒ allow `rshift` |
@@ -420,17 +444,13 @@ All knobs live in `config_default.toml`; per-field overrides go in
   (COSMOS/CEERS broad-band pairs, an F070W/F090W field, a crowded stellar field, a
   nebulous star-forming region, a narrow/medium LW pairing, tile-edge and
   missing-detector cases), `align` stays opt-in.
-- **Magnitude cuts are NOT at JHAT parity — known, deliberate.** JHAT's
-  validated COSMOS config also used `objmag_lim = [19, 28]` (calibrated AB, from
-  aperture photometry + zeropoint) and `delta_mag_lim = [-3, 4]` (pair-level
-  image-vs-refcat brightness agreement). align's `objmag_lim` is an
-  **uncalibrated** DAOStarFinder kernel magnitude (`detect.py`) so the JHAT
-  values do not transfer, and `delta_mag_lim` has no align equivalent at all
-  (no calibrated image magnitudes to compare against the refcat). The
-  histogram-consensus matcher is what makes JHAT robust — the mag cuts only
-  thin its false-pair floor — so parity was not blocked on them; if real-data
-  validation shows the floor matters, calibrating detection magnitudes
-  (zeropoint from the SCI header units + pixel area) is the follow-up.
+- **Magnitude-cut parity is implemented but default-off.** Detection mags are
+  calibrated AB (§4), so jhat's `objmag_lim = [19, 28]` and
+  `delta_mag_lim = [-3, 4]` transfer directly — but both default unset:
+  DQ saturation masking already guards the bright end, and refcat `mag`
+  zeropoints are heterogeneous across build backends. Enable them per field
+  (e.g. COSMOS) where the refcat photometry is trusted; the consensus matcher,
+  not the mag cuts, is what carries jhat's robustness either way.
 - **Per-detector distortion fitting — deliberately not built.** A genuine SIP
   distortion solve (`fit_wcs_from_points(sip_degree=…)`) was considered and
   rejected: jhat doesn't do it (its SIP is a serialization, not a fit, §1), and a

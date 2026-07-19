@@ -250,10 +250,14 @@ def test_match_measures_small_offset():
                             meta={'catalog': d.catalog, 'group_id': 'g',
                                   'name': d.detector})
     ref_sky = SkyCoord(refcat['RA'], refcat['DEC'], unit='deg')
-    resid, n, ref_idx = _match(corr, d.catalog, ref_sky, match_radius=0.5)
+    resid, n, src_idx, ref_idx = _match(corr, d.catalog, ref_sky,
+                                        match_radius=0.5)
     assert n >= 30
     assert 0.15 < resid < 0.25
-    assert len(ref_idx) >= 30
+    assert len(ref_idx) == len(src_idx) == n
+    # mutual NN => a genuine one-to-one pairing on both sides
+    assert len(np.unique(ref_idx)) == n
+    assert len(np.unique(src_idx)) == n
 
 
 # --- clustered extragalactic refcat (the XYXYMatch overflow regime) ---------
@@ -294,3 +298,26 @@ def test_solves_substructured_refcat_regime():
     assert sol.detectors[0].within_tolerance
     assert sol.detectors[0].n_matched >= 150
     assert abs(np.hypot(*sol.shift) - 0.5) < 0.1     # hypot(0.4, 0.3)
+
+
+# --- calibrated-mag plumbing (delta_mag_lim through the solve) ---------------
+
+def test_delta_mag_lim_plumbs_through_solve():
+    # Catalogs marked calibrated + a refcat 'mag' column: with agreeing mags,
+    # delta_mag_lim must not cost matches (pairs flow id->mag into the
+    # matcher); an absurd window that rejects every judged pair must reject
+    # the pool (proves the cut is actually reaching the matcher).
+    detectors, refcat = _build_group(n_det=2, offset=(1.0, 0.0))
+    refcat['mag'] = 22.0
+    for d in detectors:
+        d.catalog['mag'] = 22.0                     # agrees: dmag = 0
+        d.catalog.meta['mag_calibrated'] = True
+
+    sol = solve_exposure_group(detectors, refcat, key='exp',
+                               delta_mag_lim=(-3.0, 4.0))
+    assert sol.status == 'SOLVED'
+    assert sol.n_matched >= 60
+
+    sol_bad = solve_exposure_group(detectors, refcat, key='exp',
+                                   delta_mag_lim=(5.0, 6.0))
+    assert sol_bad.status == 'NOT_ALIGNED'

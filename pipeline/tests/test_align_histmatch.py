@@ -226,3 +226,52 @@ def test_missing_tp_columns_raise():
 def test_bad_histocut_order_raises():
     with pytest.raises(ValueError):
         OffsetHistogramMatch(histocut_order='xy')
+
+
+# --- delta_mag_lim pair cut --------------------------------------------------
+
+def test_delta_mag_lim_cuts_brightness_disagreement():
+    # Two interleaved source populations at the SAME positions offset: the
+    # positional consensus alone cannot separate them, but their mags disagree
+    # with the refcat by 6 mag, so delta_mag_lim=[-3, 4] must cut them.
+    rng = np.random.default_rng(31)
+    true = rng.uniform(0, 130, (100, 2))
+    im = true - [0.5, 0.2] + rng.normal(0, 0.01, true.shape)
+    ref = np.vstack([true, rng.uniform(-10, 140, (400, 2))])
+
+    ref_tab = _tab(ref)
+    ref_mag = np.full(len(ref), 22.0)
+    ref_tab['mag'] = ref_mag
+    im_tab = _tab(im)
+    ids = np.arange(len(im))
+    im_tab['id'] = ids
+    # first 50 image sources agree with the refcat brightness; the rest are
+    # 6 mag brighter than their refcat counterparts (dmag = -6 < -3)
+    image_mags = {int(i): (22.0 if i < 50 else 16.0) for i in ids}
+
+    base = OffsetHistogramMatch(searchrad=70.0)
+    ri0, ii0 = base(ref_tab, im_tab, tp_pscale=LW_PSCALE)
+    assert len(ri0) >= 90                       # without the cut: both halves
+
+    m = OffsetHistogramMatch(searchrad=70.0, delta_mag_lim=(-3.0, 4.0),
+                             image_mags=image_mags)
+    ri, ii = m(ref_tab, im_tab, tp_pscale=LW_PSCALE)
+    assert len(ri) >= 40
+    assert np.all(ii < 50)                      # disagreeing half is gone
+
+
+def test_delta_mag_lim_never_punishes_missing_mags():
+    # Sources absent from the image_mags lookup (uncalibrated detector) and
+    # refcat rows with non-finite mag pass the cut unjudged.
+    rng = np.random.default_rng(37)
+    true = rng.uniform(0, 130, (80, 2))
+    im = true - [0.4, 0.1] + rng.normal(0, 0.01, true.shape)
+    ref_tab = _tab(np.vstack([true, rng.uniform(-10, 140, (300, 2))]))
+    ref_tab['mag'] = np.nan                     # refcat carries no usable mags
+    im_tab = _tab(im)
+    im_tab['id'] = np.arange(len(im))
+
+    m = OffsetHistogramMatch(searchrad=70.0, delta_mag_lim=(-3.0, 4.0),
+                             image_mags={0: 22.0})
+    ri, ii = m(ref_tab, im_tab, tp_pscale=LW_PSCALE)
+    assert len(ri) >= 70                        # nothing was cut on mags
