@@ -194,6 +194,9 @@ def outlier_detect_for_visit(
             continue  # only flag and save the visit's own files
         with ImageModel(crf, memmap=False) as model:
             dq_before = (model.dq & OUTLIER_BIT) != 0
+            # weight-carrying state before detection: grow seeds must not
+            # form on pixels that were already DO_NOT_USE (edge trim)
+            dnu_before = (model.dq & pixel_flags['DO_NOT_USE']) != 0
             sci_for_plot = model.data.copy() if plot else None
             # Match jwst.outlier_detection.imaging.detect_outliers: pass
             # only median_sci. flag_resampled_model_crs falls back to the
@@ -213,13 +216,14 @@ def outlier_detect_for_visit(
 
             rootname = os.path.basename(crf).removesuffix('.fits')
             cfp_val = None
+            grow_added = None
             if grow is not None:
                 # lazy import: steps.outlier imports this module
                 from campfire_pipeline.nircam.steps.outlier import (
                     grow_outlier_regions,
                 )
-                n_large, n_added = grow_outlier_regions(
-                    model.data, model.dq, **grow)
+                n_large, n_added, grow_added = grow_outlier_regions(
+                    model.data, model.dq, preexisting_dnu=dnu_before, **grow)
                 cfp_val = (f'grow_large_regions: {n_large} regions, '
                            f'+{n_added} px')
                 if n_large:
@@ -233,12 +237,14 @@ def outlier_detect_for_visit(
 
             if plot:
                 from campfire_pipeline.nircam.steps._plots import plot_outlier
+                # dq_after was snapshotted before the grow, so new_outlier
+                # is detections only; grown pixels ride the second overlay
                 new_outlier = dq_after & ~dq_before
                 out_pdf = os.path.join(
                     os.path.dirname(crf), f'{rootname}_outlier.pdf',
                 )
                 plot_outlier(
-                    sci_for_plot, new_outlier,
+                    sci_for_plot, new_outlier, grown=grow_added,
                     save_file=out_pdf,
                     title=f'{rootname}: outlier (campfire)',
                 )

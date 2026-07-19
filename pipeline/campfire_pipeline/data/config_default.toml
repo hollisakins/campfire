@@ -501,11 +501,38 @@
     # own PSF wings) fall back to a plain grow_radius px dilation of the
     # seed. Grown px are flagged OUTLIER|DO_NOT_USE; depth cost is one
     # dither, confined to artifact neighbourhoods (<1% of frame).
+    #
+    # grow_deblend: photutils-deblend each expanded region (multi-threshold
+    # watershed on the smoothed residual) and release deblended children
+    # that contain no seed pixels AND peak >2x above the seeded artifact —
+    # neighbouring galaxies whose isophotes touch the artifact's wings keep
+    # their depth instead of being masked. The peak-ratio guard keeps the
+    # artifact's own noise-split wing chunks masked (watershed alone
+    # over-segments flat-topped elongated artifacts).
+    #
+    # grow_negative: seeds sitting on negative residuals (oversubtracted
+    # wisp/background regions — the base detection thresholds |sci-blot|,
+    # so both signs seed) expand through connected pixels *below*
+    # -grow_expand_nsigma sigma instead of above. Self-limiting: if every
+    # dither is oversubtracted identically the median matches them and no
+    # seed forms, so only exposures that disagree with the ensemble are
+    # rejected.
+    # grow_edge_buffer: OUTLIER pixels within this many px of the frame
+    # edge never seed growth (per-pixel; a large artifact reaching the
+    # edge still seeds from its deeper interior part). Detection flags
+    # near-contiguous strips along trimmed exposure edges and the
+    # saturated cores of stars falling near the edge — both would
+    # otherwise seed floods into real sources at the frame boundary.
+    # (Weightless pixels — already DO_NOT_USE before detection — are
+    # additionally always excluded from seeding, no knob.)
     grow_large_regions = false
     grow_min_area = 100
     grow_expand_nsigma = 1.5
     grow_max_factor = 40
     grow_radius = 12
+    grow_deblend = true
+    grow_negative = true
+    grow_edge_buffer = 50
     # implementation = "jwst" routes outlier detection through
     # `jwst.pipeline.calwebb_image3.Image3Pipeline` per visit (with
     # intra-program cross-visit overlap padding). "campfire" runs the
