@@ -90,7 +90,36 @@ Release procedure: edit the `## Unreleased` section below, then run
   mosaic A/B shows arc contributions removed at their per-dither sky
   positions with only local one-dither depth cost). Wired in both outlier
   implementations; growth stats stamped into `CFP_OUT`. Additive: default
-  off leaves existing outputs unchanged.
+  off leaves existing outputs unchanged. Two follow-up guards (both on by
+  default when growth is enabled): **deblend release**
+  (`grow_deblend`) — each expanded region is photutils-deblended
+  (multi-threshold watershed on the smoothed residual) and children that
+  contain no seed pixels *and* peak >2x above the seeded artifact are
+  released, so a neighbouring galaxy whose isophotes touch the artifact's
+  wings keeps its depth (the peak-ratio criterion keeps the artifact's own
+  noise-split wing chunks masked); and **negative growth**
+  (`grow_negative`) — seeds sitting on negative residuals (oversubtracted
+  wisp/background regions; the base detection thresholds `|sci − blot|`,
+  so both signs seed) expand through connected pixels *below*
+  −`grow_expand_nsigma`·σ instead of above, rejecting oversubtraction
+  wings the same way positive artifact wings are. Self-limiting: if every
+  dither is oversubtracted identically the median matches them and no
+  seed forms. Additionally, growth seeds now form only from
+  weight-carrying pixels: OUTLIER pixels that were already DO_NOT_USE
+  before detection (exposure-edge trim) are excluded from seeding —
+  detection flags near-contiguous strips along the trimmed frame edges
+  (blot/median mismatch), and on rj0911 f200w those weightless strips
+  were seeding floods into real galaxies touching the exposure edges.
+  A geometric companion guard, `grow_edge_buffer` (default 50 px),
+  additionally stops any OUTLIER pixel that close to the frame edge from
+  seeding — saturated star cores falling near the edge are
+  detection-flagged on weight-carrying pixels and would otherwise flood
+  the star's own PSF wings (per-pixel exclusion, so a large artifact
+  reaching the edge still seeds from its deeper interior part).
+  The `*_outlier.pdf` diagnostics now draw waterfall-grown
+  pixels as a separate magenta overlay (detections stay yellow) with both
+  counts in the panel title — the campfire implementation previously
+  omitted grown pixels from the plot entirely.
 
 ### Infrastructure
 - Dependency declarations now match actual imports (#330): added `requests`,
