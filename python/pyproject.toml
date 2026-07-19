@@ -46,10 +46,6 @@ dependencies = [
     "photutils>=1.13",
     "reproject",
     "Pillow>=10.0",
-    # Deploy DB operations
-    "supabase>=2.0",
-    # Deploy R2 uploads (will be replaced by presigned URLs in future)
-    "boto3>=1.28",
 ]
 
 [project.scripts]
@@ -72,6 +68,12 @@ deploy = [
     # it locally. See the repo-root install.py, which installs this profile in
     # the right order.
     "campfire-pipeline",
+    # Deploy DB operations. Base-install code paths that touch these (e.g. the
+    # annotation half of `campfire pull`) already degrade gracefully when the
+    # import fails, so consumers never need them.
+    "supabase>=2.0",
+    # Deploy R2 uploads (will be replaced by presigned URLs in future)
+    "boto3>=1.28",
     # calibration.py prefers spectres for flux-conserving resampling (falls back
     # to interpolation without it); deploy-side stacking should have the real thing.
     "spectres>=2.2",

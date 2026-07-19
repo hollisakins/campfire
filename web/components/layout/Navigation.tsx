@@ -4,7 +4,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { SignInLink } from '@/components/auth/SignInLink';
 import { usePathname, useRouter } from 'next/navigation';
-import { LogOut, User, Shield, Sun, Moon, Monitor, ChevronDown, Github } from 'lucide-react';
+import { LogOut, User, Shield, Sun, Moon, Monitor, ChevronDown, Github, Menu, X } from 'lucide-react';
 import { Logo } from '@/components/brand/Logo';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
@@ -61,6 +61,12 @@ export const Navigation: React.FC = () => {
   const router = useRouter();
   const { user, userProfile, signOut } = useAuth();
   const { theme, setTheme } = useTheme();
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Close the mobile menu on navigation.
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
 
   const cycleTheme = () => {
     const themes: Array<'light' | 'dark' | 'system'> = ['light', 'system', 'dark'];
@@ -95,6 +101,14 @@ export const Navigation: React.FC = () => {
     router.push('/login');
   };
 
+  const mobileLinkClass = (active: boolean) => `
+    block px-3 py-2 rounded-lg text-sm font-medium transition-colors
+    ${active
+      ? 'text-header-foreground bg-header-hover'
+      : 'text-header-muted hover:text-header-foreground hover:bg-header-hover'
+    }
+  `;
+
   return (
     <nav data-slot="app-header" className="bg-header text-header-foreground shadow-md">
       <div className="container mx-auto px-4 py-4">
@@ -105,8 +119,8 @@ export const Navigation: React.FC = () => {
             <span className="text-xl font-bold">CAMPFIRE</span>
           </Link>
 
-          {/* Navigation Links */}
-          <div className="flex items-center space-x-8">
+          {/* Navigation Links (desktop) */}
+          <div className="hidden md:flex items-center space-x-8">
             {navLinks.map((link) =>
               link.children ? (
                 <NavDropdown key={link.href} link={link} isActive={isActive(link.href)} />
@@ -184,7 +198,82 @@ export const Navigation: React.FC = () => {
               </SignInLink>
             )}
           </div>
+
+          {/* Mobile controls */}
+          <div className="flex md:hidden items-center space-x-3">
+            <button
+              onClick={cycleTheme}
+              className="flex items-center text-header-muted hover:text-header-foreground transition-colors"
+              aria-label={`Current theme: ${theme}. Click to change.`}
+              title={`Theme: ${theme}`}
+            >
+              <ThemeIcon className="w-5 h-5" />
+            </button>
+            <button
+              onClick={() => setMobileOpen(!mobileOpen)}
+              className="flex items-center text-header-muted hover:text-header-foreground transition-colors"
+              aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
+              aria-expanded={mobileOpen}
+            >
+              {mobileOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+            </button>
+          </div>
         </div>
+
+        {/* Mobile menu */}
+        {mobileOpen && (
+          <div className="md:hidden mt-4 pt-4 border-t border-header-border space-y-1">
+            {navLinks.map((link) =>
+              link.children ? (
+                <div key={link.href}>
+                  {link.children.map((child, i) => (
+                    <Link
+                      key={child.href}
+                      href={child.href}
+                      className={mobileLinkClass(isActive(link.href) && i === 0)}
+                    >
+                      {i === 0 ? link.label : `${link.label} · ${child.label}`}
+                    </Link>
+                  ))}
+                </div>
+              ) : (
+                <Link key={link.href} href={link.href} className={mobileLinkClass(isActive(link.href))}>
+                  {link.label}
+                </Link>
+              )
+            )}
+
+            <div className="pt-2 mt-2 border-t border-header-border space-y-1">
+              {user ? (
+                <>
+                  {userProfile?.is_admin && (
+                    <Link href="/admin" className={mobileLinkClass(isActive('/admin'))}>
+                      <span className="flex items-center gap-2"><Shield className="w-4 h-4" /> Admin</span>
+                    </Link>
+                  )}
+                  <Link href="/profile" className={mobileLinkClass(isActive('/profile'))}>
+                    <span className="flex items-center gap-2">
+                      <User className="w-4 h-4" /> {userProfile?.full_name || user.email}
+                    </span>
+                  </Link>
+                  <button onClick={handleSignOut} className={`w-full text-left ${mobileLinkClass(false)}`}>
+                    <span className="flex items-center gap-2"><LogOut className="w-4 h-4" /> Sign out</span>
+                  </button>
+                </>
+              ) : (
+                <SignInLink className={mobileLinkClass(false)}>Sign In</SignInLink>
+              )}
+              <a
+                href="https://github.com/hollisakins/campfire"
+                target="_blank"
+                rel="noopener noreferrer"
+                className={mobileLinkClass(false)}
+              >
+                <span className="flex items-center gap-2"><Github className="w-4 h-4" /> GitHub</span>
+              </a>
+            </div>
+          </div>
+        )}
       </div>
     </nav>
   );

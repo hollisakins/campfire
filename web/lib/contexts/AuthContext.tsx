@@ -21,7 +21,11 @@ interface AuthContextType {
   needsAccessCode: boolean; // True if user has no proprietary program access
   programAccess: ProgramAccessInfo | null;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
-  signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null }>;
+  signUp: (
+    email: string,
+    password: string,
+    fullName: string
+  ) => Promise<{ error: Error | null; existingAccount?: boolean }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>; // Manually refresh profile after setup
   checkProgramAccess: () => Promise<void>; // Refresh program access state
@@ -161,7 +165,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return !!existing;
       });
 
-      const { error } = await supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
@@ -182,7 +186,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (error) throw error;
 
-      return { error: null };
+      // With email confirmation enabled, Supabase obfuscates duplicate-email
+      // signups: it returns a fake user with no identities instead of an error.
+      // No confirmation email will arrive, so surface it rather than showing a
+      // false "check your inbox" success.
+      const existingAccount = !!data.user && (data.user.identities?.length ?? 0) === 0;
+
+      return { error: null, existingAccount };
     } catch (error) {
       return { error: error as Error };
     }

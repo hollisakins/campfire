@@ -435,6 +435,16 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
         </div>
       )}
 
+      {/* Non-inspectors can browse but not submit; without this banner the
+          disabled controls read as broken rather than restricted. */}
+      {!canEdit && queueReady && !queue.isEmpty && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 px-4 py-2 bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200 text-sm rounded-lg shadow-lg z-10">
+          Read-only: your account doesn&apos;t have inspection access, so ratings and
+          flags are disabled. Request access from your{' '}
+          <a href="/profile" className="underline hover:no-underline">profile page</a>.
+        </div>
+      )}
+
       {queueReady && inspectionState.versionConflict && inspectionState.conflictInfo && (
         <div className="absolute top-14 left-1/2 -translate-x-1/2 w-[640px] max-w-[calc(100vw-2rem)] z-20">
           <ConflictBanner

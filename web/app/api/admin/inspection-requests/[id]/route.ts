@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { sendInspectionDecisionNotification } from '@/lib/email/resend';
 
 /**
  * PATCH /api/admin/inspection-requests/[id]
@@ -78,6 +79,32 @@ export async function PATCH(
   if (updateError) {
     console.error('Error updating inspection request:', updateError);
     return NextResponse.json({ error: 'Failed to update request' }, { status: 500 });
+  }
+
+  // Tell the requester the outcome (the profile page promises this email).
+  // Best-effort: a failed email never fails the review itself.
+  try {
+    const [{ data: requesterProfile }, { data: requesterAuth }] = await Promise.all([
+      serviceClient
+        .from('user_profiles')
+        .select('full_name')
+        .eq('user_id', req.user_id)
+        .single(),
+      serviceClient.auth.admin.getUserById(req.user_id),
+    ]);
+
+    const requesterEmail = requesterAuth?.user?.email;
+    if (requesterEmail) {
+      await sendInspectionDecisionNotification({
+        email: requesterEmail,
+        full_name: requesterProfile?.full_name || 'there',
+        approved: action === 'approve',
+      });
+    } else {
+      console.warn('No email found for inspection requester', req.user_id);
+    }
+  } catch (err) {
+    console.error('Error sending inspection decision notification:', err);
   }
 
   return NextResponse.json({ success: true });

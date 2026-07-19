@@ -6,7 +6,7 @@ export function Footer() {
   return (
     <footer className="border-t border-border">
       <div className="container mx-auto px-4 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-sm text-text-secondary">
-        <span>&copy; 2025 Hollis Akins &middot; MIT License</span>
+        <span>&copy; {new Date().getFullYear()} Hollis Akins &middot; MIT License</span>
         <div className="flex items-center gap-4">
           <a
             href={GITHUB_REPO}

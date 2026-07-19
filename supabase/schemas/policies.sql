@@ -1119,17 +1119,14 @@ CREATE POLICY "admin_delete_invites"
 
 ALTER TABLE access_codes ENABLE ROW LEVEL SECURITY;
 
--- Admins can manage all access codes (all operations).
+-- Admins can manage all access codes (all operations). Codes are secrets:
+-- there is deliberately NO broader SELECT policy — redemption goes through the
+-- SECURITY DEFINER redeem_access_code() RPC, so non-admins can never enumerate
+-- codes (a public "read active codes" policy previously allowed exactly that).
 DROP POLICY IF EXISTS "admin_manage_codes" ON access_codes;
 CREATE POLICY "admin_manage_codes"
   ON access_codes
   USING ((SELECT public.is_admin()));
-
--- Anyone can read active codes (for code redemption flow).
-DROP POLICY IF EXISTS "Anyone can read active codes" ON access_codes;
-CREATE POLICY "Anyone can read active codes"
-  ON access_codes FOR SELECT
-  USING (is_active = true);
 
 
 -- =============================================================================

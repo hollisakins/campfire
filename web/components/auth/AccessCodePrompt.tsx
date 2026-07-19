@@ -127,7 +127,7 @@ export const AccessCodePrompt: React.FC<AccessCodePromptProps> = ({ onSuccess })
         <p className="text-sm text-text-secondary text-center mt-6">
           Don&apos;t have a code? Contact your PI or{' '}
           <a
-            href="mailto:campfire@example.com"
+            href="mailto:hollis.akins@gmail.com"
             className="text-primary hover:underline"
           >
             request access via email

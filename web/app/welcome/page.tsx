@@ -107,8 +107,8 @@ export default function WelcomePage() {
       return;
     }
 
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters');
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters');
       return;
     }
 
@@ -294,8 +294,8 @@ export default function WelcomePage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-4 py-2 bg-background text-text-primary placeholder:text-text-tertiary border border-border-strong rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
-                placeholder="Enter a password (min. 6 characters)"
-                minLength={6}
+                placeholder="Enter a password (min. 8 characters)"
+                minLength={8}
                 required
                 disabled={saving}
               />
@@ -316,7 +316,7 @@ export default function WelcomePage() {
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 className="w-full px-4 py-2 bg-background text-text-primary placeholder:text-text-tertiary border border-border-strong rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
                 placeholder="Confirm your password"
-                minLength={6}
+                minLength={8}
                 required
                 disabled={saving}
               />

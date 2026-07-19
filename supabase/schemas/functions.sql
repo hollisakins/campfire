@@ -386,6 +386,94 @@ GRANT ALL ON FUNCTION public.check_device_code_status(text) TO service_role;
 
 
 -- =============================================================================
+-- Access Code Redemption
+-- =============================================================================
+
+-- Redeems an access code for the calling user in a single transaction.
+-- SECURITY DEFINER so codes never need to be readable by non-admins (the
+-- access_codes SELECT policy is admin-only); the row lock (FOR UPDATE) makes
+-- the max_uses check + use_count increment atomic under concurrent redemptions.
+-- Returns a jsonb object whose 'status' key the API route maps to HTTP codes.
+CREATE OR REPLACE FUNCTION public.redeem_access_code(p_code text)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_code access_codes%ROWTYPE;
+  v_slugs text[];
+BEGIN
+  IF v_uid IS NULL THEN
+    RETURN jsonb_build_object('status', 'unauthenticated');
+  END IF;
+
+  IF public.is_group_account() THEN
+    RETURN jsonb_build_object('status', 'group_account');
+  END IF;
+
+  SELECT * INTO v_code
+  FROM access_codes
+  WHERE code = p_code AND is_active = true
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('status', 'invalid');
+  END IF;
+
+  IF v_code.expires_at IS NOT NULL AND v_code.expires_at < NOW() THEN
+    RETURN jsonb_build_object('status', 'expired');
+  END IF;
+
+  IF v_code.max_uses IS NOT NULL AND v_code.use_count >= v_code.max_uses THEN
+    RETURN jsonb_build_object('status', 'exhausted');
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM code_redemptions
+    WHERE code_id = v_code.id AND user_id = v_uid
+  ) THEN
+    RETURN jsonb_build_object('status', 'already_redeemed');
+  END IF;
+
+  IF v_code.grants_all_programs THEN
+    SELECT array_agg(slug) INTO v_slugs FROM programs;
+  ELSE
+    v_slugs := v_code.program_slugs;
+  END IF;
+
+  IF v_slugs IS NULL OR array_length(v_slugs, 1) IS NULL THEN
+    RETURN jsonb_build_object('status', 'no_programs');
+  END IF;
+
+  INSERT INTO user_program_access (user_id, program_slug, granted_by)
+  SELECT v_uid, slug, v_code.created_by
+  FROM unnest(v_slugs) AS slug
+  ON CONFLICT (user_id, program_slug) DO NOTHING;
+
+  INSERT INTO code_redemptions (code_id, user_id)
+  VALUES (v_code.id, v_uid);
+
+  UPDATE access_codes
+  SET use_count = use_count + 1
+  WHERE id = v_code.id;
+
+  RETURN jsonb_build_object(
+    'status', 'ok',
+    'grants_all_programs', v_code.grants_all_programs,
+    'programs_granted', COALESCE(array_length(v_slugs, 1), 0)
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.redeem_access_code(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.redeem_access_code(text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.redeem_access_code(text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.redeem_access_code(text) TO service_role;
+
+
+
+
+-- =============================================================================
 -- get_objects_for_sync
 -- (lightweight bulk fetch for Python client objects catalog sync)
 -- =============================================================================
