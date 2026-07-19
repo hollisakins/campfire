@@ -397,6 +397,7 @@ GRANT ALL ON FUNCTION public.check_device_code_status(text) TO service_role;
 CREATE OR REPLACE FUNCTION public.redeem_access_code(p_code text)
 RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_uid uuid := auth.uid();
