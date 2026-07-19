@@ -74,10 +74,10 @@ jobs:
           claude_args: |
             --allowedTools "mcp__github_inline_comment__create_inline_comment"
             --disallowedTools "ScheduleWakeup,SendMessage,Monitor"
-          # Post a single updating summary comment in addition to inline comments,
-          # so the PR always gets visible feedback even when the review has no
-          # line-specific inline nits to buffer.
-          use_sticky_comment: true
+          # Note: use_sticky_comment only takes effect in tag mode; in agent mode
+          # (this step, which passes an explicit `prompt`) the action never creates
+          # a tracking comment, so it was a no-op. The /code-review plugin posts its
+          # own top-level summary via `gh pr comment` when there are no inline nits.
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
