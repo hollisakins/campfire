@@ -88,9 +88,10 @@ per FILTER (one channel), per EXPOSURE (build_exposure_groups)
 │  1. FOOTPRINT-CLIP the field refcat to this pool's detector union +    │
 │     border (footprint.py, gnomonic tangent plane).                     │
 │  2. COARSE — ONE pooled rigid `rshift`, all the pool's detectors on one │
-│     group_id, matched by tweakwcs XYXYMatch(use2dhist=True) 2-D        │
-│     pairwise-offset histogram, iterated match→fit→rematch to converge  │
-│     (pass 0 grabs the gross translation; later passes peel off roll).  │
+│     group_id, matched by the JHAT-ported OffsetHistogramMatch          │
+│     (histmatch.py): gross 2-D-hist shift (pass 0), then unbounded 1-NN │
+│     + offset-histogram consensus; iterated match→fit→rematch to        │
+│     converge (later passes peel off roll).                             │
 │  3. GROUP GATE — recompute one-to-one (mutual-NN) matches DIRECTLY;    │
 │     accept the pool only if ≥ min_matched matches AND they span        │
 │     ≥ min_coverage_arcsec of sky; else → NOT_ALIGNED (WCS preserved).  │
@@ -137,15 +138,52 @@ Mechanically: all of a pool's detectors get one `group_id`, so `tweakwcs`
 `align_wcs` fits and applies one rigid transform to them; distinct per-pool
 `group_id`s + a static refcat + `expand_refcat=False` keep pools independent.
 
-### 3.2 Coarse solve (`solve._coarse`)
+### 3.2 Coarse solve (`solve._coarse` + `histmatch.OffsetHistogramMatch`)
 
-Pass 0 uses `XYXYMatch(use2dhist=True, searchrad=coarse_searchrad, ...)` — a 2-D
-pairwise-offset histogram that grabs the gross translation over the full search
-radius. Later passes start from the corrected WCS, match by nearest neighbour
-(`use2dhist=False`) around the now-small residual, and the rigid `rshift` peels
-off the roll; the loop stops when a pass moves the WCS by < 0.01″ (well below a
-NIRCam pixel) or after `refine_niter` passes. A matcher/fit crash degrades the
-pool to NOT_ALIGNED — it never aborts the worker or the field.
+The coarse matcher is a **faithful port of JHAT's matching algorithm**
+(`find_good_refcat_matches` + `histogram_cut`), which is structurally different
+from `tweakwcs.XYXYMatch`:
+
+- **Why not XYXYMatch.** `XYXYMatch` *enumerates* candidate pairs
+  (`stsci.stimage.xyxymatch`) and sizes its output array by the detection
+  count. On real extragalactic catalogs — where detections and refcat rows are
+  the same clustered galaxies and the refcat resolves substructure (several
+  reference rows within the match tolerance of one detection) — the number of
+  reference sources finding a partner exceeds the detection count and the
+  matcher dies with `MatchSourceConfusionError`. This killed **39% of COSMOS
+  LW exposures** (48/124 in tile A1 f444w) that JHAT solved at 100%.
+- **What JHAT does instead.** Pair **every** image source with its single
+  nearest reference (unbounded 1-NN — most pairs are wrong *by design*), then
+  find the true correspondence by **consensus**: true pairs pile into one
+  narrow peak of the pairwise-offset histogram while false pairs scatter
+  ~uniformly. Per axis (dx vs y first, then dy vs x — `histocut_order`), a
+  rotation-slope scan (`slope_max`, `slope_nsteps`) de-rotates the offsets, the
+  Gaussian-smoothed histogram peak is located, survivors of a rough cut around
+  the peak (`nfwhm`·FWHM clamped to `[rough_cut_px_min, rough_cut_px_max]`)
+  are sigma-clipped (`hist_nsigma`). Nothing is enumerated; nothing can
+  overflow. The `*_px` knobs are image pixels (converted per pool via the
+  `tweakwcs` `tp_pscale`), so the validated JHAT COSMOS configuration carries
+  over verbatim.
+- **Pooling is native, and stronger.** The matcher sees the tangent-plane
+  catalogs *after* `tweakwcs` concatenates the pool (shared `group_id`), so
+  every detector's pairs accumulate into ONE shared offset histogram — more
+  detectors mean a taller consensus peak. The port strengthens the pooled
+  design rather than trading it away.
+- **Gross-shift stage (pass 0 only).** JHAT's 1-NN assumes the WCS error is
+  below the local source spacing (true for normal JWST pointing). To keep
+  acquisition-failure recovery, pass 0 first locates the gross translation as
+  the peak of the 2-D pairwise-offset histogram within `coarse_searchrad` —
+  the same idea `XYXYMatch(use2dhist=True)` used for its initial estimate
+  (bake-off-validated), but accumulated directly into the histogram so no pair
+  list is ever materialized.
+
+Later passes start from the corrected WCS and re-match with the same consensus
+matcher minus the gross stage (JHAT's `iterate_with_xyshifts`, generalized:
+the re-pairing starts from the *fitted* WCS, not just a median shift); the
+rigid `rshift` peels off the roll. The loop stops when a pass moves the WCS by
+< 0.01″ (well below a NIRCam pixel) or after `refine_niter` passes. A
+matcher/fit crash degrades the pool to NOT_ALIGNED — it never aborts the
+worker or the field.
 
 Provenance: pass 0's fit is the gross shift/rot the input WCS was off by (stored
 for logging); the converged pass's RMSE is the reported quality.
@@ -305,10 +343,17 @@ All knobs live in `config_default.toml`; per-field overrides go in
 | `enabled` | `false` | Opt-in; off ⇒ the JHAT path runs unchanged |
 | `refcat` | — | Field's Gaia-tied refcat filename (required when enabled; set in `fields.toml`) |
 | `pool_modules` | `false` | `false`: coarse fit per module (A, B separate); `true`: pool both modules |
-| `coarse_searchrad` | `70.0` | arcsec — 2-D-hist search radius (≥ max acquisition offset) |
-| `coarse_tolerance` | `2.0` | arcsec — coarse pair-accept tolerance |
-| `coarse_separation` | `1.0` | arcsec — min in-catalog source separation |
+| `coarse_searchrad` | `70.0` | arcsec — gross-shift 2-D-hist radius (≥ max acquisition offset) |
 | `refine_niter` | `3` | coarse match→fit→rematch iterations (recovers roll) |
+| `d2d_max` | `1.5` | arcsec — drop 1-NN pairs farther than this (post gross shift) |
+| `binsize_px` | `0.02` | offset-histogram bin (image px, JHAT value) |
+| `gaussian_sigma_px` | `0.2` | histogram smoothing sigma (image px) |
+| `rough_cut_px_min` / `_max` | `2.5` / `2.5` | clamp on the rough cut around the peak (px); min = max pins it (COSMOS config) |
+| `nfwhm` | `2.5` | rough cut = `nfwhm` × peak FWHM before clamping |
+| `hist_nsigma` | `3.0` | sigma-clip of the de-rotated offsets |
+| `histocut_order` | `"dxdy"` | cut dx-vs-y first, or `"dydx"` |
+| `slope_max` | `10/2048` | rotation-scan half-range, dimensionless (≈ ±0.28°) |
+| `slope_nsteps` | `200` | rotation-scan steps |
 | `fine_fitgeom` | `"rshift"` | per-detector fine ceiling: `general` \| `rshift` \| `shift` |
 | `fine_min_general` | `10` | ≥ this many 1-to-1 matches ⇒ allow `general` |
 | `fine_min_rshift` | `4` | ≥ this ⇒ allow `rshift` |
@@ -332,8 +377,18 @@ All knobs live in `config_default.toml`; per-field overrides go in
 
 - **jhat's automatic solve.** Replaced by `align` for opted-in fields; jhat's
   linear per-detector `rshift` behavior is reproduced (`fine_fitgeom="rshift"`
-  default), and its `to_fits_sip` GWCS serialization is preserved via
+  default), its **matching algorithm is ported outright** (`histmatch.py`, §3.2),
+  and its `to_fits_sip` GWCS serialization is preserved via
   `update_fits_wcsinfo`.
+- **`tweakwcs.XYXYMatch` in the coarse path — retired.** Its pair enumeration
+  (`stsci.stimage.xyxymatch`) sizes output by the detection count and dies with
+  `MatchSourceConfusionError` on clustered extragalactic catalogs (39% of
+  COSMOS LW exposures; JHAT solved 100%). The 2-D-histogram *initial-offset*
+  idea it validated in the bake-off survives as the matcher's gross-shift
+  stage; the enumeration does not. `XYXYMatch` remains only in the fine
+  per-detector refit, where the local refcat is a subset of that detector's
+  own one-to-one matches, so the overflow condition (#refs finding a partner >
+  #detections) is impossible by construction.
 - **The triangle matcher (`tristars`) — retired.** The earlier `align` drafts
   bootstrapped correspondences with a `tristars` triangle/asterism matcher
   (`matcher.py`); the coarse-matcher bake-off (`scripts/align_matcher_bakeoff.py`)
@@ -365,6 +420,17 @@ All knobs live in `config_default.toml`; per-field overrides go in
   (COSMOS/CEERS broad-band pairs, an F070W/F090W field, a crowded stellar field, a
   nebulous star-forming region, a narrow/medium LW pairing, tile-edge and
   missing-detector cases), `align` stays opt-in.
+- **Magnitude cuts are NOT at JHAT parity — known, deliberate.** JHAT's
+  validated COSMOS config also used `objmag_lim = [19, 28]` (calibrated AB, from
+  aperture photometry + zeropoint) and `delta_mag_lim = [-3, 4]` (pair-level
+  image-vs-refcat brightness agreement). align's `objmag_lim` is an
+  **uncalibrated** DAOStarFinder kernel magnitude (`detect.py`) so the JHAT
+  values do not transfer, and `delta_mag_lim` has no align equivalent at all
+  (no calibrated image magnitudes to compare against the refcat). The
+  histogram-consensus matcher is what makes JHAT robust — the mag cuts only
+  thin its false-pair floor — so parity was not blocked on them; if real-data
+  validation shows the floor matters, calibrating detection magnitudes
+  (zeropoint from the SCI header units + pixel area) is the follow-up.
 - **Per-detector distortion fitting — deliberately not built.** A genuine SIP
   distortion solve (`fit_wcs_from_points(sip_degree=…)`) was considered and
   rejected: jhat doesn't do it (its SIP is a serialization, not a fit, §1), and a

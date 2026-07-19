@@ -55,8 +55,11 @@ NOT_ALIGNED_SENTINEL = cfp.NOT_ALIGNED
 # (``psf_fwhm_by_filter``) is resolved per member below, not passed through
 # these keys. ``pool_modules`` is an orchestration key (it decides how detectors
 # are pooled before the solve is called), so it is deliberately NOT a solve key.
-_SOLVE_KEYS = ('coarse_searchrad', 'coarse_tolerance', 'coarse_separation',
-               'refine_niter', 'fine_fitgeom', 'fine_min_general',
+_SOLVE_KEYS = ('coarse_searchrad', 'refine_niter',
+               'd2d_max', 'binsize_px', 'gaussian_sigma_px',
+               'rough_cut_px_min', 'rough_cut_px_max', 'nfwhm', 'hist_nsigma',
+               'histocut_order', 'slope_max', 'slope_nsteps',
+               'fine_fitgeom', 'fine_min_general',
                'fine_min_rshift', 'fine_min_shift', 'tolerance', 'match_radius',
                'min_matched', 'min_coverage_arcsec', 'ref_border_arcmin',
                'nclip', 'sigma')
