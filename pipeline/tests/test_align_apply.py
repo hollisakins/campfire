@@ -108,11 +108,35 @@ def test_srcmask_preserved(tmp_path):
             assert 'SRCMASK' in h
 
 
-def test_wcs_bak_written(tmp_path):
+def test_algn_bak_written(tmp_path):
     members, refcat, _ = _make_exposure(tmp_path, n_det=1)
     align_exposure_group(members, refcat, config={})
     with fits.open(members[0].path) as h:
-        assert 'WCS_BAK' in h
+        assert 'ALGN_BAK' in h          # align's own pre-align backup
+
+
+def test_ignores_and_preserves_wcs_shift_bak(tmp_path):
+    # wcs_shift runs before align and stashes the pre-*shift* WCS in WCS_BAK.
+    # align must solve from the current (wcs_shift-corrected) meta.wcs — NOT
+    # WCS_BAK — and leave WCS_BAK intact. Inject a far-off bogus WCS_BAK: if align
+    # wrongly solved from it the footprint clip would starve -> NOT_ALIGNED.
+    from campfire_pipeline.nircam.align.apply import (
+        _serialize_gwcs_to_hdu, WCS_BAK_EXTNAME)
+    members, refcat, _ = _make_exposure(tmp_path, n_det=1)
+    bogus = make_persistable_wcs(ra_ref=90.0, dec_ref=-10.0)   # far from the frame
+    bogus_hdu = _serialize_gwcs_to_hdu(bogus, name=WCS_BAK_EXTNAME)
+    bogus_bytes = bytes(bogus_hdu.data)
+    with fits.open(members[0].path) as h:
+        h.append(bogus_hdu)
+        h.writeto(members[0].path, overwrite=True)
+
+    align_exposure_group(members, refcat, config={})
+
+    assert _cfp_algn(members[0].path).startswith('dof=')  # solved from meta.wcs
+    with fits.open(members[0].path) as h:
+        assert 'ALGN_BAK' in h                            # align's backup written
+        assert 'WCS_BAK' in h                             # wcs_shift's preserved
+        assert bytes(h['WCS_BAK'].data) == bogus_bytes    # ... byte-for-byte
 
 
 # --- NOT_ALIGNED ------------------------------------------------------------
@@ -186,19 +210,19 @@ def test_overwrite_does_not_double_correct(tmp_path):
         assert _reload_residual(m.path, xy[m.detector], refcat) < 0.05
 
 
-# --- adaptive end-to-end ----------------------------------------------------
+# --- fine per-detector fit end-to-end ---------------------------------------
 
-def test_adaptive_dof_recorded(tmp_path):
-    # Detector 4 carries a 0.6" per-detector offset — large enough that the
-    # all-source shared refine sigma-clips it (rather than tilting the whole
-    # exposure to absorb it), so its residual survives above tolerance and the
-    # adaptive shift-only refit frees it. match_radius=0.8 keeps its sources
+def test_fine_dof_recorded(tmp_path):
+    # Detector 4 carries a 0.6" per-detector offset — large enough that after the
+    # pooled coarse fit its residual survives above tolerance, so the gated fine
+    # fit frees it (default ceiling rshift). match_radius=0.8 keeps its sources
     # matchable at that offset.
     members, refcat, _ = _make_exposure(
         tmp_path, n_det=5, offset=(2.0, 0.0), per_det_extra={4: (0.0, 0.6)})
     align_exposure_group(members, refcat,
                          config={'tolerance': 0.15, 'match_radius': 0.8})
-    # detectors 0-3 stay on the shared solution; detector 4 (nrcb1) is freed
-    for m in members[:4]:
-        assert 'dof=shared' in _cfp_algn(m.path)
-    assert 'dof=shift' in _cfp_algn(members[4].path)
+    # detector 4 (nrcb1)'s 0.6" offset trips tolerance; the gated fine fit frees
+    # it (default ceiling rshift). The fit is per-detector, not a global re-fit,
+    # so unperturbed good detectors keep the pooled coarse attitude.
+    assert 'dof=rshift' in _cfp_algn(members[4].path)
+    assert any('dof=coarse' in _cfp_algn(m.path) for m in members[:4])

@@ -25,6 +25,13 @@ ASDF blob). On ``--overwrite``, the original WCS is restored from
 ``WCS_BAK`` *before* the (possibly different) shift is applied, so the
 operation stays declarative — config specifies the desired shift, the
 step makes the on-disk state match.
+
+Downstream invalidation: rewriting the WCS invalidates any alignment
+that was solved from the old one. Every apply therefore clears the
+``CFP_JHAT``/``CFP_ALGN`` stamps and drops align's ``ALGN_BAK`` baseline
+in the same atomic write, so a retuned shift forces jhat/align to
+re-solve on the next run instead of a stale (but trusted-looking) stamp
+letting an unaligned WCS drizzle into the mosaic.
 """
 
 import io
@@ -40,6 +47,39 @@ from campfire_pipeline.common import cfp
 
 
 WCS_BAK_EXTNAME = 'WCS_BAK'
+
+# Alignment state this step invalidates whenever it rewrites the WCS: the
+# jhat/align provenance stamps, and align's own pre-align WCS baseline
+# (``ALGN_BAK``, written by nircam/align/apply.py — the name is duplicated here
+# to avoid importing the align stack). Both alignment solutions — and the
+# ALGN_BAK baseline — are functions of the WCS this step is about to replace;
+# left in place they would read as current (the align skip check would trust
+# the stamp and never re-solve) while describing a WCS that no longer exists.
+_ALIGN_STAMP_KEYS = ('CFP_JHAT', 'CFP_ALGN')
+_ALGN_BAK_EXTNAME = 'ALGN_BAK'
+
+
+def _scrub_alignment_state(model):
+    """Drop stale jhat/align provenance from the in-memory *model*.
+
+    stdatamodels round-trips non-schema primary-header cards and extensions
+    through ``model.extra_fits``, so the stale ``CFP_JHAT``/``CFP_ALGN`` stamps
+    and align's ``ALGN_BAK`` extension would otherwise be written straight back
+    by the save. Scrubbing must happen on the model (not by deleting HDUs from
+    the written file): the embedded ASDF extension references extra-fits data
+    by extension name, so post-save surgery would leave a dangling reference
+    that breaks the next datamodel load.
+    """
+    extra = getattr(model, 'extra_fits', None)
+    if extra is None:
+        return
+    if hasattr(extra, _ALGN_BAK_EXTNAME):
+        delattr(extra, _ALGN_BAK_EXTNAME)
+    prim = getattr(extra, 'PRIMARY', None)
+    header = getattr(prim, 'header', None) if prim is not None else None
+    if header is not None:
+        prim.header = [list(card) for card in header
+                       if card[0] not in _ALIGN_STAMP_KEYS]
 
 
 def _match_rule(rootname, filtname, rules):
@@ -185,6 +225,11 @@ def wcs_shift_step(exposure_file, field, step_config, overwrite=False,
     extra_hdus = [wcs_bak_to_save]
     if srcmask_hdu is not None:
         extra_hdus.append(srcmask_hdu)
+
+    # The WCS just changed: clear the jhat/align stamps and align's ALGN_BAK
+    # baseline (all solved from the OLD WCS) so the next run re-solves instead
+    # of trusting a stale alignment.
+    _scrub_alignment_state(model)
 
     atomic_save(
         model, exposure_file,

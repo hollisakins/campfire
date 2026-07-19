@@ -28,6 +28,39 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- NIRCam `align` redesigned as a **coarse-per-module + gated per-detector fine**
+  step and moved **into the process loop** (it replaces `jhat`; `wcs_shift` is
+  kept for manual offsets). Opt-in per field (`[<field>.align].enabled`,
+  default off), so existing jhat reductions are unchanged. Per filter (= per
+  channel), each exposure is split into module pools (`pool_modules`, default
+  per-module); each pool is footprint-clipped and tied to the field's shared
+  Gaia-tied refcat with one rigid `rshift` matched by `tweakwcs.XYXYMatch`'s
+  2-D-histogram (iterated to convergence — recovers offsets to tens of arcsec
+  and roll to ~1°; validated in `scripts/align_matcher_bakeoff.py`), gated to
+  `NOT_ALIGNED` unless enough one-to-one matches span enough sky to condition a
+  rotation, then each over-tolerance detector gets a fine fit down a
+  `general→rshift→shift→coarse` ladder (default ceiling `rshift`, = jhat's
+  per-detector geometry). Retires the pooled cross-filter joint solve, the
+  bootstrap triangle matcher, and the **`tristars` dependency** (`matcher.py`
+  removed). `CFP_ALGN` now records the refcat content hash (`rc=`) so a changed
+  refcat re-solves instead of silently keeping a stale WCS. `campfire_pipeline/
+  nircam/align/`, `association.py`, `orchestrate.py`, `config_default.toml`.
+- NIRCam `wcs_shift` now invalidates downstream alignment state whenever it
+  rewrites a WCS: the `CFP_JHAT`/`CFP_ALGN` stamps and align's `ALGN_BAK`
+  baseline are scrubbed in the same atomic write, so re-applying a retuned
+  manual offset forces jhat/align to re-solve on the next run. Previously the
+  stale stamp survived the rewrite and read as a current solution — the skip
+  checks and the combine quarantine would trust it and drizzle the exposure
+  with an unaligned WCS, silently. `campfire_pipeline/nircam/steps/wcs_shift.py`.
+
+### Calibration
+- NIRCam align refcat robustness: proper-motion propagation now reads masked
+  columns as NaN (a masked fill sentinel could otherwise propagate a filler row
+  off-sky), rejects an out-of-range `ref_epoch` loudly (an MJD / wrong-unit
+  epoch is no longer silently read as a Julian year), and warns when a merge
+  discards proper motions because the PM catalog wasn't listed first.
+  `campfire_pipeline/nircam/refcat/{motion,merge}.py`.
 ### Calibration
 - NIRCam wisp subtraction now defaults to the multi-component non-negative
   matrix factorization model of Wu et al. 2026 (JADES DR5, arXiv:2601.15958),

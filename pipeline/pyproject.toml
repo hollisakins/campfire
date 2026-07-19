@@ -40,8 +40,7 @@ dependencies = [
     "sep>=1.4.1",
     "astroquery>=0.4.7",
     "pyvo>=1.5",
-    "tweakwcs>=0.8",  # NIRCam align step: JWSTWCSCorrector/align_wcs (also transitive via jwst)
-    "tristars==0.1",  # NIRCam align step: triangle/asterism matcher (unmaintained v0.1; pin exact)
+    "tweakwcs>=0.8",  # NIRCam align: JWSTWCSCorrector/align_wcs/XYXYMatch (also transitive via jwst)
 ]
 
 [project.scripts]

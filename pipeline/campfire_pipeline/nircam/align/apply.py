@@ -7,11 +7,14 @@ the corrected gwcs back onto each canonical with a ``CFP_ALGN`` provenance stamp
 — or a ``NOT_ALIGNED`` sentinel when the exposure can't be tied to the reference
 (WCS preserved, never retried).
 
-Idempotency: the original (un-aligned) gwcs is stashed in a ``WCS_BAK``
-extension on first apply; on ``overwrite`` the solve runs from that original, so
-re-running never composes a second correction on top of the first. Mirrors the
-``steps/wcs_shift.py`` write-back contract (the ``WCS_BAK`` helpers are
-replicated here because ``align`` supersedes and will remove ``wcs_shift``).
+Idempotency: the pre-align gwcs is stashed in an ``ALGN_BAK`` extension on first
+apply; on ``overwrite`` the solve runs from that baseline, so re-running never
+composes a second correction on top of the first. ``align`` uses its OWN backup
+extension (not ``wcs_shift``'s ``WCS_BAK``) because both steps run in the process
+loop: ``wcs_shift`` applies manual offsets first and backs up the pre-*shift* WCS
+in ``WCS_BAK``, so ``align`` must solve from the wcs_shift-corrected WCS and leave
+``WCS_BAK`` intact. The gwcs<->ASDF-in-FITS backup technique is shared with
+``steps/wcs_shift.py``.
 
 The reference catalog and config knobs arrive already resolved — refcat
 resolution / loading and ``[<field>.align]`` parsing live in the field-level
@@ -38,26 +41,32 @@ from campfire_pipeline.nircam.align.solve import (
 )
 from campfire_pipeline.nircam.association import exposure_key
 
-WCS_BAK_EXTNAME = 'WCS_BAK'
+# align's OWN gwcs backup — the pre-align input WCS. Deliberately distinct from
+# wcs_shift's ``WCS_BAK`` (which holds the pre-*shift* WCS): wcs_shift runs before
+# align in the process loop, so if align solved from ``WCS_BAK`` it would discard
+# the manual offset wcs_shift applied. align solves from the current (post-shift)
+# WCS, backs it up here, and preserves wcs_shift's ``WCS_BAK`` untouched.
+ALGN_BAK_EXTNAME = 'ALGN_BAK'
+WCS_BAK_EXTNAME = 'WCS_BAK'          # wcs_shift's backup — preserved, never solved from
 NOT_ALIGNED_SENTINEL = cfp.NOT_ALIGNED
 
 # Solve/detection knobs threaded from [<field>.align]; the orchestration passes
 # a resolved dict, these are the fallbacks. Per-filter PSF FWHM
 # (``psf_fwhm_by_filter``) is resolved per member below, not passed through
-# these keys. ``bootstrap_max`` and the ``refine_*`` knobs are solve keys (the
-# triangle-vertex cap moved to the bootstrap; detection is no longer count-
-# capped, so ``brightest`` is gone from the align path).
-_SOLVE_KEYS = ('fitgeom', 'minobj', 'nclip', 'sigma', 'tolerance', 'adaptive',
-               'adaptive_min_matches', 'match_radius', 'min_matched',
-               'ref_border_arcmin', 'bootstrap_max', 'refine_searchrad',
-               'refine_tolerance', 'refine_niter')
+# these keys. ``pool_modules`` is an orchestration key (it decides how detectors
+# are pooled before the solve is called), so it is deliberately NOT a solve key.
+_SOLVE_KEYS = ('coarse_searchrad', 'coarse_tolerance', 'coarse_separation',
+               'refine_niter', 'fine_fitgeom', 'fine_min_general',
+               'fine_min_rshift', 'fine_min_shift', 'tolerance', 'match_radius',
+               'min_matched', 'min_coverage_arcsec', 'ref_border_arcmin',
+               'nclip', 'sigma')
 _DETECT_KEYS = ('fwhm', 'nsigma', 'edge', 'snr_min', 'objmag_lim',
                 'sharplo', 'sharphi', 'roundlo', 'roundhi')
 
 
-# --- WCS_BAK gwcs <-> ASDF-in-FITS (replicated from steps/wcs_shift.py) ------
+# --- gwcs <-> ASDF-in-FITS backup (technique shared with steps/wcs_shift.py) --
 
-def _serialize_gwcs_to_hdu(wcs, name=WCS_BAK_EXTNAME):
+def _serialize_gwcs_to_hdu(wcs, name=ALGN_BAK_EXTNAME):
     import asdf
     af = asdf.AsdfFile({'wcs': wcs})
     buf = io.BytesIO()
@@ -83,11 +92,22 @@ def _stamp_algn(path, value):
     os.replace(tmp, path)
 
 
-def _format_algn_value(det):
+def _algn_rc(value):
+    """The ``rc=`` refcat-hash token from a CFP_ALGN value string, or None."""
+    for tok in str(value or '').split():
+        if tok.startswith('rc='):
+            return tok[3:]
+    return None
+
+
+def _format_algn_value(det, refcat_hash=None):
     # Per-detector provenance, kept short so the value + card comment fit one
-    # 80-char FITS card. The shared shift/rot is group-level (same for every
-    # detector) and is logged once per group, not stamped on each card.
-    return f'dof={det.dof} res={det.residual_arcsec:.3g} n={det.n_matched}'
+    # 80-char FITS card. The coarse shift/rot is pool-level (same for every
+    # detector) and is logged once per pool, not stamped on each card. The ``rc=``
+    # token records which reference catalog produced the solve — read back by the
+    # orchestration skip check to re-solve when the refcat changes.
+    base = f'dof={det.dof} res={det.residual_arcsec:.3g} n={det.n_matched}'
+    return f'{base} rc={refcat_hash}' if refcat_hash else base
 
 
 def _exposure_mid_mjd(path):
@@ -146,7 +166,7 @@ def _detect_mask(model):
 
 
 def _load_detector(path, detector, detect_cfg, ImageModel):
-    """Open a canonical, pick the ORIGINAL gwcs (from WCS_BAK if this file was
+    """Open a canonical, pick the pre-align gwcs (from ALGN_BAK if this file was
     aligned before), detect sources, and return a :class:`DetectorInput`."""
     model = ImageModel(path, memmap=False)
     try:
@@ -159,11 +179,14 @@ def _load_detector(path, detector, detect_cfg, ImageModel):
     finally:
         model.close()
 
-    # A prior align stashed the un-aligned gwcs; solve from it so an overwrite
-    # re-run corrects the original, never the already-corrected WCS.
+    # A prior ALIGN stashed the pre-align gwcs in ALGN_BAK; solve from it so an
+    # overwrite re-run corrects the original input WCS, never the already-aligned
+    # one. First-time solve uses the current meta.wcs above — which, when a field
+    # also runs wcs_shift, is the wcs_shift-CORRECTED WCS (we deliberately do NOT
+    # read wcs_shift's WCS_BAK here, or the manual offset would be discarded).
     with fits.open(path, memmap=False) as hdul:
-        if WCS_BAK_EXTNAME in hdul:
-            orig_wcs = _deserialize_gwcs_from_hdu(hdul[WCS_BAK_EXTNAME])
+        if ALGN_BAK_EXTNAME in hdul:
+            orig_wcs = _deserialize_gwcs_from_hdu(hdul[ALGN_BAK_EXTNAME])
 
     return DetectorInput(detector=detector, wcs=orig_wcs, wcsinfo=wcsinfo,
                          catalog=cat)
@@ -171,16 +194,23 @@ def _load_detector(path, detector, detect_cfg, ImageModel):
 
 def _write_solution(path, corrected_wcs, cfp_value, ImageModel,
                     update_fits_wcsinfo):
-    """Write *corrected_wcs* back onto the canonical + stamp CFP_ALGN, keeping
-    SRCMASK and stashing the original gwcs in WCS_BAK."""
-    existing_wcs_bak = None
+    """Write *corrected_wcs* back onto the canonical + stamp CFP_ALGN, stashing
+    the pre-align gwcs in ALGN_BAK and preserving SRCMASK and any wcs_shift
+    ``WCS_BAK``."""
+    existing_algn_bak = None
+    wcs_shift_bak = None
     srcmask_hdu = None
     with fits.open(path, memmap=False) as hdul:
-        if WCS_BAK_EXTNAME in hdul:
+        if ALGN_BAK_EXTNAME in hdul:
+            ab = hdul[ALGN_BAK_EXTNAME]
+            existing_algn_bak = fits.ImageHDU(data=ab.data.copy(),
+                                              header=ab.header.copy(),
+                                              name=ALGN_BAK_EXTNAME)
+        if WCS_BAK_EXTNAME in hdul:            # wcs_shift's backup — keep intact
             wb = hdul[WCS_BAK_EXTNAME]
-            existing_wcs_bak = fits.ImageHDU(data=wb.data.copy(),
-                                             header=wb.header.copy(),
-                                             name=WCS_BAK_EXTNAME)
+            wcs_shift_bak = fits.ImageHDU(data=wb.data.copy(),
+                                          header=wb.header.copy(),
+                                          name=WCS_BAK_EXTNAME)
         if 'SRCMASK' in hdul:
             sm = hdul['SRCMASK']
             srcmask_hdu = fits.ImageHDU(data=sm.data.copy(),
@@ -188,10 +218,11 @@ def _write_solution(path, corrected_wcs, cfp_value, ImageModel,
 
     model = ImageModel(path, memmap=False)
     try:
-        # Preserve the true original: keep an existing WCS_BAK, else the current
-        # (still un-aligned) WCS becomes the baseline.
-        wcs_bak = (existing_wcs_bak if existing_wcs_bak is not None
-                   else _serialize_gwcs_to_hdu(model.meta.wcs))
+        # Preserve the pre-align baseline: keep an existing ALGN_BAK across
+        # re-solves, else the current (pre-align, wcs_shift-corrected) WCS
+        # becomes it.
+        algn_bak = (existing_algn_bak if existing_algn_bak is not None
+                    else _serialize_gwcs_to_hdu(model.meta.wcs))
         model.meta.wcs = corrected_wcs
         try:
             update_fits_wcsinfo(model)
@@ -199,7 +230,11 @@ def _write_solution(path, corrected_wcs, cfp_value, ImageModel,
             log(f"align: update_fits_wcsinfo failed on {os.path.basename(path)} "
                 f"({type(e).__name__}); FITS SIP keywords not refreshed.")
 
-        extra_hdus = [wcs_bak] + ([srcmask_hdu] if srcmask_hdu is not None else [])
+        extra_hdus = [algn_bak]
+        if wcs_shift_bak is not None:
+            extra_hdus.append(wcs_shift_bak)
+        if srcmask_hdu is not None:
+            extra_hdus.append(srcmask_hdu)
         atomic_save(model, path,
                     header_updates=cfp.format(CFP_ALGN=cfp_value),
                     extra_hdus=extra_hdus)
@@ -235,15 +270,22 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
     if key is None:
         key = exposure_key(members[0].path)
     config = dict(config or {})
+    refcat_hash = config.get('_refcat_hash')   # provenance/staleness (orchestration)
 
     def _aligned_ok(path):
         # A detector counts as done only if it carries a *completed, non-rejected*
-        # alignment. A NOT_ALIGNED exposure is re-attempted on a normal re-run
-        # (no --overwrite) so the user can retune [<field>.align] params and try
-        # again without force-re-solving everything that already succeeded.
+        # alignment produced by the *current* refcat. A NOT_ALIGNED exposure — or
+        # one solved against a now-changed refcat (rc mismatch) — is re-attempted
+        # on a normal re-run (no --overwrite) so the user can retune params /
+        # swap the refcat without force-re-solving everything that succeeded.
         stamped = (status.has(path, 'CFP_ALGN') if status is not None
                    else cfp.has_step(path, 'CFP_ALGN'))
-        return stamped and cfp.step_value(path, 'CFP_ALGN') != NOT_ALIGNED_SENTINEL
+        if not stamped:
+            return False
+        value = cfp.step_value(path, 'CFP_ALGN')
+        if value == NOT_ALIGNED_SENTINEL:
+            return False
+        return refcat_hash is None or _algn_rc(value) == refcat_hash
 
     if not overwrite and all(_aligned_ok(m.path) for m in members):
         log(f"align[{key}]: all {len(members)} detectors already aligned; "
@@ -268,7 +310,7 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
     # Reading + solving one exposure must never abort a whole field's align. Any
     # unexpected failure (a corrupt canonical, an unforeseen solver error the
     # in-solve guards missed) degrades this exposure to NOT_ALIGNED — surfaced
-    # loudly by run_align and quarantined from combine — rather than crashing.
+    # loudly by the align step and quarantined from combine — not crashing.
     try:
         detectors = []
         for m in members:
@@ -295,7 +337,7 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
         det_sol = by_detector.get(m.detector)
         if solution.status == 'SOLVED' and det_sol is not None:
             _write_solution(m.path, det_sol.wcs,
-                            _format_algn_value(det_sol),
+                            _format_algn_value(det_sol, refcat_hash),
                             ImageModel, update_fits_wcsinfo)
         else:
             _stamp_algn(m.path, NOT_ALIGNED_SENTINEL)
