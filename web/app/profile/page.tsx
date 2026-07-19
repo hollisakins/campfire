@@ -454,9 +454,9 @@ export default function ProfilePage() {
                   >
                     <div>
                       <span className="font-mono text-sm text-text-primary">
-                        {redemption.access_codes.code}
+                        {redemption.access_codes?.code ?? '(code unavailable)'}
                       </span>
-                      {redemption.access_codes.description && (
+                      {redemption.access_codes?.description && (
                         <span className="text-sm text-text-secondary ml-2">
                           ({redemption.access_codes.description})
                         </span>

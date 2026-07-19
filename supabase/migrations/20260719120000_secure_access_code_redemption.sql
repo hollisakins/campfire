@@ -13,6 +13,18 @@
 
 drop policy if exists "Anyone can read active codes" on "public"."access_codes";
 
+-- Users can still read codes they have already redeemed (the profile page's
+-- redemption history embeds access_codes via code_redemptions). Redeeming
+-- required knowing the code, so this reveals nothing new; unredeemed codes
+-- stay invisible to non-admins.
+CREATE POLICY "Users can read own redeemed codes"
+  ON "public"."access_codes" FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM code_redemptions
+    WHERE code_redemptions.code_id = access_codes.id
+      AND code_redemptions.user_id = (SELECT auth.uid())
+  ));
+
 CREATE OR REPLACE FUNCTION public.redeem_access_code(p_code text)
 RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER

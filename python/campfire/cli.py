@@ -156,20 +156,23 @@ def _check_client_version(base_url: str) -> None:
         latest = Version(data.get("latest", __version__))
         minimum = Version(data.get("minimum", "0.0.0"))
 
-        # campfire-layout isn't on PyPI, so the upgrade command must supply it
-        # alongside the client or pip fails to resolve the dependency.
-        upgrade_cmd = (
-            "  pip install -U "
+        # Two supported install paths, and the CLI can't tell which one it came
+        # from: a repo checkout updates via install.py, while a pip-from-git
+        # install must supply campfire-layout alongside the client (it isn't on
+        # PyPI, so the single-package form can never resolve).
+        upgrade_lines = (
+            "  repo checkout:  git pull && python3 install.py\n"
+            "  pip install:    pip install -U "
             '"campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" '
             '"campfire @ git+https://github.com/hollisakins/campfire.git#subdirectory=python"'
         )
         if current < minimum:
             click.echo(f"\n⚠ campfire v{__version__} is no longer supported "
                         f"(minimum: v{minimum}). Please update:")
-            click.echo(upgrade_cmd)
+            click.echo(upgrade_lines)
         elif current < latest:
             click.echo(f"\n  Update available: v{__version__} → v{latest}")
-            click.echo(upgrade_cmd)
+            click.echo(upgrade_lines)
     except Exception:
         pass  # Never block sync for a version check failure
 

@@ -1128,6 +1128,19 @@ CREATE POLICY "admin_manage_codes"
   ON access_codes
   USING ((SELECT public.is_admin()));
 
+-- Users can read codes they have already redeemed (the profile page's
+-- redemption history embeds access_codes via code_redemptions). Redeeming
+-- required knowing the code, so this reveals nothing new; unredeemed codes
+-- stay invisible to non-admins.
+DROP POLICY IF EXISTS "Users can read own redeemed codes" ON access_codes;
+CREATE POLICY "Users can read own redeemed codes"
+  ON access_codes FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM code_redemptions
+    WHERE code_redemptions.code_id = access_codes.id
+      AND code_redemptions.user_id = (SELECT auth.uid())
+  ));
+
 
 -- =============================================================================
 -- code_redemptions
