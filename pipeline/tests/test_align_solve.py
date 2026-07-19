@@ -217,9 +217,9 @@ def test_footprint_clip_survives_refcat_decoys():
 # --- robustness: exceptions never crash the worker --------------------------
 
 def test_matcher_exception_degrades_to_not_aligned(monkeypatch):
-    # A crowded field can make XYXYMatch raise (source confusion). That must be
-    # swallowed and degrade to NOT_ALIGNED (WCS preserved), never propagate out
-    # of the solve and abort the align worker.
+    # An unforeseen matcher crash must be swallowed and degrade to NOT_ALIGNED
+    # (WCS preserved), never propagate out of the solve and abort the align
+    # worker.
     from tweakwcs.matchutils import MatchCatalogs
     import campfire_pipeline.nircam.align.solve as _s
 
@@ -228,9 +228,9 @@ def test_matcher_exception_degrades_to_not_aligned(monkeypatch):
             pass
 
         def __call__(self, refcat, imcat, **k):
-            raise RuntimeError("simulated source confusion")
+            raise RuntimeError("simulated matcher crash")
 
-    monkeypatch.setattr(_s, 'XYXYMatch', _BoomMatch)
+    monkeypatch.setattr(_s, 'OffsetHistogramMatch', _BoomMatch)
     detectors, refcat = _build_group(n_det=2, offset=(2.0, 0.0))
     originals = [copy.deepcopy(d.wcs) for d in detectors]
     sol = solve_exposure_group(detectors, refcat, key='exp')
@@ -254,3 +254,43 @@ def test_match_measures_small_offset():
     assert n >= 30
     assert 0.15 < resid < 0.25
     assert len(ref_idx) >= 30
+
+
+# --- clustered extragalactic refcat (the XYXYMatch overflow regime) ---------
+
+def test_solves_substructured_refcat_regime():
+    # The COSMOS failure mode: detections and refcat rows are the same
+    # (clustered) galaxies, and the refcat resolves substructure — several
+    # reference rows within ~2" of one detection. XYXYMatch's pair enumeration
+    # died here with MatchSourceConfusionError (39% of COSMOS LW exposures);
+    # the histogram-consensus matcher must solve it.
+    rng = np.random.default_rng(55)
+    crval = [_BASE_RA, _BASE_DEC]
+    x = rng.uniform(50, 950, 300)
+    y = rng.uniform(50, 2000, 300)
+    wt = _mock(crval)
+    ra_t, dec_t = (np.asarray(v, float) for v in wt(x, y))
+
+    # substructure: clone layers offset ~1" around each truth position, plus a
+    # diffuse junk floor — refcat ~6x denser than the detections
+    cosd = _COSD
+    ras, decs = [ra_t], [dec_t]
+    for _ in range(6):
+        sel = rng.random(300) < 0.6
+        n = int(sel.sum())
+        ras.append(ra_t[sel] + rng.normal(0, 1.0, n) / 3600.0 / cosd)
+        decs.append(dec_t[sel] + rng.normal(0, 1.0, n) / 3600.0)
+    ras.append(_BASE_RA + rng.uniform(-0.015, 0.015, 600) / cosd)
+    decs.append(_BASE_DEC + rng.uniform(-0.015, 0.015, 600))
+    refcat = Table({'RA': np.concatenate(ras), 'DEC': np.concatenate(decs)})
+    refcat.meta['name'] = 'clustered'
+
+    crval_off = [crval[0] + 0.4 / 3600.0 / cosd, crval[1] - 0.3 / 3600.0]
+    det = [DetectorInput('nrcblong', _mock(crval_off), _wcsinfo(),
+                         Table({'x': x, 'y': y,
+                                'mag': rng.uniform(18, 24, 300)}))]
+    sol = solve_exposure_group(det, refcat, key='exp')
+    assert sol.status == 'SOLVED'
+    assert sol.detectors[0].within_tolerance
+    assert sol.detectors[0].n_matched >= 150
+    assert abs(np.hypot(*sol.shift) - 0.5) < 0.1     # hypot(0.4, 0.3)

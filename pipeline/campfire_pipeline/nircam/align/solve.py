@@ -13,11 +13,14 @@ exposure reader/writer + ``CFP_ALGN`` stamp live in the orchestration layer).
 
 1. *Footprint-clip* the field refcat to this pool's detector union + border
    (``footprint.py``), so the coarse matcher works against in-frame sources.
-2. *Coarse* — one pooled ``rshift`` recovered by ``tweakwcs.XYXYMatch`` on its
-   2-D pairwise-offset histogram (``use2dhist``), iterated match→fit→rematch to
-   convergence. The histogram grabs a gross translation (validated to tens of
-   arcsec) and the rigid fit recovers the roll (to ~1 deg) over the iterations —
-   no triangle matcher, no rotation scan (see ``scripts/align_matcher_bakeoff``).
+2. *Coarse* — one pooled ``rshift`` recovered by the JHAT-ported
+   ``OffsetHistogramMatch`` (``histmatch.py``): a 2-D-histogram gross-shift
+   stage over ``coarse_searchrad`` (pass 0 only), then unbounded 1-NN pairing
+   whose true correspondences are selected by the pairwise-offset histogram
+   consensus (rotation-slope scan + sigma clip), iterated match→fit→rematch to
+   convergence. Unlike ``tweakwcs.XYXYMatch`` (pair *enumeration*, which dies
+   with ``MatchSourceConfusionError`` on clustered extragalactic catalogs),
+   nothing here is enumerated and nothing can overflow.
 3. *Group gate* — accept the pool only if enough sources match one-to-one and
    span enough sky to condition a rotation; else reject to NOT_ALIGNED.
 4. *Fine* — each detector over tolerance gets an individual fit against a
@@ -47,6 +50,7 @@ from tweakwcs.matchutils import XYXYMatch
 
 from campfire_pipeline.common.io import log
 from campfire_pipeline.nircam.align.footprint import clip_refcat_to_exposure
+from campfire_pipeline.nircam.align.histmatch import OffsetHistogramMatch
 
 # A coarse iterate pass that moves the shared WCS by less than this (arcsec) has
 # converged — well below a NIRCam pixel (31 mas SW / 63 mas LW).
@@ -195,27 +199,23 @@ def _pool_fit(detectors, wcs_by_det, refcat, match, *, key, fitgeom, nclip, sigm
     return correctors, correctors[0].meta.get('fit_info', {})
 
 
-def _coarse(detectors, wcs_by_det, refcat, key, *, searchrad, tolerance,
-            separation, niter, nclip, sigma):
+def _coarse(detectors, wcs_by_det, refcat, key, *, match0, match_iter, niter,
+            nclip, sigma):
     """Iterate a pooled ``rshift`` to convergence; return
     ``(correctors, last_info, first_info, wcs_by_det)`` or
     ``(None, {}, {}, wcs_by_det)``.
 
-    Pass 0 uses the 2-D-histogram matcher over the full *searchrad* to grab the
-    gross translation; later passes start from the corrected WCS and match by
-    nearest-neighbour (``use2dhist=False``) around the now-small residual, the
-    rigid fit peeling off the roll each pass. *first_info* is pass 0's fit (the
-    gross shift/rot the input WCS was off by, for provenance); *last_info* is the
-    converged fit (its rmse is the final quality).
+    Pass 0 uses *match0* (the histogram matcher with its gross-translation
+    stage over the full search radius); later passes start from the corrected
+    WCS and use *match_iter* (the same consensus matcher without the gross
+    stage) around the now-small residual, the rigid fit peeling off the roll
+    each pass. *first_info* is pass 0's fit (the gross shift/rot the input WCS
+    was off by, for provenance); *last_info* is the converged fit (its rmse is
+    the final quality).
     """
     correctors, last_info, first_info = None, {}, {}
     for i in range(max(1, int(niter))):
-        if i == 0:
-            match = XYXYMatch(use2dhist=True, searchrad=searchrad,
-                              tolerance=tolerance, separation=separation)
-        else:
-            match = XYXYMatch(use2dhist=False, searchrad=tolerance,
-                              tolerance=tolerance, separation=separation)
+        match = match0 if i == 0 else match_iter
         try:
             c, fi = _pool_fit(detectors, wcs_by_det, refcat, match, key=key,
                               fitgeom='rshift', nclip=nclip, sigma=sigma)
@@ -278,8 +278,11 @@ def _fine_fit(corr, detector, local_refcat, geom, *, key, match_radius, nclip,
 
 
 def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
-                         coarse_searchrad=70.0, coarse_tolerance=2.0,
-                         coarse_separation=1.0, refine_niter=3,
+                         coarse_searchrad=70.0, refine_niter=3,
+                         d2d_max=1.5, binsize_px=0.02, gaussian_sigma_px=0.2,
+                         rough_cut_px_min=2.5, rough_cut_px_max=2.5,
+                         nfwhm=2.5, hist_nsigma=3.0, histocut_order='dxdy',
+                         slope_max=10.0 / 2048.0, slope_nsteps=200,
                          fine_fitgeom='rshift', fine_min_general=10,
                          fine_min_rshift=4, fine_min_shift=2, tolerance=0.05,
                          match_radius=0.5, min_matched=6, min_coverage_arcsec=5.0,
@@ -288,10 +291,13 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
 
     *detectors* is one pool (a module, or a whole channel when the caller pooled
     modules). The pool is footprint-clipped, tied to the refcat with a single
-    coarse ``rshift`` (``XYXYMatch`` 2-D-hist + iterate), gated on match count and
-    sky coverage, then each over-tolerance detector gets a fine fit whose geometry
+    coarse ``rshift`` (``OffsetHistogramMatch``: gross 2-D-hist shift + 1-NN /
+    offset-histogram consensus, iterated), gated on match count and sky
+    coverage, then each over-tolerance detector gets a fine fit whose geometry
     is chosen down the ``fine_fitgeom`` ladder by its match count / coverage and
-    accepted only if it reduces the residual.
+    accepted only if it reduces the residual. The ``d2d_max`` … ``slope_nsteps``
+    knobs pass straight to :class:`OffsetHistogramMatch` (the ``*_px`` ones in
+    image pixels, mirroring the validated JHAT configuration).
 
     ``pool_modules`` is accepted for config-passthrough symmetry but unused here
     (the orchestration layer decides pooling before calling this).
@@ -333,12 +339,21 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
 
     wcs_by_det = {d.detector: d.wcs for d in detectors}
 
-    # 2. Coarse: one pooled rshift, iterated to convergence.
+    # 2. Coarse: one pooled rshift, iterated to convergence. Pass 0's matcher
+    #    carries the gross-translation stage (acquisition-failure recovery);
+    #    the iterate matcher drops it and re-pairs by pure 1-NN + consensus
+    #    around the already-corrected WCS.
+    hist_kwargs = dict(
+        d2d_max=d2d_max, binsize_px=binsize_px,
+        gaussian_sigma_px=gaussian_sigma_px,
+        rough_cut_px_min=rough_cut_px_min, rough_cut_px_max=rough_cut_px_max,
+        nfwhm=nfwhm, nsigma=hist_nsigma, histocut_order=histocut_order,
+        slope_max=slope_max, slope_nsteps=slope_nsteps)
     correctors, last_info, first_info, wcs_by_det = _coarse(
         detectors, wcs_by_det, refcat, key,
-        searchrad=coarse_searchrad, tolerance=coarse_tolerance,
-        separation=coarse_separation, niter=refine_niter, nclip=nclip,
-        sigma=sigma)
+        match0=OffsetHistogramMatch(searchrad=coarse_searchrad, **hist_kwargs),
+        match_iter=OffsetHistogramMatch(searchrad=None, **hist_kwargs),
+        niter=refine_niter, nclip=nclip, sigma=sigma)
     if correctors is None or not _succeeded(last_info):
         log(f"align solve[{key}]: coarse fit "
             f"{last_info.get('status', 'FAILED')}; NOT_ALIGNED (WCS preserved).")

@@ -431,19 +431,36 @@
     enabled = false
     # --- Coarse: pooled per-module (or per-channel) shift+rotation --------------
     # One rshift is fit from all of a module's detectors at once (SIAF fixed),
-    # matched to the refcat by tweakwcs' 2-D pairwise-offset histogram
-    # (XYXYMatch, use2dhist) then iterated to convergence. The bake-off
-    # (scripts/align_matcher_bakeoff.py) showed this recovers offsets to tens of
-    # arcsec and roll to ~1 deg at 97-100% in realistic (contaminated) fields;
-    # a rotation-scan wrapper was worse and 17x slower and the stimage triangle
-    # matcher hard-crashes on sparse input, so both — and tristars — are retired.
+    # matched to the refcat by the JHAT-ported OffsetHistogramMatch: a 2-D
+    # pairwise-offset histogram grabs the gross translation (pass 0 only),
+    # then every image source is 1-NN-paired to the refcat and the TRUE pairs
+    # are selected by consensus — they pile into one narrow peak of the
+    # per-axis offset histogram (rotation-slope scan + sigma clip) while false
+    # pairs scatter. Nothing is pair-enumerated, so the matcher cannot hit
+    # tweakwcs/stimage's MatchSourceConfusionError on clustered extragalactic
+    # catalogs (39% of COSMOS LW exposures under the previous XYXYMatch).
+    # All detectors of a pool share ONE offset histogram, so pooling makes the
+    # consensus peak stronger, not weaker.
     pool_modules      = false   # false: coarse fit per module (A, B separate);
                                 # true: pool both modules into one coarse fit
-    coarse_searchrad  = 70.0    # arcsec; 2-D-hist search radius (>= max acquisition
-                                # offset to recover; 70" covers 60" shifts)
-    coarse_tolerance  = 2.0     # arcsec; coarse pair-accept tolerance
-    coarse_separation = 1.0     # arcsec; min in-catalog source separation
+    coarse_searchrad  = 70.0    # arcsec; gross-shift 2-D-hist radius (>= max
+                                # acquisition offset to recover; 70" covers 60")
     refine_niter      = 3       # coarse match->fit->rematch iters (recovers roll)
+    # Histogram-consensus knobs (JHAT names/values — the validated COSMOS
+    # [nircam.jhat] configuration). *_px values are IMAGE PIXELS, converted to
+    # tangent-plane arcsec per pool, so SW/LW each get physical values.
+    d2d_max           = 1.5     # arcsec; drop 1-NN pairs farther than this
+                                # (after the gross shift)
+    binsize_px        = 0.02    # offset-histogram bin (px)
+    gaussian_sigma_px = 0.2     # histogram smoothing sigma (px)
+    rough_cut_px_min  = 2.5     # clamp on the rough cut around the peak (px);
+    rough_cut_px_max  = 2.5     # min = max = 2.5 pins it, as JHAT ran on COSMOS
+    nfwhm             = 2.5     # rough cut = nfwhm * peak FWHM before clamping
+    hist_nsigma       = 3.0     # sigma-clip of the de-rotated offsets
+    histocut_order    = "dxdy"  # cut dx-vs-y first ("dxdy") or dy-vs-x ("dydx")
+    slope_max         = 0.0048828125  # rotation-scan half-range, dimensionless
+                                      # (= JHAT's 10px/2048px ~ 0.28 deg)
+    slope_nsteps      = 200     # rotation-scan steps across [-slope_max, +]
     # --- Fine: gated per-detector fit on top of the coarse ---------------------
     # fine_fitgeom is the CEILING dof; each detector falls down the ladder
     # (general -> rshift -> shift -> keep-coarse) by its unique-match count. jhat
