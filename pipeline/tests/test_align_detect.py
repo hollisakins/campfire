@@ -119,24 +119,70 @@ def test_snr_min_drops_low_peak_sources():
     assert _nearest(cut, 70, 70) > 5.0               # faint dropped
 
 
-def test_objmag_lim_keeps_only_range():
-    # objmag_lim trims a magnitude window (uncalibrated DAO mag). Derive the
-    # limits from the actual catalog so the test doesn't hard-code kernel flux.
+def test_objmag_lim_cuts_calibrated_mags():
+    # With a zeropoint, mags are calibrated (aperture + ZP) and objmag_lim
+    # trims a real AB window. Derive the limits from the actual catalog so the
+    # test doesn't hard-code aperture sums.
     rng = np.random.default_rng(7)
     img = _inject((120, 120),
                   [(30.0, 30.0, 600.0), (60.0, 60.0, 120.0), (90.0, 90.0, 25.0)],
                   rng)
-    full = detect_star_centroids(img, nsigma=4.0)
+    full = detect_star_centroids(img, nsigma=4.0, zeropoint=25.0)
+    assert full.meta['mag_calibrated']
     assert len(full) >= 3
-    # DAOStarFinder can emit a negative-flux detection (mag = nan); rank on the
-    # finite mags. objmag_lim itself drops the nan-mag rows (isfinite gate).
     mags = np.sort(np.asarray(full['mag']))
     mags = mags[np.isfinite(mags)]
     lo, hi = mags[0] + 0.01, mags[-1] - 0.01         # exclude the extremes
-    cut = detect_star_centroids(img, nsigma=4.0, objmag_lim=(lo, hi))
+    cut = detect_star_centroids(img, nsigma=4.0, zeropoint=25.0,
+                                objmag_lim=(lo, hi))
     assert 0 < len(cut) < len(full)
     cm = np.asarray(cut['mag'])
     assert np.all(np.isfinite(cm) & (cm >= lo) & (cm <= hi))
+
+
+def test_objmag_lim_skipped_without_zeropoint():
+    # An AB window applied to instrumental mags would cut everything, so with
+    # no zeropoint the cut must be skipped (loudly), not applied.
+    rng = np.random.default_rng(7)
+    img = _inject((120, 120), [(30.0, 30.0, 600.0), (60.0, 60.0, 120.0)], rng)
+    full = detect_star_centroids(img, nsigma=4.0)
+    assert not full.meta['mag_calibrated']
+    cut = detect_star_centroids(img, nsigma=4.0, objmag_lim=(19.0, 28.0))
+    assert len(cut) == len(full)
+
+
+def test_calibrated_mag_recovers_known_flux():
+    # A bright Gaussian of known total flux F: the aperture (r = 2xFWHM holds
+    # ~99.7% of a 2-D Gaussian) mag must land near ZP - 2.5 log10(F).
+    rng = np.random.default_rng(11)
+    fwhm, amp = 2.5, 2000.0
+    sigma = fwhm / 2.3548
+    total = amp * 2 * np.pi * sigma ** 2
+    img = _inject((100, 100), [(50.0, 50.0, amp)], rng, noise=0.5, fwhm=fwhm)
+    zp = 25.0
+    cat = detect_star_centroids(img, fwhm=fwhm, zeropoint=zp)
+    assert len(cat) >= 1
+    row = np.argmin(np.hypot(np.asarray(cat['x']) - 50,
+                             np.asarray(cat['y']) - 50))
+    expected = zp - 2.5 * np.log10(total)
+    assert abs(float(cat['mag'][row]) - expected) < 0.05
+    assert float(cat['aper_flux'][row]) > 0
+
+
+def test_ab_zeropoint_from_sci_header():
+    from campfire_pipeline.nircam.align.detect import (
+        ab_zeropoint_from_sci_header,
+    )
+    # LW pixel (0.063"): PIXAR_SR ~ 9.31e-14 sr -> ZP ~ 26.5 AB, and exactly
+    # -2.5 log10(PIXAR_SR * 1e6 / 3631)
+    h = fits.Header({'BUNIT': 'MJy/sr', 'PIXAR_SR': 9.31e-14})
+    zp = ab_zeropoint_from_sci_header(h)
+    assert abs(zp - (-2.5 * np.log10(9.31e-14 * 1e6 / 3631.0))) < 1e-10
+    assert 26.0 < zp < 27.0
+    # missing / wrong units -> None
+    assert ab_zeropoint_from_sci_header(fits.Header({'BUNIT': 'MJy/sr'})) is None
+    assert ab_zeropoint_from_sci_header(
+        fits.Header({'BUNIT': 'DN/s', 'PIXAR_SR': 9.31e-14})) is None
 
 
 def test_detect_in_exposure_masks_saturated_dq(tmp_path):

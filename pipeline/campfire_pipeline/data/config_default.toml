@@ -461,6 +461,14 @@
     slope_max         = 0.0048828125  # rotation-scan half-range, dimensionless
                                       # (= JHAT's 10px/2048px ~ 0.28 deg)
     slope_nsteps      = 200     # rotation-scan steps across [-slope_max, +]
+    # delta_mag_lim = [-3.0, 4.0]   # keep a 1-NN pair only if image_mag -
+                                # refcat_mag lies in this window (JHAT's COSMOS
+                                # value). Needs calibrated detection mags (auto
+                                # when frames are MJy/sr) AND a refcat whose
+                                # 'mag' zeropoint is trustworthy — refcat mags
+                                # are heterogeneous across build backends, so
+                                # this stays off by default. Pairs missing
+                                # either mag are never cut.
     # --- Fine: gated per-detector fit on top of the coarse ---------------------
     # fine_fitgeom is the CEILING dof; each detector falls down the ladder
     # (general -> rshift -> shift -> keep-coarse) by its unique-match count. jhat
@@ -474,12 +482,22 @@
     min_matched       = 6         # per-pool reject-to-NOT_ALIGNED floor (1-to-1)
     min_coverage_arcsec = 5.0     # matched sources must span >= this (conditions rot)
     ref_border_arcmin = 1.2     # refcat footprint margin (>= coarse_searchrad); arcmin
-    # Detection quality selection (per detector, no count cap):
+    # Detection quality selection (per detector, no count cap). Detection
+    # magnitudes are CALIBRATED AB whenever the frame is MJy/sr with PIXAR_SR
+    # (annulus-free aperture photometry, radius 2 x fwhm, JHAT's zeropoint
+    # convention) — so objmag_lim takes real AB values; on a frame with no
+    # zeropoint the cut is skipped loudly rather than applied to instrumental
+    # mags.
     nsigma = 5.0                # detection threshold (convolved background sigma)
     snr_min = 5.0               # drop detections below this peak SNR (peak/bkg-rms)
     fwhm = 2.5                  # fallback detection PSF FWHM (px); per-filter
                                 # override below
     edge = 8                    # drop detections within this many px of a border
+    # objmag_lim = [19.0, 28.0] # keep only this AB-mag window (JHAT's COSMOS
+                                # value); off by default — DQ saturation
+                                # masking already guards the bright end
+    # aper_radius_px = 5.0      # aperture radius for calibrated mags;
+                                # default 2 x fwhm
 
     # Per-filter detection PSF FWHM (detector pixels). NIRCam's PSF core runs
     # from ~F070W to ~F480M, so one fwhm is wrong across the SW+LW channels; the
