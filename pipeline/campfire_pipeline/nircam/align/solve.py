@@ -23,12 +23,14 @@ exposure reader/writer + ``CFP_ALGN`` stamp live in the orchestration layer).
    nothing here is enumerated and nothing can overflow.
 3. *Group gate* — accept the pool only if enough sources match one-to-one and
    span enough sky to condition a rotation; else reject to NOT_ALIGNED.
-4. *Fine* — each detector over tolerance gets an individual fit on its own
-   already-matched (mutual-NN) pairs — handed to ``align_wcs`` row-aligned
-   with ``match=None``, exactly JHAT's ``already_matched`` design — its
-   geometry chosen down a ladder (``general`` → ``rshift`` → ``shift`` →
-   keep-coarse) by its match count and coverage, accepted only if it
-   measurably reduces the residual.
+4. *Fine* — EVERY detector with enough verified matches gets an individual
+   fit on its own already-matched (mutual-NN) pairs — handed to ``align_wcs``
+   row-aligned with ``match=None``, exactly JHAT's ``already_matched`` design
+   (JHAT fits every detector, always) — its geometry chosen down a ladder
+   (``general`` → ``rshift`` → ``shift`` → keep-coarse) by its match count and
+   coverage, accepted only if it reduces the residual. The ladder floors
+   (``fine_min_shift`` = JHAT's ``minobj=3``) are the guard against
+   noise-chasing; ``tolerance`` is reporting-only.
 
 The pooled coarse is the mechanical expression of the pooling constraint: every
 detector of one pool shares one ``group_id`` so a single rigid rshift is fit from
@@ -287,7 +289,7 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                          slope_max=10.0 / 2048.0, slope_nsteps=200,
                          delta_mag_lim=None,
                          fine_fitgeom='rshift', fine_min_general=10,
-                         fine_min_rshift=4, fine_min_shift=2, tolerance=0.05,
+                         fine_min_rshift=4, fine_min_shift=3, tolerance=0.05,
                          match_radius=0.5, min_matched=6, min_coverage_arcsec=5.0,
                          ref_border_arcmin=1.2, nclip=3, sigma=3.0):
     """Solve one pool of detectors; return a :class:`GroupSolution`.
@@ -296,9 +298,11 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     modules). The pool is footprint-clipped, tied to the refcat with a single
     coarse ``rshift`` (``OffsetHistogramMatch``: gross 2-D-hist shift + 1-NN /
     offset-histogram consensus, iterated), gated on match count and sky
-    coverage, then each over-tolerance detector gets a fine fit whose geometry
-    is chosen down the ``fine_fitgeom`` ladder by its match count / coverage and
-    accepted only if it reduces the residual. The ``d2d_max`` …
+    coverage, then EVERY detector with enough verified matches gets a fine fit
+    whose geometry is chosen down the ``fine_fitgeom`` ladder by its match
+    count / coverage and accepted only if it reduces the residual
+    (*tolerance* only flags ``within_tolerance`` in the result; it gates
+    nothing). The ``d2d_max`` …
     ``slope_nsteps`` / ``delta_mag_lim`` knobs pass straight to
     :class:`OffsetHistogramMatch` (the ``*_px`` ones in image pixels,
     mirroring the validated JHAT configuration); ``delta_mag_lim`` reads image
@@ -412,14 +416,21 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     mins = {'general': fine_min_general, 'rshift': fine_min_rshift,
             'shift': fine_min_shift}
 
-    # 4. Fine: per-detector gated fit for any detector over tolerance.
+    # 4. Fine: per-detector fit for EVERY detector with matches (JHAT fits
+    #    every detector, always — a sub-tolerance systematic SIAF offset must
+    #    not survive just because it is small). The ladder floors are the real
+    #    guard: the residual-improvement acceptance below is nearly
+    #    tautological (the fit minimizes the same mutual-NN pairs it is judged
+    #    on), so a detector below `fine_min_shift` verified matches keeps the
+    #    pooled attitude — the better estimate at that point. `tolerance` no
+    #    longer gates anything; it is the reporting threshold for `within`.
     solutions = []
     for corr, d, (resid, nmatch, src_idx, ref_idx) in zip(correctors, detectors,
                                                           prelim):
         within = bool(np.isfinite(resid) and resid <= tolerance)
         dof, out_wcs = 'coarse', corr.wcs
 
-        if not within and np.isfinite(resid):
+        if np.isfinite(resid):
             det_cov = _coverage_arcsec(ref_sky.ra.deg[ref_idx],
                                        ref_sky.dec.deg[ref_idx])
             geom = _choose_fitgeom(len(ref_idx), det_cov, fine_fitgeom, mins,

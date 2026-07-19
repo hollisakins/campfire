@@ -47,11 +47,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   f444w) that JHAT solved at 100%. Pooling is preserved and strengthened:
   all of a pool's detectors accumulate into one shared offset histogram. The
   pool is gated to `NOT_ALIGNED` unless enough one-to-one matches span enough
-  sky to condition a rotation, then each over-tolerance detector gets a fine
-  fit down a `general→rshift→shift→coarse` ladder (default ceiling `rshift`,
-  = jhat's per-detector geometry), fit on its own mutual-NN pairs as a
-  pre-matched list (`match=None` — jhat's `already_matched` design; no
-  `XYXYMatch` remains anywhere in align). Detection magnitudes are calibrated
+  sky to condition a rotation, then EVERY detector with enough verified
+  matches gets a fine fit down a `general→rshift→shift→coarse` ladder
+  (default ceiling `rshift`, = jhat's per-detector geometry; jhat fits every
+  detector, always, so `tolerance` is a QA flag, not a gate — a sub-tolerance
+  systematic SIAF offset no longer survives), fit on its own mutual-NN pairs
+  as a pre-matched list (`match=None` — jhat's `already_matched` design; no
+  `XYXYMatch` remains anywhere in align; `fine_min_shift` floor = jhat's
+  `minobj` = 3, the guard against noise-chasing per-detector fits). Detection magnitudes are calibrated
   AB whenever the frame carries `BUNIT=MJy/sr` + `PIXAR_SR` (annulus-free
   2×FWHM aperture photometry — jhat's zeropoint convention, minus the sky
   annulus that breaks on sky-subtracted frames), making jhat's `objmag_lim`
