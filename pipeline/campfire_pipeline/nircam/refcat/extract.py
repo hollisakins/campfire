@@ -119,6 +119,98 @@ def _find_sibling_err(mosaic_path):
 # Source extraction
 # ---------------------------------------------------------------------------
 
+def sep_extract_sources(sci, err, *, mask=None, snr_thresh=3.0, minarea=15,
+                        deblend_nthresh=32, deblend_cont=0.001,
+                        filter_fwhm=1.5):
+    """SEP-on-SNR segmentation + Kron photometry, in pixel space.
+
+    The shared detection core of both the refcat build
+    (:func:`extract_from_mosaic`) and the align per-exposure detector
+    (``align/detect.py``). Sharing one recipe is load-bearing: the align coarse
+    matcher histograms image-side detections against refcat entries, and only
+    catalogs built the *same way* correspond 1:1 — point-source detection over
+    bright extended galaxies instead yields swarms of substructure peaks whose
+    clustering can out-vote the true offset (COSMOS A2/A3 misregistration).
+
+    Detection runs on the SNR map (``sci/err``) with a matched-filter Gaussian;
+    photometry (Kron ellipse + small-source circle fallback) runs on *sci*.
+    Zero/non-finite ``sci``/``err`` pixels and any *mask* pixels are excluded.
+
+    Returns an astropy Table with 0-indexed pixel columns ``x, y`` (windowed
+    positions), ``flux, fluxerr`` (in ``sci``'s native per-pixel units) and
+    ``npix``; empty (but typed) when nothing is detected.
+    """
+    import sep
+    from photutils.segmentation import make_2dgaussian_kernel
+
+    # Honor SEP's pixel-stack overflow knobs the way the notebook does;
+    # large images blow past defaults. ``set_extract_pixstack`` is global
+    # state in the C extension, but it's idempotent.
+    sep.set_extract_pixstack(int(1e7))
+    sep.set_sub_object_limit(2048)
+
+    sci = np.ascontiguousarray(sci, dtype=np.float32)
+    err = np.ascontiguousarray(err, dtype=np.float32)
+    bad = (sci == 0) | (err == 0) | ~np.isfinite(err) | ~np.isfinite(sci)
+    if mask is not None:
+        bad |= np.asarray(mask, dtype=bool)
+    sci_clean = np.where(bad, np.nan, sci)
+    err_clean = np.where(bad, np.nan, err)
+    snr = sci_clean / err_clean
+    snr_mask = ~np.isfinite(snr)
+
+    kernel = make_2dgaussian_kernel(fwhm=filter_fwhm, size=5).array
+
+    objs, segmap = sep.extract(
+        snr, thresh=snr_thresh, minarea=minarea,
+        deblend_nthresh=deblend_nthresh, deblend_cont=deblend_cont,
+        mask=snr_mask, filter_type="matched", filter_kernel=kernel,
+        clean=True, clean_param=1.0, segmentation_map=True,
+    )
+    objs = Table(objs)
+    if len(objs) == 0:
+        return Table({"x": np.array([], dtype=float),
+                      "y": np.array([], dtype=float),
+                      "flux": np.array([], dtype=float),
+                      "fluxerr": np.array([], dtype=float),
+                      "npix": np.array([], dtype=int)})
+
+    ids = np.arange(1, len(objs) + 1, dtype=np.int32)
+    objs["theta"][objs["theta"] > np.pi / 2] -= np.pi
+    nan_axes = np.isnan(objs["a"]) | np.isnan(objs["b"])
+    objs["a"][nan_axes] = 5
+    objs["b"][nan_axes] = 5
+
+    kronrad, krflag = sep.kron_radius(
+        snr, objs["x"], objs["y"], objs["a"], objs["b"], objs["theta"],
+        6.0, mask=snr_mask, seg_id=ids, segmap=segmap,
+    )
+    flux_snr, _, _ = sep.sum_ellipse(
+        snr, objs["x"], objs["y"], objs["a"], objs["b"], objs["theta"],
+        2.5 * kronrad, subpix=1, mask=snr_mask,
+        seg_id=ids, segmap=segmap,
+    )
+    rhalf, _ = sep.flux_radius(
+        snr, objs["x"], objs["y"], 6.0 * objs["a"], 0.5,
+        seg_id=ids, segmap=segmap, mask=snr_mask, normflux=flux_snr, subpix=5,
+    )
+    sigma = 2.0 / 2.35 * rhalf
+    xwin, ywin, _ = sep.winpos(snr, objs["x"], objs["y"], sigma, mask=snr_mask)
+
+    # Photometry on the SCI map (Kron + small-source circle fallback)
+    flux, fluxerr, _, _ = _kron_with_circle_fallback(
+        sci_clean, err_clean, objs, kronrad, krflag, segmap, ids, snr_mask,
+    )
+
+    return Table({
+        "x": np.asarray(xwin, dtype=float),
+        "y": np.asarray(ywin, dtype=float),
+        "flux": np.asarray(flux, dtype=float),
+        "fluxerr": np.asarray(fluxerr, dtype=float),
+        "npix": np.asarray(objs["npix"], dtype=int),
+    })
+
+
 def _ab_conversion_factor(header, wcs):
     """Multiplier that takes per-pixel ``BUNIT=MJy/sr`` flux to ``uJy/pixel``.
 
@@ -199,34 +291,16 @@ def extract_from_mosaic(
         Provenance — input paths, SEP params, count of detections at each
         cut. Stash into ``meta['params']`` of the saved refcat.
     """
-    import sep
-    from photutils.segmentation import make_2dgaussian_kernel
-
-    # Honor SEP's pixel-stack overflow knobs the way the notebook does;
-    # large mosaics blow past defaults. ``set_extract_pixstack`` is global
-    # state in the C extension, but it's idempotent.
-    sep.set_extract_pixstack(int(1e7))
-    sep.set_sub_object_limit(2048)
-
     sci, err, header, wcs = _open_sci_err(mosaic_path, err_path=err_path)
-    bad = (sci == 0) | (err == 0) | ~np.isfinite(err) | ~np.isfinite(sci)
-    sci_clean = np.where(bad, np.nan, sci)
-    err_clean = np.where(bad, np.nan, err)
-    snr = sci_clean / err_clean
-    mask = ~np.isfinite(snr)
-
-    kernel = make_2dgaussian_kernel(fwhm=filter_fwhm, size=5).array
 
     log(f"refcat extract: SEP detection on {os.path.basename(mosaic_path)} "
         f"(thresh={snr_thresh}, minarea={minarea})")
-    objs, segmap = sep.extract(
-        snr, thresh=snr_thresh, minarea=minarea,
+    srcs = sep_extract_sources(
+        sci, err, snr_thresh=snr_thresh, minarea=minarea,
         deblend_nthresh=deblend_nthresh, deblend_cont=deblend_cont,
-        mask=mask, filter_type="matched", filter_kernel=kernel,
-        clean=True, clean_param=1.0, segmentation_map=True,
+        filter_fwhm=filter_fwhm,
     )
-    objs = Table(objs)
-    n_detected = len(objs)
+    n_detected = len(srcs)
     log(f"refcat extract: {n_detected} raw detections")
 
     if n_detected == 0:
@@ -235,32 +309,10 @@ def extract_from_mosaic(
             "and the SNR threshold."
         )
 
-    ids = np.arange(1, len(objs) + 1, dtype=np.int32)
-    objs["theta"][objs["theta"] > np.pi / 2] -= np.pi
-    nan_axes = np.isnan(objs["a"]) | np.isnan(objs["b"])
-    objs["a"][nan_axes] = 5
-    objs["b"][nan_axes] = 5
-
-    kronrad, krflag = sep.kron_radius(
-        snr, objs["x"], objs["y"], objs["a"], objs["b"], objs["theta"],
-        6.0, mask=mask, seg_id=ids, segmap=segmap,
-    )
-    flux_snr, _, _ = sep.sum_ellipse(
-        snr, objs["x"], objs["y"], objs["a"], objs["b"], objs["theta"],
-        2.5 * kronrad, subpix=1, mask=mask,
-        seg_id=ids, segmap=segmap,
-    )
-    rhalf, _ = sep.flux_radius(
-        snr, objs["x"], objs["y"], 6.0 * objs["a"], 0.5,
-        seg_id=ids, segmap=segmap, mask=mask, normflux=flux_snr, subpix=5,
-    )
-    sigma = 2.0 / 2.35 * rhalf
-    xwin, ywin, _ = sep.winpos(snr, objs["x"], objs["y"], sigma, mask=mask)
-
-    # Photometry on the SCI map (Kron + small-source circle fallback)
-    flux, fluxerr, kron_a, kron_b = _kron_with_circle_fallback(
-        sci_clean, err_clean, objs, kronrad, krflag, segmap, ids, mask,
-    )
+    xwin = np.asarray(srcs["x"], dtype=float)
+    ywin = np.asarray(srcs["y"], dtype=float)
+    flux = np.asarray(srcs["flux"], dtype=float)
+    fluxerr = np.asarray(srcs["fluxerr"], dtype=float)
 
     conv = _ab_conversion_factor(header, wcs)
     with np.errstate(divide="ignore", invalid="ignore"):

@@ -162,13 +162,51 @@ def test_fine_ceiling_shift_only():
 def test_few_matches_keeps_coarse():
     # A detector with too few matches for any fine geometry keeps the coarse
     # attitude rather than fitting an under-constrained per-detector correction.
+    # (Gate disabled: this test exercises the ladder degrade, and the outlier's
+    # ~0.24" coarse residual would otherwise trip the residual backstop.)
     detectors, refcat = _build_group(
         n_det=5, offset=(2.0, 0.0), per_det_extra={4: (0.0, 0.3)})
     sol = solve_exposure_group(detectors, refcat, key='exp', tolerance=0.15,
                                fine_min_shift=999, fine_min_rshift=999,
-                               fine_min_general=999)
+                               fine_min_general=999, max_residual_arcsec=None)
     assert sol.detectors[4].dof == 'coarse'
     assert not sol.detectors[4].within_tolerance
+
+
+# --- residual gate (backstop) ------------------------------------------------
+
+def test_residual_gate_rejects_bad_detector():
+    # Random per-source scatter no rigid fit can remove: detector 0's residual
+    # stays ~0.2" while the others solve to ~0. The gate must reject detector 0
+    # individually (aligned=False, input WCS preserved) and keep the pool
+    # SOLVED for the healthy detectors.
+    detectors, refcat = _build_group(n_det=3, offset=(2.0, 0.0), seed=2)
+    rng = np.random.default_rng(11)
+    cat = detectors[0].catalog
+    # mock WCS scale ~2.06"/px -> sigma 0.1 px ~ 0.21"/axis, median 2-D
+    # separation ~0.24" — over the 0.1" gate, inside the 0.5" match radius.
+    cat['x'] = np.asarray(cat['x'], float) + rng.normal(0, 0.1, len(cat))
+    cat['y'] = np.asarray(cat['y'], float) + rng.normal(0, 0.1, len(cat))
+    original = copy.deepcopy(detectors[0].wcs)
+    sol = solve_exposure_group(detectors, refcat, key='exp')
+    assert sol.status == 'SOLVED'
+    bad, good = sol.detectors[0], sol.detectors[1:]
+    assert not bad.aligned
+    assert bad.dof == 'identity'
+    assert bad.residual_arcsec > 0.1
+    assert bad.wcs(500, 500) == original(500, 500)     # input WCS preserved
+    assert all(g.aligned and g.residual_arcsec < 0.1 for g in good)
+
+
+def test_residual_gate_all_rejected_pool_not_aligned():
+    # Gate at 0: every detector's (tiny but nonzero) residual trips it, so the
+    # pool as a whole reads NOT_ALIGNED and the orchestration warning fires.
+    detectors, refcat = _build_group(n_det=2, offset=(2.0, 0.0))
+    sol = solve_exposure_group(detectors, refcat, key='exp',
+                               max_residual_arcsec=0.0)
+    assert sol.status == 'NOT_ALIGNED'
+    assert all(not ds.aligned for ds in sol.detectors)
+    assert all(ds.dof == 'identity' for ds in sol.detectors)
 
 
 # --- NOT_ALIGNED ------------------------------------------------------------

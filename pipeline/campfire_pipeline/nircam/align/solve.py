@@ -85,6 +85,8 @@ class DetectorSolution:
     residual_arcsec: float   # median matched residual after alignment (nan if none)
     n_matched: int
     within_tolerance: bool
+    aligned: bool = True     # False: rejected by the residual gate — the I/O
+                             # layer stamps NOT_ALIGNED (WCS preserved)
 
 
 @dataclass
@@ -289,7 +291,8 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                          fine_fitgeom='rshift', fine_min_general=10,
                          fine_min_rshift=4, fine_min_shift=2, tolerance=0.05,
                          match_radius=0.5, min_matched=6, min_coverage_arcsec=5.0,
-                         ref_border_arcmin=1.2, nclip=3, sigma=3.0):
+                         ref_border_arcmin=1.2, nclip=3, sigma=3.0,
+                         max_residual_arcsec=0.1):
     """Solve one pool of detectors; return a :class:`GroupSolution`.
 
     *detectors* is one pool (a module, or a whole channel when the caller pooled
@@ -312,6 +315,13 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     fit, so acceptance never rests on it alone: the pool rejects to NOT_ALIGNED
     unless at least *min_matched* sources match one-to-one within *match_radius*
     **and** they span at least *min_coverage_arcsec* of sky.
+
+    *max_residual_arcsec* is a final per-detector backstop on top of all of the
+    above: any detector whose post-fit one-to-one residual still exceeds it is
+    individually rejected (``aligned=False`` — the I/O layer stamps NOT_ALIGNED,
+    WCS preserved), so a plausible-looking but wrong solution can never reach a
+    mosaic. Healthy solves sit well under it (~0.02–0.03"); the COSMOS A2/A3
+    misregistrations this guards against sat at 0.20–0.24". ``None`` disables.
     """
     detectors = list(detectors)
     if not detectors:
@@ -442,8 +452,25 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                         resid, nmatch = new_resid, new_n
                         within = bool(resid <= tolerance)
 
+        # Residual gate (backstop): no solution this bad may reach a mosaic.
+        # Gates only a *measured* bad residual — a nan residual (no one-to-one
+        # matches on this detector) keeps the pooled attitude, which the group
+        # gate above already vetted.
+        if (max_residual_arcsec is not None and np.isfinite(resid)
+                and resid > float(max_residual_arcsec)):
+            log(f"align solve[{key}]: {d.detector} residual {resid:.3f}\" "
+                f"exceeds max_residual_arcsec={float(max_residual_arcsec):g}; "
+                f"rejecting this detector to NOT_ALIGNED (WCS preserved).")
+            solutions.append(DetectorSolution(d.detector, d.wcs, 'identity',
+                                              resid, nmatch, False,
+                                              aligned=False))
+            continue
+
         solutions.append(DetectorSolution(d.detector, out_wcs, dof,
                                           resid, nmatch, within))
 
-    return GroupSolution(key, 'SOLVED', shift, rot_deg, rmse,
+    # If the gate rejected every detector, the pool as a whole failed — report
+    # NOT_ALIGNED so the orchestration surfaces it in the end-of-run warning.
+    status = ('SOLVED' if any(s.aligned for s in solutions) else 'NOT_ALIGNED')
+    return GroupSolution(key, status, shift, rot_deg, rmse,
                          group_nmatched, solutions)

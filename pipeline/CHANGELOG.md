@@ -52,17 +52,39 @@ Release procedure: edit the `## Unreleased` section below, then run
   = jhat's per-detector geometry), fit on its own mutual-NN pairs as a
   pre-matched list (`match=None` — jhat's `already_matched` design; no
   `XYXYMatch` remains anywhere in align). Detection magnitudes are calibrated
-  AB whenever the frame carries `BUNIT=MJy/sr` + `PIXAR_SR` (annulus-free
-  2×FWHM aperture photometry — jhat's zeropoint convention, minus the sky
-  annulus that breaks on sky-subtracted frames), making jhat's `objmag_lim`
-  and pair-level `delta_mag_lim` cuts available with their COSMOS values
-  (`[19, 28]` / `[-3, 4]`; both default-off, `objmag_lim` is skipped loudly
-  on zeropoint-less frames instead of cutting on instrumental mags). Retires the pooled cross-filter joint
+  AB whenever the frame carries `BUNIT=MJy/sr` + `PIXAR_SR` (Kron photometry
+  + jhat's zeropoint convention; see the SEP-detection entry below), making
+  jhat's `objmag_lim` and pair-level `delta_mag_lim` cuts available with
+  their COSMOS values (`[19, 28]` / `[-3, 4]`; both default-off,
+  `objmag_lim` is skipped loudly on zeropoint-less frames instead of cutting
+  on instrumental mags). Retires the pooled cross-filter joint
   solve, the bootstrap triangle matcher, and the **`tristars` dependency**
   (`matcher.py` removed). `CFP_ALGN` now records the refcat content hash
   (`rc=`) so a changed refcat re-solves instead of silently keeping a stale
   WCS. `campfire_pipeline/nircam/align/`, `association.py`, `orchestrate.py`,
   `config_default.toml`.
+- NIRCam `align` per-exposure detection swapped from point-source
+  (`DAOStarFinder`) to **SEP segmentation of the SNR map**, sharing the refcat
+  build's exact recipe (`refcat/extract.py::sep_extract_sources`, factored out
+  as a common core) so image-side detections correspond to refcat entries by
+  construction. Fixes the COSMOS A2/A3 f277w misregistration: over a bright
+  extended galaxy the point-source finder returned thousands of bright
+  substructure peaks tracing the same galaxy clustering as the refcat, and the
+  coarse gross-shift 2-D offset histogram locked onto a clustering-scale peak
+  ~37" from the true offset, dragging 13 well-pointed exposures 25–40"
+  (doubled sources in the A2/A3 mosaics). Validated on all 13 affected + 10
+  clean exposures (`scripts/claude/repro_batch.py`): 13/13 recover (0,0),
+  10/10 unchanged, refcat-match fraction up in every case (22–31% → 87–91% on
+  the bad ones). Detection knobs change accordingly
+  (`snr_thresh`/`minarea`/`deblend_*`/`fwhm` = matched-filter kernel;
+  `snr_min` is now the integrated flux SNR; calibrated mags are Kron-based,
+  `aper_radius_px` is gone). Also adds a **residual backstop**
+  (`max_residual_arcsec`, default 0.1"): any detector whose final one-to-one
+  residual exceeds it is individually rejected to `NOT_ALIGNED` (WCS
+  preserved, quarantined from combine), so a plausible-but-wrong solution can
+  never reach a mosaic again — the healthy population sits at ~0.02–0.03",
+  the A2/A3 failures sat at 0.20–0.24". `campfire_pipeline/nircam/align/`,
+  `refcat/extract.py`, `config_default.toml`.
 - NIRCam `wcs_shift` now invalidates downstream alignment state whenever it
   rewrites a WCS: the `CFP_JHAT`/`CFP_ALGN` stamps and align's `ALGN_BAK`
   baseline are scrubbed in the same atomic write, so re-applying a retuned

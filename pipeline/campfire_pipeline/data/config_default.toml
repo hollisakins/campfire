@@ -482,28 +482,44 @@
     min_matched       = 6         # per-pool reject-to-NOT_ALIGNED floor (1-to-1)
     min_coverage_arcsec = 5.0     # matched sources must span >= this (conditions rot)
     ref_border_arcmin = 1.2     # refcat footprint margin (>= coarse_searchrad); arcmin
-    # Detection quality selection (per detector, no count cap). Detection
-    # magnitudes are CALIBRATED AB whenever the frame is MJy/sr with PIXAR_SR
-    # (annulus-free aperture photometry, radius 2 x fwhm, JHAT's zeropoint
+    # Backstop residual gate: any detector whose final 1-to-1 residual exceeds
+    # this (arcsec) is individually rejected to NOT_ALIGNED (WCS preserved,
+    # quarantined from combine) — no plausible-but-wrong solution may reach a
+    # mosaic. Healthy solves sit at ~0.02-0.03"; the COSMOS A2/A3
+    # misregistrations this guards against sat at 0.20-0.24".
+    max_residual_arcsec = 0.1
+    # --- Detection (per detector, no count cap) --------------------------------
+    # SEP segmentation of the SNR map (sci/err), mirroring the refcat build
+    # (refcat/extract.py) so image-side detections correspond to refcat
+    # entries. Point-source (DAOStarFinder) detection is retired: over bright
+    # extended galaxies it found thousands of *bright* substructure peaks
+    # tracing the same galaxy clustering as the refcat, and the coarse
+    # gross-shift 2-D offset histogram grew clustering-scale peaks that could
+    # beat the true offset — dragging well-pointed exposures tens of arcsec
+    # (COSMOS A2/A3 f277w). Detection magnitudes are CALIBRATED AB whenever
+    # the frame is MJy/sr with PIXAR_SR (Kron photometry + JHAT's zeropoint
     # convention) — so objmag_lim takes real AB values; on a frame with no
     # zeropoint the cut is skipped loudly rather than applied to instrumental
     # mags.
-    nsigma = 5.0                # detection threshold (convolved background sigma)
-    snr_min = 5.0               # drop detections below this peak SNR (peak/bkg-rms)
-    fwhm = 2.5                  # fallback detection PSF FWHM (px); per-filter
-                                # override below
+    snr_thresh = 3.0            # per-pixel detection threshold on the SNR map
+    minarea = 15                # min connected pixels above snr_thresh
+    deblend_nthresh = 32        # SEP deblender: number of thresholds
+    deblend_cont = 0.001        # SEP deblender: min contrast
+    snr_min = 10.0              # drop sources below this integrated flux SNR
+                                # (flux/fluxerr; same cut as the refcat build)
     edge = 8                    # drop detections within this many px of a border
+    fwhm = 1.5                  # fallback matched-filter kernel FWHM (px);
+                                # per-filter override below
     # objmag_lim = [19.0, 28.0] # keep only this AB-mag window (JHAT's COSMOS
                                 # value); off by default — DQ saturation
                                 # masking already guards the bright end
-    # aper_radius_px = 5.0      # aperture radius for calibrated mags;
-                                # default 2 x fwhm
 
-    # Per-filter detection PSF FWHM (detector pixels). NIRCam's PSF core runs
-    # from ~F070W to ~F480M, so one fwhm is wrong across the SW+LW channels; the
-    # align worker keys detection off each member's filter, falling back to the
-    # scalar `fwhm` above for any filter not listed. Values ≈ PSF-core FWHM /
-    # pixel-scale — approximate; tune per field on real data.
+    # Per-filter matched-filter kernel FWHM (detector pixels) — the kernel
+    # should track the PSF core, which runs from ~F070W to ~F480M, so one fwhm
+    # is wrong across the SW+LW channels; the align worker keys detection off
+    # each member's filter, falling back to the scalar `fwhm` above for any
+    # filter not listed. Values ≈ PSF-core FWHM / pixel-scale — approximate;
+    # tune per field on real data.
     [nircam.align.psf_fwhm_by_filter]
         f070w = 1.5
         f090w = 1.6

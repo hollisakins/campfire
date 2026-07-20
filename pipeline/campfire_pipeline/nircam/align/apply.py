@@ -33,7 +33,7 @@ from campfire_pipeline.common.io import atomic_save, log
 from campfire_pipeline.nircam.align.detect import (
     DETECT_DQ_BITS,
     ab_zeropoint_from_sci_header,
-    detect_star_centroids,
+    detect_sources,
 )
 from campfire_pipeline.nircam.align.solve import (
     DetectorInput,
@@ -63,9 +63,9 @@ _SOLVE_KEYS = ('coarse_searchrad', 'refine_niter',
                'fine_fitgeom', 'fine_min_general',
                'fine_min_rshift', 'fine_min_shift', 'tolerance', 'match_radius',
                'min_matched', 'min_coverage_arcsec', 'ref_border_arcmin',
-               'nclip', 'sigma')
-_DETECT_KEYS = ('fwhm', 'nsigma', 'edge', 'snr_min', 'objmag_lim',
-                'aper_radius_px', 'sharplo', 'sharphi', 'roundlo', 'roundhi')
+               'nclip', 'sigma', 'max_residual_arcsec')
+_DETECT_KEYS = ('fwhm', 'snr_thresh', 'minarea', 'deblend_nthresh',
+                'deblend_cont', 'edge', 'snr_min', 'objmag_lim')
 
 
 # --- gwcs <-> ASDF-in-FITS backup (technique shared with steps/wcs_shift.py) --
@@ -183,9 +183,11 @@ def _load_detector(path, detector, detect_cfg, ImageModel):
         wcsinfo = {'v2_ref': wi['v2_ref'], 'v3_ref': wi['v3_ref'],
                    'roll_ref': wi['roll_ref']}
         orig_wcs = model.meta.wcs
-        cat = detect_star_centroids(np.asarray(model.data, dtype=float),
-                                    mask=_detect_mask(model),
-                                    zeropoint=zeropoint, **detect_cfg)
+        err = (np.asarray(model.err, dtype=float)
+               if getattr(model, 'err', None) is not None else None)
+        cat = detect_sources(np.asarray(model.data, dtype=float), err,
+                             mask=_detect_mask(model),
+                             zeropoint=zeropoint, **detect_cfg)
     finally:
         model.close()
 
@@ -305,12 +307,13 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
     solve_cfg = {k: config[k] for k in _SOLVE_KEYS if k in config}
     detect_cfg = {k: config[k] for k in _DETECT_KEYS if k in config}
 
-    # Per-filter detection PSF FWHM: NIRCam's core width runs from ~F070W to
-    # ~F480M, so a single fwhm is wrong across the exposure's SW+LW channels.
-    # Key it off each member's filter, falling back to the scalar `fwhm`.
+    # Per-filter matched-filter kernel FWHM: the kernel should track the PSF
+    # core, whose width runs from ~F070W to ~F480M, so a single fwhm is wrong
+    # across the exposure's SW+LW channels. Key it off each member's filter,
+    # falling back to the scalar `fwhm`.
     psf_by_filter = {str(k).lower(): float(v)
                      for k, v in (config.get('psf_fwhm_by_filter') or {}).items()}
-    default_fwhm = detect_cfg.get('fwhm', 2.5)
+    default_fwhm = detect_cfg.get('fwhm', 1.5)
 
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
@@ -345,7 +348,11 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
     by_detector = {d.detector: d for d in solution.detectors}
     for m in members:
         det_sol = by_detector.get(m.detector)
-        if solution.status == 'SOLVED' and det_sol is not None:
+        # ``aligned=False`` marks a per-detector residual-gate reject inside an
+        # otherwise SOLVED pool — that detector is stamped NOT_ALIGNED (WCS
+        # preserved, quarantined from combine) like a failed pool.
+        if (solution.status == 'SOLVED' and det_sol is not None
+                and getattr(det_sol, 'aligned', True)):
             _write_solution(m.path, det_sol.wcs,
                             _format_algn_value(det_sol, refcat_hash),
                             ImageModel, update_fits_wcsinfo)

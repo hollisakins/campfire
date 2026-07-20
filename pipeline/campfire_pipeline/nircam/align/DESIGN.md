@@ -78,9 +78,10 @@ per FILTER (one channel), per EXPOSURE (build_exposure_groups)
         ▼                pool_modules=true  → both modules are one pool
 ┌──────────────────────────────────────────────────────────────────────┐
 │ PER DETECTOR (detect.py)                                               │
-│  • DAOStarFinder centroids on the SCI image (0-indexed px), per-filter │
-│    PSF fwhm; DQ mask = DO_NOT_USE | SATURATED | NO_LIN_CORR; snr_min,  │
-│    objmag_lim, shape + edge cuts. mag rides along only as a rank proxy.│
+│  • SEP segmentation of the SNR map (sci/err, 0-indexed px) — the SAME  │
+│    recipe as the refcat build (refcat/extract.py shared core) — with a │
+│    per-filter matched-filter fwhm; DQ mask = DO_NOT_USE | SATURATED |  │
+│    NO_LIN_CORR; integrated snr_min, calibrated-AB objmag_lim, edge cut.│
 └──────────────────────────────────────────────────────────────────────┘
         ▼
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -99,6 +100,9 @@ per FILTER (one channel), per EXPOSURE (build_exposure_groups)
 │     the ladder general → rshift → shift → keep-coarse, geometry chosen │
 │     by its unique-match count + coverage, ACCEPTED only if it reduces  │
 │     the residual.                                                      │
+│  5. RESIDUAL GATE — any detector whose final 1-to-1 residual still     │
+│     exceeds `max_residual_arcsec` is individually rejected to          │
+│     NOT_ALIGNED (backstop: no bad solution may reach a mosaic).        │
 └──────────────────────────────────────────────────────────────────────┘
         ▼
    ACCEPTED → write corrected gwcs + CFP_ALGN + WCS_BAK (apply.py)
@@ -221,36 +225,46 @@ recorded per detector as the `dof` (`coarse` | `shift` | `rshift` | `general` |
 
 ## 4. Detection (`detect.py`)
 
-`detect_star_centroids` runs `photutils.DAOStarFinder` on the SCI image and
-returns `(x, y)` centroids (0-indexed detector pixels, the gwcs / `tweakwcs`
-convention) plus **calibrated AB magnitudes** whenever the frame carries an AB
-zeropoint (`BUNIT = MJy/sr` + `PIXAR_SR`, i.e. every jwst cal product):
-annulus-free circular-aperture photometry (radius `2×FWHM`, jhat's
-`radii_Nfwhm=[2.0]`) on the median-subtracted frame, with
+`detect_sources` runs **SEP segmentation on the SNR map** (`sci/err`) with a
+matched-filter Gaussian kernel — the *same recipe as the refcat build*, via the
+shared `refcat/extract.py::sep_extract_sources` core — and returns windowed
+`(x, y)` positions (0-indexed detector pixels, the gwcs / `tweakwcs`
+convention) plus Kron `flux`/`fluxerr` and **calibrated AB magnitudes**
+whenever the frame carries an AB zeropoint (`BUNIT = MJy/sr` + `PIXAR_SR`,
+i.e. every jwst cal product): `mag = ZP − 2.5·log10(flux)` with
 `ZP = −2.5·log10(PIXAR_SR·1e6/3631)` — the same surface-brightness ×
-pixel-area conversion jhat uses. **No sky annulus, deliberately**: jhat's
-annulus on CAMPFIRE's already sky-subtracted frames averages negative and
-trips a `-99.99` sentinel that floods the matcher — the annulus is exactly the
-piece of jhat photometry that must not be ported. No aperture correction
-either (a ~0.2–0.4 mag point-source constant, irrelevant to the wide mag
-windows, ill-defined for galaxies). `table.meta['mag_calibrated']` records
-which regime a catalog is in; without a zeropoint, `mag` falls back to the
-uncalibrated DAO kernel estimate.
+pixel-area conversion jhat uses. No aperture correction (irrelevant to the
+wide mag windows, ill-defined for galaxies). `table.meta['mag_calibrated']`
+records which regime a catalog is in; without a zeropoint, `mag` falls back to
+the uncalibrated `−2.5·log10(flux)`.
 
-- **Per-filter PSF FWHM.** NIRCam's core width runs from ~F070W to ~F480M, so one
-  `fwhm` is wrong across an exposure's SW+LW channels; `apply.py` keys detection
-  off each member's filter via `psf_fwhm_by_filter`, falling back to the scalar
-  `fwhm`.
+**Why segmentation, not point sources.** The refcat is galaxy-based (SEP
+segmentation of a mosaic), and the coarse gross-shift stage histograms *all*
+image-side detections against it. A point-source finder (DAOStarFinder, the
+original implementation) over a bright extended galaxy returns thousands of
+*bright* spurious peaks — star-forming clumps and substructure — that trace
+the same galaxy clustering as the refcat, so the 2-D offset histogram grows
+clustering-scale peaks that can beat the true (0,0) peak inside
+`coarse_searchrad`, dragging a well-pointed exposure tens of arcsec (the
+COSMOS A2/A3 f277w misregistration: 13 exposures moved ~25–40″ onto a wrong
+clustering peak). Detecting with the refcat's own recipe makes image-side
+detections correspond to refcat entries by construction (refcat-match
+fraction on the affected exposures: 22–31% → 87–91%; validated in
+`scripts/claude/repro_batch.py`, 13/13 bad fixed, 10/10 good unchanged).
+
+- **Per-filter kernel FWHM.** The matched filter should track the PSF core,
+  which runs from ~F070W to ~F480M, so one `fwhm` is wrong across an exposure's
+  SW+LW channels; `apply.py` keys detection off each member's filter via
+  `psf_fwhm_by_filter`, falling back to the scalar `fwhm`.
 - **DQ masking, not a magnitude guess.** `DETECT_DQ_BITS = DO_NOT_USE | SATURATED
   | NO_LIN_CORR` are masked before detection — a saturated or nonlinearity-
-  uncorrected core corrupts both the centroid and the kernel flux, and those are
+  uncorrected core corrupts both the position and the flux, and those are
   exactly the bright-star failures a magnitude cut can't catch.
-- **Quality cuts:** `snr_min` (peak / background RMS, above the kernel `nsigma`
-  threshold), `objmag_lim` (**calibrated AB window**, jhat's COSMOS value
+- **Quality cuts:** `snr_min` (integrated `flux/fluxerr`, the refcat's own
+  cut), `objmag_lim` (**calibrated AB window**, jhat's COSMOS value
   `[19, 28]`; skipped loudly when the frame has no zeropoint — an AB window on
-  instrumental mags would cut everything), sharpness/roundness windows, and an
-  `edge` reject. No `brightest` count cap on the align path — the full
-  quality-selected catalog reaches the solve.
+  instrumental mags would cut everything), and an `edge` reject. No count cap
+  on the align path — the full quality-selected catalog reaches the solve.
 - **Pair-level brightness agreement** (`delta_mag_lim`, jhat's COSMOS value
   `[-3, 4]`): the matcher can additionally drop 1-NN pairs whose
   `image_mag − refcat_mag` falls outside the window. `tweakwcs` drops
@@ -377,7 +391,6 @@ All knobs live in `config_default.toml`; per-field overrides go in
 | `slope_nsteps` | `200` | rotation-scan steps |
 | `delta_mag_lim` | unset | pair cut: keep `image_mag − refcat_mag` in this AB window (jhat COSMOS: `[-3, 4]`) |
 | `objmag_lim` | unset | detection cut: keep this calibrated AB window (jhat COSMOS: `[19, 28]`) |
-| `aper_radius_px` | `2×fwhm` | aperture radius for calibrated detection mags |
 | `fine_fitgeom` | `"rshift"` | per-detector fine ceiling: `general` \| `rshift` \| `shift` |
 | `fine_min_general` | `10` | ≥ this many 1-to-1 matches ⇒ allow `general` |
 | `fine_min_rshift` | `4` | ≥ this ⇒ allow `rshift` |
@@ -387,11 +400,15 @@ All knobs live in `config_default.toml`; per-field overrides go in
 | `min_matched` | `6` | per-pool reject-to-NOT_ALIGNED floor (1-to-1 count) |
 | `min_coverage_arcsec` | `5.0` | matched sources must span ≥ this (conditions rotation) |
 | `ref_border_arcmin` | `1.2` | refcat footprint margin (≥ `coarse_searchrad`); arcmin |
-| `nsigma` | `5.0` | detection threshold (convolved-background σ) |
-| `snr_min` | `5.0` | drop detections below this peak SNR |
-| `fwhm` | `2.5` | fallback detection PSF FWHM (px) |
+| `max_residual_arcsec` | `0.1` | backstop: reject any detector whose final residual exceeds this |
+| `snr_thresh` | `3.0` | per-pixel detection threshold on the SNR map |
+| `minarea` | `15` | min connected pixels above `snr_thresh` |
+| `deblend_nthresh` | `32` | SEP deblender: number of thresholds |
+| `deblend_cont` | `0.001` | SEP deblender: min contrast |
+| `snr_min` | `10.0` | drop sources below this integrated flux SNR (`flux/fluxerr`) |
+| `fwhm` | `1.5` | fallback matched-filter kernel FWHM (px) |
 | `edge` | `8` | drop detections within this many px of a border |
-| `psf_fwhm_by_filter` | table | per-filter detection PSF FWHM (F070W→F480M) |
+| `psf_fwhm_by_filter` | table | per-filter matched-filter kernel FWHM (F070W→F480M) |
 
 (`nclip=3`, `sigma=3.0` are the σ-clip params passed through to `tweakwcs`.)
 
