@@ -788,7 +788,11 @@ def _align_group_worker(key, members, *, refcat, config, overwrite, status):
 
 
 def _warn_not_aligned(field, failed_groups):
-    """Loudly report exposures that failed alignment, and how to resolve them.
+    """Loudly report detectors that failed alignment, and how to resolve them.
+
+    *failed_groups* is a list of ``(pool, rejected_members)`` pairs — a whole
+    pool that rejected, or the subset of a SOLVED pool's members the residual
+    gate rejected individually.
 
     Excluding data from the mosaic is never an automatic decision — a NOT_ALIGNED
     exposure is quarantined from every future combine (its raw WCS would double
@@ -798,14 +802,14 @@ def _warn_not_aligned(field, failed_groups):
     bar = '!' * 72
     log('')
     log(bar)
-    log(f"align: WARNING — {len(failed_groups)} exposure(s) FAILED alignment "
-        f"(CFP_ALGN = {cfp.NOT_ALIGNED}).")
+    log(f"align: WARNING — {len(failed_groups)} pool(s) have detector(s) that "
+        f"FAILED alignment (CFP_ALGN = {cfp.NOT_ALIGNED}).")
     log("These are EXCLUDED from all future mosaics by default (the combine")
     log("quarantine). Omitting data is not automatic — review and resolve first:")
     log('')
-    for g in failed_groups:
-        log(f"  {g.key}  ({g.n_members} detector(s)):")
-        for m in g.members:
+    for g, members in failed_groups:
+        log(f"  {g.key}  ({len(members)} of {g.n_members} detector(s)):")
+        for m in members:
             log(f"      {m.path}")
     log('')
     log("To retry: retune [<field>.align] in fields.toml (e.g. widen "
@@ -832,16 +836,21 @@ def _pending_pools(pools, status, overwrite, refcat_hash):
     generation). *retry_count* is how many pending pools are such re-attempts of
     already-stamped work.
     """
+    def _member_done(path):
+        value = cfp.step_value(path, 'CFP_ALGN')
+        return (value != cfp.NOT_ALIGNED
+                and _algn_refcat_hash(value) == refcat_hash)
+
     if overwrite:
         return list(pools), 0
     pending, retry = [], 0
     for p in pools:
         stamped = all(status.has(m.path, 'CFP_ALGN') for m in p.members)
-        value = (cfp.step_value(p.members[0].path, 'CFP_ALGN')
-                 if stamped else None)
-        done = (stamped and value != cfp.NOT_ALIGNED
-                and _algn_refcat_hash(value) == refcat_hash)
-        if done:
+        # Judge EVERY member, not a representative: the residual gate can
+        # reject a single detector inside an otherwise solved pool, and that
+        # NOT_ALIGNED member must keep the pool pending (re-attempted on a
+        # normal re-run) rather than being silently skipped forever.
+        if stamped and all(_member_done(m.path) for m in p.members):
             continue
         pending.append(p)
         if stamped:
@@ -921,13 +930,24 @@ def _run_align(field, config, filtname, n_processes, overwrite, status,
     for p in pending:
         status.mark_all([m.path for m in p.members], 'CFP_ALGN')
 
-    # A NOT_ALIGNED pool is quarantined from every future mosaic (the combine
-    # quarantine). That must never be silent — surface it loudly with the levers
-    # to resolve it.
+    # A NOT_ALIGNED detector is quarantined from every future mosaic (the
+    # combine quarantine). That must never be silent — surface it loudly with
+    # the levers to resolve it. Covers both whole-pool rejections and single
+    # detectors the residual gate rejected inside an otherwise SOLVED pool.
     by_key = {p.key: p for p in pending}
-    failed = [by_key[r.key] for r in results
-              if r is not None and getattr(r, 'status', None) == 'NOT_ALIGNED'
-              and getattr(r, 'key', None) in by_key]
+    failed = []
+    for r in results:
+        if r is None or getattr(r, 'key', None) not in by_key:
+            continue
+        pool = by_key[r.key]
+        if getattr(r, 'status', None) == 'NOT_ALIGNED':
+            failed.append((pool, list(pool.members)))
+            continue
+        rejected = {d.detector for d in getattr(r, 'detectors', [])
+                    if not getattr(d, 'aligned', True)}
+        if rejected:
+            failed.append((pool, [m for m in pool.members
+                                  if m.detector in rejected]))
     if failed:
         _warn_not_aligned(field, failed)
 

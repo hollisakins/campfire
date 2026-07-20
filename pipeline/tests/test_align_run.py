@@ -36,6 +36,52 @@ def _field(enabled, **kw):
                  step_overrides={'align': {'enabled': enabled, **kw}})
 
 
+def _stamped_pool(tmp_path, values, key='exp'):
+    """A minimal pool of one-detector 'canonicals': tiny FITS files carrying
+    the given CFP_ALGN header values (None = unstamped)."""
+    from types import SimpleNamespace
+    members = []
+    for i, value in enumerate(values):
+        path = str(tmp_path / f'{key}_nrc{i}.fits')
+        hdu = fits.PrimaryHDU()
+        if value is not None:
+            hdu.header['CFP_ALGN'] = value
+        hdu.writeto(path, overwrite=True)
+        members.append(SimpleNamespace(path=path, detector=f'nrc{i}'))
+    return SimpleNamespace(key=key, members=members, n_members=len(members))
+
+
+class _StampStatus:
+    def has(self, path, key):
+        with fits.open(path) as h:
+            return key in h[0].header
+
+
+def test_pending_pools_judges_every_member(tmp_path):
+    # The residual gate can reject a single detector inside an otherwise
+    # solved pool, so 'done' must be judged from EVERY member's stamp — a
+    # NOT_ALIGNED member anywhere in the pool (not just members[0]) keeps the
+    # pool pending on a normal re-run.
+    from campfire_pipeline.nircam.orchestrate import _pending_pools
+    rc = 'abcd1234'
+    solved = f'dof=coarse res=0.01 n=10 rc={rc}'
+    done_pool = _stamped_pool(tmp_path, [solved, solved], key='done')
+    partial = _stamped_pool(tmp_path, [solved, 'NOT_ALIGNED'], key='partial')
+    stale = _stamped_pool(tmp_path, [solved, 'dof=coarse res=0.01 n=10 rc=ffff0000'],
+                          key='stale')
+    unstamped = _stamped_pool(tmp_path, [solved, None], key='unstamped')
+
+    pending, retry = _pending_pools([done_pool, partial, stale, unstamped],
+                                    _StampStatus(), overwrite=False,
+                                    refcat_hash=rc)
+    assert [p.key for p in pending] == ['partial', 'stale', 'unstamped']
+    assert retry == 2                    # partial + stale are stamped re-attempts
+
+    pending, retry = _pending_pools([done_pool, partial], _StampStatus(),
+                                    overwrite=True, refcat_hash=rc)
+    assert [p.key for p in pending] == ['done', 'partial']   # overwrite: all
+
+
 def test_visit_membership_detects_dropped_member():
     # The cheap outlier pre-scan must re-run a visit whose membership changed
     # (e.g. a NOT_ALIGNED quarantine dropped an exposure) — otherwise resample
