@@ -19,6 +19,15 @@ export type ViewMode = 'spectra' | 'objects';
  */
 export const FITS_DOWNLOAD_FILE_LIMIT = 500;
 
+/**
+ * Maximum number of rows in a catalog CSV export (objects or spectra,
+ * whichever unit the view mode exports in). Enforced server-side by
+ * generateCSV — its keyset pagination loop stops at this cap — and surfaced
+ * as a truncation warning in the download dropdown. Shared constant so the
+ * warning and the actual behavior can't disagree.
+ */
+export const CSV_EXPORT_ROW_LIMIT = 50000;
+
 // Spectra-mode sort columns (must match get_filtered_spectra_paginated whitelist)
 export const SPECTRA_SORT_COLUMNS = ['spectrum_id', 'target_id', 'field', 'observation', 'program_slug', 'ra', 'dec', 'redshift', 'redshift_quality', 'redshift_auto', 'signal_to_noise', 'exposure_time', 'grating', 'distance'] as const;
 
