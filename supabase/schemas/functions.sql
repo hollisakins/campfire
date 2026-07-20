@@ -1626,6 +1626,10 @@ BEGIN
           FROM targets t
           WHERE t.object_id = fo.id
             AND t.program_slug = ANY(p_program_slugs)
+            -- Same publication gate as object_scoped_aggregates: the RPC is
+            -- reached via the service-role client (/api/v1/objects), so RLS
+            -- won't hide draft-only members here.
+            AND (p_include_unpublished OR t.has_published_spectrum)
           ),
           '[]'::jsonb
         ),
