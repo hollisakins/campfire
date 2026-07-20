@@ -89,7 +89,9 @@ def test_recovers_shared_translation():
     sol = solve_exposure_group(detectors, refcat, key='exp')
     assert sol.status == 'SOLVED'
     assert len(sol.detectors) == 3
-    assert all(ds.dof == 'coarse' for ds in sol.detectors)
+    # the fine fit now always runs; a healthy detector either keeps the coarse
+    # attitude (no strict improvement) or accepts an rshift refinement
+    assert all(ds.dof in ('coarse', 'rshift') for ds in sol.detectors)
     assert all(ds.within_tolerance for ds in sol.detectors)
     assert all(ds.residual_arcsec < 0.02 for ds in sol.detectors)
     assert abs(np.hypot(*sol.shift) - 2.0) < 0.1
@@ -143,7 +145,7 @@ def test_fine_frees_outlier_detector():
     assert sol.status == 'SOLVED'
     good = sol.detectors[:4]
     outlier = sol.detectors[4]
-    assert all(ds.dof == 'coarse' and ds.within_tolerance for ds in good)
+    assert all(ds.within_tolerance for ds in good)
     assert outlier.dof in ('rshift', 'shift', 'general')
     assert outlier.within_tolerance
     assert outlier.residual_arcsec < 0.15
@@ -162,13 +164,51 @@ def test_fine_ceiling_shift_only():
 def test_few_matches_keeps_coarse():
     # A detector with too few matches for any fine geometry keeps the coarse
     # attitude rather than fitting an under-constrained per-detector correction.
+    # (Gate disabled: this test exercises the ladder degrade, and the outlier's
+    # ~0.24" coarse residual would otherwise trip the residual backstop.)
     detectors, refcat = _build_group(
         n_det=5, offset=(2.0, 0.0), per_det_extra={4: (0.0, 0.3)})
     sol = solve_exposure_group(detectors, refcat, key='exp', tolerance=0.15,
                                fine_min_shift=999, fine_min_rshift=999,
-                               fine_min_general=999)
+                               fine_min_general=999, max_residual_arcsec=None)
     assert sol.detectors[4].dof == 'coarse'
     assert not sol.detectors[4].within_tolerance
+
+
+# --- residual gate (backstop) ------------------------------------------------
+
+def test_residual_gate_rejects_bad_detector():
+    # Random per-source scatter no rigid fit can remove: detector 0's residual
+    # stays ~0.2" while the others solve to ~0. The gate must reject detector 0
+    # individually (aligned=False, input WCS preserved) and keep the pool
+    # SOLVED for the healthy detectors.
+    detectors, refcat = _build_group(n_det=3, offset=(2.0, 0.0), seed=2)
+    rng = np.random.default_rng(11)
+    cat = detectors[0].catalog
+    # mock WCS scale ~2.06"/px -> sigma 0.1 px ~ 0.21"/axis, median 2-D
+    # separation ~0.24" — over the 0.1" gate, inside the 0.5" match radius.
+    cat['x'] = np.asarray(cat['x'], float) + rng.normal(0, 0.1, len(cat))
+    cat['y'] = np.asarray(cat['y'], float) + rng.normal(0, 0.1, len(cat))
+    original = copy.deepcopy(detectors[0].wcs)
+    sol = solve_exposure_group(detectors, refcat, key='exp')
+    assert sol.status == 'SOLVED'
+    bad, good = sol.detectors[0], sol.detectors[1:]
+    assert not bad.aligned
+    assert bad.dof == 'identity'
+    assert bad.residual_arcsec > 0.1
+    assert bad.wcs(500, 500) == original(500, 500)     # input WCS preserved
+    assert all(g.aligned and g.residual_arcsec < 0.1 for g in good)
+
+
+def test_residual_gate_all_rejected_pool_not_aligned():
+    # Gate at 0: every detector's (tiny but nonzero) residual trips it, so the
+    # pool as a whole reads NOT_ALIGNED and the orchestration warning fires.
+    detectors, refcat = _build_group(n_det=2, offset=(2.0, 0.0))
+    sol = solve_exposure_group(detectors, refcat, key='exp',
+                               max_residual_arcsec=0.0)
+    assert sol.status == 'NOT_ALIGNED'
+    assert all(not ds.aligned for ds in sol.detectors)
+    assert all(ds.dof == 'identity' for ds in sol.detectors)
 
 
 # --- NOT_ALIGNED ------------------------------------------------------------
@@ -217,9 +257,9 @@ def test_footprint_clip_survives_refcat_decoys():
 # --- robustness: exceptions never crash the worker --------------------------
 
 def test_matcher_exception_degrades_to_not_aligned(monkeypatch):
-    # A crowded field can make XYXYMatch raise (source confusion). That must be
-    # swallowed and degrade to NOT_ALIGNED (WCS preserved), never propagate out
-    # of the solve and abort the align worker.
+    # An unforeseen matcher crash must be swallowed and degrade to NOT_ALIGNED
+    # (WCS preserved), never propagate out of the solve and abort the align
+    # worker.
     from tweakwcs.matchutils import MatchCatalogs
     import campfire_pipeline.nircam.align.solve as _s
 
@@ -228,9 +268,9 @@ def test_matcher_exception_degrades_to_not_aligned(monkeypatch):
             pass
 
         def __call__(self, refcat, imcat, **k):
-            raise RuntimeError("simulated source confusion")
+            raise RuntimeError("simulated matcher crash")
 
-    monkeypatch.setattr(_s, 'XYXYMatch', _BoomMatch)
+    monkeypatch.setattr(_s, 'OffsetHistogramMatch', _BoomMatch)
     detectors, refcat = _build_group(n_det=2, offset=(2.0, 0.0))
     originals = [copy.deepcopy(d.wcs) for d in detectors]
     sol = solve_exposure_group(detectors, refcat, key='exp')
@@ -250,7 +290,91 @@ def test_match_measures_small_offset():
                             meta={'catalog': d.catalog, 'group_id': 'g',
                                   'name': d.detector})
     ref_sky = SkyCoord(refcat['RA'], refcat['DEC'], unit='deg')
-    resid, n, ref_idx = _match(corr, d.catalog, ref_sky, match_radius=0.5)
+    resid, n, src_idx, ref_idx = _match(corr, d.catalog, ref_sky,
+                                        match_radius=0.5)
     assert n >= 30
     assert 0.15 < resid < 0.25
-    assert len(ref_idx) >= 30
+    assert len(ref_idx) == len(src_idx) == n
+    # mutual NN => a genuine one-to-one pairing on both sides
+    assert len(np.unique(ref_idx)) == n
+    assert len(np.unique(src_idx)) == n
+
+
+# --- clustered extragalactic refcat (the XYXYMatch overflow regime) ---------
+
+def test_solves_substructured_refcat_regime():
+    # The COSMOS failure mode: detections and refcat rows are the same
+    # (clustered) galaxies, and the refcat resolves substructure — several
+    # reference rows within ~2" of one detection. XYXYMatch's pair enumeration
+    # died here with MatchSourceConfusionError (39% of COSMOS LW exposures);
+    # the histogram-consensus matcher must solve it.
+    rng = np.random.default_rng(55)
+    crval = [_BASE_RA, _BASE_DEC]
+    x = rng.uniform(50, 950, 300)
+    y = rng.uniform(50, 2000, 300)
+    wt = _mock(crval)
+    ra_t, dec_t = (np.asarray(v, float) for v in wt(x, y))
+
+    # substructure: clone layers offset ~1" around each truth position, plus a
+    # diffuse junk floor — refcat ~6x denser than the detections
+    cosd = _COSD
+    ras, decs = [ra_t], [dec_t]
+    for _ in range(6):
+        sel = rng.random(300) < 0.6
+        n = int(sel.sum())
+        ras.append(ra_t[sel] + rng.normal(0, 1.0, n) / 3600.0 / cosd)
+        decs.append(dec_t[sel] + rng.normal(0, 1.0, n) / 3600.0)
+    ras.append(_BASE_RA + rng.uniform(-0.015, 0.015, 600) / cosd)
+    decs.append(_BASE_DEC + rng.uniform(-0.015, 0.015, 600))
+    refcat = Table({'RA': np.concatenate(ras), 'DEC': np.concatenate(decs)})
+    refcat.meta['name'] = 'clustered'
+
+    crval_off = [crval[0] + 0.4 / 3600.0 / cosd, crval[1] - 0.3 / 3600.0]
+    det = [DetectorInput('nrcblong', _mock(crval_off), _wcsinfo(),
+                         Table({'x': x, 'y': y,
+                                'mag': rng.uniform(18, 24, 300)}))]
+    sol = solve_exposure_group(det, refcat, key='exp')
+    assert sol.status == 'SOLVED'
+    assert sol.detectors[0].within_tolerance
+    assert sol.detectors[0].n_matched >= 150
+    assert abs(np.hypot(*sol.shift) - 0.5) < 0.1     # hypot(0.4, 0.3)
+
+
+# --- calibrated-mag plumbing (delta_mag_lim through the solve) ---------------
+
+def test_delta_mag_lim_plumbs_through_solve():
+    # Catalogs marked calibrated + a refcat 'mag' column: with agreeing mags,
+    # delta_mag_lim must not cost matches (pairs flow id->mag into the
+    # matcher); an absurd window that rejects every judged pair must reject
+    # the pool (proves the cut is actually reaching the matcher).
+    detectors, refcat = _build_group(n_det=2, offset=(1.0, 0.0))
+    refcat['mag'] = 22.0
+    for d in detectors:
+        d.catalog['mag'] = 22.0                     # agrees: dmag = 0
+        d.catalog.meta['mag_calibrated'] = True
+
+    sol = solve_exposure_group(detectors, refcat, key='exp',
+                               delta_mag_lim=(-3.0, 4.0))
+    assert sol.status == 'SOLVED'
+    assert sol.n_matched >= 60
+
+    sol_bad = solve_exposure_group(detectors, refcat, key='exp',
+                                   delta_mag_lim=(5.0, 6.0))
+    assert sol_bad.status == 'NOT_ALIGNED'
+
+
+# --- fine fit is no longer gated on tolerance --------------------------------
+
+def test_fine_removes_subtolerance_systematic_offset():
+    # The motivating case for removing the tolerance gate: one detector carries
+    # a small systematic offset (0.03" ~ one SW pixel) that stays UNDER the
+    # 0.05" tolerance. Previously it kept the coarse attitude (gate never
+    # fired) and the offset shipped; now the always-on fine fit removes it.
+    detectors, refcat = _build_group(
+        n_det=3, offset=(2.0, 0.0), per_det_extra={2: (0.0, 0.03)})
+    sol = solve_exposure_group(detectors, refcat, key='exp')
+    assert sol.status == 'SOLVED'
+    biased = sol.detectors[2]
+    assert biased.dof in ('rshift', 'shift', 'general')
+    assert biased.residual_arcsec < 0.01
+    assert biased.within_tolerance

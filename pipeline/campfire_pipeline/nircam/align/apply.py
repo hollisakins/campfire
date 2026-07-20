@@ -32,7 +32,8 @@ from campfire_pipeline.common import cfp
 from campfire_pipeline.common.io import atomic_save, log
 from campfire_pipeline.nircam.align.detect import (
     DETECT_DQ_BITS,
-    detect_star_centroids,
+    ab_zeropoint_from_sci_header,
+    detect_sources,
 )
 from campfire_pipeline.nircam.align.solve import (
     DetectorInput,
@@ -55,13 +56,16 @@ NOT_ALIGNED_SENTINEL = cfp.NOT_ALIGNED
 # (``psf_fwhm_by_filter``) is resolved per member below, not passed through
 # these keys. ``pool_modules`` is an orchestration key (it decides how detectors
 # are pooled before the solve is called), so it is deliberately NOT a solve key.
-_SOLVE_KEYS = ('coarse_searchrad', 'coarse_tolerance', 'coarse_separation',
-               'refine_niter', 'fine_fitgeom', 'fine_min_general',
+_SOLVE_KEYS = ('coarse_searchrad', 'refine_niter',
+               'd2d_max', 'binsize_px', 'gaussian_sigma_px',
+               'rough_cut_px_min', 'rough_cut_px_max', 'nfwhm', 'hist_nsigma',
+               'histocut_order', 'slope_max', 'slope_nsteps', 'delta_mag_lim',
+               'fine_fitgeom', 'fine_min_general',
                'fine_min_rshift', 'fine_min_shift', 'tolerance', 'match_radius',
                'min_matched', 'min_coverage_arcsec', 'ref_border_arcmin',
-               'nclip', 'sigma')
-_DETECT_KEYS = ('fwhm', 'nsigma', 'edge', 'snr_min', 'objmag_lim',
-                'sharplo', 'sharphi', 'roundlo', 'roundhi')
+               'nclip', 'sigma', 'max_residual_arcsec')
+_DETECT_KEYS = ('fwhm', 'snr_thresh', 'minarea', 'deblend_nthresh',
+                'deblend_cont', 'edge', 'snr_min', 'objmag_lim')
 
 
 # --- gwcs <-> ASDF-in-FITS backup (technique shared with steps/wcs_shift.py) --
@@ -168,14 +172,22 @@ def _detect_mask(model):
 def _load_detector(path, detector, detect_cfg, ImageModel):
     """Open a canonical, pick the pre-align gwcs (from ALGN_BAK if this file was
     aligned before), detect sources, and return a :class:`DetectorInput`."""
+    # AB zeropoint for calibrated detection magnitudes (None -> uncalibrated
+    # fallback, objmag_lim skipped loudly) — read cheaply before the datamodel.
+    with fits.open(path, memmap=False) as hdul:
+        zeropoint = ab_zeropoint_from_sci_header(hdul['SCI'].header)
+
     model = ImageModel(path, memmap=False)
     try:
         wi = model.meta.wcsinfo.instance
         wcsinfo = {'v2_ref': wi['v2_ref'], 'v3_ref': wi['v3_ref'],
                    'roll_ref': wi['roll_ref']}
         orig_wcs = model.meta.wcs
-        cat = detect_star_centroids(np.asarray(model.data, dtype=float),
-                                    mask=_detect_mask(model), **detect_cfg)
+        err = (np.asarray(model.err, dtype=float)
+               if getattr(model, 'err', None) is not None else None)
+        cat = detect_sources(np.asarray(model.data, dtype=float), err,
+                             mask=_detect_mask(model),
+                             zeropoint=zeropoint, **detect_cfg)
     finally:
         model.close()
 
@@ -295,12 +307,13 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
     solve_cfg = {k: config[k] for k in _SOLVE_KEYS if k in config}
     detect_cfg = {k: config[k] for k in _DETECT_KEYS if k in config}
 
-    # Per-filter detection PSF FWHM: NIRCam's core width runs from ~F070W to
-    # ~F480M, so a single fwhm is wrong across the exposure's SW+LW channels.
-    # Key it off each member's filter, falling back to the scalar `fwhm`.
+    # Per-filter matched-filter kernel FWHM: the kernel should track the PSF
+    # core, whose width runs from ~F070W to ~F480M, so a single fwhm is wrong
+    # across the exposure's SW+LW channels. Key it off each member's filter,
+    # falling back to the scalar `fwhm`.
     psf_by_filter = {str(k).lower(): float(v)
                      for k, v in (config.get('psf_fwhm_by_filter') or {}).items()}
-    default_fwhm = detect_cfg.get('fwhm', 2.5)
+    default_fwhm = detect_cfg.get('fwhm', 1.5)
 
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
@@ -335,7 +348,11 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
     by_detector = {d.detector: d for d in solution.detectors}
     for m in members:
         det_sol = by_detector.get(m.detector)
-        if solution.status == 'SOLVED' and det_sol is not None:
+        # ``aligned=False`` marks a per-detector residual-gate reject inside an
+        # otherwise SOLVED pool — that detector is stamped NOT_ALIGNED (WCS
+        # preserved, quarantined from combine) like a failed pool.
+        if (solution.status == 'SOLVED' and det_sol is not None
+                and getattr(det_sol, 'aligned', True)):
             _write_solution(m.path, det_sol.wcs,
                             _format_algn_value(det_sol, refcat_hash),
                             ImageModel, update_fits_wcsinfo)

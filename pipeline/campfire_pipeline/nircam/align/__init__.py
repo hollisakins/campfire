@@ -1,21 +1,21 @@
 """NIRCam astrometric ``align`` subsystem.
 
 The field-level alignment algorithm that replaces the JHAT-based ``jhat`` /
-``wcs_shift`` steps: triangle-matches a pooled per-exposure source catalog to a
-Gaia-tied reference catalog and fits one shared shift+rotation per exposure via
-``tweakwcs`` (SIAF distortion fixed), freeing a per-detector shift only where
-residuals demand it. See ``pipeline/ASTROMETRY_ALIGN_HANDOFF.md``.
+``wcs_shift`` steps: matches a pooled per-exposure source catalog (SEP
+segmentation, mirroring the refcat build) to a Gaia-tied reference catalog via
+the JHAT-ported offset-histogram consensus matcher (``histmatch.py``) and fits
+one shared shift+rotation per pool via ``tweakwcs`` (SIAF distortion fixed),
+freeing a per-detector fit only where residuals demand it.
 
-Modules are added phase by phase; this package currently exports the source
-detector, the triangle matcher, and the per-exposure solve. The
-exposure-grouping layer lives at ``nircam/association.py`` (a general primitive,
-not align-specific).
+This package exports the source detector, the per-pool solve, and the exposure
+I/O layer. The exposure-grouping layer lives at ``nircam/association.py`` (a
+general primitive, not align-specific).
 """
 
 from campfire_pipeline.nircam.align.apply import align_exposure_group
 from campfire_pipeline.nircam.align.detect import (
     detect_in_exposure,
-    detect_star_centroids,
+    detect_sources,
 )
 from campfire_pipeline.nircam.align.solve import (
     DetectorInput,
@@ -25,7 +25,7 @@ from campfire_pipeline.nircam.align.solve import (
 )
 
 __all__ = [
-    'detect_star_centroids',
+    'detect_sources',
     'detect_in_exposure',
     'solve_exposure_group',
     'DetectorInput',

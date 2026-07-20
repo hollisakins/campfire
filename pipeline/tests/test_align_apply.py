@@ -210,6 +210,18 @@ def test_overwrite_does_not_double_correct(tmp_path):
         assert _reload_residual(m.path, xy[m.detector], refcat) < 0.05
 
 
+def test_residual_gate_threads_from_config(tmp_path):
+    # [<field>.align].max_residual_arcsec must reach the solve: a 0 gate rejects
+    # every detector (any real residual is > 0), so the pool stamps NOT_ALIGNED
+    # and the WCS stays untouched.
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2)
+    sol = align_exposure_group(members, refcat,
+                               config={'max_residual_arcsec': 0.0})
+    assert sol.status == 'NOT_ALIGNED'
+    for m in members:
+        assert _cfp_algn(m.path) == 'NOT_ALIGNED'
+
+
 # --- fine per-detector fit end-to-end ---------------------------------------
 
 def test_fine_dof_recorded(tmp_path):

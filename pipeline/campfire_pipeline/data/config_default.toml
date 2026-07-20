@@ -431,44 +431,102 @@
     enabled = false
     # --- Coarse: pooled per-module (or per-channel) shift+rotation --------------
     # One rshift is fit from all of a module's detectors at once (SIAF fixed),
-    # matched to the refcat by tweakwcs' 2-D pairwise-offset histogram
-    # (XYXYMatch, use2dhist) then iterated to convergence. The bake-off
-    # (scripts/align_matcher_bakeoff.py) showed this recovers offsets to tens of
-    # arcsec and roll to ~1 deg at 97-100% in realistic (contaminated) fields;
-    # a rotation-scan wrapper was worse and 17x slower and the stimage triangle
-    # matcher hard-crashes on sparse input, so both — and tristars — are retired.
+    # matched to the refcat by the JHAT-ported OffsetHistogramMatch: a 2-D
+    # pairwise-offset histogram grabs the gross translation (pass 0 only),
+    # then every image source is 1-NN-paired to the refcat and the TRUE pairs
+    # are selected by consensus — they pile into one narrow peak of the
+    # per-axis offset histogram (rotation-slope scan + sigma clip) while false
+    # pairs scatter. Nothing is pair-enumerated, so the matcher cannot hit
+    # tweakwcs/stimage's MatchSourceConfusionError on clustered extragalactic
+    # catalogs (39% of COSMOS LW exposures under the previous XYXYMatch).
+    # All detectors of a pool share ONE offset histogram, so pooling makes the
+    # consensus peak stronger, not weaker.
     pool_modules      = false   # false: coarse fit per module (A, B separate);
                                 # true: pool both modules into one coarse fit
-    coarse_searchrad  = 70.0    # arcsec; 2-D-hist search radius (>= max acquisition
-                                # offset to recover; 70" covers 60" shifts)
-    coarse_tolerance  = 2.0     # arcsec; coarse pair-accept tolerance
-    coarse_separation = 1.0     # arcsec; min in-catalog source separation
+    coarse_searchrad  = 70.0    # arcsec; gross-shift 2-D-hist radius (>= max
+                                # acquisition offset to recover; 70" covers 60")
     refine_niter      = 3       # coarse match->fit->rematch iters (recovers roll)
-    # --- Fine: gated per-detector fit on top of the coarse ---------------------
-    # fine_fitgeom is the CEILING dof; each detector falls down the ladder
-    # (general -> rshift -> shift -> keep-coarse) by its unique-match count. jhat
-    # only ever fits rshift per detector, so rshift is the default ceiling.
+    # Histogram-consensus knobs (JHAT names/values — the validated COSMOS
+    # [nircam.jhat] configuration). *_px values are IMAGE PIXELS, converted to
+    # tangent-plane arcsec per pool, so SW/LW each get physical values.
+    d2d_max           = 1.5     # arcsec; drop 1-NN pairs farther than this
+                                # (after the gross shift)
+    binsize_px        = 0.02    # offset-histogram bin (px)
+    gaussian_sigma_px = 0.2     # histogram smoothing sigma (px)
+    rough_cut_px_min  = 2.5     # clamp on the rough cut around the peak (px);
+    rough_cut_px_max  = 2.5     # min = max = 2.5 pins it, as JHAT ran on COSMOS
+    nfwhm             = 2.5     # rough cut = nfwhm * peak FWHM before clamping
+    hist_nsigma       = 3.0     # sigma-clip of the de-rotated offsets
+    histocut_order    = "dxdy"  # cut dx-vs-y first ("dxdy") or dy-vs-x ("dydx")
+    slope_max         = 0.0048828125  # rotation-scan half-range, dimensionless
+                                      # (= JHAT's 10px/2048px ~ 0.28 deg)
+    slope_nsteps      = 200     # rotation-scan steps across [-slope_max, +]
+    # delta_mag_lim = [-3.0, 4.0]   # keep a 1-NN pair only if image_mag -
+                                # refcat_mag lies in this window (JHAT's COSMOS
+                                # value). Needs calibrated detection mags (auto
+                                # when frames are MJy/sr) AND a refcat whose
+                                # 'mag' zeropoint is trustworthy — refcat mags
+                                # are heterogeneous across build backends, so
+                                # this stays off by default. Pairs missing
+                                # either mag are never cut.
+    # --- Fine: per-detector fit on top of the coarse ---------------------------
+    # EVERY detector with enough verified (mutual-NN) matches gets an
+    # individual fit on its pre-matched pairs — jhat fits every detector,
+    # always, and a sub-tolerance systematic SIAF offset must not survive just
+    # because it is small. fine_fitgeom is the CEILING dof; each detector
+    # falls down the ladder (general -> rshift -> shift -> keep-coarse) by its
+    # match count; the floors are the guard against noise-chasing fits
+    # (fine_min_shift = jhat's own minobj = 3). jhat only ever fits rshift per
+    # detector, so rshift is the default ceiling.
     fine_fitgeom      = "rshift"  # "general" | "rshift" | "shift"
     fine_min_general  = 10        # >= this many 1-to-1 matches -> allow general
     fine_min_rshift   = 4         # >= this -> allow rshift
-    fine_min_shift    = 2         # >= this -> allow shift; below -> keep coarse
-    tolerance         = 0.05      # arcsec; a fine fit must beat this to read "within"
+    fine_min_shift    = 3         # >= this -> allow shift; below -> keep coarse
+                                  # (= jhat's tweakreg minobj)
+    tolerance         = 0.05      # arcsec; QA/reporting only — flags a detector
+                                  # as within tolerance; gates nothing
     match_radius      = 0.5       # arcsec; 1-to-1 NN radius for residuals + fine match
     min_matched       = 6         # per-pool reject-to-NOT_ALIGNED floor (1-to-1)
     min_coverage_arcsec = 5.0     # matched sources must span >= this (conditions rot)
     ref_border_arcmin = 1.2     # refcat footprint margin (>= coarse_searchrad); arcmin
-    # Detection quality selection (per detector, no count cap):
-    nsigma = 5.0                # detection threshold (convolved background sigma)
-    snr_min = 5.0               # drop detections below this peak SNR (peak/bkg-rms)
-    fwhm = 2.5                  # fallback detection PSF FWHM (px); per-filter
-                                # override below
+    # Backstop residual gate: any detector whose final 1-to-1 residual exceeds
+    # this (arcsec) is individually rejected to NOT_ALIGNED (WCS preserved,
+    # quarantined from combine) — no plausible-but-wrong solution may reach a
+    # mosaic. Healthy solves sit at ~0.02-0.03"; the COSMOS A2/A3
+    # misregistrations this guards against sat at 0.20-0.24".
+    max_residual_arcsec = 0.1
+    # --- Detection (per detector, no count cap) --------------------------------
+    # SEP segmentation of the SNR map (sci/err), mirroring the refcat build
+    # (refcat/extract.py) so image-side detections correspond to refcat
+    # entries. Point-source (DAOStarFinder) detection is retired: over bright
+    # extended galaxies it found thousands of *bright* substructure peaks
+    # tracing the same galaxy clustering as the refcat, and the coarse
+    # gross-shift 2-D offset histogram grew clustering-scale peaks that could
+    # beat the true offset — dragging well-pointed exposures tens of arcsec
+    # (COSMOS A2/A3 f277w). Detection magnitudes are CALIBRATED AB whenever
+    # the frame is MJy/sr with PIXAR_SR (Kron photometry + JHAT's zeropoint
+    # convention) — so objmag_lim takes real AB values; on a frame with no
+    # zeropoint the cut is skipped loudly rather than applied to instrumental
+    # mags.
+    snr_thresh = 3.0            # per-pixel detection threshold on the SNR map
+    minarea = 15                # min connected pixels above snr_thresh
+    deblend_nthresh = 32        # SEP deblender: number of thresholds
+    deblend_cont = 0.001        # SEP deblender: min contrast
+    snr_min = 10.0              # drop sources below this integrated flux SNR
+                                # (flux/fluxerr; same cut as the refcat build)
     edge = 8                    # drop detections within this many px of a border
+    fwhm = 1.5                  # fallback matched-filter kernel FWHM (px);
+                                # per-filter override below
+    # objmag_lim = [19.0, 28.0] # keep only this AB-mag window (JHAT's COSMOS
+                                # value); off by default — DQ saturation
+                                # masking already guards the bright end
 
-    # Per-filter detection PSF FWHM (detector pixels). NIRCam's PSF core runs
-    # from ~F070W to ~F480M, so one fwhm is wrong across the SW+LW channels; the
-    # align worker keys detection off each member's filter, falling back to the
-    # scalar `fwhm` above for any filter not listed. Values ≈ PSF-core FWHM /
-    # pixel-scale — approximate; tune per field on real data.
+    # Per-filter matched-filter kernel FWHM (detector pixels) — the kernel
+    # should track the PSF core, which runs from ~F070W to ~F480M, so one fwhm
+    # is wrong across the SW+LW channels; the align worker keys detection off
+    # each member's filter, falling back to the scalar `fwhm` above for any
+    # filter not listed. Values ≈ PSF-core FWHM / pixel-scale — approximate;
+    # tune per field on real data.
     [nircam.align.psf_fwhm_by_filter]
         f070w = 1.5
         f090w = 1.6
