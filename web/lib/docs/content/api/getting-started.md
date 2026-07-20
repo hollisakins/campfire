@@ -70,6 +70,14 @@ Synced 146 observations, 3072 objects, 47340 spectra
 
 Re-running `cf.sync()` is fast and safe — it updates inspection results, redshifts, tags, and any new spectra. If files have been reprocessed on the server, you'll see a stale-count warning; re-fetch them with `cf.download(stale_only=True)`.
 
+To bulk-download FITS from the shell — rather than lazily on first access (see §7) — use `campfire download` (alias `campfire pull`):
+
+```bash
+campfire download --obs ember_uds_p4   # or --program / --field / --all, plus --grating / --stale / --dry-run
+```
+
+The full flag list lives in the [CLI Reference](/docs/api/cli#downloading-fits-files).
+
 ---
 
 ## 4. The mental model

@@ -13,6 +13,8 @@ const SHORTCUTS = [
   { key: 'S', action: 'Save without advancing' },
   { key: 'Z', action: 'Focus redshift input' },
   { key: 'G', action: 'Cycle grating' },
+  { key: 'F', action: 'Toggle flux units (fν / fλ)' },
+  { key: 'Y', action: 'Toggle y-axis auto-stretch' },
   { key: 'Escape', action: 'Exit inspection mode' },
   { key: '?', action: 'Toggle this help' },
 ];
