@@ -197,6 +197,51 @@ Release procedure: edit the `## Unreleased` section below, then run
   omitted grown pixels from the plot entirely.
 
 ### Infrastructure
+- NIRCam `bkg` gains a **DQ pathology guard** so a broken upstream calibration
+  step can no longer hard-fail the whole `process` phase. When an aggressive-DQ
+  class (`JUMP_DET` / `SATURATED` / `PERSISTENCE`) blankets more than
+  `[nircam.bkg.mask].mask_aggressive_dq_max_frac` (default 0.85) of a frame, it is
+  spurious over-flagging, not real transients — folding it into the fit mask left
+  the conditioning-detrend `Background2D` with no box above `exclude_percentile`
+  and raised `All boxes contain <= N unmasked pixels`, killing the step. The
+  offending bit is now dropped from that exposure's fit mask (with a log line);
+  the underlying pixels are kept as good sky. Observed on COSMOS f356w exposures
+  where `jwst` jump detection flagged ~97% of the frame on low-`NGROUPS` ramps
+  (field baseline is ~6%). Independent of `subtract_2d` (the detrend runs
+  regardless). Categorized Infrastructure: normal exposures are unaffected (guard
+  triggers only on pathological frames), and the affected path previously raised
+  rather than producing values. Drizzle already keeps these pixels
+  (`good_bits='~DO_NOT_USE'`; `JUMP_DET` is not promoted), so recovered exposures
+  contribute normally to the coadd.
+- Work around an `nmfwisp` <= 1.1.4 bug that made NMF wisp subtraction fail for
+  **every SW detector/filter on a case-sensitive filesystem**. Upstream's
+  `estimate_wisp_standard` uppercases `filter_name` for its validation list and
+  then passes that same string to `load_wisp_templates`, which builds the
+  template *filename* from it — so it looks for `nrcb4_F200W_wisp.fits.gz` while
+  the shipped file is `nrcb4_f200w_wisp.fits.gz`. The lookup misses,
+  `load_wisp_templates` returns `None` rather than raising, and the `None`
+  surfaces three frames later as an opaque `np.any((mask, None), axis=0)`
+  ValueError. macOS's case-insensitive filesystem hides the bug entirely.
+  `campfire`'s own `_nmf_supports` gate probes the correct (lowercase) name, so
+  the two disagreed: campfire dispatched to NMF for pairs upstream then could
+  not load, crashing the whole `process` phase. The step now builds a cache-
+  resident tree of uppercase-named symlinks (`$CAMPFIRE_ROOT/cache/wisps/
+  _nmfwisp_case_shim`) and passes it as `wisp_path`. Verified by injection:
+  templates recover at ratio 0.995-1.000 with residual/injected <= 0.006. The
+  shim is **self-removing** — it probes the installed `nmfwisp` and returns
+  `None` once the upstream lookup resolves, so a fixed release disables it with
+  no code change. Categorized Infrastructure because no scientific output
+  changes: the affected path previously raised rather than producing values.
+  Delete the block in `steps/wisp.py` when a fixed `nmfwisp` is pinned.
+- The conditioning detrend's in-code `box_size` fallback in the NIRCam `bkg`
+  step was 32 px while `config_default.toml` ships 256 — an 8x finer mesh for
+  any caller that builds `step_config` without the packaged TOML, which would
+  let the detrend absorb the banding/amp-DC detail the per-amp terms are meant
+  to fit. Fallback now mirrors the TOML (256 px SW -> 128 px LW). No change to
+  normal `cfpipe` runs, where the TOML value always wins. The module docstring
+  also had `fine`/`coarse` inverted between the two fits (it described the
+  detrend as the fine box and the applied fit as the coarse one, the opposite
+  of the shipped 256 vs 64); corrected, with the rj0911 A/B rationale noted.
 - Dependency declarations now match actual imports (#330): added `requests`,
   `h5py`, and `Pillow` (previously satisfied only transitively) plus the
   directly-imported JWST-stack packages (`crds`, `asdf`, `stdatamodels`,

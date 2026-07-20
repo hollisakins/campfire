@@ -24,12 +24,17 @@ R. Endsley's ``subtract_2d_before_1f``):
   gradients and diffuse (scattered-light) structure are per-amp-asymmetric,
   so the per-amp pedestal / GP DC means absorb them differently per amp and
   imprint seams at columns 512/1024/1536. The detrend is fit-only — never
-  subtracted — so it is free to follow structure aggressively (fine box, no
-  mask growth, no rejection; flux conservation cannot be harmed by a fit
-  that removes nothing). Always on by default; with it, the pedestal's
-  per-amp scope is safe even under strong gradients.
+  subtracted — so flux conservation cannot constrain it (a fit that removes
+  nothing cannot harm it). Uses a COARSE box (256 px SW -> 128 px LW), no
+  mask growth, no rejection: the coarse mesh conditions the smooth
+  component — the actual seam driver — while being structurally unable to
+  absorb the banding / amp-DC detail the per-amp terms are meant to fit.
+  Fine boxes measured slightly WORSE on real frames (rj0911 detrend-box A/B
+  2026-07-17). Always on by default; with it, the pedestal's per-amp scope
+  is safe even under strong gradients.
 * The **applied fit** (``subtract_2d``, opt-in per field) is the sky-match /
-  ICL-removal subtraction: a *smooth* model (coarse box, grown source mask,
+  ICL-removal subtraction: a *smooth* model (64 px SW -> 32 px LW — finer
+  than the detrend, but deliberately gentle — plus grown source mask and
   map-outlier reject) whose parameters are set by flux conservation — zero
   median aperture loss in the synthetic sweep — not by flatness, which the
   detrend now owns.
@@ -162,6 +167,16 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
 
     pix_factors = mask_cfg.pop('pixel_scale_factor', {'sw': 1.0, 'lw': 0.5})
     aggressive_dq = mask_cfg.pop('mask_aggressive_dq', True)
+    # Pathology guard: an aggressive-DQ class that blankets more than this
+    # fraction of the frame is a broken calibration step (e.g. JUMP_DET runaway
+    # on low-NGROUPS ramps), not real transients — folding it into the fit mask
+    # starves the Background2D detrend of unmasked boxes and hard-fails the step.
+    # Such a bit is dropped from the fit mask per-exposure. 1.0 disables the guard.
+    # Default 0.85 targets only the near-total blankets that actually starve the
+    # fit; borderline low-NGROUPS visits (~50% salt-and-pepper) fit fine either
+    # way and are left untouched (consistent across modules).
+    aggressive_dq_max_frac = float(
+        mask_cfg.pop('mask_aggressive_dq_max_frac', 0.85))
 
     with ImageModel(exposure_file, memmap=False) as model:
         sci0 = model.data.copy()
@@ -193,9 +208,12 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
             )
         sb = SubtractBackground.from_config(mcfg)
 
-        # Conditioning detrend fitter: fine box, undilated mask, no reject —
+        # Conditioning detrend fitter: coarse box, undilated mask, no reject —
         # fit-only, so flux conservation cannot constrain it (see docstring).
-        det_box = max(1, int(round(det_cfg.get('box_size', 32) * f2)))
+        # Fallback mirrors config_default.toml (256 px SW -> 128 px LW); a fine
+        # box here would let the detrend absorb the banding/amp-DC detail the
+        # per-amp terms are supposed to fit.
+        det_box = max(1, int(round(det_cfg.get('box_size', 256) * f2)))
         sb_det = SubtractBackground(
             bg_box_size=det_box,
             bg_filter_size=det_cfg.get('filter_size', 3),
@@ -210,7 +228,16 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
         # masking via inflated per-row sigma).
         dq_bits = dqflags.pixel['DO_NOT_USE']
         if aggressive_dq:
+            npix = dq.size
             for bit in ('JUMP_DET', 'SATURATED', 'PERSISTENCE'):
+                bit_frac = float((np.bitwise_and(dq, dqflags.pixel[bit]) != 0
+                                  ).sum()) / npix
+                if bit_frac > aggressive_dq_max_frac:
+                    log(f"  {rootname}: {bit} flags {100*bit_frac:.1f}% of the "
+                        f"frame (> {100*aggressive_dq_max_frac:.0f}% guard) — "
+                        f"spurious over-flagging, excluding it from the bkg fit "
+                        f"mask (underlying pixels kept as good sky)")
+                    continue
                 dq_bits |= dqflags.pixel[bit]
         dq_fit = np.bitwise_and(dq, dq_bits) != 0
 
