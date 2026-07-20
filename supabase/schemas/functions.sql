@@ -1583,10 +1583,13 @@ BEGIN
         'field', fo.field,
         'ra', fo.ra,
         'dec', fo.dec,
-        -- Aggregates scoped to the viewer's accessible (+ filtered) programs so
-        -- mixed-program objects don't leak proprietary member metadata. Filter
-        -- and sort above still run on the global o.* columns (display-only
-        -- scoping); the substitution happens only on the paginated result set.
+        -- Aggregates scoped to the viewer's accessible programs so mixed-program
+        -- objects don't leak proprietary member metadata. Deliberately NOT
+        -- narrowed by p_filter_programs: a program filter selects which objects
+        -- appear (overlap test above), but each row still shows the object's
+        -- full accessible programs/observations. Filter and sort above run on
+        -- the global o.* columns; the substitution happens only on the
+        -- paginated result set.
         'n_targets', sa.n_targets,
         'n_spectra', sa.n_spectra,
         'programs', sa.programs,
@@ -1622,7 +1625,11 @@ BEGIN
           )
           FROM targets t
           WHERE t.object_id = fo.id
-            AND t.program_slug = ANY(v_filtered_program_slugs)
+            AND t.program_slug = ANY(p_program_slugs)
+            -- Same publication gate as object_scoped_aggregates: the RPC is
+            -- reached via the service-role client (/api/v1/objects), so RLS
+            -- won't hide draft-only members here.
+            AND (p_include_unpublished OR t.has_published_spectrum)
           ),
           '[]'::jsonb
         ),
@@ -1643,7 +1650,7 @@ BEGIN
         )
       ) AS obj_json
     FROM filtered_objects fo
-    LEFT JOIN LATERAL public.object_scoped_aggregates(fo.id, v_filtered_program_slugs, p_include_unpublished) sa ON true
+    LEFT JOIN LATERAL public.object_scoped_aggregates(fo.id, p_program_slugs, p_include_unpublished) sa ON true
   )
   SELECT
     COALESCE(jsonb_agg(wm.obj_json), '[]'::jsonb),
