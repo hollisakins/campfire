@@ -50,6 +50,103 @@ from campfire_pipeline.nircam.steps._flat import (
 
 WISP_DETECTORS = {'nrca3', 'nrca4', 'nrcb3', 'nrcb4'}
 
+# ---------------------------------------------------------------------------
+# TEMPORARY: nmfwisp filter-name case shim.
+#
+# nmfwisp <= 1.1.4 cannot load ANY bundled template on a case-sensitive
+# filesystem. ``estimate_wisp_standard`` uppercases ``filter_name`` for its
+# validation list and then hands that same uppercased string to
+# ``load_wisp_templates``, which uses it verbatim to build the filename:
+#
+#     nrcb4 + 'F200W'  ->  templates/nrcb4_org/nrcb4_F200W_wisp.fits.gz
+#     shipped file     ->  templates/nrcb4_org/nrcb4_f200w_wisp.fits.gz
+#
+# The lookup misses, ``load_wisp_templates`` returns None for wmask instead of
+# raising, and the None surfaces three frames later as an opaque numpy error
+# from ``np.any((mask, None), axis=0)``. macOS's case-insensitive filesystem
+# hides this entirely, which is likely why it shipped.
+#
+# Workaround: a cache-resident tree of uppercase-named symlinks pointing at the
+# real lowercase templates, passed to ``fit_wisp(wisp_path=...)``.
+#
+# This is SELF-REMOVING: _nmfwisp_case_shim() probes the installed nmfwisp and
+# returns None when the upstream lookup works, so once a fixed nmfwisp is
+# installed the shim stops being built or used with no code change. Delete this
+# block (and the two call sites it feeds) when the fixed release is pinned.
+# ---------------------------------------------------------------------------
+
+# A (detector, filter) pair the package is known to ship, used only to probe
+# whether upstream's lookup resolves.
+_SHIM_PROBE = ('nrcb4', 'F115W')
+
+
+def _upstream_lookup_works():
+    """True when the installed nmfwisp resolves a template from an UPPERCASE
+    filter name (i.e. the case bug is fixed and no shim is needed)."""
+    try:
+        from nmfwisp.nmfwisp import load_wisp_templates
+    except (ModuleNotFoundError, ImportError):
+        return True          # nothing to shim; caller falls back anyway
+    det, filt = _SHIM_PROBE
+    try:
+        _tmpl, _err, wmask, _hsr = load_wisp_templates(None, det, filt)
+    except Exception:
+        # A fixed version may raise FileNotFoundError on a genuine miss; that is
+        # not the case bug, and a shim would not help.
+        return True
+    return wmask is not None and np.size(wmask) > 0
+
+
+@functools.lru_cache(maxsize=1)
+def _nmfwisp_case_shim():
+    """Path to the uppercase-symlink shim tree, or None if not needed.
+
+    Built once per host under the wisps cache. Construction is race-safe: each
+    process builds into a private directory and atomically renames it into
+    place, discarding its copy if another process got there first.
+    """
+    if _upstream_lookup_works():
+        return None
+    try:
+        import importlib.resources as ir
+        import nmfwisp  # noqa: F401
+        src = ir.files('nmfwisp') / 'templates'
+    except (ModuleNotFoundError, ImportError):
+        return None
+
+    from campfire_pipeline.nircam import wisp_cache
+    final = os.path.join(wisp_cache.cache_dir(), '_nmfwisp_case_shim')
+    if os.path.isdir(final):
+        return final
+
+    staging = f'{final}.{os.getpid()}'
+    n = 0
+    for det_dir in sorted(os.listdir(str(src))):
+        sub = os.path.join(str(src), det_dir)
+        if not os.path.isdir(sub):
+            continue
+        os.makedirs(os.path.join(staging, det_dir), exist_ok=True)
+        for fn in sorted(os.listdir(sub)):
+            # <det>_<filt>_wisp.fits[.gz] -> uppercase only the filter token.
+            parts = fn.split('_')
+            if len(parts) < 3:
+                continue
+            parts[1] = parts[1].upper()
+            link = os.path.join(staging, det_dir, '_'.join(parts))
+            try:
+                os.symlink(os.path.join(sub, fn), link)
+                n += 1
+            except FileExistsError:
+                pass
+    try:
+        os.rename(staging, final)
+        log(f'nmfwisp case shim: built {n} uppercase symlinks at {final}')
+    except OSError:
+        # Another process won the race; drop ours and use theirs.
+        import shutil
+        shutil.rmtree(staging, ignore_errors=True)
+    return final if os.path.isdir(final) else None
+
 # Detector-specific bbox where the wisps are most prominent — used as the
 # fitting region for the legacy ``template`` method so faint sources outside
 # the wisp region don't influence the variance minimization.
@@ -217,8 +314,12 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
         log(f"Source detection found nothing for {rootname}; "
             "fitting NMF without a source mask")
 
+    # wisp_path is the case shim when the installed nmfwisp needs it, else None
+    # (upstream default). See _nmfwisp_case_shim.
+    shim = _nmfwisp_case_shim()
     wisp, _wisp_e = fit_wisp(
         sci_before, model.err, mask,
+        wisp_path=shim,
         detector_name=detector, filter_name=filtname.upper(),
         correct_1f=correct_1f,
     )

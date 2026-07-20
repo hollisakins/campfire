@@ -208,6 +208,13 @@
         # detection): they carry residual signal that would bias the per-amp
         # estimate; the GP tolerates the extra masking.
         mask_aggressive_dq = true
+        # Pathology guard: if any aggressive-DQ class blankets more than this
+        # fraction of a frame it is broken calibration (e.g. JUMP_DET runaway on
+        # low-NGROUPS ramps), not real transients — including it would starve the
+        # Background2D detrend and hard-fail the step. That bit is dropped from
+        # the fit mask for that exposure only (underlying pixels kept as sky).
+        # 0.85 targets only near-total blankets; 1.0 disables the guard.
+        mask_aggressive_dq_max_frac = 0.85
 
         [nircam.bkg.mask.pixel_scale_factor]
             # Mask length params are angular scales in px, tuned at 30 mas.
