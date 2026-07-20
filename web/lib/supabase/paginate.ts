@@ -37,6 +37,62 @@ export async function paginateRpc<T = Record<string, unknown>>(
 }
 
 /**
+ * Keyset-paginate through all results of a Supabase RPC.
+ *
+ * Unlike paginateRpc above, which pages with PostgREST .range() — LIMIT/OFFSET
+ * applied OUTSIDE a set-returning function, so every page re-executes and
+ * re-sorts the entire result set — this drives RPCs that accept an explicit
+ * cursor + page-size argument and apply the LIMIT inside the query. Each page
+ * is then one index-bounded scan from the cursor, and total work across the
+ * whole export stays proportional to the result set (issue #412).
+ *
+ * The RPC must return rows in ascending cursor-key order and cap its output at
+ * the page size it was passed (a shorter page signals the last one).
+ */
+export async function paginateRpcKeyset<T = Record<string, unknown>>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: SupabaseClient<any, any>,
+  fnName: string,
+  args: Record<string, unknown>,
+  opts: {
+    /** RPC argument name that carries the cursor (null on the first page). */
+    cursorParam: string;
+    /** Extracts the cursor value from the last row of a page. */
+    getCursor: (row: T) => string | number;
+    /** Stop after this many rows (result is truncated to exactly this count). */
+    maxRows?: number;
+    pageSize?: number;
+  },
+): Promise<{ data: T[]; error: Error | null }> {
+  const pageSize = opts.pageSize ?? DEFAULT_PAGE_SIZE;
+  const allRows: T[] = [];
+  let cursor: string | number | null = null;
+
+  while (true) {
+    const { data, error } = await supabase.rpc(fnName, {
+      ...args,
+      [opts.cursorParam]: cursor,
+      p_page_size: pageSize,
+    });
+
+    if (error) {
+      return { data: allRows, error: new Error(error.message) };
+    }
+
+    const rows = (data ?? []) as T[];
+    allRows.push(...rows);
+    if (opts.maxRows != null && allRows.length >= opts.maxRows) {
+      allRows.length = opts.maxRows;
+      break;
+    }
+    if (rows.length < pageSize) break;
+    cursor = opts.getCursor(rows[rows.length - 1]);
+  }
+
+  return { data: allRows, error: null };
+}
+
+/**
  * Paginate through all results of a Supabase table/view query.
  *
  * Accepts a factory callback that returns a fresh query builder on each call.

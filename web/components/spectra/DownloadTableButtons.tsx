@@ -4,7 +4,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Download, FileText, Package, Loader2, ChevronDown } from 'lucide-react';
 import { generateCSV, generateCsvFilename, generateFitsDownloadUrl } from '@/lib/actions/download';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
-import { FITS_DOWNLOAD_FILE_LIMIT } from '@/lib/actions/spectra-types';
+import { FITS_DOWNLOAD_FILE_LIMIT, CSV_EXPORT_ROW_LIMIT } from '@/lib/actions/spectra-types';
 import { downloadFilesAsZip } from '@/lib/utils/zip-download';
 import { AdvancedFilterOptions } from './SpectraFilterBar';
 
@@ -32,7 +32,9 @@ export const DownloadDropdown: React.FC<DownloadDropdownProps> = ({
   const [error, setError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const CSV_LIMIT = 50000;
+  // Shared with the server action, which enforces the cap (generateCSV stops
+  // its keyset pagination loop at this many rows).
+  const CSV_LIMIT = CSV_EXPORT_ROW_LIMIT;
   // FITS_LIMIT is in spectra/file units. In spectra mode totalCount is already
   // the spectra count, so this gate is exact. In objects mode totalCount is the
   // object count — a loose lower bound on the spectra count (one object fans out

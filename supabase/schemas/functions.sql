@@ -2120,17 +2120,24 @@ GRANT EXECUTE ON FUNCTION public.get_adjacent_objects TO service_role;
 -- get_csv_export_spectra
 -- =============================================================================
 
--- Phase D: dropped spectral_features filtering (deprecated). redshift_quality
--- and redshift now read from the parent object via the targets→objects FK.
--- redshift_auto + dq_flags are per-spectrum (from spectra). Signature change
--- requires DROP first; CREATE OR REPLACE alone can't widen the RETURNS row.
+-- Issue #412: keyset pagination. PostgREST applies .range() LIMIT/OFFSET
+-- OUTSIDE a set-returning function, so the old offset-paged export fully
+-- materialized and sorted the WHOLE filtered result set on every page —
+-- pages × O(N log N) — and blew through the authenticated role's 8s
+-- statement_timeout at ~16k rows. The caller now passes p_after_id (spectra.id
+-- PK cursor; spectrum_id is not uniquely constrained) and p_page_size; the
+-- LIMIT lives inside the query, each page is one index-bounded scan in id
+-- order, and total work across an export stays O(N). Rows come back in
+-- spectra.id order — the web action re-sorts in JS for cosmetic CSV ordering,
+-- so p_sort_column/p_sort_direction are gone. RETURNS gains id + observation;
+-- signature/RETURNS changes require DROP first.
 DROP FUNCTION IF EXISTS public.get_csv_export_spectra(
   TEXT[], TEXT[], TEXT[], TEXT[], TEXT, TEXT[], INTEGER[],
   DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION,
   DOUBLE PRECISION, DOUBLE PRECISION,
-  INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER,
-  INTEGER[], TEXT, BOOLEAN, BOOLEAN, TEXT, TEXT, UUID,
-  DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT
+  INTEGER, INTEGER, INTEGER,
+  INTEGER[], TEXT, BOOLEAN, BOOLEAN, BOOLEAN, TEXT, TEXT, UUID,
+  DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT, BOOLEAN
 );
 
 CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
@@ -2151,11 +2158,12 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_comment_user_id UUID DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
-  p_sort_column TEXT DEFAULT 'target_id', p_sort_direction TEXT DEFAULT 'asc',
-  p_include_unpublished BOOLEAN DEFAULT false
+  p_include_unpublished BOOLEAN DEFAULT false,
+  p_after_id INTEGER DEFAULT NULL, p_page_size INTEGER DEFAULT 5000
 )
 RETURNS TABLE(
-  spectrum_id TEXT, target_id TEXT, grating TEXT, field TEXT, ra DOUBLE PRECISION, "dec" DOUBLE PRECISION,
+  id INTEGER, spectrum_id TEXT, target_id TEXT, grating TEXT, field TEXT, observation TEXT,
+  ra DOUBLE PRECISION, "dec" DOUBLE PRECISION,
   redshift NUMERIC, redshift_quality INTEGER, redshift_auto DOUBLE PRECISION,
   signal_to_noise DOUBLE PRECISION,
   exposure_time DOUBLE PRECISION, fits_path TEXT, program_slug TEXT, program_name TEXT,
@@ -2163,22 +2171,21 @@ RETURNS TABLE(
   dq_flags INTEGER,
   lists TEXT
 )
-LANGUAGE plpgsql STABLE SET plan_cache_mode = 'force_custom_plan'
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+SET statement_timeout = '120s'
 AS $$
 DECLARE
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
+  v_page_size INTEGER;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
   v_comment_search_active := (p_comment_search IS NOT NULL AND p_comment_search != '' AND p_comment_search_scope IN ('just_me', 'everyone'));
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
-  IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
-  IF NOT (p_sort_column IN ('target_id', 'spectrum_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality', 'redshift_auto', 'signal_to_noise', 'exposure_time', 'grating')
-       OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
-    p_sort_column := 'spectrum_id';
-  END IF;
+  v_page_size := LEAST(GREATEST(COALESCE(p_page_size, 5000), 1), 10000);
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs)) INTO v_filtered_program_slugs;
   ELSE v_filtered_program_slugs := p_program_slugs; END IF;
@@ -2193,7 +2200,7 @@ BEGIN
     GROUP BY olm.object_id
   ),
   filtered_spectra AS (
-    SELECT s.spectrum_id, t.target_id, s.grating, t.field, t.ra, t.dec,
+    SELECT s.id, s.spectrum_id, t.target_id, s.grating, t.field, t.ra, t.dec,
       o.redshift, o.redshift_quality,
       s.redshift_auto,
       s.signal_to_noise, s.exposure_time, s.fits_path, t.program_slug, t.observation,
@@ -2208,6 +2215,7 @@ BEGIN
     LEFT JOIN objects o ON o.id = t.object_id
     LEFT JOIN visible_lists vl ON vl.object_id = t.object_id
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
+      AND (p_after_id IS NULL OR s.id > p_after_id)
       AND (o.id IS NULL OR o.is_active = true)
       AND (NOT v_grating_filter_active OR s.grating = ANY(p_gratings))
       -- B1: hide unpublished spectra (fail-closed; admin opt-in only).
@@ -2245,40 +2253,16 @@ BEGIN
         AND t.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)))
   ),
   distance_filtered AS (SELECT fs.* FROM filtered_spectra fs WHERE NOT v_coord_search_active OR fs.distance <= p_radius_degrees)
-  SELECT df.spectrum_id, df.target_id, df.grating, df.field, df.ra, df.dec, df.redshift, df.redshift_quality, df.redshift_auto,
+  SELECT df.id, df.spectrum_id, df.target_id, df.grating, df.field, df.observation,
+    df.ra, df.dec, df.redshift, df.redshift_quality, df.redshift_auto,
     df.signal_to_noise, df.exposure_time, df.fits_path, df.program_slug,
     pr.program_name, df.last_inspected_at, up.full_name AS last_inspected_by,
     df.distance, df.dq_flags, df.lists
   FROM distance_filtered df
   LEFT JOIN programs pr ON pr.slug = df.program_slug
   LEFT JOIN user_profiles up ON up.user_id = df.last_inspected_by
-  ORDER BY
-    CASE WHEN v_coord_search_active THEN df.distance END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'spectrum_id' AND p_sort_direction = 'asc' THEN df.spectrum_id END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'spectrum_id' AND p_sort_direction = 'desc' THEN df.spectrum_id END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'target_id' AND p_sort_direction = 'asc' THEN df.target_id END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'target_id' AND p_sort_direction = 'desc' THEN df.target_id END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'field' AND p_sort_direction = 'asc' THEN df.field END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'field' AND p_sort_direction = 'desc' THEN df.field END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'observation' AND p_sort_direction = 'asc' THEN df.observation END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'observation' AND p_sort_direction = 'desc' THEN df.observation END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'ra' AND p_sort_direction = 'asc' THEN df.ra END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'ra' AND p_sort_direction = 'desc' THEN df.ra END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'dec' AND p_sort_direction = 'asc' THEN df.dec END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'dec' AND p_sort_direction = 'desc' THEN df.dec END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift' AND p_sort_direction = 'asc' THEN df.redshift END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift' AND p_sort_direction = 'desc' THEN df.redshift END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_quality' AND p_sort_direction = 'asc' THEN df.redshift_quality END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_quality' AND p_sort_direction = 'desc' THEN df.redshift_quality END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_auto' AND p_sort_direction = 'asc' THEN df.redshift_auto END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_auto' AND p_sort_direction = 'desc' THEN df.redshift_auto END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'signal_to_noise' AND p_sort_direction = 'asc' THEN df.signal_to_noise END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'signal_to_noise' AND p_sort_direction = 'desc' THEN df.signal_to_noise END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'exposure_time' AND p_sort_direction = 'asc' THEN df.exposure_time END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'exposure_time' AND p_sort_direction = 'desc' THEN df.exposure_time END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'grating' AND p_sort_direction = 'asc' THEN df.grating END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'grating' AND p_sort_direction = 'desc' THEN df.grating END DESC NULLS LAST,
-    df.target_id ASC, df.grating ASC;
+  ORDER BY df.id ASC
+  LIMIT v_page_size;
 END;
 $$;
 
@@ -2290,15 +2274,18 @@ GRANT EXECUTE ON FUNCTION public.get_csv_export_spectra TO authenticated;
 -- (one row per sky-object for CSV download in objects view mode)
 -- =============================================================================
 
--- Phase D: RETURNS columns expanded with per-object inspection fields.
--- CREATE OR REPLACE can't widen the row, so drop first.
+-- Issue #412: keyset pagination — same rationale as get_csv_export_spectra
+-- above. Cursor is objects.object_id (UNIQUE, objects_object_id_key); the
+-- LIMIT lives inside the query so each page is one index-bounded scan and an
+-- export's total work stays O(N). Sort params removed (the web action
+-- re-sorts in JS). Signature change requires DROP first.
 DROP FUNCTION IF EXISTS public.get_csv_export_objects(
   TEXT[], TEXT[], TEXT[], TEXT[], TEXT, INTEGER[],
   DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION,
   DOUBLE PRECISION, DOUBLE PRECISION,
-  TEXT, BOOLEAN, INTEGER[],
+  TEXT, BOOLEAN, BOOLEAN, INTEGER[],
   DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION,
-  BOOLEAN, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT
+  BOOLEAN, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT, UUID, TEXT, TEXT, BOOLEAN
 );
 
 CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
@@ -2318,8 +2305,8 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_photo_z_min DOUBLE PRECISION DEFAULT NULL, p_photo_z_max DOUBLE PRECISION DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
-  p_sort_column TEXT DEFAULT 'object_id', p_sort_direction TEXT DEFAULT 'asc',
-  p_include_unpublished BOOLEAN DEFAULT false
+  p_include_unpublished BOOLEAN DEFAULT false,
+  p_after_object_id TEXT DEFAULT NULL, p_page_size INTEGER DEFAULT 5000
 )
 RETURNS TABLE(
   object_id TEXT, field TEXT, ra DOUBLE PRECISION, "dec" DOUBLE PRECISION,
@@ -2336,7 +2323,9 @@ RETURNS TABLE(
   photo_z_err_lo DOUBLE PRECISION, photo_z_err_hi DOUBLE PRECISION,
   photometry JSONB
 )
-LANGUAGE plpgsql STABLE SET plan_cache_mode = 'force_custom_plan'
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+SET statement_timeout = '120s'
 AS $$
 DECLARE
   v_filtered_program_slugs TEXT[];
@@ -2344,6 +2333,7 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_page_size INTEGER;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
   v_comment_search_active := (
@@ -2354,13 +2344,7 @@ BEGIN
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN v_gratings_mode := 'any'; END IF;
-  IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
-  IF NOT (p_sort_column IN (
-    'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
-    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
-  ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
-    p_sort_column := 'object_id';
-  END IF;
+  v_page_size := LEAST(GREATEST(COALESCE(p_page_size, 5000), 1), 10000);
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs)) INTO v_filtered_program_slugs;
@@ -2411,6 +2395,7 @@ BEGIN
       WHERE op.object_id = o.id ORDER BY op.updated_at DESC LIMIT 1
     ) phot ON true
     WHERE o.programs && v_filtered_program_slugs
+      AND (p_after_object_id IS NULL OR o.object_id > p_after_object_id)
       AND o.is_active = true
       AND (p_include_unpublished OR o.has_published_spectrum)
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
@@ -2487,31 +2472,8 @@ BEGIN
     df.has_photometry, df.photo_z, df.photo_z_err_lo, df.photo_z_err_hi,
     df.photometry
   FROM distance_filtered df
-  ORDER BY
-    CASE WHEN v_coord_search_active THEN df.distance END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'object_id' AND p_sort_direction = 'asc' THEN df.object_id END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'object_id' AND p_sort_direction = 'desc' THEN df.object_id END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'field' AND p_sort_direction = 'asc' THEN df.field END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'field' AND p_sort_direction = 'desc' THEN df.field END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'ra' AND p_sort_direction = 'asc' THEN df.ra END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'ra' AND p_sort_direction = 'desc' THEN df.ra END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'dec' AND p_sort_direction = 'asc' THEN df.dec END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'dec' AND p_sort_direction = 'desc' THEN df.dec END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift' AND p_sort_direction = 'asc' THEN df.redshift END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift' AND p_sort_direction = 'desc' THEN df.redshift END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_quality' AND p_sort_direction = 'asc' THEN df.redshift_quality END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_quality' AND p_sort_direction = 'desc' THEN df.redshift_quality END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'n_targets' AND p_sort_direction = 'asc' THEN df.n_targets END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'n_targets' AND p_sort_direction = 'desc' THEN df.n_targets END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'n_spectra' AND p_sort_direction = 'asc' THEN df.n_spectra END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'n_spectra' AND p_sort_direction = 'desc' THEN df.n_spectra END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_snr' AND p_sort_direction = 'asc' THEN df.max_snr END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN df.max_snr END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_exposure_time' AND p_sort_direction = 'asc' THEN df.max_exposure_time END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_exposure_time' AND p_sort_direction = 'desc' THEN df.max_exposure_time END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'photo_z' AND p_sort_direction = 'asc' THEN df.photo_z END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'photo_z' AND p_sort_direction = 'desc' THEN df.photo_z END DESC NULLS LAST,
-    df.object_id ASC;
+  ORDER BY df.object_id ASC
+  LIMIT v_page_size;
 END;
 $$;
 

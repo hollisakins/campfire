@@ -2,11 +2,11 @@
 
 import { getSpectra } from './spectra';
 import type { SortColumn, SortDirection, ViewMode } from './spectra-types';
-import { FITS_DOWNLOAD_FILE_LIMIT } from './spectra-types';
+import { FITS_DOWNLOAD_FILE_LIMIT, CSV_EXPORT_ROW_LIMIT } from './spectra-types';
 import type { FilterOptions } from './filter-params';
 import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
-import { paginateRpc } from '@/lib/supabase/paginate';
+import { paginateRpcKeyset } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
 import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
@@ -59,12 +59,16 @@ interface ObjectsCsvRow {
 }
 
 interface SpectraCsvRow {
-  spectrum_id?: string;
+  id: number;                  // spectra PK — keyset cursor, not a CSV column
+  spectrum_id: string | null;
   target_id: string;
   grating: string;
   field: string;
+  observation: string;         // sort-only, not a CSV column
   ra: number;
   dec: number;
+  redshift: number | null;          // sort-only; parent-object state lives in the objects CSV
+  redshift_quality: number | null;  // sort-only
   redshift_auto: number | null;
   signal_to_noise: number | null;
   exposure_time: number | null;
@@ -78,9 +82,14 @@ interface SpectraCsvRow {
 
 /**
  * Generate a CSV file from filtered spectra results.
- * Uses a lightweight RPC that returns flat rows — no JSONB object building
- * or nested spectra subqueries, so it handles large result sets (7k+) without
- * hitting statement timeouts.
+ *
+ * Rows are fetched through keyset-paginated RPCs (issue #412): each page is an
+ * index-bounded scan continuing from a unique-key cursor, so total DB work
+ * stays proportional to the result set — offset paging re-executed and
+ * re-sorted the whole query per page and hit the 8s statement timeout at
+ * ~16k rows. The RPCs return rows in cursor-key order; the user's on-screen
+ * sort is applied here in JS (see sortCsvRows). Exports are capped at
+ * CSV_EXPORT_ROW_LIMIT, matching the warning shown in the download dropdown.
  */
 export async function generateCSV(
   filters: FilterOptions,
@@ -110,11 +119,7 @@ export async function generateCSV(
       return { csv: null, error: 'No accessible programs' };
     }
 
-    const rpcParams = {
-      ...buildFilterParams(filters, accessibleProgramSlugs, user.id),
-      p_sort_column: sortColumn,
-      p_sort_direction: sortDirection,
-    };
+    const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     const includeDistance = filters.coordinate_search !== null;
 
@@ -126,17 +131,25 @@ export async function generateCSV(
         p_observations: _obs,
         p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
         ...objectsParams
-      } = { ...rpcParams, p_sort_column: sortColumn, p_sort_direction: sortDirection };
+      } = rpcParams;
       /* eslint-enable @typescript-eslint/no-unused-vars */
 
-      const { data: rows, error: rpcError } = await paginateRpc<ObjectsCsvRow>(
-        supabase, 'get_csv_export_objects', objectsParams,
+      const { data: rows, error: rpcError } = await paginateRpcKeyset<ObjectsCsvRow>(
+        supabase, 'get_csv_export_objects', { ...objectsParams },
+        { cursorParam: 'p_after_object_id', getCursor: r => r.object_id, maxRows: CSV_EXPORT_ROW_LIMIT },
       );
 
       if (rpcError) {
         console.error('Error fetching objects CSV data:', rpcError);
         return { csv: null, error: rpcError.message };
       }
+
+      sortCsvRows(
+        rows,
+        includeDistance ? OBJECTS_CSV_SORT.distance : (OBJECTS_CSV_SORT[sortColumn] ?? OBJECTS_CSV_SORT.object_id),
+        includeDistance ? 'asc' : sortDirection,
+        [r => r.object_id],
+      );
       const csv = objectsRowsToCsv(rows, includeDistance);
 
       const objectIds = rows.map(r => r.object_id);
@@ -153,14 +166,22 @@ export async function generateCSV(
     }
 
     // Spectra mode: one row per (target_id, grating).
-    const { data: rows, error: rpcError } = await paginateRpc<SpectraCsvRow>(
-      supabase, 'get_csv_export_spectra', rpcParams,
+    const { data: rows, error: rpcError } = await paginateRpcKeyset<SpectraCsvRow>(
+      supabase, 'get_csv_export_spectra', { ...rpcParams },
+      { cursorParam: 'p_after_id', getCursor: r => r.id, maxRows: CSV_EXPORT_ROW_LIMIT },
     );
 
     if (rpcError) {
       console.error('Error fetching spectra CSV data:', rpcError);
       return { csv: null, error: rpcError.message };
     }
+
+    sortCsvRows(
+      rows,
+      includeDistance ? SPECTRA_CSV_SORT.distance : (SPECTRA_CSV_SORT[sortColumn] ?? SPECTRA_CSV_SORT.spectrum_id),
+      includeDistance ? 'asc' : sortDirection,
+      [r => r.target_id, r => r.grating],
+    );
     const csv = spectraRowsToCsv(rows, includeDistance);
 
     const targetIds = [...new Set(rows.map(r => r.target_id))];
@@ -185,6 +206,77 @@ export async function generateCSV(
  */
 function expandBitmask(bitmask: number, flags: FlagDef[]): number[] {
   return flags.map(flag => (bitmask & flag.value) !== 0 ? 1 : 0);
+}
+
+type CsvSortValue = string | number | null | undefined;
+
+// Sortable columns per mode, keyed by SortColumn. Doubles as the whitelist the
+// old SQL ORDER BY enforced: an unknown column falls back to the mode default.
+const OBJECTS_CSV_SORT: Partial<Record<SortColumn, (r: ObjectsCsvRow) => CsvSortValue>> = {
+  object_id: r => r.object_id,
+  field: r => r.field,
+  ra: r => r.ra,
+  dec: r => r.dec,
+  redshift: r => r.redshift,
+  redshift_quality: r => r.redshift_quality,
+  n_targets: r => r.n_targets,
+  n_spectra: r => r.n_spectra,
+  max_snr: r => r.max_snr,
+  max_exposure_time: r => r.max_exposure_time,
+  photo_z: r => r.photo_z,
+  distance: r => r.distance,
+};
+
+const SPECTRA_CSV_SORT: Partial<Record<SortColumn, (r: SpectraCsvRow) => CsvSortValue>> = {
+  spectrum_id: r => r.spectrum_id,
+  target_id: r => r.target_id,
+  field: r => r.field,
+  observation: r => r.observation,
+  program_slug: r => r.program_slug,
+  ra: r => r.ra,
+  dec: r => r.dec,
+  redshift: r => r.redshift,
+  redshift_quality: r => r.redshift_quality,
+  redshift_auto: r => r.redshift_auto,
+  signal_to_noise: r => r.signal_to_noise,
+  exposure_time: r => r.exposure_time,
+  grating: r => r.grating,
+  distance: r => r.distance,
+};
+
+/**
+ * Order rows for the CSV in place. The keyset RPCs return rows in cursor-key
+ * order (issue #412); the user's on-screen sort is applied here instead —
+ * sorting the full export in JS costs milliseconds, versus the database
+ * re-sorting the entire result set once per page. Mirrors the old SQL
+ * semantics: distance wins whenever a coordinate search is active (callers
+ * pass the distance accessor and 'asc'), nulls sort last in both directions,
+ * and ties break ascending on the stable unique key(s).
+ */
+function sortCsvRows<T>(
+  rows: T[],
+  primary: ((r: T) => CsvSortValue) | undefined,
+  direction: SortDirection,
+  tiebreaks: ((r: T) => CsvSortValue)[],
+): void {
+  const dir = direction === 'desc' ? -1 : 1;
+  const accessors: [(r: T) => CsvSortValue, number][] = [
+    ...(primary ? [[primary, dir] as [(r: T) => CsvSortValue, number]] : []),
+    ...tiebreaks.map(tb => [tb, 1] as [(r: T) => CsvSortValue, number]),
+  ];
+  rows.sort((x, y) => {
+    for (const [accessor, d] of accessors) {
+      const a = accessor(x);
+      const b = accessor(y);
+      if (a == null || b == null) {
+        if (a != null) return -1; // NULLS LAST regardless of direction
+        if (b != null) return 1;
+        continue;
+      }
+      if (a !== b) return a < b ? -1 * d : d;
+    }
+    return 0;
+  });
 }
 
 /**
