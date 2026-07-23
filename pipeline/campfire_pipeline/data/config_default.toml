@@ -676,6 +676,15 @@
     bg_exclude_percentile = 90
     bg_sigma = 3
     bg_interpolator = "zoom"
+    # Depth-aware source masking (issue: variable-depth tiles). Detection and
+    # ring-clip thresholds run on the noise-equalized image SCI*sqrt(WHT), so
+    # one global RMS threshold holds at every depth. With the flux-space
+    # thresholds a deep-dominated tile pins the global RMS to the deep value
+    # and mass-flags shallow-coverage noise as sources — the 2-D fit then has
+    # no data there and extrapolates, leaving (or inventing) background
+    # structure in the shallow regions. Uniform-depth tiles are unaffected.
+    # false = legacy flux-space thresholds.
+    wht_aware = true
     # Background-map outlier rejection for the MOSAIC-level fit (same guard
     # as [nircam.bkg.bkg2d].reject; see SubtractBackground.bg_reject*).
     # Default off: existing mosaics stay byte-identical and keep their

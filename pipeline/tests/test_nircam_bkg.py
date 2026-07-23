@@ -142,6 +142,68 @@ def test_mask_from_arrays_matches_compute():
     assert np.array_equal(bit_compute, bit_direct)
 
 
+def test_wht_aware_mask_variable_depth_recovers_shallow_sky():
+    """Depth-blind (flux-space) masking pins the global RMS to the deep
+    coverage and mass-flags shallow-region noise as sources; the 2-D fit then
+    has no data there and extrapolates the deep sky, leaving the shallow
+    zone's own sky level in place. The WHT-aware (noise-equalized) detection
+    keeps the masking depth-fair so the fit measures — and removes — it."""
+    rng = np.random.default_rng(9)
+    ny, nx = 600, 600
+    split = int(nx * 0.85)              # deep-dominated: 15% shallow strip
+    s_deep, s_shal, offset = 1.0, 5.0, 3.0
+    err = np.full((ny, nx), s_deep, np.float32)
+    err[:, split:] = s_shal
+    sci = rng.normal(0.0, err).astype(np.float32)
+    sci[:, split:] += offset            # the shallow visit's own sky level
+    wht = (1.0 / err ** 2).astype(np.float32)
+
+    cfg = dict(ring_radius_in=80, ring_width=4, ring_downsample=4,
+               tier_kernel_size=[25, 15, 5, 2], tier_npixels=[15, 10, 3, 1],
+               tier_nsigma=[1.5, 1.5, 1.5, 1.5],
+               tier_dilate_size=[33, 25, 21, 19],
+               bg_box_size=10, bg_filter_size=5)
+
+    shal = np.s_[:, split + 40:]        # interiors, away from the depth edge
+    deep = np.s_[:, :split - 40]
+
+    legacy_mask, _ = SubtractBackground(**cfg).mask_from_arrays(sci, err)
+    aware = SubtractBackground(**cfg)
+    aware_mask, _ = aware.mask_from_arrays(sci, err, wht=wht)
+
+    # flux-space thresholds blanket the shallow strip; noise-equalized don't
+    assert legacy_mask[shal].mean() > 0.9
+    assert aware_mask[shal].mean() < 0.3
+    assert aware_mask[deep].mean() < 0.3
+
+    # with data surviving in the shallow zone, the fit recovers its sky
+    bmap = aware.estimate_background(sci, aware_mask).background
+    assert bmap[shal].mean() == pytest.approx(offset, abs=0.3)
+    assert abs(bmap[deep].mean()) < 0.1
+
+
+def test_wht_aware_mask_uniform_depth_matches_legacy():
+    """With a uniform weight map the noise-equalized detection reduces to the
+    historical flux-space detection (stats and thresholds scale together), so
+    uniform-depth tiles are unaffected by the wht_aware default."""
+    rng = np.random.default_rng(10)
+    sci = (1.0 + rng.normal(0, 0.05, (256, 256))).astype(np.float32)
+    sci[120:130, 120:140] += 2.0
+    err = np.full((256, 256), 0.05, np.float32)
+    wht = np.full((256, 256), 400.0, np.float32)   # 1 / err**2
+    cfg = dict(ring_radius_in=40, ring_width=3, ring_downsample=1,
+               tier_kernel_size=[15, 5, 2], tier_npixels=[10, 5, 3],
+               tier_nsigma=[3, 3, 3], tier_dilate_size=[0, 0, 2])
+    m_legacy, _ = SubtractBackground(**cfg).mask_from_arrays(sci, err)
+    m_aware, _ = SubtractBackground(**cfg).mask_from_arrays(sci, err, wht=wht)
+    m_off, _ = SubtractBackground(wht_aware=False, **cfg).mask_from_arrays(
+        sci, err, wht=wht)
+    # not bit-guaranteed (the ring fill differs at float margins), but any
+    # divergence beyond a stray boundary pixel is a regression
+    assert (m_aware != m_legacy).mean() < 1e-3
+    assert np.array_equal(m_off, m_legacy)         # escape hatch is exact
+
+
 def _gradient_sky(shape, amplitude):
     yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
     return amplitude * (xx + yy) / (shape[0] + shape[1])
