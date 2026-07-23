@@ -114,6 +114,17 @@ class SubtractBackground:
     # global RMS threshold is valid everywhere instead of being pinned to the
     # deepest coverage. Equivalent to the historical flux-space thresholds for
     # uniform weights. Set False to force flux-space thresholds regardless.
+    #
+    # WHT is the drizzle's rnoise-based IVM, not inverse *total* variance:
+    # background variance is alpha/WHT with alpha the total:rnoise ratio, so
+    # equalization is exact up to the global factor (absorbed by the global
+    # biweight RMS) whenever alpha is spatially uniform — the depth effect
+    # proper cancels identically, and only ratio *variation* (mixed readout
+    # patterns, epoch-varying sky) survives, at the tens-of-percent level the
+    # tier thresholds tolerate. Deliberately NOT the total-ERR map: ERR
+    # includes source Poisson, so SCI/ERR would deflate the detection
+    # statistic over exactly the flux the mask must catch, while sqrt(WHT) is
+    # source-independent.
     wht_aware: bool = True
 
     # -- Output options --------------------------------------------------------
