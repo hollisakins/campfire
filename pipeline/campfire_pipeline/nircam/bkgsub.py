@@ -16,6 +16,10 @@ Original version history:
   1.5.0 -- perf: ring-median on a block-reduced image, gaussian_filter in
            place of convolve_fft, EDT-based tier dilation, hoisted biweight
            stats out of the tier loop
+  1.6.0 -- WHT-aware (variable-depth) source masking: when a weight map is
+           available, tier detection and the ring-clip ceiling operate in
+           noise-equalized units (SCI * sqrt(WHT)) so one global RMS
+           threshold is valid at every depth
 """
 
 import os
@@ -102,6 +106,27 @@ class SubtractBackground:
     bg_reject_percentile: float = 60.0
     bg_reject_dilate: float = 40.0
 
+    # -- WHT-aware (variable-depth) masking ------------------------------------
+    # When a weight map is available (mosaic WHT extension, or the ``wht``
+    # argument of :meth:`mask_from_arrays`), tier detection and the ring-clip
+    # ceiling are evaluated on the noise-equalized image SCI * sqrt(WHT),
+    # whose noise is spatially uniform under variable depth — so the single
+    # global RMS threshold is valid everywhere instead of being pinned to the
+    # deepest coverage. Equivalent to the historical flux-space thresholds for
+    # uniform weights. Set False to force flux-space thresholds regardless.
+    #
+    # WHT is the drizzle's rnoise-based IVM, not inverse *total* variance:
+    # background variance is alpha/WHT with alpha the total:rnoise ratio, so
+    # equalization is exact up to the global factor (absorbed by the global
+    # biweight RMS) whenever alpha is spatially uniform — the depth effect
+    # proper cancels identically, and only ratio *variation* (mixed readout
+    # patterns, epoch-varying sky) survives, at the tens-of-percent level the
+    # tier thresholds tolerate. Deliberately NOT the total-ERR map: ERR
+    # includes source Poisson, so SCI/ERR would deflate the detection
+    # statistic over exactly the flux the mask must catch, while sqrt(WHT) is
+    # source-independent.
+    wht_aware: bool = True
+
     # -- Output options --------------------------------------------------------
     plot_smooth: int = 0
     suffix: str = "bkgsub"
@@ -113,6 +138,7 @@ class SubtractBackground:
     # -- Runtime state (set during call, not constructor args) -----------------
     has_dq: bool = field(default=False, init=False, repr=False)
     dq: Optional[np.ndarray] = field(default=None, init=False, repr=False)
+    wht: Optional[np.ndarray] = field(default=None, init=False, repr=False)
     dqmask: Optional[np.ndarray] = field(default=None, init=False, repr=False)
     outfile: Optional[str] = field(default=None, init=False, repr=False)
     mask_final: Optional[np.ndarray] = field(default=None, init=False, repr=False)
@@ -138,7 +164,7 @@ class SubtractBackground:
     # ------------------------------------------------------------------
 
     def open_file(self, filepath: str) -> Tuple[np.ndarray, np.ndarray]:
-        """Read SCI and ERR (or RMS) extensions; detect DQ if present."""
+        """Read SCI and ERR (or RMS) extensions; detect DQ/WHT if present."""
         with fits.open(filepath) as hdu:
             sci = hdu["SCI"].data
             try:
@@ -148,11 +174,17 @@ class SubtractBackground:
                 err = hdu["RMS"].data
 
             self.has_dq = False
+            self.wht = None
             for h in hdu:
                 if "EXTNAME" in h.header and h.header["EXTNAME"] == "DQ":
                     self.has_dq = True
                     self.dq = h.data
                     log(f"{os.path.basename(filepath)} has a DQ array")
+            if "WHT" in hdu:
+                self.wht = hdu["WHT"].data
+                if self.wht_aware:
+                    log(f"{os.path.basename(filepath)} has a WHT array; "
+                        f"using depth-aware (noise-equalized) masking")
 
         return sci, err
 
@@ -198,9 +230,19 @@ class SubtractBackground:
         return sci - filtered
 
     def clipped_ring_median_filter(
-        self, sci: np.ndarray, mask: np.ndarray
+        self, sci: np.ndarray, mask: np.ndarray,
+        sqw: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        """Ring-median filter with a sigma-clipped ceiling to preserve galaxy wings."""
+        """Ring-median filter with a sigma-clipped ceiling to preserve galaxy wings.
+
+        ``sqw`` (sqrt(WHT), built by :meth:`mask_from_arrays`) makes the
+        ceiling depth-aware: the clip RMS is measured on the noise-equalized
+        residual and mapped back to *local* flux units per pixel, and
+        clipped/masked pixels are filled with the local smooth background
+        (under variable depth the filled regions can sit at a genuinely
+        different sky level than the global mean). ``sqw=None`` preserves the
+        historical global-scalar behaviour.
+        """
         # Smooth background at large scale
         bkg = Background2D(
             sci,
@@ -212,10 +254,19 @@ class SubtractBackground:
             mask=mask,
             interpolator=BkgZoomInterpolator(),
         )
-        # RMS after subtracting the smooth background
-        background_rms = astrostats.biweight_scale((sci - bkg.background)[~mask])
-        # Floating ceiling: pixels above this are masked before ring-median
-        ceiling = self.ring_clip_max_sigma * background_rms + bkg.background
+        resid = sci - bkg.background
+        if sqw is None:
+            # RMS after subtracting the smooth background
+            background_rms = astrostats.biweight_scale(resid[~mask])
+            # Floating ceiling: pixels above this are masked before ring-median
+            ceiling = self.ring_clip_max_sigma * background_rms + bkg.background
+        else:
+            # Depth-aware ceiling: one RMS in noise-equalized units, scaled to
+            # local flux units per pixel (sqw == 0 pixels are already masked).
+            nrms = astrostats.biweight_scale((resid * sqw)[~mask])
+            with np.errstate(divide="ignore"):
+                local_rms = np.where(sqw > 0, nrms / sqw, np.inf)
+            ceiling = self.ring_clip_max_sigma * local_rms + bkg.background
         ceiling_mask = sci > ceiling
 
         f = max(int(self.ring_downsample), 1)
@@ -223,7 +274,10 @@ class SubtractBackground:
             f"Ring median filtering with radius = {self.ring_radius_in}, "
             f"width = {self.ring_width}, downsample = {f}"
         )
-        sci_filled = self.replace_masked(sci, mask | ceiling_mask)
+        if sqw is None:
+            sci_filled = self.replace_masked(sci, mask | ceiling_mask)
+        else:
+            sci_filled = np.where(mask | ceiling_mask, bkg.background, sci)
 
         if f > 1:
             # Block-reduce, ring-median at scaled radius/width, zoom back.
@@ -306,15 +360,26 @@ class SubtractBackground:
         img: np.ndarray,
         bitmask: np.ndarray,
         starting_bit: int = 1,
+        sqw: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        """Iteratively mask sources through all configured tiers."""
+        """Iteratively mask sources through all configured tiers.
+
+        With ``sqw`` (sqrt(WHT)) the tiers detect on the noise-equalized image
+        ``img * sqw``, whose noise is spatially uniform under variable depth,
+        so the single global ``background_rms`` threshold is valid everywhere
+        (a flux-space threshold is pinned to the modal — usually deepest —
+        coverage and mass-flags shallow-region noise as sources). For uniform
+        weights the two are equivalent, since the biweight statistics scale
+        with the image. ``sqw=None`` preserves flux-space detection.
+        """
+        det_img = img if sqw is None else img * sqw
         first_mask = bitmask != 0
-        valid = img[~first_mask]
+        valid = det_img[~first_mask]
         background_rms = astrostats.biweight_scale(valid)
         background_level = astrostats.biweight_location(valid)
         log(f"Ring-filtered background median: {np.median(valid)}")
 
-        replaced_img = np.where(first_mask, background_level, img)
+        replaced_img = np.where(first_mask, background_level, det_img)
 
         for tiernum in range(len(self.tier_nsigma)):
             mask = self.tier_mask(
@@ -448,6 +513,7 @@ class SubtractBackground:
         sci: np.ndarray,
         err: np.ndarray,
         dq: Optional[np.ndarray] = None,
+        wht: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Build the source-rejection mask + bitmask from in-memory arrays.
 
@@ -456,6 +522,13 @@ class SubtractBackground:
         ``estimate_background`` call and no file I/O. Used by the unified
         ``bkg`` step (which holds the datamodel arrays in memory and only needs
         the mask), and by :meth:`compute` so the two share one code path.
+
+        ``wht`` (with ``wht_aware`` on, the default) switches detection and
+        the ring-clip ceiling to noise-equalized units — ``sci * sqrt(wht)``
+        has spatially uniform noise, so the global RMS thresholds stay valid
+        across depth variations in a mosaic. Zero/invalid-weight pixels are
+        folded into the seed mask. ``wht=None`` (e.g. the per-exposure ``bkg``
+        step, where depth is uniform) keeps flux-space thresholds.
 
         Returns ``(mask_final, bitmask)`` with the same semantics as the 2nd/3rd
         elements of :meth:`compute`.
@@ -475,10 +548,20 @@ class SubtractBackground:
         else:
             mask = off_detector_mask
         mask = np.logical_or(mask, np.isnan(sci))
+
+        sqw = None
+        if wht is not None and self.wht_aware:
+            with np.errstate(invalid="ignore"):
+                sqw = np.sqrt(
+                    np.where(np.isfinite(wht) & (wht > 0), wht, 0.0)
+                ).astype(np.float32)
+            # Zero/invalid weight = no data: fold into the seed mask so the
+            # noise-equalized image's zeros never enter the statistics.
+            mask = np.logical_or(mask, sqw == 0)
         bitmask = np.bitwise_or(bitmask, np.left_shift(mask, 0))
 
-        filtered = self.clipped_ring_median_filter(sci, mask)
-        bitmask = self.mask_sources(filtered, bitmask, starting_bit=1)
+        filtered = self.clipped_ring_median_filter(sci, mask, sqw=sqw)
+        bitmask = self.mask_sources(filtered, bitmask, starting_bit=1, sqw=sqw)
         mask_final = bitmask != 0
         return mask_final, bitmask
 
@@ -504,10 +587,10 @@ class SubtractBackground:
         log(f"Running background subtraction on {os.path.basename(filepath)}")
         sci, err = self.open_file(filepath)
 
-        # open_file set self.has_dq / self.dq; hand the DQ array (or None) to
-        # the shared mask builder.
+        # open_file set self.has_dq / self.dq / self.wht; hand the DQ and WHT
+        # arrays (or None) to the shared mask builder.
         mask_final, bitmask = self.mask_from_arrays(
-            sci, err, self.dq if self.has_dq else None
+            sci, err, self.dq if self.has_dq else None, wht=self.wht
         )
 
         bkg = self.estimate_background(sci, mask_final)

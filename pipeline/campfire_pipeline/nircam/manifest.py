@@ -132,7 +132,8 @@ def _resample_config_hash(resample_cfg, pixel_scale):
     keys are folded in **only when the guard is enabled** (non-default):
     existing tiles keep their historical hash (no spurious global rebuild),
     while flipping ``bg_reject`` on a field hashes distinctly so
-    ``get_stale_tiles`` rebuilds its tiles.
+    ``get_stale_tiles`` rebuilds its tiles. ``wht_aware`` follows the same
+    non-default-only pattern (folded in only when *disabled*).
     """
     cfg = {
         'pixfrac': resample_cfg.get('pixfrac', 1),
@@ -140,6 +141,8 @@ def _resample_config_hash(resample_cfg, pixel_scale):
         'pixel_scale': pixel_scale,
         'background_subtract': resample_cfg.get('background_subtract', True),
     }
+    if not resample_cfg.get('wht_aware', True):
+        cfg['wht_aware'] = False
     if resample_cfg.get('bg_reject', False):
         cfg['bg_reject'] = True
         cfg['bg_reject_sigma_hi'] = resample_cfg.get('bg_reject_sigma_hi', 4.0)

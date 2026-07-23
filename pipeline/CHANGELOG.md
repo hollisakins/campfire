@@ -29,6 +29,25 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- Mosaic-level background subtraction is now **depth-aware**
+  (`[nircam.resample].wht_aware`, default on). The `SubtractBackground` source
+  mask — tier detection and the ring-clip ceiling — is evaluated on the
+  noise-equalized image `SCI*sqrt(WHT)`, whose noise is spatially uniform, so
+  the single global RMS threshold is valid at every depth; masked/clipped
+  pixels are filled with the local smooth background instead of one global
+  mean. Previously the flux-space threshold was pinned to the deepest
+  coverage: on variable-depth tiles it mass-flagged shallow-region noise as
+  sources (synthetic 85/15 deep/shallow scene at 5× depth contrast: 100% of
+  the shallow strip masked), the 2-D fit had no data there and extrapolated
+  the deep zone's sky, and the shallow region's own sky level survived
+  subtraction as a background step along depth boundaries (1% of a
+  0.6σ_local offset removed; 99% with the fix — seen in practice as
+  background structure appearing in the shallow areas of depth-varied COSMOS
+  tiles). Uniform-depth tiles are unaffected (the thresholds scale out), and
+  the per-exposure `bkg` step passes no weight map so its masks are
+  unchanged. Existing tile manifests keep their hash — rerun affected fields
+  with `--overwrite` to pick up the fix; `wht_aware = false` restores the
+  flux-space thresholds and hashes distinctly.
 - NIRCam `align` redesigned as a **coarse-per-module + gated per-detector fine**
   step and moved **into the process loop** (it replaces `jhat`; `wcs_shift` is
   kept for manual offsets). Opt-in per field (`[<field>.align].enabled`,

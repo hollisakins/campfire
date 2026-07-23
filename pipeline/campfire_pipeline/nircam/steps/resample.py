@@ -340,6 +340,7 @@ def resample_step(filtname, exposure_files, field, step_config,
                     bg_reject_percentile=step_config.get(
                         'bg_reject_percentile', 60.0),
                     bg_reject_dilate=step_config.get('bg_reject_dilate', 40.0),
+                    wht_aware=step_config.get('wht_aware', True),
                     suffix='bkgsub',
                     replace_sci=True,
                 )
