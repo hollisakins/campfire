@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import dynamic from 'next/dynamic';
 import { Loader2, AlertCircle } from 'lucide-react';
 import type { SpectrumData } from '@/app/api/spectrum/route';
 import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
@@ -10,16 +9,7 @@ import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
 import { getPlotColors, getVisibleEmissionLines, computeYRange, computeNiceRestTicks } from './plotting-utils';
 import { RedshiftSliderControl } from './PlottingControls';
-
-// Dynamic import of Plotly to avoid SSR issues
-const Plot = dynamic(() => import('react-plotly.js'), {
-  ssr: false,
-  loading: () => (
-    <div className="flex items-center justify-center h-[700px] bg-card border border-border rounded-lg">
-      <Loader2 className="w-6 h-6 animate-spin text-primary" />
-    </div>
-  ),
-});
+import { LazyPlot as Plot } from '@/components/plot/LazyPlot';
 
 // Available colorscale options (display names)
 const COLORSCALE_OPTIONS: Colorscale2D[] = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis', 'Greys'];

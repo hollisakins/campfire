@@ -1,21 +1,12 @@
 'use client';
 
 import React, { useState, useMemo, useEffect } from 'react';
-import dynamic from 'next/dynamic';
 import { Loader2, BarChart3 } from 'lucide-react';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import { getPlotColors } from './plotting-utils';
 import { PhotometryTable } from './PhotometryTable';
 import type { ObjectPhotometry } from '@/lib/types';
-
-const Plot = dynamic(() => import('react-plotly.js'), {
-  ssr: false,
-  loading: () => (
-    <div className="flex items-center justify-center h-[400px] bg-card border border-border rounded-lg">
-      <Loader2 className="w-6 h-6 animate-spin text-primary" />
-    </div>
-  ),
-});
+import { LazyPlot as Plot } from '@/components/plot/LazyPlot';
 
 // Classify bands by wavelength for color coding
 function getBandColor(wav: number): string {

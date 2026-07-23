@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import dynamic from 'next/dynamic';
 import { Loader2 } from 'lucide-react';
 import type { SpectrumData } from '@/app/api/spectrum/route';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
@@ -16,15 +15,7 @@ import {
 } from './plotting-utils';
 import type { FluxUnit } from './plotting-utils';
 import { FluxUnitToggle, EmissionLinesControl, RedshiftSliderControl, ControlDivider } from './PlottingControls';
-
-const Plot = dynamic(() => import('react-plotly.js'), {
-  ssr: false,
-  loading: () => (
-    <div className="flex items-center justify-center h-[500px] bg-card border border-border rounded-lg">
-      <Loader2 className="w-6 h-6 animate-spin text-primary" />
-    </div>
-  ),
-});
+import { LazyPlot as Plot } from '@/components/plot/LazyPlot';
 
 export interface SpectrumSource {
   fitsPath: string;
