@@ -2,8 +2,10 @@
  * Shared utilities for spectrum plotting components
  */
 
-// Flux unit types
-export type FluxUnit = 'fnu' | 'flambda';
+// Flux unit type — canonical definition lives in lib/types; re-exported here
+// so plotting code can import everything plot-related from one module.
+export type { FluxUnit } from '@/lib/types';
+import type { FluxUnit } from '@/lib/types';
 
 // Plot color type
 export interface PlotColors {
@@ -368,36 +370,147 @@ export function computeNiceRestTicks(
 }
 
 /**
- * Create Plotly traces for emission line markers
+ * Extract the user's new observed x-range from a Plotly relayout event.
+ *
+ * Plotly emits ranges in different shapes depending on the interaction:
+ * box zoom / pan / modebar zoom emit 'xaxis.range[0]' / 'xaxis.range[1]'
+ * keys, some paths emit a single 'xaxis.range' array, and double-click
+ * reset / the autoscale button emit 'xaxis.autorange: true'.
+ *
+ * @returns The new [min, max] range, 'reset' for a return to full range, or
+ *          null when the event doesn't touch the x-range (y-only
+ *          interactions, resize events, …).
  */
-export function createEmissionLineTraces(
+export function parseXRangeFromRelayout(
+  event: Record<string, unknown>
+): [number, number] | 'reset' | null {
+  const r0 = event['xaxis.range[0]'];
+  const r1 = event['xaxis.range[1]'];
+  if (typeof r0 === 'number' && typeof r1 === 'number') return [r0, r1];
+  const arr = event['xaxis.range'];
+  if (Array.isArray(arr) && typeof arr[0] === 'number' && typeof arr[1] === 'number') {
+    return [arr[0], arr[1]];
+  }
+  if (event['xaxis.autorange'] === true) return 'reset';
+  return null;
+}
+
+/**
+ * Build the rest-frame wavelength (Å) axis: an overlay on the primary
+ * observed-wavelength axis (`matches: 'x'`) whose array ticks relabel the
+ * observed μm coordinates into rest-frame Å at the given redshift.
+ *
+ * The uirevision keyed to the tick content is load-bearing:
+ * - unchanged on unrelated re-renders (color scale, toggles, theme), so this
+ *   axis is NOT reset while the primary axis restores the user's zoom from
+ *   its own uirevision — a reset/restore mismatch inside a `matches` group
+ *   is unspecified Plotly behavior and produced intermittently misplaced
+ *   ticks;
+ * - changed exactly when the ticks themselves change (a zoom captured via
+ *   onRelayout, or a new redshift), so Plotly re-applies the tickvals
+ *   instead of serving cached ones.
+ */
+export function buildRestFrameAxis(options: {
+  redshift: number;
+  /** Current observed-wavelength view in μm (zoomed or full range). */
+  obsMin: number;
+  obsMax: number;
+  colors: PlotColors;
+  domain?: [number, number];
+  anchor?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+}): any {
+  const { redshift, obsMin, obsMax, colors, domain, anchor } = options;
+  const factor = 10000 / (1 + redshift);
+  const ticks = computeNiceRestTicks(obsMin, obsMax, factor);
+  return {
+    overlaying: 'x' as const,
+    side: 'top' as const,
+    matches: 'x' as const, // range always slaved to the primary axis
+    tickmode: 'array' as const,
+    tickvals: ticks.map(å => å / factor),
+    ticktext: ticks.map(å => `${parseFloat(å.toFixed(1))} Å`),
+    ticks: 'outside' as const,
+    tickcolor: colors.textSecondary,
+    tickfont: { size: 11, color: colors.textSecondary },
+    showgrid: false,
+    zeroline: false,
+    gridcolor: 'transparent',
+    zerolinecolor: 'transparent',
+    uirevision: `${redshift.toFixed(6)}:${ticks.join(',')}`,
+    ...(domain ? { domain } : {}),
+    ...(anchor ? { anchor } : {}),
+  };
+}
+
+/**
+ * Plotly only renders an axis referenced by at least one trace — this
+ * invisible marker keeps the rest-frame overlay axis alive. Anchor it to a
+ * fixed-range overlay y-axis (e.g. the emission-line axis) so it can never
+ * influence autoscaling of the data axis.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function buildRestFrameAxisActivationTrace(x0: number, xaxis: string, yaxis: string): any {
+  return {
+    x: [x0],
+    y: [0],
+    type: 'scatter' as const,
+    mode: 'markers' as const,
+    marker: { size: 0.1, opacity: 0 },
+    hoverinfo: 'skip' as const,
+    showlegend: false,
+    xaxis,
+    yaxis,
+  };
+}
+
+/**
+ * Create emission-line marker traces. Lines span the fixed [0, 1] range of a
+ * hidden overlay y-axis (see buildEmissionLineOverlayAxis) so they never
+ * affect autoscaling or double-click reset of the data axis.
+ */
+export function buildEmissionLineTraces(
   redshift: number,
   waveMin: number,
   waveMax: number,
-  fluxMin: number,
-  fluxMax: number,
-  xaxis: string = 'x',
-  yaxis: string = 'y',
-  grating?: string
+  options: {
+    /** Overlay y-axis id the lines are drawn on (e.g. 'y2', 'y4'). */
+    yaxis: string;
+    xaxis?: string;
+    grating?: string;
+    showlegend?: boolean;
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): any[] {
-  const visibleLines = getVisibleEmissionLines(redshift, waveMin, waveMax, grating);
-
+  const visibleLines = getVisibleEmissionLines(redshift, waveMin, waveMax, options.grating);
   return visibleLines.map(line => ({
     x: [line.observedWave, line.observedWave],
-    y: [fluxMin * 0.9, fluxMax * 1.1],
+    y: [0, 1],
     type: 'scatter' as const,
     mode: 'lines' as const,
     name: line.name,
-    line: {
-      color: line.color,
-      width: 1.5,
-      dash: 'dash',
-    },
+    line: { color: line.color, width: 1.5, dash: 'dash' },
     hovertemplate: `${line.name}<br>λ_rest: ${line.wave.toFixed(4)} μm<br>λ_obs: ${line.observedWave.toFixed(4)} μm<extra></extra>`,
-    showlegend: true,
+    showlegend: options.showlegend ?? false,
     legendgroup: 'emission_lines',
-    xaxis,
-    yaxis,
+    ...(options.xaxis ? { xaxis: options.xaxis } : {}),
+    yaxis: options.yaxis,
   }));
 }
+
+/** Hidden fixed-range [0, 1] overlay axis hosting emission-line traces. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function buildEmissionLineOverlayAxis(overlaying = 'y'): any {
+  return {
+    overlaying,
+    range: [0, 1],
+    autorange: false,
+    fixedrange: true,
+    showgrid: false,
+    showticklabels: false,
+    visible: false,
+    zeroline: false,
+    uirevision: 'constant',
+  };
+}
+

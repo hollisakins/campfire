@@ -41,6 +41,41 @@ export const FluxUnitToggle: React.FC<FluxUnitToggleProps> = ({ fluxUnit, onChan
   );
 };
 
+interface PlotCheckboxProps {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+  title?: string;
+}
+
+/** Labeled checkbox in the plot-controls-bar style. */
+export const PlotCheckbox: React.FC<PlotCheckboxProps> = ({
+  label,
+  checked,
+  onChange,
+  disabled = false,
+  title,
+}) => {
+  return (
+    <div className="flex items-center gap-2">
+      <label
+        className={`flex items-center gap-2 ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+        title={title}
+      >
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+          className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary dark:bg-card-hover"
+        />
+        <span className="text-sm text-text-secondary">{label}</span>
+      </label>
+    </div>
+  );
+};
+
 interface EmissionLinesControlProps {
   showEmissionLines: boolean;
   onChange: (show: boolean) => void;
@@ -50,19 +85,7 @@ export const EmissionLinesControl: React.FC<EmissionLinesControlProps> = ({
   showEmissionLines,
   onChange,
 }) => {
-  return (
-    <div className="flex items-center gap-2">
-      <label className="flex items-center gap-2 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={showEmissionLines}
-          onChange={(e) => onChange(e.target.checked)}
-          className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary dark:bg-card-hover"
-        />
-        <span className="text-sm text-text-secondary">Emission lines</span>
-      </label>
-    </div>
-  );
+  return <PlotCheckbox label="Emission lines" checked={showEmissionLines} onChange={onChange} />;
 };
 
 interface RedshiftSliderControlProps {

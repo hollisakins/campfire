@@ -1,28 +1,33 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import dynamic from 'next/dynamic';
 import { Loader2, AlertCircle } from 'lucide-react';
 import type { SpectrumData } from '@/app/api/spectrum/route';
 import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
-import { getPlotColors, getVisibleEmissionLines, computeYRange, computeNiceRestTicks } from './plotting-utils';
-import { RedshiftSliderControl } from './PlottingControls';
-
-// Dynamic import of Plotly to avoid SSR issues
-const Plot = dynamic(() => import('react-plotly.js'), {
-  ssr: false,
-  loading: () => (
-    <div className="flex items-center justify-center h-[700px] bg-card border border-border rounded-lg">
-      <Loader2 className="w-6 h-6 animate-spin text-primary" />
-    </div>
-  ),
-});
-
-// Available colorscale options (display names)
-const COLORSCALE_OPTIONS: Colorscale2D[] = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis', 'Greys'];
+import { COLORSCALE_2D_OPTIONS } from '@/lib/types';
+import {
+  getPlotColors,
+  convertToFlambda,
+  getFluxLabel,
+  getHoverLabel,
+  computeYRange,
+  parseXRangeFromRelayout,
+  buildRestFrameAxis,
+  buildRestFrameAxisActivationTrace,
+  buildEmissionLineTraces,
+  buildEmissionLineOverlayAxis,
+} from './plotting-utils';
+import {
+  FluxUnitToggle,
+  EmissionLinesControl,
+  PlotCheckbox,
+  RedshiftSliderControl,
+  ControlDivider,
+} from './PlottingControls';
+import { LazyPlot as Plot } from '@/components/plot/LazyPlot';
 
 // Custom colorscale definitions for scales not built into Plotly.js
 // Plasma, Inferno, and Magma are matplotlib colormaps not available in Plotly.js
@@ -176,16 +181,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const plotColors = useMemo(() => getPlotColors(), [resolvedTheme]);
 
-  // Convert f_nu to f_lambda: f_λ = f_ν * c / λ²
-  // f_nu is in μJy (1 μJy = 10^-29 erg/s/cm²/Hz), wavelength in μm
-  // f_λ (erg/s/cm²/Å) = f_ν (μJy) * 10^-29 * c / λ²
-  // With c = 2.998e10 cm/s and λ in μm (1 μm = 10^-4 cm):
-  // f_λ = f_ν * 10^-29 * 2.998e10 / (λ_μm * 10^-4)² / 10^8 (to convert /cm to /Å)
-  // f_λ = f_ν * 2.998e-19 / λ_μm²
-  const convertToFlambda = (fnuVal: number, wavelength: number): number => {
-    return fnuVal * 2.998e-19 / (wavelength * wavelength);
-  };
-
   useEffect(() => {
     async function fetchData() {
       setLoading(true);
@@ -230,7 +225,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     }
 
     fetchData();
-  }, [fitsPath, inspectionMode, getCachedData, grating]);
+  }, [fitsPath, inspectionMode, getCachedData]);
 
   // Memoize processed spectrum data - must be before early returns
   const processedData = useMemo(() => {
@@ -276,8 +271,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     const flux = fluxUnit === 'fnu' ? fnu : flambda;
     const fluxErr = fluxUnit === 'fnu' ? fnuErr : flambdaErr;
     const modelFlux = fluxUnit === 'fnu' ? modelFnu : modelFlambda;
-    const fluxLabel = fluxUnit === 'fnu' ? 'fν (μJy)' : 'fλ (erg/s/cm²/Å)';
-    const hoverLabel = fluxUnit === 'fnu' ? 'fν' : 'fλ';
+    const fluxLabel = getFluxLabel(fluxUnit);
+    const hoverLabel = getHoverLabel(fluxUnit);
 
     // Calculate upper and lower bounds for error band
     const upperBound = flux.map((f, i) => {
@@ -297,9 +292,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       if (w < waveMin) waveMin = w;
       if (w > waveMax) waveMax = w;
     }
-
-    // Rest-frame wavelength conversion factor: μm → Å in rest frame
-    const restFrameFactor = 10000 / (1 + redshift);
 
     // Build step-function coordinates for cross-dispersion profile
     // Using 'vh' (vertical-horizontal) pattern to match matplotlib's where='post'
@@ -366,19 +358,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         xaxis: 'x',
         yaxis: 'y',
       },
-      // Invisible trace on xaxis3 (Plotly requires a trace to render the axis)
-      // Uses same μm wavelengths as primary axis — xaxis3 is just a relabeled overlay
-      {
-        x: [data.wave[0], data.wave[data.wave.length - 1]],
-        y: [0, 0],
-        type: 'scatter' as const,
-        mode: 'markers' as const,
-        marker: { size: 0.1, opacity: 0 },
-        hoverinfo: 'skip' as const,
-        showlegend: false,
-        xaxis: 'x3',
-        yaxis: 'y',
-      },
+      // Invisible trace keeping the rest-frame overlay axis rendered
+      buildRestFrameAxisActivationTrace(waveMin, 'x3', 'y4'),
     ];
 
     // Add cross-dispersion profile traces if data exists
@@ -449,49 +430,36 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       });
     }
 
-    // Smart y-axis auto-scaling (works in both normal and inspection mode)
+    // Smart y-axis auto-scaling (works in both normal and inspection mode).
+    // The model informs the range only while it is actually drawn — otherwise
+    // Auto-y would scale to an invisible trace, and the same spectrum would
+    // stretch differently depending on whether fit data happened to exist.
     const yAxisRange = computeYRange(flux, fluxErr, {
-      modelFlux,
-      modelWave: processedData.modelWave,
+      modelFlux: showModel ? modelFlux : null,
+      modelWave: showModel ? processedData.modelWave : null,
       dataWave: wave,
     });
 
-    // Add emission line markers if enabled
+    // Add emission line markers if enabled (drawn on the hidden overlay
+    // yaxis4 so they never affect autoscaling or double-click reset)
     if (showEmissionLines) {
-      const visibleLines = getVisibleEmissionLines(redshift, waveMin, waveMax, grating);
-
-      visibleLines.forEach((line) => {
-        traces.push({
-          x: [line.observedWave, line.observedWave],
-          y: [0, 1],
-          type: 'scatter' as const,
-          mode: 'lines' as const,
-          name: line.name,
-          line: {
-            color: line.color,
-            width: 1.5,
-            dash: 'dash',
-          },
-          hovertemplate: `${line.name}<br>λ_rest: ${line.wave.toFixed(4)} μm<br>λ_obs: ${line.observedWave.toFixed(4)} μm<extra></extra>`,
-          showlegend: true,
-          legendgroup: 'emission_lines',
-          xaxis: 'x',
-          yaxis: 'y4',
-        });
-      });
+      traces.push(...buildEmissionLineTraces(redshift, waveMin, waveMax, {
+        yaxis: 'y4',
+        grating,
+        showlegend: true,
+      }));
     }
 
-    // Compute rest-frame ticks for the current view (zoomed or full range)
+    // Current observed view for rest-frame axis ticks (zoomed or full range)
     const effectiveMin = obsRange ? obsRange[0] : waveMin;
     const effectiveMax = obsRange ? obsRange[1] : waveMax;
-    const restTicks = computeNiceRestTicks(effectiveMin, effectiveMax, restFrameFactor);
 
     // Layout configuration with profile panel
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout: any = {
-      // Per-axis uirevision instead of top-level — xaxis3 (rest-frame overlay)
-      // must NOT inherit a constant uirevision, otherwise Plotly.react() caches
-      // stale tickvals when redshift changes.
+      // Per-axis uirevision instead of top-level: each axis's revision key
+      // encodes exactly the state that should invalidate it (see the y-axis
+      // and buildRestFrameAxis comments).
       font: { family: 'Inter, system-ui, sans-serif', color: plotColors.text },
       title: {
         text: `${grating} Spectrum`,
@@ -506,26 +474,16 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         range: [waveMin, waveMax],
         uirevision: 'constant', // Preserve user zoom across re-renders
       },
-      // X-axis: Rest-frame wavelength (Å), overlays primary axis
-      // Shares μm coordinate system with xaxis; tickvals/ticktext relabel to Å.
-      // No uirevision — Plotly resets this axis on every react() call so new
-      // tickvals are always applied when redshift changes.
-      xaxis3: {
-        overlaying: 'x' as const,
-        side: 'top' as const,
-        matches: 'x' as const, // Force range to always match primary axis
-        tickmode: 'array' as const,
-        tickvals: restTicks.map(å => å / restFrameFactor),
-        ticktext: restTicks.map(å => `${parseFloat(å.toFixed(1))} Å`),
-        ticks: 'outside' as const,
-        tickcolor: plotColors.textSecondary,
-        tickfont: { size: 11, color: plotColors.textSecondary },
-        showgrid: false,
-        gridcolor: 'transparent',
-        zerolinecolor: 'transparent',
+      // X-axis: Rest-frame wavelength (Å), overlays primary axis (shared
+      // builder — see buildRestFrameAxis for the uirevision contract)
+      xaxis3: buildRestFrameAxis({
+        redshift,
+        obsMin: effectiveMin,
+        obsMax: effectiveMax,
+        colors: plotColors,
         domain: [0, 0.90],
-        anchor: 'y' as const,
-      },
+        anchor: 'y',
+      }),
       // X-axis for profile panel (top-right, narrow)
       xaxis2: {
         gridcolor: plotColors.grid,
@@ -545,10 +503,13 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         exponentformat: 'e' as const,
         domain: [0, 0.7],
         anchor: 'x' as const,
-        // Tie the y-axis uirevision to autoStretch so toggling it forces Plotly
-        // to re-apply the range/autorange below. A stable uirevision would
-        // otherwise preserve the user's current y-zoom and ignore the change.
-        uirevision: autoStretch ? 'y-auto' : 'y-full',
+        // The y-axis uirevision must change whenever the meaning of the y
+        // coordinate changes, or Plotly preserves a user-zoomed range that no
+        // longer makes sense: toggling autoStretch must re-apply the
+        // range/autorange below, and switching flux units must drop a zoom
+        // set in the other unit system (fν μJy vs fλ erg/s/cm²/Å differ by
+        // ~19 orders of magnitude — a preserved range renders as a blank plot).
+        uirevision: `${fluxUnit}-${autoStretch ? 'auto' : 'full'}`,
         ...(autoStretch && yAxisRange
           ? { range: yAxisRange, autorange: false as const }
           : { autorange: true as const }),
@@ -573,16 +534,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       },
       // Y-axis for emission lines — hidden overlay on yaxis, fixed [0,1] range
       // so emission line traces never affect auto-scaling or double-click reset
-      yaxis4: {
-        overlaying: 'y' as const,
-        range: [0, 1],
-        autorange: false,
-        fixedrange: true,
-        showgrid: false,
-        showticklabels: false,
-        visible: false,
-        uirevision: 'constant',
-      },
+      yaxis4: buildEmissionLineOverlayAxis('y'),
       margin: { l: 80, r: 20, t: 50, b: 50 },
       paper_bgcolor: plotColors.paper,
       plot_bgcolor: plotColors.bg,
@@ -659,8 +611,11 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           type: 'log' as const,
           gridcolor: plotColors.grid,
           zerolinecolor: plotColors.grid,
-          range: [Math.log10(chi2Min * 0.9), Math.log10(chi2Max * 1.1)],
-          autorange: false,
+          // Explicit log range only when it's well-defined (χ² should always
+          // be positive, but a degenerate grid must not produce -Infinity).
+          ...(chi2Min > 0 && chi2Max > 0
+            ? { range: [Math.log10(chi2Min * 0.9), Math.log10(chi2Max * 1.1)], autorange: false }
+            : { autorange: true as const }),
         },
         margin: { l: 80, r: 20, t: 40, b: 40 },
         paper_bgcolor: plotColors.paper,
@@ -676,26 +631,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // cycle recomputes xaxis3 ticks and range declaratively via the layout prop.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleRelayout = useCallback((event: any) => {
-    // Extract observed range — Plotly uses different key formats
-    let obsMin: number | undefined;
-    let obsMax: number | undefined;
-
-    if (event['xaxis.range[0]'] !== undefined && event['xaxis.range[1]'] !== undefined) {
-      // Box zoom: separate keys
-      obsMin = event['xaxis.range[0]'];
-      obsMax = event['xaxis.range[1]'];
-    } else if (Array.isArray(event['xaxis.range'])) {
-      // Pan/drag: array
-      obsMin = event['xaxis.range'][0];
-      obsMax = event['xaxis.range'][1];
-    }
-
-    if (obsMin !== undefined && obsMax !== undefined) {
-      setObsRange([obsMin, obsMax]);
-    } else if (event['xaxis.autorange'] === true) {
-      // Double-click reset
-      setObsRange(null);
-    }
+    const parsed = parseXRangeFromRelayout(event);
+    if (parsed === 'reset') setObsRange(null);
+    else if (parsed) setObsRange(parsed);
   }, []);
 
   if (loading) {
@@ -730,35 +668,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     <div className={bare ? '' : 'bg-card border border-border rounded-lg overflow-hidden'}>
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-surface-2">
-        {/* Flux unit toggle */}
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-text-secondary">Units:</span>
-          <div className="flex rounded-md overflow-hidden border border-border dark:border-border-strong">
-            <button
-              onClick={() => setFluxUnit('fnu')}
-              className={`px-3 py-1 text-sm transition-colors ${
-                fluxUnit === 'fnu'
-                  ? 'bg-primary text-on-primary'
-                  : 'bg-card text-text-secondary hover:bg-card-hover'
-              }`}
-            >
-              fν
-            </button>
-            <button
-              onClick={() => setFluxUnit('flambda')}
-              className={`px-3 py-1 text-sm transition-colors ${
-                fluxUnit === 'flambda'
-                  ? 'bg-primary text-on-primary'
-                  : 'bg-card text-text-secondary hover:bg-card-hover'
-              }`}
-            >
-              fλ
-            </button>
-          </div>
-        </div>
+        <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />
 
-        {/* Divider */}
-        <div className="h-6 w-px bg-border dark:bg-border-strong" />
+        <ControlDivider />
 
         {/* 2D color scale controls */}
         <div className="flex items-center gap-2">
@@ -793,7 +705,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
             className="px-2 py-1 text-sm border border-border-strong rounded bg-card text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
             title="Colormap"
           >
-            {COLORSCALE_OPTIONS.map((scale) => (
+            {COLORSCALE_2D_OPTIONS.map((scale) => (
               <option key={scale} value={scale}>
                 {scale}
               </option>
@@ -801,54 +713,26 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           </select>
         </div>
 
-        {/* Divider */}
-        <div className="h-6 w-px bg-border dark:bg-border-strong" />
+        <ControlDivider />
 
-        {/* Emission lines toggle */}
-        <div className="flex items-center gap-2">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showEmissionLines}
-              onChange={(e) => setShowEmissionLines(e.target.checked)}
-              className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary"
-            />
-            <span className="text-sm text-text-secondary">Emission lines</span>
-          </label>
-        </div>
+        <EmissionLinesControl showEmissionLines={showEmissionLines} onChange={setShowEmissionLines} />
 
         {/* Model + chi²(z) toggle — disabled if no zfit data is available. */}
-        <div className="flex items-center gap-2">
-          <label
-            className={`flex items-center gap-2 ${fitData ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}
-            title={fitData ? 'Show best-fit model + χ²(z)' : 'No redshift fit available for this spectrum'}
-          >
-            <input
-              type="checkbox"
-              checked={showModel && !!fitData}
-              disabled={!fitData}
-              onChange={(e) => setShowModel(e.target.checked)}
-              className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary"
-            />
-            <span className="text-sm text-text-secondary">Model</span>
-          </label>
-        </div>
+        <PlotCheckbox
+          label="Model"
+          checked={showModel && !!fitData}
+          disabled={!fitData}
+          onChange={setShowModel}
+          title={fitData ? 'Show best-fit model + χ²(z)' : 'No redshift fit available for this spectrum'}
+        />
 
         {/* y-axis auto-stretch toggle (inspection shortcut: y) */}
-        <div className="flex items-center gap-2">
-          <label
-            className="flex items-center gap-2 cursor-pointer"
-            title="Auto-scale the y-axis to real spectral features; off shows the full flux range (press y in inspection mode)"
-          >
-            <input
-              type="checkbox"
-              checked={autoStretch}
-              onChange={(e) => setAutoStretch(e.target.checked)}
-              className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary"
-            />
-            <span className="text-sm text-text-secondary">Auto-y</span>
-          </label>
-        </div>
+        <PlotCheckbox
+          label="Auto-y"
+          checked={autoStretch}
+          onChange={setAutoStretch}
+          title="Auto-scale the y-axis to real spectral features; off shows the full flux range (press y in inspection mode)"
+        />
 
         {/* Redshift slider (only shown when emission lines are enabled) */}
         {showEmissionLines && (
