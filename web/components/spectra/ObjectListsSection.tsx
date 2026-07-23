@@ -355,19 +355,25 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
           (an ancestor with a CSS transform, e.g. FloatingInspectionPanel's
           -translate-x-1/2, would otherwise become its containing block) */}
       {showCreateModal && createPortal(
-        <div className="fixed inset-0 z-[100] flex items-center justify-center">
+        <div className="fixed inset-0 z-[100] overflow-y-auto">
+          <div className="fixed inset-0 bg-black/50" aria-hidden="true" />
+          {/* The overlay scrolls (not the form wrapper) so the absolutely
+              positioned emoji picker inside ListForm is never clipped */}
           <div
-            className="absolute inset-0 bg-black/50"
-            onClick={() => setShowCreateModal(false)}
-          />
-          <div className="relative w-full max-w-md mx-4 max-h-[calc(100vh-2rem)] overflow-y-auto rounded-lg">
-            <ListForm
-              mode="create"
-              initialName={createInitialName}
-              onCreated={handleTagCreated}
-              onSuccess={() => setShowCreateModal(false)}
-              onCancel={() => setShowCreateModal(false)}
-            />
+            className="relative flex min-h-full items-center justify-center p-4"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowCreateModal(false);
+            }}
+          >
+            <div className="w-full max-w-md">
+              <ListForm
+                mode="create"
+                initialName={createInitialName}
+                onCreated={handleTagCreated}
+                onSuccess={() => setShowCreateModal(false)}
+                onCancel={() => setShowCreateModal(false)}
+              />
+            </div>
           </div>
         </div>,
         document.body
