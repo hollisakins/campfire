@@ -367,37 +367,3 @@ export function computeNiceRestTicks(
   return ticks;
 }
 
-/**
- * Create Plotly traces for emission line markers
- */
-export function createEmissionLineTraces(
-  redshift: number,
-  waveMin: number,
-  waveMax: number,
-  fluxMin: number,
-  fluxMax: number,
-  xaxis: string = 'x',
-  yaxis: string = 'y',
-  grating?: string
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): any[] {
-  const visibleLines = getVisibleEmissionLines(redshift, waveMin, waveMax, grating);
-
-  return visibleLines.map(line => ({
-    x: [line.observedWave, line.observedWave],
-    y: [fluxMin * 0.9, fluxMax * 1.1],
-    type: 'scatter' as const,
-    mode: 'lines' as const,
-    name: line.name,
-    line: {
-      color: line.color,
-      width: 1.5,
-      dash: 'dash',
-    },
-    hovertemplate: `${line.name}<br>λ_rest: ${line.wave.toFixed(4)} μm<br>λ_obs: ${line.observedWave.toFixed(4)} μm<extra></extra>`,
-    showlegend: true,
-    legendgroup: 'emission_lines',
-    xaxis,
-    yaxis,
-  }));
-}
