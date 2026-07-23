@@ -147,7 +147,12 @@ def sep_extract_sources(sci, err, *, mask=None, snr_thresh=3.0, minarea=15,
     # large images blow past defaults. ``set_extract_pixstack`` is global
     # state in the C extension, but it's idempotent.
     sep.set_extract_pixstack(int(1e7))
-    sep.set_sub_object_limit(2048)
+    # Crowded/bright fields (e.g. COSMOS jw05427002001_03201 module B: a saturated
+    # star with diffraction spikes + a bright extended galaxy) blow past 2048
+    # sub-objects and raise a deblend overflow, dropping the exposure to
+    # NOT_ALIGNED. 8192 clears the observed cases; still bounded so a runaway
+    # can't consume unlimited memory.
+    sep.set_sub_object_limit(8192)
 
     sci = np.ascontiguousarray(sci, dtype=np.float32)
     err = np.ascontiguousarray(err, dtype=np.float32)
