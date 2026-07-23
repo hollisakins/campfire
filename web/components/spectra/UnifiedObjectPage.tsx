@@ -399,7 +399,11 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
               </div>
             </div>
             <div className="border border-border rounded-lg overflow-hidden">
+              {/* Keyed on the object: the page stays mounted across object
+                  navigation, and without a remount the viewer's uirevision
+                  would carry one object's zoom onto the next object's plot. */}
               <MultiSpectrumViewer
+                key={object.id}
                 sources={sources}
                 grating={selectedGrating}
                 redshift={object.redshift}

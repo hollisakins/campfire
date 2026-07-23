@@ -220,7 +220,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     }
 
     fetchData();
-  }, [fitsPath, inspectionMode, getCachedData, grating]);
+  }, [fitsPath, inspectionMode, getCachedData]);
 
   // Memoize processed spectrum data - must be before early returns
   const processedData = useMemo(() => {
@@ -439,10 +439,13 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       });
     }
 
-    // Smart y-axis auto-scaling (works in both normal and inspection mode)
+    // Smart y-axis auto-scaling (works in both normal and inspection mode).
+    // The model informs the range only while it is actually drawn — otherwise
+    // Auto-y would scale to an invisible trace, and the same spectrum would
+    // stretch differently depending on whether fit data happened to exist.
     const yAxisRange = computeYRange(flux, fluxErr, {
-      modelFlux,
-      modelWave: processedData.modelWave,
+      modelFlux: showModel ? modelFlux : null,
+      modelWave: showModel ? processedData.modelWave : null,
       dataWave: wave,
     });
 
@@ -535,10 +538,13 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         exponentformat: 'e' as const,
         domain: [0, 0.7],
         anchor: 'x' as const,
-        // Tie the y-axis uirevision to autoStretch so toggling it forces Plotly
-        // to re-apply the range/autorange below. A stable uirevision would
-        // otherwise preserve the user's current y-zoom and ignore the change.
-        uirevision: autoStretch ? 'y-auto' : 'y-full',
+        // The y-axis uirevision must change whenever the meaning of the y
+        // coordinate changes, or Plotly preserves a user-zoomed range that no
+        // longer makes sense: toggling autoStretch must re-apply the
+        // range/autorange below, and switching flux units must drop a zoom
+        // set in the other unit system (fν μJy vs fλ erg/s/cm²/Å differ by
+        // ~19 orders of magnitude — a preserved range renders as a blank plot).
+        uirevision: `${fluxUnit}-${autoStretch ? 'auto' : 'full'}`,
         ...(autoStretch && yAxisRange
           ? { range: yAxisRange, autorange: false as const }
           : { autorange: true as const }),
@@ -649,8 +655,11 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           type: 'log' as const,
           gridcolor: plotColors.grid,
           zerolinecolor: plotColors.grid,
-          range: [Math.log10(chi2Min * 0.9), Math.log10(chi2Max * 1.1)],
-          autorange: false,
+          // Explicit log range only when it's well-defined (χ² should always
+          // be positive, but a degenerate grid must not produce -Infinity).
+          ...(chi2Min > 0 && chi2Max > 0
+            ? { range: [Math.log10(chi2Min * 0.9), Math.log10(chi2Max * 1.1)], autorange: false }
+            : { autorange: true as const }),
         },
         margin: { l: 80, r: 20, t: 40, b: 40 },
         paper_bgcolor: plotColors.paper,

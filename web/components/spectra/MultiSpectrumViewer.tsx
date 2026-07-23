@@ -215,8 +215,9 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
       ? [Math.min(...allWave), Math.max(...allWave)]
       : undefined;
 
-    // Emission lines
-    if (showEmissionLines && redshift > 0 && allFlux.length > 0) {
+    // Emission lines — z = 0 is a valid rest frame; no redshift gate, or the
+    // toggle silently does nothing for objects without a catalog redshift.
+    if (showEmissionLines && allFlux.length > 0) {
       const waveMin = Math.min(...visibleSources.flatMap(s => {
         const d = loadedData.get(s.fitsPath);
         return d ? [d.wave[0]] : [];
@@ -283,7 +284,10 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
         tickcolor: plotColors.text,
         tickfont: { color: plotColors.text },
         range: yRange,
-        uirevision: 'constant',
+        // Keyed on the flux unit: a y-zoom set in fν must not be preserved
+        // when switching to fλ (the units differ by ~19 orders of magnitude,
+        // so a preserved range renders as a blank plot).
+        uirevision: fluxUnit,
       },
       // Emission line overlay axis (hidden, fixed 0-1)
       yaxis2: {
