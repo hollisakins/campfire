@@ -2,8 +2,10 @@
  * Shared utilities for spectrum plotting components
  */
 
-// Flux unit types
-export type FluxUnit = 'fnu' | 'flambda';
+// Flux unit type — canonical definition lives in lib/types; re-exported here
+// so plotting code can import everything plot-related from one module.
+export type { FluxUnit } from '@/lib/types';
+import type { FluxUnit } from '@/lib/types';
 
 // Plot color type
 export interface PlotColors {

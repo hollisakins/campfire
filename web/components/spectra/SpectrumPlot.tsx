@@ -7,8 +7,12 @@ import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
+import { COLORSCALE_2D_OPTIONS } from '@/lib/types';
 import {
   getPlotColors,
+  convertToFlambda,
+  getFluxLabel,
+  getHoverLabel,
   computeYRange,
   parseXRangeFromRelayout,
   buildRestFrameAxis,
@@ -16,11 +20,14 @@ import {
   buildEmissionLineTraces,
   buildEmissionLineOverlayAxis,
 } from './plotting-utils';
-import { RedshiftSliderControl } from './PlottingControls';
+import {
+  FluxUnitToggle,
+  EmissionLinesControl,
+  PlotCheckbox,
+  RedshiftSliderControl,
+  ControlDivider,
+} from './PlottingControls';
 import { LazyPlot as Plot } from '@/components/plot/LazyPlot';
-
-// Available colorscale options (display names)
-const COLORSCALE_OPTIONS: Colorscale2D[] = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis', 'Greys'];
 
 // Custom colorscale definitions for scales not built into Plotly.js
 // Plasma, Inferno, and Magma are matplotlib colormaps not available in Plotly.js
@@ -174,16 +181,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const plotColors = useMemo(() => getPlotColors(), [resolvedTheme]);
 
-  // Convert f_nu to f_lambda: f_λ = f_ν * c / λ²
-  // f_nu is in μJy (1 μJy = 10^-29 erg/s/cm²/Hz), wavelength in μm
-  // f_λ (erg/s/cm²/Å) = f_ν (μJy) * 10^-29 * c / λ²
-  // With c = 2.998e10 cm/s and λ in μm (1 μm = 10^-4 cm):
-  // f_λ = f_ν * 10^-29 * 2.998e10 / (λ_μm * 10^-4)² / 10^8 (to convert /cm to /Å)
-  // f_λ = f_ν * 2.998e-19 / λ_μm²
-  const convertToFlambda = (fnuVal: number, wavelength: number): number => {
-    return fnuVal * 2.998e-19 / (wavelength * wavelength);
-  };
-
   useEffect(() => {
     async function fetchData() {
       setLoading(true);
@@ -274,8 +271,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     const flux = fluxUnit === 'fnu' ? fnu : flambda;
     const fluxErr = fluxUnit === 'fnu' ? fnuErr : flambdaErr;
     const modelFlux = fluxUnit === 'fnu' ? modelFnu : modelFlambda;
-    const fluxLabel = fluxUnit === 'fnu' ? 'fν (μJy)' : 'fλ (erg/s/cm²/Å)';
-    const hoverLabel = fluxUnit === 'fnu' ? 'fν' : 'fλ';
+    const fluxLabel = getFluxLabel(fluxUnit);
+    const hoverLabel = getHoverLabel(fluxUnit);
 
     // Calculate upper and lower bounds for error band
     const upperBound = flux.map((f, i) => {
@@ -671,35 +668,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     <div className={bare ? '' : 'bg-card border border-border rounded-lg overflow-hidden'}>
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-surface-2">
-        {/* Flux unit toggle */}
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-text-secondary">Units:</span>
-          <div className="flex rounded-md overflow-hidden border border-border dark:border-border-strong">
-            <button
-              onClick={() => setFluxUnit('fnu')}
-              className={`px-3 py-1 text-sm transition-colors ${
-                fluxUnit === 'fnu'
-                  ? 'bg-primary text-on-primary'
-                  : 'bg-card text-text-secondary hover:bg-card-hover'
-              }`}
-            >
-              fν
-            </button>
-            <button
-              onClick={() => setFluxUnit('flambda')}
-              className={`px-3 py-1 text-sm transition-colors ${
-                fluxUnit === 'flambda'
-                  ? 'bg-primary text-on-primary'
-                  : 'bg-card text-text-secondary hover:bg-card-hover'
-              }`}
-            >
-              fλ
-            </button>
-          </div>
-        </div>
+        <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />
 
-        {/* Divider */}
-        <div className="h-6 w-px bg-border dark:bg-border-strong" />
+        <ControlDivider />
 
         {/* 2D color scale controls */}
         <div className="flex items-center gap-2">
@@ -734,7 +705,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
             className="px-2 py-1 text-sm border border-border-strong rounded bg-card text-text-primary focus:outline-none focus:ring-1 focus:ring-primary"
             title="Colormap"
           >
-            {COLORSCALE_OPTIONS.map((scale) => (
+            {COLORSCALE_2D_OPTIONS.map((scale) => (
               <option key={scale} value={scale}>
                 {scale}
               </option>
@@ -742,54 +713,26 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           </select>
         </div>
 
-        {/* Divider */}
-        <div className="h-6 w-px bg-border dark:bg-border-strong" />
+        <ControlDivider />
 
-        {/* Emission lines toggle */}
-        <div className="flex items-center gap-2">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showEmissionLines}
-              onChange={(e) => setShowEmissionLines(e.target.checked)}
-              className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary"
-            />
-            <span className="text-sm text-text-secondary">Emission lines</span>
-          </label>
-        </div>
+        <EmissionLinesControl showEmissionLines={showEmissionLines} onChange={setShowEmissionLines} />
 
         {/* Model + chi²(z) toggle — disabled if no zfit data is available. */}
-        <div className="flex items-center gap-2">
-          <label
-            className={`flex items-center gap-2 ${fitData ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}
-            title={fitData ? 'Show best-fit model + χ²(z)' : 'No redshift fit available for this spectrum'}
-          >
-            <input
-              type="checkbox"
-              checked={showModel && !!fitData}
-              disabled={!fitData}
-              onChange={(e) => setShowModel(e.target.checked)}
-              className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary"
-            />
-            <span className="text-sm text-text-secondary">Model</span>
-          </label>
-        </div>
+        <PlotCheckbox
+          label="Model"
+          checked={showModel && !!fitData}
+          disabled={!fitData}
+          onChange={setShowModel}
+          title={fitData ? 'Show best-fit model + χ²(z)' : 'No redshift fit available for this spectrum'}
+        />
 
         {/* y-axis auto-stretch toggle (inspection shortcut: y) */}
-        <div className="flex items-center gap-2">
-          <label
-            className="flex items-center gap-2 cursor-pointer"
-            title="Auto-scale the y-axis to real spectral features; off shows the full flux range (press y in inspection mode)"
-          >
-            <input
-              type="checkbox"
-              checked={autoStretch}
-              onChange={(e) => setAutoStretch(e.target.checked)}
-              className="w-4 h-4 rounded border-border dark:border-border-strong text-primary focus:ring-primary"
-            />
-            <span className="text-sm text-text-secondary">Auto-y</span>
-          </label>
-        </div>
+        <PlotCheckbox
+          label="Auto-y"
+          checked={autoStretch}
+          onChange={setAutoStretch}
+          title="Auto-scale the y-axis to real spectral features; off shows the full flux range (press y in inspection mode)"
+        />
 
         {/* Redshift slider (only shown when emission lines are enabled) */}
         {showEmissionLines && (

@@ -26,6 +26,8 @@ export interface UserProfile {
 export type ThemeSetting = 'light' | 'dark' | 'system';
 export type FluxUnit = 'fnu' | 'flambda';
 export type Colorscale2D = 'Viridis' | 'Plasma' | 'Inferno' | 'Magma' | 'Cividis' | 'Greys';
+// Canonical option list for UI pickers (Settings, plot controls)
+export const COLORSCALE_2D_OPTIONS: Colorscale2D[] = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis', 'Greys'];
 
 // ============================================
 // Accent Color System
