@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useTransition, useRef, useImperativeHandle } from 'react';
+import { createPortal } from 'react-dom';
 import { Plus, X, Loader2, Check, AlertCircle, Search, Tag } from 'lucide-react';
 import { getListsWithMembership, addObjectToList, removeObjectFromList } from '@/lib/actions/lists';
 import { ListForm } from '@/components/lists/ListForm';
@@ -350,14 +351,16 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
         </div>
       )}
 
-      {/* Create tag modal */}
-      {showCreateModal && (
+      {/* Create tag modal — portaled to <body> so `fixed` is viewport-relative
+          (an ancestor with a CSS transform, e.g. FloatingInspectionPanel's
+          -translate-x-1/2, would otherwise become its containing block) */}
+      {showCreateModal && createPortal(
         <div className="fixed inset-0 z-[100] flex items-center justify-center">
           <div
             className="absolute inset-0 bg-black/50"
             onClick={() => setShowCreateModal(false)}
           />
-          <div className="relative w-full max-w-md mx-4">
+          <div className="relative w-full max-w-md mx-4 max-h-[calc(100vh-2rem)] overflow-y-auto rounded-lg">
             <ListForm
               mode="create"
               initialName={createInitialName}
@@ -366,7 +369,8 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
               onCancel={() => setShowCreateModal(false)}
             />
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
