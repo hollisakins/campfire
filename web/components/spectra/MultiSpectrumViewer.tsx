@@ -24,6 +24,8 @@ export interface SpectrumSource {
   fitsPath: string;
   label: string;
   color: string;
+  /** Hidden sources stay loaded and keep contributing to the y-range, so
+   *  toggling visibility doesn't rescale the plot. */
   visible: boolean;
 }
 
@@ -65,13 +67,15 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
     const toFetch = visibleSources.filter(s => !dataCache.current.has(s.fitsPath));
 
     if (toFetch.length === 0) {
-      // All visible data is cached
+      // All visible data is cached. Include cached hidden sources too, so
+      // they keep contributing to the y-range (stable across toggles).
       const map = new Map<string, SpectrumData>();
-      for (const s of visibleSources) {
+      for (const s of sources) {
         const d = dataCache.current.get(s.fitsPath);
         if (d) map.set(s.fitsPath, d);
       }
       setLoadedData(map);
+      setLoading(false); // a cancelled in-flight run may have left this true
       setLoadingProgress(null);
       return;
     }
@@ -107,9 +111,10 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
 
         if (cancelled) return;
 
-        // Update state after each batch → traces appear progressively
+        // Update state after each batch → traces appear progressively.
+        // Rebuild from ALL sources so cached hidden spectra stay loaded.
         const map = new Map<string, SpectrumData>();
-        for (const s of visibleSources) {
+        for (const s of sources) {
           const d = dataCache.current.get(s.fitsPath);
           if (d) map.set(s.fitsPath, d);
         }
@@ -133,19 +138,27 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const allTraces: any[] = [];
 
-    // Collect flux values from ALL loaded sources (not just visible) for stable y-range
-    const allFlux: number[] = [];
-    const allFluxErr: (number | null)[] = [];
+    // Y-range: per-source smart ranges, merged. Computed over ALL loaded
+    // sources (hidden included) so toggling a spectrum doesn't rescale the
+    // plot. Per-source rather than on the concatenation: edge-trimming and
+    // the MAD statistics inside computeYRange are only meaningful within a
+    // single spectrum.
+    let yRange: [number, number] | undefined;
     for (const source of sources) {
       const data = loadedData.get(source.fitsPath);
       if (!data) continue;
+      const srcFlux: number[] = [];
+      const srcFluxErr: (number | null)[] = [];
       for (let i = 0; i < data.wave.length; i++) {
         const v = data.fnu[i];
         if (v == null || !isFinite(v)) continue;
-        allFlux.push(fluxUnit === 'flambda' ? convertToFlambda(v, data.wave[i]) : v);
+        srcFlux.push(fluxUnit === 'flambda' ? convertToFlambda(v, data.wave[i]) : v);
         const e = data.fnu_err[i];
-        allFluxErr.push(e == null ? null : (fluxUnit === 'flambda' ? convertToFlambda(e, data.wave[i]) : e));
+        srcFluxErr.push(e == null ? null : (fluxUnit === 'flambda' ? convertToFlambda(e, data.wave[i]) : e));
       }
+      const r = computeYRange(srcFlux, srcFluxErr);
+      if (!r) continue;
+      yRange = yRange ? [Math.min(yRange[0], r[0]), Math.max(yRange[1], r[1])] : r;
     }
 
     for (const source of visibleSources) {
@@ -235,11 +248,6 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
         grating: grating ?? undefined,
       }));
     }
-
-    // Y-range
-    const yRange = allFlux.length > 0
-      ? computeYRange(allFlux, allFluxErr, { edgeTrim: Math.min(20, Math.floor(allFlux.length * 0.02)) })
-      : undefined;
 
     // Current observed view for rest-frame axis ticks: user zoom if set,
     // otherwise the full data range (null = full-range convention).

@@ -148,21 +148,22 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
     [object.member_targets, selectedProgram]
   );
 
-  // MultiSpectrumViewer source list — driven by per-spectrum visibility.
-  // Each spectrum trace uses the same shade as its sidebar checkbox so the sidebar
-  // doubles as a legend. Index is the spectrum's position in the member's FULL
-  // list (not the filtered list) so a grating filter doesn't reshuffle shades.
+  // MultiSpectrumViewer source list. Hidden spectra are passed with
+  // visible: false (not dropped): the viewer keeps them loaded and in the
+  // y-range so toggling a checkbox doesn't rescale the plot. Each spectrum
+  // trace uses the same shade as its sidebar checkbox so the sidebar doubles
+  // as a legend. Index is the spectrum's position in the member's FULL list
+  // (not the filtered list) so a grating filter doesn't reshuffle shades.
   const sources: SpectrumSource[] = useMemo(() =>
     filteredMembers.flatMap(m =>
       m.spectra
         .map((s, i) => ({ s, i }))
         .filter(({ s }) => !selectedGrating || s.grating === selectedGrating)
-        .filter(({ s }) => spectrumVisibility[s.id] ?? true)
         .map(({ s, i }) => ({
           fitsPath: s.fits_path,
           label: selectedGrating ? m.target_id : `${m.target_id} (${s.grating})`,
           color: getSpectrumShade(colors[m.target_id], i),
-          visible: true,
+          visible: spectrumVisibility[s.id] ?? true,
         }))
     ),
     [filteredMembers, spectrumVisibility, selectedGrating, colors]
