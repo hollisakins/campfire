@@ -7,7 +7,15 @@ import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
-import { getPlotColors, getVisibleEmissionLines, computeYRange, computeNiceRestTicks } from './plotting-utils';
+import {
+  getPlotColors,
+  computeYRange,
+  parseXRangeFromRelayout,
+  buildRestFrameAxis,
+  buildRestFrameAxisActivationTrace,
+  buildEmissionLineTraces,
+  buildEmissionLineOverlayAxis,
+} from './plotting-utils';
 import { RedshiftSliderControl } from './PlottingControls';
 import { LazyPlot as Plot } from '@/components/plot/LazyPlot';
 
@@ -288,9 +296,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       if (w > waveMax) waveMax = w;
     }
 
-    // Rest-frame wavelength conversion factor: μm → Å in rest frame
-    const restFrameFactor = 10000 / (1 + redshift);
-
     // Build step-function coordinates for cross-dispersion profile
     // Using 'vh' (vertical-horizontal) pattern to match matplotlib's where='post'
     const buildStepCoords = (xVals: number[], yVals: number[]) => {
@@ -356,19 +361,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         xaxis: 'x',
         yaxis: 'y',
       },
-      // Invisible trace on xaxis3 (Plotly requires a trace to render the axis)
-      // Uses same μm wavelengths as primary axis — xaxis3 is just a relabeled overlay
-      {
-        x: [data.wave[0], data.wave[data.wave.length - 1]],
-        y: [0, 0],
-        type: 'scatter' as const,
-        mode: 'markers' as const,
-        marker: { size: 0.1, opacity: 0 },
-        hoverinfo: 'skip' as const,
-        showlegend: false,
-        xaxis: 'x3',
-        yaxis: 'y',
-      },
+      // Invisible trace keeping the rest-frame overlay axis rendered
+      buildRestFrameAxisActivationTrace(waveMin, 'x3', 'y4'),
     ];
 
     // Add cross-dispersion profile traces if data exists
@@ -449,42 +443,26 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       dataWave: wave,
     });
 
-    // Add emission line markers if enabled
+    // Add emission line markers if enabled (drawn on the hidden overlay
+    // yaxis4 so they never affect autoscaling or double-click reset)
     if (showEmissionLines) {
-      const visibleLines = getVisibleEmissionLines(redshift, waveMin, waveMax, grating);
-
-      visibleLines.forEach((line) => {
-        traces.push({
-          x: [line.observedWave, line.observedWave],
-          y: [0, 1],
-          type: 'scatter' as const,
-          mode: 'lines' as const,
-          name: line.name,
-          line: {
-            color: line.color,
-            width: 1.5,
-            dash: 'dash',
-          },
-          hovertemplate: `${line.name}<br>λ_rest: ${line.wave.toFixed(4)} μm<br>λ_obs: ${line.observedWave.toFixed(4)} μm<extra></extra>`,
-          showlegend: true,
-          legendgroup: 'emission_lines',
-          xaxis: 'x',
-          yaxis: 'y4',
-        });
-      });
+      traces.push(...buildEmissionLineTraces(redshift, waveMin, waveMax, {
+        yaxis: 'y4',
+        grating,
+        showlegend: true,
+      }));
     }
 
-    // Compute rest-frame ticks for the current view (zoomed or full range)
+    // Current observed view for rest-frame axis ticks (zoomed or full range)
     const effectiveMin = obsRange ? obsRange[0] : waveMin;
     const effectiveMax = obsRange ? obsRange[1] : waveMax;
-    const restTicks = computeNiceRestTicks(effectiveMin, effectiveMax, restFrameFactor);
 
     // Layout configuration with profile panel
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout: any = {
-      // Per-axis uirevision instead of top-level — xaxis3 (rest-frame overlay)
-      // must NOT inherit a constant uirevision, otherwise Plotly.react() caches
-      // stale tickvals when redshift changes.
+      // Per-axis uirevision instead of top-level: each axis's revision key
+      // encodes exactly the state that should invalidate it (see the y-axis
+      // and buildRestFrameAxis comments).
       font: { family: 'Inter, system-ui, sans-serif', color: plotColors.text },
       title: {
         text: `${grating} Spectrum`,
@@ -499,26 +477,16 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         range: [waveMin, waveMax],
         uirevision: 'constant', // Preserve user zoom across re-renders
       },
-      // X-axis: Rest-frame wavelength (Å), overlays primary axis
-      // Shares μm coordinate system with xaxis; tickvals/ticktext relabel to Å.
-      // No uirevision — Plotly resets this axis on every react() call so new
-      // tickvals are always applied when redshift changes.
-      xaxis3: {
-        overlaying: 'x' as const,
-        side: 'top' as const,
-        matches: 'x' as const, // Force range to always match primary axis
-        tickmode: 'array' as const,
-        tickvals: restTicks.map(å => å / restFrameFactor),
-        ticktext: restTicks.map(å => `${parseFloat(å.toFixed(1))} Å`),
-        ticks: 'outside' as const,
-        tickcolor: plotColors.textSecondary,
-        tickfont: { size: 11, color: plotColors.textSecondary },
-        showgrid: false,
-        gridcolor: 'transparent',
-        zerolinecolor: 'transparent',
+      // X-axis: Rest-frame wavelength (Å), overlays primary axis (shared
+      // builder — see buildRestFrameAxis for the uirevision contract)
+      xaxis3: buildRestFrameAxis({
+        redshift,
+        obsMin: effectiveMin,
+        obsMax: effectiveMax,
+        colors: plotColors,
         domain: [0, 0.90],
-        anchor: 'y' as const,
-      },
+        anchor: 'y',
+      }),
       // X-axis for profile panel (top-right, narrow)
       xaxis2: {
         gridcolor: plotColors.grid,
@@ -569,16 +537,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       },
       // Y-axis for emission lines — hidden overlay on yaxis, fixed [0,1] range
       // so emission line traces never affect auto-scaling or double-click reset
-      yaxis4: {
-        overlaying: 'y' as const,
-        range: [0, 1],
-        autorange: false,
-        fixedrange: true,
-        showgrid: false,
-        showticklabels: false,
-        visible: false,
-        uirevision: 'constant',
-      },
+      yaxis4: buildEmissionLineOverlayAxis('y'),
       margin: { l: 80, r: 20, t: 50, b: 50 },
       paper_bgcolor: plotColors.paper,
       plot_bgcolor: plotColors.bg,
@@ -675,26 +634,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // cycle recomputes xaxis3 ticks and range declaratively via the layout prop.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleRelayout = useCallback((event: any) => {
-    // Extract observed range — Plotly uses different key formats
-    let obsMin: number | undefined;
-    let obsMax: number | undefined;
-
-    if (event['xaxis.range[0]'] !== undefined && event['xaxis.range[1]'] !== undefined) {
-      // Box zoom: separate keys
-      obsMin = event['xaxis.range[0]'];
-      obsMax = event['xaxis.range[1]'];
-    } else if (Array.isArray(event['xaxis.range'])) {
-      // Pan/drag: array
-      obsMin = event['xaxis.range'][0];
-      obsMax = event['xaxis.range'][1];
-    }
-
-    if (obsMin !== undefined && obsMax !== undefined) {
-      setObsRange([obsMin, obsMax]);
-    } else if (event['xaxis.autorange'] === true) {
-      // Double-click reset
-      setObsRange(null);
-    }
+    const parsed = parseXRangeFromRelayout(event);
+    if (parsed === 'reset') setObsRange(null);
+    else if (parsed) setObsRange(parsed);
   }, []);
 
   if (loading) {

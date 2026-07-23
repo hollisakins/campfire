@@ -9,9 +9,12 @@ import {
   getPlotColors,
   convertToFlambda,
   computeYRange,
-  computeNiceRestTicks,
   getFluxLabel,
-  getVisibleEmissionLines,
+  parseXRangeFromRelayout,
+  buildRestFrameAxis,
+  buildRestFrameAxisActivationTrace,
+  buildEmissionLineTraces,
+  buildEmissionLineOverlayAxis,
 } from './plotting-utils';
 import type { FluxUnit } from './plotting-utils';
 import { FluxUnitToggle, EmissionLinesControl, RedshiftSliderControl, ControlDivider } from './PlottingControls';
@@ -206,41 +209,31 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
       });
     }
 
-    // Compute x-axis range from all loaded sources (non-NaN wave values)
-    const allWave = sources.flatMap(s => {
+    // Compute x-axis range from all loaded sources (non-NaN wave values).
+    // Loop, not Math.min(...spread): the concatenation of every spectrum can
+    // reach argument-count limits and throw.
+    let xWaveMin = Infinity;
+    let xWaveMax = -Infinity;
+    for (const s of sources) {
       const d = loadedData.get(s.fitsPath);
-      return d ? d.wave.filter(w => isFinite(w)) : [];
-    });
-    const xRange: [number, number] | undefined = allWave.length > 0
-      ? [Math.min(...allWave), Math.max(...allWave)]
-      : undefined;
+      if (!d) continue;
+      for (const w of d.wave) {
+        if (!isFinite(w)) continue;
+        if (w < xWaveMin) xWaveMin = w;
+        if (w > xWaveMax) xWaveMax = w;
+      }
+    }
+    const xRange: [number, number] | undefined =
+      xWaveMin < xWaveMax ? [xWaveMin, xWaveMax] : undefined;
 
     // Emission lines — z = 0 is a valid rest frame; no redshift gate, or the
     // toggle silently does nothing for objects without a catalog redshift.
-    if (showEmissionLines && allFlux.length > 0) {
-      const waveMin = Math.min(...visibleSources.flatMap(s => {
-        const d = loadedData.get(s.fitsPath);
-        return d ? [d.wave[0]] : [];
+    // Drawn on the hidden overlay yaxis2 so they never affect autoscaling.
+    if (showEmissionLines && xRange) {
+      allTraces.push(...buildEmissionLineTraces(redshift, xRange[0], xRange[1], {
+        yaxis: 'y2',
+        grating: grating ?? undefined,
       }));
-      const waveMax = Math.max(...visibleSources.flatMap(s => {
-        const d = loadedData.get(s.fitsPath);
-        return d ? [d.wave[d.wave.length - 1]] : [];
-      }));
-
-      const lines = getVisibleEmissionLines(redshift, waveMin, waveMax, grating ?? undefined);
-      for (const line of lines) {
-        allTraces.push({
-          x: [line.observedWave, line.observedWave],
-          y: [0, 1],
-          type: 'scatter',
-          mode: 'lines',
-          line: { color: line.color, width: 1.5, dash: 'dash' },
-          name: line.name,
-          showlegend: false,
-          hovertemplate: `${line.name}<br>λ_rest: ${line.wave.toFixed(4)} μm<br>λ_obs: ${line.observedWave.toFixed(4)} μm<extra></extra>`,
-          yaxis: 'y2',
-        });
-      }
     }
 
     // Y-range
@@ -248,21 +241,15 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
       ? computeYRange(allFlux, allFluxErr, { edgeTrim: Math.min(20, Math.floor(allFlux.length * 0.02)) })
       : undefined;
 
-    // Rest-frame ticks
-    let restTicks: number[] = [];
-    let restTickTexts: string[] = [];
-    const oRange = observedRange;
-    if (redshift > 0 && oRange) {
-      const factor = 10000 / (1 + redshift);
-      restTicks = computeNiceRestTicks(oRange[0], oRange[1], factor);
-      restTickTexts = restTicks.map(t => t.toFixed(0));
-    }
+    // Current observed view for rest-frame axis ticks: user zoom if set,
+    // otherwise the full data range (null = full-range convention).
+    const effRange = observedRange ?? xRange;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plotLayout: any = {
       autosize: true,
       height: 500,
-      margin: { l: 70, r: 20, t: redshift > 0 ? 40 : 20, b: 50 },
+      margin: { l: 70, r: 20, t: 40, b: 50 },
       paper_bgcolor: plotColors.paper,
       plot_bgcolor: plotColors.bg,
       font: { color: plotColors.text, size: 12 },
@@ -290,77 +277,34 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
         uirevision: fluxUnit,
       },
       // Emission line overlay axis (hidden, fixed 0-1)
-      yaxis2: {
-        overlaying: 'y',
-        range: [0, 1],
-        showticklabels: false,
-        showgrid: false,
-        zeroline: false,
-        uirevision: 'constant',
-      },
+      yaxis2: buildEmissionLineOverlayAxis('y'),
     };
 
-    // Rest-frame axis overlay
-    if (redshift > 0 && restTicks.length > 0 && oRange) {
-      const factor = 10000 / (1 + redshift);
-      plotLayout.xaxis2 = {
-        overlaying: 'x',
-        side: 'top',
-        matches: 'x',
-        tickmode: 'array',
-        tickvals: restTicks.map(t => t / factor),
-        ticktext: restTickTexts,
-        title: { text: 'Rest Wavelength (Å)', standoff: 8, font: { size: 11, color: plotColors.textSecondary } },
-        tickfont: { color: plotColors.textSecondary, size: 10 },
-        showgrid: false,
-        zeroline: false,
-      };
-      // Add an invisible trace to activate xaxis2
-      allTraces.push({
-        x: [oRange[0]],
-        y: [0],
-        type: 'scatter',
-        mode: 'markers',
-        marker: { size: 0, opacity: 0 },
-        xaxis: 'x2',
-        yaxis: 'y',
-        showlegend: false,
-        hoverinfo: 'skip',
+    // Rest-frame axis overlay — always present once data is loaded (labels
+    // observed-frame Å at z = 0). Shared builder, see buildRestFrameAxis.
+    if (effRange) {
+      plotLayout.xaxis2 = buildRestFrameAxis({
+        redshift,
+        obsMin: effRange[0],
+        obsMax: effRange[1],
+        colors: plotColors,
       });
+      allTraces.push(buildRestFrameAxisActivationTrace(effRange[0], 'x2', 'y2'));
     }
 
     return { traces: allTraces, layout: plotLayout };
+    // resolvedTheme is a real dependency: getPlotColors() reads CSS variables
+    // that change with the theme class on <html>.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sources, loadedData, fluxUnit, showEmissionLines, redshift, grating, observedRange, resolvedTheme]);
 
-  // Track zoom range for rest-frame axis
+  // Track zoom range for rest-frame axis (null = full data range)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const handleRelayout = useCallback((event: any) => {
-    if (event['xaxis.range[0]'] != null && event['xaxis.range[1]'] != null) {
-      setObservedRange([event['xaxis.range[0]'], event['xaxis.range[1]']]);
-    } else if (event['xaxis.autorange']) {
-      // Reset: compute full range from data
-      const visibleSources = sources.filter(s => s.visible);
-      const allWaves = visibleSources.flatMap(s => {
-        const d = loadedData.get(s.fitsPath);
-        return d ? [d.wave[0], d.wave[d.wave.length - 1]] : [];
-      });
-      if (allWaves.length > 0) {
-        setObservedRange([Math.min(...allWaves), Math.max(...allWaves)]);
-      }
-    }
-  }, [sources, loadedData]);
-
-  // Initialize observed range from data
-  useEffect(() => {
-    const visibleSources = sources.filter(s => s.visible);
-    const allWaves = visibleSources.flatMap(s => {
-      const d = loadedData.get(s.fitsPath);
-      return d ? [d.wave[0], d.wave[d.wave.length - 1]] : [];
-    });
-    if (allWaves.length > 0) {
-      setObservedRange([Math.min(...allWaves), Math.max(...allWaves)]);
-    }
-  }, [sources, loadedData]);
+    const parsed = parseXRangeFromRelayout(event);
+    if (parsed === 'reset') setObservedRange(null);
+    else if (parsed) setObservedRange(parsed);
+  }, []);
 
   const visibleCount = sources.filter(s => s.visible).length;
 
