@@ -170,13 +170,13 @@ Traces/layouts are `any` (with eslint-disables) in SpectrumPlot, MultiSpectrumVi
 
 ## 5. Prioritized remediation plan
 
-1. **Delete `RedshiftFitPlot.tsx`** + `createEmissionLineTraces` + `getHoverLabel` (pure win, removes one full copy of every bug).
-2. **Shared `LazyPlot` + partial plotly bundle** (§3.3) — one small change, ~70% cut to the plot-page JS.
-3. **Fix the toggle bugs**: `uirevision` keyed on `fluxUnit` (1.2); drop `redshift > 0` gates (1.3); gate model input to `computeYRange` on `showModel` (1.4); key MultiSpectrumViewer uirevision on object id (1.5).
-4. **Extract one rest-frame-axis + relayout implementation** (1.1) used by both plots; prefer same-frame `Plotly.relayout` tick updates over the React round-trip.
-5. **Unify emission-line rendering** on the hidden-overlay-axis pattern via a single `buildEmissionLineTraces(z, range, {xaxis, yaxis}, grating)` util.
-6. **Resolve the visibility-model ownership** in MultiSpectrumViewer (2.2) and fix the concatenated y-range math (2.3).
-7. **Deduplicate**: single `FluxUnit` type, delete SpectrumPlot's local `convertToFlambda`/label ternaries/inline controls in favor of `plotting-utils` + `PlottingControls`.
-8. Typed traces/layouts; loop-based min/max; the robustness nits in 2.4.
+1. **Delete `RedshiftFitPlot.tsx`** + `createEmissionLineTraces` + `getHoverLabel` (pure win, removes one full copy of every bug). ✅ *implemented*
+2. **Shared `LazyPlot` + partial plotly bundle** (§3.3) — one small change, ~70% cut to the plot-page JS. ✅ *implemented (`components/plot/LazyPlot.tsx`, plot chunk 4.7 MB → 1.4 MB; `getHoverLabel` kept, reused by SpectrumPlot)*
+3. **Fix the toggle bugs**: `uirevision` keyed on `fluxUnit` (1.2); drop `redshift > 0` gates (1.3); gate model input to `computeYRange` on `showModel` (1.4); key MultiSpectrumViewer uirevision on object id (1.5). ✅ *implemented (viewer keyed via React `key` on object id)*
+4. **Extract one rest-frame-axis + relayout implementation** (1.1) used by both plots. ✅ *implemented declaratively: `buildRestFrameAxis` keys the overlay axis's uirevision to its tick content, so it is no longer reset on unrelated re-renders (the reset/restore mismatch inside the `matches` group) but still re-applies ticks on zoom/redshift; one `parseXRangeFromRelayout` handles all event shapes. The same-frame `Plotly.relayout` variant remains available if the one-frame declarative lag proves visible.*
+5. **Unify emission-line rendering** on the hidden-overlay-axis pattern via a single `buildEmissionLineTraces` util. ✅ *implemented (+ `buildEmissionLineOverlayAxis`)*
+6. **Resolve the visibility-model ownership** in MultiSpectrumViewer (2.2) and fix the concatenated y-range math (2.3). ✅ *implemented: UnifiedObjectPage passes all spectra with real `visible` flags; y-range is per-source, merged, over all loaded sources*
+7. **Deduplicate**: single `FluxUnit` type, delete SpectrumPlot's local `convertToFlambda`/label ternaries/inline controls in favor of `plotting-utils` + `PlottingControls`. ✅ *implemented (+ shared `PlotCheckbox`, `COLORSCALE_2D_OPTIONS`)*
+8. Typed traces/layouts; loop-based min/max; the robustness nits in 2.4. ◐ *partial: loop-based min/max, χ² log-range guard, and a stuck-loading fix landed; trace/layout typing and redshift-slider throttling (§4) remain open*
 
-Items 1–3 are small, independent, low-risk PRs; item 4 is the one that needs careful manual testing (zoom, pan, double-click, slider, toggles, object navigation) in both plots.
+Manual testing still recommended for item 4 (zoom, pan, double-click, slider, toggles, object navigation) in both plots — the mechanism changed even though behavior should only improve.
