@@ -56,10 +56,57 @@ function NavDropdown({ link, isActive }: { link: NavLink; isActive: boolean }) {
   );
 }
 
+// The nav a share-link visitor sees (docs/design-public-mirror.md §7).
+//
+// Everything that would dead-end is gone: no nav links (every destination
+// renders empty for them), no profile, no sign-out, no admin, no sign-in. What
+// remains is enough to know where you are and to read the page comfortably --
+// the wordmark, the scope name, and the theme toggle.
+//
+// The wordmark is deliberately NOT a link to `/`: home is one of the pages that
+// would render empty.
+const SharedViewNav: React.FC<{
+  scopeLabel: string | null;
+  theme: string;
+  ThemeIcon: React.ElementType;
+  onCycleTheme: () => void;
+}> = ({ scopeLabel, theme, ThemeIcon, onCycleTheme }) => (
+  <nav data-slot="app-header" className="bg-header text-header-foreground shadow-md">
+    <div className="container mx-auto px-4 py-4">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center space-x-2 min-w-0">
+          <Logo size={32} title="" aria-hidden />
+          <span className="text-xl font-bold">CAMPFIRE</span>
+          {scopeLabel && (
+            <span className="hidden sm:inline text-sm text-header-muted truncate border-l border-header-border pl-2 ml-2">
+              Shared view · <span className="font-medium">{scopeLabel}</span>
+            </span>
+          )}
+        </div>
+
+        <button
+          onClick={onCycleTheme}
+          className="flex items-center text-header-muted hover:text-header-foreground transition-colors"
+          aria-label={`Current theme: ${theme}. Click to change.`}
+          title={`Theme: ${theme}`}
+        >
+          <ThemeIcon className="w-4 h-4" />
+        </button>
+      </div>
+
+      {scopeLabel && (
+        <div className="sm:hidden mt-2 text-sm text-header-muted truncate">
+          Shared view · <span className="font-medium">{scopeLabel}</span>
+        </div>
+      )}
+    </div>
+  </nav>
+);
+
 export const Navigation: React.FC = () => {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, userProfile, signOut } = useAuth();
+  const { user, userProfile, signOut, isLinkAccount } = useAuth();
   const { theme, setTheme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -100,6 +147,25 @@ export const Navigation: React.FC = () => {
     await signOut();
     router.push('/login');
   };
+
+  // The dead-link page (/s/inactive) stands alone. By the time someone lands
+  // there they have no access to anything, so a full nav would offer a menu of
+  // pages that all render empty -- the exact confusion the stripped nav exists
+  // to avoid. It carries its own wordmark.
+  if (pathname === '/s/inactive') return null;
+
+  // The link account's profile carries the share label as its full_name, so the
+  // scope is named without a second fetch.
+  if (isLinkAccount) {
+    return (
+      <SharedViewNav
+        scopeLabel={userProfile?.full_name ?? null}
+        theme={theme}
+        ThemeIcon={ThemeIcon}
+        onCycleTheme={cycleTheme}
+      />
+    );
+  }
 
   const mobileLinkClass = (active: boolean) => `
     block px-3 py-2 rounded-lg text-sm font-medium transition-colors

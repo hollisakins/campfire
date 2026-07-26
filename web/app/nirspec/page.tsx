@@ -24,7 +24,7 @@ import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
 
 // Inner component that uses useSearchParams (must be wrapped in Suspense)
 function SpectraPageContent() {
-  const { user, loading: authLoading, needsAccessCode } = useAuth();
+  const { user, loading: authLoading, needsAccessCode, isLinkAccount } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -206,8 +206,10 @@ function SpectraPageContent() {
         </p>
       </div>
 
-      {/* Access Code Banner for users without proprietary access */}
-      {!authLoading && user && needsAccessCode && (
+      {/* Access Code Banner for users without proprietary access. Never for
+          share-link visitors: they have no account to redeem a code against,
+          and /profile renders empty for them (design-public-mirror.md §7). */}
+      {!authLoading && user && needsAccessCode && !isLinkAccount && (
         <div className="mb-6 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-900 rounded-lg flex items-start gap-3">
           <Info className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
           <div className="flex-1">
