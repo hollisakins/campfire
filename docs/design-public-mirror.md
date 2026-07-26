@@ -1,7 +1,9 @@
 # Design: Public mirror — shareable, scope-limited links for unauthenticated viewers
 
-**Status:** investigation / design proposal, not yet implemented.
-**Date:** 2026-07-26 (rev. 2 — dropped the program-scoped phasing, see §3.1)
+**Status:** investigation / design proposal, not yet implemented. All open design
+questions are settled (§12); the build order in §11 is ready to execute.
+**Date:** 2026-07-26 (rev. 3 — dropped the program-scoped phasing, see §3.1;
+open questions closed)
 **Driver:** Sharing one NIRCam field or one NIRSpec observation with a collaborator
 who has no CAMPFIRE account currently has no answer short of "make them an account"
 or "email a tarball". We want an admin-minted URL that exposes exactly one scope,
@@ -42,8 +44,10 @@ action. Publishing or revoking an individual deployment likewise flows through.
 
 That is almost certainly the behaviour you want ("I re-reduced it, hit refresh"),
 but it has a consequence worth stating: a link can come to show data the admin
-never looked at when they minted it. Revocation and expiry are the controls for
-that, which is why both are in the schema from the start.
+never looked at when they minted it. **Per-link revocation is the control** —
+links do not expire by default (§12), so revoke is the only thing standing
+between a stale link and a live scope. It needs to be one click and it needs to
+take effect immediately (§7).
 
 ---
 
@@ -146,8 +150,8 @@ CREATE TABLE public.share_links (
   allow_download boolean NOT NULL DEFAULT true,    -- §11
   created_by     uuid NOT NULL REFERENCES auth.users(id),
   created_at     timestamptz NOT NULL DEFAULT now(),
-  expires_at     timestamptz,               -- NULL = no expiry
-  revoked_at     timestamptz,
+  expires_at     timestamptz,               -- NULL (the default) = never expires
+  revoked_at     timestamptz,               -- the primary control; see §1.1
   last_seen_at   timestamptz,
   view_count     integer NOT NULL DEFAULT 0,
   CONSTRAINT share_links_scope_check CHECK (num_nonnulls(observation, field) = 1)
@@ -182,7 +186,8 @@ principal with reduced affordances".
 
 `GET /s/<token>` (a Next.js route handler):
 
-1. Look up the token with the service client. Reject if missing, revoked, expired.
+1. Look up the token with the service client. If missing, revoked, or expired,
+   render the dead-link page (§7.1) — not a 404, not a redirect to `/login`.
 2. `signInWithPassword` with the stored link credentials against the **cookie**
    client (`@supabase/ssr`), setting the session cookie exactly as a normal login.
 3. Bump `view_count` / `last_seen_at`.
@@ -373,8 +378,27 @@ a snapshot it does not take. Instead:
 - A secondary "Share" affordance can sit on the NIRCam field page and the NIRSpec
   observation view, prefilling the scope — convenience, same underlying action.
 
+Revocation is **per link** — one link's `revoked_at`, one button. A per-scope
+"un-share from everyone" sweep is deliberately not built; it is one `UPDATE` away
+if the need ever appears, and a bulk action nobody asked for is a bulk action that
+eventually fires by accident.
+
 Revoke sets `revoked_at` **and** deletes the link's `auth.users` row, so any live
 cookie session dies at its next token refresh rather than lingering for an hour.
+
+### 7.1 The dead-link page
+
+A visitor arriving at a revoked or expired token gets a small standalone page —
+CAMPFIRE wordmark, **"This link is no longer active."**, and a line pointing at
+whoever shared it. No login form, no "request access" flow, no hint about what
+the scope was: a revoked link should not confirm what it used to point at.
+
+Reached from two directions, both of which must land there: `/s/<token>` for a
+token that is already dead, and a browsing session whose link is revoked
+mid-visit (the session dies at the next token refresh, and the resulting
+signed-out state on a link-account page routes here rather than to `/login`).
+
+Same `noindex` headers as every other shared-view route (§9).
 
 ---
 
@@ -395,7 +419,9 @@ The payoff for choosing option C:
 
 ---
 
-## 9. Indexability (open question 4, answered)
+## 9. Indexability — settled: no indexing
+
+**Decision: shared links must never appear in a search engine.**
 
 "Indexability" = whether a shared view can end up in Google. Two things make this
 non-theoretical even though the token is unguessable:
@@ -410,17 +436,26 @@ non-theoretical even though the token is unguessable:
    iMessage, Twitter — fetches those. That is *desirable* for sharing, but it means
    scope metadata leaves the perimeter as soon as the URL is pasted anywhere.
 
-Mitigation, cheap and worth doing in the same build: emit `X-Robots-Tag: noindex,
-nofollow` on `/s/*` and on any page rendered for a link account, and set
-`robots: { index: false, follow: false }` in the metadata for those routes. This
-does not stop a determined human with the URL — nothing does, that is the model —
-but it keeps an accidental paste from becoming a permanent public index entry.
+So the build emits `X-Robots-Tag: noindex, nofollow` on `/s/*`, on the dead-link
+page, and on **every page rendered for a link account** — plus
+`robots: { index: false, follow: false }` in the route metadata. Belt and braces
+on purpose: the header covers responses the metadata does not (redirects, API
+responses), and the meta tag covers crawlers that only parse HTML.
 
-The reason this matters beyond hygiene: if a shared view should ever be *citable*
-in a paper, the requirements invert — you want a stable, indexable,
-non-expiring URL, which is a different feature (a DOI-ish published data view)
-with a different security posture. Worth knowing which one you are building.
-This design assumes not-citable.
+The link-account condition is the one that needs care. A shared view is a normal
+portal route (`/nircam/<field>`, `/nirspec/objects/<id>`) that must stay indexable
+for ordinary traffic and non-indexable for link traffic, so the flag has to be set
+from the request's principal, not from the path — the same server-side
+`isLinkAccount` read the root layout already needs for chrome suppression (§7).
+
+This does not stop a determined human with the URL. Nothing does; that is the
+model. It keeps an accidental paste from becoming a permanent public index entry.
+
+Knock-on: this forecloses *citable* shared views. A URL you can cite in a paper
+needs the opposite properties — stable, indexable, non-expiring, permanent — and
+that is a different feature (a DOI-ish published data view) with a different
+security posture. If that need appears, build it as its own thing rather than
+loosening this.
 
 ---
 
@@ -456,8 +491,10 @@ Single build — the ordering below is dependency, not shipping gates.
    step 1. This is the security core; everything else is UI on top of it.
 3. **Draft support** (§6) — same policies as step 2, so it is a conjunct, not a
    second pass.
-4. **`/s/<token>` route** + `noindex` headers (§9).
-5. **Stripped chrome** (§7).
+4. **`/s/<token>` route** + the dead-link page (§7.1) + `noindex` on every
+   link-account response (§9).
+5. **Stripped chrome** (§7). Shares the server-side `isLinkAccount` read with
+   step 4's `noindex` condition — do them together.
 6. **Admin panel** — `/admin/share-links` plus the prefilled affordances.
 
 Deferred, by your call: the **scope metadata / provenance block** (program, PI,
@@ -469,20 +506,23 @@ needs the narrowed-not-denied `deployments` predicate from §5.4.
 
 ---
 
-## 12. Remaining open questions
+## 12. Settled decisions
 
-1. **Expiry default.** Is a link forever-by-default with optional expiry, or
-   30-days-by-default with optional forever? Given §1.1 (links track live scope
-   state) and §9, I would default to an expiry and let it be cleared explicitly.
-2. **Does revocation need to be per-scope as well as per-link?** "Un-share this
-   observation from everyone" is a plausible panic button and is trivial now
-   (`UPDATE share_links SET revoked_at = now() WHERE observation = ...`), awkward
-   to retrofit into the UI later.
-3. **What does a link holder see if the scope is later fully revoked?** Currently
-   an empty page. An explicit "this data has been withdrawn" state would be kinder
-   and is a small addition to the stripped-chrome work.
+| Question | Decision |
+|---|---|
+| Scope granularity | One NIRCam field or one NIRSpec observation, tracking the **scope** and not a deployment (§1.1) |
+| Expiry | **Never, by default.** `expires_at` stays in the schema for the occasional bounded share; the normal link is permanent until revoked |
+| Revocation | **Per link.** No per-scope bulk sweep (§7) |
+| Dead link UX | "This link is no longer active." Nothing more (§7.1) |
+| FITS downloads | **Allowed.** `allow_download` defaults true, so the per-link opt-out exists without being in the way |
+| Search indexing | **Never.** `noindex, nofollow` on every link-account response (§9) |
+| Scope metadata block | Deferred — built once for both the portal and shared views (§11) |
 
-**Settled:** scope granularity is one field / one observation, tracking the scope
-rather than a deployment (§1.1). Link holders can download FITS (`allow_download`
-in the schema, defaulting true, so per-link opt-out exists without being in the
-way). Indexability answered in §9. Metadata block deferred (§11).
+Two of these are load-bearing together and worth restating: links never expire,
+and revocation is per link. So `revoked_at` is the *only* thing that ever takes a
+share link out of circulation, on a view that tracks live scope state (§1.1).
+That makes the `/admin/share-links` table the operational surface that matters —
+it needs to make a forgotten link obvious (last seen, view count, age) rather than
+just list rows.
+
+No open questions remain. The build order in §11 is ready to execute.
