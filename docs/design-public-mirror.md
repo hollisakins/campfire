@@ -560,3 +560,71 @@ it needs to make a forgotten link obvious (last seen, view count, age) rather th
 just list rows.
 
 No open questions remain. The build order in §11 is ready to execute.
+
+---
+
+## 13. Implementation notes
+
+Built 2026-07-26. Four things diverged from the design above; all four are in the
+code, this section records *why* so the doc and the repo agree.
+
+### 13.1 `link_allows_download()` — a fifth helper, not an inline subquery
+
+The design listed four helpers and described `allow_download` as gating the
+`storage_objects` policy. Written as an inline subquery over `share_links`, that
+gate is silently inverted: `share_links` is admin-only under RLS, so the
+subquery returns no rows for the very link account it is deciding about, and
+`COALESCE(..., false)` then denies **every** download regardless of the flag.
+
+It has to be `SECURITY DEFINER`, like the other four, for the same reason they
+are. Generalised: **no policy may read `share_links` directly.** The five
+helpers exist precisely so nothing has to.
+
+### 13.2 Read-only link accounts are a CHECK constraint, not a convention
+
+§5.5 claimed no write-side changes were needed because link accounts carry
+`can_comment = false`. That was true only if every mint path remembers to pass
+it — and `user_profiles.can_comment` **defaults to true**, so the natural way to
+write the insert produces a share link whose holder can comment on the archive.
+
+`user_profiles_link_account_readonly` now makes a writable or admin link account
+impossible to insert at all. The guarantee belongs in the schema, not in the
+TypeScript.
+
+### 13.3 Community artifacts are denied outright, not narrowed to scope
+
+The design implied comments, lists, list members, and the audit logs would be
+scope-narrowed like everything else. They are denied outright for link accounts
+instead.
+
+Narrowing is the right instinct for *data* — photometry, spectra, shutters — but
+a comment is not data about the scope; it is CAMPFIRE users talking candidly to
+each other about a source, and a list is someone's working curation. Scoping
+them to the shared observation would still hand that discussion to an outside
+viewer. `deployments` is the one that stays narrowed rather than denied, because
+its provenance (`cfpipe_version`, CRDS context, who deployed it) is exactly what
+a colleague looking at someone else's reduction needs — and the deferred scope
+metadata block (§11) will read it.
+
+### 13.4 Verification, and what is still unverified
+
+`supabase db reset` / `db diff` could not run — the CLI needs container images
+this environment's network policy blocks. Two things were done instead:
+
+- **The migration** was verified the way the diff engine verifies: build one
+  database from `supabase/migrations/`, another from `supabase/schemas/`, apply
+  the new migration to the former, and compare `pg_dump` output. The residual
+  drift is identical with and without it (166 lines, all pre-existing — mostly
+  column ordering, which migra compares semantically and ignores, plus a few
+  COMMENTs that were never migrated and, being a documented migra blind spot,
+  will not self-correct).
+- **The narrowing** is covered by `supabase/tests/check_share_link_scoping.sql`,
+  which passes against both builds. It found both §13.1 and §13.2.
+
+**Not verified, and needing a preview branch:** the `/s/<token>` sign-in itself.
+There is no GoTrue locally, so `signInWithPassword`, `auth.admin.createUser`,
+and `auth.admin.deleteUser` have never been executed — only the code paths
+around them. The token-not-found branch, the redirect, the dead-link page, the
+noindex headers, and the chrome suppression were all exercised against a running
+production build. The first real mint-and-visit round trip is the thing to try
+on the preview deploy.
