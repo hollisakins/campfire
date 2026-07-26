@@ -419,9 +419,11 @@ The payoff for choosing option C:
 
 ---
 
-## 9. Indexability — settled: no indexing
+## 9. Indexability — settled: nothing in CAMPFIRE is indexed
 
-**Decision: shared links must never appear in a search engine.**
+**Decision: no CAMPFIRE page appears in a search engine, shared or otherwise.**
+This is a site-wide rule, not a share-link rule (§9.1) — which makes it both
+simpler to implement and simpler to keep true.
 
 "Indexability" = whether a shared view can end up in Google. Two things make this
 non-theoretical even though the token is unguessable:
@@ -436,26 +438,54 @@ non-theoretical even though the token is unguessable:
    iMessage, Twitter — fetches those. That is *desirable* for sharing, but it means
    scope metadata leaves the perimeter as soon as the URL is pasted anywhere.
 
-So the build emits `X-Robots-Tag: noindex, nofollow` on `/s/*`, on the dead-link
-page, and on **every page rendered for a link account** — plus
-`robots: { index: false, follow: false }` in the route metadata. Belt and braces
-on purpose: the header covers responses the metadata does not (redirects, API
-responses), and the meta tag covers crawlers that only parse HTML.
+### 9.1 Site-wide, not link-scoped
 
-The link-account condition is the one that needs care. A shared view is a normal
-portal route (`/nircam/<field>`, `/nirspec/objects/<id>`) that must stay indexable
-for ordinary traffic and non-indexable for link traffic, so the flag has to be set
-from the request's principal, not from the path — the same server-side
-`isLinkAccount` read the root layout already needs for chrome suppression (§7).
+The decision is that **nothing in CAMPFIRE should be indexed**, shared views or
+otherwise. That is strictly simpler than a per-principal rule, and it removes the
+one piece of this design that would have been easy to get subtly wrong: a shared
+view is a normal portal route (`/nircam/<field>`, `/nirspec/objects/<id>`) that
+would otherwise have to be indexable for ordinary traffic and non-indexable for
+link traffic, keyed on the request's principal. A blanket rule has no such seam.
 
-This does not stop a determined human with the URL. Nothing does; that is the
-model. It keeps an accidental paste from becoming a permanent public index entry.
+Today the portal has **no robots handling at all** — no `robots.txt`, no
+`sitemap`, no `robots` metadata anywhere in `web/`. So whatever `anon` can
+currently reach (the landing page, `/login`, `/signup`, `/docs`, `/updates`) is
+crawlable in principle. Adding this is a small standalone change that is worth
+making independently of the share-link work.
 
-Knock-on: this forecloses *citable* shared views. A URL you can cite in a paper
-needs the opposite properties — stable, indexable, non-expiring, permanent — and
-that is a different feature (a DOI-ish published data view) with a different
-security posture. If that need appears, build it as its own thing rather than
-loosening this.
+### 9.2 The robots.txt trap
+
+The obvious implementation is the wrong one. `robots.txt: Disallow: /` blocks
+*crawling*, and a page that is never crawled is a page whose `noindex` is never
+read — so a URL discovered from an external link can still be indexed as a bare
+URL. That is precisely the accidental-paste case this is meant to defend, and
+disallow-all makes it *worse* rather than better.
+
+The correct shape is the inverse:
+
+- `X-Robots-Tag: noindex, nofollow` on every response, set once in
+  `next.config.ts` under a `/:path*` header rule;
+- `robots.txt` that **permits** crawling (or no `robots.txt` at all), so crawlers
+  actually fetch the page and see the directive;
+- `robots: { index: false, follow: false }` in the root `metadata` export as the
+  HTML-level belt to the header's braces.
+
+One config block, no per-route logic, no principal check.
+
+### 9.3 Consequences
+
+- **The landing page stops being findable by search.** Anyone googling "CAMPFIRE
+  JWST archive" will not find it. That is the stated intent; if the front door
+  should stay discoverable later, carve out `/` specifically rather than
+  weakening the rule elsewhere.
+- **Link unfurls still work.** Slack/iMessage/Twitter previews are not indexers;
+  pasting a share link to a colleague still renders its OpenGraph card, which is
+  the behaviour you want. Noindex governs search results, not previews.
+- **It forecloses citable shared views.** A URL you can cite in a paper wants the
+  opposite properties — stable, indexable, permanent. You have said that is not a
+  goal; if it becomes one, build it as its own feature rather than loosening this.
+- **It does not stop a determined human with the URL.** Nothing does; that is the
+  model. It keeps an accidental paste from becoming a permanent public index entry.
 
 ---
 
@@ -491,11 +521,15 @@ Single build — the ordering below is dependency, not shipping gates.
    step 1. This is the security core; everything else is UI on top of it.
 3. **Draft support** (§6) — same policies as step 2, so it is a conjunct, not a
    second pass.
-4. **`/s/<token>` route** + the dead-link page (§7.1) + `noindex` on every
-   link-account response (§9).
-5. **Stripped chrome** (§7). Shares the server-side `isLinkAccount` read with
-   step 4's `noindex` condition — do them together.
+4. **`/s/<token>` route** + the dead-link page (§7.1).
+5. **Stripped chrome** (§7).
 6. **Admin panel** — `/admin/share-links` plus the prefilled affordances.
+
+**Independent of all of the above:** the site-wide `noindex` (§9.2). It is one
+header rule in `next.config.ts` plus a root metadata field, it touches nothing
+this design owns, and the portal should have it regardless of whether share links
+ever get built. Land it whenever — ideally before, so shared views are covered
+the day they exist.
 
 Deferred, by your call: the **scope metadata / provenance block** (program, PI,
 `cfpipe_version`, CRDS context, coverage). NIRCam field pages already have one and
@@ -515,7 +549,7 @@ needs the narrowed-not-denied `deployments` predicate from §5.4.
 | Revocation | **Per link.** No per-scope bulk sweep (§7) |
 | Dead link UX | "This link is no longer active." Nothing more (§7.1) |
 | FITS downloads | **Allowed.** `allow_download` defaults true, so the per-link opt-out exists without being in the way |
-| Search indexing | **Never.** `noindex, nofollow` on every link-account response (§9) |
+| Search indexing | **Never, site-wide.** `noindex, nofollow` on every CAMPFIRE response — not just shared views (§9) |
 | Scope metadata block | Deferred — built once for both the portal and shared views (§11) |
 
 Two of these are load-bearing together and worth restating: links never expire,
