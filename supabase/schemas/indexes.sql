@@ -592,5 +592,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_fitsgl_datasets_field_default
     ON public.fitsgl_datasets USING btree (field) WHERE (is_default = true);
 
 
+-- =============================================================================
+-- share_links (docs/design-public-mirror.md)
+-- =============================================================================
+
+-- The hot path: every RLS-narrowing helper (is_link_account, link_observation,
+-- link_field, link_sees_drafts) resolves the caller's link by link_user_id, on
+-- every query a link account makes. Served by share_links_link_user_id_key
+-- (UNIQUE), so no separate index is needed -- noted here so nobody adds one.
+
+-- Admin panel: "which links point at this scope?", and the prefilled Share
+-- affordance on a field / observation page.
+CREATE INDEX IF NOT EXISTS idx_share_links_observation
+    ON public.share_links USING btree (observation) WHERE (observation IS NOT NULL);
+
+CREATE INDEX IF NOT EXISTS idx_share_links_field
+    ON public.share_links USING btree (field) WHERE (field IS NOT NULL);
+
+
 -- NOTE: Materialized view indexes (mv_programs_overview, mv_filter_options)
 -- are defined in views.sql alongside the view definitions.
