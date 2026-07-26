@@ -1,9 +1,10 @@
 # Design: Public mirror — shareable, scope-limited links for unauthenticated viewers
 
-**Status:** investigation / design proposal, not yet implemented. All open design
-questions are settled (§12); the build order in §11 is ready to execute.
-**Date:** 2026-07-26 (rev. 3 — dropped the program-scoped phasing, see §3.1;
-open questions closed)
+**Status:** **implemented** 2026-07-26. Where the build diverged from the design
+below, §13 records what changed and why. One path is still unverified and wants a
+preview branch (§13.4).
+**Date:** 2026-07-26 (rev. 4 — dropped the program-scoped phasing, see §3.1;
+open questions closed; implementation notes added)
 **Driver:** Sharing one NIRCam field or one NIRSpec observation with a collaborator
 who has no CAMPFIRE account currently has no answer short of "make them an account"
 or "email a tarball". We want an admin-minted URL that exposes exactly one scope,
