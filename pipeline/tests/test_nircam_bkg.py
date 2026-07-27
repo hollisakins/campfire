@@ -374,14 +374,14 @@ def _extended_galaxy_scene(rng, n=1600, re=150.0, amp=200.0):
     return sci, np.ones((n, n), np.float32), r
 
 
-def _tier_cfg(tier0=False, nsigma0=100.0):
-    """Mosaic tiers, using the SHIPPED tier-0 values. *nsigma0* is exposed only
-    so a test can show that threshold is load-bearing."""
+def _tier_cfg(tier0=False, nsigma0=100.0, npixels0=30000):
+    """Mosaic tiers, using the SHIPPED tier-0 values. *nsigma0* / *npixels0* are
+    exposed only so a test can toggle ONE gate and show it is load-bearing."""
     base = dict(ring_radius_in=80, ring_width=4, ring_downsample=4,
                 bg_box_size=10, bg_filter_size=5)
     if tier0:
         return dict(base, tier_kernel_size=[25, 25, 15, 5, 2],
-                    tier_npixels=[30000, 15, 10, 3, 1],
+                    tier_npixels=[npixels0, 15, 10, 3, 1],
                     tier_nsigma=[nsigma0, 1.5, 1.5, 1.5, 1.5],
                     tier_dilate_size=[600, 33, 25, 21, 19])
     return dict(base, tier_kernel_size=[25, 15, 5, 2],
@@ -413,10 +413,17 @@ def test_tier0_removes_extended_source_oversubtraction_bowl():
     assert abs(fixed) < 0.35 * bowl          # observed ~0.18x
 
 
-def test_tier0_is_a_noop_without_a_large_bright_source():
-    """Ordinary compact sources must not trip tier 0, so their wings keep the
-    normal aggressive flattening. Here `npixels` is what rejects them — see
-    test_tier0_nsigma_is_load_bearing for the other half of the selectivity."""
+def test_tier0_is_a_noop_on_an_ordinary_field():
+    """End-to-end safety property: on a field of ordinary compact sources tier 0
+    must not fire at all, so their wings keep the normal aggressive flattening.
+
+    A realistic-scene check, NOT a test of either gate individually. `nsigma` is
+    what rejects here — after the tier-0 kernel (gaussian_filter, sigma=25) these
+    blobs peak at a*s^2/(s^2+25^2) = 2.18 and 2.87 against a 100-sigma threshold,
+    so detect_sources returns None before npixels is ever consulted (setting
+    npixels to 1 gives a byte-identical mask). The two gates are covered
+    individually by the two tests below.
+    """
     rng = np.random.default_rng(5)
     n = 400
     y, x = np.mgrid[:n, :n]
@@ -428,6 +435,31 @@ def test_tier0_is_a_noop_without_a_large_bright_source():
     m0, _ = SubtractBackground(**_tier_cfg(tier0=False)).mask_from_arrays(sci, err)
     m1, _ = SubtractBackground(**_tier_cfg(tier0=True)).mask_from_arrays(sci, err)
     assert np.array_equal(m0, m1)
+
+
+def test_tier0_npixels_is_load_bearing():
+    """`npixels = 30000` must do real selectivity work. This source is BRIGHT
+    enough to clear the 100-sigma threshold after smoothing (peak
+    a*s^2/(s^2+25^2) = 400*900/1525 = 236) but COMPACT, so its footprint stays
+    under the 30k floor and only npixels can reject it."""
+    rng = np.random.default_rng(11)
+    n, amp, sb = 600, 400.0, 30.0
+    y, x = np.mgrid[:n, :n]
+    sci = (rng.normal(0.0, 1.0, (n, n))
+           + amp * np.exp(-(((x - n / 2) ** 2 + (y - n / 2) ** 2)
+                            / (2 * sb ** 2)))).astype(np.float32)
+    err = np.ones((n, n), np.float32)
+
+    def mask(cfg):
+        return SubtractBackground(**cfg).mask_from_arrays(sci, err)[0]
+
+    baseline = mask(_tier_cfg(tier0=False))
+    shipped = mask(_tier_cfg(tier0=True))                    # npixels = 30000
+    lowered = mask(_tier_cfg(tier0=True, npixels0=500))      # only npixels changed
+
+    assert np.array_equal(shipped, baseline)   # the 30k floor rejects it: no-op
+    assert not np.array_equal(lowered, baseline)
+    assert lowered.mean() > 0.9
 
 
 def test_tier0_nsigma_is_load_bearing():
