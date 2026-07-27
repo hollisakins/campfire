@@ -238,3 +238,84 @@ def test_fine_dof_recorded(tmp_path):
     # so unperturbed good detectors keep the pooled coarse attitude.
     assert 'dof=rshift' in _cfp_algn(members[4].path)
     assert any('dof=coarse' in _cfp_algn(m.path) for m in members[:4])
+
+
+# --- diagnostics (ALGNCAT + ALGN* keywords) ---------------------------------
+
+def test_algncat_written_and_matches_the_written_wcs(tmp_path):
+    # The per-source catalog exists so overlapping exposures can be cross-checked
+    # WITHOUT drizzling: its ra/dec must therefore be the positions the file's own
+    # (corrected) WCS gives, and its rows must line up with the detections.
+    from campfire_pipeline.nircam.align.apply import ALGNCAT_EXTNAME
+    from jwst.datamodels import ImageModel
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2, offset=(2.0, 0.0))
+    sol = align_exposure_group(members, refcat, config={})
+    assert sol.status == 'SOLVED'
+
+    by_det = {d.detector: d for d in sol.detectors}
+    for m in members:
+        with fits.open(m.path) as h:
+            assert ALGNCAT_EXTNAME in h
+            cat = Table(h[ALGNCAT_EXTNAME].data)
+        assert len(cat) == by_det[m.detector].n_detected > 0
+        assert int(np.count_nonzero(cat['matched'])) == by_det[m.detector].n_matched
+        mo = ImageModel(m.path, memmap=False)
+        ra, dec = mo.meta.wcs(np.asarray(cat['x'], float),
+                             np.asarray(cat['y'], float))
+        mo.close()
+        assert np.allclose(ra, cat['ra'], atol=1e-9)
+        assert np.allclose(dec, cat['dec'], atol=1e-9)
+        # matched rows carry the refcat position (values, not indices) and the
+        # separation that got them accepted; unmatched rows carry neither.
+        got = cat['matched'].astype(bool)
+        assert np.all(np.isfinite(cat['ref_ra'][got]))
+        assert np.all(np.isnan(cat['ref_ra'][~got]))
+        assert np.all(cat['sep_arcsec'][got] <= 0.5)
+
+
+def test_algn_diag_keywords_all_present(tmp_path):
+    from campfire_pipeline.nircam.align.apply import ALGN_DIAG_COMMENTS
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2)
+    align_exposure_group(members, refcat, config={})
+    with fits.open(members[0].path) as h:
+        hdr = h[0].header
+        # every key present (unmeasured ones carry the UNDEF sentinel, never a
+        # missing card — silence would let a re-solve leave a stale number)
+        for key, comment in ALGN_DIAG_COMMENTS.items():
+            assert key in hdr, key
+            assert hdr.comments[key] == comment
+        assert hdr['ALGNNDET'] > 0
+        assert hdr['ALGNNREF'] > 0
+        assert hdr['ALGNSTAL'] is False
+
+
+def test_algncat_replaced_not_accumulated_on_overwrite(tmp_path):
+    from campfire_pipeline.nircam.align.apply import ALGNCAT_EXTNAME
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2)
+    align_exposure_group(members, refcat, config={})
+    align_exposure_group(members, refcat, config={}, overwrite=True)
+    align_exposure_group(members, refcat, config={}, overwrite=True)
+    for m in members:
+        with fits.open(m.path) as h:
+            assert [x.name for x in h].count(ALGNCAT_EXTNAME) == 1
+
+
+def test_not_aligned_rerun_marks_algncat_stale(tmp_path):
+    # A NOT_ALIGNED re-run keeps the WCS it already had, so a previous solve's
+    # ALGNCAT no longer describes it. The extension is left in place (dropping it
+    # would dangle the datamodel's extra_fits reference) and flagged instead.
+    from campfire_pipeline.nircam.align.apply import ALGNCAT_EXTNAME
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2, seed=3)
+    assert align_exposure_group(members, refcat, config={}).status == 'SOLVED'
+    with fits.open(members[0].path) as h:
+        assert h[0].header['ALGNSTAL'] is False
+
+    rng = np.random.default_rng(99)
+    badref = Table({'RA': 80.0 + rng.uniform(-0.05, 0.05, 30),
+                    'DEC': -30.0 + rng.uniform(-0.05, 0.05, 30)})
+    sol = align_exposure_group(members, badref, config={}, overwrite=True)
+    assert sol.status == 'NOT_ALIGNED'
+    for m in members:
+        with fits.open(m.path) as h:
+            assert h[0].header['ALGNSTAL'] is True
+            assert ALGNCAT_EXTNAME in h        # kept, but flagged as stale

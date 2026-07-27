@@ -4,7 +4,7 @@ Given, for one **pool** of detectors (a module — or, with ``pool_modules``, a
 whole channel — of one exposure), each detector's gwcs + detected source catalog
 and a static Gaia-tied reference catalog, this fits ONE shared shift+rotation
 (``rshift``) for the pool via ``tweakwcs`` (SIAF distortion untouched), then —
-per detector, gated on match count / coverage / residual improvement — frees a
+per detector, gated on match count / coverage / shift significance — frees a
 small individual fit up to a configurable ceiling geometry. It returns the
 corrected gwcs per detector plus solve diagnostics; it does no FITS I/O (the
 exposure reader/writer + ``CFP_ALGN`` stamp live in the orchestration layer).
@@ -28,7 +28,9 @@ exposure reader/writer + ``CFP_ALGN`` stamp live in the orchestration layer).
    row-aligned with ``match=None``, exactly JHAT's ``already_matched`` design
    (JHAT fits every detector, always) — its geometry chosen down a ladder
    (``general`` → ``rshift`` → ``shift`` → keep-coarse) by its match count and
-   coverage, accepted only if it reduces the residual. The ladder floors
+   coverage, and accepted when the shift it applies is SIGNIFICANT against the
+   noise adopting it costs (``|shift| > fine_min_significance * sigma/sqrt(n)``)
+   and it does not materially degrade the residual. The ladder floors
    (``fine_min_shift`` = JHAT's ``minobj=3``) are the guard against
    noise-chasing; ``tolerance`` is reporting-only.
 
@@ -40,6 +42,17 @@ a static reference catalog + ``expand_refcat=False`` keep pools independent.
 Per-detector residuals are recomputed DIRECTLY (``det_to_world`` vs matched
 refcat positions) with **one-to-one** (mutual nearest-neighbour) matching, not
 read from ``tweakwcs``'s group-level ``fit_info``.
+
+**Diagnostics for independent validation.** The reported residual is measured on
+the very sample the matcher selected, so it is circular: a solution locked onto
+the wrong sources reports a small residual just as happily as a right one. The
+solve therefore also carries out (a) the **per-source** matched mask / separation
+/ matched-refcat position for every detection (:class:`DetectorSolution`), so
+overlapping exposures can be cross-checked against each other without drizzling
+anything, and (b) the matcher's own **peak-confidence** numbers
+(:attr:`GroupSolution.diagnostics`, lifted off ``OffsetHistogramMatch.diag``), so
+a low-contrast — i.e. ambiguous — lock can be triaged. Neither influences any
+gate; the I/O layer persists them (``ALGNCAT`` + ``ALGN*`` header keywords).
 """
 
 import copy
@@ -66,6 +79,14 @@ _FINE_LADDER = ('general', 'rshift', 'shift')
 # Geometries that fit a rotation and so need spatial coverage to be conditioned.
 _ROTATING = ('general', 'rshift')
 
+# Median of a 2-D Gaussian's radial deviation, in units of the per-axis sigma.
+_RAYLEIGH_MEDIAN = np.sqrt(2.0 * np.log(2.0))      # 1.1774
+# A fine fit whose own residual is this much WORSE than the coarse one is
+# rejected however significant its shift looks — a significant-but-degrading fit
+# is a broken fit, not a correction. Sized well above the noise on the median
+# residual (~1.06/sqrt(n), i.e. ~14% at n=60), so it only fires on real damage.
+_FINE_MAX_DEGRADE = 1.25
+
 
 @dataclass
 class DetectorInput:
@@ -79,7 +100,18 @@ class DetectorInput:
 
 @dataclass
 class DetectorSolution:
-    """The align outcome for one detector."""
+    """The align outcome for one detector.
+
+    Everything from ``n_detected`` down is **diagnostic only** — it gates
+    nothing, and every field defaults so the positional constructions above stay
+    valid. The four arrays are row-aligned with the detector's input catalog
+    (``DetectorInput.catalog``), length ``n_detected``, and describe the FINAL
+    accepted WCS (the post-fine re-match when a fine fit was accepted, else the
+    pooled coarse match). On a residual-gate reject (``aligned=False``) they
+    describe the *rejected* correction — which is exactly what one wants to
+    triage the reject — while ``wcs`` is the untouched original; the I/O layer
+    does not persist them in that case.
+    """
 
     detector: str
     wcs: object              # corrected (or, when NOT_ALIGNED, original) gwcs
@@ -89,6 +121,15 @@ class DetectorSolution:
     within_tolerance: bool
     aligned: bool = True     # False: rejected by the residual gate — the I/O
                              # layer stamps NOT_ALIGNED (WCS preserved)
+    n_detected: int = 0      # rows in this detector's detection catalog
+    matched: Optional[object] = None    # bool array: row paired one-to-one
+    sep_arcsec: Optional[object] = None  # float array: separation to the NEAREST
+                             # refcat source (all rows, matched or not)
+    ref_ra: Optional[object] = None     # float array: matched refcat RA (deg),
+    ref_dec: Optional[object] = None    # ... and Dec; nan on unmatched rows.
+                             # VALUES, not indices: they index the
+                             # footprint-clipped refcat, which no downstream
+                             # consumer can reconstruct.
 
 
 @dataclass
@@ -102,6 +143,14 @@ class GroupSolution:
     rmse_arcsec: Optional[float]
     n_matched: int                        # pool-level matched-source count
     detectors: List[DetectorSolution]
+    # Diagnostics (defaults; gate nothing). ``n_refcat_in_footprint`` is the
+    # footprint clip's ``n_kept`` — the reference density the coarse matcher
+    # actually worked against. ``diagnostics`` is the matcher's peak confidence
+    # (see ``OffsetHistogramMatch.diag``): the gross 2-D-histogram keys come from
+    # coarse pass 0 (the only pass that runs the gross stage), the per-axis
+    # consensus keys from the last pass that was KEPT.
+    n_refcat_in_footprint: Optional[int] = None
+    diagnostics: Optional[dict] = None
 
 
 def _has_radec(refcat):
@@ -140,7 +189,7 @@ def _coverage_arcsec(ra, dec):
 
 def _match(corrector, catalog, ref_sky, match_radius):
     """One-to-one residual for one detector: ``(residual_arcsec, n_matched,
-    src_idx, ref_idx)``.
+    src_idx, ref_idx, keep, sep)``.
 
     Transform the detector's own sources through the (corrected) gwcs and match
     them to the reference positions by **mutual nearest neighbour** — a source
@@ -148,12 +197,23 @@ def _match(corrector, catalog, ref_sky, match_radius):
     within *match_radius* arcsec. ``src_idx``/``ref_idx`` are the row-aligned
     pairing (one-to-one by the mutuality); the fine fit consumes it directly as
     a pre-matched list, and the group gate measures coverage from ``ref_idx``.
+
+    ``keep`` (bool) and ``sep`` (arcsec) are the same information *per catalog
+    row* — the matched mask and the separation to the nearest reference source
+    for EVERY detection, unmatched ones included — which is what the per-source
+    diagnostic catalog is built from. ``sep`` is nan where no separation could be
+    measured; on unmatched rows it is a real distance to a source that simply
+    isn't a counterpart, so read it together with ``keep``.
     """
-    empty = (float('nan'), 0, np.array([], dtype=int), np.array([], dtype=int))
+    n_src = len(catalog)
+    keep = np.zeros(n_src, dtype=bool)
+    sep = np.full(n_src, np.nan, dtype=float)
+    no_pairs = (float('nan'), 0, np.array([], dtype=int),
+                np.array([], dtype=int), keep, sep)
     x = np.asarray(catalog['x'], dtype=float)
     y = np.asarray(catalog['y'], dtype=float)
     if x.size == 0 or len(ref_sky) == 0:
-        return empty
+        return no_pairs
     ra, dec = corrector.det_to_world(x, y)
     src = SkyCoord(np.asarray(ra, dtype=float), np.asarray(dec, dtype=float),
                    unit='deg')
@@ -164,18 +224,39 @@ def _match(corrector, catalog, ref_sky, match_radius):
     mutual = r2s[s2r] == src_ix
     keep = mutual & np.isfinite(sep) & (sep <= match_radius)
     if not np.any(keep):
-        return empty
+        return (float('nan'), 0, np.array([], dtype=int),
+                np.array([], dtype=int), keep, sep)
     return (float(np.median(sep[keep])), int(np.count_nonzero(keep)),
-            src_ix[keep], np.asarray(s2r)[keep])
+            src_ix[keep], np.asarray(s2r)[keep], keep, sep)
 
 
-def _not_aligned(key, detectors, wcs_getter):
+def _ref_positions(n_src, src_idx, ref_idx, ref_sky):
+    """Per-catalog-row matched refcat ``(ra, dec)`` in degrees, nan unmatched.
+
+    Resolves the pairing to POSITIONS here, on purpose: ``ref_idx`` indexes the
+    footprint-clipped refcat, which is local to this solve and cannot be
+    reconstructed by anything downstream, so bare indices would be unusable.
+    """
+    ref_ra = np.full(n_src, np.nan, dtype=float)
+    ref_dec = np.full(n_src, np.nan, dtype=float)
+    if len(src_idx):
+        ref_ra[src_idx] = ref_sky.ra.deg[ref_idx]
+        ref_dec[src_idx] = ref_sky.dec.deg[ref_idx]
+    return ref_ra, ref_dec
+
+
+def _not_aligned(key, detectors, wcs_getter, *, n_refcat=None, diag=None):
+    """Reject the whole pool. *n_refcat*/*diag* carry whatever diagnostics the
+    reject path already knows (refcat density, matcher peak confidence) — the
+    numbers that explain WHY it rejected — for the caller's log/report; nothing
+    per-source is persisted, since no corrected WCS is written."""
     return GroupSolution(
         key=key, status='NOT_ALIGNED', shift=None, rot_deg=None,
         rmse_arcsec=None, n_matched=0,
         detectors=[DetectorSolution(name, wcs_getter(name, obj), 'identity',
                                     float('nan'), 0, False)
                    for name, obj in detectors],
+        n_refcat_in_footprint=n_refcat, diagnostics=(diag or None),
     )
 
 
@@ -204,8 +285,8 @@ def _pool_fit(detectors, wcs_by_det, refcat, match, *, key, fitgeom, nclip, sigm
 def _coarse(detectors, wcs_by_det, refcat, key, *, match0, match_iter, niter,
             nclip, sigma):
     """Iterate a pooled ``rshift`` to convergence; return
-    ``(correctors, last_info, first_info, wcs_by_det)`` or
-    ``(None, {}, {}, wcs_by_det)``.
+    ``(correctors, last_info, first_info, wcs_by_det, diag)`` or
+    ``(None, {}, {}, wcs_by_det, {})``.
 
     Pass 0 uses *match0* (the histogram matcher with its gross-translation
     stage over the full search radius); later passes start from the corrected
@@ -214,8 +295,16 @@ def _coarse(detectors, wcs_by_det, refcat, key, *, match0, match_iter, niter,
     each pass. *first_info* is pass 0's fit (the gross shift/rot the input WCS
     was off by, for provenance); *last_info* is the converged fit (its rmse is
     the final quality).
+
+    *diag* mirrors that convention for the matcher's peak confidence
+    (``OffsetHistogramMatch.diag``, overwritten on every call): pass 0's keys are
+    laid down first — it alone runs the gross stage — and each KEPT later pass
+    overwrites the per-axis consensus keys, so the result is pass 0's gross peak
+    plus the final accepted pass's consensus peaks. Snapshotted only for passes
+    that succeeded, since a crashing or failing pass is discarded (and the loop
+    can break at any i, so the last call is not necessarily the last pass).
     """
-    correctors, last_info, first_info = None, {}, {}
+    correctors, last_info, first_info, diag = None, {}, {}, {}
     for i in range(max(1, int(niter))):
         match = match0 if i == 0 else match_iter
         try:
@@ -231,12 +320,13 @@ def _coarse(detectors, wcs_by_det, refcat, key, *, match0, match_iter, niter,
         correctors, last_info = c, fi
         if not first_info:
             first_info = fi
+        diag.update(getattr(match, 'diag', None) or {})
         wcs_by_det = {cc.meta['name']: cc.wcs for cc in c}
         if i > 0:
             delta = np.hypot(*np.asarray(fi['shift'], float).ravel()[:2])
             if delta < _REFINE_CONVERGE_ARCSEC:
                 break
-    return correctors, last_info, first_info, wcs_by_det
+    return correctors, last_info, first_info, wcs_by_det, diag
 
 
 def _choose_fitgeom(n, coverage, ceiling, mins, min_coverage):
@@ -258,6 +348,50 @@ def _choose_fitgeom(n, coverage, ceiling, mins, min_coverage):
             continue
         return geom
     return None
+
+
+def _fine_shift_arcsec(coarse, trial, catalog, src_idx):
+    """Median on-sky displacement (arcsec) the fine fit applies to this detector.
+
+    Measured at the matched sources — where the fit is actually constrained and
+    where the astrometry matters — rather than at one fiducial pixel, so a
+    rotation-bearing fit is judged by how far it really moves things.
+    """
+    if len(src_idx) == 0:
+        return float('nan')
+    x = np.asarray(catalog['x'], dtype=float)[src_idx]
+    y = np.asarray(catalog['y'], dtype=float)[src_idx]
+    ra0, dec0 = coarse.det_to_world(x, y)
+    ra1, dec1 = trial.det_to_world(x, y)
+    ra0 = np.asarray(ra0, dtype=float); dec0 = np.asarray(dec0, dtype=float)
+    d_ra = (np.asarray(ra1, dtype=float) - ra0) * np.cos(np.radians(dec0))
+    d_dec = np.asarray(dec1, dtype=float) - dec0
+    return float(np.median(np.hypot(d_ra, d_dec)) * 3600.0)
+
+
+def _fine_significance(shift_arcsec, new_resid, new_n):
+    """``t = |shift| / (sigma_axis / sqrt(n))`` — the fine fit's shift measured
+    against the estimation noise that adopting it costs.
+
+    This is the quantity the accept/reject decision is really about. Keeping the
+    pooled coarse attitude is right when the detector has no offset of its own,
+    because the pooled fit averages ~M times more pairs; taking the per-detector
+    fit is right when its offset exceeds the noise of estimating it. Comparing
+    residuals instead cannot express that trade-off: the fit is judged on a
+    RE-MATCHED sample rather than the one it minimized, so with no offset present
+    the comparison is a coin flip, and roughly half of the detectors that do
+    carry a real offset keep the coarse attitude anyway (measured on COSMOS
+    f410m/f210m: median t ~ 3.1-3.4 against a null expectation of 1.18, yet the
+    residual test accepted only 44-59%).
+
+    ``sigma_axis`` comes from the post-fit residual: for a 2-D Gaussian the
+    median radial deviation is ``sqrt(2 ln 2)`` per-axis sigmas.
+    """
+    if (not np.isfinite(shift_arcsec) or not np.isfinite(new_resid)
+            or new_n < 2 or new_resid <= 0):
+        return float('nan')
+    se = (new_resid / _RAYLEIGH_MEDIAN) / np.sqrt(new_n)
+    return float('inf') if se <= 0 else float(shift_arcsec / se)
 
 
 def _fine_fit(corr, detector, catalog, refcat, src_idx, ref_idx, geom, *,
@@ -294,7 +428,9 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                          fine_min_rshift=4, fine_min_shift=3, tolerance=0.05,
                          match_radius=0.5, min_matched=6, min_coverage_arcsec=5.0,
                          ref_border_arcmin=1.2, nclip=3, sigma=3.0,
-                         max_residual_arcsec=0.1):
+                         max_residual_arcsec=0.1,
+                         dva_repivot=True, dva_pivot='pool',
+                         fine_min_significance=1.4):
     """Solve one pool of detectors; return a :class:`GroupSolution`.
 
     *detectors* is one pool (a module, or a whole channel when the caller pooled
@@ -326,20 +462,45 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     WCS preserved), so a plausible-looking but wrong solution can never reach a
     mosaic. Healthy solves sit well under it (~0.02–0.03"); the COSMOS A2/A3
     misregistrations this guards against sat at 0.20–0.24". ``None`` disables.
+
+    Alongside the corrected WCSes the result carries diagnostics that permit
+    INDEPENDENT validation of the solve (nothing below gates anything): the
+    per-detection matched mask / separation / matched-refcat position for the
+    accepted WCS (:class:`DetectorSolution`), the footprint-clipped refcat
+    density, and the matcher's peak-confidence numbers
+    (:attr:`GroupSolution.diagnostics`) — the residual alone cannot expose a
+    confident lock onto the wrong sources, a low peak contrast can.
     """
     detectors = list(detectors)
     if not detectors:
         return GroupSolution(key, 'NOT_ALIGNED', None, None, None, 0, [])
 
+    # 0. Re-reference the per-detector DVA scale to a pool-common pivot, so the
+    #    pooled rigid fit is geometrically valid (see align/dva.py). A no-op for
+    #    a single-detector pool. `original_wcs` keeps the untouched input WCSes:
+    #    NOT_ALIGNED must preserve exactly what was on disk, and the re-pivot is
+    #    an unverified refinement until the pool actually solves.
+    original_wcs = {d.detector: d.wcs for d in detectors}
+    dva_info = None
+    if dva_repivot:
+        from campfire_pipeline.nircam.align.dva import repivot_pool_dva
+        detectors, dva_info = repivot_pool_dva(detectors, pivot=dva_pivot,
+                                               key=key)
+
+    def _orig(name, wcs):
+        """Reject path: hand back the WCS exactly as it arrived."""
+        return original_wcs.get(name, wcs)
+
     if not _has_radec(refcat) or len(refcat) < 3:
         log(f"align solve[{key}]: reference catalog missing 'RA'/'DEC' or "
             f"has <3 sources; NOT_ALIGNED (WCS preserved).")
         return _not_aligned(key, [(d.detector, d.wcs) for d in detectors],
-                            lambda name, wcs: wcs)
+                            _orig)
 
     # 1. Footprint-clip the field refcat to this pool's coverage + border. Fail
     #    open (keep the full refcat) on any geometry error — a per-pool worker
     #    must never crash the field.
+    n_ref_footprint = None
     try:
         clip = clip_refcat_to_exposure(refcat, [d.wcs for d in detectors],
                                        border_arcmin=ref_border_arcmin)
@@ -348,6 +509,9 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                 f"{clip.n_kept}/{clip.n_total} sources "
                 f"(border {ref_border_arcmin:.2f}').")
         refcat = clip.table
+        # Reference density the coarse matcher actually worked against — the
+        # denominator for any independent read of the match count.
+        n_ref_footprint = int(clip.n_kept)
     except Exception as e:  # noqa: BLE001 — worker robustness; fail open
         log(f"align solve[{key}]: footprint clip failed ({type(e).__name__}: "
             f"{e}); using the full refcat.")
@@ -355,7 +519,7 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
         log(f"align solve[{key}]: only {len(refcat)} refcat sources inside the "
             f"footprint; NOT_ALIGNED (source-starved / outside-acquisition-bound).")
         return _not_aligned(key, [(d.detector, d.wcs) for d in detectors],
-                            lambda name, wcs: wcs)
+                            _orig, n_refcat=n_ref_footprint)
 
     wcs_by_det = {d.detector: d.wcs for d in detectors}
 
@@ -385,16 +549,20 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
         nfwhm=nfwhm, nsigma=hist_nsigma, histocut_order=histocut_order,
         slope_max=slope_max, slope_nsteps=slope_nsteps,
         delta_mag_lim=delta_mag_lim, image_mags=image_mags)
-    correctors, last_info, first_info, wcs_by_det = _coarse(
+    # Bound to locals (not passed as anonymous temporaries) so ``_coarse`` can
+    # read each matcher's peak-confidence stash back off the instance.
+    match0 = OffsetHistogramMatch(searchrad=coarse_searchrad, **hist_kwargs)
+    match_iter = OffsetHistogramMatch(searchrad=None, **hist_kwargs)
+    correctors, last_info, first_info, wcs_by_det, diag = _coarse(
         detectors, wcs_by_det, refcat, key,
-        match0=OffsetHistogramMatch(searchrad=coarse_searchrad, **hist_kwargs),
-        match_iter=OffsetHistogramMatch(searchrad=None, **hist_kwargs),
+        match0=match0, match_iter=match_iter,
         niter=refine_niter, nclip=nclip, sigma=sigma)
     if correctors is None or not _succeeded(last_info):
         log(f"align solve[{key}]: coarse fit "
             f"{last_info.get('status', 'FAILED')}; NOT_ALIGNED (WCS preserved).")
         return _not_aligned(key, [(d.detector, d.wcs) for d in detectors],
-                            lambda name, wcs: wcs)
+                            _orig, n_refcat=n_ref_footprint,
+                            diag=diag)
 
     # Provenance: the gross correction the input WCS was off by (pass 0), with
     # the converged fit's rmse as the quality.
@@ -410,9 +578,9 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     #    enough sources match AND they span enough sky to condition a rotation.
     prelim = [_match(corr, d.catalog, ref_sky, match_radius)
               for corr, d in zip(correctors, detectors)]
-    group_nmatched = sum(n for _, n, _, _ in prelim)
+    group_nmatched = sum(p[1] for p in prelim)
     matched_ref = np.unique(np.concatenate(
-        [idx for _, _, _, idx in prelim] + [np.array([], dtype=int)]))
+        [p[3] for p in prelim] + [np.array([], dtype=int)]))
     coverage = _coverage_arcsec(ref_sky.ra.deg[matched_ref],
                                 ref_sky.dec.deg[matched_ref])
     if group_nmatched < min_matched or coverage < min_coverage_arcsec:
@@ -421,7 +589,11 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
             f"{min_coverage_arcsec:.1f}\"); rejecting to NOT_ALIGNED.")
         return _not_aligned(
             key, [(c.meta['name'], c) for c in correctors],
-            lambda name, c: c.original_wcs)
+            # c.original_wcs is the corrector's input — i.e. the RE-PIVOTED wcs.
+            # A rejected pool must hand back what was on disk.
+            lambda name, c: original_wcs.get(name, c.original_wcs),
+            n_refcat=n_ref_footprint,
+            diag=diag)
 
     mins = {'general': fine_min_general, 'rshift': fine_min_rshift,
             'shift': fine_min_shift}
@@ -435,8 +607,8 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     #    pooled attitude — the better estimate at that point. `tolerance` no
     #    longer gates anything; it is the reporting threshold for `within`.
     solutions = []
-    for corr, d, (resid, nmatch, src_idx, ref_idx) in zip(correctors, detectors,
-                                                          prelim):
+    for corr, d, (resid, nmatch, src_idx, ref_idx, keep, sep) in zip(
+            correctors, detectors, prelim):
         within = bool(np.isfinite(resid) and resid <= tolerance)
         dof, out_wcs = 'coarse', corr.wcs
 
@@ -456,12 +628,31 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                     tfi = {}
                     trial = None
                 if trial is not None and _succeeded(tfi):
-                    new_resid, new_n, _, _ = _match(trial, d.catalog, ref_sky,
-                                                    match_radius)
-                    if np.isfinite(new_resid) and new_resid < resid:
+                    (new_resid, new_n, new_src, new_ref, new_keep,
+                     new_sep) = _match(trial, d.catalog, ref_sky, match_radius)
+                    # Accept on the SIGNIFICANCE of the shift, not on a residual
+                    # improvement (see _fine_significance) — but never adopt a
+                    # fit that materially degrades the residual, however
+                    # significant its shift.
+                    tstat = _fine_significance(
+                        _fine_shift_arcsec(corr, trial, d.catalog, src_idx),
+                        new_resid, new_n)
+                    degraded = (np.isfinite(new_resid) and np.isfinite(resid)
+                                and new_resid > resid * _FINE_MAX_DEGRADE)
+                    if (np.isfinite(new_resid) and np.isfinite(tstat)
+                            and tstat > fine_min_significance and not degraded):
                         out_wcs, dof = trial.wcs, geom
                         resid, nmatch = new_resid, new_n
                         within = bool(resid <= tolerance)
+                        # Per-source diagnostics must describe the WCS actually
+                        # accepted, so adopt the post-fine re-match wholesale.
+                        src_idx, ref_idx = new_src, new_ref
+                        keep, sep = new_keep, new_sep
+
+        ref_ra, ref_dec = _ref_positions(len(d.catalog), src_idx, ref_idx,
+                                         ref_sky)
+        per_source = dict(n_detected=len(d.catalog), matched=keep,
+                          sep_arcsec=sep, ref_ra=ref_ra, ref_dec=ref_dec)
 
         # Residual gate (backstop): no solution this bad may reach a mosaic.
         # Gates only a *measured* bad residual — a nan residual (no one-to-one
@@ -472,16 +663,29 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
             log(f"align solve[{key}]: {d.detector} residual {resid:.3f}\" "
                 f"exceeds max_residual_arcsec={float(max_residual_arcsec):g}; "
                 f"rejecting this detector to NOT_ALIGNED (WCS preserved).")
-            solutions.append(DetectorSolution(d.detector, d.wcs, 'identity',
+            solutions.append(DetectorSolution(d.detector,
+                                              original_wcs.get(d.detector,
+                                                               d.wcs),
+                                              'identity',
                                               resid, nmatch, False,
-                                              aligned=False))
+                                              aligned=False, **per_source))
             continue
 
         solutions.append(DetectorSolution(d.detector, out_wcs, dof,
-                                          resid, nmatch, within))
+                                          resid, nmatch, within,
+                                          **per_source))
 
     # If the gate rejected every detector, the pool as a whole failed — report
     # NOT_ALIGNED so the orchestration surfaces it in the end-of-run warning.
     status = ('SOLVED' if any(s.aligned for s in solutions) else 'NOT_ALIGNED')
+    if dva_info is not None:
+        diag = dict(diag or {})
+        diag['dva_applied'] = bool(dva_info.get('applied'))
+        if dva_info.get('applied'):
+            diag['dva_pivot'] = dva_info['pivot']
+            diag['dva_va_scale'] = dva_info['va_scale']
+            diag['dva_max_shift_mas'] = dva_info['max_shift_mas']
     return GroupSolution(key, status, shift, rot_deg, rmse,
-                         group_nmatched, solutions)
+                         group_nmatched, solutions,
+                         n_refcat_in_footprint=n_ref_footprint,
+                         diagnostics=(diag or None))

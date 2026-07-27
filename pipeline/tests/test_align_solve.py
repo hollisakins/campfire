@@ -290,14 +290,19 @@ def test_match_measures_small_offset():
                             meta={'catalog': d.catalog, 'group_id': 'g',
                                   'name': d.detector})
     ref_sky = SkyCoord(refcat['RA'], refcat['DEC'], unit='deg')
-    resid, n, src_idx, ref_idx = _match(corr, d.catalog, ref_sky,
-                                        match_radius=0.5)
+    resid, n, src_idx, ref_idx, keep, sep = _match(corr, d.catalog, ref_sky,
+                                                   match_radius=0.5)
     assert n >= 30
     assert 0.15 < resid < 0.25
     assert len(ref_idx) == len(src_idx) == n
     # mutual NN => a genuine one-to-one pairing on both sides
     assert len(np.unique(ref_idx)) == n
     assert len(np.unique(src_idx)) == n
+    # per-source diagnostics: full-length, row-aligned with the catalog
+    assert keep.shape == sep.shape == (len(d.catalog),)
+    assert np.count_nonzero(keep) == n
+    assert np.array_equal(np.flatnonzero(keep), src_idx)
+    assert np.all(sep[keep] <= 0.5)
 
 
 # --- clustered extragalactic refcat (the XYXYMatch overflow regime) ---------
