@@ -63,10 +63,36 @@ function ExposureDetailPageInner() {
   const [correction, setCorrection] = useState<string>('none');
   const [notes, setNotes] = useState<string>('');
 
+  // Whether the operator has touched / persisted the triage panel for the
+  // exposure currently on screen. The background revalidation below fires on
+  // arrival and lands 100-300 ms later — long after a fast operator has already
+  // pressed 2 — so it must not write over what they set. Without these guards
+  // the status visibly flips back to the DB value, `hasChanges` goes false, and
+  // the auto-save on → silently skips: the exposure flashes Approved for a frame
+  // and stays Pending. Reset on every route-id change (below), so arriving at a
+  // fresh exposure still takes the server's values.
+  const localEditsRef = useRef({ dirty: false, saved: false });
+  const editStatus = useCallback((v: string) => {
+    localEditsRef.current.dirty = true;
+    setReviewStatus(v);
+  }, []);
+  const editCorrection = useCallback((v: string) => {
+    localEditsRef.current.dirty = true;
+    setCorrection(v);
+  }, []);
+  const editNotes = useCallback((v: string) => {
+    localEditsRef.current.dirty = true;
+    setNotes(v);
+  }, []);
+
   // Sibling-exposure nav: the ±window neighbors + absolute position within
   // the filtered, ordered set, from get_admin_exposure_neighbors. Survives
   // refresh and direct entry because the filter context lives in the URL.
-  const [nav, setNav] = useState<ExposureNeighbors | null>(null);
+  // Tagged with the id it was fetched for: `id` changes the instant we push, but
+  // the neighbors RPC for the new exposure takes another round trip to land.
+  const [navState, setNavState] = useState<
+    { forId: number; data: ExposureNeighbors } | null
+  >(null);
   const [showHelp, setShowHelp] = useState(false);
   // N4 (epic #261): live FITS render vs the legacy pre-generated PNG. Defaults
   // to PNG; the toggle doubles as the pixel-parity check during the rollout.
@@ -82,10 +108,33 @@ function ExposureDetailPageInner() {
     let cancelled = false;
     getExposureNeighbors(id, { ...navFilters, window: PREFETCH_AHEAD }).then((res) => {
       if (cancelled) return;
-      setNav(res.error || res.total === 0 ? null : res);
+      setNavState(res.error || res.total === 0 ? null : { forId: id, data: res });
     });
     return () => { cancelled = true; };
   }, [id, navFilters]);
+
+  // While that RPC is in flight, `navState` still describes the exposure we just
+  // left, and using it verbatim mis-targets both arrows: → points at the current
+  // exposure (a no-op push, so hammering → appears to stick) and ← skips one.
+  // The stale window almost always already contains the new id, so re-derive
+  // prev/next/position from it — instant and correct for the single-step case.
+  // Only when the new id falls outside that window do we report "no nav" and let
+  // the arrows sit disabled for the ~100 ms until the fresh result lands.
+  const nav = useMemo<ExposureNeighbors | null>(() => {
+    if (!navState) return null;
+    if (navState.forId === id) return navState.data;
+    const stale = navState.data;
+    const idx = stale.windowIds.indexOf(id);
+    const fromIdx = stale.windowIds.indexOf(navState.forId);
+    if (idx < 0 || fromIdx < 0) return null;
+    return {
+      prevId: idx > 0 ? stale.windowIds[idx - 1] : null,
+      nextId: idx < stale.windowIds.length - 1 ? stale.windowIds[idx + 1] : null,
+      position: stale.position != null ? stale.position + (idx - fromIdx) : null,
+      total: stale.total,
+      windowIds: stale.windowIds,
+    };
+  }, [navState, id]);
 
   // When the route id changes, reset state synchronously from the in-memory
   // cache so the new exposure paints in the same frame as the URL change —
@@ -102,11 +151,14 @@ function ExposureDetailPageInner() {
     setLoading(!cached);
     setError(null);
     setSaved(false);
+    localEditsRef.current = { dirty: false, saved: false };
   }
 
   // Background revalidation against the DB on every id change. Auto-save on
-  // navigation has already flushed any dirty triage state, so it's safe to
-  // overwrite the editable fields with the freshly-fetched values.
+  // navigation has already flushed the *previous* exposure's triage state, so
+  // arriving clean means the server's values win. But this read races the
+  // operator: anything they've typed or keyed since arriving, and any save that
+  // has already landed, is newer than this response and must survive it.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -118,11 +170,18 @@ function ExposureDetailPageInner() {
         return;
       }
       if (result.exposure) {
-        setCachedExposure(result.exposure);
-        setExposure(result.exposure);
-        setReviewStatus(result.exposure.review_status);
-        setCorrection(result.exposure.correction);
-        setNotes(result.exposure.notes || '');
+        const edits = localEditsRef.current;
+        // A save for this exposure already landed — our write is strictly newer
+        // than this read, so don't let it back into state *or* the cache.
+        if (!edits.saved) {
+          setCachedExposure(result.exposure);
+          setExposure(result.exposure);
+        }
+        if (!edits.dirty) {
+          setReviewStatus(result.exposure.review_status);
+          setCorrection(result.exposure.correction);
+          setNotes(result.exposure.notes || '');
+        }
       }
       setLoading(false);
     })();
@@ -214,6 +273,7 @@ function ExposureDetailPageInner() {
       return { ok: false };
     }
     if (result.exposure) {
+      localEditsRef.current.saved = true;
       setCachedExposure(result.exposure);
       setExposure(result.exposure);
     }
@@ -225,14 +285,16 @@ function ExposureDetailPageInner() {
   // Auto-save on nav: mirror inspection mode — flush dirty triage so the
   // operator can blast through a queue with arrow keys without losing state.
   const goTo = useCallback(async (targetId: number | null) => {
-    if (targetId == null) return;
+    // targetId === id means the neighbor window is stale in a way the derivation
+    // above couldn't repair; pushing would be a no-op that looks like a step.
+    if (targetId == null || targetId === id) return;
     if (stateRef.current.hasChanges) {
       const result = await handleSave();
       if (!result.ok) return; // don't navigate on a save failure
     }
     // Carry the filter context so the next exposure's nav walks the same set.
     router.push(`/admin/nircam/${targetId}${navQuery ? `?${navQuery}` : ''}`);
-  }, [handleSave, router, navQuery]);
+  }, [handleSave, router, navQuery, id]);
 
   const handleNext = useCallback(() => goTo(nav?.nextId ?? null), [goTo, nav]);
   const handlePrev = useCallback(() => goTo(nav?.prevId ?? null), [goTo, nav]);
@@ -248,9 +310,9 @@ function ExposureDetailPageInner() {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
 
       switch (e.key) {
-        case '1': e.preventDefault(); setReviewStatus('pending');  break;
-        case '2': e.preventDefault(); setReviewStatus('approved'); break;
-        case '3': e.preventDefault(); setReviewStatus('excluded'); break;
+        case '1': e.preventDefault(); editStatus('pending');  break;
+        case '2': e.preventDefault(); editStatus('approved'); break;
+        case '3': e.preventDefault(); editStatus('excluded'); break;
         case 'ArrowRight':
         case 'n':
         case 'N': e.preventDefault(); handleNext(); break;
@@ -265,7 +327,7 @@ function ExposureDetailPageInner() {
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [handleNext, handlePrev, handleSave, showHelp]);
+  }, [handleNext, handlePrev, handleSave, showHelp, editStatus]);
 
   if (loading) {
     return (
@@ -320,6 +382,9 @@ function ExposureDetailPageInner() {
   const handleSaveMasks = async (regions: MaskRegionsPayload) => {
     const res = await saveExposureMaskRegions(exposure.id, regions);
     if (res.exposure) {
+      // Same newer-than-the-read rule as the triage save: a mask write must not
+      // be undone by an in-flight revalidation landing after it.
+      localEditsRef.current.saved = true;
       setCachedExposure(res.exposure);
       setExposure(res.exposure);
     }
@@ -524,7 +589,7 @@ function ExposureDetailPageInner() {
                 </label>
                 <select
                   value={reviewStatus}
-                  onChange={(e) => setReviewStatus(e.target.value)}
+                  onChange={(e) => editStatus(e.target.value)}
                   className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary"
                 >
                   <option value="pending">Pending</option>
@@ -539,7 +604,7 @@ function ExposureDetailPageInner() {
                 </label>
                 <select
                   value={correction}
-                  onChange={(e) => setCorrection(e.target.value)}
+                  onChange={(e) => editCorrection(e.target.value)}
                   className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary"
                 >
                   <option value="none">None</option>
@@ -554,7 +619,7 @@ function ExposureDetailPageInner() {
                 </label>
                 <textarea
                   value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
+                  onChange={(e) => editNotes(e.target.value)}
                   placeholder="Describe artifacts, masking needs, etc."
                   rows={4}
                   className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary placeholder:text-text-tertiary resize-none"
