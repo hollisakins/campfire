@@ -374,14 +374,15 @@ def _extended_galaxy_scene(rng, n=1600, re=150.0, amp=200.0):
     return sci, np.ones((n, n), np.float32), r
 
 
-def _tier_cfg(tier0=False):
-    """Mosaic tiers, using the SHIPPED tier-0 values."""
+def _tier_cfg(tier0=False, nsigma0=100.0):
+    """Mosaic tiers, using the SHIPPED tier-0 values. *nsigma0* is exposed only
+    so a test can show that threshold is load-bearing."""
     base = dict(ring_radius_in=80, ring_width=4, ring_downsample=4,
                 bg_box_size=10, bg_filter_size=5)
     if tier0:
         return dict(base, tier_kernel_size=[25, 25, 15, 5, 2],
                     tier_npixels=[30000, 15, 10, 3, 1],
-                    tier_nsigma=[100.0, 1.5, 1.5, 1.5, 1.5],
+                    tier_nsigma=[nsigma0, 1.5, 1.5, 1.5, 1.5],
                     tier_dilate_size=[600, 33, 25, 21, 19])
     return dict(base, tier_kernel_size=[25, 15, 5, 2],
                 tier_npixels=[15, 10, 3, 1], tier_nsigma=[1.5, 1.5, 1.5, 1.5],
@@ -413,8 +414,9 @@ def test_tier0_removes_extended_source_oversubtraction_bowl():
 
 
 def test_tier0_is_a_noop_without_a_large_bright_source():
-    """Selectivity: nsigma=100 with npixels=30000 admits only a >=30k-pixel core
-    above 100 sigma, so ordinary galaxy wings keep their normal flattening."""
+    """Ordinary compact sources must not trip tier 0, so their wings keep the
+    normal aggressive flattening. Here `npixels` is what rejects them — see
+    test_tier0_nsigma_is_load_bearing for the other half of the selectivity."""
     rng = np.random.default_rng(5)
     n = 400
     y, x = np.mgrid[:n, :n]
@@ -428,22 +430,63 @@ def test_tier0_is_a_noop_without_a_large_bright_source():
     assert np.array_equal(m0, m1)
 
 
-def test_shipped_mosaic_tier_config_is_coherent():
-    """The mosaic tiers actually shipped carry tier 0 and stay the same length
-    (the four lists are consumed in lockstep); the per-exposure tiers
-    deliberately do NOT — 30k px / 600 px are sized for a mosaic tile."""
+def test_tier0_nsigma_is_load_bearing():
+    """`nsigma = 100` must do real selectivity work, not ride along behind
+    `npixels`. This scene is deliberately BROAD but FAINT — its smoothed
+    footprint is far past the 30k-pixel floor, so `npixels` cannot reject it and
+    only the 100-sigma threshold can. Dropping nsigma to 1.5 fires tier 0 and
+    swallows the frame; at the shipped 100 the mask is untouched."""
+    rng = np.random.default_rng(7)
+    n, amp, s = 1000, 25.0, 150.0
+    y, x = np.mgrid[:n, :n]
+    sci = (rng.normal(0.0, 1.0, (n, n))
+           + amp * np.exp(-(((x - n / 2) ** 2 + (y - n / 2) ** 2)
+                            / (2 * s ** 2)))).astype(np.float32)
+    err = np.ones((n, n), np.float32)
+
+    def mask(cfg):
+        return SubtractBackground(**cfg).mask_from_arrays(sci, err)[0]
+
+    baseline = mask(_tier_cfg(tier0=False))
+    shipped = mask(_tier_cfg(tier0=True))                 # nsigma = 100
+    lowered = mask(_tier_cfg(tier0=True, nsigma0=1.5))    # only nsigma changed
+
+    assert np.array_equal(shipped, baseline)   # 100 sigma rejects it: no-op
+    assert not np.array_equal(lowered, baseline)
+    assert lowered.mean() > 0.9                # 1.5 sigma would swallow the frame
+
+
+def test_shipped_mosaic_tier_config_is_coherent(tmp_path):
+    """Pin the tiers as SHIPPED. Both the config and the field file are given
+    explicitly: `load_config()` would deep-merge $CAMPFIRE_ROOT/config/config.toml
+    and `Field.load()` without `fields_file=` raises on a clean checkout, so the
+    unqualified calls would test the developer's machine rather than the package
+    (and would not run in CI at all)."""
+    from pathlib import Path
+
+    import campfire_pipeline
     from campfire_pipeline.config import get_nircam_step_config, load_config
     from campfire_pipeline.nircam.field import Field
 
-    cfg = load_config()
+    packaged = Path(campfire_pipeline.__file__).parent / 'data' / 'config_default.toml'
+    cfg = load_config(config_path=str(packaged))
+    ff = tmp_path / 'fields.toml'
+    ff.write_text('[cosmos]\n'
+                  'filters = ["f444w"]\n'
+                  'files = ["jw01727*"]\n'
+                  'tangent_point = [150.1, 2.1]\n')
+    field = Field.load('cosmos', fields_file=str(ff))     # no step overrides
+    assert not field.step_overrides
+
     keys = ('tier_kernel_size', 'tier_npixels', 'tier_nsigma',
             'tier_dilate_size')
-    mosaic = get_nircam_step_config('resample', cfg, Field.load('cosmos'))
-    assert {len(mosaic[k]) for k in keys} == {5}
+    mosaic = get_nircam_step_config('resample', cfg, field)
+    assert {len(mosaic[k]) for k in keys} == {5}          # consumed in lockstep
     assert mosaic['tier_nsigma'][0] == 100.0
     assert mosaic['tier_npixels'][0] == 30000
     assert mosaic['tier_dilate_size'][0] == 600
 
-    per_exp = (get_nircam_step_config('bkg', cfg, Field.load('cosmos'))
-               .get('mask') or {})
+    # per-exposure deliberately keeps 4 tiers: 30k px / 600 px are sized for a
+    # 30mas mosaic tile, not a 2048^2 frame
+    per_exp = get_nircam_step_config('bkg', cfg, field).get('mask') or {}
     assert {len(per_exp[k]) for k in keys} == {4}
