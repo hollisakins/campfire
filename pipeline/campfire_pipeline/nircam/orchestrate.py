@@ -493,7 +493,7 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
     # The CFP_OUT-only short-circuit avoids the polygon-overlap setup work
     # done at the top of outlier_step on no-op runs.
     from campfire_pipeline.nircam.manifest import (
-        compute_file_hash, load_manifest,
+        file_unchanged, load_manifest,
     )
 
     def _visit_up_to_date(visit, visit_files):
@@ -510,16 +510,17 @@ def _run_outlier_per_visit(field, cfg, filtname, n_processes, overwrite, status,
         # the now-absent exposure still pooled (see _visit_membership_matches).
         if not _visit_membership_matches(manifest, visit, visit_files):
             return False
-        # Check that visit_files (a subset of all_inputs) hashes still match.
-        old_hashes = {
-            inp['filename']: inp['file_hash']
-            for inp in manifest['inputs']
-        }
+        # Check that visit_files (a subset of all_inputs) still match their
+        # recorded entries. file_unchanged compares the science AND astrometric
+        # digests: a re-aligned working copy has identical SCI/DQ and a new WCS,
+        # so a pixels-only comparison would reuse CR masks derived under the old
+        # astrometry.
+        old_by_name = {inp['filename']: inp for inp in manifest['inputs']}
         for f in visit_files:
             bn = os.path.basename(f)
-            if bn not in old_hashes:
+            if bn not in old_by_name:
                 return False
-            if compute_file_hash(f) != old_hashes[bn]:
+            if not file_unchanged(f, old_by_name[bn]):
                 return False
         return True
 

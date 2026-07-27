@@ -1009,6 +1009,16 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- checks; sci_dq_hash is only a change-detection key. NULL for products with
     -- no partial digest (everything except nircam_exposure today).
     "sci_dq_hash" "text",
+    -- Astrometric half of the same change-detection identity. sci_dq_hash alone
+    -- is blind to a re-ALIGNMENT: the align (and wcs_shift) steps rewrite an
+    -- exposure's WCS without touching a single SCI or DQ pixel, so a re-aligned
+    -- exposure deduped as "unchanged" and the cloud copy kept its pre-alignment
+    -- astrometry indefinitely. Deploy now requires BOTH digests to match before
+    -- skipping an upload. sha256 over the WCS-defining header cards (see
+    -- campfire.storage.hashing.wcs_hash). NULL for products that compare on the
+    -- whole-file hash, and on exposure rows written before this column existed —
+    -- the push planner reconciles those against content_hash and backfills.
+    "wcs_hash" "text",
     "size_bytes" bigint NOT NULL,
     -- Bytes as stored in the bucket for transport-compressed products (gzipped
     -- mosaic FITS, epic #261 / PR #383); NULL = stored verbatim. size_bytes
@@ -1041,6 +1051,9 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- sci_dq_hash, when present, is always an authoritative sha256 (no provisional
     -- etag form — it is computed from the local FITS arrays, never a HEAD).
     CONSTRAINT "storage_objects_sci_dq_hash_check" CHECK (("sci_dq_hash" IS NULL OR "sci_dq_hash" ~ '^sha256:'::"text")),
+    -- wcs_hash, like sci_dq_hash, is always an authoritative sha256 when present
+    -- (computed from the local FITS header cards, never from a HEAD).
+    CONSTRAINT "storage_objects_wcs_hash_check" CHECK (("wcs_hash" IS NULL OR "wcs_hash" ~ '^sha256:'::"text")),
     -- product_type tracks the campfire_layout PRODUCTS registry (every entry with a
     -- non-null bucket). A new cloud-backed product type requires a migration here.
     CONSTRAINT "storage_objects_product_type_check" CHECK (("product_type" = ANY (ARRAY[
@@ -1085,7 +1098,9 @@ COMMENT ON COLUMN "public"."storage_objects"."filter" IS 'Typed, indexed scope c
 
 COMMENT ON COLUMN "public"."storage_objects"."exposure_ref" IS 'Stable per-exposure reference for intermediate products (nircam rootname; nirspec (root,nod,detector,source) tuple). Backs the partial unique (product_type, exposure_ref) WHERE status=''active'' — one current object per product/exposure.';
 
-COMMENT ON COLUMN "public"."storage_objects"."sci_dq_hash" IS 'Science-only sha256(SCI+DQ) change-detection digest (epic #261, N1). Lets deploy skip re-uploading a NIRCam canonical exposure whose science is unchanged even though its whole-file content_hash shifted (pipeline re-save bumps header timestamps). content_hash remains the authoritative whole-file integrity token; this is never used for download/copy verification. NULL for products without a partial digest.';
+COMMENT ON COLUMN "public"."storage_objects"."sci_dq_hash" IS 'Science-only sha256(SCI+DQ) change-detection digest (epic #261, N1). Lets deploy skip re-uploading a NIRCam canonical exposure whose science is unchanged even though its whole-file content_hash shifted (pipeline re-save bumps header timestamps). Paired with wcs_hash: BOTH must match for deploy to skip an upload, since the array digest alone cannot see a re-alignment. content_hash remains the authoritative whole-file integrity token; this is never used for download/copy verification. NULL for products without a partial digest.';
+
+COMMENT ON COLUMN "public"."storage_objects"."wcs_hash" IS 'Astrometric change-detection digest: sha256 over the WCS-defining header cards of a NIRCam canonical exposure. The companion to sci_dq_hash — the align and wcs_shift steps rewrite an exposure''s WCS without touching a SCI or DQ pixel, so a science-only identity skipped re-aligned exposures and left the cloud copy on its pre-alignment astrometry. Never used for download/copy verification. NULL for whole-file-identity products, and on exposure rows written before this column existed (the push planner reconciles those against content_hash and backfills the digest without re-uploading).';
 
 COMMENT ON COLUMN "public"."storage_objects"."status" IS 'active = current object; superseded = replaced by a newer hash (tombstone, GC-eligible later); revoked = un-published. Only active rows count toward the budget and the partial-unique constraint.';
 

@@ -1,10 +1,11 @@
 """Unit tests for the NIRCam canonical-exposure deploy (epic #261, N1).
 
 Pure/local: the science-only content hash (SCI+DQ, stable across a header-only
-re-save), canonical FITS/expmap upload-task keys, the registry row identity for a
-NIRCam exposure (field-scoped, admin-only, carrying a sci_dq_hash + exposure_ref),
-and sci_dq_hash threading through build_registry_rows. The full upload + registry
-round-trip is exercised live against local Supabase in CI.
+re-save), the astrometric wcs_hash that goes with it (so a re-alignment is not
+mistaken for a re-save), canonical FITS/expmap upload-task keys, the registry row
+identity for a NIRCam exposure (field-scoped, admin-only, carrying both digests +
+an exposure_ref), and digest threading through build_registry_rows. The full
+upload + registry round-trip is exercised live against local Supabase in CI.
 """
 import numpy as np
 import pytest
@@ -76,6 +77,105 @@ def test_sci_dq_hash_includes_cfmask(tmp_path):
         hdul.append(fits.ImageHDU(data=cf, name="CFMASK"))
         hdul.flush()
     assert nc._sci_dq_hash(masked) != nc._sci_dq_hash(plain)
+
+
+# --- wcs_hash (the astrometric half of the exposure identity) ----------------
+
+def _wcs_cards(crval1=150.0, crval2=2.0):
+    return {
+        "CTYPE1": "RA---TAN", "CTYPE2": "DEC--TAN",
+        "CRPIX1": 1024.0, "CRPIX2": 1024.0,
+        "CRVAL1": crval1, "CRVAL2": crval2,
+        "CD1_1": -8.6e-6, "CD1_2": 0.0, "CD2_1": 0.0, "CD2_2": 8.6e-6,
+    }
+
+
+def _make_wcs_exposure(path, sci, dq, wcs_cards, *, extra_header=None):
+    p = _make_exposure(path, sci, dq, extra_header=extra_header)
+    with fits.open(p, mode="update") as hdul:
+        for k, v in wcs_cards.items():
+            hdul["SCI"].header[k] = v
+        hdul.flush()
+    return p
+
+
+def test_wcs_hash_moves_when_the_solution_moves(tmp_path):
+    from campfire.storage.hashing import wcs_hash
+    sci = np.arange(16, dtype="float32").reshape(4, 4)
+    dq = np.zeros((4, 4), dtype="int32")
+    a = _make_wcs_exposure(tmp_path / "a.fits", sci, dq, _wcs_cards())
+    # A re-alignment: same pixels, corrected reference position.
+    b = _make_wcs_exposure(tmp_path / "b.fits", sci, dq,
+                           _wcs_cards(crval1=150.0001))
+    assert nc._sci_dq_hash(a) == nc._sci_dq_hash(b)   # science is identical...
+    assert wcs_hash(a) != wcs_hash(b)                 # ...astrometry is not.
+    assert wcs_hash(a).startswith("sha256:")
+
+
+def test_wcs_hash_stable_across_a_plain_resave(tmp_path):
+    # The property that makes a partial digest usable at all: nothing a re-save
+    # touches (timestamps, HISTORY, card order) may move it.
+    from campfire.storage.hashing import wcs_hash
+    sci = np.arange(16, dtype="float32").reshape(4, 4)
+    dq = np.zeros((4, 4), dtype="int32")
+    p = _make_wcs_exposure(tmp_path / "a.fits", sci, dq, _wcs_cards())
+    before = wcs_hash(p)
+    with fits.open(p, mode="update") as hdul:
+        hdul[0].header["DATE"] = "2026-07-27T12:00:00"
+        hdul[0].header["HISTORY"] = "resaved"
+        hdul["SCI"].header["BUNIT"] = "MJy/sr"
+        hdul.flush()
+    assert wcs_hash(p) == before
+
+
+def test_wcs_hash_covers_sip_distortion(tmp_path):
+    # update_fits_wcsinfo re-fits the SIP approximation from the corrected gwcs
+    # on every solve, so a distortion-only change is a real astrometric change
+    # that must not slip past the digest.
+    from campfire.storage.hashing import wcs_hash
+    sci = np.arange(16, dtype="float32").reshape(4, 4)
+    dq = np.zeros((4, 4), dtype="int32")
+    cards = dict(_wcs_cards(), A_ORDER=2, A_0_2=1e-7, B_ORDER=2, B_2_0=1e-7)
+    a = _make_wcs_exposure(tmp_path / "a.fits", sci, dq, cards)
+    b = _make_wcs_exposure(tmp_path / "b.fits", sci, dq,
+                           dict(cards, A_0_2=2e-7))
+    assert wcs_hash(a) != wcs_hash(b)
+
+
+def test_wcs_hash_none_without_wcs_cards(tmp_path):
+    # No WCS → no astrometric component. Must be None, never a digest over an
+    # empty card set, so it can't compare equal to some other WCS-less file.
+    from campfire.storage.hashing import wcs_hash
+    p = _make_exposure(tmp_path / "e.fits", np.zeros((4, 4), "float32"),
+                       np.zeros((4, 4), "int32"))
+    assert wcs_hash(p) is None
+
+
+def test_exposure_identity_matches_the_separate_digests(tmp_path):
+    # exposure_identity() reads both from one open; it must agree exactly with
+    # the two standalone readers.
+    from campfire.storage.hashing import exposure_identity, wcs_hash
+    sci = np.arange(16, dtype="float32").reshape(4, 4)
+    dq = np.zeros((4, 4), dtype="int32")
+    p = _make_wcs_exposure(tmp_path / "a.fits", sci, dq, _wcs_cards())
+    assert exposure_identity(p) == (nc._sci_dq_hash(p), wcs_hash(p))
+
+
+def test_exposure_identity_matches_pipeline_recipe(tmp_path):
+    # The client re-implements the pipeline's digests (it must not import the
+    # pipeline). The two copies drifting apart would silently churn uploads, so
+    # pin them together here.
+    pipeline_manifest = pytest.importorskip(
+        "campfire_pipeline.nircam.manifest",
+        reason="campfire-pipeline not installed")
+    from campfire.storage.hashing import exposure_identity
+    sci = np.arange(16, dtype="float32").reshape(4, 4)
+    dq = np.zeros((4, 4), dtype="int32")
+    p = _make_wcs_exposure(tmp_path / "a.fits", sci, dq, _wcs_cards())
+    assert exposure_identity(str(p)) == (
+        pipeline_manifest.compute_file_hash(str(p)),
+        pipeline_manifest.compute_wcs_hash(str(p)),
+    )
 
 
 # --- upload-task builders ---------------------------------------------------
@@ -163,7 +263,8 @@ def test_row_for_nircam_exposure_identity_and_sci_dq():
     row = reg.row_for_key(
         EXP_KEY, backend="osn", content_hash="sha256:" + "a" * 64,
         size_bytes=100, content_type="application/fits",
-        deployment_id=42, sci_dq_hash="sha256:" + "b" * 64)
+        deployment_id=42, sci_dq_hash="sha256:" + "b" * 64,
+        wcs_hash="sha256:" + "d" * 64)
     assert row["product_type"] == "nircam_exposure"
     assert row["instrument"] == "nircam"
     assert row["field"] == "cosmos"
@@ -173,6 +274,7 @@ def test_row_for_nircam_exposure_identity_and_sci_dq():
     assert row["deployment_id"] == 42        # tagged with the field deployment
     assert row["exposure_ref"] == ROOT       # one active row per exposure
     assert row["sci_dq_hash"] == "sha256:" + "b" * 64
+    assert row["wcs_hash"] == "sha256:" + "d" * 64
 
 
 def test_row_sci_dq_hash_none_by_default():
@@ -186,6 +288,7 @@ def test_row_sci_dq_hash_none_by_default():
     assert row["field"] == "cosmos"
     assert row["filter"] == "f444w"
     assert row["sci_dq_hash"] is None
+    assert row["wcs_hash"] is None
 
 
 def test_build_registry_rows_threads_sci_dq_hashes(tmp_path):
@@ -194,11 +297,15 @@ def test_build_registry_rows_threads_sci_dq_hashes(tmp_path):
     tasks = [UploadTask(p, EXP_KEY, "application/fits")]
     rows = reg.build_registry_rows(
         tasks, backend="osn", succeeded_keys={EXP_KEY},
-        sci_dq_hashes={EXP_KEY: "sha256:" + "c" * 64})
+        sci_dq_hashes={EXP_KEY: "sha256:" + "c" * 64},
+        wcs_hashes={EXP_KEY: "sha256:" + "d" * 64})
     assert len(rows) == 1
     assert rows[0]["content_hash"].startswith("sha256:")   # whole-file digest
     assert rows[0]["content_hash"] != "sha256:" + "c" * 64  # not the sci_dq one
     assert rows[0]["sci_dq_hash"] == "sha256:" + "c" * 64
+    # Both identity components ride the same row; a row registered without the
+    # astrometric one would dedup as unchanged after a re-alignment.
+    assert rows[0]["wcs_hash"] == "sha256:" + "d" * 64
 
 
 # --- mosaic deploy (N2) -----------------------------------------------------

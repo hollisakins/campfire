@@ -176,10 +176,15 @@ The local products tree and cloud storage are two ends of one sync relationship,
 mediated by the `storage_objects` registry (server) and its local mirror
 (`$CAMPFIRE_ROOT/meta/campfire.db`). One engine (`python/campfire/storage/` +
 `campfire/deploy/push.py`) serves both directions with content-identity dedup
-(sci_dq for NIRCam exposures, whole-file otherwise), a stat fast-path (unchanged
-files are never re-read), and per-batch registration (interrupted transfers
-resume at file granularity). **All data products live on OSN; map tiles are the
-sole R2 exception.**
+(whole-file everywhere except NIRCam exposures, which use the two-component
+**exposure identity**: `sci_dq_hash` over the SCI/DQ/CFMASK arrays *and*
+`wcs_hash` over the WCS header cards — both must match to skip an upload,
+because `align`/`wcs_shift` move an exposure's astrometry without touching a
+science pixel), a stat fast-path (unchanged files are never re-read), and
+per-batch registration (interrupted transfers resume at file granularity).
+Registry rows predating `wcs_hash` are reconciled against `content_hash` and
+backfilled in place, so upgrading never stampedes a full re-upload. **All data
+products live on OSN; map tiles are the sole R2 exception.**
 
 ```bash
 campfire sync                          # refresh the local index (never touches the tree)
