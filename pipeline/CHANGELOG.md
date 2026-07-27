@@ -29,6 +29,22 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- NIRCam `align` now **pools both modules into one coarse fit by default**
+  (`[nircam.align].pool_modules`, flipped `false` → `true`). Pooling was off
+  because a spurious per-module SIAF offset could cross-contaminate the shared
+  fit; the offset that motivated that caution is **not** SIAF — it is
+  differential velocity aberration, a scale no pooled `rshift` can express, now
+  removed deterministically by `dva_repivot` (below). With that fix plus
+  significance-based fine-fit acceptance, a pooled solve leaves no per-module
+  systematic: on f410m the module-to-module offset against the reference catalog
+  is 0.26 mas with 93.3% of detectors carrying their own fine fit, and no new
+  NOT_ALIGNED. Pooling is established **safe**; its **benefit is not
+  quantified** — under the previous acceptance test it was a wash on f410m
+  (0.215 vs 0.210 mas), and no matched non-pooled arm was run under the new one.
+  It is enabled because a shared coarse fit is better conditioned (twice the
+  sources for LW, where a per-module pool is a single detector), which should
+  help sparse / low-match exposures — the regime that remains untested. Set
+  `pool_modules = false` to restore per-module fits.
 - NIRCam `align` now accepts the **per-detector fine fit on the significance of
   the shift it applies**, not on a residual improvement
   (`[nircam.align].fine_min_significance`, default 1.4). The choice between the

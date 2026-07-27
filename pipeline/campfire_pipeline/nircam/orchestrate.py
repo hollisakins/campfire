@@ -901,7 +901,7 @@ def _run_align(field, config, filtname, n_processes, overwrite, status,
             f"excluded_exposures list) and re-run, or select a supported subset "
             f"with --filters / --tiles.")
 
-    pools = split_pools(groups, pool_modules=align_cfg.get('pool_modules', False))
+    pools = split_pools(groups, pool_modules=align_cfg.get('pool_modules', True))
     refcat_path = _resolve_align_refcat(align_cfg, field.refcat_dir)
     refcat_hash = _refcat_hash(refcat_path)   # cheap; drives the staleness skip
     pending, retry = _pending_pools(pools, status, overwrite, refcat_hash)

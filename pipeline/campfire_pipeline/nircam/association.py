@@ -285,12 +285,17 @@ def split_pools(groups, *, pool_modules=False) -> List[ExposureGroup]:
     """Split each exposure group into the **pools** that share one coarse fit.
 
     The align coarse solve fits one rigid shift+rotation per pool. With
-    ``pool_modules`` (or a single-module group) the whole group is one pool;
-    otherwise each NIRCam module (A, B) becomes its own pool, so module A's
-    detectors and module B's are tied to the reference independently — the
-    default, since a spurious per-module SIAF offset then can't cross-contaminate
-    and each module still has enough sources to condition its own rotation (for
-    SW; LW-per-module is a single detector, the jhat-equivalent).
+    ``pool_modules`` (or a single-module group) the whole group is one pool —
+    the default; otherwise each NIRCam module (A, B) becomes its own pool, so
+    module A's detectors and module B's are tied to the reference independently
+    (for SW; LW-per-module is a single detector, the jhat-equivalent).
+
+    Pooling was previously off out of concern that a spurious per-module SIAF
+    offset would cross-contaminate the shared fit. The offset that motivated
+    that caution is not SIAF — it is differential velocity aberration, a scale
+    no pooled ``rshift`` can express, now removed deterministically upstream
+    (``align/dva.py``). With that fix a pooled solve leaves no per-module
+    systematic against the reference catalog (0.26 mas on f410m).
 
     Pool keys carry a ``:<module>`` suffix so per-pool provenance/logging stays
     distinct. A group with any unknown-module member is never split (kept whole),
