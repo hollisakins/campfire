@@ -50,6 +50,16 @@ configuration carries over verbatim — converted per call via the ``tp_pscale``
 the ``tweakwcs`` machinery passes (the pool's detector pixel size in
 tangent-plane arcsec, so SW/LW each get physically correct values).
 ``searchrad`` and ``d2d_max`` are arcsec (matching JHAT's ``d2d_max``).
+
+**Peak confidence.** ``tweakwcs`` calls the matcher through ``__call__`` and only
+the surviving row indices escape, so the consensus peaks' own numbers — which is
+what tells a decisive lock from an ambiguous one — cannot be returned. They are
+stashed on the instance in :attr:`OffsetHistogramMatch.diag` instead (reset per
+call), for the solve to lift onto its ``GroupSolution`` and the I/O layer to
+stamp into the header. This is the *independent* half of the align diagnostics:
+the solve's own residual is measured on the very pairs the matcher selected, so a
+confident-looking residual on a wrong lock is indistinguishable from a right one
+— the peak contrast is not, because a wrong lock is a low-contrast one.
 """
 
 import numpy as np
@@ -71,6 +81,11 @@ _GROSS_BIN_ARCSEC = 0.5
 # bins, the bin size is coarsened. Only reachable with d2d_max=None on a
 # pathologically wide offset distribution.
 _MAX_BINS = 200_000
+
+# Half-width (in bins) of the winning gross peak's neighbourhood — the same
+# +-2-bin patch the centroid refinement uses, excluded when hunting the runner-up
+# so the runner-up is a genuinely different peak and not the winner's own skirt.
+_GROSS_PEAK_HALFWIDTH_BINS = 2
 
 
 def _smoothed_hist_peak(d, binsize, gaussian_sigma):
@@ -203,6 +218,35 @@ class OffsetHistogramMatch(MatchCatalogs):
         ``id`` values the solve assigned to each detector catalog.
     refcat_mag_col : str
         Reference-catalog magnitude column (``'mag'`` in campfire-refcat-v1).
+
+    Attributes
+    ----------
+    diag : dict
+        Peak-confidence numbers from the **most recent** ``__call__`` (cleared at
+        the top of each call, so it never mixes two passes). Keys, all optional
+        (a stage that did not run contributes nothing):
+
+        ``gross_peak``, ``gross_runner_up``, ``gross_contrast``, ``gross_mass``
+            Gross 2-D offset histogram (``searchrad`` passes only): the winning
+            bin's smoothed height, the tallest height outside its +-2-bin
+            neighbourhood, their ratio, and the pair count in the winner's
+            neighbourhood (the mass the sub-bin centroid was measured from). A
+            contrast near 1 means a second gross offset was nearly as popular —
+            the clustering-scale false peak that dragged the COSMOS A2/A3
+            exposures.
+        ``dx_peak`` / ``dy_peak``, ``dx_fwhm_arcsec`` / ``dy_fwhm_arcsec``,
+        ``dx_contrast`` / ``dy_contrast``
+            Per-axis consensus peak from the rotation-slope scan: the winning
+            slope's smoothed peak height, that peak's FWHM in tangent-plane
+            arcsec, and its height over the tallest peak from a *well-separated*
+            slope (see :meth:`_histogram_cut`). A ``nan`` contrast means the scan
+            was degenerate — no slope was distinguishable from the winner — which
+            is what a collapsed ``hist_binsize_arcsec`` produces.
+        ``hist_binsize_arcsec``
+            The consensus histogram bin as actually used (``binsize_px`` ×
+            ``tp_pscale``). Expect a small fraction of an arcsec; a value near or
+            above the offset distribution's own width means the whole consensus
+            stage collapsed to one bin and selected nothing.
     """
 
     def __init__(self, *, searchrad=None, d2d_max=1.5, binsize_px=0.02,
@@ -228,6 +272,11 @@ class OffsetHistogramMatch(MatchCatalogs):
         self.delta_mag_lim = delta_mag_lim
         self.image_mags = image_mags
         self.refcat_mag_col = refcat_mag_col
+        # Peak-confidence stash for the last __call__ (see the class docstring):
+        # the MatchCatalogs contract lets only row indices out, so the numbers
+        # ride the instance. An instance reused across coarse passes is
+        # overwritten each call; the solve snapshots the pass it keeps.
+        self.diag = {}
 
     # -- gross translation (2-D offset histogram) ---------------------------
 
@@ -239,6 +288,10 @@ class OffsetHistogramMatch(MatchCatalogs):
         image sources), so — unlike a pair-enumerating matcher — memory is
         bounded by the histogram, not the pair count. The peak is refined by
         an intensity-weighted centroid over its ±2-bin neighbourhood.
+
+        Records the winner's height, the runner-up height (tallest bin outside
+        that same neighbourhood), their contrast and the neighbourhood mass in
+        ``self.diag`` — the triage numbers for a low-contrast (ambiguous) lock.
         """
         r = float(self.searchrad)
         nbins = max(int(np.ceil(2.0 * r / _GROSS_BIN_ARCSEC)), 4)
@@ -267,10 +320,24 @@ class OffsetHistogramMatch(MatchCatalogs):
 
         i, j = np.unravel_index(int(np.argmax(acc)), acc.shape)
         centers = 0.5 * (edges[:-1] + edges[1:])
-        i0, i1 = max(i - 2, 0), min(i + 3, nbins)
-        j0, j1 = max(j - 2, 0), min(j + 3, nbins)
+        h = _GROSS_PEAK_HALFWIDTH_BINS
+        i0, i1 = max(i - h, 0), min(i + h + 1, nbins)
+        j0, j1 = max(j - h, 0), min(j + h + 1, nbins)
         patch = acc[i0:i1, j0:j1]
         total = patch.sum()
+
+        # Runner-up: the tallest bin OUTSIDE the winner's neighbourhood, so a
+        # peak straddling bin edges cannot masquerade as its own rival.
+        rival = acc.copy()
+        rival[i0:i1, j0:j1] = 0.0
+        peak = float(acc[i, j])
+        runner_up = float(rival.max())
+        self.diag.update(
+            gross_peak=peak, gross_runner_up=runner_up,
+            gross_contrast=(peak / runner_up if runner_up > 0
+                            else float('nan')),
+            gross_mass=float(total))
+
         if total <= 0:
             return None
         dx0 = float((patch.sum(axis=1) * centers[i0:i1]).sum() / total)
@@ -280,9 +347,19 @@ class OffsetHistogramMatch(MatchCatalogs):
     # -- per-axis histogram cut (rotation scan + rough cut + sigma clip) ----
 
     def _histogram_cut(self, d, c, mask, *, binsize, gaussian_sigma,
-                       rough_min, rough_max):
+                       rough_min, rough_max, label=None):
         """One JHAT ``histogram_cut``: refine *mask* by the consensus peak of
-        offsets *d* against cross coordinate *c* (rotation-slope scan)."""
+        offsets *d* against cross coordinate *c* (rotation-slope scan).
+
+        When *label* is given (``'dx'``/``'dy'``), the winning peak's height,
+        FWHM (tangent-plane arcsec) and contrast are recorded in ``self.diag``.
+        The contrast's denominator is the tallest peak from a slope **far enough
+        from the winner to be a different consensus**: neighbouring scan steps
+        de-rotate the offsets by far less than one peak width, so their heights
+        are near-identical and a plain second-best would report ~1.0 for every
+        solve, decisive or not. The exclusion half-width is therefore the slope
+        change that displaces the outermost source by one peak FWHM.
+        """
         idx = np.flatnonzero(mask)
         if idx.size < _MIN_PAIRS:
             return mask
@@ -293,15 +370,29 @@ class OffsetHistogramMatch(MatchCatalogs):
         c0 = 0.5 * (float(np.min(c_sel)) + float(np.max(c_sel)))
         c_rel = c_sel - c0
 
+        slopes = np.linspace(-self.slope_max, self.slope_max,
+                             self.slope_nsteps + 1)
+        heights = np.empty(slopes.size, dtype=float)
         best = None   # (height, slope, center, fwhm)
-        for slope in np.linspace(-self.slope_max, self.slope_max,
-                                 self.slope_nsteps + 1):
+        for k, slope in enumerate(slopes):
             center, height, fwhm = _smoothed_hist_peak(
                 d_sel - slope * c_rel, binsize, gaussian_sigma)
+            heights[k] = height
             if best is None or height > best[0]:
                 best = (height, slope, center, fwhm)
 
-        _, slope, center, fwhm = best
+        height, slope, center, fwhm = best
+        if label is not None:
+            far = np.abs(slopes - slope) > (
+                fwhm / max(float(np.max(np.abs(c_rel))), 1e-12))
+            runner_up = float(heights[far].max()) if np.any(far) else 0.0
+            self.diag.update({
+                f'{label}_peak': float(height),
+                f'{label}_fwhm_arcsec': float(fwhm),
+                f'{label}_contrast': (height / runner_up if runner_up > 0
+                                      else float('nan')),
+            })
+
         rough = float(np.clip(self.nfwhm * fwhm, rough_min, rough_max))
         d_rot = d - slope * (c - c0)
         rough_mask = mask & (np.abs(d_rot - center) <= rough)
@@ -339,6 +430,10 @@ class OffsetHistogramMatch(MatchCatalogs):
     def __call__(self, refcat, imcat, tp_pscale=1.0, tp_units=None, **kwargs):
         from scipy.spatial import cKDTree
 
+        # Peak confidence describes THIS call only — clear it up front so a
+        # short-circuited call can never report the previous pass's numbers.
+        self.diag = {}
+
         for cat, side in ((refcat, 'reference'), (imcat, 'image')):
             for col in ('TPx', 'TPy'):
                 if col not in cat.colnames:
@@ -359,6 +454,11 @@ class OffsetHistogramMatch(MatchCatalogs):
         gaussian_sigma = self.gaussian_sigma_px * pscale
         rough_min = self.rough_cut_px_min * pscale
         rough_max = self.rough_cut_px_max * pscale
+        # The consensus histogram's bin size AS EXECUTED (arcsec) — recorded
+        # because every ``*_px`` knob is scaled by the ``tp_pscale`` tweakwcs
+        # hands us, so this one number says whether the consensus stage resolved
+        # the offset distribution at all or collapsed it into a single bin.
+        self.diag['hist_binsize_arcsec'] = float(binsize)
 
         tree = cKDTree(ref_xy)
 
@@ -389,13 +489,13 @@ class OffsetHistogramMatch(MatchCatalogs):
         im_y = im_xy[:, 1]
 
         if self.histocut_order == 'dxdy':
-            axes = ((dx, im_y), (dy, im_x))
+            axes = ((dx, im_y, 'dx'), (dy, im_x, 'dy'))
         else:
-            axes = ((dy, im_x), (dx, im_y))
-        for d, c in axes:
+            axes = ((dy, im_x, 'dy'), (dx, im_y, 'dx'))
+        for d, c, label in axes:
             mask = self._histogram_cut(
                 d, c, mask, binsize=binsize, gaussian_sigma=gaussian_sigma,
-                rough_min=rough_min, rough_max=rough_max)
+                rough_min=rough_min, rough_max=rough_max, label=label)
 
         im_idx = np.flatnonzero(mask)
         if im_idx.size < _MIN_PAIRS:

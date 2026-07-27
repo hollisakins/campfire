@@ -29,6 +29,81 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- NIRCam `align` now **pools both modules into one coarse fit by default**
+  (`[nircam.align].pool_modules`, flipped `false` → `true`). Pooling was off
+  because a spurious per-module SIAF offset could cross-contaminate the shared
+  fit; the offset that motivated that caution is **not** SIAF — it is
+  differential velocity aberration, a scale no pooled `rshift` can express, now
+  removed deterministically by `dva_repivot` (below). With that fix plus
+  significance-based fine-fit acceptance, a pooled solve leaves no per-module
+  systematic: on f410m the module-to-module offset against the reference catalog
+  is 0.26 mas with 93.3% of detectors carrying their own fine fit, and no new
+  NOT_ALIGNED. Pooling is established **safe**; its **benefit is not
+  quantified** — under the previous acceptance test it was a wash on f410m
+  (0.215 vs 0.210 mas), and no matched non-pooled arm was run under the new one.
+  It is enabled because a shared coarse fit is better conditioned (twice the
+  sources for LW, where a per-module pool is a single detector), which should
+  help sparse / low-match exposures — the regime that remains untested. Set
+  `pool_modules = false` to restore per-module fits.
+- NIRCam `align` now accepts the **per-detector fine fit on the significance of
+  the shift it applies**, not on a residual improvement
+  (`[nircam.align].fine_min_significance`, default 1.4). The choice between the
+  pooled coarse attitude and a detector's own fit is a bias/variance trade-off:
+  the pool averages ~M times more pairs, so keeping it is right when the
+  detector has no offset of its own, and taking the individual fit is right when
+  that offset exceeds the noise of estimating it — i.e. when
+  `|shift| > k·σ/√n`. The previous test (`new_resid < resid`) could not express
+  this: it judged the fit on a **re-matched** sample rather than the one the fit
+  minimized, so with no offset present it was a coin flip. Measured on COSMOS
+  f410m (2-detector pools) and f210m (8-detector pools) with the fine fit
+  disabled, so per-detector offsets were observed **unbiased** — in a normal run
+  accepted detectors have the offset fitted away and rejected ones are selected
+  for having a small one: median `t` = 3.1 / 3.4 against a null expectation of
+  1.18 (real offsets of 3.0 / 5.0 mas versus 1.0 / 1.4 mas of fit noise). The old
+  test behaved like `t > 3`, accepting only 44% / 59% and leaving 1.69 / 1.96 mas
+  of per-detector positional error; `k = 1.4` leaves 0.94 / 1.39 mas — a 44% /
+  29% reduction. Theory agrees independently: minimum MSE sits at
+  `√(2 − 1/M)` = 1.22 (M=2) to 1.41 (M=8), and the empirical optimum landed on
+  exactly those values; the optimum is flat over 1.0–1.5. A fit whose residual
+  degrades by more than 25% is still rejected however significant its shift, and
+  the ladder floors, coverage gate and `max_residual_arcsec` backstop are
+  unchanged. The statistic is **normalized for the fit geometry**: a richer
+  geometry moves sources further on noise alone (mean squared noise displacement
+  `(p/2)·σ²/n` for a `p`-parameter fit), so the standard error carries a
+  `√(p/2)` factor — 1.0 `shift`, 1.22 `rshift`, 1.41 `rscale`, 1.73 `general`.
+  Without it a noise-only `general` fit would score ~1.7× too high and clear the
+  gate on variance alone; with it `t` is ~Rayleigh(1) under the null for every
+  geometry, so one threshold keeps the same false-accept rate throughout. On
+  COSMOS the practical effect is small (matched 40-exposure f410m subset:
+  97.5% → 96.2% accepted, identical 0.501 mas refcat differential), because the
+  default ceiling is `rshift` and the observed `t` sits well above the
+  threshold; it matters for the richer geometries. The 93.3% / 91.0% figures
+  above were measured before this normalization and are ~1 point high.
+  **Output changes for every NIRCam exposure** (more detectors now carry their
+  individual fit). `fine_min_significance = 0` accepts every non-degrading fit.
+- NIRCam `align` now **re-references the differential velocity aberration (DVA)
+  correction to a pool-common pivot** before solving
+  (`[nircam.align].dva_repivot`, default on; `dva_pivot = "pool" | "boresight"`).
+  `jwst.assign_wcs` corrects DVA per detector, scaling about *that detector's
+  own* aperture reference (`dva_corr_model` builds
+  `v' = v_ref + va_scale*(v - v_ref)`), so each reference point never moves and
+  the separation between two detectors' reference points keeps the full
+  uncorrected aberration, `(1 - va_scale) * |Δv_ref|`. For the NIRCam LW pair
+  (|Δv_ref| = 175.34″) at COSMOS's |1 − va_scale| ~ 1e-4 that is ~13 mas —
+  measured on 3258 COSMOS LW exposures as a module-to-module differential
+  matching the prediction in sign and magnitude (ratio 0.92 / 1.10 in the
+  field's two visibility windows, where `VA_SCALE` straddles 1; the residual
+  lies entirely along the module baseline, perpendicular component
+  +0.14 ± 3.62 mas). The residual is a pure *scale* about a point outside each
+  detector, which a pooled `rshift` cannot express — it is what makes
+  `pool_modules` lossy. Re-referencing applies a per-detector shift of
+  `(va_scale - 1) * (v_ref - v_pivot)`, rebuilt with jwst's own
+  `dva_corr_model`. A strict no-op for a single-detector pool (LW with
+  `pool_modules = false`); **SW output changes**, since a module's four
+  detectors span ~130″ and currently carry up to ~5 mas of the same error that
+  the pooled fit must absorb as residual. Rejected pools and residual-gated
+  detectors still hand back the untouched on-disk WCS. Set
+  `dva_repivot = false` to restore the previous behaviour.
 - Mosaic-level background subtraction is now **depth-aware**
   (`[nircam.resample].wht_aware`, default on). The `SubtractBackground` source
   mask — tier detection and the ring-clip ceiling — is evaluated on the
@@ -216,6 +291,28 @@ Release procedure: edit the `## Unreleased` section below, then run
   omitted grown pixels from the plot entirely.
 
 ### Infrastructure
+- NIRCam `align` now writes **diagnostics for independent validation** of every
+  solve. Its self-reported residual is circular — measured on the very sample the
+  matcher selected — so a solution locked onto the wrong sources reports a small
+  residual just as happily as a right one. Two new outputs make an outside check
+  possible. (1) An `ALGNCAT` binary table per aligned detector: one row per
+  detection with `x`/`y`, the `ra`/`dec` the file's own corrected WCS gives, the
+  Kron photometry the solve selected on, and the match outcome (`matched`,
+  `sep_arcsec`, and `ref_ra`/`ref_dec` as *values* — reference indices would point
+  into a per-solve footprint-clipped catalog nothing downstream can reconstruct),
+  so overlapping exposures can be cross-checked source-by-source without
+  resampling anything. (2) `ALGN*` primary-header keywords: the detection /
+  one-to-one-match / in-footprint-refcat counts, plus the offset-histogram
+  matcher's own peak confidences — gross 2-D-histogram peak, runner-up, contrast
+  and neighbourhood mass, the per-axis consensus peak heights / FWHMs /
+  contrasts, and the histogram bin size as actually executed — which *do*
+  separate a decisive lock from an ambiguous one. Nothing is read back by the
+  pipeline: no gate, WCS, or pixel value changes. `ALGNCAT` rides the existing
+  replace-or-append path so `--overwrite` re-solves swap it in place (verified
+  byte-stable over five consecutive re-solves), and a `NOT_ALIGNED` re-run flags
+  a leftover catalog with `ALGNSTAL = T` rather than deleting the HDU, which
+  would dangle the datamodel's `extra_fits` reference. Cost is ~40–46 kB per
+  ~117 MB canonical (~440–510 rows).
 - NIRCam `bkg` gains a **DQ pathology guard** so a broken upstream calibration
   step can no longer hard-fail the whole `process` phase. When an aggressive-DQ
   class (`JUMP_DET` / `SATURATED` / `PERSISTENCE`) blankets more than

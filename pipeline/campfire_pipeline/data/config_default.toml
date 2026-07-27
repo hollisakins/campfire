@@ -448,8 +448,45 @@
     # catalogs (39% of COSMOS LW exposures under the previous XYXYMatch).
     # All detectors of a pool share ONE offset histogram, so pooling makes the
     # consensus peak stronger, not weaker.
-    pool_modules      = false   # false: coarse fit per module (A, B separate);
-                                # true: pool both modules into one coarse fit
+    # true: pool both modules into ONE coarse fit; false: fit per module (A, B
+    # separate). Pooling was previously off because a spurious per-module SIAF
+    # offset could cross-contaminate the shared fit. The offset that motivated
+    # that caution turned out NOT to be SIAF — it is differential velocity
+    # aberration (a scale a pooled rshift cannot express), now removed
+    # deterministically by `dva_repivot`, so the original objection no longer
+    # applies. With that fix plus significance-based fine-fit acceptance, a
+    # pooled solve leaves no per-module systematic: measured on f410m, the
+    # module-to-module offset against the reference catalog is 0.26 mas with
+    # 93.3% of detectors carrying their own fine fit.
+    # Pooling is established SAFE; its BENEFIT is not quantified — on f410m
+    # under the old acceptance test it was a wash (0.215 vs 0.210 mas), and no
+    # matched non-pooled arm was run under the new one. It is on because a
+    # shared coarse fit is better conditioned (twice the sources for LW, where a
+    # per-module pool is a single detector), which should help sparse or
+    # low-match exposures — the regime that is still untested.
+    pool_modules      = true
+    # --- Differential velocity aberration (DVA) re-reference ------------------
+    # jwst's assign_wcs corrects DVA per detector, scaling about THAT detector's
+    # own aperture reference (dva_corr_model(va_scale, v2_ref, v3_ref) builds
+    # v' = v_ref + va_scale*(v - v_ref)). Each reference point therefore never
+    # moves, and the SEPARATION between two detectors' reference points keeps the
+    # full uncorrected aberration: (1 - va_scale) * |dv_ref|. For the NIRCam LW
+    # pair (|dv_ref| = 175.34") at COSMOS's |1 - va_scale| ~ 1e-4 that is ~13 mas
+    # — measured on 3258 COSMOS LW exposures as a module-to-module differential
+    # matching this prediction in sign and magnitude.
+    #
+    # That residual is a pure SCALE about a point outside each detector, which a
+    # pooled `rshift` cannot express — so it is exactly what makes pool_modules
+    # lossy. Re-referencing every detector of a pool to one shared pivot removes
+    # it (a per-detector shift of (va_scale-1)*(v_ref - v_pivot)).
+    #
+    # A strict no-op for a single-detector pool (LW with pool_modules=false), so
+    # it is safe on by default; for a multi-detector SW pool it also removes the
+    # smaller intra-pool residual (~5 mas across a module's ~130" span).
+    dva_repivot       = true    # re-reference DVA to a pool-common pivot
+    dva_pivot         = "pool"  # "pool": centroid of the pool's v2_ref/v3_ref
+                                #   (leaves the pool's mean position unchanged);
+                                # "boresight": V2=V3=0
     coarse_searchrad  = 70.0    # arcsec; gross-shift 2-D-hist radius (>= max
                                 # acquisition offset to recover; 70" covers 60")
     refine_niter      = 3       # coarse match->fit->rematch iters (recovers roll)
@@ -490,6 +527,25 @@
     fine_min_rshift   = 4         # >= this -> allow rshift
     fine_min_shift    = 3         # >= this -> allow shift; below -> keep coarse
                                   # (= jhat's tweakreg minobj)
+    # Acceptance: take the per-detector fit when the shift it applies is
+    # SIGNIFICANT against the noise adopting it costs, t = |shift|/(sigma/sqrt n).
+    # Keeping the pooled coarse attitude is right when a detector has no offset
+    # of its own (the pool averages ~M times more pairs); the per-detector fit is
+    # right when its offset exceeds the noise of estimating it. Choosing on a
+    # residual IMPROVEMENT instead cannot express that trade-off — the fit is
+    # judged on a re-matched sample rather than the one it minimized, so with no
+    # offset present it is a coin flip.
+    # Measured on COSMOS f410m (2-detector pools) and f210m (8-detector pools)
+    # with the fine fit disabled, so the per-detector offsets were observed
+    # unbiased: median t = 3.1 / 3.4 against a null expectation of 1.18 — real
+    # offsets of 3.0 / 5.0 mas versus 1.0 / 1.4 mas of fit noise. The old
+    # residual test behaved like t > 3, accepting only 44% / 59% and leaving
+    # 1.69 / 1.96 mas of per-detector error; 1.4 leaves 0.94 / 1.39 mas.
+    # Theory agrees: minimum MSE sits at sqrt(2 - 1/M) = 1.22 (M=2) .. 1.41
+    # (M=8), and the empirical optimum landed on exactly those values. The
+    # optimum is FLAT over 1.0-1.5, so the exact choice is not delicate.
+    # 0 accepts every fit that does not degrade the residual.
+    fine_min_significance = 1.4
     tolerance         = 0.05      # arcsec; QA/reporting only — flags a detector
                                   # as within tolerance; gates nothing
     match_radius      = 0.5       # arcsec; 1-to-1 NN radius for residuals + fine match
