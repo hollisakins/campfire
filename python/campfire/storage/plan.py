@@ -159,7 +159,10 @@ class PushPlan:
         if self.fast_skipped:
             parts.append(f"{self.fast_skipped} via stat fast-path")
         if self.backfill:
-            parts.append(f"{len(self.backfill)} wcs_hash backfilled")
+            # "reconciled", not "backfilled": the plan only determines these —
+            # whether the registry write happens is the caller's call (a dry run
+            # never writes). The actual write count is printed by the backfill.
+            parts.append(f"{len(self.backfill)} legacy wcs_hash reconciled")
         if self.missing:
             parts.append(f"{len(self.missing)} missing locally")
         return ", ".join(parts)

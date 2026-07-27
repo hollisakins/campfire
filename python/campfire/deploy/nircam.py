@@ -629,8 +629,11 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     png_upload_list = [t[0] for t in png_tasks]
     osn_tasks = fits_tasks + expmap_tasks + png_upload_list + layout_tasks
     store = open_reducer_store()
+    # apply_backfill: this path is past every dry-run return, so it is a real
+    # deploy — legacy exposure rows proven unchanged can learn their wcs_hash.
     plan, _server_rows = plan_remote_push(
-        client, store, osn_tasks, backend=_CANONICAL_BACKEND)
+        client, store, osn_tasks, backend=_CANONICAL_BACKEND,
+        apply_backfill=True)
     print(f"\nPlan: {plan.summary()}")
 
     # --- Upload new/changed products to OSN, registering per batch -----------

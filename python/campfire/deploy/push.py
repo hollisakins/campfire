@@ -136,12 +136,21 @@ def plan_remote_push(
     backend: str,
     max_workers: Optional[int] = None,
     progress: bool = True,
+    apply_backfill: bool = False,
 ) -> tuple[PushPlan, dict[str, dict]]:
     """Plan a push: live server-row fetch + local fast-path + classification.
 
     Returns ``(plan, server_rows)`` — callers that index derived tables (the
     NIRCam mosaic path) need the server rows for the sizes/hashes of
     dedup-skipped objects.
+
+    ``apply_backfill`` writes ``plan.backfill`` (legacy exposure rows the
+    planner *proved* unchanged) to the server registry. It defaults to **False**
+    because planning is also what a dry run does: ``campfire push --dry-run``
+    and scoped ``campfire status`` both call this and then return, and a command
+    advertised as a read-only diff must not mutate ``storage_objects``. Only the
+    paths that actually go on to transfer bytes opt in. Skipping the write is
+    free: the reconciliation is re-derived on the next run.
     """
     from campfire.deploy.registry import backfill_wcs_hashes
 
@@ -152,11 +161,10 @@ def plan_remote_push(
     plan = plan_push(tasks, server_rows, local_rows=local_rows,
                      max_workers=max_workers, progress=progress)
 
-    # Legacy exposure rows the planner proved unchanged learn their astrometric
-    # digest here — no bytes move, and the next push compares on the full
-    # exposure identity. Best-effort: a failed backfill only means the same
-    # reconciliation runs again next time.
-    if plan.backfill:
+    # Legacy exposure rows learn their astrometric digest — no bytes move, and
+    # the next push compares on the full exposure identity. Best-effort: a
+    # failed backfill only means the same reconciliation runs again next time.
+    if plan.backfill and apply_backfill:
         try:
             n = backfill_wcs_hashes(client, plan.backfill)
             if n:
@@ -342,7 +350,8 @@ def push_observation(
 
     client = get_supabase_client(config)
     store = open_reducer_store()
-    plan, _server_rows = plan_remote_push(client, store, tasks, backend='osn')
+    plan, _server_rows = plan_remote_push(client, store, tasks, backend='osn',
+                                          apply_backfill=not dry_run)
     print(f"  Plan: {plan.summary()}")
     for t in plan.missing:
         print(f"    missing locally: {t.local_path}")
@@ -461,7 +470,8 @@ def push_field(
 
     client = get_supabase_client(config)
     store = open_reducer_store()
-    plan, _server_rows = plan_remote_push(client, store, tasks, backend='osn')
+    plan, _server_rows = plan_remote_push(client, store, tasks, backend='osn',
+                                          apply_backfill=not dry_run)
     print(f"  Plan: {plan.summary()}")
 
     if dry_run or not plan.to_upload:
