@@ -45,12 +45,20 @@ def _canonical(tmp_path):
 
 
 def _stamp_aligned(path):
-    """Simulate a completed alignment: CFP stamps + align's ALGN_BAK baseline."""
+    """Simulate a completed alignment: CFP stamps, align's ALGN_BAK baseline,
+    and the per-source ALGNCAT + scalar diagnostics a real solve writes."""
+    from astropy.table import Table
     with fits.open(path, mode='update') as h:
         h[0].header['CFP_ALGN'] = 'dof=rshift res=0.01 n=12 rc=abcd1234'
         h[0].header['CFP_JHAT'] = 'gaia.ecsv'
+        h[0].header['ALGNNMAT'] = 12
+        h[0].header['ALGNGCON'] = 5.5
+        h[0].header['ALGNSTAL'] = False
         h.append(fits.ImageHDU(data=np.arange(4, dtype=np.uint8),
                                name='ALGN_BAK'))
+        h.append(fits.BinTableHDU(
+            Table({'ra': [80.0, 80.1], 'dec': [-30.0, -30.1]}),
+            name='ALGNCAT'))
 
 
 def _probe_ra(path):
@@ -75,6 +83,12 @@ def test_first_apply_invalidates_alignment(tmp_path):
         assert 'CFP_ALGN' not in hdr                # stale stamps cleared
         assert 'CFP_JHAT' not in hdr
         assert 'ALGN_BAK' not in h                  # stale baseline dropped
+        # ALGNCAT holds sky positions under the WCS align solved, which this
+        # step just replaced — it must not survive advertising them as current.
+        assert 'ALGNCAT' not in h
+        assert 'ALGNNMAT' not in hdr                # scalar diagnostics too
+        assert 'ALGNGCON' not in hdr
+        assert 'ALGNSTAL' not in hdr
         assert 'WCS_BAK' in h                       # own backup written
         assert 'SRCMASK' in h                       # untouched by the drop
 

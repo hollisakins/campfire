@@ -162,6 +162,38 @@ def test_not_aligned_preserves_wcs(tmp_path):
         assert np.allclose(after, before[m.path], atol=1e-12)   # WCS untouched
 
 
+def test_not_aligned_clears_scalar_diagnostics(tmp_path):
+    """A file re-solved to NOT_ALIGNED must not keep the counts and peak
+    contrasts of the earlier SUCCESSFUL solve standing beside the rejection —
+    they would read as provenance for the rejected attempt."""
+    from astropy.io import fits
+
+    from campfire_pipeline.nircam.align.apply import (ALGN_DIAG_COMMENTS,
+                                                      ALGN_UNDEF)
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2, seed=3)
+
+    sol = align_exposure_group(members, refcat, config={})
+    assert sol.status == 'SOLVED'
+    measured = [k for k in ALGN_DIAG_COMMENTS
+                if k != 'ALGNSTAL'
+                and fits.getheader(members[0].path, 0).get(k) != ALGN_UNDEF]
+    assert measured, 'expected the successful solve to record some diagnostics'
+
+    # now force a rejection on the same files
+    rng = np.random.default_rng(99)
+    badref = Table({'RA': 80.0 + rng.uniform(-0.05, 0.05, 30),
+                    'DEC': -30.0 + rng.uniform(-0.05, 0.05, 30)})
+    assert align_exposure_group(members, badref, config={},
+                                overwrite=True).status == 'NOT_ALIGNED'
+    for m in members:
+        hdr = fits.getheader(m.path, 0)
+        assert hdr['ALGNSTAL'] is True
+        for key in ALGN_DIAG_COMMENTS:
+            if key == 'ALGNSTAL':
+                continue
+            assert hdr[key] == ALGN_UNDEF, f'{key} kept a stale value'
+
+
 # --- idempotency / overwrite ------------------------------------------------
 
 def test_idempotent_skip(tmp_path):

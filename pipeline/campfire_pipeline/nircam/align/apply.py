@@ -174,6 +174,14 @@ def _stamp_algn(path, value):
     tmp = f'{base}.tmp{ext}'
     with fits.open(path) as hdul:
         hdul[0].header['CFP_ALGN'] = (value, cfp.CFP_COMMENTS['CFP_ALGN'])
+        # Every scalar diagnostic describes ONE solve. A file re-solved to
+        # NOT_ALIGNED must not keep the counts and peak contrasts of an earlier
+        # successful run standing beside the rejection — that would read as
+        # provenance for the rejected attempt. Reset them all to UNDEF; the
+        # all-keys-on-every-solve contract is what makes staleness impossible.
+        for key in ALGN_DIAG_COMMENTS:
+            if key != 'ALGNSTAL':
+                hdul[0].header[key] = (ALGN_UNDEF, ALGN_DIAG_COMMENTS[key])
         hdul[0].header['ALGNSTAL'] = (True, ALGN_DIAG_COMMENTS['ALGNSTAL'])
         hdul.writeto(tmp, overwrite=True)
     os.replace(tmp, path)

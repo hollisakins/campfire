@@ -67,9 +67,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   exactly those values; the optimum is flat over 1.0–1.5. A fit whose residual
   degrades by more than 25% is still rejected however significant its shift, and
   the ladder floors, coverage gate and `max_residual_arcsec` backstop are
-  unchanged. **Output changes for every NIRCam exposure** (more detectors now
-  carry their individual fit). `fine_min_significance = 0` accepts every
-  non-degrading fit.
+  unchanged. The statistic is **normalized for the fit geometry**: a richer
+  geometry moves sources further on noise alone (mean squared noise displacement
+  `(p/2)·σ²/n` for a `p`-parameter fit), so the standard error carries a
+  `√(p/2)` factor — 1.0 `shift`, 1.22 `rshift`, 1.41 `rscale`, 1.73 `general`.
+  Without it a noise-only `general` fit would score ~1.7× too high and clear the
+  gate on variance alone; with it `t` is ~Rayleigh(1) under the null for every
+  geometry, so one threshold keeps the same false-accept rate throughout. On
+  COSMOS the practical effect is small (matched 40-exposure f410m subset:
+  97.5% → 96.2% accepted, identical 0.501 mas refcat differential), because the
+  default ceiling is `rshift` and the observed `t` sits well above the
+  threshold; it matters for the richer geometries. The 93.3% / 91.0% figures
+  above were measured before this normalization and are ~1 point high.
+  **Output changes for every NIRCam exposure** (more detectors now carry their
+  individual fit). `fine_min_significance = 0` accepts every non-degrading fit.
 - NIRCam `align` now **re-references the differential velocity aberration (DVA)
   correction to a pool-common pivot** before solving
   (`[nircam.align].dva_repivot`, default on; `dva_pivot = "pool" | "boresight"`).

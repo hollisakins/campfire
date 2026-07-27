@@ -78,6 +78,10 @@ _REFINE_CONVERGE_ARCSEC = 0.01
 _FINE_LADDER = ('general', 'rshift', 'shift')
 # Geometries that fit a rotation and so need spatial coverage to be conditioned.
 _ROTATING = ('general', 'rshift')
+# Free parameters per fine-fit geometry (both coordinates counted): shift is
+# (dx, dy); rshift adds a rotation; rscale adds a scale; general is a full
+# affine. Used to normalize the acceptance statistic — see _fine_significance.
+_FITGEOM_NPARAM = {'shift': 2, 'rshift': 3, 'rscale': 4, 'general': 6}
 
 # Median of a 2-D Gaussian's radial deviation, in units of the per-axis sigma.
 _RAYLEIGH_MEDIAN = np.sqrt(2.0 * np.log(2.0))      # 1.1774
@@ -364,14 +368,18 @@ def _fine_shift_arcsec(coarse, trial, catalog, src_idx):
     ra0, dec0 = coarse.det_to_world(x, y)
     ra1, dec1 = trial.det_to_world(x, y)
     ra0 = np.asarray(ra0, dtype=float); dec0 = np.asarray(dec0, dtype=float)
-    d_ra = (np.asarray(ra1, dtype=float) - ra0) * np.cos(np.radians(dec0))
+    # Wrap the longitude difference into (-180, 180]: a detector straddling
+    # RA=0 otherwise reads a ~360 deg displacement for a milliarcsecond move,
+    # which would make a noise-only fit look overwhelmingly significant.
+    d_ra = (np.asarray(ra1, dtype=float) - ra0 + 180.0) % 360.0 - 180.0
+    d_ra *= np.cos(np.radians(dec0))
     d_dec = np.asarray(dec1, dtype=float) - dec0
     return float(np.median(np.hypot(d_ra, d_dec)) * 3600.0)
 
 
-def _fine_significance(shift_arcsec, new_resid, new_n):
-    """``t = |shift| / (sigma_axis / sqrt(n))`` — the fine fit's shift measured
-    against the estimation noise that adopting it costs.
+def _fine_significance(shift_arcsec, new_resid, new_n, geom='shift'):
+    """``t = |shift| / se(geom)`` — the fine fit's shift measured against the
+    estimation noise that adopting it costs.
 
     This is the quantity the accept/reject decision is really about. Keeping the
     pooled coarse attitude is right when the detector has no offset of its own,
@@ -386,11 +394,23 @@ def _fine_significance(shift_arcsec, new_resid, new_n):
 
     ``sigma_axis`` comes from the post-fit residual: for a 2-D Gaussian the
     median radial deviation is ``sqrt(2 ln 2)`` per-axis sigmas.
+
+    **Normalized for the fit geometry.** A richer geometry moves sources further
+    on noise alone: summing the leverage over the fitted points gives a mean
+    squared noise displacement of ``(p/2) * sigma^2/n`` for a ``p``-parameter fit,
+    so the standard error carries a ``sqrt(p/2)`` factor — 1.0 for ``shift``,
+    1.22 for ``rshift``, 1.41 for ``rscale``, 1.73 for ``general``. Without it a
+    noise-only ``general`` fit would score ~1.7x too high and clear the gate on
+    variance alone. With it, ``t`` is ~Rayleigh(1) under the null for EVERY
+    geometry, so one threshold has the same false-accept rate
+    (``exp(-k^2/2)``) throughout and the k derivation below stays valid.
     """
     if (not np.isfinite(shift_arcsec) or not np.isfinite(new_resid)
             or new_n < 2 or new_resid <= 0):
         return float('nan')
-    se = (new_resid / _RAYLEIGH_MEDIAN) / np.sqrt(new_n)
+    nparam = _FITGEOM_NPARAM.get(geom, 2)
+    se = (np.sqrt(nparam / 2.0) * (new_resid / _RAYLEIGH_MEDIAN)
+          / np.sqrt(new_n))
     return float('inf') if se <= 0 else float(shift_arcsec / se)
 
 
@@ -636,7 +656,7 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                     # significant its shift.
                     tstat = _fine_significance(
                         _fine_shift_arcsec(corr, trial, d.catalog, src_idx),
-                        new_resid, new_n)
+                        new_resid, new_n, geom)
                     degraded = (np.isfinite(new_resid) and np.isfinite(resid)
                                 and new_resid > resid * _FINE_MAX_DEGRADE)
                     if (np.isfinite(new_resid) and np.isfinite(tstat)

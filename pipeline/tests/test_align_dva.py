@@ -75,7 +75,7 @@ def test_va_scale_read_back_from_wcs():
 
 
 def test_va_scale_none_without_dva_step():
-    from tests._align_gwcs import HAVE_PERSISTABLE_WCS, make_persistable_wcs
+    from _align_gwcs import HAVE_PERSISTABLE_WCS, make_persistable_wcs
     if not HAVE_PERSISTABLE_WCS:
         pytest.skip('no persistable wcs builder')
     assert va_scale_from_wcs(make_persistable_wcs()) is None
