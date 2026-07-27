@@ -36,7 +36,7 @@ DEFAULT_NOD_TYPE = '3-SHUTTER-SLITLET'
 # programs actually did. The jwst association rules make the same assumption:
 # they read subpxpts through `sources=["subpxpns", "subpxpts"]` and treat
 # missing / null / zero alike (rules_level2_base.nrs_fss_nods_overlap).
-DEFAULT_PRIMARY_DITHER_POINTS = 1
+DEFAULT_PRIMARY_DITHER_POINTS = 3
 DEFAULT_SUBPIXEL_DITHER_POINTS = 1
 
 # NIRSpec spectroscopic exposure types the pipeline can reduce. MSA (MOS) is
