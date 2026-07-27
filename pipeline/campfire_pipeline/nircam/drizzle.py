@@ -254,7 +254,7 @@ def _apply_output_metadata(model, *, blender, pixel_scale, pixfrac, kernel,
 def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
                     cmpfrver, exptime, *, pixel_scale, pixfrac, kernel,
                     weight_type, blender=None, n_pointings=None,
-                    pixel_scale_ratio=None):
+                    pixel_scale_ratio=None, compress_context=True):
     """Write i2d FITS with the schema bkgsub and _split_extensions consume.
 
     Uses ``stdatamodels.jwst.datamodels.ImageModel`` so the HDU layout
@@ -282,10 +282,23 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
     model.data = sci.astype(np.float32, copy=False)
     model.err = err.astype(np.float32, copy=False)
     model.wht = wht.astype(np.float32, copy=False)
-    if ctx.ndim == 3 and ctx.shape[0] == 1:
-        model.con = ctx[0].astype(np.int32, copy=False)
+    ctx_out = (ctx[0] if (ctx.ndim == 3 and ctx.shape[0] == 1) else ctx)
+    ctx_out = ctx_out.astype(np.int32, copy=False)
+
+    # CON is written tile-compressed (see _swap_in_compressed_context). It is
+    # by far the largest extension: one int32 plane per 32 inputs, each at FULL
+    # tile size, so its cost is tile_area * n_inputs/32 — 17 planes / 80 GiB for
+    # a 1.26 Gpix tile with 534 inputs, against 14 GiB for SCI+ERR+WHT combined.
+    # Almost every bit is zero (a pixel is touched by a handful of inputs, not
+    # hundreds), so it compresses ~50x losslessly.
+    #
+    # A 1x1x1 placeholder goes in first so `model.save` does not materialise the
+    # uncompressed array on disk at all; without it the swap below would mean
+    # writing ~95 GiB and immediately rewriting it.
+    if compress_context:
+        model.con = np.zeros((1, 1, 1), dtype=np.int32)
     else:
-        model.con = ctx.astype(np.int32, copy=False)
+        model.con = ctx_out
 
     _apply_output_metadata(
         model, blender=blender, pixel_scale=pixel_scale,
@@ -311,6 +324,9 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
 
     model.save(output_path)
 
+    if compress_context:
+        _swap_in_compressed_context(output_path, ctx_out)
+
     with fits.open(output_path, mode='update') as hdul:
         hdul[0].header['CMPFRTIM'] = (
             datetime.now(timezone.utc).isoformat(),
@@ -320,6 +336,46 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
             cmpfrver,
             'CAMPFIRE git commit (or pinned version)',
         )
+
+
+def _swap_in_compressed_context(output_path, ctx):
+    """Replace the placeholder CON extension with a tile-compressed one.
+
+    ``model.save`` wrote a 1x1x1 CON placeholder, so the file on disk is just
+    SCI+ERR+WHT and the rewrite here is cheap. GZIP_1 is lossless on the int32
+    bitmask (verified bit-identical on round-trip); the extension keeps the name
+    ``CON`` and reads back transparently through ``astropy.io.fits`` —
+    ``hdul['CON'].data`` returns the same int32 array as before.
+
+    Non-astropy readers see a compressed-image BinTable rather than a plain
+    ImageHDU. Nothing in this repository reads CON (the only references are the
+    two writes in this module), so that is a compatibility note rather than a
+    breakage; ``[nircam.resample].compress_context = false`` restores the
+    uncompressed extension.
+    """
+    tmp = f'{output_path}.ctx.tmp'
+    with fits.open(output_path) as hdul:
+        idx = hdul.index_of('CON')
+        out = fits.HDUList()
+        for i, hdu in enumerate(hdul):
+            if i == idx:
+                comp = fits.CompImageHDU(
+                    data=ctx, name='CON', compression_type='GZIP_1')
+                # keep any provenance the datamodel put on the placeholder
+                for card in hdu.header.cards:
+                    k = card.keyword
+                    if k and k not in comp.header and not k.startswith(
+                            ('NAXIS', 'BITPIX', 'PCOUNT', 'GCOUNT', 'XTENSION',
+                             'EXTNAME', 'SIMPLE', 'ZIMAGE', 'ZCMPTYPE')):
+                        try:
+                            comp.header[k] = (card.value, card.comment)
+                        except Exception:
+                            pass
+                out.append(comp)
+            else:
+                out.append(hdu.copy())
+        out.writeto(tmp, overwrite=True)
+    os.replace(tmp, output_path)
 
 
 def _sanitize_variance(var_rnoise, var_poisson, var_flat, weight):
@@ -462,6 +518,7 @@ def drizzle_tile(
     good_bits='~DO_NOT_USE',
     blendheaders=True,
     reduction_version='unknown',
+    compress_context=True,
 ):
     """Drizzle ``crf_files`` into a single i2d at ``output_path``.
 
@@ -598,6 +655,7 @@ def drizzle_tile(
         weight_type=weight_type,
         blender=blender if contributing > 0 else None,
         n_pointings=contributing if contributing > 0 else None,
+        compress_context=compress_context,
         pixel_scale_ratio=pixel_scale_ratio,
     )
 

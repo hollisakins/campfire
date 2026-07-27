@@ -725,6 +725,17 @@
 
 [nircam.resample]
     mode = "tile"
+    # Write the drizzle CONTEXT extension tile-compressed (GZIP_1, lossless).
+    # CON is one int32 plane per 32 inputs, each at FULL tile size, so its cost
+    # is tile_area * n_inputs/32 and it dominates the i2d: an a2744 1.26 Gpix
+    # tile with 534 inputs needs 17 planes = 80 GiB, against 14 GiB for
+    # SCI+ERR+WHT combined. Almost every bit is zero (a pixel is touched by a
+    # handful of inputs, not hundreds), so it compresses ~50x. Measured on that
+    # tile: ~95 GiB -> ~16 GiB.
+    # `hdul['CON'].data` reads back identically through astropy; nothing in this
+    # repository reads CON at all. Set false if an external, non-astropy reader
+    # needs a plain ImageHDU.
+    compress_context = true
     # implementation = "jwst" routes the per-tile drizzle through
     # `jwst.pipeline.calwebb_image3.Image3Pipeline` (stcal Resample,
     # the historical default). "campfire" uses the campfire-native
