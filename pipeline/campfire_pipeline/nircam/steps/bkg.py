@@ -169,14 +169,23 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
     aggressive_dq = mask_cfg.pop('mask_aggressive_dq', True)
     # Pathology guard: an aggressive-DQ class that blankets more than this
     # fraction of the frame is a broken calibration step (e.g. JUMP_DET runaway
-    # on low-NGROUPS ramps), not real transients — folding it into the fit mask
-    # starves the Background2D detrend of unmasked boxes and hard-fails the step.
-    # Such a bit is dropped from the fit mask per-exposure. 1.0 disables the guard.
-    # Default 0.85 targets only the near-total blankets that actually starve the
-    # fit; borderline low-NGROUPS visits (~50% salt-and-pepper) fit fine either
-    # way and are left untouched (consistent across modules).
+    # on low-NGROUPS ramps), not real transients. Such a bit is dropped from the
+    # fit mask per-exposure. 1.0 disables the guard.
+    #
+    # There are TWO failure modes, and the quieter one binds first:
+    #   * loud — the Background2D detrend runs out of unmasked boxes and the
+    #     step hard-fails. Needs a near-total blanket.
+    #   * quiet — the per-amp-row 1/f fit is starved long before that. It does
+    #     not fail; it fits noise and SUBTRACTS it, injecting row/column
+    #     structure. A2744 f444w jw03073008001 (JUMP_DET 79-81%, so nowhere near
+    #     total) left 11.4% of pixels usable, a median of 58 unmasked px per
+    #     amp-row vs 279 on a healthy frame, and injected ~1e-3 MJy/sr.
+    # The old 0.85 default was sized for the loud mode only. Keep this literal
+    # in sync with [nircam.bkg.mask] in config_default.toml, where the full
+    # measurement is recorded — every config path merges over that file today,
+    # so this fallback is unreachable, but it must not drift.
     aggressive_dq_max_frac = float(
-        mask_cfg.pop('mask_aggressive_dq_max_frac', 0.85))
+        mask_cfg.pop('mask_aggressive_dq_max_frac', 0.50))
 
     with ImageModel(exposure_file, memmap=False) as model:
         sci0 = model.data.copy()

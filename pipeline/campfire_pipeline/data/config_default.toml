@@ -213,8 +213,31 @@
         # low-NGROUPS ramps), not real transients — including it would starve the
         # Background2D detrend and hard-fail the step. That bit is dropped from
         # the fit mask for that exposure only (underlying pixels kept as sky).
-        # 0.85 targets only near-total blankets; 1.0 disables the guard.
-        mask_aggressive_dq_max_frac = 0.85
+        # 1.0 disables the guard.
+        #
+        # Lowered 0.85 -> 0.50 (2026-07-27). 0.85 only caught near-total
+        # blankets and let a real runaway through: A2744 f444w
+        # jw03073008001_03201 carries JUMP_DET on 79-81% of every LW detector,
+        # so the guard missed by ~4 points. Folding that bit into the fit mask
+        # left 11.4% of pixels usable and a median of 58 unmasked pixels per
+        # amp-row (a healthy frame has 279). The amp-row GP then estimates each
+        # row offset from ~58 pixels; its self-adapting amplitude clamps to the
+        # noise floor sigma/sqrt(n), which the small n inflates, and the
+        # resulting noise-dominated offsets are applied to ALL pixels —
+        # including the 81% the fit never saw — INJECTING row/column structure
+        # rather than removing it. Measured on that exposure: masked row sigma
+        # 0.00050 (no 1/f) -> 0.00084 (with 1/f) at 0.85, versus 0.00011 at
+        # 0.50. A depth-matched healthy control is unchanged by the switch
+        # (0.00013 either way), so this only alters frames the guard should
+        # always have caught. Across a2744 f444w (540 detectors) 8 sit in the
+        # 50-85% band this newly catches; the population median is 8.7%, so
+        # normal frames are nowhere near the threshold.
+        #
+        # NOTE: the real failure condition is "too few pixels per amp-row
+        # survive to fit", not "one DQ bit exceeds X%". A guard on the resulting
+        # usable fraction would catch this class without a tuned constant; this
+        # change is the minimal, low-risk fix.
+        mask_aggressive_dq_max_frac = 0.50
 
         [nircam.bkg.mask.pixel_scale_factor]
             # Mask length params are angular scales in px, tuned at 30 mas.
