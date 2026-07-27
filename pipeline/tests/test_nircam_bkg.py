@@ -355,3 +355,95 @@ def test_skymatch_invariant_and_banding_removal():
     before, after = band_std(sci), band_std(out)
     for amp in 'ABCD':
         assert after[amp] < 0.3 * before[amp]
+
+
+def _extended_galaxy_scene(rng, n=1600, re=150.0, amp=200.0):
+    """Mostly-sky frame with one very bright, very extended galaxy at centre.
+
+    Three properties are load-bearing and each was found the hard way:
+    a de Vaucouleurs (r^1/4) profile, because a Gaussian's wing is too steep to
+    bias the mesh at all; NO truncation, because a hard cut puts clean sky just
+    outside the mask and removes the bias entirely; and a frame the galaxy
+    occupies only a small part of, because otherwise the galaxy inflates the RMS
+    the 100-sigma tier-0 threshold is measured against and tier 0 never fires.
+    """
+    y, x = np.mgrid[:n, :n]
+    r = np.hypot(x - n / 2, y - n / 2)
+    prof = amp * np.exp(-7.669 * ((np.maximum(r, 1e-3) / re) ** 0.25 - 1.0))
+    sci = (rng.normal(0.0, 1.0, (n, n)) + prof).astype(np.float32)
+    return sci, np.ones((n, n), np.float32), r
+
+
+def _tier_cfg(tier0=False):
+    """Mosaic tiers, using the SHIPPED tier-0 values."""
+    base = dict(ring_radius_in=80, ring_width=4, ring_downsample=4,
+                bg_box_size=10, bg_filter_size=5)
+    if tier0:
+        return dict(base, tier_kernel_size=[25, 25, 15, 5, 2],
+                    tier_npixels=[30000, 15, 10, 3, 1],
+                    tier_nsigma=[100.0, 1.5, 1.5, 1.5, 1.5],
+                    tier_dilate_size=[600, 33, 25, 21, 19])
+    return dict(base, tier_kernel_size=[25, 15, 5, 2],
+                tier_npixels=[15, 10, 3, 1], tier_nsigma=[1.5, 1.5, 1.5, 1.5],
+                tier_dilate_size=[33, 25, 21, 19])
+
+
+def test_tier0_removes_extended_source_oversubtraction_bowl():
+    """A galaxy far larger than bg_box_size is over-subtracted even when fully
+    masked at pixel level: Background2D keeps mesh cells up to
+    bg_exclude_percentile masked at the galaxy edge, samples its outskirts
+    there, and the zoom interpolator extrapolates that gradient inward. Tier 0
+    pushes the mesh boundary out to true sky."""
+    rng = np.random.default_rng(4)
+    sci, err, radius = _extended_galaxy_scene(rng)
+    assert int((sci > 100.0).sum()) > 30000, 'scene must trip the tier-0 floor'
+
+    without = SubtractBackground(**_tier_cfg(tier0=False))
+    m0, _ = without.mask_from_arrays(sci, err)
+    bowl = float(without.estimate_background(sci, m0).background[radius < 50].mean())
+
+    with_t0 = SubtractBackground(**_tier_cfg(tier0=True))
+    m1, _ = with_t0.mask_from_arrays(sci, err)
+    fixed = float(with_t0.estimate_background(sci, m1).background[radius < 50].mean())
+
+    # Guard: without a real bowl the comparison below passes vacuously.
+    assert bowl > 3.0, f'scene did not reproduce the bowl (got {bowl:.2f} sigma)'
+    assert m1.mean() > m0.mean()             # tier 0 actually fired
+    assert abs(fixed) < 0.35 * bowl          # observed ~0.18x
+
+
+def test_tier0_is_a_noop_without_a_large_bright_source():
+    """Selectivity: nsigma=100 with npixels=30000 admits only a >=30k-pixel core
+    above 100 sigma, so ordinary galaxy wings keep their normal flattening."""
+    rng = np.random.default_rng(5)
+    n = 400
+    y, x = np.mgrid[:n, :n]
+    sci = rng.normal(0.0, 1.0, (n, n)).astype(np.float32)
+    for cx, cy, a, s in ((100, 120, 40.0, 6.0), (280, 300, 25.0, 9.0)):
+        sci += a * np.exp(-(((x - cx) ** 2 + (y - cy) ** 2) / (2 * s ** 2)))
+    err = np.ones((n, n), np.float32)
+
+    m0, _ = SubtractBackground(**_tier_cfg(tier0=False)).mask_from_arrays(sci, err)
+    m1, _ = SubtractBackground(**_tier_cfg(tier0=True)).mask_from_arrays(sci, err)
+    assert np.array_equal(m0, m1)
+
+
+def test_shipped_mosaic_tier_config_is_coherent():
+    """The mosaic tiers actually shipped carry tier 0 and stay the same length
+    (the four lists are consumed in lockstep); the per-exposure tiers
+    deliberately do NOT — 30k px / 600 px are sized for a mosaic tile."""
+    from campfire_pipeline.config import get_nircam_step_config, load_config
+    from campfire_pipeline.nircam.field import Field
+
+    cfg = load_config()
+    keys = ('tier_kernel_size', 'tier_npixels', 'tier_nsigma',
+            'tier_dilate_size')
+    mosaic = get_nircam_step_config('resample', cfg, Field.load('cosmos'))
+    assert {len(mosaic[k]) for k in keys} == {5}
+    assert mosaic['tier_nsigma'][0] == 100.0
+    assert mosaic['tier_npixels'][0] == 30000
+    assert mosaic['tier_dilate_size'][0] == 600
+
+    per_exp = (get_nircam_step_config('bkg', cfg, Field.load('cosmos'))
+               .get('mask') or {})
+    assert {len(per_exp[k]) for k in keys} == {4}

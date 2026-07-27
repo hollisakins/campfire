@@ -29,6 +29,27 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- Mosaic background subtraction gains a **large-extended-source pre-tier**
+  (tier 0) in `[nircam.resample]`, fixing a galaxy-shaped over-subtraction bowl.
+  A galaxy far larger than `bg_box_size` is over-subtracted *even when fully
+  masked at the pixel level*: `Background2D` keeps mesh cells masked out to
+  `bg_exclude_percentile` at the galaxy edge, samples its outskirts there, and
+  `BkgZoomInterpolator` extrapolates that gradient inward — a galaxy-shaped
+  `+30..90e-3 MJy/sr` bowl, 4–11σ of sky. The mechanism is the **mesh boundary**,
+  not the pixel mask, so making the source mask deeper does not help; tier 0
+  instead masks the bright core plus a heavy dilation (600 px) so the mesh
+  boundary lands on true sky. Selectivity is what keeps it safe: `nsigma = 100`
+  with `npixels = 30000` admits only objects with a ≥30k-pixel core above 100σ —
+  ~4 per COSMOS 30 mas tile, versus ~120 at 5σ — so the normal aggressive
+  flattening of ordinary galaxy wings is unchanged everywhere else, and it is a
+  strict no-op on tiles with no such object. Verified over a full 152-mosaic
+  COSMOS LW campaign (11 filters, restored from `_i2d_before_bkgsub`): 152/152
+  succeeded, tier 0 fired on 50 tiles and no-opped on the other 102, and in the
+  four LW bands covering the extreme galaxy the 10–21″ annulus went from a
+  `+0.25` bowl to `+2.98e-3` against `σ_sky ~ 7e-3`. Deliberately **not** applied
+  to the per-exposure `[nircam.bkg.mask]` tiers: 30k px / 600 px are sized for a
+  30 mas mosaic tile, not a 2048² frame. Affected mosaics need `--overwrite` to
+  pick up the fix.
 - NIRCam `align` now **pools both modules into one coarse fit by default**
   (`[nircam.align].pool_modules`, flipped `false` → `true`). Pooling was off
   because a spurious per-module SIAF offset could cross-contaminate the shared

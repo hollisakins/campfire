@@ -82,10 +82,25 @@ class SubtractBackground:
     ring_downsample: int = 1
 
     # -- Tiered source masking -------------------------------------------------
-    tier_kernel_size: list = field(default_factory=lambda: [25, 15, 5, 2])
-    tier_npixels: list = field(default_factory=lambda: [15, 10, 3, 1])
-    tier_nsigma: list = field(default_factory=lambda: [1.5, 1.5, 1.5, 1.5])
-    tier_dilate_size: list = field(default_factory=lambda: [33, 25, 21, 19])
+    # Tier 0 is a large-extended-source pre-tier that fires ONLY on the handful
+    # of extremely bright, large galaxies (and comparably bright stars) per tile.
+    # A galaxy far larger than ``bg_box_size`` is fully masked at the pixel level
+    # yet still over-subtracted: ``Background2D`` keeps mesh cells up to
+    # ``bg_exclude_percentile`` masked at the galaxy edge, samples its outskirts
+    # there, and the zoom interpolator extrapolates that gradient inward (a
+    # galaxy-shaped +30..90e-3 MJy/sr bowl, 4-11 sigma of sky). Tier 0 masks the
+    # bright core + a heavy dilation so the mesh boundary lands on true sky.
+    # Selectivity: a HIGH ``tier_nsigma`` (100) plus a large ``tier_npixels``
+    # (30k min connected area) means only objects with a >=30k-px core above
+    # 100*sigma survive -- ~4 per COSMOS 30mas tile (vs ~120 at 5*sigma), so the
+    # normal aggressive flattening of ordinary galaxy wings is UNCHANGED
+    # everywhere else. The heavy ``tier_dilate_size`` (600) compensates for the
+    # small high-sigma footprint and reaches the galaxy's sky radius. It is a
+    # no-op on tiles with no such object. Tiers 1-4 are the compact-source cascade.
+    tier_kernel_size: list = field(default_factory=lambda: [25, 25, 15, 5, 2])
+    tier_npixels: list = field(default_factory=lambda: [30000, 15, 10, 3, 1])
+    tier_nsigma: list = field(default_factory=lambda: [100.0, 1.5, 1.5, 1.5, 1.5])
+    tier_dilate_size: list = field(default_factory=lambda: [600, 33, 25, 21, 19])
 
     # -- Background estimation -------------------------------------------------
     bg_box_size: int = 10
