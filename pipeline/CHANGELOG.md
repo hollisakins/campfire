@@ -28,6 +28,31 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Calibration
+- Per-exposure background: `[nircam.bkg.mask].mask_aggressive_dq_max_frac`
+  lowered **0.85 → 0.50**, fixing a case where the per-amp-row 1/f fit
+  *injected* row/column structure instead of removing it. `mask_aggressive_dq`
+  folds `JUMP_DET`/`SATURATED`/`PERSISTENCE` into the background **fit** mask,
+  and the guard that drops a runaway bit only triggered on near-total blankets.
+  A2744 f444w `jw03073008001_03201` carries `JUMP_DET` on 79–81 % of every LW
+  detector, missing the 0.85 guard by ~4 points; folding it in left **11.4 % of
+  pixels usable and a median of 58 unmasked pixels per amp-row** (a healthy
+  frame has 279). The GP then estimates each row offset from ~58 pixels, its
+  self-adapting amplitude clamps to the noise floor `σ/√n` (inflated by the
+  small `n`: 1.59e-3 vs a healthy 4.95e-4), and those noise-dominated offsets
+  are applied to **all** pixels — including the 81 % the fit never saw.
+  Measured on that exposure with a fixed mask, masked row σ goes 0.00050 (no
+  1/f) → 0.00084 (1/f at 0.85) → **0.00011 at 0.50**, i.e. the fit finally lands
+  *below* its own no-1/f floor. A depth-matched healthy control is **unchanged**
+  (0.00013 either way), so only frames the guard should always have caught are
+  affected. Across a2744 f444w (540 detectors) 8 fall in the newly-caught
+  50–85 % band while the population median `JUMP_DET` is 8.7 %. Exposures
+  already reduced through the old threshold need re-processing (`bkg` is
+  SCI-mutating, so use `reset --from image2` or a full re-process — a bare
+  `bkg --overwrite` double-subtracts). The underlying failure condition is
+  really "too few pixels per amp-row survive to fit"; a guard on the resulting
+  usable fraction would generalise better and is left as follow-up.
+
 ### Algorithm
 - Mosaic background subtraction gains a **large-extended-source pre-tier**
   (tier 0) in `[nircam.resample]`, fixing a galaxy-shaped over-subtraction bowl.

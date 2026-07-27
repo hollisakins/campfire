@@ -522,3 +522,79 @@ def test_shipped_mosaic_tier_config_is_coherent(tmp_path):
     # 30mas mosaic tile, not a 2048^2 frame
     per_exp = get_nircam_step_config('bkg', cfg, field).get('mask') or {}
     assert {len(per_exp[k]) for k in keys} == {4}
+
+
+def test_shipped_aggressive_dq_guard_catches_a_jump_det_runaway(tmp_path):
+    """Pin the SHIPPED guard threshold against the pathology it exists for.
+
+    A2744 f444w jw03073008001_03201 carries JUMP_DET on 79-81% of every LW
+    detector. At the old 0.85 the guard missed it, the bit was folded into the
+    background FIT mask, and the starved amp-row GP injected structure. The
+    shipped value must therefore sit below the observed runaway fraction.
+    """
+    from pathlib import Path
+
+    import campfire_pipeline
+    from campfire_pipeline.config import get_nircam_step_config, load_config
+    from campfire_pipeline.nircam.field import Field
+
+    packaged = Path(campfire_pipeline.__file__).parent / 'data' / 'config_default.toml'
+    cfg = load_config(config_path=str(packaged))
+    ff = tmp_path / 'fields.toml'
+    ff.write_text('[a2744]\n'
+                  'filters = ["f444w"]\n'
+                  'files = ["jw03073*"]\n'
+                  'tangent_point = [3.5, -30.4]\n')
+    field = Field.load('a2744', fields_file=str(ff))
+    mask_cfg = get_nircam_step_config('bkg', cfg, field)['mask']
+
+    assert mask_cfg['mask_aggressive_dq'] is True
+    guard = mask_cfg['mask_aggressive_dq_max_frac']
+    # 0.789 is the LOWEST JUMP_DET fraction measured across the six affected
+    # detectors; the guard must fire below it, or the runaway slips through.
+    assert guard < 0.789, (
+        f'mask_aggressive_dq_max_frac={guard} does not catch a 78.9% JUMP_DET '
+        f'blanket — the A2744 f444w runaway would starve the 1/f fit again')
+    # ...but not so low that ordinary frames lose their DQ masking: the a2744
+    # f444w population median JUMP_DET is 8.7%, p90 22.1%.
+    assert guard > 0.25
+
+
+def test_starved_amprow_mask_makes_the_gp_inject_structure():
+    """The mechanism, in miniature: when a DQ blanket leaves only a handful of
+    pixels per amp-row, the GP's row offsets are noise and subtracting them
+    ADDS row structure. This is why the guard has to fire.
+
+    Non-vacuous by construction: the same frame with a healthy mask must come
+    out BETTER, so the assertion cannot pass by the GP simply doing nothing.
+    """
+    from campfire_pipeline.nircam.gp_striping import gp_amprow_offsets
+
+    rng = np.random.default_rng(20260727)
+    rows = 512
+    # faint true 1/f (constant along each amp row) + white noise
+    true_1f = rng.normal(0.0, 2.0e-4, size=(rows, 1))
+    frame = true_1f + rng.normal(0.0, 8.0e-3, size=(rows, COLS))
+
+    def row_sigma(a, m):
+        v = np.where(m, np.nan, a)
+        r = np.nanmedian(v, axis=1)
+        return float(np.nanstd(r[np.isfinite(r)]))
+
+    def run(mask):
+        h, _, ks = gp_amprow_offsets(frame, mask, rho=5.0, zero_dc=True)
+        return row_sigma(frame - h, mask), ks
+
+    healthy = rng.random((rows, COLS)) < 0.35        # ~35% masked, like a real frame
+    starved = rng.random((rows, COLS)) < 0.886       # ~11% usable, the pathology
+
+    before_h = row_sigma(frame, healthy)
+    after_h, ks_h = run(healthy)
+    before_s = row_sigma(frame, starved)
+    after_s, ks_s = run(starved)
+
+    # healthy: the GP removes real 1/f
+    assert after_h < before_h, (before_h, after_h)
+    # starved: it cannot, and the fitted amplitude is inflated by the small n
+    assert ks_s > ks_h, (ks_s, ks_h)
+    assert after_s > after_h, (after_s, after_h)
