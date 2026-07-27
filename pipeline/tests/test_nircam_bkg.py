@@ -355,3 +355,170 @@ def test_skymatch_invariant_and_banding_removal():
     before, after = band_std(sci), band_std(out)
     for amp in 'ABCD':
         assert after[amp] < 0.3 * before[amp]
+
+
+def _extended_galaxy_scene(rng, n=1600, re=150.0, amp=200.0):
+    """Mostly-sky frame with one very bright, very extended galaxy at centre.
+
+    Three properties are load-bearing and each was found the hard way:
+    a de Vaucouleurs (r^1/4) profile, because a Gaussian's wing is too steep to
+    bias the mesh at all; NO truncation, because a hard cut puts clean sky just
+    outside the mask and removes the bias entirely; and a frame the galaxy
+    occupies only a small part of, because otherwise the galaxy inflates the RMS
+    the 100-sigma tier-0 threshold is measured against and tier 0 never fires.
+    """
+    y, x = np.mgrid[:n, :n]
+    r = np.hypot(x - n / 2, y - n / 2)
+    prof = amp * np.exp(-7.669 * ((np.maximum(r, 1e-3) / re) ** 0.25 - 1.0))
+    sci = (rng.normal(0.0, 1.0, (n, n)) + prof).astype(np.float32)
+    return sci, np.ones((n, n), np.float32), r
+
+
+def _tier_cfg(tier0=False, nsigma0=100.0, npixels0=30000):
+    """Mosaic tiers, using the SHIPPED tier-0 values. *nsigma0* / *npixels0* are
+    exposed only so a test can toggle ONE gate and show it is load-bearing."""
+    base = dict(ring_radius_in=80, ring_width=4, ring_downsample=4,
+                bg_box_size=10, bg_filter_size=5)
+    if tier0:
+        return dict(base, tier_kernel_size=[25, 25, 15, 5, 2],
+                    tier_npixels=[npixels0, 15, 10, 3, 1],
+                    tier_nsigma=[nsigma0, 1.5, 1.5, 1.5, 1.5],
+                    tier_dilate_size=[600, 33, 25, 21, 19])
+    return dict(base, tier_kernel_size=[25, 15, 5, 2],
+                tier_npixels=[15, 10, 3, 1], tier_nsigma=[1.5, 1.5, 1.5, 1.5],
+                tier_dilate_size=[33, 25, 21, 19])
+
+
+def test_tier0_removes_extended_source_oversubtraction_bowl():
+    """A galaxy far larger than bg_box_size is over-subtracted even when fully
+    masked at pixel level: Background2D keeps mesh cells up to
+    bg_exclude_percentile masked at the galaxy edge, samples its outskirts
+    there, and the zoom interpolator extrapolates that gradient inward. Tier 0
+    pushes the mesh boundary out to true sky."""
+    rng = np.random.default_rng(4)
+    sci, err, radius = _extended_galaxy_scene(rng)
+    assert int((sci > 100.0).sum()) > 30000, 'scene must trip the tier-0 floor'
+
+    without = SubtractBackground(**_tier_cfg(tier0=False))
+    m0, _ = without.mask_from_arrays(sci, err)
+    bowl = float(without.estimate_background(sci, m0).background[radius < 50].mean())
+
+    with_t0 = SubtractBackground(**_tier_cfg(tier0=True))
+    m1, _ = with_t0.mask_from_arrays(sci, err)
+    fixed = float(with_t0.estimate_background(sci, m1).background[radius < 50].mean())
+
+    # Guard: without a real bowl the comparison below passes vacuously.
+    assert bowl > 3.0, f'scene did not reproduce the bowl (got {bowl:.2f} sigma)'
+    assert m1.mean() > m0.mean()             # tier 0 actually fired
+    assert abs(fixed) < 0.35 * bowl          # observed ~0.18x
+
+
+def test_tier0_is_a_noop_on_an_ordinary_field():
+    """End-to-end safety property: on a field of ordinary compact sources tier 0
+    must not fire at all, so their wings keep the normal aggressive flattening.
+
+    A realistic-scene check, NOT a test of either gate individually. `nsigma` is
+    what rejects here — after the tier-0 kernel (gaussian_filter, sigma=25) these
+    blobs peak at a*s^2/(s^2+25^2) = 2.18 and 2.87 against a 100-sigma threshold,
+    so detect_sources returns None before npixels is ever consulted (setting
+    npixels to 1 gives a byte-identical mask). The two gates are covered
+    individually by the two tests below.
+    """
+    rng = np.random.default_rng(5)
+    n = 400
+    y, x = np.mgrid[:n, :n]
+    sci = rng.normal(0.0, 1.0, (n, n)).astype(np.float32)
+    for cx, cy, a, s in ((100, 120, 40.0, 6.0), (280, 300, 25.0, 9.0)):
+        sci += a * np.exp(-(((x - cx) ** 2 + (y - cy) ** 2) / (2 * s ** 2)))
+    err = np.ones((n, n), np.float32)
+
+    m0, _ = SubtractBackground(**_tier_cfg(tier0=False)).mask_from_arrays(sci, err)
+    m1, _ = SubtractBackground(**_tier_cfg(tier0=True)).mask_from_arrays(sci, err)
+    assert np.array_equal(m0, m1)
+
+
+def test_tier0_npixels_is_load_bearing():
+    """`npixels = 30000` must do real selectivity work. This source is BRIGHT
+    enough to clear the 100-sigma threshold after smoothing (peak
+    a*s^2/(s^2+25^2) = 400*900/1525 = 236) but COMPACT, so its footprint stays
+    under the 30k floor and only npixels can reject it."""
+    rng = np.random.default_rng(11)
+    n, amp, sb = 600, 400.0, 30.0
+    y, x = np.mgrid[:n, :n]
+    sci = (rng.normal(0.0, 1.0, (n, n))
+           + amp * np.exp(-(((x - n / 2) ** 2 + (y - n / 2) ** 2)
+                            / (2 * sb ** 2)))).astype(np.float32)
+    err = np.ones((n, n), np.float32)
+
+    def mask(cfg):
+        return SubtractBackground(**cfg).mask_from_arrays(sci, err)[0]
+
+    baseline = mask(_tier_cfg(tier0=False))
+    shipped = mask(_tier_cfg(tier0=True))                    # npixels = 30000
+    lowered = mask(_tier_cfg(tier0=True, npixels0=500))      # only npixels changed
+
+    assert np.array_equal(shipped, baseline)   # the 30k floor rejects it: no-op
+    assert not np.array_equal(lowered, baseline)
+    assert lowered.mean() > 0.9
+
+
+def test_tier0_nsigma_is_load_bearing():
+    """`nsigma = 100` must do real selectivity work, not ride along behind
+    `npixels`. This scene is deliberately BROAD but FAINT — its smoothed
+    footprint is far past the 30k-pixel floor, so `npixels` cannot reject it and
+    only the 100-sigma threshold can. Dropping nsigma to 1.5 fires tier 0 and
+    swallows the frame; at the shipped 100 the mask is untouched."""
+    rng = np.random.default_rng(7)
+    n, amp, s = 1000, 25.0, 150.0
+    y, x = np.mgrid[:n, :n]
+    sci = (rng.normal(0.0, 1.0, (n, n))
+           + amp * np.exp(-(((x - n / 2) ** 2 + (y - n / 2) ** 2)
+                            / (2 * s ** 2)))).astype(np.float32)
+    err = np.ones((n, n), np.float32)
+
+    def mask(cfg):
+        return SubtractBackground(**cfg).mask_from_arrays(sci, err)[0]
+
+    baseline = mask(_tier_cfg(tier0=False))
+    shipped = mask(_tier_cfg(tier0=True))                 # nsigma = 100
+    lowered = mask(_tier_cfg(tier0=True, nsigma0=1.5))    # only nsigma changed
+
+    assert np.array_equal(shipped, baseline)   # 100 sigma rejects it: no-op
+    assert not np.array_equal(lowered, baseline)
+    assert lowered.mean() > 0.9                # 1.5 sigma would swallow the frame
+
+
+def test_shipped_mosaic_tier_config_is_coherent(tmp_path):
+    """Pin the tiers as SHIPPED. Both the config and the field file are given
+    explicitly: `load_config()` would deep-merge $CAMPFIRE_ROOT/config/config.toml
+    and `Field.load()` without `fields_file=` raises on a clean checkout, so the
+    unqualified calls would test the developer's machine rather than the package
+    (and would not run in CI at all)."""
+    from pathlib import Path
+
+    import campfire_pipeline
+    from campfire_pipeline.config import get_nircam_step_config, load_config
+    from campfire_pipeline.nircam.field import Field
+
+    packaged = Path(campfire_pipeline.__file__).parent / 'data' / 'config_default.toml'
+    cfg = load_config(config_path=str(packaged))
+    ff = tmp_path / 'fields.toml'
+    ff.write_text('[cosmos]\n'
+                  'filters = ["f444w"]\n'
+                  'files = ["jw01727*"]\n'
+                  'tangent_point = [150.1, 2.1]\n')
+    field = Field.load('cosmos', fields_file=str(ff))     # no step overrides
+    assert not field.step_overrides
+
+    keys = ('tier_kernel_size', 'tier_npixels', 'tier_nsigma',
+            'tier_dilate_size')
+    mosaic = get_nircam_step_config('resample', cfg, field)
+    assert {len(mosaic[k]) for k in keys} == {5}          # consumed in lockstep
+    assert mosaic['tier_nsigma'][0] == 100.0
+    assert mosaic['tier_npixels'][0] == 30000
+    assert mosaic['tier_dilate_size'][0] == 600
+
+    # per-exposure deliberately keeps 4 tiers: 30k px / 600 px are sized for a
+    # 30mas mosaic tile, not a 2048^2 frame
+    per_exp = get_nircam_step_config('bkg', cfg, field).get('mask') or {}
+    assert {len(per_exp[k]) for k in keys} == {4}
