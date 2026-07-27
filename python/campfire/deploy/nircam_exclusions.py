@@ -102,7 +102,7 @@ def import_skip(field, config, dry_run=False):
 
     client = get_supabase_client(config)
     resp = (client.table('nircam_exposures')
-            .select('filter,filename,review_status')
+            .select('filter,detector,filename,review_status')
             .eq('field', field)
             .execute())
     rows = resp.data or []
@@ -127,9 +127,16 @@ def import_skip(field, config, dry_run=False):
         return
 
     now = _utcnow_iso()
+    # `detector` must be carried through even though this only ever UPDATEs an
+    # existing row: Postgres validates NOT NULL on the proposed INSERT tuple
+    # BEFORE resolving ON CONFLICT, so omitting a NOT NULL column with no
+    # default (nircam_exposures.detector) fails the whole upsert with 23502.
+    # Every other NOT NULL column is either supplied here or has a default
+    # (id -> nextval, stage -> 'uncal', correction -> 'none').
     updates = [{
         'field': field,
         'filter': row['filter'],
+        'detector': row['detector'],
         'filename': row['filename'],
         'review_status': 'excluded',
         'updated_at': now,
