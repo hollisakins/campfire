@@ -46,21 +46,38 @@ function RateDetailPageInner() {
   const [reviewStatus, setReviewStatus] = useState<string>('pending');
   const [notes, setNotes] = useState<string>('');
 
-  // Whether the operator has touched / persisted the triage panel for the row
-  // currently on screen. The background revalidation below fires on arrival and
-  // lands a round trip later — long after a fast operator has already pressed 2 —
-  // so it must not write over what they set. Without these guards the status
-  // visibly flips back to the DB value, `hasChanges` goes false, and the
+  // Which triage fields the operator has touched, and whether a save has landed,
+  // for the row currently on screen. The background revalidation below fires on
+  // arrival and lands a round trip later — long after a fast operator has already
+  // pressed 2 — so it must not write over what they set. Without these guards the
+  // status visibly flips back to the DB value, `hasChanges` goes false, and the
   // auto-save on → silently skips: the row flashes Approved and stays Pending.
-  // Reset on every route-id change (below), so arriving at a fresh row still
-  // takes the server's values.
-  const localEditsRef = useRef({ dirty: false, saved: false });
+  //
+  // `dirty` is per-field rather than one flag: with a stale cached row, editing
+  // a single field would otherwise pin *every* control to its cached value while
+  // `exposure` is replaced with the fresh row — so `hasChanges` reads the
+  // untouched-but-stale fields as edits and the next save writes them back over
+  // a newer server decision.
+  //
+  // `forId` tags the whole record with the row it describes (same pattern as
+  // `navState` below), so a save resolving after we've navigated away can tell
+  // that it no longer owns this state. Reset on every route-id change (below),
+  // so arriving at a fresh row still takes the server's values.
+  const localEditsRef = useRef<{
+    forId: number | null;
+    dirty: { reviewStatus: boolean; notes: boolean };
+    saved: boolean;
+  }>({
+    forId: null,
+    dirty: { reviewStatus: false, notes: false },
+    saved: false,
+  });
   const editStatus = useCallback((v: string) => {
-    localEditsRef.current.dirty = true;
+    localEditsRef.current.dirty.reviewStatus = true;
     setReviewStatus(v);
   }, []);
   const editNotes = useCallback((v: string) => {
-    localEditsRef.current.dirty = true;
+    localEditsRef.current.dirty.notes = true;
     setNotes(v);
   }, []);
 
@@ -115,7 +132,11 @@ function RateDetailPageInner() {
     setLoading(!cached);
     setError(null);
     setSaved(false);
-    localEditsRef.current = { dirty: false, saved: false };
+    localEditsRef.current = {
+      forId: id,
+      dirty: { reviewStatus: false, notes: false },
+      saved: false,
+    };
   }
 
   // Background revalidation against the DB on every id change. This read races
@@ -139,10 +160,9 @@ function RateDetailPageInner() {
           setCachedRate(result.exposure);
           setExposure(result.exposure);
         }
-        if (!edits.dirty) {
-          setReviewStatus(result.exposure.review_status);
-          setNotes(result.exposure.notes || '');
-        }
+        // Per field: an untouched control still takes the fresh server value.
+        if (!edits.dirty.reviewStatus) setReviewStatus(result.exposure.review_status);
+        if (!edits.dirty.notes) setNotes(result.exposure.notes || '');
       }
       setLoading(false);
     })();
@@ -170,21 +190,33 @@ function RateDetailPageInner() {
 
   const handleSave = useCallback(async (): Promise<{ ok: boolean }> => {
     const s = stateRef.current;
+    // The row this save is for. `goTo` awaits its own save before pushing, but
+    // the `S` shortcut fires handleSave un-awaited and mask saves aren't gated
+    // by `goTo` at all — so a response can land after the route moved on.
+    const savedForId = id;
     setSaving(true);
     setSaved(false);
     setError(null);
-    const result = await updateNirspecRateReview(id, {
+    const result = await updateNirspecRateReview(savedForId, {
       review_status: s.reviewStatus as NirspecRateExposure['review_status'],
       notes: s.notes || undefined,
     });
     setSaving(false);
     if (result.error) {
+      // Surfaced even if we've navigated on: a failed save means the operator's
+      // decision didn't stick, which they need to know about either way.
       setError(result.error);
       return { ok: false };
     }
+    // Keyed by the row's own id, so this is correct regardless of route.
+    if (result.exposure) setCachedRate(result.exposure);
+    // Everything below writes state belonging to whatever is on screen *now* —
+    // only safe while that's still the row we saved. Otherwise this would render
+    // the old row under the new one's URL and set the new one's `saved` guard,
+    // permanently suppressing its revalidation.
+    if (localEditsRef.current.forId !== savedForId) return { ok: true };
     if (result.exposure) {
       localEditsRef.current.saved = true;
-      setCachedRate(result.exposure);
       setExposure(result.exposure);
     }
     setSaved(true);
@@ -263,13 +295,19 @@ function RateDetailPageInner() {
   );
 
   const handleSaveMasks = async (regions: MaskRegionsPayload) => {
-    const res = await saveRateMaskRegions(exposure.id, regions);
+    // Mask saves run from the editor's own toolbar, outside `goTo`'s dirty
+    // check — so the operator can navigate away while one is still in flight.
+    const savedForId = exposure.id;
+    const res = await saveRateMaskRegions(savedForId, regions);
     if (res.exposure) {
-      // Same newer-than-the-read rule as the triage save: a mask write must not
-      // be undone by an in-flight revalidation landing after it.
-      localEditsRef.current.saved = true;
       setCachedRate(res.exposure);
-      setExposure(res.exposure);
+      // Same newer-than-the-read rule as the triage save: a mask write must not
+      // be undone by an in-flight revalidation landing after it — but only for
+      // the row it was issued for (see handleSave).
+      if (localEditsRef.current.forId === savedForId) {
+        localEditsRef.current.saved = true;
+        setExposure(res.exposure);
+      }
     }
     return { error: res.error };
   };
