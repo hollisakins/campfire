@@ -1287,6 +1287,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   `read_nod_type` helper that falls back to `3-SHUTTER-SLITLET` (the canonical
   `N-SHUTTER-SLITLET` form for a 3-shutter slitlet) and logs a warning naming
   the offending file. Files that already carry `NOD_TYPE` are unaffected.
+- NIRSpec `discover_files` no longer crashes with `KeyError: 'PRIDTPTS'` /
+  `KeyError: 'SUBPXPTS'` on programs whose exposures omit the dither
+  point-count keywords (issue #415, seen in program 1210 — the same Cycle 1
+  blind spot as `NOD_TYPE` above). The failure hit stage2a before unit fixing,
+  so the observation never got off the ground. Both keywords now go through
+  `read_primary_dither_points` / `read_subpixel_dither_points`, which default
+  to 1 (no dithering beyond the nod pattern) and log a warning naming the file;
+  `stage3.py`'s exposures table uses the same helper. Two robustness details
+  copied from the jwst association rules, which have handled these keywords
+  defensively since JP-1802: `SUBPXPTS` falls back to the pre-2021 spelling
+  `SUBPXPNS` (renamed in jwst 0.18.2, PR #5618) before defaulting, and a value
+  of `0` is rejected rather than trusted (SDP wrote `SUBPXPTS = 0` for some
+  NIRSpec modes until Build 9.0 / SDP 2022.4). Files carrying usable values are
+  unaffected — no change to grouping, background pairing, or pixel values.
 
 ## v0.5.1 — 2026-05-27
 
