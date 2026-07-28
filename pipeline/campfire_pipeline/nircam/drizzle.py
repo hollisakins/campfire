@@ -367,48 +367,61 @@ def compress_context_extension(output_path, ctx=None):
     (no CON extension, or one that is already compressed).
     """
     tmp = f'{output_path}.ctx.tmp'
-    with fits.open(output_path) as hdul:
-        try:
-            idx = hdul.index_of('CON')
-        except KeyError:
-            log("  no CON extension to compress")
-            return False
-        if isinstance(hdul[idx], fits.CompImageHDU):
-            return False
+    # Same staging discipline as `common.io.atomic_save`: the i2d is the
+    # largest file this pipeline writes, so a mid-write ENOSPC is a realistic
+    # failure — and under `--processes N` one leaked temp per failed tile adds
+    # up on the very disk that just filled. BaseException so a KeyboardInterrupt
+    # cleans up too. The `.ctx.tmp` suffix (rather than atomic_save's
+    # `.tmp<ext>`) keeps a partial file from ever matching an `*_i2d.fits` glob.
+    try:
+        with fits.open(output_path) as hdul:
+            try:
+                idx = hdul.index_of('CON')
+            except KeyError:
+                log("  no CON extension to compress")
+                return False
+            if isinstance(hdul[idx], fits.CompImageHDU):
+                return False
 
-        # Left lazy on purpose when it comes from the file: astropy compresses
-        # tile-by-tile, so a memmapped source is paged in rather than held
-        # resident, and the ~80 GiB CON never has to fit in RAM at once.
-        data = hdul[idx].data if ctx is None else ctx
+            # Left lazy on purpose when it comes from the file: astropy
+            # compresses tile-by-tile, so a memmapped source is paged in rather
+            # than held resident, and the ~80 GiB CON never has to fit in RAM
+            # at once.
+            data = hdul[idx].data if ctx is None else ctx
 
-        out = fits.HDUList()
-        for i, hdu in enumerate(hdul):
-            if i == idx:
-                comp = fits.CompImageHDU(
-                    data=data, name='CON', compression_type='GZIP_1')
-                # Keep any provenance the datamodel put on the source CON,
-                # minus the structural keywords (they describe the *old*
-                # layout) and the checksums (stale the moment we recompress).
-                for card in hdu.header.cards:
-                    k = card.keyword
-                    if k and k not in comp.header and not k.startswith(
-                            ('NAXIS', 'BITPIX', 'PCOUNT', 'GCOUNT', 'XTENSION',
-                             'EXTNAME', 'SIMPLE', 'ZIMAGE', 'ZCMPTYPE',
-                             'CHECKSUM', 'DATASUM')):
-                        try:
-                            comp.header[k] = (card.value, card.comment)
-                        except Exception:
-                            pass
-                out.append(comp)
-            else:
-                # No .copy() — that would fault every lazily-memmapped
-                # extension (SCI/ERR/WHT/ASDF, ~14 GiB on a large tile) into
-                # RAM and then allocate a second copy of each. `hdul` stays
-                # open for the writeto below, so the unmodified HDUs stream
-                # straight from the source file.
-                out.append(hdu)
-        out.writeto(tmp, overwrite=True)
-    os.replace(tmp, output_path)
+            out = fits.HDUList()
+            for i, hdu in enumerate(hdul):
+                if i == idx:
+                    comp = fits.CompImageHDU(
+                        data=data, name='CON', compression_type='GZIP_1')
+                    # Keep any provenance the datamodel put on the source CON,
+                    # minus the structural keywords (they describe the *old*
+                    # layout) and the checksums (stale the moment we
+                    # recompress).
+                    for card in hdu.header.cards:
+                        k = card.keyword
+                        if k and k not in comp.header and not k.startswith(
+                                ('NAXIS', 'BITPIX', 'PCOUNT', 'GCOUNT',
+                                 'XTENSION', 'EXTNAME', 'SIMPLE', 'ZIMAGE',
+                                 'ZCMPTYPE', 'CHECKSUM', 'DATASUM')):
+                            try:
+                                comp.header[k] = (card.value, card.comment)
+                            except Exception:
+                                pass
+                    out.append(comp)
+                else:
+                    # No .copy() — that would fault every lazily-memmapped
+                    # extension (SCI/ERR/WHT/ASDF, ~14 GiB on a large tile)
+                    # into RAM and then allocate a second copy of each. `hdul`
+                    # stays open for the writeto below, so the unmodified HDUs
+                    # stream straight from the source file.
+                    out.append(hdu)
+            out.writeto(tmp, overwrite=True)
+        os.replace(tmp, output_path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
     return True
 
 

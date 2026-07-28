@@ -26,6 +26,7 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
+import campfire_pipeline.nircam.drizzle as drizzle_mod
 from campfire_pipeline.nircam.drizzle import (
     _apply_output_metadata, _sanitize_variance, _output_bbox_in_tile,
     compress_context_extension,
@@ -501,3 +502,54 @@ def test_compress_context_leaves_no_temp_file(tmp_path):
     compress_context_extension(path)
     assert not os.path.exists(f'{path}.ctx.tmp')
     assert sorted(os.listdir(tmp_path)) == ['tmpcheck_i2d.fits']
+
+
+def test_compress_context_cleans_up_temp_when_write_fails(tmp_path,
+                                                          monkeypatch):
+    """A failed compression must not strand a partial `.ctx.tmp`.
+
+    ENOSPC partway through is realistic here — the i2d is the largest file the
+    pipeline writes — and under ``--processes N`` a whole-field run would
+    otherwise leak one partial temp per failed tile onto the disk that just
+    filled. Same guarantee `common.io.atomic_save` gives.
+    """
+    path = str(tmp_path / 'failing_i2d.fits')
+    ctx = _context_array()
+    _write_i2d_like(path, ctx)
+    original = fits.HDUList.writeto
+
+    def _writeto_then_fail(self, fileobj, *args, **kwargs):
+        # Land a partial file first, the way a truncated write would.
+        with open(fileobj, 'wb') as fp:
+            fp.write(b'SIMPLE  =                    T')
+        raise OSError(28, 'No space left on device')
+
+    monkeypatch.setattr(fits.HDUList, 'writeto', _writeto_then_fail)
+    with pytest.raises(OSError):
+        compress_context_extension(path, ctx=ctx)
+    monkeypatch.setattr(fits.HDUList, 'writeto', original)
+
+    assert not os.path.exists(f'{path}.ctx.tmp')
+    # The original i2d is untouched — the swap never got as far as os.replace.
+    assert sorted(os.listdir(tmp_path)) == ['failing_i2d.fits']
+    with fits.open(path) as hdul:
+        np.testing.assert_array_equal(hdul['CON'].data, ctx)
+        np.testing.assert_array_equal(hdul['SCI'].data, _SCI)
+
+
+def test_compress_context_cleans_up_temp_when_replace_fails(tmp_path,
+                                                            monkeypatch):
+    """Cleanup also covers a failure after the temp is fully written."""
+    path = str(tmp_path / 'replacefail_i2d.fits')
+    ctx = _context_array()
+    _write_i2d_like(path, ctx)
+
+    def _boom(src, dst):
+        raise OSError(28, 'No space left on device')
+
+    monkeypatch.setattr(drizzle_mod.os, 'replace', _boom)
+    with pytest.raises(OSError):
+        compress_context_extension(path, ctx=ctx)
+
+    assert not os.path.exists(f'{path}.ctx.tmp')
+    assert sorted(os.listdir(tmp_path)) == ['replacefail_i2d.fits']
