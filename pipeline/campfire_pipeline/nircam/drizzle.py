@@ -285,7 +285,7 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
     ctx_out = (ctx[0] if (ctx.ndim == 3 and ctx.shape[0] == 1) else ctx)
     ctx_out = ctx_out.astype(np.int32, copy=False)
 
-    # CON is written tile-compressed (see _swap_in_compressed_context). It is
+    # CON is written tile-compressed (see compress_context_extension). It is
     # by far the largest extension: one int32 plane per 32 inputs, each at FULL
     # tile size, so its cost is tile_area * n_inputs/32 — 17 planes / 80 GiB for
     # a 1.26 Gpix tile with 534 inputs, against 14 GiB for SCI+ERR+WHT combined.
@@ -325,7 +325,7 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
     model.save(output_path)
 
     if compress_context:
-        _swap_in_compressed_context(output_path, ctx_out)
+        compress_context_extension(output_path, ctx=ctx_out)
 
     with fits.open(output_path, mode='update') as hdul:
         hdul[0].header['CMPFRTIM'] = (
@@ -338,44 +338,78 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
         )
 
 
-def _swap_in_compressed_context(output_path, ctx):
-    """Replace the placeholder CON extension with a tile-compressed one.
+def compress_context_extension(output_path, ctx=None):
+    """Rewrite ``output_path`` with its CON extension tile-compressed.
 
-    ``model.save`` wrote a 1x1x1 CON placeholder, so the file on disk is just
-    SCI+ERR+WHT and the rewrite here is cheap. GZIP_1 is lossless on the int32
-    bitmask (verified bit-identical on round-trip); the extension keeps the name
-    ``CON`` and reads back transparently through ``astropy.io.fits`` —
-    ``hdul['CON'].data`` returns the same int32 array as before.
+    Two callers, one rewrite:
+
+    * the campfire backend passes ``ctx`` explicitly. ``model.save`` wrote a
+      1x1x1 CON placeholder, so the file on disk is just SCI+ERR+WHT and the
+      rewrite is cheap — the uncompressed array is never materialised on disk.
+    * the jwst backend passes ``ctx=None``. ``Image3Pipeline`` has already
+      written the full uncompressed CON, so the array is read back (lazily,
+      through the memmap) and the file is rewritten compressed. That path pays
+      one extra read+write of the i2d; the placeholder trick isn't available
+      because the write is inside jwst's own step.
+
+    GZIP_1 is lossless on the int32 bitmask (verified bit-identical on
+    round-trip); the extension keeps the name ``CON`` and reads back
+    transparently through ``astropy.io.fits`` — ``hdul['CON'].data`` returns the
+    same int32 array as before.
 
     Non-astropy readers see a compressed-image BinTable rather than a plain
     ImageHDU. Nothing in this repository reads CON (the only references are the
-    two writes in this module), so that is a compatibility note rather than a
+    writes in this module), so that is a compatibility note rather than a
     breakage; ``[nircam.resample].compress_context = false`` restores the
     uncompressed extension.
+
+    Returns True if the file was rewritten, False if there was nothing to do
+    (no CON extension, or one that is already compressed).
     """
     tmp = f'{output_path}.ctx.tmp'
     with fits.open(output_path) as hdul:
-        idx = hdul.index_of('CON')
+        try:
+            idx = hdul.index_of('CON')
+        except KeyError:
+            log("  no CON extension to compress")
+            return False
+        if isinstance(hdul[idx], fits.CompImageHDU):
+            return False
+
+        # Left lazy on purpose when it comes from the file: astropy compresses
+        # tile-by-tile, so a memmapped source is paged in rather than held
+        # resident, and the ~80 GiB CON never has to fit in RAM at once.
+        data = hdul[idx].data if ctx is None else ctx
+
         out = fits.HDUList()
         for i, hdu in enumerate(hdul):
             if i == idx:
                 comp = fits.CompImageHDU(
-                    data=ctx, name='CON', compression_type='GZIP_1')
-                # keep any provenance the datamodel put on the placeholder
+                    data=data, name='CON', compression_type='GZIP_1')
+                # Keep any provenance the datamodel put on the source CON,
+                # minus the structural keywords (they describe the *old*
+                # layout) and the checksums (stale the moment we recompress).
                 for card in hdu.header.cards:
                     k = card.keyword
                     if k and k not in comp.header and not k.startswith(
                             ('NAXIS', 'BITPIX', 'PCOUNT', 'GCOUNT', 'XTENSION',
-                             'EXTNAME', 'SIMPLE', 'ZIMAGE', 'ZCMPTYPE')):
+                             'EXTNAME', 'SIMPLE', 'ZIMAGE', 'ZCMPTYPE',
+                             'CHECKSUM', 'DATASUM')):
                         try:
                             comp.header[k] = (card.value, card.comment)
                         except Exception:
                             pass
                 out.append(comp)
             else:
-                out.append(hdu.copy())
+                # No .copy() — that would fault every lazily-memmapped
+                # extension (SCI/ERR/WHT/ASDF, ~14 GiB on a large tile) into
+                # RAM and then allocate a second copy of each. `hdul` stays
+                # open for the writeto below, so the unmodified HDUs stream
+                # straight from the source file.
+                out.append(hdu)
         out.writeto(tmp, overwrite=True)
     os.replace(tmp, output_path)
+    return True
 
 
 def _sanitize_variance(var_rnoise, var_poisson, var_flat, weight):

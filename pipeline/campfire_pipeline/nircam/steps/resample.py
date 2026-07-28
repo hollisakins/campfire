@@ -97,6 +97,14 @@ def _drizzle_tile_via_jwst(
     every substep but ``resample`` skipped, and stamps ``CMPFRTIM`` /
     ``CMPFRVER`` on the primary header of the resulting i2d.
 
+    ``[nircam.resample].compress_context`` is honored here too, but it costs
+    more than on the campfire backend: the write happens inside jwst's own
+    resample step, so the uncompressed CON hits the disk first and is then
+    rewritten compressed (one extra read+write of the i2d). The campfire
+    backend instead saves a placeholder and never materialises it. Peak RSS is
+    unaffected either way — the rewrite streams the CON back through the memmap
+    tile-by-tile rather than holding it resident.
+
     Parameters
     ----------
     selected_files : list of str
@@ -153,6 +161,16 @@ def _drizzle_tile_via_jwst(
         asn_file, output_dir=mosaic_outdir, steps=params,
         save_results=True,
     )
+
+    if resample_cfg.get('compress_context', True):
+        from campfire_pipeline.nircam.drizzle import compress_context_extension
+
+        before = os.path.getsize(output_path)
+        if compress_context_extension(output_path):
+            after = os.path.getsize(output_path)
+            log(f"  compressed CON: {before / 2**30:.1f} GiB → "
+                f"{after / 2**30:.1f} GiB "
+                f"({before / max(after, 1):.1f}x smaller)")
 
     with fits.open(output_path, mode='update') as hdul:
         hdul[0].header['CMPFRTIM'] = (

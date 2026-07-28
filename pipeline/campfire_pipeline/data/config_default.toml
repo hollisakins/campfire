@@ -735,6 +735,12 @@
     # `hdul['CON'].data` reads back identically through astropy; nothing in this
     # repository reads CON at all. Set false if an external, non-astropy reader
     # needs a plain ImageHDU.
+    # Applies to both `implementation` backends, but the cost differs: the
+    # campfire backend saves a CON placeholder and swaps the compressed
+    # extension in, so the uncompressed array never reaches the disk, while the
+    # jwst backend writes it first (inside jwst's own resample step) and then
+    # rewrites the i2d compressed — one extra read+write per tile. Peak RSS is
+    # the same either way; the rewrite streams CON tile-by-tile.
     compress_context = true
     # implementation = "jwst" routes the per-tile drizzle through
     # `jwst.pipeline.calwebb_image3.Image3Pipeline` (stcal Resample,

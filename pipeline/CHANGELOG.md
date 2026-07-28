@@ -28,31 +28,45 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
-### Algorithm
+### Infrastructure
 - The drizzle **CONTEXT extension is now written tile-compressed** (GZIP_1,
   lossless), controlled by `[nircam.resample].compress_context` (default
-  `true`). `CON` carries one `int32` plane per 32 inputs, each at *full tile
-  size*, so its cost scales as `tile_area x n_inputs/32` and it dominates the
-  i2d: an A2744 1.26 Gpix tile with 534 inputs needs 17 planes = **80 GiB**,
-  against 14 GiB for SCI+ERR+WHT combined. Because a pixel is touched by a
-  handful of inputs rather than hundreds, almost every bit is zero and the
-  array is spatially coherent, so it compresses well. **Measured on a real
-  A2744 f444w combine (534 inputs, 17 planes): the i2d went from a would-be
-  94.9 GiB to 15.4 GiB, 6.2x smaller**, with the run itself completing in
-  1h25m. `hdul['CON'].data` reads back bit-identical through
-  `astropy.io.fits`; verified against an uncompressed reference written from
-  the same array, with SCI/ERR/WHT and the extension order unchanged, and the
-  resulting mosaic's coverage (128.4 arcmin^2) matches the independent expmap
-  prediction for that filter (129.8) to 1%.
+  `true`) and applied on **both** `implementation` backends. `CON` carries one
+  `int32` plane per 32 inputs, each at *full tile size*, so its cost scales as
+  `tile_area x n_inputs/32` and it dominates the i2d: an A2744 1.26 Gpix tile
+  with 534 inputs needs 17 planes = **80 GiB**, against 14 GiB for SCI+ERR+WHT
+  combined. Because a pixel is touched by a handful of inputs rather than
+  hundreds, almost every bit is zero and the array is spatially coherent, so it
+  compresses well. **Measured on a real A2744 f444w combine (534 inputs, 17
+  planes): the i2d went from a would-be 94.9 GiB to 15.4 GiB, 6.2x smaller**,
+  with the run itself completing in 1h25m. `hdul['CON'].data` reads back
+  bit-identical through `astropy.io.fits`; verified against an uncompressed
+  reference written from the same array, with SCI/ERR/WHT and the extension
+  order unchanged, and the resulting mosaic's coverage (128.4 arcmin^2) matches
+  the independent expmap prediction for that filter (129.8) to 1%.
   Note this saves DISK, not RAM: materialising the full CON still needs ~80 GiB
-  either way, so large arrays should be read via `hdu.section[...]`. To avoid materialising the uncompressed array on
-  disk at all, the model is saved with a `1x1x1` placeholder and the compressed
-  extension swapped in, so the write cost drops rather than doubling.
+  either way, so large arrays should be read via `hdu.section[...]`.
+  **Backend cost differs.** On `implementation = "campfire"` the model is saved
+  with a `1x1x1` CON placeholder and the compressed extension swapped in, so
+  the uncompressed array never reaches the disk. On `implementation = "jwst"`
+  (the default) the write happens inside jwst's own resample step, so the
+  uncompressed CON lands first and the i2d is then rewritten compressed — one
+  extra read+write per tile. Peak RSS is unchanged on either path: the rewrite
+  streams CON back through the memmap tile-by-tile (verified: +9 MB RSS while
+  recompressing a 400 MB CON).
   **Compatibility:** a non-astropy reader sees a compressed-image BinTable
   rather than a plain `ImageHDU`. Nothing in this repository reads `CON` (the
-  only references are the two writes in `drizzle.py`), so this is a note rather
+  only references are the writes in `drizzle.py`), so this is a note rather
   than a breakage; set `compress_context = false` to restore the old layout.
   Existing mosaics are unaffected until they are rebuilt.
+  *Category note (AGENTS.md bump policy):* filed **Infrastructure / PATCH**
+  because pixel and flux values are unchanged — `CON` round-trips bit-identical
+  and SCI/ERR/WHT are untouched, so there is no scientific-output impact. The
+  arguable alternative is **Algorithm / MAJOR** on the grounds that
+  `ImageHDU` → `CompImageHDU` is a FITS-schema change; that reading was
+  rejected because `CompImageHDU` is a standard FITS construct that astropy
+  reads transparently under the same `CON` name, and because no reader in this
+  repository touches the extension at all.
 
 ### Calibration
 - Per-exposure background: `[nircam.bkg.mask].mask_aggressive_dq_max_frac`
