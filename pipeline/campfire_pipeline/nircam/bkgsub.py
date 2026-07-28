@@ -660,7 +660,17 @@ class SubtractBackground:
         n_capped = int((mesh > cmesh).sum())
         log(f"  guard ceiling: capped {n_capped}/{mesh.size} mesh cells")
         interp = BkgZoomInterpolator()
-        return interp(capped, box_size=(by, bx), shape=shape, dtype=float)
+        # photutils' BkgZoomInterpolator.__call__ reads kwargs['edge_method']
+        # unconditionally (2.3.0, interpolators.py:97), so omitting it is a hard
+        # KeyError on every call — this path cannot run without it. Take the
+        # value from the Background2D being capped rather than hardcoding
+        # 'pad': re-interpolating the capped mesh has to use exactly the
+        # interpolation the original fit used, or the capped map is not
+        # comparable to the one it replaces. Verified on a synthetic fit —
+        # with this kwarg, interp(uncapped_mesh) reproduces bkg2d.background
+        # to 0.0e+00.
+        return interp(capped, box_size=(by, bx), shape=shape, dtype=float,
+                      edge_method=getattr(bkg2d, "edge_method", "pad"))
 
     def _residual_exclusion(
         self, resid_eq: np.ndarray, off: np.ndarray
