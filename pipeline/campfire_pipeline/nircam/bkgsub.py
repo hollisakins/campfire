@@ -892,7 +892,16 @@ class SubtractBackground:
             log("Applying negativity guard (ceiling meshcap + trough pass)")
             off = (bitmask & 1) != 0
             bkgmap = self.apply_negativity_guard(sci, bkg, mask_final, off)
-        bkgd_subtracted = sci - bkgmap
+        # Cast back to the input precision. The guard works in float64 —
+        # _cap_mesh reads the mesh as `dtype=float` — so `sci - bkgmap` would
+        # otherwise promote a float32 mosaic to float64 and double every SCI
+        # array on disk (A2744 F444W: _sci 4.68 -> 9.37 GiB, _i2d 15.4 -> 20.1
+        # GiB), silently, for no gain over float32 drizzle inputs. The
+        # unguarded path already returns float32, and this method's docstring
+        # promises "same dtype as the input SCI"; without this the guard breaks
+        # that invariant. Keeping the arithmetic in float64 and casting only
+        # the result costs 2.4e-07 relative rounding.
+        bkgd_subtracted = (sci - bkgmap).astype(sci.dtype, copy=False)
 
         self.mask_final = mask_final
         return bkgd_subtracted, mask_final, bitmask
