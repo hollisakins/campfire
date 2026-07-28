@@ -763,20 +763,20 @@
     ring_clip_max_sigma = 5.0
     ring_clip_box_size = 100
     ring_clip_filter_size = 3
-    # Tier 0 is a large-extended-source PRE-tier (see nircam/bkgsub.py). It fires
-    # only on objects with a >=30k-pixel core above 100*sigma — ~4 per COSMOS
-    # 30mas tile — and exists because a galaxy far larger than bg_box_size is
-    # over-subtracted even when fully masked at pixel level: Background2D keeps
-    # mesh cells masked at the galaxy edge, samples its outskirts there, and the
-    # zoom interpolator extrapolates that gradient inward as a galaxy-shaped
-    # bowl. The heavy dilation (600 px) pushes the mesh boundary out to true sky.
-    # A no-op on tiles with no such object. Deliberately NOT applied to the
-    # per-exposure [nircam.bkg.mask] tiers above: 30k px / 600 px dilation are
-    # sized for a 30mas mosaic tile, not a 2048^2 frame.
-    tier_kernel_size = [25, 25, 15, 5, 2]
-    tier_npixels = [30000, 15, 10, 3, 1]
-    tier_nsigma = [100.0, 1.5, 1.5, 1.5, 1.5]
-    tier_dilate_size = [600, 33, 25, 21, 19]
+    # Compact-source detection cascade (aggressive -> fine). The former
+    # "tier 0" giant-galaxy pre-tier (100 sigma / 30k px core, 600 px
+    # dilation) was REMOVED together with the introduction of bg_guard: the
+    # A2744 120" A/B showed the fit inside a tier-0 hole is pure
+    # extrapolation (negative area ~3x worse than without the tier, ~9x
+    # worse even after guard cleanup), and the tier never fired on the
+    # envelope-dominated BCGs it was meant to protect. The guard bounds the
+    # background with the observed flux floor instead — it works under
+    # masks, so no protective hole is needed. See nircam/bkgsub.py and
+    # pipeline/experiments/bkg_nonneg.
+    tier_kernel_size = [25, 15, 5, 2]
+    tier_npixels = [15, 10, 3, 1]
+    tier_nsigma = [1.5, 1.5, 1.5, 1.5]
+    tier_dilate_size = [33, 25, 21, 19]
     bg_box_size = 10
     bg_filter_size = 5
     bg_exclude_percentile = 90
@@ -808,6 +808,27 @@
     bg_reject_sigma_lo = 3.0
     bg_reject_percentile = 60.0
     bg_reject_dilate = 40.0
+    # Negativity guard (see SubtractBackground.bg_guard in nircam/bkgsub.py):
+    # constrains the final background map so the subtracted mosaic carries no
+    # statistically significant negative structure (true flux >= 0 makes the
+    # observed flux floor an upper bound on the background, even under
+    # masks). Two data-side corrections: a maskless one-sided ceiling capping
+    # the background mesh (multi-scale min over guard_ceiling_boxes,
+    # self-calibrated on quiet sky, k-sigma slack), then a detection-gated
+    # iterated trough pass lifting coherent negative residual regions to the
+    # -t sigma floor. Noise model is s/sqrt(WHT) (source-independent).
+    # Default ON: validated on A2744 F444W 120" cutouts (cluster core
+    # negative structure 159k px -> 1.3k px, empty-aperture medians
+    # unchanged; blank-tile null is a near-no-op by construction of the
+    # gate). NOTE: enabling changes tile config hashes -> mosaic rebuild.
+    bg_guard = true
+    guard_ceiling_boxes = [32, 64, 128]
+    guard_ceiling_k = 2.0
+    guard_ceiling_sigma_upper = 1.0
+    guard_trough_sigmas = [5.0, 15.0]
+    guard_trough_t = 2.0
+    guard_trough_npix = 8.0
+    guard_trough_max_iter = 12
     split_extensions = true
     plot = true
     plot_downsample = 4

@@ -360,6 +360,19 @@ def resample_step(filtname, exposure_files, field, step_config,
                         'bg_reject_percentile', 60.0),
                     bg_reject_dilate=step_config.get('bg_reject_dilate', 40.0),
                     wht_aware=step_config.get('wht_aware', True),
+                    bg_guard=step_config.get('bg_guard', True),
+                    guard_ceiling_boxes=step_config.get(
+                        'guard_ceiling_boxes', [32, 64, 128]),
+                    guard_ceiling_k=step_config.get('guard_ceiling_k', 2.0),
+                    guard_ceiling_sigma_upper=step_config.get(
+                        'guard_ceiling_sigma_upper', 1.0),
+                    guard_trough_sigmas=step_config.get(
+                        'guard_trough_sigmas', [5.0, 15.0]),
+                    guard_trough_t=step_config.get('guard_trough_t', 2.0),
+                    guard_trough_npix=step_config.get(
+                        'guard_trough_npix', 8.0),
+                    guard_trough_max_iter=step_config.get(
+                        'guard_trough_max_iter', 12),
                     suffix='bkgsub',
                     replace_sci=True,
                 )

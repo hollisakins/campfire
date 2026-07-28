@@ -68,6 +68,33 @@ Release procedure: edit the `## Unreleased` section below, then run
   reads transparently under the same `CON` name, and because no reader in this
   repository touches the extension at all.
 
+### Algorithm
+- Mosaic-level background subtraction gains a **negativity guard**
+  (`bg_guard`, default **on** for the mosaic stage): the final background
+  map is constrained so the subtracted mosaic carries no statistically
+  significant negative structure (physical prior: true flux ≥ 0 makes the
+  observed flux floor an upper bound on the background, even under the
+  source mask). Two data-side corrections after the existing fit — a
+  maskless one-sided **ceiling** capping the background mesh (multi-scale
+  min over box 32/64/128, self-calibrated per image on quiet sky, 2σ
+  slack, noise model `s/sqrt(WHT)`), then a detection-gated iterated
+  **trough pass** lifting coherent negative residual regions to the −2σ
+  floor. Blank fields are a near-no-op by construction of the gate.
+  Validated on A2744 F444W 120″ cutouts: cluster-core negative structure
+  159k px → 1.3k px, offcluster 186k px → 2k px, at unchanged
+  empty-aperture medians. See `experiments/bkg_nonneg/README.md`.
+- The mosaic mask's **tier-0 giant-galaxy pre-tier is removed** (100σ /
+  30k px core, 600 px dilation; tier lists shrink 5 → 4 entries, so
+  `SRCMASK` tier-bit meanings shift down by one). The A/B on the field
+  that tripped it showed the fit inside the tier-0 hole is pure
+  extrapolation — ~3× more significant negative area than without the
+  tier, ~9× more even after guard cleanup — while the tier never fired on
+  the envelope-dominated BCGs it was meant to protect. The guard subsumes
+  its purpose (the oversubtraction bowl is exactly the failure mode it
+  removes) and works under masks, so no protective hole is needed.
+  Enabling the guard + tier change alters mosaic config hashes → tiles
+  rebuild on next run.
+
 ### Calibration
 - Per-exposure background: `[nircam.bkg.mask].mask_aggressive_dq_max_frac`
   lowered **0.85 → 0.50**, fixing a case where the per-amp-row 1/f fit
