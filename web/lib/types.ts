@@ -296,12 +296,16 @@ export interface NircamImage {
 
 // A per-(field, filter) exposure-coverage map (product_type 'nircam_expmap',
 // sourced from the storage_objects registry). Unlike mosaics there is one
-// fiducial map per field/filter — no tile/scale/extension axes.
+// fiducial map per field/filter — no tile/extension axes.
 export interface NircamExpmap {
   field: string;
   filter: string;
   storage_key: string;
   file_size?: number; // size_bytes from the registry, if available
+  /** Expmap grid scale, formatted like the mosaic column ('500mas'). Comes from
+   *  fields.expmap_pixel_scale_arcsec (one grid per field, not per object);
+   *  null for a field deployed before that column was populated. */
+  pixel_scale: string | null;
 }
 
 // One row of the /nircam landing grid (get_nircam_fields RPC + a presigned

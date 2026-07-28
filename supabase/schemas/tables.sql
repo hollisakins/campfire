@@ -730,8 +730,9 @@ ALTER TABLE "public"."programs" OWNER TO "postgres";
 -- the commonly-queried bits are also lifted into typed columns. `latest_deployment_id`
 -- mirrors observations. `coverage_area_*` are deploy-computed from <field>_layout.json
 -- (exact survey area = non-zero pixels of the stacked exposure map x pixel area);
--- sync-fields upserts only config columns so it never clobbers them. Read by
--- get_nircam_fields / get_nircam_field_summary.
+-- `expmap_pixel_scale_arcsec` comes from the same file. sync-fields upserts only
+-- config columns so it never clobbers them. Read by get_nircam_fields /
+-- get_nircam_field_summary / getNircamExpmaps.
 CREATE TABLE IF NOT EXISTS "public"."fields" (
     "name" "text" NOT NULL,
     "display_name" "text",
@@ -747,6 +748,13 @@ CREATE TABLE IF NOT EXISTS "public"."fields" (
     "config" "jsonb",
     "coverage_area_arcmin2" double precision,
     "coverage_area_deg2" double precision,
+    -- Pixel scale (arcsec/pix) of the field's exposure-map grid. Deploy-owned,
+    -- from <field>_layout.json. One value per field: expmap builds a single
+    -- shared auto-WCS across every filter in the invocation, so all of a
+    -- field's expmap FITS are pixel-registered on the same grid. Unlike the
+    -- mosaics (whose scale is a key axis in nircam_images) an expmap carries
+    -- its scale only in CDELT1/2, so the web table has nothing else to read.
+    "expmap_pixel_scale_arcsec" double precision,
     "latest_deployment_id" integer,
     "created_at" timestamp with time zone DEFAULT "now"(),
     CONSTRAINT "fields_pkey" PRIMARY KEY ("name")
