@@ -27,6 +27,18 @@ from campfire_pipeline.common.io import log
 # "N-SHUTTER-SLITLET", so a 3-shutter slitlet is "3-SHUTTER-SLITLET".
 DEFAULT_NOD_TYPE = '3-SHUTTER-SLITLET'
 
+# Defaults assumed when a file is missing the dither point-count keywords
+# (issue #415). Same Cycle 1 blind spot as NOD_TYPE above: PRIDTPTS only
+# entered the jwst core schema in 0.18.2 (2021-01, PR #5618) — which also
+# renamed SUBPXPNS to SUBPXPTS — and SDP kept writing SUBPXPTS = 0 for some
+# NIRSpec modes until Build 9.0 (SDP 2022.4). 1 primary and 1 subpixel dither
+# point means "no dithering beyond the nod pattern", which is what these
+# programs actually did. The jwst association rules make the same assumption:
+# they read subpxpts through `sources=["subpxpns", "subpxpts"]` and treat
+# missing / null / zero alike (rules_level2_base.nrs_fss_nods_overlap).
+DEFAULT_PRIMARY_DITHER_POINTS = 3
+DEFAULT_SUBPIXEL_DITHER_POINTS = 1
+
 # NIRSpec spectroscopic exposure types the pipeline can reduce. MSA (MOS) is
 # the original mode; standalone fixed-slit (NRS_FIXEDSLIT) is handled via the
 # jwst native fixed-slit path (no MSA metadata file). Used to filter raw uncals
@@ -64,6 +76,79 @@ def read_nod_type(hdr, filename):
     log(f"WARNING: NOD_TYPE keyword missing from {os.path.basename(filename)}; "
         f"assuming {DEFAULT_NOD_TYPE}")
     return DEFAULT_NOD_TYPE
+
+
+def _read_dither_points(hdr, filename, keywords, default, label):
+    """Read a positive integer dither point-count from a primary header.
+
+    Shared backend for :func:`read_primary_dither_points` and
+    :func:`read_subpixel_dither_points`. Tries each name in *keywords* in
+    order and returns the first that parses as a positive integer; a keyword
+    that is absent, non-numeric, or <= 0 is skipped. Zero is rejected rather
+    than trusted because SDP wrote SUBPXPTS = 0 for some NIRSpec modes until
+    Build 9.0, and a zero point-count is never physically meaningful.
+
+    Returns *default* (with a warning naming the file) when nothing usable is
+    found.
+    """
+    for keyword in keywords:
+        if keyword not in hdr:
+            continue
+        try:
+            value = int(hdr[keyword])
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    log(f"WARNING: no usable {label} keyword ({'/'.join(keywords)}) in "
+        f"{os.path.basename(filename)}; assuming {default}")
+    return default
+
+
+def read_primary_dither_points(hdr, filename):
+    """Read PRIDTPTS from a primary header, defaulting if missing (issue #415).
+
+    Parameters
+    ----------
+    hdr : astropy.io.fits.Header
+        Primary header to read from.
+    filename : str
+        File path or name, used only for the warning message.
+
+    Returns
+    -------
+    int
+        The number of primary dither points, or
+        `DEFAULT_PRIMARY_DITHER_POINTS` if the keyword is absent or unusable.
+    """
+    return _read_dither_points(hdr, filename, ('PRIDTPTS',),
+                               DEFAULT_PRIMARY_DITHER_POINTS,
+                               'primary dither points')
+
+
+def read_subpixel_dither_points(hdr, filename):
+    """Read SUBPXPTS from a primary header, defaulting if missing (issue #415).
+
+    Falls back to the pre-2021 spelling ``SUBPXPNS`` before defaulting, so
+    programs ingested before the jwst 0.18.2 rename still yield their real
+    value instead of the assumed one.
+
+    Parameters
+    ----------
+    hdr : astropy.io.fits.Header
+        Primary header to read from.
+    filename : str
+        File path or name, used only for the warning message.
+
+    Returns
+    -------
+    int
+        The number of subpixel dither points, or
+        `DEFAULT_SUBPIXEL_DITHER_POINTS` if neither keyword is usable.
+    """
+    return _read_dither_points(hdr, filename, ('SUBPXPTS', 'SUBPXPNS'),
+                               DEFAULT_SUBPIXEL_DITHER_POINTS,
+                               'subpixel dither points')
 
 
 def _validate_program_slug(obs_name, program_slug):
@@ -494,11 +579,11 @@ class Observation:
             filt.append(hdr['FILTER'])
             grat.append(hdr['GRATING'])
             PATTTYPE.append(hdr['PATTTYPE'])
-            PRIDTPTS.append(hdr['PRIDTPTS'])
+            PRIDTPTS.append(read_primary_dither_points(hdr, f))
             PATT_NUM.append(hdr['PATT_NUM'])
             NUMDTHPT.append(hdr['NUMDTHPT'])
             NOD_TYPE.append(read_nod_type(hdr, f))
-            SUBPXPTS.append(hdr['SUBPXPTS'])
+            SUBPXPTS.append(read_subpixel_dither_points(hdr, f))
             hdr1 = fits.getheader(f, ext=1)
             SHUTTRID.append(hdr1['SHUTTRID'])
             SHUTSTA.append(hdr1.get('SHUTSTA', ''))
