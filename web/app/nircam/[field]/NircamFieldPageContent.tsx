@@ -86,6 +86,15 @@ const extSort = (a: string, b: string): number => {
   return ai - bi;
 };
 
+// Scale facet order: finest grid first, numerically — a plain string sort would
+// put the expmaps' '500mas' before a mosaic's '30mas'.
+const scaleSort = (a: string, b: string): number => {
+  const mas = (s: string) => parseFloat(s);
+  const [am, bm] = [mas(a), mas(b)];
+  if (Number.isNaN(am) || Number.isNaN(bm)) return a.localeCompare(b);
+  return am - bm;
+};
+
 interface NircamFieldPageContentProps {
   field: string;
 }
@@ -142,7 +151,9 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
       setFieldImages(imagesUrlsRes);
 
       // Merge mosaics + expmaps into the single products list. Expmaps ride as
-      // a synthetic 'exp' extension with no tile/scale axes.
+      // a synthetic 'exp' extension with no tile axis; their scale is the
+      // field's expmap grid (one shared WCS across every filter), not a
+      // per-product axis like a mosaic's.
       const mosaicRows: NircamProductRow[] = (imagesRes.error ? [] : imagesRes.images).map(
         (img) => ({
           kind: 'mosaic',
@@ -163,7 +174,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
           field: e.field,
           filter: e.filter,
           tile: null,
-          pixel_scale: null,
+          pixel_scale: e.pixel_scale,
           extension: 'exp',
           file_path: e.storage_key,
           file_size: e.file_size,
@@ -205,7 +216,12 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
     return {
       tiles: [...new Set(mosaics.map((p) => p.tile as string))].sort(tileSort),
       filters: [...new Set(products.map((p) => p.filter))].sort(),
-      pixel_scales: [...new Set(mosaics.map((p) => p.pixel_scale as string))].sort(),
+      // Every product with a scale, not just mosaics — expmaps now carry the
+      // field's grid scale, so the facet has to offer it or the Scale filter
+      // could never match a row the Scale column visibly labels.
+      pixel_scales: [...new Set(
+        products.map((p) => p.pixel_scale).filter((s): s is string => s !== null),
+      )].sort(scaleSort),
       extensions: [...new Set(products.map((p) => p.extension))].sort(extSort),
       epochs: [...new Set(mosaics.map((p) => p.epoch ?? ''))].sort(),
     };

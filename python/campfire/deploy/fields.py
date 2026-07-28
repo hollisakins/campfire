@@ -5,10 +5,10 @@ loop (programs / observations / fields). The full fields.toml section is mirrore
 losslessly into the `config` jsonb column; the commonly-queried bits are lifted
 into typed columns.
 
-`coverage_area_*` and `latest_deployment_id` are **deploy-owned** — written by
-`deploy_nircam` from `<field>_layout.json` — so `sync_fields` never sends them and
-the upsert leaves them untouched on existing rows (PostgREST merge-duplicates only
-updates the columns present in the payload).
+`coverage_area_*`, `expmap_pixel_scale_arcsec` and `latest_deployment_id` are
+**deploy-owned** — written by `deploy_nircam` from `<field>_layout.json` — so
+`sync_fields` never sends them and the upsert leaves them untouched on existing rows
+(PostgREST merge-duplicates only updates the columns present in the payload).
 
 Scoped to fields that already have deployed NIRCam data, so the cloud table
 reflects what is actually reduced, not every field defined locally.
@@ -152,6 +152,12 @@ def upsert_field_on_deploy(client, products_dir, field: str,
         row["coverage_area_arcmin2"] = coverage["coverage_area_arcmin2"]
         row["coverage_area_deg2"] = coverage.get("coverage_area_deg2")
         area_msg = f", area {coverage['coverage_area_arcmin2']:.1f} arcmin2"
+    # The expmap grid's pixel scale, so the web product table can show a Scale
+    # for expmap rows (an expmap FITS carries it only in CDELT1/2, and the
+    # registry row has no scale axis). Lifted separately from the area: it is
+    # present whenever the layout JSON is, independent of coverage.
+    if coverage and coverage.get("pixel_scale_arcsec") is not None:
+        row["expmap_pixel_scale_arcsec"] = coverage["pixel_scale_arcsec"]
     upsert_field(client, row)
     print(f"  fields: upserted '{field}' "
           f"({len(row['filters'])} filters, {len(row['tiles'])} tiles{area_msg})")
