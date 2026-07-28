@@ -158,6 +158,48 @@ class TestApplyAndClearDQ:
             # Pixel inside polygon (that we flipped) should be cleared.
             assert not (model.dq[10, 8] & masks.DO_NOT_USE)
 
+    def test_clear_after_intervening_save_leaves_file_readable(self, tmp_path):
+        """Regression: clearing a mask must not corrupt the rate file.
+
+        ``apply_mask_dq`` appends CFDQMASK with astropy, which records no asdf
+        ref. But any later ``ImageModel.save()`` — in the real flow, stage 1's
+        background subtraction — picks the HDU up into ``extra_fits`` and
+        *does* write one. Deleting the HDU with astropy then left a dangling
+        ``extra_fits.CFDQMASK`` entry, so the next ``ImageModel`` open died
+        with ``Extension ('CFDQMASK', 1) not found`` and the rate file was
+        unrecoverable through the supported path.
+
+        The original round-trip test misses this because nothing saves the
+        model between apply and clear.
+        """
+        pytest.importorskip("jwst")
+        from jwst.datamodels import ImageModel
+
+        rate = str(tmp_path / "jw00000000001_nrs1_rate.fits")
+        n = 32
+        dq = np.zeros((n, n), dtype=np.uint32)
+        dq[10, 10] = masks.DO_NOT_USE
+        self._make_rate_with_dq(rate, dq)
+
+        masks.apply_mask_dq(rate, "image\npolygon(5,5,15,5,15,15,5,15)")
+
+        # Stand in for the bkgsub re-save that promotes CFDQMASK into the
+        # asdf tree. Without this the bug does not reproduce.
+        with ImageModel(rate) as model:
+            model.save(rate)
+        with fits.open(rate) as hdul:
+            assert "CFDQMASK" in hdul, "setup: CFDQMASK should survive the re-save"
+
+        masks.clear_manual_mask_dq(rate)
+
+        # The file must still be openable as a datamodel...
+        with ImageModel(rate) as model:
+            assert model.dq[10, 10] & masks.DO_NOT_USE
+            assert not (model.dq[10, 8] & masks.DO_NOT_USE)
+        # ...and the extension must actually be gone.
+        with fits.open(rate) as hdul:
+            assert "CFDQMASK" not in hdul
+
 
 class TestBkgsubExtensionsAndRestore:
     """Round-trip CFBKG/CFBKGMASK/CFBKGSUB/CFBKGRMS: simulate a bkgsub by

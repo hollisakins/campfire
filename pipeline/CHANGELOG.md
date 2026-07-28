@@ -312,6 +312,27 @@ Release procedure: edit the `## Unreleased` section below, then run
   omitted grown pixels from the plot entirely.
 
 ### Infrastructure
+- **NIRSpec manual masks: editing or clearing a mask no longer corrupts the rate
+  file.** `masks.py` dropped the `CFDQMASK` / `CFBKG` / `CFBKGMASK` extensions
+  with `fits.open(mode="update")` immediately before reopening the file as an
+  `ImageModel`. Those HDUs carry no asdf ref when first appended with astropy,
+  but any subsequent `ImageModel.save()` — in the real flow, stage 1's
+  background subtraction — promotes them into `extra_fits` and *does* record
+  one. Deleting the HDU then left a dangling `extra_fits.<NAME>` entry in the
+  embedded ASDF tree, so the next open died with
+  `KeyError: Extension ('CFDQMASK', 1) not found`. The failure mode was nasty:
+  `cfpipe nirspec mask apply` aborted partway, leaving the rate file with
+  `DO_NOT_USE` still set, the `CFMASKSH`/`CFMASKN` sentinels still stamped, and
+  the `CFDQMASK` record of *which* pixels to revert destroyed — i.e. the mask
+  became unrevertable and the file unopenable by any datamodel, recoverable
+  only by re-running stage 1 from `uncal`. Triggered by the ordinary workflow
+  of removing a `.reg` and re-applying. Fixed by dropping extensions *through
+  the datamodel* (`_drop_extra_fits`, replacing `_drop_extensions_if_present`)
+  so the FITS and the ASDF tree stay consistent across the save; applied to all
+  three call sites, including the latent instance in `restore_pre_bkgsub`.
+  Regression test reproduces the exact sequence (apply → intervening
+  `model.save()` → clear); the pre-existing round-trip test missed it because
+  nothing saved the model in between. No change to pixel or flux values.
 - NIRCam `align` now writes **diagnostics for independent validation** of every
   solve. Its self-reported residual is circular — measured on the very sample the
   matcher selected — so a solution locked onto the wrong sources reports a small
