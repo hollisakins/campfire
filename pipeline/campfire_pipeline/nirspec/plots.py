@@ -17,6 +17,10 @@ from astropy.visualization import ImageNormalize, ZScaleInterval
 
 from campfire_pipeline.common.io import log, files_to_glob
 
+if plt.rcParams['text.usetex']: # if usetex is enabled in a users matplotlibrc, plotting is very slow. Disable this when running the pipeline. 
+    plt.rcParams['text.usetex']=False
+    plt.rcParams['font.serif']='DejaVu Serif'
+
 
 # ---------------------------------------------------------------------------
 # Shared style helpers
