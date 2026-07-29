@@ -606,6 +606,16 @@ function ExposureDetailPageInner() {
       return;
     }
     for (const x of batch) inflight.add(x);
+    // A dispatched id is being retried NOW — drop any stale failure mark so
+    // the viewer shows the spinner, not a misleading "Couldn't load" panel,
+    // for the duration of this round trip (navigating to a previously-failed
+    // exposure re-batches it here without passing through the Retry button).
+    setPresignFailed((prev) => {
+      if (!batch.some((x) => prev.has(x))) return prev;
+      const next = new Set(prev);
+      for (const x of batch) next.delete(x);
+      return next;
+    });
     presignExposurePngs(batch)
       .then(
         (res) => {

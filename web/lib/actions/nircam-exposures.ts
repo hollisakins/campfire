@@ -289,17 +289,22 @@ export async function presignExposurePngs(
 
     let anyFailed = false;
     for (const r of data) {
-      if ((r.png_path && failedKeys.has(r.png_path)) ||
-          (r.full_png_path && failedKeys.has(r.full_png_path))) {
-        // Retryable, not "no PNG": omit the id entirely.
+      const rowFailed =
+        (r.png_path && failedKeys.has(r.png_path)) ||
+        (r.full_png_path && failedKeys.has(r.full_png_path));
+      if (rowFailed) anyFailed = true;
+      const preview = r.png_path ? urlByKey.get(r.png_path) ?? null : null;
+      const full = r.full_png_path ? urlByKey.get(r.full_png_path) ?? null : null;
+      if (rowFailed && preview === null && full === null) {
+        // Nothing signed for this row — retryable, not "no PNG": omit the id
+        // entirely so the client doesn't cache the failure.
         delete out[r.id];
-        anyFailed = true;
         continue;
       }
-      out[r.id] = {
-        preview: r.png_path ? urlByKey.get(r.png_path) ?? null : null,
-        full: r.full_png_path ? urlByKey.get(r.full_png_path) ?? null : null,
-      };
+      // Per-key, not per-row: one unsignable key (e.g. a mixed-backend row
+      // whose other backend is misconfigured) must not sink a URL that DID
+      // sign — the viewer falls back full↔preview on its own.
+      out[r.id] = { preview, full };
     }
     return anyFailed
       ? { urls: out, error: 'Failed to sign some exposure image URLs' }
