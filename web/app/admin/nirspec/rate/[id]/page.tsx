@@ -294,10 +294,13 @@ function RateDetailPageInner() {
     exposure.storage_key && exposure.image_width && exposure.image_height,
   );
 
-  const handleSaveMasks = async (regions: MaskRegionsPayload) => {
-    // Mask saves run from the editor's own toolbar, outside `goTo`'s dirty
-    // check — so the operator can navigate away while one is still in flight.
-    const savedForId = exposure.id;
+  const handleSaveMasks = async (regions: MaskRegionsPayload, forKey?: number) => {
+    // Mask saves run from the editor's own toolbar or its auto-flush on
+    // navigation, outside `goTo`'s dirty check — so the operator can navigate
+    // away while one is still in flight. `forKey` echoes the exposureKey the
+    // payload belongs to: a flush dispatches mid-swap, when `exposure` is
+    // already the next row, and saving to it would mask the wrong exposure.
+    const savedForId = forKey ?? exposure.id;
     const res = await saveRateMaskRegions(savedForId, regions);
     if (res.exposure) {
       setCachedRate(res.exposure);
@@ -380,7 +383,7 @@ function RateDetailPageInner() {
             <div className="flex justify-between"><dt>Help</dt><dd className="font-mono text-text-secondary">?</dd></div>
           </dl>
           <p className="mt-2 text-xs text-text-secondary">
-            Navigation auto-saves the triage panel if there are unsaved changes. Mask edits save separately from the editor toolbar.
+            Navigation auto-saves the triage panel and any unsaved mask edits (the editor&apos;s Save button persists masks immediately).
           </p>
         </div>
       )}
@@ -399,6 +402,7 @@ function RateDetailPageInner() {
               <div className="h-[80vh]">
                 <MaskEditor
                   fitsKey={exposure.storage_key!}
+                  exposureKey={exposure.id}
                   imageWidth={exposure.image_width!}
                   imageHeight={exposure.image_height!}
                   initialRegions={exposure.mask_regions}
