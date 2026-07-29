@@ -490,6 +490,75 @@ values in the mosaic for fields that enable it, even though the default-off
 config means no change for existing fields until opted in). Phase 0 alone is
 Infrastructure (PATCH).
 
+### 6.1 Build plan
+
+Six milestones, each one PR, each independently shippable and useful on
+its own. M1 ∥ M2 can proceed in parallel (no shared code); everything
+else is a chain. Validation gates (G0–G2) sit *between* code milestones —
+they are analysis deliverables, not merges, and each one de-risks the
+next milestone before it's built.
+
+```mermaid
+flowchart TB
+    m1["M1 — ref_cache extraction<br/>common/ref_cache.py from wisp_cache<br/>(thin wrapper back-compat) + layout<br/>cache kind. Pure refactor, PATCH."]
+    m2["M2 — model packaging (no pipeline code)<br/>repack in-hand models: angular units,<br/>anchor λs, normalization; mask-grade<br/>downsample experiment; manifest +<br/>public-bucket upload (hosting doc flow)"]
+    g0["G0 — footprint validation<br/>model isophotes vs real spikes on an<br/>existing reduction: envelope within<br/>grow? mask-grade ≈ full-grade?"]
+    m3["M3 — spikes subpackage, report mode (Phase 0)<br/>catalog/model/coverage/export.py + spike_mask<br/>step wired report-only + config + overlays +<br/>starmask export. PATCH."]
+    g1["G1 — starmask acceptance<br/>exported starmask vs a hand-drawn<br/>reference (e.g. COSMOS-Web region set):<br/>capture/contamination rates"]
+    m4["M4 — DQ masking (Phase 1)<br/>CFSPIKE + materialize_work fusion +<br/>mode=mask + status/reset integration.<br/>Algorithm, MINOR. A/B mosaics on a<br/>dense multi-PA field."]
+    m5["M5 — empirical loop (Phase 2)<br/>cross-PA median stamps (campfire drizzle<br/>primitives), residual metrics, model-fidelity<br/>report = the subtraction gatekeeper data"]
+    g2["G2 — fidelity verdict<br/>residuals below contamination-gate<br/>threshold, star by star, radius by radius?"]
+    m6["M6 — STRETCH: subtraction<br/>photometric-grade fetch, amplitude fit,<br/>ρ-gated subtract. Only exists if G2 passes."]
+    m1 --> m3
+    m2 --> g0 --> m3 --> g1 --> m4 --> m5 --> g2 -.-> m6
+```
+
+Per-milestone notes:
+
+- **M1 (`common/ref_cache.py`)** — behavior-preserving refactor;
+  `test_wisp_cache.py` keeps passing unmodified against the wrapper, new
+  engine-level tests use a throwaway manifest. Lands any time; nothing
+  waits on it except M3's fetch path. Infrastructure/PATCH.
+- **M2 (model packaging)** — no pipeline code: a repack script (sibling of
+  `scripts/build_wisp_manifest.py`), the manifest, the bucket upload, and
+  the mask-grade downsample experiment whose output feeds G0. The G0
+  notebook/script itself belongs in `pipeline/experiments/` (existing
+  convention).
+- **G0** answers two questions before M3 exists: does the scaled model
+  isophote actually envelope real spikes to within `grow` across
+  mag/filter, and how far can mask-grade be downsampled before isophotes
+  drift. Cheap to run against any existing reduction; kills or corrects
+  the model assumptions while they're still cheap to change.
+- **M3 (report mode)** — the biggest single PR; everything in
+  `nircam/spikes/` plus orchestrator wiring, but zero pixel mutation
+  (`mode = "report"` is the only mode). Ships the starmask export (§5.1),
+  so it delivers the labor-saving product first, on every field, before
+  masking exists. Tests follow the repo's synthetic-fixture conventions
+  (`test_nircam_*`: fabricated WCS/PA headers, golden gate geometries,
+  single-PA no-op, close-star interaction cases). Infrastructure/PATCH.
+- **G1** — quantitative starmask acceptance against a hand-drawn reference
+  mask: what fraction of hand-masked area the export captures (target ≈
+  all of it) and how much extra it masks (tolerable overshoot). This is
+  the go/no-go for trusting the same geometry as DQ masks in M4.
+- **M4 (mask mode)** — small diff (CFSPIKE write, `materialize_work`
+  fusion, `mode = "mask"`, `status`/`reset --from` integration) but the
+  first pixel-affecting change, so it carries the A/B mosaic validation
+  and the **Algorithm/MINOR** changelog entry. Depth accounting checked
+  via expmap/WHT on the A/B pair.
+- **M5 (empirical loop)** — reuses the campfire-native drizzle/median/blot
+  primitives; its product is a *report* (per-star, per-radius residuals),
+  not a pixel change, and doubles as the G2 dataset. Refinement of
+  footprints from residuals can ship here too (Algorithm if it alters
+  masks).
+- **M6 (subtraction)** — spec'd in open question 1 (§7); built only if G2 passes, and gets
+  its own design pass at that point (amplitude fitting, ERR propagation,
+  ρ-gate defaults) informed by real G2 numbers.
+
+The rollout risk profile follows from the ordering: M1–M3 cannot change a
+single science pixel by construction; M4 is the first that can, and it
+arrives with the gate evidence (G0, G1) already in hand, on an opt-in
+flag, in the same PR as its A/B validation.
+
 ## 7. Open questions
 
 1. **Hard mask vs. subtraction — masking is the plan of record;
