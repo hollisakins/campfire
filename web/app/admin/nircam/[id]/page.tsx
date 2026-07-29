@@ -903,6 +903,7 @@ function ExposureDetailPageInner() {
                   initialRegions={exposure.mask_regions}
                   onSave={handleSaveMasks}
                   clipboardSource={exposure.filename}
+                  clipboardLive={() => idRef.current === exposure.id}
                 />
               </div>
             ) : pngPresignPending ? (
@@ -920,6 +921,7 @@ function ExposureDetailPageInner() {
                   initialRegions={exposure.mask_regions}
                   onSave={handleSaveMasks}
                   clipboardSource={exposure.filename}
+                  clipboardLive={() => idRef.current === exposure.id}
                 />
               </div>
             ) : pngUrl ? (

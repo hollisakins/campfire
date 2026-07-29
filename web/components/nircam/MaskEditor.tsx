@@ -66,6 +66,15 @@ interface Props {
    * offered onto exposures with identical dimensions. Omit to disable.
    */
   clipboardSource?: string;
+  /**
+   * Returns false while the host page is mid-transition to another exposure —
+   * a navigation target set synchronously (keypress) that this editor hasn't
+   * re-rendered for yet. Clipboard actions check it at event time and no-op
+   * in that gap: a paste keyed there would land in the outgoing exposure's
+   * editor state and be wiped by the resync, and a copy would capture (and be
+   * attributed to) the exposure being left. Omit to always allow.
+   */
+  clipboardLive?: () => boolean;
 }
 
 function uuid() {
@@ -126,7 +135,7 @@ function toPayload(polys: SvgPolygon[], h: number): MaskRegionsPayload {
 
 export default function MaskEditor({
   pngUrl, fitsKey, imageWidth, imageHeight, initialRegions, onSave,
-  clipboardSource,
+  clipboardSource, clipboardLive,
 }: Props) {
   const [polygons, setPolygons] = useState<SvgPolygon[]>(
     () => fromPayload(initialRegions, imageHeight)
@@ -317,6 +326,7 @@ export default function MaskEditor({
 
   const handleCopy = useCallback(() => {
     if (!clipboardSource || polygons.length === 0) return;
+    if (clipboardLive && !clipboardLive()) return;
     setMaskClipboard({
       polygons: toPayload(polygons, imageHeight).polygons,
       imageWidth,
@@ -325,10 +335,11 @@ export default function MaskEditor({
       copiedAt: new Date().toISOString(),
     });
     setClipMsg({ text: `copied ${polygons.length} polygon${polygons.length === 1 ? '' : 's'}` });
-  }, [clipboardSource, polygons, imageWidth, imageHeight]);
+  }, [clipboardSource, clipboardLive, polygons, imageWidth, imageHeight]);
 
   const handlePaste = useCallback(() => {
     if (!clipboardSource) return;
+    if (clipboardLive && !clipboardLive()) return;
     const clip = getMaskClipboard();
     if (!clip) {
       setClipMsg({ text: 'mask clipboard is empty', error: true });
@@ -362,7 +373,7 @@ export default function MaskEditor({
     setPolygons((ps) => [...ps, ...pasted]);
     markDirty();
     setClipMsg({ text: `pasted ${pasted.length} from ${clip.sourceFilename}` });
-  }, [clipboardSource, imageWidth, imageHeight, markDirty]);
+  }, [clipboardSource, clipboardLive, imageWidth, imageHeight, markDirty]);
 
   // ----- pointer interactions -----
   const onPointerDown = useCallback((e: React.PointerEvent) => {
