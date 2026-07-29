@@ -100,16 +100,17 @@ export default function AdminDashboardPage() {
   const pendingReview = progress.reduce((s, r) => s + (r.pending_review ?? 0), 0);
   const needsCorrection = progress.reduce((s, r) => s + (r.needs_correction ?? 0), 0);
   // The view is detector-grain; roll up to field/filter for the queue table.
+  // Accumulate every row (so Total covers fully-reviewed detectors too), then
+  // keep only groups that still have pending work.
   const attentionMap = new Map<string, { field: string; filter: string; pending: number; total: number }>();
   for (const r of progress) {
-    if (!r.pending_review) continue;
     const key = `${r.field}|${r.filter}`;
     const acc = attentionMap.get(key) ?? { field: r.field, filter: r.filter, pending: 0, total: 0 };
-    acc.pending += r.pending_review;
-    acc.total += r.total;
+    acc.pending += r.pending_review ?? 0;
+    acc.total += r.total ?? 0;
     attentionMap.set(key, acc);
   }
-  const attention = Array.from(attentionMap.values());
+  const attention = Array.from(attentionMap.values()).filter((r) => r.pending > 0);
 
   const budgetOk = budget && 'total_bytes' in budget;
   const b = budgetOk ? (budget as StorageBudget) : null;
