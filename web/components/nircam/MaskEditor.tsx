@@ -583,18 +583,26 @@ function MaskEditor({
     // then describes the NEW exposure and must not be touched; the host owns
     // reporting a departed save's outcome.
     const savedForKey = editedRef.current.key;
+    // Snapshot the dispatched list: drawing is NOT blocked while the request
+    // is in flight (only the Save button is), so by the time it resolves the
+    // canvas may hold polygons newer than this payload.
+    const dispatched = polygons;
     setSaving(true);
     setSaveError(null);
     try {
-      const result = await onSave(toPayload(polygons, imageHeight), savedForKey);
+      const result = await onSave(toPayload(dispatched, imageHeight), savedForKey);
       if (editedRef.current.key !== savedForKey) return;
       if (result.error) {
         setSaveError(result.error);
-      } else {
+      } else if (polygonsRef.current === dispatched) {
         dirtyRef.current = false;
         setDirty(false);
         setSavedAt(Date.now());
       }
+      // else: edits landed mid-flight. Leave dirty set — clearing it here
+      // would let the resync effect overwrite the canvas from the host's
+      // just-refreshed row (which predates those edits) and stop the
+      // nav auto-flush from ever persisting them.
     } finally {
       setSaving(false);
     }
