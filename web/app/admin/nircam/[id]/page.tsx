@@ -346,6 +346,9 @@ function ExposureDetailPageInner() {
     }
     // Keyed by the exposure's own id, so this is correct regardless of route.
     if (result.exposure) setCachedExposure(result.exposure);
+    // A retry that lands supersedes an earlier failure for this exposure —
+    // same rule as the fire-and-forget path, or the banner outlives the fix.
+    if (result.exposure && getSaveError()?.id === savedForId) setSaveError(null);
     // Everything below writes state belonging to whatever is on screen *now* —
     // only safe while that's still the exposure we saved. Otherwise this would
     // render the old exposure under the new one's URL and set the new one's
@@ -475,6 +478,11 @@ function ExposureDetailPageInner() {
       if (e.key === 'Escape' && isInput) { t.blur(); return; }
       if (isInput) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // Space is the browser's native activation key for a focused button or
+      // link (and buttons keep focus after a click) — let it press the control
+      // instead of firing approve-and-next. Other shortcut keys don't overlap
+      // button semantics, so they still work with a button focused.
+      if (e.key === ' ' && (t.tagName === 'BUTTON' || t.tagName === 'A')) return;
 
       switch (e.key) {
         case '1': e.preventDefault(); editStatus('pending');  break;
