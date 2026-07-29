@@ -34,6 +34,53 @@ one PA exists, masking would punch holes in the mosaic, so the mask must be
 This is the same "earns its keep only at high N" regime as `bad_pixel`, and
 the design borrows its posture: **disabled by default, opted in per field.**
 
+### 1.1 Prior art: JADES DR5 (Johnson et al. 2026, arXiv:2601.15954)
+
+The JADES DR5 NIRCam reduction does exactly this — coverage-gated,
+multi-PA spike removal — but manually, and at the mosaic level rather than
+per exposure (their §3.3.1, §3.3.6, §4.3.7):
+
+- Exposures are first combined into **"subregion" mosaics grouped by (PID,
+  epoch, PA)** — PAs within ±1° form one group — partly *because* mixing
+  PAs "would lead to a complicated, spatially variable effective PSF with
+  many diffraction spikes," and explicitly so that "when there are
+  multiple PAs covering a region, this also allows us to recover area
+  under the diffraction spikes of bright stars."
+- Spike masks are **drawn by hand via visual inspection** of each
+  subregion mosaic and stored as `NIM = −2` in the coverage layer.
+- At full-mosaic coaddition, `NIM = −2` pixels contribute **only if no
+  other subregion has a valid pixel there** — i.e. spike data are replaced
+  by clean other-PA data where possible and *retained* (no hole) where
+  they are the only coverage. A small subset of stars/filters get forced
+  censoring (`NIM = −4`) regardless.
+- Failure modes they report: **"orphan" spike segments** where the
+  supporting other-PA data run out mid-arm; **interacting masks** for
+  close stars whose arms at different PAs overlap; and filter-by-filter
+  inconsistency (a spike masked in some bands, visible in others).
+- Their §4.3.7 closes with: "alternative handling of the diffraction
+  spikes would be best done in the subregion mosaics, **before the
+  coaddition**" — i.e. upstream, which is where this design operates
+  (per-exposure DQ, before outlier/resample).
+
+Mapping to this design: our PA-coverage gate encodes the same invariant as
+their NIM = −2 semantics (never lose sky — only mask what another PA can
+replace), with three deltas: (a) the masks are **automated** (ePSF model +
+Gaia) instead of hand-drawn; (b) they live **per exposure**, so outlier
+detection also benefits and the JADES failure modes are addressed
+structurally — the sky-frame gate ends arms exactly where replacement
+coverage ends (no orphans), and subtracting each PA group's own spike
+footprint from its coverage contribution handles interacting close-star
+arms; (c) the mask is recorded non-destructively (`CFSPIKE`), so it stays
+reversible and reviewable. The filter-by-filter caveat applies to us
+identically (the step is per-filter by construction) — inherited, not
+solved.
+
+A useful side-fact from their Appendix B: they PSF-fit **Gaia star
+positions using the diffraction spikes themselves** (cores saturated) and
+achieve 1–2 mas exposure-to-exposure repeatability — strong evidence that
+fitting the model to spikes/wings, never the core, is sufficient for the
+centering and amplitude fits in §3.2.
+
 ## 2. Where it sits in the pipeline
 
 A new per-filter ensemble step, `spike_mask`, in the **combine phase**,
@@ -172,9 +219,12 @@ the pupil (hexagonal primary → six arms at 60°, plus the secondary-strut
 "+") and filter-level features (e.g. LW ghosts) are second order for
 masking. It is not achromatic, though: diffraction structure scales
 radially ∝ λ (a factor ~5 across 0.9–4.4 μm, on top of the SW/LW pixel-
-scale difference). One normalized model in angular units (or one per
-channel), radially rescaled by `λ_pivot / λ_ref` per filter — a one-line
-transform, not a per-filter model. Wavefront-epoch drift (breathing) is
+scale difference). The in-hand models exist at **several distinct
+wavelengths**, which is the ideal shape: pick the nearest anchor
+wavelength per filter and apply the small residual radial rescale
+`λ_pivot / λ_anchor` — the ∝ λ diffraction scaling is then only ever
+interpolating between measured anchors, never extrapolating across the
+full 5× range. Still not a per-filter model. Wavefront-epoch drift (breathing) is
 well below mask tolerance + `grow`; a single post-commissioning ePSF
 suffices. This also buys what capsules structurally can't: the scattered-
 light halo, asymmetric wings, and the correct relative strut-arm strength.
@@ -188,7 +238,8 @@ model's radial extent — and for cheap Phase-0 overlays. Not full PSF
 Practical weak links to watch: flux prediction for red stars (Gaia G →
 NIRCam LW is the main error source; the in-frame amplitude fit is the
 mitigation) and centering on saturated cores (fit the wings/spike cross,
-never the core).
+never the core — JADES DR5 gets 1–2 mas repeatability fitting Gaia star
+positions from the spikes alone, see §1.1).
 
 ### 3.3 The PA-coverage gate (`coverage.py`) — the heart of the design
 
@@ -296,7 +347,7 @@ flowchart LR
     p0["Phase 0 — Diagnose<br/>mode=report: PA-coverage map,<br/>star list, arm overlays.<br/>No masking. Validates geometry<br/>model against real spikes."]
     p1["Phase 1 — Model mask<br/>CFSPIKE + coverage gate,<br/>fused at materialize_work.<br/>Opt-in per field."]
     p2["Phase 2 — Empirical loop<br/>cross-PA median residuals<br/>refine footprints + validate<br/>model flux/λ scaling"]
-    p3["Phase 3 — Subtract, don't mask<br/>fit ePSF model amplitude per star,<br/>subtract halo+spikes (wisp pattern);<br/>mask only the residual core.<br/>Works even single-PA. Web review<br/>via CFMASK round-trip rails."]
+    p3["Phase 3 — Subtract where trustable<br/>fit ePSF amplitude per star, subtract<br/>halo+spikes (wisp pattern); keep pixels<br/>only below a contamination-ratio cut,<br/>hard-mask above it. Works even<br/>single-PA. Web review via CFMASK rails."]
     p0 --> p1 --> p2 --> p3
 ```
 
@@ -307,15 +358,27 @@ Infrastructure (PATCH).
 
 ## 7. Open questions
 
-1. **Hard mask vs. subtraction.** DO_NOT_USE is simple and rides existing
-   rails, but discards spike-wing pixels that still carry mostly valid flux
-   far from the core. With a real scattered-light model, the better endgame
-   is **model subtraction** (Phase 3): fit the amplitude per star, subtract
-   halo+spikes, and only mask the residual-heavy core — keeping depth in
-   the wings, and working even in single-PA fields where the coverage gate
-   never opens. Structurally this is the `wisp` step's pattern applied at
-   combine time. (Weight-downweighting was considered and dropped —
-   subtraction dominates it on every axis once an ePSF model exists.)
+1. **Hard mask vs. subtraction — resolved: subtract only where trustable.**
+   DO_NOT_USE discards spike-wing pixels that still carry mostly valid
+   flux, and with a real scattered-light model the alternative is **model
+   subtraction** (Phase 3): fit the amplitude per star, subtract
+   halo+spikes (the `wisp` pattern at combine time) — it keeps depth in
+   the wings and works even in single-PA fields where the coverage gate
+   never opens. But a subtracted pixel is only as good as the model, and a
+   pixel that was *dominated* by spike flux before subtraction should not
+   be trusted afterward: residual fractional model error there exceeds the
+   science signal, and the Poisson noise of the removed flux remains in
+   the pixel regardless. So the subtract/mask decision is **per pixel,
+   gated on a contamination ratio** — e.g.
+   ρ = model SB / max(local background RMS, science SB): subtract-and-keep
+   where ρ < ρ_max (spike is a perturbation; also inflate ERR/VAR by the
+   subtracted model's uncertainty so the drizzle weights stay honest),
+   hard-mask where ρ ≥ ρ_max (subtraction residuals would dominate the
+   error budget). ρ_max is a config knob (`subtract_max_contrast`,
+   Phase 3); ρ_max → 0 degenerates to pure Phase-1 masking. The isophote
+   machinery gives both contours for free — they are two thresholds of the
+   same scaled model. (Weight-downweighting was considered and dropped —
+   gated subtraction dominates it once an ePSF model exists.)
 2. **Saturated-core handling.** The core/halo region is typically
    contaminated at *every* PA and thus never gated in. Do we want an
    ungated central-disk option (`mask_core = true`) that accepts the mosaic
@@ -337,10 +400,12 @@ Infrastructure (PATCH).
    (strut arms simply fall below threshold at SW flux levels) — but if the
    model is single-channel, verify the λ rescaling doesn't over-mask struts
    in SW; the capsule fallback table should allow per-arm zero lengths.
-6. **ePSF model provenance & format.** Which extended PSF model to adopt
-   (an in-hand empirical model exists), its angular extent vs. the
-   brightest stars in target fields, single model vs. per-channel, and
-   packaging (small enough for the wheel, or `wisp_cache`-style
+6. **ePSF model provenance & format.** In-hand scattered-light models
+   exist at several distinct anchor wavelengths (nearest-anchor +
+   residual λ rescale per filter, per §3.2). Remaining: their angular
+   extent vs. the brightest stars in target fields (determines whether
+   the capsule fallback is ever exercised), normalization convention,
+   and packaging (small enough for the wheel, or `wisp_cache`-style
    checksummed fetch).
 
 ## 8. Summary of touchpoints
