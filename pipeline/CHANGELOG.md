@@ -92,8 +92,12 @@ Release procedure: edit the `## Unreleased` section below, then run
   the envelope-dominated BCGs it was meant to protect. The guard subsumes
   its purpose (the oversubtraction bowl is exactly the failure mode it
   removes) and works under masks, so no protective hole is needed.
-  Enabling the guard + tier change alters mosaic config hashes → tiles
-  rebuild on next run.
+  Rollout: the tile config hash (`nircam/manifest.py`) now folds in every
+  pixel-affecting bkgsub setting plus a bkgsub algorithm version, so all
+  existing mosaic manifests hash stale and their tiles rerun background
+  subtraction on the next resample pass — previously the hash covered
+  none of these, and the resample step's skip logic would have kept the
+  old subtraction on existing tiles indefinitely.
 
 ### Calibration
 - Per-exposure background: `[nircam.bkg.mask].mask_aggressive_dq_max_frac`

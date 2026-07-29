@@ -152,6 +152,52 @@ def test_guard_sigma_map_follows_wht():
     assert ratio == pytest.approx(2.0, rel=1e-3)
 
 
+@pytest.mark.parametrize("interp_name", ["zoom", "IDW"])
+def test_cap_mesh_preserves_configured_interpolator(interp_name):
+    """An uncapping ceiling must reproduce the fitted map for BOTH
+    interpolators — _cap_mesh re-runs the fit's own interpolation, so
+    enabling the guard with bg_interpolator='IDW' cannot silently swap the
+    whole background for a zoom-interpolated one."""
+    sci, err, _ = _scene(n=256)
+    sb = _guard_sb(bg_interpolator=interp_name)
+    mask, _ = sb.mask_from_arrays(sci, err)
+    bkg = sb.estimate_background(sci, mask)
+    ref = bkg.background
+    uncapping = np.full(sci.shape, np.inf)
+    remade = sb._cap_mesh(bkg, uncapping, sci.shape)
+    # identical interpolation of an identical mesh; tolerance only for the
+    # float32-mesh vs float64-capped-mesh arithmetic
+    assert np.allclose(remade, ref, rtol=1e-5, atol=1e-6 * SIG)
+
+
+def test_trough_correction_continuous_across_excluded_footprint():
+    """The trough correction must not hard-zero over excluded source
+    footprints: a source inside a fired trough gets the same ambient
+    lowering as its surroundings (no per-source pedestal/seam)."""
+    n = 256
+    yy, xx = np.mgrid[0:n, 0:n]
+    noise = gaussian_filter(RNG.normal(size=(n, n)), 1.2, mode="wrap")
+    noise *= SIG / noise.std()
+    trough = 6 * SIG * np.exp(-(((yy - 128) ** 2 + (xx - 128) ** 2)
+                                / (2 * 30.0 ** 2)))
+    sci = (noise - trough).astype(np.float32)
+    sigma_map = np.full((n, n), SIG, dtype=np.float32)
+    exclude = np.hypot(yy - 128, xx - 128) < 8      # compact source footprint
+    sb = _guard_sb()
+
+    m = sb._gated_trough_pass(sci, np.zeros_like(sci), exclude, sigma_map)
+
+    r_in = np.hypot(yy - 128, xx - 128)
+    annulus = (r_in >= 9) & (r_in < 14)
+    corr_inside = float(np.mean(m[exclude]))
+    corr_annulus = float(np.mean(m[annulus]))
+    assert corr_annulus < -2 * SIG                  # the trough fired
+    # continuity: interior lowered like its immediate surroundings, not
+    # left at ~0 on a pedestal
+    assert corr_inside < 0.5 * corr_annulus
+    assert abs(corr_inside - corr_annulus) < 1.5 * SIG
+
+
 def test_compute_applies_guard(tmp_path):
     """End-to-end through compute(): guard on vs off differ only where the
     guard fired, and the guard never raises the background."""

@@ -659,18 +659,24 @@ class SubtractBackground:
         capped = np.minimum(mesh, cmesh)
         n_capped = int((mesh > cmesh).sum())
         log(f"  guard ceiling: capped {n_capped}/{mesh.size} mesh cells")
-        interp = BkgZoomInterpolator()
-        # photutils' BkgZoomInterpolator.__call__ reads kwargs['edge_method']
-        # unconditionally (2.3.0, interpolators.py:97), so omitting it is a hard
-        # KeyError on every call — this path cannot run without it. Take the
-        # value from the Background2D being capped rather than hardcoding
-        # 'pad': re-interpolating the capped mesh has to use exactly the
-        # interpolation the original fit used, or the capped map is not
-        # comparable to the one it replaces. Verified on a synthetic fit —
-        # with this kwarg, interp(uncapped_mesh) reproduces bkg2d.background
-        # to 0.0e+00.
-        return interp(capped, box_size=(by, bx), shape=shape, dtype=float,
-                      edge_method=getattr(bkg2d, "edge_method", "pad"))
+        # Re-run exactly the interpolation the original fit used:
+        # Background2D.background is interpolator(background_mesh,
+        # **_interp_kwargs) (photutils 2.3.0, background_2d.py), so calling
+        # the fit's own interpolator with the fit's own kwargs reproduces
+        # bkg2d.background bit-for-bit from the uncapped mesh, and the capped
+        # map differs only through the capped cells. This also honors the
+        # configured bg_interpolator: a hardcoded BkgZoomInterpolator here
+        # would silently replace an IDW background with a zoom-interpolated
+        # one even when no cell is capped (and _interp_kwargs carries the
+        # mesh_yxcen/mesh_nan_mask the IDW call requires).
+        interp_kwargs = getattr(bkg2d, "_interp_kwargs", None)
+        if interp_kwargs is None:
+            # photutils without _interp_kwargs: fall back to the zoom-style
+            # call (edge_method is read unconditionally in 2.3.0).
+            interp_kwargs = dict(
+                box_size=(by, bx), shape=shape, dtype=float,
+                edge_method=getattr(bkg2d, "edge_method", "pad"))
+        return bkg2d.interpolator(capped, **interp_kwargs)
 
     def _residual_exclusion(
         self, resid_eq: np.ndarray, off: np.ndarray
@@ -717,17 +723,39 @@ class SubtractBackground:
             for it in range(self.guard_trough_max_iter):
                 resid_eq = (sci - m) * inv_sigma
                 sm = self._smooth_masked(resid_eq, exclude, s)
-                ok = np.isfinite(sm) & ~exclude
-                rms = float(astrostats.biweight_scale(sm[ok]))
+                # exclude keeps source flux out of the smoothing inputs and
+                # the rms estimate ONLY. The gate and the correction use sm
+                # wherever it is finite — including under excluded source
+                # footprints, where the normalized convolution interpolates
+                # the ambient trough from the surrounding sky — so corr stays
+                # continuous across footprint edges. Zeroing signif on
+                # excluded pixels instead would hard-zero corr over every
+                # source inside a fired trough, leaving each one on a
+                # pedestal at the original trough depth (a seam the class
+                # docstring promises not to make).
+                finite = np.isfinite(sm)
+                rms = float(astrostats.biweight_scale(sm[finite & ~exclude]))
                 if not np.isfinite(rms) or rms <= 0:
                     break
-                signif = np.where(ok, sm / rms, 0.0)
+                signif = np.where(finite, sm / rms, 0.0)
                 seg = detect_sources(-signif,
                                      threshold=self.guard_trough_t,
                                      npixels=npixels)
                 if seg is None:
                     break
-                gate = seg.make_source_mask()
+                # A region's significance must rest on at least npixels of
+                # real (non-excluded) sky: interpolated sm under excluded
+                # islands may extend a genuine trough across a footprint,
+                # but must never create or carry a firing on its own —
+                # otherwise shallow negative patches bridged by source
+                # footprints erode the blank-field near-no-op guarantee.
+                sky_area = np.bincount(
+                    seg.data[~exclude].ravel(), minlength=seg.nlabels + 1)
+                keep = sky_area >= npixels
+                keep[0] = False
+                if not keep.any():
+                    break
+                gate = keep[seg.data]
                 corr = np.where(
                     gate,
                     np.minimum(sm + self.guard_trough_t * rms, 0.0), 0.0)
