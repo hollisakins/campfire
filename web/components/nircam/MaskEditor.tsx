@@ -146,6 +146,7 @@ export default function MaskEditor({
   const [dragging, setDragging] = useState<
     | { kind: 'pan'; startClient: [number, number]; startTranslate: [number, number] }
     | { kind: 'vertex'; polyId: string; vertexIndex: number }
+    | { kind: 'polygon'; polyId: string; start: SvgVertex; startVertices: SvgVertex[] }
     | null
   >(null);
   const [dirty, setDirty] = useState(false);
@@ -425,6 +426,22 @@ export default function MaskEditor({
               i === dragging.vertexIndex ? pt : v) }
       ));
       markDirty();
+    } else if (dragging.kind === 'polygon') {
+      const pt = clientToSvg(e.clientX, e.clientY);
+      if (!pt) return;
+      // Translate from the drag-start snapshot rather than the previous move,
+      // so accumulated float error can't skew the shape mid-drag. A plain
+      // click fires no move events, so selection alone never dirties. No
+      // zero-delta skip: with absolute offsets, delta (0,0) is how a drag
+      // that returns to its start point restores the original position.
+      const dx = pt.x - dragging.start.x;
+      const dy = pt.y - dragging.start.y;
+      setPolygons((ps) => ps.map((p) =>
+        p.id !== dragging.polyId ? p :
+          { ...p, vertices: dragging.startVertices.map((v) =>
+              ({ x: v.x + dx, y: v.y + dy })) }
+      ));
+      markDirty();
     }
   }, [dragging, clientToSvg, markDirty]);
 
@@ -662,7 +679,22 @@ export default function MaskEditor({
                 selected={selectedId === p.id}
                 mode={mode}
                 scale={scale}
-                onSelect={() => mode === 'edit' && setSelectedId(p.id)}
+                onBodyDown={(e) => {
+                  if (mode !== 'edit') return;
+                  // Leave shift+drag / middle mouse to the container's pan.
+                  if (e.shiftKey || e.button !== 0) return;
+                  e.stopPropagation();
+                  setSelectedId(p.id);
+                  const pt = clientToSvg(e.clientX, e.clientY);
+                  if (!pt) return;
+                  (e.target as Element).setPointerCapture?.(e.pointerId);
+                  setDragging({
+                    kind: 'polygon',
+                    polyId: p.id,
+                    start: pt,
+                    startVertices: p.vertices,
+                  });
+                }}
                 onVertexDown={(idx, e) => {
                   if (mode !== 'edit') return;
                   e.stopPropagation();
@@ -712,7 +744,7 @@ export default function MaskEditor({
         <div className="absolute bottom-2 left-2 right-2 text-[11px] text-white/70 pointer-events-none font-mono">
           {mode === 'inspect' && 'drag = pan • wheel = zoom • shift+drag = pan in any mode'}
           {mode === 'draw'    && 'click = add vertex • click first vertex / Enter = close • Esc = cancel • Backspace = undo vertex'}
-          {mode === 'edit'    && 'click polygon = select • drag vertex = move • Delete = remove polygon'}
+          {mode === 'edit'    && 'click polygon = select • drag polygon = move • drag vertex = reshape • Delete = remove polygon'}
         </div>
       </div>
     </div>
@@ -724,13 +756,13 @@ export default function MaskEditor({
 // ---------------------------------------------------------------------------
 
 function PolygonShape({
-  poly, selected, mode, scale, onSelect, onVertexDown,
+  poly, selected, mode, scale, onBodyDown, onVertexDown,
 }: {
   poly: SvgPolygon;
   selected: boolean;
   mode: Mode;
   scale: number;
-  onSelect: () => void;
+  onBodyDown: (e: React.PointerEvent) => void;
   onVertexDown: (vertexIndex: number, e: React.PointerEvent) => void;
 }) {
   const pointsStr = poly.vertices.map((v) => `${v.x},${v.y}`).join(' ');
@@ -746,7 +778,8 @@ function PolygonShape({
         fill={fill}
         stroke={stroke}
         strokeWidth={1.5 / scale}
-        onPointerDown={(e) => { if (interactive) { e.stopPropagation(); onSelect(); } }}
+        style={interactive ? { cursor: 'move' } : undefined}
+        onPointerDown={(e) => { if (interactive) onBodyDown(e); }}
       />
       {interactive && selected && poly.vertices.map((v, i) => (
         <circle
