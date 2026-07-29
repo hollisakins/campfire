@@ -63,7 +63,41 @@ function ExposureDetailPageInner() {
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const id = Number(params.id);
+
+  // Client-side stepping: prev/next swaps the exposure via local state +
+  // history.pushState, NOT router.push. A router.push between dynamic
+  // segments paints nothing until the new page's RSC payload has
+  // round-tripped from the server — several hundred ms frozen on the old
+  // exposure with no loading indicator (none of the new page's spinners exist
+  // yet), during which keystrokes still target the OLD exposure, so a fast
+  // operator's decisions land on the wrong row or appear to vanish. With
+  // local stepping the id swaps in the same frame as the keypress and every
+  // loading state below actually engages; the URL stays in sync for
+  // refresh/share/back, and Next-driven navigations (direct entry, list
+  // links) seed from the route param.
+  const routeId = Number(params.id);
+  const [id, setId] = useState(routeId);
+  // Synchronous mirror of `id` for handlers that can fire faster than React
+  // re-renders — a double-tapped arrow in one frame must not double-step.
+  const idRef = useRef(id);
+  idRef.current = id;
+  // A real navigation changed the route param (back/forward or an entry that
+  // didn't remount): the route wins over local stepping state.
+  const lastRouteIdRef = useRef(routeId);
+  if (lastRouteIdRef.current !== routeId) {
+    lastRouteIdRef.current = routeId;
+    if (id !== routeId) setId(routeId);
+  }
+  // Back/forward across locally-pushed steps: Next may not remount for URLs
+  // written via history.pushState, so follow popstate ourselves as well.
+  useEffect(() => {
+    const onPop = () => {
+      const m = window.location.pathname.match(/\/admin\/nircam\/(\d+)(?:\/|$)/);
+      if (m) setId(Number(m[1]));
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   // The list page's filter+sort state, carried in the URL (see
   // lib/nircam-exposure-nav.ts). Defines the ordered set prev/next walks;
@@ -532,20 +566,27 @@ function ExposureDetailPageInner() {
     }
   }, [id]);
 
-  // Auto-save on nav: flush the dirty triage state (fire-and-forget) and push
-  // in the same tick, so the operator can blast through a queue with arrow
-  // keys without losing state or waiting on the save round trip.
+  // Auto-save on nav: flush the dirty triage state (fire-and-forget), then
+  // swap the exposure locally in the same tick — the operator can blast
+  // through a queue with arrow keys without losing state or waiting on any
+  // round trip (save or navigation).
   const goTo = useCallback((
     targetId: number | null,
     statusOverride?: NircamExposure['review_status'],
   ) => {
-    // targetId === id means the neighbor window is stale in a way the derivation
-    // above couldn't repair; pushing would be a no-op that looks like a step.
-    if (targetId == null || targetId === id) return;
+    // targetId === current id means the neighbor window is stale in a way the
+    // derivation above couldn't repair; stepping would be a no-op that looks
+    // like a step. Checked against the sync mirror so a double-tap inside one
+    // frame can't double-step.
+    if (targetId == null || targetId === idRef.current) return;
     flushDirtySave(statusOverride);
-    // Carry the filter context so the next exposure's nav walks the same set.
-    router.push(`/admin/nircam/${targetId}${navQuery ? `?${navQuery}` : ''}`);
-  }, [flushDirtySave, router, navQuery, id]);
+    idRef.current = targetId;
+    setId(targetId);
+    // Keep the URL shareable/refreshable, carrying the filter context so the
+    // next exposure's nav walks the same set (see the routeId comment above
+    // for why this is history.pushState and not router.push).
+    window.history.pushState(null, '', `/admin/nircam/${targetId}${navQuery ? `?${navQuery}` : ''}`);
+  }, [flushDirtySave, navQuery]);
 
   const handleNext = useCallback(() => goTo(nav?.nextId ?? null), [goTo, nav]);
   const handlePrev = useCallback(() => goTo(nav?.prevId ?? null), [goTo, nav]);
