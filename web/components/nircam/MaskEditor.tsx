@@ -22,9 +22,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   MousePointer2, PencilLine, Hand, Trash2, Save, Loader2, Check,
+  Copy, ClipboardPaste,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import type { MaskPolygon, MaskRegionsPayload } from '@/lib/types';
+import { getMaskClipboard, setMaskClipboard } from '@/lib/mask-clipboard';
 import FitsCanvas, { type FitsCanvasLoad } from './FitsCanvas';
 import { STRETCH_MODES, COLORMAP_NAMES, type StretchMode, type ColormapName } from '@/lib/fits';
 import { isPngCached } from '@/lib/nircam-exposure-cache';
@@ -40,6 +42,8 @@ interface SvgPolygon {
   original_frame?: string;
   imported_from?: string;
   imported_at?: string;
+  copied_from?: string;
+  copied_at?: string;
   created_at?: string;
   modified_at?: string;
   label?: string;
@@ -55,6 +59,13 @@ interface Props {
   imageHeight: number;       // image height in pixels (= exposure NAXIS2)
   initialRegions: MaskRegionsPayload | null;
   onSave: (regions: MaskRegionsPayload) => Promise<{ error?: string }>;
+  /**
+   * Enables the mask clipboard (copy/paste between exposures); the value is
+   * the current exposure's filename, stamped onto pasted polygons as
+   * provenance. Coordinates are raw detector pixels, so pasting is only
+   * offered onto exposures with identical dimensions. Omit to disable.
+   */
+  clipboardSource?: string;
 }
 
 function uuid() {
@@ -87,6 +98,8 @@ function fromPayload(payload: MaskRegionsPayload | null, h: number): SvgPolygon[
     original_frame: p.original_frame,
     imported_from: p.imported_from,
     imported_at: p.imported_at,
+    copied_from: p.copied_from,
+    copied_at: p.copied_at,
     created_at: p.created_at,
     modified_at: p.modified_at,
     label: p.label,
@@ -101,6 +114,8 @@ function toPayload(polys: SvgPolygon[], h: number): MaskRegionsPayload {
     original_frame: p.original_frame,
     imported_from: p.imported_from,
     imported_at: p.imported_at,
+    copied_from: p.copied_from,
+    copied_at: p.copied_at,
     created_at: p.created_at,
     modified_at: p.modified_at ?? new Date().toISOString(),
     label: p.label,
@@ -111,6 +126,7 @@ function toPayload(polys: SvgPolygon[], h: number): MaskRegionsPayload {
 
 export default function MaskEditor({
   pngUrl, fitsKey, imageWidth, imageHeight, initialRegions, onSave,
+  clipboardSource,
 }: Props) {
   const [polygons, setPolygons] = useState<SvgPolygon[]>(
     () => fromPayload(initialRegions, imageHeight)
@@ -127,6 +143,8 @@ export default function MaskEditor({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // Transient copy/paste feedback ("copied 3", dimension-mismatch refusal).
+  const [clipMsg, setClipMsg] = useState<{ text: string; error?: boolean } | null>(null);
 
   // The PNG actually painted. Managed by the swap effect below; starts as the
   // incoming URL only when its bytes are already decoded (retained cache), so
@@ -199,7 +217,14 @@ export default function MaskEditor({
     setDirty(false);
     setSelectedId(null);
     setDraftVertices([]);
+    setClipMsg(null);
   }, [initialRegions, imageHeight]);
+
+  useEffect(() => {
+    if (!clipMsg) return;
+    const t = setTimeout(() => setClipMsg(null), 4000);
+    return () => clearTimeout(t);
+  }, [clipMsg]);
 
   // Image swap, on mount and on prev/next alike:
   //   - Warm (already decoded in the retained cache): keep the current frame
@@ -283,6 +308,62 @@ export default function MaskEditor({
     markDirty();
   }, [draftVertices, markDirty]);
 
+  // ----- mask clipboard (copy/paste between exposures) -----
+  // Read during render for button enablement; cheap after the first lazy
+  // sessionStorage load, and any copy re-renders via the feedback message.
+  const clipboard = clipboardSource ? getMaskClipboard() : null;
+  const clipboardFits = !!clipboard &&
+    clipboard.imageWidth === imageWidth && clipboard.imageHeight === imageHeight;
+
+  const handleCopy = useCallback(() => {
+    if (!clipboardSource || polygons.length === 0) return;
+    setMaskClipboard({
+      polygons: toPayload(polygons, imageHeight).polygons,
+      imageWidth,
+      imageHeight,
+      sourceFilename: clipboardSource,
+      copiedAt: new Date().toISOString(),
+    });
+    setClipMsg({ text: `copied ${polygons.length} polygon${polygons.length === 1 ? '' : 's'}` });
+  }, [clipboardSource, polygons, imageWidth, imageHeight]);
+
+  const handlePaste = useCallback(() => {
+    if (!clipboardSource) return;
+    const clip = getMaskClipboard();
+    if (!clip) {
+      setClipMsg({ text: 'mask clipboard is empty', error: true });
+      return;
+    }
+    // Vertices are raw detector pixels: pasting across a size change (NIRCam
+    // SW vs LW) would silently land the polygons in the wrong place.
+    if (clip.imageWidth !== imageWidth || clip.imageHeight !== imageHeight) {
+      setClipMsg({
+        text: `clipboard is ${clip.imageWidth}×${clip.imageHeight}; this exposure is ${imageWidth}×${imageHeight} — not pasted`,
+        error: true,
+      });
+      return;
+    }
+    const now = new Date().toISOString();
+    // Pasted polygons are new web-authored polygons for THIS exposure: fresh
+    // id and timestamps, source 'web', with copied_from/copied_at recording
+    // where they came from. The source polygon's import lineage
+    // (original_frame/imported_*) describes a projection through the OTHER
+    // exposure's WCS, so it is deliberately not carried over.
+    const pasted: SvgPolygon[] = clip.polygons.map((p) => ({
+      id: uuid(),
+      source: 'web',
+      label: p.label,
+      copied_from: clip.sourceFilename,
+      copied_at: now,
+      created_at: now,
+      modified_at: now,
+      vertices: p.vertices.map((v) => ds9ToSvg(v, imageHeight)),
+    }));
+    setPolygons((ps) => [...ps, ...pasted]);
+    markDirty();
+    setClipMsg({ text: `pasted ${pasted.length} from ${clip.sourceFilename}` });
+  }, [clipboardSource, imageWidth, imageHeight, markDirty]);
+
   // ----- pointer interactions -----
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     // Shift+drag, middle mouse, or inspect-mode drag → pan.
@@ -341,6 +422,22 @@ export default function MaskEditor({
   // ----- keyboard: Enter/Escape (draw), Backspace (vertex undo) -----
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Ctrl/⌘ C/V — mask clipboard. Skip when typing in a form field, and
+      // yield Ctrl/⌘C to a real text selection anywhere on the page.
+      if (clipboardSource && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        const t = e.target as HTMLElement;
+        const isInput = t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT';
+        const k = e.key.toLowerCase();
+        if (k === 'c' && !isInput && !window.getSelection()?.toString()) {
+          if (polygons.length > 0) { e.preventDefault(); handleCopy(); }
+          return;
+        }
+        if (k === 'v' && !isInput) {
+          e.preventDefault();
+          handlePaste();
+          return;
+        }
+      }
       if (mode === 'draw') {
         if (e.key === 'Enter') { e.preventDefault(); finalizeDraft(); }
         if (e.key === 'Escape') { e.preventDefault(); setDraftVertices([]); }
@@ -359,7 +456,8 @@ export default function MaskEditor({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [mode, selectedId, markDirty, finalizeDraft]);
+  }, [mode, selectedId, markDirty, finalizeDraft,
+      clipboardSource, polygons.length, handleCopy, handlePaste]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -401,8 +499,38 @@ export default function MaskEditor({
               <Trash2 className="w-4 h-4 text-red-500" />
             </ToolButton>
           )}
+          {clipboardSource && (
+            <>
+              <div className="w-px h-4 bg-border mx-1" />
+              <ToolButton
+                onClick={handleCopy}
+                disabled={polygons.length === 0}
+                label={polygons.length === 0
+                  ? 'Copy masks — nothing to copy'
+                  : `Copy ${polygons.length} mask${polygons.length === 1 ? '' : 's'} (Ctrl/⌘C)`}
+              >
+                <Copy className="w-4 h-4" />
+              </ToolButton>
+              <ToolButton
+                onClick={handlePaste}
+                disabled={!clipboard || !clipboardFits}
+                label={!clipboard
+                  ? 'Paste masks — clipboard empty'
+                  : !clipboardFits
+                  ? `Paste masks — clipboard is ${clipboard.imageWidth}×${clipboard.imageHeight}, this exposure is ${imageWidth}×${imageHeight}`
+                  : `Paste ${clipboard.polygons.length} mask${clipboard.polygons.length === 1 ? '' : 's'} from ${clipboard.sourceFilename} (Ctrl/⌘V)`}
+              >
+                <ClipboardPaste className="w-4 h-4" />
+              </ToolButton>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-3 text-xs text-text-secondary">
+          {clipMsg && (
+            <span className={clipMsg.error ? 'text-red-500' : 'text-primary'}>
+              {clipMsg.text}
+            </span>
+          )}
           <span>{polygons.length} polygon{polygons.length === 1 ? '' : 's'}</span>
           <span>{(scale * 100).toFixed(0)}%</span>
           {saveError && <span className="text-red-500">{saveError}</span>}
@@ -626,9 +754,10 @@ function PolygonShape({
 }
 
 function ToolButton({
-  active = false, onClick, label, children,
+  active = false, disabled = false, onClick, label, children,
 }: {
   active?: boolean;
+  disabled?: boolean;
   onClick: () => void;
   label: string;
   children: React.ReactNode;
@@ -636,6 +765,7 @@ function ToolButton({
   return (
     <button
       type="button"
+      disabled={disabled}
       onClick={(e) => {
         // Drop mouse-click focus so a following Space press reaches the page's
         // approve-and-next shortcut instead of re-activating this tool button.
@@ -645,7 +775,7 @@ function ToolButton({
       }}
       title={label}
       aria-label={label}
-      className={`p-1.5 rounded text-sm ${
+      className={`p-1.5 rounded text-sm disabled:opacity-30 disabled:cursor-not-allowed ${
         active
           ? 'bg-primary/15 text-primary'
           : 'text-text-secondary hover:bg-card-hover'

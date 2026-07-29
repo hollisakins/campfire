@@ -390,6 +390,8 @@ export interface MaskPolygon {
   original_frame?: 'fk5' | 'icrs' | 'image' | string;
   imported_from?: string;
   imported_at?: string;
+  copied_from?: string;            // exposure filename this polygon was pasted from
+  copied_at?: string;
   created_at?: string;
   modified_at?: string;
 }
