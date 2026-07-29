@@ -209,6 +209,34 @@ export function setSaveError(err: ExposureSaveError | null): void {
  */
 const saveQueues = new Map<number, Promise<unknown>>();
 
+/**
+ * Per-id monotonic save generations. The queue orders the server-action tasks,
+ * but a failed save's cleanup handler awaits a revert refetch — and in that
+ * window a newer save for the same id can dispatch, run, and fully commit
+ * (dropping the in-flight count back to zero). The resuming handler must be
+ * able to tell "a newer save has already committed" apart from "nothing newer
+ * happened", or it reverts the cache to a pre-newer-save snapshot and raises a
+ * failure banner for a decision that actually persisted. Each save takes a
+ * dispatch sequence number; successful saves record theirs as committed.
+ */
+const saveDispatchSeq = new Map<number, number>();
+const saveCommitSeq = new Map<number, number>();
+
+export function nextSaveSeq(id: number): number {
+  const n = (saveDispatchSeq.get(id) ?? 0) + 1;
+  saveDispatchSeq.set(id, n);
+  return n;
+}
+
+export function markSaveCommitted(id: number, seq: number): void {
+  if ((saveCommitSeq.get(id) ?? 0) < seq) saveCommitSeq.set(id, seq);
+}
+
+/** True when a save dispatched after `seq` has already committed for `id`. */
+export function hasNewerCommittedSave(id: number, seq: number): boolean {
+  return (saveCommitSeq.get(id) ?? 0) > seq;
+}
+
 export function enqueueSave<T>(id: number, task: () => Promise<T>): Promise<T> {
   const prev = saveQueues.get(id) ?? Promise.resolve();
   const run = prev.then(task, task);

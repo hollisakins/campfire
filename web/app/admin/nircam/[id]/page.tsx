@@ -35,6 +35,9 @@ import {
   subscribeSaveState,
   getSaveStateVersion,
   enqueueSave,
+  nextSaveSeq,
+  markSaveCommitted,
+  hasNewerCommittedSave,
 } from '@/lib/nircam-exposure-cache';
 
 // Eager PNG prefetch window: warm the full-res mask surface (~5.7 MB) the
@@ -326,7 +329,10 @@ function ExposureDetailPageInner() {
     setSaved(false);
     setError(null);
     // Same per-exposure queue as the fire-and-forget nav save, so an explicit
-    // save and a background one for this row can't commit out of order.
+    // save and a background one for this row can't commit out of order. Takes
+    // a dispatch generation for the same reason: a success here must be
+    // visible to an older failed save's suspended cleanup handler.
+    const saveSeq = nextSaveSeq(savedForId);
     const result = await enqueueSave(savedForId, () => updateExposureReview(savedForId, {
       review_status: statusOverride ?? (s.reviewStatus as NircamExposure['review_status']),
       correction: s.correction as NircamExposure['correction'],
@@ -345,10 +351,13 @@ function ExposureDetailPageInner() {
       return { ok: false };
     }
     // Keyed by the exposure's own id, so this is correct regardless of route.
-    if (result.exposure) setCachedExposure(result.exposure);
-    // A retry that lands supersedes an earlier failure for this exposure —
-    // same rule as the fire-and-forget path, or the banner outlives the fix.
-    if (result.exposure && getSaveError()?.id === savedForId) setSaveError(null);
+    if (result.exposure) {
+      markSaveCommitted(savedForId, saveSeq);
+      setCachedExposure(result.exposure);
+      // A retry that lands supersedes an earlier failure for this exposure —
+      // same rule as the fire-and-forget path, or the banner outlives the fix.
+      if (getSaveError()?.id === savedForId) setSaveError(null);
+    }
     // Everything below writes state belonging to whatever is on screen *now* —
     // only safe while that's still the exposure we saved. Otherwise this would
     // render the old exposure under the new one's URL and set the new one's
@@ -411,7 +420,10 @@ function ExposureDetailPageInner() {
       };
       // Queued per exposure id so a second save for the same row (revisit +
       // re-edit before the first lands) can never commit or report out of
-      // order with this one.
+      // order with this one. The dispatch generation lets the failure handler
+      // below — which awaits, so it can resume after a newer save has fully
+      // committed — recognize that it has been superseded.
+      const saveSeq = nextSaveSeq(savedForId);
       enqueueSave(savedForId, () => updateExposureReview(savedForId, {
         review_status: review,
         correction: s.correction as NircamExposure['correction'],
@@ -419,6 +431,7 @@ function ExposureDetailPageInner() {
       })).then(async (result) => {
         if (result.exposure && !result.error) {
           endPending();
+          markSaveCommitted(savedForId, saveSeq);
           // A newer save queued behind this one has already written its own
           // optimistic row — don't put this (older) confirmed row over it.
           if (!hasPendingSave(savedForId)) setCachedExposure(result.exposure);
@@ -431,18 +444,27 @@ function ExposureDetailPageInner() {
         endPending();
         // Put the server's row back over the optimistic one (best effort —
         // the transport may be down), then tell the operator: they may be
-        // several exposures ahead by now.
+        // several exposures ahead by now. Both steps are void if a newer save
+        // for this row committed while this handler was suspended: the revert
+        // snapshot predates that save, and the banner would report a failure
+        // for a decision that did persist.
         try {
           const fresh = await getNircamExposureById(savedForId);
-          if (fresh.exposure && !hasPendingSave(savedForId)) {
+          if (
+            fresh.exposure &&
+            !hasPendingSave(savedForId) &&
+            !hasNewerCommittedSave(savedForId, saveSeq)
+          ) {
             setCachedExposure(fresh.exposure);
           }
         } catch { /* revert refetch failed too; the row corrects on next visit */ }
-        setSaveError({
-          id: savedForId,
-          filename: savedFilename,
-          message: err instanceof Error ? err.message : 'Save failed',
-        });
+        if (!hasNewerCommittedSave(savedForId, saveSeq)) {
+          setSaveError({
+            id: savedForId,
+            filename: savedFilename,
+            message: err instanceof Error ? err.message : 'Save failed',
+          });
+        }
       });
     }
     // Carry the filter context so the next exposure's nav walks the same set.
