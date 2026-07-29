@@ -431,10 +431,11 @@ export default function MaskEditor({
       if (!pt) return;
       // Translate from the drag-start snapshot rather than the previous move,
       // so accumulated float error can't skew the shape mid-drag. A plain
-      // click fires no move events, so selection alone never dirties.
+      // click fires no move events, so selection alone never dirties. No
+      // zero-delta skip: with absolute offsets, delta (0,0) is how a drag
+      // that returns to its start point restores the original position.
       const dx = pt.x - dragging.start.x;
       const dy = pt.y - dragging.start.y;
-      if (dx === 0 && dy === 0) return;
       setPolygons((ps) => ps.map((p) =>
         p.id !== dragging.polyId ? p :
           { ...p, vertices: dragging.startVertices.map((v) =>
