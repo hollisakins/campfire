@@ -871,9 +871,12 @@ function ExposureDetailPageInner() {
             <div className="flex justify-between"><dt>Mark excluded</dt><dd className="font-mono text-text-secondary">3</dd></div>
             <div className="flex justify-between"><dt>Save</dt><dd className="font-mono text-text-secondary">S</dd></div>
             <div className="flex justify-between"><dt>Help</dt><dd className="font-mono text-text-secondary">?</dd></div>
+            <div className="flex justify-between"><dt>Copy masks</dt><dd className="font-mono text-text-secondary">Ctrl/⌘ C</dd></div>
+            <div className="flex justify-between"><dt>Paste masks</dt><dd className="font-mono text-text-secondary">Ctrl/⌘ V</dd></div>
           </dl>
           <p className="mt-2 text-xs text-text-secondary">
             Navigation auto-saves the triage panel in the background if there are unsaved changes. Mask edits save separately from the editor toolbar.
+            Copied masks paste onto any exposure with the same pixel dimensions (positions are detector pixels, not sky coordinates).
           </p>
         </div>
       )}
@@ -936,6 +939,8 @@ function ExposureDetailPageInner() {
                   imageHeight={exposure.image_height!}
                   initialRegions={exposure.mask_regions}
                   onSave={handleSaveMasks}
+                  clipboardSource={exposure.filename}
+                  clipboardLive={() => idRef.current === exposure.id}
                 />
               </div>
             ) : pngPresignPending ? (
@@ -952,6 +957,8 @@ function ExposureDetailPageInner() {
                   imageHeight={exposure.image_height!}
                   initialRegions={exposure.mask_regions}
                   onSave={handleSaveMasks}
+                  clipboardSource={exposure.filename}
+                  clipboardLive={() => idRef.current === exposure.id}
                 />
               </div>
             ) : pngUrl ? (
