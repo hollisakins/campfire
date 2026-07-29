@@ -24,15 +24,6 @@ const STAGE_PHASE: Record<NircamStage, Phase> = {
   outlier:       'done',
 };
 
-const PHASE_BG: Record<Phase, string> = {
-  pre:     'bg-gray-200 dark:bg-slate-700',
-  early:   'bg-blue-200 dark:bg-blue-900',
-  mid:     'bg-indigo-200 dark:bg-indigo-900',
-  late:    'bg-purple-200 dark:bg-purple-900',
-  combine: 'bg-amber-200 dark:bg-amber-900',
-  done:    'bg-green-300 dark:bg-green-800',
-};
-
 const PHASE_BADGE: Record<Phase, string> = {
   pre:     'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-400',
   early:   'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300',
@@ -46,17 +37,6 @@ export function stageBadgeClasses(stage: NircamStage | string): string {
   const phase = STAGE_PHASE[stage as NircamStage] ?? 'pre';
   return PHASE_BADGE[phase];
 }
-
-export function stageBarClasses(stage: NircamStage | string): string {
-  const phase = STAGE_PHASE[stage as NircamStage] ?? 'pre';
-  return PHASE_BG[phase];
-}
-
-// Map the at_<step> column names returned by nircam_reduction_progress
-// back to the canonical stage names for rendering.
-export const STAGE_COLUMN_KEYS = NIRCAM_STAGES.map(s =>
-  ({ stage: s, key: `at_${s}` as const })
-);
 
 export type { NircamStage };
 export { NIRCAM_STAGES };
