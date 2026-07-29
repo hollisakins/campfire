@@ -128,11 +128,15 @@ export default function MaskEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
-  // The PNG actually painted. Swapped by the effect below: held across a warm
-  // navigation (seamless) but cleared to a loading state on a cold one, so we
-  // never show a stale exposure under the next one's metadata + mask.
-  const [shownUrl, setShownUrl] = useState<string | undefined>(pngUrl);
-  const swappedOnceRef = useRef(false);
+  // The PNG actually painted. Managed by the swap effect below; starts as the
+  // incoming URL only when its bytes are already decoded (retained cache), so
+  // a cold MOUNT shows the loading state too — initializing to `pngUrl`
+  // unconditionally meant a fresh mount (every prev/next remounts this page)
+  // rendered an invisible, natively-loading <img>: a blank canvas with no
+  // indicator until the full-res PNG landed.
+  const [shownUrl, setShownUrl] = useState<string | undefined>(
+    () => (pngUrl && isPngCached(pngUrl) ? pngUrl : undefined),
+  );
 
   // FITS render controls (only used when `fitsKey` is set). vmin/vmax drive the
   // display interval; 0/0 means "unset" so FitsCanvas keeps its on-load ZScale
@@ -197,15 +201,13 @@ export default function MaskEditor({
     setDraftVertices([]);
   }, [initialRegions, imageHeight]);
 
-  // Image swap on prev/next. The initial mount already shows `pngUrl`, so skip
-  // the first run and let that image load natively. On later navigations:
+  // Image swap, on mount and on prev/next alike:
   //   - Warm (already decoded in the retained cache): keep the current frame
   //     and swap on the ~instant decode, so the step never flashes.
   //   - Cold: blank to a loading state immediately rather than lingering on the
-  //     previous exposure's pixels (misleading beside the new metadata + mask),
-  //     then swap once the incoming image has decoded.
+  //     previous exposure's pixels (misleading beside the new metadata + mask)
+  //     or an invisible native load, then swap once the image has decoded.
   useEffect(() => {
-    if (!swappedOnceRef.current) { swappedOnceRef.current = true; return; }
     if (pngUrl === undefined) { setShownUrl(undefined); return; }
     if (!isPngCached(pngUrl)) setShownUrl(undefined);
     let cancelled = false;

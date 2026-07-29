@@ -25,6 +25,7 @@ import {
   getCachedExposure,
   setCachedExposure,
   prefetchPng,
+  isPngCached,
   getCachedPngUrls,
   setCachedPngUrls,
   hasPendingSave,
@@ -353,7 +354,10 @@ function ExposureDetailPageInner() {
     // Keyed by the exposure's own id, so this is correct regardless of route.
     if (result.exposure) {
       markSaveCommitted(savedForId, saveSeq);
-      setCachedExposure(result.exposure);
+      // Same guard as the fire-and-forget success path: a newer save queued
+      // behind this one (edit + navigate before this resolved) has already
+      // written its optimistic row — don't put this older row over it.
+      if (!hasPendingSave(savedForId)) setCachedExposure(result.exposure);
       // A retry that lands supersedes an earlier failure for this exposure —
       // same rule as the fire-and-forget path, or the banner outlives the fix.
       if (getSaveError()?.id === savedForId) setSaveError(null);
@@ -483,13 +487,20 @@ function ExposureDetailPageInner() {
     // over whatever the row actually holds once it loads.
     if (!stateRef.current.exposure) return;
     editStatus('approved');
-    const nextId = nav?.nextId ?? null;
-    if (nextId == null || nextId === id) {
+    // "End of queue" only when the neighbors result is FRESH for this
+    // exposure. A null or stale nav (RPC still in flight after a fast Space
+    // burst, the stale window's edge, or an RPC error) means "unknown": mark
+    // approved and wait — mirroring the disabled arrows — rather than firing
+    // redundant in-place saves; the next press advances once nav lands, and
+    // that navigation auto-saves the marked status.
+    const freshNav = navState?.forId === id ? navState.data : null;
+    if (freshNav && freshNav.nextId == null) {
       handleSave('approved');
       return;
     }
-    goTo(nextId, 'approved');
-  }, [editStatus, nav, id, goTo, handleSave]);
+    const nextId = nav?.nextId ?? null;
+    if (nextId != null && nextId !== id) goTo(nextId, 'approved');
+  }, [editStatus, navState, nav, id, goTo, handleSave]);
 
   // Global keyboard shortcuts (mirrors web/components/spectra/inspection
   // pattern). Skip when an input has focus so users can type in notes etc.
@@ -748,11 +759,7 @@ function ExposureDetailPageInner() {
               </div>
             ) : pngUrl ? (
               // Fallback: thumbnail-only view (full PNG hasn't been deployed yet).
-              <img
-                src={pngUrl}
-                alt={`${exposure.filename} quick-look`}
-                className="w-full h-auto"
-              />
+              <PreviewImage url={pngUrl} alt={`${exposure.filename} quick-look`} />
             ) : (
               <div className="flex items-center justify-center py-24 text-text-secondary">
                 No PNG available
@@ -874,6 +881,37 @@ function ExposureDetailPageInner() {
           </Card>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Thumbnail-only fallback with a cold-load spinner: a plain <img> mounted with
+// an unfetched URL is invisible while it downloads, which reads as "nothing is
+// happening" when stepping faster than the prefetch window. Warm mounts (URL
+// already decoded in the retained cache) skip the spinner entirely.
+function PreviewImage({ url, alt }: { url: string; alt: string }) {
+  const [loaded, setLoaded] = useState(() => isPngCached(url));
+  const imgRef = useRef<HTMLImageElement>(null);
+  // Reset per URL, and catch an image that completed before React attached the
+  // onLoad handler (cached responses can land between render and commit).
+  useEffect(() => {
+    setLoaded(isPngCached(url) || !!imgRef.current?.complete);
+  }, [url]);
+  return (
+    <div className="relative">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        ref={imgRef}
+        src={url}
+        alt={alt}
+        className="w-full h-auto"
+        onLoad={() => setLoaded(true)}
+      />
+      {!loaded && (
+        <div className="absolute inset-0 flex items-center justify-center py-24">
+          <Loader2 className="w-8 h-8 animate-spin text-text-secondary" />
+        </div>
+      )}
     </div>
   );
 }
