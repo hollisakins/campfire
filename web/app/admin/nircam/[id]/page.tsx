@@ -49,6 +49,15 @@ import {
 // exposures that have no full PNG (the thumbnail-only view).
 const PREFETCH_AHEAD = 3;
 const PREFETCH_BEHIND = 1;
+// Neighbors-RPC window: deliberately wider than the PNG byte-prefetch. The
+// window ids feed three things that must survive a fast `A`/`→` burst — the
+// stale-window prev/next derivation, the row-data prefetch, and URL
+// presigning. All three are a handful of bytes per exposure, so the wide
+// window costs nothing; only the ~5.7 MB PNG byte-warm stays at
+// PREFETCH_AHEAD. At 3, a burst outran the window every third or fourth
+// press: nav went null (dead arrows) and the un-prefetched row blanked the
+// whole page to the loading state — reading as a full page remount.
+const NAV_WINDOW = 8;
 
 // A mouse click leaves a button focused, and the shortcut handler yields Space
 // to focused buttons (it's their native activation key) — so without this,
@@ -382,7 +391,7 @@ function ExposureDetailPageInner() {
     // exposure outright (dead arrows until the id changed) — retry a couple
     // of times with backoff before giving up.
     const attempt = (tryNo: number) => {
-      getExposureNeighbors(id, { ...navFilters, window: PREFETCH_AHEAD })
+      getExposureNeighbors(id, { ...navFilters, window: NAV_WINDOW })
         .then(
           (res) => {
             if (cancelled) return;
@@ -536,13 +545,36 @@ function ExposureDetailPageInner() {
     return () => { cancelled = true; };
   }, [id]);
 
-  // Warm the sibling exposure *data* cache (prev/next) so navigation paints in
-  // the same frame — independent of PNG bytes.
+  // Warm the sibling exposure *data* cache across the nav window's whole
+  // ahead side so navigation paints in the same frame — independent of PNG
+  // bytes. The row is
+  // what the id-change reset paints from (setLoading(!cached)): arrive at an
+  // un-warmed id and the viewer and sidebar drop to their loading placeholders
+  // until the fetch lands. Warming only prev/next made that a coin-flip on
+  // every fast press (one row of headroom vs a full round trip per step);
+  // the window gives NAV_WINDOW steps of slack. In-flight ids are tracked
+  // because successive windows overlap almost entirely — without the guard,
+  // every step would re-dispatch fetches for rows already on the wire.
+  const rowFetchInFlightRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     if (!nav) return;
-    for (const sibId of [nav.nextId, nav.prevId]) {
-      if (sibId == null || getCachedExposure(sibId)) continue;
+    // Ahead-heavy slice, nearest-first: server actions from one client run
+    // through a serialized queue, so dispatch order is arrival order — the
+    // rows the operator will hit next must go out first, and the far-behind
+    // half of the window (already visited and cached in a forward pass, or
+    // never needed on direct entry) shouldn't occupy the queue at all.
+    const idx = nav.windowIds.indexOf(id);
+    if (idx < 0) return;
+    const rowWin = [
+      ...nav.windowIds.slice(idx + 1),
+      ...nav.windowIds.slice(Math.max(0, idx - PREFETCH_BEHIND), idx),
+    ];
+    const inflight = rowFetchInFlightRef.current;
+    for (const sibId of rowWin) {
+      if (getCachedExposure(sibId) || inflight.has(sibId)) continue;
+      inflight.add(sibId);
       getNircamExposureById(sibId).then((res) => {
+        inflight.delete(sibId);
         // Re-checked at RESPONSE time, not just dispatch: the operator can
         // arrive at this sibling and key a decision while this read is in
         // flight (one slow round trip is all it takes). Any cache entry that
@@ -554,9 +586,9 @@ function ExposureDetailPageInner() {
         if (!res.exposure) return;
         if (getCachedExposure(sibId) || hasPendingSave(sibId)) return;
         setCachedExposure(res.exposure);
-      });
+      }, () => inflight.delete(sibId));
     }
-  }, [nav]);
+  }, [nav, id]);
 
   // Presign the current exposure's PNGs + eagerly prefetch a window of upcoming
   // ones (epic #261, N5). Keys are re-derived server-side; URLs go straight into
@@ -572,13 +604,20 @@ function ExposureDetailPageInner() {
   // revisiting an approved exposure with review=pending still in the query),
   // and gating the sign on it left the image panel on a spinner forever.
   useEffect(() => {
-    // Prefetch window from the neighbors RPC result, when available:
-    // ahead-heavy slice of the ordered window ids around the current exposure.
+    // Presign candidates: every windowed sibling (URLs are a few hundred
+    // bytes — sign as deep as the window so a burst never has to wait on the
+    // presign round trip). Byte-warming stays on the narrow ahead-heavy
+    // slice: full PNGs are ~5.7 MB each.
     const win: number[] = [];
+    const warmWin: number[] = [];
     if (nav) {
       const idx = nav.windowIds.indexOf(id);
       if (idx >= 0) {
         win.push(
+          ...nav.windowIds.slice(idx + 1),
+          ...nav.windowIds.slice(Math.max(0, idx - PREFETCH_BEHIND), idx),
+        );
+        warmWin.push(
           ...nav.windowIds.slice(idx + 1, idx + 1 + PREFETCH_AHEAD),
           ...nav.windowIds.slice(Math.max(0, idx - PREFETCH_BEHIND), idx),
         );
@@ -589,7 +628,7 @@ function ExposureDetailPageInner() {
     // full PNG. Re-warming an already-cached URL is a browser cache hit, so the
     // only new network per step is the frontier exposure entering the window.
     const warm = () => {
-      for (const sib of win) {
+      for (const sib of warmWin) {
         const u = getCachedPngUrls(sib);
         if (u) prefetchPng(u.full ?? u.preview);
       }
@@ -957,15 +996,13 @@ function ExposureDetailPageInner() {
     [],
   );
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-
-  if (!exposure) {
+  // A row-cache miss used to bail out here to a full-page spinner, unmounting
+  // the header, viewer, and sidebar — so a fast `A` burst that outran the row
+  // prefetch made the entire page appear to remount every few steps. Only the
+  // terminal not-found state replaces the page now; while the row is loading
+  // the layout below stays mounted with per-panel placeholders (and the image
+  // panel keeps showing the already-presigned preview when it has one).
+  if (!exposure && !loading) {
     return (
       <div className="py-8">
         <p className="text-text-secondary">Exposure not found.</p>
@@ -984,13 +1021,13 @@ function ExposureDetailPageInner() {
   const fullPngUrl = currentUrls?.full ?? null;
   const pngPresignPending = currentUrls === undefined;
   const editorAvailable = Boolean(
-    fullPngUrl && exposure.image_width && exposure.image_height
+    exposure && fullPngUrl && exposure.image_width && exposure.image_height
   );
 
   // Canonical OSN key for the exposure SCI FITS, for the live N4 renderer.
   let fitsKey: string | null = null;
   try {
-    if (exposure.field && exposure.filter && exposure.filename) {
+    if (exposure && exposure.field && exposure.filter && exposure.filename) {
       const fname = `${exposure.filename.replace(/\.fits$/, '')}.fits`;
       fitsKey = storageKey(
         'nircam_exposure',
@@ -1004,7 +1041,7 @@ function ExposureDetailPageInner() {
   }
   // FITS masking needs the key plus the pixel dims (for the overlay viewBox).
   const fitsMaskAvailable = Boolean(
-    fitsKey && exposure.image_width && exposure.image_height,
+    fitsKey && exposure?.image_width && exposure?.image_height,
   );
 
   return (
@@ -1024,11 +1061,13 @@ function ExposureDetailPageInner() {
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex-1 min-w-0">
+          {/* Non-breaking-space placeholders hold the header's height while a
+              row-cache miss resolves, so the layout doesn't jump. */}
           <h1 className="text-xl font-semibold font-mono text-text-primary truncate">
-            {exposure.filename}
+            {exposure ? exposure.filename : '\u00A0'}
           </h1>
           <p className="text-sm text-text-secondary">
-            {exposure.field} / {exposure.filter} / {exposure.detector}
+            {exposure ? `${exposure.field} / ${exposure.filter} / ${exposure.detector}` : '\u00A0'}
           </p>
         </div>
         {/* Rendered even while nav is unknown (RPC in flight or the exposure
@@ -1144,7 +1183,7 @@ function ExposureDetailPageInner() {
             </button>
           </div>
           <Card className="overflow-hidden">
-            {viewMode === 'fits' && fitsMaskAvailable ? (
+            {viewMode === 'fits' && exposure && fitsMaskAvailable ? (
               <div className="h-[80vh]">
                 <MaskEditor
                   fitsKey={fitsKey!}
@@ -1187,6 +1226,18 @@ function ExposureDetailPageInner() {
                   <Loader2 className="w-8 h-8 animate-spin text-text-secondary" />
                 </div>
               )
+            ) : !exposure ? (
+              // Row-cache miss mid-step (the prefetch was outrun): the panel
+              // stays mounted and shows the already-signed preview if one is
+              // cached — the operator keeps seeing THIS exposure's pixels
+              // while the row round-trips — else a spinner in place.
+              pngUrl ? (
+                <PreviewImage url={pngUrl} alt="Exposure quick-look" />
+              ) : (
+                <div className="flex items-center justify-center py-24">
+                  <Loader2 className="w-8 h-8 animate-spin text-text-secondary" />
+                </div>
+              )
             ) : editorAvailable ? (
               <div className="h-[80vh]">
                 <MaskEditor
@@ -1221,33 +1272,37 @@ function ExposureDetailPageInner() {
             <dl className="space-y-2 text-sm">
               <div className="flex justify-between">
                 <dt className="text-text-secondary">Field</dt>
-                <dd className="text-text-primary">{exposure.field}</dd>
+                <dd className="text-text-primary">{exposure?.field ?? '—'}</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-text-secondary">Filter</dt>
-                <dd className="text-text-primary">{exposure.filter}</dd>
+                <dd className="text-text-primary">{exposure?.filter ?? '—'}</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-text-secondary">Detector</dt>
-                <dd className="text-text-primary">{exposure.detector}</dd>
+                <dd className="text-text-primary">{exposure?.detector ?? '—'}</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-text-secondary">Visit</dt>
-                <dd className="text-text-primary font-mono text-xs">{exposure.visit || '—'}</dd>
+                <dd className="text-text-primary font-mono text-xs">{exposure?.visit || '—'}</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-text-secondary">Date</dt>
-                <dd className="text-text-primary">{exposure.date_obs || '—'}</dd>
+                <dd className="text-text-primary">{exposure?.date_obs || '—'}</dd>
               </div>
               <div className="flex justify-between">
                 <dt className="text-text-secondary">Stage</dt>
                 <dd>
-                  <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full font-mono ${stageBadgeClasses(exposure.stage)}`}>
-                    {exposure.stage}
-                  </span>
+                  {exposure ? (
+                    <span className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full font-mono ${stageBadgeClasses(exposure.stage)}`}>
+                      {exposure.stage}
+                    </span>
+                  ) : (
+                    <span className="text-text-primary">—</span>
+                  )}
                 </dd>
               </div>
-              {(exposure.ra_center != null && exposure.dec_center != null) && (
+              {(exposure && exposure.ra_center != null && exposure.dec_center != null) && (
                 <div className="flex justify-between">
                   <dt className="text-text-secondary">RA, Dec</dt>
                   <dd className="text-text-primary font-mono text-xs">
