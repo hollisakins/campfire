@@ -6,9 +6,11 @@
 -- already available for the gratings and DQ-flags filters. This adds the
 -- same v_list_ids_mode pattern (see v_gratings_mode) to the six RPCs that
 -- accept p_list_ids: 'all' requires an object to carry every selected tag
--- (COUNT DISTINCT matched list_id = array_length(p_list_ids)), 'none'
--- excludes objects carrying any selected tag, 'any' keeps the prior
--- behavior and remains the default so existing callers are unaffected.
+-- (COUNT DISTINCT matched list_id = COUNT DISTINCT p_list_ids, so duplicate
+-- ids in the array can't cause false negatives), 'none' excludes objects
+-- carrying any selected tag (spectra whose target has no parent object have
+-- no tags, so they match 'none'), 'any' keeps the prior behavior and
+-- remains the default so existing callers are unaffected.
 -- =============================================================================
 
 DROP FUNCTION IF EXISTS public.get_filtered_spectra_paginated;
@@ -194,10 +196,10 @@ BEGIN
         OR (v_list_ids_mode = 'all' AND (
             SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
             WHERE olm.object_id = t.object_id AND olm.list_id = ANY(p_list_ids)
-        ) = array_length(p_list_ids, 1))
-        OR (v_list_ids_mode = 'none' AND t.object_id NOT IN (
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND (t.object_id IS NULL OR t.object_id NOT IN (
             SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-        ))
+        )))
       )
       AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
       AND (
@@ -499,7 +501,7 @@ BEGIN
       OR (v_list_ids_mode = 'all' AND (
           SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
           WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
-      ) = array_length(p_list_ids, 1))
+      ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
       OR (v_list_ids_mode = 'none' AND o.id NOT IN (
           SELECT olm.object_id FROM object_list_members olm
           WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
@@ -634,7 +636,7 @@ BEGIN
         OR (v_list_ids_mode = 'all' AND (
             SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
             WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
-        ) = array_length(p_list_ids, 1))
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
         OR (v_list_ids_mode = 'none' AND o.id NOT IN (
             SELECT olm.object_id FROM object_list_members olm
             WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
@@ -945,7 +947,7 @@ BEGIN
       OR (v_list_ids_mode = 'all' AND (
           SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
           WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
-      ) = array_length(p_list_ids, 1))
+      ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
       OR (v_list_ids_mode = 'none' AND o.id NOT IN (
           SELECT olm.object_id FROM object_list_members olm
           WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
@@ -1162,7 +1164,7 @@ BEGIN
         OR (v_list_ids_mode = 'all' AND (
             SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
             WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
-        ) = array_length(p_list_ids, 1))
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
         OR (v_list_ids_mode = 'none' AND o.id NOT IN (
             SELECT olm.object_id FROM object_list_members olm
             WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
@@ -1380,10 +1382,10 @@ BEGIN
         OR (v_list_ids_mode = 'all' AND (
             SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
             WHERE olm.object_id = t.object_id AND olm.list_id = ANY(p_list_ids)
-        ) = array_length(p_list_ids, 1))
-        OR (v_list_ids_mode = 'none' AND t.object_id NOT IN (
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND (t.object_id IS NULL OR t.object_id NOT IN (
             SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-        ))
+        )))
       )
       AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND COALESCE(o.redshift_quality, 0) = 0))
@@ -1578,7 +1580,7 @@ BEGIN
         OR (v_list_ids_mode = 'all' AND (
             SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
             WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
-        ) = array_length(p_list_ids, 1))
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
         OR (v_list_ids_mode = 'none' AND o.id NOT IN (
             SELECT olm.object_id FROM object_list_members olm
             WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
