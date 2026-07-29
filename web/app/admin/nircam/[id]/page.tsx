@@ -342,7 +342,17 @@ function ExposureDetailPageInner() {
     for (const sibId of [nav.nextId, nav.prevId]) {
       if (sibId == null || getCachedExposure(sibId)) continue;
       getNircamExposureById(sibId).then((res) => {
-        if (res.exposure) setCachedExposure(res.exposure);
+        // Re-checked at RESPONSE time, not just dispatch: the operator can
+        // arrive at this sibling and key a decision while this read is in
+        // flight (one slow round trip is all it takes). Any cache entry that
+        // appeared since dispatch — the optimistic row or a save confirmation
+        // — is strictly newer than what this read saw, and a pending save with
+        // no cache entry (row never loaded) outranks it too. Overwriting here
+        // painted the pre-decision row on the next revisit as if the decision
+        // had reverted.
+        if (!res.exposure) return;
+        if (getCachedExposure(sibId) || hasPendingSave(sibId)) return;
+        setCachedExposure(res.exposure);
       });
     }
   }, [nav]);
@@ -748,10 +758,37 @@ function ExposureDetailPageInner() {
   const handleSaveMasks = async (regions: MaskRegionsPayload) => {
     // Mask saves run from the editor's own toolbar, outside `goTo`'s dirty
     // check — so the operator can navigate away while one is still in flight.
+    //
+    // Serialized through the SAME per-exposure queue as the triage saves.
+    // Unqueued, a mask save and a nav triage save for this row could commit
+    // at the database in either order, and each confirmation only reflects
+    // the fields the database held at ITS commit — so whichever response was
+    // snapshotted first is missing the other's write, and no response-time
+    // guard can reassemble the truth from two partial rows. Queued, dispatch
+    // order is commit order and each later confirmation contains every
+    // earlier write. Marked pending for the same reason as triage saves:
+    // revalidation and the sibling prefetch must not resurrect the pre-save
+    // row while this write is in flight.
     const savedForId = exposure.id;
-    const res = await saveExposureMaskRegions(savedForId, regions);
+    beginPendingSave(savedForId);
+    let res: Awaited<ReturnType<typeof saveExposureMaskRegions>>;
+    try {
+      res = await enqueueSave(savedForId, () =>
+        saveExposureMaskRegions(savedForId, regions));
+    } catch (err) {
+      res = {
+        exposure: null,
+        error: err instanceof Error ? err.message : 'Save failed',
+      };
+    } finally {
+      endPendingSave(savedForId);
+    }
     if (res.exposure) {
-      setCachedExposure(res.exposure);
+      // A save queued behind this one (triage flush during the mask round
+      // trip) has already written its optimistic row, and — because the queue
+      // serializes commits — its confirmation will carry this mask write too.
+      // Only the newest pending state may own the cache.
+      if (!hasPendingSave(savedForId)) setCachedExposure(res.exposure);
       // Same newer-than-the-read rule as the triage save: a mask write must not
       // be undone by an in-flight revalidation landing after it — but only for
       // the exposure it was issued for (see handleSave).
