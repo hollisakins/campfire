@@ -136,38 +136,73 @@ function ExposureDetailPageInner() {
   //
   // `forId` tags the whole record with the exposure it describes (same pattern
   // as `navState` below), so a save resolving after we've navigated away can
-  // tell that it no longer owns this state. Reset on every route-id change
-  // (below), so arriving at a fresh exposure still takes the server's values.
+  // tell that it no longer owns this state. Reset on every id change (below),
+  // so arriving at a fresh exposure still takes the server's values.
+  //
+  // `values` carries the operator's edited values alongside the flags: this
+  // record — not React state — is the authoritative "what did the operator
+  // decide, for which exposure". It is written synchronously on every edit,
+  // so the save flush never depends on a re-render having happened.
   const localEditsRef = useRef<{
     forId: number | null;
     dirty: { reviewStatus: boolean; correction: boolean; notes: boolean };
+    values: { reviewStatus: string; correction: string; notes: string };
     saved: boolean;
   }>({
     forId: null,
     dirty: { reviewStatus: false, correction: false, notes: false },
+    values: { reviewStatus: 'pending', correction: 'none', notes: '' },
     saved: false,
   });
-  // Each edit writes the VALUE into stateRef synchronously as well as into
-  // React state. The keyboard handler is a native document listener, so its
-  // setState calls get default priority — under load (big PNG decodes), the
-  // re-render that refreshes stateRef can lag the next keypress. Without the
-  // sync write, `2` then a fast `→` reads the PRE-press status out of
-  // stateRef, concludes nothing changed, and silently drops the decision.
+  // Every edit targets idRef.current — the exposure the operator believes is
+  // (or is about to be) on screen — NOT whatever the last committed render
+  // showed. The keyboard handler is a native document listener, so its
+  // setState calls get default priority and can lag: press `→` then `2`
+  // quickly and the `2` fires while the id transition is still uncommitted.
+  // Untargeted, that edit lands on the OLD record and the incoming render
+  // reset wipes it — the status flashes Approved for a frame, reverts to
+  // Pending, and the next flush has nothing dirty to save. Retargeting stages
+  // the edit for the incoming exposure; the reset below re-applies it instead
+  // of wiping it.
+  const targetEdits = useCallback(() => {
+    const target = idRef.current;
+    if (localEditsRef.current.forId !== target) {
+      localEditsRef.current = {
+        forId: target,
+        dirty: { reviewStatus: false, correction: false, notes: false },
+        // Baselines for as-yet-untouched fields; only dirty fields are ever
+        // read out of `values`, so stale entries here are never used.
+        values: {
+          reviewStatus: stateRef.current.reviewStatus,
+          correction: stateRef.current.correction,
+          notes: stateRef.current.notes,
+        },
+        saved: false,
+      };
+    }
+    return localEditsRef.current;
+  }, []);
   const editStatus = useCallback((v: string) => {
-    localEditsRef.current.dirty.reviewStatus = true;
+    const edits = targetEdits();
+    edits.dirty.reviewStatus = true;
+    edits.values.reviewStatus = v;
     stateRef.current.reviewStatus = v;
     setReviewStatus(v);
-  }, []);
+  }, [targetEdits]);
   const editCorrection = useCallback((v: string) => {
-    localEditsRef.current.dirty.correction = true;
+    const edits = targetEdits();
+    edits.dirty.correction = true;
+    edits.values.correction = v;
     stateRef.current.correction = v;
     setCorrection(v);
-  }, []);
+  }, [targetEdits]);
   const editNotes = useCallback((v: string) => {
-    localEditsRef.current.dirty.notes = true;
+    const edits = targetEdits();
+    edits.dirty.notes = true;
+    edits.values.notes = v;
     stateRef.current.notes = v;
     setNotes(v);
-  }, []);
+  }, [targetEdits]);
 
   // Sibling-exposure nav: the ±window neighbors + absolute position within
   // the filtered, ordered set, from get_admin_exposure_neighbors. Survives
@@ -227,19 +262,33 @@ function ExposureDetailPageInner() {
   // bounded by the exposureForId guard so we don't loop.)
   if (exposureForId !== id) {
     const cached = getCachedExposure(id);
+    // Edits keyed to the incoming id were staged by a keypress that raced this
+    // transition (see targetEdits) — they are the operator's decision for THIS
+    // exposure and must be applied over the cached baseline, not wiped.
+    const staged = localEditsRef.current.forId === id ? localEditsRef.current : null;
     setExposureForId(id);
     setExposure(cached);
-    setReviewStatus(cached?.review_status || 'pending');
-    setCorrection(cached?.correction || 'none');
-    setNotes(cached?.notes || '');
+    setReviewStatus(staged?.dirty.reviewStatus
+      ? staged.values.reviewStatus : (cached?.review_status || 'pending'));
+    setCorrection(staged?.dirty.correction
+      ? staged.values.correction : (cached?.correction || 'none'));
+    setNotes(staged?.dirty.notes
+      ? staged.values.notes : (cached?.notes || ''));
     setLoading(!cached);
     setError(null);
     setSaved(false);
-    localEditsRef.current = {
-      forId: id,
-      dirty: { reviewStatus: false, correction: false, notes: false },
-      saved: false,
-    };
+    if (!staged) {
+      localEditsRef.current = {
+        forId: id,
+        dirty: { reviewStatus: false, correction: false, notes: false },
+        values: {
+          reviewStatus: cached?.review_status || 'pending',
+          correction: cached?.correction || 'none',
+          notes: cached?.notes || '',
+        },
+        saved: false,
+      };
+    }
   }
 
   // Background revalidation against the DB on every id change. Auto-save on
@@ -262,21 +311,24 @@ function ExposureDetailPageInner() {
         return;
       }
       if (result.exposure) {
+        // The edits record only speaks for this exposure when tagged with its
+        // id (a mid-transition keypress can retarget it — see targetEdits).
         const edits = localEditsRef.current;
+        const ours = edits.forId === id;
         // A save for this exposure already landed — our write is strictly newer
         // than this read, so don't let it back into state *or* the cache. Same
         // for a save in flight at either end of this read (fire-and-forget
         // auto-save on nav, then a quick revisit): the optimistic or
         // save-confirmed row is newer than what this read may have seen.
         const pending = pendingAtStart || hasPendingSave(id);
-        if (!edits.saved && !pending) {
+        if (!(ours && edits.saved) && !pending) {
           setCachedExposure(result.exposure);
           setExposure(result.exposure);
         }
         // Per field: an untouched control still takes the fresh server value.
-        if (!edits.dirty.reviewStatus && !pending) setReviewStatus(result.exposure.review_status);
-        if (!edits.dirty.correction && !pending) setCorrection(result.exposure.correction);
-        if (!edits.dirty.notes && !pending) setNotes(result.exposure.notes || '');
+        if (!(ours && edits.dirty.reviewStatus) && !pending) setReviewStatus(result.exposure.review_status);
+        if (!(ours && edits.dirty.correction) && !pending) setCorrection(result.exposure.correction);
+        if (!(ours && edits.dirty.notes) && !pending) setNotes(result.exposure.notes || '');
       }
       setLoading(false);
     })();
@@ -378,9 +430,7 @@ function ExposureDetailPageInner() {
     if (cached) setExposure(cached);
   }, [saveError, id]);
 
-  const handleSave = useCallback(async (
-    statusOverride?: NircamExposure['review_status'],
-  ): Promise<{ ok: boolean }> => {
+  const handleSave = useCallback(async (): Promise<{ ok: boolean }> => {
     const s = stateRef.current;
     // No baseline row yet (direct entry, still loading): the controls hold
     // defaults, and saving them would overwrite the row's real correction and
@@ -399,7 +449,7 @@ function ExposureDetailPageInner() {
     // visible to an older failed save's suspended cleanup handler.
     const saveSeq = nextSaveSeq(savedForId);
     const result = await enqueueSave(savedForId, () => updateExposureReview(savedForId, {
-      review_status: statusOverride ?? (s.reviewStatus as NircamExposure['review_status']),
+      review_status: s.reviewStatus as NircamExposure['review_status'],
       correction: s.correction as NircamExposure['correction'],
       // Always sent (even '') so clearing the notes field actually persists —
       // an undefined key is dropped from the PATCH and leaves the old value.
@@ -449,55 +499,48 @@ function ExposureDetailPageInner() {
   // server's truth and raises the module save-error banner, since this
   // instance is usually gone by then.
   //
-  // A decision must survive two situations diff-against-state alone loses:
-  //  - the baseline row hasn't loaded yet (fast burst outruns the fetch), so
-  //    there is nothing to diff against — the dirty flags, set synchronously
-  //    by the edit callbacks, are the ground truth that the operator decided
-  //    something. The update is PARTIAL: only touched fields are sent, so
-  //    unloaded defaults can never overwrite the row's real values;
-  //  - `statusOverride` (approve-and-next): a status chosen in the same tick,
-  //    passed explicitly rather than read back out of state.
-  const flushDirtySave = useCallback((
-    statusOverride?: NircamExposure['review_status'],
-  ) => {
+  // The save is built from the edits record ALONE — forId says which exposure,
+  // dirty says which fields, values says what the operator chose, all written
+  // synchronously at edit time. Nothing here depends on a re-render having
+  // happened or on which exposure the last committed render showed, so a
+  // decision keyed in during an uncommitted id transition still saves, and it
+  // saves to the right row. The update is PARTIAL: only touched fields are
+  // sent, so a not-yet-loaded row's untouched values can never be overwritten
+  // with defaults.
+  const flushDirtySave = useCallback(() => {
     const s = stateRef.current;
-    const exp = s.exposure;
     const edits = localEditsRef.current;
-    const dirty = edits.forId === id
-      ? edits.dirty
-      : { reviewStatus: false, correction: false, notes: false };
-    const review = statusOverride ?? (s.reviewStatus as NircamExposure['review_status']);
+    if (edits.forId == null) return;
+    const savedForId = edits.forId;
+    const dirty = edits.dirty;
+    if (!dirty.reviewStatus && !dirty.correction && !dirty.notes) return;
 
-    // Persist anything the operator touched, plus (when the baseline is
-    // loaded) anything that differs from it — belt and braces.
+    // Baseline for no-op detection and the optimistic write: the on-screen row
+    // when it is this record's row, else the cache. May be null (row never
+    // loaded) — the save still goes out, just without a diff to skip on.
+    const exp = s.exposure && s.exposure.id === savedForId
+      ? s.exposure
+      : getCachedExposure(savedForId);
+
     const updates: Parameters<typeof updateExposureReview>[1] = {};
-    if (dirty.reviewStatus || statusOverride !== undefined ||
-        (exp && review !== exp.review_status)) {
-      updates.review_status = review;
+    if (dirty.reviewStatus && (!exp || edits.values.reviewStatus !== exp.review_status)) {
+      updates.review_status = edits.values.reviewStatus as NircamExposure['review_status'];
     }
-    if (dirty.correction || (exp && s.correction !== exp.correction)) {
-      updates.correction = s.correction as NircamExposure['correction'];
+    if (dirty.correction && (!exp || edits.values.correction !== exp.correction)) {
+      updates.correction = edits.values.correction as NircamExposure['correction'];
     }
-    if (dirty.notes || (exp && s.notes !== (exp.notes || ''))) {
-      updates.notes = s.notes; // sent even as '' so clearing notes persists
+    if (dirty.notes && (!exp || edits.values.notes !== (exp.notes || ''))) {
+      updates.notes = edits.values.notes; // sent even as '' so clearing persists
     }
     if (Object.keys(updates).length === 0) return;
-    // Known baseline and every touched field already matches it → no-op.
-    if (exp &&
-        (updates.review_status ?? exp.review_status) === exp.review_status &&
-        (updates.correction ?? exp.correction) === exp.correction &&
-        (updates.notes ?? (exp.notes || '')) === (exp.notes || '')) {
-      return;
-    }
 
-    const savedForId = exp?.id ?? id;
-    const savedFilename = exp?.filename ?? `exposure #${id}`;
+    const savedFilename = exp?.filename ?? `exposure #${savedForId}`;
     if (exp) {
       setCachedExposure({
         ...exp,
         review_status: updates.review_status ?? exp.review_status,
         correction: updates.correction ?? exp.correction,
-        notes: updates.notes !== undefined ? (s.notes || null) : exp.notes,
+        notes: updates.notes !== undefined ? (updates.notes || null) : exp.notes,
       });
     }
     {
@@ -564,22 +607,19 @@ function ExposureDetailPageInner() {
         }
       });
     }
-  }, [id]);
+  }, []);
 
   // Auto-save on nav: flush the dirty triage state (fire-and-forget), then
   // swap the exposure locally in the same tick — the operator can blast
   // through a queue with arrow keys without losing state or waiting on any
   // round trip (save or navigation).
-  const goTo = useCallback((
-    targetId: number | null,
-    statusOverride?: NircamExposure['review_status'],
-  ) => {
+  const goTo = useCallback((targetId: number | null) => {
     // targetId === current id means the neighbor window is stale in a way the
     // derivation above couldn't repair; stepping would be a no-op that looks
     // like a step. Checked against the sync mirror so a double-tap inside one
     // frame can't double-step.
     if (targetId == null || targetId === idRef.current) return;
-    flushDirtySave(statusOverride);
+    flushDirtySave();
     idRef.current = targetId;
     setId(targetId);
     // Keep the URL shareable/refreshable, carrying the filter context so the
@@ -608,11 +648,13 @@ function ExposureDetailPageInner() {
     // that navigation auto-saves the marked status.
     const freshNav = navState?.forId === id ? navState.data : null;
     if (freshNav && freshNav.nextId == null) {
-      handleSave('approved');
+      // editStatus above already staged + synced the value, so a plain save
+      // picks it up.
+      handleSave();
       return;
     }
     const nextId = nav?.nextId ?? null;
-    if (nextId != null && nextId !== id) goTo(nextId, 'approved');
+    if (nextId != null && nextId !== id) goTo(nextId);
   }, [editStatus, navState, nav, id, goTo, handleSave]);
 
   // Global keyboard shortcuts (mirrors web/components/spectra/inspection
