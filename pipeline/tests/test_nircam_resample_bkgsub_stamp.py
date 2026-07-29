@@ -47,6 +47,11 @@ class FakeSubtractBackground:
         self.outfile = filepath.replace('.fits', '_bkgsub.fits')
         with fits.open(filepath) as hdul:
             hdul['SCI'].data = hdul['SCI'].data - BKG
+            # The real SubtractBackground always appends SRCMASK; the skip
+            # logic uses its presence to tell a subtracted i2d from a
+            # restored pre-bkgsub snapshot.
+            hdul.append(fits.ImageHDU(
+                np.zeros((4, 4), dtype=np.uint8), name='SRCMASK'))
             hdul.writeto(self.outfile, overwrite=True)
         return self.outfile
 
@@ -61,7 +66,7 @@ def _pre_bkg_path(tmp_path):
                                           '_i2d_before_bkgsub.fits')
 
 
-def _write_mosaic(path, sci_level, stamped=False):
+def _write_mosaic(path, sci_level, stamped=False, srcmask=False):
     sci = fits.ImageHDU(np.full((4, 4), sci_level, dtype=np.float32),
                         name='SCI')
     err = fits.ImageHDU(np.ones((4, 4), dtype=np.float32), name='ERR')
@@ -69,7 +74,11 @@ def _write_mosaic(path, sci_level, stamped=False):
     primary = fits.PrimaryHDU()
     if stamped:
         primary.header[MOSAIC_BKGSUB_KEY] = 'v0 cfg=deadbeef0000'
-    fits.HDUList([primary, sci, err, wht]).writeto(path, overwrite=True)
+    hdus = [primary, sci, err, wht]
+    if srcmask:
+        hdus.append(fits.ImageHDU(np.zeros((4, 4), dtype=np.uint8),
+                                  name='SRCMASK'))
+    fits.HDUList(hdus).writeto(path, overwrite=True)
 
 
 def _sci_level(path):
@@ -157,11 +166,12 @@ def test_snapshot_never_carries_the_stamp(tmp_path, monkeypatch):
 
 def test_legacy_mosaic_skips_via_snapshot_and_backfills(tmp_path, monkeypatch):
     # A mosaic subtracted before the stamp existed: no CFP_BKGS, snapshot on
-    # disk. It must keep skipping, and the skip must backfill the stamp so
-    # the snapshot becomes deletable.
+    # disk, SRCMASK extension present (SubtractBackground always appends it).
+    # It must keep skipping, and the skip must backfill the stamp so the
+    # snapshot becomes deletable.
     mosaic = _mosaic_path(tmp_path)
     pre_bkg = _pre_bkg_path(tmp_path)
-    _write_mosaic(mosaic, SKY - BKG)
+    _write_mosaic(mosaic, SKY - BKG, srcmask=True)
     _write_mosaic(pre_bkg, SKY)
 
     logs = _run(tmp_path, monkeypatch)
@@ -174,6 +184,29 @@ def test_legacy_mosaic_skips_via_snapshot_and_backfills(tmp_path, monkeypatch):
     logs = _run(tmp_path, monkeypatch)
     assert _skipped(logs)
     assert _sci_level(mosaic) == SKY - BKG
+
+
+def test_restored_snapshot_reruns_instead_of_backfilling(tmp_path, monkeypatch):
+    # Rollback by *copying* the snapshot over the i2d, leaving the snapshot
+    # in place: the restored i2d has unsubtracted pixels, no stamp, and no
+    # SRCMASK extension. The fallback must NOT mistake it for a legacy
+    # subtracted mosaic (which would backfill the stamp and permanently skip
+    # subtraction on unsubtracted data) — it must re-run bkgsub.
+    import shutil
+
+    mosaic = _mosaic_path(tmp_path)
+    pre_bkg = _pre_bkg_path(tmp_path)
+    _write_mosaic(mosaic, SKY)
+
+    _run(tmp_path, monkeypatch)  # subtract once: SCI -> SKY - BKG, snapshot
+    shutil.copy2(pre_bkg, mosaic)  # rollback, snapshot left behind
+    assert _sci_level(mosaic) == SKY
+
+    logs = _run(tmp_path, monkeypatch)
+    assert not _skipped(logs)
+    assert _sci_level(mosaic) == SKY - BKG  # re-subtracted exactly once
+    assert MOSAIC_BKGSUB_KEY in fits.getheader(mosaic)
+    assert _sci_level(pre_bkg) == SKY  # fresh snapshot of the restored input
 
 
 def test_stamped_mosaic_skips_without_snapshot(tmp_path, monkeypatch):

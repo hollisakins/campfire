@@ -338,17 +338,31 @@ def resample_step(filtname, exposure_files, field, step_config,
             if needs_rebuild:
                 bkgsub_done = False  # freshly drizzled, stamp gone with it
             else:
-                bkgsub_done = MOSAIC_BKGSUB_KEY in fits.getheader(mosaic_file)
+                with fits.open(mosaic_file) as hdul:
+                    bkgsub_done = MOSAIC_BKGSUB_KEY in hdul[0].header
+                    has_srcmask = 'SRCMASK' in hdul
                 if not bkgsub_done and os.path.exists(pre_bkg):
-                    # Mosaic subtracted before the stamp existed. The manifest
-                    # config check passed to get here, so the current bkgsub
-                    # settings are the ones that produced it — backfill the
-                    # stamp so the snapshot becomes deletable from now on.
-                    bkgsub_done = True
-                    log(f"  backfilling {MOSAIC_BKGSUB_KEY} stamp on "
-                        f"pre-stamp mosaic {os.path.basename(mosaic_file)}")
-                    with fits.open(mosaic_file, mode='update') as hdul:
-                        hdul[0].header[MOSAIC_BKGSUB_KEY] = stamp_card
+                    # No stamp but a snapshot on disk: either a legacy mosaic
+                    # subtracted before the stamp existed, or a rollback where
+                    # the snapshot was copied over the i2d (restoring
+                    # unsubtracted pixels) with the snapshot left in place.
+                    # SubtractBackground always appends a SRCMASK extension
+                    # and the snapshot (copied from the pre-subtraction
+                    # drizzle output) never carries one, so SRCMASK presence
+                    # tells the two apart.
+                    if has_srcmask:
+                        # Legacy subtracted mosaic. The manifest config check
+                        # passed to get here, so the current bkgsub settings
+                        # are the ones that produced it — backfill the stamp
+                        # so the snapshot becomes deletable from now on.
+                        bkgsub_done = True
+                        log(f"  backfilling {MOSAIC_BKGSUB_KEY} stamp on "
+                            f"pre-stamp mosaic {os.path.basename(mosaic_file)}")
+                        with fits.open(mosaic_file, mode='update') as hdul:
+                            hdul[0].header[MOSAIC_BKGSUB_KEY] = stamp_card
+                    else:
+                        log("  snapshot present but i2d has no SRCMASK — "
+                            "restored pre-bkgsub data; re-running bkgsub")
 
             if not bkgsub_done:
                 if os.path.exists(pre_bkg):

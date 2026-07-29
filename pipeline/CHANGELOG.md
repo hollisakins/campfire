@@ -42,7 +42,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   provenance. Legacy mosaics stamped before this change fall back to the
   snapshot's existence and get the stamp **backfilled** on their next
   up-to-date run — so run the pipeline once over a field before deleting its
-  snapshots. New `[nircam.resample].keep_pre_bkgsub` (default `true`) skips
+  snapshots. The backfill is gated on the i2d carrying the `SRCMASK`
+  extension (which `SubtractBackground` always appends and the snapshot
+  never has), so a rollback that *copies* the snapshot over the i2d is
+  recognized as restored pre-bkgsub data and re-subtracted rather than
+  wrongly stamped as done. New `[nircam.resample].keep_pre_bkgsub` (default `true`) skips
   writing the snapshot entirely (cost: no rollback copy, no `_bkgsub.png`
   before/after plot). Regression-tested against the double-subtraction
   (`tests/test_nircam_resample_bkgsub_stamp.py`; the test measurably fails on
