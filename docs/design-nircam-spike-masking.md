@@ -227,8 +227,10 @@ wavelength per filter and apply the small residual radial rescale
 `λ_pivot / λ_anchor` — the ∝ λ diffraction scaling is then only ever
 interpolating between measured anchors, never extrapolating across the
 full 5× range. Still not a per-filter model. Wavefront-epoch drift (breathing) is
-well below mask tolerance + `grow`; a single post-commissioning ePSF
-suffices. This also buys what capsules structurally can't: the scattered-
+well below mask tolerance + `grow`; a single wavefront epoch suffices for
+footprints — though note the in-hand set is **pre-flight** (WebbPSF 1.0.0,
+requirements OPD, Feb 2022; see §7 OQ6), which G0 must validate against
+real in-flight spikes. This also buys what capsules structurally can't: the scattered-
 light halo, asymmetric wings, and the correct relative strut-arm strength.
 
 Fallback backend: **analytic capsule arms** (6 primary + 2 strut, mag- and
@@ -286,7 +288,8 @@ Notes:
 ### 3.4 Model distribution: generalize the `wisp_cache` pattern
 
 The full PSF + scattered-light model set at NIRCam wavelengths is
-**~5.8 GB** — too big to ship in the wheel, same regime as the wisp
+**~5.4 GB raw (2.7 GB as published float32)** — too big to ship in the
+wheel, same regime as the wisp
 templates (~2.5 GB), and the pipeline already solved this problem once.
 `nircam/wisp_cache.py` is a manifest-driven fetch+cache engine: a
 checksummed manifest ships inside the package (`data/wisp_manifest.toml`
@@ -307,18 +310,34 @@ and spike models get their own `data/spike_model_manifest.toml` +
 The hosting doc and `scripts/build_wisp_manifest.py` pattern carry over
 as-is.
 
-Two things keep the 5.8 GB from ever being felt in practice:
+Two things keep the model-set size from ever being felt in practice:
 
 - **Lazy, per-anchor fetch.** `ensure()` is per-file; a run needs only the
   nearest-anchor model(s) for the field's filters, so a typical reduction
   pulls a fraction of the set, once per machine.
 - **Two grades in the manifest.** Masking (Phases 0–2) needs footprint
-  shape only — so publish a **mask-grade** repack (downsampled /
-  clipped-dynamic-range, plausibly tens–hundreds of MB total) alongside
-  the **photometric-grade** originals. Phases 0–2 fetch mask-grade by
-  default; the full-fidelity files are fetched only if/when the Phase-3
-  subtraction stretch goal graduates (§6). A config knob
-  (`model_grade = "mask" | "photometric"`) selects, and the manifest
+  shape only — so publish a **mask-grade** repack alongside the
+  **photometric-grade** full-resolution files. *(Built in M2:)* mask grade
+  is block-**max**-downsampled float32, uniform ×4 in both channels — a
+  4-native-px cell (0.124″ SW / 0.252″ LW), so overshoot is expressed in
+  each channel's own exposure pixels, the unit `grow` uses (~180 MB for
+  all 16 anchors vs 2.7 GB photometric). Max, not mean: a coarse cell
+  records "some sub-pixel exceeds this SB", so the mask-grade threshold
+  footprint is a strict superset of the full-res one at every isophote
+  level (measured miss = 0), with one-sided overshoot bounded by the
+  block diagonal (measured p99.9 ≈ 4.2 native px) — whereas mean-pooling
+  dilutes narrow arm ridges below threshold and silently drops whole
+  segments (`experiments/spike_model_grade/`). Block-max also *bridges*
+  the intrinsic beading of the full-res isophote (fringe oscillations
+  along an arm cross a fixed threshold: 218 → 33 connected components in
+  the validation window at ×4), so the coarse mask is more contiguous,
+  never less covering. Consumers should smooth at the *polygon* stage
+  (simplify + outward buffer ~half a cell) — smoothing the pixel grid
+  (Gaussian included) is a weighted mean and re-introduces the
+  under-masking failure. Phases 0–2
+  fetch mask-grade by default; the full-fidelity files are fetched only
+  if/when the Phase-3 subtraction stretch goal graduates (§6). A config
+  knob (`model_grade = "mask" | "photometric"`) selects, and the manifest
   lists both so the choice is a fetch decision, not a repackaging event.
 
 Preflight mirrors wisp semantics: a filter whose anchor is listed but
@@ -358,7 +377,7 @@ for single-PA fields (no cross-PA median exists).
     mag_limit_lw = 15.0        # Gaia G cutoff, LW filters
     include_saturated = true   # supplement catalog with in-frame saturated cores
     model = "epsf"             # "epsf" (extended PSF isophote) | "capsule" (analytic fallback)
-    model_grade = "mask"       # "mask" (footprint-grade repack) | "photometric" (full 5.8 GB set, Phase 3) — §3.4
+    model_grade = "mask"       # "mask" (footprint-grade repack, ~180 MB) | "photometric" (2.7 GB set, Phase 3) — §3.4
     threshold_sigma = 1.0      # f in "model SB > f × local background RMS" isophote cut
     pa_cluster_deg = 3.0       # exposures within this roll tolerance = one PA group
     min_other_pa = 1           # distinct other-PA groups required to gate a cell in
@@ -606,15 +625,30 @@ flag, in the same PR as its A/B validation.
    (strut arms simply fall below threshold at SW flux levels) — but if the
    model is single-channel, verify the λ rescaling doesn't over-mask struts
    in SW; the capsule fallback table should allow per-arm zero lengths.
-6. **ePSF model provenance & format.** In-hand scattered-light models
-   exist at several distinct anchor wavelengths (nearest-anchor +
-   residual λ rescale per filter, per §3.2); the set totals ~5.8 GB and
-   distributes via the generalized `wisp_cache` engine (§3.4). Remaining:
-   their angular extent vs. the brightest stars in target fields
-   (determines whether the capsule fallback is ever exercised),
-   normalization convention, and the mask-grade repack parameters
-   (how far the models can be downsampled before footprint isophotes
-   move by more than `grow`).
+6. **ePSF model provenance & format.** *(Largely answered in M2.)* The
+   in-hand set is WebbPSF 1.0.0 PSF+scattered-light, 16 NIRCam anchors
+   (0.6–2.3 µm on NRCA1 at 0.0311″/px, 2.6–4.4 µm on NRCA5 at 0.063″/px;
+   the raw set's 5.0 µm file is MIRI and is excluded), each sum-normalized
+   to unit total flux on a 240″ FOV — pixel values are flux fraction per
+   raw detector px, a unit the repack preserves across grades so one
+   absolute isophote threshold serves both. Measured answers:
+   - *Angular extent:* the spike-arm envelope reaches the model's own
+     120″ radius below isophote ~1e-8 (fraction of total flux per raw
+     px) at all anchors — the capsule fallback is exercised only for
+     stars bright enough to push the working isophote below that;
+     quantifying the corresponding magnitude per filter/depth is a G0
+     deliverable.
+   - *Mask-grade parameters:* block-max, uniform ×4 (4-native-px cell:
+     0.124″ SW / 0.252″ LW), zero under-masking by construction,
+     ≈ 4.2 native px one-sided overshoot (p99.9); mean-pooling was
+     measured to drop whole arm segments and is rejected; block-max
+     bridges the full-res isophote's intrinsic beading
+     (`experiments/spike_model_grade/`).
+   - *Remaining — in-flight fidelity:* the models are **pre-flight**
+     (requirements OPD RevW, Feb 2022, single NRCA1/NRCA5 field points),
+     not a post-commissioning ePSF. Whether pre-flight footprint isophotes
+     envelope real in-flight spikes to within `grow` is now the central
+     G0 question (and Phase 2's cross-PA residuals quantify it in bulk).
 
 ## 8. Summary of touchpoints
 
@@ -629,5 +663,5 @@ flag, in the same PR as its A/B validation.
 | `data/config_default.toml` | `[nircam.spike_mask]` section |
 | `common/ref_cache.py` (new) | generic manifest fetch+cache engine extracted from `wisp_cache.py` (which becomes a thin wrapper) — see §3.4 |
 | `layout/` | one new `_CACHE_KINDS` entry (`spike_models` → `cache/spike_models/`) |
-| packaged data | `spike_model_manifest.toml` (checksums for the ~5.8 GB model set, mask-grade + photometric-grade) + capsule-fallback coefficient table (few KB) |
+| packaged data | `spike_model_manifest.toml` (checksums for the 16-anchor model set, mask-grade ~180 MB + photometric-grade 2.7 GB — committed in M2) + capsule-fallback coefficient table (few KB) |
 | `steps/preview.py` | optional arm-overlay hook (Phase 0) |
