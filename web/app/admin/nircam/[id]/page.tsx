@@ -342,7 +342,17 @@ function ExposureDetailPageInner() {
     for (const sibId of [nav.nextId, nav.prevId]) {
       if (sibId == null || getCachedExposure(sibId)) continue;
       getNircamExposureById(sibId).then((res) => {
-        if (res.exposure) setCachedExposure(res.exposure);
+        // Re-checked at RESPONSE time, not just dispatch: the operator can
+        // arrive at this sibling and key a decision while this read is in
+        // flight (one slow round trip is all it takes). Any cache entry that
+        // appeared since dispatch — the optimistic row or a save confirmation
+        // — is strictly newer than what this read saw, and a pending save with
+        // no cache entry (row never loaded) outranks it too. Overwriting here
+        // painted the pre-decision row on the next revisit as if the decision
+        // had reverted.
+        if (!res.exposure) return;
+        if (getCachedExposure(sibId) || hasPendingSave(sibId)) return;
+        setCachedExposure(res.exposure);
       });
     }
   }, [nav]);
@@ -751,7 +761,11 @@ function ExposureDetailPageInner() {
     const savedForId = exposure.id;
     const res = await saveExposureMaskRegions(savedForId, regions);
     if (res.exposure) {
-      setCachedExposure(res.exposure);
+      // Same response-time rule as the triage paths: a triage save in flight
+      // for this row has already written its optimistic decision — this
+      // (possibly older) row must not go over it. Its own confirmation will
+      // refresh the cache when it lands.
+      if (!hasPendingSave(savedForId)) setCachedExposure(res.exposure);
       // Same newer-than-the-read rule as the triage save: a mask write must not
       // be undone by an in-flight revalidation landing after it — but only for
       // the exposure it was issued for (see handleSave).
