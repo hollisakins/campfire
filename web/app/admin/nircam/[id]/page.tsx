@@ -29,6 +29,7 @@ import {
   getCachedPngUrls,
   setCachedPngUrls,
   hasPendingSave,
+  hasAnyPendingSave,
   beginPendingSave,
   endPendingSave,
   getSaveError,
@@ -47,6 +48,15 @@ import {
 // exposures that have no full PNG (the thumbnail-only view).
 const PREFETCH_AHEAD = 3;
 const PREFETCH_BEHIND = 1;
+
+// A mouse click leaves a button focused, and the shortcut handler yields Space
+// to focused buttons (it's their native activation key) — so without this,
+// clicking any button once turns every later Space press into "click that
+// button again" instead of approve-and-next, which silently skips the approve.
+// Keyboard activation (detail === 0) keeps focus for tab-navigation users.
+function blurOnMouseClick(e: React.MouseEvent<HTMLElement>) {
+  if (e.detail > 0) e.currentTarget.blur();
+}
 
 function ExposureDetailPageInner() {
   const params = useParams();
@@ -102,16 +112,25 @@ function ExposureDetailPageInner() {
     dirty: { reviewStatus: false, correction: false, notes: false },
     saved: false,
   });
+  // Each edit writes the VALUE into stateRef synchronously as well as into
+  // React state. The keyboard handler is a native document listener, so its
+  // setState calls get default priority — under load (big PNG decodes), the
+  // re-render that refreshes stateRef can lag the next keypress. Without the
+  // sync write, `2` then a fast `→` reads the PRE-press status out of
+  // stateRef, concludes nothing changed, and silently drops the decision.
   const editStatus = useCallback((v: string) => {
     localEditsRef.current.dirty.reviewStatus = true;
+    stateRef.current.reviewStatus = v;
     setReviewStatus(v);
   }, []);
   const editCorrection = useCallback((v: string) => {
     localEditsRef.current.dirty.correction = true;
+    stateRef.current.correction = v;
     setCorrection(v);
   }, []);
   const editNotes = useCallback((v: string) => {
     localEditsRef.current.dirty.notes = true;
+    stateRef.current.notes = v;
     setNotes(v);
   }, []);
 
@@ -304,6 +323,16 @@ function ExposureDetailPageInner() {
   useSyncExternalStore(subscribeSaveState, getSaveStateVersion, getSaveStateVersion);
   const saveError = getSaveError();
 
+  // Warn before unload while fire-and-forget saves are still in flight — a
+  // closed tab takes the in-flight decision (and any failure banner) with it.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (hasAnyPendingSave()) e.preventDefault();
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, []);
+
   // A failed save reverts the cached row to the server's truth; if that
   // exposure is the one on screen, re-baseline `exposure` from the cache so
   // hasChanges compares against reality and a retry actually fires (otherwise
@@ -376,41 +405,67 @@ function ExposureDetailPageInner() {
     return { ok: true };
   }, [id]);
 
-  // Auto-save on nav: flush dirty triage so the operator can blast through a
-  // queue with arrow keys without losing state — WITHOUT blocking navigation
-  // on the save round trip. The decision goes into the row cache
-  // optimistically (that's what the next visit paints from), the server action
-  // fires, and the route pushes in the same tick. The pending-save registry
-  // keeps a quick revisit's revalidation from resurrecting the pre-save row;
-  // a failure reverts the cache to the server's truth and raises the module
-  // save-error banner, since this instance is gone by then.
+  // Fire-and-forget flush of the operator's dirty triage state — the write
+  // half of auto-save-on-nav, also used by the back-to-list button. The
+  // decision goes into the row cache optimistically (that's what the next
+  // visit paints from) and the server action fires without blocking the
+  // caller. The pending-save registry keeps a quick revisit's revalidation
+  // from resurrecting the pre-save row; a failure reverts the cache to the
+  // server's truth and raises the module save-error banner, since this
+  // instance is usually gone by then.
   //
-  // `statusOverride` exists for approve-and-next: a status set in the same
-  // tick isn't visible in stateRef yet.
-  const goTo = useCallback((
-    targetId: number | null,
+  // A decision must survive two situations diff-against-state alone loses:
+  //  - the baseline row hasn't loaded yet (fast burst outruns the fetch), so
+  //    there is nothing to diff against — the dirty flags, set synchronously
+  //    by the edit callbacks, are the ground truth that the operator decided
+  //    something. The update is PARTIAL: only touched fields are sent, so
+  //    unloaded defaults can never overwrite the row's real values;
+  //  - `statusOverride` (approve-and-next): a status chosen in the same tick,
+  //    passed explicitly rather than read back out of state.
+  const flushDirtySave = useCallback((
     statusOverride?: NircamExposure['review_status'],
   ) => {
-    // targetId === id means the neighbor window is stale in a way the derivation
-    // above couldn't repair; pushing would be a no-op that looks like a step.
-    if (targetId == null || targetId === id) return;
     const s = stateRef.current;
     const exp = s.exposure;
+    const edits = localEditsRef.current;
+    const dirty = edits.forId === id
+      ? edits.dirty
+      : { reviewStatus: false, correction: false, notes: false };
     const review = statusOverride ?? (s.reviewStatus as NircamExposure['review_status']);
-    const changed = !!(exp && (
-      review !== exp.review_status ||
-      s.correction !== exp.correction ||
-      s.notes !== (exp.notes || '')
-    ));
-    if (changed && exp) {
-      const savedForId = exp.id;
-      const savedFilename = exp.filename;
+
+    // Persist anything the operator touched, plus (when the baseline is
+    // loaded) anything that differs from it — belt and braces.
+    const updates: Parameters<typeof updateExposureReview>[1] = {};
+    if (dirty.reviewStatus || statusOverride !== undefined ||
+        (exp && review !== exp.review_status)) {
+      updates.review_status = review;
+    }
+    if (dirty.correction || (exp && s.correction !== exp.correction)) {
+      updates.correction = s.correction as NircamExposure['correction'];
+    }
+    if (dirty.notes || (exp && s.notes !== (exp.notes || ''))) {
+      updates.notes = s.notes; // sent even as '' so clearing notes persists
+    }
+    if (Object.keys(updates).length === 0) return;
+    // Known baseline and every touched field already matches it → no-op.
+    if (exp &&
+        (updates.review_status ?? exp.review_status) === exp.review_status &&
+        (updates.correction ?? exp.correction) === exp.correction &&
+        (updates.notes ?? (exp.notes || '')) === (exp.notes || '')) {
+      return;
+    }
+
+    const savedForId = exp?.id ?? id;
+    const savedFilename = exp?.filename ?? `exposure #${id}`;
+    if (exp) {
       setCachedExposure({
         ...exp,
-        review_status: review,
-        correction: s.correction as NircamExposure['correction'],
-        notes: s.notes || null,
+        review_status: updates.review_status ?? exp.review_status,
+        correction: updates.correction ?? exp.correction,
+        notes: updates.notes !== undefined ? (s.notes || null) : exp.notes,
       });
+    }
+    {
       beginPendingSave(savedForId);
       // endPendingSave must run exactly once per beginPendingSave on every
       // path — including a transport rejection, which would otherwise leave
@@ -428,11 +483,8 @@ function ExposureDetailPageInner() {
       // below — which awaits, so it can resume after a newer save has fully
       // committed — recognize that it has been superseded.
       const saveSeq = nextSaveSeq(savedForId);
-      enqueueSave(savedForId, () => updateExposureReview(savedForId, {
-        review_status: review,
-        correction: s.correction as NircamExposure['correction'],
-        notes: s.notes, // always sent (even '') so clearing notes persists
-      })).then(async (result) => {
+      enqueueSave(savedForId, () => updateExposureReview(savedForId, updates))
+        .then(async (result) => {
         if (result.exposure && !result.error) {
           endPending();
           markSaveCommitted(savedForId, saveSeq);
@@ -471,9 +523,22 @@ function ExposureDetailPageInner() {
         }
       });
     }
+  }, [id]);
+
+  // Auto-save on nav: flush the dirty triage state (fire-and-forget) and push
+  // in the same tick, so the operator can blast through a queue with arrow
+  // keys without losing state or waiting on the save round trip.
+  const goTo = useCallback((
+    targetId: number | null,
+    statusOverride?: NircamExposure['review_status'],
+  ) => {
+    // targetId === id means the neighbor window is stale in a way the derivation
+    // above couldn't repair; pushing would be a no-op that looks like a step.
+    if (targetId == null || targetId === id) return;
+    flushDirtySave(statusOverride);
     // Carry the filter context so the next exposure's nav walks the same set.
     router.push(`/admin/nircam/${targetId}${navQuery ? `?${navQuery}` : ''}`);
-  }, [router, navQuery, id]);
+  }, [flushDirtySave, router, navQuery, id]);
 
   const handleNext = useCallback(() => goTo(nav?.nextId ?? null), [goTo, nav]);
   const handlePrev = useCallback(() => goTo(nav?.prevId ?? null), [goTo, nav]);
@@ -613,7 +678,12 @@ function ExposureDetailPageInner() {
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <button
-          onClick={() => router.push(`/admin/nircam${navQuery ? `?${navQuery}` : ''}`)}
+          onClick={(e) => {
+            blurOnMouseClick(e);
+            // Leaving the triage flow still flushes a pending decision.
+            flushDirtySave();
+            router.push(`/admin/nircam${navQuery ? `?${navQuery}` : ''}`);
+          }}
           className="text-text-secondary hover:text-text-primary"
           title="Back to list"
         >
@@ -630,7 +700,7 @@ function ExposureDetailPageInner() {
         {nav && (
           <div className="flex items-center gap-1 text-sm text-text-secondary">
             <button
-              onClick={handlePrev}
+              onClick={(e) => { blurOnMouseClick(e); handlePrev(); }}
               disabled={nav.prevId == null}
               title="Previous (← / P)"
               className="p-1.5 rounded hover:bg-card-hover disabled:opacity-30 disabled:cursor-not-allowed"
@@ -641,7 +711,7 @@ function ExposureDetailPageInner() {
               {nav.position} / {nav.total}
             </span>
             <button
-              onClick={handleNext}
+              onClick={(e) => { blurOnMouseClick(e); handleNext(); }}
               disabled={nav.nextId == null}
               title="Next (→ / N)"
               className="p-1.5 rounded hover:bg-card-hover disabled:opacity-30 disabled:cursor-not-allowed"
@@ -651,7 +721,7 @@ function ExposureDetailPageInner() {
           </div>
         )}
         <button
-          onClick={() => setShowHelp(prev => !prev)}
+          onClick={(e) => { blurOnMouseClick(e); setShowHelp(prev => !prev); }}
           title="Keyboard shortcuts (?)"
           className="p-1.5 rounded text-text-secondary hover:bg-card-hover"
         >
@@ -703,7 +773,7 @@ function ExposureDetailPageInner() {
             : {saveError.message}. Its review status was not changed — revisit it to re-apply your decision.
           </p>
           <button
-            onClick={() => setSaveError(null)}
+            onClick={(e) => { blurOnMouseClick(e); setSaveError(null); }}
             className="text-xs text-red-800 dark:text-red-400 hover:underline flex-shrink-0"
           >
             Dismiss
@@ -716,13 +786,13 @@ function ExposureDetailPageInner() {
         <div className="flex-1 min-w-0">
           <div className="mb-2 inline-flex rounded-lg border border-border p-0.5 text-xs">
             <button
-              onClick={() => setViewMode('png')}
+              onClick={(e) => { blurOnMouseClick(e); setViewMode('png'); }}
               className={`rounded-md px-3 py-1 ${viewMode === 'png' ? 'bg-card-hover text-text-primary' : 'text-text-secondary'}`}
             >
               PNG
             </button>
             <button
-              onClick={() => setViewMode('fits')}
+              onClick={(e) => { blurOnMouseClick(e); setViewMode('fits'); }}
               disabled={!fitsMaskAvailable}
               title={fitsMaskAvailable ? 'Live FITS render (SCI) + masking' : 'FITS unavailable for this exposure'}
               className={`rounded-md px-3 py-1 disabled:opacity-40 ${viewMode === 'fits' ? 'bg-card-hover text-text-primary' : 'text-text-secondary'}`}
@@ -865,7 +935,7 @@ function ExposureDetailPageInner() {
               </div>
 
               <Button
-                onClick={() => handleSave()}
+                onClick={(e) => { blurOnMouseClick(e); handleSave(); }}
                 disabled={saving || !hasChanges}
                 className="w-full"
               >

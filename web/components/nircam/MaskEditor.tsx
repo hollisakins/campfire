@@ -406,7 +406,14 @@ export default function MaskEditor({
           <span>{polygons.length} polygon{polygons.length === 1 ? '' : 's'}</span>
           <span>{(scale * 100).toFixed(0)}%</span>
           {saveError && <span className="text-red-500">{saveError}</span>}
-          <Button onClick={handleSave} disabled={saving || !dirty} size="sm">
+          <Button
+            onClick={(e) => {
+              if (e.detail > 0) e.currentTarget.blur();
+              handleSave();
+            }}
+            disabled={saving || !dirty}
+            size="sm"
+          >
             {saving ? (<><Loader2 className="w-4 h-4 mr-1 animate-spin" />Saving</>) :
              savedAt && !dirty ? (<><Check className="w-4 h-4 mr-1" />Saved</>) :
              (<><Save className="w-4 h-4 mr-1" />Save</>)}
@@ -447,7 +454,8 @@ export default function MaskEditor({
               onKeyDown={(e) => e.key === 'Enter' && commitRange(rangeText.lo, rangeText.hi)}
               className="w-20 rounded border border-border bg-card px-1.5 py-0.5 font-mono text-text-primary" />
           </label>
-          <button type="button" onClick={autoStretch}
+          <button type="button"
+            onClick={(e) => { if (e.detail > 0) e.currentTarget.blur(); autoStretch(); }}
             className="rounded border border-border px-2 py-0.5 text-text-secondary hover:bg-card-hover">
             Auto
           </button>
@@ -628,7 +636,13 @@ function ToolButton({
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={(e) => {
+        // Drop mouse-click focus so a following Space press reaches the page's
+        // approve-and-next shortcut instead of re-activating this tool button.
+        // Keyboard activation (detail === 0) keeps focus.
+        if (e.detail > 0) e.currentTarget.blur();
+        onClick();
+      }}
       title={label}
       aria-label={label}
       className={`p-1.5 rounded text-sm ${

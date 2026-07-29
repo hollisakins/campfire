@@ -177,6 +177,11 @@ export function hasPendingSave(id: number): boolean {
   return pendingSaveIds.has(id);
 }
 
+/** Any save still in flight, for the beforeunload "decisions unsaved" guard. */
+export function hasAnyPendingSave(): boolean {
+  return pendingSaveIds.size > 0;
+}
+
 export function beginPendingSave(id: number): void {
   pendingSaveIds.set(id, (pendingSaveIds.get(id) ?? 0) + 1);
   emitSaveState();
