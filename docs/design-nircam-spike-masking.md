@@ -100,15 +100,15 @@ flowchart TB
         gaia["Gaia DR3 bright stars<br/>(refcat/query.py, PM-propagated<br/>to exposure epoch)"]
         hdrs["Per-exposure WCS + roll<br/>(roll_ref / PA_V3 / V3IdlYAngle,<br/>already parsed by align)"]
         sreg["S_REGION footprints<br/>(geometry.py polygon cache)"]
-        tmpl["Spike geometry templates<br/>per filter/channel<br/>(length vs mag calibration,<br/>packaged like wisp templates)"]
+        tmpl["Extended PSF + scattered-light<br/>model (telescope-level, angular<br/>units, λ-rescaled per filter;<br/>packaged like wisp templates)"]
     end
 
     subgraph spikes ["nircam/spikes/ (new subpackage)"]
         cat["catalog.py<br/>select stars per filter FOV;<br/>merge in-frame saturated cores"]
-        geom["model.py<br/>synthesize 6+2 spike arms per<br/>(star, exposure): PA-rotated,<br/>mag- and λ-scaled length/width"]
+        geom["model.py<br/>flux-scale ePSF model per star,<br/>threshold at f × bkg RMS →<br/>isophote footprint; PA-rotated<br/>(analytic capsules as fallback)"]
         cov["coverage.py<br/>cluster exposure PAs;<br/>per-sky-cell distinct-PA count;<br/>gate mask where N_PA ≥ min"]
         rast["mask.py<br/>rasterize gated arms to<br/>per-exposure pixel masks"]
-        emp["empirical.py (Phase 2)<br/>cross-PA median blot residual;<br/>refine template lengths"]
+        emp["empirical.py (Phase 2)<br/>cross-PA median blot residual;<br/>validate/refine model footprints"]
     end
 
     subgraph outputs [Outputs]
@@ -145,27 +145,50 @@ flowchart TB
   LW but faint in Gaia G. Positions from the cluster centroid; "effective
   magnitude" from the saturated-core radius.
 
-### 3.2 Spike geometry model (`model.py`)
+### 3.2 Spike footprint model (`model.py`)
 
-Per (star, exposure), synthesize the arm set analytically — no PSF
-simulation (WebbPSF is far too heavy for this, and spike *cores* don't need
-sub-pixel fidelity, only conservative footprints):
+Primary backend: an **empirical extended PSF + scattered-light model** of
+the telescope optics, used as a *footprint generator*, not a photometric
+model. Per bright star:
 
-- 6 primary arms at 60° spacing with orientation
-  `θ_sky = PA_aper + θ₀`, where `PA_aper` comes from the same
-  `roll_ref`/`V3IdlYAngle`/`vparity` chain `align/apply.py` and
-  `outlier_detect.py` already compute per exposure.
-- +2 shorter horizontal secondary-strut arms (the "+" overlay on the "✕").
-- Arm length `L(mag, filter)` and width `W(mag, filter)`: empirical
-  power-law/log-linear fits **calibrated once from existing reductions**
-  (measure radial extent of spike flux above threshold for a sample of
-  Gaia stars across mag/filter) and shipped as a small packaged table —
-  the wisp-template pattern (`wisp_cache`-style manifest if the table
-  outgrows the wheel; it won't — it's a few KB of coefficients).
-- Everything is rendered as **capsule polygons in sky coordinates first**
-  (shapely, consistent with `geometry.py`), because the coverage gate
-  operates on the sky, then projected per-exposure for rasterization.
-- Optionally include the saturated core + halo as a central disk arm-0.
+1. Predict the star's flux in the exposure's filter (Gaia G with a BP–RP
+   color term; refine by fitting the model amplitude to unsaturated wing
+   pixels in-frame — the model itself enables this).
+2. Scale the model, threshold at `f × local background RMS` — **the
+   isophote is the mask**. The mag–length relation falls out of the model
+   photometry for free, and the footprint auto-adapts to survey depth
+   (deeper data → spikes detectable further out → larger isophote at fixed
+   threshold), which is exactly the wanted behavior. No hand-calibrated
+   `L(mag, filter)` table.
+3. Polygonize the thresholded isophote in sky coordinates (shapely,
+   consistent with `geometry.py`) — the coverage gate operates on
+   polygons regardless of backend — then project per-exposure for
+   rasterization. Orientation from the same
+   `roll_ref`/`V3IdlYAngle`/`vparity` chain `align/apply.py` and
+   `outlier_detect.py` already compute.
+
+The model is **telescope-level, not per-filter** — spike geometry is set by
+the pupil (hexagonal primary → six arms at 60°, plus the secondary-strut
+"+") and filter-level features (e.g. LW ghosts) are second order for
+masking. It is not achromatic, though: diffraction structure scales
+radially ∝ λ (a factor ~5 across 0.9–4.4 μm, on top of the SW/LW pixel-
+scale difference). One normalized model in angular units (or one per
+channel), radially rescaled by `λ_pivot / λ_ref` per filter — a one-line
+transform, not a per-filter model. Wavefront-epoch drift (breathing) is
+well below mask tolerance + `grow`; a single post-commissioning ePSF
+suffices. This also buys what capsules structurally can't: the scattered-
+light halo, asymmetric wings, and the correct relative strut-arm strength.
+
+Fallback backend: **analytic capsule arms** (6 primary + 2 strut, mag- and
+λ-scaled length/width from a small packaged coefficient table) for regimes
+outside the model's validity — stars bright enough that spikes exceed the
+model's radial extent — and for cheap Phase-0 overlays. Not full PSF
+*simulation* (WebbPSF is far too heavy and unnecessary here).
+
+Practical weak links to watch: flux prediction for red stars (Gaia G →
+NIRCam LW is the main error source; the in-frame amplitude fit is the
+mitigation) and centering on saturated cores (fit the wings/spike cross,
+never the core).
 
 ### 3.3 The PA-coverage gate (`coverage.py`) — the heart of the design
 
@@ -223,8 +246,9 @@ with data:
   corridor around the predicted arm directions** (the model constrains the
   search, killing false positives from real extended sources).
 - Output feeds two places: (a) per-exposure mask refinement (extend/trim
-  arms), and (b) accumulated `L(mag, filter)` measurements that recalibrate
-  the packaged template table over time.
+  footprints), and (b) validation of the ePSF model's flux scaling and λ
+  rescaling against real data (systematic over/under-masking → adjust the
+  threshold `f` or the color term, not the model).
 
 This is strictly additive — Phase 1 is useful alone, and Phase 2 never runs
 for single-PA fields (no cross-PA median exists).
@@ -237,6 +261,8 @@ for single-PA fields (no cross-PA median exists).
     mag_limit_sw = 15.5        # Gaia G cutoff, SW filters
     mag_limit_lw = 15.0        # Gaia G cutoff, LW filters
     include_saturated = true   # supplement catalog with in-frame saturated cores
+    model = "epsf"             # "epsf" (extended PSF isophote) | "capsule" (analytic fallback)
+    threshold_sigma = 1.0      # f in "model SB > f × local background RMS" isophote cut
     pa_cluster_deg = 3.0       # exposures within this roll tolerance = one PA group
     min_other_pa = 1           # distinct other-PA groups required to gate a cell in
     grow = 2                   # binary dilation (px) on the rasterized mask
@@ -269,8 +295,8 @@ shows as reduced weight, not fabricated data).
 flowchart LR
     p0["Phase 0 — Diagnose<br/>mode=report: PA-coverage map,<br/>star list, arm overlays.<br/>No masking. Validates geometry<br/>model against real spikes."]
     p1["Phase 1 — Model mask<br/>CFSPIKE + coverage gate,<br/>fused at materialize_work.<br/>Opt-in per field."]
-    p2["Phase 2 — Empirical loop<br/>cross-PA median residuals<br/>refine arms + recalibrate<br/>L(mag, filter) table"]
-    p3["Phase 3 — Maybes<br/>weight-downweighting instead of<br/>hard mask; web review of spike<br/>masks (CFMASK round-trip rails)"]
+    p2["Phase 2 — Empirical loop<br/>cross-PA median residuals<br/>refine footprints + validate<br/>model flux/λ scaling"]
+    p3["Phase 3 — Subtract, don't mask<br/>fit ePSF model amplitude per star,<br/>subtract halo+spikes (wisp pattern);<br/>mask only the residual core.<br/>Works even single-PA. Web review<br/>via CFMASK round-trip rails."]
     p0 --> p1 --> p2 --> p3
 ```
 
@@ -281,11 +307,15 @@ Infrastructure (PATCH).
 
 ## 7. Open questions
 
-1. **Hard mask vs. downweight.** DO_NOT_USE is simple and rides existing
-   rails, but discards spike-wing pixels that still carry ~90% valid flux far
-   from the core. A downweight mode would need to touch resample weight
-   handling (more invasive; deferred to Phase 3, and only if Phase 1 depth
-   maps show it matters).
+1. **Hard mask vs. subtraction.** DO_NOT_USE is simple and rides existing
+   rails, but discards spike-wing pixels that still carry mostly valid flux
+   far from the core. With a real scattered-light model, the better endgame
+   is **model subtraction** (Phase 3): fit the amplitude per star, subtract
+   halo+spikes, and only mask the residual-heavy core — keeping depth in
+   the wings, and working even in single-PA fields where the coverage gate
+   never opens. Structurally this is the `wisp` step's pattern applied at
+   combine time. (Weight-downweighting was considered and dropped —
+   subtraction dominates it on every axis once an ePSF model exists.)
 2. **Saturated-core handling.** The core/halo region is typically
    contaminated at *every* PA and thus never gated in. Do we want an
    ungated central-disk option (`mask_core = true`) that accepts the mosaic
@@ -303,8 +333,15 @@ Infrastructure (PATCH).
    `align` refinement — but running after it in the combine phase gets the
    better WCS for free anyway.
 5. **Filter dependence of the strut spikes.** The horizontal strut arms are
-   weak in SW, prominent in LW; the calibration table should allow per-arm,
-   per-filter zero lengths so SW configs don't over-mask.
+   weak in SW, prominent in LW. The ePSF isophote handles this naturally
+   (strut arms simply fall below threshold at SW flux levels) — but if the
+   model is single-channel, verify the λ rescaling doesn't over-mask struts
+   in SW; the capsule fallback table should allow per-arm zero lengths.
+6. **ePSF model provenance & format.** Which extended PSF model to adopt
+   (an in-hand empirical model exists), its angular extent vs. the
+   brightest stars in target fields, single model vs. per-channel, and
+   packaging (small enough for the wheel, or `wisp_cache`-style
+   checksummed fetch).
 
 ## 8. Summary of touchpoints
 
@@ -316,5 +353,5 @@ Infrastructure (PATCH).
 | `nircam/steps/outlier.py` | none (benefits automatically via DQ) |
 | `refcat/` | reuse `query.py` / `motion.py`; possibly a thin cached "bright stars" wrapper |
 | `data/config_default.toml` | `[nircam.spike_mask]` section |
-| packaged data | spike length/width calibration table (few KB) |
+| packaged data | extended PSF + scattered-light model (angular units; `wisp_cache`-style fetch if large) + capsule-fallback coefficient table (few KB) |
 | `steps/preview.py` | optional arm-overlay hook (Phase 0) |
