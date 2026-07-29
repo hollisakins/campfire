@@ -34,6 +34,7 @@ import {
   setSaveError,
   subscribeSaveState,
   getSaveStateVersion,
+  enqueueSave,
 } from '@/lib/nircam-exposure-cache';
 
 // Eager PNG prefetch window: warm the full-res mask surface (~5.7 MB) the
@@ -190,6 +191,10 @@ function ExposureDetailPageInner() {
   // has already landed, is newer than this response and must survive it.
   useEffect(() => {
     let cancelled = false;
+    // Captured before the read is issued: a save in flight NOW means the
+    // response may reflect pre-save state even if the save has finished (and
+    // cleared its pending marker) by the time the response resolves.
+    const pendingAtStart = hasPendingSave(id);
     (async () => {
       const result = await getNircamExposureById(id);
       if (cancelled) return;
@@ -202,9 +207,10 @@ function ExposureDetailPageInner() {
         const edits = localEditsRef.current;
         // A save for this exposure already landed — our write is strictly newer
         // than this read, so don't let it back into state *or* the cache. Same
-        // for a save still in flight (fire-and-forget auto-save on nav, then a
-        // quick revisit): the optimistic row is newer than this read too.
-        const pending = hasPendingSave(id);
+        // for a save in flight at either end of this read (fire-and-forget
+        // auto-save on nav, then a quick revisit): the optimistic or
+        // save-confirmed row is newer than what this read may have seen.
+        const pending = pendingAtStart || hasPendingSave(id);
         if (!edits.saved && !pending) {
           setCachedExposure(result.exposure);
           setExposure(result.exposure);
@@ -308,6 +314,10 @@ function ExposureDetailPageInner() {
     statusOverride?: NircamExposure['review_status'],
   ): Promise<{ ok: boolean }> => {
     const s = stateRef.current;
+    // No baseline row yet (direct entry, still loading): the controls hold
+    // defaults, and saving them would overwrite the row's real correction and
+    // notes with 'none' / ''.
+    if (!s.exposure) return { ok: false };
     // The exposure this save is for. The `S` shortcut fires handleSave
     // un-awaited and mask saves aren't gated by navigation at all — so a
     // response can land after the route moved on.
@@ -315,13 +325,18 @@ function ExposureDetailPageInner() {
     setSaving(true);
     setSaved(false);
     setError(null);
-    const result = await updateExposureReview(savedForId, {
+    // Same per-exposure queue as the fire-and-forget nav save, so an explicit
+    // save and a background one for this row can't commit out of order.
+    const result = await enqueueSave(savedForId, () => updateExposureReview(savedForId, {
       review_status: statusOverride ?? (s.reviewStatus as NircamExposure['review_status']),
       correction: s.correction as NircamExposure['correction'],
       // Always sent (even '') so clearing the notes field actually persists —
       // an undefined key is dropped from the PATCH and leaves the old value.
       notes: s.notes,
-    });
+    })).catch((err: unknown) => ({
+      exposure: null,
+      error: err instanceof Error ? err.message : 'Save failed',
+    }));
     setSaving(false);
     if (result.error) {
       // Surfaced even if we've navigated on: a failed save means the operator's
@@ -381,27 +396,49 @@ function ExposureDetailPageInner() {
         notes: s.notes || null,
       });
       beginPendingSave(savedForId);
-      updateExposureReview(savedForId, {
+      // endPendingSave must run exactly once per beginPendingSave on every
+      // path — including a transport rejection, which would otherwise leave
+      // the id pending for the rest of the tab session (blocking revalidation
+      // and the failure banner alike).
+      let ended = false;
+      const endPending = () => {
+        if (ended) return;
+        ended = true;
+        endPendingSave(savedForId);
+      };
+      // Queued per exposure id so a second save for the same row (revisit +
+      // re-edit before the first lands) can never commit or report out of
+      // order with this one.
+      enqueueSave(savedForId, () => updateExposureReview(savedForId, {
         review_status: review,
         correction: s.correction as NircamExposure['correction'],
         notes: s.notes, // always sent (even '') so clearing notes persists
-      }).then(async (result) => {
+      })).then(async (result) => {
         if (result.exposure && !result.error) {
-          setCachedExposure(result.exposure);
+          endPending();
+          // A newer save queued behind this one has already written its own
+          // optimistic row — don't put this (older) confirmed row over it.
+          if (!hasPendingSave(savedForId)) setCachedExposure(result.exposure);
           // A retry that lands supersedes an earlier failure for this exposure.
           if (getSaveError()?.id === savedForId) setSaveError(null);
-          endPendingSave(savedForId);
           return;
         }
-        // Failed: put the server's row back over the optimistic one, then tell
-        // the operator — they may be several exposures ahead by now.
-        const fresh = await getNircamExposureById(savedForId);
-        if (fresh.exposure) setCachedExposure(fresh.exposure);
-        endPendingSave(savedForId);
+        throw new Error(result.error || 'Save failed');
+      }).catch(async (err: unknown) => {
+        endPending();
+        // Put the server's row back over the optimistic one (best effort —
+        // the transport may be down), then tell the operator: they may be
+        // several exposures ahead by now.
+        try {
+          const fresh = await getNircamExposureById(savedForId);
+          if (fresh.exposure && !hasPendingSave(savedForId)) {
+            setCachedExposure(fresh.exposure);
+          }
+        } catch { /* revert refetch failed too; the row corrects on next visit */ }
         setSaveError({
           id: savedForId,
           filename: savedFilename,
-          message: result.error || 'Save failed',
+          message: err instanceof Error ? err.message : 'Save failed',
         });
       });
     }
@@ -417,6 +454,9 @@ function ExposureDetailPageInner() {
   // stateRef until the next render. At the end of the queue there's nowhere to
   // advance to, so persist the decision in place instead.
   const approveAndNext = useCallback(() => {
+    // Nothing on screen yet to approve: marking now would just pin 'approved'
+    // over whatever the row actually holds once it loads.
+    if (!stateRef.current.exposure) return;
     editStatus('approved');
     const nextId = nav?.nextId ?? null;
     if (nextId == null || nextId === id) {

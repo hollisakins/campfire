@@ -197,3 +197,25 @@ export function setSaveError(err: ExposureSaveError | null): void {
   saveError = err;
   emitSaveState();
 }
+
+/**
+ * Per-exposure save queue: saves for the same row run strictly in dispatch
+ * order. Fire-and-forget saves mean two updates for one exposure can be in
+ * flight together (navigate away, revisit before the save lands, edit,
+ * navigate away again); if the transport reordered them, the older decision
+ * would win in the database and the cache. Chaining per id makes dispatch
+ * order the commit order regardless of transport behavior. Saves for
+ * different exposures stay independent.
+ */
+const saveQueues = new Map<number, Promise<unknown>>();
+
+export function enqueueSave<T>(id: number, task: () => Promise<T>): Promise<T> {
+  const prev = saveQueues.get(id) ?? Promise.resolve();
+  const run = prev.then(task, task);
+  const tail = run.then(() => undefined, () => undefined);
+  saveQueues.set(id, tail);
+  tail.then(() => {
+    if (saveQueues.get(id) === tail) saveQueues.delete(id);
+  });
+  return run;
+}
