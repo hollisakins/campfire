@@ -82,25 +82,24 @@ class SubtractBackground:
     ring_downsample: int = 1
 
     # -- Tiered source masking -------------------------------------------------
-    # Tier 0 is a large-extended-source pre-tier that fires ONLY on the handful
-    # of extremely bright, large galaxies (and comparably bright stars) per tile.
-    # A galaxy far larger than ``bg_box_size`` is fully masked at the pixel level
-    # yet still over-subtracted: ``Background2D`` keeps mesh cells up to
-    # ``bg_exclude_percentile`` masked at the galaxy edge, samples its outskirts
-    # there, and the zoom interpolator extrapolates that gradient inward (a
-    # galaxy-shaped +30..90e-3 MJy/sr bowl, 4-11 sigma of sky). Tier 0 masks the
-    # bright core + a heavy dilation so the mesh boundary lands on true sky.
-    # Selectivity: a HIGH ``tier_nsigma`` (100) plus a large ``tier_npixels``
-    # (30k min connected area) means only objects with a >=30k-px core above
-    # 100*sigma survive -- ~4 per COSMOS 30mas tile (vs ~120 at 5*sigma), so the
-    # normal aggressive flattening of ordinary galaxy wings is UNCHANGED
-    # everywhere else. The heavy ``tier_dilate_size`` (600) compensates for the
-    # small high-sigma footprint and reaches the galaxy's sky radius. It is a
-    # no-op on tiles with no such object. Tiers 1-4 are the compact-source cascade.
-    tier_kernel_size: list = field(default_factory=lambda: [25, 25, 15, 5, 2])
-    tier_npixels: list = field(default_factory=lambda: [30000, 15, 10, 3, 1])
-    tier_nsigma: list = field(default_factory=lambda: [100.0, 1.5, 1.5, 1.5, 1.5])
-    tier_dilate_size: list = field(default_factory=lambda: [600, 33, 25, 21, 19])
+    # Tiers are the compact-source detection cascade (aggressive -> fine).
+    #
+    # HISTORY: a "tier 0" giant-galaxy pre-tier (100 sigma / 30k px core,
+    # 600 px dilation) used to precede these tiers on mosaics, masking the
+    # handful of extremely bright large galaxies out to their sky radius so
+    # the Background2D mesh boundary landed on true sky (guarding against the
+    # galaxy-shaped oversubtraction bowl). It was REMOVED with the negativity
+    # guard (``bg_guard``): the A2744 120" A/B showed the fit inside the
+    # tier-0 hole is pure extrapolation — negative area ~3x WORSE than no
+    # tier 0, and ~9x worse even after guard cleanup — while the tier never
+    # fired on the envelope-dominated BCGs it was meant to protect (their
+    # 25 px-smoothed cores never reach 100 sigma over 30k connected px). The
+    # guard bounds the background with the observed flux floor instead, which
+    # works under masks and needs no hole. See experiments/bkg_nonneg.
+    tier_kernel_size: list = field(default_factory=lambda: [25, 15, 5, 2])
+    tier_npixels: list = field(default_factory=lambda: [15, 10, 3, 1])
+    tier_nsigma: list = field(default_factory=lambda: [1.5, 1.5, 1.5, 1.5])
+    tier_dilate_size: list = field(default_factory=lambda: [33, 25, 21, 19])
 
     # -- Background estimation -------------------------------------------------
     bg_box_size: int = 10
@@ -120,6 +119,53 @@ class SubtractBackground:
     bg_reject_sigma_lo: float = 3.0
     bg_reject_percentile: float = 60.0
     bg_reject_dilate: float = 40.0
+
+    # -- Negativity guard (opt-in; the mosaic config enables it) ---------------
+    # Constrains the final background map so the subtracted image carries no
+    # statistically significant negative structure. Physical prior: true flux
+    # >= 0, so every pixel — masked or not — asserts bkg(x) <= sci(x) + noise.
+    # Two data-side corrections applied after the (bg_reject-refit) fit:
+    #
+    # 1. CEILING MESHCAP: maskless coarse Background2D fits with a hard
+    #    one-sided upper clip track the lower envelope of the local flux — a
+    #    valid upper bound on any admissible background, even where the map
+    #    tracks (sky + wing). Fit on the noise-equalized image so the clip
+    #    bias is depth-uniform; self-calibrated per image against the masked
+    #    fit on quiet sky (removes the clip bias), plus guard_ceiling_k x the
+    #    quiet-sky scatter of that difference as slack (a slack ceiling is
+    #    costless — it is a bound, never an estimate). The minimum over
+    #    guard_ceiling_boxes tightens the bound in sky gaps next to bright
+    #    masked sources. Enforced by capping the low-res background MESH and
+    #    re-interpolating (smooth by construction) — a mask-and-refit
+    #    enforcement is a no-op for violations under fully-masked regions,
+    #    where the interpolator would extrapolate identically.
+    # 2. GATED TROUGH PASS: the residual is observable even under the fit
+    #    mask. Where its smoothed, noise-equalized map is coherently below
+    #    -guard_trough_t sigma over a connected region of at least
+    #    guard_trough_npix * sigma_smooth^2 px (area threshold tracks the
+    #    smoothing correlation area, so blank-field false-fire is scale-
+    #    independent and small), the map is lowered so the residual comes
+    #    back up to the -t sigma floor — the minimal correction that removes
+    #    statistical significance, continuous at the region edge (no seams),
+    #    and zero over compliant sky (blank fields are a near-no-op).
+    #    Iterated to convergence per smoothing scale.
+    #
+    # Noise model: sigma(x) = s / sqrt(WHT), s calibrated as the robust scale
+    # of the noise-equalized first-pass residual over unmasked sky. WHT is
+    # source-independent (ERR's source-Poisson term would suppress trough
+    # significance and loosen the ceiling exactly under bright wings/ICL).
+    # Without a WHT map the noise is a single global scalar (uniform depth).
+    # Validated on A2744 F444W 120" cutouts: negative structure 159k px ->
+    # 1.3k px (cluster core) at unchanged empty-aperture medians. See
+    # experiments/bkg_nonneg/README.md.
+    bg_guard: bool = False
+    guard_ceiling_boxes: list = field(default_factory=lambda: [32, 64, 128])
+    guard_ceiling_k: float = 2.0
+    guard_ceiling_sigma_upper: float = 1.0
+    guard_trough_sigmas: list = field(default_factory=lambda: [5.0, 15.0])
+    guard_trough_t: float = 2.0
+    guard_trough_npix: float = 8.0
+    guard_trough_max_iter: int = 12
 
     # -- WHT-aware (variable-depth) masking ------------------------------------
     # When a weight map is available (mosaic WHT extension, or the ``wht``
@@ -487,6 +533,266 @@ class SubtractBackground:
         return self._fit_background2d(img, mask | outliers)
 
     # ------------------------------------------------------------------
+    # Negativity guard
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _smooth_masked(
+        field_img: np.ndarray, exclude: np.ndarray, sigma: float
+    ) -> np.ndarray:
+        """NaN-tolerant gaussian smoothing (normalized convolution).
+
+        Excluded pixels contribute nothing; regions with <5% local coverage
+        go NaN so starved areas never produce fake significance.
+        """
+        filled = np.where(exclude, np.nan, field_img)
+        w = np.isfinite(filled).astype(np.float32)
+        f0 = np.where(np.isfinite(filled), filled, 0.0).astype(np.float32)
+        num = gaussian_filter(f0, sigma, mode="reflect")
+        den = gaussian_filter(w, sigma, mode="reflect")
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(den > 0.05, num / den, np.nan)
+
+    def _guard_sigma_map(
+        self, resid: np.ndarray, skymask: np.ndarray
+    ) -> np.ndarray:
+        """Local sky-noise map for the guard.
+
+        With a weight map (and ``wht_aware``): sigma(x) = s / sqrt(WHT),
+        with s the robust scale of the noise-equalized residual over usable
+        sky (``skymask``) — background variance is alpha/WHT with alpha
+        global, and WHT carries no source-Poisson term. Otherwise a single
+        global robust scale (uniform depth).
+        """
+        if self.wht is not None and self.wht_aware:
+            good = np.isfinite(self.wht) & (self.wht > 0)
+            with np.errstate(invalid="ignore"):
+                sqw = np.where(good, np.sqrt(np.where(good, self.wht, 0.0)),
+                               np.nan)
+            sel = skymask & good & np.isfinite(resid)
+            s = float(astrostats.biweight_scale((resid * sqw)[sel]))
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return np.where(good, s / sqw, np.nan)
+        sel = skymask & np.isfinite(resid)
+        s = float(astrostats.biweight_scale(resid[sel]))
+        return np.full(resid.shape, s, dtype=np.float32)
+
+    def _onesided_ceiling_map(
+        self, e_img: np.ndarray, off: np.ndarray, box: int
+    ) -> np.ndarray:
+        """Maskless (off-detector only) coarse background of the equalized
+        image with a hard upper clip: tracks the lower envelope of the local
+        flux distribution — an upper bound on the background up to a
+        (calibrated) clip bias."""
+        bkg = Background2D(
+            e_img,
+            box_size=box,
+            sigma_clip=astrostats.SigmaClip(
+                sigma_lower=10.0,
+                sigma_upper=self.guard_ceiling_sigma_upper,
+                maxiters=10,
+            ),
+            filter_size=3,
+            bkg_estimator=BiweightLocationBackground(),
+            exclude_percentile=95,
+            mask=off,
+            interpolator=BkgZoomInterpolator(),
+        )
+        return bkg.background
+
+    def _multiscale_ceiling(
+        self,
+        sci: np.ndarray,
+        off: np.ndarray,
+        bkgmap: np.ndarray,
+        fitmask: np.ndarray,
+        sigma_map: np.ndarray,
+    ) -> np.ndarray:
+        """Minimum over independently calibrated one-sided ceilings at
+        several box scales (min of upper bounds = tighter bound; finer
+        scales catch the sky gaps next to bright masked sources, where a
+        coarse mesh is source-embedded and its ceiling useless).
+
+        Everything runs in noise-equalized units (sci/sigma bounds
+        bkg/sigma pixelwise since true flux >= 0) so the one-sided clip
+        bias is depth-uniform and one global calibration constant is valid;
+        the bound maps back through the local sigma.
+        """
+        good = np.isfinite(sigma_map) & (sigma_map > 0)
+        with np.errstate(invalid="ignore"):
+            e_sci = np.where(good, sci / sigma_map, np.nan)
+            e_bkg = np.where(good, bkgmap / sigma_map, np.nan)
+        off_e = off | ~good
+        quiet = ~(fitmask | off_e)
+        ceils = []
+        for box in self.guard_ceiling_boxes:
+            om = self._onesided_ceiling_map(e_sci, off_e, int(box))
+            diff = (om - e_bkg)[quiet]
+            delta = float(astrostats.biweight_location(diff))
+            scatter = float(astrostats.biweight_scale(diff))
+            ceils.append(om - delta + self.guard_ceiling_k * scatter)
+            log(f"  guard ceiling box={box}: clip bias={delta:.3f} "
+                f"quiet-sky scatter={scatter:.3f} (equalized units)")
+        ceil_e = np.minimum.reduce(ceils)
+        return np.where(good, ceil_e * sigma_map, np.inf)
+
+    def _cap_mesh(self, bkg2d: Background2D, ceiling: np.ndarray,
+                  shape) -> np.ndarray:
+        """Cap the low-res background mesh at the ceiling (block-averaged
+        onto the mesh grid) and re-run the zoom interpolation — smooth by
+        construction, and effective under fully-masked regions where a
+        mask-and-refit pass cannot change the extrapolation."""
+        mesh = np.asarray(bkg2d.background_mesh, dtype=float)
+        box = np.atleast_1d(bkg2d.box_size)
+        by, bx = int(box[0]), int(box[-1])
+        my, mx = mesh.shape
+        pady, padx = my * by - shape[0], mx * bx - shape[1]
+        cpad = np.pad(np.where(np.isfinite(ceiling), ceiling, np.inf),
+                      ((0, pady), (0, padx)), mode="edge")
+        # mean over finite entries per cell; all-inf cells stay uncapped
+        cgrid = cpad.reshape(my, by, mx, bx)
+        finite = np.isfinite(cgrid)
+        csum = np.where(finite, cgrid, 0.0).sum(axis=(1, 3))
+        cnt = finite.sum(axis=(1, 3))
+        with np.errstate(invalid="ignore"):
+            cmesh = np.where(cnt > 0, csum / np.maximum(cnt, 1), np.inf)
+        capped = np.minimum(mesh, cmesh)
+        n_capped = int((mesh > cmesh).sum())
+        log(f"  guard ceiling: capped {n_capped}/{mesh.size} mesh cells")
+        # Re-run exactly the interpolation the original fit used:
+        # Background2D.background is interpolator(background_mesh,
+        # **_interp_kwargs) (photutils 2.3.0, background_2d.py), so calling
+        # the fit's own interpolator with the fit's own kwargs reproduces
+        # bkg2d.background bit-for-bit from the uncapped mesh, and the capped
+        # map differs only through the capped cells. This also honors the
+        # configured bg_interpolator: a hardcoded BkgZoomInterpolator here
+        # would silently replace an IDW background with a zoom-interpolated
+        # one even when no cell is capped (and _interp_kwargs carries the
+        # mesh_yxcen/mesh_nan_mask the IDW call requires).
+        interp_kwargs = getattr(bkg2d, "_interp_kwargs", None)
+        if interp_kwargs is None:
+            # photutils without _interp_kwargs: fall back to the zoom-style
+            # call (edge_method is read unconditionally in 2.3.0).
+            interp_kwargs = dict(
+                box_size=(by, bx), shape=shape, dtype=float,
+                edge_method=getattr(bkg2d, "edge_method", "pad"))
+        return bkg2d.interpolator(capped, **interp_kwargs)
+
+    def _residual_exclusion(
+        self, resid_eq: np.ndarray, off: np.ndarray
+    ) -> np.ndarray:
+        """Positive-only compact-source mask on the equalized residual.
+
+        Keeps source flux from diluting the trough-pass smoothing WITHOUT
+        blinding it: exclusion follows positive detections in the residual,
+        never SCI brightness, so negative lanes (e.g. under bright ICL)
+        stay visible to the negativity detector.
+        """
+        field_img = np.where(np.isfinite(resid_eq), resid_eq, 0.0)
+        sm = gaussian_filter(np.where(off, 0.0, field_img).astype(np.float32),
+                             2.0, mode="reflect")
+        rms = astrostats.biweight_scale(sm[~off])
+        lvl = astrostats.biweight_location(sm[~off])
+        seg = detect_sources(sm, threshold=lvl + 2.0 * rms, npixels=8,
+                             mask=off)
+        if seg is None:
+            return off.copy()
+        m = seg.make_source_mask()
+        m = distance_transform_edt(~m) <= 5.0
+        return m | off
+
+    def _gated_trough_pass(
+        self,
+        sci: np.ndarray,
+        bkgmap: np.ndarray,
+        exclude: np.ndarray,
+        sigma_map: np.ndarray,
+    ) -> np.ndarray:
+        """Iterated, detection-gated trough correction (see class docstring).
+
+        Returns the corrected background map (only ever lowered, and only
+        inside detected coherent negative regions).
+        """
+        m = bkgmap.copy()
+        with np.errstate(invalid="ignore"):
+            inv_sigma = np.where(
+                np.isfinite(sigma_map) & (sigma_map > 0),
+                1.0 / sigma_map, np.nan)
+        for s in self.guard_trough_sigmas:
+            npixels = max(int(self.guard_trough_npix * s * s), 30)
+            for it in range(self.guard_trough_max_iter):
+                resid_eq = (sci - m) * inv_sigma
+                sm = self._smooth_masked(resid_eq, exclude, s)
+                # exclude keeps source flux out of the smoothing inputs and
+                # the rms estimate ONLY. The gate and the correction use sm
+                # wherever it is finite — including under excluded source
+                # footprints, where the normalized convolution interpolates
+                # the ambient trough from the surrounding sky — so corr stays
+                # continuous across footprint edges. Zeroing signif on
+                # excluded pixels instead would hard-zero corr over every
+                # source inside a fired trough, leaving each one on a
+                # pedestal at the original trough depth (a seam the class
+                # docstring promises not to make).
+                finite = np.isfinite(sm)
+                rms = float(astrostats.biweight_scale(sm[finite & ~exclude]))
+                if not np.isfinite(rms) or rms <= 0:
+                    break
+                signif = np.where(finite, sm / rms, 0.0)
+                seg = detect_sources(-signif,
+                                     threshold=self.guard_trough_t,
+                                     npixels=npixels)
+                if seg is None:
+                    break
+                # A region's significance must rest on at least npixels of
+                # real (non-excluded) sky: interpolated sm under excluded
+                # islands may extend a genuine trough across a footprint,
+                # but must never create or carry a firing on its own —
+                # otherwise shallow negative patches bridged by source
+                # footprints erode the blank-field near-no-op guarantee.
+                sky_area = np.bincount(
+                    seg.data[~exclude].ravel(), minlength=seg.nlabels + 1)
+                keep = sky_area >= npixels
+                keep[0] = False
+                if not keep.any():
+                    break
+                gate = keep[seg.data]
+                corr = np.where(
+                    gate,
+                    np.minimum(sm + self.guard_trough_t * rms, 0.0), 0.0)
+                corr[~np.isfinite(corr)] = 0.0
+                corr = corr * np.where(np.isfinite(sigma_map), sigma_map, 0.0)
+                m = m + corr
+                log(f"  guard trough sigma={s} iter={it}: corrected "
+                    f"{float(gate.mean()):.4f} of area, "
+                    f"min={float(corr.min()):.3g}")
+        return m
+
+    def apply_negativity_guard(
+        self,
+        sci: np.ndarray,
+        bkg2d: Background2D,
+        mask_final: np.ndarray,
+        off: np.ndarray,
+    ) -> np.ndarray:
+        """Apply ceiling meshcap + gated trough pass to a fitted background.
+
+        Parameters: the SCI image, the fitted ``Background2D``, the full fit
+        mask, and the off-detector/DQ/zero-weight seed mask (bit 0 of the
+        bitmask). Returns the guarded background map.
+        """
+        bkgmap = bkg2d.background
+        sigma_map = self._guard_sigma_map(sci - bkgmap, ~mask_final & ~off)
+        ceiling = self._multiscale_ceiling(
+            sci, off, bkgmap, mask_final, sigma_map)
+        capped = self._cap_mesh(bkg2d, ceiling, sci.shape)
+        with np.errstate(invalid="ignore"):
+            resid_eq = np.where(
+                np.isfinite(sigma_map) & (sigma_map > 0),
+                (sci - capped) / sigma_map, np.nan)
+        excl = self._residual_exclusion(resid_eq, off)
+        return self._gated_trough_pass(sci, capped, excl, sigma_map)
+
+    # ------------------------------------------------------------------
     # Evaluation / diagnostics
     # ------------------------------------------------------------------
 
@@ -609,7 +915,21 @@ class SubtractBackground:
         )
 
         bkg = self.estimate_background(sci, mask_final)
-        bkgd_subtracted = sci - bkg.background
+        bkgmap = bkg.background
+        if self.bg_guard:
+            log("Applying negativity guard (ceiling meshcap + trough pass)")
+            off = (bitmask & 1) != 0
+            bkgmap = self.apply_negativity_guard(sci, bkg, mask_final, off)
+        # Cast back to the input precision. The guard works in float64 —
+        # _cap_mesh reads the mesh as `dtype=float` — so `sci - bkgmap` would
+        # otherwise promote a float32 mosaic to float64 and double every SCI
+        # array on disk (A2744 F444W: _sci 4.68 -> 9.37 GiB, _i2d 15.4 -> 20.1
+        # GiB), silently, for no gain over float32 drizzle inputs. The
+        # unguarded path already returns float32, and this method's docstring
+        # promises "same dtype as the input SCI"; without this the guard breaks
+        # that invariant. Keeping the arithmetic in float64 and casting only
+        # the result costs 2.4e-07 relative rounding.
+        bkgd_subtracted = (sci - bkgmap).astype(sci.dtype, copy=False)
 
         self.mask_final = mask_final
         return bkgd_subtracted, mask_final, bitmask

@@ -513,12 +513,14 @@ def test_shipped_mosaic_tier_config_is_coherent(tmp_path):
     keys = ('tier_kernel_size', 'tier_npixels', 'tier_nsigma',
             'tier_dilate_size')
     mosaic = get_nircam_step_config('resample', cfg, field)
-    assert {len(mosaic[k]) for k in keys} == {5}          # consumed in lockstep
-    assert mosaic['tier_nsigma'][0] == 100.0
-    assert mosaic['tier_npixels'][0] == 30000
-    assert mosaic['tier_dilate_size'][0] == 600
+    # tier 0 (100 sigma / 30k px / 600 px pre-tier) removed with bg_guard:
+    # both stages now run the same 4-tier compact-source cascade
+    assert {len(mosaic[k]) for k in keys} == {4}          # consumed in lockstep
+    assert mosaic['tier_nsigma'][0] == 1.5
+    assert mosaic['bg_guard'] is True                     # negativity guard on
 
-    # per-exposure deliberately keeps 4 tiers: 30k px / 600 px are sized for a
-    # 30mas mosaic tile, not a 2048^2 frame
     per_exp = get_nircam_step_config('bkg', cfg, field).get('mask') or {}
     assert {len(per_exp[k]) for k in keys} == {4}
+    # the guard is mosaic-scoped: the per-exposure mask section must not
+    # carry it (SubtractBackground default is False)
+    assert 'bg_guard' not in per_exp

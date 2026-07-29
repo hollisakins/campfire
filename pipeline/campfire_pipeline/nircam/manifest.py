@@ -124,16 +124,66 @@ def build_mosaic_name(filtname, field_name, pixel_scale, tile, epoch=None,
     return name
 
 
+# Bump whenever the mosaic bkgsub *algorithm* changes results at identical
+# settings, so existing manifests hash stale and get_stale_tiles / the
+# resample-step skip logic rebuild their tiles. v2 = negativity guard
+# rollout + tier-0 pre-tier removal (both change pixels at the default
+# config, so the bump — not any key below — is what marks pre-guard tiles
+# stale).
+_BKGSUB_ALGORITHM_VERSION = 2
+
+# Every SubtractBackground setting that changes mosaic pixels, with the
+# defaults resample_step applies. Single source of truth: the config hash
+# below and the SubtractBackground construction in steps/resample.py both
+# iterate this dict, so a new tunable (or a default change) can never be
+# applied without also invalidating the tiles it affects. ``wht_aware`` is
+# deliberately absent — it is hashed separately (non-default-only, for
+# historical-hash compatibility) and passed explicitly by resample_step.
+BKGSUB_PIXEL_DEFAULTS = {
+    'ring_radius_in': 80,
+    'ring_width': 4,
+    'ring_downsample': 4,
+    'ring_clip_max_sigma': 5.0,
+    'ring_clip_box_size': 100,
+    'ring_clip_filter_size': 3,
+    'tier_kernel_size': [25, 15, 5, 2],
+    'tier_npixels': [15, 10, 3, 1],
+    'tier_nsigma': [1.5, 1.5, 1.5, 1.5],
+    'tier_dilate_size': [33, 25, 21, 19],
+    'bg_box_size': 10,
+    'bg_filter_size': 5,
+    'bg_exclude_percentile': 90,
+    'bg_sigma': 3,
+    'bg_interpolator': 'zoom',
+    'bg_reject': False,
+    'bg_reject_sigma_hi': 4.0,
+    'bg_reject_sigma_lo': 3.0,
+    'bg_reject_percentile': 60.0,
+    'bg_reject_dilate': 40.0,
+    'bg_guard': True,
+    'guard_ceiling_boxes': [32, 64, 128],
+    'guard_ceiling_k': 2.0,
+    'guard_ceiling_sigma_upper': 1.0,
+    'guard_trough_sigmas': [5.0, 15.0],
+    'guard_trough_t': 2.0,
+    'guard_trough_npix': 8.0,
+    'guard_trough_max_iter': 12,
+}
+
+
 def _resample_config_hash(resample_cfg, pixel_scale):
     """Hash the resample config fields that affect mosaic pixels.
 
     Single source of truth for :func:`create_manifest` and
-    :func:`check_config_changed` so the two can never drift. The bg_reject
-    keys are folded in **only when the guard is enabled** (non-default):
-    existing tiles keep their historical hash (no spurious global rebuild),
-    while flipping ``bg_reject`` on a field hashes distinctly so
-    ``get_stale_tiles`` rebuilds its tiles. ``wht_aware`` follows the same
-    non-default-only pattern (folded in only when *disabled*).
+    :func:`check_config_changed` so the two can never drift. When
+    background subtraction is enabled, the hash folds in every bkgsub
+    setting that changes pixels (:data:`BKGSUB_PIXEL_DEFAULTS`) plus the
+    bkgsub algorithm version, so both tuning changes and behavior changes
+    at identical settings mark tiles stale — resample_step skips bkgsub
+    entirely for a tile whose manifest and ``_i2d_before_bkgsub.fits``
+    exist, so a stale hash is the *only* thing that reruns it.
+    ``wht_aware`` is folded in only when *disabled* (non-default), keeping
+    historical hashes for the common case.
     """
     cfg = {
         'pixfrac': resample_cfg.get('pixfrac', 1),
@@ -143,13 +193,10 @@ def _resample_config_hash(resample_cfg, pixel_scale):
     }
     if not resample_cfg.get('wht_aware', True):
         cfg['wht_aware'] = False
-    if resample_cfg.get('bg_reject', False):
-        cfg['bg_reject'] = True
-        cfg['bg_reject_sigma_hi'] = resample_cfg.get('bg_reject_sigma_hi', 4.0)
-        cfg['bg_reject_sigma_lo'] = resample_cfg.get('bg_reject_sigma_lo', 3.0)
-        cfg['bg_reject_percentile'] = resample_cfg.get(
-            'bg_reject_percentile', 60.0)
-        cfg['bg_reject_dilate'] = resample_cfg.get('bg_reject_dilate', 40.0)
+    if cfg['background_subtract']:
+        cfg['bkgsub_algorithm'] = _BKGSUB_ALGORITHM_VERSION
+        for key, default in BKGSUB_PIXEL_DEFAULTS.items():
+            cfg[key] = resample_cfg.get(key, default)
     config_str = json.dumps(cfg, sort_keys=True)
     return f'sha256:{hashlib.sha256(config_str.encode()).hexdigest()}'
 

@@ -214,8 +214,8 @@ def resample_step(filtname, exposure_files, field, step_config,
         epoch segment.
     """
     from campfire_pipeline.nircam.manifest import (
-        build_mosaic_name, check_config_changed, check_inputs_changed,
-        create_manifest, write_manifest,
+        BKGSUB_PIXEL_DEFAULTS, build_mosaic_name, check_config_changed,
+        check_inputs_changed, create_manifest, write_manifest,
     )
 
     pixel_scale, pixel_scale_str = _resolve_pixel_scale(
@@ -327,38 +327,13 @@ def resample_step(filtname, exposure_files, field, step_config,
                 if needs_rebuild and bkgsub_done:
                     os.remove(pre_bkg)
 
+                # Pixel-affecting settings and their defaults come from the
+                # manifest's BKGSUB_PIXEL_DEFAULTS — the same dict the tile
+                # config hash iterates — so nothing applied here can change
+                # mosaic pixels without also marking existing tiles stale.
                 bkg = SubtractBackground(
-                    ring_radius_in=step_config.get('ring_radius_in', 80),
-                    ring_width=step_config.get('ring_width', 4),
-                    ring_downsample=step_config.get('ring_downsample', 4),
-                    ring_clip_max_sigma=step_config.get(
-                        'ring_clip_max_sigma', 5.0),
-                    ring_clip_box_size=step_config.get(
-                        'ring_clip_box_size', 100),
-                    ring_clip_filter_size=step_config.get(
-                        'ring_clip_filter_size', 3),
-                    tier_kernel_size=step_config.get(
-                        'tier_kernel_size', [25, 15, 5, 2]),
-                    tier_npixels=step_config.get(
-                        'tier_npixels', [15, 10, 3, 1]),
-                    tier_nsigma=step_config.get(
-                        'tier_nsigma', [1.5, 1.5, 1.5, 1.5]),
-                    tier_dilate_size=step_config.get(
-                        'tier_dilate_size', [33, 25, 21, 19]),
-                    bg_box_size=step_config.get('bg_box_size', 10),
-                    bg_filter_size=step_config.get('bg_filter_size', 5),
-                    bg_exclude_percentile=step_config.get(
-                        'bg_exclude_percentile', 90),
-                    bg_sigma=step_config.get('bg_sigma', 3),
-                    bg_interpolator=step_config.get('bg_interpolator', 'zoom'),
-                    bg_reject=step_config.get('bg_reject', False),
-                    bg_reject_sigma_hi=step_config.get(
-                        'bg_reject_sigma_hi', 4.0),
-                    bg_reject_sigma_lo=step_config.get(
-                        'bg_reject_sigma_lo', 3.0),
-                    bg_reject_percentile=step_config.get(
-                        'bg_reject_percentile', 60.0),
-                    bg_reject_dilate=step_config.get('bg_reject_dilate', 40.0),
+                    **{k: step_config.get(k, d)
+                       for k, d in BKGSUB_PIXEL_DEFAULTS.items()},
                     wht_aware=step_config.get('wht_aware', True),
                     suffix='bkgsub',
                     replace_sci=True,
