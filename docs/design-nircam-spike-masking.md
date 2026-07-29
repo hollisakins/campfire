@@ -347,9 +347,23 @@ flowchart LR
     p0["Phase 0 — Diagnose<br/>mode=report: PA-coverage map,<br/>star list, arm overlays.<br/>No masking. Validates geometry<br/>model against real spikes."]
     p1["Phase 1 — Model mask<br/>CFSPIKE + coverage gate,<br/>fused at materialize_work.<br/>Opt-in per field."]
     p2["Phase 2 — Empirical loop<br/>cross-PA median residuals<br/>refine footprints + validate<br/>model flux/λ scaling"]
-    p3["Phase 3 — Subtract where trustable<br/>fit ePSF amplitude per star, subtract<br/>halo+spikes (wisp pattern); keep pixels<br/>only below a contamination-ratio cut,<br/>hard-mask above it. Works even<br/>single-PA. Web review via CFMASK rails."]
-    p0 --> p1 --> p2 --> p3
+    p3["Phase 3 — STRETCH: subtraction<br/>fit ePSF amplitude per star, subtract<br/>halo+spikes; keep pixels only below a<br/>contamination-ratio cut. Contingent on<br/>model fidelity proven via Phase-2<br/>cross-PA residual tests."]
+    p0 --> p1 --> p2 -.-> p3
 ```
+
+**Masking (Phases 0–2) is the plan of record; subtraction (Phase 3) is a
+stretch goal.** The two demand very different things from the model:
+masking only needs the *footprint shape* — it is tolerant of flux-
+prediction and normalization errors (a mask slightly too big costs a
+little gated depth; `grow` already assumes imprecision) — while
+subtraction needs **percent-level photometric fidelity** in the model
+profile, which is unproven for the in-hand models. Phase 3 therefore
+stays dashed until the Phase-2 machinery has quantified model fidelity:
+the cross-PA median around each star is spike-free ground truth, so
+`(exposure − model) − blotted median` residuals measure exactly the error
+that subtraction would leave behind, star by star, radius by radius. Only
+if those residuals are consistently below the contamination-gate
+threshold does subtraction graduate from stretch goal to phase.
 
 Phase 1 ships as an **Algorithm** changelog entry (MINOR — it changes pixel
 values in the mosaic for fields that enable it, even though the default-off
@@ -358,27 +372,30 @@ Infrastructure (PATCH).
 
 ## 7. Open questions
 
-1. **Hard mask vs. subtraction — resolved: subtract only where trustable.**
-   DO_NOT_USE discards spike-wing pixels that still carry mostly valid
-   flux, and with a real scattered-light model the alternative is **model
-   subtraction** (Phase 3): fit the amplitude per star, subtract
-   halo+spikes (the `wisp` pattern at combine time) — it keeps depth in
-   the wings and works even in single-PA fields where the coverage gate
+1. **Hard mask vs. subtraction — masking is the plan of record;
+   subtraction is a stretch goal pending model validation.** DO_NOT_USE
+   discards spike-wing pixels that still carry mostly valid flux, and with
+   a good enough scattered-light model the alternative is **model
+   subtraction** (Phase 3, stretch): fit the amplitude per star, subtract
+   halo+spikes (the `wisp` pattern at combine time) — keeping depth in the
+   wings, and working even in single-PA fields where the coverage gate
    never opens. But a subtracted pixel is only as good as the model, and a
    pixel that was *dominated* by spike flux before subtraction should not
    be trusted afterward: residual fractional model error there exceeds the
    science signal, and the Poisson noise of the removed flux remains in
-   the pixel regardless. So the subtract/mask decision is **per pixel,
-   gated on a contamination ratio** — e.g.
+   the pixel regardless. If subtraction ever ships, the subtract/mask
+   decision is therefore **per pixel, gated on a contamination ratio** —
    ρ = model SB / max(local background RMS, science SB): subtract-and-keep
-   where ρ < ρ_max (spike is a perturbation; also inflate ERR/VAR by the
-   subtracted model's uncertainty so the drizzle weights stay honest),
-   hard-mask where ρ ≥ ρ_max (subtraction residuals would dominate the
-   error budget). ρ_max is a config knob (`subtract_max_contrast`,
-   Phase 3); ρ_max → 0 degenerates to pure Phase-1 masking. The isophote
-   machinery gives both contours for free — they are two thresholds of the
-   same scaled model. (Weight-downweighting was considered and dropped —
-   gated subtraction dominates it once an ePSF model exists.)
+   where ρ < ρ_max (spike is a perturbation; inflate ERR/VAR by the model
+   uncertainty so drizzle weights stay honest), hard-mask where ρ ≥ ρ_max.
+   ρ_max → 0 degenerates to pure Phase-1 masking, and both contours are
+   two thresholds of the same scaled model. **Gatekeeper:** the Phase-2
+   cross-PA residual tests (see §6) must first demonstrate percent-level
+   model fidelity — masking needs only footprint shape, subtraction needs
+   photometry, and the in-hand models are validated for neither yet.
+   (Weight-downweighting was considered and dropped — if the model is good
+   enough to downweight against, it's good enough to subtract; if not,
+   masking is the honest option.)
 2. **Saturated-core handling.** The core/halo region is typically
    contaminated at *every* PA and thus never gated in. Do we want an
    ungated central-disk option (`mask_core = true`) that accepts the mosaic
