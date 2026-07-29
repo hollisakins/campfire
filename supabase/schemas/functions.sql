@@ -929,6 +929,8 @@ DROP FUNCTION IF EXISTS public.get_filtered_spectra_paginated(
   DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT, INTEGER, INTEGER, BOOLEAN
 );
 
+DROP FUNCTION IF EXISTS public.get_filtered_spectra_paginated;
+
 CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_program_slugs TEXT[],
   p_filter_programs TEXT[] DEFAULT NULL,
@@ -947,6 +949,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
+  p_list_ids_mode TEXT DEFAULT 'any',
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
   p_needs_review BOOLEAN DEFAULT NULL,
@@ -974,6 +977,8 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_list_filter_active BOOLEAN;
+  v_list_ids_mode TEXT;
   v_offset INTEGER;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
@@ -989,6 +994,12 @@ BEGIN
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN
     v_gratings_mode := 'any';
+  END IF;
+
+  v_list_filter_active := (p_list_ids IS NOT NULL AND array_length(p_list_ids, 1) > 0);
+  v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
+  IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN
+    v_list_ids_mode := 'any';
   END IF;
 
   IF p_sort_direction NOT IN ('asc', 'desc') THEN
@@ -1093,9 +1104,19 @@ BEGIN
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_exclude) = 0)
-      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
-          SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-      ))
+      AND (
+        NOT v_list_filter_active
+        OR (v_list_ids_mode = 'any' AND t.object_id IN (
+            SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+        OR (v_list_ids_mode = 'all' AND (
+            SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+            WHERE olm.object_id = t.object_id AND olm.list_id = ANY(p_list_ids)
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND (t.object_id IS NULL OR t.object_id NOT IN (
+            SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        )))
+      )
       AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
@@ -1238,6 +1259,8 @@ GRANT EXECUTE ON FUNCTION public.get_filtered_spectra_paginated TO service_role;
 -- (one row per unique sky position, cross-matched across programs)
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_filtered_objects_paginated;
+
 CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_program_slugs TEXT[],
   p_filter_programs TEXT[] DEFAULT NULL,
@@ -1256,6 +1279,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_inspected_only BOOLEAN DEFAULT NULL,
   p_needs_review BOOLEAN DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
+  p_list_ids_mode TEXT DEFAULT 'any',
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
@@ -1281,6 +1305,8 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_list_filter_active BOOLEAN;
+  v_list_ids_mode TEXT;
   v_offset INTEGER;
   v_total_count BIGINT;
 BEGIN
@@ -1294,6 +1320,11 @@ BEGIN
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN
     v_gratings_mode := 'any';
+  END IF;
+  v_list_filter_active := (p_list_ids IS NOT NULL AND array_length(p_list_ids, 1) > 0);
+  v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
+  IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN
+    v_list_ids_mode := 'any';
   END IF;
 
   IF p_sort_direction NOT IN ('asc', 'desc') THEN
@@ -1382,10 +1413,21 @@ BEGIN
         ))) <= p_radius_degrees
       )
     )
-    AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
-        SELECT olm.object_id FROM object_list_members olm
-        WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-    ))
+    AND (
+      NOT v_list_filter_active
+      OR (v_list_ids_mode = 'any' AND o.id IN (
+          SELECT olm.object_id FROM object_list_members olm
+          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
+      OR (v_list_ids_mode = 'all' AND (
+          SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+          WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
+      ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+      OR (v_list_ids_mode = 'none' AND o.id NOT IN (
+          SELECT olm.object_id FROM object_list_members olm
+          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
+    )
     AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
     AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
     AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
@@ -1506,10 +1548,21 @@ BEGIN
           ))) <= p_radius_degrees
         )
       )
-      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
-          SELECT olm.object_id FROM object_list_members olm
-          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-      ))
+      AND (
+        NOT v_list_filter_active
+        OR (v_list_ids_mode = 'any' AND o.id IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+        OR (v_list_ids_mode = 'all' AND (
+            SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+            WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND o.id NOT IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+      )
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
       AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
@@ -1670,6 +1723,8 @@ GRANT EXECUTE ON FUNCTION public.get_filtered_objects_paginated TO service_role;
 -- (lightweight: returns only object_id strings for map marker filtering)
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_filtered_object_ids;
+
 CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_program_slugs TEXT[],
   p_filter_programs TEXT[] DEFAULT NULL,
@@ -1688,6 +1743,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_inspected_only BOOLEAN DEFAULT NULL,
   p_needs_review BOOLEAN DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
+  p_list_ids_mode TEXT DEFAULT 'any',
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
@@ -1711,6 +1767,8 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_list_filter_active BOOLEAN;
+  v_list_ids_mode TEXT;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
   v_comment_search_active := (
@@ -1722,6 +1780,11 @@ BEGIN
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN
     v_gratings_mode := 'any';
+  END IF;
+  v_list_filter_active := (p_list_ids IS NOT NULL AND array_length(p_list_ids, 1) > 0);
+  v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
+  IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN
+    v_list_ids_mode := 'any';
   END IF;
 
   IF p_sort_direction NOT IN ('asc', 'desc') THEN
@@ -1801,10 +1864,21 @@ BEGIN
         ))) <= p_radius_degrees
       )
     )
-    AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
-        SELECT olm.object_id FROM object_list_members olm
-        WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-    ))
+    AND (
+      NOT v_list_filter_active
+      OR (v_list_ids_mode = 'any' AND o.id IN (
+          SELECT olm.object_id FROM object_list_members olm
+          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
+      OR (v_list_ids_mode = 'all' AND (
+          SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+          WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
+      ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+      OR (v_list_ids_mode = 'none' AND o.id NOT IN (
+          SELECT olm.object_id FROM object_list_members olm
+          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
+    )
     AND (
       NOT v_comment_search_active
       -- Uncorrelated semijoin; see get_filtered_objects_paginated for rationale.
@@ -1877,6 +1951,8 @@ GRANT EXECUTE ON FUNCTION public.get_filtered_object_ids TO service_role;
 -- get_adjacent_objects
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_adjacent_objects;
+
 CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_current_object_id TEXT,
   p_program_slugs TEXT[],
@@ -1896,6 +1972,7 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_inspected_only BOOLEAN DEFAULT NULL,
   p_needs_review BOOLEAN DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
+  p_list_ids_mode TEXT DEFAULT 'any',
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
@@ -1919,6 +1996,8 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_list_filter_active BOOLEAN;
+  v_list_ids_mode TEXT;
   v_sort_is_text BOOLEAN;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
@@ -1930,6 +2009,9 @@ BEGIN
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN v_gratings_mode := 'any'; END IF;
+  v_list_filter_active := (p_list_ids IS NOT NULL AND array_length(p_list_ids, 1) > 0);
+  v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
+  IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN v_list_ids_mode := 'any'; END IF;
   IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
   IF NOT (p_sort_column IN (
     'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
@@ -2004,10 +2086,21 @@ BEGIN
         o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
         AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
       ))
-      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
-          SELECT olm.object_id FROM object_list_members olm
-          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-      ))
+      AND (
+        NOT v_list_filter_active
+        OR (v_list_ids_mode = 'any' AND o.id IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+        OR (v_list_ids_mode = 'all' AND (
+            SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+            WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND o.id NOT IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+      )
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
       AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
@@ -2140,6 +2233,8 @@ DROP FUNCTION IF EXISTS public.get_csv_export_spectra(
   DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT, BOOLEAN
 );
 
+DROP FUNCTION IF EXISTS public.get_csv_export_spectra;
+
 CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_program_slugs TEXT[], p_filter_programs TEXT[] DEFAULT NULL,
   p_fields TEXT[] DEFAULT NULL, p_gratings TEXT[] DEFAULT NULL,
@@ -2151,6 +2246,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_dq_flags_include_any INTEGER DEFAULT NULL, p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
+  p_list_ids_mode TEXT DEFAULT 'any',
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
   p_needs_review BOOLEAN DEFAULT NULL,
   p_has_photometry BOOLEAN DEFAULT NULL,
@@ -2180,11 +2276,16 @@ DECLARE
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
+  v_list_filter_active BOOLEAN;
+  v_list_ids_mode TEXT;
   v_page_size INTEGER;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
   v_comment_search_active := (p_comment_search IS NOT NULL AND p_comment_search != '' AND p_comment_search_scope IN ('just_me', 'everyone'));
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
+  v_list_filter_active := (p_list_ids IS NOT NULL AND array_length(p_list_ids, 1) > 0);
+  v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
+  IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN v_list_ids_mode := 'any'; END IF;
   v_page_size := LEAST(GREATEST(COALESCE(p_page_size, 5000), 1), 10000);
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs)) INTO v_filtered_program_slugs;
@@ -2229,9 +2330,19 @@ BEGIN
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_exclude) = 0)
-      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
-          SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-      ))
+      AND (
+        NOT v_list_filter_active
+        OR (v_list_ids_mode = 'any' AND t.object_id IN (
+            SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+        OR (v_list_ids_mode = 'all' AND (
+            SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+            WHERE olm.object_id = t.object_id AND olm.list_id = ANY(p_list_ids)
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND (t.object_id IS NULL OR t.object_id NOT IN (
+            SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        )))
+      )
       AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND COALESCE(o.redshift_quality, 0) = 0))
       AND (p_needs_review IS NULL
@@ -2288,6 +2399,8 @@ DROP FUNCTION IF EXISTS public.get_csv_export_objects(
   BOOLEAN, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT, UUID, TEXT, TEXT, BOOLEAN
 );
 
+DROP FUNCTION IF EXISTS public.get_csv_export_objects;
+
 CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_program_slugs TEXT[], p_filter_programs TEXT[] DEFAULT NULL,
   p_fields TEXT[] DEFAULT NULL, p_gratings TEXT[] DEFAULT NULL,
@@ -2299,6 +2412,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
   p_needs_review BOOLEAN DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
+  p_list_ids_mode TEXT DEFAULT 'any',
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
   p_has_photometry BOOLEAN DEFAULT NULL,
@@ -2333,6 +2447,8 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_list_filter_active BOOLEAN;
+  v_list_ids_mode TEXT;
   v_page_size INTEGER;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
@@ -2344,6 +2460,9 @@ BEGIN
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN v_gratings_mode := 'any'; END IF;
+  v_list_filter_active := (p_list_ids IS NOT NULL AND array_length(p_list_ids, 1) > 0);
+  v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
+  IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN v_list_ids_mode := 'any'; END IF;
   v_page_size := LEAST(GREATEST(COALESCE(p_page_size, 5000), 1), 10000);
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -2427,10 +2546,21 @@ BEGIN
         o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
         AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
       ))
-      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
-          SELECT olm.object_id FROM object_list_members olm
-          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-      ))
+      AND (
+        NOT v_list_filter_active
+        OR (v_list_ids_mode = 'any' AND o.id IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+        OR (v_list_ids_mode = 'all' AND (
+            SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+            WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND o.id NOT IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+      )
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
       AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)

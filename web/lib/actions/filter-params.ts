@@ -43,6 +43,7 @@ export interface FilterOptions {
   search_scope: SearchScope;
   gratings_mode: FilterMode;
   dq_flags_mode: FilterMode;
+  list_ids_mode: FilterMode;
 }
 
 export const DEFAULT_FILTERS: FilterOptions = {
@@ -67,6 +68,7 @@ export const DEFAULT_FILTERS: FilterOptions = {
   search_scope: 'target_id',
   gratings_mode: 'any',
   dq_flags_mode: 'any',
+  list_ids_mode: 'any',
 };
 
 /**
@@ -92,6 +94,7 @@ export interface FilterRpcParams {
   p_max_exposure_time_min: number | null;
   p_max_exposure_time_max: number | null;
   p_list_ids: number[] | null;
+  p_list_ids_mode: string;
   p_dq_flags_include_any: number | null;
   p_dq_flags_include_all: number | null;
   p_dq_flags_exclude: number | null;
@@ -168,6 +171,7 @@ export function buildFilterParams(
     p_max_exposure_time_min: filters?.max_exposure_time_min ?? null,
     p_max_exposure_time_max: filters?.max_exposure_time_max ?? null,
     p_list_ids: filters?.list_ids?.length ? filters.list_ids : null,
+    p_list_ids_mode: filters?.list_ids_mode || 'any',
     p_dq_flags_include_any: dqMode === 'any' ? dqFlagsMask : null,
     p_dq_flags_include_all: dqMode === 'all' ? dqFlagsMask : null,
     p_dq_flags_exclude: dqMode === 'none' ? dqFlagsMask : null,

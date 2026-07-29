@@ -124,6 +124,7 @@ export async function getSpectra(
         p_needs_review: rpcParams.p_needs_review,
         p_has_photometry: rpcParams.p_has_photometry,
         p_list_ids: rpcParams.p_list_ids,
+        p_list_ids_mode: rpcParams.p_list_ids_mode,
         p_coord_ra: rpcParams.p_coord_ra,
         p_coord_dec: rpcParams.p_coord_dec,
         p_radius_degrees: rpcParams.p_radius_degrees,
