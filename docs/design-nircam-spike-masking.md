@@ -162,6 +162,7 @@ flowchart TB
         cfspike["CFSPIKE ext + CFP_SPKE<br/>on canonical exposures"]
         man["spike_manifest.json<br/>(stars, per-exposure stats)"]
         diag2["Diagnostics: PA-coverage map,<br/>preview overlays"]
+        stm["_starmask mosaic sibling<br/>two-tier ALL/REMAINING (§5.1)<br/>+ vector sidecar"]
     end
 
     gaia --> cat --> geom
@@ -173,6 +174,7 @@ flowchart TB
     cov --> rast --> cfspike
     rast --> man
     cov --> diag2
+    cov --> stm
     emp -.refines.-> geom
     cfspike -->|"materialize_work fuses<br/>as DO_NOT_USE"| dq["working-copy DQ<br/>→ outlier median + resample<br/>exclude spike pixels"]
 ```
@@ -318,6 +320,8 @@ for single-PA fields (no cross-PA median exists).
     min_other_pa = 1           # distinct other-PA groups required to gate a cell in
     grow = 2                   # binary dilation (px) on the rasterized mask
     mode = "mask"              # "mask" (DO_NOT_USE) | "report" (diagnostics only)
+    export_starmask = true     # write the two-tier _starmask mosaic sibling (§5.1);
+                               # independent of mode — report-mode runs still export
 ```
 
 Parametric-only, per the config contract — it controls *how* the step runs;
@@ -334,18 +338,90 @@ map, manifest, and overlays without writing `CFSPIKE`.
 | `spike_manifest.json` | `products/nircam/<field>/<filter>/` | star list, PA groups, per-exposure masked-pixel counts; follows `manifest.py` conventions (input hashes → cheap re-run skip) |
 | PA-coverage map | field reference dir | small FITS/PNG diagnostic: distinct-PA count per sky cell — independently useful for survey planning |
 | Preview overlays | filter products dir | predicted arms drawn over the existing `preview` PNGs |
+| `_starmask` mosaic sibling | `field.filter_dir(filter)` | two-tier star/spike bitmask on the mosaic grid + vector sidecar — see §5.1 |
 
 Effects downstream, all via existing mechanisms: `outlier` and `resample`
 exclude the pixels through `good_bits='~DO_NOT_USE'`; `expmap`/WHT drop
 accordingly (honest depth accounting — masked spike area at single-PA depth
 shows as reduced weight, not fabricated data).
 
+### 5.1 Star-mask export: a two-tier sibling product of the mosaics
+
+Hand-drawn star masks are one of the most labor-intensive artifacts of
+survey production (days of region-drawing for a COSMOS-Web-scale field).
+The machinery above computes everything a star mask contains as a
+*byproduct* — so export it as a first-class product, regardless of whether
+DQ masking is enabled or even possible. This is the piece that pays off
+**even in single-PA fields**, where the coverage gate never opens.
+
+Two tiers, from the two geometry sets the step already holds:
+
+- **Tier ALL** — the union of predicted star/spike footprints over every
+  exposure that contributed to the mosaic, *pre-gate*. "A star's optics
+  touched this pixel in at least one input, whether or not it was cleaned."
+  This is the conservative mask for depth-critical work (completeness
+  sims, number counts near the confusion limit).
+- **Tier REMAINING** — footprint segments still contaminated in the
+  delivered mosaic: arm segments the gate could not open (no clean
+  other-PA coverage), everything when `spike_mask` is disabled or in
+  `report` mode, and the always-contaminated cores. "Do not trust
+  photometry here." This is the mask that replaces the hand-drawn one.
+
+`REMAINING ⊆ ALL` by construction, and `ALL ∖ REMAINING` is itself
+informative: "was spike-contaminated, cleaned by other-PA data" — a
+natural per-source quality flag for catalogs.
+
+```mermaid
+flowchart LR
+    subgraph geom ["already computed by spike_mask"]
+        arms["per-PA-group arm + core<br/>polygons, sky frame (pre-gate)"]
+        gate["gate outcome per segment:<br/>maskable / not replaceable"]
+    end
+    arms -->|union| tALL["Tier ALL"]
+    arms --> diff
+    gate --> diff["segments where gate closed<br/>+ cores + everything if masking off"]
+    diff --> tREM["Tier REMAINING"]
+    tALL --> ras["rasterize onto each mosaic<br/>tile WCS (per filter, per scale)"]
+    tREM --> ras
+    ras --> fits["&lt;mosaic basename&gt;_starmask.fits<br/>uint8: bit1=ALL, bit2=REMAINING<br/>(+ bit4=CORE), tile-aligned"]
+    tALL --> vec["vector sidecar: DS9 .reg /<br/>GeoJSON per star, sky coords"]
+    tREM --> vec
+```
+
+Design points:
+
+- **Pixel + vector, both.** The raster ships as a `_starmask.fits` sibling
+  alongside the existing `_sci/_err/_wht/_srcmask` split — same tile grid,
+  same version-free basename convention — so photometry code applies it
+  with one array op. The vector sidecar (per-star polygons in sky
+  coordinates, tagged by tier, star ID, magnitude) is the human- and
+  web-friendly form: reviewable, editable, and convertible into the
+  existing `.reg` → `apply_mask` flow when a hand fix *is* needed —
+  the export becomes the starting point instead of a blank canvas.
+- **Computable from Phase 0.** Tiers derive from the model geometry, the
+  PA-coverage gate, and headers — no pixel data, no DQ mutation. The
+  export therefore lands with `mode = "report"`, before any masking ships,
+  and is immediately useful on fields where masking will never be possible
+  (single PA → `REMAINING = ALL`, which is exactly the hand-drawn-mask
+  replacement).
+- **Truthfulness rule.** Tier REMAINING must reflect what actually entered
+  the drizzle: segments count as cleaned only if the corresponding
+  exposures carried `CFSPIKE` when `resample` ran (the manifest records
+  this), so a report-mode run or a stale re-run can't claim cleaning that
+  didn't happen.
+- **Cheap.** uint8, spike-sparse, RLE/gzip-compressed FITS — negligible
+  next to the mosaics; the vector form is KB-scale.
+- Downstream hooks (out of scope here, noted for later): catalog
+  cross-match sets per-source spike flags from the tiers — the web
+  portal's bitmask flag machinery (`web/lib/flags.ts`) is a natural
+  landing spot; deploy ships `_starmask` wherever `_srcmask` already goes.
+
 ## 6. Phasing
 
 ```mermaid
 flowchart LR
-    p0["Phase 0 — Diagnose<br/>mode=report: PA-coverage map,<br/>star list, arm overlays.<br/>No masking. Validates geometry<br/>model against real spikes."]
-    p1["Phase 1 — Model mask<br/>CFSPIKE + coverage gate,<br/>fused at materialize_work.<br/>Opt-in per field."]
+    p0["Phase 0 — Diagnose + export<br/>mode=report: PA-coverage map,<br/>star list, arm overlays, and the<br/>two-tier _starmask export (§5.1,<br/>REMAINING = ALL). No DQ masking."]
+    p1["Phase 1 — Model mask<br/>CFSPIKE + coverage gate,<br/>fused at materialize_work;<br/>_starmask tiers now diverge.<br/>Opt-in per field."]
     p2["Phase 2 — Empirical loop<br/>cross-PA median residuals<br/>refine footprints + validate<br/>model flux/λ scaling"]
     p3["Phase 3 — STRETCH: subtraction<br/>fit ePSF amplitude per star, subtract<br/>halo+spikes; keep pixels only below a<br/>contamination-ratio cut. Contingent on<br/>model fidelity proven via Phase-2<br/>cross-PA residual tests."]
     p0 --> p1 --> p2 -.-> p3
@@ -430,8 +506,9 @@ Infrastructure (PATCH).
 | Area | Change |
 |---|---|
 | `nircam/orchestrate.py` | add `('spike_mask', 'CFP_SPKE')` to `COMBINE_STEPS`; per-filter ensemble runner (bad_pixel pattern) |
-| `nircam/spikes/` (new) | `catalog.py`, `model.py`, `coverage.py`, `mask.py`, `empirical.py` (Phase 2) |
+| `nircam/spikes/` (new) | `catalog.py`, `model.py`, `coverage.py`, `mask.py`, `export.py` (§5.1 star-mask tiers), `empirical.py` (Phase 2) |
 | `nircam/field.py` | `materialize_work`: fuse `CFSPIKE` alongside `CFMASK` |
+| `nircam/steps/resample.py` | rasterize `_starmask` tiers onto each tile WCS after drizzle (sibling of the `_sci/_err/_wht/_srcmask` split) |
 | `nircam/steps/outlier.py` | none (benefits automatically via DQ) |
 | `refcat/` | reuse `query.py` / `motion.py`; possibly a thin cached "bright stars" wrapper |
 | `data/config_default.toml` | `[nircam.spike_mask]` section |
