@@ -214,8 +214,9 @@ def resample_step(filtname, exposure_files, field, step_config,
         epoch segment.
     """
     from campfire_pipeline.nircam.manifest import (
-        BKGSUB_PIXEL_DEFAULTS, build_mosaic_name, check_config_changed,
-        check_inputs_changed, create_manifest, write_manifest,
+        BKGSUB_PIXEL_DEFAULTS, MOSAIC_BKGSUB_KEY, bkgsub_stamp_value,
+        build_mosaic_name, check_config_changed, check_inputs_changed,
+        create_manifest, write_manifest,
     )
 
     pixel_scale, pixel_scale_str = _resolve_pixel_scale(
@@ -322,9 +323,35 @@ def resample_step(filtname, exposure_files, field, step_config,
             from campfire_pipeline.nircam.bkgsub import SubtractBackground
 
             pre_bkg = mosaic_file.replace('_i2d.fits', '_i2d_before_bkgsub.fits')
-            bkgsub_done = os.path.exists(pre_bkg)
-            if needs_rebuild or not bkgsub_done:
-                if needs_rebuild and bkgsub_done:
+            stamp_card = (
+                bkgsub_stamp_value(step_config),
+                'campfire: mosaic bkgsub (alg ver, params hash)',
+            )
+
+            # The CFP_BKGS primary-header stamp on the i2d — not the existence
+            # of the _i2d_before_bkgsub.fits snapshot — is the record that the
+            # on-disk pixels are already background-subtracted (issue #427):
+            # deriving bkgsub_done from the snapshot made a deleted snapshot
+            # silently subtract the background a second time. The snapshot is
+            # a rollback convenience copy, deletable once its mosaic carries
+            # the stamp.
+            if needs_rebuild:
+                bkgsub_done = False  # freshly drizzled, stamp gone with it
+            else:
+                bkgsub_done = MOSAIC_BKGSUB_KEY in fits.getheader(mosaic_file)
+                if not bkgsub_done and os.path.exists(pre_bkg):
+                    # Mosaic subtracted before the stamp existed. The manifest
+                    # config check passed to get here, so the current bkgsub
+                    # settings are the ones that produced it — backfill the
+                    # stamp so the snapshot becomes deletable from now on.
+                    bkgsub_done = True
+                    log(f"  backfilling {MOSAIC_BKGSUB_KEY} stamp on "
+                        f"pre-stamp mosaic {os.path.basename(mosaic_file)}")
+                    with fits.open(mosaic_file, mode='update') as hdul:
+                        hdul[0].header[MOSAIC_BKGSUB_KEY] = stamp_card
+
+            if not bkgsub_done:
+                if os.path.exists(pre_bkg):
                     os.remove(pre_bkg)
 
                 # Pixel-affecting settings and their defaults come from the
@@ -340,8 +367,19 @@ def resample_step(filtname, exposure_files, field, step_config,
                 )
                 bkg.call(mosaic_file)
 
-                log(f"  copying input → {os.path.basename(pre_bkg)}")
-                shutil.copy2(mosaic_file, pre_bkg)
+                # Stamp the subtracted output *before* it is renamed into
+                # place, so stamp and pixels land together atomically and the
+                # pre-bkgsub snapshot (copied from the un-stamped input) never
+                # carries the stamp.
+                with fits.open(bkg.outfile, mode='update') as hdul:
+                    hdul[0].header[MOSAIC_BKGSUB_KEY] = stamp_card
+
+                if step_config.get('keep_pre_bkgsub', True):
+                    log(f"  copying input → {os.path.basename(pre_bkg)}")
+                    shutil.copy2(mosaic_file, pre_bkg)
+                else:
+                    log("  keep_pre_bkgsub = false; "
+                        "not snapshotting the pre-bkgsub mosaic")
 
                 log(f"  renaming {os.path.basename(bkg.outfile)} → "
                     f"{os.path.basename(mosaic_file)}")

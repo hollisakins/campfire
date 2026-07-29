@@ -28,6 +28,28 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- **Mosaic background subtraction is now recorded by a `CFP_BKGS` stamp on the
+  i2d primary header, making `_i2d_before_bkgsub.fits` deletable** (issue
+  #427). Previously the snapshot's *existence on disk* was the only
+  bkgsub-done record, so deleting one of these full-size copies (~7.5 TB
+  pinned across the products tree) made the next up-to-date `resample` run
+  silently subtract the background a **second time**, in place — and then
+  re-snapshot the corrupted data, concealing the damage. The stamp (written
+  onto the subtracted output before it is renamed into place, so pixels and
+  record land atomically) now drives the skip decision; its value carries the
+  bkgsub algorithm version and a hash of the pixel-affecting settings for
+  provenance. Legacy mosaics stamped before this change fall back to the
+  snapshot's existence and get the stamp **backfilled** on their next
+  up-to-date run — so run the pipeline once over a field before deleting its
+  snapshots. New `[nircam.resample].keep_pre_bkgsub` (default `true`) skips
+  writing the snapshot entirely (cost: no rollback copy, no `_bkgsub.png`
+  before/after plot). Regression-tested against the double-subtraction
+  (`tests/test_nircam_resample_bkgsub_stamp.py`; the test measurably fails on
+  the pre-fix code). Pixels are unchanged for every correctly-skipped or
+  rebuilt tile — the only behavior removed is the corruption path — but the
+  new header keyword is an (additive) output-structure change.
+
 ### Infrastructure
 - The drizzle **CONTEXT extension is now written tile-compressed** (GZIP_1,
   lossless), controlled by `[nircam.resample].compress_context` (default

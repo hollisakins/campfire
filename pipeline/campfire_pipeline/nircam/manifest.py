@@ -171,6 +171,34 @@ BKGSUB_PIXEL_DEFAULTS = {
 }
 
 
+# Primary-header keyword stamped on a mosaic i2d once its on-disk pixels have
+# been background-subtracted (issue #427). This stamp — not the existence of
+# the ``_i2d_before_bkgsub.fits`` snapshot — is the authoritative bkgsub-done
+# record, so the snapshot is a pure rollback convenience that can be deleted
+# to reclaim space. Not part of the ``cfp`` exposure keysets: those track the
+# per-exposure canonical chain, while this lives on the per-tile mosaic.
+MOSAIC_BKGSUB_KEY = 'CFP_BKGS'
+
+
+def bkgsub_stamp_value(resample_cfg):
+    """Value for the :data:`MOSAIC_BKGSUB_KEY` mosaic stamp.
+
+    Records *what* ran, not just that it ran: the bkgsub algorithm version
+    plus a short hash of every pixel-affecting SubtractBackground setting
+    (:data:`BKGSUB_PIXEL_DEFAULTS`, and ``wht_aware`` when non-default —
+    the same fields :func:`_resample_config_hash` folds in). Readers decide
+    skip-vs-rerun from the stamp's *presence*; the value is provenance for
+    after-the-fact debugging.
+    """
+    params = {k: resample_cfg.get(k, d)
+              for k, d in BKGSUB_PIXEL_DEFAULTS.items()}
+    if not resample_cfg.get('wht_aware', True):
+        params['wht_aware'] = False
+    digest = hashlib.sha256(
+        json.dumps(params, sort_keys=True).encode()).hexdigest()[:12]
+    return f'v{_BKGSUB_ALGORITHM_VERSION} cfg={digest}'
+
+
 def _resample_config_hash(resample_cfg, pixel_scale):
     """Hash the resample config fields that affect mosaic pixels.
 
@@ -180,8 +208,10 @@ def _resample_config_hash(resample_cfg, pixel_scale):
     setting that changes pixels (:data:`BKGSUB_PIXEL_DEFAULTS`) plus the
     bkgsub algorithm version, so both tuning changes and behavior changes
     at identical settings mark tiles stale — resample_step skips bkgsub
-    entirely for a tile whose manifest and ``_i2d_before_bkgsub.fits``
-    exist, so a stale hash is the *only* thing that reruns it.
+    entirely for a tile whose manifest is current and whose i2d carries the
+    :data:`MOSAIC_BKGSUB_KEY` stamp (legacy fallback: an existing
+    ``_i2d_before_bkgsub.fits``), so a stale hash is the *only* thing that
+    reruns it.
     ``wht_aware`` is folded in only when *disabled* (non-default), keeping
     historical hashes for the common case.
     """
