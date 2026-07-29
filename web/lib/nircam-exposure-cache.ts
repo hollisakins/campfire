@@ -23,6 +23,17 @@ export function setCachedExposure(exp: NircamExposure): void {
   cache.set(exp.id, exp);
 }
 
+/**
+ * Drop a row whose cached value can no longer be trusted — e.g. an optimistic
+ * write whose save failed AND whose revert refetch also failed. Deleting beats
+ * leaving the never-persisted row in place: the next visit misses the cache
+ * and refetches the server's truth instead of painting the attempted value as
+ * if it had stuck.
+ */
+export function deleteCachedExposure(id: number): void {
+  cache.delete(id);
+}
+
 export function clearExposureCache(): void {
   cache.clear();
 }

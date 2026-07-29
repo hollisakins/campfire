@@ -24,6 +24,7 @@ import { parseExposureNavParams } from '@/lib/nircam-exposure-nav';
 import {
   getCachedExposure,
   setCachedExposure,
+  deleteCachedExposure,
   prefetchPng,
   isPngCached,
   getCachedPngUrls,
@@ -504,16 +505,22 @@ function ExposureDetailPageInner() {
         // for this row committed while this handler was suspended: the revert
         // snapshot predates that save, and the banner would report a failure
         // for a decision that did persist.
+        const owned = () =>
+          !hasPendingSave(savedForId) && !hasNewerCommittedSave(savedForId, saveSeq);
         try {
           const fresh = await getNircamExposureById(savedForId);
-          if (
-            fresh.exposure &&
-            !hasPendingSave(savedForId) &&
-            !hasNewerCommittedSave(savedForId, saveSeq)
-          ) {
-            setCachedExposure(fresh.exposure);
+          if (fresh.exposure) {
+            if (owned()) setCachedExposure(fresh.exposure);
+          } else if (owned()) {
+            // The revert read failed too. Don't leave the never-persisted
+            // optimistic row posing as truth (a revisit would paint it as
+            // saved, with hasChanges false and no way to retry) — drop the
+            // entry so the next visit misses the cache and refetches.
+            deleteCachedExposure(savedForId);
           }
-        } catch { /* revert refetch failed too; the row corrects on next visit */ }
+        } catch {
+          if (owned()) deleteCachedExposure(savedForId);
+        }
         if (!hasNewerCommittedSave(savedForId, saveSeq)) {
           setSaveError({
             id: savedForId,
