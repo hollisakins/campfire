@@ -696,7 +696,15 @@ function ExposureDetailPageInner() {
     // This dispatch takes responsibility for everything currently staged:
     // consume the dirty flags so a following navigation's flush doesn't
     // re-send the same decision. Anything keyed after this line re-dirties.
-    if (localEditsRef.current.forId === savedForId) {
+    // The consumed flags are KEPT for the failure path below — they are the
+    // only record of which fields held operator decisions; re-dirtying more
+    // than that would let a later flush push `values` entries that were never
+    // edited (stale seeds from targetEdits, or defaults) over server truth.
+    const ownedAtDispatch = localEditsRef.current.forId === savedForId;
+    const dirtyAtDispatch = ownedAtDispatch
+      ? { ...localEditsRef.current.dirty }
+      : null;
+    if (ownedAtDispatch) {
       localEditsRef.current.dirty = { reviewStatus: false, correction: false, notes: false };
     }
     setSaving(true);
@@ -724,16 +732,34 @@ function ExposureDetailPageInner() {
     endPendingSave(savedForId);
     setSaving(false);
     if (result.error) {
-      // The decision did NOT persist — put the dirty flags back (all of them:
-      // the values are the operator's current choices, and the flush diffs
-      // against the baseline row anyway) so a later navigation retries the
-      // save instead of treating it as already handled.
-      if (localEditsRef.current.forId === savedForId) {
-        localEditsRef.current.dirty = { reviewStatus: true, correction: true, notes: true };
+      // The decision did NOT persist. If the record still belongs to this
+      // exposure, restore EXACTLY the flags this dispatch consumed (unioned
+      // with any edits keyed since — those set their own flags and must
+      // survive) so a later navigation retries the operator's actual
+      // decisions and nothing more.
+      const ownedNow = localEditsRef.current.forId === savedForId;
+      if (ownedNow && dirtyAtDispatch) {
+        const cur = localEditsRef.current.dirty;
+        localEditsRef.current.dirty = {
+          reviewStatus: cur.reviewStatus || dirtyAtDispatch.reviewStatus,
+          correction: cur.correction || dirtyAtDispatch.correction,
+          notes: cur.notes || dirtyAtDispatch.notes,
+        };
       }
-      // Surfaced even if we've navigated on: a failed save means the operator's
-      // decision didn't stick, which they need to know about either way.
-      setError(result.error);
+      if (ownedNow) {
+        setError(result.error);
+      } else {
+        // The operator has moved on: the record now belongs to another
+        // exposure, so the flags can't be restored and the component-scoped
+        // error box would paint unattributed on the wrong screen. Raise the
+        // id-aware module banner instead — it names the exposure, links back,
+        // and survives further navigation (same UX as a failed nav flush).
+        setSaveError({
+          id: savedForId,
+          filename: s.exposure.filename,
+          message: result.error,
+        });
+      }
       return { ok: false };
     }
     // Keyed by the exposure's own id, so this is correct regardless of route.

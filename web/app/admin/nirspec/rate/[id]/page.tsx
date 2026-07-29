@@ -25,6 +25,12 @@ function RateDetailPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const id = Number(params.id);
+  // Synchronous mirror of the route id for callbacks whose closures can
+  // outlive a navigation (the mask save handler below): "is the operator
+  // still on the row this response is about" must be answered with the id as
+  // of NOW, not as of the render the closure was created in.
+  const idRef = useRef(id);
+  idRef.current = id;
 
   // The list page's filter+sort state, carried in the URL (see
   // lib/nirspec-rate-nav.ts). Defines the ordered set prev/next walks; empty
@@ -294,14 +300,27 @@ function RateDetailPageInner() {
     exposure.storage_key && exposure.image_width && exposure.image_height,
   );
 
-  const handleSaveMasks = async (regions: MaskRegionsPayload, forKey?: number) => {
+  const handleSaveMasks = async (
+    regions: MaskRegionsPayload,
+    forKey?: number,
+    background?: boolean,
+  ) => {
     // Mask saves run from the editor's own toolbar or its auto-flush on
     // navigation, outside `goTo`'s dirty check — so the operator can navigate
     // away while one is still in flight. `forKey` echoes the exposureKey the
     // payload belongs to: a flush dispatches mid-swap, when `exposure` is
     // already the next row, and saving to it would mask the wrong exposure.
+    // `background` marks flushes the editor can't report inline.
     const savedForId = forKey ?? exposure.id;
-    const res = await saveRateMaskRegions(savedForId, regions);
+    let res: Awaited<ReturnType<typeof saveRateMaskRegions>>;
+    try {
+      res = await saveRateMaskRegions(savedForId, regions);
+    } catch (err) {
+      res = {
+        exposure: null,
+        error: err instanceof Error ? err.message : 'Save failed',
+      };
+    }
     if (res.exposure) {
       setCachedRate(res.exposure);
       // Same newer-than-the-read rule as the triage save: a mask write must not
@@ -311,6 +330,17 @@ function RateDetailPageInner() {
         localEditsRef.current.saved = true;
         setExposure(res.exposure);
       }
+    } else if (res.error && (background || idRef.current !== savedForId)) {
+      // The editor swallows background-flush outcomes and resets to the next
+      // exposure before this lands, so a failure here would otherwise discard
+      // the drawn polygons with no signal anywhere — the exact silent loss the
+      // auto-save exists to prevent. Surface it on the page banner, naming the
+      // row. (Best effort: the banner clears on the next id change, like the
+      // triage-save failure path on this page.)
+      setError(
+        `Mask auto-save failed for exposure #${savedForId}: ${res.error}. ` +
+        'The masks were NOT persisted — revisit the exposure to redraw them.',
+      );
     }
     return { error: res.error };
   };
