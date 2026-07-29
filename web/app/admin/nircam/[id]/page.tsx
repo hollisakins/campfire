@@ -758,13 +758,36 @@ function ExposureDetailPageInner() {
   const handleSaveMasks = async (regions: MaskRegionsPayload) => {
     // Mask saves run from the editor's own toolbar, outside `goTo`'s dirty
     // check — so the operator can navigate away while one is still in flight.
+    //
+    // Serialized through the SAME per-exposure queue as the triage saves.
+    // Unqueued, a mask save and a nav triage save for this row could commit
+    // at the database in either order, and each confirmation only reflects
+    // the fields the database held at ITS commit — so whichever response was
+    // snapshotted first is missing the other's write, and no response-time
+    // guard can reassemble the truth from two partial rows. Queued, dispatch
+    // order is commit order and each later confirmation contains every
+    // earlier write. Marked pending for the same reason as triage saves:
+    // revalidation and the sibling prefetch must not resurrect the pre-save
+    // row while this write is in flight.
     const savedForId = exposure.id;
-    const res = await saveExposureMaskRegions(savedForId, regions);
+    beginPendingSave(savedForId);
+    let res: Awaited<ReturnType<typeof saveExposureMaskRegions>>;
+    try {
+      res = await enqueueSave(savedForId, () =>
+        saveExposureMaskRegions(savedForId, regions));
+    } catch (err) {
+      res = {
+        exposure: null,
+        error: err instanceof Error ? err.message : 'Save failed',
+      };
+    } finally {
+      endPendingSave(savedForId);
+    }
     if (res.exposure) {
-      // Same response-time rule as the triage paths: a triage save in flight
-      // for this row has already written its optimistic decision — this
-      // (possibly older) row must not go over it. Its own confirmation will
-      // refresh the cache when it lands.
+      // A save queued behind this one (triage flush during the mask round
+      // trip) has already written its optimistic row, and — because the queue
+      // serializes commits — its confirmation will carry this mask write too.
+      // Only the newest pending state may own the cache.
       if (!hasPendingSave(savedForId)) setCachedExposure(res.exposure);
       // Same newer-than-the-read rule as the triage save: a mask write must not
       // be undone by an in-flight revalidation landing after it — but only for
