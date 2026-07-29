@@ -170,6 +170,7 @@ _CACHE_KINDS = {
     "crds": "crds",
     "templates": "templates",
     "wisps": "wisps",
+    "spike_models": "spike_models",
 }
 
 

@@ -9,10 +9,10 @@ fetches each needed template once from a public, anonymous-HTTPS endpoint into
 ``$CAMPFIRE_ROOT/cache/wisps/``, verifies its sha256, and hard-fails if a
 listed template is missing or unfetchable.
 
-Deliberately independent of the campfire CLI / auth / storage-key machinery:
-downloads are plain ``urllib`` GETs against ``base_url`` from the manifest — no
-login, no cloud credentials, no ``campfire_layout`` storage key. The only new
-runtime requirement is outbound HTTPS.
+The generic fetch/verify/cache machinery lives in ``common/ref_cache.py``
+(extracted from here — M1 of the spike-masking build plan); this module is the
+wisp-specific policy: template naming, the wisp detector set, and what
+"required" means.
 
 Manifest semantics (mirrored in ``data/wisp_manifest.toml``):
   * A ``(detector, filter)`` whose 4 templates ARE listed but are missing on
@@ -23,17 +23,9 @@ Manifest semantics (mirrored in ``data/wisp_manifest.toml``):
 """
 
 import functools
-import hashlib
-import os
-import tempfile
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
-from campfire_layout import cache_path
-
-from campfire_pipeline.common.io import log
+from campfire_pipeline.common import ref_cache
 
 
 # Detectors that carry wisps and the four smoothing variants each must have.
@@ -48,30 +40,28 @@ _VARIANT_SUFFIXES = (
 
 _MANIFEST_PATH = Path(__file__).resolve().parent.parent / 'data' / 'wisp_manifest.toml'
 
-_DOWNLOAD_RETRIES = 3
-_HTTP_TIMEOUT = 120  # seconds per read; templates are ~16 MB each
 
-
-class WispTemplateError(RuntimeError):
+class WispTemplateError(ref_cache.RefCacheError):
     """A required wisp template is missing and could not be fetched."""
 
 
 @functools.lru_cache(maxsize=1)
 def _manifest():
-    """Load and index the shipped manifest once.
+    """Load and index the shipped manifest once: ``(base_url, {name: (sha, bytes)})``."""
+    return ref_cache.load_manifest(_MANIFEST_PATH, 'template')
 
-    Returns ``(base_url, {name: (sha256, bytes)})``. A malformed or unconfigured
-    manifest (empty ``base_url`` / no templates) loads fine — the emptiness is
-    surfaced later, loudly, only if a fetch is actually needed.
-    """
-    import toml
-    data = toml.load(_MANIFEST_PATH)
-    base_url = (data.get('base_url') or '').rstrip('/')
-    templates = {}
-    for entry in data.get('template', []):
-        name = entry['name']
-        templates[name] = (entry.get('sha256'), entry.get('bytes'))
-    return base_url, templates
+
+# The lambda resolves ``_manifest`` from module globals at call time, so tests
+# that monkeypatch ``wisp_cache._manifest`` keep working.
+_ENGINE = ref_cache.RefCache(
+    'wisps', lambda: _manifest(),
+    error_cls=WispTemplateError,
+    log_prefix='wisp',
+    log_noun='wisp template',
+    no_base_url_hint=(
+        f"The manifest ({_MANIFEST_PATH.name}) is unconfigured — publish "
+        "templates and regenerate it with scripts/build_wisp_manifest.py."),
+)
 
 
 def build_names(detector, filtname):
@@ -100,9 +90,7 @@ def required_templates(detector, filtname):
 
 def cache_dir():
     """``$CAMPFIRE_ROOT/cache/wisps/``, created on demand."""
-    d = str(cache_path('wisps'))
-    os.makedirs(d, exist_ok=True)
-    return d
+    return _ENGINE.cache_dir()
 
 
 def resolve(name, legacy_dir=None):
@@ -112,119 +100,17 @@ def resolve(name, legacy_dir=None):
     reference directory (``field.wisp_dir``) if given — so machines that already
     have templates copied there keep working with zero disruption and no fetch.
     """
-    cached = os.path.join(cache_dir(), name)
-    if os.path.exists(cached):
-        return cached
-    if legacy_dir:
-        legacy = os.path.join(legacy_dir, name)
-        if os.path.exists(legacy):
-            return legacy
-    return None
-
-
-def _download_one(name, dest, base_url, expected_sha, expected_bytes):
-    """Stream one template to ``dest`` atomically, verifying size + sha256.
-
-    Downloads to a sibling ``.part`` temp file, checks byte count and sha256
-    against the manifest, then ``os.replace`` into place — so a file that exists
-    in the cache is always a complete, verified download. Retries transient
-    HTTP/URL errors; raises ``WispTemplateError`` on exhaustion or a checksum
-    mismatch (the latter is not retried by url — a mismatch is deterministic).
-    """
-    if not base_url:
-        raise WispTemplateError(
-            f"cannot fetch {name}: wisp manifest has no base_url set. The "
-            f"manifest ({_MANIFEST_PATH.name}) is unconfigured — publish "
-            "templates and regenerate it with scripts/build_wisp_manifest.py.")
-
-    url = f'{base_url}/{name}'
-    last_err = None
-    for attempt in range(1, _DOWNLOAD_RETRIES + 1):
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest), suffix='.part')
-        h = hashlib.sha256()
-        total = 0
-        try:
-            with os.fdopen(fd, 'wb') as out:
-                req = urllib.request.Request(
-                    url, headers={'User-Agent': 'campfire-pipeline'})
-                with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
-                    while True:
-                        chunk = resp.read(1 << 20)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        h.update(chunk)
-                        total += len(chunk)
-                out.flush()
-                os.fsync(out.fileno())
-
-            if expected_bytes is not None and total != expected_bytes:
-                raise WispTemplateError(
-                    f"size mismatch for {name}: got {total} bytes, "
-                    f"manifest says {expected_bytes}")
-            digest = h.hexdigest()
-            if expected_sha and digest != expected_sha:
-                raise WispTemplateError(
-                    f"checksum mismatch for {name}: got {digest}, "
-                    f"manifest says {expected_sha}")
-            os.replace(tmp, dest)
-            return
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-            last_err = e
-            _unlink_quiet(tmp)
-            if attempt < _DOWNLOAD_RETRIES:
-                log(f"  wisp fetch {name}: {e} (attempt {attempt}/"
-                    f"{_DOWNLOAD_RETRIES}); retrying")
-                time.sleep(2 * attempt)
-        except BaseException:
-            _unlink_quiet(tmp)
-            raise
-    raise WispTemplateError(
-        f"failed to fetch {name} from {url} after {_DOWNLOAD_RETRIES} "
-        f"attempts: {last_err}")
-
-
-def _unlink_quiet(path):
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
+    return _ENGINE.resolve(name, legacy_dir)
 
 
 def ensure(names, legacy_dir=None):
     """Ensure every template in ``names`` is present locally, fetching if needed.
 
-    Present files (cache or legacy) are trusted and skipped — the atomic,
-    verified write in ``_download_one`` means a cached file was already checked,
-    so re-hashing 2.5 GB every run is avoided. Missing ones are downloaded under
-    a per-file lock so two concurrent ``cfpipe`` runs don't fetch the same file
-    twice or read a half-written one.
-
-    Names not present in the manifest are skipped with a warning rather than
-    erroring here — ``required_templates`` is the gate that decides what is
-    genuinely required; this function only fulfills a given list.
-
-    Raises ``WispTemplateError`` if a manifest-listed template can't be fetched.
+    See ``ref_cache.RefCache.ensure`` for the shared semantics (trust present
+    files, per-file locking, loud failure on listed-but-unfetchable). Raises
+    ``WispTemplateError``; returns the number of files actually downloaded.
     """
-    base_url, templates = _manifest()
-    cdir = cache_dir()
-    fetched = 0
-    for name in names:
-        if resolve(name, legacy_dir) is not None:
-            continue
-        if name not in templates:
-            log(f"  wisp: {name} is not in the manifest; cannot fetch, skipping")
-            continue
-        sha, nbytes = templates[name]
-        dest = os.path.join(cdir, name)
-        with _file_lock(dest + '.lock'):
-            # Double-check under the lock: another process may have just fetched it.
-            if os.path.exists(dest):
-                continue
-            log(f"  fetching wisp template {name} …")
-            _download_one(name, dest, base_url, sha, nbytes)
-            fetched += 1
-    return fetched
+    return _ENGINE.ensure(names, legacy_dir=legacy_dir)
 
 
 def ensure_for_pairs(pairs, legacy_dir=None):
@@ -246,25 +132,3 @@ def ensure_for_pairs(pairs, legacy_dir=None):
     if not names:
         return 0
     return ensure(names, legacy_dir=legacy_dir)
-
-
-class _file_lock:
-    """Minimal advisory lock via ``fcntl.flock`` on a lock file (POSIX)."""
-
-    def __init__(self, path):
-        self._path = path
-        self._fd = None
-
-    def __enter__(self):
-        import fcntl
-        self._fd = os.open(self._path, os.O_CREAT | os.O_RDWR, 0o644)
-        fcntl.flock(self._fd, fcntl.LOCK_EX)
-        return self
-
-    def __exit__(self, *exc):
-        import fcntl
-        try:
-            fcntl.flock(self._fd, fcntl.LOCK_UN)
-        finally:
-            os.close(self._fd)
-            self._fd = None
