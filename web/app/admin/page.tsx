@@ -99,7 +99,17 @@ export default function AdminDashboardPage() {
   const progress = progressResult?.progress ?? [];
   const pendingReview = progress.reduce((s, r) => s + (r.pending_review ?? 0), 0);
   const needsCorrection = progress.reduce((s, r) => s + (r.needs_correction ?? 0), 0);
-  const attention = progress.filter((r) => r.pending_review > 0);
+  // The view is detector-grain; roll up to field/filter for the queue table.
+  const attentionMap = new Map<string, { field: string; filter: string; pending: number; total: number }>();
+  for (const r of progress) {
+    if (!r.pending_review) continue;
+    const key = `${r.field}|${r.filter}`;
+    const acc = attentionMap.get(key) ?? { field: r.field, filter: r.filter, pending: 0, total: 0 };
+    acc.pending += r.pending_review;
+    acc.total += r.total;
+    attentionMap.set(key, acc);
+  }
+  const attention = Array.from(attentionMap.values());
 
   const budgetOk = budget && 'total_bytes' in budget;
   const b = budgetOk ? (budget as StorageBudget) : null;
@@ -180,7 +190,7 @@ export default function AdminDashboardPage() {
                       href={`/admin/nircam?field=${encodeURIComponent(r.field)}&filter=${encodeURIComponent(r.filter)}&review=pending`}
                       className="text-yellow-600 dark:text-yellow-400 font-medium hover:underline"
                     >
-                      {r.pending_review}
+                      {r.pending}
                     </Link>
                   </td>
                   <td className="px-4 py-2 text-right text-text-secondary tabular-nums">{r.total}</td>

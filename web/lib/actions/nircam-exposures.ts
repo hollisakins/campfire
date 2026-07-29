@@ -367,28 +367,18 @@ export async function saveExposureMaskRegions(
 // Reduction progress (aggregated view)
 // ---------------------------------------------------------------------------
 
+// One row per (field, filter, detector) — matches the columns of the
+// nircam_reduction_progress view. Callers aggregate back up to filter/field
+// grain; detector grain exists to power per-detector pending quick-filters.
 export interface ReductionProgress {
   field: string;
   filter: string;
+  detector: string;
   total: number;
-  // Per-step counts (matches the columns in the nircam_reduction_progress view)
-  at_uncal: number;
-  at_detector1: number;
-  at_persistence: number;
-  at_wisp: number;
-  at_image2: number;
-  at_edge: number;
-  at_bkg: number;
-  at_diag_striping: number;
-  at_wcs_shift: number;
-  at_preview: number;
-  at_jhat: number;
-  at_apply_mask: number;
-  at_bad_pixel: number;
-  at_outlier: number;
   pending_review: number;
   approved: number;
   excluded: number;
+  masked: number;
   needs_correction: number;
 }
 
@@ -403,7 +393,8 @@ export async function getReductionProgress(): Promise<{
       .from('nircam_reduction_progress')
       .select('*')
       .order('field')
-      .order('filter');
+      .order('filter')
+      .order('detector');
 
     if (error) {
       return { progress: [], error: error.message };
@@ -418,44 +409,11 @@ export async function getReductionProgress(): Promise<{
   }
 }
 
-// ---------------------------------------------------------------------------
-// Excluded exposures (copy-paste source for fields.toml skip=[])
-// ---------------------------------------------------------------------------
-
-export interface ExcludedExposure {
-  field: string;
-  filter: string;
-  filename: string;
-  notes: string | null;
-}
-
-export async function getExcludedExposures(): Promise<{
-  excluded: ExcludedExposure[];
-  error?: string;
-}> {
-  try {
-    const supabase = await requireSession();
-
-    const { data, error } = await supabase
-      .from('nircam_exposures')
-      .select('field, filter, filename, notes')
-      .eq('review_status', 'excluded')
-      .order('field')
-      .order('filter')
-      .order('filename');
-
-    if (error) {
-      return { excluded: [], error: error.message };
-    }
-
-    return { excluded: data || [] };
-  } catch (err) {
-    return {
-      excluded: [],
-      error: err instanceof Error ? err.message : 'Failed to fetch excluded exposures',
-    };
-  }
-}
+// The former getExcludedExposures action (copy-paste source for fields.toml
+// skip=[]) is gone: exclusions reach the pipeline automatically via
+// `campfire pull` → reference/nircam/<field>/exposures.json
+// (campfire.deploy.nircam_exclusions.pull_exclusions), which
+// Field._load_excluded_exposures merges into the effective skip list.
 
 // ---------------------------------------------------------------------------
 // Filter options (for dropdowns)
