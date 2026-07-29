@@ -283,7 +283,50 @@ Notes:
   shared config, but still ship `enabled = false` by default (bad_pixel
   precedent).
 
-### 3.4 Empirical refinement (`empirical.py`, Phase 2)
+### 3.4 Model distribution: generalize the `wisp_cache` pattern
+
+The full PSF + scattered-light model set at NIRCam wavelengths is
+**~5.8 GB** — too big to ship in the wheel, same regime as the wisp
+templates (~2.5 GB), and the pipeline already solved this problem once.
+`nircam/wisp_cache.py` is a manifest-driven fetch+cache engine: a
+checksummed manifest ships inside the package (`data/wisp_manifest.toml`
+with `base_url` + per-file sha256/bytes), files are fetched lazily by
+plain anonymous-HTTPS GET from a public R2 bucket, streamed to a sibling
+`.part` and atomically renamed after size+sha256 verification, cached
+under a registered `campfire_layout.cache_path` kind, and **fail loud**:
+listed-but-unfetchable is a hard error, not-listed is a visible
+"no template" stamp. `WISP_TEMPLATE_HOSTING.md` documents the bucket
+half (public bucket, flat namespace, version segment in the path).
+
+Plan: **extract the engine, don't fork it.** Lift the generic core
+(manifest load, `ensure(names)`, `_download_one`, cache-dir resolution)
+into a shared `common/ref_cache.py` parameterized by
+(manifest path, cache kind); `wisp_cache` becomes a thin wrapper over it,
+and spike models get their own `data/spike_model_manifest.toml` +
+`cache/spike_models/` (one new `_CACHE_KINDS` entry in campfire-layout).
+The hosting doc and `scripts/build_wisp_manifest.py` pattern carry over
+as-is.
+
+Two things keep the 5.8 GB from ever being felt in practice:
+
+- **Lazy, per-anchor fetch.** `ensure()` is per-file; a run needs only the
+  nearest-anchor model(s) for the field's filters, so a typical reduction
+  pulls a fraction of the set, once per machine.
+- **Two grades in the manifest.** Masking (Phases 0–2) needs footprint
+  shape only — so publish a **mask-grade** repack (downsampled /
+  clipped-dynamic-range, plausibly tens–hundreds of MB total) alongside
+  the **photometric-grade** originals. Phases 0–2 fetch mask-grade by
+  default; the full-fidelity files are fetched only if/when the Phase-3
+  subtraction stretch goal graduates (§6). A config knob
+  (`model_grade = "mask" | "photometric"`) selects, and the manifest
+  lists both so the choice is a fetch decision, not a repackaging event.
+
+Preflight mirrors wisp semantics: a filter whose anchor is listed but
+unfetchable hard-fails the step; a filter with no listed anchor logs
+visibly and falls back to the analytic capsule backend (§3.2) rather than
+silently skipping.
+
+### 3.5 Empirical refinement (`empirical.py`, Phase 2)
 
 The model mask is deliberately conservative; real spikes vary (filter
 ghosts, PSF breathing, scattered-light features). Phase 2 closes the loop
@@ -315,6 +358,7 @@ for single-PA fields (no cross-PA median exists).
     mag_limit_lw = 15.0        # Gaia G cutoff, LW filters
     include_saturated = true   # supplement catalog with in-frame saturated cores
     model = "epsf"             # "epsf" (extended PSF isophote) | "capsule" (analytic fallback)
+    model_grade = "mask"       # "mask" (footprint-grade repack) | "photometric" (full 5.8 GB set, Phase 3) — §3.4
     threshold_sigma = 1.0      # f in "model SB > f × local background RMS" isophote cut
     pa_cluster_deg = 3.0       # exposures within this roll tolerance = one PA group
     min_other_pa = 1           # distinct other-PA groups required to gate a cell in
@@ -495,11 +539,13 @@ Infrastructure (PATCH).
    in SW; the capsule fallback table should allow per-arm zero lengths.
 6. **ePSF model provenance & format.** In-hand scattered-light models
    exist at several distinct anchor wavelengths (nearest-anchor +
-   residual λ rescale per filter, per §3.2). Remaining: their angular
-   extent vs. the brightest stars in target fields (determines whether
-   the capsule fallback is ever exercised), normalization convention,
-   and packaging (small enough for the wheel, or `wisp_cache`-style
-   checksummed fetch).
+   residual λ rescale per filter, per §3.2); the set totals ~5.8 GB and
+   distributes via the generalized `wisp_cache` engine (§3.4). Remaining:
+   their angular extent vs. the brightest stars in target fields
+   (determines whether the capsule fallback is ever exercised),
+   normalization convention, and the mask-grade repack parameters
+   (how far the models can be downsampled before footprint isophotes
+   move by more than `grow`).
 
 ## 8. Summary of touchpoints
 
@@ -512,5 +558,7 @@ Infrastructure (PATCH).
 | `nircam/steps/outlier.py` | none (benefits automatically via DQ) |
 | `refcat/` | reuse `query.py` / `motion.py`; possibly a thin cached "bright stars" wrapper |
 | `data/config_default.toml` | `[nircam.spike_mask]` section |
-| packaged data | extended PSF + scattered-light model (angular units; `wisp_cache`-style fetch if large) + capsule-fallback coefficient table (few KB) |
+| `common/ref_cache.py` (new) | generic manifest fetch+cache engine extracted from `wisp_cache.py` (which becomes a thin wrapper) — see §3.4 |
+| `layout/` | one new `_CACHE_KINDS` entry (`spike_models` → `cache/spike_models/`) |
+| packaged data | `spike_model_manifest.toml` (checksums for the ~5.8 GB model set, mask-grade + photometric-grade) + capsule-fallback coefficient table (few KB) |
 | `steps/preview.py` | optional arm-overlay hook (Phase 0) |
