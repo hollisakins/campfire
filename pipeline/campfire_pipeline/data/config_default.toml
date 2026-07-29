@@ -757,6 +757,13 @@
     pixfrac = 1
     kernel = "square"
     background_subtract = true
+    # Keep the full-size _i2d_before_bkgsub.fits rollback snapshot after
+    # subtracting the mosaic background. The bkgsub-done record is the
+    # CFP_BKGS stamp on the i2d itself (issue #427), so the snapshot is a
+    # pure convenience copy: deletable at any time to reclaim space, and
+    # skippable up front by setting this false (its only cost is losing the
+    # rollback and the _bkgsub.png before/after plot).
+    keep_pre_bkgsub = true
     ring_radius_in = 80
     ring_width = 4
     ring_downsample = 4

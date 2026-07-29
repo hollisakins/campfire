@@ -1,7 +1,8 @@
 """Tests for the resample config hash (tile staleness detection).
 
 The resample step skips background subtraction entirely for a tile whose
-manifest and ``_i2d_before_bkgsub.fits`` both exist, so the config hash is
+manifest is current and whose i2d carries the ``CFP_BKGS`` stamp (legacy
+fallback: an existing ``_i2d_before_bkgsub.fits``), so the config hash is
 the only thing that reruns bkgsub on existing tiles. It must therefore
 cover every bkgsub setting that changes mosaic pixels, plus an algorithm
 version for behavior changes at identical settings (the guard rollout).
