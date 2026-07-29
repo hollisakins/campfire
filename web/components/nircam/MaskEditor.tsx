@@ -128,11 +128,15 @@ export default function MaskEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
-  // The PNG actually painted. Swapped by the effect below: held across a warm
-  // navigation (seamless) but cleared to a loading state on a cold one, so we
-  // never show a stale exposure under the next one's metadata + mask.
-  const [shownUrl, setShownUrl] = useState<string | undefined>(pngUrl);
-  const swappedOnceRef = useRef(false);
+  // The PNG actually painted. Managed by the swap effect below; starts as the
+  // incoming URL only when its bytes are already decoded (retained cache), so
+  // a cold MOUNT shows the loading state too — initializing to `pngUrl`
+  // unconditionally meant a fresh mount (every prev/next remounts this page)
+  // rendered an invisible, natively-loading <img>: a blank canvas with no
+  // indicator until the full-res PNG landed.
+  const [shownUrl, setShownUrl] = useState<string | undefined>(
+    () => (pngUrl && isPngCached(pngUrl) ? pngUrl : undefined),
+  );
 
   // FITS render controls (only used when `fitsKey` is set). vmin/vmax drive the
   // display interval; 0/0 means "unset" so FitsCanvas keeps its on-load ZScale
@@ -197,15 +201,13 @@ export default function MaskEditor({
     setDraftVertices([]);
   }, [initialRegions, imageHeight]);
 
-  // Image swap on prev/next. The initial mount already shows `pngUrl`, so skip
-  // the first run and let that image load natively. On later navigations:
+  // Image swap, on mount and on prev/next alike:
   //   - Warm (already decoded in the retained cache): keep the current frame
   //     and swap on the ~instant decode, so the step never flashes.
   //   - Cold: blank to a loading state immediately rather than lingering on the
-  //     previous exposure's pixels (misleading beside the new metadata + mask),
-  //     then swap once the incoming image has decoded.
+  //     previous exposure's pixels (misleading beside the new metadata + mask)
+  //     or an invisible native load, then swap once the image has decoded.
   useEffect(() => {
-    if (!swappedOnceRef.current) { swappedOnceRef.current = true; return; }
     if (pngUrl === undefined) { setShownUrl(undefined); return; }
     if (!isPngCached(pngUrl)) setShownUrl(undefined);
     let cancelled = false;
@@ -404,7 +406,14 @@ export default function MaskEditor({
           <span>{polygons.length} polygon{polygons.length === 1 ? '' : 's'}</span>
           <span>{(scale * 100).toFixed(0)}%</span>
           {saveError && <span className="text-red-500">{saveError}</span>}
-          <Button onClick={handleSave} disabled={saving || !dirty} size="sm">
+          <Button
+            onClick={(e) => {
+              if (e.detail > 0) e.currentTarget.blur();
+              handleSave();
+            }}
+            disabled={saving || !dirty}
+            size="sm"
+          >
             {saving ? (<><Loader2 className="w-4 h-4 mr-1 animate-spin" />Saving</>) :
              savedAt && !dirty ? (<><Check className="w-4 h-4 mr-1" />Saved</>) :
              (<><Save className="w-4 h-4 mr-1" />Save</>)}
@@ -445,7 +454,8 @@ export default function MaskEditor({
               onKeyDown={(e) => e.key === 'Enter' && commitRange(rangeText.lo, rangeText.hi)}
               className="w-20 rounded border border-border bg-card px-1.5 py-0.5 font-mono text-text-primary" />
           </label>
-          <button type="button" onClick={autoStretch}
+          <button type="button"
+            onClick={(e) => { if (e.detail > 0) e.currentTarget.blur(); autoStretch(); }}
             className="rounded border border-border px-2 py-0.5 text-text-secondary hover:bg-card-hover">
             Auto
           </button>
@@ -626,7 +636,13 @@ function ToolButton({
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={(e) => {
+        // Drop mouse-click focus so a following Space press reaches the page's
+        // approve-and-next shortcut instead of re-activating this tool button.
+        // Keyboard activation (detail === 0) keeps focus.
+        if (e.detail > 0) e.currentTarget.blur();
+        onClick();
+      }}
       title={label}
       aria-label={label}
       className={`p-1.5 rounded text-sm ${

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useState, useEffect, useCallback, useMemo, useRef, useReducer } from 'react';
+import React, { Suspense, useState, useEffect, useCallback, useMemo, useRef, useReducer, useSyncExternalStore } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card } from '@/components/ui/Card';
@@ -24,9 +24,23 @@ import { parseExposureNavParams } from '@/lib/nircam-exposure-nav';
 import {
   getCachedExposure,
   setCachedExposure,
+  deleteCachedExposure,
   prefetchPng,
+  isPngCached,
   getCachedPngUrls,
   setCachedPngUrls,
+  hasPendingSave,
+  hasAnyPendingSave,
+  beginPendingSave,
+  endPendingSave,
+  getSaveError,
+  setSaveError,
+  subscribeSaveState,
+  getSaveStateVersion,
+  enqueueSave,
+  nextSaveSeq,
+  markSaveCommitted,
+  hasNewerCommittedSave,
 } from '@/lib/nircam-exposure-cache';
 
 // Eager PNG prefetch window: warm the full-res mask surface (~5.7 MB) the
@@ -36,11 +50,54 @@ import {
 const PREFETCH_AHEAD = 3;
 const PREFETCH_BEHIND = 1;
 
+// A mouse click leaves a button focused, and the shortcut handler yields Space
+// to focused buttons (it's their native activation key) — so without this,
+// clicking any button once turns every later Space press into "click that
+// button again" instead of approve-and-next, which silently skips the approve.
+// Keyboard activation (detail === 0) keeps focus for tab-navigation users.
+function blurOnMouseClick(e: React.MouseEvent<HTMLElement>) {
+  if (e.detail > 0) e.currentTarget.blur();
+}
+
 function ExposureDetailPageInner() {
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const id = Number(params.id);
+
+  // Client-side stepping: prev/next swaps the exposure via local state +
+  // history.pushState, NOT router.push. A router.push between dynamic
+  // segments paints nothing until the new page's RSC payload has
+  // round-tripped from the server — several hundred ms frozen on the old
+  // exposure with no loading indicator (none of the new page's spinners exist
+  // yet), during which keystrokes still target the OLD exposure, so a fast
+  // operator's decisions land on the wrong row or appear to vanish. With
+  // local stepping the id swaps in the same frame as the keypress and every
+  // loading state below actually engages; the URL stays in sync for
+  // refresh/share/back, and Next-driven navigations (direct entry, list
+  // links) seed from the route param.
+  const routeId = Number(params.id);
+  const [id, setId] = useState(routeId);
+  // Synchronous mirror of `id` for handlers that can fire faster than React
+  // re-renders — a double-tapped arrow in one frame must not double-step.
+  const idRef = useRef(id);
+  idRef.current = id;
+  // A real navigation changed the route param (back/forward or an entry that
+  // didn't remount): the route wins over local stepping state.
+  const lastRouteIdRef = useRef(routeId);
+  if (lastRouteIdRef.current !== routeId) {
+    lastRouteIdRef.current = routeId;
+    if (id !== routeId) setId(routeId);
+  }
+  // Back/forward across locally-pushed steps: Next may not remount for URLs
+  // written via history.pushState, so follow popstate ourselves as well.
+  useEffect(() => {
+    const onPop = () => {
+      const m = window.location.pathname.match(/\/admin\/nircam\/(\d+)(?:\/|$)/);
+      if (m) setId(Number(m[1]));
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   // The list page's filter+sort state, carried in the URL (see
   // lib/nircam-exposure-nav.ts). Defines the ordered set prev/next walks;
@@ -79,29 +136,73 @@ function ExposureDetailPageInner() {
   //
   // `forId` tags the whole record with the exposure it describes (same pattern
   // as `navState` below), so a save resolving after we've navigated away can
-  // tell that it no longer owns this state. Reset on every route-id change
-  // (below), so arriving at a fresh exposure still takes the server's values.
+  // tell that it no longer owns this state. Reset on every id change (below),
+  // so arriving at a fresh exposure still takes the server's values.
+  //
+  // `values` carries the operator's edited values alongside the flags: this
+  // record — not React state — is the authoritative "what did the operator
+  // decide, for which exposure". It is written synchronously on every edit,
+  // so the save flush never depends on a re-render having happened.
   const localEditsRef = useRef<{
     forId: number | null;
     dirty: { reviewStatus: boolean; correction: boolean; notes: boolean };
+    values: { reviewStatus: string; correction: string; notes: string };
     saved: boolean;
   }>({
     forId: null,
     dirty: { reviewStatus: false, correction: false, notes: false },
+    values: { reviewStatus: 'pending', correction: 'none', notes: '' },
     saved: false,
   });
+  // Every edit targets idRef.current — the exposure the operator believes is
+  // (or is about to be) on screen — NOT whatever the last committed render
+  // showed. The keyboard handler is a native document listener, so its
+  // setState calls get default priority and can lag: press `→` then `2`
+  // quickly and the `2` fires while the id transition is still uncommitted.
+  // Untargeted, that edit lands on the OLD record and the incoming render
+  // reset wipes it — the status flashes Approved for a frame, reverts to
+  // Pending, and the next flush has nothing dirty to save. Retargeting stages
+  // the edit for the incoming exposure; the reset below re-applies it instead
+  // of wiping it.
+  const targetEdits = useCallback(() => {
+    const target = idRef.current;
+    if (localEditsRef.current.forId !== target) {
+      localEditsRef.current = {
+        forId: target,
+        dirty: { reviewStatus: false, correction: false, notes: false },
+        // Baselines for as-yet-untouched fields; only dirty fields are ever
+        // read out of `values`, so stale entries here are never used.
+        values: {
+          reviewStatus: stateRef.current.reviewStatus,
+          correction: stateRef.current.correction,
+          notes: stateRef.current.notes,
+        },
+        saved: false,
+      };
+    }
+    return localEditsRef.current;
+  }, []);
   const editStatus = useCallback((v: string) => {
-    localEditsRef.current.dirty.reviewStatus = true;
+    const edits = targetEdits();
+    edits.dirty.reviewStatus = true;
+    edits.values.reviewStatus = v;
+    stateRef.current.reviewStatus = v;
     setReviewStatus(v);
-  }, []);
+  }, [targetEdits]);
   const editCorrection = useCallback((v: string) => {
-    localEditsRef.current.dirty.correction = true;
+    const edits = targetEdits();
+    edits.dirty.correction = true;
+    edits.values.correction = v;
+    stateRef.current.correction = v;
     setCorrection(v);
-  }, []);
+  }, [targetEdits]);
   const editNotes = useCallback((v: string) => {
-    localEditsRef.current.dirty.notes = true;
+    const edits = targetEdits();
+    edits.dirty.notes = true;
+    edits.values.notes = v;
+    stateRef.current.notes = v;
     setNotes(v);
-  }, []);
+  }, [targetEdits]);
 
   // Sibling-exposure nav: the ±window neighbors + absolute position within
   // the filtered, ordered set, from get_admin_exposure_neighbors. Survives
@@ -161,19 +262,33 @@ function ExposureDetailPageInner() {
   // bounded by the exposureForId guard so we don't loop.)
   if (exposureForId !== id) {
     const cached = getCachedExposure(id);
+    // Edits keyed to the incoming id were staged by a keypress that raced this
+    // transition (see targetEdits) — they are the operator's decision for THIS
+    // exposure and must be applied over the cached baseline, not wiped.
+    const staged = localEditsRef.current.forId === id ? localEditsRef.current : null;
     setExposureForId(id);
     setExposure(cached);
-    setReviewStatus(cached?.review_status || 'pending');
-    setCorrection(cached?.correction || 'none');
-    setNotes(cached?.notes || '');
+    setReviewStatus(staged?.dirty.reviewStatus
+      ? staged.values.reviewStatus : (cached?.review_status || 'pending'));
+    setCorrection(staged?.dirty.correction
+      ? staged.values.correction : (cached?.correction || 'none'));
+    setNotes(staged?.dirty.notes
+      ? staged.values.notes : (cached?.notes || ''));
     setLoading(!cached);
     setError(null);
     setSaved(false);
-    localEditsRef.current = {
-      forId: id,
-      dirty: { reviewStatus: false, correction: false, notes: false },
-      saved: false,
-    };
+    if (!staged) {
+      localEditsRef.current = {
+        forId: id,
+        dirty: { reviewStatus: false, correction: false, notes: false },
+        values: {
+          reviewStatus: cached?.review_status || 'pending',
+          correction: cached?.correction || 'none',
+          notes: cached?.notes || '',
+        },
+        saved: false,
+      };
+    }
   }
 
   // Background revalidation against the DB on every id change. Auto-save on
@@ -183,6 +298,10 @@ function ExposureDetailPageInner() {
   // has already landed, is newer than this response and must survive it.
   useEffect(() => {
     let cancelled = false;
+    // Captured before the read is issued: a save in flight NOW means the
+    // response may reflect pre-save state even if the save has finished (and
+    // cleared its pending marker) by the time the response resolves.
+    const pendingAtStart = hasPendingSave(id);
     (async () => {
       const result = await getNircamExposureById(id);
       if (cancelled) return;
@@ -192,17 +311,24 @@ function ExposureDetailPageInner() {
         return;
       }
       if (result.exposure) {
+        // The edits record only speaks for this exposure when tagged with its
+        // id (a mid-transition keypress can retarget it — see targetEdits).
         const edits = localEditsRef.current;
+        const ours = edits.forId === id;
         // A save for this exposure already landed — our write is strictly newer
-        // than this read, so don't let it back into state *or* the cache.
-        if (!edits.saved) {
+        // than this read, so don't let it back into state *or* the cache. Same
+        // for a save in flight at either end of this read (fire-and-forget
+        // auto-save on nav, then a quick revisit): the optimistic or
+        // save-confirmed row is newer than what this read may have seen.
+        const pending = pendingAtStart || hasPendingSave(id);
+        if (!(ours && edits.saved) && !pending) {
           setCachedExposure(result.exposure);
           setExposure(result.exposure);
         }
         // Per field: an untouched control still takes the fresh server value.
-        if (!edits.dirty.reviewStatus) setReviewStatus(result.exposure.review_status);
-        if (!edits.dirty.correction) setCorrection(result.exposure.correction);
-        if (!edits.dirty.notes) setNotes(result.exposure.notes || '');
+        if (!(ours && edits.dirty.reviewStatus) && !pending) setReviewStatus(result.exposure.review_status);
+        if (!(ours && edits.dirty.correction) && !pending) setCorrection(result.exposure.correction);
+        if (!(ours && edits.dirty.notes) && !pending) setNotes(result.exposure.notes || '');
       }
       setLoading(false);
     })();
@@ -275,23 +401,63 @@ function ExposureDetailPageInner() {
   ));
 
   // Latest-state ref so the keyboard handler doesn't capture stale closures.
-  const stateRef = useRef({ reviewStatus, correction, notes, hasChanges });
-  stateRef.current = { reviewStatus, correction, notes, hasChanges };
+  const stateRef = useRef({ reviewStatus, correction, notes, hasChanges, exposure });
+  stateRef.current = { reviewStatus, correction, notes, hasChanges, exposure };
+
+  // The last failed fire-and-forget save (module store — survives the remount
+  // on navigation, so the failure surfaces even though the operator is several
+  // exposures ahead by the time the response lands).
+  useSyncExternalStore(subscribeSaveState, getSaveStateVersion, getSaveStateVersion);
+  const saveError = getSaveError();
+
+  // Warn before unload while fire-and-forget saves are still in flight — a
+  // closed tab takes the in-flight decision (and any failure banner) with it.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (hasAnyPendingSave()) e.preventDefault();
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, []);
+
+  // A failed save reverts the cached row to the server's truth; if that
+  // exposure is the one on screen, re-baseline `exposure` from the cache so
+  // hasChanges compares against reality and a retry actually fires (otherwise
+  // the optimistic row read at mount claims the decision already stuck).
+  useEffect(() => {
+    if (saveError?.id !== id) return;
+    const cached = getCachedExposure(id);
+    if (cached) setExposure(cached);
+  }, [saveError, id]);
 
   const handleSave = useCallback(async (): Promise<{ ok: boolean }> => {
     const s = stateRef.current;
-    // The exposure this save is for. `goTo` awaits its own save before pushing,
-    // but the `S` shortcut fires handleSave un-awaited and mask saves aren't
-    // gated by `goTo` at all — so a response can land after the route moved on.
+    // No baseline row yet (direct entry, still loading): the controls hold
+    // defaults, and saving them would overwrite the row's real correction and
+    // notes with 'none' / ''.
+    if (!s.exposure) return { ok: false };
+    // The exposure this save is for. The `S` shortcut fires handleSave
+    // un-awaited and mask saves aren't gated by navigation at all — so a
+    // response can land after the route moved on.
     const savedForId = id;
     setSaving(true);
     setSaved(false);
     setError(null);
-    const result = await updateExposureReview(savedForId, {
+    // Same per-exposure queue as the fire-and-forget nav save, so an explicit
+    // save and a background one for this row can't commit out of order. Takes
+    // a dispatch generation for the same reason: a success here must be
+    // visible to an older failed save's suspended cleanup handler.
+    const saveSeq = nextSaveSeq(savedForId);
+    const result = await enqueueSave(savedForId, () => updateExposureReview(savedForId, {
       review_status: s.reviewStatus as NircamExposure['review_status'],
       correction: s.correction as NircamExposure['correction'],
-      notes: s.notes || undefined,
-    });
+      // Always sent (even '') so clearing the notes field actually persists —
+      // an undefined key is dropped from the PATCH and leaves the old value.
+      notes: s.notes,
+    })).catch((err: unknown) => ({
+      exposure: null,
+      error: err instanceof Error ? err.message : 'Save failed',
+    }));
     setSaving(false);
     if (result.error) {
       // Surfaced even if we've navigated on: a failed save means the operator's
@@ -300,7 +466,16 @@ function ExposureDetailPageInner() {
       return { ok: false };
     }
     // Keyed by the exposure's own id, so this is correct regardless of route.
-    if (result.exposure) setCachedExposure(result.exposure);
+    if (result.exposure) {
+      markSaveCommitted(savedForId, saveSeq);
+      // Same guard as the fire-and-forget success path: a newer save queued
+      // behind this one (edit + navigate before this resolved) has already
+      // written its optimistic row — don't put this older row over it.
+      if (!hasPendingSave(savedForId)) setCachedExposure(result.exposure);
+      // A retry that lands supersedes an earlier failure for this exposure —
+      // same rule as the fire-and-forget path, or the banner outlives the fix.
+      if (getSaveError()?.id === savedForId) setSaveError(null);
+    }
     // Everything below writes state belonging to whatever is on screen *now* —
     // only safe while that's still the exposure we saved. Otherwise this would
     // render the old exposure under the new one's URL and set the new one's
@@ -315,22 +490,172 @@ function ExposureDetailPageInner() {
     return { ok: true };
   }, [id]);
 
-  // Auto-save on nav: mirror inspection mode — flush dirty triage so the
-  // operator can blast through a queue with arrow keys without losing state.
-  const goTo = useCallback(async (targetId: number | null) => {
-    // targetId === id means the neighbor window is stale in a way the derivation
-    // above couldn't repair; pushing would be a no-op that looks like a step.
-    if (targetId == null || targetId === id) return;
-    if (stateRef.current.hasChanges) {
-      const result = await handleSave();
-      if (!result.ok) return; // don't navigate on a save failure
+  // Fire-and-forget flush of the operator's dirty triage state — the write
+  // half of auto-save-on-nav, also used by the back-to-list button. The
+  // decision goes into the row cache optimistically (that's what the next
+  // visit paints from) and the server action fires without blocking the
+  // caller. The pending-save registry keeps a quick revisit's revalidation
+  // from resurrecting the pre-save row; a failure reverts the cache to the
+  // server's truth and raises the module save-error banner, since this
+  // instance is usually gone by then.
+  //
+  // The save is built from the edits record ALONE — forId says which exposure,
+  // dirty says which fields, values says what the operator chose, all written
+  // synchronously at edit time. Nothing here depends on a re-render having
+  // happened or on which exposure the last committed render showed, so a
+  // decision keyed in during an uncommitted id transition still saves, and it
+  // saves to the right row. The update is PARTIAL: only touched fields are
+  // sent, so a not-yet-loaded row's untouched values can never be overwritten
+  // with defaults.
+  const flushDirtySave = useCallback(() => {
+    const s = stateRef.current;
+    const edits = localEditsRef.current;
+    if (edits.forId == null) return;
+    const savedForId = edits.forId;
+    const dirty = edits.dirty;
+    if (!dirty.reviewStatus && !dirty.correction && !dirty.notes) return;
+
+    // Baseline for no-op detection and the optimistic write: the on-screen row
+    // when it is this record's row, else the cache. May be null (row never
+    // loaded) — the save still goes out, just without a diff to skip on.
+    const exp = s.exposure && s.exposure.id === savedForId
+      ? s.exposure
+      : getCachedExposure(savedForId);
+
+    const updates: Parameters<typeof updateExposureReview>[1] = {};
+    if (dirty.reviewStatus && (!exp || edits.values.reviewStatus !== exp.review_status)) {
+      updates.review_status = edits.values.reviewStatus as NircamExposure['review_status'];
     }
-    // Carry the filter context so the next exposure's nav walks the same set.
-    router.push(`/admin/nircam/${targetId}${navQuery ? `?${navQuery}` : ''}`);
-  }, [handleSave, router, navQuery, id]);
+    if (dirty.correction && (!exp || edits.values.correction !== exp.correction)) {
+      updates.correction = edits.values.correction as NircamExposure['correction'];
+    }
+    if (dirty.notes && (!exp || edits.values.notes !== (exp.notes || ''))) {
+      updates.notes = edits.values.notes; // sent even as '' so clearing persists
+    }
+    if (Object.keys(updates).length === 0) return;
+
+    const savedFilename = exp?.filename ?? `exposure #${savedForId}`;
+    if (exp) {
+      setCachedExposure({
+        ...exp,
+        review_status: updates.review_status ?? exp.review_status,
+        correction: updates.correction ?? exp.correction,
+        notes: updates.notes !== undefined ? (updates.notes || null) : exp.notes,
+      });
+    }
+    {
+      beginPendingSave(savedForId);
+      // endPendingSave must run exactly once per beginPendingSave on every
+      // path — including a transport rejection, which would otherwise leave
+      // the id pending for the rest of the tab session (blocking revalidation
+      // and the failure banner alike).
+      let ended = false;
+      const endPending = () => {
+        if (ended) return;
+        ended = true;
+        endPendingSave(savedForId);
+      };
+      // Queued per exposure id so a second save for the same row (revisit +
+      // re-edit before the first lands) can never commit or report out of
+      // order with this one. The dispatch generation lets the failure handler
+      // below — which awaits, so it can resume after a newer save has fully
+      // committed — recognize that it has been superseded.
+      const saveSeq = nextSaveSeq(savedForId);
+      enqueueSave(savedForId, () => updateExposureReview(savedForId, updates))
+        .then(async (result) => {
+        if (result.exposure && !result.error) {
+          endPending();
+          markSaveCommitted(savedForId, saveSeq);
+          // A newer save queued behind this one has already written its own
+          // optimistic row — don't put this (older) confirmed row over it.
+          if (!hasPendingSave(savedForId)) setCachedExposure(result.exposure);
+          // A retry that lands supersedes an earlier failure for this exposure.
+          if (getSaveError()?.id === savedForId) setSaveError(null);
+          return;
+        }
+        throw new Error(result.error || 'Save failed');
+      }).catch(async (err: unknown) => {
+        endPending();
+        // Put the server's row back over the optimistic one (best effort —
+        // the transport may be down), then tell the operator: they may be
+        // several exposures ahead by now. Both steps are void if a newer save
+        // for this row committed while this handler was suspended: the revert
+        // snapshot predates that save, and the banner would report a failure
+        // for a decision that did persist.
+        const owned = () =>
+          !hasPendingSave(savedForId) && !hasNewerCommittedSave(savedForId, saveSeq);
+        try {
+          const fresh = await getNircamExposureById(savedForId);
+          if (fresh.exposure) {
+            if (owned()) setCachedExposure(fresh.exposure);
+          } else if (owned()) {
+            // The revert read failed too. Don't leave the never-persisted
+            // optimistic row posing as truth (a revisit would paint it as
+            // saved, with hasChanges false and no way to retry) — drop the
+            // entry so the next visit misses the cache and refetches.
+            deleteCachedExposure(savedForId);
+          }
+        } catch {
+          if (owned()) deleteCachedExposure(savedForId);
+        }
+        if (!hasNewerCommittedSave(savedForId, saveSeq)) {
+          setSaveError({
+            id: savedForId,
+            filename: savedFilename,
+            message: err instanceof Error ? err.message : 'Save failed',
+          });
+        }
+      });
+    }
+  }, []);
+
+  // Auto-save on nav: flush the dirty triage state (fire-and-forget), then
+  // swap the exposure locally in the same tick — the operator can blast
+  // through a queue with arrow keys without losing state or waiting on any
+  // round trip (save or navigation).
+  const goTo = useCallback((targetId: number | null) => {
+    // targetId === current id means the neighbor window is stale in a way the
+    // derivation above couldn't repair; stepping would be a no-op that looks
+    // like a step. Checked against the sync mirror so a double-tap inside one
+    // frame can't double-step.
+    if (targetId == null || targetId === idRef.current) return;
+    flushDirtySave();
+    idRef.current = targetId;
+    setId(targetId);
+    // Keep the URL shareable/refreshable, carrying the filter context so the
+    // next exposure's nav walks the same set (see the routeId comment above
+    // for why this is history.pushState and not router.push).
+    window.history.pushState(null, '', `/admin/nircam/${targetId}${navQuery ? `?${navQuery}` : ''}`);
+  }, [flushDirtySave, navQuery]);
 
   const handleNext = useCallback(() => goTo(nav?.nextId ?? null), [goTo, nav]);
   const handlePrev = useCallback(() => goTo(nav?.prevId ?? null), [goTo, nav]);
+
+  // The 90% case as a single keystroke: mark approved and advance. Routed
+  // through goTo's status override because the setState here isn't visible in
+  // stateRef until the next render. At the end of the queue there's nowhere to
+  // advance to, so persist the decision in place instead.
+  const approveAndNext = useCallback(() => {
+    // Nothing on screen yet to approve: marking now would just pin 'approved'
+    // over whatever the row actually holds once it loads.
+    if (!stateRef.current.exposure) return;
+    editStatus('approved');
+    // "End of queue" only when the neighbors result is FRESH for this
+    // exposure. A null or stale nav (RPC still in flight after a fast Space
+    // burst, the stale window's edge, or an RPC error) means "unknown": mark
+    // approved and wait — mirroring the disabled arrows — rather than firing
+    // redundant in-place saves; the next press advances once nav lands, and
+    // that navigation auto-saves the marked status.
+    const freshNav = navState?.forId === id ? navState.data : null;
+    if (freshNav && freshNav.nextId == null) {
+      // editStatus above already staged + synced the value, so a plain save
+      // picks it up.
+      handleSave();
+      return;
+    }
+    const nextId = nav?.nextId ?? null;
+    if (nextId != null && nextId !== id) goTo(nextId);
+  }, [editStatus, navState, nav, id, goTo, handleSave]);
 
   // Global keyboard shortcuts (mirrors web/components/spectra/inspection
   // pattern). Skip when an input has focus so users can type in notes etc.
@@ -341,11 +666,19 @@ function ExposureDetailPageInner() {
       if (e.key === 'Escape' && isInput) { t.blur(); return; }
       if (isInput) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // Space is the browser's native activation key for a focused button or
+      // link (and buttons keep focus after a click) — let it press the control
+      // instead of firing approve-and-next. Other shortcut keys don't overlap
+      // button semantics, so they still work with a button focused.
+      if (e.key === ' ' && (t.tagName === 'BUTTON' || t.tagName === 'A')) return;
 
       switch (e.key) {
         case '1': e.preventDefault(); editStatus('pending');  break;
         case '2': e.preventDefault(); editStatus('approved'); break;
         case '3': e.preventDefault(); editStatus('excluded'); break;
+        case ' ':
+        case 'a':
+        case 'A': e.preventDefault(); approveAndNext(); break;
         case 'ArrowRight':
         case 'n':
         case 'N': e.preventDefault(); handleNext(); break;
@@ -360,7 +693,7 @@ function ExposureDetailPageInner() {
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [handleNext, handlePrev, handleSave, showHelp, editStatus]);
+  }, [handleNext, handlePrev, handleSave, approveAndNext, showHelp, editStatus]);
 
   if (loading) {
     return (
@@ -435,7 +768,12 @@ function ExposureDetailPageInner() {
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <button
-          onClick={() => router.push(`/admin/nircam${navQuery ? `?${navQuery}` : ''}`)}
+          onClick={(e) => {
+            blurOnMouseClick(e);
+            // Leaving the triage flow still flushes a pending decision.
+            flushDirtySave();
+            router.push(`/admin/nircam${navQuery ? `?${navQuery}` : ''}`);
+          }}
           className="text-text-secondary hover:text-text-primary"
           title="Back to list"
         >
@@ -452,7 +790,7 @@ function ExposureDetailPageInner() {
         {nav && (
           <div className="flex items-center gap-1 text-sm text-text-secondary">
             <button
-              onClick={handlePrev}
+              onClick={(e) => { blurOnMouseClick(e); handlePrev(); }}
               disabled={nav.prevId == null}
               title="Previous (← / P)"
               className="p-1.5 rounded hover:bg-card-hover disabled:opacity-30 disabled:cursor-not-allowed"
@@ -463,7 +801,7 @@ function ExposureDetailPageInner() {
               {nav.position} / {nav.total}
             </span>
             <button
-              onClick={handleNext}
+              onClick={(e) => { blurOnMouseClick(e); handleNext(); }}
               disabled={nav.nextId == null}
               title="Next (→ / N)"
               className="p-1.5 rounded hover:bg-card-hover disabled:opacity-30 disabled:cursor-not-allowed"
@@ -473,7 +811,7 @@ function ExposureDetailPageInner() {
           </div>
         )}
         <button
-          onClick={() => setShowHelp(prev => !prev)}
+          onClick={(e) => { blurOnMouseClick(e); setShowHelp(prev => !prev); }}
           title="Keyboard shortcuts (?)"
           className="p-1.5 rounded text-text-secondary hover:bg-card-hover"
         >
@@ -488,6 +826,7 @@ function ExposureDetailPageInner() {
             <button onClick={() => setShowHelp(false)} className="text-xs text-text-secondary hover:underline">close</button>
           </div>
           <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+            <div className="flex justify-between"><dt>Approve &amp; next</dt><dd className="font-mono text-text-secondary">Space or A</dd></div>
             <div className="flex justify-between"><dt>Next exposure</dt><dd className="font-mono text-text-secondary">→ or N</dd></div>
             <div className="flex justify-between"><dt>Previous</dt><dd className="font-mono text-text-secondary">← or P</dd></div>
             <div className="flex justify-between"><dt>Mark pending</dt><dd className="font-mono text-text-secondary">1</dd></div>
@@ -497,7 +836,7 @@ function ExposureDetailPageInner() {
             <div className="flex justify-between"><dt>Help</dt><dd className="font-mono text-text-secondary">?</dd></div>
           </dl>
           <p className="mt-2 text-xs text-text-secondary">
-            Navigation auto-saves the triage panel if there are unsaved changes. Mask edits save separately from the editor toolbar.
+            Navigation auto-saves the triage panel in the background if there are unsaved changes. Mask edits save separately from the editor toolbar.
           </p>
         </div>
       )}
@@ -508,18 +847,42 @@ function ExposureDetailPageInner() {
         </div>
       )}
 
+      {/* A background auto-save (fire-and-forget on nav) failed — possibly for
+          an exposure several steps back. Persistent until dismissed or a retry
+          for the same exposure lands. */}
+      {saveError && (
+        <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4 mb-6 flex items-start justify-between gap-4">
+          <p className="text-red-800 dark:text-red-400">
+            Failed to save{' '}
+            <Link
+              href={`/admin/nircam/${saveError.id}${navQuery ? `?${navQuery}` : ''}`}
+              className="font-mono underline"
+            >
+              {saveError.filename}
+            </Link>
+            : {saveError.message}. Its review status was not changed — revisit it to re-apply your decision.
+          </p>
+          <button
+            onClick={(e) => { blurOnMouseClick(e); setSaveError(null); }}
+            className="text-xs text-red-800 dark:text-red-400 hover:underline flex-shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <div className="flex gap-6">
         {/* Image viewer: live FITS render (N4) or the legacy PNG / mask editor */}
         <div className="flex-1 min-w-0">
           <div className="mb-2 inline-flex rounded-lg border border-border p-0.5 text-xs">
             <button
-              onClick={() => setViewMode('png')}
+              onClick={(e) => { blurOnMouseClick(e); setViewMode('png'); }}
               className={`rounded-md px-3 py-1 ${viewMode === 'png' ? 'bg-card-hover text-text-primary' : 'text-text-secondary'}`}
             >
               PNG
             </button>
             <button
-              onClick={() => setViewMode('fits')}
+              onClick={(e) => { blurOnMouseClick(e); setViewMode('fits'); }}
               disabled={!fitsMaskAvailable}
               title={fitsMaskAvailable ? 'Live FITS render (SCI) + masking' : 'FITS unavailable for this exposure'}
               className={`rounded-md px-3 py-1 disabled:opacity-40 ${viewMode === 'fits' ? 'bg-card-hover text-text-primary' : 'text-text-secondary'}`}
@@ -556,11 +919,7 @@ function ExposureDetailPageInner() {
               </div>
             ) : pngUrl ? (
               // Fallback: thumbnail-only view (full PNG hasn't been deployed yet).
-              <img
-                src={pngUrl}
-                alt={`${exposure.filename} quick-look`}
-                className="w-full h-auto"
-              />
+              <PreviewImage url={pngUrl} alt={`${exposure.filename} quick-look`} />
             ) : (
               <div className="flex items-center justify-center py-24 text-text-secondary">
                 No PNG available
@@ -666,7 +1025,7 @@ function ExposureDetailPageInner() {
               </div>
 
               <Button
-                onClick={handleSave}
+                onClick={(e) => { blurOnMouseClick(e); handleSave(); }}
                 disabled={saving || !hasChanges}
                 className="w-full"
               >
@@ -682,6 +1041,37 @@ function ExposureDetailPageInner() {
           </Card>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Thumbnail-only fallback with a cold-load spinner: a plain <img> mounted with
+// an unfetched URL is invisible while it downloads, which reads as "nothing is
+// happening" when stepping faster than the prefetch window. Warm mounts (URL
+// already decoded in the retained cache) skip the spinner entirely.
+function PreviewImage({ url, alt }: { url: string; alt: string }) {
+  const [loaded, setLoaded] = useState(() => isPngCached(url));
+  const imgRef = useRef<HTMLImageElement>(null);
+  // Reset per URL, and catch an image that completed before React attached the
+  // onLoad handler (cached responses can land between render and commit).
+  useEffect(() => {
+    setLoaded(isPngCached(url) || !!imgRef.current?.complete);
+  }, [url]);
+  return (
+    <div className="relative">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        ref={imgRef}
+        src={url}
+        alt={alt}
+        className="w-full h-auto"
+        onLoad={() => setLoaded(true)}
+      />
+      {!loaded && (
+        <div className="absolute inset-0 flex items-center justify-center py-24">
+          <Loader2 className="w-8 h-8 animate-spin text-text-secondary" />
+        </div>
+      )}
     </div>
   );
 }
