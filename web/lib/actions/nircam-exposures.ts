@@ -204,6 +204,20 @@ export async function getNircamExposureById(id: number): Promise<{
 
 const PNG_PRESIGN_TTL_SECONDS = 3600;
 
+export interface PresignExposurePngsResult {
+  /**
+   * Presigned urls per requested id. An id maps to null urls when the
+   * exposure genuinely has no PNG (cacheable by the client), and is ABSENT
+   * when its urls could not be produced this call (retryable) — the
+   * distinction matters because the client caches these for ~50 min, and a
+   * transient failure cached as "no PNG" used to blank the viewer for the
+   * rest of the session.
+   */
+  urls: Record<number, ExposurePngUrls>;
+  /** Set when any requested id could not be signed (those ids are omitted). */
+  error?: string;
+}
+
 /**
  * Presigned GET URLs for a batch of exposures' preview + full PNGs, keyed by
  * exposure id (epic #261, N5). The admin UI puts these straight in `<img src>`
@@ -217,30 +231,32 @@ const PNG_PRESIGN_TTL_SECONDS = 3600;
  * `OSN_READ_ENABLED`-gated dual-read helper, which would divert to R2 when the
  * flag is off, and legacy R2 rows still resolve via their `r2` registry entry).
  *
- * ALWAYS returns an entry for every requested id (null urls when a PNG is
- * absent or a single sign fails) so the caller can distinguish "no PNG" from
- * "still presigning" and never wedges on a spinner. URLs live ~1h (covers a
- * viewing session + the sibling prefetch window).
+ * URLs live ~1h (covers a viewing session + the sibling prefetch window).
  */
 export async function presignExposurePngs(
   ids: number[],
-): Promise<Record<number, ExposurePngUrls>> {
-  const out: Record<number, ExposurePngUrls> = Object.fromEntries(
-    ids.map((i) => [i, { preview: null, full: null } as ExposurePngUrls]),
-  );
-  if (ids.length === 0) return out;
+): Promise<PresignExposurePngsResult> {
+  if (ids.length === 0) return { urls: {} };
   try {
     const supabase = await requireSession();
     const { data, error } = await supabase
       .from('nircam_exposures')
       .select('id, png_path, full_png_path')
       .in('id', ids);
-    if (error || !data) return out;
+    if (error || !data) {
+      return { urls: {}, error: error?.message ?? 'Exposure lookup failed' };
+    }
+
+    // An id the select didn't return doesn't exist (or isn't visible) — no
+    // PNG will ever materialize for it, so a null-urls entry is cacheable.
+    const out: Record<number, ExposurePngUrls> = Object.fromEntries(
+      ids.map((i) => [i, { preview: null, full: null } as ExposurePngUrls]),
+    );
 
     const keys = [...new Set(
       data.flatMap((r) => [r.png_path, r.full_png_path].filter(Boolean) as string[]),
     )];
-    if (keys.length === 0) return out;
+    if (keys.length === 0) return { urls: out };
 
     // Resolve each object's home backend from the registry (admin RLS sees all
     // rows); default OSN for anything unregistered — canonical PNGs are OSN.
@@ -255,6 +271,7 @@ export async function presignExposurePngs(
 
     // Presign per key, resilient: one unsignable key doesn't sink the batch.
     const urlByKey = new Map<string, string>();
+    const failedKeys = new Set<string>();
     await Promise.all(keys.map(async (k) => {
       try {
         const backend: DataBackend = backendByKey.get(k) === 'r2' ? 'r2' : 'osn';
@@ -266,18 +283,37 @@ export async function presignExposurePngs(
         urlByKey.set(k, url);
       } catch (err) {
         console.error(`presignExposurePngs: failed to sign ${k}:`, err);
+        failedKeys.add(k);
       }
     }));
 
+    let anyFailed = false;
     for (const r of data) {
-      out[r.id] = {
-        preview: r.png_path ? urlByKey.get(r.png_path) ?? null : null,
-        full: r.full_png_path ? urlByKey.get(r.full_png_path) ?? null : null,
-      };
+      const rowFailed =
+        (r.png_path && failedKeys.has(r.png_path)) ||
+        (r.full_png_path && failedKeys.has(r.full_png_path));
+      if (rowFailed) anyFailed = true;
+      const preview = r.png_path ? urlByKey.get(r.png_path) ?? null : null;
+      const full = r.full_png_path ? urlByKey.get(r.full_png_path) ?? null : null;
+      if (rowFailed && preview === null && full === null) {
+        // Nothing signed for this row — retryable, not "no PNG": omit the id
+        // entirely so the client doesn't cache the failure.
+        delete out[r.id];
+        continue;
+      }
+      // Per-key, not per-row: one unsignable key (e.g. a mixed-backend row
+      // whose other backend is misconfigured) must not sink a URL that DID
+      // sign — the viewer falls back full↔preview on its own.
+      out[r.id] = { preview, full };
     }
-    return out;
-  } catch {
-    return out;
+    return anyFailed
+      ? { urls: out, error: 'Failed to sign some exposure image URLs' }
+      : { urls: out };
+  } catch (err) {
+    return {
+      urls: {},
+      error: err instanceof Error ? err.message : 'Presign failed',
+    };
   }
 }
 
