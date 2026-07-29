@@ -127,3 +127,73 @@ export function getCachedPngUrls(id: number): ExposurePngUrls | undefined {
 export function setCachedPngUrls(id: number, urls: ExposurePngUrls): void {
   pngUrlCache.set(id, { urls, signedAt: Date.now() });
 }
+
+/**
+ * In-flight triage saves + the most recent save failure.
+ *
+ * The detail page's auto-save-on-nav no longer blocks navigation on the save
+ * round trip: it writes the operator's decision into the row cache
+ * optimistically, fires the server action, and pushes the route immediately.
+ * Module scope (surviving the page remount) is what lets the next page
+ * instance still see the two things that flow leaves behind:
+ *
+ *  - which exposure ids have a save still in flight, so the background
+ *    revalidation of a quickly-revisited exposure doesn't overwrite the
+ *    optimistic row with the pre-save DB state; and
+ *  - the most recent failed save, so the operator — possibly several
+ *    exposures ahead by the time the failure lands — is told their decision
+ *    didn't stick, with a way back to re-apply it.
+ *
+ * Subscribed via useSyncExternalStore: the snapshot is a monotonic version
+ * counter; consumers read the actual values after the version changes.
+ */
+
+export interface ExposureSaveError {
+  id: number;
+  filename: string;
+  message: string;
+}
+
+const pendingSaveIds = new Map<number, number>(); // id → in-flight save count
+let saveError: ExposureSaveError | null = null;
+let saveStateVersion = 0;
+const saveStateListeners = new Set<() => void>();
+
+function emitSaveState(): void {
+  saveStateVersion++;
+  for (const listener of saveStateListeners) listener();
+}
+
+export function subscribeSaveState(listener: () => void): () => void {
+  saveStateListeners.add(listener);
+  return () => saveStateListeners.delete(listener);
+}
+
+export function getSaveStateVersion(): number {
+  return saveStateVersion;
+}
+
+export function hasPendingSave(id: number): boolean {
+  return pendingSaveIds.has(id);
+}
+
+export function beginPendingSave(id: number): void {
+  pendingSaveIds.set(id, (pendingSaveIds.get(id) ?? 0) + 1);
+  emitSaveState();
+}
+
+export function endPendingSave(id: number): void {
+  const n = pendingSaveIds.get(id) ?? 0;
+  if (n > 1) pendingSaveIds.set(id, n - 1);
+  else pendingSaveIds.delete(id);
+  emitSaveState();
+}
+
+export function getSaveError(): ExposureSaveError | null {
+  return saveError;
+}
+
+export function setSaveError(err: ExposureSaveError | null): void {
+  saveError = err;
+  emitSaveState();
+}

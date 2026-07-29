@@ -30,6 +30,23 @@ async function requireAdmin() {
   return supabase;
 }
 
+// Fast-path guard for the triage hot loop (save + prev/next + prefetch).
+// requireAdmin() spends two sequential network round trips before the real
+// query — auth.getUser() re-validates the JWT against Supabase Auth, then
+// user_profiles is read — purely to produce a clean error message: every table
+// and RPC the hot-path functions touch is already admin-gated at the database
+// (nircam_exposures RLS policies; the get_admin_exposure_* RPCs' explicit
+// is_admin() checks), so a non-admin session gets zero rows or an RPC error,
+// never data. Here we only confirm a session exists (a cookie read, no
+// network) and let the database be the authority. Keep requireAdmin for
+// anything not fully RLS/RPC-gated (e.g. the nircam_reduction_progress view).
+async function requireSession() {
+  const supabase = await createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error('Not authenticated');
+  return supabase;
+}
+
 // ---------------------------------------------------------------------------
 // Read
 // ---------------------------------------------------------------------------
@@ -78,7 +95,7 @@ export async function getNircamExposures(params?: ExposureFilters & ExposureSort
   pageSize?: number;   // default 50
 }): Promise<ExposuresResult> {
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
 
     const { data, error } = await supabase.rpc('get_admin_exposures', {
       ...rpcExposureParams(params),
@@ -130,7 +147,7 @@ export async function getExposureNeighbors(
     prevId: null, nextId: null, position: null, total: 0, windowIds: [],
   };
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
 
     const { data, error } = await supabase.rpc('get_admin_exposure_neighbors', {
       p_current_id: currentId,
@@ -164,7 +181,7 @@ export async function getNircamExposureById(id: number): Promise<{
   error?: string;
 }> {
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
 
     const { data, error } = await supabase
       .from('nircam_exposures')
@@ -213,7 +230,7 @@ export async function presignExposurePngs(
   );
   if (ids.length === 0) return out;
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
     const { data, error } = await supabase
       .from('nircam_exposures')
       .select('id, png_path, full_png_path')
@@ -277,7 +294,7 @@ export async function updateExposureReview(
   },
 ): Promise<{ exposure: NircamExposure | null; error?: string }> {
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
 
     const { data, error } = await supabase
       .from('nircam_exposures')
@@ -319,7 +336,7 @@ export async function saveExposureMaskRegions(
   regions: MaskRegionsPayload,
 ): Promise<{ exposure: NircamExposure | null; error?: string }> {
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
     const hasPolygons = (regions?.polygons?.length ?? 0) > 0;
 
     const { data, error } = await supabase
@@ -417,7 +434,7 @@ export async function getExcludedExposures(): Promise<{
   error?: string;
 }> {
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
 
     const { data, error } = await supabase
       .from('nircam_exposures')
@@ -454,7 +471,7 @@ export async function getExposureFilterOptions(): Promise<{
   error?: string;
 }> {
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
 
     const { data, error } = await supabase.rpc('get_admin_exposure_facets');
 
