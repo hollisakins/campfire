@@ -79,10 +79,28 @@ export interface SpectrumPreferences {
   snrMax: number;
 }
 
+// Snapshot of an object pinned from the NIRSpec table. Metadata is cached at
+// pin time so the bucket renders without extra queries; the RGB thumbnail is
+// fetched live by target_id. `route` records which detail page the id belongs
+// to — spectra-mode rows without a parent object pin the target itself.
+export interface PinnedObject {
+  target_id: string;
+  route: 'objects' | 'targets';
+  field: string;
+  ra: number;
+  dec: number;
+  redshift: number | null;
+  redshift_quality: number;
+  pinned_at: string;
+}
+
+export const MAX_PINNED_OBJECTS = 12;
+
 export interface UserPreferences {
   theme: ThemeSetting;
   accentColor: AccentColorName;
   spectrum: SpectrumPreferences;
+  pinnedObjects: PinnedObject[];
 }
 
 export const DEFAULT_SPECTRUM_PREFERENCES: SpectrumPreferences = {
@@ -96,6 +114,7 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   theme: 'system',
   accentColor: DEFAULT_ACCENT_COLOR,
   spectrum: DEFAULT_SPECTRUM_PREFERENCES,
+  pinnedObjects: [],
 };
 
 export interface AccessCode {
