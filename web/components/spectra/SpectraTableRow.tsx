@@ -15,7 +15,7 @@ interface SpectraTableRowProps {
  */
 const SpectraTableRowComponent: React.FC<SpectraTableRowProps> = ({ row }) => {
   return (
-    <tr className="hover:bg-card-hover transition-colors">
+    <tr className="group/row hover:bg-card-hover transition-colors">
       {row.getVisibleCells().map((cell: Cell<SpectrumTarget, unknown>) => (
         <td
           key={cell.id}
