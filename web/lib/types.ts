@@ -79,19 +79,25 @@ export interface SpectrumPreferences {
   snrMax: number;
 }
 
-// Snapshot of an object pinned from the NIRSpec table. Metadata is cached at
-// pin time so the bucket renders without extra queries; the RGB thumbnail is
-// fetched live by target_id. `route` records which detail page the id belongs
-// to — spectra-mode rows without a parent object pin the target itself.
+// Reference to an object pinned from the NIRSpec table. Deliberately minimal:
+// user_profiles is readable by all authenticated users (see policies.sql), so
+// preferences must not cache catalog metadata (coordinates, redshift, …) that
+// the targets/objects RLS policies would hide from other users. Display
+// metadata is resolved at render time via getPinnedObjectsMetadata, which
+// runs under the viewer's own RLS scope. `route` records which detail page
+// the id belongs to — spectra-mode rows without a parent object pin the
+// target itself.
 export interface PinnedObject {
   target_id: string;
   route: 'objects' | 'targets';
+  pinned_at: string;
+}
+
+// Display metadata for a pinned object, resolved per-viewer at render time.
+export interface PinnedObjectMetadata {
   field: string;
-  ra: number;
-  dec: number;
   redshift: number | null;
   redshift_quality: number;
-  pinned_at: string;
 }
 
 export const MAX_PINNED_OBJECTS = 12;

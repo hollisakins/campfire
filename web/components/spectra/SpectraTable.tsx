@@ -374,6 +374,9 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       // targets the parent object — in spectra mode a row pins the object the
       // spectrum belongs to; rows without a parent object pin the target
       // itself (route: 'targets') so the bucket card links somewhere real.
+      // Only the id + route are stored (no metadata snapshot): preferences
+      // are readable by all authenticated users, so cached catalog fields
+      // would leak proprietary-program data past the targets/objects RLS.
       {
         id: 'pin',
         size: 40,
@@ -384,19 +387,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
           const o = row.original;
           const pinId = isObjectsMode ? o.target_id : (o.parent_object_id ?? o.target_id);
           const route = isObjectsMode || o.parent_object_id ? 'objects' as const : 'targets' as const;
-          return (
-            <PinButton
-              pin={{
-                target_id: pinId,
-                route,
-                field: o.field,
-                ra: o.ra,
-                dec: o.dec,
-                redshift: o.redshift ?? null,
-                redshift_quality: o.redshift_quality,
-              }}
-            />
-          );
+          return <PinButton pin={{ target_id: pinId, route }} />;
         },
         enableSorting: false,
       },

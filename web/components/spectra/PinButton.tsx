@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Pin, PinOff } from 'lucide-react';
+import { useAuth } from '@/lib/contexts/AuthContext';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { MAX_PINNED_OBJECTS, type PinnedObject } from '@/lib/types';
 
@@ -15,10 +16,16 @@ interface PinButtonProps {
  * except when the object is already pinned — then it stays visible so pinned
  * rows are recognizable at a glance. Subscribes to PreferencesContext
  * directly, so it re-renders on pin changes even inside memoized rows.
+ *
+ * Hidden entirely for group accounts: PATCH /api/profile rejects them, so
+ * pins would apply optimistically but silently vanish on reload.
  */
 export const PinButton: React.FC<PinButtonProps> = ({ pin }) => {
+  const { userProfile } = useAuth();
   const { pinnedObjects, pinObject, unpinObject } = usePreferences();
   const [hovered, setHovered] = useState(false);
+
+  if (userProfile?.is_group_account) return null;
 
   const isPinned = pinnedObjects.some(p => p.target_id === pin.target_id);
   const atCap = !isPinned && pinnedObjects.length >= MAX_PINNED_OBJECTS;

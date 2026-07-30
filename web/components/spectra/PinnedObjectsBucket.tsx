@@ -5,7 +5,13 @@ import Link from 'next/link';
 import { Pin, X } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
-import { MAX_PINNED_OBJECTS, QUALITY_LABELS, type PinnedObject } from '@/lib/types';
+import { usePinnedMetadataQuery } from '@/lib/hooks/usePinnedMetadataQuery';
+import {
+  MAX_PINNED_OBJECTS,
+  QUALITY_LABELS,
+  type PinnedObject,
+  type PinnedObjectMetadata,
+} from '@/lib/types';
 import { TileThumbnail } from './TileThumbnail';
 
 // Delay before the panel collapses after the pointer leaves, so the hover
@@ -17,10 +23,12 @@ const detailHref = (pin: PinnedObject) =>
 
 const PinnedCard: React.FC<{
   pin: PinnedObject;
+  meta: PinnedObjectMetadata | undefined;
+  metaLoading: boolean;
   index: number;
   onUnpin: (targetId: string) => void;
-}> = ({ pin, index, onUnpin }) => {
-  const quality = QUALITY_LABELS.find(q => q.value === pin.redshift_quality);
+}> = ({ pin, meta, metaLoading, index, onUnpin }) => {
+  const quality = meta ? QUALITY_LABELS.find(q => q.value === meta.redshift_quality) : undefined;
 
   return (
     <Link
@@ -33,21 +41,29 @@ const PinnedCard: React.FC<{
         <p className="text-sm font-mono text-text-primary truncate group-hover/pin:text-primary transition-colors">
           {pin.target_id}
         </p>
-        <p className="text-xs text-text-secondary truncate">
-          <span className="uppercase">{pin.field}</span>
-          <span className="mx-1.5 text-text-tertiary">·</span>
-          <span className="font-mono">
-            {pin.redshift !== null ? `z=${pin.redshift.toFixed(4)}` : 'z=—'}
-          </span>
-          {quality && (
-            <>
-              <span className="mx-1.5 text-text-tertiary">·</span>
-              <span title={quality.label}>
-                {quality.icon} {quality.short_label}
-              </span>
-            </>
-          )}
-        </p>
+        {meta ? (
+          <p className="text-xs text-text-secondary truncate">
+            <span className="uppercase">{meta.field}</span>
+            <span className="mx-1.5 text-text-tertiary">·</span>
+            <span className="font-mono">
+              {meta.redshift !== null ? `z=${meta.redshift.toFixed(4)}` : 'z=—'}
+            </span>
+            {quality && (
+              <>
+                <span className="mx-1.5 text-text-tertiary">·</span>
+                <span title={quality.label}>
+                  {quality.icon} {quality.short_label}
+                </span>
+              </>
+            )}
+          </p>
+        ) : metaLoading ? (
+          <div className="h-3 mt-1 w-32 bg-surface-2 rounded animate-pulse" />
+        ) : (
+          <p className="text-xs text-text-tertiary truncate">
+            Not available with your current access
+          </p>
+        )}
       </div>
       <button
         onClick={(e) => {
@@ -69,13 +85,24 @@ const PinnedCard: React.FC<{
  * The "pinned spectra bucket" — a collapsed chip in the NIRSpec page header
  * showing stacked thumbnails of pinned objects; expands on hover (or click,
  * for touch/keyboard) into a panel of compact cards linking to detail pages.
+ *
+ * Preferences store only bare pin references; card metadata is resolved here
+ * under the viewer's RLS scope (usePinnedMetadataQuery), and the whole
+ * feature is hidden for group accounts, whose preferences cannot persist
+ * (PATCH /api/profile returns 403 for them).
  */
 export const PinnedObjectsBucket: React.FC = () => {
-  const { user } = useAuth();
+  const { user, userProfile } = useAuth();
   const { pinnedObjects, unpinObject } = usePreferences();
   const [open, setOpen] = useState(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+
+  const enabled = !!user && !userProfile?.is_group_account;
+  const { data: metaResult, isLoading: metaLoading } = usePinnedMetadataQuery(
+    pinnedObjects,
+    enabled
+  );
 
   const cancelClose = useCallback(() => {
     if (closeTimer.current) {
@@ -111,7 +138,7 @@ export const PinnedObjectsBucket: React.FC = () => {
 
   useEffect(() => cancelClose, [cancelClose]);
 
-  if (!user) return null;
+  if (!enabled) return null;
 
   const hasPins = pinnedObjects.length > 0;
   const stack = pinnedObjects.slice(0, 3);
@@ -189,7 +216,14 @@ export const PinnedObjectsBucket: React.FC = () => {
           {hasPins ? (
             <div className="p-1.5 max-h-[60vh] overflow-y-auto">
               {pinnedObjects.map((pin, i) => (
-                <PinnedCard key={pin.target_id} pin={pin} index={i} onUnpin={unpinObject} />
+                <PinnedCard
+                  key={pin.target_id}
+                  pin={pin}
+                  meta={metaResult?.metadata[pin.target_id]}
+                  metaLoading={metaLoading}
+                  index={i}
+                  onUnpin={unpinObject}
+                />
               ))}
             </div>
           ) : (
