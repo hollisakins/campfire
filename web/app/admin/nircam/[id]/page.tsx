@@ -1323,10 +1323,20 @@ function ExposureDetailPageInner() {
                 <label className="block text-xs font-medium text-text-secondary mb-1">
                   Review Status
                 </label>
+                {/* Disabled until the real row has loaded (with the loading
+                    early-return gone, these controls now render during a
+                    row-cache miss showing fabricated defaults): an edit made
+                    against that baseline is an edit against values the
+                    operator never saw — worst for Notes, where typing into a
+                    misleadingly-empty box replaces the row's real note on the
+                    next nav flush. Keyboard staging (1/2/3) stays live: those
+                    are complete-value decisions routed through targetEdits,
+                    same as before this panel was reachable while loading. */}
                 <select
                   value={reviewStatus}
                   onChange={(e) => editStatus(e.target.value)}
-                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary"
+                  disabled={!exposure}
+                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary disabled:opacity-50"
                 >
                   <option value="pending">Pending</option>
                   <option value="approved">Approved</option>
@@ -1341,7 +1351,8 @@ function ExposureDetailPageInner() {
                 <select
                   value={correction}
                   onChange={(e) => editCorrection(e.target.value)}
-                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary"
+                  disabled={!exposure}
+                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary disabled:opacity-50"
                 >
                   <option value="none">None</option>
                   <option value="needed">Needed</option>
@@ -1358,7 +1369,8 @@ function ExposureDetailPageInner() {
                   onChange={(e) => editNotes(e.target.value)}
                   placeholder="Describe artifacts, masking needs, etc."
                   rows={4}
-                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary placeholder:text-text-tertiary resize-none"
+                  disabled={!exposure}
+                  className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-card text-text-primary placeholder:text-text-tertiary resize-none disabled:opacity-50"
                 />
               </div>
 
