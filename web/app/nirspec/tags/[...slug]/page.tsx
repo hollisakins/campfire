@@ -21,6 +21,7 @@ import {
   Edit2,
   Trash2,
   User,
+  Users,
   Calendar,
   Hash,
 } from 'lucide-react';
@@ -145,6 +146,12 @@ export default function ListDetailPage() {
                     <div className="mt-1 flex items-center gap-2">
                       <span className="text-sm font-mono text-text-secondary">#{list.slug}</span>
                       <ListBadge visibility={list.visibility} isSystem={list.is_system} size="md" />
+                      {!isOwner && list.shared_role && (
+                        <span className="inline-flex items-center gap-1 rounded-full font-medium text-xs px-2 py-0.5 bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300">
+                          <Users className="w-3 h-3" />
+                          Shared with you · {list.shared_role === 'editor' ? 'can edit' : 'can view'}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
