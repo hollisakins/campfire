@@ -733,14 +733,16 @@ export async function searchUsersForSharing(query: string): Promise<{
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { users: [], error: 'Not authenticated' };
 
-  // Escape PostgREST ilike wildcards in user input
-  const escaped = trimmed.replace(/[%_\\]/g, ch => `\\${ch}`);
+  // Escape ILIKE wildcards, then double-quote the value for the or() filter —
+  // PostgREST's or() grammar splits on bare commas/parens, so an unquoted
+  // "Doe, John" would be parsed as two malformed conditions (HTTP 400).
+  const escaped = trimmed.replace(/[%_\\]/g, ch => `\\${ch}`).replace(/"/g, '\\"');
 
   const { data, error } = await supabase
     .from('user_profiles')
     .select('user_id, username, full_name')
     .neq('user_id', user.id)
-    .or(`username.ilike.%${escaped}%,full_name.ilike.%${escaped}%`)
+    .or(`username.ilike."%${escaped}%",full_name.ilike."%${escaped}%"`)
     .order('username')
     .limit(8);
 
@@ -817,6 +819,32 @@ export async function updateListShare(
   // RLS silently filters rows the caller may not update
   if (!data || data.length === 0) {
     return { error: 'Share not found or permission denied' };
+  }
+
+  return {};
+}
+
+/**
+ * Leave a tag that was shared with the current user (delete own share).
+ */
+export async function leaveSharedList(listId: number): Promise<{ error?: string }> {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'Not authenticated' };
+
+  const { data, error } = await supabase
+    .from('object_list_shares')
+    .delete()
+    .eq('list_id', listId)
+    .eq('user_id', user.id)
+    .select('id');
+
+  if (error) {
+    return { error: error.message };
+  }
+  if (!data || data.length === 0) {
+    return { error: 'This tag is not shared with you' };
   }
 
   return {};

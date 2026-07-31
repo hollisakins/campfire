@@ -118,6 +118,8 @@ export function ListShareManager({ listId }: ListShareManagerProps) {
   };
 
   const handleRemove = async (share: ObjectListShareWithUser) => {
+    const who = share.full_name ?? share.username ?? 'this user';
+    if (!confirm(`Revoke ${who}'s access to this tag?`)) return;
     setBusy(true);
     setError(null);
     const result = await removeListShare(share.id);
@@ -155,6 +157,8 @@ export function ListShareManager({ listId }: ListShareManagerProps) {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            // Block implicit submission of the surrounding ListForm on Enter
+            onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
             placeholder="Search by username or name..."
             disabled={busy}
             className="w-full px-3 py-2 text-sm border border-border-strong rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
