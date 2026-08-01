@@ -96,6 +96,39 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.accessible_program_slugs() TO authenticated;
 
+-- Tag sharing (issue #450). These two helpers are the single authority for
+-- "which lists can the caller see / edit members of": owner + public visibility
+-- + per-user object_list_shares grants. SECURITY DEFINER so RLS policies on
+-- object_lists / object_list_members / list_audit_log can call them without
+-- recursing into each table's own policies.
+CREATE OR REPLACE FUNCTION public.viewable_list_ids()
+RETURNS SETOF integer
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT id FROM object_lists
+  WHERE created_by = auth.uid()
+     OR visibility IN ('public_read', 'public_edit')
+     OR id IN (SELECT list_id FROM object_list_shares WHERE user_id = auth.uid());
+$$;
+
+GRANT EXECUTE ON FUNCTION public.viewable_list_ids() TO authenticated;
+
+-- Lists whose MEMBERS the caller may add/remove (list metadata stays
+-- owner-only): owner + public_edit + editor-role shares.
+CREATE OR REPLACE FUNCTION public.member_editable_list_ids()
+RETURNS SETOF integer
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT id FROM object_lists
+  WHERE created_by = auth.uid()
+     OR visibility = 'public_edit'
+     OR id IN (SELECT list_id FROM object_list_shares WHERE user_id = auth.uid() AND role = 'editor');
+$$;
+
+GRANT EXECUTE ON FUNCTION public.member_editable_list_ids() TO authenticated;
+
 
 -- Whether a FitsGL dataset (epic #337, Phase 3) is public: every backing mosaic it
 -- was built from is published. The pyramid in the public tiles bucket is built from
@@ -575,7 +608,8 @@ BEGIN
     JOIN object_lists ol ON ol.id = olm.list_id
     WHERE olm.object_id IN (SELECT id FROM matched)
       AND (ol.created_by = p_user_id
-           OR ol.visibility IN ('public_read', 'public_edit'))
+           OR ol.visibility IN ('public_read', 'public_edit')
+           OR ol.id IN (SELECT list_id FROM object_list_shares WHERE user_id = p_user_id))
     GROUP BY olm.object_id
   ),
   -- Count CTEs are gated on p_include_counts; when FALSE the planner
@@ -898,7 +932,8 @@ BEGIN
     ) ORDER BY ol.is_system DESC, ol.name)
     FROM object_lists ol
     WHERE ol.created_by = p_user_id
-       OR ol.visibility IN ('public_read', 'public_edit')),
+       OR ol.visibility IN ('public_read', 'public_edit')
+       OR ol.id IN (SELECT list_id FROM object_list_shares WHERE user_id = p_user_id)),
     '[]'::jsonb
   );
 END;
@@ -2298,6 +2333,7 @@ BEGIN
     FROM object_list_members olm
     JOIN object_lists ol ON ol.id = olm.list_id
     WHERE ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit')
+       OR ol.id IN (SELECT list_id FROM object_list_shares WHERE user_id = auth.uid())
     GROUP BY olm.object_id
   ),
   filtered_spectra AS (
@@ -2482,6 +2518,7 @@ BEGIN
     FROM object_list_members olm
     JOIN object_lists ol ON ol.id = olm.list_id
     WHERE ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit')
+       OR ol.id IN (SELECT list_id FROM object_list_shares WHERE user_id = auth.uid())
     GROUP BY olm.object_id
   ),
   filtered_objects AS (

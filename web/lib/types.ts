@@ -244,6 +244,26 @@ export interface ObjectList {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  // Role granted to the CURRENT user via object_list_shares (issue #450).
+  // Attached by the list server actions; null/undefined when not shared.
+  shared_role?: ListShareRole | null;
+}
+
+// Per-user sharing grants on lists (issue #450)
+export type ListShareRole = 'viewer' | 'editor';
+
+export interface ObjectListShare {
+  id: number;
+  list_id: number;
+  user_id: string;
+  role: ListShareRole;
+  granted_by: string | null;
+  granted_at: string;
+}
+
+export interface ObjectListShareWithUser extends ObjectListShare {
+  username: string | null;
+  full_name: string | null;
 }
 
 export interface ObjectListMember {

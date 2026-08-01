@@ -11,7 +11,7 @@ import { ListBadge } from '@/components/lists/ListBadge';
 import { ListForm } from '@/components/lists/ListForm';
 import { ListMembersTable } from '@/components/lists/ListMembersTable';
 import { useListDetailQuery } from '@/lib/hooks/useListsQuery';
-import { deleteList } from '@/lib/actions/lists';
+import { deleteList, leaveSharedList } from '@/lib/actions/lists';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import {
   LogIn,
@@ -21,8 +21,10 @@ import {
   Edit2,
   Trash2,
   User,
+  Users,
   Calendar,
   Hash,
+  LogOut,
 } from 'lucide-react';
 
 export default function ListDetailPage() {
@@ -34,6 +36,7 @@ export default function ListDetailPage() {
   const [page, setPage] = useState(1);
   const [isEditing, setIsEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [leaving, setLeaving] = useState(false);
 
   const { data, isLoading, refetch } = useListDetailQuery(slug, page, !authLoading && !!user);
   const list = data?.list ?? null;
@@ -53,6 +56,20 @@ export default function ListDetailPage() {
     if (result.error) {
       alert(result.error);
       setDeleting(false);
+    } else {
+      router.push('/nirspec/tags');
+    }
+  };
+
+  const handleLeave = async () => {
+    if (!list || !confirm(`Leave "${list.name}"? You will lose access unless it is public or shared with you again.`)) {
+      return;
+    }
+    setLeaving(true);
+    const result = await leaveSharedList(list.id);
+    if (result.error) {
+      alert(result.error);
+      setLeaving(false);
     } else {
       router.push('/nirspec/tags');
     }
@@ -145,6 +162,12 @@ export default function ListDetailPage() {
                     <div className="mt-1 flex items-center gap-2">
                       <span className="text-sm font-mono text-text-secondary">#{list.slug}</span>
                       <ListBadge visibility={list.visibility} isSystem={list.is_system} size="md" />
+                      {!isOwner && list.shared_role && (
+                        <span className="inline-flex items-center gap-1 rounded-full font-medium text-xs px-2 py-0.5 bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300">
+                          <Users className="w-3 h-3" />
+                          Shared with you · {list.shared_role === 'editor' ? 'can edit' : 'can view'}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -169,6 +192,23 @@ export default function ListDetailPage() {
                       )}
                     </Button>
                   </div>
+                )}
+
+                {!isOwner && list.shared_role && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleLeave}
+                    disabled={leaving}
+                    title="Remove your access to this shared tag"
+                  >
+                    {leaving ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                    ) : (
+                      <LogOut className="w-4 h-4 mr-1" />
+                    )}
+                    Leave
+                  </Button>
                 )}
               </div>
 

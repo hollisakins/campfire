@@ -71,10 +71,10 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
   const { user, userProfile } = useAuth();
   const canEdit = !!userProfile?.can_comment;
 
-  /** Check if the current user can edit a specific list (owner or public_edit). */
+  /** Check if the current user can edit a specific list (owner, public_edit, or editor share). */
   const canEditList = useCallback((list: ObjectListWithMembership) => {
     if (!canEdit) return false;
-    return list.created_by === user?.id || list.visibility === 'public_edit';
+    return list.created_by === user?.id || list.visibility === 'public_edit' || list.shared_role === 'editor';
   }, [canEdit, user?.id]);
 
   const [lists, setLists] = useState<ObjectListWithMembership[]>([]);
