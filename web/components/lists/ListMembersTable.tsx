@@ -73,7 +73,7 @@ export function ListMembersTable({ members, totalMembers, page, pageSize, onPage
                     <td className="px-4 py-3">
                       {hasObject ? (
                         <Link
-                          href={`/nirspec/objects/${obj.id}`}
+                          href={`/nirspec/objects/${encodeURIComponent(obj.object_id)}`}
                           className="text-primary hover:underline font-mono text-xs"
                         >
                           {obj.object_id}
