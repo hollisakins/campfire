@@ -217,8 +217,12 @@ _CLOUD_COLS = "config, config_hash, config_updated_at, retired_at"
 
 def fetch_cloud_rows(client, kind: str, names: list[str] | None = None) -> dict[str, dict]:
     """``{name: row}`` of config-relevant columns for *kind* (RLS-scoped —
-    non-admins see what their program access allows)."""
-    q = client.table(_TABLES[kind]).select(f"{_PK[kind]}, {_CLOUD_COLS}")
+    non-admins see what their program access allows). fields also carries
+    ``programs`` so push can tell when only the slug backfill changed."""
+    cols = f"{_PK[kind]}, {_CLOUD_COLS}"
+    if kind == "fields":
+        cols += ", programs"
+    q = client.table(_TABLES[kind]).select(cols)
     if names:
         q = q.in_(_PK[kind], names)
     resp = q.execute()
@@ -293,6 +297,25 @@ def push_kind(client, kind: str, sections: dict[str, dict],
             continue
         chash = cloud_hash(crow)
         if chash == row["config_hash"]:
+            # Config is in sync, but the programs slug backfill (#454) rides
+            # outside the config hash: an unchanged field whose resolution
+            # improved still needs a write — a narrow one, so the config
+            # mirror and its updated_at stamp stay untouched. This is the
+            # MAIN backfill path: pre-existing fields rarely change their TOML.
+            new_programs = row.get("programs")
+            if (kind == "fields" and new_programs
+                    and sorted(crow.get("programs") or []) != new_programs):
+                if dry_run:
+                    print(f"  would update programs for {name} "
+                          f"-> {new_programs}")
+                    continue
+                client.table(_TABLES[kind]).upsert(
+                    {_PK[kind]: name, "programs": new_programs},
+                    on_conflict=_PK[kind]).execute()
+                pushed[name] = row["config_hash"]
+                n += 1
+                print(f"  ~ {name} (programs -> {', '.join(new_programs)})")
+                continue
             pushed[name] = row["config_hash"]
             print(f"  = {name} (in sync)")
             continue

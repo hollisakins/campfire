@@ -424,3 +424,54 @@ def test_push_fields_unresolved_omits_programs_key(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     (_t, _c, row), = [u for u in client.store["upserts"] if u[0] == "fields"]
     assert "programs" not in row
+
+
+def test_push_fields_in_sync_still_backfills_programs(tmp_path, monkeypatch):
+    """The main backfill population: a field whose TOML is unchanged since the
+    last push. The in-sync shortcut must not discard a newly resolved
+    programs value — it gets a narrow programs-only upsert (config mirror and
+    its updated_at stamp untouched)."""
+    _write_toml(tmp_path, "fields", """
+        [cosmos]
+        filters = ["f444w"]
+        files = ["jw01727*"]
+        tangent_point = [150.1, 2.2]
+    """)
+    section = {"filters": ["f444w"], "files": ["jw01727*"],
+               "tangent_point": [150.1, 2.2]}
+    client = _FakeClient(tables={
+        "fields": [{"name": "cosmos", "config": section,
+                    "config_hash": cs.config_hash(section),
+                    "retired_at": None, "programs": []}],
+        "observations": [
+            {"name": "o1", "jwst_program_id": 1727, "program_slug": "cweb"}],
+    })
+    runner = _wire(monkeypatch, tmp_path, client)
+    result = runner.invoke(config_group, ["push", "--field", "cosmos", "--local"])
+    assert result.exit_code == 0, result.output
+    assert "programs -> cweb" in result.output
+    (_t, _c, row), = [u for u in client.store["upserts"] if u[0] == "fields"]
+    assert row == {"name": "cosmos", "programs": ["cweb"]}   # narrow write only
+
+
+def test_push_fields_in_sync_with_matching_programs_writes_nothing(tmp_path, monkeypatch):
+    _write_toml(tmp_path, "fields", """
+        [cosmos]
+        filters = ["f444w"]
+        files = ["jw01727*"]
+        tangent_point = [150.1, 2.2]
+    """)
+    section = {"filters": ["f444w"], "files": ["jw01727*"],
+               "tangent_point": [150.1, 2.2]}
+    client = _FakeClient(tables={
+        "fields": [{"name": "cosmos", "config": section,
+                    "config_hash": cs.config_hash(section),
+                    "retired_at": None, "programs": ["cweb"]}],
+        "observations": [
+            {"name": "o1", "jwst_program_id": 1727, "program_slug": "cweb"}],
+    })
+    runner = _wire(monkeypatch, tmp_path, client)
+    result = runner.invoke(config_group, ["push", "--field", "cosmos", "--local"])
+    assert result.exit_code == 0, result.output
+    assert "(in sync)" in result.output
+    assert client.store["upserts"] == []
