@@ -19,30 +19,44 @@ from campfire.deploy.config_cli import _pull_decision, config_group
 class _FakeQuery:
     def __init__(self, store, name):
         self.store, self.name = store, name
-        self._names = None
+        self._filter = None
+        self._update = None
 
     def select(self, _cols):
         return self
 
-    def in_(self, _col, names):
-        self._names = list(names)
+    def in_(self, col, values):
+        self._filter = (col, list(values))
+        return self
+
+    def eq(self, col, value):
+        self._filter = (col, [value])
         return self
 
     def upsert(self, row, on_conflict=None):
         self.store["upserts"].append((self.name, on_conflict, row))
         return self
 
+    def update(self, patch):
+        self._update = patch
+        return self
+
     def execute(self):
         rows = self.store.get("tables", {}).get(self.name, [])
-        if self._names is not None:
-            pk = "slug" if self.name == "programs" else "name"
-            rows = [r for r in rows if r.get(pk) in self._names]
+        if self._filter is not None:
+            col, values = self._filter
+            rows = [r for r in rows if r.get(col) in values]
+        if self._update is not None:
+            for r in rows:
+                r.update(self._update)
+            self.store["updates"].append((self.name, self._filter, self._update))
         return types.SimpleNamespace(data=rows)
 
 
 class _FakeClient:
     def __init__(self, tables=None):
-        self.store = {"upserts": [], "rpcs": [], "tables": tables or {}}
+        self.store = {"upserts": [], "updates": [], "rpcs": [],
+                      "tables": tables or {}}
 
     def table(self, name):
         return _FakeQuery(self.store, name)
@@ -307,3 +321,106 @@ def test_diff_reports_unjsonable_local_section(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "bare TOML datetime" in result.output
     assert "taken" in result.output   # the offending key path is named
+
+
+# --- retire (issue #454) -----------------------------------------------------
+
+def test_retire_sets_retired_at_and_audits(tmp_path, monkeypatch):
+    client = _FakeClient(tables={"observations": [
+        {"name": "old-obs", "retired_at": None},
+        {"name": "keep-obs", "retired_at": None},
+    ]})
+    runner = _wire(monkeypatch, tmp_path, client)
+    result = runner.invoke(config_group,
+                           ["retire", "observations", "old-obs", "--local"])
+    assert result.exit_code == 0, result.output
+    assert "old-obs retired" in result.output
+    rows = {r["name"]: r for r in client.store["tables"]["observations"]}
+    assert rows["old-obs"]["retired_at"] is not None
+    assert rows["keep-obs"]["retired_at"] is None
+    # Audited via the deploy_events RPC.
+    rpc_names = [n for (n, _p) in client.store["rpcs"]]
+    assert "log_deploy_event" in rpc_names
+    (_n, params), = [(n, p) for (n, p) in client.store["rpcs"]
+                     if n == "log_deploy_event"]
+    assert params["p_metadata"]["scope"] == "config_retire"
+    assert params["p_metadata"]["names"] == ["old-obs"]
+
+
+def test_retire_undo_reactivates(tmp_path, monkeypatch):
+    client = _FakeClient(tables={"fields": [
+        {"name": "oldfield", "retired_at": "2026-08-01T00:00:00Z"}]})
+    runner = _wire(monkeypatch, tmp_path, client)
+    result = runner.invoke(config_group,
+                           ["retire", "fields", "oldfield", "--undo", "--local"])
+    assert result.exit_code == 0, result.output
+    assert "re-activated" in result.output
+    assert client.store["tables"]["fields"][0]["retired_at"] is None
+
+
+def test_retire_reports_missing_rows(tmp_path, monkeypatch):
+    client = _FakeClient()
+    runner = _wire(monkeypatch, tmp_path, client)
+    result = runner.invoke(config_group,
+                           ["retire", "programs", "ghost", "--local"])
+    assert result.exit_code == 0, result.output
+    assert "not found in cloud programs" in result.output
+    assert client.store["rpcs"] == []   # nothing retired -> no audit row
+
+
+def test_retired_section_round_trip_with_pull(tmp_path, monkeypatch):
+    """retire -> pull skips it; --undo -> pull applies it again."""
+    row = _obs_row("capers-egs-p1", _CLOUD_OBS)
+    client = _FakeClient(tables={"observations": [row]})
+    runner = _wire(monkeypatch, tmp_path, client)
+    runner.invoke(config_group,
+                  ["retire", "observations", "capers-egs-p1", "--local"])
+    result = runner.invoke(config_group, ["pull", "--observations"])
+    assert "retired in cloud" in result.output
+    assert not (tmp_path / "config" / "observations.toml").exists()
+    runner.invoke(config_group,
+                  ["retire", "observations", "capers-egs-p1", "--undo", "--local"])
+    result = runner.invoke(config_group, ["pull", "--observations"])
+    assert result.exit_code == 0, result.output
+    parsed = tomllib.loads((tmp_path / "config" / "observations.toml").read_text())
+    assert parsed["capers-egs-p1"] == _CLOUD_OBS
+
+
+# --- fields.programs backfill (issue #454) -----------------------------------
+
+def test_push_fields_resolves_program_slugs(tmp_path, monkeypatch):
+    _write_toml(tmp_path, "fields", """
+        [cosmos]
+        filters = ["f444w"]
+        files = ["jw01727*", "jw05893*", "jw09999*"]
+        tangent_point = [150.1, 2.2]
+    """)
+    client = _FakeClient(tables={"observations": [
+        {"name": "o1", "jwst_program_id": 1727, "program_slug": "cweb"},
+        {"name": "o2", "jwst_program_id": 5893, "program_slug": "cosmos3d"},
+        {"name": "o3", "jwst_program_id": 5893, "program_slug": "cosmos3d"},
+        # 9999 has no observation row -> stays unresolved
+    ]})
+    runner = _wire(monkeypatch, tmp_path, client)
+    result = runner.invoke(config_group, ["push", "--field", "cosmos", "--local"])
+    assert result.exit_code == 0, result.output
+    (_t, _c, row), = [u for u in client.store["upserts"] if u[0] == "fields"]
+    assert row["programs"] == ["cosmos3d", "cweb"]
+    assert row["jwst_program_ids"] == [1727, 5893, 9999]
+
+
+def test_push_fields_unresolved_omits_programs_key(tmp_path, monkeypatch):
+    """No matching observation rows: the programs key must be absent so the
+    upsert keeps whatever the cloud column already holds."""
+    _write_toml(tmp_path, "fields", """
+        [cosmos]
+        filters = ["f444w"]
+        files = ["jw09999*"]
+        tangent_point = [150.1, 2.2]
+    """)
+    client = _FakeClient()
+    runner = _wire(monkeypatch, tmp_path, client)
+    result = runner.invoke(config_group, ["push", "--field", "cosmos", "--local"])
+    assert result.exit_code == 0, result.output
+    (_t, _c, row), = [u for u in client.store["upserts"] if u[0] == "fields"]
+    assert "programs" not in row

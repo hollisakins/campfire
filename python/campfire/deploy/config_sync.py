@@ -283,6 +283,9 @@ def push_kind(client, kind: str, sections: dict[str, dict],
         except ValueError as e:
             print(f"  ! {e} — skipping")
             continue
+        if kind == "fields":
+            from .fields import resolve_field_programs
+            row = resolve_field_programs(client, row)
         crow = cloud.get(name)
         if crow and crow.get("retired_at") and not force:
             print(f"  ! {name}: retired in cloud "

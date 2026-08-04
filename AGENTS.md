@@ -208,6 +208,7 @@ canonical sha256 in `config_hash`.
 campfire config push [--programs|--observations|--fields|--obs X|--field Y]  # local → cloud (admin)
 campfire config pull [--theirs]        # cloud → local TOMLs, comment-preserving (any logged-in user)
 campfire config diff                   # three-way divergence report (read-only)
+campfire config retire <kind> <name> [--undo]  # soft-retire a definition (admin; rename = retire + push)
 ```
 
 Reconciliation is three-way per section against the last-synced hash in
@@ -215,8 +216,12 @@ Reconciliation is three-way per section against the last-synced hash in
 section someone else changed (`--force` to override), pull refuses to clobber
 local hand-edits (local-ahead sections are kept; true conflicts prompt, or
 `--theirs`). Pull rewrites only changed sections via tomlkit, preserving
-comments and formatting elsewhere. Rows are never deleted — removal is soft
-(`retired_at`), which pull skips. Bare TOML datetimes are rejected at push
+comments and formatting elsewhere. Rows are never deleted — removal is the
+explicit `config retire` (never inferred from a section missing locally),
+which pull skips and push refuses; `--undo` re-activates. `fields.programs`
+is resolved at write time by mapping the field's `jwst_program_ids` through
+`observations` rows; unresolved writes omit the column rather than clobber
+it. Bare TOML datetimes are rejected at push
 (they wouldn't survive the jsonb round trip — use quoted ISO strings).
 `campfire deploy` still upserts the config of what it deploys automatically;
 `config push` is the explicit/bulk path. `deploy sync-programs` /

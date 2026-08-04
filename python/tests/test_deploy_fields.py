@@ -29,6 +29,9 @@ class _FakeTable:
     def select(self, _cols):
         return self
 
+    def in_(self, _col, _values):
+        return self
+
     def upsert(self, row, on_conflict=None):
         self.store["upserts"].append((self.name, on_conflict, row))
         return self
@@ -36,7 +39,7 @@ class _FakeTable:
     def execute(self):
         if self.name == "deployments":
             return types.SimpleNamespace(data=self.store.get("deployments", []))
-        return types.SimpleNamespace(data=[])
+        return types.SimpleNamespace(data=self.store.get(self.name, []))
 
 
 class _FakeClient:
@@ -92,7 +95,8 @@ def test_field_config_row_lifts_and_is_lossless():
     assert row["file_globs"] == ["jw01727*", "jw05893*"]
     assert row["center_ra"] == pytest.approx(150.1163)
     assert row["center_dec"] == pytest.approx(2.2009)
-    assert row["programs"] == []                       # slug resolution deferred
+    assert "programs" not in row     # resolved at write time (issue #454) —
+                                     # absent so upserts never clobber it
     assert row["display_name"] is None                 # RPC derives upper()
     # config is the whole section, verbatim (lossless).
     assert row["config"] == cfg
