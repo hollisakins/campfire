@@ -272,3 +272,38 @@ def test_diff_reports_all_states(tmp_path, monkeypatch):
     assert "> local-only-obs: local-only" in result.output
     assert "< cloud-only" in result.output
     assert "! diverged" in result.output
+
+
+# --- bare-date local sections must not crash pull/diff -----------------------
+
+_BARE_DATE_TOML = """
+    [capers-egs-p1]
+    program = "capers"
+    field = "egs"
+    files = ["jw06368*"]
+    taken = 2026-01-01
+"""
+
+
+def test_pull_skips_unjsonable_local_section(tmp_path, monkeypatch):
+    """A bare TOML date in a local section can't be hashed, so pull can't tell
+    local-ahead from stale — it must keep the local section, not crash and
+    not overwrite."""
+    _write_toml(tmp_path, "observations", _BARE_DATE_TOML)
+    client = _FakeClient(tables={"observations": [_obs_row("capers-egs-p1", _CLOUD_OBS)]})
+    runner = _wire(monkeypatch, tmp_path, client)
+    result = runner.invoke(config_group, ["pull", "--observations"])
+    assert result.exit_code == 0, result.output
+    assert "bare TOML datetime" in result.output
+    parsed = tomllib.loads((tmp_path / "config" / "observations.toml").read_text())
+    assert "taken" in parsed["capers-egs-p1"]   # local kept verbatim
+
+
+def test_diff_reports_unjsonable_local_section(tmp_path, monkeypatch):
+    _write_toml(tmp_path, "observations", _BARE_DATE_TOML)
+    client = _FakeClient(tables={"observations": [_obs_row("capers-egs-p1", _CLOUD_OBS)]})
+    runner = _wire(monkeypatch, tmp_path, client)
+    result = runner.invoke(config_group, ["diff", "--observations"])
+    assert result.exit_code == 0, result.output
+    assert "bare TOML datetime" in result.output
+    assert "taken" in result.output   # the offending key path is named

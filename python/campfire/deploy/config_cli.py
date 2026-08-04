@@ -230,6 +230,17 @@ def pull_cmd(config_path, kind_programs, kind_observations, kind_fields, obs,
                 continue
             chash = cs.cloud_hash(row)
             lsec = local_sections.get(name)
+            # A local section that can't ride jsonb can't be hashed, so it
+            # can't be three-way compared — and without a hash we can't tell
+            # local-ahead from stale, so overwriting it is never safe. Skip
+            # explicitly (push refuses these sections for the same reason).
+            bad = cs.find_unjsonable(lsec) if lsec is not None else []
+            if bad:
+                print(f"  ! {name}: local section has bare TOML datetime(s) "
+                      f"at {', '.join(bad)} — can't compare; keeping yours "
+                      f"(quote as ISO strings to sync)")
+                counts['skipped'] += 1
+                continue
             lhash = cs.config_hash(lsec) if lsec is not None else None
             base = state.get('base', {}).get(kind, {}).get(name)
             verdict = _pull_decision(lhash, chash, base)
@@ -312,6 +323,13 @@ def diff_cmd(config_path, kind_programs, kind_observations, kind_fields, obs,
                 continue
             chash = cs.cloud_hash(row)
             lsec = local_sections.get(name)
+            # diff is exactly where a user looks to see why push/pull skipped
+            # a section — report unjsonable local sections, don't crash on them.
+            bad = cs.find_unjsonable(lsec) if lsec is not None else []
+            if bad:
+                lines.append(f"  ! {name}: bare TOML datetime(s) at "
+                             f"{', '.join(bad)} — quote as ISO strings to sync")
+                continue
             lhash = cs.config_hash(lsec) if lsec is not None else None
             base = state.get('base', {}).get(kind, {}).get(name)
             if chash is None:
