@@ -662,7 +662,19 @@ CREATE TABLE IF NOT EXISTS "public"."observations" (
     "file_globs" "text"[] NOT NULL DEFAULT '{}',
     "gratings" "text"[] NOT NULL DEFAULT '{}',
     "data_subdir" "text",
-    "pointings" "jsonb"
+    "pointings" "jsonb",
+    -- Config sync (issue #303): the observations.toml [<name>] section mirrored
+    -- losslessly (stage overrides, config_groups — everything the typed columns
+    -- above drop), so a reducer or ephemeral container can regenerate the local
+    -- TOML from the cloud. config_hash is the client-computed sha256 of the
+    -- canonical JSON form of the section (sorted keys), the divergence token for
+    -- `campfire config pull/push/diff`; config_updated_at stamps the last sync.
+    -- retired_at soft-retires a renamed/removed definition — sync is additive,
+    -- rows are never deleted (storage_objects FKs + provenance history).
+    "config" "jsonb",
+    "config_hash" "text",
+    "config_updated_at" timestamp with time zone,
+    "retired_at" timestamp with time zone
 );
 
 
@@ -732,7 +744,13 @@ CREATE TABLE IF NOT EXISTS "public"."programs" (
     "description" "text",
     "cycle" integer,
     "is_public" boolean DEFAULT false,
-    "created_at" timestamp with time zone DEFAULT "now"()
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    -- Config sync (issue #303) — same contract as observations: lossless
+    -- programs.toml section, canonical-JSON sha256, last-sync stamp, soft retire.
+    "config" "jsonb",
+    "config_hash" "text",
+    "config_updated_at" timestamp with time zone,
+    "retired_at" timestamp with time zone
 );
 
 
@@ -775,6 +793,12 @@ CREATE TABLE IF NOT EXISTS "public"."fields" (
     "expmap_pixel_scale_arcsec" double precision,
     "latest_deployment_id" integer,
     "created_at" timestamp with time zone DEFAULT "now"(),
+    -- Config sync (issue #303) — same contract as observations/programs. The
+    -- lossless section already lives in `config` above; these add the canonical
+    -- sha256 divergence token, the last-sync stamp, and soft retirement.
+    "config_hash" "text",
+    "config_updated_at" timestamp with time zone,
+    "retired_at" timestamp with time zone,
     CONSTRAINT "fields_pkey" PRIMARY KEY ("name")
 );
 
@@ -1138,7 +1162,7 @@ CREATE TABLE IF NOT EXISTS "public"."deploy_events" (
     "host" "text",
     "metadata" "jsonb",
     "occurred_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text"])))
+    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text", 'config_sync'::"text"])))
 );
 
 
