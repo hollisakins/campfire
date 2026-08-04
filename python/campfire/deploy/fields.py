@@ -130,7 +130,23 @@ def read_layout_coverage(products_dir, field: str) -> dict | None:
 def upsert_field(client, row: dict) -> None:
     """Upsert one `fields` row (on conflict = name). Only the keys present in
     ``row`` are written, so a config-only sync leaves the deploy-owned columns
-    (coverage_area_*, latest_deployment_id) untouched on existing rows."""
+    (coverage_area_*, latest_deployment_id) untouched on existing rows.
+
+    The single write path for fields rows, so the config-sync stamp (#303 —
+    config_hash + config_updated_at) is applied here for every producer
+    (sync_fields, upsert_field_on_deploy, `campfire config push`). Lazy import:
+    config_sync imports this module at top level."""
+    if row.get("config") is not None and "config_hash" not in row:
+        import datetime as _dt
+        from .config_sync import config_hash, find_unjsonable
+        if find_unjsonable(row["config"]):
+            # Bare TOML datetimes can't ride jsonb faithfully; push validates
+            # loudly, but deploy-time upserts must never fail the deploy — drop
+            # only the config mirror and keep the typed columns.
+            row = {k: v for k, v in row.items() if k != "config"}
+        else:
+            row["config_hash"] = config_hash(row["config"])
+            row["config_updated_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     client.table("fields").upsert(row, on_conflict="name").execute()
 
 
