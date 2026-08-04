@@ -478,6 +478,17 @@ export async function generateCsvFilename(viewMode: string = 'objects'): Promise
  * presigned URL is HMAC-signed so the credential-free proxy Worker will fetch
  * only URLs we authorized. The browser fetches each proxy URL (which supplies
  * CORS) and zips the results client-side.
+ *
+ * The download unit follows the view the user filtered in. In spectra mode the
+ * on-screen rows ARE spectra, so the spectra RPC's per-spectrum filtering is
+ * exactly the visible set. In objects mode the filters select OBJECTS on
+ * aggregate semantics (e.g. max_snr = the object's best spectrum), so the same
+ * parameters must NOT be re-run through the spectra RPC: there `max_snr_min`
+ * drops each sibling spectrum below the cutoff individually, silently omitting
+ * files of objects the table shows as matching (a PRISM whose G395M carried the
+ * object past the cutoff simply vanished from the ZIP). Instead, derive the
+ * object set with the objects RPC and download every published spectrum of its
+ * member targets.
  */
 export async function generateFitsDownloadUrl(
   filters: FilterOptions,
@@ -498,45 +509,105 @@ export async function generateFitsDownloadUrl(
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    // Fetch filtered results via spectra mode — that RPC returns one row per
-    // (target, grating) with the FITS path attached, and result.total is the
-    // count over spectra (the same unit this download acts on).
-    const result = await getSpectra(
-      filters,
-      1, // page
-      FITS_DOWNLOAD_FILE_LIMIT, // pageSize
-      sortColumn === 'object_id' ? 'target_id' : sortColumn,
-      sortDirection,
-      'spectra'
-    );
+    let keys: string[];
+    let downloadTargetIds: string[];
 
-    if (result.error) {
-      return { files: null, zipFilename: null, error: result.error };
-    }
+    if (viewMode === 'objects') {
+      // Objects view: resolve the matching objects with the SAME RPC the table
+      // uses, so the download set is exactly the objects on screen.
+      const result = await getSpectra(
+        filters,
+        1, // page
+        FITS_DOWNLOAD_FILE_LIMIT, // pageSize (objects ≤ files, so overflow is caught below)
+        sortColumn,
+        sortDirection,
+        'objects'
+      );
 
-    // Guard against silent truncation. The UI gate is computed from the current
-    // view's count — in the default objects view that is the OBJECT count, but
-    // one object commonly fans out to 2-3 spectra, so the gate can stay enabled
-    // while the spectra total exceeds the page we fetched. result.total is the
-    // authoritative spectra count from the same RPC; if it exceeds what we
-    // pulled, refuse with a clear, actionable error rather than handing back a
-    // biased first-N-of-M ZIP that looks complete (a reproducibility hazard).
-    if (result.total > result.spectra.length) {
-      return {
-        files: null, zipFilename: null,
-        error: `This filter set has ${result.total.toLocaleString()} spectra, which exceeds the ${FITS_DOWNLOAD_FILE_LIMIT.toLocaleString()}-file ZIP limit. Refine your filters, or use the CSV export (which includes every fits_path) to fetch the full set.`,
-      };
-    }
-
-    // Extract all FITS file paths from spectra on each target
-    const keys: string[] = [];
-    const filenames: string[] = [];
-    for (const obj of result.spectra) {
-      for (const spec of obj.spectra) {
-        keys.push(spec.fits_path);
-        filenames.push(spec.fits_path.split('/').pop() || spec.fits_path);
+      if (result.error) {
+        return { files: null, zipFilename: null, error: result.error };
       }
+
+      if (result.total > result.spectra.length) {
+        return {
+          files: null, zipFilename: null,
+          error: `This filter set matches ${result.total.toLocaleString()} objects, which exceeds the ${FITS_DOWNLOAD_FILE_LIMIT.toLocaleString()}-file ZIP limit. Refine your filters, or use the CSV export (which includes every fits_path) to fetch the full set.`,
+        };
+      }
+
+      // Member targets are already scoped to the caller's accessible programs
+      // by the objects RPC; re-reading spectra below runs under the caller's
+      // RLS session, so nothing outside their access is ever presigned.
+      const memberTargetIds = [...new Set(
+        result.spectra.flatMap(obj => (obj.member_targets ?? []).map(m => m.target_id))
+      )];
+
+      // Chunked so the `.in()` list never overflows the PostgREST request URL.
+      const rows: { fits_path: string; target_id: string }[] = [];
+      const TARGET_CHUNK = 100;
+      for (let i = 0; i < memberTargetIds.length; i += TARGET_CHUNK) {
+        const { data, error: queryError } = await supabase
+          .from('spectra')
+          .select('fits_path, target_id')
+          .eq('deploy_status', 'published')
+          .in('target_id', memberTargetIds.slice(i, i + TARGET_CHUNK));
+        if (queryError) {
+          console.error('Error authorizing FITS download:', queryError);
+          return { files: null, zipFilename: null, error: 'Failed to authorize download' };
+        }
+        rows.push(...(data ?? []));
+      }
+
+      // Deterministic archive order: group files by target.
+      rows.sort((a, b) =>
+        a.target_id.localeCompare(b.target_id) || a.fits_path.localeCompare(b.fits_path)
+      );
+      keys = [...new Set(rows.map(r => r.fits_path))];
+      downloadTargetIds = [...new Set(rows.map(r => r.target_id))];
+
+      // The UI gate counts objects, but objects fan out to several spectra, so
+      // the file total can exceed the limit while the gate stays enabled.
+      // Refuse rather than truncating into a biased first-N-of-M ZIP.
+      if (keys.length > FITS_DOWNLOAD_FILE_LIMIT) {
+        return {
+          files: null, zipFilename: null,
+          error: `This filter set matches ${keys.length.toLocaleString()} spectra, which exceeds the ${FITS_DOWNLOAD_FILE_LIMIT.toLocaleString()}-file ZIP limit. Refine your filters, or use the CSV export (which includes every fits_path) to fetch the full set.`,
+        };
+      }
+    } else {
+      // Spectra view: one on-screen row per (target, grating); the spectra RPC's
+      // per-spectrum filtering matches the visible rows exactly, and
+      // result.total is the count over spectra (the same unit this download
+      // acts on).
+      const result = await getSpectra(
+        filters,
+        1, // page
+        FITS_DOWNLOAD_FILE_LIMIT, // pageSize
+        sortColumn === 'object_id' ? 'target_id' : sortColumn,
+        sortDirection,
+        'spectra'
+      );
+
+      if (result.error) {
+        return { files: null, zipFilename: null, error: result.error };
+      }
+
+      // Guard against silent truncation: result.total is the authoritative
+      // spectra count from the same RPC; if it exceeds the page we pulled,
+      // refuse with a clear, actionable error rather than handing back a
+      // biased first-N-of-M ZIP that looks complete (a reproducibility hazard).
+      if (result.total > result.spectra.length) {
+        return {
+          files: null, zipFilename: null,
+          error: `This filter set has ${result.total.toLocaleString()} spectra, which exceeds the ${FITS_DOWNLOAD_FILE_LIMIT.toLocaleString()}-file ZIP limit. Refine your filters, or use the CSV export (which includes every fits_path) to fetch the full set.`,
+        };
+      }
+
+      keys = result.spectra.flatMap(obj => obj.spectra.map(spec => spec.fits_path));
+      downloadTargetIds = [...new Set(result.spectra.map(s => s.target_id))];
     }
+
+    const filenames = keys.map(k => k.split('/').pop() || k);
 
     if (keys.length === 0) {
       return { files: null, zipFilename: null, error: 'No FITS files found for selected objects' };
@@ -560,12 +631,11 @@ export async function generateFitsDownloadUrl(
 
     // Track ZIP download (fire-and-forget)
     if (user) {
-      const targetIds = result.spectra.map(s => s.target_id);
       trackDownload({
         userId: user.id,
         downloadType: 'fits_zip',
-        targetIds,
-        targetCount: targetIds.length,
+        targetIds: downloadTargetIds,
+        targetCount: downloadTargetIds.length,
         fileCount: files.length,
         filterSnapshot: filters as unknown as Record<string, unknown>,
       });
