@@ -148,6 +148,12 @@ def upsert_field(client, row: dict) -> None:
             row["config_hash"] = config_hash(row["config"])
             row["config_updated_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     client.table("fields").upsert(row, on_conflict="name").execute()
+    if "config_hash" in row:
+        # The hash just written IS the operator's new sync base — without it,
+        # their own deploy reads as "someone else pushed" on the next
+        # `config push` (see config_sync.record_synced).
+        from .config_sync import record_synced
+        record_synced("fields", {row["name"]: row["config_hash"]})
 
 
 def upsert_field_on_deploy(client, products_dir, field: str,

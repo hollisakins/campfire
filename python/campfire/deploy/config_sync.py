@@ -295,9 +295,16 @@ def push_kind(client, kind: str, sections: dict[str, dict],
             continue
         if (not force and crow is not None and base is not None
                 and chash is not None and base.get(name) != chash):
-            print(f"  ! {name}: cloud section changed since your last sync "
-                  f"(someone else pushed?) — run `campfire config pull` or "
-                  f"`campfire config diff`, or --force to overwrite")
+            if base.get(name) is None:
+                print(f"  ! {name}: cloud already has a version of this "
+                      f"section that this machine never synced — run "
+                      f"`campfire config pull` to reconcile, or --force to "
+                      f"overwrite")
+            else:
+                print(f"  ! {name}: cloud section changed since your last "
+                      f"sync (someone else pushed?) — run `campfire config "
+                      f"pull` or `campfire config diff`, or --force to "
+                      f"overwrite")
             continue
         if dry_run:
             print(f"  would push {name}")
@@ -343,3 +350,22 @@ def save_state(state: dict) -> None:
 
 def record_base(state: dict, kind: str, hashes: dict[str, str]) -> None:
     state.setdefault("base", {}).setdefault(kind, {}).update(hashes)
+
+
+def record_synced(kind: str, hashes: dict[str, str]) -> None:
+    """Best-effort load/record/save for deploy-time upserts.
+
+    A deploy that mirrors a section to the cloud has, by construction, just
+    synced local and cloud — so the hash it wrote is the operator's new base.
+    Without this, the operator's own deploy later reads as "someone else
+    pushed" and `config push` refuses their next hand-edit indefinitely.
+    Never raises: base recording is bookkeeping and must not fail a deploy
+    (e.g. no $CAMPFIRE_ROOT in an exotic CI setup)."""
+    if not hashes:
+        return
+    try:
+        state = load_state()
+        record_base(state, kind, hashes)
+        save_state(state)
+    except Exception as e:
+        print(f"  Warning: could not record config sync base ({kind}): {e}")

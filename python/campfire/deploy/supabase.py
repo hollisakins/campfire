@@ -487,6 +487,9 @@ def upsert_programs(
             data = program_config_row(slug, section)
         client.table('programs').upsert(data, on_conflict='slug').execute()
         print(f"  + {slug} ({data['program_name']})")
+        if 'config_hash' in data:
+            from .config_sync import record_synced
+            record_synced('programs', {slug: data['config_hash']})
 
 
 def upsert_observation(
@@ -533,6 +536,9 @@ def upsert_observation(
             data['config_hash'] = config_hash(config_section)
             data['config_updated_at'] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     client.table('observations').upsert(data, on_conflict='name').execute()
+    if 'config_hash' in data:
+        from .config_sync import record_synced
+        record_synced('observations', {obs_name: data['config_hash']})
 
 
 def update_observation_pointings(

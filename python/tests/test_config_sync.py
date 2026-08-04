@@ -287,3 +287,65 @@ def test_upsert_programs_mirrors_config_when_jsonable():
     (_t, _c, row), = client.store["upserts"]
     assert row["config"] == {"program_name": "CAPERS"}   # injected slug stripped
     assert row["config_hash"] == cs.config_hash({"program_name": "CAPERS"})
+
+
+# --- deploy-time upserts advance the sync base -------------------------------
+
+def test_upsert_observation_records_sync_base(tmp_path, monkeypatch):
+    """After `campfire deploy` mirrors a section, the operator's own next
+    `config push` of a hand-edit must not read as 'someone else pushed'."""
+    from campfire.deploy.supabase import upsert_observation
+
+    monkeypatch.setenv("CAMPFIRE_ROOT", str(tmp_path))
+    section = {"program": "capers", "field": "egs", "files": ["jw06368*"]}
+    client = _FakeClient()
+    upsert_observation(client, "capers-egs-p1", "capers", 6368, "egs",
+                       config_section=section)
+    assert (cs.load_state()["base"]["observations"]["capers-egs-p1"]
+            == cs.config_hash(section))
+
+    # The full loop: hand-edit locally, cloud still holds the deploy's hash —
+    # the guard sees base == cloud and lets the push through.
+    edited = {**section, "gratings": ["prism"]}
+    _write_toml(tmp_path, monkeypatch, "observations", """
+        [capers-egs-p1]
+        program = "capers"
+        field = "egs"
+        files = ["jw06368*"]
+        gratings = ["prism"]
+    """)
+    client2 = _FakeClient(tables={"observations": [
+        {"name": "capers-egs-p1", "config_hash": cs.config_hash(section)}]})
+    n, pushed = cs.push_kind(client2, "observations",
+                             cs.load_sections("observations"),
+                             base=cs.load_state()["base"]["observations"])
+    assert n == 1
+    assert pushed["capers-egs-p1"] == cs.config_hash(edited)
+
+
+def test_upsert_programs_records_sync_base(tmp_path, monkeypatch):
+    from campfire.deploy.supabase import upsert_programs
+
+    monkeypatch.setenv("CAMPFIRE_ROOT", str(tmp_path))
+    client = _FakeClient()
+    upsert_programs(client, ["capers"],
+                    {"capers": {"slug": "capers", "program_name": "CAPERS"}})
+    assert (cs.load_state()["base"]["programs"]["capers"]
+            == cs.config_hash({"program_name": "CAPERS"}))
+
+
+def test_upsert_field_records_sync_base(tmp_path, monkeypatch):
+    from campfire.deploy.fields import upsert_field
+
+    monkeypatch.setenv("CAMPFIRE_ROOT", str(tmp_path))
+    section = {"filters": ["f444w"], "files": ["jw01727*"]}
+    client = _FakeClient()
+    upsert_field(client, {"name": "cosmos", "config": section})
+    assert (cs.load_state()["base"]["fields"]["cosmos"]
+            == cs.config_hash(section))
+
+
+def test_record_synced_never_raises_without_root(monkeypatch, capsys):
+    monkeypatch.delenv("CAMPFIRE_ROOT", raising=False)
+    cs.record_synced("programs", {"x": "sha256:aa"})   # must not raise
+    assert "could not record" in capsys.readouterr().out
