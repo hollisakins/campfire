@@ -17,13 +17,13 @@ from campfire.deploy import config_sync as cs
 class _FakeQuery:
     def __init__(self, store, name):
         self.store, self.name = store, name
-        self._names = None
+        self._filter = None
 
     def select(self, _cols):
         return self
 
-    def in_(self, _col, names):
-        self._names = list(names)
+    def in_(self, col, values):
+        self._filter = (col, list(values))
         return self
 
     def upsert(self, row, on_conflict=None):
@@ -32,9 +32,9 @@ class _FakeQuery:
 
     def execute(self):
         rows = self.store.get("tables", {}).get(self.name, [])
-        if self._names is not None:
-            pk = "slug" if self.name == "programs" else "name"
-            rows = [r for r in rows if r.get(pk) in self._names]
+        if self._filter is not None:
+            col, values = self._filter
+            rows = [r for r in rows if r.get(col) in values]
         return types.SimpleNamespace(data=rows)
 
 

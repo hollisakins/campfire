@@ -346,3 +346,56 @@ def diff_cmd(config_path, kind_programs, kind_observations, kind_fields, obs,
         clean = clean and not lines
     if clean:
         print("\nLocal config and cloud registry are in sync.")
+
+
+# ---------------------------------------------------------------------------
+# retire
+# ---------------------------------------------------------------------------
+
+@config_group.command('retire')
+@click.argument('kind', type=click.Choice(['programs', 'observations', 'fields']))
+@click.argument('names', nargs=-1, required=True)
+@click.option('--undo', is_flag=True,
+              help='Clear the retirement, re-activating the section for sync.')
+@click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
+@click.option('--local', is_flag=True, help='Use local Supabase (127.0.0.1:54321).')
+@click.option('--service-role', 'service_role', is_flag=True,
+              help='Service-role auth for unattended runs (bypasses RLS).')
+def retire_cmd(kind, names, undo, config_path, local, service_role):
+    """Soft-retire definitions in the cloud registry (admin).
+
+    Sync is additive by design: a section missing from someone's local TOML is
+    ambiguous (two reducers hold different files), so removal is never inferred
+    — it is this explicit action. A retired row keeps its data and FKs; pull
+    skips it and push refuses to re-push it. A rename is retire-old + push-new.
+    --undo re-activates a section (also the sanctioned way back after an
+    accidental retire).
+    """
+    import datetime as _dt
+
+    config, sb = _client(config_path, local, service_role)
+    from .cli import _gate_admin
+    if not local:
+        _gate_admin(config)
+
+    table, pk = cs._TABLES[kind], cs._PK[kind]
+    value = None if undo else _dt.datetime.now(_dt.timezone.utc).isoformat()
+    done = []
+    for name in names:
+        resp = (sb.table(table).update({'retired_at': value})
+                .eq(pk, name).execute())
+        if resp.data:
+            done.append(name)
+            print(f"  {'~' if undo else '-'} {name} "
+                  f"{'re-activated' if undo else 'retired'}")
+        else:
+            print(f"  ! {name}: not found in cloud {kind}")
+    if done:
+        log_deploy_event(
+            sb, action='config_sync', actor=get_user_id_from_token(config),
+            affected_count=len(done), host=socket.gethostname(),
+            metadata={'scope': 'config_retire', 'kind': kind,
+                      'names': done, 'undo': undo},
+        )
+    print(f"\nDone. {'Re-activated' if undo else 'Retired'} "
+          f"{len(done)} of {len(names)} section(s).")
