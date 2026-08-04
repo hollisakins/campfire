@@ -126,10 +126,18 @@ def push_cmd(config_path, kind_programs, kind_observations, kind_fields, obs,
             print(f"{kind}: no local {kind}.toml (or empty) — skipping")
             continue
         if kind == 'fields' and names is None:
+            # Deployed-data scope (same as the old sync-fields). An empty
+            # intersection must stay [] — push_kind pushes nothing for [], but
+            # everything for None, and a fresh DB has no deployed fields.
             from .fields import deployed_field_names
-            names = [n for n in deployed_field_names(sb) if n in sections] or None
+            names = [n for n in deployed_field_names(sb) if n in sections]
+            if not names:
+                print("fields: no deployed fields overlap fields.toml — "
+                      "nothing to push (use --field X to push one anyway)")
+                continue
         print(f"{kind}: pushing "
-              + (f"{len(names)} section(s)" if names else f"all {len(sections)} local section(s)"))
+              + (f"all {len(sections)} local section(s)" if names is None
+                 else f"{len(names)} section(s)"))
         n, pushed = cs.push_kind(
             sb, kind, sections, names,
             programs_config=programs_config if kind == 'observations' else None,

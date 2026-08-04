@@ -119,17 +119,26 @@ def _stamp(row: dict, section: dict) -> dict:
     return row
 
 
-def program_config_row(slug: str, section: dict) -> dict:
-    """programs.toml ``[<slug>]`` -> a `programs` row. Empty strings normalize
+def program_typed_row(slug: str, section: dict) -> dict:
+    """The typed `programs` columns only — no config mirror. Deploy-time
+    callers fall back to this when the section is not JSON-representable
+    (deploy must never fail over a bare TOML date). Empty strings normalize
     to NULL (the pre-#303 upsert wrote ``''`` defaults; don't propagate them)."""
-    return _stamp({
+    return {
         "slug": slug,
         "program_name": section.get("program_name") or slug,
         "pi_name": section.get("pi_name") or None,
         "description": section.get("description") or None,
         "is_public": section.get("is_public", False),
         "cycle": section.get("cycle"),
-    }, section)
+    }
+
+
+def program_config_row(slug: str, section: dict) -> dict:
+    """programs.toml ``[<slug>]`` -> a full `programs` row: typed columns plus
+    the lossless config mirror and hash/stamp. Raises TypeError on sections
+    that cannot ride jsonb — callers guard with :func:`find_unjsonable`."""
+    return _stamp(program_typed_row(slug, section), section)
 
 
 def _jwst_pid(section: dict) -> int | None:
@@ -236,7 +245,10 @@ def push_kind(client, kind: str, sections: dict[str, dict],
               dry_run: bool = False) -> tuple[int, dict[str, str]]:
     """Upsert local sections of *kind* into the cloud.
 
-    - ``names`` scopes the push (default: every local section).
+    - ``names`` scopes the push: ``None`` means every local section, while an
+      explicit list — INCLUDING an empty one — is honored verbatim. The
+      distinction matters: a caller that computed "fields with deployed data"
+      and found none must push nothing, not fall through to everything.
     - ``programs_config`` (observations only) validates the program slug so a
       name/slug mix-up cannot create a broken FK at push time.
     - ``base`` (``{name: hash}`` from the state file) is the divergence guard:
@@ -245,7 +257,7 @@ def push_kind(client, kind: str, sections: dict[str, dict],
 
     Returns ``(pushed_count, {name: new_hash})`` for state recording.
     """
-    todo = list(names) if names else sorted(sections)
+    todo = sorted(sections) if names is None else list(names)
     cloud = fetch_cloud_rows(client, kind, todo) if todo else {}
     pushed: dict[str, str] = {}
     n = 0

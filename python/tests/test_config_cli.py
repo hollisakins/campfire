@@ -227,6 +227,27 @@ def test_push_dry_run_no_writes_no_state(tmp_path, monkeypatch):
     assert not (tmp_path / "meta" / "config_sync_state.json").exists()
 
 
+def test_push_fields_default_scope_empty_intersection_pushes_nothing(tmp_path, monkeypatch):
+    """Local fields.toml has sections but nothing is deployed: the default
+    deployed-data scope must push zero fields, not all of them."""
+    _write_toml(tmp_path, "fields", """
+        [cosmos]
+        filters = ["f444w"]
+        files = ["jw01727*"]
+        tangent_point = [150.1, 2.2]
+    """)
+    client = _FakeClient()   # empty deployments table
+    runner = _wire(monkeypatch, tmp_path, client)
+    result = runner.invoke(config_group, ["push", "--fields", "--local"])
+    assert result.exit_code == 0, result.output
+    assert "no deployed fields overlap" in result.output
+    assert client.store["upserts"] == []
+    # Explicit --field overrides the deployed-data scope.
+    result = runner.invoke(config_group, ["push", "--field", "cosmos", "--local"])
+    assert result.exit_code == 0, result.output
+    assert [t for (t, _c, _r) in client.store["upserts"]] == ["fields"]
+
+
 # --- diff --------------------------------------------------------------------
 
 def test_diff_reports_all_states(tmp_path, monkeypatch):

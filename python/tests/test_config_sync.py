@@ -227,6 +227,17 @@ def test_push_kind_dry_run_writes_nothing(tmp_path, monkeypatch):
     assert n == 0 and pushed == {}
 
 
+def test_push_kind_empty_names_pushes_nothing(tmp_path, monkeypatch):
+    """[] is an explicit empty scope, NOT a fall-through to 'everything'.
+
+    The fields default computes 'deployed fields ∩ local sections'; on a fresh
+    DB that intersection is empty and must push zero sections."""
+    _write_toml(tmp_path, monkeypatch, "programs", _PROGRAMS_TOML)
+    client = _FakeClient()
+    n, pushed = cs.push_kind(client, "programs", cs.load_sections("programs"), [])
+    assert n == 0 and pushed == {} and client.store["upserts"] == []
+
+
 # --- state file --------------------------------------------------------------
 
 def test_state_round_trip(tmp_path, monkeypatch):
@@ -245,3 +256,34 @@ def test_state_survives_corruption(tmp_path, monkeypatch):
     (tmp_path / "meta").mkdir()
     (tmp_path / "meta" / "config_sync_state.json").write_text("{not json")
     assert cs.load_state()["base"] == {k: {} for k in cs.KINDS}
+
+
+# --- deploy-time upsert_programs guard ---------------------------------------
+
+def test_upsert_programs_survives_bare_toml_date(capsys):
+    """A bare TOML date in programs.toml must not crash a deploy: the typed
+    columns still land, only the config mirror is skipped (with a warning)."""
+    from campfire.deploy.supabase import upsert_programs
+
+    client = _FakeClient()
+    programs_config = {"capers": {
+        "slug": "capers", "program_name": "CAPERS",
+        "launched": datetime.date(2026, 1, 1),
+    }}
+    upsert_programs(client, ["capers"], programs_config)
+    (table, on_conflict, row), = client.store["upserts"]
+    assert table == "programs" and on_conflict == "slug"
+    assert row["program_name"] == "CAPERS"
+    assert "config" not in row and "config_hash" not in row
+    assert "bare TOML" in capsys.readouterr().out
+
+
+def test_upsert_programs_mirrors_config_when_jsonable():
+    from campfire.deploy.supabase import upsert_programs
+
+    client = _FakeClient()
+    programs_config = {"capers": {"slug": "capers", "program_name": "CAPERS"}}
+    upsert_programs(client, ["capers"], programs_config)
+    (_t, _c, row), = client.store["upserts"]
+    assert row["config"] == {"program_name": "CAPERS"}   # injected slug stripped
+    assert row["config_hash"] == cs.config_hash({"program_name": "CAPERS"})

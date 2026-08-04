@@ -39,3 +39,41 @@ ALTER TABLE "public"."deploy_events"
 ALTER TABLE "public"."deploy_events"
   ADD CONSTRAINT "deploy_events_action_check"
   CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text", 'config_sync'::"text"])));
+
+-- The log_deploy_event RPC — the only sanctioned write path to deploy_events —
+-- validates the action against its own whitelist, independent of the table
+-- CHECK, so it must learn 'config_sync' too. Hand-authored (migra does not
+-- diff function bodies); full definition mirrored from schemas/functions.sql.
+CREATE OR REPLACE FUNCTION public.log_deploy_event(
+  p_action text,
+  p_actor uuid DEFAULT NULL,
+  p_deployment_id integer DEFAULT NULL,
+  p_observation text DEFAULT NULL,
+  p_field text DEFAULT NULL,
+  p_affected_count integer DEFAULT NULL,
+  p_metadata jsonb DEFAULT NULL,
+  p_host text DEFAULT NULL
+)
+RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_id uuid;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  IF p_action NOT IN ('upload', 'publish', 'revoke', 'recover', 'supersede', 'delete', 'config_sync') THEN
+    RAISE EXCEPTION 'Invalid deploy_event action: %', p_action;
+  END IF;
+
+  INSERT INTO deploy_events(actor, action, deployment_id, observation, field, affected_count, metadata, host)
+  VALUES (p_actor, p_action, p_deployment_id, p_observation, p_field, p_affected_count, p_metadata, p_host)
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END;
+$$;

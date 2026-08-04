@@ -472,10 +472,19 @@ def upsert_programs(
         info = programs_config[slug]
         # Full config-sync row (#303): typed columns + the lossless section in
         # `config` jsonb + hash/stamp. load_programs injects 'slug' into each
-        # section; strip it so `config` stays a faithful TOML mirror.
-        from .config_sync import program_config_row
+        # section; strip it so `config` stays a faithful TOML mirror. A
+        # section jsonb can't represent (bare TOML datetimes) drops only the
+        # config mirror — this runs mid-deploy and must never fail the deploy.
+        from .config_sync import find_unjsonable, program_config_row, program_typed_row
         section = {k: v for k, v in info.items() if k != 'slug'}
-        data = program_config_row(slug, section)
+        bad = find_unjsonable(section)
+        if bad:
+            print(f"  Warning: programs.toml [{slug}] has bare TOML "
+                  f"datetime(s) at {', '.join(bad)} — config not mirrored to "
+                  f"cloud (quote as ISO strings to enable config sync)")
+            data = program_typed_row(slug, section)
+        else:
+            data = program_config_row(slug, section)
         client.table('programs').upsert(data, on_conflict='slug').execute()
         print(f"  + {slug} ({data['program_name']})")
 
