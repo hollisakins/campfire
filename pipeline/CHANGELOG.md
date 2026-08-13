@@ -62,6 +62,19 @@ Release procedure: edit the `## Unreleased` section below, then run
   wide masked gaps). `CFP_BKG` now records `bkg2d_order` when `subtract_2d`
   is on. Pixel values change wherever the detrend is enabled (everywhere, by
   default) → MINOR.
+  *Follow-up (same session series):* the real-frame A/B **rejected the
+  reorder** (sometimes better, often worse, judged by eye); the knob remains
+  for reference but stays `"last"`. The mitigation search moved to a second
+  opt-in lever, **`[nircam.bkg.striping].extra_dilate`** (default 0 = no
+  behavior change): grow the source tiers by N angular px (channel-scaled)
+  for the **1/f fit mask only** — the amp-row/column anchors move off
+  bright-galaxy halos, which the mask tiers structurally cannot reach (the
+  ring-median pre-filter erases structure broader than its radius before
+  detection), and the GP bridges the widened gaps as designed. Recorded as
+  `strp_dilate` in `CFP_BKG` when nonzero. Evaluated on the new eye-first
+  synthetic harness `experiments/amprow_halo` (brightfield scene: bright
+  amp-spanning ellipticals with halo envelopes + complex smooth sky +
+  injected 1/f, run through the real `bkg_step`, judged from PNGs).
 - **Mosaic background subtraction is now recorded by a `CFP_BKGS` stamp on the
   i2d primary header, making `_i2d_before_bkgsub.fits` deletable** (issue
   #427). Previously the snapshot's *existence on disk* was the only

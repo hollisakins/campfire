@@ -268,6 +268,19 @@
         # Rebuild the source mask each iteration on the running residual (it
         # sharpens as the frame flattens). Set false to mask once (cheaper).
         remask_each_iter = true
+        # Grow the source tiers by this many px (angular, channel-scaled like
+        # the mask params) for the 1/f fit mask ONLY (column pattern + amp-row
+        # terms; detrend/pedestal/bkg2d keep their own masks). Pushes the
+        # amp-row anchors away from bright-galaxy halos — the mask tiers
+        # structurally cannot reach them (the ring-median pre-filter removes
+        # structure broader than its radius before detection), and
+        # halo-contaminated anchors are what the per-amp GP broadcasts into
+        # the amp-blocky oversubtraction around bright multi-amp sources.
+        # The GP interpolates across the widened gaps (rho_long's job),
+        # reverting to the per-amp DC where nothing anchors. 0 = off (legacy
+        # behavior). Under evaluation on the amprow_halo synthetic harness
+        # (experiments/amprow_halo).
+        extra_dilate = 0
 
         [nircam.bkg.striping.gp]
             # rho = SHOTerm correlation length in *rows* (frozen; a detector

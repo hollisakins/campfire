@@ -222,7 +222,10 @@ def _render_fullframe_sersic(shape, x0, y0, r_e, n, q, pa, peak):
 def make_scene(preset='cluster', shape=(2048, 2048), channel='sw', seed=0,
                sigma=0.05, sky_level=1.0, grad_amp=0.2, n_gal=500,
                icl_peak_sigma=0.6, margin=24, inject_1f=False,
-               amp_dc_sigma=0.5, banding_sigma=0.3, colstripe_sigma=0.15):
+               amp_dc_sigma=0.5, banding_sigma=0.3, colstripe_sigma=0.15,
+               n_bright=5, bright_flux_range=(2e5, 2e6),
+               bright_halo_peak_sigma=2.0,
+               sky_patch_amp=0.0, sky_patch_scale=400.0):
     """Build a Scene.
 
     preset='blank': uniform field population, no ICL plane.
@@ -230,7 +233,20 @@ def make_scene(preset='cluster', shape=(2048, 2048), channel='sw', seed=0,
       component BCG (inner n=4 -> galaxy plane; outer envelope -> ICL plane)
       and a large ICL envelope (peak ``icl_peak_sigma`` * sigma per px,
       i.e. ~3% of sky at the defaults — mu ~ 26-28 mag/arcsec^2 territory).
+    preset='brightfield': the amp-row-artifact scene (the "cluster outskirts"
+      look of e.g. jw03073 A2744 frames): ``n_bright`` very bright extended
+      ellipticals scattered across the frame — the first few deliberately
+      near amp boundaries (cols 512/1024/1536), since a source *spanning*
+      amps is the artifact's trigger — each with a compact n~3-4 body
+      (galaxy plane) plus a broad n~1 halo envelope rendered full-frame into
+      the ICL plane (peak ``bright_halo_peak_sigma`` * sigma; accepted loss
+      under subtract_2d, exactly the flux whose *row-wise* misattribution is
+      the artifact under study).
     grad_amp: linear sky gradient amplitude across the frame, in sky units.
+    sky_patch_amp: adds a smooth "complex" background component — a Gaussian
+      random field (white noise smoothed at ``sky_patch_scale`` px, unit-std
+      normalized) times this amplitude in sky units. This is the structure
+      subtract_2d exists to remove; 0 disables (legacy scenes unchanged).
     inject_1f: add detector systematics (per-amp DC offsets + amp-row
       banding + column stripes; amplitudes in sigma_pix units) as a separate
       ``stripes`` truth plane — required to exercise the GP / per-amp-DC
@@ -251,6 +267,16 @@ def make_scene(preset='cluster', shape=(2048, 2048), channel='sw', seed=0,
     ramp = (np.cos(ang) * xx + np.sin(ang) * yy) / max(H, W)
     scene.sky = (sky_level + grad_amp * (ramp - ramp.mean())).astype(
         np.float64)
+    if sky_patch_amp > 0:
+        # smooth "complex" component: unit-std Gaussian random field at the
+        # patch scale (pad-free: smooth a larger grid and crop the center so
+        # the field statistics don't taper at the frame edge)
+        pad = int(2 * sky_patch_scale)
+        grf = gaussian_filter(rng.normal(0, 1, (H + 2 * pad, W + 2 * pad)),
+                              sky_patch_scale, mode='wrap')
+        grf = grf[pad:pad + H, pad:pad + W]
+        grf = (grf - grf.mean()) / grf.std()
+        scene.sky += sky_patch_amp * grf
 
     scene.galaxies = np.zeros(shape, np.float64)
     scene.icl = np.zeros(shape, np.float64)
@@ -285,6 +311,31 @@ def make_scene(preset='cluster', shape=(2048, 2048), channel='sw', seed=0,
         comps.append((2e5 * sigma, 25.0 * scale, 4.0, 0.8,
                       rng.uniform(0, np.pi), cx, cy, 'galaxy'))
 
+    bright = []
+    if preset == 'brightfield':
+        # a few very bright extended ellipticals scattered over the frame,
+        # the first few pinned near amp boundaries so they span amps
+        bounds = [512, 1024, 1536]
+        bx, by = [], []
+        for i in range(n_bright):
+            if i < len(bounds):
+                x = int(np.clip(bounds[i] + rng.integers(-140, 140),
+                                margin, W - margin))
+            else:
+                x = int(rng.integers(margin, W - margin))
+            bx.append(x)
+            by.append(int(rng.integers(H // 8, H - H // 8)))
+        lo, hi = bright_flux_range
+        bflux = _sample_powerlaw(rng, n_bright, lo, hi, alpha=1.5) * sigma
+        bre = rng.uniform(15, 45, n_bright) * scale
+        bn = rng.uniform(2.8, 4.5, n_bright)
+        bq = rng.uniform(0.55, 0.9, n_bright)
+        bpa = rng.uniform(0, np.pi, n_bright)
+        comps += [(bflux[i], bre[i], bn[i], bq[i], bpa[i],
+                   bx[i], by[i], 'galaxy') for i in range(n_bright)]
+        bright = [(bx[i], by[i], bre[i], bq[i], bpa[i], bflux[i])
+                  for i in range(n_bright)]
+
     for f, re_i, ni, qi, pai, ix, iy, kind in comps:
         stamp, dx, dy = render_sersic_stamp(rng, f, re_i, ni, qi, pai)
         plane = scene.galaxies if kind == 'galaxy' else scene.icl
@@ -309,6 +360,21 @@ def make_scene(preset='cluster', shape=(2048, 2048), channel='sw', seed=0,
             scene.sources.append(Source(
                 x=cx, y=cy, flux=float(plane.sum()), r_e=re_i, n=ni, q=qi,
                 pa=pai, kind='icl', peak=float(peak)))
+
+    if preset == 'brightfield':
+        # halo envelopes of the bright galaxies -> ICL plane (accepted loss
+        # under subtract_2d; the artifact under study is their row-wise
+        # misattribution, not their removal). Peak scales weakly with the
+        # body flux so the brightest galaxies carry the biggest halos.
+        fmax = max(f for *_, f in bright)
+        for hx, hy, re_i, qi, pai, f in bright:
+            peak = bright_halo_peak_sigma * sigma * (f / fmax) ** 0.5
+            plane = _render_fullframe_sersic(shape, hx, hy, 4.0 * re_i, 1.0,
+                                             qi, pai, peak)
+            scene.icl += plane
+            scene.sources.append(Source(
+                x=hx, y=hy, flux=float(plane.sum()), r_e=4.0 * re_i, n=1.0,
+                q=qi, pa=pai, kind='icl', peak=float(peak)))
 
     if inject_1f:
         scene.stripes = _inject_stripes(rng, shape, sigma, amp_dc_sigma,

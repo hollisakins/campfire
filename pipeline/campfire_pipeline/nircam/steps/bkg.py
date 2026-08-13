@@ -164,6 +164,8 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
             f"[nircam.bkg.striping].estimator={estimator!r} not in {_VALID}")
     maxiters = int(strp_cfg.get('maxiters', 3))
     remask = strp_cfg.get('remask_each_iter', True)
+    # Angular px (channel-scaled below, like the mask/bkg2d length params).
+    strp_extra_dilate = float(strp_cfg.get('extra_dilate', 0.0))
     gp_cfg = strp_cfg.get('gp', {})
     rho_short = gp_cfg.get('rho_short', 5.0)
     rho_long = gp_cfg.get('rho_long', 20.0)
@@ -300,6 +302,25 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
                 srcmask, srcbits = sb.mask_from_arrays(resid, err, dq)
             fitmask = srcmask | dq_fit
 
+            # Optional grown fit mask for the 1/f terms ONLY
+            # ([nircam.bkg.striping].extra_dilate): the amp-row medians are
+            # the chain's most halo-contaminable statistic (508-px samples,
+            # one-signed bias), and the mask tiers structurally cannot reach
+            # a bright galaxy's halo (the ring-median pre-filter removes
+            # structure broader than its radius before detection). Growing
+            # the source tiers pushes the row/column anchors out to true
+            # sky; the GP bridges the widened gap by design (that is what
+            # rho_long is for), reverting to the per-amp DC where nothing
+            # anchors — i.e. leaving the halo alone. Detrend, pedestal and
+            # the applied 2-D fit keep their own masks.
+            if strp_extra_dilate > 0:
+                src_only_1f = (srcbits >> 1) != 0
+                grown_1f = (distance_transform_edt(~src_only_1f)
+                            <= strp_extra_dilate * f2)
+                fitmask_1f = fitmask | grown_1f
+            else:
+                fitmask_1f = fitmask
+
             # (2) CONDITIONING DETREND — fit-only, zero-median structure
             #     model. Subtracted from the *measurement copies* below so
             #     the pedestal / 1/f terms see a structure-free residual;
@@ -367,7 +388,7 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
                 h = np.zeros_like(resid)
             elif estimator == 'gp':
                 from campfire_pipeline.nircam.gp_striping import gp_amprow_offsets
-                vcol = oneoverf.column_pattern(meas, fitmask, maxiters)
+                vcol = oneoverf.column_pattern(meas, fitmask_1f, maxiters)
                 base = meas - vcol
                 # GP kernel amplitude is measured on the PRE-detrend frame
                 # (applied terms only): the prior must reflect how far the
@@ -387,17 +408,18 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
                     # GP passes return zero-DC offsets (see gp_striping)
                     zero_dc=True,
                 )
-                h5, _, ks5 = gp_amprow_offsets(base, fitmask, rho=rho_short,
+                h5, _, ks5 = gp_amprow_offsets(base, fitmask_1f,
+                                               rho=rho_short,
                                                amplitude_data=amp5, **gp_kw)
                 amp20 = (amp5 - h5) if amp5 is not None else None
-                h20, _, ks20 = gp_amprow_offsets(base - h5, fitmask,
+                h20, _, ks20 = gp_amprow_offsets(base - h5, fitmask_1f,
                                                  rho=rho_long,
                                                  amplitude_data=amp20, **gp_kw)
                 h = h5 + h20
                 ks_last = f'{ks5:.3e}/{ks20:.3e}'
             else:  # 'median' — legacy reference arm (h+v together)
                 h, vcol, ampc, _ = oneoverf.fit_residual_striping(
-                    meas, fitmask, maxiters, estimator='median')
+                    meas, fitmask_1f, maxiters, estimator='median')
                 ampc_last = ','.join(ampc)
 
             # (6) legacy fit_order='last': applied fit on the 1/f-corrected
@@ -461,6 +483,8 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
             f'detrend={"box%d" % det_box if detrend_on else "off"}, '
             f'subtract_2d={subtract_2d}'
         )
+        if strp_extra_dilate > 0:
+            cfp_value += f', strp_dilate={strp_extra_dilate * f2:.0f}'
         if estimator == 'gp':
             cfp_value += (f', rho_short={rho_short}, rho_long={rho_long}, '
                           f'kernel_sigma[last]={ks_last}')
