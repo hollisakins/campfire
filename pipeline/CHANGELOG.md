@@ -29,6 +29,39 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- **New opt-in `[nircam.bkg.bkg2d].fit_order = "first"` fixes the amp-blocky
+  halo oversubtraction around bright multi-amp galaxies** when `subtract_2d`
+  is on. With the legacy order (`"last"`, still the default), the amp-row 1/f
+  terms are fit before the applied 2-D background ever sees the frame:
+  unmasked halo/wing flux — structurally invisible to the source mask, whose
+  ring-median pre-filter removes structure broader than its radius before
+  tier detection — leaks into the clipped amp-row medians, the GP follows it
+  (smooth structure slower than ρ is exactly its model), and the offset is
+  broadcast across each amp's full width: oversubtracted amp-height blocks
+  with hard edges at columns 512/1024/1536 and at the source's top/bottom
+  rows. The 2-D fit then runs on the post-1/f residual and can never reclaim
+  that flux; iterating makes it *worse* (synthetic amp-spanning-halo scene:
+  row-ledger halo leak grows 1.42 → 1.92 over 3 iterations). `"first"` fits
+  the 2-D model on the pedestal-subtracted residual with the halo intact and
+  conditions the 1/f measurement on its output — same components, same
+  accumulation, different attribution — cutting the leak ~2x at shipped
+  settings (to ~0, i.e. the full artifact, when the 2-D model is exact; the
+  remainder is the fit's deficit inside the `extra_dilate` holes). CAUTION:
+  pair `"first"` with `reject = false` — the background-map outlier reject
+  flags the halo bump in the first-order map as leaked source flux and refits
+  it away, cancelling the benefit (measured; the step logs a warning on the
+  combination). Regression-pinned in
+  `tests/test_nircam_bkg.py::test_b2d_fit_order_first_starves_amprow_of_halo`;
+  real-frame A/B instructions in `docs/handoff-bkg2d-fit-order.md`.
+  Additionally (both orders, all fields): the amp-row GP's self-adapting
+  kernel amplitude is now measured on the **pre-detrend** residual
+  (`amplitude_data`, restoring the rj0911 f444w calibration contract recorded
+  in `gp_amprow_offsets` — the retired striping step honored it; the unified
+  step had regressed to measuring on the conditioned residual, which
+  under-estimates the amplitude and over-regularizes the interpolation across
+  wide masked gaps). `CFP_BKG` now records `bkg2d_order` when `subtract_2d`
+  is on. Pixel values change wherever the detrend is enabled (everywhere, by
+  default) → MINOR.
 - **Mosaic background subtraction is now recorded by a `CFP_BKGS` stamp on the
   i2d primary header, making `_i2d_before_bkgsub.fits` deletable** (issue
   #427). Previously the snapshot's *existence on disk* was the only

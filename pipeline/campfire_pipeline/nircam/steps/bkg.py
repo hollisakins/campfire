@@ -10,11 +10,27 @@ flux-calibrated cal-stage data. One iterative chain, one shared source mask:
                   fit directly on the residual — the coarse box is the
                   protection against absorbing detector striping
         ped     = pedestal on (residual - detrend)   # owns the DC (skymatch)
+        b2d     = optional APPLIED smooth 2-D background (subtract_2d),
+                  fit here when bkg2d.fit_order = "first" (recommended for
+                  bright/extended fields) or after the 1/f terms when "last"
         vcol    = per-column (vertical) 1/f, on the conditioned residual
-        h       = amp-row 1/f: GP ρ≈5 then ρ≈20, on the conditioned residual
-        b2d     = optional APPLIED smooth 2-D background (subtract_2d)
+                  (minus b2d when it was fit first)
+        h       = amp-row 1/f: GP ρ≈5 then ρ≈20, on the same residual
         residual -= ped + vcol + h + b2d             # detrend NOT subtracted
     rescale VAR_RNOISE on (residual - detrend), final mask
+
+With ``fit_order = "last"`` (the legacy order) the amp-row terms are fit
+before the applied 2-D model ever sees the frame, so unmasked halo/wing flux
+around bright galaxies leaks into the clipped amp-row medians and the GP —
+smooth structure slower than ρ is exactly what it follows — and is broadcast
+across each amp's full width: oversubtracted amp-blocky patches with hard
+edges at the amp boundaries (cols 512/1024/1536) and at the source's
+top/bottom rows. The 2-D fit then runs on the *post-h* residual, so it can
+never reclaim that flux, in this iteration or any later one (corrections
+accumulate one-way; the loop's fixed point — zero clipped amp-row medians —
+is satisfied by the artifact). ``fit_order = "first"`` fits the smooth model
+on ``resid - ped`` with the halo intact and conditions the 1/f measurement on
+its output, so smooth flux is claimed by the model that can represent it.
 
 Two 2-D fits with opposite jobs (design realization 2026-07-17; the split
 mirrors both the retired striping step's fit-only ``skyfit`` detrend and
@@ -133,6 +149,11 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
     var_cfg = step_config.get('variance', {})
     subtract_2d = bool(step_config.get('subtract_2d', False))
     b2d_cfg = step_config.get('bkg2d', {})
+    b2d_order = str(b2d_cfg.get('fit_order', 'last'))
+    _ORDERS = ('first', 'last')
+    if b2d_order not in _ORDERS:
+        raise ValueError(
+            f"[nircam.bkg.bkg2d].fit_order={b2d_order!r} not in {_ORDERS}")
     det_cfg = step_config.get('detrend', {})
     detrend_on = bool(det_cfg.get('enabled', True))
 
@@ -216,6 +237,18 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
                 bg_reject_dilate=float(b2d_cfg.get('reject_dilate', 40)) * f2,
             )
         sb = SubtractBackground.from_config(mcfg)
+        if subtract_2d and b2d_order == 'first' and sb.bg_reject:
+            # Measured on the synthetic amp-spanning-halo scene (see
+            # test_nircam_bkg.test_b2d_fit_order_first_starves_amprow_of_halo):
+            # the map-outlier reject flags the very halo bump the first-order
+            # fit exists to model, masks it, and refits it away — cancelling
+            # the reorder. Warn rather than override: reject still guards
+            # against compact-source leakage, so the trade is the field
+            # config's to make.
+            log(f"  {rootname}: bkg2d fit_order='first' with reject=true — "
+                f"the map-outlier reject can re-reject extended halo bumps "
+                f"and cancel the first-order benefit; consider "
+                f"[nircam.bkg.bkg2d].reject=false for bright-halo fields")
 
         # Conditioning detrend fitter: coarse box, undilated mask, no reject —
         # fit-only, so flux conservation cannot constrain it (see docstring).
@@ -298,14 +331,52 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
             ped, _ = pedestal_fn(cond, fitmask,
                                  sigma=ped_sigma, maxiters=maxiters)
 
-            # (4) VERTICAL + HORIZONTAL 1/f, on the conditioned residual
+            # (4) APPLIED smooth background (subtract_2d) — the sky-match /
+            #     ICL subtraction, with the source tiers grown by
+            #     extra_dilate (bit 0 — off-detector/DQ/NaN — is not grown,
+            #     so detector edges don't cost a dilated border band).
+            #     fit_order='first' fits it HERE, on resid - ped with halo /
+            #     wing flux still in the frame, so the smooth model gets
+            #     first claim on smooth structure and the 1/f terms below
+            #     measure a b2d-subtracted residual (the amp-blocky halo
+            #     oversubtraction fix — see module docstring). The ~20-row
+            #     banding still present under this fit averages out in the
+            #     32/64 px clipped mesh boxes, and the next iteration refits
+            #     on the striping-corrected residual anyway.
+            #     fit_order='last' is the legacy order: fit on the
+            #     1/f-corrected residual, after the amp-row terms.
+            b2d = 0.0
+            if subtract_2d:
+                src_only = (srcbits >> 1) != 0
+                if b2d_extra_dilate > 0:
+                    grown = (distance_transform_edt(~src_only)
+                             <= b2d_extra_dilate)
+                else:
+                    grown = src_only
+                b2d_mask = srcmask | grown | dq_fit
+                if b2d_order == 'first':
+                    b2d = sb.estimate_background(
+                        resid - ped, b2d_mask).background.astype(resid.dtype)
+
+            # (5) VERTICAL + HORIZONTAL 1/f, on the conditioned residual
+            #     (additionally minus the applied 2-D model when fit first —
+            #     b2d is 0.0 in the legacy order at this point)
+            meas = cond - ped - b2d
             if estimator == 'none':
                 vcol = np.zeros_like(resid)
                 h = np.zeros_like(resid)
             elif estimator == 'gp':
                 from campfire_pipeline.nircam.gp_striping import gp_amprow_offsets
-                vcol = oneoverf.column_pattern(cond - ped, fitmask, maxiters)
-                base = cond - ped - vcol
+                vcol = oneoverf.column_pattern(meas, fitmask, maxiters)
+                base = meas - vcol
+                # GP kernel amplitude is measured on the PRE-detrend frame
+                # (applied terms only): the prior must reflect how far the
+                # offsets vary across wide masked gaps, and the post-detrend
+                # residual underestimates that, over-regularizing the gap
+                # interpolation (gp_amprow_offsets docstring; rj0911 f444w
+                # calibration). With the detrend off the frames coincide, so
+                # skip the extra statistics pass.
+                amp5 = (base + det_struct) if detrend_on else None
                 gp_kw = dict(
                     kernel_sigma_factor=gp_cfg.get('kernel_sigma_factor', 1.0),
                     q=gp_cfg.get('q', 1.0 / np.sqrt(2.0)),
@@ -316,33 +387,26 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
                     # GP passes return zero-DC offsets (see gp_striping)
                     zero_dc=True,
                 )
-                h5, _, ks5 = gp_amprow_offsets(base, fitmask, rho=rho_short, **gp_kw)
+                h5, _, ks5 = gp_amprow_offsets(base, fitmask, rho=rho_short,
+                                               amplitude_data=amp5, **gp_kw)
+                amp20 = (amp5 - h5) if amp5 is not None else None
                 h20, _, ks20 = gp_amprow_offsets(base - h5, fitmask,
-                                                 rho=rho_long, **gp_kw)
+                                                 rho=rho_long,
+                                                 amplitude_data=amp20, **gp_kw)
                 h = h5 + h20
                 ks_last = f'{ks5:.3e}/{ks20:.3e}'
             else:  # 'median' — legacy reference arm (h+v together)
                 h, vcol, ampc, _ = oneoverf.fit_residual_striping(
-                    cond - ped, fitmask, maxiters, estimator='median')
+                    meas, fitmask, maxiters, estimator='median')
                 ampc_last = ','.join(ampc)
 
-            # (5) APPLIED smooth background (subtract_2d) — the sky-match /
-            #     ICL subtraction, fit on the 1/f-corrected residual with the
-            #     source tiers grown by extra_dilate (bit 0 — off-detector/
-            #     DQ/NaN — is not grown, so detector edges don't cost a
-            #     dilated border band).
-            if subtract_2d:
-                src_only = (srcbits >> 1) != 0
-                if b2d_extra_dilate > 0:
-                    grown = (distance_transform_edt(~src_only)
-                             <= b2d_extra_dilate)
-                else:
-                    grown = src_only
+            # (6) legacy fit_order='last': applied fit on the 1/f-corrected
+            #     residual. Whatever the amp-row terms absorbed above is
+            #     invisible to this fit — the reason 'first' exists.
+            if subtract_2d and b2d_order == 'last':
                 b2d = sb.estimate_background(
-                    resid - ped - vcol - h, srcmask | grown | dq_fit
+                    resid - ped - vcol - h, b2d_mask
                 ).background.astype(resid.dtype)
-            else:
-                b2d = 0.0
 
             step = ped + vcol + h + b2d
             resid -= step
@@ -355,7 +419,7 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
                 components_out['det_struct'] = (
                     det_struct if detrend_on else np.zeros_like(resid))
 
-        # (6) VARIANCE rescale on the final mask. Measure the sky variance on
+        # (7) VARIANCE rescale on the final mask. Measure the sky variance on
         #     the *conditioned* corrected residual (resid - det_struct): when
         #     the applied fit is off (or misses structure), retained sky
         #     structure would otherwise inflate the noise estimate.
@@ -363,7 +427,7 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
                                            model.var_rnoise, srcmask,
                                            block_size)
 
-        # (7) Write. SCI = original - accumulated correction.
+        # (8) Write. SCI = original - accumulated correction.
         outsci = sci0 - correction
         outsci[sci0 == 0] = 0
         wnan = np.isnan(outsci)
@@ -409,7 +473,8 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
             cfp_value += (
                 f', bkg2d_box={b2d_box}, '
                 f'bkg2d_dilate={b2d_extra_dilate:.0f}, '
-                f'bkg2d_reject={sb.bg_reject}'
+                f'bkg2d_reject={sb.bg_reject}, '
+                f'bkg2d_order={b2d_order}'
             )
 
         sci_after = model.data.copy() if do_plot else None

@@ -320,6 +320,26 @@
         # cluster sweep (experiments/bkg2d_synthetic, arm b64_d20): zero
         # median aperture-flux loss for compact, extended AND bright
         # galaxies simultaneously, ICL removal ~0.6.
+        # Where in the per-iteration chain the applied fit runs.
+        #   "last" (legacy default): fit on the 1/f-corrected residual, AFTER
+        #       the amp-row terms. Unmasked halo/wing flux around bright
+        #       multi-amp galaxies then leaks into the clipped amp-row
+        #       medians first and is broadcast across each amp's width —
+        #       amp-blocky oversubtraction with hard edges at cols
+        #       512/1024/1536 — and the 2-D fit can never reclaim it (it
+        #       only ever sees the post-h residual; corrections accumulate
+        #       one-way across iterations).
+        #   "first": fit on resid - ped with the halo intact, and condition
+        #       the 1/f measurement on the fitted model, so smooth structure
+        #       is claimed by the smooth model. Recommended for the
+        #       bright-galaxy fields subtract_2d exists for; kept opt-in
+        #       pending the real-frame A/B (docs/handoff-bkg2d-fit-order.md).
+        #       CAUTION: pair with reject = false — the map-outlier reject
+        #       below flags the halo bump in the first-order map as leaked
+        #       source flux and refits it away, cancelling the benefit
+        #       (measured on the synthetic amp-spanning-halo scene; the step
+        #       logs a warning on this combination).
+        fit_order = "last"
         box_size = 64
         filter_size = 5
         sigma = 3.0

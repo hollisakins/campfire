@@ -357,6 +357,114 @@ def test_skymatch_invariant_and_banding_removal():
         assert after[amp] < 0.3 * before[amp]
 
 
+def test_b2d_fit_order_first_starves_amprow_of_halo():
+    """The amp-blocky halo-oversubtraction mechanism and its fix.
+
+    A bright galaxy's halo is structurally invisible to the source mask (the
+    ring-median pre-filter removes structure broader than its radius before
+    tier detection), so unmasked halo flux enters the clipped amp-row medians
+    and the GP — smooth structure slower than rho is exactly what it follows —
+    and gets broadcast across the host amp's full width: oversubtracted
+    amp-blocks with hard edges at the amp boundaries. With the legacy
+    fit_order='last', the applied 2-D fit runs on the post-h residual, so it
+    can never reclaim that flux. fit_order='first' fits the smooth model with
+    the halo intact and conditions the 1/f measurement on it.
+
+    Replicates the step's per-iteration numerics (this suite's convention —
+    the I/O wrapper needs a datamodel), one iteration, no detrend (a coarse
+    fit-only detrend does not change the mechanism). Three pinned facts:
+
+    1. 'last' leaks the halo's row-collapse into h (artifact reproduced);
+    2. 'first' + reject=False cuts that leak by ~half (measured 0.54x; the
+       rest is the b2d model deficit inside the extra_dilate holes — with a
+       perfect b2d model the leak measures ~0);
+    3. 'first' + reject=True does NOT help: the map-outlier reject flags the
+       halo bump in the map as leaked source flux and refits it away. This
+       interaction is why the step warns on that combination and the config
+       says to pair fit_order='first' with reject=false.
+    """
+    pytest.importorskip('celerite2')
+    from scipy.ndimage import distance_transform_edt
+    from campfire_pipeline.nircam.gp_striping import gp_amprow_offsets
+
+    rng = np.random.default_rng(12)
+    H = 2048
+    rows = np.arange(H)
+    sci = rng.normal(0.0, 1.0, (H, COLS))
+    band = {'A': 1.0, 'B': 0.7, 'C': 1.3, 'D': 0.5}   # amp-dependent banding
+    for amp in 'ABCD':
+        c0, c1 = _amp_cols(amp)
+        sci[:, c0:c1] += band[amp] * np.sin(2 * np.pi * rows[:, None] / 100.0)
+    # bright halo hosted by amp C (center 176 px from the B/C boundary), far
+    # broader than the masked core the tiers will catch
+    halo = _gaussian_blob((H, COLS), 1024, 1200, 20.0, 120.0)
+    sci = sci + halo
+    err = np.full((H, COLS), 1.0, np.float32)
+    dq = np.zeros((H, COLS), np.int32)
+
+    mask_cfg = dict(ring_radius_in=80, ring_width=4, ring_downsample=4,
+                    tier_kernel_size=[25, 15, 5, 2],
+                    tier_npixels=[15, 10, 3, 1],
+                    tier_nsigma=[1.5, 1.5, 1.5, 1.5],
+                    tier_dilate_size=[33, 25, 21, 19])
+
+    def chain(order, reject):
+        sb = SubtractBackground(bg_box_size=64, bg_filter_size=5,
+                                bg_reject=reject, bg_reject_dilate=40.0,
+                                **mask_cfg)
+        srcmask, srcbits = sb.mask_from_arrays(sci, err, dq)
+        src_only = (srcbits >> 1) != 0
+        grown = distance_transform_edt(~src_only) <= 20
+        b2d_mask = srcmask | grown
+        ped, _ = oneoverf.peramp_pedestal(sci, srcmask)
+        b2d = 0.0
+        if order == 'first':
+            b2d = sb.estimate_background(sci - ped, b2d_mask).background
+        meas = sci - ped - b2d
+        vcol = oneoverf.column_pattern(meas, srcmask, 3)
+        base = meas - vcol
+        h5, _, _ = gp_amprow_offsets(base, srcmask, rho=5.0, maxiters=3,
+                                     zero_dc=True)
+        h20, _, _ = gp_amprow_offsets(base - h5, srcmask, rho=20.0,
+                                      maxiters=3, zero_dc=True)
+        h = h5 + h20
+        if order == 'last':
+            b2d = sb.estimate_background(sci - ped - vcol - h,
+                                         b2d_mask).background
+        return h, sci - (ped + vcol + h + b2d), srcmask
+
+    def leak(h, amp='C'):
+        # halo flux in the amp-row ledger: mean row-offset difference between
+        # halo rows and far rows (both windows span whole banding periods, so
+        # the sinusoid cancels)
+        c0, c1 = _amp_cols(amp)
+        prof = np.median(h[:, c0:c1], axis=1)
+        return prof[924:1124].mean() - prof[200:400].mean()
+
+    h_last, out_last, bg_last = chain('last', reject=True)     # shipped legacy
+    h_first, out_first, bg_first = chain('first', reject=False)
+    h_first_rej, _, _ = chain('first', reject=True)
+
+    leak_last = leak(h_last)
+    # (1) the artifact is reproduced by the legacy order (measured ~1.4)
+    assert leak_last > 1.0
+    # (2) first-order fit starves the amp-row term of halo flux (~0.54x)
+    assert leak(h_first) < 0.65 * leak_last
+    # (3) reject=True cancels the reorder (measured ~1.05x of legacy) — if a
+    #     future scale-aware reject fixes this, loosen/flip this assertion
+    #     and drop the warning in bkg_step
+    assert leak(h_first_rej) > 0.8 * leak_last
+    # the fix must not cost banding removal: far from the halo, the amp-row
+    # profile of the corrected frame is flat in both orders
+    bg = ~bg_first
+    for amp in 'ABCD':
+        c0, c1 = _amp_cols(amp)
+        strip, m = out_first[:, c0:c1], bg[:, c0:c1]
+        rowmed = np.array([np.median(strip[i][m[i]]) if m[i].any() else np.nan
+                           for i in range(200, 400)])
+        assert np.nanstd(rowmed) < 0.3 * band[amp]
+
+
 def _extended_galaxy_scene(rng, n=1600, re=150.0, amp=200.0):
     """Mostly-sky frame with one very bright, very extended galaxy at centre.
 
