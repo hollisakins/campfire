@@ -44,8 +44,9 @@ def _fake(ncomp=3, n=192, seed=11):
 def test_legacy_defaults_match_nmfwisp(ncomp):
     sci, err, src, tmpl, wmask, hsnr = _fake(ncomp=ncomp)
 
-    W_cf, model_cf, _sky = _nmf_amplitudes(
+    W_cf, model_cf, _sky, used = _nmf_amplitudes(
         sci, err, src, tmpl, wmask, hsnr, region='hsnr', sigma='ivar')
+    assert used == 'hsnr'
 
     data2, err2, mask2 = nmfwisp.process_data(
         sci.copy(), err.copy(), src.copy(), wmask)
@@ -64,10 +65,10 @@ def test_legacy_defaults_match_nmfwisp(ncomp):
 def test_region_and_sigma_knobs_change_the_fit():
     """Guard against the knobs silently becoming no-ops."""
     sci, err, src, tmpl, wmask, hsnr = _fake()
-    W_legacy, _m, _s = _nmf_amplitudes(sci, err, src, tmpl, wmask, hsnr,
-                                       region='hsnr', sigma='ivar')
-    W_new, _m2, _s2 = _nmf_amplitudes(sci, err, src, tmpl, wmask, hsnr,
-                                      region='t30', sigma='flat')
+    W_legacy, _m, _s, _u = _nmf_amplitudes(sci, err, src, tmpl, wmask, hsnr,
+                                           region='hsnr', sigma='ivar')
+    W_new, _m2, _s2, _u2 = _nmf_amplitudes(sci, err, src, tmpl, wmask, hsnr,
+                                           region='t30', sigma='flat')
     assert not np.allclose(W_legacy, W_new)
     assert np.all(W_new >= 0), 'NNLS must stay non-negative'
 
@@ -75,10 +76,14 @@ def test_region_and_sigma_knobs_change_the_fit():
 def test_degenerate_region_falls_back_rather_than_crashing():
     """A threshold that starves the fit must fall back, not raise or return junk."""
     sci, err, src, tmpl, wmask, hsnr = _fake()
-    W, model, _sky = _nmf_amplitudes(sci, err, src, tmpl, wmask, hsnr,
-                                     region='t99', sigma='flat')
+    W, model, _sky, used = _nmf_amplitudes(sci, err, src, tmpl, wmask, hsnr,
+                                           region='t99', sigma='flat')
     assert W.shape == (tmpl.shape[0],)
     assert np.all(np.isfinite(model))
+    # the fallback must be REPORTED, not silent -- CFP_WISP is stamped from
+    # this value, so a silent swap would claim t99 on an hSNR fit
+    assert used == 'hsnr(fallback)', (
+        f'starved region fell back but reported {used!r}')
 
 
 def test_unknown_options_are_rejected():
@@ -87,3 +92,31 @@ def test_unknown_options_are_rejected():
         _nmf_amplitudes(sci, err, src, tmpl, wmask, hsnr, region='nope')
     with pytest.raises(ValueError):
         _nmf_amplitudes(sci, err, src, tmpl, wmask, hsnr, sigma='nope')
+
+
+def test_exhausted_region_reports_none_rather_than_a_silent_no_op():
+    """Both regions starved must be distinguishable from a successful fit.
+
+    Returning zeros with no signal let ``_fit_nmf`` subtract nothing, stamp
+    ``CFP_WISP``, and log success — after which ``should_skip`` treats an
+    unsubtracted exposure as processed forever. The caller can only stamp the
+    ``skipped`` sentinel if the solve says it failed, so assert the contract:
+    ``region_used is None`` and the model is exactly zero.
+    """
+    sci, err, _src, tmpl, wmask, hsnr = _fake()
+    everything = np.ones(sci.shape, bool)          # nothing survives masking
+    W, model, _sky, used = _nmf_amplitudes(
+        sci, err, everything, tmpl, wmask, hsnr, region='t50', sigma='ivar')
+    assert used is None, f'exhausted fit reported {used!r} instead of None'
+    assert not np.any(model), 'exhausted fit must return an all-zero model'
+    assert W.shape == (tmpl.shape[0],)
+    assert not np.any(W)
+
+
+def test_successful_fit_reports_the_region_it_used():
+    """The happy path must echo the requested region, not a fallback."""
+    sci, err, src, tmpl, wmask, hsnr = _fake()
+    for region in ('hsnr', 't30'):
+        _W, _m, _s, used = _nmf_amplitudes(
+            sci, err, src, tmpl, wmask, hsnr, region=region, sigma='ivar')
+        assert used == region, f'{region} reported as {used!r}'

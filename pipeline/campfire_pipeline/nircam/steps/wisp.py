@@ -225,7 +225,15 @@ def _fit_region_mask(tmpl, hsnr, region):
 
 def _nmf_amplitudes(sci, err, srcmask, tmpl, wmask, hsnr,
                     region='hsnr', sigma='ivar'):
-    """Solve for the NMF template amplitudes. Returns ``(W, model, sky)``.
+    """Solve for the NMF template amplitudes.
+
+    Returns ``(W, model, sky, region_used)``. ``region_used`` is the region the
+    solve actually scored — ``region``, or ``'hsnr(fallback)'`` when the
+    requested one was too starved to fit, or **None** when even hSNR was, in
+    which case ``W`` and ``model`` are zeros and the caller must not treat the
+    exposure as subtracted. Reporting it is what keeps ``CFP_WISP`` honest: the
+    header would otherwise claim the configured region on an exposure that
+    silently fell back to the legacy one.
 
     campfire's own reproduction of the amplitude solve, so the two things that
     actually set the answer — the *fit region* and the *pixel weighting* — are
@@ -274,12 +282,14 @@ def _nmf_amplitudes(sci, err, srcmask, tmpl, wmask, hsnr,
 
     fit = reg & ~mask
     ncomp = tmpl.shape[0]
+    used = region
     if fit.sum() < 50 * ncomp:
         log(f'NMF fit region has only {int(fit.sum())} usable pixels for '
             f'{ncomp} component(s); falling back to the full hSNR region')
         fit = np.asarray(hsnr, bool) & ~mask
+        used = 'hsnr(fallback)'
         if fit.sum() < 50 * ncomp:
-            return np.zeros(ncomp), np.zeros_like(sci, dtype=np.float64), sky
+            return np.zeros(ncomp), np.zeros_like(sci, dtype=np.float64), sky, None
 
     if sigma == 'flat':
         sig = np.ones(int(fit.sum()), dtype=np.float64)
@@ -292,10 +302,10 @@ def _nmf_amplitudes(sci, err, srcmask, tmpl, wmask, hsnr,
     b = (sci[fit] - sky) / sig
     ok = np.isfinite(b) & np.all(np.isfinite(A), axis=1)
     if ok.sum() < 50 * ncomp:
-        return np.zeros(ncomp), np.zeros_like(sci, dtype=np.float64), sky
+        return np.zeros(ncomp), np.zeros_like(sci, dtype=np.float64), sky, None
 
     W, _ = nnls(A[ok], b[ok])
-    return W, np.einsum('i,imn->mn', W, tmpl), sky
+    return W, np.einsum('i,imn->mn', W, tmpl), sky, used
 
 
 def _source_mask(data, nsigma=3.0, npixels=55, dilate=8):
@@ -416,7 +426,11 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
             "fitting NMF without a source mask")
 
     if correct_1f:
-        # the 1/f path lives entirely inside nmfwisp; no campfire equivalent
+        # The 1/f path lives entirely inside nmfwisp; no campfire equivalent.
+        # fit_wisp always runs nmfwisp's own hSNR/ivar solve, so the configured
+        # region/sigma are NOT honoured here — record what actually ran, not
+        # what was asked for, or the header would claim a calibration this
+        # exposure never received.
         from nmfwisp import fit_wisp
         wisp, _wisp_e = fit_wisp(
             sci_before, model.err, mask,
@@ -425,13 +439,36 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
             correct_1f=True,
         )
         W = None
+        if (fit_region_name, fit_sigma) != ('hsnr', 'ivar'):
+            log(f'nmf_correct_1f=True delegates to nmfwisp, which always fits '
+                f'hsnr/ivar; the configured {fit_region_name}/{fit_sigma} is '
+                f'not applied and is not recorded for {rootname}')
+        region_used, sigma_used = 'hsnr', 'ivar'
     else:
         from nmfwisp.nmfwisp import load_wisp_templates
         tmpl, _terr, wmask, hsnr = load_wisp_templates(
             shim, detector, filtname.upper())
-        W, wisp, _sky = _nmf_amplitudes(
+        W, wisp, _sky, region_used = _nmf_amplitudes(
             sci_before, model.err, mask, tmpl, wmask, hsnr,
             region=fit_region_name, sigma=fit_sigma)
+        sigma_used = fit_sigma
+        if region_used is None:
+            # Nothing left to fit. Subtracting the all-zero model and stamping
+            # success would mark an UNSUBTRACTED exposure as processed, and
+            # should_skip would then never revisit it. Leave SCI untouched and
+            # stamp a distinct sentinel instead.
+            log(f'NMF fit region is exhausted for {rootname} (source mask '
+                f'leaves too few pixels in both {fit_region_name} and hSNR); '
+                f'stamping skipped, SCI left untouched')
+            # model.data is still pristine here — the subtraction happens below
+            atomic_save(
+                model, exposure_file,
+                header_updates=cfp.format(
+                    CFP_WISP=f'skipped (fit region exhausted: '
+                             f'{fit_region_name})'),
+            )
+            model.close()
+            return
     wisp = np.nan_to_num(np.asarray(wisp, dtype=np.float64), nan=0.0)
     wisp[sci_before == 0] = 0
     model.data = (sci_before - wisp).astype(model.data.dtype)
@@ -451,7 +488,7 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
     # from a deployed product. It is also the only way to tell an old-fit
     # product from a new-fit one, since the nmfwisp version string does not
     # change when the region/sigma defaults do.
-    prov = f'nmf {ver} region={fit_region_name} sigma={fit_sigma}'
+    prov = f'nmf {ver} region={region_used} sigma={sigma_used}'
     if W is not None:
         prov += ' W=' + ','.join(f'{x:.5g}' for x in np.atleast_1d(W))
     else:
