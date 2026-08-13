@@ -225,6 +225,8 @@ def make_scene(preset='cluster', shape=(2048, 2048), channel='sw', seed=0,
                amp_dc_sigma=0.5, banding_sigma=0.3, colstripe_sigma=0.15,
                n_bright=5, bright_flux_range=(2e5, 2e6),
                bright_halo_peak_sigma=2.0,
+               giant=False, giant_flux=5e6, giant_re=90.0,
+               giant_halo_peak_sigma=4.0,
                sky_patch_amp=0.0, sky_patch_scale=400.0):
     """Build a Scene.
 
@@ -335,6 +337,22 @@ def make_scene(preset='cluster', shape=(2048, 2048), channel='sw', seed=0,
                    bx[i], by[i], 'galaxy') for i in range(n_bright)]
         bright = [(bx[i], by[i], bre[i], bq[i], bpa[i], bflux[i])
                   for i in range(n_bright)]
+        if giant:
+            # BCG-scale stress case: body far larger than any field member,
+            # centered ON an amp boundary so it spans amps by construction;
+            # its halo envelope (4 x r_e, n=1, giant_halo_peak_sigma) can
+            # cover most of an amp's width
+            gx = int(np.clip(1024 + rng.integers(-60, 60),
+                             margin, W - margin))
+            gy = int(rng.integers(2 * H // 5, 3 * H // 5))
+            gq = rng.uniform(0.6, 0.85)
+            gpa = rng.uniform(0, np.pi)
+            gre = giant_re * scale
+            comps.append((giant_flux * sigma, gre, 4.0, gq, gpa,
+                          gx, gy, 'galaxy'))
+            giant_env = (gx, gy, gre, gq, gpa)
+        else:
+            giant_env = None
 
     for f, re_i, ni, qi, pai, ix, iy, kind in comps:
         stamp, dx, dy = render_sersic_stamp(rng, f, re_i, ni, qi, pai)
@@ -367,8 +385,14 @@ def make_scene(preset='cluster', shape=(2048, 2048), channel='sw', seed=0,
         # misattribution, not their removal). Peak scales weakly with the
         # body flux so the brightest galaxies carry the biggest halos.
         fmax = max(f for *_, f in bright)
-        for hx, hy, re_i, qi, pai, f in bright:
-            peak = bright_halo_peak_sigma * sigma * (f / fmax) ** 0.5
+        envs = [(hx, hy, re_i, qi, pai,
+                 bright_halo_peak_sigma * sigma * (f / fmax) ** 0.5)
+                for hx, hy, re_i, qi, pai, f in bright]
+        if giant_env is not None:
+            gx, gy, gre, gq, gpa = giant_env
+            envs.append((gx, gy, gre, gq, gpa,
+                         giant_halo_peak_sigma * sigma))
+        for hx, hy, re_i, qi, pai, peak in envs:
             plane = _render_fullframe_sersic(shape, hx, hy, 4.0 * re_i, 1.0,
                                              qi, pai, peak)
             scene.icl += plane

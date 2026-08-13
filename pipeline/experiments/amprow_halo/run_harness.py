@@ -81,6 +81,12 @@ ARMS = {
                                  'filter_size': [1, 5]}},
     'aniso_y96x32': {'detrend': {'box_size': 96, 'box_size_x': 32,
                                  'filter_size': [1, 5]}},
+    # aniso conditioning + no b2d map-outlier reject: tests whether reject
+    # (which re-flags halo bumps in the map as leaked source flux) is what
+    # caps the smooth residual the 2-D fit leaves around bright galaxies
+    'aniso_y96x32_norej': {'detrend': {'box_size': 96, 'box_size_x': 32,
+                                       'filter_size': [1, 5]},
+                           'bkg2d': {'reject': False}},
     # selective growth + anchor floor: starved rows (< 50 px) become true
     # GP gaps instead of overconfident anchors
     'sel_d80_floor': {'striping': {'extra_dilate': 80,
@@ -237,6 +243,9 @@ def main():
     ap.add_argument('--n-bright', type=int, default=5)
     ap.add_argument('--halo-peak', type=float, default=2.0,
                     help='bright-galaxy halo envelope peak, in sigma_pix')
+    ap.add_argument('--giant', action='store_true',
+                    help='add a BCG-scale galaxy (r_e ~90 px body, ~360 px '
+                         'halo envelope) centered on an amp boundary')
     ap.add_argument('--sky-patch-amp', type=float, default=0.10,
                     help='complex smooth background amplitude, in sky units')
     ap.add_argument('--quick', action='store_true',
@@ -259,6 +268,7 @@ def main():
     scene = make_scene(preset='brightfield', shape=shape, channel='sw',
                        seed=args.seed, n_gal=n_gal, n_bright=args.n_bright,
                        bright_halo_peak_sigma=args.halo_peak,
+                       giant=args.giant,
                        sky_patch_amp=args.sky_patch_amp,
                        inject_1f=True)
     sig = scene.sigma
