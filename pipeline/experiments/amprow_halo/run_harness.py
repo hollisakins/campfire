@@ -200,6 +200,23 @@ def plot_compare(path, rows, sigma, kind):
     plt.close(fig)
 
 
+def amprow_ledger_error(h, stripes):
+    """Fitted amp-row profile minus the injected truth banding, per amp,
+    both zero-DC per amp — the isolator for row-wise MISattribution (halo
+    theft, noise-following). Zero everywhere = perfect amp-row estimate;
+    the real banding is removed from view by construction."""
+    err = np.zeros_like(h)
+    W = h.shape[1]
+    for c0 in range(0, W, 512):
+        c1 = min(c0 + 512, W)
+        hprof = np.median(h[:, c0:c1], axis=1)
+        tprof = np.median(stripes[:, c0:c1], axis=1)
+        hprof = hprof - np.median(hprof)
+        tprof = tprof - np.median(tprof)
+        err[:, c0:c1] = (hprof - tprof)[:, None]
+    return err
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--out', default='out')
@@ -261,6 +278,7 @@ def main():
 
     gray_rows = [('input', image, None)]
     err_rows = []
+    hrow_rows = []
     for name in arm_names:
         print(f'-- arm {name}', flush=True)
         sc = deep_merge(defaults, ARMS[name])
@@ -299,6 +317,13 @@ def main():
                               h, np.zeros_like(srcmask), sig,
                               f'{name}: accumulated amp-row term h [±'
                               f'{ERR_SPAN:.1f}σ]')
+            hrow = amprow_ledger_error(np.asarray(h, dtype=np.float64),
+                                       scene.stripes)
+            plot_single_error(os.path.join(args.out, f'{name}_hrow_err.png'),
+                              hrow, np.zeros_like(srcmask), sig,
+                              f'{name}: amp-row ledger error (fitted − '
+                              f'injected banding) [±{ERR_SPAN:.1f}σ]')
+            hrow_rows.append((f'{name}: amp-row ledger error', hrow, None))
 
         gray_rows.append((f'{name}: after', after, None))
         err_rows.append((f'{name}: after − target', err_map, srcmask))
@@ -317,6 +342,9 @@ def main():
                  gray_rows, sig, 'gray')
     plot_compare(os.path.join(args.out, 'compare_error.png'),
                  err_rows, sig, 'error')
+    if hrow_rows:
+        plot_compare(os.path.join(args.out, 'compare_hrow_err.png'),
+                     hrow_rows, sig, 'error')
 
     if not args.keep_fits:
         shutil.rmtree(workdir, ignore_errors=True)
