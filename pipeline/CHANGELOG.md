@@ -54,6 +54,29 @@ Release procedure: edit the `## Unreleased` section below, then run
   rebuilt tile — the only behavior removed is the corruption path — but the
   new header keyword is an (additive) output-structure change.
 
+- **The NMF wisp amplitude solve now lives in campfire, and `CFP_WISP` records
+  what the fit decided.** `_fit_nmf` previously called `nmfwisp.fit_wisp`, which
+  hardcodes both the fit region (the template's `MASK_hSNR`) and the pixel
+  weighting (the ERR array) — neither reachable through its public API, and both
+  since measured to bias the amplitude low. The new `_nmf_amplitudes` does the
+  same solve with those two exposed as `[nircam.wisp].nmf_fit_region`
+  (`hsnr` | `tNN`, pixels above NN% of the template peak) and `nmf_fit_sigma`
+  (`ivar` | `flat`). `nmfwisp` remains the template provider; no private
+  function is imported. **Defaults (`hsnr`/`ivar`) reproduce
+  `estimate_wisp_standard` bit-for-bit** — verified against the production path
+  on four A2744 F200W detectors spanning 1- and 3-component templates: max
+  relative amplitude difference `1.4e-12`, max model difference `5e-16` of the
+  pixel noise. Pixel values are **unchanged** until a config opts in — this is
+  Algorithm rather than Calibration because it is the `CFP_WISP` output
+  structure that changes, additively, not the pixels (same basis as the
+  `CFP_BKGS` entry above); the default flip that *does* move pixels is the
+  separate Calibration entry below. `CFP_WISP` grows from `nmf <ver>` to
+  `nmf <ver> region=<r> sigma=<s> W=<a1>,<a2>,...`, which (a) makes an otherwise
+  destructive in-place step invertible, since the model is exactly
+  `W . templates` over versioned reference data, and (b) is the only way to tell
+  an old-fit product from a new-fit one — the `nmfwisp` version string does not
+  change when the fit configuration does. The `nmf_correct_1f=True` path still
+  delegates to `fit_wisp`, as the 1/f correction has no campfire equivalent.
 ### Calibration
 - **The NMF wisp fit now scores only pixels above 50% of the template peak
   (`[nircam.wisp].nmf_fit_region` `"hsnr"` -> `"t50"`). SW wisp-detector pixel
@@ -81,27 +104,6 @@ Release procedure: edit the `## Unreleased` section below, then run
   distinguishable and the subtraction stays invertible.
 
 ### Infrastructure
-- **The NMF wisp amplitude solve now lives in campfire, and `CFP_WISP` records
-  what the fit decided.** `_fit_nmf` previously called `nmfwisp.fit_wisp`, which
-  hardcodes both the fit region (the template's `MASK_hSNR`) and the pixel
-  weighting (the ERR array) — neither reachable through its public API, and both
-  since measured to bias the amplitude low. The new `_nmf_amplitudes` does the
-  same solve with those two exposed as `[nircam.wisp].nmf_fit_region`
-  (`hsnr` | `tNN`, pixels above NN% of the template peak) and `nmf_fit_sigma`
-  (`ivar` | `flat`). `nmfwisp` remains the template provider; no private
-  function is imported. **Defaults (`hsnr`/`ivar`) reproduce
-  `estimate_wisp_standard` bit-for-bit** — verified against the production path
-  on four A2744 F200W detectors spanning 1- and 3-component templates: max
-  relative amplitude difference `1.4e-12`, max model difference `5e-16` of the
-  pixel noise. Pixel values are therefore **unchanged** until a config opts in,
-  so this is Infrastructure; flipping the defaults later is a separate
-  Calibration change. `CFP_WISP` grows from `nmf <ver>` to
-  `nmf <ver> region=<r> sigma=<s> W=<a1>,<a2>,...`, which (a) makes an otherwise
-  destructive in-place step invertible, since the model is exactly
-  `W . templates` over versioned reference data, and (b) is the only way to tell
-  an old-fit product from a new-fit one — the `nmfwisp` version string does not
-  change when the fit configuration does. The `nmf_correct_1f=True` path still
-  delegates to `fit_wisp`, as the 1/f correction has no campfire equivalent.
 - The drizzle **CONTEXT extension is now written tile-compressed** (GZIP_1,
   lossless), controlled by `[nircam.resample].compress_context` (default
   `true`) and applied on **both** `implementation` backends. `CON` carries one
