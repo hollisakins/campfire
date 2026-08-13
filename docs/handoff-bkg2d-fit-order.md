@@ -4,10 +4,12 @@
 > described below was run (with `reject=false`); by eye the artifacts were
 > sometimes reduced but often *worse* with `fit_order="first"`. The knob
 > remains in the code for reference but should stay `"last"`. The mitigation
-> effort moved to the 1/f fit-mask lever
-> (`[nircam.bkg.striping].extra_dilate`) evaluated on the eye-first
-> synthetic harness at `pipeline/experiments/amprow_halo/` — see its README.
-> This document is retained for the mechanism analysis and the reject
+> effort moved to the eye-first synthetic harness at
+> `pipeline/experiments/amprow_halo/`, where the 1/f fit-mask-growth levers
+> were also rejected and the **anisotropic conditioning detrend**
+> (`[nircam.bkg.detrend].box_size_x`) emerged as the surviving candidate —
+> real-frame test instructions in `docs/handoff-aniso-detrend.md`. This
+> document is retained for the mechanism analysis and the reject
 > interaction, which still hold.
 
 **Branch:** `claude/nircam-bkg-amp-row-oversubtraction-4t12t6`

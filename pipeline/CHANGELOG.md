@@ -74,7 +74,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   `strp_dilate` in `CFP_BKG` when nonzero. Evaluated on the new eye-first
   synthetic harness `experiments/amprow_halo` (brightfield scene: bright
   amp-spanning ellipticals with halo envelopes + complex smooth sky +
-  injected 1/f, run through the real `bkg_step`, judged from PNGs).
+  injected 1/f, run through the real `bkg_step`, judged from PNGs) — where
+  the mask-growth levers were also rejected (global growth injects
+  row/column noise; selective growth cannot out-run halos broader than the
+  push). The surviving candidate is the **anisotropic conditioning
+  detrend**: with `[nircam.bkg.detrend].box_size_x > 0`, `box_size` becomes
+  the y (row) box and `box_size_x` a finer x box (evaluated at 96×32,
+  `filter_size = [1, 5]`). Banding is fine in y and constant in x within an
+  amp while halo structure is smooth in both, so a y-coarse/x-fine fit-only
+  mesh is banding-blind by construction (~4% pass-through of a ρ≈20 pattern
+  at 96 rows) yet follows halo column profiles, and, fit full-width and
+  smooth in x, cannot represent amp-dependent banding at any scale. On the
+  harness (standard + giant-BCG stress scenes) it removed the amp-row
+  misattribution nearly completely with no visible banding absorption;
+  provenance records `detrend=boxYxX`. Default `box_size_x = 0` (square
+  legacy box — no behavior change); real-frame validation instructions in
+  `docs/handoff-aniso-detrend.md`.
 - **Mosaic background subtraction is now recorded by a `CFP_BKGS` stamp on the
   i2d primary header, making `_i2d_before_bkgsub.fits` deletable** (issue
   #427). Previously the snapshot's *existence on disk* was the only

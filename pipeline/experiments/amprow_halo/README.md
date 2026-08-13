@@ -73,3 +73,15 @@ python run_harness.py --out out --seed 3 --halo-peak 3 --sky-patch-amp 0.15
 - 2026-08-13: harness created after the `fit_order='first'` reorder was
   rejected on real frames (sometimes better, often worse, by eye — with
   `reject=false`). First lever under test: `striping.extra_dilate`.
+- 2026-08-13 (later): mask-growth levers rejected on the harness (global
+  growth injects row/column noise via frame-wide anchor starvation;
+  selective growth at 80 px is a no-op — halos are broader than the push;
+  300 px trades blocks for fine noise lines). The **anisotropic
+  conditioning detrend** (`aniso_y96x32`: `detrend.box_size=96,
+  box_size_x=32, filter_size=[1,5]`) removed the amp-row misattribution
+  nearly completely on both the standard and `--giant` BCG stress scenes,
+  with no visible banding absorption; judged by eye (HA): "genuinely
+  pretty good", 96×32 preferred, marginally better with `bkg2d.reject =
+  false`. The remaining smooth halo-shaped residual is the b2d fit's own
+  error (identical in `ideal_1f`) — a separate workstream. Real-frame
+  validation: `docs/handoff-aniso-detrend.md`.
