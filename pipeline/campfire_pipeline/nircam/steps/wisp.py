@@ -206,6 +206,23 @@ def _calc_variance(data, template, coeff):
     return mad ** 2
 
 
+def _fit_region_mask(tmpl, hsnr, region):
+    """Pixels the NMF amplitude solve scores, before source masking.
+
+    ``'hsnr'`` is the template's own ``MASK_hSNR`` extension; ``'tNN'`` is
+    pixels above NN% of the summed template's peak.
+    """
+    tmpl = np.asarray(tmpl, dtype=np.float64)
+    if tmpl.ndim == 2:
+        tmpl = tmpl[None]
+    if region == 'hsnr':
+        return np.asarray(hsnr, bool)
+    if region.startswith('t') and region[1:].isdigit():
+        tot = tmpl.sum(0)
+        return tot > (int(region[1:]) / 100.0) * float(np.nanmax(tot))
+    raise ValueError(f'unknown nmf_fit_region {region!r}')
+
+
 def _nmf_amplitudes(sci, err, srcmask, tmpl, wmask, hsnr,
                     region='hsnr', sigma='ivar'):
     """Solve for the NMF template amplitudes. Returns ``(W, model, sky)``.
@@ -253,13 +270,7 @@ def _nmf_amplitudes(sci, err, srcmask, tmpl, wmask, hsnr,
     ref = ~(mask | np.asarray(wmask, bool))
     sky = float(np.nanmedian(sci[ref])) if ref.any() else 0.0
 
-    if region == 'hsnr':
-        reg = np.asarray(hsnr, bool)
-    elif region.startswith('t') and region[1:].isdigit():
-        tot = tmpl.sum(0)
-        reg = tot > (int(region[1:]) / 100.0) * float(np.nanmax(tot))
-    else:
-        raise ValueError(f'unknown nmf_fit_region {region!r}')
+    reg = _fit_region_mask(tmpl, hsnr, region)
 
     fit = reg & ~mask
     ncomp = tmpl.shape[0]
@@ -382,24 +393,28 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
 
     plot = step_config.get('plot', True)
     correct_1f = step_config.get('nmf_correct_1f', False)
-    nsigma = step_config.get('mask_nsigma', 3.0)
-    dilate = step_config.get('mask_dilate', 8)
-    # Defaults reproduce nmfwisp exactly; the A/B decides whether they move.
-    fit_region = step_config.get('nmf_fit_region', 'hsnr')
+    # 'hsnr'/'ivar' reproduce nmfwisp exactly; the region default is t50 (see
+    # config_default.toml for why). Both land verbatim in CFP_WISP below.
+    fit_region_name = step_config.get('nmf_fit_region', 't50')
     fit_sigma = step_config.get('nmf_fit_sigma', 'ivar')
 
     log(f"Running NMF wisp subtraction on {rootname}")
     model = ImageModel(exposure_file, memmap=False)
     sci_before = model.data.copy()
 
-    mask, found = _source_mask(model.data, nsigma=nsigma, dilate=dilate)
+    # wisp_path is the case shim when the installed nmfwisp needs it, else None
+    # (upstream default). See _nmfwisp_case_shim.
+    shim = _nmfwisp_case_shim()
+
+    mask, found = _source_mask(
+        model.data,
+        nsigma=step_config.get('mask_nsigma', 3.0),
+        dilate=step_config.get('mask_dilate', 8),
+    )
     if not found:
         log(f"Source detection found nothing for {rootname}; "
             "fitting NMF without a source mask")
 
-    # wisp_path is the case shim when the installed nmfwisp needs it, else None
-    # (upstream default). See _nmfwisp_case_shim.
-    shim = _nmfwisp_case_shim()
     if correct_1f:
         # the 1/f path lives entirely inside nmfwisp; no campfire equivalent
         from nmfwisp import fit_wisp
@@ -416,7 +431,7 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
             shim, detector, filtname.upper())
         W, wisp, _sky = _nmf_amplitudes(
             sci_before, model.err, mask, tmpl, wmask, hsnr,
-            region=fit_region, sigma=fit_sigma)
+            region=fit_region_name, sigma=fit_sigma)
     wisp = np.nan_to_num(np.asarray(wisp, dtype=np.float64), nan=0.0)
     wisp[sci_before == 0] = 0
     model.data = (sci_before - wisp).astype(model.data.dtype)
@@ -436,7 +451,7 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
     # from a deployed product. It is also the only way to tell an old-fit
     # product from a new-fit one, since the nmfwisp version string does not
     # change when the region/sigma defaults do.
-    prov = f'nmf {ver} region={fit_region} sigma={fit_sigma}'
+    prov = f'nmf {ver} region={fit_region_name} sigma={fit_sigma}'
     if W is not None:
         prov += ' W=' + ','.join(f'{x:.5g}' for x in np.atleast_1d(W))
     else:

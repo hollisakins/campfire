@@ -54,6 +54,32 @@ Release procedure: edit the `## Unreleased` section below, then run
   rebuilt tile — the only behavior removed is the corruption path — but the
   new header keyword is an (additive) output-structure change.
 
+### Calibration
+- **The NMF wisp fit now scores only pixels above 50% of the template peak
+  (`[nircam.wisp].nmf_fit_region` `"hsnr"` -> `"t50"`). SW wisp-detector pixel
+  values change.** `nmfwisp` fits over the template's `MASK_hSNR` extension,
+  which is misnamed: on A2744 F200W nrcb4 it is ~511k pixels of which ~90% lie
+  below 20% of the template peak, and a mirrored-model null test recovers as
+  much signal from those as from the real ones — they measure large-scale
+  background, not wisp. Being ~200x more numerous they set the fit, and NNLS
+  responds by zeroing the components that carry the filament: `W=[0.54,0,0]`.
+  At `t50` the same exposure gives `W=[0.84,0.70,0.75]`, all three components
+  live, and the filament clears.
+  **Validated on the delivered frame, not just the rate frame**: both arms were
+  run through the identical `wisp -> image2 -> edge -> bkg` chain (with
+  `subtract_2d`) on 12 exposures spanning 4 detectors, 5 filters, 1/2/3-
+  component templates and two fields. Under `hsnr` the filament **survives
+  `bkg` into the delivered product** — a 64 px background mesh cannot follow a
+  narrow filament — and under `t50` it does not. Diffuse over/under-subtraction
+  is not part of this: `bkg`'s applied 2-D background already absorbs it (79%
+  of a wisp-shaped signal at box 64), which is why the region, not the source
+  mask or a background term, is the lever that matters.
+  `nmf_fit_sigma` stays `"ivar"`: `"flat"` removes a real ERR-correlation bias
+  but over-subtracts across the matrix (mean core residual -0.38 sigma, worst
+  -1.54) and has blown up to `W=16` on low-wisp frames.
+  Amplitudes are recorded in `CFP_WISP`, so old- and new-fit products are
+  distinguishable and the subtraction stays invertible.
+
 ### Infrastructure
 - **The NMF wisp amplitude solve now lives in campfire, and `CFP_WISP` records
   what the fit decided.** `_fit_nmf` previously called `nmfwisp.fit_wisp`, which
