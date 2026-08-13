@@ -266,9 +266,28 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
         # box here would let the detrend absorb the banding/amp-DC detail the
         # per-amp terms are supposed to fit.
         det_box = max(1, int(round(det_cfg.get('box_size', 256) * f2)))
+        # Anisotropic conditioning (opt-in, box_size_x > 0): box_size stays
+        # the y (row) box; box_size_x sets a finer x box. Banding is fine in
+        # y and constant in x within an amp, the halo is smooth in both — so
+        # a y-coarse/x-fine mesh is banding-blind by construction (a 64-row
+        # box averages a rho~20 pattern to ~6%) while following the halo's
+        # column profile near bright galaxies, where the square coarse box
+        # cannot. Being fit full-width it is also continuous across amp
+        # boundaries, so the amp-DEPENDENT banding (h's unique job) is
+        # unrepresentable regardless of scale. Cost: common-mode row
+        # structure in the ~50-150-row band may be absorbed and then
+        # underfit by h. NOTE: rho is a readout property in native ROWS
+        # while box_size channel-scales as an angular length — at LW the
+        # scaled y-box is half as many rows, weakening the banding
+        # attenuation; revisit before enabling on LW.
+        det_box_x = int(round(det_cfg.get('box_size_x', 0) * f2))
+        det_boxes = (det_box, max(1, det_box_x)) if det_box_x > 0 else det_box
+        det_filter = det_cfg.get('filter_size', 3)
+        if isinstance(det_filter, list):
+            det_filter = tuple(det_filter)
         sb_det = SubtractBackground(
-            bg_box_size=det_box,
-            bg_filter_size=det_cfg.get('filter_size', 3),
+            bg_box_size=det_boxes,
+            bg_filter_size=det_filter,
             bg_sigma=det_cfg.get('sigma', 3.0),
             bg_exclude_percentile=det_cfg.get('exclude_percentile', 90),
             bg_reject=False,
@@ -500,7 +519,8 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
             f'estimator={estimator}, n_iter={n_iter}, channel={channel}, '
             f'pedestal={bkg_level:.5e}, ped_scope={ped_scope}, '
             f'var_factor={factor:.3f}, '
-            f'detrend={"box%d" % det_box if detrend_on else "off"}, '
+            f'detrend='
+            f'{("box%dx%d" % (det_box, det_box_x) if det_box_x > 0 else "box%d" % det_box) if detrend_on else "off"}, '
             f'subtract_2d={subtract_2d}'
         )
         if strp_extra_dilate > 0:

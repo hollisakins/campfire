@@ -332,6 +332,22 @@
         # matching Endsley's bw=128).
         enabled = true
         box_size = 256
+        # Anisotropic conditioning (opt-in): when > 0, box_size becomes the
+        # y (row) box and box_size_x sets a finer x box, e.g. 96 / 32.
+        # Rationale: banding is fine in y and constant in x within an amp;
+        # the halo/wing structure the amp-row terms steal is smooth in both.
+        # A y-coarse mesh is banding-blind by construction (a 64-row box
+        # averages a rho~20 pattern to ~6%, 96 rows to ~4%) while the fine x
+        # box follows halo column profiles near bright galaxies where the
+        # square coarse box cannot; fit full-width, it is also continuous
+        # across amp boundaries, so amp-DEPENDENT banding is unrepresentable
+        # at any scale. The rj0911 "fine boxes worse" A/B used SQUARE fine
+        # boxes (fine in y too — the configuration that absorbs banding);
+        # anisotropy was untested. Trade: common-mode row structure at
+        # ~50-150 rows may be conditioned away and underfit by h. filter_size
+        # may be a 2-list [y, x] (use [1, 5] to keep full y mesh resolution).
+        # Under evaluation on experiments/amprow_halo. 0 = square legacy box.
+        box_size_x = 0
         filter_size = 3
         sigma = 3.0
         exclude_percentile = 90

@@ -74,6 +74,13 @@ ARMS = {
     'sel_d300': {'striping': {'extra_dilate': 300,
                               'extra_dilate_min_area': 10000,
                               'gp': {'min_row_pixels': 50}}},
+    # anisotropic conditioning detrend: y-coarse (banding-blind by
+    # construction), x-fine (follows halo column profiles). filter [1, 5]
+    # keeps full y mesh resolution.
+    'aniso_y64x32': {'detrend': {'box_size': 64, 'box_size_x': 32,
+                                 'filter_size': [1, 5]}},
+    'aniso_y96x32': {'detrend': {'box_size': 96, 'box_size_x': 32,
+                                 'filter_size': [1, 5]}},
     # selective growth + anchor floor: starved rows (< 50 px) become true
     # GP gaps instead of overconfident anchors
     'sel_d80_floor': {'striping': {'extra_dilate': 80,
