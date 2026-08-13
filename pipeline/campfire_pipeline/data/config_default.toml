@@ -281,6 +281,14 @@
         # behavior). Under evaluation on the amprow_halo synthetic harness
         # (experiments/amprow_halo).
         extra_dilate = 0
+        # With extra_dilate > 0: grow ONLY source-tier footprints of at least
+        # this many px^2 (angular, channel-scaled x f^2). Growing every tier
+        # starves the amp-row anchors frame-wide (hundreds of faint sources
+        # each donate a grown disk) and the GP then follows sampling noise —
+        # measured on the amprow_halo harness: injected row/column striping
+        # and a remask runaway at extra_dilate=150. The artifact drivers are
+        # the few LARGE footprints; 0 grows everything (not recommended).
+        extra_dilate_min_area = 0
 
         [nircam.bkg.striping.gp]
             # rho = SHOTerm correlation length in *rows* (frozen; a detector
@@ -295,6 +303,13 @@
             q = 0.70710678
             sigma_clip = 2.0
             weak_frac = 0.5
+            # Amp-rows with fewer surviving background pixels than this do
+            # not anchor the GP (they become interpolated gap rows): a
+            # MAD-based sigma on a handful of pixels can make a starved,
+            # contaminated row an overconfident anchor. 0 = legacy (any row
+            # with >= 1 pixel anchors). Under evaluation on the amprow_halo
+            # harness alongside striping.extra_dilate.
+            min_row_pixels = 0
 
     [nircam.bkg.variance]
         # VAR_RNOISE rescale (folded in; uses the shared final source mask).

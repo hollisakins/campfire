@@ -60,11 +60,26 @@ from scene import make_scene  # noqa: E402
 # ---------------------------------------------------------------------------
 ARMS = {
     'baseline': {},
+    # global growth — kept as the cautionary reference: growing every tier
+    # starves the anchors frame-wide and injects row/column noise
     'strp_d40': {'striping': {'extra_dilate': 40}},
     'strp_d80': {'striping': {'extra_dilate': 80}},
     'strp_d150': {'striping': {'extra_dilate': 150}},
+    # selective growth: only footprints >= min_area px^2 (the few bright
+    # galaxies) are grown; faint-source anchors untouched
+    'sel_d80': {'striping': {'extra_dilate': 80,
+                             'extra_dilate_min_area': 10000}},
+    'sel_d150': {'striping': {'extra_dilate': 150,
+                              'extra_dilate_min_area': 10000}},
+    # selective growth + anchor floor: starved rows (< 50 px) become true
+    # GP gaps instead of overconfident anchors
+    'sel_d80_floor': {'striping': {'extra_dilate': 80,
+                                   'extra_dilate_min_area': 10000,
+                                   'gp': {'min_row_pixels': 50}}},
     'ideal_1f': {'striping': {'estimator': 'none'}},
 }
+DEFAULT_ARMS = ['baseline', 'sel_d80', 'sel_d150', 'sel_d80_floor',
+                'ideal_1f']
 
 
 def deep_merge(base, over):
@@ -189,7 +204,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--out', default='out')
     ap.add_argument('--seed', type=int, default=0)
-    ap.add_argument('--arms', default=','.join(ARMS),
+    ap.add_argument('--arms', default=','.join(DEFAULT_ARMS),
                     help='comma list from: ' + ', '.join(ARMS))
     ap.add_argument('--n-gal', type=int, default=450)
     ap.add_argument('--n-bright', type=int, default=5)

@@ -166,6 +166,14 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
     remask = strp_cfg.get('remask_each_iter', True)
     # Angular px (channel-scaled below, like the mask/bkg2d length params).
     strp_extra_dilate = float(strp_cfg.get('extra_dilate', 0.0))
+    # Only grow source-tier footprints at least this big (angular px^2,
+    # channel-scaled x f^2). 0 = grow everything. Growing ALL tiers starves
+    # the amp-row anchors frame-wide (hundreds of faint sources each donate
+    # a grown disk) and the GP then follows sampling noise — measured on the
+    # amprow_halo harness (strp_d150 arm): injected row/column striping and
+    # a remask runaway. The artifact driver is the few LARGE footprints, so
+    # grow only those.
+    strp_min_area = float(strp_cfg.get('extra_dilate_min_area', 0.0))
     gp_cfg = strp_cfg.get('gp', {})
     rho_short = gp_cfg.get('rho_short', 5.0)
     rho_long = gp_cfg.get('rho_long', 20.0)
@@ -315,6 +323,17 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
             # the applied 2-D fit keep their own masks.
             if strp_extra_dilate > 0:
                 src_only_1f = (srcbits >> 1) != 0
+                if strp_min_area > 0:
+                    # grow only the large footprints (the artifact drivers);
+                    # see the config-parse comment for why growing all tiers
+                    # backfires
+                    from scipy.ndimage import label as ndi_label
+                    lab, nlab = ndi_label(src_only_1f)
+                    if nlab:
+                        areas = np.bincount(lab.ravel())
+                        keep = areas >= strp_min_area * f2 * f2
+                        keep[0] = False
+                        src_only_1f = keep[lab]
                 grown_1f = (distance_transform_edt(~src_only_1f)
                             <= strp_extra_dilate * f2)
                 fitmask_1f = fitmask | grown_1f
@@ -404,6 +423,7 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
                     sigma_clip_sigma=gp_cfg.get('sigma_clip', 2.0),
                     maxiters=maxiters,
                     weak_frac=gp_cfg.get('weak_frac', 0.5),
+                    min_row_pixels=int(gp_cfg.get('min_row_pixels', 0)),
                     # pedestal is the chain's only per-amp DC carrier: the
                     # GP passes return zero-DC offsets (see gp_striping)
                     zero_dc=True,
