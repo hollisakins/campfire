@@ -71,6 +71,9 @@ ARMS = {
                              'extra_dilate_min_area': 10000}},
     'sel_d150': {'striping': {'extra_dilate': 150,
                               'extra_dilate_min_area': 10000}},
+    'sel_d300': {'striping': {'extra_dilate': 300,
+                              'extra_dilate_min_area': 10000,
+                              'gp': {'min_row_pixels': 50}}},
     # selective growth + anchor floor: starved rows (< 50 px) become true
     # GP gaps instead of overconfident anchors
     'sel_d80_floor': {'striping': {'extra_dilate': 80,
