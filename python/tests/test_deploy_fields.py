@@ -29,6 +29,9 @@ class _FakeTable:
     def select(self, _cols):
         return self
 
+    def in_(self, _col, _values):
+        return self
+
     def upsert(self, row, on_conflict=None):
         self.store["upserts"].append((self.name, on_conflict, row))
         return self
@@ -36,7 +39,7 @@ class _FakeTable:
     def execute(self):
         if self.name == "deployments":
             return types.SimpleNamespace(data=self.store.get("deployments", []))
-        return types.SimpleNamespace(data=[])
+        return types.SimpleNamespace(data=self.store.get(self.name, []))
 
 
 class _FakeClient:
@@ -92,7 +95,8 @@ def test_field_config_row_lifts_and_is_lossless():
     assert row["file_globs"] == ["jw01727*", "jw05893*"]
     assert row["center_ra"] == pytest.approx(150.1163)
     assert row["center_dec"] == pytest.approx(2.2009)
-    assert row["programs"] == []                       # slug resolution deferred
+    assert "programs" not in row     # resolved at write time (issue #454) —
+                                     # absent so upserts never clobber it
     assert row["display_name"] is None                 # RPC derives upper()
     # config is the whole section, verbatim (lossless).
     assert row["config"] == cfg
@@ -187,7 +191,8 @@ def test_upsert_field_on_deploy_writes_config_area_and_deployment(tmp_path, monk
     products = tmp_path / "products"
     products.mkdir()
     (products / "cosmos_layout.json").write_text(
-        json.dumps({"coverage_area_arcmin2": 1944.0, "coverage_area_deg2": 0.54}))
+        json.dumps({"coverage_area_arcmin2": 1944.0, "coverage_area_deg2": 0.54,
+                    "pixel_scale_arcsec": 0.5}))
     client = _FakeClient()
     assert F.upsert_field_on_deploy(client, products, "cosmos", 42) is True
     (name, on_conflict, row), = client.store["upserts"]
@@ -195,7 +200,37 @@ def test_upsert_field_on_deploy_writes_config_area_and_deployment(tmp_path, monk
     assert row["latest_deployment_id"] == 42
     assert row["coverage_area_arcmin2"] == 1944.0
     assert row["coverage_area_deg2"] == 0.54
+    assert row["expmap_pixel_scale_arcsec"] == 0.5
     assert row["filters"] == ["f115w", "f444w"]
+
+
+def test_upsert_field_on_deploy_lifts_pixel_scale_without_coverage(tmp_path, monkeypatch):
+    """The expmap grid scale rides its own guard: a layout JSON that records the
+    scale but no coverage area still populates the column the web Scale column
+    reads. (Pre-AREA layout JSONs exist in the wild.)"""
+    _write_root(tmp_path, monkeypatch)
+    products = tmp_path / "products"
+    products.mkdir()
+    (products / "cosmos_layout.json").write_text(
+        json.dumps({"pixel_scale_arcsec": 0.5}))
+    client = _FakeClient()
+    assert F.upsert_field_on_deploy(client, products, "cosmos", 42) is True
+    (_t, _c, row), = client.store["upserts"]
+    assert row["expmap_pixel_scale_arcsec"] == 0.5
+    assert "coverage_area_arcmin2" not in row
+
+
+def test_upsert_field_on_deploy_without_layout_omits_deploy_owned_columns(tmp_path, monkeypatch):
+    """No layout JSON at all: the upsert must not send the deploy-owned columns,
+    so a prior deploy's scale/area survive on the existing row."""
+    _write_root(tmp_path, monkeypatch)
+    products = tmp_path / "products"
+    products.mkdir()
+    client = _FakeClient()
+    assert F.upsert_field_on_deploy(client, products, "cosmos", 42) is True
+    (_t, _c, row), = client.store["upserts"]
+    assert "expmap_pixel_scale_arcsec" not in row
+    assert "coverage_area_arcmin2" not in row
 
 
 def test_upsert_field_on_deploy_skips_unknown_field(tmp_path, monkeypatch):

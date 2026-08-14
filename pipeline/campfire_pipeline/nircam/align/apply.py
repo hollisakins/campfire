@@ -19,6 +19,16 @@ in ``WCS_BAK``, so ``align`` must solve from the wcs_shift-corrected WCS and lea
 The reference catalog and config knobs arrive already resolved — refcat
 resolution / loading and ``[<field>.align]`` parsing live in the field-level
 orchestration.
+
+**Diagnostics on disk.** align's self-reported residual is measured on the very
+sample it matched, so it cannot expose a confident lock onto the wrong sources.
+Two outputs exist for INDEPENDENT validation: an ``ALGNCAT`` binary table per
+detector (every detection, its sky position under the WRITTEN WCS, and whether /
+how far it matched the reference — so overlapping exposures can be cross-checked
+against each other without drizzling anything), and the ``ALGN*`` scalar header
+keywords (detection / match / refcat-density counts plus the matcher's peak
+contrasts, which DO distinguish a decisive lock from an ambiguous one). Neither
+is read by the pipeline; they exist to be audited.
 """
 
 import io
@@ -49,7 +59,67 @@ from campfire_pipeline.nircam.association import exposure_key
 # WCS, backs it up here, and preserves wcs_shift's ``WCS_BAK`` untouched.
 ALGN_BAK_EXTNAME = 'ALGN_BAK'
 WCS_BAK_EXTNAME = 'WCS_BAK'          # wcs_shift's backup — preserved, never solved from
+# Per-source align diagnostics (one row per detection). Replaced — never
+# duplicated — on a re-solve, like the backup extensions above.
+ALGNCAT_EXTNAME = 'ALGNCAT'
 NOT_ALIGNED_SENTINEL = cfp.NOT_ALIGNED
+
+# Columns of the ALGNCAT table, in order: the detection catalog as the solve saw
+# it, plus the sky position under the WCS this file now carries and the match
+# outcome. ``ra``/``dec``/``ref_ra``/``ref_dec`` stay float64 (degrees at
+# milliarcsecond precision needs it); everything else is float32/int to keep the
+# extension small — it is written to every aligned canonical.
+_ALGNCAT_COLUMNS = (
+    ('x', 'f4'), ('y', 'f4'), ('ra', 'f8'), ('dec', 'f8'),
+    ('flux', 'f4'), ('fluxerr', 'f4'), ('mag', 'f4'), ('snr', 'f4'),
+    ('npix', 'i4'), ('id', 'i8'), ('matched', 'bool'),
+    ('sep_arcsec', 'f4'), ('ref_ra', 'f8'), ('ref_dec', 'f8'),
+)
+
+# Scalar align diagnostics, stamped on the primary header. Deliberately NOT
+# added to ``cfp.NIRCAM``: that keyset is the step-provenance *chain* — its order
+# drives ``reset --from`` slicing and it renders the ``status`` completion table —
+# and these keywords record how WELL the solve did, not that it ran. They follow
+# the same convention otherwise (a ``{key: comment}`` map, applied as
+# ``{key: (value, comment)}`` through ``atomic_save(header_updates=...)``).
+#
+# Every key is written on every solve, carrying ``ALGN_UNDEF`` when the quantity
+# was not measured — never omitted, so a re-solve can never leave a previous
+# solve's number standing (FITS headers forbid NaN and ``atomic_save`` sets
+# keywords rather than deleting them, so silence would mean staleness).
+ALGN_UNDEF = 'UNDEF'          # not measured (see :func:`_hdr_num`)
+ALGN_DIAG_COMMENTS = {
+    'ALGNNDET': 'align: sources detected on this detector',
+    'ALGNNMAT': 'align: sources matched 1-to-1 to the refcat',
+    'ALGNNREF': 'align: refcat sources in exposure footprint',
+    'ALGNGPK':  'align: gross 2D offset-hist peak height',
+    'ALGNGRU':  'align: gross runner-up peak height',
+    'ALGNGCON': 'align: gross peak contrast (peak/runner-up)',
+    'ALGNGMAS': 'align: gross peak neighbourhood mass (pairs)',
+    'ALGNXPK':  'align: dx consensus peak height',
+    'ALGNXFWH': 'align: dx consensus peak FWHM (arcsec)',
+    'ALGNXCON': 'align: dx peak contrast (peak/runner-up)',
+    'ALGNYPK':  'align: dy consensus peak height',
+    'ALGNYFWH': 'align: dy consensus peak FWHM (arcsec)',
+    'ALGNYCON': 'align: dy peak contrast (peak/runner-up)',
+    'ALGNHBIN': 'align: consensus histogram bin (arcsec)',
+    'ALGNSTAL': 'align: ALGNCAT does not match the current WCS',
+}
+
+# GroupSolution.diagnostics key -> FITS keyword (see histmatch's ``diag``).
+_ALGN_DIAG_KEYWORDS = {
+    'gross_peak': 'ALGNGPK',
+    'gross_runner_up': 'ALGNGRU',
+    'gross_contrast': 'ALGNGCON',
+    'gross_mass': 'ALGNGMAS',
+    'dx_peak': 'ALGNXPK',
+    'dx_fwhm_arcsec': 'ALGNXFWH',
+    'dx_contrast': 'ALGNXCON',
+    'dy_peak': 'ALGNYPK',
+    'dy_fwhm_arcsec': 'ALGNYFWH',
+    'dy_contrast': 'ALGNYCON',
+    'hist_binsize_arcsec': 'ALGNHBIN',
+}
 
 # Solve/detection knobs threaded from [<field>.align]; the orchestration passes
 # a resolved dict, these are the fallbacks. Per-filter PSF FWHM
@@ -63,7 +133,8 @@ _SOLVE_KEYS = ('coarse_searchrad', 'refine_niter',
                'fine_fitgeom', 'fine_min_general',
                'fine_min_rshift', 'fine_min_shift', 'tolerance', 'match_radius',
                'min_matched', 'min_coverage_arcsec', 'ref_border_arcmin',
-               'nclip', 'sigma', 'max_residual_arcsec')
+               'nclip', 'sigma', 'max_residual_arcsec',
+               'dva_repivot', 'dva_pivot', 'fine_min_significance')
 _DETECT_KEYS = ('fwhm', 'snr_thresh', 'minarea', 'deblend_nthresh',
                 'deblend_cont', 'edge', 'snr_min', 'objmag_lim')
 
@@ -87,11 +158,31 @@ def _deserialize_gwcs_from_hdu(hdu):
 
 
 def _stamp_algn(path, value):
-    """Atomically set CFP_ALGN=*value* (header only; WCS untouched)."""
+    """Atomically set CFP_ALGN=*value* (header only; WCS untouched).
+
+    Also marks any ``ALGNCAT`` from an earlier successful solve as **stale**
+    (``ALGNSTAL``), because this path leaves the extension in place: the WCS it
+    was computed against is not the one the file now carries. Marking is
+    deliberate rather than deleting the HDU — a datamodel round-trip registers
+    ``ALGNCAT`` in the embedded ASDF's ``extra_fits``, and dropping the HDU with
+    plain ``astropy`` (as here) would leave that reference dangling and break the
+    next datamodel load (see ``common.io.atomic_save``'s note). Consumers must
+    treat ``ALGNSTAL = T`` as "no per-source diagnostics for this WCS"; a later
+    successful solve rewrites both the extension and the flag.
+    """
     base, ext = os.path.splitext(path)
     tmp = f'{base}.tmp{ext}'
     with fits.open(path) as hdul:
         hdul[0].header['CFP_ALGN'] = (value, cfp.CFP_COMMENTS['CFP_ALGN'])
+        # Every scalar diagnostic describes ONE solve. A file re-solved to
+        # NOT_ALIGNED must not keep the counts and peak contrasts of an earlier
+        # successful run standing beside the rejection — that would read as
+        # provenance for the rejected attempt. Reset them all to UNDEF; the
+        # all-keys-on-every-solve contract is what makes staleness impossible.
+        for key in ALGN_DIAG_COMMENTS:
+            if key != 'ALGNSTAL':
+                hdul[0].header[key] = (ALGN_UNDEF, ALGN_DIAG_COMMENTS[key])
+        hdul[0].header['ALGNSTAL'] = (True, ALGN_DIAG_COMMENTS['ALGNSTAL'])
         hdul.writeto(tmp, overwrite=True)
     os.replace(tmp, path)
 
@@ -112,6 +203,80 @@ def _format_algn_value(det, refcat_hash=None):
     # orchestration skip check to re-solve when the refcat changes.
     base = f'dof={det.dof} res={det.residual_arcsec:.3g} n={det.n_matched}'
     return f'{base} rc={refcat_hash}' if refcat_hash else base
+
+
+def _hdr_num(value):
+    """A FITS-safe header value: the float/int itself, else :data:`ALGN_UNDEF`.
+
+    FITS headers cannot hold NaN/Inf, and an *undefined* (valueless) card is not
+    an option either: a datamodel round-trip pulls it into ``extra_fits`` as an
+    ``astropy.io.fits.card.Undefined``, which the embedded ASDF cannot serialize
+    — the next save raises. A short string is legal in both, so unmeasured
+    quantities are stamped rather than skipped, which is what keeps a re-solve
+    from leaving a previous solve's number standing.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return ALGN_UNDEF
+    if not np.isfinite(v):
+        return ALGN_UNDEF
+    return int(value) if isinstance(value, (int, np.integer)) else v
+
+
+def _diag_header_updates(solution, det):
+    """``{keyword: (value, comment)}`` for the scalar align diagnostics.
+
+    Every :data:`ALGN_DIAG_COMMENTS` key is present (undefined where unmeasured)
+    so a re-solve overwrites the previous solve's numbers wholesale. ``det`` is
+    this detector's :class:`~...solve.DetectorSolution`, *solution* its pool.
+    """
+    diag = solution.diagnostics or {}
+    values = {kw: _hdr_num(diag.get(k))
+              for k, kw in _ALGN_DIAG_KEYWORDS.items()}
+    values['ALGNNDET'] = _hdr_num(getattr(det, 'n_detected', None))
+    values['ALGNNMAT'] = _hdr_num(det.n_matched)
+    values['ALGNNREF'] = _hdr_num(solution.n_refcat_in_footprint)
+    # This solve wrote a matching ALGNCAT, so nothing is stale.
+    values['ALGNSTAL'] = False
+    return {kw: (values[kw], ALGN_DIAG_COMMENTS[kw])
+            for kw in ALGN_DIAG_COMMENTS}
+
+
+def _algncat_hdu(catalog, det):
+    """The per-source ``ALGNCAT`` table for one detector, or ``None``.
+
+    One row per detection — the catalog the solve worked from, its sky position
+    under *det*'s (final, accepted) WCS, and the match outcome — which is what
+    makes an independent check possible: two overlapping exposures can be
+    compared source-by-source without resampling either of them. Returns ``None``
+    (and logs) when the solve carried no per-source diagnostics or they are not
+    row-aligned with *catalog*, rather than writing a misleading table.
+    """
+    n = len(catalog)
+    matched = getattr(det, 'matched', None)
+    if matched is None or len(matched) != n:
+        log(f"align: no per-source diagnostics for {det.detector} "
+            f"({ALGNCAT_EXTNAME} not written).")
+        return None
+
+    ra, dec = det.wcs(np.asarray(catalog['x'], dtype=float),
+                      np.asarray(catalog['y'], dtype=float))
+    source = dict(catalog.columns)
+    source.update(ra=ra, dec=dec, matched=matched,
+                  sep_arcsec=det.sep_arcsec,
+                  ref_ra=det.ref_ra, ref_dec=det.ref_dec)
+
+    cols = {}
+    for name, dtype in _ALGNCAT_COLUMNS:
+        col = source.get(name)
+        fill = False if dtype == 'bool' else (0 if dtype[0] == 'i' else np.nan)
+        cols[name] = (np.full(n, fill, dtype=dtype) if col is None
+                      else np.asarray(col, dtype=dtype))
+    from astropy.table import Table
+    hdu = fits.BinTableHDU(Table(cols), name=ALGNCAT_EXTNAME)
+    hdu.header['ALGNDOF'] = (det.dof, 'align: geometry this WCS was fit with')
+    return hdu
 
 
 def _exposure_mid_mjd(path):
@@ -205,10 +370,16 @@ def _load_detector(path, detector, detect_cfg, ImageModel):
 
 
 def _write_solution(path, corrected_wcs, cfp_value, ImageModel,
-                    update_fits_wcsinfo):
+                    update_fits_wcsinfo, *, algncat=None, diag_updates=None):
     """Write *corrected_wcs* back onto the canonical + stamp CFP_ALGN, stashing
     the pre-align gwcs in ALGN_BAK and preserving SRCMASK and any wcs_shift
-    ``WCS_BAK``."""
+    ``WCS_BAK``.
+
+    *algncat* (a ``BinTableHDU``) and *diag_updates* are the align diagnostics for
+    this detector. The table rides the same ``extra_hdus`` replace-or-append path
+    as the backup extensions, so a re-solve overwrites it in place rather than
+    accumulating copies; the keywords ride ``header_updates`` alongside CFP_ALGN,
+    in the one atomic write."""
     existing_algn_bak = None
     wcs_shift_bak = None
     srcmask_hdu = None
@@ -247,8 +418,11 @@ def _write_solution(path, corrected_wcs, cfp_value, ImageModel,
             extra_hdus.append(wcs_shift_bak)
         if srcmask_hdu is not None:
             extra_hdus.append(srcmask_hdu)
-        atomic_save(model, path,
-                    header_updates=cfp.format(CFP_ALGN=cfp_value),
+        if algncat is not None:
+            extra_hdus.append(algncat)
+        header_updates = cfp.format(CFP_ALGN=cfp_value)
+        header_updates.update(diag_updates or {})
+        atomic_save(model, path, header_updates=header_updates,
                     extra_hdus=extra_hdus)
     finally:
         model.close()
@@ -346,6 +520,10 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
         return GroupSolution(key, 'NOT_ALIGNED', None, None, None, 0, [])
 
     by_detector = {d.detector: d for d in solution.detectors}
+    # The detection catalogs are still live here (the solve read, never replaced,
+    # them), row-aligned with each solution's per-source diagnostic arrays — this
+    # is what ALGNCAT is built from.
+    by_input = {d.detector: d for d in detectors}
     for m in members:
         det_sol = by_detector.get(m.detector)
         # ``aligned=False`` marks a per-detector residual-gate reject inside an
@@ -353,9 +531,15 @@ def align_exposure_group(members, refcat, *, key=None, config=None,
         # preserved, quarantined from combine) like a failed pool.
         if (solution.status == 'SOLVED' and det_sol is not None
                 and getattr(det_sol, 'aligned', True)):
+            det_in = by_input.get(m.detector)
+            algncat = (_algncat_hdu(det_in.catalog, det_sol)
+                       if det_in is not None else None)
             _write_solution(m.path, det_sol.wcs,
                             _format_algn_value(det_sol, refcat_hash),
-                            ImageModel, update_fits_wcsinfo)
+                            ImageModel, update_fits_wcsinfo,
+                            algncat=algncat,
+                            diag_updates=_diag_header_updates(solution,
+                                                              det_sol))
         else:
             _stamp_algn(m.path, NOT_ALIGNED_SENTINEL)
 

@@ -332,10 +332,7 @@ CREATE POLICY "select_lists"
   ON object_lists FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
-    AND (
-      created_by = (SELECT auth.uid())
-      OR visibility IN ('public_read', 'public_edit')
-    )
+    AND id IN (SELECT public.viewable_list_ids())
   );
 
 DROP POLICY IF EXISTS "select_list_members" ON object_list_members;
@@ -343,16 +340,9 @@ CREATE POLICY "select_list_members"
   ON object_list_members FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
-    AND list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility IN ('public_read', 'public_edit')
-    )
+    AND list_id IN (SELECT public.viewable_list_ids())
     AND (
-      (object_id IS NULL AND list_id IN (
-        SELECT id FROM object_lists
-        WHERE created_by = (SELECT auth.uid()) OR visibility = 'public_edit'
-      ))
+      (object_id IS NULL AND list_id IN (SELECT public.member_editable_list_ids()))
       OR object_id IN (
         SELECT o.id FROM objects o
         WHERE o.programs && (SELECT public.accessible_program_slugs())
@@ -368,11 +358,7 @@ CREATE POLICY "select_list_audit"
   ON list_audit_log FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
-    AND list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility IN ('public_read', 'public_edit')
-    )
+    AND list_id IN (SELECT public.viewable_list_ids())
   );
 
 DROP POLICY IF EXISTS "select_spectra_by_access" ON spectra;

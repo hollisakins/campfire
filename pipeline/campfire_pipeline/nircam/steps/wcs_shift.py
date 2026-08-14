@@ -56,7 +56,14 @@ WCS_BAK_EXTNAME = 'WCS_BAK'
 # left in place they would read as current (the align skip check would trust
 # the stamp and never re-solve) while describing a WCS that no longer exists.
 _ALIGN_STAMP_KEYS = ('CFP_JHAT', 'CFP_ALGN')
-_ALGN_BAK_EXTNAME = 'ALGN_BAK'
+# Align's own extensions/keywords. Imported from the align I/O layer rather than
+# re-spelled, so a new diagnostic can never be added there and silently survive
+# a wcs_shift here. (align.apply does not import steps, so there is no cycle.)
+from campfire_pipeline.nircam.align.apply import (  # noqa: E402
+    ALGN_BAK_EXTNAME as _ALGN_BAK_EXTNAME,
+    ALGNCAT_EXTNAME as _ALGNCAT_EXTNAME,
+    ALGN_DIAG_COMMENTS as _ALGN_DIAG_KEYS,
+)
 
 
 def _scrub_alignment_state(model):
@@ -73,13 +80,18 @@ def _scrub_alignment_state(model):
     extra = getattr(model, 'extra_fits', None)
     if extra is None:
         return
-    if hasattr(extra, _ALGN_BAK_EXTNAME):
-        delattr(extra, _ALGN_BAK_EXTNAME)
+    # ALGNCAT holds each detection's sky position under the WCS align solved —
+    # which this step is about to replace. Carrying it (and its scalar
+    # diagnostics) across a shift would advertise stale positions as current, so
+    # both go with the alignment stamps.
+    for extname in (_ALGN_BAK_EXTNAME, _ALGNCAT_EXTNAME):
+        if hasattr(extra, extname):
+            delattr(extra, extname)
+    drop = set(_ALIGN_STAMP_KEYS) | set(_ALGN_DIAG_KEYS)
     prim = getattr(extra, 'PRIMARY', None)
     header = getattr(prim, 'header', None) if prim is not None else None
     if header is not None:
-        prim.header = [list(card) for card in header
-                       if card[0] not in _ALIGN_STAMP_KEYS]
+        prim.header = [list(card) for card in header if card[0] not in drop]
 
 
 def _match_rule(rootname, filtname, rules):

@@ -7,6 +7,7 @@ import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { SpectraTable } from '@/components/spectra/SpectraTable';
 import { SpectraFilterBar, AdvancedFilterOptions } from '@/components/spectra/SpectraFilterBar';
+import { PinnedObjectsBucket } from '@/components/spectra/PinnedObjectsBucket';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
 import { isValidSortColumn, defaultSortColumn } from '@/lib/actions/spectra-types';
 import { LogIn, Loader2, Info, KeyRound } from 'lucide-react';
@@ -198,12 +199,15 @@ function SpectraPageContent() {
         className="mb-6"
       />
 
-      {/* Page Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-text-primary mb-2">NIRSpec Spectra</h1>
-        <p className="text-text-secondary">
-          Browse and filter the CAMPFIRE spectroscopic catalog
-        </p>
+      {/* Page Header — pinned-objects bucket sits top-right, opposite the title */}
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-text-primary mb-2">NIRSpec Spectra</h1>
+          <p className="text-text-secondary">
+            Browse and filter the CAMPFIRE spectroscopic catalog
+          </p>
+        </div>
+        <PinnedObjectsBucket />
       </div>
 
       {/* Access Code Banner for users without proprietary access. Never for

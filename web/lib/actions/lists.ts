@@ -7,7 +7,56 @@ import type {
   ObjectListWithMembership,
   ObjectListOverview,
   ObjectListMemberWithObject,
+  ObjectListShareWithUser,
+  ListShareRole,
 } from '@/lib/types';
+
+type ServerSupabase = Awaited<ReturnType<typeof createClient>>;
+
+/**
+ * Fetch the current user's share roles (issue #450), keyed by list id.
+ * Used to attach `shared_role` to lists returned by the read actions.
+ */
+async function fetchMyShareRoles(
+  supabase: ServerSupabase,
+  userId: string | undefined,
+): Promise<Map<number, ListShareRole>> {
+  if (!userId) return new Map();
+  const { data } = await supabase
+    .from('object_list_shares')
+    .select('list_id, role')
+    .eq('user_id', userId);
+  return new Map((data ?? []).map(s => [s.list_id, s.role as ListShareRole]));
+}
+
+/**
+ * Whether the user may add/remove members of a list: owner, public_edit,
+ * or an editor-role share. Mirrors public.member_editable_list_ids() (RLS
+ * is the real enforcement; this exists for friendly error messages).
+ */
+async function canEditListMembers(
+  supabase: ServerSupabase,
+  listId: number,
+  userId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const { data: list } = await supabase
+    .from('object_lists')
+    .select('created_by, visibility')
+    .eq('id', listId)
+    .single();
+  if (!list) return { ok: false, error: 'Tag not found' };
+  if (list.created_by === userId || list.visibility === 'public_edit') {
+    return { ok: true };
+  }
+  const { data: share } = await supabase
+    .from('object_list_shares')
+    .select('role')
+    .eq('list_id', listId)
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (share?.role === 'editor') return { ok: true };
+  return { ok: false };
+}
 
 /**
  * Get all lists that an object belongs to, plus available lists for the add dropdown.
@@ -32,7 +81,8 @@ export async function getListsForObject(objectId: number): Promise<{
 
 /**
  * Get all lists available to the current user (for filter dropdowns and add-to-list UI).
- * Returns system lists + user's own lists + public_edit lists.
+ * Returns system lists + user's own lists + public lists + lists shared with the user
+ * (RLS does the filtering); each list carries the user's shared_role, if any.
  */
 export async function getAvailableLists(): Promise<{
   lists: ObjectList[];
@@ -40,17 +90,27 @@ export async function getAvailableLists(): Promise<{
 }> {
   const supabase = await createClient();
 
-  const { data, error } = await supabase
-    .from('object_lists')
-    .select('*')
-    .order('is_system', { ascending: false })
-    .order('name');
+  const { data: { user } } = await supabase.auth.getUser();
+
+  const [{ data, error }, shareRoles] = await Promise.all([
+    supabase
+      .from('object_lists')
+      .select('*')
+      .order('is_system', { ascending: false })
+      .order('name'),
+    fetchMyShareRoles(supabase, user?.id),
+  ]);
 
   if (error) {
     return { lists: [], error: error.message };
   }
 
-  return { lists: data ?? [] };
+  const lists: ObjectList[] = (data ?? []).map(list => ({
+    ...list,
+    shared_role: shareRoles.get(list.id) ?? null,
+  }));
+
+  return { lists };
 }
 
 /**
@@ -62,7 +122,9 @@ export async function getListsWithMembership(objectId: number): Promise<{
 }> {
   const supabase = await createClient();
 
-  const [listsResult, membersResult] = await Promise.all([
+  const { data: { user } } = await supabase.auth.getUser();
+
+  const [listsResult, membersResult, shareRoles] = await Promise.all([
     supabase
       .from('object_lists')
       .select('*')
@@ -72,6 +134,7 @@ export async function getListsWithMembership(objectId: number): Promise<{
       .from('object_list_members')
       .select('list_id')
       .eq('object_id', objectId),
+    fetchMyShareRoles(supabase, user?.id),
   ]);
 
   if (listsResult.error) return { lists: [], error: listsResult.error.message };
@@ -82,6 +145,7 @@ export async function getListsWithMembership(objectId: number): Promise<{
   const lists: ObjectListWithMembership[] = (listsResult.data ?? []).map(list => ({
     ...list,
     is_member: memberListIds.has(list.id),
+    shared_role: shareRoles.get(list.id) ?? null,
   }));
 
   return { lists };
@@ -109,15 +173,10 @@ export async function addObjectToList(
     .single();
   if (!profile?.can_comment) return { error: 'You do not have permission to edit tags' };
 
-  // Verify user can edit this list (owner or public_edit)
-  const { data: list } = await supabase
-    .from('object_lists')
-    .select('created_by, visibility')
-    .eq('id', listId)
-    .single();
-  if (!list) return { error: 'Tag not found' };
-  if (list.created_by !== user.id && list.visibility !== 'public_edit') {
-    return { error: 'You do not have permission to add objects to this tag' };
+  // Verify user can edit this list (owner, public_edit, or editor share)
+  const { ok, error: checkError } = await canEditListMembers(supabase, listId, user.id);
+  if (!ok) {
+    return { error: checkError ?? 'You do not have permission to add objects to this tag' };
   }
 
   const { error } = await supabase
@@ -154,15 +213,10 @@ export async function removeObjectFromList(
     .single();
   if (!profile?.can_comment) return { error: 'You do not have permission to edit tags' };
 
-  // Verify user can edit this list (owner or public_edit)
-  const { data: list } = await supabase
-    .from('object_lists')
-    .select('created_by, visibility')
-    .eq('id', listId)
-    .single();
-  if (!list) return { error: 'Tag not found' };
-  if (list.created_by !== user.id && list.visibility !== 'public_edit') {
-    return { error: 'You do not have permission to remove objects from this tag' };
+  // Verify user can edit this list (owner, public_edit, or editor share)
+  const { ok, error: checkError } = await canEditListMembers(supabase, listId, user.id);
+  if (!ok) {
+    return { error: checkError ?? 'You do not have permission to remove objects from this tag' };
   }
 
   const { error } = await supabase
@@ -439,11 +493,16 @@ export async function getListsOverview(): Promise<{
 }> {
   const supabase = await createClient();
 
-  const { data, error } = await supabase
-    .from('object_lists')
-    .select('*, object_list_members(count)')
-    .order('is_system', { ascending: false })
-    .order('name');
+  const { data: { user } } = await supabase.auth.getUser();
+
+  const [{ data, error }, shareRoles] = await Promise.all([
+    supabase
+      .from('object_lists')
+      .select('*, object_list_members(count)')
+      .order('is_system', { ascending: false })
+      .order('name'),
+    fetchMyShareRoles(supabase, user?.id),
+  ]);
 
   if (error) {
     return { lists: [], error: error.message };
@@ -458,6 +517,7 @@ export async function getListsOverview(): Promise<{
       ...list,
       member_count: object_list_members?.[0]?.count ?? 0,
       creator_name: list.created_by ? nameMap.get(list.created_by) ?? null : null,
+      shared_role: shareRoles.get(list.id) ?? null,
     };
   });
 
@@ -490,10 +550,21 @@ export async function getListBySlug(
     return { list: null, members: [], totalMembers: 0, error: listError.message };
   }
 
-  // Creator name
-  const nameMap = listData.created_by
-    ? await fetchCreatorNames(supabase, [listData.created_by])
-    : new Map<string, string>();
+  // Creator name + current user's share role (issue #450)
+  const { data: { user } } = await supabase.auth.getUser();
+  const [nameMap, shareResult] = await Promise.all([
+    listData.created_by
+      ? fetchCreatorNames(supabase, [listData.created_by])
+      : Promise.resolve(new Map<string, string>()),
+    user
+      ? supabase
+          .from('object_list_shares')
+          .select('role')
+          .eq('list_id', listData.id)
+          .eq('user_id', user.id)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
 
   const { object_list_members: countArr, ...listFields } = listData;
   const totalMembers = countArr?.[0]?.count ?? 0;
@@ -501,6 +572,7 @@ export async function getListBySlug(
     ...listFields,
     member_count: totalMembers,
     creator_name: listFields.created_by ? nameMap.get(listFields.created_by) ?? null : null,
+    shared_role: (shareResult.data?.role as ListShareRole | undefined) ?? null,
   };
 
   // Fetch paginated members with joined object data. NOTE: n_spectra / max_snr
@@ -596,4 +668,210 @@ export async function getMyLists(): Promise<{
   });
 
   return { lists };
+}
+
+// =============================================================================
+// Tag sharing (issue #450)
+// =============================================================================
+// RLS on object_list_shares enforces owner-only grant/role-change/revoke (a
+// grantee may only delete their own share); the checks here exist for
+// friendly error messages.
+
+/**
+ * Get the shares on a list, with grantee names (owner-facing management UI).
+ */
+export async function getListShares(listId: number): Promise<{
+  shares: ObjectListShareWithUser[];
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  const { data: shares, error } = await supabase
+    .from('object_list_shares')
+    .select('*')
+    .eq('list_id', listId)
+    .order('granted_at', { ascending: true });
+
+  if (error) {
+    return { shares: [], error: error.message };
+  }
+  if (!shares || shares.length === 0) {
+    return { shares: [] };
+  }
+
+  // No PostgREST-resolvable FK from shares.user_id to user_profiles (it
+  // references auth.users), so join manually.
+  const userIds = [...new Set(shares.map(s => s.user_id))];
+  const { data: profiles } = await supabase
+    .from('user_profiles')
+    .select('user_id, username, full_name')
+    .in('user_id', userIds);
+  const profileMap = new Map((profiles ?? []).map(p => [p.user_id, p]));
+
+  return {
+    shares: shares.map(s => ({
+      ...s,
+      username: profileMap.get(s.user_id)?.username ?? null,
+      full_name: profileMap.get(s.user_id)?.full_name ?? null,
+    })),
+  };
+}
+
+/**
+ * Search users to share a tag with (autocomplete). Matches username or full
+ * name; excludes the current user.
+ */
+export async function searchUsersForSharing(query: string): Promise<{
+  users: { user_id: string; username: string; full_name: string }[];
+  error?: string;
+}> {
+  const trimmed = query.trim();
+  if (trimmed.length < 2) return { users: [] };
+
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { users: [], error: 'Not authenticated' };
+
+  // Escape ILIKE wildcards, then double-quote the value for the or() filter —
+  // PostgREST's or() grammar splits on bare commas/parens, so an unquoted
+  // "Doe, John" would be parsed as two malformed conditions (HTTP 400).
+  const escaped = trimmed.replace(/[%_\\]/g, ch => `\\${ch}`).replace(/"/g, '\\"');
+
+  const { data, error } = await supabase
+    .from('user_profiles')
+    .select('user_id, username, full_name')
+    .neq('user_id', user.id)
+    .or(`username.ilike."%${escaped}%",full_name.ilike."%${escaped}%"`)
+    .order('username')
+    .limit(8);
+
+  if (error) {
+    return { users: [], error: error.message };
+  }
+
+  return { users: data ?? [] };
+}
+
+/**
+ * Share a tag with another user (owner only, non-system tags).
+ */
+export async function addListShare(
+  listId: number,
+  granteeUserId: string,
+  role: ListShareRole,
+): Promise<{ error?: string }> {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'Not authenticated' };
+
+  const { data: list } = await supabase
+    .from('object_lists')
+    .select('created_by, is_system')
+    .eq('id', listId)
+    .single();
+  if (!list) return { error: 'Tag not found' };
+  if (list.is_system) return { error: 'System tags cannot be shared' };
+  if (list.created_by !== user.id) return { error: 'Only the tag owner can manage sharing' };
+  if (granteeUserId === user.id) return { error: 'You cannot share a tag with yourself' };
+
+  const { error } = await supabase
+    .from('object_list_shares')
+    .insert({
+      list_id: listId,
+      user_id: granteeUserId,
+      role,
+      granted_by: user.id,
+    });
+
+  if (error) {
+    if (error.code === '23505') {
+      return { error: 'This tag is already shared with that user' };
+    }
+    return { error: error.message };
+  }
+
+  return {};
+}
+
+/**
+ * Change a share's role (owner only).
+ */
+export async function updateListShare(
+  shareId: number,
+  role: ListShareRole,
+): Promise<{ error?: string }> {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'Not authenticated' };
+
+  const { data, error } = await supabase
+    .from('object_list_shares')
+    .update({ role })
+    .eq('id', shareId)
+    .select('id');
+
+  if (error) {
+    return { error: error.message };
+  }
+  // RLS silently filters rows the caller may not update
+  if (!data || data.length === 0) {
+    return { error: 'Share not found or permission denied' };
+  }
+
+  return {};
+}
+
+/**
+ * Leave a tag that was shared with the current user (delete own share).
+ */
+export async function leaveSharedList(listId: number): Promise<{ error?: string }> {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'Not authenticated' };
+
+  const { data, error } = await supabase
+    .from('object_list_shares')
+    .delete()
+    .eq('list_id', listId)
+    .eq('user_id', user.id)
+    .select('id');
+
+  if (error) {
+    return { error: error.message };
+  }
+  if (!data || data.length === 0) {
+    return { error: 'This tag is not shared with you' };
+  }
+
+  return {};
+}
+
+/**
+ * Revoke a share. The owner can revoke any share on their tag; a grantee can
+ * remove their own share (leave the tag).
+ */
+export async function removeListShare(shareId: number): Promise<{ error?: string }> {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'Not authenticated' };
+
+  const { data, error } = await supabase
+    .from('object_list_shares')
+    .delete()
+    .eq('id', shareId)
+    .select('id');
+
+  if (error) {
+    return { error: error.message };
+  }
+  if (!data || data.length === 0) {
+    return { error: 'Share not found or permission denied' };
+  }
+
+  return {};
 }

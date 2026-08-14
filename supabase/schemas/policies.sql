@@ -398,7 +398,9 @@ CREATE POLICY "admin_object_photometry_delete"
 
 ALTER TABLE object_lists ENABLE ROW LEVEL SECURITY;
 
--- Users can see: their own lists + public lists + public_edit lists.
+-- Users can see: their own lists + public lists + public_edit lists + lists
+-- shared with them (issue #450). viewable_list_ids() (SECURITY DEFINER,
+-- functions.sql) is the single authority for that predicate.
 --
 -- Link accounts (docs/design-public-mirror.md §5.4) see no lists at all. A list
 -- is a curation artifact of the CAMPFIRE community, not part of a data scope --
@@ -409,10 +411,7 @@ CREATE POLICY "select_lists"
   ON object_lists FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
-    AND (
-      created_by = (SELECT auth.uid())
-      OR visibility IN ('public_read', 'public_edit')
-    )
+    AND id IN (SELECT public.viewable_list_ids())
   );
 
 -- Users can create lists (owned by them, non-system, non-group-account).
@@ -453,10 +452,11 @@ CREATE POLICY "admin_manage_lists"
 ALTER TABLE object_list_members ENABLE ROW LEVEL SECURITY;
 
 -- Members visible if:
---   1. The list is visible to the user, AND
+--   1. The list is visible to the user (owner / public / shared), AND
 --   2. The matched object (if any) has at least one accessible program
--- Members with NULL object_id (orphaned) are visible to the list owner
--- OR to anyone if the list is public_edit (so co-editors can see orphans).
+-- Members with NULL object_id (orphaned) are visible to anyone who can edit
+-- the list's members (owner, public_edit, editor-role share) — co-editors
+-- need to see orphans; read-only viewers don't.
 -- Link accounts (docs/design-public-mirror.md §5.4) see no list members: they
 -- see no lists at all (select_lists), and membership would leak which sources
 -- CAMPFIRE users have curated together.
@@ -465,16 +465,9 @@ CREATE POLICY "select_list_members"
   ON object_list_members FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
-    AND list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility IN ('public_read', 'public_edit')
-    )
+    AND list_id IN (SELECT public.viewable_list_ids())
     AND (
-      (object_id IS NULL AND list_id IN (
-        SELECT id FROM object_lists
-        WHERE created_by = (SELECT auth.uid()) OR visibility = 'public_edit'
-      ))
+      (object_id IS NULL AND list_id IN (SELECT public.member_editable_list_ids()))
       OR object_id IN (
         SELECT o.id FROM objects o
         WHERE o.programs && (SELECT public.accessible_program_slugs())
@@ -485,52 +478,37 @@ CREATE POLICY "select_list_members"
     )
   );
 
--- can_comment users can add members to own lists + public_edit lists.
+-- can_comment users can add members to own lists + public_edit lists +
+-- editor-role shared lists.
 DROP POLICY IF EXISTS "insert_list_members" ON object_list_members;
 CREATE POLICY "insert_list_members"
   ON object_list_members FOR INSERT TO authenticated
   WITH CHECK (
     (SELECT public.can_comment())
-    AND list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility = 'public_edit'
-    )
+    AND list_id IN (SELECT public.member_editable_list_ids())
   );
 
--- can_comment users can update members in own lists + public_edit lists
+-- can_comment users can update members in member-editable lists
 -- (needed for upsert ON CONFLICT DO UPDATE when re-linking coordinate entries).
 DROP POLICY IF EXISTS "update_list_members" ON object_list_members;
 CREATE POLICY "update_list_members"
   ON object_list_members FOR UPDATE TO authenticated
   USING (
     (SELECT public.can_comment())
-    AND list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility = 'public_edit'
-    )
+    AND list_id IN (SELECT public.member_editable_list_ids())
   )
   WITH CHECK (
     (SELECT public.can_comment())
-    AND list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility = 'public_edit'
-    )
+    AND list_id IN (SELECT public.member_editable_list_ids())
   );
 
--- can_comment users can remove members from own lists + public_edit lists.
+-- can_comment users can remove members from member-editable lists.
 DROP POLICY IF EXISTS "delete_list_members" ON object_list_members;
 CREATE POLICY "delete_list_members"
   ON object_list_members FOR DELETE TO authenticated
   USING (
     (SELECT public.can_comment())
-    AND list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility = 'public_edit'
-    )
+    AND list_id IN (SELECT public.member_editable_list_ids())
   );
 
 -- Admins can manage all list members.
@@ -546,26 +524,90 @@ CREATE POLICY "admin_manage_list_members"
 
 ALTER TABLE list_audit_log ENABLE ROW LEVEL SECURITY;
 
--- Audit log visible if the parent list is visible. Link accounts see no lists
--- (select_lists), so the same conjunct keeps their edit history hidden too --
--- restated here rather than inherited, matching how every other policy in this
--- file re-derives its access check inline.
+-- Audit log visible if the parent list is visible (owner / public / shared).
+-- Link accounts see no lists (select_lists), so the same conjunct keeps their
+-- edit history hidden too -- restated here rather than inherited, matching how
+-- every other policy in this file re-derives its access check inline.
 DROP POLICY IF EXISTS "select_list_audit" ON list_audit_log;
 CREATE POLICY "select_list_audit"
   ON list_audit_log FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
-    AND list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility IN ('public_read', 'public_edit')
-    )
+    AND list_id IN (SELECT public.viewable_list_ids())
   );
 
 -- Admins can see all list audit entries.
 DROP POLICY IF EXISTS "admin_select_list_audit" ON list_audit_log;
 CREATE POLICY "admin_select_list_audit"
   ON list_audit_log FOR SELECT TO authenticated
+  USING ((SELECT public.is_admin()));
+
+
+-- =============================================================================
+-- object_list_shares  (tag sharing, issue #450)
+-- =============================================================================
+-- NOTE: policies here reference object_lists via plain subqueries; that is
+-- safe from RLS recursion because the object_lists policies reach shares only
+-- through the SECURITY DEFINER helpers (viewable_list_ids et al.), which do
+-- not re-enter policy evaluation.
+
+ALTER TABLE object_list_shares ENABLE ROW LEVEL SECURITY;
+
+-- Grantees see their own share rows; list owners see all shares on their lists.
+DROP POLICY IF EXISTS "select_list_shares" ON object_list_shares;
+CREATE POLICY "select_list_shares"
+  ON object_list_shares FOR SELECT TO authenticated
+  USING (
+    user_id = (SELECT auth.uid())
+    OR list_id IN (
+      SELECT id FROM object_lists WHERE created_by = (SELECT auth.uid())
+    )
+  );
+
+-- Only the list owner grants shares, on their own non-system lists. granted_by
+-- is stamped with the grantor; self-shares are pointless and disallowed.
+DROP POLICY IF EXISTS "insert_list_shares" ON object_list_shares;
+CREATE POLICY "insert_list_shares"
+  ON object_list_shares FOR INSERT TO authenticated
+  WITH CHECK (
+    granted_by = (SELECT auth.uid())
+    AND user_id <> (SELECT auth.uid())
+    AND list_id IN (
+      SELECT id FROM object_lists
+      WHERE created_by = (SELECT auth.uid()) AND is_system = false
+    )
+  );
+
+-- Only the list owner changes a share's role.
+DROP POLICY IF EXISTS "update_list_shares" ON object_list_shares;
+CREATE POLICY "update_list_shares"
+  ON object_list_shares FOR UPDATE TO authenticated
+  USING (
+    list_id IN (
+      SELECT id FROM object_lists WHERE created_by = (SELECT auth.uid())
+    )
+  )
+  WITH CHECK (
+    list_id IN (
+      SELECT id FROM object_lists WHERE created_by = (SELECT auth.uid())
+    )
+  );
+
+-- The list owner revokes shares; grantees can remove their own share (leave).
+DROP POLICY IF EXISTS "delete_list_shares" ON object_list_shares;
+CREATE POLICY "delete_list_shares"
+  ON object_list_shares FOR DELETE TO authenticated
+  USING (
+    user_id = (SELECT auth.uid())
+    OR list_id IN (
+      SELECT id FROM object_lists WHERE created_by = (SELECT auth.uid())
+    )
+  );
+
+-- Admins can manage all shares.
+DROP POLICY IF EXISTS "admin_manage_list_shares" ON object_list_shares;
+CREATE POLICY "admin_manage_list_shares"
+  ON object_list_shares
   USING ((SELECT public.is_admin()));
 
 

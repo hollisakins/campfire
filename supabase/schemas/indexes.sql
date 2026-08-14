@@ -132,6 +132,15 @@ CREATE INDEX IF NOT EXISTS idx_list_members_coords
 
 
 -- =============================================================================
+-- object_list_shares  (tag sharing, issue #450)
+-- =============================================================================
+-- (list_id, user_id) lookups are covered by the table's unique constraint.
+
+CREATE INDEX IF NOT EXISTS idx_list_shares_user_id
+    ON public.object_list_shares USING btree (user_id);
+
+
+-- =============================================================================
 -- list_audit_log
 -- =============================================================================
 

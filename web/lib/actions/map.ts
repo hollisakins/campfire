@@ -282,6 +282,7 @@ export async function getFilteredObjectIds(
       p_needs_review: baseParams.p_needs_review,
       p_has_photometry: baseParams.p_has_photometry,
       p_list_ids: baseParams.p_list_ids,
+      p_list_ids_mode: baseParams.p_list_ids_mode,
       p_coord_ra: baseParams.p_coord_ra,
       p_coord_dec: baseParams.p_coord_dec,
       p_radius_degrees: baseParams.p_radius_degrees,

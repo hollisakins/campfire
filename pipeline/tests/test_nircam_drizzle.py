@@ -20,11 +20,16 @@ the bug and validate the fix deterministically without depending on WCS
 construction.
 """
 
+import os
+
 import numpy as np
 import pytest
+from astropy.io import fits
 
+import campfire_pipeline.nircam.drizzle as drizzle_mod
 from campfire_pipeline.nircam.drizzle import (
     _apply_output_metadata, _sanitize_variance, _output_bbox_in_tile,
+    compress_context_extension,
 )
 
 Drizzle = pytest.importorskip("drizzle.resample").Drizzle
@@ -377,3 +382,174 @@ def test_apply_output_metadata_without_blender_still_sets_photometry():
     assert out.meta.bunit_data == 'MJy/sr'
     assert out.meta.bunit_err == 'MJy/sr'
     assert out.meta.cal_step.resample == 'COMPLETE'
+
+
+# ---------------------------------------------------------------------------
+# CON compression
+#
+# Two call paths share one rewrite: the campfire backend hands the array in
+# (the file holds a 1x1x1 placeholder), the jwst backend hands nothing in and
+# the full uncompressed CON is read back off the disk. Both must land on a
+# bit-identical CON under the same extension name and order, with every other
+# extension untouched.
+# ---------------------------------------------------------------------------
+
+_SCI = np.arange(12, dtype=np.float32).reshape(3, 4)
+_ERR = (_SCI + 0.5).astype(np.float32)
+_WHT = np.ones((3, 4), dtype=np.float32)
+
+
+def _context_array():
+    """A coherent int32 bitmask: blocky, mostly zero — like a real CON."""
+    ctx = np.zeros((3, 3, 4), dtype=np.int32)
+    ctx[0, 1:, 1:3] = 0b1011
+    ctx[1, 2:, :2] = 0b110
+    return ctx
+
+
+def _write_i2d_like(path, con_data):
+    """Minimal stand-in for the i2d layout, CON in its usual third slot."""
+    primary = fits.PrimaryHDU()
+    primary.header['CMPFRVER'] = ('test', 'CAMPFIRE git commit')
+    con = fits.ImageHDU(con_data, name='CON')
+    con.header['BUNIT'] = ('', 'provenance the datamodel put on CON')
+    hdrtab = fits.BinTableHDU.from_columns(
+        [fits.Column(name='FILENAME', format='8A',
+                     array=np.array(['a.fits', 'b.fits']))],
+        name='HDRTAB',
+    )
+    fits.HDUList([
+        primary,
+        fits.ImageHDU(_SCI, name='SCI'),
+        fits.ImageHDU(_ERR, name='ERR'),
+        con,
+        fits.ImageHDU(_WHT, name='WHT'),
+        hdrtab,
+    ]).writeto(path, overwrite=True)
+
+
+def _assert_compressed_i2d_intact(path, expected_ctx):
+    with fits.open(path) as hdul:
+        assert [h.name for h in hdul] == [
+            'PRIMARY', 'SCI', 'ERR', 'CON', 'WHT', 'HDRTAB']
+        assert isinstance(hdul['CON'], fits.CompImageHDU)
+        con = hdul['CON'].data
+        assert con.shape == expected_ctx.shape
+        # FITS stores big-endian >i4 and CompImageHDU decompresses to native
+        # int32 — same integers, so compare on kind/itemsize not exact dtype.
+        assert con.dtype.kind == 'i' and con.dtype.itemsize == 4
+        assert np.array_equal(con, expected_ctx)
+        assert hdul['CON'].header.get('BUNIT') == ''
+        np.testing.assert_array_equal(hdul['SCI'].data, _SCI)
+        np.testing.assert_array_equal(hdul['ERR'].data, _ERR)
+        np.testing.assert_array_equal(hdul['WHT'].data, _WHT)
+        assert list(hdul['HDRTAB'].data['FILENAME']) == ['a.fits', 'b.fits']
+        assert hdul[0].header['CMPFRVER'] == 'test'
+
+
+def test_compress_context_from_supplied_array(tmp_path):
+    """campfire backend: the file carries a placeholder, ctx comes in memory."""
+    path = str(tmp_path / 'placeholder_i2d.fits')
+    ctx = _context_array()
+    _write_i2d_like(path, np.zeros((1, 1, 1), dtype=np.int32))
+
+    assert compress_context_extension(path, ctx=ctx) is True
+    _assert_compressed_i2d_intact(path, ctx)
+
+
+def test_compress_context_read_back_from_file(tmp_path):
+    """jwst backend: CON is already on disk uncompressed and gets rewritten.
+
+    This is the path that used to be a no-op — `compress_context` was only
+    threaded into the campfire backend, so the shipped default
+    (`implementation = "jwst"`) ignored it entirely.
+    """
+    path = str(tmp_path / 'uncompressed_i2d.fits')
+    ctx = _context_array()
+    _write_i2d_like(path, ctx)
+
+    assert compress_context_extension(path) is True
+    _assert_compressed_i2d_intact(path, ctx)
+
+
+def test_compress_context_is_idempotent(tmp_path):
+    """Re-running on an already-compressed i2d is a no-op, not a re-wrap."""
+    path = str(tmp_path / 'twice_i2d.fits')
+    ctx = _context_array()
+    _write_i2d_like(path, ctx)
+
+    assert compress_context_extension(path) is True
+    assert compress_context_extension(path) is False
+    _assert_compressed_i2d_intact(path, ctx)
+
+
+def test_compress_context_without_con_extension(tmp_path):
+    """A product with no CON is left alone rather than raising."""
+    path = str(tmp_path / 'nocon.fits')
+    fits.HDUList([
+        fits.PrimaryHDU(), fits.ImageHDU(_SCI, name='SCI'),
+    ]).writeto(path, overwrite=True)
+
+    assert compress_context_extension(path) is False
+    with fits.open(path) as hdul:
+        assert [h.name for h in hdul] == ['PRIMARY', 'SCI']
+
+
+def test_compress_context_leaves_no_temp_file(tmp_path):
+    path = str(tmp_path / 'tmpcheck_i2d.fits')
+    _write_i2d_like(path, _context_array())
+
+    compress_context_extension(path)
+    assert not os.path.exists(f'{path}.ctx.tmp')
+    assert sorted(os.listdir(tmp_path)) == ['tmpcheck_i2d.fits']
+
+
+def test_compress_context_cleans_up_temp_when_write_fails(tmp_path,
+                                                          monkeypatch):
+    """A failed compression must not strand a partial `.ctx.tmp`.
+
+    ENOSPC partway through is realistic here — the i2d is the largest file the
+    pipeline writes — and under ``--processes N`` a whole-field run would
+    otherwise leak one partial temp per failed tile onto the disk that just
+    filled. Same guarantee `common.io.atomic_save` gives.
+    """
+    path = str(tmp_path / 'failing_i2d.fits')
+    ctx = _context_array()
+    _write_i2d_like(path, ctx)
+    original = fits.HDUList.writeto
+
+    def _writeto_then_fail(self, fileobj, *args, **kwargs):
+        # Land a partial file first, the way a truncated write would.
+        with open(fileobj, 'wb') as fp:
+            fp.write(b'SIMPLE  =                    T')
+        raise OSError(28, 'No space left on device')
+
+    monkeypatch.setattr(fits.HDUList, 'writeto', _writeto_then_fail)
+    with pytest.raises(OSError):
+        compress_context_extension(path, ctx=ctx)
+    monkeypatch.setattr(fits.HDUList, 'writeto', original)
+
+    assert not os.path.exists(f'{path}.ctx.tmp')
+    # The original i2d is untouched — the swap never got as far as os.replace.
+    assert sorted(os.listdir(tmp_path)) == ['failing_i2d.fits']
+    with fits.open(path) as hdul:
+        np.testing.assert_array_equal(hdul['CON'].data, ctx)
+        np.testing.assert_array_equal(hdul['SCI'].data, _SCI)
+
+
+def test_compress_context_cleans_up_temp_when_replace_fails(tmp_path,
+                                                            monkeypatch):
+    """Cleanup also covers a failure after the temp is fully written."""
+    path = str(tmp_path / 'replacefail_i2d.fits')
+    ctx = _context_array()
+    _write_i2d_like(path, ctx)
+
+    def _boom(src, dst):
+        raise OSError(28, 'No space left on device')
+
+    monkeypatch.setattr(drizzle_mod.os, 'replace', _boom)
+    with pytest.raises(OSError):
+        compress_context_extension(path, ctx=ctx)
+
+    assert not os.path.exists(f'{path}.ctx.tmp')
+    assert sorted(os.listdir(tmp_path)) == ['replacefail_i2d.fits']

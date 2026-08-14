@@ -83,10 +83,34 @@ export interface SpectrumPreferences {
   snrMax: number;
 }
 
+// Reference to an object pinned from the NIRSpec table. Deliberately minimal:
+// user_profiles is readable by all authenticated users (see policies.sql), so
+// preferences must not cache catalog metadata (coordinates, redshift, …) that
+// the targets/objects RLS policies would hide from other users. Display
+// metadata is resolved at render time via getPinnedObjectsMetadata, which
+// runs under the viewer's own RLS scope. `route` records which detail page
+// the id belongs to — spectra-mode rows without a parent object pin the
+// target itself.
+export interface PinnedObject {
+  target_id: string;
+  route: 'objects' | 'targets';
+  pinned_at: string;
+}
+
+// Display metadata for a pinned object, resolved per-viewer at render time.
+export interface PinnedObjectMetadata {
+  field: string;
+  redshift: number | null;
+  redshift_quality: number;
+}
+
+export const MAX_PINNED_OBJECTS = 12;
+
 export interface UserPreferences {
   theme: ThemeSetting;
   accentColor: AccentColorName;
   spectrum: SpectrumPreferences;
+  pinnedObjects: PinnedObject[];
 }
 
 export const DEFAULT_SPECTRUM_PREFERENCES: SpectrumPreferences = {
@@ -100,6 +124,7 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   theme: 'system',
   accentColor: DEFAULT_ACCENT_COLOR,
   spectrum: DEFAULT_SPECTRUM_PREFERENCES,
+  pinnedObjects: [],
 };
 
 export interface AccessCode {
@@ -223,6 +248,26 @@ export interface ObjectList {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  // Role granted to the CURRENT user via object_list_shares (issue #450).
+  // Attached by the list server actions; null/undefined when not shared.
+  shared_role?: ListShareRole | null;
+}
+
+// Per-user sharing grants on lists (issue #450)
+export type ListShareRole = 'viewer' | 'editor';
+
+export interface ObjectListShare {
+  id: number;
+  list_id: number;
+  user_id: string;
+  role: ListShareRole;
+  granted_by: string | null;
+  granted_at: string;
+}
+
+export interface ObjectListShareWithUser extends ObjectListShare {
+  username: string | null;
+  full_name: string | null;
 }
 
 export interface ObjectListMember {
@@ -300,12 +345,16 @@ export interface NircamImage {
 
 // A per-(field, filter) exposure-coverage map (product_type 'nircam_expmap',
 // sourced from the storage_objects registry). Unlike mosaics there is one
-// fiducial map per field/filter — no tile/scale/extension axes.
+// fiducial map per field/filter — no tile/extension axes.
 export interface NircamExpmap {
   field: string;
   filter: string;
   storage_key: string;
   file_size?: number; // size_bytes from the registry, if available
+  /** Expmap grid scale, formatted like the mosaic column ('500mas'). Comes from
+   *  fields.expmap_pixel_scale_arcsec (one grid per field, not per object);
+   *  null for a field deployed before that column was populated. */
+  pixel_scale: string | null;
 }
 
 // One row of the /nircam landing grid (get_nircam_fields RPC + a presigned
@@ -390,6 +439,8 @@ export interface MaskPolygon {
   original_frame?: 'fk5' | 'icrs' | 'image' | string;
   imported_from?: string;
   imported_at?: string;
+  copied_from?: string;            // exposure filename this polygon was pasted from
+  copied_at?: string;
   created_at?: string;
   modified_at?: string;
 }

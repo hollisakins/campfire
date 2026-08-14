@@ -195,6 +195,39 @@ Slow-link workflow (CANDIDE→OSN): `campfire push` for the heavy bytes
 already landed and attaches it to the new deployment. `download` remains an
 alias of `pull`.
 
+### Config plane (issue #303)
+
+The storage plane moves bytes; the **config plane** moves the three
+data-management TOMLs (`programs.toml` / `observations.toml` / `fields.toml`)
+with the same verbs. The cloud registry (`programs` / `observations` /
+`fields` tables) is the source of truth: each row mirrors its TOML section
+losslessly in `config` jsonb (stage overrides, tile WCS, everything) with a
+canonical sha256 in `config_hash`.
+
+```bash
+campfire config push [--programs|--observations|--fields|--obs X|--field Y]  # local → cloud (admin)
+campfire config pull [--theirs]        # cloud → local TOMLs, comment-preserving (any logged-in user)
+campfire config diff                   # three-way divergence report (read-only)
+campfire config retire <kind> <name> [--undo]  # soft-retire a definition (admin; rename = retire + push)
+```
+
+Reconciliation is three-way per section against the last-synced hash in
+`$CAMPFIRE_ROOT/meta/config_sync_state.json`: push refuses to clobber a cloud
+section someone else changed (`--force` to override), pull refuses to clobber
+local hand-edits (local-ahead sections are kept; true conflicts prompt, or
+`--theirs`). Pull rewrites only changed sections via tomlkit, preserving
+comments and formatting elsewhere. Rows are never deleted — removal is the
+explicit `config retire` (never inferred from a section missing locally),
+which pull skips and push refuses; `--undo` re-activates. `fields.programs`
+is resolved at write time by mapping the field's `jwst_program_ids` through
+`observations` rows; unresolved writes omit the column rather than clobber
+it. Bare TOML datetimes are rejected at push
+(they wouldn't survive the jsonb round trip — use quoted ISO strings).
+`campfire deploy` still upserts the config of what it deploys automatically;
+`config push` is the explicit/bulk path. `deploy sync-programs` /
+`deploy sync-fields` are hidden legacy aliases now. This is what lets an
+ephemeral container bootstrap: `campfire config pull` → reduce → deploy.
+
 ### Deploy CLI (publication)
 
 `campfire deploy` = push (via the shared engine) + catalog upserts + deployment
@@ -206,7 +239,7 @@ campfire deploy --obs <obs_name>                         # full deploy
 campfire deploy --obs <obs_name> --dry-run               # validate only
 campfire deploy pointings --obs <obs_name>               # pointings JSONB backfill
 campfire deploy tiles --field cosmos --filter f444w      # map tiles
-campfire deploy sync-programs                            # upsert from programs.toml
+campfire config push --programs                          # programs.toml → cloud (config plane)
 ```
 
 Migration-era one-time tools (`deploy registry backfill/copy/prune`, `deploy

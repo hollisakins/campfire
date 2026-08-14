@@ -89,6 +89,7 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     // Filter modes (default to 'any')
     gratings_mode: parseMode('gratings_mode'),
     dq_flags_mode: parseMode('dq_flags_mode'),
+    list_ids_mode: parseMode('tags_mode'),
   };
 }
 
@@ -209,6 +210,9 @@ export function filtersToURLParams(
   }
   if (filters.dq_flags.length > 0 && filters.dq_flags_mode && filters.dq_flags_mode !== 'any') {
     params.set('dq_flags_mode', filters.dq_flags_mode);
+  }
+  if (filters.list_ids.length > 0 && filters.list_ids_mode && filters.list_ids_mode !== 'any') {
+    params.set('tags_mode', filters.list_ids_mode);
   }
   // Only include pagination params if not default values
   if (page > 1) {

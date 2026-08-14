@@ -182,18 +182,27 @@ def is_stale(rate_file: str, reg_string: str | None) -> bool:
 # the extension.
 
 
-def _drop_extensions_if_present(rate_file: str, names: tuple[str, ...]) -> None:
-    """Delete the named extensions from ``rate_file`` if present. No-op for
-    names that don't exist. Used to remove extensions *before* an upcoming
-    ``ImageModel.save()`` — that save snapshots asdf refs to whatever
-    extensions are present at save time, so deleting after would leave
-    dangling refs and break the next ImageModel open."""
-    with fits.open(rate_file, mode="update") as hdul:
-        for name in names:
-            try:
-                del hdul[name]
-            except KeyError:
-                pass
+def _drop_extra_fits(model, names: tuple[str, ...]) -> None:
+    """Remove the named extra-FITS extensions from an open ``model`` so the
+    next ``model.save()`` writes neither the HDU nor an asdf ref to it.
+
+    Extensions we append with ``astropy`` (``CFDQMASK``, ``CFBKG``,
+    ``CFBKGMASK``) carry no asdf ref when first written, but any later
+    ``ImageModel.save()`` picks them up into ``extra_fits`` and *does* record
+    one. Deleting such an HDU with ``fits.open(mode="update")`` therefore
+    leaves a dangling ``extra_fits.<NAME>`` entry in the embedded ASDF tree,
+    and the next ``ImageModel`` open fails with::
+
+        KeyError: ERROR loading embedded ASDF: Extension ('<NAME>', 1) not found
+
+    Dropping through the datamodel keeps the FITS and the ASDF tree
+    consistent. Always prefer this over deleting the HDU directly.
+    """
+    extra = getattr(model, "extra_fits", None)
+    if extra is None:
+        return
+    for name in names:
+        extra.instance.pop(name, None)
 
 
 def apply_mask_dq(rate_file: str, reg_string: str | None) -> int:
@@ -207,10 +216,6 @@ def apply_mask_dq(rate_file: str, reg_string: str | None) -> int:
     if not canonicalize(reg_string):
         return 0
 
-    # Drop any pre-existing CFDQMASK *before* the ImageModel save below so
-    # the save doesn't snapshot an asdf ref to a soon-to-be-replaced HDU.
-    _drop_extensions_if_present(rate_file, ("CFDQMASK",))
-
     from jwst.datamodels import ImageModel
 
     with ImageModel(rate_file) as model:
@@ -222,6 +227,9 @@ def apply_mask_dq(rate_file: str, reg_string: str | None) -> int:
         prior_dnu = (model.dq & DO_NOT_USE).astype(bool)
         flipped = mask & ~prior_dnu
         model.dq[mask] |= DO_NOT_USE
+        # Drop any pre-existing CFDQMASK through the datamodel so this save
+        # doesn't carry an asdf ref to the HDU we replace just below.
+        _drop_extra_fits(model, ("CFDQMASK",))
         model.save(rate_file)
 
     with fits.open(rate_file, mode="update") as hdul:
@@ -239,9 +247,6 @@ def clear_manual_mask_dq(rate_file: str) -> None:
             return
         flipped = hdul["CFDQMASK"].data.astype(bool).copy()
 
-    # Drop CFDQMASK *before* the ImageModel save below — see _drop_extensions_if_present.
-    _drop_extensions_if_present(rate_file, ("CFDQMASK",))
-
     from jwst.datamodels import ImageModel
 
     with ImageModel(rate_file) as model:
@@ -253,6 +258,8 @@ def clear_manual_mask_dq(rate_file: str) -> None:
             return
         # AND-NOT DO_NOT_USE on the recorded pixels.
         model.dq[flipped] &= ~np.uint32(DO_NOT_USE)
+        # Drop through the datamodel, not the FITS: see _drop_extra_fits.
+        _drop_extra_fits(model, ("CFDQMASK",))
         model.save(rate_file)
 
 
@@ -310,15 +317,14 @@ def restore_pre_bkgsub(rate_file: str) -> None:
             )
         bkg = np.asarray(hdul["CFBKG"].data).copy()
 
-    # Tear down the bkgsub state *before* reopening as ImageModel — see
-    # _drop_extensions_if_present for the asdf-ref reasoning. Header keys
-    # are cleared in the same pass for atomicity.
+    # Clear the bkgsub header sentinels. Header keys carry no asdf refs, so
+    # they are safe to strip with astropy; the CFBKG/CFBKGMASK *extensions*
+    # are dropped through the datamodel below (see _drop_extra_fits).
     with fits.open(rate_file, mode="update") as hdul:
         hdr = hdul[0].header
         for k in ("CFBKGSUB", "CFBKGRMS", "CFBKGDT", "CFMASKSH", "CFMASKDT", "CFMASKN"):
             if k in hdr:
                 del hdr[k]
-    _drop_extensions_if_present(rate_file, ("CFBKG", "CFBKGMASK"))
 
     with ImageModel(rate_file) as model:
         if bkg.shape != model.data.shape:
@@ -332,6 +338,7 @@ def restore_pre_bkgsub(rate_file: str) -> None:
         #   reverse:  data += bkg;        var_rnoise /= var_rescale
         model.data = model.data + bkg
         model.var_rnoise = model.var_rnoise / float(var_rescale)
+        _drop_extra_fits(model, ("CFBKG", "CFBKGMASK", "CFDQMASK"))
         model.save(rate_file)
 
 

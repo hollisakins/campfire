@@ -228,8 +228,19 @@ def _read_exposure_metadata(path):
             info['combine_stamped'] = ('CFP_BPIX' in hdr0 or 'CFP_OUT' in hdr0)
             info['date_obs'] = hdr0.get('DATE-OBS')
             info['detector'] = hdr0.get('DETECTOR', info['detector'])
-            if len(hdul) > 1:
+            # Index HDU 1 directly rather than testing len(hdul): len() forces
+            # astropy to enumerate *every* HDU, parsing the full structure of a
+            # ~120 MB exposure just to learn whether a second one exists. That
+            # dominated discover_exposures — 9-14x slower than this form on
+            # COSMOS LW, measured cold-vs-cold on disjoint file slices. The
+            # cost is header parsing, not I/O (a warm page cache barely helps),
+            # so parallelising the scan would have masked it rather than fixed
+            # it. Lazy loading stops at HDU 1.
+            try:
                 sci_hdr = hdul[1].header
+            except IndexError:
+                sci_hdr = None
+            if sci_hdr is not None:
                 ra = sci_hdr.get('CRVAL1')
                 dec = sci_hdr.get('CRVAL2')
                 if ra is not None and dec is not None:

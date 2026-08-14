@@ -23,6 +23,17 @@ export function setCachedExposure(exp: NircamExposure): void {
   cache.set(exp.id, exp);
 }
 
+/**
+ * Drop a row whose cached value can no longer be trusted — e.g. an optimistic
+ * write whose save failed AND whose revert refetch also failed. Deleting beats
+ * leaving the never-persisted row in place: the next visit misses the cache
+ * and refetches the server's truth instead of painting the attempted value as
+ * if it had stuck.
+ */
+export function deleteCachedExposure(id: number): void {
+  cache.delete(id);
+}
+
 export function clearExposureCache(): void {
   cache.clear();
 }
@@ -126,4 +137,129 @@ export function getCachedPngUrls(id: number): ExposurePngUrls | undefined {
 
 export function setCachedPngUrls(id: number, urls: ExposurePngUrls): void {
   pngUrlCache.set(id, { urls, signedAt: Date.now() });
+}
+
+/**
+ * In-flight triage saves + the most recent save failure.
+ *
+ * The detail page's auto-save-on-nav no longer blocks navigation on the save
+ * round trip: it writes the operator's decision into the row cache
+ * optimistically, fires the server action, and pushes the route immediately.
+ * Module scope (surviving the page remount) is what lets the next page
+ * instance still see the two things that flow leaves behind:
+ *
+ *  - which exposure ids have a save still in flight, so the background
+ *    revalidation of a quickly-revisited exposure doesn't overwrite the
+ *    optimistic row with the pre-save DB state; and
+ *  - the most recent failed save, so the operator — possibly several
+ *    exposures ahead by the time the failure lands — is told their decision
+ *    didn't stick, with a way back to re-apply it.
+ *
+ * Subscribed via useSyncExternalStore: the snapshot is a monotonic version
+ * counter; consumers read the actual values after the version changes.
+ */
+
+export interface ExposureSaveError {
+  id: number;
+  filename: string;
+  message: string;
+}
+
+const pendingSaveIds = new Map<number, number>(); // id → in-flight save count
+let saveError: ExposureSaveError | null = null;
+let saveStateVersion = 0;
+const saveStateListeners = new Set<() => void>();
+
+function emitSaveState(): void {
+  saveStateVersion++;
+  for (const listener of saveStateListeners) listener();
+}
+
+export function subscribeSaveState(listener: () => void): () => void {
+  saveStateListeners.add(listener);
+  return () => saveStateListeners.delete(listener);
+}
+
+export function getSaveStateVersion(): number {
+  return saveStateVersion;
+}
+
+export function hasPendingSave(id: number): boolean {
+  return pendingSaveIds.has(id);
+}
+
+/** Any save still in flight, for the beforeunload "decisions unsaved" guard. */
+export function hasAnyPendingSave(): boolean {
+  return pendingSaveIds.size > 0;
+}
+
+export function beginPendingSave(id: number): void {
+  pendingSaveIds.set(id, (pendingSaveIds.get(id) ?? 0) + 1);
+  emitSaveState();
+}
+
+export function endPendingSave(id: number): void {
+  const n = pendingSaveIds.get(id) ?? 0;
+  if (n > 1) pendingSaveIds.set(id, n - 1);
+  else pendingSaveIds.delete(id);
+  emitSaveState();
+}
+
+export function getSaveError(): ExposureSaveError | null {
+  return saveError;
+}
+
+export function setSaveError(err: ExposureSaveError | null): void {
+  saveError = err;
+  emitSaveState();
+}
+
+/**
+ * Per-exposure save queue: saves for the same row run strictly in dispatch
+ * order. Fire-and-forget saves mean two updates for one exposure can be in
+ * flight together (navigate away, revisit before the save lands, edit,
+ * navigate away again); if the transport reordered them, the older decision
+ * would win in the database and the cache. Chaining per id makes dispatch
+ * order the commit order regardless of transport behavior. Saves for
+ * different exposures stay independent.
+ */
+const saveQueues = new Map<number, Promise<unknown>>();
+
+/**
+ * Per-id monotonic save generations. The queue orders the server-action tasks,
+ * but a failed save's cleanup handler awaits a revert refetch — and in that
+ * window a newer save for the same id can dispatch, run, and fully commit
+ * (dropping the in-flight count back to zero). The resuming handler must be
+ * able to tell "a newer save has already committed" apart from "nothing newer
+ * happened", or it reverts the cache to a pre-newer-save snapshot and raises a
+ * failure banner for a decision that actually persisted. Each save takes a
+ * dispatch sequence number; successful saves record theirs as committed.
+ */
+const saveDispatchSeq = new Map<number, number>();
+const saveCommitSeq = new Map<number, number>();
+
+export function nextSaveSeq(id: number): number {
+  const n = (saveDispatchSeq.get(id) ?? 0) + 1;
+  saveDispatchSeq.set(id, n);
+  return n;
+}
+
+export function markSaveCommitted(id: number, seq: number): void {
+  if ((saveCommitSeq.get(id) ?? 0) < seq) saveCommitSeq.set(id, seq);
+}
+
+/** True when a save dispatched after `seq` has already committed for `id`. */
+export function hasNewerCommittedSave(id: number, seq: number): boolean {
+  return (saveCommitSeq.get(id) ?? 0) > seq;
+}
+
+export function enqueueSave<T>(id: number, task: () => Promise<T>): Promise<T> {
+  const prev = saveQueues.get(id) ?? Promise.resolve();
+  const run = prev.then(task, task);
+  const tail = run.then(() => undefined, () => undefined);
+  saveQueues.set(id, tail);
+  tail.then(() => {
+    if (saveQueues.get(id) === tail) saveQueues.delete(id);
+  });
+  return run;
 }

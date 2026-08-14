@@ -634,6 +634,24 @@ ALTER TABLE "public"."list_audit_log" OWNER TO "postgres";
 
 
 
+CREATE TABLE IF NOT EXISTS "public"."object_list_shares" (
+    "id" integer NOT NULL,
+    "list_id" integer NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "role" "text" DEFAULT 'viewer'::"text" NOT NULL,
+    "granted_by" "uuid",
+    "granted_at" timestamp with time zone DEFAULT "now"(),
+    CONSTRAINT "object_list_shares_role_check" CHECK (("role" = ANY (ARRAY['viewer'::"text", 'editor'::"text"])))
+);
+
+
+ALTER TABLE "public"."object_list_shares" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."object_list_shares" IS 'Per-user sharing grants on object_lists (issue #450). A share gives the grantee visibility of the list regardless of its visibility setting; role=editor additionally allows adding/removing members (same scope as public_edit — list metadata stays owner-only). Owner manages shares; grantees can remove their own share (leave).';
+
+
+
 CREATE TABLE IF NOT EXISTS "public"."observations" (
     "name" "text" NOT NULL,
     "program_slug" "text" NOT NULL,
@@ -644,7 +662,19 @@ CREATE TABLE IF NOT EXISTS "public"."observations" (
     "file_globs" "text"[] NOT NULL DEFAULT '{}',
     "gratings" "text"[] NOT NULL DEFAULT '{}',
     "data_subdir" "text",
-    "pointings" "jsonb"
+    "pointings" "jsonb",
+    -- Config sync (issue #303): the observations.toml [<name>] section mirrored
+    -- losslessly (stage overrides, config_groups — everything the typed columns
+    -- above drop), so a reducer or ephemeral container can regenerate the local
+    -- TOML from the cloud. config_hash is the client-computed sha256 of the
+    -- canonical JSON form of the section (sorted keys), the divergence token for
+    -- `campfire config pull/push/diff`; config_updated_at stamps the last sync.
+    -- retired_at soft-retires a renamed/removed definition — sync is additive,
+    -- rows are never deleted (storage_objects FKs + provenance history).
+    "config" "jsonb",
+    "config_hash" "text",
+    "config_updated_at" timestamp with time zone,
+    "retired_at" timestamp with time zone
 );
 
 
@@ -714,7 +744,13 @@ CREATE TABLE IF NOT EXISTS "public"."programs" (
     "description" "text",
     "cycle" integer,
     "is_public" boolean DEFAULT false,
-    "created_at" timestamp with time zone DEFAULT "now"()
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    -- Config sync (issue #303) — same contract as observations: lossless
+    -- programs.toml section, canonical-JSON sha256, last-sync stamp, soft retire.
+    "config" "jsonb",
+    "config_hash" "text",
+    "config_updated_at" timestamp with time zone,
+    "retired_at" timestamp with time zone
 );
 
 
@@ -730,8 +766,9 @@ ALTER TABLE "public"."programs" OWNER TO "postgres";
 -- the commonly-queried bits are also lifted into typed columns. `latest_deployment_id`
 -- mirrors observations. `coverage_area_*` are deploy-computed from <field>_layout.json
 -- (exact survey area = non-zero pixels of the stacked exposure map x pixel area);
--- sync-fields upserts only config columns so it never clobbers them. Read by
--- get_nircam_fields / get_nircam_field_summary.
+-- `expmap_pixel_scale_arcsec` comes from the same file. sync-fields upserts only
+-- config columns so it never clobbers them. Read by get_nircam_fields /
+-- get_nircam_field_summary / getNircamExpmaps.
 CREATE TABLE IF NOT EXISTS "public"."fields" (
     "name" "text" NOT NULL,
     "display_name" "text",
@@ -747,8 +784,21 @@ CREATE TABLE IF NOT EXISTS "public"."fields" (
     "config" "jsonb",
     "coverage_area_arcmin2" double precision,
     "coverage_area_deg2" double precision,
+    -- Pixel scale (arcsec/pix) of the field's exposure-map grid. Deploy-owned,
+    -- from <field>_layout.json. One value per field: expmap builds a single
+    -- shared auto-WCS across every filter in the invocation, so all of a
+    -- field's expmap FITS are pixel-registered on the same grid. Unlike the
+    -- mosaics (whose scale is a key axis in nircam_images) an expmap carries
+    -- its scale only in CDELT1/2, so the web table has nothing else to read.
+    "expmap_pixel_scale_arcsec" double precision,
     "latest_deployment_id" integer,
     "created_at" timestamp with time zone DEFAULT "now"(),
+    -- Config sync (issue #303) — same contract as observations/programs. The
+    -- lossless section already lives in `config` above; these add the canonical
+    -- sha256 divergence token, the last-sync stamp, and soft retirement.
+    "config_hash" "text",
+    "config_updated_at" timestamp with time zone,
+    "retired_at" timestamp with time zone,
     CONSTRAINT "fields_pkey" PRIMARY KEY ("name")
 );
 
@@ -1112,7 +1162,7 @@ CREATE TABLE IF NOT EXISTS "public"."deploy_events" (
     "host" "text",
     "metadata" "jsonb",
     "occurred_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text"])))
+    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text", 'config_sync'::"text"])))
 );
 
 
@@ -1446,6 +1496,22 @@ ALTER SEQUENCE "public"."list_audit_log_id_seq" OWNED BY "public"."list_audit_lo
 
 
 
+CREATE SEQUENCE IF NOT EXISTS "public"."object_list_shares_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."object_list_shares_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."object_list_shares_id_seq" OWNED BY "public"."object_list_shares"."id";
+
+
+
 CREATE TABLE IF NOT EXISTS "public"."user_profiles" (
     "user_id" "uuid" NOT NULL,
     "username" "text" NOT NULL,
@@ -1632,6 +1698,10 @@ ALTER TABLE ONLY "public"."object_photometry" ALTER COLUMN "id" SET DEFAULT "nex
 
 
 ALTER TABLE ONLY "public"."list_audit_log" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."list_audit_log_id_seq"'::"regclass");
+
+
+
+ALTER TABLE ONLY "public"."object_list_shares" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."object_list_shares_id_seq"'::"regclass");
 
 
 
@@ -1885,6 +1955,16 @@ ALTER TABLE ONLY "public"."object_list_members"
     ADD CONSTRAINT "object_list_members_list_id_ra_dec_key" UNIQUE ("list_id", "ra", "dec");
 
 
+
+ALTER TABLE ONLY "public"."object_list_shares"
+    ADD CONSTRAINT "object_list_shares_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."object_list_shares"
+    ADD CONSTRAINT "object_list_shares_list_id_user_id_key" UNIQUE ("list_id", "user_id");
+
+
 ALTER TABLE ONLY "public"."object_photometry"
     ADD CONSTRAINT "object_photometry_pkey" PRIMARY KEY ("id");
 
@@ -2060,6 +2140,21 @@ ALTER TABLE ONLY "public"."list_audit_log"
 
 ALTER TABLE ONLY "public"."list_audit_log"
     ADD CONSTRAINT "list_audit_log_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id");
+
+
+
+ALTER TABLE ONLY "public"."object_list_shares"
+    ADD CONSTRAINT "object_list_shares_list_id_fkey" FOREIGN KEY ("list_id") REFERENCES "public"."object_lists"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."object_list_shares"
+    ADD CONSTRAINT "object_list_shares_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."object_list_shares"
+    ADD CONSTRAINT "object_list_shares_granted_by_fkey" FOREIGN KEY ("granted_by") REFERENCES "auth"."users"("id");
 
 
 
@@ -2306,6 +2401,12 @@ GRANT ALL ON TABLE "public"."list_audit_log" TO "service_role";
 
 
 
+GRANT ALL ON TABLE "public"."object_list_shares" TO "anon";
+GRANT ALL ON TABLE "public"."object_list_shares" TO "authenticated";
+GRANT ALL ON TABLE "public"."object_list_shares" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "public"."observations" TO "anon";
 GRANT ALL ON TABLE "public"."observations" TO "authenticated";
 GRANT ALL ON TABLE "public"."observations" TO "service_role";
@@ -2539,6 +2640,12 @@ GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "service_role";
 GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "anon";
 GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "anon";
+GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "service_role";
 
 
 
