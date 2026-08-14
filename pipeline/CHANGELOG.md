@@ -101,9 +101,37 @@ Release procedure: edit the `## Unreleased` section below, then run
   driver is bright *stars'* PSF wings rather than galaxy halos), and the
   `fit_order` reorder was rejected on the same data. LW arms used
   `box_size = 192` so the ×0.5 channel scaling leaves ~96 rows;
-  `box_size_x` is not doubled. No default is flipped by this PR. Full write-up
-  with the failure modes and the discarded metrics:
-  `docs/findings-aniso-detrend-a2744.md`.
+  `box_size_x` is not doubled. Full write-up with the failure modes and the
+  discarded metrics: `docs/findings-aniso-detrend-a2744.md`.
+- **Defaults flipped for the NIRCam background step** on the strength of that
+  validation. Pixel values change on every NIRCam field → MINOR.
+  - `[nircam.bkg].subtract_2d`: `false` → **`true`**. This aligns the package
+    with the practice it was written for — the reduction config in use has set
+    it true for every field, blank and cluster alike, for the life of the
+    unified step, so the `false` default was the path nothing ran on. The
+    trade is unchanged and deliberate: a fine-box applied fit removes ICL and
+    bright-galaxy wings by construction, bounded by the `bkg2d` box_size /
+    extra_dilate pair (chosen for zero median aperture-flux loss on compact,
+    extended and bright galaxies simultaneously). Set false to leave the
+    astrophysical sky for the mosaic.
+  - `[nircam.bkg.detrend]`: `box_size` `256` → **`96`**, `box_size_x` `0` →
+    **`32`**, `filter_size` `3` → **`[1, 5]`** — the validated anisotropic
+    conditioning mesh, on by default.
+  - `[nircam.bkg.bkg2d].reject`: `true` → **`false`** — the arm preferred on
+    real frames; the reject re-flags extended halo/wing bumps in the
+    background map as leaked source flux and refits away part of what the
+    conditioning buys. Only affects `subtract_2d` fields. Set true to restore
+    the leaked-compact-source guard.
+  - **The detrend y box is now scale-exempt in anisotropic mode** (a code
+    change, not just a default): ρ is a readout property in native ROWS, so
+    the banding attenuation a y box buys depends on rows spanned, not angle
+    subtended. Channel-scaling it would hand LW half the rows (96 → 48) and
+    half the attenuation — not the configuration validated on real frames,
+    which ran 96 rows in BOTH channels. The x box is still channel-scaled (it
+    tracks the halo's angular column profile), and legacy square mode
+    (`box_size_x = 0`) keeps the old scaled behavior untouched (256 → 128 LW).
+    Verified by running the shipped defaults against the stored validation arm
+    on real SW and LW frames.
 - **Mosaic background subtraction is now recorded by a `CFP_BKGS` stamp on the
   i2d primary header, making `_i2d_before_bkgsub.fits` deletable** (issue
   #427). Previously the snapshot's *existence on disk* was the only

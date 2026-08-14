@@ -276,11 +276,21 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
         # boundaries, so the amp-DEPENDENT banding (h's unique job) is
         # unrepresentable regardless of scale. Cost: common-mode row
         # structure in the ~50-150-row band may be absorbed and then
-        # underfit by h. NOTE: rho is a readout property in native ROWS
-        # while box_size channel-scales as an angular length — at LW the
-        # scaled y-box is half as many rows, weakening the banding
-        # attenuation; revisit before enabling on LW.
+        # underfit by h.
+        #
+        # The y box is SCALE-EXEMPT in anisotropic mode. rho is a readout
+        # property in native ROWS, so the banding attenuation a y-box buys
+        # depends on how many ROWS it spans, not on the angle it subtends:
+        # channel-scaling it would give LW half the rows (96 -> 48) and half
+        # the attenuation, which is not the configuration validated on real
+        # frames (docs/findings-aniso-detrend-a2744.md ran 96 rows in BOTH
+        # channels, via box_size=192 on LW under the old scaling rule). The
+        # x box IS still scaled: it tracks the halo's angular column profile.
+        # Legacy square mode (box_size_x = 0) keeps the old scaled behavior
+        # untouched — 256 px SW -> 128 px LW.
         det_box_x = int(round(det_cfg.get('box_size_x', 0) * f2))
+        if det_box_x > 0:
+            det_box = max(1, int(round(det_cfg.get('box_size', 256))))
         det_boxes = (det_box, max(1, det_box_x)) if det_box_x > 0 else det_box
         det_filter = det_cfg.get('filter_size', 3)
         if isinstance(det_filter, list):
