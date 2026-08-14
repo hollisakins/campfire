@@ -524,7 +524,7 @@ ALTER TABLE "public"."objects" OWNER TO "postgres";
 COMMENT ON TABLE "public"."objects" IS 'Unique sky positions cross-matched across programs. One object groups one or more targets observed within ~0.2 arcsec. Aggregate columns (n_targets, programs, max_snr, etc.) refreshed by reconcile_field_objects() at deploy time; redshift / redshift_quality / inspection state are user-editable and persist across reconciliation.';
 
 
-COMMENT ON COLUMN "public"."objects"."redshift_auto" IS 'Phase A: per-object auto-fit redshift, computed post-reconciliation by compute_object_redshift_auto() from the best member spectrum under a grating-priority hierarchy (PRISM > medium > high-res, tiebreak on exposure_time). Empty until Phase D migration.';
+COMMENT ON COLUMN "public"."objects"."redshift_auto" IS 'Phase A: per-object auto-fit redshift, computed post-reconciliation by compute_object_redshift_auto() from the best member spectrum under a grating-priority hierarchy (PRISM > G395M > G395H > G235M > G235H > G140M > G140H, tiebreak on exposure_time); when a grating auto-fit agrees with the PRISM anchor within |dz|/(1+z) < 0.01, the best such grating redshift is adopted for its higher precision. Empty until Phase D migration.';
 
 
 COMMENT ON COLUMN "public"."objects"."redshift_inspected" IS 'Phase A: user-set redshift override at the object level. Empty until Phase D migration. After the pin-on-signoff migration, also populated automatically (= redshift_auto, with inspected_used_auto = true) when an inspector commits a quality flag without typing a numeric override — this stabilizes the displayed redshift across reprocessing.';

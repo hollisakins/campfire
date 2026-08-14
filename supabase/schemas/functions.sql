@@ -5326,11 +5326,22 @@ GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_
 -- moving a value out from under an inspector.
 --
 -- Staleness signal: when redshift_auto changes for an already-signed-off
--- object (quality >= 2), we still flag staleness_reason='reprocessed' and
+-- object (quality >= 2), we flag staleness_reason='reprocessed' and
 -- bump last_data_change_at so the UI surfaces a "Needs Review" badge.
 -- The pinned displayed redshift is unchanged, but the inspector should
 -- know the underlying fit shifted in case they want to update their
 -- override or reaffirm the existing one.
+--
+-- The badge only fires on solution-level changes: a shift within the same
+-- (1+z)-scaled z_delta tolerance used for grating refinement is by
+-- definition the same redshift solution at different precision (e.g. the
+-- PRISM anchor being swapped for a consistent grating fit) and does not
+-- warrant re-review. Appearing/disappearing values always badge.
+-- Selection rule: the best member spectrum by explicit grating priority
+-- (PRISM > G395M > G395H > G235M > G235H > G140M > G140H, tiebreak on
+-- exposure_time, then id) anchors the value. When that anchor is PRISM and
+-- a grating spectrum's auto-fit agrees with it within |dz|/(1+z) < z_delta,
+-- the best such grating redshift is adopted instead for its higher precision.
 CREATE OR REPLACE FUNCTION public.compute_object_redshift_auto(p_field TEXT)
 RETURNS INTEGER
 LANGUAGE plpgsql
@@ -5342,29 +5353,61 @@ SET statement_timeout = '300s'
 AS $$
 DECLARE
   n INTEGER;
+  -- (1+z)-scaled tolerance for a grating auto-fit to count as consistent
+  -- with the PRISM anchor: |z_grating - z_prism| / (1 + z_prism) < z_delta.
+  -- Also the re-review threshold: auto-fit shifts smaller than this are the
+  -- same solution at different precision and do not badge inspected objects.
+  z_delta CONSTANT DOUBLE PRECISION := 0.01;
 BEGIN
   WITH computed AS (
     SELECT o.id,
            o.redshift_auto AS old_auto,
            o.redshift_quality AS quality,
-           (
-             SELECT s.redshift_auto
-             FROM targets t
-             JOIN spectra s ON s.target_id = t.target_id
-             WHERE t.object_id = o.id
-               AND s.redshift_auto IS NOT NULL
-             ORDER BY
+           best.new_val
+    FROM objects o
+    LEFT JOIN LATERAL (
+      WITH members AS (
+        SELECT s.redshift_auto AS z,
+               s.exposure_time,
+               s.id,
                CASE
                  WHEN s.grating = 'PRISM' THEN 0
-                 WHEN s.grating IN ('G140M', 'G235M', 'G395M') THEN 1
-                 WHEN s.grating IN ('G140H', 'G235H', 'G395H') THEN 2
-                 ELSE 3
-               END ASC,
-               s.exposure_time DESC NULLS LAST,
-               s.id ASC
-             LIMIT 1
-           ) AS new_val
-    FROM objects o
+                 WHEN s.grating = 'G395M' THEN 1
+                 WHEN s.grating = 'G395H' THEN 2
+                 WHEN s.grating = 'G235M' THEN 3
+                 WHEN s.grating = 'G235H' THEN 4
+                 WHEN s.grating = 'G140M' THEN 5
+                 WHEN s.grating = 'G140H' THEN 6
+                 ELSE 7
+               END AS priority
+        FROM targets t
+        JOIN spectra s ON s.target_id = t.target_id
+        WHERE t.object_id = o.id
+          AND s.redshift_auto IS NOT NULL
+      ),
+      prism AS (
+        SELECT z FROM members WHERE priority = 0
+        ORDER BY exposure_time DESC NULLS LAST, id ASC
+        LIMIT 1
+      ),
+      -- Best member outright: PRISM if present, else best grating.
+      base AS (
+        SELECT z FROM members
+        ORDER BY priority ASC, exposure_time DESC NULLS LAST, id ASC
+        LIMIT 1
+      ),
+      -- PRISM-consistent refinement: best known grating whose auto-fit
+      -- agrees with the PRISM anchor. Empty when no PRISM member exists.
+      refined AS (
+        SELECT m.z
+        FROM members m, prism p
+        WHERE m.priority BETWEEN 1 AND 6
+          AND ABS(m.z - p.z) / (1.0 + p.z) < z_delta
+        ORDER BY m.priority ASC, m.exposure_time DESC NULLS LAST, m.id ASC
+        LIMIT 1
+      )
+      SELECT COALESCE((SELECT z FROM refined), (SELECT z FROM base)) AS new_val
+    ) best ON TRUE
     WHERE o.field = p_field
   )
   UPDATE objects o
@@ -5372,12 +5415,16 @@ BEGIN
       staleness_reason = CASE
         WHEN c.quality >= 2
              AND c.old_auto IS DISTINCT FROM c.new_val
+             AND (c.old_auto IS NULL OR c.new_val IS NULL
+                  OR ABS(c.new_val - c.old_auto) / (1.0 + c.old_auto) >= z_delta)
         THEN 'reprocessed'
         ELSE o.staleness_reason
       END,
       last_data_change_at = CASE
         WHEN c.quality >= 2
              AND c.old_auto IS DISTINCT FROM c.new_val
+             AND (c.old_auto IS NULL OR c.new_val IS NULL
+                  OR ABS(c.new_val - c.old_auto) / (1.0 + c.old_auto) >= z_delta)
         THEN NOW()
         ELSE o.last_data_change_at
       END,
