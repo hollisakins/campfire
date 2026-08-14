@@ -234,6 +234,26 @@ Release procedure: edit the `## Unreleased` section below, then run
   distinguishable and the subtraction stays invertible.
 
 ### Infrastructure
+- **A git timeout can no longer masquerade as a version answer (#463).**
+  `CMPFRVER` resolution shells out to `git`, and under NFS contention any of
+  those calls can time out; each timeout previously fell into a different
+  silent fallback, so one reduction from one pinned commit could stamp three
+  different strings — including a bare release string (`0.5.1` with distance
+  and sha silently dropped) that `campfire deploy`'s non-release warning waved
+  through. `_run_git` now distinguishes "git answered no" (nonzero exit) from
+  "git could not answer" (timeout / missing binary, raised as
+  `_GitUnavailable`), and any resolution touched by the latter keeps whatever
+  was reliably determined but always carries a local segment ending in
+  `unresolved` (with the HEAD sha whenever obtainable, e.g.
+  `0.5.1+g066d8ab.unresolved`) — so it can never match deploy's
+  `_is_release_version()` and always trips the warn-and-confirm path. A
+  timed-out dirty check likewise marks the string unresolved instead of
+  stamping the tree clean, a garbage `rev-list` answer is no longer collapsed
+  to distance 0, and a degraded resolution logs a warning. The per-call git
+  timeout is raised 5 s → 30 s: resolution is `lru_cache`d per process, so
+  this is a once-per-run cap, and a blown timeout now permanently degrades
+  that process's stamped provenance. Version strings from fully-answering git
+  are byte-identical to before; no scientific output changes.
 - **Spike-model packaging (M2 of the diffraction-spike masking plan,
   `docs/design-nircam-spike-masking.md` §6.1).** New
   `scripts/build_spike_models.py` repacks the raw WebbPSF PSF+scattered-light
