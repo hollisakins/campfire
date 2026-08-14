@@ -59,12 +59,24 @@ function NavDropdown({ link, isActive }: { link: NavLink; isActive: boolean }) {
 // The nav a share-link visitor sees (docs/design-public-mirror.md §7).
 //
 // Everything that would dead-end is gone: no nav links (every destination
-// renders empty for them), no profile, no sign-out, no admin, no sign-in. What
-// remains is enough to know where you are and to read the page comfortably --
-// the wordmark, the scope name, and the theme toggle.
+// renders empty for them), no profile, no admin, no sign-in. What remains is
+// enough to know where you are and to read the page comfortably -- the
+// wordmark, the scope name, and the theme toggle.
 //
-// The wordmark is deliberately NOT a link to `/`: home is one of the pages that
-// would render empty.
+// The wordmark does what a wordmark always does -- goes home -- but it exits
+// the shared view on the way, via the /s/exit route handler (sign out of the
+// link account, then land on the public home page). Without that escape hatch
+// there is no way out of a shared view at all, because share-link sessions
+// ride the same cookies as a normal login: anyone with a real account who
+// opens a share link (an admin testing their own link, say) is silently
+// signed OUT of that account, and this nav strips every other route to a
+// sign-in. Navigating home while still signed in as the link account would be
+// worse than useless -- home renders empty for link accounts -- so the
+// sign-out is what makes the logo do the expected thing.
+//
+// A plain <a>, not next/link: /s/exit is a route handler, and the full
+// document navigation also drops every scrap of client state (query caches,
+// contexts) left over from the shared session.
 const SharedViewNav: React.FC<{
   scopeLabel: string | null;
   theme: string;
@@ -75,8 +87,15 @@ const SharedViewNav: React.FC<{
     <div className="container mx-auto px-4 py-4">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center space-x-2 min-w-0">
-          <Logo size={32} title="" aria-hidden />
-          <span className="text-xl font-bold">CAMPFIRE</span>
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- /s/exit is a route handler; the exit must be a full document navigation */}
+          <a
+            href="/s/exit"
+            className="flex items-center space-x-2 hover:opacity-80 transition-opacity"
+            title="Leave this shared view"
+          >
+            <Logo size={32} title="" aria-hidden />
+            <span className="text-xl font-bold">CAMPFIRE</span>
+          </a>
           {scopeLabel && (
             <span className="hidden sm:inline text-sm text-header-muted truncate border-l border-header-border pl-2 ml-2">
               Shared view · <span className="font-medium">{scopeLabel}</span>

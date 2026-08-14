@@ -359,12 +359,29 @@ unconditionally. `ConditionalFooter` already demonstrates the pattern (it hides 
 - `Navigation` renders a stripped bar when set — wordmark, scope name, theme
   toggle, and a short "You're viewing a shared view of *cosmos-web*" note with a
   "request an account" link. No nav links, no profile menu, no admin entry.
+- The wordmark is the exit: it links to `/s/exit`, the mirror of `/s/<token>`,
+  which signs out (`scope: 'local'` — the link account is shared by every
+  holder of the link, so a global sign-out would revoke their sessions too),
+  unconditionally deletes the auth cookies, and redirects to the public home
+  page. A route handler rather than a client-side `signOut()` because
+  supabase-js keeps the local session when its /logout call fails — a
+  transient auth-server error must not trap the visitor in the shared view.
+  An escape hatch must exist because `/s/<token>` mints its session through
+  the same cookies as a normal login: anyone with a real account who opens a
+  share link (an admin testing their own link) is silently signed out of that
+  account, and the stripped nav removes every other route to a sign-in. The
+  sign-out is also what lets the logo do the expected go-home thing — home
+  renders empty while signed in as a link account.
+- In-page breadcrumbs are hidden too: `Breadcrumbs` returns null for link
+  accounts, since every ancestor crumb points outside the shared scope and the
+  trail reads as an invitation to explore a site that renders empty for them.
 - Read the profile in the root layout's server component too, or accept a flash of
   the full nav on first paint.
 
 Deep links out of scope (a *Show on map* button, a program breadcrumb) will render
-empty rather than 403. The stripped nav removes most of them; the rest are worth a
-pass once the feature is real, guided by what link holders actually click.
+empty rather than 403. The stripped nav and hidden breadcrumbs remove most of
+them; the rest are worth a pass once the feature is real, guided by what link
+holders actually click.
 
 ### Admin panel
 
