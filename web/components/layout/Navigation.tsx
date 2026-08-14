@@ -61,17 +61,18 @@ function NavDropdown({ link, isActive }: { link: NavLink; isActive: boolean }) {
 // Everything that would dead-end is gone: no nav links (every destination
 // renders empty for them), no profile, no admin, no sign-in. What remains is
 // enough to know where you are and to read the page comfortably -- the
-// wordmark, the scope name, the theme toggle, and an Exit button.
+// wordmark, the scope name, and the theme toggle.
 //
-// Exit exists because share-link sessions ride the same cookies as a normal
+// The wordmark does what a wordmark always does -- goes home -- but it exits
+// the shared view on the way: sign out of the link account, then land on the
+// public home page. Without that escape hatch there is no way out of a shared
+// view at all, because share-link sessions ride the same cookies as a normal
 // login: anyone with a real account who opens a share link (an admin testing
-// their own link, say) is silently signed OUT of that account and into the
-// link account, and without an exit there is no way back -- every route to
-// /login is stripped from this nav. A genuine no-account visitor who clicks it
-// just lands on the login page and can re-open the link to return.
-//
-// The wordmark is deliberately NOT a link to `/`: home is one of the pages that
-// would render empty.
+// their own link, say) is silently signed OUT of that account, and this nav
+// strips every other route to a sign-in. Navigating home while still signed in
+// as the link account would be worse than useless -- home renders empty for
+// link accounts -- so the sign-out is what makes the logo do the expected
+// thing.
 const SharedViewNav: React.FC<{
   scopeLabel: string | null;
   theme: string;
@@ -83,8 +84,14 @@ const SharedViewNav: React.FC<{
     <div className="container mx-auto px-4 py-4">
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center space-x-2 min-w-0">
-          <Logo size={32} title="" aria-hidden />
-          <span className="text-xl font-bold">CAMPFIRE</span>
+          <button
+            onClick={onExit}
+            className="flex items-center space-x-2 hover:opacity-80 transition-opacity"
+            title="Leave this shared view"
+          >
+            <Logo size={32} title="" aria-hidden />
+            <span className="text-xl font-bold">CAMPFIRE</span>
+          </button>
           {scopeLabel && (
             <span className="hidden sm:inline text-sm text-header-muted truncate border-l border-header-border pl-2 ml-2">
               Shared view · <span className="font-medium">{scopeLabel}</span>
@@ -92,24 +99,14 @@ const SharedViewNav: React.FC<{
           )}
         </div>
 
-        <div className="flex items-center gap-4">
-          <button
-            onClick={onCycleTheme}
-            className="flex items-center text-header-muted hover:text-header-foreground transition-colors"
-            aria-label={`Current theme: ${theme}. Click to change.`}
-            title={`Theme: ${theme}`}
-          >
-            <ThemeIcon className="w-4 h-4" />
-          </button>
-          <button
-            onClick={onExit}
-            className="flex items-center gap-1 text-sm text-header-muted hover:text-header-foreground transition-colors"
-            title="Leave this shared view and go to the sign-in page"
-          >
-            <LogOut className="w-4 h-4" />
-            <span>Exit</span>
-          </button>
-        </div>
+        <button
+          onClick={onCycleTheme}
+          className="flex items-center text-header-muted hover:text-header-foreground transition-colors"
+          aria-label={`Current theme: ${theme}. Click to change.`}
+          title={`Theme: ${theme}`}
+        >
+          <ThemeIcon className="w-4 h-4" />
+        </button>
       </div>
 
       {scopeLabel && (
@@ -185,7 +182,7 @@ export const Navigation: React.FC = () => {
           // scope 'local': the link account is shared by everyone holding this
           // link, so a global sign-out would revoke their sessions too.
           await signOut({ scope: 'local' });
-          router.push('/login');
+          router.push('/');
         }}
       />
     );
