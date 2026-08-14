@@ -5334,8 +5334,8 @@ GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_
 -- Selection rule: the best member spectrum by explicit grating priority
 -- (PRISM > G395M > G395H > G235M > G235H > G140M > G140H, tiebreak on
 -- exposure_time, then id) anchors the value. When that anchor is PRISM and
--- a grating spectrum's auto-fit agrees with it within |dz| <= z_delta, the
--- best such grating redshift is adopted instead for its higher precision.
+-- a grating spectrum's auto-fit agrees with it within |dz|/(1+z) < z_delta,
+-- the best such grating redshift is adopted instead for its higher precision.
 CREATE OR REPLACE FUNCTION public.compute_object_redshift_auto(p_field TEXT)
 RETURNS INTEGER
 LANGUAGE plpgsql
@@ -5347,9 +5347,9 @@ SET statement_timeout = '300s'
 AS $$
 DECLARE
   n INTEGER;
-  -- Absolute |dz| tolerance for a grating auto-fit to count as consistent
-  -- with the PRISM anchor (not (1+z)-scaled).
-  z_delta CONSTANT DOUBLE PRECISION := 0.03;
+  -- (1+z)-scaled tolerance for a grating auto-fit to count as consistent
+  -- with the PRISM anchor: |z_grating - z_prism| / (1 + z_prism) < z_delta.
+  z_delta CONSTANT DOUBLE PRECISION := 0.01;
 BEGIN
   WITH computed AS (
     SELECT o.id,
@@ -5394,7 +5394,7 @@ BEGIN
         SELECT m.z
         FROM members m, prism p
         WHERE m.priority BETWEEN 1 AND 6
-          AND ABS(m.z - p.z) <= z_delta
+          AND ABS(m.z - p.z) / (1.0 + p.z) < z_delta
         ORDER BY m.priority ASC, m.exposure_time DESC NULLS LAST, m.id ASC
         LIMIT 1
       )
