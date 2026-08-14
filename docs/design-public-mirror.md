@@ -359,12 +359,23 @@ unconditionally. `ConditionalFooter` already demonstrates the pattern (it hides 
 - `Navigation` renders a stripped bar when set — wordmark, scope name, theme
   toggle, and a short "You're viewing a shared view of *cosmos-web*" note with a
   "request an account" link. No nav links, no profile menu, no admin entry.
+- The stripped bar keeps one account affordance: an **Exit** button that signs
+  out locally (`scope: 'local'` — the link account is shared by every holder of
+  the link, so a global sign-out would revoke their sessions too) and routes to
+  `/login`. It exists because `/s/<token>` mints its session through the same
+  cookies as a normal login: anyone with a real account who opens a share link
+  (an admin testing their own link) is silently signed out of that account, and
+  without Exit the stripped nav offers no route back to `/login`.
+- In-page breadcrumbs are hidden too: `Breadcrumbs` returns null for link
+  accounts, since every ancestor crumb points outside the shared scope and the
+  trail reads as an invitation to explore a site that renders empty for them.
 - Read the profile in the root layout's server component too, or accept a flash of
   the full nav on first paint.
 
 Deep links out of scope (a *Show on map* button, a program breadcrumb) will render
-empty rather than 403. The stripped nav removes most of them; the rest are worth a
-pass once the feature is real, guided by what link holders actually click.
+empty rather than 403. The stripped nav and hidden breadcrumbs remove most of
+them; the rest are worth a pass once the feature is real, guided by what link
+holders actually click.
 
 ### Admin panel
 

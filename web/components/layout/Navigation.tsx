@@ -59,9 +59,16 @@ function NavDropdown({ link, isActive }: { link: NavLink; isActive: boolean }) {
 // The nav a share-link visitor sees (docs/design-public-mirror.md §7).
 //
 // Everything that would dead-end is gone: no nav links (every destination
-// renders empty for them), no profile, no sign-out, no admin, no sign-in. What
-// remains is enough to know where you are and to read the page comfortably --
-// the wordmark, the scope name, and the theme toggle.
+// renders empty for them), no profile, no admin, no sign-in. What remains is
+// enough to know where you are and to read the page comfortably -- the
+// wordmark, the scope name, the theme toggle, and an Exit button.
+//
+// Exit exists because share-link sessions ride the same cookies as a normal
+// login: anyone with a real account who opens a share link (an admin testing
+// their own link, say) is silently signed OUT of that account and into the
+// link account, and without an exit there is no way back -- every route to
+// /login is stripped from this nav. A genuine no-account visitor who clicks it
+// just lands on the login page and can re-open the link to return.
 //
 // The wordmark is deliberately NOT a link to `/`: home is one of the pages that
 // would render empty.
@@ -70,7 +77,8 @@ const SharedViewNav: React.FC<{
   theme: string;
   ThemeIcon: React.ElementType;
   onCycleTheme: () => void;
-}> = ({ scopeLabel, theme, ThemeIcon, onCycleTheme }) => (
+  onExit: () => void;
+}> = ({ scopeLabel, theme, ThemeIcon, onCycleTheme, onExit }) => (
   <nav data-slot="app-header" className="bg-header text-header-foreground shadow-md">
     <div className="container mx-auto px-4 py-4">
       <div className="flex items-center justify-between gap-4">
@@ -84,14 +92,24 @@ const SharedViewNav: React.FC<{
           )}
         </div>
 
-        <button
-          onClick={onCycleTheme}
-          className="flex items-center text-header-muted hover:text-header-foreground transition-colors"
-          aria-label={`Current theme: ${theme}. Click to change.`}
-          title={`Theme: ${theme}`}
-        >
-          <ThemeIcon className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-4">
+          <button
+            onClick={onCycleTheme}
+            className="flex items-center text-header-muted hover:text-header-foreground transition-colors"
+            aria-label={`Current theme: ${theme}. Click to change.`}
+            title={`Theme: ${theme}`}
+          >
+            <ThemeIcon className="w-4 h-4" />
+          </button>
+          <button
+            onClick={onExit}
+            className="flex items-center gap-1 text-sm text-header-muted hover:text-header-foreground transition-colors"
+            title="Leave this shared view and go to the sign-in page"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Exit</span>
+          </button>
+        </div>
       </div>
 
       {scopeLabel && (
@@ -163,6 +181,12 @@ export const Navigation: React.FC = () => {
         theme={theme}
         ThemeIcon={ThemeIcon}
         onCycleTheme={cycleTheme}
+        onExit={async () => {
+          // scope 'local': the link account is shared by everyone holding this
+          // link, so a global sign-out would revoke their sessions too.
+          await signOut({ scope: 'local' });
+          router.push('/login');
+        }}
       />
     );
   }
