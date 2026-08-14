@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
+import { getAccessiblePrograms, getLinkScope, isAdminUser } from '@/lib/api-helpers';
 import {
   compositeTileThumbnail,
   type MapLayerInfo,
@@ -73,7 +73,7 @@ export async function GET(request: NextRequest) {
     const isAdmin = await isAdminUser(userId);
     let objQuery = supabase
       .from('objects')
-      .select('ra, dec, field, programs')
+      .select('ra, dec, field, programs, observations')
       .eq('object_id', objectId);
     if (!isAdmin) {
       objQuery = objQuery.eq('has_published_spectrum', true);
@@ -93,6 +93,26 @@ export async function GET(request: NextRequest) {
         { error: 'Access denied to this object' },
         { status: 403 }
       );
+    }
+
+    // The program check above is too coarse for a share link: its program
+    // spans sibling observations that were never shared. Mirror the RLS
+    // observation/field conjunct (docs/design-public-mirror.md §5.2), and
+    // answer out-of-scope exactly like a missing object so probing object ids
+    // confirms nothing.
+    const linkScope = await getLinkScope(userId);
+    if (linkScope) {
+      const objObservations: string[] = obj.observations ?? [];
+      const inScope =
+        linkScope.active &&
+        ((linkScope.observation !== null && objObservations.includes(linkScope.observation)) ||
+          (linkScope.field !== null && obj.field === linkScope.field));
+      if (!inScope) {
+        return NextResponse.json(
+          { error: 'Object not found' },
+          { status: 404 }
+        );
+      }
     }
 
     // Requested size, validated once; the default (native resolution for the

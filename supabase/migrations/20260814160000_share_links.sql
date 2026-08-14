@@ -74,10 +74,19 @@ ALTER TABLE ONLY public.share_links
 
 -- link_password is a live credential and admins browse through `authenticated`
 -- like everyone else. RLS is row-level and cannot withhold a column, so the
--- column-level REVOKE is what keeps the credential server-side.
-GRANT ALL ON TABLE public.share_links TO authenticated;
+-- SELECT grant is an explicit column list omitting link_password -- a
+-- table-level GRANT SELECT would cover every column no matter what column
+-- REVOKEs follow (a column REVOKE only subtracts column-level grants). The
+-- REVOKE ALL is load-bearing: default privileges grant ALL to `authenticated`
+-- on every new table, so the table-level SELECT must be explicitly taken back.
+REVOKE ALL ON TABLE public.share_links FROM anon;
+REVOKE ALL ON TABLE public.share_links FROM authenticated;
+GRANT INSERT, UPDATE, DELETE ON TABLE public.share_links TO authenticated;
+GRANT SELECT (token, label, observation, field, link_user_id,
+              include_drafts, allow_download, created_by, created_at,
+              expires_at, revoked_at, last_seen_at, view_count)
+  ON TABLE public.share_links TO authenticated;
 GRANT ALL ON TABLE public.share_links TO service_role;
-REVOKE SELECT (link_password) ON TABLE public.share_links FROM authenticated;
 
 CREATE INDEX IF NOT EXISTS idx_share_links_observation
     ON public.share_links USING btree (observation) WHERE (observation IS NOT NULL);
@@ -254,7 +263,8 @@ CREATE POLICY "accessible_fields_select"
       AND EXISTS (
         SELECT 1 FROM nircam_images ni
         WHERE ni.field = fields.name
-          AND (ni.deploy_status = 'published' OR (SELECT public.link_sees_drafts()))
+          AND (ni.deploy_status = 'published'
+               OR (ni.deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
       )
     ELSE
       EXISTS (
@@ -435,7 +445,8 @@ CREATE POLICY "authenticated_select_nircam"
   USING (
     CASE WHEN (SELECT public.is_link_account()) THEN
       field = (SELECT public.link_field())
-      AND (deploy_status = 'published' OR (SELECT public.link_sees_drafts()))
+      AND (deploy_status = 'published'
+           OR (deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
     ELSE
       deploy_status = 'published' OR (SELECT public.is_admin())
     END
@@ -495,7 +506,8 @@ CREATE POLICY "authenticated_select_deployments"
         observation = (SELECT public.link_observation())
         OR field = (SELECT public.link_field())
       )
-      AND (status = 'published' OR (SELECT public.link_sees_drafts()))
+      AND (status = 'published'
+           OR (status = 'draft' AND (SELECT public.link_sees_drafts())))
     )
   );
 
@@ -554,3 +566,94 @@ CREATE POLICY "admin_manage_share_links"
   ON share_links TO authenticated
   USING ((SELECT public.is_admin()))
   WITH CHECK ((SELECT public.is_admin()));
+
+-- ---------------------------------------------------------------------------
+-- Role-column guard on user_profiles
+-- ---------------------------------------------------------------------------
+-- self_update_profile is row-level and `authenticated` holds table-wide
+-- UPDATE, so without this a user could escalate their own row via PostgREST
+-- (is_admin = true) -- and a share-link visitor could clear is_link_account,
+-- stepping out of every NOT is_link_account() narrowing conjunct. Body
+-- extracted verbatim from supabase/schemas/triggers.sql.
+
+DROP FUNCTION IF EXISTS public.enforce_profile_role_update_scope CASCADE;
+
+CREATE OR REPLACE FUNCTION public.enforce_profile_role_update_scope() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+BEGIN
+    IF auth.uid() IS NULL OR public.is_admin() THEN
+        RETURN NEW;
+    END IF;
+
+    IF OLD.is_admin IS DISTINCT FROM NEW.is_admin
+       OR OLD.can_comment IS DISTINCT FROM NEW.can_comment
+       OR OLD.can_inspect IS DISTINCT FROM NEW.can_inspect
+       OR OLD.is_group_account IS DISTINCT FROM NEW.is_group_account
+       OR OLD.is_link_account IS DISTINCT FROM NEW.is_link_account THEN
+        RAISE EXCEPTION 'Only admins may change role columns on user_profiles'
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS enforce_profile_role_update_scope_trigger ON public.user_profiles;
+CREATE TRIGGER enforce_profile_role_update_scope_trigger
+  BEFORE UPDATE ON public.user_profiles
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_profile_role_update_scope();
+
+
+-- ---------------------------------------------------------------------------
+-- Device-auth hardening
+-- ---------------------------------------------------------------------------
+-- authorize_device_code is EXECUTEable by `authenticated`, trusted its
+-- caller-supplied p_user_id, and had no notion of link accounts -- so a share
+-- link session could complete the CLI device flow and mint a durable API
+-- token (which API-layer authorization honours with every public program, and
+-- which survives revoking the link). Bind non-service callers to auth.uid()
+-- and refuse link accounts outright. Body extracted verbatim from
+-- supabase/schemas/functions.sql.
+
+CREATE OR REPLACE FUNCTION public.authorize_device_code(p_user_code text, p_user_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  updated_rows INTEGER;
+BEGIN
+  -- A JWT-bearing caller can only authorize a code for THEMSELVES: p_user_id
+  -- is caller-supplied and this function is EXECUTEable by `authenticated`, so
+  -- without the binding a session could mint an API credential for an
+  -- arbitrary user id. Service-role callers (the web routes) pass through.
+  IF (SELECT auth.role()) <> 'service_role'
+     AND (auth.uid() IS NULL OR p_user_id IS DISTINCT FROM auth.uid()) THEN
+    RETURN false;
+  END IF;
+
+  -- Share links (docs/design-public-mirror.md §5.5): a link account must never
+  -- mint a durable API credential. Its cookie session is scoped by RLS, but a
+  -- device-flow token would outlive revocation and be honoured by API-layer
+  -- authorization paths. Fail closed at the source of the grant.
+  IF EXISTS (
+    SELECT 1 FROM public.user_profiles up
+    WHERE up.user_id = p_user_id AND up.is_link_account
+  ) THEN
+    RETURN false;
+  END IF;
+
+  UPDATE device_codes
+  SET
+    status = 'authorized',
+    user_id = p_user_id,
+    authorized_at = NOW()
+  WHERE
+    user_code = p_user_code
+    AND status = 'pending'
+    AND expires_at > NOW();
+
+  GET DIAGNOSTICS updated_rows = ROW_COUNT;
+  RETURN updated_rows > 0;
+END;
+$$;

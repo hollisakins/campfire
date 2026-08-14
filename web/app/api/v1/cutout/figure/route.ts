@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isColormapName, type StretchMode, type ColormapName } from '@fitsgl/core';
 import { createServiceClient } from '@/lib/supabase/server';
-import { isAdminUser } from '@/lib/api-helpers';
+import { isAdminUser, getLinkScope } from '@/lib/api-helpers';
 import { resolveFieldScienceSource, UnknownBandError } from '@/lib/cutout/source';
 import { renderFigurePng } from '@/lib/cutout/figure';
 import { resolveRequestUser, parseScienceParams } from '../science-params';
@@ -64,6 +64,19 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // Service-role authorization, so the link scope is enforced here (see the
+    // sibling /fits route): only the link's own field, 404 indistinguishable
+    // from a missing dataset. No allow_download gate — a rendered PNG is
+    // display, not FITS bytes, matching the RLS split (nircam_images vs
+    // storage_objects).
+    const linkScope = await getLinkScope(userId);
+    if (linkScope && (!linkScope.active || linkScope.field === null || linkScope.field !== field)) {
+      return NextResponse.json(
+        { error: 'No FitsGL dataset for this field' },
+        { status: 404 }
+      );
+    }
+
     const isAdmin = await isAdminUser(userId);
     const supabase = createServiceClient();
 

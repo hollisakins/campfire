@@ -54,12 +54,84 @@ export async function isAdminUser(userId: string): Promise<boolean> {
 }
 
 /**
- * Get all program slugs accessible to a user (public + explicit access)
+ * The share-link scope for a link account, or null for an ordinary user.
+ *
+ * The API layer's mirror of the SQL helpers (is_link_account() + link_*()):
+ * routes that authorize through service-role queries instead of RLS must
+ * consult this, or a link session/bearer JWT walks straight past the RLS
+ * narrowing (docs/design-public-mirror.md §5). An inactive (revoked or
+ * expired) link resolves to active: false, which callers must treat as
+ * "sees nothing" — never as "ordinary user". Fail-closed: a profile lookup
+ * failure counts as a link account with no scope.
+ */
+export interface LinkScope {
+  active: boolean;
+  observation: string | null;
+  field: string | null;
+  allowDownload: boolean;
+  includeDrafts: boolean;
+}
+
+const DEAD_LINK_SCOPE: LinkScope = {
+  active: false, observation: null, field: null, allowDownload: false, includeDrafts: false,
+};
+
+export async function getLinkScope(userId: string): Promise<LinkScope | null> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+  const { data: profile, error } = await supabase
+    .from('user_profiles')
+    .select('is_link_account')
+    .eq('user_id', userId)
+    .single();
+  if (error) return DEAD_LINK_SCOPE;
+  if (profile?.is_link_account !== true) return null;
+
+  const { data: link } = await supabase
+    .from('share_links')
+    .select('observation, field, allow_download, include_drafts, revoked_at, expires_at')
+    .eq('link_user_id', userId)
+    .single();
+
+  const active =
+    !!link &&
+    link.revoked_at === null &&
+    (link.expires_at === null || new Date(link.expires_at) > new Date());
+  if (!active) return DEAD_LINK_SCOPE;
+
+  return {
+    active: true,
+    observation: link.observation ?? null,
+    field: link.field ?? null,
+    allowDownload: link.allow_download === true,
+    includeDrafts: link.include_drafts === true,
+  };
+}
+
+/**
+ * Get all program slugs accessible to a user (public + explicit access).
+ *
+ * Link accounts get ONLY their scoped observation's program — mirroring
+ * accessible_program_slugs(), which drops the is_public union for them. This
+ * matters here because /api/v1/* authorizes via service-role queries, not RLS.
  */
 export async function getAccessiblePrograms(userId: string): Promise<string[]> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+  const linkScope = await getLinkScope(userId);
+  if (linkScope) {
+    if (!linkScope.active || !linkScope.observation) return [];
+    const { data: obs } = await supabase
+      .from('observations')
+      .select('program_slug')
+      .eq('name', linkScope.observation)
+      .single();
+    return obs?.program_slug ? [obs.program_slug] : [];
+  }
 
   // Get programs with explicit access
   const { data: accessData } = await supabase

@@ -161,7 +161,8 @@ CREATE POLICY "accessible_fields_select"
       AND EXISTS (
         SELECT 1 FROM nircam_images ni
         WHERE ni.field = fields.name
-          AND (ni.deploy_status = 'published' OR (SELECT public.link_sees_drafts()))
+          AND (ni.deploy_status = 'published'
+               OR (ni.deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
       )
     ELSE
       EXISTS (
@@ -827,7 +828,8 @@ CREATE POLICY "authenticated_select_nircam"
   USING (
     CASE WHEN (SELECT public.is_link_account()) THEN
       field = (SELECT public.link_field())
-      AND (deploy_status = 'published' OR (SELECT public.link_sees_drafts()))
+      AND (deploy_status = 'published'
+           OR (deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
     ELSE
       deploy_status = 'published' OR (SELECT public.is_admin())
     END
@@ -1296,7 +1298,8 @@ CREATE POLICY "authenticated_select_deployments"
         observation = (SELECT public.link_observation())
         OR field = (SELECT public.link_field())
       )
-      AND (status = 'published' OR (SELECT public.link_sees_drafts()))
+      AND (status = 'published'
+           OR (status = 'draft' AND (SELECT public.link_sees_drafts())))
     )
   );
 

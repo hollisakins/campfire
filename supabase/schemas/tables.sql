@@ -2454,15 +2454,28 @@ GRANT ALL ON TABLE "public"."deploy_events" TO "service_role";
 
 -- share_links is admin-only (RLS); not granted to anon.
 --
--- The column-level REVOKE is the point: `link_password` is a live credential,
--- and admins browse the portal through `authenticated` like everyone else. RLS
--- is row-level and cannot withhold a column, so withhold it with a grant. Only
--- service_role -- i.e. the /s/<token> route on the server -- can read it, so
--- the credential never reaches a browser even for an admin who can see every
--- other column of the row.
-GRANT ALL ON TABLE "public"."share_links" TO "authenticated";
+-- The column list is the point: `link_password` is a live credential, and
+-- admins browse the portal through `authenticated` like everyone else. RLS is
+-- row-level and cannot withhold a column, so withhold it with the grant. A
+-- table-level GRANT SELECT would cover every column no matter what column
+-- REVOKEs follow (a column REVOKE only subtracts column-level grants, never a
+-- table-level one), so SELECT is granted as an explicit list that omits
+-- link_password. Only service_role -- i.e. the /s/<token> route on the server
+-- -- can read it, so the credential never reaches a browser even for an admin
+-- who can see every other column of the row. A new column added to the table
+-- stays invisible to the portal until it is added here.
+--
+-- The REVOKE ALL is load-bearing: the default privileges above grant ALL to
+-- `authenticated` on every new table, so omitting a GRANT here would not be
+-- enough -- the table-level SELECT has to be explicitly taken back.
+REVOKE ALL ON TABLE "public"."share_links" FROM "anon";
+REVOKE ALL ON TABLE "public"."share_links" FROM "authenticated";
+GRANT INSERT, UPDATE, DELETE ON TABLE "public"."share_links" TO "authenticated";
+GRANT SELECT ("token", "label", "observation", "field", "link_user_id",
+              "include_drafts", "allow_download", "created_by", "created_at",
+              "expires_at", "revoked_at", "last_seen_at", "view_count")
+  ON TABLE "public"."share_links" TO "authenticated";
 GRANT ALL ON TABLE "public"."share_links" TO "service_role";
-REVOKE SELECT ("link_password") ON TABLE "public"."share_links" FROM "authenticated";
 
 
 -- deploy_scope_state is admin/internal concurrency state (RLS admin-only); not anon.

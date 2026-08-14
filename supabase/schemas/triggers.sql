@@ -472,3 +472,41 @@ DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+
+-- Role/privilege columns on user_profiles are admin-set only. RLS's
+-- self_update_profile is row-level (user_id = auth.uid()) and cannot withhold
+-- columns, and `authenticated` holds table-wide UPDATE, so without this a user
+-- could escalate their own row via PostgREST (is_admin = true) -- and a share-
+-- link visitor could clear is_link_account, stepping out of every
+-- NOT is_link_account() narrowing conjunct in one statement (the readonly CHECK
+-- constraint accepts is_link_account = false with anything). Same
+-- belt-and-suspenders shape as enforce_object_user_update_scope: service-role
+-- writes (auth.uid() IS NULL) and admins pass through.
+DROP FUNCTION IF EXISTS public.enforce_profile_role_update_scope CASCADE;
+
+CREATE OR REPLACE FUNCTION public.enforce_profile_role_update_scope() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+BEGIN
+    IF auth.uid() IS NULL OR public.is_admin() THEN
+        RETURN NEW;
+    END IF;
+
+    IF OLD.is_admin IS DISTINCT FROM NEW.is_admin
+       OR OLD.can_comment IS DISTINCT FROM NEW.can_comment
+       OR OLD.can_inspect IS DISTINCT FROM NEW.can_inspect
+       OR OLD.is_group_account IS DISTINCT FROM NEW.is_group_account
+       OR OLD.is_link_account IS DISTINCT FROM NEW.is_link_account THEN
+        RAISE EXCEPTION 'Only admins may change role columns on user_profiles'
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS enforce_profile_role_update_scope_trigger ON public.user_profiles;
+CREATE TRIGGER enforce_profile_role_update_scope_trigger
+  BEFORE UPDATE ON public.user_profiles
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_profile_role_update_scope();

@@ -94,7 +94,11 @@ function MintForm({ onDone }: { onDone: () => void }) {
       field: scopeKind === 'field' ? scope : null,
       includeDrafts,
       allowDownload,
-      expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
+      // Local end-of-day: a bare YYYY-MM-DD parses as UTC *midnight at the
+      // start* of that day, which would expire "today" links immediately and
+      // "tomorrow" links before that day even starts locally. "Expires <date>"
+      // means valid through that date in the admin's timezone.
+      expiresAt: expiresAt ? new Date(`${expiresAt}T23:59:59`).toISOString() : null,
     });
     setBusy(false);
     if (result.error) return setError(result.error);

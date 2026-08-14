@@ -517,6 +517,26 @@ AS $$
 DECLARE
   updated_rows INTEGER;
 BEGIN
+  -- A JWT-bearing caller can only authorize a code for THEMSELVES: p_user_id
+  -- is caller-supplied and this function is EXECUTEable by `authenticated`, so
+  -- without the binding a session could mint an API credential for an
+  -- arbitrary user id. Service-role callers (the web routes) pass through.
+  IF (SELECT auth.role()) <> 'service_role'
+     AND (auth.uid() IS NULL OR p_user_id IS DISTINCT FROM auth.uid()) THEN
+    RETURN false;
+  END IF;
+
+  -- Share links (docs/design-public-mirror.md §5.5): a link account must never
+  -- mint a durable API credential. Its cookie session is scoped by RLS, but a
+  -- device-flow token would outlive revocation and be honoured by API-layer
+  -- authorization paths. Fail closed at the source of the grant.
+  IF EXISTS (
+    SELECT 1 FROM public.user_profiles up
+    WHERE up.user_id = p_user_id AND up.is_link_account
+  ) THEN
+    RETURN false;
+  END IF;
+
   UPDATE device_codes
   SET
     status = 'authorized',

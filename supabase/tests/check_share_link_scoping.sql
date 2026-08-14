@@ -44,7 +44,8 @@ INSERT INTO auth.users (id, email) VALUES
   ('00000000-0000-0000-0000-0000000000b2', 'zzz-link-field@test.invalid'),
   ('00000000-0000-0000-0000-0000000000b3', 'zzz-link-drafts@test.invalid'),
   ('00000000-0000-0000-0000-0000000000b4', 'zzz-link-revoked@test.invalid'),
-  ('00000000-0000-0000-0000-0000000000b5', 'zzz-link-nodl@test.invalid');
+  ('00000000-0000-0000-0000-0000000000b5', 'zzz-link-nodl@test.invalid'),
+  ('00000000-0000-0000-0000-0000000000b6', 'zzz-link-flddrf@test.invalid');
 
 -- Link accounts must carry can_comment/can_inspect false; the
 -- user_profiles_link_account_readonly CHECK enforces it (asserted below).
@@ -55,7 +56,8 @@ INSERT INTO user_profiles (user_id, username, full_name, is_admin, is_link_accou
   ('00000000-0000-0000-0000-0000000000b2', 'zzz-l-fld', 'ZZZ Link Field', false, true, false, false),
   ('00000000-0000-0000-0000-0000000000b3', 'zzz-l-drf', 'ZZZ Link Draft', false, true, false, false),
   ('00000000-0000-0000-0000-0000000000b4', 'zzz-l-rev', 'ZZZ Link Revkd', false, true, false, false),
-  ('00000000-0000-0000-0000-0000000000b5', 'zzz-l-ndl', 'ZZZ Link NoDL',  false, true, false, false);
+  ('00000000-0000-0000-0000-0000000000b5', 'zzz-l-ndl', 'ZZZ Link NoDL',  false, true, false, false),
+  ('00000000-0000-0000-0000-0000000000b6', 'zzz-l-fdr', 'ZZZ Link FldDrf', false, true, false, false);
 
 -- The ordinary user is granted the private program, so the ONLY difference
 -- between them and the link accounts below is link-ness -- which is what makes
@@ -69,7 +71,8 @@ INSERT INTO share_links (token, label, observation, field, link_user_id, link_pa
   ('zzz_tok_field', 'field link',   NULL,             'zzz_sl_field', '00000000-0000-0000-0000-0000000000b2', 'x', false, true,  '00000000-0000-0000-0000-0000000000a1', NULL),
   ('zzz_tok_draft', 'drafts link',  'zzz_obs_shared', NULL,           '00000000-0000-0000-0000-0000000000b3', 'x', true,  true,  '00000000-0000-0000-0000-0000000000a1', NULL),
   ('zzz_tok_revkd', 'revoked link', 'zzz_obs_shared', NULL,           '00000000-0000-0000-0000-0000000000b4', 'x', false, true,  '00000000-0000-0000-0000-0000000000a1', now()),
-  ('zzz_tok_nodl',  'no-dl link',   'zzz_obs_shared', NULL,           '00000000-0000-0000-0000-0000000000b5', 'x', false, false, '00000000-0000-0000-0000-0000000000a1', NULL);
+  ('zzz_tok_nodl',  'no-dl link',   'zzz_obs_shared', NULL,           '00000000-0000-0000-0000-0000000000b5', 'x', false, false, '00000000-0000-0000-0000-0000000000a1', NULL),
+  ('zzz_tok_flddr', 'fld+drf link', NULL,             'zzz_sl_field', '00000000-0000-0000-0000-0000000000b6', 'x', true,  true,  '00000000-0000-0000-0000-0000000000a1', NULL);
 
 -- Objects: one per observation, plus a draft-only object in the shared scope.
 INSERT INTO objects (object_id, field, ra, dec, programs, observations, has_published_spectrum) VALUES
@@ -100,10 +103,12 @@ INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, photomet
 SELECT o.id, 'zzz_sl_field', o.ra, o.dec, 'zzz_cat', '{}'::jsonb FROM objects o
 WHERE o.object_id IN ('ZZZ-OBJ-SHARED', 'ZZZ-OBJ-SIBLING', 'ZZZ-OBJ-OPEN');
 
--- NIRCam: a published mosaic in each field, plus a draft in the shared field.
+-- NIRCam: a published mosaic in each field, plus a draft AND a revoked one in
+-- the shared field -- include_drafts must reach the former and never the latter.
 INSERT INTO nircam_images (field, tile, filter, pixel_scale, extension, file_path, deploy_status) VALUES
   ('zzz_sl_field', 'A1', 'F444W', '30mas', 'sci', '/tmp/zzz_shared_sci.fits', 'published'),
   ('zzz_sl_field', 'A2', 'F444W', '30mas', 'sci', '/tmp/zzz_shared_drf.fits', 'draft'),
+  ('zzz_sl_field', 'A3', 'F444W', '30mas', 'sci', '/tmp/zzz_shared_rvk.fits', 'revoked'),
   ('zzz_sl_other', 'A1', 'F444W', '30mas', 'sci', '/tmp/zzz_other_sci.fits',  'published');
 
 INSERT INTO map_layers (field, filter, tile_base_url, min_zoom, max_zoom,
@@ -115,7 +120,8 @@ INSERT INTO deployments (id, observation, field, status) VALUES
   (990001, 'zzz_obs_shared',  NULL,           'published'),
   (990002, 'zzz_obs_sibling', NULL,           'published'),
   (990003, NULL,              'zzz_sl_field', 'published'),
-  (990004, NULL,              'zzz_sl_other', 'published');
+  (990004, NULL,              'zzz_sl_other', 'published'),
+  (990005, NULL,              'zzz_sl_field', 'revoked');
 
 INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, size_bytes,
                              content_type, product_type, status, spectrum_id, deployment_id)
@@ -179,7 +185,7 @@ LANGUAGE sql STABLE AS $$
     'nircam',      (SELECT count(*) FROM nircam_images   WHERE field LIKE 'zzz%'),
     'fields',      (SELECT count(*) FROM fields          WHERE name LIKE 'zzz%'),
     'map_layers',  (SELECT count(*) FROM map_layers      WHERE field LIKE 'zzz%'),
-    'deployments', (SELECT count(*) FROM deployments     WHERE id BETWEEN 990001 AND 990004),
+    'deployments', (SELECT count(*) FROM deployments     WHERE id BETWEEN 990001 AND 990005),
     'storage',     (SELECT count(*) FROM storage_objects WHERE storage_key LIKE '/zzz/%'),
     'shutters',    (SELECT count(*) FROM shutters        WHERE field LIKE 'zzz%'),
     'slits',       (SELECT count(*) FROM slit_regions    WHERE field LIKE 'zzz%'),
@@ -187,7 +193,8 @@ LANGUAGE sql STABLE AS $$
     'list_members',(SELECT count(*) FROM object_list_members WHERE list_id = 990001),
     'list_audit',  (SELECT count(*) FROM list_audit_log  WHERE list_id = 990001),
     'comments',    (SELECT count(*) FROM comments        WHERE content = 'internal note'),
-    'flag_audit',  (SELECT count(*) FROM flag_audit_log  WHERE field_name = 'redshift_quality'),
+    'flag_audit',  (SELECT count(*) FROM flag_audit_log  WHERE field_name = 'redshift_quality'
+                      AND object_id IN (SELECT id FROM objects WHERE object_id LIKE 'ZZZ%')),
     'share_links', (SELECT count(*) FROM share_links     WHERE token LIKE 'zzz%')
   );
 $$;
@@ -267,6 +274,25 @@ BEGIN
   END IF;
 
   -- -------------------------------------------------------------------------
+  -- 3b) The same on the field axis, where deploy_status is three-valued:
+  --     include_drafts relaxes 'published' to 'draft' and must stop there. A
+  --     revoked mosaic and a revoked deployment sit in this link's own field,
+  --     which is exactly where an unscoped OR link_sees_drafts() would leak.
+  -- -------------------------------------------------------------------------
+  PERFORM pg_temp.zzz_as('00000000-0000-0000-0000-0000000000b6');
+  v := pg_temp.zzz_visible();
+
+  IF (v->>'nircam')::int <> 2 THEN
+    RAISE EXCEPTION 'field+drafts link should see published+draft mosaics only: %', v;
+  END IF;
+  IF (v->>'deployments')::int <> 1 THEN
+    RAISE EXCEPTION 'field+drafts link saw a revoked deployment: %', v;
+  END IF;
+  IF (v->>'fields')::int <> 1 OR (v->>'targets')::int <> 0 THEN
+    RAISE EXCEPTION 'field+drafts link widened beyond its field: %', v;
+  END IF;
+
+  -- -------------------------------------------------------------------------
   -- 4) Revoked link: reads nothing at all, immediately -- the helpers resolve
   --    to NULL on both axes, so revocation bites on the next query rather than
   --    waiting for the account deletion to propagate.
@@ -332,7 +358,7 @@ BEGIN
   IF (v->>'nircam')::int <> 2 OR (v->>'map_layers')::int <> 2 OR (v->>'fields')::int <> 2 THEN
     RAISE EXCEPTION 'ordinary user lost NIRCam access: %', v;
   END IF;
-  IF (v->>'deployments')::int <> 4 THEN
+  IF (v->>'deployments')::int <> 5 THEN
     RAISE EXCEPTION 'ordinary user lost the deployment log: %', v;
   END IF;
   IF (v->>'comments')::int <> 1 OR (v->>'lists')::int <> 1 OR (v->>'flag_audit')::int <> 1 THEN
@@ -351,10 +377,10 @@ BEGIN
   PERFORM pg_temp.zzz_as('00000000-0000-0000-0000-0000000000a1');
   v := pg_temp.zzz_visible();
 
-  IF (v->>'targets')::int <> 4 OR (v->>'spectra')::int <> 4 OR (v->>'nircam')::int <> 3 THEN
+  IF (v->>'targets')::int <> 4 OR (v->>'spectra')::int <> 4 OR (v->>'nircam')::int <> 4 THEN
     RAISE EXCEPTION 'admin lost draft visibility: %', v;
   END IF;
-  IF (v->>'share_links')::int <> 5 THEN
+  IF (v->>'share_links')::int <> 6 THEN
     RAISE EXCEPTION 'admin cannot read share_links: %', v;
   END IF;
 
@@ -394,5 +420,74 @@ BEGIN
 
   RAISE NOTICE 'OK: link accounts cannot be granted write or admin rights.';
 END $$;
+
+-- ---------------------------------------------------------------------------
+-- 10) Role columns are locked against self-service updates.
+--
+-- self_update_profile is row-level and `authenticated` holds table-wide
+-- UPDATE, so without the enforce_profile_role_update_scope trigger a link
+-- account could clear its own is_link_account -- stepping out of every
+-- narrowing conjunct at once -- and any user could set their own is_admin.
+-- ---------------------------------------------------------------------------
+SET LOCAL ROLE authenticated;
+
+DO $$
+BEGIN
+  -- A link account must not be able to clear its own discriminator.
+  PERFORM pg_temp.zzz_as('00000000-0000-0000-0000-0000000000b1');
+  BEGIN
+    UPDATE user_profiles SET is_link_account = false
+    WHERE user_id = '00000000-0000-0000-0000-0000000000b1';
+    RAISE EXCEPTION 'link account cleared its own is_link_account';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;  -- expected
+  END;
+
+  -- An ordinary user must not be able to self-escalate.
+  PERFORM pg_temp.zzz_as('00000000-0000-0000-0000-0000000000a2');
+  BEGIN
+    UPDATE user_profiles SET is_admin = true
+    WHERE user_id = '00000000-0000-0000-0000-0000000000a2';
+    RAISE EXCEPTION 'ordinary user set their own is_admin';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;  -- expected
+  END;
+
+  -- ...while ordinary self-service profile edits still work.
+  UPDATE user_profiles SET full_name = 'ZZZ Renamed'
+  WHERE user_id = '00000000-0000-0000-0000-0000000000a2';
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'ordinary user can no longer edit their own profile';
+  END IF;
+
+  RAISE NOTICE 'OK: role columns are admin-set only.';
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 11) link_password never reaches `authenticated` -- not even an admin's
+--     browser session. The grant is an explicit column list because a
+--     table-level GRANT SELECT would cover every column regardless of any
+--     column-level REVOKE.
+-- ---------------------------------------------------------------------------
+DO $$
+BEGIN
+  PERFORM pg_temp.zzz_as('00000000-0000-0000-0000-0000000000a1');
+
+  BEGIN
+    PERFORM count(link_password) FROM share_links;
+    RAISE EXCEPTION 'authenticated (admin) can read link_password';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;  -- expected
+  END;
+
+  -- The non-secret columns stay readable for the admin table.
+  IF (SELECT count(token) FROM share_links WHERE token LIKE 'zzz%') <> 6 THEN
+    RAISE EXCEPTION 'admin lost the share-links table listing';
+  END IF;
+
+  RAISE NOTICE 'OK: link_password is invisible to authenticated.';
+END $$;
+
+RESET ROLE;
 
 ROLLBACK;

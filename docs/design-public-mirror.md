@@ -629,3 +629,47 @@ around them. The token-not-found branch, the redirect, the dead-link page, the
 noindex headers, and the chrome suppression were all exercised against a running
 production build. The first real mint-and-visit round trip is the thing to try
 on the preview deploy.
+
+### 13.5 Review-round hardening (2026-08-14)
+
+The first review pass (Codex + Claude reviewers on PR #461) found six holes,
+all sharing one root cause: **the RLS narrowing is only as good as the paths
+that actually go through RLS.** Every fix either closes a non-RLS path or
+repairs a Postgres privilege subtlety:
+
+1. **Role columns were self-service.** `self_update_profile` is row-level and
+   `authenticated` holds table-wide UPDATE, so any user could set their own
+   `is_admin` via PostgREST — and a link visitor could clear `is_link_account`,
+   stepping out of every narrowing conjunct in one statement. Now a guard
+   trigger (`enforce_profile_role_update_scope`): role columns are admin-set
+   only, structurally.
+2. **The `link_password` column REVOKE was a no-op.** A table-level
+   `GRANT SELECT` covers every column regardless of column-level REVOKEs, and
+   the schema's default privileges grant ALL on every new table. The grant is
+   now an explicit column list with a load-bearing `REVOKE ALL` first (anon
+   included, which default privileges had also quietly granted).
+3. **Revocation deleted the tombstone.** `deleteUser` cascaded away the
+   profile and share_links rows, so a still-live JWT COALESCEd to "ordinary
+   user" and *gained* access on revocation — and the admin table's "revoked"
+   badge was unreachable. Revoke now stamps + bans; the tombstone rows stay.
+4. **The device-auth flow minted durable credentials.** A link session could
+   complete the CLI device flow; API-layer authorization (`getAccessiblePrograms`)
+   had no notion of link accounts and returns every public program, and the
+   token survives revocation. `authorize_device_code()` now binds non-service
+   callers to `auth.uid()` and refuses link accounts; the API layer grew
+   `getLinkScope()` and `getAccessiblePrograms` mirrors
+   `accessible_program_slugs()` for link accounts.
+5. **Cutout routes bypassed RLS entirely.** `/api/v1/cutout{,/fits,/figure}`
+   authorize via service-role queries; a link cookie session could cut out any
+   published field, and FITS ignored `allow_download`. All three now enforce
+   the link scope (own field / own observation only, download opt-out on FITS
+   bytes), answering out-of-scope identically to not-found.
+6. **`include_drafts` reached past draft.** Three policies used
+   `published OR link_sees_drafts()`, which also exposed `revoked` rows.
+   All are now `published OR (draft AND link_sees_drafts())`, the form the
+   spectra policy already used.
+
+The leak test grew sections for 1, 2, and 6 (field-axis revoked fixtures); it
+now also passes against a migrated **and seeded** database. The general lesson
+for future readers: any route that reads with the service role must consult
+`getLinkScope()` — RLS cannot save a query that bypasses it.

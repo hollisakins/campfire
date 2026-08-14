@@ -199,14 +199,18 @@ export async function mintShareLink(params: MintShareLinkParams): Promise<MintSh
 /**
  * Revoke a link.
  *
- * Stamps revoked_at AND deletes the link account. The stamp is what the RLS
- * helpers read, so revocation bites on the visitor's very next query; deleting
- * the account additionally kills any live cookie session at its next token
- * refresh, rather than letting it run for the rest of the hour.
+ * Stamps revoked_at AND bans the link account. The stamp is what the RLS
+ * helpers read, so revocation bites on the visitor's very next query; the ban
+ * additionally stops the session from refreshing its token, so the cookie
+ * session dies within the hour instead of living as long as the visitor keeps
+ * the tab open.
  *
- * The delete cascades the share_links row away (share_links_link_user_id_fkey
- * ON DELETE CASCADE), so the stamp is deliberately written first: if the delete
- * fails, the link is already dead rather than merely scheduled to die.
+ * Deliberately NOT auth.admin.deleteUser(): the delete would cascade away the
+ * user_profiles row (so is_link_account() COALESCEs to false and any
+ * still-live JWT is suddenly treated as an ORDINARY user with every public
+ * program -- revocation must never widen access) and the share_links row
+ * itself (so the stamp, the admin table's "revoked" badge, and the audit
+ * trail all vanish). The tombstone rows are the revocation; they stay.
  */
 export async function revokeShareLink(token: string): Promise<{ error?: string }> {
   try {
@@ -227,11 +231,14 @@ export async function revokeShareLink(token: string): Promise<{ error?: string }
       .eq('token', token);
     if (stampError) return { error: `Failed to revoke: ${stampError.message}` };
 
-    const { error: deleteError } = await service.auth.admin.deleteUser(link.link_user_id);
-    if (deleteError) {
+    const { error: banError } = await service.auth.admin.updateUserById(link.link_user_id, {
+      // Effectively forever (100 years); GoTrue has no "permanent" literal.
+      ban_duration: '876000h',
+    });
+    if (banError) {
       // The link is already inert (revoked_at is set and the helpers read it),
       // so surface this without pretending the revoke failed.
-      return { error: `Link revoked, but its account could not be deleted: ${deleteError.message}` };
+      return { error: `Link revoked, but its account could not be banned: ${banError.message}` };
     }
 
     return {};
