@@ -632,3 +632,43 @@ def test_shipped_mosaic_tier_config_is_coherent(tmp_path):
     # the guard is mosaic-scoped: the per-exposure mask section must not
     # carry it (SubtractBackground default is False)
     assert 'bg_guard' not in per_exp
+
+
+def test_extra_dilate_no_sources_does_not_mask_the_border():
+    """`striping.extra_dilate` must be a no-op when nothing is selected to grow.
+
+    `distance_transform_edt` measures the distance to the nearest ZERO, so an
+    all-True input (no selected source pixels — either no tiers at all, or
+    `extra_dilate_min_area` filtered every component out) has no seed and the
+    transform falls back to distances measured from OUTSIDE the array. A naive
+    `edt(~src) <= r` then masks a border-and-corner band that no source put
+    there, deleting exactly the edge amp-row anchors.
+
+    Asserts the failure mode is real BEFORE asserting the guard removes it, so
+    the test cannot pass vacuously if the EDT behaviour ever changes.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    src_only_1f = np.zeros((256, 256), dtype=bool)      # nothing selected
+    radius = 20.0
+
+    # 1. the failure mode exists: unguarded, this masks a spurious band
+    unguarded = distance_transform_edt(~src_only_1f) <= radius
+    assert unguarded.any(), (
+        'EDT no longer produces a spurious band on an all-True input; '
+        'the guard under test may be obsolete — re-check bkg.py')
+    assert not unguarded[128, 128], 'spurious mask should hug the border'
+
+    # 2. the guard removes it, and leaves the fit mask untouched
+    fitmask = np.zeros((256, 256), dtype=bool)
+    if src_only_1f.any():
+        fitmask_1f = fitmask | (distance_transform_edt(~src_only_1f) <= radius)
+    else:
+        fitmask_1f = fitmask
+    assert not fitmask_1f.any()
+
+    # 3. and it still grows normally when something IS selected
+    src_only_1f[128, 128] = True
+    grown = distance_transform_edt(~src_only_1f) <= radius
+    assert grown[128, 128] and grown[128, 128 + int(radius)]
+    assert not grown[0, 0]

@@ -363,9 +363,22 @@ def bkg_step(exposure_file, field, step_config, overwrite=False, status=None,
                         keep = areas >= strp_min_area * f2 * f2
                         keep[0] = False
                         src_only_1f = keep[lab]
-                grown_1f = (distance_transform_edt(~src_only_1f)
-                            <= strp_extra_dilate * f2)
-                fitmask_1f = fitmask | grown_1f
+                if src_only_1f.any():
+                    grown_1f = (distance_transform_edt(~src_only_1f)
+                                <= strp_extra_dilate * f2)
+                    fitmask_1f = fitmask | grown_1f
+                else:
+                    # Nothing selected to grow — either no source tiers at all
+                    # or extra_dilate_min_area filtered every component out.
+                    # `distance_transform_edt` measures the distance to the
+                    # nearest ZERO, so on an all-True input it has no seed and
+                    # returns distances measured from OUTSIDE the array: a 256²
+                    # frame yields min 1.0 / max 361, and `<= extra_dilate`
+                    # then masks a border-and-corner band (314 px at 20 px
+                    # dilation) that no source put there. Those are exactly the
+                    # edge amp-row anchors, so it would degrade the 1/f fit on
+                    # the emptiest frames — the ones with the least to spare.
+                    fitmask_1f = fitmask
             else:
                 fitmask_1f = fitmask
 
