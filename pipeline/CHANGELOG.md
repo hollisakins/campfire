@@ -28,6 +28,33 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Calibration
+- **The NMF wisp source mask is now iterated (`[nircam.wisp].mask_iterations
+  = 5`), so a bright wisp can no longer mask its own fit region.** The mask was
+  built once, from the frame that still contained the wisp, so
+  `detect_sources(nsigma=3, dilate=8)` treated the wisp itself as a source and
+  removed the very pixels the amplitude solve scores. The bias scales with wisp
+  brightness and is self-defeating at the bright end: on A2744/F200W
+  `jw02561001004_06101_00005_nrcb4` the wisp core sits 7.6σ above sky against a
+  3σ detection threshold (0.095 vs 0.045 DN/s), 97.6% of `t50` is detected,
+  dilation takes the rest, and `t50 & ~mask` collapses to **zero** usable pixels
+  against the `50 × ncomp` = 150 threshold. The solve then fell back to the full
+  `MASK_hSNR` region — ~90% background, the exact failure the `t50` default
+  exists to avoid — and answered with a spurious broad third component
+  (`W = 2.08, 4.47, 1.56`) that dug a −0.006…−0.014 MJy/sr bowl over the wisp
+  footprint, peaking at 0.024 MJy/sr of flux removed in error. Re-detecting on
+  the wisp-subtracted frame and re-fitting until the model settles (within 1% of
+  its peak) converges in 2–4 passes and is seed-independent: starting from the
+  bad hSNR fallback and from a `t30` fit land within 2% of each other. On the
+  pathological frame the fit returns to `region=t50` (`W = 2.03, 5.24, 0`) and
+  its residual profile joins the other detectors'. Healthy frames move too —
+  the same self-masking under-subtracts every bright wisp — but only slightly:
+  across 4 wisp detectors × 2 A2744 exposures, six frames improve toward zero
+  residual (worst case `nrca3`, +0.0068 → +0.0018 MJy/sr at `t40`), two are
+  unchanged, none degrade. `CFP_WISP` now records `passes=N`. Set
+  `mask_iterations = 1` for the previous single-pass behaviour. Costs ~1 s per
+  extra pass per exposure.
+
 ### Algorithm
 - **New opt-in `[nircam.bkg.bkg2d].fit_order = "first"` targets the amp-blocky
   halo oversubtraction around bright multi-amp galaxies** when `subtract_2d`
