@@ -1522,7 +1522,26 @@ CREATE TABLE IF NOT EXISTS "public"."user_profiles" (
     "can_inspect" boolean DEFAULT false,
     "is_admin" boolean DEFAULT false,
     "preferences" "jsonb" DEFAULT '{}'::"jsonb",
-    CONSTRAINT "user_profiles_username_check" CHECK (("username" ~ '^[a-z0-9][a-z0-9._-]{0,38}[a-z0-9]$'::"text"))
+    -- Share links (docs/design-public-mirror.md): a link account is a synthetic
+    -- principal backing one share_links row. It authenticates like any other
+    -- user -- which is the whole point, since every reader then works unchanged
+    -- -- so this flag is the discriminator every narrowing rule keys on. It is
+    -- the input to public.is_link_account(); see the link_* helpers in
+    -- functions.sql and the scope conjuncts throughout policies.sql.
+    -- Never set on a human account.
+    "is_link_account" boolean NOT NULL DEFAULT false,
+    CONSTRAINT "user_profiles_username_check" CHECK (("username" ~ '^[a-z0-9][a-z0-9._-]{0,38}[a-z0-9]$'::"text")),
+    -- A link account is read-only, structurally. Every write policy already
+    -- gates on can_comment()/can_inspect()/is_admin(), so in principle the mint
+    -- code setting them false is enough -- but `can_comment` DEFAULTS TO TRUE,
+    -- so a mint path that simply forgets to pass it produces a share link whose
+    -- holder can comment on the archive. Enforce it here instead of trusting
+    -- every present and future caller to remember.
+    CONSTRAINT "user_profiles_link_account_readonly" CHECK (
+        NOT ("is_link_account" AND (COALESCE("can_comment", false)
+                                    OR COALESCE("can_inspect", false)
+                                    OR COALESCE("is_admin", false)))
+    )
 );
 
 
@@ -1542,6 +1561,65 @@ CREATE TABLE IF NOT EXISTS "public"."user_program_access" (
 
 
 ALTER TABLE "public"."user_program_access" OWNER TO "postgres";
+
+
+-- Share links (docs/design-public-mirror.md): an admin-minted URL that exposes
+-- exactly one NIRCam field or one NIRSpec observation to someone with no
+-- CAMPFIRE account.
+--
+-- Scoped to a FIELD OR OBSERVATION, never to a deployment. A scope is deployed
+-- many times and any one deployment may be narrower than the scope (a
+-- source_ids_filter subset, a few filters, one grating re-reduction), so a link
+-- shows the scope's CURRENT state rather than a snapshot taken at mint time.
+-- Redeploying updates what the link shows with no admin action. The scope CHECK
+-- deliberately mirrors deployments_scope_check.
+--
+-- Each row is backed by a synthetic `auth.users` principal (link_user_id, the
+-- "link account") whose profile carries is_link_account. That is what makes the
+-- whole feature cheap: the visitor authenticates like any other user, so every
+-- existing reader works unchanged, and the entire security story is the
+-- narrowing conjuncts in policies.sql.
+--
+-- Links never expire by default, and revocation is per link, so `revoked_at` is
+-- the ONLY thing that ever takes a link out of circulation.
+CREATE TABLE IF NOT EXISTS "public"."share_links" (
+    -- 32 url-safe random chars (~190 bits). The URL path segment; also the PK.
+    "token" "text" NOT NULL,
+    "label" "text" NOT NULL,
+    "observation" "text",
+    "field" "text",
+    "link_user_id" "uuid" NOT NULL,
+    -- Password for link_user_id, used by /s/<token> to mint a cookie session.
+    -- Plaintext by necessity (we must present it to GoTrue), which is why the
+    -- column-level grant below withholds it from `authenticated` entirely --
+    -- only service_role can read it, so it never reaches a browser even for an
+    -- admin. Low-value by construction: it authenticates a principal that can
+    -- read one scope and write nothing.
+    "link_password" "text" NOT NULL,
+    -- Opt-in: also expose draft (in-prep) rows inside the scope. This is what
+    -- makes "reduce it for a colleague without publishing it" work -- see
+    -- `campfire deploy --in-prep` and the draft gates in policies.sql. Spans
+    -- deployments: it means every draft row currently in the scope, including a
+    -- re-reduction staged after the link was minted.
+    "include_drafts" boolean NOT NULL DEFAULT false,
+    -- Per-link opt-out from FITS downloads. Default true (link holders can
+    -- download); present so the opt-out exists without being in the way.
+    "allow_download" boolean NOT NULL DEFAULT true,
+    "created_by" "uuid" NOT NULL,
+    "created_at" timestamp with time zone NOT NULL DEFAULT "now"(),
+    -- NULL (the default) = never expires. Set for the occasional bounded share.
+    "expires_at" timestamp with time zone,
+    "revoked_at" timestamp with time zone,
+    "last_seen_at" timestamp with time zone,
+    "view_count" integer NOT NULL DEFAULT 0,
+    CONSTRAINT "share_links_scope_check" CHECK (("num_nonnulls"("observation", "field") = 1))
+);
+
+
+ALTER TABLE "public"."share_links" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."share_links" IS 'Admin-minted share links scoped to one NIRCam field or NIRSpec observation. Each row is backed by a synthetic link account (link_user_id). See docs/design-public-mirror.md.';
 
 
 -- ---------------------------------------------------------------------------
@@ -1911,6 +1989,19 @@ ALTER TABLE ONLY "public"."user_profiles"
 
 
 
+ALTER TABLE ONLY "public"."share_links"
+    ADD CONSTRAINT "share_links_pkey" PRIMARY KEY ("token");
+
+
+
+-- One link account backs exactly one share link. Revoking a link deletes the
+-- account (so any live cookie session dies at its next token refresh), which
+-- cascades the row away with it.
+ALTER TABLE ONLY "public"."share_links"
+    ADD CONSTRAINT "share_links_link_user_id_key" UNIQUE ("link_user_id");
+
+
+
 ALTER TABLE ONLY "public"."user_program_access"
     ADD CONSTRAINT "user_program_access_pkey" PRIMARY KEY ("user_id", "program_slug");
 
@@ -2163,6 +2254,24 @@ ALTER TABLE ONLY "public"."user_program_access"
 
 
 
+-- Deleting the link account is the revocation primitive; the link row follows.
+ALTER TABLE ONLY "public"."share_links"
+    ADD CONSTRAINT "share_links_link_user_id_fkey" FOREIGN KEY ("link_user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."share_links"
+    ADD CONSTRAINT "share_links_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "auth"."users"("id");
+
+
+
+-- No FK on `observation`/`field`: the scope name is the durable identity of the
+-- share, and an observation can be un-deployed and re-deployed under the same
+-- name (`campfire deploy remove` deletes the row). A link whose scope row is
+-- momentarily absent shows nothing, which is correct; it should not be deleted.
+
+
+
 -- ---------------------------------------------------------------------------
 -- Publication
 -- ---------------------------------------------------------------------------
@@ -2341,6 +2450,32 @@ GRANT ALL ON TABLE "public"."nirspec_source_review" TO "service_role";
 -- deploy_events is an admin/internal audit log (RLS admin-only); not granted to anon.
 GRANT ALL ON TABLE "public"."deploy_events" TO "authenticated";
 GRANT ALL ON TABLE "public"."deploy_events" TO "service_role";
+
+
+-- share_links is admin-only (RLS); not granted to anon.
+--
+-- The column list is the point: `link_password` is a live credential, and
+-- admins browse the portal through `authenticated` like everyone else. RLS is
+-- row-level and cannot withhold a column, so withhold it with the grant. A
+-- table-level GRANT SELECT would cover every column no matter what column
+-- REVOKEs follow (a column REVOKE only subtracts column-level grants, never a
+-- table-level one), so SELECT is granted as an explicit list that omits
+-- link_password. Only service_role -- i.e. the /s/<token> route on the server
+-- -- can read it, so the credential never reaches a browser even for an admin
+-- who can see every other column of the row. A new column added to the table
+-- stays invisible to the portal until it is added here.
+--
+-- The REVOKE ALL is load-bearing: the default privileges above grant ALL to
+-- `authenticated` on every new table, so omitting a GRANT here would not be
+-- enough -- the table-level SELECT has to be explicitly taken back.
+REVOKE ALL ON TABLE "public"."share_links" FROM "anon";
+REVOKE ALL ON TABLE "public"."share_links" FROM "authenticated";
+GRANT INSERT, UPDATE, DELETE ON TABLE "public"."share_links" TO "authenticated";
+GRANT SELECT ("token", "label", "observation", "field", "link_user_id",
+              "include_drafts", "allow_download", "created_by", "created_at",
+              "expires_at", "revoked_at", "last_seen_at", "view_count")
+  ON TABLE "public"."share_links" TO "authenticated";
+GRANT ALL ON TABLE "public"."share_links" TO "service_role";
 
 
 -- deploy_scope_state is admin/internal concurrency state (RLS admin-only); not anon.

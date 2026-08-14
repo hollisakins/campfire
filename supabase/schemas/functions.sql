@@ -68,30 +68,170 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.is_group_account() TO authenticated;
 
+-- =============================================================================
+-- Share links (docs/design-public-mirror.md)
+-- =============================================================================
+-- A share link is backed by a synthetic authenticated principal (a "link
+-- account"). Because it authenticates like any other user, every reader in the
+-- portal works unchanged -- and the entire security story is the narrowing
+-- conjuncts these four helpers feed throughout policies.sql.
+--
+-- All four are argument-free on purpose. A policy conjunct written as
+--     (SELECT public.link_observation()) = t.observation
+-- evaluates the helper ONCE PER QUERY (Postgres treats the scalar subquery as
+-- an InitPlan), whereas a row-varying call like link_ok(t.observation) would
+-- run per row. `targets` and `spectra` back the big paginated table queries, so
+-- that difference is the hot path of the whole portal. This is the same reason
+-- every policy in this schema wraps is_admin() as `(SELECT public.is_admin())`.
+--
+-- SECURITY DEFINER because a link account cannot read share_links (RLS there is
+-- admin-only) and must not be able to.
+
+CREATE OR REPLACE FUNCTION public.is_link_account()
+RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT COALESCE(
+    (SELECT is_link_account FROM user_profiles WHERE user_id = auth.uid()),
+    false
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION public.is_link_account() TO authenticated;
+
+
+-- The scoped observation for the calling link account, or NULL for everyone
+-- else (and for a field-scoped link). A revoked or expired link resolves to
+-- NULL on BOTH axes, so its session reads nothing even before the account is
+-- deleted -- revocation takes effect on the next query, not the next refresh.
+CREATE OR REPLACE FUNCTION public.link_observation()
+RETURNS text
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT sl.observation
+  FROM share_links sl
+  WHERE sl.link_user_id = auth.uid()
+    AND sl.revoked_at IS NULL
+    AND (sl.expires_at IS NULL OR sl.expires_at > now());
+$$;
+
+GRANT EXECUTE ON FUNCTION public.link_observation() TO authenticated;
+
+
+CREATE OR REPLACE FUNCTION public.link_field()
+RETURNS text
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT sl.field
+  FROM share_links sl
+  WHERE sl.link_user_id = auth.uid()
+    AND sl.revoked_at IS NULL
+    AND (sl.expires_at IS NULL OR sl.expires_at > now());
+$$;
+
+GRANT EXECUTE ON FUNCTION public.link_field() TO authenticated;
+
+
+-- Whether this link may also see draft (in-prep) rows inside its scope. This is
+-- what makes "reduce it for a colleague without publishing it" work: deploy
+-- with `campfire deploy --in-prep`, then mint a link with include_drafts.
+--
+-- NOTE this widens an invariant that used to be absolute: before share links,
+-- deploy_status='draft' meant "admins only", full stop. It now means "admins,
+-- plus a link account scoped to that row". Still narrow -- link_sees_drafts()
+-- only ever appears ANDed with a scope match -- but the next person reading
+-- these policies deserves to know the rule has an exception.
+CREATE OR REPLACE FUNCTION public.link_sees_drafts()
+RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT COALESCE(
+    (SELECT sl.include_drafts
+     FROM share_links sl
+     WHERE sl.link_user_id = auth.uid()
+       AND sl.revoked_at IS NULL
+       AND (sl.expires_at IS NULL OR sl.expires_at > now())),
+    false
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION public.link_sees_drafts() TO authenticated;
+
+
+-- Whether this link may download FITS. Gates the whole storage_objects select
+-- policy, which every download path in the portal and the API runs through.
+--
+-- MUST be a SECURITY DEFINER helper rather than an inline subquery over
+-- share_links: that table is admin-only under RLS, so a policy reading it
+-- directly evaluates to no-rows for the very link account it is deciding
+-- about -- silently denying every download instead of honouring the flag.
+CREATE OR REPLACE FUNCTION public.link_allows_download()
+RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT COALESCE(
+    (SELECT sl.allow_download
+     FROM share_links sl
+     WHERE sl.link_user_id = auth.uid()
+       AND sl.revoked_at IS NULL
+       AND (sl.expires_at IS NULL OR sl.expires_at > now())),
+    false
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION public.link_allows_download() TO authenticated;
+
+
 CREATE OR REPLACE FUNCTION public.accessible_program_slugs()
 RETURNS text[]
 LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT COALESCE(array_agg(DISTINCT slug), '{}')
-  FROM (
-    SELECT program_slug AS slug
-    FROM user_program_access
-    WHERE user_id = auth.uid()
-    UNION
-    SELECT slug
-    FROM programs
-    WHERE is_public = true
-    UNION
-    -- Admins (the operators) inherit access to every program. This is the
-    -- single point where admin access is granted to all program-gated data:
-    -- every RLS SELECT policy routes through accessible_program_slugs(), so
-    -- this lets admins read back rows they deploy for private programs
-    -- (otherwise an upsert's RETURNING fails the SELECT policy -> 42501).
-    SELECT slug
-    FROM programs
-    WHERE public.is_admin()
-  ) sub;
+  -- Share links (docs/design-public-mirror.md §5.1): a link account gets ONLY
+  -- the program of its scoped observation. No user_program_access union (it has
+  -- no grants), no is_public union, no admin union.
+  --
+  -- Dropping is_public is the load-bearing part. Without it, handing someone a
+  -- share link would hand them every public program in the archive -- and
+  -- because ~20 policies route through this function, that one omission would
+  -- leak through all of them at once. A field-scoped link gets '{}': NIRCam is
+  -- not program-gated at all, so its narrowing lives on the field axis instead.
+  SELECT CASE WHEN public.is_link_account() THEN
+    COALESCE(
+      (SELECT array_agg(DISTINCT o.program_slug)
+       FROM observations o
+       WHERE o.name = public.link_observation()),
+      '{}'::text[]
+    )
+  ELSE
+    COALESCE(
+      (SELECT array_agg(DISTINCT slug)
+       FROM (
+         SELECT program_slug AS slug
+         FROM user_program_access
+         WHERE user_id = auth.uid()
+         UNION
+         SELECT slug
+         FROM programs
+         WHERE is_public = true
+         UNION
+         -- Admins (the operators) inherit access to every program. This is the
+         -- single point where admin access is granted to all program-gated data:
+         -- every RLS SELECT policy routes through accessible_program_slugs(), so
+         -- this lets admins read back rows they deploy for private programs
+         -- (otherwise an upsert's RETURNING fails the SELECT policy -> 42501).
+         SELECT slug
+         FROM programs
+         WHERE public.is_admin()
+       ) sub),
+      '{}'::text[]
+    )
+  END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.accessible_program_slugs() TO authenticated;
@@ -377,6 +517,26 @@ AS $$
 DECLARE
   updated_rows INTEGER;
 BEGIN
+  -- A JWT-bearing caller can only authorize a code for THEMSELVES: p_user_id
+  -- is caller-supplied and this function is EXECUTEable by `authenticated`, so
+  -- without the binding a session could mint an API credential for an
+  -- arbitrary user id. Service-role callers (the web routes) pass through.
+  IF (SELECT auth.role()) <> 'service_role'
+     AND (auth.uid() IS NULL OR p_user_id IS DISTINCT FROM auth.uid()) THEN
+    RETURN false;
+  END IF;
+
+  -- Share links (docs/design-public-mirror.md §5.5): a link account must never
+  -- mint a durable API credential. Its cookie session is scoped by RLS, but a
+  -- device-flow token would outlive revocation and be honoured by API-layer
+  -- authorization paths. Fail closed at the source of the grant.
+  IF EXISTS (
+    SELECT 1 FROM public.user_profiles up
+    WHERE up.user_id = p_user_id AND up.is_link_account
+  ) THEN
+    RETURN false;
+  END IF;
+
   UPDATE device_codes
   SET
     status = 'authorized',

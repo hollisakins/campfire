@@ -16,6 +16,10 @@ export interface UserProfile {
   can_comment: boolean;
   can_inspect: boolean;
   is_admin?: boolean;
+  // Share links (docs/design-public-mirror.md): a synthetic principal backing
+  // one share_links row. Read-only by CHECK constraint, scoped to one field or
+  // observation by RLS, and shown a stripped nav.
+  is_link_account?: boolean;
   preferences?: UserPreferences;
 }
 

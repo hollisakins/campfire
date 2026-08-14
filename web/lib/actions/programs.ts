@@ -1,6 +1,7 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
+import { getAccessibleProgramSlugs } from '@/lib/accessible-programs';
 import type { Pointing } from '@/lib/types';
 
 export interface ProgramOverview {
@@ -236,20 +237,11 @@ export async function getObservationsOverview(): Promise<ObservationsOverviewRes
   }
 
   try {
-    // Compute the accessible slug list with two cheap queries in parallel,
-    // then scope the heavy RPC server-side. Avoids hitting mv_programs_overview
-    // (via get_programs_overview) just to discover public slugs.
-    const [publicResult, accessResult] = await Promise.all([
-      supabase.from('programs').select('slug').eq('is_public', true),
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-    ]);
-
-    const accessibleSlugs = Array.from(
-      new Set([
-        ...(publicResult.data || []).map(p => p.slug),
-        ...(accessResult.data || []).map(a => a.program_slug),
-      ])
-    );
+    // Accessible slugs straight from the SQL authority (see
+    // web/lib/accessible-programs.ts), then scope the heavy RPC server-side.
+    // Avoids hitting mv_programs_overview (via get_programs_overview) just to
+    // discover slugs, and is correct for link accounts and admins.
+    const accessibleSlugs = await getAccessibleProgramSlugs(supabase);
 
     if (accessibleSlugs.length === 0) {
       return { observations: [], isAuthenticated: true };
