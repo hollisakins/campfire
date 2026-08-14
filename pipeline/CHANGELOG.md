@@ -234,6 +234,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   distinguishable and the subtraction stays invertible.
 
 ### Infrastructure
+- **Spike-model packaging (M2 of the diffraction-spike masking plan,
+  `docs/design-nircam-spike-masking.md` §6.1).** New
+  `scripts/build_spike_models.py` repacks the raw WebbPSF PSF+scattered-light
+  model set (16 NIRCam anchors, 0.6–4.4 µm; the raw set's 5.0 µm file is MIRI
+  and is skipped) into a two-grade published set — full-resolution float32
+  `photometric` and block-**max**-downsampled `mask` (×4 both channels, a
+  4-native-px cell: 0.124″ SW / 0.252″ LW) — and generates the committed
+  `campfire_pipeline/data/spike_model_manifest.toml` (checksums + per-entry
+  channel/λ/grade metadata). Block-max was chosen over block-mean after
+  `experiments/spike_model_grade/` measured mean-pooling silently dropping
+  whole narrow arm segments at threshold (miss drift 140–1600 px at every
+  factor); max-pooling makes the mask-grade threshold footprint a strict
+  superset of the full-res one at every isophote level. Hosting flow in
+  `pipeline/SPIKE_MODEL_HOSTING.md` (deltas from the wisp-template flow).
+  No pipeline code consumes the models yet (that lands with M3); no
+  scientific output changes.
 - **Generic reference-data cache engine (`common/ref_cache.py`)** — M1 of the
   spike-masking build plan (`docs/design-nircam-spike-masking.md` §6.1). The
   manifest-driven fetch+cache core (load, `ensure()`, atomic verified
