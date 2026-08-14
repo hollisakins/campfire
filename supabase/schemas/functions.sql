@@ -5326,11 +5326,17 @@ GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_
 -- moving a value out from under an inspector.
 --
 -- Staleness signal: when redshift_auto changes for an already-signed-off
--- object (quality >= 2), we still flag staleness_reason='reprocessed' and
+-- object (quality >= 2), we flag staleness_reason='reprocessed' and
 -- bump last_data_change_at so the UI surfaces a "Needs Review" badge.
 -- The pinned displayed redshift is unchanged, but the inspector should
 -- know the underlying fit shifted in case they want to update their
 -- override or reaffirm the existing one.
+--
+-- The badge only fires on solution-level changes: a shift within the same
+-- (1+z)-scaled z_delta tolerance used for grating refinement is by
+-- definition the same redshift solution at different precision (e.g. the
+-- PRISM anchor being swapped for a consistent grating fit) and does not
+-- warrant re-review. Appearing/disappearing values always badge.
 -- Selection rule: the best member spectrum by explicit grating priority
 -- (PRISM > G395M > G395H > G235M > G235H > G140M > G140H, tiebreak on
 -- exposure_time, then id) anchors the value. When that anchor is PRISM and
@@ -5349,6 +5355,8 @@ DECLARE
   n INTEGER;
   -- (1+z)-scaled tolerance for a grating auto-fit to count as consistent
   -- with the PRISM anchor: |z_grating - z_prism| / (1 + z_prism) < z_delta.
+  -- Also the re-review threshold: auto-fit shifts smaller than this are the
+  -- same solution at different precision and do not badge inspected objects.
   z_delta CONSTANT DOUBLE PRECISION := 0.01;
 BEGIN
   WITH computed AS (
@@ -5407,12 +5415,16 @@ BEGIN
       staleness_reason = CASE
         WHEN c.quality >= 2
              AND c.old_auto IS DISTINCT FROM c.new_val
+             AND (c.old_auto IS NULL OR c.new_val IS NULL
+                  OR ABS(c.new_val - c.old_auto) / (1.0 + c.old_auto) >= z_delta)
         THEN 'reprocessed'
         ELSE o.staleness_reason
       END,
       last_data_change_at = CASE
         WHEN c.quality >= 2
              AND c.old_auto IS DISTINCT FROM c.new_val
+             AND (c.old_auto IS NULL OR c.new_val IS NULL
+                  OR ABS(c.new_val - c.old_auto) / (1.0 + c.old_auto) >= z_delta)
         THEN NOW()
         ELSE o.last_data_change_at
       END,
