@@ -673,3 +673,28 @@ The leak test grew sections for 1, 2, and 6 (field-axis revoked fixtures); it
 now also passes against a migrated **and seeded** database. The general lesson
 for future readers: any route that reads with the service role must consult
 `getLinkScope()` — RLS cannot save a query that bypasses it.
+
+### 13.6 Second review round (2026-08-14): the API layer is closed outright
+
+The first round taught each patched route about link scoping; the second round
+found the pattern doesn't scale — the rest of `/api/v1/*` authorizes at
+program grain (`getAccessiblePrograms`), which cannot express "one
+observation" or the download opt-out, and a link visitor can lift their JWT
+out of the cookie jar (it is not httpOnly) or could mint an `sk_` API key.
+Rather than teach every route, the API layer is now **closed to link accounts
+at the two chokepoints**:
+
+- `validateAuth()` — the single entry for every bearer-authorized route —
+  resolves link accounts to no credential at all. The shared view never goes
+  through it: browser pages ride the cookie session, and the two
+  cookie-capable cutout routes (`/cutout/fits`, `/cutout/figure`) keep their
+  own scope checks from round one. The bearer-only base `/cutout` route
+  dropped its (now-dead) scope check accordingly.
+- The `api_keys` INSERT policy refuses link accounts, mirroring
+  `authorize_device_code` — no durable credential can be minted from a link
+  session (leak test asserts it).
+
+Also fixed from round two: `getLinkScope()` uses `maybeSingle()`, so an
+authenticated user with no profile row yet (invited, pre-setup) resolves as an
+ordinary user rather than a dead link — round one's `.single()` would have
+broken `campfire login` for them.

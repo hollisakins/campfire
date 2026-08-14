@@ -657,3 +657,18 @@ BEGIN
   RETURN updated_rows > 0;
 END;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- API keys are closed to link accounts
+-- ---------------------------------------------------------------------------
+-- An sk_ key is a durable credential that outlives revocation; refuse the mint
+-- at the source, mirroring authorize_device_code. Body extracted verbatim from
+-- supabase/schemas/policies.sql.
+
+DROP POLICY IF EXISTS "Users can create own API keys" ON api_keys;
+CREATE POLICY "Users can create own API keys"
+  ON api_keys FOR INSERT TO authenticated
+  WITH CHECK (
+    (SELECT auth.uid()) = user_id
+    AND (SELECT NOT public.is_link_account())
+  );

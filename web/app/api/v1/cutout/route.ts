@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms, getLinkScope, isAdminUser } from '@/lib/api-helpers';
+import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import {
   compositeTileThumbnail,
   type MapLayerInfo,
@@ -73,7 +73,7 @@ export async function GET(request: NextRequest) {
     const isAdmin = await isAdminUser(userId);
     let objQuery = supabase
       .from('objects')
-      .select('ra, dec, field, programs, observations')
+      .select('ra, dec, field, programs')
       .eq('object_id', objectId);
     if (!isAdmin) {
       objQuery = objQuery.eq('has_published_spectrum', true);
@@ -95,25 +95,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // The program check above is too coarse for a share link: its program
-    // spans sibling observations that were never shared. Mirror the RLS
-    // observation/field conjunct (docs/design-public-mirror.md §5.2), and
-    // answer out-of-scope exactly like a missing object so probing object ids
-    // confirms nothing.
-    const linkScope = await getLinkScope(userId);
-    if (linkScope) {
-      const objObservations: string[] = obj.observations ?? [];
-      const inScope =
-        linkScope.active &&
-        ((linkScope.observation !== null && objObservations.includes(linkScope.observation)) ||
-          (linkScope.field !== null && obj.field === linkScope.field));
-      if (!inScope) {
-        return NextResponse.json(
-          { error: 'Object not found' },
-          { status: 404 }
-        );
-      }
-    }
+    // No link-scope check here: this route is bearer-only (validateAuth), and
+    // validateAuth refuses link accounts outright — a link visitor's browser
+    // session never reaches it, and the cookie-capable cutout routes
+    // (/cutout/fits, /cutout/figure) carry their own scope checks.
 
     // Requested size, validated once; the default (native resolution for the
     // FOV) depends on which tile stack serves the field, so it's applied below.

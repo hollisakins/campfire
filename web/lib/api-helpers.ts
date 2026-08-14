@@ -81,13 +81,17 @@ export async function getLinkScope(userId: string): Promise<LinkScope | null> {
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+  // maybeSingle: an authenticated user with NO profile row is a real,
+  // pre-existing state (invited accounts before profile setup — see
+  // needsProfileSetup in AuthContext), and must resolve as an ordinary user,
+  // not as a dead link. Only a genuine query failure fails closed.
   const { data: profile, error } = await supabase
     .from('user_profiles')
     .select('is_link_account')
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
   if (error) return DEAD_LINK_SCOPE;
-  if (profile?.is_link_account !== true) return null;
+  if (!profile || profile.is_link_account !== true) return null;
 
   const { data: link } = await supabase
     .from('share_links')

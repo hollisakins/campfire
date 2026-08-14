@@ -338,6 +338,17 @@ BEGIN
     NULL;  -- expected
   END;
 
+  -- An sk_ API key is a durable credential that outlives revocation, and the
+  -- programmatic API authorizes at program grain -- a link account must not be
+  -- able to mint one.
+  BEGIN
+    INSERT INTO api_keys (user_id, key_hash, key_prefix)
+    VALUES ('00000000-0000-0000-0000-0000000000b1', 'zzz-hash', 'sk_zzz');
+    RAISE EXCEPTION 'link account minted an API key';
+  EXCEPTION WHEN insufficient_privilege THEN
+    NULL;  -- expected
+  END;
+
   -- -------------------------------------------------------------------------
   -- 7) Ordinary users are unaffected. The narrowing is ~20 conjuncts spliced
   --    into shared policies, so the regression risk runs in both directions:

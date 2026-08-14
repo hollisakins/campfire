@@ -1527,11 +1527,17 @@ CREATE POLICY "Users can view own API keys"
   ON api_keys FOR SELECT TO authenticated
   USING ((SELECT auth.uid()) = user_id);
 
--- Users can create own API keys.
+-- Users can create own API keys. Link accounts cannot (docs/design-public-mirror.md
+-- §5.5): an sk_ key is a durable credential that outlives revocation, and the
+-- programmatic API refuses link accounts anyway (validateAuth) -- refuse the
+-- mint at the source too, mirroring authorize_device_code.
 DROP POLICY IF EXISTS "Users can create own API keys" ON api_keys;
 CREATE POLICY "Users can create own API keys"
   ON api_keys FOR INSERT TO authenticated
-  WITH CHECK ((SELECT auth.uid()) = user_id);
+  WITH CHECK (
+    (SELECT auth.uid()) = user_id
+    AND (SELECT NOT public.is_link_account())
+  );
 
 -- Users can update own API keys.
 DROP POLICY IF EXISTS "Users can update own API keys" ON api_keys;
