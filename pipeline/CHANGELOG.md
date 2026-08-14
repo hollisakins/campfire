@@ -29,6 +29,109 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- **New opt-in `[nircam.bkg.bkg2d].fit_order = "first"` targets the amp-blocky
+  halo oversubtraction around bright multi-amp galaxies** when `subtract_2d`
+  is on — but was **rejected on real frames** and stays `"last"` (see the
+  follow-up at the end of this entry; the synthetic result below is retained
+  for the mechanism analysis, which still holds). With the legacy order (`"last"`, still the default), the amp-row 1/f
+  terms are fit before the applied 2-D background ever sees the frame:
+  unmasked halo/wing flux — structurally invisible to the source mask, whose
+  ring-median pre-filter removes structure broader than its radius before
+  tier detection — leaks into the clipped amp-row medians, the GP follows it
+  (smooth structure slower than ρ is exactly its model), and the offset is
+  broadcast across each amp's full width: oversubtracted amp-height blocks
+  with hard edges at columns 512/1024/1536 and at the source's top/bottom
+  rows. The 2-D fit then runs on the post-1/f residual and can never reclaim
+  that flux; iterating makes it *worse* (synthetic amp-spanning-halo scene:
+  row-ledger halo leak grows 1.42 → 1.92 over 3 iterations). `"first"` fits
+  the 2-D model on the pedestal-subtracted residual with the halo intact and
+  conditions the 1/f measurement on its output — same components, same
+  accumulation, different attribution — cutting the leak ~2x at shipped
+  settings (to ~0, i.e. the full artifact, when the 2-D model is exact; the
+  remainder is the fit's deficit inside the `extra_dilate` holes). CAUTION:
+  pair `"first"` with `reject = false` — the background-map outlier reject
+  flags the halo bump in the first-order map as leaked source flux and refits
+  it away, cancelling the benefit (measured; the step logs a warning on the
+  combination). Regression-pinned in
+  `tests/test_nircam_bkg.py::test_b2d_fit_order_first_starves_amprow_of_halo`;
+  real-frame A/B instructions in `docs/handoff-bkg2d-fit-order.md`.
+  Additionally (both orders, all fields): the amp-row GP's self-adapting
+  kernel amplitude is now measured on the **pre-detrend** residual
+  (`amplitude_data`, restoring the rj0911 f444w calibration contract recorded
+  in `gp_amprow_offsets` — the retired striping step honored it; the unified
+  step had regressed to measuring on the conditioned residual, which
+  under-estimates the amplitude and over-regularizes the interpolation across
+  wide masked gaps). `CFP_BKG` now records `bkg2d_order` when `subtract_2d`
+  is on. Pixel values change wherever the detrend is enabled (everywhere, by
+  default) → MINOR.
+  *Follow-up (same session series):* the real-frame A/B **rejected the
+  reorder** (sometimes better, often worse, judged by eye); the knob remains
+  for reference but stays `"last"`. The mitigation search moved to a second
+  opt-in lever, **`[nircam.bkg.striping].extra_dilate`** (default 0 = no
+  behavior change): grow the source tiers by N angular px (channel-scaled)
+  for the **1/f fit mask only** — the amp-row/column anchors move off
+  bright-galaxy halos, which the mask tiers structurally cannot reach (the
+  ring-median pre-filter erases structure broader than its radius before
+  detection), and the GP bridges the widened gaps as designed. Recorded as
+  `strp_dilate` in `CFP_BKG` when nonzero. Evaluated on the new eye-first
+  synthetic harness `experiments/amprow_halo` (brightfield scene: bright
+  amp-spanning ellipticals with halo envelopes + complex smooth sky +
+  injected 1/f, run through the real `bkg_step`, judged from PNGs) — where
+  the mask-growth levers were also rejected (global growth injects
+  row/column noise; selective growth cannot out-run halos broader than the
+  push). The surviving candidate is the **anisotropic conditioning
+  detrend**: with `[nircam.bkg.detrend].box_size_x > 0`, `box_size` becomes
+  the y (row) box and `box_size_x` a finer x box (evaluated at 96×32,
+  `filter_size = [1, 5]`). Banding is fine in y and constant in x within an
+  amp while halo structure is smooth in both, so a y-coarse/x-fine fit-only
+  mesh is banding-blind by construction (~4% pass-through of a ρ≈20 pattern
+  at 96 rows) yet follows halo column profiles, and, fit full-width and
+  smooth in x, cannot represent amp-dependent banding at any scale. On the
+  harness (standard + giant-BCG stress scenes) it removed the amp-row
+  misattribution nearly completely with no visible banding absorption;
+  provenance records `detrend=boxYxX`. Default `box_size_x = 0` (square
+  legacy box — no behavior change); real-frame validation instructions in
+  `docs/handoff-aniso-detrend.md`.
+  *Real-frame validation (2026-08-14):* three-arm A/B on **32 A2744 exposures
+  rebuilt from uncal** (24 SW F200W + 8 LW F444W), `bkg` re-run per arm on
+  copies, judged by eye on post-bkg SCI at a stretch held common across arms —
+  **`box_size_x = 32` with `reject = false` was preferred over production**.
+  The artifact was first confirmed to exist on those frames (5 of 32 showed a
+  strong single-amp excursion in the amp-row ledger, all SW; on real data the
+  driver is bright *stars'* PSF wings rather than galaxy halos), and the
+  `fit_order` reorder was rejected on the same data. LW arms used
+  `box_size = 192` so the ×0.5 channel scaling leaves ~96 rows;
+  `box_size_x` is not doubled. Full write-up with the failure modes and the
+  discarded metrics: `docs/findings-aniso-detrend-a2744.md`.
+- **Defaults flipped for the NIRCam background step** on the strength of that
+  validation. Pixel values change on every NIRCam field → MINOR.
+  - `[nircam.bkg].subtract_2d`: `false` → **`true`**. This aligns the package
+    with the practice it was written for — the reduction config in use has set
+    it true for every field, blank and cluster alike, for the life of the
+    unified step, so the `false` default was the path nothing ran on. The
+    trade is unchanged and deliberate: a fine-box applied fit removes ICL and
+    bright-galaxy wings by construction, bounded by the `bkg2d` box_size /
+    extra_dilate pair (chosen for zero median aperture-flux loss on compact,
+    extended and bright galaxies simultaneously). Set false to leave the
+    astrophysical sky for the mosaic.
+  - `[nircam.bkg.detrend]`: `box_size` `256` → **`96`**, `box_size_x` `0` →
+    **`32`**, `filter_size` `3` → **`[1, 5]`** — the validated anisotropic
+    conditioning mesh, on by default.
+  - `[nircam.bkg.bkg2d].reject`: `true` → **`false`** — the arm preferred on
+    real frames; the reject re-flags extended halo/wing bumps in the
+    background map as leaked source flux and refits away part of what the
+    conditioning buys. Only affects `subtract_2d` fields. Set true to restore
+    the leaked-compact-source guard.
+  - **The detrend y box is now scale-exempt in anisotropic mode** (a code
+    change, not just a default): ρ is a readout property in native ROWS, so
+    the banding attenuation a y box buys depends on rows spanned, not angle
+    subtended. Channel-scaling it would hand LW half the rows (96 → 48) and
+    half the attenuation — not the configuration validated on real frames,
+    which ran 96 rows in BOTH channels. The x box is still channel-scaled (it
+    tracks the halo's angular column profile), and legacy square mode
+    (`box_size_x = 0`) keeps the old scaled behavior untouched (256 → 128 LW).
+    Verified by running the shipped defaults against the stored validation arm
+    on real SW and LW frames.
 - **Mosaic background subtraction is now recorded by a `CFP_BKGS` stamp on the
   i2d primary header, making `_i2d_before_bkgsub.fits` deletable** (issue
   #427). Previously the snapshot's *existence on disk* was the only

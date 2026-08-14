@@ -202,14 +202,26 @@
     # See docs/design-nircam-unified-background.md.
     n_iterations = 3
     plot = true
-    # Opt-in applied 2-D background per exposure (fields with strongly varying
-    # backgrounds — lensing clusters). Each iteration fits Background2D on the
-    # running residual (see [nircam.bkg.bkg2d]) and subtracts the model. A
-    # fine-box fit removes ICL and bright-galaxy wings by construction — an
-    # accepted trade for cluster fields; leave false for blank fields. NOTE:
-    # the per-exposure skip is CFP_BKG-presence-based, so flipping this on
-    # already-processed exposures needs --overwrite (or reset --from image2).
-    subtract_2d = false
+    # Applied 2-D background per exposure. Each iteration fits Background2D on
+    # the running residual (see [nircam.bkg.bkg2d]) and subtracts the model.
+    #
+    # ON BY DEFAULT (was opt-in). This makes the package agree with the
+    # long-standing practice it was written for: the reduction config here has
+    # set subtract_2d = true for EVERY NIRCam field, blank and cluster alike,
+    # for the life of the unified bkg step — the false default was already the
+    # path nothing ran on.
+    #
+    # KNOW THE TRADE: a fine-box fit removes ICL and bright-galaxy wings by
+    # construction. That is the point on cluster fields; on blank fields it
+    # also removes real extended wing/sky structure. What bounds the loss is
+    # the [nircam.bkg.bkg2d] box_size / extra_dilate pair, chosen by the
+    # synthetic cluster sweep for zero median aperture-flux loss on compact,
+    # extended AND bright galaxies simultaneously. Set false to leave the
+    # astrophysical sky in place for the mosaic to handle.
+    #
+    # NOTE: the per-exposure skip is CFP_BKG-presence-based, so flipping this
+    # on already-processed exposures needs --overwrite (or reset --from image2).
+    subtract_2d = true
 
     [nircam.bkg.mask]
         # SubtractBackground mask config (mask only). Mosaic-like depth: the
@@ -289,6 +301,27 @@
         # Rebuild the source mask each iteration on the running residual (it
         # sharpens as the frame flattens). Set false to mask once (cheaper).
         remask_each_iter = true
+        # Grow the source tiers by this many px (angular, channel-scaled like
+        # the mask params) for the 1/f fit mask ONLY (column pattern + amp-row
+        # terms; detrend/pedestal/bkg2d keep their own masks). Pushes the
+        # amp-row anchors away from bright-galaxy halos — the mask tiers
+        # structurally cannot reach them (the ring-median pre-filter removes
+        # structure broader than its radius before detection), and
+        # halo-contaminated anchors are what the per-amp GP broadcasts into
+        # the amp-blocky oversubtraction around bright multi-amp sources.
+        # The GP interpolates across the widened gaps (rho_long's job),
+        # reverting to the per-amp DC where nothing anchors. 0 = off (legacy
+        # behavior). Under evaluation on the amprow_halo synthetic harness
+        # (experiments/amprow_halo).
+        extra_dilate = 0
+        # With extra_dilate > 0: grow ONLY source-tier footprints of at least
+        # this many px^2 (angular, channel-scaled x f^2). Growing every tier
+        # starves the amp-row anchors frame-wide (hundreds of faint sources
+        # each donate a grown disk) and the GP then follows sampling noise —
+        # measured on the amprow_halo harness: injected row/column striping
+        # and a remask runaway at extra_dilate=150. The artifact drivers are
+        # the few LARGE footprints; 0 grows everything (not recommended).
+        extra_dilate_min_area = 0
 
         [nircam.bkg.striping.gp]
             # rho = SHOTerm correlation length in *rows* (frozen; a detector
@@ -303,6 +336,13 @@
             q = 0.70710678
             sigma_clip = 2.0
             weak_frac = 0.5
+            # Amp-rows with fewer surviving background pixels than this do
+            # not anchor the GP (they become interpolated gap rows): a
+            # MAD-based sigma on a handful of pixels can make a starved,
+            # contaminated row an overconfident anchor. 0 = legacy (any row
+            # with >= 1 pixel anchors). Under evaluation on the amprow_halo
+            # harness alongside striping.extra_dilate.
+            min_row_pixels = 0
 
     [nircam.bkg.variance]
         # VAR_RNOISE rescale (folded in; uses the shared final source mask).
@@ -324,8 +364,38 @@
         # channel-scaled like the mask params (256 -> 128 px LW native,
         # matching Endsley's bw=128).
         enabled = true
-        box_size = 256
-        filter_size = 3
+        # y (row) box. In anisotropic mode (box_size_x > 0, the default) this
+        # is SCALE-EXEMPT and means native ROWS in both channels — rho is a
+        # readout property in rows, so the banding attenuation depends on rows
+        # spanned, not angle subtended. In legacy square mode (box_size_x = 0)
+        # it is channel-scaled as an angular length, as before (256 -> 128 LW).
+        box_size = 96
+        # Anisotropic conditioning (opt-in): when > 0, box_size becomes the
+        # y (row) box and box_size_x sets a finer x box, e.g. 96 / 32.
+        # Rationale: banding is fine in y and constant in x within an amp;
+        # the halo/wing structure the amp-row terms steal is smooth in both.
+        # A y-coarse mesh is banding-blind by construction (a 64-row box
+        # averages a rho~20 pattern to ~6%, 96 rows to ~4%) while the fine x
+        # box follows halo column profiles near bright galaxies where the
+        # square coarse box cannot; fit full-width, it is also continuous
+        # across amp boundaries, so amp-DEPENDENT banding is unrepresentable
+        # at any scale. The rj0911 "fine boxes worse" A/B used SQUARE fine
+        # boxes (fine in y too — the configuration that absorbs banding);
+        # anisotropy was untested. Trade: common-mode row structure at
+        # ~50-150 rows may be conditioned away and underfit by h. filter_size
+        # may be a 2-list [y, x] (use [1, 5] to keep full y mesh resolution).
+        # 0 = square legacy box.
+        #
+        # ON BY DEFAULT since the real-frame validation on A2744 (32 exposures
+        # rebuilt from uncal, three arms, judged by eye on post-bkg SCI at a
+        # stretch held common across arms — 96x32 with bkg2d.reject = false was
+        # preferred over the square-box production configuration). Details and
+        # the rejected alternatives: docs/findings-aniso-detrend-a2744.md.
+        box_size_x = 32
+        # [y, x]. y = 1 keeps full mesh resolution in the row direction, which
+        # is the point of the anisotropic mesh; the x median filter smooths
+        # across columns. A scalar is still accepted (applied to both axes).
+        filter_size = [1, 5]
         sigma = 3.0
         exclude_percentile = 90
 
@@ -341,6 +411,26 @@
         # cluster sweep (experiments/bkg2d_synthetic, arm b64_d20): zero
         # median aperture-flux loss for compact, extended AND bright
         # galaxies simultaneously, ICL removal ~0.6.
+        # Where in the per-iteration chain the applied fit runs.
+        #   "last" (legacy default): fit on the 1/f-corrected residual, AFTER
+        #       the amp-row terms. Unmasked halo/wing flux around bright
+        #       multi-amp galaxies then leaks into the clipped amp-row
+        #       medians first and is broadcast across each amp's width —
+        #       amp-blocky oversubtraction with hard edges at cols
+        #       512/1024/1536 — and the 2-D fit can never reclaim it (it
+        #       only ever sees the post-h residual; corrections accumulate
+        #       one-way across iterations).
+        #   "first": fit on resid - ped with the halo intact, and condition
+        #       the 1/f measurement on the fitted model, so smooth structure
+        #       is claimed by the smooth model. Recommended for the
+        #       bright-galaxy fields subtract_2d exists for; kept opt-in
+        #       pending the real-frame A/B (docs/handoff-bkg2d-fit-order.md).
+        #       CAUTION: pair with reject = false — the map-outlier reject
+        #       below flags the halo bump in the first-order map as leaked
+        #       source flux and refits it away, cancelling the benefit
+        #       (measured on the synthetic amp-spanning-halo scene; the step
+        #       logs a warning on this combination).
+        fit_order = "last"
         box_size = 64
         filter_size = 5
         sigma = 3.0
@@ -354,7 +444,15 @@
         # med + hi*sigma / med - lo*sigma masked (sigma from the lowest
         # reject_percentile of map values), grown by reject_dilate px. Guards
         # against source flux leaking through the mask into the fine-box fit.
-        reject = true
+        #
+        # Default flipped to FALSE alongside the anisotropic conditioning
+        # detrend: on real A2744 frames the preferred arm was aniso +
+        # reject = false (the reject re-flags extended halo/wing bumps in the
+        # background map as leaked source flux and refits them away, undoing
+        # part of what the conditioning buys). Only affects subtract_2d
+        # fields, since bkg2d runs nowhere else. Set true to restore the
+        # leaked-compact-source guard. See docs/findings-aniso-detrend-a2744.md.
+        reject = false
         reject_sigma_hi = 4.0
         reject_sigma_lo = 3.0
         reject_percentile = 60.0
