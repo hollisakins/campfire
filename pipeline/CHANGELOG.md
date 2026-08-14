@@ -234,6 +234,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   distinguishable and the subtraction stays invertible.
 
 ### Infrastructure
+- **G0 footprint-validation harness for the spike models
+  (`experiments/spike_g0_footprint/`,
+  `docs/design-nircam-spike-masking.md` §6.1 gate G0).** Automates the
+  model-isophote-vs-real-spike check on any existing reduction:
+  ref_cache model fetch, Gaia bright-star selection, self-contained
+  orientation fit (azimuthal arm-profile correlation — no roll_ref
+  dependency; the recovered per-detector `dtheta` doubles as ground truth
+  for M3's WCS wiring), in-frame amplitude fit, and per-arm envelope
+  verdicts from pixel-count radial extents (cell statistics dilute
+  few-px-wide ridges; counts have no fill-factor bias) plus pixel-level
+  miss counts, with overlay/profile PNGs and a JSON report. Includes a
+  no-data no-network `selftest.py` that asserts both directions on a
+  synthetic 8-arm scene: a perfect model passes every arm with
+  noise-level misses; a truncated model fails every arm. Run plan and
+  pass criteria in `docs/handoff-spike-g0-footprint.md`. Experiment-only;
+  no pipeline code paths change.
 - **Spike-model packaging (M2 of the diffraction-spike masking plan,
   `docs/design-nircam-spike-masking.md` §6.1).** New
   `scripts/build_spike_models.py` repacks the raw WebbPSF PSF+scattered-light
