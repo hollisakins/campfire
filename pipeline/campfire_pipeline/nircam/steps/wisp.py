@@ -498,9 +498,17 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
             # while the model it implies moves by <1%. The model is what gets
             # subtracted, so 1% of its peak (far under the pixel noise) is the
             # criterion that matters.
-            peak = float(np.nanmax(np.abs(wisp_i)))
-            settled = (np.nanmax(np.abs(wisp_i - wisp)) <= 0.01 * peak
-                       if peak > 0 else True)
+            #
+            # Scale on BOTH models, not just the new one. NNLS can drive every
+            # component to the boundary on a low-wisp frame, and scaling on the
+            # new peak alone would make that all-zero model look converged
+            # against any predecessor -- replacing a good fit with "subtract
+            # nothing" and stamping it as processed. Zero is only settled when
+            # the previous model was zero too.
+            scale = max(float(np.nanmax(np.abs(wisp_i))),
+                        float(np.nanmax(np.abs(wisp))))
+            settled = (np.nanmax(np.abs(wisp_i - wisp)) <= 0.01 * scale
+                       if scale > 0 else True)
             W, wisp, mask, region_used = W_i, wisp_i, mask_i, used_i
             n_passes += 1
             if settled:
