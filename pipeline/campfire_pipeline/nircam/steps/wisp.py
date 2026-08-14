@@ -13,6 +13,8 @@ Two subtraction methods are available (``[nircam.wisp].method``):
   package. Per-detector/filter templates (a small basis of components) are fit
   to each exposure with non-negative least squares, capturing exposure-to-
   exposure morphological variation that a single scaled template cannot.
+  The source mask is iterated (``mask_iterations``): each pass re-detects on
+  the wisp-subtracted frame, so a bright wisp cannot mask its own fit region.
   Templates ship inside the ``nmfwisp`` wheel; coverage is irregular (not every
   filter exists for every detector), so a ``(detector, filter)`` NMF has no
   template for automatically falls back to the ``template`` method below.
@@ -407,6 +409,9 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
     # config_default.toml for why). Both land verbatim in CFP_WISP below.
     fit_region_name = step_config.get('nmf_fit_region', 't50')
     fit_sigma = step_config.get('nmf_fit_sigma', 'ivar')
+    mask_nsigma = step_config.get('mask_nsigma', 3.0)
+    mask_dilate = step_config.get('mask_dilate', 8)
+    mask_passes = max(int(step_config.get('mask_iterations', 5)), 1)
 
     log(f"Running NMF wisp subtraction on {rootname}")
     model = ImageModel(exposure_file, memmap=False)
@@ -416,11 +421,8 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
     # (upstream default). See _nmfwisp_case_shim.
     shim = _nmfwisp_case_shim()
 
-    mask, found = _source_mask(
-        model.data,
-        nsigma=step_config.get('mask_nsigma', 3.0),
-        dilate=step_config.get('mask_dilate', 8),
-    )
+    mask, found = _source_mask(model.data, nsigma=mask_nsigma,
+                               dilate=mask_dilate)
     if not found:
         log(f"Source detection found nothing for {rootname}; "
             "fitting NMF without a source mask")
@@ -444,6 +446,7 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
                 f'hsnr/ivar; the configured {fit_region_name}/{fit_sigma} is '
                 f'not applied and is not recorded for {rootname}')
         region_used, sigma_used = 'hsnr', 'ivar'
+        n_passes = 1          # nmfwisp owns the solve; no mask iteration here
     else:
         from nmfwisp.nmfwisp import load_wisp_templates
         tmpl, _terr, wmask, hsnr = load_wisp_templates(
@@ -452,6 +455,61 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
             sci_before, model.err, mask, tmpl, wmask, hsnr,
             region=fit_region_name, sigma=fit_sigma)
         sigma_used = fit_sigma
+
+        # Re-detect sources on the wisp-SUBTRACTED frame and re-fit, until the
+        # model stops moving. The first-pass mask is built on a frame that
+        # still contains the wisp, so ``detect_sources`` sees the wisp itself
+        # as a source and masks the very pixels the amplitude solve scores.
+        # The bias scales with wisp brightness and is self-defeating at the
+        # bright end: on A2744/F200W nrcb4 the wisp core runs 7.6 sigma above
+        # sky against a 3-sigma detection threshold, so 97.6% of t50 is
+        # detected, dilation takes the rest, and ``t50 & ~mask`` collapses to
+        # ZERO usable pixels -- the solve then falls back to the whole hSNR
+        # region, which is ~90% background and answers with a spurious broad
+        # component that digs a -0.006..-0.014 MJy/sr bowl over the wisp
+        # footprint. That is exactly the failure the t50 default exists to
+        # avoid, re-entered through the fallback.
+        #
+        # Subtracting even a bad first model drops the wisp below the
+        # detection threshold, so pass 2 recovers the region and the fit
+        # converges in 2-4 passes. It is seed-independent: starting from the
+        # hSNR fallback and from a t30 fit land within 2% of each other.
+        # ``mask_iterations = 1`` restores the single-pass behaviour.
+        n_passes = 1
+        for _ in range(mask_passes - 1):
+            if region_used is None:
+                break                      # nothing subtracted; mask can't move
+            # nan_to_num for the same reason the final subtraction does it: a
+            # NaN in the model would turn that pixel non-finite and _source_mask
+            # would mask it, quietly shrinking the fit region pass by pass.
+            mask_i, _found_i = _source_mask(
+                sci_before - np.nan_to_num(wisp, nan=0.0),
+                nsigma=mask_nsigma, dilate=mask_dilate)
+            W_i, wisp_i, _sky_i, used_i = _nmf_amplitudes(
+                sci_before, model.err, mask_i, tmpl, wmask, hsnr,
+                region=fit_region_name, sigma=fit_sigma)
+            if used_i is None:
+                # A later pass starving is not a reason to throw away a fit
+                # that worked; keep the previous pass and stop.
+                break
+            # Converge on the MODEL, not on W. The components are near-
+            # degenerate and NNLS trades amplitude between them freely --
+            # nrca3 walks [0.76,0.62,1.50] -> [1.43,0,0.89] -> [1.72,0,0]
+            # while the model it implies moves by <1%. The model is what gets
+            # subtracted, so 1% of its peak (far under the pixel noise) is the
+            # criterion that matters.
+            peak = float(np.nanmax(np.abs(wisp_i)))
+            settled = (np.nanmax(np.abs(wisp_i - wisp)) <= 0.01 * peak
+                       if peak > 0 else True)
+            W, wisp, mask, region_used = W_i, wisp_i, mask_i, used_i
+            n_passes += 1
+            if settled:
+                break
+        else:
+            if mask_passes > 1:
+                log(f'NMF mask iteration did not settle in {mask_passes} '
+                    f'passes for {rootname}; using the last fit')
+
         if region_used is None:
             # Nothing left to fit. Subtracting the all-zero model and stamping
             # success would mark an UNSUBTRACTED exposure as processed, and
@@ -488,7 +546,8 @@ def _fit_nmf(exposure_file, step_config, rootname, detector, filtname):
     # from a deployed product. It is also the only way to tell an old-fit
     # product from a new-fit one, since the nmfwisp version string does not
     # change when the region/sigma defaults do.
-    prov = f'nmf {ver} region={region_used} sigma={sigma_used}'
+    prov = (f'nmf {ver} region={region_used} sigma={sigma_used} '
+            f'passes={n_passes}')
     if W is not None:
         prov += ' W=' + ','.join(f'{x:.5g}' for x in np.atleast_1d(W))
     else:

@@ -168,6 +168,18 @@
                                # before fitting, to swallow wings past the nsigma
                                # isophote (0 disables). Secondary to mask_nsigma;
                                # nsigma=3 + dilate=8 sit on the converged plateau.
+    mask_iterations = 5        # NMF only: max source-mask/amplitude passes. The
+                               # first mask is built on a frame that still contains
+                               # the wisp, so detect_sources treats a bright wisp as
+                               # a source and masks the pixels the solve scores —
+                               # under-subtracting bright wisps, and at the extreme
+                               # starving the region entirely (A2744/F200W nrcb4: the
+                               # wisp core is 7.6 sigma over sky against a 3-sigma
+                               # threshold, 97.6% of t50 is detected, and t50 & ~mask
+                               # hits ZERO px, forcing the hSNR fallback and a
+                               # -0.006..-0.014 MJy/sr over-subtracted bowl).
+                               # Re-detecting on the subtracted frame fixes it;
+                               # converges in 2-4 passes. 1 = single-pass (legacy).
     # Which pixels the NMF amplitude solve scores. "hsnr" = the template's own
     # MASK_hSNR extension (nmfwisp behaviour); "tNN" = pixels above NN% of the
     # summed template's peak. MASK_hSNR is misnamed — on nrcb4 F200W it is
