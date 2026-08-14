@@ -698,3 +698,21 @@ Also fixed from round two: `getLinkScope()` uses `maybeSingle()`, so an
 authenticated user with no profile row yet (invited, pre-setup) resolves as an
 ordinary user rather than a dead link — round one's `.single()` would have
 broken `campfire login` for them.
+
+### 13.7 Round three (2026-08-14): the server actions had their own union
+
+Review round three found the portal's own server actions hand-rolled the
+accessible-programs set (`user_program_access` ∪ `is_public`) as a client-side
+pre-filter before calling the filter RPCs — nine sites across `spectra.ts`,
+`map.ts`, `download.ts`, `programs.ts`. A link account has no grants and gets
+no `is_public` union, so the pre-filter came out empty and short-circuited to
+zero results: the spectra browser rendered blank for a private-program share
+link — the feature's primary use case — even though RLS would have returned
+the rows. Fail-closed, but broken.
+
+All nine sites now call `accessible_program_slugs()` itself via RPC
+(`web/lib/accessible-programs.ts`): one round trip to the single SQL authority
+that knows every principal shape, instead of a JS re-derivation that only knew
+one. The two `explicitAccessSlugs` sites in `programs.ts` stay hand-rolled
+deliberately — they mark which programs carry an explicit grant (an access
+badge), which is a different question from accessibility.

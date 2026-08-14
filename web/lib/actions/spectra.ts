@@ -1,6 +1,7 @@
 'use server';
 
 import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { getAccessibleProgramSlugs } from '@/lib/accessible-programs';
 import { paginateRpc } from '@/lib/supabase/paginate';
 import type { SpectrumTarget, Program, Spectrum, ObjectDetail, ObjectMemberTarget, PinnedObjectMetadata } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
@@ -73,15 +74,11 @@ export async function getSpectra(
   }
 
   try {
-    // Determine which programs the user can access (parallel queries)
-    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
-    ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+    // Which programs can this user access? One RPC to the SQL authority
+    // (accessible_program_slugs) rather than a hand-rolled grants + public
+    // union: the union is wrong for link accounts (scoped program only, no
+    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
+    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
 
     if (accessibleProgramSlugs.length === 0) {
       return {
@@ -290,15 +287,11 @@ export async function getSpectrumById(targetId: string): Promise<{
   }
 
   try {
-    // Determine which programs the user can access (parallel queries)
-    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
-    ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+    // Which programs can this user access? One RPC to the SQL authority
+    // (accessible_program_slugs) rather than a hand-rolled grants + public
+    // union: the union is wrong for link accounts (scoped program only, no
+    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
+    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
 
     const { data, error } = await supabase
       .from('targets')
@@ -443,16 +436,12 @@ export async function getObjectById(objectId: string): Promise<{
   }
 
   try {
-    // Fetch access data, public programs, and object row in parallel
-    const [{ data: accessData }, { data: publicPrograms }, { data: obj, error: objError }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
+    // Fetch the accessible-slug list (SQL authority — see
+    // web/lib/accessible-programs.ts) and the object row in parallel.
+    const [accessibleProgramSlugs, { data: obj, error: objError }] = await Promise.all([
+      getAccessibleProgramSlugs(supabase),
       supabase.from('objects').select('*').eq('object_id', objectId).single(),
     ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
     if (objError || !obj) {
       return {
@@ -709,17 +698,12 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
   }
 
   try {
-    // Fetch user access and all programs in parallel
-    const [{ data: accessData, error: accessError }, { data: allPrograms, error: programsError }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
+    // Fetch the accessible-slug list (SQL authority — see
+    // web/lib/accessible-programs.ts) and all RLS-visible programs in parallel.
+    const [accessibleSlugList, { data: allPrograms, error: programsError }] = await Promise.all([
+      getAccessibleProgramSlugs(supabase),
       supabase.from('programs').select('*'),
     ]);
-
-    if (accessError) {
-      console.error('Error fetching program access:', accessError);
-    }
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
 
     if (programsError) {
       console.error('Error fetching programs:', programsError);
@@ -731,9 +715,10 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
       };
     }
 
-    // Filter to programs that are public OR user has explicit access
+    // Filter to the accessible set. The old form (is_public OR explicit
+    // grant) was wrong for link accounts, whose scoped program is neither.
     const accessiblePrograms = (allPrograms || []).filter(
-      p => p.is_public || explicitAccessSlugs.includes(p.slug)
+      p => accessibleSlugList.includes(p.slug)
     );
 
     if (accessiblePrograms.length === 0) {
@@ -826,14 +811,11 @@ export async function getInspectionQueueIds(
   }
 
   try {
-    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
-    ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+    // Which programs can this user access? One RPC to the SQL authority
+    // (accessible_program_slugs) rather than a hand-rolled grants + public
+    // union: the union is wrong for link accounts (scoped program only, no
+    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
+    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
 
     if (accessibleProgramSlugs.length === 0) {
       return { ids: [] };
@@ -903,14 +885,11 @@ export async function getAdjacentObjectIds(
   }
 
   try {
-    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
-    ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+    // Which programs can this user access? One RPC to the SQL authority
+    // (accessible_program_slugs) rather than a hand-rolled grants + public
+    // union: the union is wrong for link accounts (scoped program only, no
+    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
+    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
 
     if (accessibleProgramSlugs.length === 0) {
       return { prev: null, next: null, currentIndex: 0, total: 0 };
