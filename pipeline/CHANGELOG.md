@@ -29,9 +29,11 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
-- **New opt-in `[nircam.bkg.bkg2d].fit_order = "first"` fixes the amp-blocky
+- **New opt-in `[nircam.bkg.bkg2d].fit_order = "first"` targets the amp-blocky
   halo oversubtraction around bright multi-amp galaxies** when `subtract_2d`
-  is on. With the legacy order (`"last"`, still the default), the amp-row 1/f
+  is on — but was **rejected on real frames** and stays `"last"` (see the
+  follow-up at the end of this entry; the synthetic result below is retained
+  for the mechanism analysis, which still holds). With the legacy order (`"last"`, still the default), the amp-row 1/f
   terms are fit before the applied 2-D background ever sees the frame:
   unmasked halo/wing flux — structurally invisible to the source mask, whose
   ring-median pre-filter removes structure broader than its radius before
@@ -90,6 +92,18 @@ Release procedure: edit the `## Unreleased` section below, then run
   provenance records `detrend=boxYxX`. Default `box_size_x = 0` (square
   legacy box — no behavior change); real-frame validation instructions in
   `docs/handoff-aniso-detrend.md`.
+  *Real-frame validation (2026-08-14):* three-arm A/B on **32 A2744 exposures
+  rebuilt from uncal** (24 SW F200W + 8 LW F444W), `bkg` re-run per arm on
+  copies, judged by eye on post-bkg SCI at a stretch held common across arms —
+  **`box_size_x = 32` with `reject = false` was preferred over production**.
+  The artifact was first confirmed to exist on those frames (5 of 32 showed a
+  strong single-amp excursion in the amp-row ledger, all SW; on real data the
+  driver is bright *stars'* PSF wings rather than galaxy halos), and the
+  `fit_order` reorder was rejected on the same data. LW arms used
+  `box_size = 192` so the ×0.5 channel scaling leaves ~96 rows;
+  `box_size_x` is not doubled. No default is flipped by this PR. Full write-up
+  with the failure modes and the discarded metrics:
+  `docs/findings-aniso-detrend-a2744.md`.
 - **Mosaic background subtraction is now recorded by a `CFP_BKGS` stamp on the
   i2d primary header, making `_i2d_before_bkgsub.fits` deletable** (issue
   #427). Previously the snapshot's *existence on disk* was the only
