@@ -1161,8 +1161,10 @@ def compute_object_redshift_auto(client: Client, field: str) -> int:
 
     Wraps the SQL function of the same name. Explicit priority: PRISM >
     G395M > G395H > G235M > G235H > G140M > G140H; tiebreak on longest
-    exposure_time. Objects whose members have no spectra with redshift_auto
-    are nulled out.
+    exposure_time. When a grating auto-fit agrees with the PRISM anchor
+    within |dz| <= 0.03, the best such grating redshift is adopted for its
+    higher precision. Objects whose members have no spectra with
+    redshift_auto are nulled out.
     """
     resp = client.rpc('compute_object_redshift_auto', {'p_field': field}).execute()
     return int(resp.data) if resp.data is not None else 0

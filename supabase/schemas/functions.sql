@@ -5331,6 +5331,11 @@ GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_
 -- The pinned displayed redshift is unchanged, but the inspector should
 -- know the underlying fit shifted in case they want to update their
 -- override or reaffirm the existing one.
+-- Selection rule: the best member spectrum by explicit grating priority
+-- (PRISM > G395M > G395H > G235M > G235H > G140M > G140H, tiebreak on
+-- exposure_time, then id) anchors the value. When that anchor is PRISM and
+-- a grating spectrum's auto-fit agrees with it within |dz| <= z_delta, the
+-- best such grating redshift is adopted instead for its higher precision.
 CREATE OR REPLACE FUNCTION public.compute_object_redshift_auto(p_field TEXT)
 RETURNS INTEGER
 LANGUAGE plpgsql
@@ -5342,18 +5347,21 @@ SET statement_timeout = '300s'
 AS $$
 DECLARE
   n INTEGER;
+  -- Absolute |dz| tolerance for a grating auto-fit to count as consistent
+  -- with the PRISM anchor (not (1+z)-scaled).
+  z_delta CONSTANT DOUBLE PRECISION := 0.03;
 BEGIN
   WITH computed AS (
     SELECT o.id,
            o.redshift_auto AS old_auto,
            o.redshift_quality AS quality,
-           (
-             SELECT s.redshift_auto
-             FROM targets t
-             JOIN spectra s ON s.target_id = t.target_id
-             WHERE t.object_id = o.id
-               AND s.redshift_auto IS NOT NULL
-             ORDER BY
+           best.new_val
+    FROM objects o
+    LEFT JOIN LATERAL (
+      WITH members AS (
+        SELECT s.redshift_auto AS z,
+               s.exposure_time,
+               s.id,
                CASE
                  WHEN s.grating = 'PRISM' THEN 0
                  WHEN s.grating = 'G395M' THEN 1
@@ -5363,12 +5371,35 @@ BEGIN
                  WHEN s.grating = 'G140M' THEN 5
                  WHEN s.grating = 'G140H' THEN 6
                  ELSE 7
-               END ASC,
-               s.exposure_time DESC NULLS LAST,
-               s.id ASC
-             LIMIT 1
-           ) AS new_val
-    FROM objects o
+               END AS priority
+        FROM targets t
+        JOIN spectra s ON s.target_id = t.target_id
+        WHERE t.object_id = o.id
+          AND s.redshift_auto IS NOT NULL
+      ),
+      prism AS (
+        SELECT z FROM members WHERE priority = 0
+        ORDER BY exposure_time DESC NULLS LAST, id ASC
+        LIMIT 1
+      ),
+      -- Best member outright: PRISM if present, else best grating.
+      base AS (
+        SELECT z FROM members
+        ORDER BY priority ASC, exposure_time DESC NULLS LAST, id ASC
+        LIMIT 1
+      ),
+      -- PRISM-consistent refinement: best known grating whose auto-fit
+      -- agrees with the PRISM anchor. Empty when no PRISM member exists.
+      refined AS (
+        SELECT m.z
+        FROM members m, prism p
+        WHERE m.priority BETWEEN 1 AND 6
+          AND ABS(m.z - p.z) <= z_delta
+        ORDER BY m.priority ASC, m.exposure_time DESC NULLS LAST, m.id ASC
+        LIMIT 1
+      )
+      SELECT COALESCE((SELECT z FROM refined), (SELECT z FROM base)) AS new_val
+    ) best ON TRUE
     WHERE o.field = p_field
   )
   UPDATE objects o
