@@ -1159,8 +1159,8 @@ def _migrate_split_photometry(
 def compute_object_redshift_auto(client: Client, field: str) -> int:
     """Set objects.redshift_auto from best member spectrum under grating priority.
 
-    Wraps the SQL function of the same name. Priority tiers: PRISM > medium
-    (G140M/G235M/G395M) > high-res (G140H/G235H/G395H); tiebreak on longest
+    Wraps the SQL function of the same name. Explicit priority: PRISM >
+    G395M > G395H > G235M > G235H > G140M > G140H; tiebreak on longest
     exposure_time. Objects whose members have no spectra with redshift_auto
     are nulled out.
     """

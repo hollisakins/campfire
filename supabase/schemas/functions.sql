@@ -5356,9 +5356,13 @@ BEGIN
              ORDER BY
                CASE
                  WHEN s.grating = 'PRISM' THEN 0
-                 WHEN s.grating IN ('G140M', 'G235M', 'G395M') THEN 1
-                 WHEN s.grating IN ('G140H', 'G235H', 'G395H') THEN 2
-                 ELSE 3
+                 WHEN s.grating = 'G395M' THEN 1
+                 WHEN s.grating = 'G395H' THEN 2
+                 WHEN s.grating = 'G235M' THEN 3
+                 WHEN s.grating = 'G235H' THEN 4
+                 WHEN s.grating = 'G140M' THEN 5
+                 WHEN s.grating = 'G140H' THEN 6
+                 ELSE 7
                END ASC,
                s.exposure_time DESC NULLS LAST,
                s.id ASC
