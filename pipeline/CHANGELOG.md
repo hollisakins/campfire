@@ -234,6 +234,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   distinguishable and the subtraction stays invertible.
 
 ### Infrastructure
+- **Generic reference-data cache engine (`common/ref_cache.py`)** — M1 of the
+  spike-masking build plan (`docs/design-nircam-spike-masking.md` §6.1). The
+  manifest-driven fetch+cache core (load, `ensure()`, atomic verified
+  download, per-file locking, fail-loud semantics) is extracted from
+  `nircam/wisp_cache.py` into a shared `RefCache` engine parameterized by
+  (cache kind, manifest, error class); `wisp_cache` is now a thin wrapper with
+  an unchanged public surface (`test_wisp_cache.py` passes unmodified).
+  `campfire-layout` gains one cache kind (`spike_models` →
+  `cache/spike_models/`) for the M3 consumer. Pure refactor; no behavior or
+  output changes.
 - The drizzle **CONTEXT extension is now written tile-compressed** (GZIP_1,
   lossless), controlled by `[nircam.resample].compress_context` (default
   `true`) and applied on **both** `implementation` backends. `CON` carries one
