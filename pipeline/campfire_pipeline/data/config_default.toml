@@ -168,6 +168,27 @@
                                # before fitting, to swallow wings past the nsigma
                                # isophote (0 disables). Secondary to mask_nsigma;
                                # nsigma=3 + dilate=8 sit on the converged plateau.
+    # Which pixels the NMF amplitude solve scores. "hsnr" = the template's own
+    # MASK_hSNR extension (nmfwisp behaviour); "tNN" = pixels above NN% of the
+    # summed template's peak. MASK_hSNR is misnamed — on nrcb4 F200W it is
+    # ~511k pixels of which ~90% sit below 20% of the template peak, and a
+    # mirrored-model null test returns as much signal from those as the real
+    # ones, i.e. they measure large-scale background. Being ~200x more numerous
+    # they set the fit, and NNLS then zeros the components that carry the
+    # filament (W=[0.54,0,0] on nrcb4 F200W). At "t50" the same exposure gives
+    # [0.84,0.70,0.75] and the filament clears — including in the DELIVERED
+    # frame, where it otherwise survives bkg (a 64 px background mesh cannot
+    # follow a narrow filament).
+    nmf_fit_region = "t50"
+    # Pixel weighting for the solve. "ivar" = the ERR array (nmfwisp
+    # behaviour); "flat" = uniform. ERR carries a Poisson term computed from
+    # the *measured* signal (spearman(err, data) = +0.63..+0.70 on every wisp
+    # detector), so positive excesses are down-weighted and the amplitude is
+    # biased low. "flat" removes that bias but is DANGEROUS on low-wisp frames:
+    # across a 23-pair matrix it over-subtracts (mean core residual -0.38 sigma
+    # at hsnr, worst -1.54), and on frames with little wisp it has blown up to
+    # W=16. Prefer moving nmf_fit_region over switching this.
+    nmf_fit_sigma = "ivar"
     apply_flat = true          # template method: flat-field the fitting copy
     use_custom_flat = false
     plot = true
