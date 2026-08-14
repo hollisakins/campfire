@@ -29,10 +29,7 @@ interface AuthContextType {
     password: string,
     fullName: string
   ) => Promise<{ error: Error | null; existingAccount?: boolean }>;
-  // scope 'local' signs out this browser only. It exists for share-link
-  // sessions: one link account is shared by every holder of the link, so the
-  // default global sign-out would revoke every other visitor's session too.
-  signOut: (options?: { scope?: 'global' | 'local' }) => Promise<void>;
+  signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>; // Manually refresh profile after setup
   checkProgramAccess: () => Promise<void>; // Refresh program access state
 }
@@ -215,8 +212,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const signOut = async (options?: { scope?: 'global' | 'local' }) => {
-    await supabase.auth.signOut({ scope: options?.scope ?? 'global' });
+  const signOut = async () => {
+    await supabase.auth.signOut();
     setNeedsProfileSetup(false);
     setNeedsAccessCode(false);
     setProgramAccess(null);
