@@ -193,11 +193,15 @@ def _register_deploy_group():
     """
     try:
         from campfire.deploy.cli import delete_local, deploy_group, push_cmd
+        from campfire.deploy.config_cli import config_group
         cli.add_command(deploy_group, name='deploy')
         cli.add_command(push_cmd, name='push')
         # Same command as `campfire deploy delete-local`, surfaced top-level as
         # the storage-plane verb paired with pull/push.
         cli.add_command(delete_local, name='drop-local')
+        # The config plane (issue #303): push/pull/diff for the three
+        # data-management TOMLs, mirroring the storage-plane verbs.
+        cli.add_command(config_group, name='config')
     except ImportError:
         @cli.command('deploy', hidden=False)
         def deploy_stub():
@@ -208,6 +212,12 @@ def _register_deploy_group():
         @cli.command('push', hidden=False)
         def push_stub():
             """Push local products to cloud storage. (Requires: pip install campfire[deploy])"""
+            click.echo("Deploy dependencies not installed. Run: pip install campfire[deploy]")
+            sys.exit(1)
+
+        @cli.command('config', hidden=False)
+        def config_stub():
+            """Sync data-management config with the cloud. (Requires: pip install campfire[deploy])"""
             click.echo("Deploy dependencies not installed. Run: pip install campfire[deploy]")
             sys.exit(1)
 

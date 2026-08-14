@@ -357,6 +357,114 @@ def test_skymatch_invariant_and_banding_removal():
         assert after[amp] < 0.3 * before[amp]
 
 
+def test_b2d_fit_order_first_starves_amprow_of_halo():
+    """The amp-blocky halo-oversubtraction mechanism and its fix.
+
+    A bright galaxy's halo is structurally invisible to the source mask (the
+    ring-median pre-filter removes structure broader than its radius before
+    tier detection), so unmasked halo flux enters the clipped amp-row medians
+    and the GP — smooth structure slower than rho is exactly what it follows —
+    and gets broadcast across the host amp's full width: oversubtracted
+    amp-blocks with hard edges at the amp boundaries. With the legacy
+    fit_order='last', the applied 2-D fit runs on the post-h residual, so it
+    can never reclaim that flux. fit_order='first' fits the smooth model with
+    the halo intact and conditions the 1/f measurement on it.
+
+    Replicates the step's per-iteration numerics (this suite's convention —
+    the I/O wrapper needs a datamodel), one iteration, no detrend (a coarse
+    fit-only detrend does not change the mechanism). Three pinned facts:
+
+    1. 'last' leaks the halo's row-collapse into h (artifact reproduced);
+    2. 'first' + reject=False cuts that leak by ~half (measured 0.54x; the
+       rest is the b2d model deficit inside the extra_dilate holes — with a
+       perfect b2d model the leak measures ~0);
+    3. 'first' + reject=True does NOT help: the map-outlier reject flags the
+       halo bump in the map as leaked source flux and refits it away. This
+       interaction is why the step warns on that combination and the config
+       says to pair fit_order='first' with reject=false.
+    """
+    pytest.importorskip('celerite2')
+    from scipy.ndimage import distance_transform_edt
+    from campfire_pipeline.nircam.gp_striping import gp_amprow_offsets
+
+    rng = np.random.default_rng(12)
+    H = 2048
+    rows = np.arange(H)
+    sci = rng.normal(0.0, 1.0, (H, COLS))
+    band = {'A': 1.0, 'B': 0.7, 'C': 1.3, 'D': 0.5}   # amp-dependent banding
+    for amp in 'ABCD':
+        c0, c1 = _amp_cols(amp)
+        sci[:, c0:c1] += band[amp] * np.sin(2 * np.pi * rows[:, None] / 100.0)
+    # bright halo hosted by amp C (center 176 px from the B/C boundary), far
+    # broader than the masked core the tiers will catch
+    halo = _gaussian_blob((H, COLS), 1024, 1200, 20.0, 120.0)
+    sci = sci + halo
+    err = np.full((H, COLS), 1.0, np.float32)
+    dq = np.zeros((H, COLS), np.int32)
+
+    mask_cfg = dict(ring_radius_in=80, ring_width=4, ring_downsample=4,
+                    tier_kernel_size=[25, 15, 5, 2],
+                    tier_npixels=[15, 10, 3, 1],
+                    tier_nsigma=[1.5, 1.5, 1.5, 1.5],
+                    tier_dilate_size=[33, 25, 21, 19])
+
+    def chain(order, reject):
+        sb = SubtractBackground(bg_box_size=64, bg_filter_size=5,
+                                bg_reject=reject, bg_reject_dilate=40.0,
+                                **mask_cfg)
+        srcmask, srcbits = sb.mask_from_arrays(sci, err, dq)
+        src_only = (srcbits >> 1) != 0
+        grown = distance_transform_edt(~src_only) <= 20
+        b2d_mask = srcmask | grown
+        ped, _ = oneoverf.peramp_pedestal(sci, srcmask)
+        b2d = 0.0
+        if order == 'first':
+            b2d = sb.estimate_background(sci - ped, b2d_mask).background
+        meas = sci - ped - b2d
+        vcol = oneoverf.column_pattern(meas, srcmask, 3)
+        base = meas - vcol
+        h5, _, _ = gp_amprow_offsets(base, srcmask, rho=5.0, maxiters=3,
+                                     zero_dc=True)
+        h20, _, _ = gp_amprow_offsets(base - h5, srcmask, rho=20.0,
+                                      maxiters=3, zero_dc=True)
+        h = h5 + h20
+        if order == 'last':
+            b2d = sb.estimate_background(sci - ped - vcol - h,
+                                         b2d_mask).background
+        return h, sci - (ped + vcol + h + b2d), srcmask
+
+    def leak(h, amp='C'):
+        # halo flux in the amp-row ledger: mean row-offset difference between
+        # halo rows and far rows (both windows span whole banding periods, so
+        # the sinusoid cancels)
+        c0, c1 = _amp_cols(amp)
+        prof = np.median(h[:, c0:c1], axis=1)
+        return prof[924:1124].mean() - prof[200:400].mean()
+
+    h_last, out_last, bg_last = chain('last', reject=True)     # shipped legacy
+    h_first, out_first, bg_first = chain('first', reject=False)
+    h_first_rej, _, _ = chain('first', reject=True)
+
+    leak_last = leak(h_last)
+    # (1) the artifact is reproduced by the legacy order (measured ~1.4)
+    assert leak_last > 1.0
+    # (2) first-order fit starves the amp-row term of halo flux (~0.54x)
+    assert leak(h_first) < 0.65 * leak_last
+    # (3) reject=True cancels the reorder (measured ~1.05x of legacy) — if a
+    #     future scale-aware reject fixes this, loosen/flip this assertion
+    #     and drop the warning in bkg_step
+    assert leak(h_first_rej) > 0.8 * leak_last
+    # the fix must not cost banding removal: far from the halo, the amp-row
+    # profile of the corrected frame is flat in both orders
+    bg = ~bg_first
+    for amp in 'ABCD':
+        c0, c1 = _amp_cols(amp)
+        strip, m = out_first[:, c0:c1], bg[:, c0:c1]
+        rowmed = np.array([np.median(strip[i][m[i]]) if m[i].any() else np.nan
+                           for i in range(200, 400)])
+        assert np.nanstd(rowmed) < 0.3 * band[amp]
+
+
 def _extended_galaxy_scene(rng, n=1600, re=150.0, amp=200.0):
     """Mostly-sky frame with one very bright, very extended galaxy at centre.
 
@@ -513,12 +621,54 @@ def test_shipped_mosaic_tier_config_is_coherent(tmp_path):
     keys = ('tier_kernel_size', 'tier_npixels', 'tier_nsigma',
             'tier_dilate_size')
     mosaic = get_nircam_step_config('resample', cfg, field)
-    assert {len(mosaic[k]) for k in keys} == {5}          # consumed in lockstep
-    assert mosaic['tier_nsigma'][0] == 100.0
-    assert mosaic['tier_npixels'][0] == 30000
-    assert mosaic['tier_dilate_size'][0] == 600
+    # tier 0 (100 sigma / 30k px / 600 px pre-tier) removed with bg_guard:
+    # both stages now run the same 4-tier compact-source cascade
+    assert {len(mosaic[k]) for k in keys} == {4}          # consumed in lockstep
+    assert mosaic['tier_nsigma'][0] == 1.5
+    assert mosaic['bg_guard'] is True                     # negativity guard on
 
-    # per-exposure deliberately keeps 4 tiers: 30k px / 600 px are sized for a
-    # 30mas mosaic tile, not a 2048^2 frame
     per_exp = get_nircam_step_config('bkg', cfg, field).get('mask') or {}
     assert {len(per_exp[k]) for k in keys} == {4}
+    # the guard is mosaic-scoped: the per-exposure mask section must not
+    # carry it (SubtractBackground default is False)
+    assert 'bg_guard' not in per_exp
+
+
+def test_extra_dilate_no_sources_does_not_mask_the_border():
+    """`striping.extra_dilate` must be a no-op when nothing is selected to grow.
+
+    `distance_transform_edt` measures the distance to the nearest ZERO, so an
+    all-True input (no selected source pixels — either no tiers at all, or
+    `extra_dilate_min_area` filtered every component out) has no seed and the
+    transform falls back to distances measured from OUTSIDE the array. A naive
+    `edt(~src) <= r` then masks a border-and-corner band that no source put
+    there, deleting exactly the edge amp-row anchors.
+
+    Asserts the failure mode is real BEFORE asserting the guard removes it, so
+    the test cannot pass vacuously if the EDT behaviour ever changes.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    src_only_1f = np.zeros((256, 256), dtype=bool)      # nothing selected
+    radius = 20.0
+
+    # 1. the failure mode exists: unguarded, this masks a spurious band
+    unguarded = distance_transform_edt(~src_only_1f) <= radius
+    assert unguarded.any(), (
+        'EDT no longer produces a spurious band on an all-True input; '
+        'the guard under test may be obsolete — re-check bkg.py')
+    assert not unguarded[128, 128], 'spurious mask should hug the border'
+
+    # 2. the guard removes it, and leaves the fit mask untouched
+    fitmask = np.zeros((256, 256), dtype=bool)
+    if src_only_1f.any():
+        fitmask_1f = fitmask | (distance_transform_edt(~src_only_1f) <= radius)
+    else:
+        fitmask_1f = fitmask
+    assert not fitmask_1f.any()
+
+    # 3. and it still grows normally when something IS selected
+    src_only_1f[128, 128] = True
+    grown = distance_transform_edt(~src_only_1f) <= radius
+    assert grown[128, 128] and grown[128, 128 + int(radius)]
+    assert not grown[0, 0]

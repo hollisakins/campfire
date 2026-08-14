@@ -54,6 +54,18 @@ const config: Config = {
           '0%': { opacity: '0', transform: 'scale(0.95)' },
           '100%': { opacity: '1', transform: 'scale(1)' },
         },
+        // Panel entrance for the pinned-objects bucket: anchored top-right, so
+        // it grows out of the collapsed chip rather than zooming from center.
+        'unfurl': {
+          '0%': { opacity: '0', transform: 'scale(0.92) translateY(-4px)' },
+          '100%': { opacity: '1', transform: 'scale(1) translateY(0)' },
+        },
+        // Per-card stagger inside the bucket panel (used with animation-delay
+        // and `backwards` fill so delayed cards start invisible).
+        'slide-in-up': {
+          '0%': { opacity: '0', transform: 'translateY(6px)' },
+          '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
         // Override Tailwind's default `spin` keyframe, which only defines a
         // `to: rotate(360deg)` frame. With an implicit `from` (the element's
         // underlying `none`), Firefox interpolates `none -> rotate(360deg)` via
@@ -71,6 +83,8 @@ const config: Config = {
       animation: {
         'fade-in': 'fade-in 200ms ease-out',
         'zoom-in': 'zoom-in 200ms ease-out',
+        'unfurl': 'unfurl 180ms cubic-bezier(0.16, 1, 0.3, 1)',
+        'slide-in-up': 'slide-in-up 250ms ease-out backwards',
         spin: 'spin 1s linear infinite',
       },
     }

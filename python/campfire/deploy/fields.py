@@ -92,8 +92,12 @@ def field_config_row(field: str, section: dict) -> dict:
     for querying. Tile names come from :func:`declared_tiles_and_epochs` (WCS-bearing
     sub-tables only — step-override tables like ``jhat``/``align`` are excluded).
     Program ids are the 5-digit ids embedded in the ``files`` globs (``jwPPPPP*``).
-    Program *slugs* are left empty — programs.toml carries no program-id map, so
-    slug resolution is deferred (issue #303).
+    Program *slugs* are resolved separately at write time by
+    :func:`resolve_field_programs` (programs.toml carries no program-id map, so
+    the mapping comes from the cloud `observations` rows); this row deliberately
+    omits the ``programs`` key so an unresolved write never clobbers a
+    previously resolved value (PostgREST only updates columns present in the
+    payload — same contract as the deploy-owned columns).
     """
     tp = _as_list(section.get("tangent_point"))
     globs = _as_list(section.get("files"))
@@ -107,13 +111,38 @@ def field_config_row(field: str, section: dict) -> dict:
         "tiles": sorted(tiles),
         "fiducial_tiles": _as_list(section.get("fiducial_tiles")),
         "epochs": sorted(epochs),
-        "programs": [],  # slug resolution deferred (no program-id map in programs.toml)
         "jwst_program_ids": pids,
         "file_globs": globs,
         "center_ra": tp[0] if len(tp) > 0 else None,
         "center_dec": tp[1] if len(tp) > 1 else None,
         "config": section,
     }
+
+
+def resolve_field_programs(client, row: dict) -> dict:
+    """Best-effort ``fields.programs`` slug backfill (issue #454).
+
+    Maps the field's ``jwst_program_ids`` (lifted from its file globs) through
+    the cloud `observations` rows (``jwst_program_id -> program_slug``) — the
+    one place both identifiers coexist. Ids with no matching observation row
+    stay unresolved; when nothing resolves the ``programs`` key is left absent
+    so the upsert keeps whatever the column already holds. Never raises: this
+    runs inside deploys.
+    """
+    pids = row.get("jwst_program_ids") or []
+    if not pids:
+        return row
+    try:
+        resp = (client.table("observations")
+                .select("jwst_program_id, program_slug")
+                .in_("jwst_program_id", pids).execute())
+        slugs = sorted({r["program_slug"] for r in (resp.data or [])
+                        if r.get("program_slug")})
+        if slugs:
+            row["programs"] = slugs
+    except Exception as e:
+        print(f"  Warning: could not resolve field programs: {e}")
+    return row
 
 
 def read_layout_coverage(products_dir, field: str) -> dict | None:
@@ -130,8 +159,32 @@ def read_layout_coverage(products_dir, field: str) -> dict | None:
 def upsert_field(client, row: dict) -> None:
     """Upsert one `fields` row (on conflict = name). Only the keys present in
     ``row`` are written, so a config-only sync leaves the deploy-owned columns
-    (coverage_area_*, latest_deployment_id) untouched on existing rows."""
+    (coverage_area_*, latest_deployment_id) untouched on existing rows.
+
+    The single write path for fields rows, so the config-sync stamp (#303 —
+    config_hash + config_updated_at) is applied here for every producer
+    (sync_fields, upsert_field_on_deploy, `campfire config push`). Lazy import:
+    config_sync imports this module at top level."""
+    if "programs" not in row:
+        row = resolve_field_programs(client, row)
+    if row.get("config") is not None and "config_hash" not in row:
+        import datetime as _dt
+        from .config_sync import config_hash, find_unjsonable
+        if find_unjsonable(row["config"]):
+            # Bare TOML datetimes can't ride jsonb faithfully; push validates
+            # loudly, but deploy-time upserts must never fail the deploy — drop
+            # only the config mirror and keep the typed columns.
+            row = {k: v for k, v in row.items() if k != "config"}
+        else:
+            row["config_hash"] = config_hash(row["config"])
+            row["config_updated_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     client.table("fields").upsert(row, on_conflict="name").execute()
+    if "config_hash" in row:
+        # The hash just written IS the operator's new sync base — without it,
+        # their own deploy reads as "someone else pushed" on the next
+        # `config push` (see config_sync.record_synced).
+        from .config_sync import record_synced
+        record_synced("fields", {row["name"]: row["config_hash"]})
 
 
 def upsert_field_on_deploy(client, products_dir, field: str,

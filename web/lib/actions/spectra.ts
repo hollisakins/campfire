@@ -2,7 +2,7 @@
 
 import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { paginateRpc } from '@/lib/supabase/paginate';
-import type { SpectrumTarget, Program, Spectrum, ObjectDetail, ObjectMemberTarget } from '@/lib/types';
+import type { SpectrumTarget, Program, Spectrum, ObjectDetail, ObjectMemberTarget, PinnedObjectMetadata } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
 import type { FilterOptions } from './filter-params';
 export type { FilterOptions, FilterMode } from './filter-params';
@@ -124,6 +124,7 @@ export async function getSpectra(
         p_needs_review: rpcParams.p_needs_review,
         p_has_photometry: rpcParams.p_has_photometry,
         p_list_ids: rpcParams.p_list_ids,
+        p_list_ids_mode: rpcParams.p_list_ids_mode,
         p_coord_ra: rpcParams.p_coord_ra,
         p_coord_dec: rpcParams.p_coord_dec,
         p_radius_degrees: rpcParams.p_radius_degrees,
@@ -624,6 +625,68 @@ export async function getObjectMetadata(objectId: string): Promise<{
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Resolve display metadata (field, redshift, quality) for the user's pinned
+ * objects. Pins are stored in user_profiles.preferences as bare references
+ * (id + route) because that column is readable by all authenticated users;
+ * this action resolves the metadata under the caller's own RLS scope, so
+ * pins pointing at programs the caller can't access simply don't resolve.
+ */
+export async function getPinnedObjectsMetadata(
+  pins: { target_id: string; route: 'objects' | 'targets' }[]
+): Promise<{ metadata: Record<string, PinnedObjectMetadata>; isAuthenticated: boolean }> {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return { metadata: {}, isAuthenticated: false };
+  }
+
+  // Defensive cap — the UI limits pins to MAX_PINNED_OBJECTS, but the action
+  // shouldn't trust its input size.
+  const bounded = pins.slice(0, 50);
+  const objectIds = bounded.filter(p => p.route === 'objects').map(p => p.target_id);
+  const targetIds = bounded.filter(p => p.route === 'targets').map(p => p.target_id);
+
+  const metadata: Record<string, PinnedObjectMetadata> = {};
+
+  try {
+    const [objectsRes, targetsRes] = await Promise.all([
+      objectIds.length > 0
+        ? supabase
+            .from('objects')
+            .select('object_id, field, redshift, redshift_quality')
+            .in('object_id', objectIds)
+        : Promise.resolve({ data: [] as { object_id: string; field: string; redshift: number | null; redshift_quality: number }[], error: null }),
+      targetIds.length > 0
+        ? supabase
+            .from('targets')
+            .select('target_id, field, redshift, redshift_quality')
+            .in('target_id', targetIds)
+        : Promise.resolve({ data: [] as { target_id: string; field: string; redshift: number | null; redshift_quality: number }[], error: null }),
+    ]);
+
+    for (const row of objectsRes.data || []) {
+      metadata[row.object_id] = {
+        field: row.field,
+        redshift: row.redshift,
+        redshift_quality: row.redshift_quality,
+      };
+    }
+    for (const row of targetsRes.data || []) {
+      metadata[row.target_id] = {
+        field: row.field,
+        redshift: row.redshift,
+        redshift_quality: row.redshift_quality,
+      };
+    }
+
+    return { metadata, isAuthenticated: true };
+  } catch {
+    return { metadata: {}, isAuthenticated: true };
   }
 }
 

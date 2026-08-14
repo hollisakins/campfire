@@ -127,6 +127,7 @@ export async function GET(request: NextRequest) {
       p_dq_flags_include_all: dq.all,
       p_dq_flags_exclude: dq.none,
       p_list_ids: listIds,
+      p_list_ids_mode: searchParams.get('list_ids_mode') || 'any',
       p_search: searchParams.get('search') || null,
       p_inspected_only: inspectedOnly,
       p_needs_review: needsReview,

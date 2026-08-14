@@ -6,14 +6,10 @@ Usage (as subcommand of campfire):
     campfire deploy --obs ember_uds_p4 --dry-run
     campfire deploy --obs ember_uds_p4 --supabase-only
     campfire deploy --obs ember_uds_p4 --force-overwrite --auto-approve
-    campfire deploy --obs ember_uds_p4 --rgb
-    campfire deploy --obs ember_uds_p4 --no-sed
     campfire deploy --obs ember_uds_p4 --no-shutters
     campfire deploy --obs ember_uds_p4 --skip-astrometry
     campfire deploy --obs ember_uds_p4 --source-ids 12345 67890
 
-    campfire deploy rgb   --obs ember_uds_p4
-    campfire deploy sed   --obs ember_uds_p4
     campfire deploy json  --obs ember_uds_p4 --source-ids 12345
     campfire deploy zfit  --obs ember_uds_p4 --force-overwrite
     campfire deploy thumbnails --obs ember_uds_p4
@@ -1306,14 +1302,20 @@ def photometry(ctx, config_path, field, photometry_config, dry_run, no_photoz, p
 # sync-programs subcommand
 # ---------------------------------------------------------------------------
 
-@deploy_group.command('sync-programs')
+@deploy_group.command('sync-programs', hidden=True)
 @click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
 @click.option('--dry-run', is_flag=True, help='Show what would happen without making changes.')
 @click.option('--local', is_flag=True,
               help='Use local Supabase (127.0.0.1:54321).')
 @click.pass_context
 def sync_programs(ctx, config_path, dry_run, local):
-    """Upsert all programs from $CAMPFIRE_ROOT/config/programs.toml."""
+    """Upsert all programs from $CAMPFIRE_ROOT/config/programs.toml.
+
+    Hidden legacy alias — superseded by ``campfire config push --programs``
+    (issue #303), which adds the lossless config mirror and divergence guard.
+    """
+    print("Note: `deploy sync-programs` is superseded by "
+          "`campfire config push --programs`.")
     programs_config = load_programs()
     program_slugs = list(programs_config.keys())
 
@@ -1341,7 +1343,7 @@ def sync_programs(ctx, config_path, dry_run, local):
 # sync-fields subcommand  (issue #303)
 # ---------------------------------------------------------------------------
 
-@deploy_group.command('sync-fields')
+@deploy_group.command('sync-fields', hidden=True)
 @click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
 @click.option('--field', default=None,
               help='Sync a single field (default: every field with deployed data).')
@@ -1352,12 +1354,15 @@ def sync_programs(ctx, config_path, dry_run, local):
 def sync_fields_cmd(ctx, config_path, field, dry_run, local):
     """Upsert fields.toml config into the cloud `fields` table (issue #303).
 
-    Scoped to fields that already have deployed NIRCam data (or a single
-    ``--field``). Only the config columns are written — the deploy-computed
-    coverage area and latest_deployment_id (owned by ``campfire deploy --field``)
-    are left untouched.
+    Hidden legacy alias — superseded by ``campfire config push --fields``,
+    which adds the divergence guard. Same scope: fields that already have
+    deployed NIRCam data (or a single ``--field``). Only the config columns
+    are written — the deploy-computed coverage area and latest_deployment_id
+    (owned by ``campfire deploy --field``) are left untouched.
     """
     from campfire.deploy.fields import load_fields_toml, sync_fields
+    print("Note: `deploy sync-fields` is superseded by "
+          "`campfire config push --fields`.")
 
     if not load_fields_toml():
         print("No fields.toml found (or empty) at $CAMPFIRE_ROOT/config/.")

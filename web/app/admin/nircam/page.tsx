@@ -1,11 +1,11 @@
 'use client';
 
-import React, { Suspense, useMemo, useState } from 'react';
+import { Suspense, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Card } from '@/components/ui/Card';
-import { Loader2, ChevronRight, Copy, Check } from 'lucide-react';
+import { Loader2, ChevronRight, Check } from 'lucide-react';
 import { AdminTable } from '@/components/admin/AdminTable';
 import { AdminFilterBar } from '@/components/admin/AdminFilterBar';
 import { flatFilterCodec, useTableUrlState, type SortState } from '@/lib/hooks/useTableUrlState';
@@ -14,18 +14,11 @@ import {
   getNircamExposures,
   getReductionProgress,
   getExposureFilterOptions,
-  getExcludedExposures,
   type ReductionProgress,
-  type ExcludedExposure,
 } from '@/lib/actions/nircam-exposures';
 import { EXPOSURE_SORT_KEYS } from '@/lib/admin/sort-keys';
 import type { NircamExposure } from '@/lib/types';
-import {
-  stageBadgeClasses,
-  stageBarClasses,
-  NIRCAM_STAGES,
-  STAGE_COLUMN_KEYS,
-} from '@/lib/nircam-stages';
+import { stageBadgeClasses, NIRCAM_STAGES } from '@/lib/nircam-stages';
 import { buildExposureNavQuery } from '@/lib/nircam-exposure-nav';
 
 // ---------------------------------------------------------------------------
@@ -80,171 +73,264 @@ function StageBadge({ stage }: { stage: string }) {
   );
 }
 
-// Horizontal stacked-bar showing distribution of exposures across pipeline
-// stages within a (field, filter) group. Segments are colored by phase
-// bucket; native title-tooltips show the exact step name and count.
-function StageDistributionBar({ progress }: { progress: ReductionProgress }) {
-  const total = progress.total || 1;
-  const segments = STAGE_COLUMN_KEYS
-    .map(({ stage, key }) => ({
-      stage,
-      count: (progress[key] as number) || 0,
-    }))
-    .filter(s => s.count > 0);
+// ---------------------------------------------------------------------------
+// Reduction progress — inspection-centric summary, grouped field → filter →
+// detector. Fields collapse (default closed) so the exposure table stays one
+// scroll away regardless of how many field/filter combinations exist. Each
+// filter row shows inspection progress (approved+excluded of total), the mask
+// count, and per-detector quick-filter links into the pending queue below.
+// (The old per-stage distribution bar is gone: whole filters sit at the same
+// pipeline stage in practice, so it carried no signal. The excluded-exposures
+// copy-paste panel is gone too — `campfire pull` materializes exclusions into
+// reference/nircam/<field>/exposures.json, no fields.toml edit needed.)
+// ---------------------------------------------------------------------------
 
-  if (segments.length === 0) {
-    return <div className="h-3 bg-surface-2 rounded" />;
-  }
+interface DetectorProgress { detector: string; total: number; pending: number }
 
-  return (
-    <div className="flex h-3 rounded overflow-hidden bg-surface-2">
-      {segments.map(({ stage, count }) => (
-        <div
-          key={stage}
-          className={stageBarClasses(stage)}
-          style={{ width: `${(count / total) * 100}%` }}
-          title={`${stage}: ${count}`}
-        />
-      ))}
-    </div>
-  );
+interface TriageCounts {
+  total: number;
+  pending: number;
+  approved: number;
+  excluded: number;
+  masked: number;
+  needsCorrection: number;
 }
 
-// ---------------------------------------------------------------------------
-// Progress table
-// ---------------------------------------------------------------------------
-
-function ProgressTable({ progress }: { progress: ReductionProgress[] }) {
-  if (progress.length === 0) {
-    return (
-      <p className="text-sm text-text-secondary py-4">
-        No reduction data available. Deploy exposures with <code className="text-xs bg-card dark:bg-card-hover px-1 py-0.5 rounded">campfire deploy nircam</code>.
-      </p>
-    );
-  }
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="border-b border-border">
-          <tr>
-            <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary uppercase">Field</th>
-            <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary uppercase">Filter</th>
-            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary uppercase">Total</th>
-            <th className="px-3 py-2 text-left text-xs font-medium text-text-secondary uppercase w-1/3">Stage distribution</th>
-            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary uppercase">Pending</th>
-            <th className="px-3 py-2 text-right text-xs font-medium text-text-secondary uppercase">Correction</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border">
-          {progress.map((row) => (
-            <tr key={`${row.field}-${row.filter}`} className="hover:bg-card-hover">
-              <td className="px-3 py-2 font-medium text-text-primary">{row.field}</td>
-              <td className="px-3 py-2 text-text-primary">{row.filter}</td>
-              <td className="px-3 py-2 text-right text-text-primary">{row.total}</td>
-              <td className="px-3 py-2">
-                <StageDistributionBar progress={row} />
-              </td>
-              <td className="px-3 py-2 text-right">
-                {row.pending_review > 0 ? (
-                  <Link
-                    href={`/admin/nircam?field=${encodeURIComponent(row.field)}&filter=${encodeURIComponent(row.filter)}&review=pending`}
-                    className="text-yellow-600 dark:text-yellow-400 font-medium hover:underline"
-                  >
-                    {row.pending_review}
-                  </Link>
-                ) : (
-                  <span className="text-text-secondary">0</span>
-                )}
-              </td>
-              <td className="px-3 py-2 text-right">
-                {row.needs_correction > 0 ? (
-                  <Link
-                    href={`/admin/nircam?field=${encodeURIComponent(row.field)}&filter=${encodeURIComponent(row.filter)}&correction=needed`}
-                    className="text-orange-600 dark:text-orange-400 font-medium hover:underline"
-                  >
-                    {row.needs_correction}
-                  </Link>
-                ) : (
-                  <span className="text-text-secondary">0</span>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+interface FilterProgress extends TriageCounts {
+  filter: string;
+  detectors: DetectorProgress[];
 }
 
-// ---------------------------------------------------------------------------
-// Excluded exposures panel — copy-paste source for fields.toml skip=[]
-// ---------------------------------------------------------------------------
+interface FieldProgress extends TriageCounts {
+  field: string;
+  filters: FilterProgress[];
+}
 
-function ExcludedPanel({ excluded }: { excluded: ExcludedExposure[] }) {
-  const [copied, setCopied] = useState<string | null>(null);
+const emptyCounts = (): TriageCounts => ({
+  total: 0, pending: 0, approved: 0, excluded: 0, masked: 0, needsCorrection: 0,
+});
 
-  // Group by (field, filter); within each group emit the TOML-fragment line list.
-  const groups = React.useMemo(() => {
-    const m = new Map<string, ExcludedExposure[]>();
-    for (const e of excluded) {
-      const k = `${e.field} / ${e.filter}`;
-      if (!m.has(k)) m.set(k, []);
-      m.get(k)!.push(e);
+// Rows arrive ordered by (field, filter, detector) — see getReductionProgress
+// — so grouping is a single linear pass appending to the tail.
+function groupProgress(rows: ReductionProgress[]): FieldProgress[] {
+  const out: FieldProgress[] = [];
+  for (const r of rows) {
+    let fld = out[out.length - 1];
+    if (!fld || fld.field !== r.field) {
+      fld = { field: r.field, filters: [], ...emptyCounts() };
+      out.push(fld);
     }
-    return Array.from(m.entries());
-  }, [excluded]);
+    let flt = fld.filters[fld.filters.length - 1];
+    if (!flt || flt.filter !== r.filter) {
+      flt = { filter: r.filter, detectors: [], ...emptyCounts() };
+      fld.filters.push(flt);
+    }
+    flt.detectors.push({ detector: r.detector, total: r.total, pending: r.pending_review });
+    for (const acc of [fld, flt]) {
+      acc.total += r.total;
+      acc.pending += r.pending_review;
+      acc.approved += r.approved;
+      acc.excluded += r.excluded;
+      acc.masked += r.masked;
+      acc.needsCorrection += r.needs_correction;
+    }
+  }
+  return out;
+}
 
-  if (excluded.length === 0) return null;
+function pendingHref(field: string, filter?: string, detector?: string) {
+  const p = new URLSearchParams({ field, review: 'pending' });
+  if (filter) p.set('filter', filter);
+  if (detector) p.set('detector', detector);
+  return `/admin/nircam?${p.toString()}`;
+}
 
-  const copy = (key: string, text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopied(key);
-    setTimeout(() => setCopied(null), 1500);
-  };
+// Single-hue completion meter: fill = inspected (approved + excluded) share.
+// The approved/excluded split lives in the title tooltip and the text counts,
+// not in bar segments, so the meter stays readable for all color vision.
+function InspectionMeter({ counts }: { counts: TriageCounts }) {
+  const inspected = counts.approved + counts.excluded;
+  const pct = counts.total > 0 ? (inspected / counts.total) * 100 : 0;
+  return (
+    <div
+      className="flex items-center gap-2"
+      title={`${counts.approved} approved · ${counts.excluded} excluded · ${counts.pending} pending`}
+    >
+      <div className="h-2 flex-1 min-w-16 rounded-full bg-surface-2 overflow-hidden">
+        <div
+          className="h-full rounded-full bg-green-500 dark:bg-green-600"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="text-xs tabular-nums text-text-secondary whitespace-nowrap">
+        {inspected}/{counts.total}
+      </span>
+    </div>
+  );
+}
+
+// Quick-filter chip: jumps to the exposure table pre-filtered to this
+// field/filter/detector's pending queue.
+function PendingChip({ label, count, href }: { label: string; count: number; href: string }) {
+  return (
+    <Link
+      href={href}
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-mono
+        bg-yellow-100 dark:bg-yellow-900/50 text-yellow-800 dark:text-yellow-300
+        hover:bg-yellow-200 dark:hover:bg-yellow-900"
+    >
+      {label}
+      <span className="font-semibold tabular-nums">{count}</span>
+    </Link>
+  );
+}
+
+function FieldSection({ fp }: { fp: FieldProgress }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-card-hover">
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="flex items-center gap-2 flex-1 min-w-0 text-left"
+          aria-expanded={open}
+        >
+          <ChevronRight
+            className={`w-4 h-4 shrink-0 text-text-secondary transition-transform ${open ? 'rotate-90' : ''}`}
+          />
+          <span className="font-medium text-text-primary">{fp.field}</span>
+          <span className="text-xs text-text-secondary whitespace-nowrap">
+            {fp.filters.length} filter{fp.filters.length !== 1 ? 's' : ''} · {fp.total} exp
+            {fp.masked > 0 && <> · {fp.masked} masked</>}
+          </span>
+        </button>
+        <div className="w-40 shrink-0 hidden sm:block">
+          <InspectionMeter counts={fp} />
+        </div>
+        <div className="w-20 shrink-0 text-right">
+          {fp.pending > 0 ? (
+            <PendingChip label="pending" count={fp.pending} href={pendingHref(fp.field)} />
+          ) : (
+            <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+              <Check className="w-3.5 h-3.5" /> done
+            </span>
+          )}
+        </div>
+      </div>
+
+      {open && (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-t border-border">
+              <th className="pl-11 pr-3 py-1.5 text-left text-xs font-medium text-text-secondary uppercase">Filter</th>
+              <th className="px-3 py-1.5 text-left text-xs font-medium text-text-secondary uppercase w-52">Inspected</th>
+              <th className="px-3 py-1.5 text-right text-xs font-medium text-text-secondary uppercase w-20">Masks</th>
+              <th className="px-3 py-1.5 text-left text-xs font-medium text-text-secondary uppercase">Pending by detector</th>
+              <th className="px-3 py-1.5 text-right text-xs font-medium text-text-secondary uppercase w-16">Corr</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {fp.filters.map((flt) => (
+              <tr key={flt.filter} className="border-t border-border hover:bg-card-hover/50">
+                <td className="pl-11 pr-3 py-1.5">
+                  <Link
+                    href={`/admin/nircam?${new URLSearchParams({ field: fp.field, filter: flt.filter })}`}
+                    className="font-mono text-text-primary hover:text-primary hover:underline"
+                  >
+                    {flt.filter}
+                  </Link>
+                </td>
+                <td className="px-3 py-1.5">
+                  <InspectionMeter counts={flt} />
+                </td>
+                <td className="px-3 py-1.5 text-right tabular-nums">
+                  {flt.masked > 0
+                    ? <span className="text-blue-600 dark:text-blue-400">{flt.masked}</span>
+                    : <span className="text-text-secondary">&mdash;</span>}
+                </td>
+                <td className="px-3 py-1.5">
+                  {flt.pending === 0 ? (
+                    <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                      <Check className="w-3.5 h-3.5" /> inspected
+                    </span>
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {flt.detectors
+                        .filter((d) => d.pending > 0)
+                        .map((d) => (
+                          <PendingChip
+                            key={d.detector}
+                            label={d.detector}
+                            count={d.pending}
+                            href={pendingHref(fp.field, flt.filter, d.detector)}
+                          />
+                        ))}
+                    </div>
+                  )}
+                </td>
+                <td className="px-3 py-1.5 text-right">
+                  {flt.needsCorrection > 0 ? (
+                    <Link
+                      href={`/admin/nircam?${new URLSearchParams({ field: fp.field, filter: flt.filter, correction: 'needed' })}`}
+                      className="text-orange-600 dark:text-orange-400 font-medium hover:underline tabular-nums"
+                    >
+                      {flt.needsCorrection}
+                    </Link>
+                  ) : (
+                    <span className="text-text-secondary">&mdash;</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function ProgressSummary({ progress }: { progress: ReductionProgress[] }) {
+  const fields = useMemo(() => groupProgress(progress), [progress]);
+
+  const grand = useMemo(() => {
+    const g = emptyCounts();
+    for (const f of fields) {
+      g.total += f.total;
+      g.pending += f.pending;
+      g.approved += f.approved;
+      g.excluded += f.excluded;
+      g.masked += f.masked;
+      g.needsCorrection += f.needsCorrection;
+    }
+    return g;
+  }, [fields]);
+  const inspected = grand.approved + grand.excluded;
 
   return (
     <Card className="mb-6 overflow-hidden">
-      <div className="px-4 py-3 border-b border-border flex items-baseline justify-between bg-surface-2">
+      <div className="px-4 py-3 border-b border-border bg-surface-2 flex items-baseline justify-between gap-3">
         <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
-          Excluded — copy into <code className="font-mono text-xs">fields.toml</code> <code className="font-mono text-xs">skip = […]</code>
+          Reduction Progress
         </h2>
-        <span className="text-xs text-text-secondary">{excluded.length} total</span>
+        {grand.total > 0 && (
+          <span className="text-xs text-text-secondary whitespace-nowrap">
+            {inspected}/{grand.total} inspected ({Math.round((inspected / grand.total) * 100)}%)
+            · {grand.masked} masked · {grand.pending} pending
+          </span>
+        )}
       </div>
-      <div className="divide-y divide-border">
-        {groups.map(([heading, rows]) => {
-          const tomlBlock = rows.map(r => `    "${r.filename}",`).join('\n');
-          return (
-            <div key={heading} className="p-4">
-              <div className="flex items-baseline justify-between mb-2">
-                <h3 className="text-xs font-medium text-text-secondary">
-                  {heading} <span className="text-text-secondary">({rows.length})</span>
-                </h3>
-                <button
-                  onClick={() => copy(heading, tomlBlock)}
-                  className="text-xs text-primary hover:underline inline-flex items-center gap-1"
-                >
-                  {copied === heading ? (
-                    <><Check className="w-3 h-3" /> Copied</>
-                  ) : (
-                    <><Copy className="w-3 h-3" /> Copy</>
-                  )}
-                </button>
-              </div>
-              <pre className="text-xs font-mono bg-surface-2 p-2 rounded overflow-x-auto text-text-primary">{tomlBlock}</pre>
-              {rows.some(r => r.notes) && (
-                <ul className="mt-2 text-xs text-text-secondary space-y-0.5">
-                  {rows.filter(r => r.notes).map(r => (
-                    <li key={r.filename}>
-                      <span className="font-mono">{r.filename}</span> — {r.notes}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      {fields.length === 0 ? (
+        <p className="text-sm text-text-secondary p-4">
+          No reduction data available. Deploy exposures with <code className="text-xs bg-card dark:bg-card-hover px-1 py-0.5 rounded">campfire deploy nircam</code>.
+        </p>
+      ) : (
+        <div className="divide-y divide-border">
+          {fields.map((fp) => (
+            <FieldSection key={fp.field} fp={fp} />
+          ))}
+        </div>
+      )}
     </Card>
   );
 }
@@ -308,11 +394,6 @@ function AdminNircamPageInner() {
   const { data: progressResult } = useQuery({
     queryKey: ['admin-nircam-progress'],
     queryFn: getReductionProgress,
-    staleTime: 30_000,
-  });
-  const { data: excludedResult } = useQuery({
-    queryKey: ['admin-nircam-excluded'],
-    queryFn: getExcludedExposures,
     staleTime: 30_000,
   });
   const { data: facets } = useQuery({
@@ -409,17 +490,7 @@ function AdminNircamPageInner() {
       )}
 
       {/* Progress summary */}
-      <Card className="mb-6 overflow-hidden">
-        <div className="px-4 py-3 border-b border-border bg-surface-2">
-          <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
-            Reduction Progress
-          </h2>
-        </div>
-        <ProgressTable progress={progressResult?.progress ?? []} />
-      </Card>
-
-      {/* Excluded exposures (copy-paste source for fields.toml skip=[]) */}
-      <ExcludedPanel excluded={excludedResult?.excluded ?? []} />
+      <ProgressSummary progress={progressResult?.progress ?? []} />
 
       <AdminFilterBar
         facets={[

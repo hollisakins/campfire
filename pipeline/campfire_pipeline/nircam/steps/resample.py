@@ -214,6 +214,7 @@ def resample_step(filtname, exposure_files, field, step_config,
         epoch segment.
     """
     from campfire_pipeline.nircam.manifest import (
+        BKGSUB_PIXEL_DEFAULTS, MOSAIC_BKGSUB_KEY, bkgsub_stamp_value,
         build_mosaic_name, check_config_changed, check_inputs_changed,
         create_manifest, write_manifest,
     )
@@ -322,51 +323,77 @@ def resample_step(filtname, exposure_files, field, step_config,
             from campfire_pipeline.nircam.bkgsub import SubtractBackground
 
             pre_bkg = mosaic_file.replace('_i2d.fits', '_i2d_before_bkgsub.fits')
-            bkgsub_done = os.path.exists(pre_bkg)
-            if needs_rebuild or not bkgsub_done:
-                if needs_rebuild and bkgsub_done:
+            stamp_card = (
+                bkgsub_stamp_value(step_config),
+                'campfire: mosaic bkgsub (alg ver, params hash)',
+            )
+
+            # The CFP_BKGS primary-header stamp on the i2d — not the existence
+            # of the _i2d_before_bkgsub.fits snapshot — is the record that the
+            # on-disk pixels are already background-subtracted (issue #427):
+            # deriving bkgsub_done from the snapshot made a deleted snapshot
+            # silently subtract the background a second time. The snapshot is
+            # a rollback convenience copy, deletable once its mosaic carries
+            # the stamp.
+            if needs_rebuild:
+                bkgsub_done = False  # freshly drizzled, stamp gone with it
+            else:
+                with fits.open(mosaic_file) as hdul:
+                    bkgsub_done = MOSAIC_BKGSUB_KEY in hdul[0].header
+                    has_srcmask = 'SRCMASK' in hdul
+                if not bkgsub_done and os.path.exists(pre_bkg):
+                    # No stamp but a snapshot on disk: either a legacy mosaic
+                    # subtracted before the stamp existed, or a rollback where
+                    # the snapshot was copied over the i2d (restoring
+                    # unsubtracted pixels) with the snapshot left in place.
+                    # SubtractBackground always appends a SRCMASK extension
+                    # and the snapshot (copied from the pre-subtraction
+                    # drizzle output) never carries one, so SRCMASK presence
+                    # tells the two apart.
+                    if has_srcmask:
+                        # Legacy subtracted mosaic. The manifest config check
+                        # passed to get here, so the current bkgsub settings
+                        # are the ones that produced it — backfill the stamp
+                        # so the snapshot becomes deletable from now on.
+                        bkgsub_done = True
+                        log(f"  backfilling {MOSAIC_BKGSUB_KEY} stamp on "
+                            f"pre-stamp mosaic {os.path.basename(mosaic_file)}")
+                        with fits.open(mosaic_file, mode='update') as hdul:
+                            hdul[0].header[MOSAIC_BKGSUB_KEY] = stamp_card
+                    else:
+                        log("  snapshot present but i2d has no SRCMASK — "
+                            "restored pre-bkgsub data; re-running bkgsub")
+
+            if not bkgsub_done:
+                if os.path.exists(pre_bkg):
                     os.remove(pre_bkg)
 
+                # Pixel-affecting settings and their defaults come from the
+                # manifest's BKGSUB_PIXEL_DEFAULTS — the same dict the tile
+                # config hash iterates — so nothing applied here can change
+                # mosaic pixels without also marking existing tiles stale.
                 bkg = SubtractBackground(
-                    ring_radius_in=step_config.get('ring_radius_in', 80),
-                    ring_width=step_config.get('ring_width', 4),
-                    ring_downsample=step_config.get('ring_downsample', 4),
-                    ring_clip_max_sigma=step_config.get(
-                        'ring_clip_max_sigma', 5.0),
-                    ring_clip_box_size=step_config.get(
-                        'ring_clip_box_size', 100),
-                    ring_clip_filter_size=step_config.get(
-                        'ring_clip_filter_size', 3),
-                    tier_kernel_size=step_config.get(
-                        'tier_kernel_size', [25, 15, 5, 2]),
-                    tier_npixels=step_config.get(
-                        'tier_npixels', [15, 10, 3, 1]),
-                    tier_nsigma=step_config.get(
-                        'tier_nsigma', [1.5, 1.5, 1.5, 1.5]),
-                    tier_dilate_size=step_config.get(
-                        'tier_dilate_size', [33, 25, 21, 19]),
-                    bg_box_size=step_config.get('bg_box_size', 10),
-                    bg_filter_size=step_config.get('bg_filter_size', 5),
-                    bg_exclude_percentile=step_config.get(
-                        'bg_exclude_percentile', 90),
-                    bg_sigma=step_config.get('bg_sigma', 3),
-                    bg_interpolator=step_config.get('bg_interpolator', 'zoom'),
-                    bg_reject=step_config.get('bg_reject', False),
-                    bg_reject_sigma_hi=step_config.get(
-                        'bg_reject_sigma_hi', 4.0),
-                    bg_reject_sigma_lo=step_config.get(
-                        'bg_reject_sigma_lo', 3.0),
-                    bg_reject_percentile=step_config.get(
-                        'bg_reject_percentile', 60.0),
-                    bg_reject_dilate=step_config.get('bg_reject_dilate', 40.0),
+                    **{k: step_config.get(k, d)
+                       for k, d in BKGSUB_PIXEL_DEFAULTS.items()},
                     wht_aware=step_config.get('wht_aware', True),
                     suffix='bkgsub',
                     replace_sci=True,
                 )
                 bkg.call(mosaic_file)
 
-                log(f"  copying input → {os.path.basename(pre_bkg)}")
-                shutil.copy2(mosaic_file, pre_bkg)
+                # Stamp the subtracted output *before* it is renamed into
+                # place, so stamp and pixels land together atomically and the
+                # pre-bkgsub snapshot (copied from the un-stamped input) never
+                # carries the stamp.
+                with fits.open(bkg.outfile, mode='update') as hdul:
+                    hdul[0].header[MOSAIC_BKGSUB_KEY] = stamp_card
+
+                if step_config.get('keep_pre_bkgsub', True):
+                    log(f"  copying input → {os.path.basename(pre_bkg)}")
+                    shutil.copy2(mosaic_file, pre_bkg)
+                else:
+                    log("  keep_pre_bkgsub = false; "
+                        "not snapshotting the pre-bkgsub mosaic")
 
                 log(f"  renaming {os.path.basename(bkg.outfile)} → "
                     f"{os.path.basename(mosaic_file)}")
