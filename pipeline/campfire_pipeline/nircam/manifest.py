@@ -8,6 +8,8 @@ stale tiles need to be re-mosaicked when new data arrives.
 import hashlib
 import json
 import os
+import re
+import warnings
 from datetime import datetime, timezone
 
 from astropy.io import fits
@@ -25,6 +27,10 @@ def compute_file_hash(filepath):
 
     Only hashing the science data (not padding or auxiliary HDUs) keeps this
     fast and deterministic across different astropy write orderings.
+
+    This is the *pixel* half of an input's identity. It says nothing about
+    where those pixels sit on the sky — see :func:`compute_wcs_hash`, which
+    :func:`file_unchanged` compares alongside it.
 
     Parameters
     ----------
@@ -51,6 +57,71 @@ def compute_file_hash(filepath):
     return f'sha256:{h.hexdigest()}'
 
 
+# The header cards that define an input's sky mapping. A whitelist rather than
+# a denylist: the digest must move when the astrometry moves and never on a
+# plain re-save (a re-save that looks "modified" costs a needless re-drizzle of
+# every tile the file touches). Mirrored client-side in
+# ``campfire.storage.hashing`` — the client cannot import the pipeline, so the
+# recipe is written out in both places and the two must stay in step.
+_WCS_KEY_RE = re.compile(
+    r'^(?:'
+    r'WCSAXES|RADESYS|EQUINOX|LONPOLE|LATPOLE'
+    r'|C(?:TYPE|UNIT|RPIX|RVAL|DELT|ROTA)\d+'
+    r'|CD\d+_\d+|PC\d+_\d+'
+    r'|[AB]P?_ORDER|[AB]P?_DMAX|[AB]P?_\d+_\d+'
+    r'|V[23]_REF|VPARITY|VA_SCALE|ROLL_REF|RA_REF|DEC_REF'
+    r'|S_REGION'
+    r')$'
+)
+
+_WCS_DIGEST_VERSION = b'campfire-wcs-1\n'
+_WCS_HEADER_EXTS = (0, 'SCI')
+
+
+def compute_wcs_hash(filepath):
+    """SHA-256 over a FITS file's WCS-defining header cards, or ``None``.
+
+    The astrometric half of an input's identity. ``align`` and ``wcs_shift``
+    rewrite an exposure's WCS *without touching a science pixel*, so
+    :func:`compute_file_hash` cannot see a re-alignment — a CRF regenerated with
+    corrected astrometry but identical SCI/DQ hashes the same as before, and the
+    tile that consumed it is judged up to date while its inputs have moved on
+    the sky.
+
+    ``None`` means the file carries no WCS cards at all (or could not be read);
+    :func:`file_unchanged` treats that as "no astrometric component", never as
+    a match.
+
+    Digests the FITS (SIP-approximated) WCS that ``update_fits_wcsinfo`` writes
+    from the authoritative gwcs on every solve, not the gwcs in the embedded
+    ASDF extension — those bytes carry a save timestamp and would churn on every
+    re-save, defeating the point of a partial digest. The two disagree only when
+    ``update_fits_wcsinfo`` fails, which ``align`` logs.
+    """
+    h = hashlib.sha256()
+    h.update(_WCS_DIGEST_VERSION)
+    found = False
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            with fits.open(filepath, memmap=False, lazy_load_hdus=True) as hdul:
+                for ext in _WCS_HEADER_EXTS:
+                    try:
+                        header = hdul[ext].header
+                    except (KeyError, IndexError):
+                        continue
+                    # Sorted, so card order in the file cannot move the digest;
+                    # repr() round-trips a float's full precision exactly, so a
+                    # re-save writing the same numbers hashes the same.
+                    for key in sorted(k for k in header if _WCS_KEY_RE.match(k)):
+                        h.update(
+                            f'{ext}|{key}={header[key]!r}\n'.encode('utf-8', 'replace'))
+                        found = True
+    except Exception:
+        return None
+    return f'sha256:{h.hexdigest()}' if found else None
+
+
 def file_stat(filepath):
     """Return ``(size, mtime_ns)`` for fast change detection."""
     st = os.stat(filepath)
@@ -64,6 +135,13 @@ def file_unchanged(filepath, old_entry):
     match the current stat, the file hasn't been rewritten — skip the
     SHA-256 read entirely. Otherwise fall back to recomputing the content
     hash and comparing.
+
+    The astrometric digest is compared **only when the old entry carries one**.
+    Manifests written before ``wcs_hash`` existed therefore keep their current
+    verdicts instead of declaring every input modified — a recipe change that
+    invalidated every manifest at once would re-drizzle every field's every tile
+    on the next run. Those entries pick up the digest the next time the manifest
+    is rewritten, and ``--overwrite`` forces the rebuild in the meantime.
     """
     size = old_entry.get('size')
     mtime_ns = old_entry.get('mtime_ns')
@@ -71,7 +149,12 @@ def file_unchanged(filepath, old_entry):
         cur_size, cur_mtime = file_stat(filepath)
         if cur_size == size and cur_mtime == mtime_ns:
             return True
-    return compute_file_hash(filepath) == old_entry.get('file_hash')
+    if compute_file_hash(filepath) != old_entry.get('file_hash'):
+        return False
+    old_wcs = old_entry.get('wcs_hash')
+    if old_wcs and compute_wcs_hash(filepath) != old_wcs:
+        return False
+    return True
 
 
 def input_entry(filepath, extra=None):
@@ -80,6 +163,9 @@ def input_entry(filepath, extra=None):
     entry = {
         'filename': os.path.basename(filepath),
         'file_hash': compute_file_hash(filepath),
+        # Astrometric digest: without it a re-aligned input (same pixels, new
+        # WCS) reads as unchanged and its tiles are never rebuilt.
+        'wcs_hash': compute_wcs_hash(filepath),
         'size': size,
         'mtime_ns': mtime_ns,
     }

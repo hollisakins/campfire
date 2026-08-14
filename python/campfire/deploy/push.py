@@ -41,18 +41,23 @@ from typing import Optional
 from campfire_layout import KeyScheme, Scope, storage_key
 
 from campfire.config import ensure_data_dir, meta_dir, products_dir
-from campfire.storage.hashing import sci_dq_hashes_parallel
-from campfire.storage.plan import PushPlan, identity_kind_for_key, plan_push
+from campfire.storage.hashing import exposure_identities_parallel
+from campfire.storage.plan import (
+    PushPlan, compose_identity, identity_kind_for_key, plan_push,
+)
 from campfire.storage.transfer import BatchFlusher
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 
 # Registry columns fetched for push planning — the mirror-row shape (everything
-# the local storage_objects cache carries), so fetched rows double as a cache
-# refresh for the keys being pushed.
+# the local storage_objects cache carries) plus wcs_hash, so fetched rows double
+# as a cache refresh for the keys being pushed. wcs_hash is deliberately NOT
+# mirrored locally: the planner always reads it from the live server fetch
+# below, so mirroring it would cost every reducer a forced re-sync (a client
+# schema bump) to store a column no decision reads.
 _PLAN_COLUMNS = (
-    'id, backend, bucket, storage_key, content_hash, sci_dq_hash, size_bytes, '
-    'content_type, product_type, instrument, status, observation, field, '
-    'filter, spectrum_id, exposure_ref, deployment_id, cfpipe_version, '
+    'id, backend, bucket, storage_key, content_hash, sci_dq_hash, wcs_hash, '
+    'size_bytes, content_type, product_type, instrument, status, observation, '
+    'field, filter, spectrum_id, exposure_ref, deployment_id, cfpipe_version, '
     'created_at, updated_at'
 )
 
@@ -131,19 +136,41 @@ def plan_remote_push(
     backend: str,
     max_workers: Optional[int] = None,
     progress: bool = True,
+    apply_backfill: bool = False,
 ) -> tuple[PushPlan, dict[str, dict]]:
     """Plan a push: live server-row fetch + local fast-path + classification.
 
     Returns ``(plan, server_rows)`` — callers that index derived tables (the
     NIRCam mosaic path) need the server rows for the sizes/hashes of
     dedup-skipped objects.
+
+    ``apply_backfill`` writes ``plan.backfill`` (legacy exposure rows the
+    planner *proved* unchanged) to the server registry. It defaults to **False**
+    because planning is also what a dry run does: ``campfire push --dry-run``
+    and scoped ``campfire status`` both call this and then return, and a command
+    advertised as a read-only diff must not mutate ``storage_objects``. Only the
+    paths that actually go on to transfer bytes opt in. Skipping the write is
+    free: the reconciliation is re-derived on the next run.
     """
+    from campfire.deploy.registry import backfill_wcs_hashes
+
     keys = [t.r2_key for t in tasks]
     server_rows = fetch_registry_rows(client, keys, backend=backend)
     local_rows = store.get_storage_rows_by_keys(keys) if store else {}
 
     plan = plan_push(tasks, server_rows, local_rows=local_rows,
                      max_workers=max_workers, progress=progress)
+
+    # Legacy exposure rows learn their astrometric digest — no bytes move, and
+    # the next push compares on the full exposure identity. Best-effort: a
+    # failed backfill only means the same reconciliation runs again next time.
+    if plan.backfill and apply_backfill:
+        try:
+            n = backfill_wcs_hashes(client, plan.backfill)
+            if n:
+                print(f"  Backfilled wcs_hash on {n} unchanged exposure row(s)")
+        except Exception as e:  # noqa: BLE001 - bookkeeping must not sink a push
+            print(f"  Note: wcs_hash backfill skipped ({e})")
 
     if store:
         # Cache the fresh server rows (preserves local_*/pushed_* on conflict)
@@ -186,9 +213,10 @@ def registration_flusher(
     prod_dir = products_dir().resolve()
 
     def _flush(batch: list[UploadTask]) -> None:
-        # Science-only digests for exposure-identity products: reuse the plan's
-        # value when it hashed the file, compute for plan-unhashed (new) files.
+        # Exposure identities (science + astrometric digests): reuse the plan's
+        # values when it hashed the file, compute for plan-unhashed (new) files.
         sci_dq: dict[str, str] = {}
+        wcs: dict[str, str] = {}
         need = []
         for t in batch:
             if identity_kind_for_key(t.r2_key) != 'sci_dq':
@@ -196,20 +224,25 @@ def registration_flusher(
             h = plan.identities.get(t.r2_key)
             if h:
                 sci_dq[t.r2_key] = h
+                w = plan.wcs_hashes.get(t.r2_key)
+                if w:
+                    wcs[t.r2_key] = w
             else:
                 need.append(t)
         if need:
-            by_path = sci_dq_hashes_parallel(
+            by_path = exposure_identities_parallel(
                 [t.local_path for t in need], max_workers=max_workers)
             for t in need:
-                h = by_path.get(Path(t.local_path))
+                h, w = by_path.get(Path(t.local_path), (None, None))
                 if h:
                     sci_dq[t.r2_key] = h
+                if w:
+                    wcs[t.r2_key] = w
 
         rows = build_registry_rows(
             batch, backend=backend, deployment_id=deployment_id,
             uploaded_by=uploaded_by, cfpipe_version=cfpipe_version,
-            sci_dq_hashes=sci_dq, precomputed=plan.whole_file,
+            sci_dq_hashes=sci_dq, wcs_hashes=wcs, precomputed=plan.whole_file,
             max_workers=max_workers, stored_sizes=stored_sizes,
         )
         upsert_storage_objects(client, rows)
@@ -226,7 +259,10 @@ def registration_flusher(
                 except OSError:
                     continue
                 kind = identity_kind_for_key(t.r2_key)
-                identity = row.get('sci_dq_hash') if kind == 'sci_dq' else row.get('content_hash')
+                identity = (
+                    compose_identity(row.get('sci_dq_hash'), row.get('wcs_hash'))
+                    if kind == 'sci_dq' else row.get('content_hash')
+                )
                 store.mark_object_pushed(
                     t.r2_key, identity, st.st_mtime, st.st_size, commit=False)
                 # Pull-side write-through: a pushed tree file IS materialized
@@ -314,7 +350,8 @@ def push_observation(
 
     client = get_supabase_client(config)
     store = open_reducer_store()
-    plan, _server_rows = plan_remote_push(client, store, tasks, backend='osn')
+    plan, _server_rows = plan_remote_push(client, store, tasks, backend='osn',
+                                          apply_backfill=not dry_run)
     print(f"  Plan: {plan.summary()}")
     for t in plan.missing:
         print(f"    missing locally: {t.local_path}")
@@ -433,7 +470,8 @@ def push_field(
 
     client = get_supabase_client(config)
     store = open_reducer_store()
-    plan, _server_rows = plan_remote_push(client, store, tasks, backend='osn')
+    plan, _server_rows = plan_remote_push(client, store, tasks, backend='osn',
+                                          apply_backfill=not dry_run)
     print(f"  Plan: {plan.summary()}")
 
     if dry_run or not plan.to_upload:

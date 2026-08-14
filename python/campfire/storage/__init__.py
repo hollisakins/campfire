@@ -20,9 +20,12 @@ out loud (see ``presign.request_put_urls``).
 from .hashing import (
     compute_file_hash,
     default_hash_workers,
+    exposure_identities_parallel,
+    exposure_identity,
     hash_file,
     hash_files_parallel,
     sci_dq_hash,
+    wcs_hash,
 )
 from .session import create_transfer_session
 from .transfer import BatchFlusher, TransferResult, run_transfers
@@ -33,8 +36,11 @@ __all__ = [
     "compute_file_hash",
     "create_transfer_session",
     "default_hash_workers",
+    "exposure_identities_parallel",
+    "exposure_identity",
     "hash_file",
     "hash_files_parallel",
     "run_transfers",
     "sci_dq_hash",
+    "wcs_hash",
 ]

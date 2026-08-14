@@ -356,6 +356,25 @@ Release procedure: edit the `## Unreleased` section below, then run
   usable fraction would generalise better and is left as follow-up.
 
 ### Algorithm
+- **NIRCam manifest change detection now sees a re-alignment.** `manifest`
+  entries gain a `wcs_hash` — a SHA-256 over the WCS-defining header cards —
+  alongside the existing SCI+DQ `file_hash`, and `file_unchanged` compares
+  both. `align` and `wcs_shift` rewrite an exposure's WCS *without touching a
+  science pixel*, so a re-solved input hashed identically to its pre-alignment
+  self: a CRF regenerated with corrected astrometry read as unchanged, and the
+  outlier visit / mosaic tile that consumed it stayed on its stale product.
+  The outlier up-to-date check (`orchestrate.py`) now routes through
+  `file_unchanged` rather than comparing `file_hash` inline, so it picks the
+  same comparison up. The new digest is compared **only when the stored entry
+  carries one**, so pre-existing manifests keep their current verdicts instead
+  of invalidating en masse and re-drizzling every tile of every field on the
+  next run; they gain the digest the next time they are rewritten (or force it
+  with `--overwrite`). Categorized Algorithm rather than Infrastructure because
+  it changes which products are considered stale — mosaics that should have
+  rebuilt after a re-alignment now do. Mirrors the client-side fix to the
+  deploy dedup identity (`campfire.storage.hashing.wcs_hash`), which had the
+  same blind spot; the two recipes are written out separately (the client must
+  not import the pipeline) and pinned equal by a test.
 - Mosaic background subtraction gains a **large-extended-source pre-tier**
   (tier 0) in `[nircam.resample]`, fixing a galaxy-shaped over-subtraction bowl.
   A galaxy far larger than `bg_box_size` is over-subtracted *even when fully
