@@ -434,3 +434,46 @@ def test_upload_workers_env_override(monkeypatch):
     assert nc._upload_workers() == 1            # clamped to >= 1
     monkeypatch.setenv("CAMPFIRE_DEPLOY_UPLOAD_WORKERS", "not-a-number")
     assert nc._upload_workers() == 16           # falls back to default
+
+
+# --- provenance under --no-mosaics ------------------------------------------
+
+def test_provenance_prefers_mosaic_by_default(tmp_path, monkeypatch):
+    """Default: the i2d mosaic header wins (it is the only mosaic product
+    carrying the version cards)."""
+    p = _make_exposure(tmp_path / "m_i2d.fits", np.zeros((2, 2)), np.zeros((2, 2)),
+                       extra_header={'CMPFRVER': '9.9.9', 'CAL_VER': '1.2.3',
+                                     'CRDS_CTX': 'jwst_9999.pmap'})
+    monkeypatch.setattr(nc, 'discover_mosaics',
+                        lambda *a, **k: [{'path': str(p), 'extension': 'i2d'}])
+    prov = nc._read_field_provenance({}, 'egs', ['f070w'])
+    assert prov[0] == '9.9.9'
+
+
+def test_provenance_skips_mosaic_when_not_deploying_it(tmp_path, monkeypatch):
+    """--no-mosaics: a stale on-disk i2d must NOT stamp the deployment, since
+    the mosaics are not part of it.
+
+    The stub RECORDS the call rather than raising: ``_read_field_provenance``
+    wraps discovery in ``except Exception``, which would swallow an
+    AssertionError and let this pass with the guard removed.
+    """
+    calls = []
+    stale = _make_exposure(tmp_path / "stale_i2d.fits", np.zeros((2, 2)),
+                           np.zeros((2, 2)),
+                           extra_header={'CMPFRVER': 'STALE', 'CAL_VER': '0.0.0',
+                                         'CRDS_CTX': 'jwst_0000.pmap'})
+    exp = _make_exposure(tmp_path / "e.fits", np.zeros((2, 2)), np.zeros((2, 2)),
+                         extra_header={'CMPFRVER': '1.1.1', 'CAL_VER': '4.5.6',
+                                       'CRDS_CTX': 'jwst_1111.pmap'})
+
+    def _record(*a, **k):
+        calls.append(a)
+        return [{'path': str(stale), 'extension': 'i2d'}]
+
+    monkeypatch.setattr(nc, 'discover_mosaics', _record)
+    monkeypatch.setattr(nc, 'discover_exposures',
+                        lambda *a, **k: {'e': {'path': str(exp)}})
+    prov = nc._read_field_provenance({}, 'egs', ['f070w'], prefer_mosaic=False)
+    assert calls == [], "discover_mosaics consulted with prefer_mosaic=False"
+    assert prov[0] == '1.1.1', "provenance came from the stale mosaic, not the exposures"

@@ -435,7 +435,7 @@ def _provenance_from_header(path):
         return None, None, None
 
 
-def _read_field_provenance(dirs, field, filters):
+def _read_field_provenance(dirs, field, filters, *, prefer_mosaic=True):
     """Best-effort ``(cfpipe_version, jwst_version, crds_context)`` for a field.
 
     Prefer the local ``i2d`` mosaic header (the combined science product) — the
@@ -449,9 +449,15 @@ def _read_field_provenance(dirs, field, filters):
     exposure deploy (no mosaic yet) now records real provenance instead of NULL
     (audit B2). Returns ``(None, None, None)`` only when the field has neither a
     readable i2d nor a readable exposure.
+
+    ``prefer_mosaic=False`` skips the mosaic entirely and reads the exposures.
+    Set it when the mosaics are not part of this deployment (``--no-mosaics``):
+    an on-disk i2d left over from an earlier reduction would otherwise stamp the
+    deployment with the provenance of a product it is not shipping, and the
+    whole point of that mode is that the exposures have moved on from it.
     """
     try:
-        mosaics = discover_mosaics(dirs, field, filters)
+        mosaics = discover_mosaics(dirs, field, filters) if prefer_mosaic else []
     except Exception:
         mosaics = []
     if mosaics:
@@ -472,7 +478,8 @@ def _read_field_provenance(dirs, field, filters):
     return None, None, None
 
 
-def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
+def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
+                  skip_mosaics=False):
     """Push NIRCam exposure state to OSN + Supabase (epic #261, N1).
 
     Records a **field-scoped deployment** (provenance + the draft->published
@@ -501,6 +508,13 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     draft : bool
         If True, record the deployment as ``draft`` (admin-only) for review;
         otherwise ``published`` (public) immediately.
+    skip_mosaics : bool
+        If True, deploy exposures/expmaps/layout only and skip the mosaic
+        stage entirely (no discovery, no upload, no ``mosaics`` rows). For the
+        inspect-then-rebuild loop: a reviewer needs the exposures in the portal
+        to draw masks, but the mosaics built *before* those masks exist are
+        superseded by the post-mask re-combine, so shipping them is wasted
+        transfer over a slow link. The mosaics ride the next deploy.
     """
     dirs = _resolve_nircam_dirs(field)
 
@@ -530,12 +544,21 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     # Scope mosaic discovery to what the current fields.toml declares — a stray
     # on-disk tile/epoch from a former config must not ride into the cloud (this is
     # the guard; the count + the actual upload both use this same scoped list).
-    try:
-        mosaics_to_deploy = scope_mosaics_to_fields_toml(
-            deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    if skip_mosaics:
+        # Skip discovery too, not just the upload: with no mosaic shipping this
+        # run, a stray on-disk tile is not this deploy's problem, and the
+        # fields.toml scope check would otherwise abort a perfectly good
+        # exposure deploy over a mosaic we were never going to send.
+        mosaics_to_deploy = []
+        print("Mosaics: SKIPPED (--no-mosaics) — exposures, expmaps and "
+              "layout only.")
+    else:
+        try:
+            mosaics_to_deploy = scope_mosaics_to_fields_toml(
+                deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
     n_mosaics = len(mosaics_to_deploy)
     print(f"Discovered {len(exposures)} canonical exposure(s), "
           f"{len(expmap_tasks)} expmap file(s), {n_mosaics} mosaic(s), "
@@ -619,7 +642,10 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     # the version cards, so an exposure-only --draft deploy (no mosaic yet)
     # records NULL provenance — the pipeline version that produced the exposures
     # is not stamped on exposure headers.
-    cfpipe_version, jwst_version, crds_context = _read_field_provenance(dirs, field, filters)
+    # With --no-mosaics the mosaics are not part of this deployment, so a stale
+    # on-disk i2d must not supply its provenance: read the exposures instead.
+    cfpipe_version, jwst_version, crds_context = _read_field_provenance(
+        dirs, field, filters, prefer_mosaic=not skip_mosaics)
 
     # Record the field-scoped deployment up front — it is the provenance anchor and
     # the draft/published visibility gate every registered object hangs off.
@@ -702,9 +728,12 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     # --- Mosaics: deploy under the same field deployment (epic #261, N2) ----
     # Reuse the fields.toml-scoped list computed up front (single discovery +
     # single skip-log; stray tiles/epochs were already filtered out above).
-    mosaic_stats = _deploy_field_mosaics(dirs, field, config, client, filters,
-                                         deployment_id, draft, user_id, store=store,
-                                         mosaics=mosaics_to_deploy)
+    if skip_mosaics:
+        mosaic_stats = None
+    else:
+        mosaic_stats = _deploy_field_mosaics(dirs, field, config, client, filters,
+                                             deployment_id, draft, user_id, store=store,
+                                             mosaics=mosaics_to_deploy)
 
     # --- Field registry: upsert the fields.toml config + deploy-computed survey
     # area (issue #303). Rides the deploy so a field row exists exactly for fields
