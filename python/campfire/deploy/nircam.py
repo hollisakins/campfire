@@ -434,7 +434,7 @@ def _provenance_from_header(path):
         return None, None, None
 
 
-def _read_field_provenance(dirs, field, filters):
+def _read_field_provenance(dirs, field, filters, *, prefer_mosaic=True):
     """Best-effort ``(cfpipe_version, jwst_version, crds_context)`` for a field.
 
     Prefer the local ``i2d`` mosaic header (the combined science product) — the
@@ -448,9 +448,15 @@ def _read_field_provenance(dirs, field, filters):
     exposure deploy (no mosaic yet) now records real provenance instead of NULL
     (audit B2). Returns ``(None, None, None)`` only when the field has neither a
     readable i2d nor a readable exposure.
+
+    ``prefer_mosaic=False`` skips the mosaic entirely and reads the exposures.
+    Set it when the mosaics are not part of this deployment (``--no-mosaics``):
+    an on-disk i2d left over from an earlier reduction would otherwise stamp the
+    deployment with the provenance of a product it is not shipping, and the
+    whole point of that mode is that the exposures have moved on from it.
     """
     try:
-        mosaics = discover_mosaics(dirs, field, filters)
+        mosaics = discover_mosaics(dirs, field, filters) if prefer_mosaic else []
     except Exception:
         mosaics = []
     if mosaics:
@@ -635,7 +641,10 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     # the version cards, so an exposure-only --draft deploy (no mosaic yet)
     # records NULL provenance — the pipeline version that produced the exposures
     # is not stamped on exposure headers.
-    cfpipe_version, jwst_version, crds_context = _read_field_provenance(dirs, field, filters)
+    # With --no-mosaics the mosaics are not part of this deployment, so a stale
+    # on-disk i2d must not supply its provenance: read the exposures instead.
+    cfpipe_version, jwst_version, crds_context = _read_field_provenance(
+        dirs, field, filters, prefer_mosaic=not skip_mosaics)
 
     # Record the field-scoped deployment up front — it is the provenance anchor and
     # the draft/published visibility gate every registered object hangs off.

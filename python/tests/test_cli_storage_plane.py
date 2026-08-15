@@ -96,9 +96,21 @@ def test_deploy_has_no_mosaics_flag():
     assert 'no_mosaics' in params
 
 
-def test_no_mosaics_rejected_without_field():
+def test_no_mosaics_rejected_without_field(monkeypatch):
     """It scopes the NIRCam mosaic stage, so it is meaningless on a NIRSpec
-    --obs deploy and must not silently no-op there."""
+    --obs deploy and must not silently no-op there.
+
+    load_config/_gate_admin are stubbed because deploy_group runs
+    `_gate_admin(load_config(...))` *before* this validation: unstubbed, a
+    sandbox with no `campfire login` session exits 1 on "Not logged in" and the
+    assertion below would pass for entirely the wrong reason.
+    """
+    import campfire.deploy.cli as dcli
+
+    monkeypatch.setattr(dcli, 'load_config', lambda *a, **k: {})
+    monkeypatch.setattr(dcli, '_announce_auth_mode', lambda *a, **k: None)
+    monkeypatch.setattr(dcli, '_gate_admin', lambda *a, **k: None)
+
     cli = _cli()
     res = CliRunner().invoke(cli, ['deploy', '--obs', 'ember_uds_p4',
                                    '--no-mosaics', '--dry-run'])
