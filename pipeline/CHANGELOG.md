@@ -60,7 +60,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   reprocessed exposures — a consequence of the corrected flagged-pixel
   zero-points, not a regression. Already-reduced trees need a detector1
   re-reduction (`reset --uncal`) to gain the correction; `reset --from`
-  refuses to cross the step (SCI-mutating).
+  refuses to cross the step (SCI-mutating). Readout-pattern generality
+  validated on public NRCA1 exposures: DEEP8/NGROUPS=7 (JADES
+  jw01180016001, mild curvature — single-jump bias rms 0.174 → 0.085
+  DN/group) and SHALLOW4/NGROUPS=5 (COSMOS-Web jw01727167001, near-linear
+  ramp — deltas correctly ≈0, no harm, 100% coverage). The SHALLOW4 run
+  exposed a separate, pre-existing effect outside this step's scope: on
+  5-group ramps the jump-detection *selection* bias reaches −1 to −2.6
+  DN/group on single-jump-flagged sky pixels (incoherent speckle, not
+  circles); tracked as follow-up work on the jump thresholds for short
+  ramps.
 - **The NMF wisp source mask is now iterated (`[nircam.wisp].mask_iterations
   = 5`), so a bright wisp can no longer mask its own fit region.** The mask was
   built once, from the frame that still contained the wisp, so
