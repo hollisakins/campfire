@@ -94,16 +94,31 @@ def _patterns_from_groupdq(gdq_int):
     return pat, carries
 
 
+def _coprime_stride(start, n):
+    """Smallest stride >= ``start`` that is coprime to ``n`` (n >= 1)."""
+    s = int(start)
+    while np.gcd(s, n) != 1:
+        s += 1
+    return s
+
+
 def _class_map(shape, n_classes):
     """Deterministic diagonal-lattice class assignment (0..n_classes-1).
 
-    Strides coprime with power-of-two detector axes, so no class aliases a
-    fixed column or row comb (the failure mode of ``index % n`` layouts:
-    2048 % 64 == 0 turns "interleaved" into a 1/f-aliasing column comb).
+    Both strides are forced coprime to ``n_classes`` at runtime — not just
+    to the detector axes. A stride sharing a factor with the class count
+    collapses the lattice into a row or column comb (e.g. a column stride
+    of 31 with 31 classes makes every row a single class), which lets
+    banded 1/f structure alias straight into the deltas — the same failure
+    mode as ``index % n`` layouts (2048 % 64 == 0), just rotated.
     """
     ny, nx = shape
-    r = np.arange(ny, dtype=np.int64)[:, None] * _LATTICE_ROW
-    c = np.arange(nx, dtype=np.int64)[None, :] * _LATTICE_COL
+    if n_classes <= 1:
+        return np.zeros(shape, dtype=np.int32)
+    sr = _coprime_stride(_LATTICE_ROW, n_classes)
+    sc = _coprime_stride(_LATTICE_COL, n_classes)
+    r = np.arange(ny, dtype=np.int64)[:, None] * sr
+    c = np.arange(nx, dtype=np.int64)[None, :] * sc
     return ((r + c) % n_classes).astype(np.int32)
 
 
@@ -290,10 +305,16 @@ def jackknife_step(exposure_file, field, step_config, overwrite=False,
 
             # gain_scale ran on the canonical but not on the calibration
             # fit; reconcile before differencing. (No-op for full frame,
-            # where the factor is absent/1.)
+            # where the factor is absent/1.) The multiply must happen at
+            # the canonical array's storage precision — production scales
+            # the float32 SCI in place, so scaling our float64 promotion
+            # instead would differ by float32 rounding and trip the exact
+            # identity check below.
             gain_factor = float(gain_factor) if gain_factor else 1.0
             if gain_factor != 1.0:
-                rate_cal *= gain_factor
+                rate_cal = (rate_cal.astype(model.data.dtype)
+                            * model.data.dtype.type(gain_factor)
+                            ).astype(np.float64)
 
             # Paired identity check: on clean class-0 pixels the two fits
             # ran identical flags on identical data, so any nonzero

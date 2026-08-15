@@ -50,10 +50,13 @@ def test_patterns_jump_and_sat_pixel_is_carrier():
 # lattice assignment — the anti-comb property
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("n_classes", [2, 7, 61, 64, 214])
+@pytest.mark.parametrize("n_classes", [2, 7, 31, 61, 62, 64, 124, 214])
 def test_class_map_no_column_or_row_comb(n_classes):
-    """No class may alias a fixed column or row subset (the `index % n`
-    failure mode when n divides the axis length: a 1/f-aliasing comb)."""
+    """No class may alias a fixed column or row subset. Covers both comb
+    failure modes: n dividing the axis length (`index % n` layouts) and n
+    sharing a factor with a lattice stride (31 and its multiples collapsed
+    every row to a single class before the strides were made runtime-coprime
+    to the class count)."""
     cm = _class_map((256, 256), n_classes)
     # every column and every row must contain many distinct classes
     for axis in (0, 1):

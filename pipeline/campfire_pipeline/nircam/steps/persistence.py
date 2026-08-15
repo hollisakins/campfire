@@ -157,16 +157,33 @@ def persistence_step(exposure_files, field, step_config, overwrite=False,
     # The jackknife step's only possible input is the _jump.fits sidecar:
     # once deleted, the per-pixel excluded-group pattern is unrecoverable
     # (the 2-D DQ keeps JUMP_DET presence but not which groups were
-    # dropped). When jackknife is enabled, retain the sidecar for any
-    # exposure it has not stamped yet — normal process-phase ordering runs
-    # jackknife first, so this only bites standalone/interrupted runs.
+    # dropped). When jackknife is enabled, retain the sidecar both for
+    # exposures it has not stamped yet (normal ordering runs jackknife
+    # first, so that only bites standalone/interrupted runs) and for
+    # RETRYABLE failure stamps — 'skipped (error: ...)' / 'skipped
+    # (identity check failed)' — so a transient failure can be re-run with
+    # --overwrite instead of forcing a detector1 rebuild. Permanent skips
+    # (nints>1, ngroups out of range) delete like successes: their sidecar
+    # can never become usable.
     jackknife_enabled = bool(step_config.get('jackknife_enabled', True))
+
+    def _jack_retain_reason(f):
+        if not jackknife_enabled:
+            return None
+        if not cfp.has_step(f, 'CFP_JACK'):
+            return 'jackknife has not run on this exposure yet'
+        value = str(cfp.step_value(f, 'CFP_JACK'))
+        if value.startswith('skipped (error') or value.startswith(
+                'skipped (identity'):
+            return f'jackknife recorded a retryable failure ({value})'
+        return None
+
     removed, retained = 0, 0
     for f in saved:
-        if jackknife_enabled and not cfp.has_step(f, 'CFP_JACK'):
+        reason = _jack_retain_reason(f)
+        if reason is not None:
             retained += 1
-            log(f"  retaining {os.path.basename(_jump_path(f))}: jackknife "
-                f"is enabled but has not run on this exposure yet")
+            log(f"  retaining {os.path.basename(_jump_path(f))}: {reason}")
             continue
         try:
             os.remove(_jump_path(f))

@@ -414,6 +414,7 @@ export interface NircamProductRow {
 export const NIRCAM_STAGES = [
   'uncal',
   'detector1',
+  'jackknife',
   'persistence',
   'wisp',
   'image2',
