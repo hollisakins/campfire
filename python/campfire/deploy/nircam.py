@@ -471,7 +471,8 @@ def _read_field_provenance(dirs, field, filters):
     return None, None, None
 
 
-def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
+def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
+                  skip_mosaics=False):
     """Push NIRCam exposure state to OSN + Supabase (epic #261, N1).
 
     Records a **field-scoped deployment** (provenance + the draft->published
@@ -500,6 +501,13 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     draft : bool
         If True, record the deployment as ``draft`` (admin-only) for review;
         otherwise ``published`` (public) immediately.
+    skip_mosaics : bool
+        If True, deploy exposures/expmaps/layout only and skip the mosaic
+        stage entirely (no discovery, no upload, no ``mosaics`` rows). For the
+        inspect-then-rebuild loop: a reviewer needs the exposures in the portal
+        to draw masks, but the mosaics built *before* those masks exist are
+        superseded by the post-mask re-combine, so shipping them is wasted
+        transfer over a slow link. The mosaics ride the next deploy.
     """
     dirs = _resolve_nircam_dirs(field)
 
@@ -529,12 +537,21 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     # Scope mosaic discovery to what the current fields.toml declares — a stray
     # on-disk tile/epoch from a former config must not ride into the cloud (this is
     # the guard; the count + the actual upload both use this same scoped list).
-    try:
-        mosaics_to_deploy = scope_mosaics_to_fields_toml(
-            deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    if skip_mosaics:
+        # Skip discovery too, not just the upload: with no mosaic shipping this
+        # run, a stray on-disk tile is not this deploy's problem, and the
+        # fields.toml scope check would otherwise abort a perfectly good
+        # exposure deploy over a mosaic we were never going to send.
+        mosaics_to_deploy = []
+        print("Mosaics: SKIPPED (--no-mosaics) — exposures, expmaps and "
+              "layout only.")
+    else:
+        try:
+            mosaics_to_deploy = scope_mosaics_to_fields_toml(
+                deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
     n_mosaics = len(mosaics_to_deploy)
     print(f"Discovered {len(exposures)} canonical exposure(s), "
           f"{len(expmap_tasks)} expmap file(s), {n_mosaics} mosaic(s), "
@@ -701,9 +718,12 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     # --- Mosaics: deploy under the same field deployment (epic #261, N2) ----
     # Reuse the fields.toml-scoped list computed up front (single discovery +
     # single skip-log; stray tiles/epochs were already filtered out above).
-    mosaic_stats = _deploy_field_mosaics(dirs, field, config, client, filters,
-                                         deployment_id, draft, user_id, store=store,
-                                         mosaics=mosaics_to_deploy)
+    if skip_mosaics:
+        mosaic_stats = None
+    else:
+        mosaic_stats = _deploy_field_mosaics(dirs, field, config, client, filters,
+                                             deployment_id, draft, user_id, store=store,
+                                             mosaics=mosaics_to_deploy)
 
     # --- Field registry: upsert the fields.toml config + deploy-computed survey
     # area (issue #303). Rides the deploy so a field row exists exactly for fields

@@ -209,6 +209,10 @@ def source_ids_option(f):
                    'the field; mutually exclusive with --obs.')
 @click.option('--filter', 'filter_names', multiple=True, cls=_VariadicOption,
               help='NIRCam filter(s) to deploy with --field (default: all).')
+@click.option('--no-mosaics', 'no_mosaics', is_flag=True,
+              help='NIRCam --field only: deploy exposures/expmaps/layout and '
+                   'skip the mosaic stage. For the inspect-then-rebuild loop, '
+                   'where mosaics built before masking are superseded anyway.')
 @click.option('--dry-run', is_flag=True, help='Show what would happen without making changes.')
 @click.option('--source-ids', multiple=True, type=str, default=None,
               cls=_VariadicOption, callback=_parse_source_ids,
@@ -233,8 +237,8 @@ def source_ids_option(f):
                    '(bypasses RLS + presigned URLs). For unattended / CI deploys. '
                    'Equivalent to CAMPFIRE_DEPLOY_MODE=service-role.')
 @click.pass_context
-def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids,
-                 supabase_only, force_overwrite, auto_approve,
+def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run,
+                 source_ids, supabase_only, force_overwrite, auto_approve,
                  no_shutters, no_photometry, skip_astrometry, draft, local,
                  service_role):
     """Deploy CAMPFIRE pipeline products to Supabase + object storage.
@@ -264,6 +268,10 @@ def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids
         if field and obs:
             print("Error: --field (NIRCam) and --obs (NIRSpec) are mutually exclusive.")
             sys.exit(1)
+        if no_mosaics and not field:
+            print("Error: --no-mosaics applies to the NIRCam field deploy; "
+                  "use it with --field.")
+            sys.exit(1)
         if field:
             config = load_config(config_path, local=local,
                                  service_role=ctx.obj['service_role'])
@@ -271,7 +279,8 @@ def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids
             from campfire.deploy.nircam import deploy_nircam
             deploy_nircam(field, config,
                           filters=list(filter_names) if filter_names else None,
-                          dry_run=dry_run, draft=draft)
+                          dry_run=dry_run, draft=draft,
+                          skip_mosaics=no_mosaics)
             return
         if not obs:
             print("Error: --obs (NIRSpec) or --field (NIRCam) is required for full deployment.")
