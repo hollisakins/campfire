@@ -65,6 +65,7 @@ _PNG_CONTENT_TYPE = 'image/png'
 # Each entry: (CFP_* keyword, stage value to report).
 _CFP_TO_STAGE = [
     ('CFP_DET1', 'detector1'),
+    ('CFP_JACK', 'jackknife'),
     ('CFP_PERS', 'persistence'),
     ('CFP_WISP', 'wisp'),
     ('CFP_IMG2', 'image2'),

@@ -29,6 +29,47 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Calibration
+- **New NIRCam `jackknife` step: re-zeros jump-segmented ramp fits against the
+  exposure's frame-common ramp curvature** (`[nircam.jackknife]`, enabled by
+  default; runs between `detector1` and `persistence`). The mean calibrated
+  ramp retains a frame-wide, exposure-dependent nonlinearity in time
+  (surviving superbias/refpix/linearity/dark; e.g. jw01345064001_07201_00002
+  NRCA1 clean-sky group diffs +8.2, −2.7, +9.9, +7.2, +7.8, +8.7, +7.6, +8.5
+  DN/group), so pixels whose jump/snowball flags change their ramp-fit segment
+  pattern read a different zero-point than their full-ramp neighbours:
+  coherent ±10–25%-of-sky disks at snowball footprints (the SNR-preview
+  "circles", both light and dark polarities depending on event timing) and an
+  incoherent ~−0.16 DN/group CR speckle. The step measures each observed flag
+  pattern's offset per exposure by re-flagging clean pixels and rerunning the
+  production `RampFitStep` once (~+10 s, +0.95 GB per worker), then subtracts
+  it (per amp × detector-half zone, frame-global fallback). Measured on the
+  reference exposure: single-jump bias table flattens (+1.30 → +0.06, −0.81 →
+  −0.20 DN/group), worst snowball circle deficits −1.09 → −0.27 and −1.13 →
+  −0.19 DN/group (~70–80% suppression; the residual is jump-*selection* bias
+  plus an amplitude-proportional charge deficit on event cores, both outside
+  a zero-point model's reach). Curvature amplitude varies ~9× between
+  consecutive exposures of one detector, so the calibration is strictly
+  per-exposure; benign exposures measure ≈0 and are unharmed. Pixels carrying
+  SAT/DO_NOT_USE group flags are excluded (different segment semantics; owned
+  by downstream masking), NINTS>1 / NGROUPS∉[4,16] / legacy exposures without
+  the `_jump.fits` sidecar are sentinel-stamped `skipped`, and `persistence`
+  now retains the sidecar for exposures the enabled step hasn't stamped yet.
+  Provenance: `CFP_JACK` summary card + full δ table with per-cell errors and
+  a split-half null diagnostic in `<rootname>_jackknife.json`. Expect small
+  downstream shifts in `var_factor` and `meta.background.level` on
+  reprocessed exposures — a consequence of the corrected flagged-pixel
+  zero-points, not a regression. Already-reduced trees need a detector1
+  re-reduction (`reset --uncal`) to gain the correction; `reset --from`
+  refuses to cross the step (SCI-mutating). Readout-pattern generality
+  validated on public NRCA1 exposures: DEEP8/NGROUPS=7 (JADES
+  jw01180016001, mild curvature — single-jump bias rms 0.174 → 0.085
+  DN/group) and SHALLOW4/NGROUPS=5 (COSMOS-Web jw01727167001, near-linear
+  ramp — deltas correctly ≈0, no harm, 100% coverage). The SHALLOW4 run
+  exposed a separate, pre-existing effect outside this step's scope: on
+  5-group ramps the jump-detection *selection* bias reaches −1 to −2.6
+  DN/group on single-jump-flagged sky pixels (incoherent speckle, not
+  circles); tracked as follow-up work on the jump thresholds for short
+  ramps.
 - **The NMF wisp source mask is now iterated (`[nircam.wisp].mask_iterations
   = 5`), so a bright wisp can no longer mask its own fit region.** The mask was
   built once, from the frame that still contained the wisp, so

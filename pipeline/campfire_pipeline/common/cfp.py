@@ -67,6 +67,7 @@ NIRCAM = Keyset(
     name='nircam',
     keys=[
         'CFP_DET1',  # detector1
+        'CFP_JACK',  # jackknife ramp-fit zero-point correction
         'CFP_PERS',  # snowblind persistence
         'CFP_WISP',  # wisp template subtraction
         'CFP_IMG2',  # image2
@@ -83,6 +84,7 @@ NIRCAM = Keyset(
     ],
     comments={
         'CFP_DET1': 'campfire: detector1 done',
+        'CFP_JACK': 'campfire: jackknife zero-point applied',
         'CFP_PERS': 'campfire: persistence flagged',
         'CFP_WISP': 'campfire: wisp template, scale',
         'CFP_IMG2': 'campfire: image2 done',

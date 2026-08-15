@@ -38,7 +38,7 @@ from campfire_pipeline.nircam.refcat.cli import refcat as refcat_group
 # --from <step>` refuses these — the user must `--uncal` to redo them
 # correctly.
 _SCI_MUTATING_STEPS = {
-    'wisp', 'image2', 'bkg',
+    'jackknife', 'wisp', 'image2', 'bkg',
 }
 
 # Combine ensemble steps whose CFP stamp (CFP_BPIX/CFP_OUT) lives on the working
@@ -49,6 +49,7 @@ _COMBINE_WORK_CFP_STEPS = {'bad_pixel', 'outlier'}
 # Short labels for the status command's column headers (max 4 chars).
 _STEP_LABELS = {
     'detector1':   'det1',
+    'jackknife':   'jack',
     'persistence': 'pers',
     'wisp':        'wisp',
     'image2':      'img2',

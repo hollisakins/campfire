@@ -10,6 +10,7 @@ type Phase = 'pre' | 'early' | 'mid' | 'late' | 'combine' | 'done';
 const STAGE_PHASE: Record<NircamStage, Phase> = {
   uncal:         'pre',
   detector1:     'early',
+  jackknife:     'early',
   persistence:   'early',
   wisp:          'early',
   image2:        'mid',
