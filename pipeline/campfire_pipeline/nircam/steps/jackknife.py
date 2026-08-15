@@ -231,6 +231,7 @@ def jackknife_step(exposure_file, field, step_config, overwrite=False,
     zones_cfg = int(step_config.get('zones', 8))
     bright_clip = float(step_config.get('bright_clip_sigma', 5.0))
 
+    applied = False   # set the moment the corrected SCI is durably saved
     try:
         with ImageModel(exposure_file, memmap=False) as model:
             rate = np.asarray(model.data, dtype=np.float64)
@@ -365,11 +366,17 @@ def jackknife_step(exposure_file, field, step_config, overwrite=False,
             null_rms = float(np.sqrt(np.mean(np.square(nulls)))) \
                 if nulls else 0.0
             n_flagged = int((pat != 0).sum())
-            coverage = n_corr / n_flagged if n_flagged else 1.0
+            n_correctable = int(correctable.sum())
+            # Coverage is judged against the pixels the step is *designed*
+            # to correct: SAT/DNU carriers are structurally excluded (owned
+            # by downstream masking), so counting them would make a fully
+            # successful run read as a partial failure.
+            coverage = n_corr / n_correctable if n_correctable else 1.0
             mean_corr = float(np.mean(corr[correctable])) \
                 if correctable.any() else 0.0
+            n_pat = len({p for _, p in delta})
 
-            stamp = (f'npat={len(delta)}, cand={len(cands) - 1}, '
+            stamp = (f'npat={n_pat}, cand={len(cands) - 1}, '
                      f'cov={100 * coverage:.1f}%, zones={n_zones}, '
                      f'mean={mean_corr:.3e}, null={null_rms:.2e}, '
                      f'gain={gain_factor:g}')
@@ -380,7 +387,8 @@ def jackknife_step(exposure_file, field, step_config, overwrite=False,
                 'nints': nints,
                 'gain_factor': gain_factor,
                 'zones': n_zones,
-                'n_flagged': n_flagged,
+                'n_flagged_total': n_flagged,
+                'n_correctable': n_correctable,
                 'n_corrected': n_corr,
                 'coverage': coverage,
                 'null_rms': null_rms,
@@ -409,9 +417,20 @@ def jackknife_step(exposure_file, field, step_config, overwrite=False,
 
             atomic_save(model, exposure_file,
                         header_updates=cfp.format(CFP_JACK=stamp))
+            applied = True
             log(f"jackknife done ({stamp}): {rootname}")
 
     except Exception as e:  # noqa: BLE001 — one bad exposure must not kill the phase
+        if applied:
+            # The corrected SCI and its real CFP_JACK stamp are already on
+            # disk; a failure after that point (logging, model close) must
+            # NOT relabel the exposure 'skipped' — that would let a later
+            # --overwrite pass the double-subtraction guard and subtract
+            # delta a second time.
+            log(f"jackknife: {rootname} late failure after the correction "
+                f"was saved ({type(e).__name__}: {e}); stamp left as "
+                f"applied")
+            return
         log(f"jackknife: {rootname} failed ({type(e).__name__}: {e}); "
             f"stamping skipped, SCI left untouched")
         try:
