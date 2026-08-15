@@ -45,6 +45,10 @@ from campfire_pipeline.nircam.status import StepStatus
 # resample (mosaic outputs are stamped with CMPFRVER, not CFP_*).
 PROCESS_STEPS = [
     ('detector1',   'CFP_DET1'),
+    # jackknife must sit between detector1 (creates the _jump.fits sidecar)
+    # and persistence (deletes it) — the GROUPDQ patterns it needs exist
+    # only in that window.
+    ('jackknife',   'CFP_JACK'),
     ('persistence', 'CFP_PERS'),
     ('wisp',        'CFP_WISP'),
     ('image2',      'CFP_IMG2'),
@@ -86,7 +90,7 @@ _COMBINE_WORK_STEPS = {'bad_pixel', 'outlier', 'resample'}
 # reference files before parallel dispatch. striping now runs *after* image2
 # (on flat-fielded, flux-calibrated cal-stage data) so it no longer resolves a
 # flat itself; wisp still runs in the rate frame and resolves its own flat.
-_CRDS_STEPS = {'detector1', 'wisp', 'image2'}
+_CRDS_STEPS = {'detector1', 'jackknife', 'wisp', 'image2'}
 
 
 def _detector_sorted(paths):
@@ -113,6 +117,7 @@ def _detector_sorted(paths):
 # module is imported lazily inside the runner so ``orchestrate`` import never
 # drags in a step the current phase won't run.
 _PER_EXPOSURE_STEPS = {
+    'jackknife':  ('jackknife',   'jackknife_step',   'CFP_JACK'),
     'wisp':       ('wisp',        'wisp_step',        'CFP_WISP'),
     'image2':     ('image2',      'image2_step',      'CFP_IMG2'),
     'edge':       ('edge',        'edge_step',        'CFP_EDGE'),
@@ -276,6 +281,18 @@ def _run_detector1(field, config, filtname, n_processes, overwrite, status,
     )
 
 
+def _run_jackknife(field, config, filtname, n_processes, overwrite, status,
+                   tiles=None):
+    """Jackknife ramp-fit zero-point correction. On by default; a field or
+    user config can disable it via ``[nircam.jackknife].enabled = false``."""
+    cfg = get_nircam_step_config('jackknife', config, field)
+    if not cfg.get('enabled', True):
+        log(f"jackknife: disabled by config; skipping {filtname}")
+        return
+    _run_per_exposure('jackknife', field, config, filtname,
+                      n_processes, overwrite, status, tiles=tiles)
+
+
 def _run_persistence(field, config, filtname, n_processes, overwrite, status,
                      tiles=None):
     exposures = field.get_exposure_files(filtname, tiles=tiles)
@@ -289,7 +306,13 @@ def _run_persistence(field, config, filtname, n_processes, overwrite, status,
             f"exposures for {filtname}; skipping")
         return
     from campfire_pipeline.nircam.steps.persistence import persistence_step
-    cfg = get_nircam_step_config('persistence', config, field)
+    cfg = dict(get_nircam_step_config('persistence', config, field))
+    # The jackknife step's only input is the _jump.fits sidecar this step
+    # deletes. Tell persistence whether jackknife is enabled so it retains
+    # sidecars for exposures the correction has not stamped yet (standalone
+    # `cfpipe nircam persistence` invocations, interrupted runs).
+    jk_cfg = get_nircam_step_config('jackknife', config, field)
+    cfg['jackknife_enabled'] = bool(jk_cfg.get('enabled', True))
     persistence_step(exposures, field, cfg, overwrite=overwrite, status=status)
     status.mark_all(exposures, 'CFP_PERS')
 
@@ -581,6 +604,7 @@ def _run_resample(field, config, filtname, n_processes, overwrite, status,
 # imports the worker lazily when it actually dispatches.
 _RUNNERS = {
     'detector1':   _run_detector1,
+    'jackknife':   _run_jackknife,
     'persistence': _run_persistence,
     'wisp':        functools.partial(_run_per_exposure, 'wisp'),
     'image2':      functools.partial(_run_per_exposure, 'image2'),

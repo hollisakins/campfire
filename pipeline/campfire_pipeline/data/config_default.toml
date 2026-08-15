@@ -148,6 +148,19 @@
 [nircam.detector1]
     clean_flicker_noise = false
 
+[nircam.jackknife]
+    # Re-zero jump-segmented ramp fits against the exposure's frame-common
+    # ramp curvature (the snowball-circle / CR-speckle zero-point bias).
+    # Self-calibrating per exposure: one extra RampFitStep on the real ramp
+    # with candidate flag patterns assigned to clean pixels. See
+    # steps/jackknife.py for the mechanism and known limits.
+    enabled = true
+    max_patterns = 256            # cap on calibrated flag patterns
+    min_pixels_per_pattern = 2000 # clean-pixel budget that sets the adaptive cap
+    min_pixels_per_cell = 500     # (zone, pattern) floor before frame-global fallback
+    zones = 8                     # 4 amp columns x 2 halves; forced to 1 off full-frame
+    bright_clip_sigma = 5.0       # clean-sky selection (no SRCMASK exists yet)
+
 [nircam.persistence]
     # No tunable parameters; reserved for future snowblind config.
 

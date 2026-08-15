@@ -154,10 +154,25 @@ def persistence_step(exposure_files, field, step_config, overwrite=False,
         finally:
             gc.collect()
 
+    # The jackknife step's only possible input is the _jump.fits sidecar:
+    # once deleted, the per-pixel excluded-group pattern is unrecoverable
+    # (the 2-D DQ keeps JUMP_DET presence but not which groups were
+    # dropped). When jackknife is enabled, retain the sidecar for any
+    # exposure it has not stamped yet — normal process-phase ordering runs
+    # jackknife first, so this only bites standalone/interrupted runs.
+    jackknife_enabled = bool(step_config.get('jackknife_enabled', True))
+    removed, retained = 0, 0
     for f in saved:
+        if jackknife_enabled and not cfp.has_step(f, 'CFP_JACK'):
+            retained += 1
+            log(f"  retaining {os.path.basename(_jump_path(f))}: jackknife "
+                f"is enabled but has not run on this exposure yet")
+            continue
         try:
             os.remove(_jump_path(f))
+            removed += 1
         except OSError:
             pass
-    log(f"Persistence flagged {len(saved)} exposures; "
-        f"removed _jump.fits sidecars")
+    log(f"Persistence flagged {len(saved)} exposures; removed {removed} "
+        f"_jump.fits sidecars"
+        + (f", retained {retained} pending jackknife" if retained else ""))

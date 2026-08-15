@@ -18,6 +18,12 @@ reviewer's eye is drawn to what actually warrants a hand mask, not to every
 bright-but-already-downweighted artifact. See the module change in
 ``pipeline/CHANGELOG.md``.
 
+(Historical note: jump-flagged pixels also used to carry a coherent flux
+zero-point offset — smooth light/dark disks at snowball footprints in these
+renders — caused by frame-common ramp curvature meeting per-pattern segment
+fitting. The ``jackknife`` step now removes that bias upstream; what remains
+visible here is real residual structure worth a reviewer's attention.)
+
 Both PNGs use the same ZScale stretch computed on the downsampled SNR map (so
 the editor and the thumbnail look identical), and both are ``origin='lower'`` so
 PNG row 0 corresponds to ``data[H-1, :]`` — the polygon editor's canvas inverts
