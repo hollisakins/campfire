@@ -27,8 +27,10 @@ use ``git describe --abbrev=0`` to get just the tag, ``git rev-list
     tag pipeline-v0.4.0, 0 pipeline commits since, dirty -> 0.4.0+d20260504
     (no matching tag yet)                                -> 0.0.0.dev0+g7f4e2c1[.d20260504]
 
-**Failure is not an answer** (#463). Each ``git`` call runs with a timeout,
-and under NFS contention any of them can time out. A timeout (or a missing
+**Failure is not an answer** (#463). All git probes of one resolution share
+a single wall-clock budget (``_GIT_TIME_BUDGET`` — a deadline, so a hung git
+stalls startup once, not once per probe), and under NFS contention any of
+them can time out. A timeout (or a missing
 ``git`` binary) must never be mistaken for a real answer — historically a
 timed-out ``rev-list`` collapsed the distance to 0 and stamped a bare release
 string (e.g. ``0.5.1``) onto data actually built 178 commits past the tag,
@@ -52,6 +54,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -81,13 +84,22 @@ class _GitUnavailable(Exception):
     """
 
 
-# Generous because the result is cached per process, so this is a once-per-run
-# cap, and a timeout here permanently degrades the CMPFRVER provenance for
-# everything the process writes (#463: git on contended NFS blew a 5 s budget).
-_GIT_TIMEOUT = 30
+# Total wall-clock budget shared by ALL git probes of one resolution — a
+# deadline, not a per-call timeout, so a hung git costs at most this much
+# even though up to four probes run. Generous because the result is cached
+# per process, so this is a once-per-run cap, and blowing it permanently
+# degrades the CMPFRVER provenance for everything the process writes
+# (#463: git on contended NFS blew a 5 s budget).
+_GIT_TIME_BUDGET = 30
 
 
-def _run_git(args: list[str], cwd: Path) -> str | None:
+def _run_git(args: list[str], cwd: Path, deadline: float | None = None) -> str | None:
+    if deadline is None:
+        timeout: float = _GIT_TIME_BUDGET
+    else:
+        timeout = deadline - time.monotonic()
+        if timeout <= 0:
+            raise _GitUnavailable(f"git {args[0]}: shared git deadline exhausted")
     try:
         result = subprocess.run(
             ['git', *args],
@@ -95,7 +107,7 @@ def _run_git(args: list[str], cwd: Path) -> str | None:
             check=True,
             capture_output=True,
             text=True,
-            timeout=_GIT_TIMEOUT,
+            timeout=timeout,
         )
     except subprocess.CalledProcessError:
         return None
@@ -163,15 +175,15 @@ def _describe_to_pep440(described: str, dirty: bool) -> str | None:
     )
 
 
-def _pipeline_dirty(repo: Path) -> bool:
+def _pipeline_dirty(repo: Path, deadline: float | None = None) -> bool:
     # `git describe --dirty` checks the entire working tree; we only care
     # about edits to pipeline/ since that's what the version string scopes.
     # Raises _GitUnavailable on timeout — a tree of unknown state must not
     # be stamped clean.
-    return bool(_run_git(['status', '--porcelain', '--', 'pipeline'], repo))
+    return bool(_run_git(['status', '--porcelain', '--', 'pipeline'], repo, deadline))
 
 
-def _pipeline_distance(repo: Path, tag: str) -> int | None:
+def _pipeline_distance(repo: Path, tag: str, deadline: float | None = None) -> int | None:
     """Commits between *tag* and HEAD that touched ``pipeline/``.
 
     ``git describe --long`` reports the whole-monorepo count, which would
@@ -184,7 +196,9 @@ def _pipeline_distance(repo: Path, tag: str) -> int | None:
     Neither must ever be collapsed to 0 — that is the false-release bug
     of #463.
     """
-    out = _run_git(['rev-list', f'{tag}..HEAD', '--count', '--', 'pipeline'], repo)
+    out = _run_git(
+        ['rev-list', f'{tag}..HEAD', '--count', '--', 'pipeline'], repo, deadline,
+    )
     if out is None or not out.isdigit():
         return None
     return int(out)
@@ -199,12 +213,16 @@ def _git_version() -> str | None:
     # "could not answer" (_GitUnavailable: timeout, missing binary). The latter
     # marks the whole resolution unresolved — we keep whatever was reliably
     # determined, but the result must never look like a clean release (#463).
+    # All probes share one deadline: a hung git costs _GIT_TIME_BUDGET total,
+    # not per probe — once the budget is gone, remaining probes fail instantly.
     unresolved = False
+    deadline = time.monotonic() + _GIT_TIME_BUDGET
 
     try:
         tag = _run_git(
             ['describe', '--tags', '--abbrev=0', '--match', 'pipeline-v*'],
             repo,
+            deadline,
         )
     except _GitUnavailable:
         tag = None
@@ -220,7 +238,7 @@ def _git_version() -> str | None:
     distance: int | None = None
     if base is not None:
         try:
-            distance = _pipeline_distance(repo, tag)
+            distance = _pipeline_distance(repo, tag, deadline)
         except _GitUnavailable:
             distance = None
         if distance is None:
@@ -229,7 +247,7 @@ def _git_version() -> str | None:
             unresolved = True
 
     try:
-        dirty = _pipeline_dirty(repo)
+        dirty = _pipeline_dirty(repo, deadline)
     except _GitUnavailable:
         dirty = False
         unresolved = True
@@ -239,7 +257,7 @@ def _git_version() -> str | None:
     sha = None
     if distance or unresolved or base is None:
         try:
-            sha = _run_git(['rev-parse', '--short=7', 'HEAD'], repo)
+            sha = _run_git(['rev-parse', '--short=7', 'HEAD'], repo, deadline)
         except _GitUnavailable:
             sha = None
             unresolved = True

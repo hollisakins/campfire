@@ -249,11 +249,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   `_is_release_version()` and always trips the warn-and-confirm path. A
   timed-out dirty check likewise marks the string unresolved instead of
   stamping the tree clean, a garbage `rev-list` answer is no longer collapsed
-  to distance 0, and a degraded resolution logs a warning. The per-call git
-  timeout is raised 5 s → 30 s: resolution is `lru_cache`d per process, so
-  this is a once-per-run cap, and a blown timeout now permanently degrades
-  that process's stamped provenance. Version strings from fully-answering git
-  are byte-identical to before; no scientific output changes.
+  to distance 0, and a degraded resolution logs a warning. The git time
+  allowance is raised 5 s-per-call → 30 s, but as a **single wall-clock
+  budget shared by all probes of one resolution** (a deadline, not a
+  per-call timeout — once a hung git exhausts it, remaining probes fail
+  instantly), so worst-case startup stall is 30 s total: resolution is
+  `lru_cache`d per process, so this is a once-per-run cap, and a blown
+  budget now permanently degrades that process's stamped provenance.
+  Version strings from fully-answering git are byte-identical to before;
+  no scientific output changes.
 - **Spike-model packaging (M2 of the diffraction-spike masking plan,
   `docs/design-nircam-spike-masking.md` §6.1).** New
   `scripts/build_spike_models.py` repacks the raw WebbPSF PSF+scattered-light

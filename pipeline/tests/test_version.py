@@ -51,7 +51,7 @@ def _fake_git(
     """
     captured: list[list[str]] = []
 
-    def fake_run_git(args, cwd):
+    def fake_run_git(args, cwd, deadline=None):
         captured.append(args)
         if args[0] in unavailable:
             raise version_mod._GitUnavailable(f'git {args[0]}: simulated timeout')
@@ -349,3 +349,56 @@ class TestGitUnavailable:
             side_effect=subprocess.CalledProcessError(128, ['git']),
         ):
             assert version_mod._run_git(['describe'], tmp_path) is None
+
+
+class TestSharedDeadline:
+    """All git probes of one resolution share a single wall-clock budget, so a
+    hung git stalls startup for at most _GIT_TIME_BUDGET total — not once per
+    probe (PR #464 review)."""
+
+    def test_git_version_passes_one_deadline_to_every_probe(self, tmp_path):
+        (tmp_path / '.git').mkdir()
+        deadlines = []
+
+        def fake_run_git(args, cwd, deadline=None):
+            deadlines.append(deadline)
+            if args[0] == 'describe':
+                return 'pipeline-v0.4.0'
+            if args[0] == 'rev-list':
+                return '3'
+            if args[0] == 'rev-parse':
+                return '7f4e2c1'
+            if args[0] == 'status':
+                return ''
+            return None
+
+        with (
+            mock.patch.object(version_mod, '_repo_root', return_value=tmp_path),
+            mock.patch.object(version_mod, '_run_git', side_effect=fake_run_git),
+        ):
+            version_mod._git_version()
+
+        assert len(deadlines) >= 3, 'expected describe/rev-list/status/rev-parse probes'
+        assert all(d is not None for d in deadlines), 'every probe must get the deadline'
+        assert len(set(deadlines)) == 1, f'probes must share ONE deadline: {deadlines}'
+
+    def test_exhausted_deadline_fails_instantly_without_running_git(self, tmp_path):
+        with mock.patch.object(version_mod.subprocess, 'run') as run:
+            try:
+                version_mod._run_git(
+                    ['status'], tmp_path, deadline=version_mod.time.monotonic() - 1,
+                )
+            except version_mod._GitUnavailable:
+                pass
+            else:
+                raise AssertionError('expired deadline must raise _GitUnavailable')
+        run.assert_not_called()
+
+    def test_remaining_budget_becomes_the_subprocess_timeout(self, tmp_path):
+        with mock.patch.object(version_mod.subprocess, 'run') as run:
+            run.return_value = mock.Mock(stdout='ok\n')
+            version_mod._run_git(
+                ['status'], tmp_path, deadline=version_mod.time.monotonic() + 7.0,
+            )
+        timeout = run.call_args.kwargs['timeout']
+        assert 0 < timeout <= 7.0, f'timeout must be the remaining budget, got {timeout}'
