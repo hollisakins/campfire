@@ -411,8 +411,6 @@ def jackknife_step(exposure_file, field, step_config, overwrite=False,
                         header_updates=cfp.format(CFP_JACK=stamp))
             log(f"jackknife done ({stamp}): {rootname}")
 
-    except RuntimeError:
-        raise
     except Exception as e:  # noqa: BLE001 — one bad exposure must not kill the phase
         log(f"jackknife: {rootname} failed ({type(e).__name__}: {e}); "
             f"stamping skipped, SCI left untouched")
