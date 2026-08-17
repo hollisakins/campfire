@@ -30,10 +30,13 @@
  * auth, validation, vanished row) drop the entry, revert the row cache to
  * server truth, and raise the banner as before (kind 'permanent').
  *
- * Multi-tab: tabs share the storage key. Each tab flushes its own in-memory
- * view; duplicate sends are idempotent under the server guard, and a tab
- * re-persisting an entry another tab already delivered only causes one more
- * no-op send. Not worth a cross-tab lock for an admin tool.
+ * Multi-tab: tabs share the storage key, and every write MERGES with what's
+ * in storage instead of overwriting it (per id, the newer decidedAt wins;
+ * entries this tab has seen acknowledged are dropped), so one tab persisting
+ * can never evict another tab's undelivered decision. Tabs also adopt each
+ * other's entries via storage events and both flush them — duplicate sends
+ * are idempotent under the server guard, and the worst cross-tab race is one
+ * redundant no-op send of an already-delivered decision.
  */
 
 import type { NircamExposure } from '@/lib/types';
@@ -112,19 +115,12 @@ export function queuedReviewCount(): number {
 
 let loaded = false;
 
-function ensureLoaded(): void {
-  if (loaded || !isBrowser) return;
-  loaded = true;
-  let raw: string | null = null;
-  try {
-    raw = window.localStorage.getItem(STORAGE_KEY);
-  } catch {
-    return; // storage unavailable (private mode etc.) — memory-only outbox
-  }
-  if (!raw) return;
+function parseStoredEntries(raw: string | null): OutboxEntry[] {
+  if (!raw) return [];
+  const out: OutboxEntry[] = [];
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return;
+    if (!Array.isArray(parsed)) return [];
     for (const item of parsed) {
       if (typeof item !== 'object' || item === null) continue;
       const e = item as Partial<OutboxEntry>;
@@ -142,7 +138,7 @@ function ensureLoaded(): void {
       }
       if (typeof e.fields.notes === 'string') fields.notes = e.fields.notes;
       if (Object.keys(fields).length === 0) continue;
-      entries.set(e.id, {
+      out.push({
         id: e.id,
         fields,
         decidedAt: e.decidedAt,
@@ -150,16 +146,79 @@ function ensureLoaded(): void {
       });
     }
   } catch {
+    return [];
+  }
+  return out;
+}
+
+/** True when this tab has seen a commit at least as new as `entry` — the
+ *  entry is settled and must not be (re)adopted or re-persisted. */
+function isSettled(entry: OutboxEntry): boolean {
+  const acked = ackedReview.get(entry.id);
+  return acked !== undefined && acked.decidedAt >= entry.decidedAt;
+}
+
+/** Fold entries found in shared storage (another tab's work, or a previous
+ *  session's) into this tab's map: per id the newer decidedAt wins, settled
+ *  entries are ignored. Returns the adopted ids so callers can kick flushes. */
+function adoptEntries(found: OutboxEntry[]): number[] {
+  const adopted: number[] = [];
+  for (const e of found) {
+    if (isSettled(e)) continue;
+    const mine = entries.get(e.id);
+    if (mine !== undefined && mine.decidedAt >= e.decidedAt) continue;
+    entries.set(e.id, e);
+    adopted.push(e.id);
+  }
+  return adopted;
+}
+
+function ensureLoaded(): void {
+  if (loaded || !isBrowser) return;
+  loaded = true;
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return; // storage unavailable (private mode etc.) — memory-only outbox
+  }
+  if (raw && parseStoredEntries(raw).length === 0) {
     // Corrupt payload: drop it rather than wedge every future stage() call.
     try { window.localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
   }
+  adoptEntries(parseStoredEntries(raw));
+  // Another tab staging or retiring decisions fires this (storage events
+  // never fire in the tab that wrote). Adopt anything newer and deliver it
+  // here too — duplicates are idempotent; retirement is handled by acks, not
+  // by events, so a tab never drops an entry just because another tab wrote.
+  window.addEventListener('storage', (ev) => {
+    if (ev.key !== STORAGE_KEY) return;
+    const adopted = adoptEntries(parseStoredEntries(ev.newValue));
+    if (adopted.length > 0) {
+      emit();
+      for (const id of adopted) void attemptEntry(id);
+    }
+  });
 }
 
 function persist(): void {
   if (!isBrowser) return;
   try {
-    if (entries.size === 0) window.localStorage.removeItem(STORAGE_KEY);
-    else window.localStorage.setItem(STORAGE_KEY, JSON.stringify([...entries.values()]));
+    // MERGE with storage rather than overwrite: another tab's undelivered
+    // entries must survive this tab's write. Per id the newer decidedAt
+    // wins; entries this tab has seen acknowledged are dropped (that is the
+    // only retirement path — a tab that merely didn't have an entry in
+    // memory can never evict it).
+    const merged = new Map<number, OutboxEntry>();
+    for (const e of parseStoredEntries(window.localStorage.getItem(STORAGE_KEY))) {
+      if (!isSettled(e)) merged.set(e.id, e);
+    }
+    for (const e of entries.values()) {
+      const theirs = merged.get(e.id);
+      if (theirs === undefined || theirs.decidedAt <= e.decidedAt) merged.set(e.id, e);
+    }
+    if (merged.size === 0) window.localStorage.removeItem(STORAGE_KEY);
+    else window.localStorage.setItem(STORAGE_KEY, JSON.stringify([...merged.values()]));
   } catch {
     // Quota/private mode: the in-memory outbox still flushes this session.
   }

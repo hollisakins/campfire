@@ -4066,6 +4066,11 @@ RETURNS TABLE (
   image_height integer,
   mask_regions jsonb,
   notes text,
+  -- Carried so the web client's review-decision overlay can compare its
+  -- acked/queued stamps against the row instead of treating list rows as
+  -- stampless (which would let a stale overlay shadow a newer decision made
+  -- from another device for the rest of the session).
+  review_decided_at timestamptz,
   created_at timestamp without time zone,
   updated_at timestamp without time zone,
   total_count bigint
@@ -4090,7 +4095,8 @@ BEGIN
   SELECT e.id, e.field, e.filter, e.detector, e.filename, e.visit, e.date_obs,
          e.ra_center, e.dec_center, e.stage, e.review_status,
          e.correction, e.png_path, e.full_png_path, e.image_width,
-         e.image_height, e.mask_regions, e.notes, e.created_at, e.updated_at,
+         e.image_height, e.mask_regions, e.notes, e.review_decided_at,
+         e.created_at, e.updated_at,
          count(*) OVER ()
   FROM nircam_exposures e
   WHERE (p_field IS NULL OR e.field = p_field)

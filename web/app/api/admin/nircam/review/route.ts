@@ -35,10 +35,17 @@ import { createClient } from '@/lib/supabase/server';
 const REVIEW_STATUS_VALUES = new Set(['pending', 'approved', 'excluded']);
 const CORRECTION_VALUES = new Set(['none', 'needed', 'done']);
 const MAX_NOTES_LENGTH = 20_000;
-// Tolerated clock skew for the client-supplied decision stamp. A stamp far in
-// the future would wedge the row (every later honest decision < the poisoned
-// review_decided_at), so absurd values are rejected rather than stored.
-const MAX_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000;
+// Tolerated FUTURE clock skew for the client-supplied decision stamp. The
+// stamp orders decisions (last-writer-wins), so a fast client clock could
+// shadow genuinely-later decisions from other devices until real time
+// catches up — this cap bounds that window to minutes. Kept as a client
+// stamp (not a server-assigned version) deliberately: within one device the
+// stamp is exactly monotonic, which is what makes at-least-once retries and
+// cross-session replays idempotent, and a server version can't distinguish
+// a retry from a new write without the client carrying an identity anyway.
+// Cross-device skew inside this window is the accepted residual for a
+// single-operator triage tool.
+const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
 interface ReviewFields {
   review_status?: 'pending' | 'approved' | 'excluded';
@@ -52,8 +59,7 @@ function parseBody(body: unknown): { id: number; decidedAt: number; fields: Revi
   const id = b.id;
   const decidedAt = b.decidedAt;
   if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) return null;
-  if (typeof decidedAt !== 'number' || !Number.isFinite(decidedAt)) return null;
-  if (decidedAt <= 0 || decidedAt > Date.now() + MAX_FUTURE_SKEW_MS) return null;
+  if (typeof decidedAt !== 'number' || !Number.isFinite(decidedAt) || decidedAt <= 0) return null;
   const rawFields = b.fields;
   if (typeof rawFields !== 'object' || rawFields === null) return null;
   const f = rawFields as Record<string, unknown>;
@@ -80,6 +86,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid review payload' }, { status: 400 });
   }
   const { id, decidedAt, fields } = parsed;
+  if (decidedAt > Date.now() + MAX_FUTURE_SKEW_MS) {
+    // Named specifically (still a permanent 400): the fix is on the client's
+    // machine, and a generic validation error would send the operator
+    // hunting through the app instead of at their clock.
+    return NextResponse.json(
+      { error: 'Decision timestamp is ahead of server time — check this machine\'s clock' },
+      { status: 400 },
+    );
+  }
 
   const supabase = await createClient();
   const { data: { session } } = await supabase.auth.getSession();
