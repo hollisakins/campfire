@@ -470,6 +470,13 @@ export interface NircamExposure {
   image_height: number | null;
   mask_regions: MaskRegionsPayload | null;
   notes: string | null;
+  /**
+   * When the review fields were last decided (client decision time, ISO).
+   * Last-writer-wins token for the triage review API: a retried or duplicated
+   * save carrying an older stamp is rejected server-side. Null until the row
+   * has been triaged through the outbox path.
+   */
+  review_decided_at: string | null;
   created_at: string;
   updated_at: string;
 }

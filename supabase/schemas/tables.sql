@@ -871,6 +871,14 @@ CREATE TABLE IF NOT EXISTS "public"."nircam_exposures" (
     "image_height" integer,
     "mask_regions" "jsonb",
     "notes" "text",
+    -- Last-writer-wins guard for triage review writes (web outbox): the
+    -- client stamps each staged decision with its decision time, and the
+    -- review API only applies an update when this column is null or <= the
+    -- incoming stamp — so a delayed retry or keepalive duplicate of an older
+    -- decision can never overwrite a newer one. timestamptz (unlike the
+    -- legacy created/updated columns) because it round-trips a client epoch
+    -- unambiguously.
+    "review_decided_at" timestamp with time zone,
     "created_at" timestamp without time zone DEFAULT "now"(),
     "updated_at" timestamp without time zone DEFAULT "now"()
 );

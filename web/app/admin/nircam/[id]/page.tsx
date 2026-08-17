@@ -11,7 +11,6 @@ import {
 import {
   getNircamExposureById,
   getExposureNeighbors,
-  updateExposureReview,
   saveExposureMaskRegions,
   presignExposurePngs,
   type ExposureNeighbors,
@@ -24,7 +23,6 @@ import { parseExposureNavParams } from '@/lib/nircam-exposure-nav';
 import {
   getCachedExposure,
   setCachedExposure,
-  deleteCachedExposure,
   prefetchPng,
   isPngCached,
   getCachedPngUrls,
@@ -38,10 +36,16 @@ import {
   subscribeSaveState,
   getSaveStateVersion,
   enqueueSave,
-  nextSaveSeq,
-  markSaveCommitted,
-  hasNewerCommittedSave,
 } from '@/lib/nircam-exposure-cache';
+import {
+  stageReviewDecision,
+  ensureReviewOutboxRunning,
+  overlayReviewDecisions,
+  queuedReviewCount,
+  subscribeReviewOutbox,
+  getReviewOutboxVersion,
+  type ReviewDecisionFields,
+} from '@/lib/nircam-review-outbox';
 
 // Eager PNG prefetch window: warm the full-res mask surface (~5.7 MB) the
 // editor actually renders for a few exposures ahead + one back, so stepping
@@ -73,7 +77,6 @@ interface TriageEdits {
   forId: number | null;
   dirty: { reviewStatus: boolean; correction: boolean; notes: boolean };
   values: { reviewStatus: string; correction: string; notes: string };
-  saved: boolean;
 }
 
 function ExposureDetailPageInner() {
@@ -132,22 +135,24 @@ function ExposureDetailPageInner() {
   const [exposure, setExposure] = useState<NircamExposure | null>(null);
   const [exposureForId, setExposureForId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Replay any decisions stranded by a previous session's reload and keep
+  // the outbox delivery loop running while the operator works here.
+  useEffect(() => { ensureReviewOutboxRunning(); }, []);
 
   // Editable fields
   const [reviewStatus, setReviewStatus] = useState<string>('pending');
   const [correction, setCorrection] = useState<string>('none');
   const [notes, setNotes] = useState<string>('');
 
-  // Which triage fields the operator has touched, and whether a save has landed,
-  // for the exposure currently on screen. The background revalidation below fires
-  // on arrival and lands 100-300 ms later — long after a fast operator has
-  // already pressed 2 — so it must not write over what they set. Without these
-  // guards the status visibly flips back to the DB value, `hasChanges` goes
-  // false, and the auto-save on → silently skips: the exposure flashes Approved
-  // for a frame and stays Pending.
+  // Which triage fields the operator has touched, for the exposure currently
+  // on screen. The background revalidation below fires on arrival and lands
+  // 100-300 ms later — long after a fast operator has already pressed 2 — so
+  // it must not write over what they set but haven't staged yet. (Anything
+  // already STAGED is covered separately: overlayReviewDecisions folds queued
+  // and acked decisions over every server read.)
   //
   // `dirty` is per-field rather than one flag: with a stale cached row, editing
   // a single field would otherwise pin *every* control to its cached value while
@@ -156,9 +161,9 @@ function ExposureDetailPageInner() {
   // a newer server decision.
   //
   // `forId` tags the whole record with the exposure it describes (same pattern
-  // as `navState` below), so a save resolving after we've navigated away can
-  // tell that it no longer owns this state. Reset on every id change (below),
-  // so arriving at a fresh exposure still takes the server's values.
+  // as `navState` below), so an id change can tell the record no longer owns
+  // the screen. Reset on every id change (below), so arriving at a fresh
+  // exposure still takes the server's values.
   //
   // `values` carries the operator's edited values alongside the flags: this
   // record — not React state — is the authoritative "what did the operator
@@ -168,7 +173,6 @@ function ExposureDetailPageInner() {
     forId: null,
     dirty: { reviewStatus: false, correction: false, notes: false },
     values: { reviewStatus: 'pending', correction: 'none', notes: '' },
-    saved: false,
   });
   // An outgoing edits record displaced by the id-change reset below while
   // still carrying un-dispatched edits — an id change that bypassed goTo
@@ -176,15 +180,10 @@ function ExposureDetailPageInner() {
   // stashes the record here and the effect right after it dispatches.
   const pendingNavFlushRef = useRef<TriageEdits | null>(null);
 
-  // Fire-and-forget flush of the operator's dirty triage state — the write
-  // half of auto-save-on-nav, also used by the back-to-list button, the
-  // unmount cleanup, and the id-change reset's stash (navigations that bypass
-  // goTo: browser back/forward, in-app links). The decision goes into the row
-  // cache optimistically (that's what the next visit paints from) and the
-  // server action fires without blocking the caller. The pending-save registry
-  // keeps a quick revisit's revalidation from resurrecting the pre-save row; a
-  // failure reverts the cache to the server's truth and raises the module
-  // save-error banner, since this instance is usually gone by then.
+  // Flush of the operator's dirty triage state — the write half of
+  // auto-save-on-nav, also used by the back-to-list button, the unmount
+  // cleanup, the unload handlers, and the id-change reset's stash
+  // (navigations that bypass goTo: browser back/forward, in-app links).
   //
   // The save is built from the edits record ALONE — forId says which exposure,
   // dirty says which fields, values says what the operator chose, all written
@@ -195,12 +194,17 @@ function ExposureDetailPageInner() {
   // sent, so a not-yet-loaded row's untouched values can never be overwritten
   // with defaults.
   //
+  // Staging is the commit point. Everything after it — durable persistence
+  // across reloads, delivery with timeout/retry/keepalive, the failure
+  // banner, cache reconciliation on ack — belongs to the outbox
+  // (lib/nircam-review-outbox.ts), which also writes the staged decision into
+  // the row cache so the next visit paints the operator's latest state.
+  //
   // The record's dirty flags are consumed (cleared) synchronously at dispatch,
   // which makes every caller idempotent: one navigation can route through
   // several of them (goTo, then the reset stash, then unmount) and only the
-  // first with something dirty actually sends.
+  // first with something dirty actually stages.
   const flushDirtySave = useCallback((record?: TriageEdits) => {
-    const s = stateRef.current;
     const edits = record ?? localEditsRef.current;
     if (edits.forId == null) return;
     const savedForId = edits.forId;
@@ -208,98 +212,26 @@ function ExposureDetailPageInner() {
     edits.dirty = { reviewStatus: false, correction: false, notes: false };
     if (!dirty.reviewStatus && !dirty.correction && !dirty.notes) return;
 
-    // Baseline for no-op detection and the optimistic write: the on-screen row
-    // when it is this record's row, else the cache. May be null (row never
-    // loaded) — the save still goes out, just without a diff to skip on.
-    const exp = s.exposure && s.exposure.id === savedForId
-      ? s.exposure
-      : getCachedExposure(savedForId);
+    // Deliberately NO "already equal" diff against the cached row: the cache
+    // can hold an optimistic value from an earlier staging of this same
+    // decision, and skipping writes that compare equal against it is exactly
+    // what used to make a lost save unrepairable — re-applying the decision
+    // looked like a no-op and never re-sent. A redundant send is one tiny
+    // idempotent POST; the server's review_decided_at guard makes it harmless.
+    const fields: ReviewDecisionFields = {};
+    if (dirty.reviewStatus) {
+      fields.review_status = edits.values.reviewStatus as NircamExposure['review_status'];
+    }
+    if (dirty.correction) {
+      fields.correction = edits.values.correction as NircamExposure['correction'];
+    }
+    if (dirty.notes) {
+      fields.notes = edits.values.notes; // sent even as '' so clearing persists
+    }
 
-    const updates: Parameters<typeof updateExposureReview>[1] = {};
-    if (dirty.reviewStatus && (!exp || edits.values.reviewStatus !== exp.review_status)) {
-      updates.review_status = edits.values.reviewStatus as NircamExposure['review_status'];
-    }
-    if (dirty.correction && (!exp || edits.values.correction !== exp.correction)) {
-      updates.correction = edits.values.correction as NircamExposure['correction'];
-    }
-    if (dirty.notes && (!exp || edits.values.notes !== (exp.notes || ''))) {
-      updates.notes = edits.values.notes; // sent even as '' so clearing persists
-    }
-    if (Object.keys(updates).length === 0) return;
-
-    const savedFilename = exp?.filename ?? `exposure #${savedForId}`;
-    if (exp) {
-      setCachedExposure({
-        ...exp,
-        review_status: updates.review_status ?? exp.review_status,
-        correction: updates.correction ?? exp.correction,
-        notes: updates.notes !== undefined ? (updates.notes || null) : exp.notes,
-      });
-    }
-    {
-      beginPendingSave(savedForId);
-      // endPendingSave must run exactly once per beginPendingSave on every
-      // path — including a transport rejection, which would otherwise leave
-      // the id pending for the rest of the tab session (blocking revalidation
-      // and the failure banner alike).
-      let ended = false;
-      const endPending = () => {
-        if (ended) return;
-        ended = true;
-        endPendingSave(savedForId);
-      };
-      // Queued per exposure id so a second save for the same row (revisit +
-      // re-edit before the first lands) can never commit or report out of
-      // order with this one. The dispatch generation lets the failure handler
-      // below — which awaits, so it can resume after a newer save has fully
-      // committed — recognize that it has been superseded.
-      const saveSeq = nextSaveSeq(savedForId);
-      enqueueSave(savedForId, () => updateExposureReview(savedForId, updates))
-        .then(async (result) => {
-        if (result.exposure && !result.error) {
-          endPending();
-          markSaveCommitted(savedForId, saveSeq);
-          // A newer save queued behind this one has already written its own
-          // optimistic row — don't put this (older) confirmed row over it.
-          if (!hasPendingSave(savedForId)) setCachedExposure(result.exposure);
-          // A retry that lands supersedes an earlier failure for this exposure.
-          if (getSaveError()?.id === savedForId) setSaveError(null);
-          return;
-        }
-        throw new Error(result.error || 'Save failed');
-      }).catch(async (err: unknown) => {
-        endPending();
-        // Put the server's row back over the optimistic one (best effort —
-        // the transport may be down), then tell the operator: they may be
-        // several exposures ahead by now. Both steps are void if a newer save
-        // for this row committed while this handler was suspended: the revert
-        // snapshot predates that save, and the banner would report a failure
-        // for a decision that did persist.
-        const owned = () =>
-          !hasPendingSave(savedForId) && !hasNewerCommittedSave(savedForId, saveSeq);
-        try {
-          const fresh = await getNircamExposureById(savedForId);
-          if (fresh.exposure) {
-            if (owned()) setCachedExposure(fresh.exposure);
-          } else if (owned()) {
-            // The revert read failed too. Don't leave the never-persisted
-            // optimistic row posing as truth (a revisit would paint it as
-            // saved, with hasChanges false and no way to retry) — drop the
-            // entry so the next visit misses the cache and refetches.
-            deleteCachedExposure(savedForId);
-          }
-        } catch {
-          if (owned()) deleteCachedExposure(savedForId);
-        }
-        if (!hasNewerCommittedSave(savedForId, saveSeq)) {
-          setSaveError({
-            id: savedForId,
-            filename: savedFilename,
-            message: err instanceof Error ? err.message : 'Save failed',
-          });
-        }
-      });
-    }
+    const s = stateRef.current;
+    const exp = s.exposure && s.exposure.id === savedForId ? s.exposure : null;
+    stageReviewDecision(savedForId, fields, exp?.filename ?? null);
   }, []);
 
   // Every edit targets idRef.current — the exposure the operator believes is
@@ -331,7 +263,6 @@ function ExposureDetailPageInner() {
           correction: stateRef.current.correction,
           notes: stateRef.current.notes,
         },
-        saved: false,
       };
     }
     return localEditsRef.current;
@@ -479,7 +410,6 @@ function ExposureDetailPageInner() {
           correction: cached?.correction || 'none',
           notes: cached?.notes || '',
         },
-        saved: false,
       };
     }
   }
@@ -499,16 +429,20 @@ function ExposureDetailPageInner() {
   useEffect(() => () => flushDirtySave(), [flushDirtySave]);
 
   // Background revalidation against the DB on every id change. Auto-save on
-  // navigation has already flushed the *previous* exposure's triage state, so
-  // arriving clean means the server's values win. But this read races the
-  // operator: anything they've typed or keyed since arriving, and any save that
-  // has already landed, is newer than this response and must survive it.
+  // navigation has already staged the *previous* exposure's triage state, so
+  // arriving clean means the server's values win. This read still races the
+  // operator and the outbox — but staged/committed review decisions no longer
+  // need to SUPPRESS it: overlayReviewDecisions folds every queued or acked
+  // decision for this row over the response, so a read snapshotted before a
+  // commit reconverges instead of resurrecting pre-decision state. (The old
+  // suppression had a failure mode where a wedged save marker froze the row
+  // on optimistic values forever.)
   useEffect(() => {
     let cancelled = false;
-    // Captured before the read is issued: a save in flight NOW means the
-    // response may reflect pre-save state even if the save has finished (and
-    // cleared its pending marker) by the time the response resolves.
-    const pendingAtStart = hasPendingSave(id);
+    // Mask saves are the one write the overlay does NOT cover (it only knows
+    // review fields), so a mask save in flight at either end of this read
+    // still suppresses the row write — the mask confirm rewrites the cache.
+    const maskPendingAtStart = hasPendingSave(id);
     (async () => {
       const result = await getNircamExposureById(id);
       if (cancelled) return;
@@ -518,27 +452,21 @@ function ExposureDetailPageInner() {
         return;
       }
       if (result.exposure) {
+        const merged = overlayReviewDecisions(result.exposure);
         // The edits record only speaks for this exposure when tagged with its
         // id (a mid-transition keypress can retarget it — see targetEdits).
         const edits = localEditsRef.current;
         const ours = edits.forId === id;
-        // A save for this exposure already landed — our write is strictly newer
-        // than this read, so don't let it back into state *or* the cache. Same
-        // for a save in flight at either end of this read (fire-and-forget
-        // auto-save on nav, then a quick revisit): the optimistic or
-        // save-confirmed row is newer than what this read may have seen.
-        const pending = pendingAtStart || hasPendingSave(id);
-        if (!(ours && edits.saved) && !pending) {
-          setCachedExposure(result.exposure);
-          setExposure(result.exposure);
+        if (!maskPendingAtStart && !hasPendingSave(id)) {
+          setCachedExposure(merged);
+          setExposure(merged);
         }
-        // Per field: an untouched control still takes the fresh server value.
-        // `saved` shields every field, not just dirty ones: once a save has
-        // landed, its dirty flags are consumed, but this read may still
-        // predate the save — its values are stale for anything the save wrote.
-        if (!(ours && (edits.dirty.reviewStatus || edits.saved)) && !pending) setReviewStatus(result.exposure.review_status);
-        if (!(ours && (edits.dirty.correction || edits.saved)) && !pending) setCorrection(result.exposure.correction);
-        if (!(ours && (edits.dirty.notes || edits.saved)) && !pending) setNotes(result.exposure.notes || '');
+        // Per field: an untouched control still takes the freshest value.
+        // Dirty fields hold typing/keying the operator hasn't staged yet —
+        // strictly newer than both this read and the overlay.
+        if (!(ours && edits.dirty.reviewStatus)) setReviewStatus(merged.review_status);
+        if (!(ours && edits.dirty.correction)) setCorrection(merged.correction);
+        if (!(ours && edits.dirty.notes)) setNotes(merged.notes || '');
       }
       setLoading(false);
     })();
@@ -578,14 +506,15 @@ function ExposureDetailPageInner() {
         // Re-checked at RESPONSE time, not just dispatch: the operator can
         // arrive at this sibling and key a decision while this read is in
         // flight (one slow round trip is all it takes). Any cache entry that
-        // appeared since dispatch — the optimistic row or a save confirmation
-        // — is strictly newer than what this read saw, and a pending save with
-        // no cache entry (row never loaded) outranks it too. Overwriting here
-        // painted the pre-decision row on the next revisit as if the decision
-        // had reverted.
+        // appeared since dispatch — a staged decision's row or a save
+        // confirmation — is newer than what this read saw, and a mask save in
+        // flight outranks it too. Review fields are additionally overlaid
+        // with any queued/acked decision, so even a first write for a row the
+        // operator has already triaged (staged while the row was unloaded)
+        // paints their decision, not the pre-decision snapshot.
         if (!res.exposure) return;
         if (getCachedExposure(sibId) || hasPendingSave(sibId)) return;
-        setCachedExposure(res.exposure);
+        setCachedExposure(overlayReviewDecisions(res.exposure));
       }, () => inflight.delete(sibId));
     }
   }, [nav, id]);
@@ -700,32 +629,41 @@ function ExposureDetailPageInner() {
   const stateRef = useRef({ reviewStatus, correction, notes, hasChanges, exposure });
   stateRef.current = { reviewStatus, correction, notes, hasChanges, exposure };
 
-  // The last failed fire-and-forget save (module store — survives the remount
-  // on navigation, so the failure surfaces even though the operator is several
-  // exposures ahead by the time the response lands).
+  // The last failed save (module store — survives the remount on navigation,
+  // so the failure surfaces even though the operator is several exposures
+  // ahead by the time it lands) and the outbox backlog for the syncing pill.
   useSyncExternalStore(subscribeSaveState, getSaveStateVersion, getSaveStateVersion);
+  useSyncExternalStore(subscribeReviewOutbox, getReviewOutboxVersion, getReviewOutboxVersion);
   const saveError = getSaveError();
+  const queuedSaves = queuedReviewCount();
 
-  // Warn before unload while fire-and-forget saves are still in flight — a
-  // closed tab takes the in-flight decision (and any failure banner) with it.
-  // Dirty-but-undispatched edits warn too: a keyed decision that hasn't been
-  // followed by a navigation (e.g. `2` on the last exposure of the queue) has
-  // not even started saving, and unload would silently drop it.
+  // Unload no longer endangers triage decisions: stage anything still dirty
+  // right here (covers `2` on the last exposure with no navigation after it)
+  // — staging persists it to the outbox, whose in-flight sends are keepalive
+  // and whose stragglers replay on the next visit. Only mask saves still ride
+  // the plain server-action transport, so they alone keep the leave-site
+  // warning (hasAnyPendingSave now counts only mask saves). pagehide is the
+  // belt-and-braces flush for tab discards where beforeunload never fires.
   useEffect(() => {
-    const handler = (e: BeforeUnloadEvent) => {
-      const d = localEditsRef.current.dirty;
-      if (hasAnyPendingSave() || d.reviewStatus || d.correction || d.notes) {
-        e.preventDefault();
-      }
+    const warnHandler = (e: BeforeUnloadEvent) => {
+      flushDirtySave();
+      if (hasAnyPendingSave()) e.preventDefault();
     };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, []);
+    const flushHandler = () => flushDirtySave();
+    window.addEventListener('beforeunload', warnHandler);
+    window.addEventListener('pagehide', flushHandler);
+    return () => {
+      window.removeEventListener('beforeunload', warnHandler);
+      window.removeEventListener('pagehide', flushHandler);
+    };
+  }, [flushDirtySave]);
 
-  // A failed save reverts the cached row to the server's truth; if that
-  // exposure is the one on screen, re-baseline `exposure` from the cache so
-  // hasChanges compares against reality and a retry actually fires (otherwise
-  // the optimistic row read at mount claims the decision already stuck).
+  // When a save failure names the exposure on screen, re-baseline `exposure`
+  // from the cache so hasChanges compares against reality. For a PERMANENT
+  // failure the outbox has reverted the cache to server truth, so the
+  // controls light up as unsaved and the operator can re-apply. For a
+  // RETRYING failure the cache still holds the staged decision (delivery is
+  // the outbox's problem, not the operator's), so this is a no-op by design.
   useEffect(() => {
     if (saveError?.id !== id) return;
     const cached = getCachedExposure(id);
@@ -738,101 +676,33 @@ function ExposureDetailPageInner() {
     // defaults, and saving them would overwrite the row's real correction and
     // notes with 'none' / ''.
     if (!s.exposure) return { ok: false };
-    // The exposure this save is for. The `S` shortcut fires handleSave
-    // un-awaited and mask saves aren't gated by navigation at all — so a
-    // response can land after the route moved on.
     const savedForId = id;
     // This dispatch takes responsibility for everything currently staged:
     // consume the dirty flags so a following navigation's flush doesn't
     // re-send the same decision. Anything keyed after this line re-dirties.
-    // The consumed flags are KEPT for the failure path below — they are the
-    // only record of which fields held operator decisions; re-dirtying more
-    // than that would let a later flush push `values` entries that were never
-    // edited (stale seeds from targetEdits, or defaults) over server truth.
-    const ownedAtDispatch = localEditsRef.current.forId === savedForId;
-    const dirtyAtDispatch = ownedAtDispatch
-      ? { ...localEditsRef.current.dirty }
-      : null;
-    if (ownedAtDispatch) {
+    if (localEditsRef.current.forId === savedForId) {
       localEditsRef.current.dirty = { reviewStatus: false, correction: false, notes: false };
     }
-    setSaving(true);
-    setSaved(false);
-    setError(null);
-    // Same per-exposure queue as the fire-and-forget nav save, so an explicit
-    // save and a background one for this row can't commit out of order. Takes
-    // a dispatch generation for the same reason: a success here must be
-    // visible to an older failed save's suspended cleanup handler. Marked
-    // pending like every other save so an in-flight revalidation (dispatched
-    // before this save, resolving after) can't write the pre-save row back
-    // over the operator's decision now that the dirty flags are consumed.
-    const saveSeq = nextSaveSeq(savedForId);
-    beginPendingSave(savedForId);
-    const result = await enqueueSave(savedForId, () => updateExposureReview(savedForId, {
+    // Explicit save persists the whole visible triple — the operator is
+    // saying "what's on screen is my decision".
+    stageReviewDecision(savedForId, {
       review_status: s.reviewStatus as NircamExposure['review_status'],
       correction: s.correction as NircamExposure['correction'],
       // Always sent (even '') so clearing the notes field actually persists —
-      // an undefined key is dropped from the PATCH and leaves the old value.
+      // an undefined key is dropped from the update and leaves the old value.
       notes: s.notes,
-    })).catch((err: unknown) => ({
-      exposure: null,
-      error: err instanceof Error ? err.message : 'Save failed',
-    }));
-    endPendingSave(savedForId);
-    setSaving(false);
-    if (result.error) {
-      // The decision did NOT persist. If the record still belongs to this
-      // exposure, restore EXACTLY the flags this dispatch consumed (unioned
-      // with any edits keyed since — those set their own flags and must
-      // survive) so a later navigation retries the operator's actual
-      // decisions and nothing more.
-      const ownedNow = localEditsRef.current.forId === savedForId;
-      if (ownedNow && dirtyAtDispatch) {
-        const cur = localEditsRef.current.dirty;
-        localEditsRef.current.dirty = {
-          reviewStatus: cur.reviewStatus || dirtyAtDispatch.reviewStatus,
-          correction: cur.correction || dirtyAtDispatch.correction,
-          notes: cur.notes || dirtyAtDispatch.notes,
-        };
-      }
-      if (ownedNow) {
-        setError(result.error);
-      } else {
-        // The operator has moved on: the record now belongs to another
-        // exposure, so the flags can't be restored and the component-scoped
-        // error box would paint unattributed on the wrong screen. Raise the
-        // id-aware module banner instead — it names the exposure, links back,
-        // and survives further navigation (same UX as a failed nav flush).
-        setSaveError({
-          id: savedForId,
-          filename: s.exposure.filename,
-          message: result.error,
-        });
-      }
-      return { ok: false };
+    }, s.exposure.filename);
+    // Staged == durable: the outbox delivers it (with retry, surviving
+    // reloads) or raises the module banner. Reflect that on screen without
+    // holding the UI on the round trip — same contract as auto-save-on-nav.
+    // Re-baselining `exposure` from the just-staged cache row is what flips
+    // hasChanges off; only correct while the screen still shows this row.
+    if (localEditsRef.current.forId === savedForId) {
+      const cached = getCachedExposure(savedForId);
+      if (cached) setExposure(cached);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
     }
-    // Keyed by the exposure's own id, so this is correct regardless of route.
-    if (result.exposure) {
-      markSaveCommitted(savedForId, saveSeq);
-      // Same guard as the fire-and-forget success path: a newer save queued
-      // behind this one (edit + navigate before this resolved) has already
-      // written its optimistic row — don't put this older row over it.
-      if (!hasPendingSave(savedForId)) setCachedExposure(result.exposure);
-      // A retry that lands supersedes an earlier failure for this exposure —
-      // same rule as the fire-and-forget path, or the banner outlives the fix.
-      if (getSaveError()?.id === savedForId) setSaveError(null);
-    }
-    // Everything below writes state belonging to whatever is on screen *now* —
-    // only safe while that's still the exposure we saved. Otherwise this would
-    // render the old exposure under the new one's URL and set the new one's
-    // `saved` guard, permanently suppressing its revalidation.
-    if (localEditsRef.current.forId !== savedForId) return { ok: true };
-    if (result.exposure) {
-      localEditsRef.current.saved = true;
-      setExposure(result.exposure);
-    }
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
     return { ok: true };
   }, [id]);
 
@@ -928,16 +798,15 @@ function ExposureDetailPageInner() {
   // editor dispatches flushes mid-swap, when the on-screen exposure is already
   // the next one); `background` marks saves the editor can't report inline.
   //
-  // Serialized through the SAME per-exposure queue as the triage saves.
-  // Unqueued, a mask save and a nav triage save for this row could commit
-  // at the database in either order, and each confirmation only reflects
-  // the fields the database held at ITS commit — so whichever response was
-  // snapshotted first is missing the other's write, and no response-time
-  // guard can reassemble the truth from two partial rows. Queued, dispatch
-  // order is commit order and each later confirmation contains every
-  // earlier write. Marked pending for the same reason as triage saves:
-  // revalidation and the sibling prefetch must not resurrect the pre-save
-  // row while this write is in flight.
+  // Serialized through the per-exposure queue so two mask saves for one row
+  // (toolbar Save racing the nav auto-flush) can't commit out of order.
+  // Triage saves no longer share this queue — they ride the outbox — so a
+  // mask confirmation's row snapshot can predate a triage commit that
+  // happened during its round trip; overlayReviewDecisions repairs exactly
+  // that when the confirmed row is written below. Marked pending so
+  // revalidation and the sibling prefetch don't resurrect the pre-save
+  // mask_regions while this write is in flight (masks are the one field
+  // family the overlay can't reconstruct).
   //
   // useCallback with no deps (everything flows through refs/params): a stable
   // reference is what lets the memoized MaskEditor skip re-rendering on
@@ -962,17 +831,16 @@ function ExposureDetailPageInner() {
       endPendingSave(savedForId);
     }
     if (res.exposure) {
-      // A save queued behind this one (triage flush during the mask round
-      // trip) has already written its optimistic row, and — because the queue
-      // serializes commits — its confirmation will carry this mask write too.
-      // Only the newest pending state may own the cache.
-      if (!hasPendingSave(savedForId)) setCachedExposure(res.exposure);
-      // Same newer-than-the-read rule as the triage save: a mask write must not
-      // be undone by an in-flight revalidation landing after it — but only for
+      const merged = overlayReviewDecisions(res.exposure);
+      // A mask save queued behind this one has already written its own
+      // pending state — only the newest pending save may own the cache; its
+      // confirmation (serialized after this one) will carry this write too.
+      if (!hasPendingSave(savedForId)) setCachedExposure(merged);
+      // A mask write must not be undone by an in-flight revalidation landing
+      // after it — but re-baselining the on-screen row is only correct for
       // the exposure it was issued for (see handleSave).
       if (localEditsRef.current.forId === savedForId) {
-        localEditsRef.current.saved = true;
-        setExposure(res.exposure);
+        setExposure(merged);
       }
     } else if (res.error && (background || idRef.current !== savedForId)) {
       // Nothing on screen can show this failure inline (a background flush,
@@ -1098,6 +966,14 @@ function ExposureDetailPageInner() {
             <ChevronRight className="w-5 h-5" />
           </button>
         </div>
+        {queuedSaves > 0 && (
+          <span
+            className="text-xs text-text-tertiary tabular-nums whitespace-nowrap"
+            title="Decisions saved locally and being delivered — safe to keep working. They survive a refresh and finish syncing on their own."
+          >
+            syncing {queuedSaves}…
+          </span>
+        )}
         <button
           onClick={(e) => { blurOnMouseClick(e); setShowHelp(prev => !prev); }}
           title="Keyboard shortcuts (?)"
@@ -1139,10 +1015,32 @@ function ExposureDetailPageInner() {
         </div>
       )}
 
-      {/* A background auto-save (fire-and-forget on nav) failed — possibly for
-          an exposure several steps back. Persistent until dismissed or a retry
-          for the same exposure lands. */}
-      {saveError && (
+      {/* A background save is struggling — possibly for an exposure several
+          steps back. 'retrying' (amber): the outbox still holds the decision
+          and keeps retrying; clears itself when a retry lands. 'permanent'
+          (red): the write was rejected and dropped — the operator must
+          re-apply. Persistent until dismissed or superseded. */}
+      {saveError && (saveError.kind === 'retrying' ? (
+        <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-900 rounded-lg p-4 mb-6 flex items-start justify-between gap-4">
+          <p className="text-amber-800 dark:text-amber-400">
+            Trouble saving{' '}
+            <Link
+              href={`/admin/nircam/${saveError.id}${navQuery ? `?${navQuery}` : ''}`}
+              className="font-mono underline"
+            >
+              {saveError.filename}
+            </Link>
+            : {saveError.message}. Your decision is stored locally and will keep
+            retrying in the background (it survives a refresh).
+          </p>
+          <button
+            onClick={(e) => { blurOnMouseClick(e); setSaveError(null); }}
+            className="text-xs text-amber-800 dark:text-amber-400 hover:underline flex-shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : (
         <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-4 mb-6 flex items-start justify-between gap-4">
           <p className="text-red-800 dark:text-red-400">
             Failed to save{' '}
@@ -1161,7 +1059,7 @@ function ExposureDetailPageInner() {
             Dismiss
           </button>
         </div>
-      )}
+      ))}
 
       <div className="flex gap-6">
         {/* Image viewer: live FITS render (N4) or the legacy PNG / mask editor */}
@@ -1376,12 +1274,10 @@ function ExposureDetailPageInner() {
 
               <Button
                 onClick={(e) => { blurOnMouseClick(e); handleSave(); }}
-                disabled={saving || !hasChanges}
+                disabled={!hasChanges}
                 className="w-full"
               >
-                {saving ? (
-                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving...</>
-                ) : saved ? (
+                {saved ? (
                   <><Check className="w-4 h-4 mr-2" /> Saved</>
                 ) : (
                   <><Save className="w-4 h-4 mr-2" /> Save Changes</>
