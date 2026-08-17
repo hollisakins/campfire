@@ -151,11 +151,25 @@ function parseStoredEntries(raw: string | null): OutboxEntry[] {
   return out;
 }
 
-/** True when this tab has seen a commit at least as new as `entry` — the
- *  entry is settled and must not be (re)adopted or re-persisted. */
+/** Stamps this tab has RETIRED, by exposure id: the send settled — delivered,
+ *  outrun by a newer decision (superseded), or permanently rejected — and the
+ *  entry must leave durable storage. Kept separately from ackedReview because
+ *  only *committed* fields may be overlaid onto server rows: a superseded or
+ *  rejected decision is settled but its fields never became truth. Without
+ *  this, persist()'s merge resurrected such entries into storage forever —
+ *  every reload re-adopted and re-sent them, re-raising the failure banner. */
+const retiredReview = new Map<number, number>();
+
+function markRetired(id: number, decidedAt: number): void {
+  if ((retiredReview.get(id) ?? 0) < decidedAt) retiredReview.set(id, decidedAt);
+}
+
+/** True when this tab has seen `entry`'s stamp settle (commit, superseded, or
+ *  permanent rejection) — the entry must not be (re)adopted or re-persisted. */
 function isSettled(entry: OutboxEntry): boolean {
   const acked = ackedReview.get(entry.id);
-  return acked !== undefined && acked.decidedAt >= entry.decidedAt;
+  if (acked !== undefined && acked.decidedAt >= entry.decidedAt) return true;
+  return (retiredReview.get(entry.id) ?? 0) >= entry.decidedAt;
 }
 
 /** Fold entries found in shared storage (another tab's work, or a previous
@@ -285,9 +299,17 @@ export function stageReviewDecision(
   if (!isBrowser || Object.keys(fields).length === 0) return;
   ensureLoaded();
   const existing = entries.get(id);
-  // Strictly monotonic per entry even within one ms, so an in-flight send's
-  // snapshot compares unequal to a re-edited entry.
-  const decidedAt = Math.max(Date.now(), (existing?.decidedAt ?? 0) + 1);
+  // Strictly monotonic per exposure even within one ms — above the live
+  // entry (so an in-flight send's snapshot compares unequal to a re-edit)
+  // AND above every settled stamp (so a decision re-applied right after an
+  // ack or a permanent rejection can never mint a stamp that isSettled()
+  // would judge already-retired and silently drop from durable storage).
+  const decidedAt = Math.max(
+    Date.now(),
+    (existing?.decidedAt ?? 0) + 1,
+    (retiredReview.get(id) ?? 0) + 1,
+    (ackedReview.get(id)?.decidedAt ?? 0) + 1,
+  );
   const entry: OutboxEntry = {
     id,
     fields: { ...existing?.fields, ...fields },
@@ -404,19 +426,26 @@ async function attemptEntry(id: number): Promise<void> {
   try {
     const result = await postReview(snapshot);
 
-    // Settled. Retire the entry unless it changed mid-flight.
-    reattempt = changedMidFlight();
-    if (!reattempt) {
-      entries.delete(id);
-      persist();
-    }
+    // Settled — delivered or outrun. Both bookkeeping writes MUST precede
+    // persist(): its merge treats any storage entry not provably settled as
+    // another tab's live work and writes it back, so retiring after
+    // persisting would leave this entry in storage to replay on next load.
     consecutiveFailures.delete(id);
     if (!result.superseded) {
       // Remember what committed so later stale reads can be overlaid. On a
       // superseded response our snapshot did NOT commit — a newer decision
       // (another tab, or a pre-teardown keepalive from a previous session)
-      // already owns the row, and the returned row reflects it.
+      // already owns the row, and the returned row reflects it — so its
+      // fields must never be overlaid; it is retired without an ack.
       ackedReview.set(id, { fields: { ...snapshot.fields }, decidedAt: snapshot.decidedAt });
+    }
+    markRetired(id, snapshot.decidedAt);
+    // Drop the entry unless it changed mid-flight (then the merged, newer
+    // entry goes back out — its stamp is above the retirement mark).
+    reattempt = changedMidFlight();
+    if (!reattempt) {
+      entries.delete(id);
+      persist();
     }
     if (result.exposure) cacheConfirmedRow(result.exposure);
     if (getSaveError()?.id === id) setSaveError(null);
@@ -424,6 +453,11 @@ async function attemptEntry(id: number): Promise<void> {
     const message = err instanceof Error ? err.message : 'Save failed';
     const filename = snapshot.filename ?? `exposure #${id}`;
     if (err instanceof PermanentSaveError) {
+      // This stamp can never succeed — retire it (before any persist) so it
+      // leaves durable storage instead of replaying the same rejection on
+      // every future load. A mid-flight re-edit carries a higher stamp and
+      // is unaffected.
+      markRetired(id, snapshot.decidedAt);
       if (changedMidFlight()) {
         // The rejection judged a payload the operator has since replaced —
         // the merged entry deserves its own verdict. Re-send it; if it is
