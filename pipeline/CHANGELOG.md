@@ -51,11 +51,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   Validated by five arms re-run from uncal through the real pipeline on 6 frames
   spanning the banding distribution, with a deliberately-too-coarse 256/5
   control that confirms the metrics move in the physically correct direction.
-  Known cost: a highly elongated feature loses ~1% of its flux (one segment of
-  elongation 22 spanning 4,832 px: -1.03%) versus -0.03% for compact sources in
-  the same frame; the intermediate/large source bins are flat, so this is not a
-  general extended-source loss. The feature was not identified — only its
-  geometry was measured. Expect all NIRCam
+  Known cost: DIFFRACTION-SPIKE FLUX. The finer mesh removes ~1% of the flux in
+  a bright star's diffraction spike (-1.03% over 4,832 px; verified as a spike by
+  radial alignment — two segments 1,530 and 1,745 px from the star, major axes
+  9.0 and 7.9 deg from the star-centroid position angle, sharing PA -29.3 deg).
+  This is REAL PSF FLUX, not contamination, so it is relevant to PSF modelling
+  and to bright-star photometry in large apertures. Compact sources in the same
+  frame change by -0.03% and the intermediate (-0.05%) / large (-0.01%) bins are
+  flat, so the loss is confined to the extended PSF, not to source photometry
+  generally. Measured on one star in one frame. Expect all NIRCam
   exposures to need reprocessing from uncal to pick this up (`bkg` is
   SCI-mutating and has no backup, so `reset --from bkg` is refused).
 - **New NIRCam `jackknife` step: re-zeros jump-segmented ramp fits against the

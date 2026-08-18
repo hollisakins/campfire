@@ -466,13 +466,18 @@
         # the physically correct direction (a too-coarse mesh under-subtracts,
         # inflating apertures).
         #
-        # KNOWN COST: a highly elongated feature loses ~1% of its flux (one
-        # segment of elongation 22 spanning 4,832 px: -1.03%) against -0.03% for
-        # compact sources in the same frame. The intermediate (-0.05%) and large
-        # (-0.01%) source bins are flat, so this is not a general extended-source
-        # loss. The feature was NOT identified — only its geometry was measured;
-        # if elongated-feature photometry matters, characterise it first.
-        # Measured on ONE such feature in one frame.
+        # KNOWN COST: DIFFRACTION-SPIKE FLUX. The finer mesh removes ~1% of a
+        # bright star's diffraction spike (-1.03% over 4,832 px). Verified as a
+        # spike, not assumed: two elongated segments 1,530 and 1,745 px from the
+        # star, major axes 9.0 and 7.9 deg off the star-centroid position angle,
+        # both at PA -29.3 deg (one spike split by the detection threshold).
+        # This is REAL PSF FLUX, not contamination — it matters for PSF
+        # modelling and for bright-star photometry in large apertures.
+        # Compact sources in the same frame move -0.03%, and the intermediate
+        # (-0.05%) / large (-0.01%) bins are flat, so the loss is confined to the
+        # extended PSF rather than to source photometry generally.
+        # Measured on ONE star in ONE frame — characterise further before
+        # relying on spike photometry anywhere in the field.
         # Where in the per-iteration chain the applied fit runs.
         #   "last" (legacy default): fit on the 1/f-corrected residual, AFTER
         #       the amp-row terms. Unmasked halo/wing flux around bright
