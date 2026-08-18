@@ -403,6 +403,14 @@ ALTER TABLE object_lists ENABLE ROW LEVEL SECURITY;
 -- shared with them (issue #450). viewable_list_ids() (SECURITY DEFINER,
 -- functions.sql) is the single authority for that predicate.
 --
+-- The direct created_by disjunct is NOT redundant with viewable_list_ids()
+-- (issue #469): SELECT policies are also enforced on rows returned by
+-- INSERT ... RETURNING, and viewable_list_ids() is STABLE, so it runs under
+-- the statement's snapshot and cannot see the row being inserted. Without the
+-- direct check, createList's insert().select() fails with an RLS violation
+-- for every non-admin. Evaluated against the candidate row itself, the
+-- disjunct passes for owned rows (and short-circuits the function call).
+--
 -- Link accounts (docs/design-public-mirror.md §5.4) see no lists at all. A list
 -- is a curation artifact of the CAMPFIRE community, not part of a data scope --
 -- its name and description would leak collaborators' working notes to an
@@ -412,7 +420,10 @@ CREATE POLICY "select_lists"
   ON object_lists FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
-    AND id IN (SELECT public.viewable_list_ids())
+    AND (
+      created_by = (SELECT auth.uid())
+      OR id IN (SELECT public.viewable_list_ids())
+    )
   );
 
 -- Users can create lists (owned by them, non-system, non-group-account).
