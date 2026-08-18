@@ -51,10 +51,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   Validated by five arms re-run from uncal through the real pipeline on 6 frames
   spanning the banding distribution, with a deliberately-too-coarse 256/5
   control that confirms the metrics move in the physically correct direction.
-  Known cost: a highly elongated feature loses ~1% of its flux (one satellite
-  trail, elongation 22: -1.03%) versus -0.03% for compact sources in the same
-  frame; trails and diffraction spikes are contamination rather than photometric
-  targets, and the intermediate/large source bins are flat. Expect all NIRCam
+  Known cost: a highly elongated feature loses ~1% of its flux (one segment of
+  elongation 22 spanning 4,832 px: -1.03%) versus -0.03% for compact sources in
+  the same frame; the intermediate/large source bins are flat, so this is not a
+  general extended-source loss. The feature was not identified — only its
+  geometry was measured. Expect all NIRCam
   exposures to need reprocessing from uncal to pick this up (`bkg` is
   SCI-mutating and has no backup, so `reset --from bkg` is refused).
 - **New NIRCam `jackknife` step: re-zeros jump-segmented ramp fits against the

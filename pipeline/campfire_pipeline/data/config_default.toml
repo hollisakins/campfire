@@ -466,12 +466,13 @@
         # the physically correct direction (a too-coarse mesh under-subtracts,
         # inflating apertures).
         #
-        # KNOWN COST: a highly elongated feature loses ~1% of its flux
-        # (satellite trail, elongation 22, -1.03%) against -0.03% for compact
-        # sources in the same frame. Trails and diffraction spikes are
-        # contamination rather than photometric targets, and the intermediate
-        # (-0.05%) and large (-0.01%) source bins are flat, so this is not a
-        # general extended-source loss. Measured on ONE trail in one frame.
+        # KNOWN COST: a highly elongated feature loses ~1% of its flux (one
+        # segment of elongation 22 spanning 4,832 px: -1.03%) against -0.03% for
+        # compact sources in the same frame. The intermediate (-0.05%) and large
+        # (-0.01%) source bins are flat, so this is not a general extended-source
+        # loss. The feature was NOT identified — only its geometry was measured;
+        # if elongated-feature photometry matters, characterise it first.
+        # Measured on ONE such feature in one frame.
         # Where in the per-iteration chain the applied fit runs.
         #   "last" (legacy default): fit on the 1/f-corrected residual, AFTER
         #       the amp-row terms. Unmasked halo/wing flux around bright
