@@ -321,39 +321,12 @@ export async function presignExposurePngs(
 // Update
 // ---------------------------------------------------------------------------
 
-export async function updateExposureReview(
-  id: number,
-  updates: {
-    review_status?: 'pending' | 'approved' | 'excluded';
-    correction?: 'none' | 'needed' | 'done';
-    notes?: string;
-  },
-): Promise<{ exposure: NircamExposure | null; error?: string }> {
-  try {
-    const supabase = await requireSession();
-
-    const { data, error } = await supabase
-      .from('nircam_exposures')
-      .update({
-        ...updates,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) {
-      return { exposure: null, error: error.message };
-    }
-
-    return { exposure: data };
-  } catch (err) {
-    return {
-      exposure: null,
-      error: err instanceof Error ? err.message : 'Failed to update exposure',
-    };
-  }
-}
+// Triage review updates (review_status / correction / notes) intentionally
+// have no server action: they go through POST /api/admin/nircam/review via
+// the durable outbox (lib/nircam-review-outbox.ts), which needs a transport
+// with timeout, retry, and keepalive — none of which server actions expose.
+// The route carries the review_decided_at last-writer-wins guard that makes
+// its at-least-once delivery safe.
 
 // ---------------------------------------------------------------------------
 // Mask polygons

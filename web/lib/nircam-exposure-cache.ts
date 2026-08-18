@@ -140,20 +140,23 @@ export function setCachedPngUrls(id: number, urls: ExposurePngUrls): void {
 }
 
 /**
- * In-flight triage saves + the most recent save failure.
+ * In-flight MASK saves + the most recent save failure.
  *
- * The detail page's auto-save-on-nav no longer blocks navigation on the save
- * round trip: it writes the operator's decision into the row cache
- * optimistically, fires the server action, and pushes the route immediately.
- * Module scope (surviving the page remount) is what lets the next page
- * instance still see the two things that flow leaves behind:
+ * Triage review decisions no longer register here — they ride the durable
+ * outbox (lib/nircam-review-outbox.ts), whose queued/acked state is what
+ * readers consult (via overlayReviewDecisions) instead of a suppression
+ * marker. Mask saves still use the plain server-action transport, so their
+ * in-flight ids are tracked here at module scope (surviving the page remount)
+ * for two consumers:
  *
- *  - which exposure ids have a save still in flight, so the background
- *    revalidation of a quickly-revisited exposure doesn't overwrite the
- *    optimistic row with the pre-save DB state; and
- *  - the most recent failed save, so the operator — possibly several
- *    exposures ahead by the time the failure lands — is told their decision
- *    didn't stick, with a way back to re-apply it.
+ *  - the background revalidation and sibling prefetch, which must not
+ *    overwrite the cache with a row snapshotted before an in-flight mask
+ *    write commits (mask_regions is the one field family the review overlay
+ *    cannot reconstruct); and
+ *  - the beforeunload warning, since an in-flight mask save dies with the
+ *    tab.
+ *
+ * The save-failure banner is shared: mask saves and the outbox both raise it.
  *
  * Subscribed via useSyncExternalStore: the snapshot is a monotonic version
  * counter; consumers read the actual values after the version changes.
@@ -163,6 +166,14 @@ export interface ExposureSaveError {
   id: number;
   filename: string;
   message: string;
+  /**
+   * How the failure should read to the operator. 'retrying' — the outbox
+   * still holds the decision and keeps retrying (transient transport/server
+   * trouble); the banner is informational and clears itself when a retry
+   * lands. 'permanent' (default when absent) — the write was rejected and
+   * dropped; the operator must re-apply the decision.
+   */
+  kind?: 'retrying' | 'permanent';
 }
 
 const pendingSaveIds = new Map<number, number>(); // id → in-flight save count
@@ -215,43 +226,17 @@ export function setSaveError(err: ExposureSaveError | null): void {
 }
 
 /**
- * Per-exposure save queue: saves for the same row run strictly in dispatch
- * order. Fire-and-forget saves mean two updates for one exposure can be in
- * flight together (navigate away, revisit before the save lands, edit,
- * navigate away again); if the transport reordered them, the older decision
- * would win in the database and the cache. Chaining per id makes dispatch
- * order the commit order regardless of transport behavior. Saves for
- * different exposures stay independent.
+ * Per-exposure save queue for MASK saves: saves for the same row run strictly
+ * in dispatch order. Fire-and-forget flushes mean two mask writes for one
+ * exposure can be in flight together (toolbar Save racing the editor's
+ * auto-flush on navigation); if the transport reordered them, the older
+ * polygons would win in the database and the cache. Chaining per id makes
+ * dispatch order the commit order regardless of transport behavior. Saves
+ * for different exposures stay independent. (Triage review writes don't
+ * queue here — the outbox's review_decided_at last-writer-wins guard handles
+ * their ordering server-side.)
  */
 const saveQueues = new Map<number, Promise<unknown>>();
-
-/**
- * Per-id monotonic save generations. The queue orders the server-action tasks,
- * but a failed save's cleanup handler awaits a revert refetch — and in that
- * window a newer save for the same id can dispatch, run, and fully commit
- * (dropping the in-flight count back to zero). The resuming handler must be
- * able to tell "a newer save has already committed" apart from "nothing newer
- * happened", or it reverts the cache to a pre-newer-save snapshot and raises a
- * failure banner for a decision that actually persisted. Each save takes a
- * dispatch sequence number; successful saves record theirs as committed.
- */
-const saveDispatchSeq = new Map<number, number>();
-const saveCommitSeq = new Map<number, number>();
-
-export function nextSaveSeq(id: number): number {
-  const n = (saveDispatchSeq.get(id) ?? 0) + 1;
-  saveDispatchSeq.set(id, n);
-  return n;
-}
-
-export function markSaveCommitted(id: number, seq: number): void {
-  if ((saveCommitSeq.get(id) ?? 0) < seq) saveCommitSeq.set(id, seq);
-}
-
-/** True when a save dispatched after `seq` has already committed for `id`. */
-export function hasNewerCommittedSave(id: number, seq: number): boolean {
-  return (saveCommitSeq.get(id) ?? 0) > seq;
-}
 
 export function enqueueSave<T>(id: number, task: () => Promise<T>): Promise<T> {
   const prev = saveQueues.get(id) ?? Promise.resolve();

@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import type { ColumnDef } from '@tanstack/react-table';
@@ -17,6 +17,10 @@ import {
   type ReductionProgress,
 } from '@/lib/actions/nircam-exposures';
 import { EXPOSURE_SORT_KEYS } from '@/lib/admin/sort-keys';
+import {
+  ensureReviewOutboxRunning,
+  overlayReviewDecisions,
+} from '@/lib/nircam-review-outbox';
 import type { NircamExposure } from '@/lib/types';
 import { stageBadgeClasses, NIRCAM_STAGES } from '@/lib/nircam-stages';
 import { buildExposureNavQuery } from '@/lib/nircam-exposure-nav';
@@ -367,6 +371,10 @@ function AdminNircamPageInner() {
     defaultSort: DEFAULT_SORT,
   });
 
+  // Replay triage decisions stranded by a reload as soon as the operator is
+  // back in the tool — the list page is where sessions land.
+  useEffect(() => { ensureReviewOutboxRunning(); }, []);
+
   const exposures = useAdminTableQuery<NircamExposure>({
     scope: 'admin-nircam-exposures',
     filters: state.debouncedFilters,
@@ -387,7 +395,15 @@ function AdminNircamPageInner() {
         page,
         pageSize: state.pageSize,
       });
-      return { rows: res.exposures, total: res.total, error: res.error };
+      return {
+        // Fold not-yet-delivered triage decisions over the server rows, so
+        // returning to the table right after a fast run shows what the
+        // operator decided rather than statuses the outbox hasn't finished
+        // syncing (the queue drains in the background either way).
+        rows: res.exposures.map(overlayReviewDecisions),
+        total: res.total,
+        error: res.error,
+      };
     },
   });
 
