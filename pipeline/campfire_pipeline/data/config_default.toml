@@ -432,10 +432,46 @@
         # (box_size, extra_dilate, reject_dilate) are angular scales in px
         # tuned at SW native ~31 mas; rescaled per channel via
         # [nircam.bkg.mask.pixel_scale_factor] like the mask params.
-        # box_size 64 px SW (~2") + extra_dilate 20 chosen by the synthetic
-        # cluster sweep (experiments/bkg2d_synthetic, arm b64_d20): zero
-        # median aperture-flux loss for compact, extended AND bright
-        # galaxies simultaneously, ICL removal ~0.6.
+        # box_size 32 px SW (~1") + filter_size 3 + extra_dilate 20.
+        #
+        # WAS box_size 64 / filter_size 5, chosen by the synthetic cluster
+        # sweep (experiments/bkg2d_synthetic, arm b64_d20) for zero median
+        # aperture-flux loss with ICL removal ~0.6. That pair leaves COMMON-MODE
+        # ROW BANDING in the delivered exposures, which costs mosaic DEPTH:
+        # un-sky-matched frames stacked together add variance that never
+        # averages down, and the mosaic bkgsub removing the mean structure
+        # afterwards cannot recover it.
+        #
+        # WHY 64/5 could not remove it: filter_size is a median filter over the
+        # LOW-RESOLUTION MESH, in units of MESH CELLS — so 5 cells x 64 px is a
+        # ~320 px (~10") footprint, far too coarse for the ~128-row (~4")
+        # structure. Meanwhile the fit-only conditioning detrend (96 rows,
+        # filter_size [1,5] -> full row resolution) CAN represent that
+        # structure, absorbs it into a model that is never subtracted, and so
+        # leaves the amp-row GP nothing to fit. See the trade already noted in
+        # [nircam.bkg.detrend]: "common-mode row structure at ~50-150 rows may
+        # be conditioned away and underfit by h".
+        #
+        # MEASURED on 6 COSMOS f150w frames, real pipeline reruns from uncal
+        # spanning the banding distribution (docs + scripts/claude/cosmos-reproc):
+        #   arm            banding(x noise)  compact  intermed  large   pixel sigma
+        #   64/5 (was)          1.76          ref      ref      ref      1.000
+        #   64/1                0.56        -0.21%   -0.01%   +0.01%     0.998
+        #   32/3 (now)          0.57        +0.24%   -0.05%   -0.01%     0.998
+        #   10/5 (mosaic mesh)  0.60        -0.58%   -0.02%   -0.08%     0.998
+        #   256/5 (control)     3.36        +1.60%   +0.15%   +0.06%     1.012
+        # 32/3 and 64/1 are statistically tied; 32/3 is chosen because
+        # filter_size 3 retains mesh outlier rejection that filter_size 1
+        # discards entirely. The 256/5 control confirms the metrics respond in
+        # the physically correct direction (a too-coarse mesh under-subtracts,
+        # inflating apertures).
+        #
+        # KNOWN COST: a highly elongated feature loses ~1% of its flux
+        # (satellite trail, elongation 22, -1.03%) against -0.03% for compact
+        # sources in the same frame. Trails and diffraction spikes are
+        # contamination rather than photometric targets, and the intermediate
+        # (-0.05%) and large (-0.01%) source bins are flat, so this is not a
+        # general extended-source loss. Measured on ONE trail in one frame.
         # Where in the per-iteration chain the applied fit runs.
         #   "last" (legacy default): fit on the 1/f-corrected residual, AFTER
         #       the amp-row terms. Unmasked halo/wing flux around bright
@@ -456,8 +492,8 @@
         #       (measured on the synthetic amp-spanning-halo scene; the step
         #       logs a warning on this combination).
         fit_order = "last"
-        box_size = 64
-        filter_size = 5
+        box_size = 32
+        filter_size = 3
         sigma = 3.0
         exclude_percentile = 90
         # Grow the source tiers (not off-detector/DQ) by this many px for the

@@ -29,6 +29,34 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Calibration
+- **`[nircam.bkg.bkg2d]` mesh retuned to `box_size = 32` / `filter_size = 3`
+  (was 64 / 5) — removes common-mode row banding that was costing mosaic
+  depth.** Delivered SW exposures carried coherent horizontal banding at ~128-row
+  scales: row-median rms 1.76x the pure-noise expectation (median over 6 COSMOS
+  f150w frames, worst frame 2.42x), correlated across all four amps (pairwise
+  0.80-0.90) and coherent out past 600 rows. Because it differs between
+  exposures, stacking un-sky-matched frames adds variance that never averages
+  down, so the loss is in mosaic DEPTH; the mosaic-level bkgsub removing the
+  mean structure afterwards cannot recover it. Root cause: `filter_size` is a
+  median filter over the LOW-RESOLUTION MESH in units of MESH CELLS, so 5 x 64 px
+  gave a ~320 px (~10") footprint — far too coarse for ~4" structure — while the
+  fit-only conditioning detrend (96 rows, `filter_size = [1, 5]`, i.e. full row
+  resolution) *can* represent it, absorbs it into a model that is never
+  subtracted, and leaves the amp-row GP nothing to fit. This is the trade
+  already documented under `[nircam.bkg.detrend]` ("common-mode row structure at
+  ~50-150 rows may be conditioned away and underfit by h"), now measured on real
+  data. Retuning the applied mesh takes banding to 0.57x noise (a 10x drop in
+  coherence, 0.258 -> 0.023) at unchanged pixel sigma (0.998 of production) and
+  aperture-flux changes of +0.24% compact / -0.05% intermediate / -0.01% large.
+  Validated by five arms re-run from uncal through the real pipeline on 6 frames
+  spanning the banding distribution, with a deliberately-too-coarse 256/5
+  control that confirms the metrics move in the physically correct direction.
+  Known cost: a highly elongated feature loses ~1% of its flux (one satellite
+  trail, elongation 22: -1.03%) versus -0.03% for compact sources in the same
+  frame; trails and diffraction spikes are contamination rather than photometric
+  targets, and the intermediate/large source bins are flat. Expect all NIRCam
+  exposures to need reprocessing from uncal to pick this up (`bkg` is
+  SCI-mutating and has no backup, so `reset --from bkg` is refused).
 - **New NIRCam `jackknife` step: re-zeros jump-segmented ramp fits against the
   exposure's frame-common ramp curvature** (`[nircam.jackknife]`, enabled by
   default; runs between `detector1` and `persistence`). The mean calibrated
