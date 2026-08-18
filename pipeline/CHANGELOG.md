@@ -28,6 +28,8 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+## v0.6.0 — 2026-08-18
+
 ### Calibration
 - **`[nircam.bkg.bkg2d]` mesh retuned to `box_size = 32` / `filter_size = 3`
   (was 64 / 5) — removes common-mode row banding that was costing mosaic
