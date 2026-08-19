@@ -24,6 +24,7 @@ import {
 import type { NircamExposure } from '@/lib/types';
 import { stageBadgeClasses, NIRCAM_STAGES } from '@/lib/nircam-stages';
 import { buildExposureNavQuery } from '@/lib/nircam-exposure-nav';
+import { PngPrecacheControl } from '@/components/nircam/PngPrecacheControl';
 
 // ---------------------------------------------------------------------------
 // Status badge helpers
@@ -533,6 +534,11 @@ function AdminNircamPageInner() {
         onChange={(key, value) => state.setFilters({ ...state.filters, [key]: value })}
         onReset={state.resetFilters}
       />
+
+      {/* Pre-download the filtered set's PNGs for a no-network triage run —
+          scoped to whatever the filter bar currently selects (a whole
+          filter/detector pair, just the pending queue, ...). */}
+      <PngPrecacheControl filters={state.debouncedFilters} sort={state.sort} />
 
       <AdminTable
         columns={columns}

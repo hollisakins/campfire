@@ -46,6 +46,12 @@ import {
   getReviewOutboxVersion,
   type ReviewDecisionFields,
 } from '@/lib/nircam-review-outbox';
+import {
+  ensurePngStoreReady,
+  getStoredPng,
+  subscribePngStore,
+  getPngStoreVersion,
+} from '@/lib/nircam-png-store';
 
 // Eager PNG prefetch window: warm the full-res mask surface (~5.7 MB) the
 // editor actually renders for a few exposures ahead + one back, so stepping
@@ -141,6 +147,13 @@ function ExposureDetailPageInner() {
   // Replay any decisions stranded by a previous session's reload and keep
   // the outbox delivery loop running while the operator works here.
   useEffect(() => { ensureReviewOutboxRunning(); }, []);
+
+  // Hydrate the durable pre-downloaded PNG store (lib/nircam-png-store.ts).
+  // Idempotent and module-scoped, so on the remount-per-step this is a no-op;
+  // the subscription re-renders this instance when hydration (or a warm
+  // running in another tab of the flow) makes new blobs available.
+  useEffect(() => { ensurePngStoreReady(); }, []);
+  useSyncExternalStore(subscribePngStore, getPngStoreVersion, getPngStoreVersion);
 
   // Editable fields
   const [reviewStatus, setReviewStatus] = useState<string>('pending');
@@ -558,6 +571,11 @@ function ExposureDetailPageInner() {
     // only new network per step is the frontier exposure entering the window.
     const warm = () => {
       for (const sib of warmWin) {
+        // A pre-downloaded blob needs no network, but decoding ~6 MB still
+        // takes real time — run it through the retained-image cache too so a
+        // warmed sibling is paint-instant, not just fetch-instant.
+        const stored = getStoredPng(sib);
+        if (stored) { prefetchPng(stored.url); continue; }
         const u = getCachedPngUrls(sib);
         if (u) prefetchPng(u.full ?? u.preview);
       }
@@ -884,10 +902,19 @@ function ExposureDetailPageInner() {
   // Presigned OSN URLs for the current exposure (undefined until the presign
   // round-trip lands; null once resolved if the exposure has no PNG). Read from
   // the module cache so a prefetched sibling is already resolved on arrival.
+  // A pre-downloaded blob (lib/nircam-png-store.ts) outranks the presigned URL
+  // for the slot it covers — zero network, and immune to presign expiry. The
+  // store holds the display byte, so its kind says which slot: 'full' feeds
+  // the mask editor, 'preview' means the exposure never had a full PNG. With
+  // a stored blob in hand the viewer needn't wait on the presign round trip
+  // (it still runs in the background and fills the other slot's fallback).
+  const stored = getStoredPng(id);
   const currentUrls = getCachedPngUrls(id);
-  const pngUrl = currentUrls?.preview ?? null;
-  const fullPngUrl = currentUrls?.full ?? null;
-  const pngPresignPending = currentUrls === undefined;
+  const pngUrl =
+    (stored?.kind === 'preview' ? stored.url : null) ?? currentUrls?.preview ?? null;
+  const fullPngUrl =
+    (stored?.kind === 'full' ? stored.url : null) ?? currentUrls?.full ?? null;
+  const pngPresignPending = currentUrls === undefined && !stored;
   const editorAvailable = Boolean(
     exposure && fullPngUrl && exposure.image_width && exposure.image_height
   );
@@ -1126,11 +1153,12 @@ function ExposureDetailPageInner() {
               )
             ) : !exposure ? (
               // Row-cache miss mid-step (the prefetch was outrun): the panel
-              // stays mounted and shows the already-signed preview if one is
-              // cached — the operator keeps seeing THIS exposure's pixels
-              // while the row round-trips — else a spinner in place.
-              pngUrl ? (
-                <PreviewImage url={pngUrl} alt="Exposure quick-look" />
+              // stays mounted and shows this exposure's pixels from whatever
+              // is at hand — the already-signed preview, or the pre-downloaded
+              // blob (whose full-res byte serves fine as a quick-look) — while
+              // the row round-trips; else a spinner in place.
+              (pngUrl ?? stored?.url) ? (
+                <PreviewImage url={(pngUrl ?? stored!.url)} alt="Exposure quick-look" />
               ) : (
                 <div className="flex items-center justify-center py-24">
                   <Loader2 className="w-8 h-8 animate-spin text-text-secondary" />
@@ -1149,9 +1177,14 @@ function ExposureDetailPageInner() {
                   clipboardLive={isExposureLive}
                 />
               </div>
-            ) : pngUrl ? (
-              // Fallback: thumbnail-only view (full PNG hasn't been deployed yet).
-              <PreviewImage url={pngUrl} alt={`${exposure.filename} quick-look`} />
+            ) : (pngUrl ?? stored?.url) ? (
+              // Fallback: thumbnail-only view (full PNG hasn't been deployed
+              // yet, or the editor can't mount for want of pixel dims — a
+              // stored full-res blob still beats "No PNG available").
+              <PreviewImage
+                url={(pngUrl ?? stored!.url)}
+                alt={`${exposure.filename} quick-look`}
+              />
             ) : (
               <div className="flex items-center justify-center py-24 text-text-secondary">
                 No PNG available
