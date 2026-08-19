@@ -1,11 +1,18 @@
-"""Reproduce the GP-vs-median 1/f docs figure.
+"""Reproduce the GP-vs-conventional striping docs figure.
 
-Stages a public UNCOVER exposure from MAST whose bright galaxy group spans
-amplifier rows, runs the unified ``bkg`` step twice — once approximating
-the conventional treatment (``estimator="median"``, conditioning detrend
-disabled), once with shipped defaults (GP + detrend) — and renders the
-input frame beside the two removed 1/f models (``h + vcol`` ledgers) at a
-common stretch.
+Stages a public UNCOVER exposure from MAST with a bright elliptical whose
+envelope spans amplifier rows, runs the unified ``bkg`` step twice — once
+approximating the conventional treatment (``estimator="median"``,
+conditioning detrend disabled), once with shipped defaults (GP + detrend) —
+and renders a native-pixel-scale crop of the input frame beside the two
+corrected frames, where the conventional arm's blocky over-subtraction
+around the galaxy is visible by eye.
+
+Frame selection notes (2026-08): on LW frames (F444W) the leak never rises
+above the pixel noise unbinned — the sky is too bright — so the figure uses
+the SW counterpart (F200W), where striping and the leak are prominent by
+eye. All three nrcb1 dithers of this group show the artifact; dither 00001
+shows it best.
 
 Needs the campfire pipeline importable plus its science deps (jwst,
 photutils, celerite2). No CRDS cache required.
@@ -20,9 +27,9 @@ import numpy as np
 import requests
 
 ROOT = sys.argv[1] if len(sys.argv) > 1 else '.'
-EXPOSURE = 'jw02561006002_07201_00001_nrcblong'  # A2744/UNCOVER F444W
+EXPOSURE = 'jw02561006002_07201_00001_nrcb1'  # A2744/UNCOVER F200W
 MAST = 'https://mast.stsci.edu/api/v0.1/Download/file?uri=mast:JWST/product/'
-GALAXY = (1408, 1068)  # x, y of the bright group (detector px)
+CROP = np.s_[0:1040, 210:1250]  # native px around the bright elliptical
 
 
 def stage():
@@ -39,7 +46,7 @@ def run_arm(cal, name, estimator, detrend_enabled):
     from campfire_pipeline.config import load_config
     from campfire_pipeline.nircam.steps.bkg import bkg_step
 
-    work = os.path.join(ROOT, f'ab_{name}.fits')
+    work = os.path.join(ROOT, f'arm_{name}.fits')
     shutil.copy(cal, work)
     cfg = dict(load_config()['nircam']['bkg'])
     cfg['plot'] = False
@@ -55,57 +62,47 @@ def plot(conv, default, out):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    from astropy.nddata import block_reduce
     from astropy.stats import mad_std
 
-    before = default['before'].astype(float)
-    good = (~default['fitmask'].astype(bool)) & np.isfinite(before)
-    sky_med = np.median(before[good])
+    good = (~default['fitmask'].astype(bool)) & np.isfinite(default['before'])
     sig = mad_std(default['after'][good])
+    med = np.median(default['before'][good])
 
-    def oneoverf(c):
-        h = c['h'].astype(float) + c['vcol'].astype(float)
-        return h - np.median(h[np.isfinite(h)])
-
-    def ds(a):
-        return block_reduce(np.nan_to_num(a), 2, np.mean)
-
-    fig, axes = plt.subplots(1, 3, figsize=(16.5, 6.2))
-    axes[0].imshow(ds(before) - sky_med, origin='lower', cmap='Greys',
-                   vmin=-2 * sig, vmax=6 * sig, interpolation='nearest')
-    axes[0].set_title('input frame — bright galaxy group with an\n'
-                      'extended envelope spanning amplifier rows',
-                      fontsize=11)
-    v = 0.008
+    fig, axes = plt.subplots(1, 3, figsize=(16.8, 6.15))
     panels = [
-        (axes[1], oneoverf(conv),
-         'removed 1/f model — plain per-amp-row median\n'
+        (default['before'].astype(float) - med,
+         'before — flat-fielded exposure, stock pipeline\n'
+         '(sky median removed for display)'),
+        (conv['after'].astype(float),
+         'after — plain per-amp-row & column medians\n'
          '(no conditioning; the conventional approach)'),
-        (axes[2], oneoverf(default),
-         'removed 1/f model — CAMPFIRE default\n'
+        (default['after'].astype(float),
+         'after — CAMPFIRE bkg step\n'
          '(Gaussian process + conditioning detrend)'),
     ]
-    for ax, h, title in panels:
-        ax.imshow(ds(h), origin='lower', cmap='RdBu_r', vmin=-v, vmax=v,
-                  interpolation='nearest')
-        ax.set_title(title, fontsize=11)
-        for x in (512, 1024, 1536):
-            ax.axvline(x / 2, color='k', lw=0.5, ls=':', alpha=0.6)
-    gx, gy = GALAXY
-    for ax in axes:
-        ax.add_patch(plt.Circle((gx / 2, gy / 2), 140, fill=False,
-                                color='k' if ax is axes[0] else '0.2',
-                                lw=1.0, ls='--', alpha=0.8))
+    x0 = CROP[1].start
+    for ax, (img, title) in zip(axes, panels):
+        ax.imshow(np.nan_to_num(img)[CROP], origin='lower', cmap='Greys',
+                  vmin=-1.3 * sig, vmax=1.3 * sig, interpolation='nearest')
+        ax.set_title(title, fontsize=10.5)
+        for x in (512, 1024):
+            ax.axvline(x - x0, color='k', lw=0.6, ls=':', alpha=0.6)
         ax.set_xticks([])
         ax.set_yticks([])
-    axes[1].annotate('galaxy flux absorbed into the\namp-row estimate, '
-                     'broadcast\nacross the full amplifier',
-                     xy=(1290 / 2, 1150 / 2), xytext=(660 / 2, 1730 / 2),
-                     fontsize=9.5,
-                     arrowprops=dict(arrowstyle='->', lw=1.0, color='0.15'))
-    fig.suptitle('Why a Gaussian-process 1/f model — '
-                 'jw02561006002_07201_00001 NRCBLONG '
-                 '(Abell 2744 / UNCOVER, F444W)', fontsize=13, y=0.99)
+    axes[1].annotate('bright blocks & streaks: galaxy flux\n'
+                     'absorbed into the row/column estimates,\n'
+                     'subtracted from the surrounding sky',
+                     xy=(800, 210), xycoords='data', annotation_clip=False,
+                     xytext=(0.97, 0.64), textcoords='axes fraction',
+                     ha='right', va='bottom', fontsize=9.5,
+                     bbox=dict(boxstyle='round,pad=0.35', fc='white',
+                               ec='0.4', alpha=0.9),
+                     arrowprops=dict(arrowstyle='->', lw=1.4, color='0.1',
+                                     shrinkB=4,
+                                     connectionstyle='arc3,rad=0.12'))
+    fig.suptitle('Striping residuals around bright extended sources — '
+                 'jw02561006002_07201_00001 NRCB1 '
+                 '(Abell 2744 / UNCOVER, F200W)', fontsize=12.5, y=0.99)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(out, dpi=180)
 
