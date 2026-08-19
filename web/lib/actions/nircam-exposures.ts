@@ -235,8 +235,15 @@ function parseExposureName(filename: string): { act: string; exp: string } | nul
   return parts.length >= 4 ? { act: parts[1], exp: parts[2] } : null;
 }
 
-const detectorModule = (detector: string) => detector.slice(0, 4);      // 'nrca' | 'nrcb'
-const detectorChannel = (detector: string) => detector.endsWith('long') ? 'lw' : 'sw';
+// Mirrors the pipeline's module_of/channel_of (campfire_pipeline/nircam/
+// association.py): the deployed `detector` column holds the FITS DETECTOR
+// header value verbatim, which is uppercase (NRCALONG) — and nrca5/nrcb5 are
+// aliases for the LW detectors — so normalize before classifying.
+const detectorModule = (detector: string) => detector.toLowerCase().slice(0, 4); // 'nrca' | 'nrcb'
+function detectorChannel(detector: string): 'sw' | 'lw' {
+  const d = detector.toLowerCase();
+  return d.endsWith('long') || d.endsWith('5') ? 'lw' : 'sw';
+}
 
 /**
  * The other exposures a triage decision here might implicate: everything in
