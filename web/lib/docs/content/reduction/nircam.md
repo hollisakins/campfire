@@ -8,6 +8,8 @@ This page describes the reduction stage by stage, focusing on where and why CAMP
 
 NIRCam reduction is organized by **field** — a contiguous sky region with an associated set of filters and output mosaic tiles (e.g. a cluster pointing, or a contiguous survey mosaic), potentially drawing exposures from multiple JWST programs. Processing runs in two phases:
 
+![Flow diagram of the NIRCam pipeline: the per-exposure processing chain from raw exposure through detector processing, artifact corrections, calibration, background subtraction, and alignment; and the mosaic combination chain from masking through outlier detection, drizzling, and mosaic-level background subtraction.](/docs/reduction/nircam-flow.png)
+
 **Per-exposure processing** — each exposure is carried from the raw ramp to a calibrated, background-subtracted, aligned image:
 
 | Step | What it does | Origin |
