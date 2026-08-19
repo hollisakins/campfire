@@ -538,11 +538,7 @@ function AdminNircamPageInner() {
       {/* Pre-download the filtered set's PNGs for a no-network triage run —
           scoped to whatever the filter bar currently selects (a whole
           filter/detector pair, just the pending queue, ...). */}
-      <PngPrecacheControl
-        filters={state.debouncedFilters}
-        sort={state.sort}
-        total={exposures.total}
-      />
+      <PngPrecacheControl filters={state.debouncedFilters} sort={state.sort} />
 
       <AdminTable
         columns={columns}

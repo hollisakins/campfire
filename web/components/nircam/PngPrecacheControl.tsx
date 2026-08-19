@@ -1,9 +1,12 @@
 'use client';
 
-import React, { useEffect, useState, useSyncExternalStore } from 'react';
-import { Download, HardDrive, Loader2, Trash2, X } from 'lucide-react';
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { Check, Download, HardDrive, Loader2, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
-import { getNircamExposureIds } from '@/lib/actions/nircam-exposures';
+import {
+  getNircamExposurePngManifest,
+  type ExposurePngManifest,
+} from '@/lib/actions/nircam-exposures';
 import type { SortState } from '@/lib/hooks/useTableUrlState';
 import {
   cancelPngWarm,
@@ -12,6 +15,7 @@ import {
   estimateStorage,
   getPngStoreStats,
   getPngStoreVersion,
+  getStoredPng,
   getWarmState,
   startPngWarm,
   subscribePngStore,
@@ -28,10 +32,6 @@ function fmtBytes(n: number): string {
   return `${v} B`;
 }
 
-// Rough per-exposure budget for the pre-warm size hint (full-res PNGs run
-// ~5–6 MB); the progress readout shows real bytes once the warm is running.
-const EST_BYTES_PER_EXPOSURE = 6 * 1024 * 1024;
-
 function resultNotice(r: PngWarmResult): string | null {
   if (r.error) return r.error;
   if (r.aborted) {
@@ -47,32 +47,41 @@ interface PngPrecacheControlProps {
   /** The list page's active (debounced) filter values, by URL param key. */
   filters: Record<string, string>;
   sort: SortState;
-  /** Matching-exposure count from the table query (sizes the warm up front). */
-  total: number;
 }
 
 /**
  * "Pre-download all PNGs" control for the /admin/nircam list page (sits
  * between the filter bar and the table). Starts a warm of the display PNG of
- * every exposure in the CURRENT filtered set — in list order, resumable,
- * cancellable — into the durable IndexedDB store. The warm itself is module
- * state (lib/nircam-png-store.ts): this control only starts, renders, and
- * cancels it, so navigating into an exposure to begin inspecting does NOT
- * stop the download loop — coming back shows it still running. The cached
- * total and the explicit clear button live here too; expiry is otherwise
- * automatic (PNG_STORE_TTL_MS after each image is stored).
+ * every UNCACHED exposure in the CURRENT filtered set — in list order,
+ * resumable, cancellable — into the durable IndexedDB store. The warm itself
+ * is module state (lib/nircam-png-store.ts): this control only starts,
+ * renders, and cancels it, so navigating into an exposure to begin inspecting
+ * does NOT stop the download loop — coming back shows it still running.
+ *
+ * The button and the size hint are driven by the PNG manifest for the current
+ * filters (getNircamExposurePngManifest): downloadable exposures with their
+ * exact registry sizes. Cached ids are subtracted live, so the count is
+ * "what this click would download", the bytes are the registry truth rather
+ * than a per-image guess, and a fully-cached set greys the button out. The
+ * cached total and the explicit clear button live here too; expiry is
+ * otherwise automatic (PNG_STORE_TTL_MS after each image is stored).
  */
-export function PngPrecacheControl({ filters, sort, total }: PngPrecacheControlProps) {
+export function PngPrecacheControl({ filters, sort }: PngPrecacheControlProps) {
   useSyncExternalStore(subscribePngStore, getPngStoreVersion, getPngStoreVersion);
   const stats = getPngStoreStats();
   const warm = getWarmState();
 
-  // Covers the ids round trip between the click and the module warm starting,
-  // so the button can't double-fire; everything after that renders from the
-  // module's warm state.
+  // Covers the manifest round trip between the click and the module warm
+  // starting, so the button can't double-fire; everything after that renders
+  // from the module's warm state.
   const [starting, setStarting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [headroom, setHeadroom] = useState<{ usage: number; quota: number } | null>(null);
+  // Downloadable exposures + exact sizes for the current filters; null while
+  // loading or after a failed fetch (the button then falls back to a
+  // fetch-at-click flow rather than wedging).
+  const [manifest, setManifest] = useState<ExposurePngManifest['entries'] | null>(null);
+  const [manifestLoading, setManifestLoading] = useState(false);
 
   useEffect(() => {
     ensurePngStoreReady();
@@ -81,24 +90,75 @@ export function PngPrecacheControl({ filters, sort, total }: PngPrecacheControlP
     // operator steps into the triage flow — that's the point of warming.
   }, []);
 
+  const queryParams = useMemo(() => ({
+    field: filters.field || undefined,
+    filter: filters.filter || undefined,
+    detector: filters.detector || undefined,
+    reviewStatus: filters.review || undefined,
+    stage: filters.stage || undefined,
+    correction: filters.correction || undefined,
+    sortColumn: sort.column,
+    sortDirection: sort.direction,
+  }), [
+    filters.field, filters.filter, filters.detector,
+    filters.review, filters.stage, filters.correction,
+    sort.column, sort.direction,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setManifest(null);
+    setManifestLoading(true);
+    getNircamExposurePngManifest(queryParams).then(
+      (res) => {
+        if (cancelled) return;
+        setManifestLoading(false);
+        if (!res.error) setManifest(res.entries);
+      },
+      () => { if (!cancelled) setManifestLoading(false); },
+    );
+    return () => { cancelled = true; };
+  }, [queryParams]);
+
+  // Live split of the manifest against the store: recomputed on every store
+  // change (hydration, each warmed image, clear), so the count is always
+  // "what this click would download" and flips to the all-cached state the
+  // moment the last image lands.
+  const uncached = useMemo(
+    () => manifest?.filter((e) => !getStoredPng(e.id)) ?? null,
+    // getPngStoreVersion() ties the memo to store changes surfaced by the
+    // useSyncExternalStore subscription above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [manifest, getPngStoreVersion()],
+  );
+  let knownBytes = 0;
+  let unknownSizes = 0;
+  if (uncached) {
+    for (const e of uncached) {
+      if (e.bytes != null) knownBytes += e.bytes;
+      else unknownSizes++;
+    }
+  }
+  const uncachedCount = uncached?.length ?? null;
+  const allCached = manifest !== null && manifest.length > 0 && uncachedCount === 0;
+
   const startWarm = async () => {
     setLocalError(null);
     setStarting(true);
     try {
-      const { ids, error } = await getNircamExposureIds({
-        field: filters.field || undefined,
-        filter: filters.filter || undefined,
-        detector: filters.detector || undefined,
-        reviewStatus: filters.review || undefined,
-        stage: filters.stage || undefined,
-        correction: filters.correction || undefined,
-        sortColumn: sort.column,
-        sortDirection: sort.direction,
-      });
-      if (error || ids.length === 0) {
-        setLocalError(error ?? 'No exposures match the current filters.');
-        return;
+      let ids = uncached?.map((e) => e.id) ?? null;
+      if (ids === null) {
+        // Manifest fetch failed or hasn't landed — get one now so the click
+        // still works (startPngWarm skips cached ids on its own).
+        const res = await getNircamExposurePngManifest(queryParams);
+        if (res.error) {
+          setLocalError(res.error);
+          return;
+        }
+        setManifest(res.entries);
+        ids = res.entries.map((e) => e.id);
       }
+      if (ids.length === 0) return;
       setStarting(false);
       // Module-scoped: outlives this component; result surfaces via
       // getWarmState().lastResult whenever a control is mounted to show it.
@@ -109,7 +169,6 @@ export function PngPrecacheControl({ filters, sort, total }: PngPrecacheControlP
     }
   };
 
-  const estNeeded = total * EST_BYTES_PER_EXPOSURE;
   const free = headroom ? Math.max(0, headroom.quota - headroom.usage) : null;
   const ttlHours = Math.round(PNG_STORE_TTL_MS / 3_600_000);
   const notice = localError ?? (warm.lastResult ? resultNotice(warm.lastResult) : null);
@@ -149,26 +208,36 @@ export function PngPrecacheControl({ filters, sort, total }: PngPrecacheControlP
       ) : (
         <div className="flex items-center gap-3 ml-auto">
           {notice && <span className="text-xs text-text-secondary">{notice}</span>}
-          {total > 0 && (
+          {uncached !== null && uncachedCount! > 0 && (
             <span
               className="text-xs text-text-tertiary tabular-nums whitespace-nowrap"
-              title="Rough size of the current filtered set at ~6 MB per exposure, against this browser's storage headroom (already-cached images are skipped, so re-runs only fetch what's missing)."
+              title="Exact size of the not-yet-cached images in the current filtered set (from the storage registry), against this browser's storage headroom."
             >
-              ~{fmtBytes(estNeeded)}{free != null && <> · {fmtBytes(free)} free</>}
+              {unknownSizes > 0 ? '≥' : ''}{fmtBytes(knownBytes)}
+              {free != null && <> · {fmtBytes(free)} free</>}
             </span>
           )}
           <Button
             size="sm"
             onClick={startWarm}
-            disabled={!stats.hydrated || starting || total === 0}
-            title="Download the display PNG of every exposure matching the current filters into this browser, so stepping through the queue never waits on the network. Keeps running if you start inspecting."
+            disabled={
+              !stats.hydrated || starting || manifestLoading ||
+              (manifest !== null && uncachedCount === 0)
+            }
+            title={allCached
+              ? 'Every image in the current filtered set is already cached in this browser.'
+              : 'Download the display PNG of every not-yet-cached exposure matching the current filters into this browser, so stepping through the queue never waits on the network. Keeps running if you start inspecting.'}
           >
-            {!stats.hydrated || starting ? (
-              <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
+            {!stats.hydrated || starting || manifestLoading ? (
+              <><Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> Pre-download PNGs</>
+            ) : allCached ? (
+              <><Check className="w-3.5 h-3.5 mr-1" /> All PNGs cached</>
+            ) : uncachedCount !== null ? (
+              <><Download className="w-3.5 h-3.5 mr-1" /> Pre-download {uncachedCount} PNG{uncachedCount !== 1 ? 's' : ''}</>
             ) : (
-              <Download className="w-3.5 h-3.5 mr-1" />
+              // Manifest fetch failed — the click fetches one and proceeds.
+              <><Download className="w-3.5 h-3.5 mr-1" /> Pre-download PNGs</>
             )}
-            Pre-download {total > 0 ? total : ''} PNG{total !== 1 ? 's' : ''}
           </Button>
           {stats.count > 0 && (
             <Button

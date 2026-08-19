@@ -177,19 +177,38 @@ export async function getExposureNeighbors(
   }
 }
 
+export interface ExposurePngManifest {
+  /**
+   * One entry per exposure in the filtered set that HAS a display PNG (the
+   * full-res mask surface when deployed, else the preview — the byte
+   * /api/nircam-png serves), in the same order the list shows. Exposures with
+   * no PNG at all are omitted: they can't be downloaded, so they must not
+   * count toward the pre-download button or keep it enabled. `bytes` is the
+   * object's exact registry size, or null for a key the registry doesn't
+   * know (the size hint then reads as a lower bound).
+   */
+  entries: { id: number; bytes: number | null }[];
+  error?: string;
+}
+
 /**
- * Every exposure id in a filtered set, in the same order the list shows —
- * feeds the PNG pre-download warm (lib/nircam-png-store.ts), so images are
- * fetched in inspection order and the operator can start stepping while the
- * warm is still running. Ids only: the warm pulls bytes per id through
- * /api/nircam-png. Paged internally (PostgREST caps a single response at
- * 1000 rows) with a hard cap as a runaway guard.
+ * The PNG pre-download manifest for a filtered set: which exposures have a
+ * downloadable display PNG, in inspection order, each with its exact size
+ * from the storage_objects registry. Feeds both halves of the list page's
+ * pre-cache control — the warm's id list (lib/nircam-png-store.ts) and the
+ * bytes-needed hint, which is real registry data rather than a per-image
+ * heuristic (full-res PNG sizes are content-dependent and vary ~2× between
+ * fields). Paged internally (PostgREST caps a single response at 1000 rows)
+ * with a hard cap as a runaway guard.
  */
-export async function getNircamExposureIds(
+export async function getNircamExposurePngManifest(
   params?: ExposureFilters & ExposureSort,
-): Promise<{ ids: number[]; error?: string }> {
+): Promise<ExposurePngManifest> {
   const CHUNK = 1000;
   const CAP = 20000;
+  // storage_objects lookups go out as GET query strings; ~100 keys per
+  // request keeps the URL comfortably under proxy limits.
+  const SIZE_CHUNK = 100;
   try {
     const supabase = await requireSession();
     const sortCol =
@@ -198,9 +217,9 @@ export async function getNircamExposureIds(
         : 'filename';
     const asc = (params?.sortDirection ?? 'asc') === 'asc';
 
-    const ids: number[] = [];
+    const rows: { id: number; key: string }[] = [];
     for (let off = 0; off < CAP; off += CHUNK) {
-      let q = supabase.from('nircam_exposures').select('id');
+      let q = supabase.from('nircam_exposures').select('id, png_path, full_png_path');
       if (params?.field) q = q.eq('field', params.field);
       if (params?.filter) q = q.eq('filter', params.filter);
       if (params?.detector) q = q.eq('detector', params.detector);
@@ -220,15 +239,39 @@ export async function getNircamExposureIds(
       q = q.order('id', { ascending: true }).range(off, off + CHUNK - 1);
 
       const { data, error } = await q;
-      if (error) return { ids: [], error: error.message };
-      ids.push(...(data ?? []).map((r) => r.id as number));
+      if (error) return { entries: [], error: error.message };
+      for (const r of data ?? []) {
+        // Same display-byte rule as /api/nircam-png: full-res wins.
+        const key = (r.full_png_path ?? r.png_path) as string | null;
+        if (key) rows.push({ id: r.id as number, key });
+      }
       if (!data || data.length < CHUNK) break;
     }
-    return { ids };
+
+    const keys = [...new Set(rows.map((r) => r.key))];
+    const sizeByKey = new Map<string, number>();
+    const chunks: string[][] = [];
+    for (let i = 0; i < keys.length; i += SIZE_CHUNK) {
+      chunks.push(keys.slice(i, i + SIZE_CHUNK));
+    }
+    // Best-effort: a failed size lookup leaves those entries at bytes:null
+    // (hint degrades to a lower bound) rather than failing the manifest.
+    await Promise.all(chunks.map(async (chunk) => {
+      const { data } = await supabase
+        .from('storage_objects')
+        .select('storage_key, size_bytes')
+        .eq('status', 'active')
+        .in('storage_key', chunk);
+      for (const r of data ?? []) {
+        if (typeof r.size_bytes === 'number') sizeByKey.set(r.storage_key, r.size_bytes);
+      }
+    }));
+
+    return { entries: rows.map((r) => ({ id: r.id, bytes: sizeByKey.get(r.key) ?? null })) };
   } catch (err) {
     return {
-      ids: [],
-      error: err instanceof Error ? err.message : 'Failed to fetch exposure ids',
+      entries: [],
+      error: err instanceof Error ? err.message : 'Failed to fetch PNG manifest',
     };
   }
 }
