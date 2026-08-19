@@ -276,9 +276,14 @@ function putRecord(rec: PngRecord): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!db) { reject(new Error('PNG store unavailable')); return; }
     const tx = db.transaction(STORE, 'readwrite');
-    tx.objectStore(STORE).put(rec);
+    const req = tx.objectStore(STORE).put(rec);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('PNG store write failed'));
+    // Reject from the REQUEST's error handler: request.error is populated
+    // before its error event fires, while tx.error is still null when that
+    // event bubbles to the transaction (the abort that populates it happens
+    // after dispatch). Rejecting from tx.onerror surfaced a generic Error and
+    // made the warm's QuotaExceededError fatal-stop unreachable.
+    req.onerror = () => reject(req.error ?? new Error('PNG store write failed'));
     tx.onabort = () => reject(tx.error ?? new Error('PNG store write aborted'));
   });
 }
