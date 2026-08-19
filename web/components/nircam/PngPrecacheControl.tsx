@@ -1,20 +1,22 @@
 'use client';
 
-import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { Download, HardDrive, Loader2, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { getNircamExposureIds } from '@/lib/actions/nircam-exposures';
 import type { SortState } from '@/lib/hooks/useTableUrlState';
 import {
+  cancelPngWarm,
   clearPngStore,
   ensurePngStoreReady,
   estimateStorage,
   getPngStoreStats,
   getPngStoreVersion,
+  getWarmState,
+  startPngWarm,
   subscribePngStore,
-  warmPngStore,
   PNG_STORE_TTL_MS,
-  type PngWarmProgress,
+  type PngWarmResult,
 } from '@/lib/nircam-png-store';
 
 function fmtBytes(n: number): string {
@@ -30,6 +32,17 @@ function fmtBytes(n: number): string {
 // ~5–6 MB); the progress readout shows real bytes once the warm is running.
 const EST_BYTES_PER_EXPOSURE = 6 * 1024 * 1024;
 
+function resultNotice(r: PngWarmResult): string | null {
+  if (r.error) return r.error;
+  if (r.aborted) {
+    return `Stopped — ${r.done - r.failed}/${r.total} cached so far (resume any time).`;
+  }
+  if (r.failed > 0) {
+    return `Done with ${r.failed} failed download${r.failed !== 1 ? 's' : ''} — run again to retry them.`;
+  }
+  return null;
+}
+
 interface PngPrecacheControlProps {
   /** The list page's active (debounced) filter values, by URL param key. */
   filters: Record<string, string>;
@@ -40,37 +53,37 @@ interface PngPrecacheControlProps {
 
 /**
  * "Pre-download all PNGs" control for the /admin/nircam list page (sits
- * between the filter bar and the table). Downloads the display PNG of every
- * exposure in the CURRENT filtered set — in list order, resumable, cancellable
- * — into the durable IndexedDB store (lib/nircam-png-store.ts), so a triage
- * run over a whole filter/detector pair never waits on a fetch. The cached
+ * between the filter bar and the table). Starts a warm of the display PNG of
+ * every exposure in the CURRENT filtered set — in list order, resumable,
+ * cancellable — into the durable IndexedDB store. The warm itself is module
+ * state (lib/nircam-png-store.ts): this control only starts, renders, and
+ * cancels it, so navigating into an exposure to begin inspecting does NOT
+ * stop the download loop — coming back shows it still running. The cached
  * total and the explicit clear button live here too; expiry is otherwise
  * automatic (PNG_STORE_TTL_MS after each image is stored).
  */
 export function PngPrecacheControl({ filters, sort, total }: PngPrecacheControlProps) {
   useSyncExternalStore(subscribePngStore, getPngStoreVersion, getPngStoreVersion);
   const stats = getPngStoreStats();
+  const warm = getWarmState();
 
-  const [warming, setWarming] = useState(false);
-  const [progress, setProgress] = useState<PngWarmProgress | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // Covers the ids round trip between the click and the module warm starting,
+  // so the button can't double-fire; everything after that renders from the
+  // module's warm state.
+  const [starting, setStarting] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
   const [headroom, setHeadroom] = useState<{ usage: number; quota: number } | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     ensurePngStoreReady();
     estimateStorage().then(setHeadroom);
-    // Cancel a warm this page instance started if the operator navigates away
-    // mid-run; whatever already landed is kept (the warm is resumable).
-    return () => abortRef.current?.abort();
+    // Deliberately NO abort on unmount: the warm keeps running while the
+    // operator steps into the triage flow — that's the point of warming.
   }, []);
 
   const startWarm = async () => {
-    setNotice(null);
-    setWarming(true);
-    setProgress({ done: 0, total, bytes: 0, failed: 0 });
-    const controller = new AbortController();
-    abortRef.current = controller;
+    setLocalError(null);
+    setStarting(true);
     try {
       const { ids, error } = await getNircamExposureIds({
         field: filters.field || undefined,
@@ -83,31 +96,23 @@ export function PngPrecacheControl({ filters, sort, total }: PngPrecacheControlP
         sortDirection: sort.direction,
       });
       if (error || ids.length === 0) {
-        setNotice(error ?? 'No exposures match the current filters.');
+        setLocalError(error ?? 'No exposures match the current filters.');
         return;
       }
-      const result = await warmPngStore(ids, {
-        signal: controller.signal,
-        onProgress: setProgress,
-      });
-      if (result.error) {
-        setNotice(result.error);
-      } else if (result.aborted) {
-        setNotice(`Stopped — ${result.done - result.failed}/${result.total} cached so far (resume any time).`);
-      } else if (result.failed > 0) {
-        setNotice(`Done with ${result.failed} failed download${result.failed !== 1 ? 's' : ''} — run again to retry them.`);
-      }
+      setStarting(false);
+      // Module-scoped: outlives this component; result surfaces via
+      // getWarmState().lastResult whenever a control is mounted to show it.
+      await startPngWarm(ids);
       estimateStorage().then(setHeadroom);
     } finally {
-      abortRef.current = null;
-      setWarming(false);
-      setProgress(null);
+      setStarting(false);
     }
   };
 
   const estNeeded = total * EST_BYTES_PER_EXPOSURE;
   const free = headroom ? Math.max(0, headroom.quota - headroom.usage) : null;
   const ttlHours = Math.round(PNG_STORE_TTL_MS / 3_600_000);
+  const notice = localError ?? (warm.lastResult ? resultNotice(warm.lastResult) : null);
 
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-4 px-4 py-2.5 rounded-lg border border-border bg-card text-sm">
@@ -125,19 +130,19 @@ export function PngPrecacheControl({ filters, sort, total }: PngPrecacheControlP
         )}
       </div>
 
-      {warming && progress ? (
+      {warm.running && warm.progress ? (
         <div className="flex items-center gap-3 flex-1 min-w-48">
           <div className="h-2 flex-1 min-w-24 rounded-full bg-surface-2 overflow-hidden">
             <div
               className="h-full rounded-full bg-primary transition-[width]"
-              style={{ width: `${progress.total > 0 ? (progress.done / progress.total) * 100 : 0}%` }}
+              style={{ width: `${warm.progress.total > 0 ? (warm.progress.done / warm.progress.total) * 100 : 0}%` }}
             />
           </div>
           <span className="text-xs tabular-nums text-text-secondary whitespace-nowrap">
-            {progress.done}/{progress.total} · {fmtBytes(progress.bytes)}
-            {progress.failed > 0 && <> · {progress.failed} failed</>}
+            {warm.progress.done}/{warm.progress.total} · {fmtBytes(warm.progress.bytes)}
+            {warm.progress.failed > 0 && <> · {warm.progress.failed} failed</>}
           </span>
-          <Button size="sm" variant="secondary" onClick={() => abortRef.current?.abort()}>
+          <Button size="sm" variant="secondary" onClick={cancelPngWarm}>
             <X className="w-3.5 h-3.5 mr-1" /> Stop
           </Button>
         </div>
@@ -155,10 +160,10 @@ export function PngPrecacheControl({ filters, sort, total }: PngPrecacheControlP
           <Button
             size="sm"
             onClick={startWarm}
-            disabled={!stats.hydrated || total === 0}
-            title="Download the display PNG of every exposure matching the current filters into this browser, so stepping through the queue never waits on the network."
+            disabled={!stats.hydrated || starting || total === 0}
+            title="Download the display PNG of every exposure matching the current filters into this browser, so stepping through the queue never waits on the network. Keeps running if you start inspecting."
           >
-            {!stats.hydrated ? (
+            {!stats.hydrated || starting ? (
               <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />
             ) : (
               <Download className="w-3.5 h-3.5 mr-1" />
@@ -169,7 +174,10 @@ export function PngPrecacheControl({ filters, sort, total }: PngPrecacheControlP
             <Button
               size="sm"
               variant="secondary"
-              onClick={() => { setNotice(null); clearPngStore(); estimateStorage().then(setHeadroom); }}
+              onClick={() => {
+                setLocalError(null);
+                clearPngStore().then(() => estimateStorage().then(setHeadroom));
+              }}
               title="Delete all cached exposure images from this browser now."
             >
               <Trash2 className="w-3.5 h-3.5 mr-1" /> Clear

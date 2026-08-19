@@ -17,13 +17,26 @@
  * storage quota (GBs on desktop — navigator.storage.estimate() is the truth).
  * A thousand full-res exposures is roughly 6 GB.
  *
- * Lifecycle: every record carries storedAt, and ensurePngStoreReady() —
- * called from both triage pages on mount — sweeps records older than
- * PNG_STORE_TTL_MS, so a finished inspection's cache clears itself after the
- * buffer window without the operator doing anything. clearPngStore() empties
- * it on demand. Object URLs are minted once at hydration (or store time) and
- * revoked when their record is dropped; blobs stay on disk until then, so the
- * in-memory map costs a few strings per exposure, not the image bytes.
+ * The warm itself is MODULE state, not component state: the control that
+ * starts it unmounts as soon as the operator opens an exposure (the whole
+ * point is inspecting while the warm continues), so the download loop and its
+ * progress live here and every page of the flow just subscribes. One warm at
+ * a time; navigation neither cancels nor duplicates it.
+ *
+ * Tabs cooperate through a BroadcastChannel: each stored image and each
+ * clear is announced, and other tabs fold the change into their own map — so
+ * warming in one tab feeds a triage session already running in another
+ * without a reload.
+ *
+ * Lifecycle: every record carries storedAt. Expiry (PNG_STORE_TTL_MS after
+ * download — inspection session + buffer) is enforced three ways so the
+ * "auto-clears" promise holds even for a long-lived SPA session: a sweep at
+ * first hydration, a read-time check in getStoredPng (an expired blob is
+ * never served), and a periodic re-sweep that actually deletes what expired
+ * while the tab stayed open. clearPngStore() empties everything on demand.
+ * Object URLs are minted once at hydration (or store time) and revoked when
+ * their record is dropped; blobs stay on disk until then, so the in-memory
+ * map costs a few strings per exposure, not the image bytes.
  */
 
 export const PNG_STORE_TTL_MS = 24 * 60 * 60 * 1000; // inspection session + buffer
@@ -31,9 +44,15 @@ export const PNG_STORE_TTL_MS = 24 * 60 * 60 * 1000; // inspection session + buf
 const DB_NAME = 'campfire-nircam-png-store';
 const DB_VERSION = 1;
 const STORE = 'pngs';
+const CHANNEL_NAME = 'campfire-nircam-png-store';
 // Modest parallelism: each request streams ~6 MB through a serverless
 // function; 4-way keeps the pipe full without hammering the proxy.
 const WARM_CONCURRENCY = 4;
+// How often a long-lived tab re-checks for records that expired while open.
+const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+// Progress emits are throttled so a warm running behind an active triage
+// session doesn't re-render the detail page once per downloaded image.
+const PROGRESS_EMIT_INTERVAL_MS = 250;
 
 interface PngRecord {
   id: number;                    // nircam_exposures.id (the IDB key)
@@ -47,12 +66,14 @@ export interface StoredPng {
   kind: 'full' | 'preview';
   url: string;                   // object URL backed by the stored blob
   bytes: number;
+  storedAt: number;
 }
 
 const mem = new Map<number, StoredPng>();
 let db: IDBDatabase | null = null;
 let hydrated = false;
 let readyPromise: Promise<void> | null = null;
+let channel: BroadcastChannel | null = null;
 
 // useSyncExternalStore plumbing (same version-counter pattern as the save
 // state in lib/nircam-exposure-cache.ts): consumers re-read the maps after
@@ -71,6 +92,17 @@ export function getPngStoreVersion(): number {
   return version;
 }
 
+function isExpired(storedAt: number): boolean {
+  return Date.now() - storedAt > PNG_STORE_TTL_MS;
+}
+
+function dropMemEntry(id: number): void {
+  const e = mem.get(id);
+  if (!e) return;
+  URL.revokeObjectURL(e.url);
+  mem.delete(id);
+}
+
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -84,45 +116,132 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
+function getRecord(id: number): Promise<PngRecord | undefined> {
+  return new Promise((resolve, reject) => {
+    if (!db) { resolve(undefined); return; }
+    const req = db.transaction(STORE, 'readonly').objectStore(STORE).get(id);
+    req.onsuccess = () => resolve(req.result as PngRecord | undefined);
+    req.onerror = () => reject(req.error ?? new Error('PNG store read failed'));
+  });
+}
+
+function deleteRecords(ids: number[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (!db || ids.length === 0) { resolve(); return; }
+    const tx = db.transaction(STORE, 'readwrite');
+    const os = tx.objectStore(STORE);
+    for (const id of ids) os.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('PNG store delete failed'));
+  });
+}
+
 /**
- * Open the database, sweep expired records, and mint object URLs for the
- * rest. Idempotent single-flight; both triage pages call it on mount. If
- * IndexedDB is unavailable (private browsing, disabled storage) this resolves
- * with an empty store — the pages just fall back to the presigned-URL path.
+ * Drop everything past its TTL — from this tab's map and from disk. Runs at
+ * hydration and on a coarse interval afterwards, so records that age out
+ * while the SPA stays open still get deleted, not just hidden by the
+ * read-time check in getStoredPng.
+ */
+async function sweepExpired(): Promise<void> {
+  const expired: number[] = [];
+  for (const [id, e] of mem) {
+    if (isExpired(e.storedAt)) expired.push(id);
+  }
+  if (expired.length === 0) return;
+  for (const id of expired) dropMemEntry(id);
+  try {
+    await deleteRecords(expired);
+  } catch {
+    // Disk cleanup failed; the entries are already unservable here and the
+    // next hydration's sweep gets another shot.
+  }
+  emit();
+}
+
+// Cross-tab messages: 'stored' announces one new record (receivers pull it
+// from IndexedDB into their own map), 'cleared' announces a full clear.
+type ChannelMessage = { type: 'stored'; id: number } | { type: 'cleared' };
+
+function announce(msg: ChannelMessage): void {
+  try {
+    channel?.postMessage(msg);
+  } catch {
+    // Channel closed or serialization refused — cross-tab freshness only.
+  }
+}
+
+async function onChannelMessage(msg: ChannelMessage): Promise<void> {
+  if (msg.type === 'cleared') {
+    for (const e of mem.values()) URL.revokeObjectURL(e.url);
+    mem.clear();
+    emit();
+    return;
+  }
+  if (msg.type === 'stored' && typeof msg.id === 'number' && !mem.has(msg.id)) {
+    try {
+      const rec = await getRecord(msg.id);
+      if (rec && !isExpired(rec.storedAt) && !mem.has(rec.id)) {
+        mem.set(rec.id, {
+          kind: rec.kind,
+          url: URL.createObjectURL(rec.blob),
+          bytes: rec.bytes,
+          storedAt: rec.storedAt,
+        });
+        emit();
+      }
+    } catch {
+      // Reads race the writer tab; the record stays available on disk.
+    }
+  }
+}
+
+/**
+ * Open the database, sweep expired records, mint object URLs for the rest,
+ * and start the cross-tab channel + periodic re-sweep. Idempotent
+ * single-flight; both triage pages call it on mount. If IndexedDB is
+ * unavailable (private browsing, disabled storage) this resolves with an
+ * empty store — the pages just fall back to the presigned-URL path.
  */
 export function ensurePngStoreReady(): Promise<void> {
   if (readyPromise) return readyPromise;
   readyPromise = (async () => {
-    if (typeof indexedDB === 'undefined') { hydrated = true; return; }
-    try {
-      db = await openDb();
-      const cutoff = Date.now() - PNG_STORE_TTL_MS;
-      await new Promise<void>((resolve, reject) => {
-        const tx = db!.transaction(STORE, 'readwrite');
-        const cursorReq = tx.objectStore(STORE).openCursor();
-        cursorReq.onsuccess = () => {
-          const cursor = cursorReq.result;
-          if (!cursor) return; // tx.oncomplete resolves
-          const rec = cursor.value as PngRecord;
-          if (rec.storedAt < cutoff) {
-            cursor.delete();
-          } else {
-            mem.set(rec.id, {
-              kind: rec.kind,
-              url: URL.createObjectURL(rec.blob),
-              bytes: rec.bytes,
-            });
-          }
-          cursor.continue();
-        };
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error ?? new Error('PNG store sweep failed'));
-      });
-    } catch {
-      // Store unusable — behave as empty rather than breaking triage.
-      db = null;
-      for (const e of mem.values()) URL.revokeObjectURL(e.url);
-      mem.clear();
+    if (typeof indexedDB !== 'undefined') {
+      try {
+        db = await openDb();
+        const cutoff = Date.now() - PNG_STORE_TTL_MS;
+        await new Promise<void>((resolve, reject) => {
+          const tx = db!.transaction(STORE, 'readwrite');
+          const cursorReq = tx.objectStore(STORE).openCursor();
+          cursorReq.onsuccess = () => {
+            const cursor = cursorReq.result;
+            if (!cursor) return; // tx.oncomplete resolves
+            const rec = cursor.value as PngRecord;
+            if (rec.storedAt < cutoff) {
+              cursor.delete();
+            } else {
+              mem.set(rec.id, {
+                kind: rec.kind,
+                url: URL.createObjectURL(rec.blob),
+                bytes: rec.bytes,
+                storedAt: rec.storedAt,
+              });
+            }
+            cursor.continue();
+          };
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error ?? new Error('PNG store sweep failed'));
+        });
+        if (typeof BroadcastChannel !== 'undefined') {
+          channel = new BroadcastChannel(CHANNEL_NAME);
+          channel.onmessage = (ev) => { onChannelMessage(ev.data as ChannelMessage); };
+        }
+        setInterval(sweepExpired, SWEEP_INTERVAL_MS);
+      } catch {
+        // Store unusable — behave as empty rather than breaking triage.
+        db = null;
+        for (const e of mem.values()) URL.revokeObjectURL(e.url);
+        mem.clear();
+      }
     }
     hydrated = true;
     emit();
@@ -130,15 +249,27 @@ export function ensurePngStoreReady(): Promise<void> {
   return readyPromise;
 }
 
-/** Synchronous read for the render path; undefined until warmed/hydrated. */
+/**
+ * Synchronous read for the render path; undefined until warmed/hydrated.
+ * Expiry is enforced here too: a record past its TTL is never served, even
+ * before the periodic sweep gets around to deleting it.
+ */
 export function getStoredPng(id: number): StoredPng | undefined {
-  return mem.get(id);
+  const e = mem.get(id);
+  if (!e) return undefined;
+  if (isExpired(e.storedAt)) return undefined;
+  return e;
 }
 
 export function getPngStoreStats(): { count: number; bytes: number; hydrated: boolean } {
+  let count = 0;
   let bytes = 0;
-  for (const e of mem.values()) bytes += e.bytes;
-  return { count: mem.size, bytes, hydrated };
+  for (const e of mem.values()) {
+    if (isExpired(e.storedAt)) continue;
+    count++;
+    bytes += e.bytes;
+  }
+  return { count, bytes, hydrated };
 }
 
 function putRecord(rec: PngRecord): Promise<void> {
@@ -173,59 +304,99 @@ export interface PngWarmResult extends PngWarmProgress {
   error?: string;
 }
 
+// The single active warm + the last finished one, module-scoped so the run
+// survives the list page unmounting (navigating into an exposure) and so any
+// page can render its progress. State changes flow through emit().
+let activeWarm: { controller: AbortController; progress: PngWarmProgress } | null = null;
+let lastWarmResult: PngWarmResult | null = null;
+
+export function getWarmState(): {
+  running: boolean;
+  progress: PngWarmProgress | null;
+  lastResult: PngWarmResult | null;
+} {
+  return {
+    running: activeWarm !== null,
+    progress: activeWarm ? { ...activeWarm.progress } : null,
+    lastResult: lastWarmResult,
+  };
+}
+
+export function cancelPngWarm(): void {
+  activeWarm?.controller.abort();
+}
+
 /**
  * Download-and-store every id not already held, in the order given (= the
  * list's inspection order, so the exposures the operator will hit first are
- * warmed first — inspecting can start while the warm continues). Resumable
- * by construction: already-stored ids are skipped, so re-running after a
- * cancel or failure only fetches what's missing. A 404 (exposure has no PNG
- * deployed) is a silent skip, not a failure — those render "No PNG available"
- * in triage regardless.
+ * warmed first — inspecting can start while the warm continues; the run is
+ * module state, so navigating into the triage flow does NOT cancel it).
+ * Resumable by construction: already-stored ids are skipped, so re-running
+ * after a cancel or failure only fetches what's missing. A 404 (exposure has
+ * no PNG deployed) is a silent skip, not a failure — those render "No PNG
+ * available" in triage regardless. One warm at a time: starting while one is
+ * running returns null and leaves the active run alone.
  */
-export async function warmPngStore(
-  ids: number[],
-  opts: { signal?: AbortSignal; onProgress?: (p: PngWarmProgress) => void } = {},
-): Promise<PngWarmResult> {
+export async function startPngWarm(ids: number[]): Promise<PngWarmResult | null> {
+  if (activeWarm) return null;
   await ensurePngStoreReady();
-  const todo = ids.filter((i) => !mem.has(i));
+  const todo = ids.filter((i) => !getStoredPng(i));
   const progress: PngWarmProgress = {
     done: ids.length - todo.length,
     total: ids.length,
     bytes: 0,
     failed: 0,
   };
-  opts.onProgress?.({ ...progress });
+  const controller = new AbortController();
+  activeWarm = { controller, progress };
+  lastWarmResult = null;
+  emit();
   if (!db && todo.length > 0) {
-    return { ...progress, aborted: false, error: 'Browser storage is unavailable (private browsing?)' };
+    activeWarm = null;
+    lastWarmResult = {
+      ...progress, aborted: false,
+      error: 'Browser storage is unavailable (private browsing?)',
+    };
+    emit();
+    return lastWarmResult;
   }
+
+  let lastProgressEmit = 0;
+  const progressed = () => {
+    const now = Date.now();
+    if (now - lastProgressEmit >= PROGRESS_EMIT_INTERVAL_MS) {
+      lastProgressEmit = now;
+      emit();
+    }
+  };
 
   let fatal: string | undefined;
   let next = 0;
   const worker = async () => {
-    while (!fatal && !opts.signal?.aborted) {
+    while (!fatal && !controller.signal.aborted) {
       const idx = next++;
       if (idx >= todo.length) return;
       const id = todo[idx];
       try {
-        const res = await fetch(`/api/nircam-png?id=${id}`, { signal: opts.signal });
+        const res = await fetch(`/api/nircam-png?id=${id}`, { signal: controller.signal });
         if (!res.ok) {
           if (res.status !== 404) progress.failed++;
           progress.done++;
-          opts.onProgress?.({ ...progress });
+          progressed();
           continue;
         }
         const kind = res.headers.get('x-png-kind') === 'preview' ? 'preview' : 'full';
         const blob = await res.blob();
-        await putRecord({ id, kind, bytes: blob.size, storedAt: Date.now(), blob });
-        mem.set(id, { kind, url: URL.createObjectURL(blob), bytes: blob.size });
+        const storedAt = Date.now();
+        await putRecord({ id, kind, bytes: blob.size, storedAt, blob });
+        dropMemEntry(id); // replace a stale/expired leftover, if any
+        mem.set(id, { kind, url: URL.createObjectURL(blob), bytes: blob.size, storedAt });
+        announce({ type: 'stored', id });
         progress.bytes += blob.size;
         progress.done++;
-        opts.onProgress?.({ ...progress });
-        // Keep any store-stats UI roughly live without a global re-render per
-        // image; the final emit below settles the exact numbers.
-        if (progress.done % 25 === 0) emit();
+        progressed();
       } catch (err) {
-        if (opts.signal?.aborted) return;
+        if (controller.signal.aborted) return;
         if (isQuotaError(err)) {
           fatal = 'Browser storage quota exhausted — the warm stored what fit. ' +
             'Clear the cache or free disk space and re-run to continue.';
@@ -233,13 +404,15 @@ export async function warmPngStore(
         }
         progress.failed++;
         progress.done++;
-        opts.onProgress?.({ ...progress });
+        progressed();
       }
     }
   };
   await Promise.all(Array.from({ length: WARM_CONCURRENCY }, worker));
+  lastWarmResult = { ...progress, aborted: controller.signal.aborted, error: fatal };
+  activeWarm = null;
   emit();
-  return { ...progress, aborted: !!opts.signal?.aborted, error: fatal };
+  return lastWarmResult;
 }
 
 /**
@@ -260,6 +433,8 @@ export async function clearPngStore(): Promise<void> {
   }
   for (const e of mem.values()) URL.revokeObjectURL(e.url);
   mem.clear();
+  lastWarmResult = null;
+  announce({ type: 'cleared' });
   emit();
 }
 
