@@ -3,10 +3,6 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Check, Download, HardDrive, Loader2, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
-import {
-  getNircamExposurePngManifest,
-  type ExposurePngManifest,
-} from '@/lib/actions/nircam-exposures';
 import type { SortState } from '@/lib/hooks/useTableUrlState';
 import {
   cancelPngWarm,
@@ -30,6 +26,27 @@ function fmtBytes(n: number): string {
     v /= 1024;
   }
   return `${v} B`;
+}
+
+interface PngManifestEntry {
+  id: number;
+  bytes: number | null;
+}
+
+/**
+ * GET /api/nircam-png/manifest — deliberately a route fetch, NOT a server
+ * action: Next serializes server actions per client, and this scan as an
+ * action queued ahead of the table's own fetch on every filter change,
+ * freezing the table until the manifest landed. A fetch runs alongside the
+ * actions and aborts cleanly when the filters change again.
+ */
+async function fetchPngManifest(
+  query: string,
+  signal?: AbortSignal,
+): Promise<{ entries: PngManifestEntry[]; error?: string }> {
+  const res = await fetch(`/api/nircam-png/manifest?${query}`, { signal });
+  if (!res.ok) return { entries: [], error: `Manifest fetch failed (HTTP ${res.status})` };
+  return res.json();
 }
 
 function resultNotice(r: PngWarmResult): string | null {
@@ -80,7 +97,7 @@ export function PngPrecacheControl({ filters, sort }: PngPrecacheControlProps) {
   // Downloadable exposures + exact sizes for the current filters; null while
   // loading or after a failed fetch (the button then falls back to a
   // fetch-at-click flow rather than wedging).
-  const [manifest, setManifest] = useState<ExposurePngManifest['entries'] | null>(null);
+  const [manifest, setManifest] = useState<PngManifestEntry[] | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
 
   useEffect(() => {
@@ -90,35 +107,30 @@ export function PngPrecacheControl({ filters, sort }: PngPrecacheControlProps) {
     // operator steps into the triage flow — that's the point of warming.
   }, []);
 
-  const queryParams = useMemo(() => ({
-    field: filters.field || undefined,
-    filter: filters.filter || undefined,
-    detector: filters.detector || undefined,
-    reviewStatus: filters.review || undefined,
-    stage: filters.stage || undefined,
-    correction: filters.correction || undefined,
-    sortColumn: sort.column,
-    sortDirection: sort.direction,
-  }), [
-    filters.field, filters.filter, filters.detector,
-    filters.review, filters.stage, filters.correction,
-    sort.column, sort.direction,
-  ]);
+  const manifestQuery = useMemo(() => {
+    const sp = new URLSearchParams();
+    for (const key of ['field', 'filter', 'detector', 'review', 'stage', 'correction'] as const) {
+      if (filters[key]) sp.set(key, filters[key]);
+    }
+    sp.set('sort', sort.column);
+    sp.set('dir', sort.direction);
+    return sp.toString();
+  }, [filters, sort]);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     setManifest(null);
     setManifestLoading(true);
-    getNircamExposurePngManifest(queryParams).then(
+    fetchPngManifest(manifestQuery, controller.signal).then(
       (res) => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setManifestLoading(false);
         if (!res.error) setManifest(res.entries);
       },
-      () => { if (!cancelled) setManifestLoading(false); },
+      () => { if (!controller.signal.aborted) setManifestLoading(false); },
     );
-    return () => { cancelled = true; };
-  }, [queryParams]);
+    return () => controller.abort();
+  }, [manifestQuery]);
 
   // Live split of the manifest against the store: recomputed on every store
   // change (hydration, each warmed image, clear), so the count is always
@@ -150,7 +162,7 @@ export function PngPrecacheControl({ filters, sort }: PngPrecacheControlProps) {
       if (ids === null) {
         // Manifest fetch failed or hasn't landed — get one now so the click
         // still works (startPngWarm skips cached ids on its own).
-        const res = await getNircamExposurePngManifest(queryParams);
+        const res = await fetchPngManifest(manifestQuery);
         if (res.error) {
           setLocalError(res.error);
           return;
