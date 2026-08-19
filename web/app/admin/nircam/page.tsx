@@ -83,7 +83,10 @@ function StageBadge({ stage }: { stage: string }) {
 // detector. Fields collapse (default closed) so the exposure table stays one
 // scroll away regardless of how many field/filter combinations exist. Each
 // filter row shows inspection progress (approved+excluded of total), the mask
-// count, and per-detector quick-filter links into the pending queue below.
+// count, and per-detector quick links into the exposure table below. The
+// detector chips still COUNT pending (that's the work signal) but select the
+// whole field/filter/detector set, not just pending — the already-decided
+// neighbors are useful context while triaging.
 // (The old per-stage distribution bar is gone: whole filters sit at the same
 // pipeline stage in practice, so it carried no signal. The excluded-exposures
 // copy-paste panel is gone too — `campfire pull` materializes exclusions into
@@ -143,8 +146,14 @@ function groupProgress(rows: ReductionProgress[]): FieldProgress[] {
   return out;
 }
 
-function pendingHref(field: string, filter?: string, detector?: string) {
-  const p = new URLSearchParams({ field, review: 'pending' });
+// Field-level "pending" chip: that one IS labeled pending, so it filters to it.
+function pendingHref(field: string) {
+  return `/admin/nircam?${new URLSearchParams({ field, review: 'pending' })}`;
+}
+
+// Filter/detector quick-select: scopes the table without a review filter.
+function scopeHref(field: string, filter?: string, detector?: string) {
+  const p = new URLSearchParams({ field });
   if (filter) p.set('filter', filter);
   if (detector) p.set('detector', detector);
   return `/admin/nircam?${p.toString()}`;
@@ -174,8 +183,8 @@ function InspectionMeter({ counts }: { counts: TriageCounts }) {
   );
 }
 
-// Quick-filter chip: jumps to the exposure table pre-filtered to this
-// field/filter/detector's pending queue.
+// Quick-select chip: jumps to the exposure table scoped by the href, showing
+// the count as the work signal.
 function PendingChip({ label, count, href }: { label: string; count: number; href: string }) {
   return (
     <Link
@@ -268,7 +277,7 @@ function FieldSection({ fp }: { fp: FieldProgress }) {
                             key={d.detector}
                             label={d.detector}
                             count={d.pending}
-                            href={pendingHref(fp.field, flt.filter, d.detector)}
+                            href={scopeHref(fp.field, flt.filter, d.detector)}
                           />
                         ))}
                     </div>

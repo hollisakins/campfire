@@ -22,7 +22,7 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   MousePointer2, PencilLine, Hand, Trash2, Save, Loader2, Check,
-  Copy, ClipboardPaste,
+  Copy, ClipboardPaste, Maximize,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import type { MaskPolygon, MaskRegionsPayload } from '@/lib/types';
@@ -232,8 +232,9 @@ function MaskEditor({
   const [scale, setScale] = useState(1);
   const [translate, setTranslate] = useState<[number, number]>([0, 0]);
 
-  // Fit-to-container on first mount.
-  useEffect(() => {
+  // Scale + center the image to the container — the initial view, re-invocable
+  // from the toolbar's fit button / `F` after zooming or panning away.
+  const fitToView = useCallback(() => {
     if (!containerRef.current) return;
     const cw = containerRef.current.clientWidth;
     const ch = containerRef.current.clientHeight;
@@ -244,6 +245,9 @@ function MaskEditor({
       (ch - imageHeight * s) / 2,
     ]);
   }, [imageWidth, imageHeight]);
+
+  // Fit-to-container on first mount (and when the frame dimensions change).
+  useEffect(() => { fitToView(); }, [fitToView]);
 
   // Which exposure (and frame height) the editor state currently belongs to,
   // plus event-time mirrors of `polygons`/`dirty` — the swap flush below runs
@@ -540,11 +544,19 @@ function MaskEditor({
   // ----- keyboard: Enter/Escape (draw), Backspace (vertex undo) -----
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      const isInput = t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT';
+      // F — zoom to fit (matches the toolbar button). Plain keypress only, so
+      // it never shadows browser chords like Ctrl/⌘F.
+      if ((e.key === 'f' || e.key === 'F')
+          && !e.metaKey && !e.ctrlKey && !e.altKey && !isInput) {
+        e.preventDefault();
+        fitToView();
+        return;
+      }
       // Ctrl/⌘ C/V — mask clipboard. Skip when typing in a form field, and
       // yield Ctrl/⌘C to a real text selection anywhere on the page.
       if (clipboardSource && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
-        const t = e.target as HTMLElement;
-        const isInput = t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT';
         const k = e.key.toLowerCase();
         if (k === 'c' && !isInput && !window.getSelection()?.toString()) {
           if (polygons.length > 0) { e.preventDefault(); handleCopy(); }
@@ -574,7 +586,7 @@ function MaskEditor({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [mode, selectedId, markDirty, finalizeDraft,
+  }, [mode, selectedId, markDirty, finalizeDraft, fitToView,
       clipboardSource, polygons.length, handleCopy, handlePaste]);
 
   const handleSave = useCallback(async () => {
@@ -666,6 +678,9 @@ function MaskEditor({
           )}
           <span>{polygons.length} polygon{polygons.length === 1 ? '' : 's'}</span>
           <span>{(scale * 100).toFixed(0)}%</span>
+          <ToolButton onClick={fitToView} label="Zoom to fit (F)">
+            <Maximize className="w-4 h-4" />
+          </ToolButton>
           {saveError && <span className="text-red-500">{saveError}</span>}
           <Button
             onClick={(e) => {
@@ -847,7 +862,7 @@ function MaskEditor({
 
         {/* Help footer */}
         <div className="absolute bottom-2 left-2 right-2 text-[11px] text-white/70 pointer-events-none font-mono">
-          {mode === 'inspect' && 'drag = pan • wheel = zoom • shift+drag = pan in any mode'}
+          {mode === 'inspect' && 'drag = pan • wheel = zoom • F = zoom to fit • shift+drag = pan in any mode'}
           {mode === 'draw'    && 'click = add vertex • click first vertex / Enter = close • Esc = cancel • Backspace = undo vertex'}
           {mode === 'edit'    && 'click polygon = select • drag polygon = move • drag vertex = reshape • Delete = remove polygon'}
         </div>
