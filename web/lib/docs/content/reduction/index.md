@@ -9,8 +9,8 @@ The pipeline is organized into sequential stages for each instrument:
 | Stage | NIRSpec | NIRCam |
 |-------|---------|--------|
 | **Stage 1** | Detector processing + background subtraction | Detector processing + artifact removal |
-| **Stage 2** | WCS assignment (2a), stuck shutter masking, nodded background subtraction (2b) | Flat fielding + sky subtraction |
-| **Stage 3** | Spectral extraction + 1D combination | Alignment + mosaicking |
+| **Stage 2** | WCS assignment (2a), stuck shutter masking, nodded background subtraction (2b) | Calibration, background subtraction + alignment |
+| **Stage 3** | Spectral extraction + 1D combination | Mosaic combination |
 | **Redshift Fitting** | Template-based chi-squared fitting | — |
 
 ## Heritage
@@ -23,4 +23,4 @@ The CAMPFIRE pipeline builds on the work of several teams:
 ## Instrument Pipelines
 
 - [NIRSpec Pipeline](/docs/reduction/nirspec) — Multi-object spectroscopy: detector processing through 1D extraction and redshift fitting
-- NIRCam Pipeline — Imaging: detector processing through mosaic assembly *(documentation coming soon)*
+- [NIRCam Pipeline](/docs/reduction/nircam) — Imaging: detector processing through mosaic assembly
