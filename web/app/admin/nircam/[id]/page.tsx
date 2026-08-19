@@ -7,13 +7,17 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import {
   Loader2, ArrowLeft, Save, Check, ChevronLeft, ChevronRight, Keyboard,
+  ExternalLink,
 } from 'lucide-react';
 import {
   getNircamExposureById,
   getExposureNeighbors,
+  getRelatedExposures,
   saveExposureMaskRegions,
   presignExposurePngs,
   type ExposureNeighbors,
+  type RelatedExposure,
+  type RelatedExposuresResult,
 } from '@/lib/actions/nircam-exposures';
 import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 import { stageBadgeClasses } from '@/lib/nircam-stages';
@@ -1024,6 +1028,7 @@ function ExposureDetailPageInner() {
             <div className="flex justify-between"><dt>Mark approved</dt><dd className="font-mono text-text-secondary">2</dd></div>
             <div className="flex justify-between"><dt>Mark excluded</dt><dd className="font-mono text-text-secondary">3</dd></div>
             <div className="flex justify-between"><dt>Save</dt><dd className="font-mono text-text-secondary">S</dd></div>
+            <div className="flex justify-between"><dt>Zoom to fit</dt><dd className="font-mono text-text-secondary">F</dd></div>
             <div className="flex justify-between"><dt>Help</dt><dd className="font-mono text-text-secondary">?</dd></div>
             <div className="flex justify-between"><dt>Copy masks</dt><dd className="font-mono text-text-secondary">Ctrl/⌘ C</dd></div>
             <div className="flex justify-between"><dt>Paste masks</dt><dd className="font-mono text-text-secondary">Ctrl/⌘ V</dd></div>
@@ -1318,8 +1323,141 @@ function ExposureDetailPageInner() {
               </Button>
             </div>
           </Card>
+
+          {/* Related exposures — quick jumps to siblings likely to share the
+              same artifact (mask/exclude them without hunting the table). */}
+          <RelatedExposuresPanel id={id} visit={exposure?.visit} />
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Related exposures panel
+// ---------------------------------------------------------------------------
+
+const REVIEW_DOT: Record<string, string> = {
+  pending: 'bg-yellow-400',
+  approved: 'bg-green-500',
+  excluded: 'bg-red-500',
+};
+
+// Collapsed-by-default quick links to the exposures a decision here may
+// implicate: the same-module other-channel exposures read out simultaneously,
+// and the rest of the visit. Fetched lazily on first expand — server actions
+// from one client run through a serialized queue, so an eager fetch per step
+// would contend with the row/presign prefetch the triage hot loop depends on.
+// Expansion persists across prev/next; the list refetches per id while open.
+function RelatedExposuresPanel({ id, visit }: { id: number; visit: string | null | undefined }) {
+  const [open, setOpen] = useState(false);
+  // Tagged with the id it was fetched for (same pattern as navState): `id`
+  // changes instantly on a step, the fetch lands a round trip later.
+  const [state, setState] = useState<{ forId: number; data: RelatedExposuresResult } | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    getRelatedExposures(id).then(
+      (data) => { if (!cancelled) setState({ forId: id, data }); },
+      () => { if (!cancelled) setState({ forId: id, data: { simultaneous: [], sameVisit: [], error: 'Failed to load related exposures' } }); },
+    );
+    return () => { cancelled = true; };
+  }, [open, id]);
+
+  const ready = state?.forId === id ? state.data : null;
+
+  return (
+    <Card className="overflow-hidden">
+      <button
+        onClick={(e) => { blurOnMouseClick(e); setOpen((o) => !o); }}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-card-hover"
+      >
+        <span className="text-sm font-medium text-text-secondary uppercase tracking-wider">
+          Related exposures
+        </span>
+        <ChevronRight
+          className={`w-4 h-4 text-text-secondary transition-transform ${open ? 'rotate-90' : ''}`}
+        />
+      </button>
+      {open && (
+        <div className="px-4 pb-4 space-y-3">
+          {!ready ? (
+            <div className="flex justify-center py-4">
+              <Loader2 className="w-5 h-5 animate-spin text-text-secondary" />
+            </div>
+          ) : ready.error ? (
+            <p className="text-xs text-red-600 dark:text-red-400">{ready.error}</p>
+          ) : ready.simultaneous.length === 0 && ready.sameVisit.length === 0 ? (
+            <p className="text-xs text-text-secondary">
+              {visit ? 'No other exposures in this visit.' : 'No visit recorded for this exposure.'}
+            </p>
+          ) : (
+            <>
+              <RelatedList
+                title="SW/LW simultaneous"
+                hint="The same module's other-channel exposures, read out at the same moment over the same sky — artifacts here usually show in these too."
+                rows={ready.simultaneous}
+                visit={visit}
+              />
+              <RelatedList
+                title="Others in this visit"
+                rows={ready.sameVisit}
+                visit={visit}
+              />
+            </>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function RelatedList({ title, hint, rows, visit }: {
+  title: string;
+  hint?: string;
+  rows: RelatedExposure[];
+  visit: string | null | undefined;
+}) {
+  // The shared visit prefix (and extension) carry no signal in a list that is
+  // entirely one visit — show the distinguishing tail: activity_exposure_detector.
+  const shortName = (filename: string) => {
+    const base = filename.replace(/\.fits$/, '');
+    return visit && base.startsWith(`${visit}_`) ? base.slice(visit.length + 1) : base;
+  };
+  return (
+    <div>
+      <h3 className="text-xs font-medium text-text-secondary uppercase tracking-wider mb-1" title={hint}>
+        {title}{rows.length > 0 && <span className="tabular-nums"> ({rows.length})</span>}
+      </h3>
+      {rows.length === 0 ? (
+        <p className="text-xs text-text-secondary">None</p>
+      ) : (
+        <ul className="max-h-56 overflow-y-auto">
+          {rows.map((r) => (
+            <li key={r.id}>
+              <a
+                href={`/admin/nircam/${r.id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`${r.filename} — ${r.review_status}${r.masked ? ', masked' : ''} (opens in a new tab)`}
+                className="flex items-center gap-2 -mx-1.5 px-1.5 py-1 text-xs rounded hover:bg-card-hover"
+              >
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${REVIEW_DOT[r.review_status] ?? 'bg-surface-2'}`} />
+                <span className="font-mono text-text-primary truncate">{shortName(r.filename)}</span>
+                <span className="ml-auto flex items-center gap-1.5 flex-shrink-0 text-text-secondary">
+                  {r.masked && (
+                    <span className="text-blue-600 dark:text-blue-400">masked</span>
+                  )}
+                  <span>{r.filter}</span>
+                  <ExternalLink className="w-3 h-3" />
+                </span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

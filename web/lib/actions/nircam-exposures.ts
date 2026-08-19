@@ -202,6 +202,109 @@ export async function getNircamExposureById(id: number): Promise<{
   }
 }
 
+// ---------------------------------------------------------------------------
+// Related exposures (same visit / simultaneous SW+LW)
+// ---------------------------------------------------------------------------
+
+export interface RelatedExposure {
+  id: number;
+  filename: string;
+  filter: string;
+  detector: string;
+  review_status: NircamExposure['review_status'];
+  masked: boolean;
+}
+
+export interface RelatedExposuresResult {
+  /**
+   * Exposures read out at the same moment as this one through the other
+   * channel of the same module: NIRCam's dichroic feeds a module's SW
+   * (nrc[ab]1-4) and LW (nrc[ab]long) detectors from the same sky
+   * simultaneously, so an artifact here (satellite trail, scattered light,
+   * a bright transient) usually shows up in these too.
+   */
+  simultaneous: RelatedExposure[];
+  /** Everything else sharing this exposure's visit (self + simultaneous excluded). */
+  sameVisit: RelatedExposure[];
+  error?: string;
+}
+
+// JWST filename: {visit}_{visitgroup+seq+activity}_{exposure}_{detector}[.fits]
+function parseExposureName(filename: string): { act: string; exp: string } | null {
+  const parts = filename.replace(/\.fits$/, '').split('_');
+  return parts.length >= 4 ? { act: parts[1], exp: parts[2] } : null;
+}
+
+// Mirrors the pipeline's module_of/channel_of (campfire_pipeline/nircam/
+// association.py): the deployed `detector` column holds the FITS DETECTOR
+// header value verbatim, which is uppercase (NRCALONG) — and nrca5/nrcb5 are
+// aliases for the LW detectors — so normalize before classifying.
+const detectorModule = (detector: string) => detector.toLowerCase().slice(0, 4); // 'nrca' | 'nrcb'
+function detectorChannel(detector: string): 'sw' | 'lw' {
+  const d = detector.toLowerCase();
+  return d.endsWith('long') || d.endsWith('5') ? 'lw' : 'sw';
+}
+
+/**
+ * The other exposures a triage decision here might implicate: everything in
+ * the same visit (split out: the simultaneously-read other-channel exposures
+ * of the same module). Feeds the detail page's "Related exposures" panel —
+ * quick jumps to siblings that likely share the same problem.
+ */
+export async function getRelatedExposures(id: number): Promise<RelatedExposuresResult> {
+  const empty: RelatedExposuresResult = { simultaneous: [], sameVisit: [] };
+  try {
+    const supabase = await requireSession();
+
+    const { data: cur, error } = await supabase
+      .from('nircam_exposures')
+      .select('id, field, visit, filename, detector')
+      .eq('id', id)
+      .single();
+    if (error) return { ...empty, error: error.message };
+    // No visit recorded (pre-backfill row or unparseable filename) — nothing
+    // to relate on.
+    if (!cur?.visit) return empty;
+
+    const { data, error: listErr } = await supabase
+      .from('nircam_exposures')
+      .select('id, filename, filter, detector, review_status, mask_regions')
+      .eq('field', cur.field)
+      .eq('visit', cur.visit)
+      .neq('id', id)
+      .order('filename');
+    if (listErr) return { ...empty, error: listErr.message };
+
+    const curName = parseExposureName(cur.filename);
+    const curModule = detectorModule(cur.detector);
+    const curChannel = detectorChannel(cur.detector);
+
+    const out = empty;
+    for (const r of data ?? []) {
+      const rel: RelatedExposure = {
+        id: r.id,
+        filename: r.filename,
+        filter: r.filter,
+        detector: r.detector,
+        review_status: r.review_status,
+        masked: ((r.mask_regions as MaskRegionsPayload | null)?.polygons?.length ?? 0) > 0,
+      };
+      const name = parseExposureName(r.filename);
+      const simultaneous = !!curName && !!name &&
+        name.act === curName.act && name.exp === curName.exp &&
+        detectorModule(r.detector) === curModule &&
+        detectorChannel(r.detector) !== curChannel;
+      (simultaneous ? out.simultaneous : out.sameVisit).push(rel);
+    }
+    return out;
+  } catch (err) {
+    return {
+      ...empty,
+      error: err instanceof Error ? err.message : 'Failed to fetch related exposures',
+    };
+  }
+}
+
 const PNG_PRESIGN_TTL_SECONDS = 3600;
 
 export interface PresignExposurePngsResult {
