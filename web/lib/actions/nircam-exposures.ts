@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getS3ClientForBackend, getBucketNameForBackend, type DataBackend } from '@/lib/storage';
+import { EXPOSURE_SORT_KEYS } from '@/lib/admin/sort-keys';
 import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 
 export interface ExposurePngUrls {
@@ -172,6 +173,62 @@ export async function getExposureNeighbors(
     return {
       ...empty,
       error: err instanceof Error ? err.message : 'Failed to fetch neighbors',
+    };
+  }
+}
+
+/**
+ * Every exposure id in a filtered set, in the same order the list shows —
+ * feeds the PNG pre-download warm (lib/nircam-png-store.ts), so images are
+ * fetched in inspection order and the operator can start stepping while the
+ * warm is still running. Ids only: the warm pulls bytes per id through
+ * /api/nircam-png. Paged internally (PostgREST caps a single response at
+ * 1000 rows) with a hard cap as a runaway guard.
+ */
+export async function getNircamExposureIds(
+  params?: ExposureFilters & ExposureSort,
+): Promise<{ ids: number[]; error?: string }> {
+  const CHUNK = 1000;
+  const CAP = 20000;
+  try {
+    const supabase = await requireSession();
+    const sortCol =
+      params?.sortColumn && (EXPOSURE_SORT_KEYS as readonly string[]).includes(params.sortColumn)
+        ? params.sortColumn
+        : 'filename';
+    const asc = (params?.sortDirection ?? 'asc') === 'asc';
+
+    const ids: number[] = [];
+    for (let off = 0; off < CAP; off += CHUNK) {
+      let q = supabase.from('nircam_exposures').select('id');
+      if (params?.field) q = q.eq('field', params.field);
+      if (params?.filter) q = q.eq('filter', params.filter);
+      if (params?.detector) q = q.eq('detector', params.detector);
+      if (params?.reviewStatus) q = q.eq('review_status', params.reviewStatus);
+      if (params?.stage) q = q.eq('stage', params.stage);
+      if (params?.correction) q = q.eq('correction', params.correction);
+      // Mirror get_admin_exposures' ORDER BY: 'filename' is the compound
+      // (field, filter, filename) list order; everything gets the id tiebreak.
+      if (sortCol === 'filename') {
+        q = q
+          .order('field', { ascending: asc })
+          .order('filter', { ascending: asc })
+          .order('filename', { ascending: asc });
+      } else {
+        q = q.order(sortCol, { ascending: asc, nullsFirst: false });
+      }
+      q = q.order('id', { ascending: true }).range(off, off + CHUNK - 1);
+
+      const { data, error } = await q;
+      if (error) return { ids: [], error: error.message };
+      ids.push(...(data ?? []).map((r) => r.id as number));
+      if (!data || data.length < CHUNK) break;
+    }
+    return { ids };
+  } catch (err) {
+    return {
+      ids: [],
+      error: err instanceof Error ? err.message : 'Failed to fetch exposure ids',
     };
   }
 }
