@@ -97,6 +97,10 @@ All components share a single deep, multi-scale source mask, and the chain is it
 
 The step was validated on synthetic scenes with known truth (flux conservation on injected Sérsic sources, blank-sky recovery to 0.04σ) and on real COSMOS and Abell 2744 exposures re-reduced from raw data ([figures](https://github.com/hollisakins/campfire/tree/main/docs/figures/nircam-bkg2d)). The current configuration reduces residual common-mode row banding from 1.8× the pure-noise expectation to 0.6× while changing aperture photometry of compact sources by +0.24% and of extended sources by less than 0.1%.
 
+![Comparison of 1/f models on an Abell 2744 exposure with a bright galaxy group: a plain per-amp-row median absorbs an amp-wide box of galaxy flux, while the CAMPFIRE default leaves only a small residual band.](/docs/reduction/nircam-gp-vs-median.png)
+
+*Why the Gaussian-process treatment matters, demonstrated on a public UNCOVER exposure (`jw02561006002_07201_00001`, NRCBLONG) whose bright galaxy group spans amplifier rows. Left: the input frame. Middle: the 1/f model removed by a plain per-amp-row median with no conditioning (the conventional approach) — the galaxy's envelope leaks into the row estimates and is subtracted as a coherent box across the amplifier's full width (mean +1.4σ of sky over the galaxy's rows, hard edges at the amp boundaries), and per-amp asymmetric absorption of the sky gradient imprints seams between amplifiers. Right: the CAMPFIRE default (GP + conditioning detrend + deep mask) suppresses the misattributed flux by roughly a factor of 7; a small residual band at the very brightest rows remains and is the subject of continued refinement.*
+
 **Trade-offs to know when using the data:**
 
 - The 2D background fit removes intracluster light and the outermost wings of bright, extended galaxies *by construction*. This is intended for the cluster and deep-field reductions CAMPFIRE targets, but means the mosaics are not suitable for ICL science without a dedicated re-reduction.
