@@ -68,13 +68,34 @@ _PLAN_COLUMNS = (
 REGISTRATION_BATCH = 200
 
 
-def default_upload_workers() -> int:
-    """Parallel upload streams for data pushes.
+# Parallel upload streams, per storage backend.
+#
+# OSN (uaz1.osn.mghpcc.org) rejects a large fraction of concurrent PutObject
+# requests with 500 Internal Server Error once the stream count is high. It is
+# a load response, not a per-file problem: on a 621-file pg004 deploy, 16
+# streams failed 68% of uploads and 81% on the retry, while the SAME files to
+# the SAME endpoint at 4 streams failed 0/344. A single sequential PUT of a
+# just-failed object returned 200. Size is not the discriminator — the failed
+# set's median (3.6 MB) matched the overall median (3.69 MB).
+#
+# R2 has shown no such behaviour, and the original rationale for a high count
+# still holds there: many ~20-40 MB files over a high-latency link, where extra
+# streams help fill the uplink. So the default is per-backend rather than a
+# blanket reduction.
+_UPLOAD_WORKERS_BY_BACKEND = {
+    'osn': 4,
+    'r2': 16,
+}
+_UPLOAD_WORKERS_FALLBACK = 16
 
-    Overridable via ``CAMPFIRE_DEPLOY_UPLOAD_WORKERS``. Defaults to 16: data
-    products are many ~20-40 MB files whose upload is network-bound over a
-    high-latency link, so extra concurrent streams help fill the uplink.
-    Clamped to a sane range.
+
+def default_upload_workers(backend: Optional[str] = None) -> int:
+    """Parallel upload streams for data pushes to *backend*.
+
+    ``backend`` is ``'osn'`` | ``'r2'``; ``None`` keeps the historical default.
+    Overridable for every backend via ``CAMPFIRE_DEPLOY_UPLOAD_WORKERS``, which
+    still wins when set (clamped to 1..64) — raise it deliberately if you are
+    pushing to a store that tolerates more concurrency.
     """
     raw = os.environ.get('CAMPFIRE_DEPLOY_UPLOAD_WORKERS')
     if raw:
@@ -82,7 +103,7 @@ def default_upload_workers() -> int:
             return max(1, min(64, int(raw)))
         except ValueError:
             pass
-    return 16
+    return _UPLOAD_WORKERS_BY_BACKEND.get(backend, _UPLOAD_WORKERS_FALLBACK)
 
 
 def open_reducer_store():
@@ -375,7 +396,7 @@ def push_observation(
         uploaded_by=user_id, cfpipe_version=cfpipe_version,
         stored_sizes=stored_sizes)
 
-    upload_workers = workers or default_upload_workers()
+    upload_workers = workers or default_upload_workers('osn')
     total_bytes = sum(plan.stats[t.r2_key][1] for t in plan.to_upload
                       if t.r2_key in plan.stats)
     print(f"  Pushing {len(plan.to_upload)} file(s) "
@@ -494,7 +515,7 @@ def push_field(
         uploaded_by=user_id, cfpipe_version=cfpipe_version,
         stored_sizes=stored_sizes)
 
-    upload_workers = workers or default_upload_workers()
+    upload_workers = workers or default_upload_workers('osn')
     total_bytes = sum(plan.stats[t.r2_key][1] for t in plan.to_upload
                       if t.r2_key in plan.stats)
     print(f"  Pushing {len(plan.to_upload)} file(s) "

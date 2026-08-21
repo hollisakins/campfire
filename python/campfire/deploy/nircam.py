@@ -681,7 +681,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     # whole-file digest for download/copy verification. Registration is durable
     # per batch (registration_flusher), so an interrupted deploy resumes at file
     # granularity instead of re-uploading everything already landed.
-    upload_workers = _upload_workers()
+    upload_workers = _upload_workers(_CANONICAL_BACKEND)
     n_failed = 0
     osn_uploaded: set[str] = set()
     flusher = registration_flusher(
@@ -1116,11 +1116,11 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     flusher = registration_flusher(
         client, store, plan, backend=_CANONICAL_BACKEND,
         deployment_id=deployment_id, uploaded_by=user_id,
-        max_workers=_upload_workers(), stored_sizes=stored_sizes)
+        max_workers=_upload_workers(_CANONICAL_BACKEND), stored_sizes=stored_sizes)
     if plan.to_upload:
         print(f"  Uploading {len(plan.to_upload)} mosaic file(s) to OSN...")
         success, failed, failures = upload_files_parallel(
-            config, plan.to_upload, desc='OSN mosaic uploads', max_workers=_upload_workers(),
+            config, plan.to_upload, desc='OSN mosaic uploads', max_workers=_upload_workers(_CANONICAL_BACKEND),
             succeeded_out=uploaded, backend=_CANONICAL_BACKEND,
             on_success=flusher.add, stored_sizes_out=stored_sizes)
         flusher.flush()
