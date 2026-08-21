@@ -96,7 +96,19 @@ class UploadTask(NamedTuple):
 # Presigned URL mode
 # ---------------------------------------------------------------------------
 
-PRESIGN_BATCH_SIZE = 500  # Max URLs per presign request (matches the web route)
+# Max URLs per presign request. The web route accepts up to 500, but the batch
+# is also the unit that has to finish inside the 1-hour presign TTL: every URL
+# in a batch is minted at the same instant, so a batch that takes longer than
+# an hour to transfer loses its whole tail at once. At 2.16 MB/s (a domestic
+# asymmetric uplink) 500 x ~42 MB needs ~2.7 h and 438/552 files died on
+# expiry; 25 files is ~23 min there, and on a research link the extra
+# round-trips are noise against the transfer. `_PRESIGN_RETRY_ROUNDS` is the
+# real safety net -- this just makes hitting it rare.
+PRESIGN_BATCH_SIZE = 25
+# Re-mint + retry rounds for a batch's stragglers. A URL that aged out is
+# indistinguishable from a transient 5xx at this layer, and re-PUT is
+# idempotent, so retrying with fresh URLs is safe either way.
+_PRESIGN_RETRY_ROUNDS = 2
 
 
 def _get_presign_headers(config: dict) -> Optional[dict]:
@@ -518,13 +530,44 @@ def upload_files_parallel(
             # divergence. Refuse if we asked for OSN but got R2-host URLs.
             if backend == 'osn':
                 _assert_presigned_backend_osn(urls)
-            s, f, msgs = upload_files_presigned(
-                urls, batch, max_workers=max_workers, desc=desc,
-                succeeded_out=succeeded_out, session=session, on_success=on_success,
-                stored_sizes_out=stored_sizes_out,
-            )
-            total_success += s
-            total_failed += f
+            # Re-mint and retry this batch's stragglers. On a slow uplink the
+            # dominant failure is the presigned URL ageing out mid-batch, which
+            # surfaces as a 5xx indistinguishable from a transient fault --
+            # fresh URLs fix the former and cost nothing for the latter (PUT is
+            # idempotent). Only unfinished tasks are retried, so `on_success`
+            # never fires twice for the same file.
+            pending, msgs = batch, []
+            for attempt in range(1 + _PRESIGN_RETRY_ROUNDS):
+                if attempt:
+                    urls = request_presigned_urls(
+                        config, pending, bucket=bucket_id,
+                        cache_control=cache_control, backend=backend,
+                    )
+                    if not urls:
+                        break
+                    if backend == 'osn':
+                        _assert_presigned_backend_osn(urls)
+                landed: set[str] = set()
+                s, _f, msgs = upload_files_presigned(
+                    urls, pending, max_workers=max_workers,
+                    desc=(desc if not attempt else f'{desc} (retry {attempt})'),
+                    succeeded_out=landed, session=session,
+                    on_success=on_success, stored_sizes_out=stored_sizes_out,
+                )
+                total_success += s
+                if succeeded_out is not None:
+                    succeeded_out |= landed
+                if not _f:
+                    # The uploader is the authority on what failed; `landed` is
+                    # only used to decide WHICH tasks to retry. Trusting it for
+                    # "are we done" would re-upload everything against an
+                    # implementation that reports success without populating it.
+                    pending = []
+                    break
+                pending = [t for t in pending if t.r2_key not in landed]
+                if not pending:
+                    break
+            total_failed += len(pending)
             all_failures.extend(msgs)
         return total_success, total_failed, all_failures
 
