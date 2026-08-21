@@ -28,6 +28,24 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Algorithm
+- **Fixed a SEP `theta` round-trip that could abort source detection for an
+  entire align pool.** `sep.extract` emits `theta` as float32 while
+  `sep.sum_ellipse` validates `|theta| <= pi/2` in float64 — and
+  `float32(pi/2) = 1.5707964` falls *outside* that interval. A perfectly
+  vertical source therefore round-trips out of `extract` and straight into
+  `Exception: invalid aperture parameters`, killing detection for the whole
+  detector; because align solves per pool, every detector in the pool is then
+  stamped `NOT_ALIGNED` and quarantined from the mosaic. The pre-existing guard
+  (`theta[theta > pi/2] -= pi`) only ever covered the positive side, so the
+  `-pi/2` case survived to the aperture call. `edge` does not protect against
+  it either — that cut is applied to the returned catalogue, after photometry.
+  Observed on pg004 f444w: one 51-px edge sliver at x=2043 cost a whole dither
+  (2 of 8 LW detectors). Latent and data-dependent — any pixel-level change can
+  nudge a sliver onto the boundary. Categorized **Algorithm** rather than
+  Infrastructure because it changes scientific output: exposures that were
+  silently quarantined now contribute to their mosaics.
+
 ## v0.6.0 — 2026-08-18
 
 ### Calibration

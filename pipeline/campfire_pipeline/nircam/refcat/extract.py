@@ -119,6 +119,11 @@ def _find_sibling_err(mosaic_path):
 # Source extraction
 # ---------------------------------------------------------------------------
 
+# Largest float32 strictly inside SEP's valid (-pi/2, pi/2) aperture range.
+# float32(pi/2) itself rounds OUTSIDE the float64 interval SEP validates on.
+_SEP_THETA_MAX = float(np.nextafter(np.float32(np.pi / 2), np.float32(0)))
+
+
 def sep_extract_sources(sci, err, *, mask=None, snr_thresh=3.0, minarea=15,
                         deblend_nthresh=32, deblend_cont=0.001,
                         filter_fwhm=1.5):
@@ -182,6 +187,18 @@ def sep_extract_sources(sci, err, *, mask=None, snr_thresh=3.0, minarea=15,
 
     ids = np.arange(1, len(objs) + 1, dtype=np.int32)
     objs["theta"][objs["theta"] > np.pi / 2] -= np.pi
+    # SEP emits `theta` as float32 while its aperture routines validate
+    # |theta| <= pi/2 in double precision -- so sep.extract can hand back an
+    # object that sep.sum_ellipse then rejects. A perfectly vertical source
+    # lands on exactly -pi/2, and float32(-pi/2) == -1.5707964 is *more
+    # negative* than float64 -pi/2 == -1.5707963267948966. The wrap above only
+    # ever covered the +pi/2 side, so that object raised "invalid aperture
+    # parameters" and aborted detection for the whole detector -- and, because
+    # align solves per pool, quarantined every detector in it. One 51-px edge
+    # sliver cost a whole f444w dither on pg004 (2026-08-21).
+    # Clip both sides into the largest float32 strictly inside the interval;
+    # the shift is ~1e-7 rad, far below any photometric relevance.
+    objs["theta"] = np.clip(objs["theta"], -_SEP_THETA_MAX, _SEP_THETA_MAX)
     nan_axes = np.isnan(objs["a"]) | np.isnan(objs["b"])
     objs["a"][nan_axes] = 5
     objs["b"][nan_axes] = 5
