@@ -22,10 +22,11 @@ was the "surely this deploys to R2" trap.
 
 Transport details shared with the download side via ``campfire.storage``:
 pooled sessions with retry (PUT is idempotent, so it retries safely),
-just-in-time presign batches (URLs are minted per 500-task batch immediately
-before that batch transfers, so a multi-hour push never races the 1-hour
-presign TTL), and per-item success callbacks that run on the calling thread
-(safe for registry/mirror bookkeeping mid-transfer).
+just-in-time presign batches sized by total bytes (URLs are minted per batch
+immediately before that batch transfers, and each batch is capped at
+``PRESIGN_BATCH_MAX_BYTES`` so it finishes well inside the 1-hour presign TTL
+even on a slow uplink), and per-item success callbacks that run on the calling
+thread (safe for registry/mirror bookkeeping mid-transfer).
 """
 
 import gzip
@@ -34,7 +35,7 @@ import shutil
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, Iterator, NamedTuple, Optional
 
 import requests as http_requests  # module-global: patchable seam for tests
 from urllib.parse import urlparse
@@ -96,19 +97,66 @@ class UploadTask(NamedTuple):
 # Presigned URL mode
 # ---------------------------------------------------------------------------
 
-# Max URLs per presign request. The web route accepts up to 500, but the batch
-# is also the unit that has to finish inside the 1-hour presign TTL: every URL
-# in a batch is minted at the same instant, so a batch that takes longer than
-# an hour to transfer loses its whole tail at once. At 2.16 MB/s (a domestic
-# asymmetric uplink) 500 x ~42 MB needs ~2.7 h and 438/552 files died on
-# expiry; 25 files is ~23 min there, and on a research link the extra
-# round-trips are noise against the transfer. `_PRESIGN_RETRY_ROUNDS` is the
-# real safety net -- this just makes hitting it rare.
-PRESIGN_BATCH_SIZE = 25
+# Max URLs per presign request -- the web route's hard cap. Since batching
+# went size-aware this is only the count guard (a batch of tiny files, e.g.
+# NIRSpec spectra or map tiles, tops out here); the TTL constraint is
+# PRESIGN_BATCH_MAX_BYTES below.
+PRESIGN_BATCH_SIZE = 500
+# Byte budget per presign batch. Every URL in a batch is minted at the same
+# instant with a 1-hour TTL, so the batch is also the unit that must finish
+# inside that hour -- and transfer time scales with total bytes, not file
+# count (25 NIRCam mosaics take far longer to push than 25 NIRSpec spectra,
+# which is why a fixed file-count batch was the wrong knob). At 2.16 MB/s (a
+# domestic asymmetric uplink) the old 500-file batches of ~42 MB products
+# needed ~2.7 h and lost 438/552 files to expiry in one stroke; 1 GiB is
+# ~8 min there, a comfortable margin, while a fast research link still gets
+# large batches for its many-small-file pushes. A single file bigger than the
+# budget forms its own batch: its URL is minted immediately before its PUT,
+# and S3/OSN validate expiry when the request starts, so one long PUT never
+# ages out mid-flight. `_PRESIGN_RETRY_ROUNDS` is the real safety net -- this
+# just makes hitting it rare.
+PRESIGN_BATCH_MAX_BYTES = 1 << 30
 # Re-mint + retry rounds for a batch's stragglers. A URL that aged out is
 # indistinguishable from a transient 5xx at this layer, and re-PUT is
 # idempotent, so retrying with fresh URLs is safe either way.
 _PRESIGN_RETRY_ROUNDS = 2
+
+
+def iter_presign_batches(
+    tasks: list[UploadTask],
+    *,
+    max_bytes: int = PRESIGN_BATCH_MAX_BYTES,
+    max_files: int = PRESIGN_BATCH_SIZE,
+) -> Iterator[list[UploadTask]]:
+    """Split ``tasks`` into presign batches bounded by total bytes and count.
+
+    Greedy, order-preserving accumulation: a task joins the current batch
+    unless doing so would push it past ``max_bytes`` or ``max_files``, in
+    which case the batch is yielded and a new one starts. A task larger than
+    ``max_bytes`` on its own becomes a singleton batch (its URL is minted
+    just-in-time, and expiry is checked when the PUT starts, so a single long
+    upload is TTL-safe).
+
+    Sizes come from the *local* file (compressed products upload a smaller
+    gzipped body, so this overestimates -- the safe direction for a TTL
+    budget). A file that cannot be stat'd counts as 0 bytes: the batcher's
+    job is TTL budgeting, not existence checking -- the upload itself will
+    report the missing file.
+    """
+    batch: list[UploadTask] = []
+    batch_bytes = 0
+    for task in tasks:
+        try:
+            size = task.local_path.stat().st_size
+        except OSError:
+            size = 0
+        if batch and (batch_bytes + size > max_bytes or len(batch) >= max_files):
+            yield batch
+            batch, batch_bytes = [], 0
+        batch.append(task)
+        batch_bytes += size
+    if batch:
+        yield batch
 
 
 def _get_presign_headers(config: dict) -> Optional[dict]:
@@ -463,9 +511,11 @@ def upload_files_parallel(
     In the explicit ``service_role`` / ``local`` modes it uploads directly with
     boto3 using local object-store credentials.
 
-    Presigned URLs are minted **just-in-time per batch** (500 tasks), so a push
-    that runs longer than the 1-hour presign TTL never fails late files on
-    signature expiry.
+    Presigned URLs are minted **just-in-time per batch**, and batches are
+    sized by total bytes (``PRESIGN_BATCH_MAX_BYTES``, with the web route's
+    500-URL cap as the count guard), so a push that runs longer than the
+    1-hour presign TTL never fails late files on signature expiry — however
+    large or small the individual products are.
 
     Parameters
     ----------
@@ -508,9 +558,10 @@ def upload_files_parallel(
         total_success, total_failed = 0, 0
         all_failures: list[str] = []
         # Just-in-time presigning: mint each batch's URLs immediately before
-        # that batch uploads so none can expire mid-run.
-        for i in range(0, len(tasks), PRESIGN_BATCH_SIZE):
-            batch = tasks[i:i + PRESIGN_BATCH_SIZE]
+        # that batch uploads so none can expire mid-run. Batches are bounded
+        # by total bytes (the quantity the TTL actually races), not file
+        # count.
+        for batch in iter_presign_batches(tasks):
             urls = request_presigned_urls(
                 config, batch, bucket=bucket_id, cache_control=cache_control,
                 backend=backend,
