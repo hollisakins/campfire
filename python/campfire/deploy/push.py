@@ -80,7 +80,7 @@ def default_upload_workers(backend: Optional[str] = None) -> int:
     are writing to. An earlier revision defaulted OSN to 4 on the theory that
     concurrency was provoking 500s; that was a misdiagnosis. The 500s were
     presigned URLs ageing out mid-batch on a slow uplink (see
-    ``PRESIGN_BATCH_SIZE`` in ``deploy/r2.py``), which is throughput-dependent
+    ``PRESIGN_BATCH_MAX_BYTES`` in ``deploy/r2.py``), which is throughput-dependent
     and entirely indifferent to stream count -- a 16-way probe against the same
     endpoint went 16/16 while a 4-way production run failed 79%.
     """

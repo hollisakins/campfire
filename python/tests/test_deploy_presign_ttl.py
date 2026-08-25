@@ -6,8 +6,11 @@ so the batch is also the unit that must finish inside that hour. At 2.16 MB/s
 of ~42 MB products needs ~2.7 h, and a pg004 deploy lost 438 of 552 files in
 one go, all sharing a single X-Amz-Date.
 
-Two guards: a batch small enough that expiry is rare, and a re-mint + retry
-round so expiry is survivable regardless of link speed or file size.
+Two guards: batches bounded by total *bytes* (the quantity the TTL actually
+races -- 25 NIRCam mosaics take far longer to push than 25 NIRSpec spectra,
+so a file-count bound over- or under-shoots depending on product mix), and a
+re-mint + retry round so expiry is survivable regardless of link speed or
+file size.
 """
 
 from pathlib import Path
@@ -16,21 +19,75 @@ import pytest
 
 from campfire.deploy import r2
 from campfire.deploy.push import default_upload_workers
-from campfire.deploy.r2 import PRESIGN_BATCH_SIZE, UploadTask
+from campfire.deploy.r2 import (
+    PRESIGN_BATCH_MAX_BYTES, PRESIGN_BATCH_SIZE, UploadTask,
+    iter_presign_batches,
+)
 
 
-def test_batch_fits_inside_the_presign_ttl_on_a_slow_uplink():
+def test_batch_budget_fits_inside_the_presign_ttl_on_a_slow_uplink():
     """The regression that motivated this: 500 x 42 MB at 2.16 MB/s >> 1 h."""
     slow_bytes_per_s = 2.16e6
-    typical_product_bytes = 42e6
     ttl_s = 3600
-    seconds = PRESIGN_BATCH_SIZE * typical_product_bytes / slow_bytes_per_s
+    seconds = PRESIGN_BATCH_MAX_BYTES / slow_bytes_per_s
     assert seconds < ttl_s / 2, (
-        f"a {PRESIGN_BATCH_SIZE}-file batch needs {seconds/60:.0f} min on a "
-        f"2.16 MB/s uplink; that leaves no margin against the 1 h presign TTL"
+        f"a {PRESIGN_BATCH_MAX_BYTES}-byte batch needs {seconds/60:.0f} min "
+        f"on a 2.16 MB/s uplink; that leaves no margin against the 1 h "
+        f"presign TTL"
     )
-    # And the old value would not have.
-    assert 500 * typical_product_bytes / slow_bytes_per_s > ttl_s
+    # And the original unbounded 500-file batch of ~42 MB products would not
+    # have fit.
+    assert 500 * 42e6 / slow_bytes_per_s > ttl_s
+
+
+def _sized_task(tmp_path, name, size):
+    p = tmp_path / name
+    p.write_bytes(b"\0" * size)
+    return UploadTask(local_path=p, r2_key=f"data/products/x/{name}",
+                      content_type="application/fits")
+
+
+def test_batches_split_on_total_bytes_not_file_count(tmp_path):
+    """Big products form small batches, small products form big ones."""
+    tasks = [_sized_task(tmp_path, f"m{i}.fits", 400) for i in range(5)]
+    batches = list(iter_presign_batches(tasks, max_bytes=1000, max_files=500))
+    assert [len(b) for b in batches] == [2, 2, 1]
+    # Order preserved, nothing lost or duplicated.
+    assert [t.r2_key for b in batches for t in b] == [t.r2_key for t in tasks]
+
+
+def test_oversized_file_becomes_a_singleton_batch(tmp_path):
+    """A single mosaic bigger than the budget must still upload (alone)."""
+    tasks = [
+        _sized_task(tmp_path, "small1.fits", 10),
+        _sized_task(tmp_path, "huge.fits", 5000),
+        _sized_task(tmp_path, "small2.fits", 10),
+    ]
+    batches = list(iter_presign_batches(tasks, max_bytes=1000, max_files=500))
+    assert [[t.local_path.name for t in b] for b in batches] == [
+        ["small1.fits"], ["huge.fits"], ["small2.fits"]]
+
+
+def test_file_count_cap_still_bounds_tiny_file_batches(tmp_path):
+    """Many tiny files hit the presign route's URL-count cap, not the bytes."""
+    tasks = [_sized_task(tmp_path, f"s{i}.json", 1) for i in range(7)]
+    batches = list(iter_presign_batches(tasks, max_bytes=10**9, max_files=3))
+    assert [len(b) for b in batches] == [3, 3, 1]
+
+
+def test_unstatable_files_count_as_zero_bytes():
+    """Batching must not die on a missing file; the upload reports it."""
+    tasks = [UploadTask(local_path=Path(f"/nonexistent/f{i}.fits"),
+                        r2_key=f"data/products/x/f{i}.fits",
+                        content_type="application/fits")
+             for i in range(4)]
+    batches = list(iter_presign_batches(tasks, max_bytes=100, max_files=500))
+    assert [len(b) for b in batches] == [4]
+
+
+def test_default_count_cap_matches_presign_route_limit():
+    """The web /deploy/presign route accepts at most 500 URLs per request."""
+    assert PRESIGN_BATCH_SIZE == 500
 
 
 def test_worker_default_is_not_lowered_for_osn():
