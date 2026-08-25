@@ -172,21 +172,26 @@ def _spectrum_data_from_hdul(hdul) -> dict:
     ypos = prof1d['ypos']
     opt_weight = prof1d['opt']
 
-    valid_opt = opt_weight > 0
+    # An inf weight passes a bare `> 0` cut and would poison the centroid
+    # (and with it every centered pixel), so require finiteness up front.
+    valid_opt = np.isfinite(opt_weight) & np.isfinite(ypos) & (opt_weight > 0)
     if np.any(valid_opt):
         cen = np.average(ypos[valid_opt], weights=opt_weight[valid_opt])
     else:
         cen = np.median(ypos)
 
-    # A non-finite weight (inf passes the `> 0` cut) or ypos poisons `cen`
-    # and with it the whole centered-pixel axis; coerce like the arrays above.
     pix_centered = ypos - cen
+    # Backstop for the no-valid-weight fallback (all-NaN ypos): still never
+    # let a non-finite coordinate reach the JSON.
     pix_centered = np.where(np.isfinite(pix_centered), pix_centered, 0.0)
 
     with np.errstate(divide='ignore', invalid='ignore'):
         collapsed_norm = collapsed / np.nanmax(np.abs(collapsed[valid_opt])) if np.any(valid_opt) else collapsed
         collapsed_norm = np.where(np.isfinite(collapsed_norm), collapsed_norm, 0)
-        opt_norm = opt_weight / np.nanmax(opt_weight) if np.nanmax(opt_weight) > 0 else opt_weight
+        # Normalize by the finite max — np.nanmax ignores NaN but not inf,
+        # and an inf denominator would flatten the whole profile to zero.
+        opt_max = float(np.max(opt_weight[valid_opt])) if np.any(valid_opt) else 0.0
+        opt_norm = opt_weight / opt_max if opt_max > 0 else opt_weight
         # opt weights can be non-finite at masked/edge pixels; a NaN here would
         # be serialized as the bare token `NaN` (invalid JSON) and make the
         # browser's JSON.parse reject the whole spectrum payload. Guard it the

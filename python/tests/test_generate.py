@@ -109,6 +109,24 @@ def test_inf_flux_becomes_null(tmp_path):
     assert "<svg" in thumbs["thumbnail_svg_fnu"]
 
 
+def test_inf_profile_weight_keeps_centered_axis(tmp_path):
+    """An inf extraction weight passes a bare `> 0` cut; it must not poison
+    the centroid (collapsing profile_pix to all zeros) nor the profile_fit
+    normalization (nanmax ignores NaN but not inf)."""
+    fits_path = tmp_path / "obj_prism_clear_4_spec.fits"
+    _write_spec_fits(fits_path, opt=[np.inf, 1.0, 2.0, 1.0, 0.5])
+
+    json_path = generate_spectrum_json(fits_path, tmp_path)
+    data = json.loads(json_path.read_text(), parse_constant=_strict_constant)
+
+    # Centroid from the finite weights only: axis stays centered, not zeroed.
+    assert any(v != 0.0 for v in data["profile_pix"])
+    assert data["profile_pix"] == sorted(data["profile_pix"])
+    # The inf weight itself is coerced to 0; the rest normalize to finite max.
+    assert data["profile_fit"][0] == 0.0
+    assert max(data["profile_fit"]) == 1.0
+
+
 def _write_zfit_fits(path, *, chi2, model_fnu, zconf=8.0):
     z = np.linspace(0.0, 10.0, len(chi2))
     model_wave = np.linspace(1.0, 5.0, len(model_fnu))

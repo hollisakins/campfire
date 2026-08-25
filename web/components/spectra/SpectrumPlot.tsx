@@ -246,16 +246,20 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     );
 
     // Process model data if available (inspection mode)
-    let modelWave: number[] | null = null;
-    let modelFnu: number[] | null = null;
-    let modelFlambda: number[] | null = null;
+    let modelWave: (number | null)[] | null = null;
+    let modelFnu: (number | null)[] | null = null;
+    let modelFlambda: (number | null)[] | null = null;
 
     if (fitData) {
       modelWave = fitData.model_wave;
       modelFnu = fitData.model_fnu;
-      modelFlambda = fitData.model_fnu.map((f, i) =>
-        convertToFlambda(f, fitData.model_wave[i])
-      );
+      // Null samples (non-finite in the FITS) must survive as nulls — Plotly
+      // renders them as gaps, while arithmetic would coerce null to 0 and
+      // plot a false zero-flux model point.
+      modelFlambda = fitData.model_fnu.map((f, i) => {
+        const w = fitData.model_wave[i];
+        return f !== null && w !== null ? convertToFlambda(f, w) : null;
+      });
     }
 
     return { wave, fnu: fnuValues, fnuErr, flambda, flambdaErr, modelWave, modelFnu, modelFlambda };
@@ -560,9 +564,13 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // χ²(z) panel data — only built when the user toggles the Model overlay on.
   const chi2PlotData = useMemo(() => {
     if (!showModel || !fitData) return null;
+    // Null best-fit scalars mean the chi2 grid had no finite minimum
+    // (degenerate fit) — there is nothing meaningful to plot.
+    if (fitData.redshift === null || fitData.chi2_min === null) return null;
     let chi2Min = Infinity;
     let chi2Max = -Infinity;
     for (const v of fitData.chi2_grid) {
+      if (v === null) continue;
       if (v < chi2Min) chi2Min = v;
       if (v > chi2Max) chi2Max = v;
     }
@@ -595,7 +603,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       traces,
       layout: {
         title: {
-          text: `Redshift fit · z = ${fitData.redshift.toFixed(4)}, χ²_min = ${fitData.chi2_min.toFixed(2)}, conf = ${fitData.confidence.toFixed(1)}%`,
+          text: `Redshift fit · z = ${fitData.redshift.toFixed(4)}, χ²_min = ${fitData.chi2_min.toFixed(2)}, conf = ${fitData.confidence !== null ? `${fitData.confidence.toFixed(1)}%` : '—'}`,
           font: { size: 12, color: plotColors.text },
         },
         font: { family: 'Inter, system-ui, sans-serif', color: plotColors.text },

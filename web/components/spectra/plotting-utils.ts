@@ -223,8 +223,8 @@ export function computeYRange(
   flux: number[],
   fluxErr: (number | null)[],
   options?: {
-    modelFlux?: number[] | null;
-    modelWave?: number[] | null;
+    modelFlux?: (number | null)[] | null;
+    modelWave?: (number | null)[] | null;
     dataWave?: number[];
     edgeTrim?: number;
   }
@@ -250,8 +250,12 @@ export function computeYRange(
 
     const filteredModelFlux: number[] = [];
     for (let i = 0; i < modelWave.length; i++) {
-      if (modelWave[i] >= trimmedWaveMin && modelWave[i] <= trimmedWaveMax) {
-        filteredModelFlux.push(modelFlux[i]);
+      const w = modelWave[i];
+      const f = modelFlux[i];
+      // Null samples (non-finite in the FITS) carry no range information —
+      // comparing them would coerce null to 0 and drag the range to zero.
+      if (w !== null && f !== null && w >= trimmedWaveMin && w <= trimmedWaveMax) {
+        filteredModelFlux.push(f);
       }
     }
 
