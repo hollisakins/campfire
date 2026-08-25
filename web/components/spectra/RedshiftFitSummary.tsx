@@ -63,9 +63,11 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
 
           return {
             index,
-            redshift: fitData.redshift,
-            chi2Min: fitData.chi2_min,
-            confidence: fitData.confidence,
+            // Null scalars (degenerate fit with no finite chi2 minimum) map
+            // to undefined so the table's existing guards render an em dash.
+            redshift: fitData.redshift ?? undefined,
+            chi2Min: fitData.chi2_min ?? undefined,
+            confidence: fitData.confidence ?? undefined,
           };
         } catch (err) {
           return {
