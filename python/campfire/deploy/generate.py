@@ -152,10 +152,12 @@ def _spectrum_data_from_hdul(hdul) -> dict:
     err = hdul['ERR'].data
     prof1d = hdul['PROF1D'].data
 
-    # 1D spectrum
+    # 1D spectrum. Any non-finite flux (NaN *or* ±inf) becomes JSON null —
+    # inf is just as invalid as NaN under strict JSON, and json.dump below
+    # runs with allow_nan=False.
     wave = [round(x, 6) for x in spec1d['wave'].tolist()]
-    fnu = [None if np.isnan(x) else round(float(x), 6) for x in spec1d['fnu']]
-    fnu_err = [None if np.isnan(x) or np.isinf(x) else round(float(x), 6) for x in spec1d['fnu_err']]
+    fnu = [None if not np.isfinite(x) else round(float(x), 6) for x in spec1d['fnu']]
+    fnu_err = [None if not np.isfinite(x) else round(float(x), 6) for x in spec1d['fnu_err']]
 
     # 2D S/N
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -176,7 +178,10 @@ def _spectrum_data_from_hdul(hdul) -> dict:
     else:
         cen = np.median(ypos)
 
+    # A non-finite weight (inf passes the `> 0` cut) or ypos poisons `cen`
+    # and with it the whole centered-pixel axis; coerce like the arrays above.
     pix_centered = ypos - cen
+    pix_centered = np.where(np.isfinite(pix_centered), pix_centered, 0.0)
 
     with np.errstate(divide='ignore', invalid='ignore'):
         collapsed_norm = collapsed / np.nanmax(np.abs(collapsed[valid_opt])) if np.any(valid_opt) else collapsed
@@ -263,18 +268,30 @@ def generate_zfit_json(zfit_path: Path, output_dir: Path) -> Path:
         primary = hdul['PRIMARY'].header
 
         chi2_data = hdul['CHI2'].data
-        z_grid = [round(float(z), 4) for z in chi2_data['z'].tolist()]
-        chi2_grid = [round(float(c), 2) for c in chi2_data['chi2'].tolist()]
+        z_arr = np.asarray(chi2_data['z'], dtype=float)
+        chi2_arr = np.asarray(chi2_data['chi2'], dtype=float)
+        z_grid = [round(float(z), 4) for z in z_arr.tolist()]
+        # Non-finite chi2 (masked/failed grid points) → JSON null; a bare
+        # NaN/Infinity token would make the browser reject the whole payload.
+        chi2_grid = [None if not np.isfinite(c) else round(float(c), 2) for c in chi2_arr]
 
-        min_idx = np.argmin(chi2_data['chi2'])
-        z_best = round(float(chi2_data['z'][min_idx]), 4)
-        chi2_min = round(float(chi2_data['chi2'][min_idx]), 2)
+        finite_chi2 = np.isfinite(chi2_arr)
+        if np.any(finite_chi2):
+            min_idx = int(np.argmin(np.where(finite_chi2, chi2_arr, np.inf)))
+            z_best = round(float(z_arr[min_idx]), 4)
+            chi2_min = round(float(chi2_arr[min_idx]), 2)
+        else:
+            z_best = None
+            chi2_min = None
 
-        confidence = round(float(primary.get('ZCONF', 0.0)), 1)
+        zconf = float(primary.get('ZCONF', 0.0))
+        confidence = round(zconf, 1) if np.isfinite(zconf) else None
 
         model_data = hdul['MODEL'].data
-        model_wave = [round(x, 6) for x in model_data['wav'].tolist()]
-        model_fnu = [round(x, 6) for x in model_data['fnu'].tolist()]
+        model_wave = [None if not np.isfinite(x) else round(float(x), 6)
+                      for x in model_data['wav']]
+        model_fnu = [None if not np.isfinite(x) else round(float(x), 6)
+                     for x in model_data['fnu']]
 
         data = {
             'redshift': z_best,
@@ -288,5 +305,6 @@ def generate_zfit_json(zfit_path: Path, output_dir: Path) -> Path:
 
     json_path = output_dir / (zfit_path.stem + '.json')
     with open(json_path, 'w') as f:
-        json.dump(data, f)
+        # allow_nan=False — see generate_spectrum_json.
+        json.dump(data, f, allow_nan=False)
     return json_path
