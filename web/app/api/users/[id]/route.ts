@@ -40,14 +40,23 @@ export async function PATCH(
 
     // Group accounts are never admins: a shared admin credential is
     // unattributable. The create endpoint refuses it; refuse promotion here
-    // too so the shield toggle can't grant it after the fact.
+    // too so the shield toggle can't grant it after the fact. Fail closed:
+    // this check is the sole enforcement of the invariant (there is no DB
+    // constraint), so a failed lookup must block the promotion, not allow it.
     if (is_admin === true) {
-      const { data: target } = await serviceClient
+      const { data: target, error: targetError } = await serviceClient
         .from('user_profiles')
         .select('is_group_account')
         .eq('user_id', userId)
-        .single();
+        .maybeSingle();
 
+      if (targetError) {
+        console.error('Error checking target profile:', targetError);
+        return NextResponse.json(
+          { error: 'Failed to verify the target account — admin status not changed' },
+          { status: 500 }
+        );
+      }
       if (target?.is_group_account) {
         return NextResponse.json(
           { error: 'Group accounts cannot be given admin privileges' },
@@ -161,11 +170,22 @@ export async function DELETE(
     // Use service client for admin mutations on other users' data
     const serviceClient = createServiceClient();
 
-    const { data: target } = await serviceClient
+    // Fail closed: if we cannot tell whether this is a group account, do not
+    // delete anything — a fall-through here would remove the profile while
+    // leaving a shared credential authenticating with no visible trace.
+    const { data: target, error: targetError } = await serviceClient
       .from('user_profiles')
       .select('is_group_account')
       .eq('user_id', userId)
-      .single();
+      .maybeSingle();
+
+    if (targetError) {
+      console.error('Error checking target profile:', targetError);
+      return NextResponse.json(
+        { error: 'Failed to verify the target account — nothing was deleted' },
+        { status: 500 }
+      );
+    }
 
     if (target?.is_group_account) {
       // Ban the principal BEFORE the row deletes below, so the shared

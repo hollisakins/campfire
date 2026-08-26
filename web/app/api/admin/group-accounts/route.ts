@@ -181,7 +181,24 @@ export async function POST(request: NextRequest) {
     const groupUserId = created.user.id;
 
     const cleanup = async (message: string) => {
-      await serviceClient.auth.admin.deleteUser(groupUserId);
+      const { error: rollbackError } = await serviceClient.auth.admin.deleteUser(groupUserId);
+      if (rollbackError) {
+        // A live, confirmed credential now exists with no profile: invisible
+        // in the admin UI and blocking this email from re-registration.
+        console.error(
+          `Rollback failed — orphaned auth user ${groupUserId} (${normalizedEmail}):`,
+          rollbackError
+        );
+        return NextResponse.json(
+          {
+            error:
+              `${message}. Rollback also failed, leaving an orphaned login for ` +
+              `${normalizedEmail} — it must be removed in the Supabase dashboard ` +
+              'before this email can be reused.',
+          },
+          { status: 500 }
+        );
+      }
       return NextResponse.json({ error: message }, { status: 500 });
     };
 
