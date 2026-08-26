@@ -355,7 +355,7 @@ function ProgressSummary({ progress }: { progress: ReductionProgress[] }) {
 // see lib/nircam-exposure-nav.ts.
 // ---------------------------------------------------------------------------
 
-const FILTER_KEYS = ['field', 'filter', 'detector', 'review', 'stage', 'correction'] as const;
+const FILTER_KEYS = ['field', 'filter', 'detector', 'review', 'stage', 'correction', 'search'] as const;
 const codec = flatFilterCodec(FILTER_KEYS);
 const DEFAULT_SORT: SortState = { column: 'filename', direction: 'asc' };
 
@@ -400,6 +400,7 @@ function AdminNircamPageInner() {
         reviewStatus: f.review || undefined,
         stage: f.stage || undefined,
         correction: f.correction || undefined,
+        search: f.search || undefined,
         sortColumn: state.sort.column,
         sortDirection: state.sort.direction,
         page,
@@ -520,6 +521,9 @@ function AdminNircamPageInner() {
 
       <AdminFilterBar
         facets={[
+          // Wildcard filename search: * = any run, ? = one char; a term with
+          // no wildcard matches as a substring. Composes with the selects.
+          { kind: 'search', key: 'search', placeholder: 'Filename, e.g. jw01727001*' },
           {
             kind: 'select', key: 'field', label: 'Field',
             options: (facets?.fields ?? []).map((f) => ({ value: f, label: f })),

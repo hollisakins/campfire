@@ -4045,7 +4045,9 @@ CREATE OR REPLACE FUNCTION public.get_admin_exposures(
   p_sort_column text DEFAULT 'filename',   -- 'filename' = the compound (field, filter, filename) list order
   p_sort_direction text DEFAULT 'asc',
   p_page integer DEFAULT 1,
-  p_page_size integer DEFAULT 50
+  p_page_size integer DEFAULT 50,
+  p_search text DEFAULT NULL               -- ILIKE pattern on filename; callers pre-translate
+                                           -- the operator's glob (web/lib/admin/exposure-search.ts)
 )
 RETURNS TABLE (
   id integer,
@@ -4105,6 +4107,7 @@ BEGIN
     AND (p_review_status IS NULL OR e.review_status = p_review_status)
     AND (p_stage IS NULL OR e.stage = p_stage)
     AND (p_correction IS NULL OR e.correction = p_correction)
+    AND (p_search IS NULL OR p_search = '' OR e.filename ILIKE p_search)
   ORDER BY
     -- Keep in lockstep with get_admin_exposure_neighbors.
     CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.field END ASC,
@@ -4149,7 +4152,8 @@ CREATE OR REPLACE FUNCTION public.get_admin_exposure_neighbors(
   p_correction text DEFAULT NULL,
   p_sort_column text DEFAULT 'filename',
   p_sort_direction text DEFAULT 'asc',
-  p_window integer DEFAULT 3
+  p_window integer DEFAULT 3,
+  p_search text DEFAULT NULL   -- ILIKE pattern on filename; same contract as get_admin_exposures
 )
 RETURNS TABLE (
   id integer,
@@ -4206,6 +4210,7 @@ BEGIN
       AND (p_review_status IS NULL OR e.review_status = p_review_status)
       AND (p_stage IS NULL OR e.stage = p_stage)
         AND (p_correction IS NULL OR e.correction = p_correction)
+        AND (p_search IS NULL OR p_search = '' OR e.filename ILIKE p_search)
   ),
   cur AS (
     SELECT r.rn AS rn0 FROM ranked r WHERE r.exp_id = p_current_id

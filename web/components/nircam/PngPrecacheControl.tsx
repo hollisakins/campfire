@@ -109,7 +109,7 @@ export function PngPrecacheControl({ filters, sort }: PngPrecacheControlProps) {
 
   const manifestQuery = useMemo(() => {
     const sp = new URLSearchParams();
-    for (const key of ['field', 'filter', 'detector', 'review', 'stage', 'correction'] as const) {
+    for (const key of ['field', 'filter', 'detector', 'review', 'stage', 'correction', 'search'] as const) {
       if (filters[key]) sp.set(key, filters[key]);
     }
     sp.set('sort', sort.column);
