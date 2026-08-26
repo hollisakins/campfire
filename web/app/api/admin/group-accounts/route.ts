@@ -7,7 +7,9 @@ import { findAuthUserByEmail } from '@/lib/supabase/paginate';
  *
  * Create a group account (admin only): a shared-credential principal for a
  * whole team. Unlike the invite flow there is no email round-trip — the admin
- * sets the password directly and distributes it. The auth user is created
+ * sets the password directly and distributes it. Re-using the email of a
+ * previously deleted (tombstoned) group account revives it with the new
+ * password, which doubles as the rotation path for a leaked shared password. The auth user is created
  * first, then the profile, then program access; if a later step fails the auth
  * user is deleted so a failed create never leaves an orphan principal
  * (mirrors mintShareLink in lib/actions/share-links.ts).
@@ -109,11 +111,38 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
+    // The delete flow tombstones a group account (banned auth principal,
+    // profile removed) rather than hard-deleting it, so its audit rows
+    // survive. Such a tombstone may be REVIVED here — same email, new
+    // password, fresh profile — which is also the recovery path for a leaked
+    // shared password (delete, then re-create with the same email). Anything
+    // else that matches the email is a genuine conflict: a live user, or a
+    // profileless auth row from a pending invite (which the accept flow will
+    // claim — never hijack it).
+    let reviveUserId: string | null = null;
     if (existingUser) {
-      return NextResponse.json(
-        { error: 'A user with this email already exists' },
-        { status: 409 }
-      );
+      const { data: existingProfile, error: profileLookupError } = await serviceClient
+        .from('user_profiles')
+        .select('user_id')
+        .eq('user_id', existingUser.id)
+        .maybeSingle();
+
+      if (profileLookupError) {
+        return NextResponse.json(
+          { error: `Failed to check existing users: ${profileLookupError.message}` },
+          { status: 500 }
+        );
+      }
+
+      const isTombstonedGroup =
+        !existingProfile && existingUser.user_metadata?.group_account === true;
+      if (!isTombstonedGroup) {
+        return NextResponse.json(
+          { error: 'A user with this email already exists' },
+          { status: 409 }
+        );
+      }
+      reviveUserId = existingUser.id;
     }
 
     // Resolve a username: an explicit one must satisfy the DB check as given;
@@ -163,25 +192,51 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Create the auth user. No self_signup flag, so handle_new_user() does not
-    // auto-provision a profile — we insert it below with the group flag set.
-    const { data: created, error: userError } = await serviceClient.auth.admin.createUser({
-      email: normalizedEmail,
-      password,
-      email_confirm: true,
-      user_metadata: { group_account: true, full_name: full_name.trim() },
-    });
+    // Create the auth user (or revive the tombstoned one). No self_signup
+    // flag, so handle_new_user() does not auto-provision a profile — we
+    // insert it below with the group flag set.
+    let groupUserId: string;
+    if (reviveUserId) {
+      const { error: reviveError } = await serviceClient.auth.admin.updateUserById(reviveUserId, {
+        password,
+        ban_duration: 'none',
+        user_metadata: { group_account: true, full_name: full_name.trim() },
+      });
+      if (reviveError) {
+        return NextResponse.json(
+          { error: `Failed to reactivate account: ${reviveError.message}` },
+          { status: 500 }
+        );
+      }
+      groupUserId = reviveUserId;
+    } else {
+      const { data: created, error: userError } = await serviceClient.auth.admin.createUser({
+        email: normalizedEmail,
+        password,
+        email_confirm: true,
+        user_metadata: { group_account: true, full_name: full_name.trim() },
+      });
 
-    if (userError || !created?.user) {
-      return NextResponse.json(
-        { error: `Failed to create account: ${userError?.message ?? 'unknown error'}` },
-        { status: 500 }
-      );
+      if (userError || !created?.user) {
+        return NextResponse.json(
+          { error: `Failed to create account: ${userError?.message ?? 'unknown error'}` },
+          { status: 500 }
+        );
+      }
+      groupUserId = created.user.id;
     }
-    const groupUserId = created.user.id;
 
     const cleanup = async (message: string) => {
-      const { error: rollbackError } = await serviceClient.auth.admin.deleteUser(groupUserId);
+      // A revived principal is re-banned, never deleted: the tombstone (and
+      // the audit rows that cascade from auth.users) must survive a failed
+      // revive exactly as they survived the original deletion.
+      const { error: rollbackError } = reviveUserId
+        ? (
+            await serviceClient.auth.admin.updateUserById(groupUserId, {
+              ban_duration: '876000h',
+            })
+          )
+        : await serviceClient.auth.admin.deleteUser(groupUserId);
       if (rollbackError) {
         // A live, confirmed credential now exists with no profile: invisible
         // in the admin UI and blocking this email from re-registration.
@@ -193,8 +248,7 @@ export async function POST(request: NextRequest) {
           {
             error:
               `${message}. Rollback also failed, leaving an orphaned login for ` +
-              `${normalizedEmail} — it must be removed in the Supabase dashboard ` +
-              'before this email can be reused.',
+              `${normalizedEmail} — it must be disabled in the Supabase dashboard.`,
           },
           { status: 500 }
         );
