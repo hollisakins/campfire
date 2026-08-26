@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getS3ClientForBackend, getBucketNameForBackend, type DataBackend } from '@/lib/storage';
+import { filenameSearchPattern } from '@/lib/admin/exposure-search';
 import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 
 export interface ExposurePngUrls {
@@ -64,6 +65,8 @@ export interface ExposureFilters {
   reviewStatus?: string;
   stage?: string;
   correction?: string;
+  /** Raw wildcard filename search ("jw01727001*"); glob → ILIKE happens at the RPC boundary. */
+  search?: string;
 }
 
 export interface ExposureSort {
@@ -83,6 +86,7 @@ function rpcExposureParams(params?: ExposureFilters & ExposureSort) {
     p_review_status: params?.reviewStatus ?? null,
     p_stage: params?.stage ?? null,
     p_correction: params?.correction ?? null,
+    p_search: filenameSearchPattern(params?.search),
     p_sort_column: params?.sortColumn ?? 'filename',
     p_sort_direction: params?.sortDirection ?? 'asc',
   };

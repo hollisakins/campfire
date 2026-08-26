@@ -1,9 +1,10 @@
 import { NextRequest } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { EXPOSURE_SORT_KEYS } from '@/lib/admin/sort-keys';
+import { filenameSearchPattern } from '@/lib/admin/exposure-search';
 
 /**
- * GET /api/nircam-png/manifest?field=..&filter=..&detector=..&review=..&stage=..&correction=..&sort=..&dir=..
+ * GET /api/nircam-png/manifest?field=..&filter=..&detector=..&review=..&stage=..&correction=..&search=..&sort=..&dir=..
  *
  * The PNG pre-download manifest for a filtered set: which exposures have a
  * downloadable display PNG (full-res when deployed, else preview — the byte
@@ -44,6 +45,9 @@ export async function GET(request: NextRequest) {
     const v = sp.get(param);
     if (v) eq.push([column, v]);
   }
+  // Same glob → ILIKE translation as get_admin_exposures' p_search, so the
+  // manifest covers exactly the set the searched list shows.
+  const searchPattern = filenameSearchPattern(sp.get('search'));
 
   const CHUNK = 1000;   // PostgREST caps a single response at 1000 rows
   const CAP = 20000;    // runaway guard
@@ -56,6 +60,7 @@ export async function GET(request: NextRequest) {
     for (let off = 0; off < CAP; off += CHUNK) {
       let q = supabase.from('nircam_exposures').select('id, png_path, full_png_path');
       for (const [col, v] of eq) q = q.eq(col, v);
+      if (searchPattern) q = q.ilike('filename', searchPattern);
       // Mirror get_admin_exposures' ORDER BY: 'filename' is the compound
       // (field, filter, filename) list order; everything gets the id tiebreak.
       if (sortCol === 'filename') {
