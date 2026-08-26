@@ -15,6 +15,10 @@ import {
   Mail,
   X,
   UserPlus,
+  Users,
+  Eye,
+  EyeOff,
+  Dices,
 } from 'lucide-react';
 import type { UserProfile, Program } from '@/lib/types';
 
@@ -53,6 +57,20 @@ export default function AdminUsersPage() {
   const [sendingInvite, setSendingInvite] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [resendingInvite, setResendingInvite] = useState<number | null>(null);
+
+  // Group account creation state
+  const [showGroupForm, setShowGroupForm] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const [groupEmail, setGroupEmail] = useState('');
+  const [groupUsername, setGroupUsername] = useState('');
+  const [groupPassword, setGroupPassword] = useState('');
+  const [showGroupPassword, setShowGroupPassword] = useState(false);
+  const [groupProgramSlugs, setGroupProgramSlugs] = useState<string[]>([]);
+  const [groupCanComment, setGroupCanComment] = useState(true);
+  const [groupCanInspect, setGroupCanInspect] = useState(false);
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [groupError, setGroupError] = useState<string | null>(null);
+  const [groupSuccess, setGroupSuccess] = useState<string | null>(null);
 
   const fetchInvites = useCallback(async () => {
     try {
@@ -185,6 +203,83 @@ export default function AdminUsersPage() {
         ? prev.filter(s => s !== programSlug)
         : [...prev, programSlug]
     );
+  };
+
+  const toggleGroupProgram = (programSlug: string) => {
+    setGroupProgramSlugs(prev =>
+      prev.includes(programSlug)
+        ? prev.filter(s => s !== programSlug)
+        : [...prev, programSlug]
+    );
+  };
+
+  const generateGroupPassword = () => {
+    const bytes = new Uint8Array(12);
+    crypto.getRandomValues(bytes);
+    // base64url: url-safe, no padding — easy to share with a team
+    const password = btoa(String.fromCharCode(...bytes))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    setGroupPassword(password);
+    setShowGroupPassword(true);
+  };
+
+  const resetGroupForm = () => {
+    setGroupName('');
+    setGroupEmail('');
+    setGroupUsername('');
+    setGroupPassword('');
+    setShowGroupPassword(false);
+    setGroupProgramSlugs([]);
+    setGroupCanComment(true);
+    setGroupCanInspect(false);
+    setGroupError(null);
+  };
+
+  const createGroupAccount = async () => {
+    if (!groupName.trim() || !groupEmail.trim() || !groupPassword) {
+      setGroupError('Display name, email, and password are required');
+      return;
+    }
+
+    setCreatingGroup(true);
+    setGroupError(null);
+    setGroupSuccess(null);
+
+    try {
+      const response = await fetch('/api/admin/group-accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          full_name: groupName.trim(),
+          email: groupEmail.trim(),
+          username: groupUsername.trim() || undefined,
+          password: groupPassword,
+          can_comment: groupCanComment,
+          can_inspect: groupCanInspect,
+          program_slugs: groupProgramSlugs,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to create group account');
+      }
+
+      setGroupSuccess(
+        `Group account "${groupName.trim()}" created (username: ${data.username}). ` +
+        'Share the email and password with the team — they will not be shown again.'
+      );
+      resetGroupForm();
+      setShowGroupForm(false);
+      fetchUsers();
+    } catch (err) {
+      setGroupError(err instanceof Error ? err.message : 'Failed to create group account');
+    } finally {
+      setCreatingGroup(false);
+    }
   };
 
   const toggleAdmin = async (user: UserWithAccess) => {
@@ -347,9 +442,13 @@ export default function AdminUsersPage() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-semibold text-text-primary">Users</h1>
         <div className="flex gap-2">
-          <Button variant="primary" size="sm" onClick={() => setShowInviteForm(true)}>
+          <Button variant="primary" size="sm" onClick={() => { setShowInviteForm(true); setShowGroupForm(false); }}>
             <UserPlus className="w-4 h-4 mr-2" />
             Invite User
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => { setShowGroupForm(true); setShowInviteForm(false); setGroupSuccess(null); }}>
+            <Users className="w-4 h-4 mr-2" />
+            Create Group Account
           </Button>
           <Button variant="secondary" size="sm" onClick={() => { fetchUsers(); fetchInvites(); }}>
             <RefreshCw className="w-4 h-4 mr-2" />
@@ -507,6 +606,228 @@ export default function AdminUsersPage() {
                   <>
                     <Mail className="w-4 h-4 mr-2" />
                     Send Invite
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Group account created confirmation */}
+      {groupSuccess && (
+        <div className="bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-900 rounded-lg p-4 mb-6 flex items-start justify-between gap-4">
+          <p className="text-sm text-green-800 dark:text-green-400">{groupSuccess}</p>
+          <button
+            onClick={() => setGroupSuccess(null)}
+            className="text-green-800 dark:text-green-400 hover:opacity-70 flex-shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Group Account Form */}
+      {showGroupForm && (
+        <Card className="mb-6 p-6">
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+              <Users className="w-5 h-5" />
+              Create Group Account
+            </h2>
+            <button
+              onClick={() => {
+                setShowGroupForm(false);
+                setGroupError(null);
+              }}
+              className="text-text-secondary hover:text-text-primary"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+          <p className="text-sm text-text-secondary mb-4">
+            A shared login for a whole team. The account is created immediately with the
+            password you set here — no invite email is sent. Group accounts cannot be
+            admins, pin objects, create lists, or redeem access codes.
+          </p>
+
+          {groupError && (
+            <div className="bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg p-3 mb-4">
+              <p className="text-sm text-red-800 dark:text-red-400">{groupError}</p>
+            </div>
+          )}
+
+          <div className="space-y-4">
+            {/* Name + username */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1">
+                  Display Name
+                </label>
+                <input
+                  type="text"
+                  value={groupName}
+                  onChange={(e) => setGroupName(e.target.value)}
+                  placeholder="e.g. CEERS Collaboration"
+                  className="w-full px-4 py-2 border border-border rounded-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1">
+                  Username <span className="text-text-tertiary font-normal">(optional — derived from name)</span>
+                </label>
+                <input
+                  type="text"
+                  value={groupUsername}
+                  onChange={(e) => setGroupUsername(e.target.value)}
+                  placeholder="e.g. ceers-team"
+                  className="w-full px-4 py-2 border border-border rounded-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+            </div>
+
+            {/* Email + password */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1">
+                  Login Email
+                </label>
+                <input
+                  type="email"
+                  value={groupEmail}
+                  onChange={(e) => setGroupEmail(e.target.value)}
+                  placeholder="team@example.com"
+                  className="w-full px-4 py-2 border border-border rounded-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-1">
+                  Password <span className="text-text-tertiary font-normal">(min 8 characters)</span>
+                </label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type={showGroupPassword ? 'text' : 'password'}
+                      value={groupPassword}
+                      onChange={(e) => setGroupPassword(e.target.value)}
+                      autoComplete="new-password"
+                      className="w-full px-4 py-2 pr-10 border border-border rounded-lg bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowGroupPassword(v => !v)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-text-secondary hover:text-text-primary"
+                      title={showGroupPassword ? 'Hide password' : 'Show password'}
+                    >
+                      {showGroupPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <Button variant="secondary" size="sm" onClick={generateGroupPassword} title="Generate a random password">
+                    <Dices className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* Program Access */}
+            <div>
+              <label className="block text-sm font-medium text-text-primary mb-2">
+                Program Access
+              </label>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                {proprietaryPrograms.map((program) => {
+                  const selected = groupProgramSlugs.includes(program.slug);
+                  return (
+                    <button
+                      key={program.slug}
+                      onClick={() => toggleGroupProgram(program.slug)}
+                      className={`
+                        flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left
+                        transition-colors
+                        ${selected
+                          ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800'
+                          : 'bg-card-hover text-text-secondary hover:bg-card-hover'
+                        }
+                      `}
+                    >
+                      {selected && <Check className="w-4 h-4 flex-shrink-0" />}
+                      <span className="truncate">
+                        {program.program_name || program.slug}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={() => setGroupProgramSlugs(proprietaryPrograms.map(p => p.slug))}
+                  className="text-xs text-primary hover:underline"
+                >
+                  Select All
+                </button>
+                <button
+                  onClick={() => setGroupProgramSlugs([])}
+                  className="text-xs text-primary hover:underline"
+                >
+                  Clear All
+                </button>
+              </div>
+            </div>
+
+            {/* Permissions */}
+            <div className="flex flex-wrap gap-6">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={groupCanComment}
+                  onChange={(e) => setGroupCanComment(e.target.checked)}
+                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                />
+                <span className="text-sm text-text-primary">Can comment &amp; tag</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={groupCanInspect}
+                  onChange={(e) => setGroupCanInspect(e.target.checked)}
+                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                />
+                <span className="text-sm text-text-primary">Can submit inspections</span>
+              </label>
+            </div>
+
+            {/* Submit */}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setShowGroupForm(false);
+                  setGroupError(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={createGroupAccount}
+                disabled={
+                  creatingGroup ||
+                  !groupName.trim() ||
+                  !groupEmail.trim() ||
+                  groupPassword.length < 8
+                }
+              >
+                {creatingGroup ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  <>
+                    <Users className="w-4 h-4 mr-2" />
+                    Create Account
                   </>
                 )}
               </Button>
