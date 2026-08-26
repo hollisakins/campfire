@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { findAuthUserByEmail } from '@/lib/supabase/paginate';
 
 /**
  * POST /api/admin/group-accounts
@@ -35,8 +36,11 @@ function sanitizeUsername(raw: string): string {
     .replace(/[^a-z0-9._-]/g, '')
     .replace(/^[._-]+/, '')
     .replace(/[._-]+$/, '');
-  if (base.length < 2) base = `group${base}`;
+  // Truncate before applying the length floor: truncation can cut off the
+  // trailing alphanumeric and the separator strip can then shorten the string
+  // below 2 chars, so the floor must come last.
   base = base.slice(0, 38).replace(/[._-]+$/, '');
+  if (base.length < 2) base = `group${base}`;
   return base;
 }
 
@@ -94,11 +98,17 @@ export async function POST(request: NextRequest) {
     const normalizedEmail = email.trim().toLowerCase();
     const serviceClient = createServiceClient();
 
-    // Check the email is not already taken (same pattern as the invite route)
-    const { data: existingUsers } = await serviceClient.auth.admin.listUsers();
-    const existingUser = existingUsers?.users?.find(
-      u => u.email?.toLowerCase() === normalizedEmail
+    // Check the email is not already taken
+    const { user: existingUser, error: lookupError } = await findAuthUserByEmail(
+      serviceClient,
+      normalizedEmail
     );
+    if (lookupError) {
+      return NextResponse.json(
+        { error: `Failed to check existing users: ${lookupError.message}` },
+        { status: 500 }
+      );
+    }
     if (existingUser) {
       return NextResponse.json(
         { error: 'A user with this email already exists' },
@@ -142,6 +152,14 @@ export async function POST(request: NextRequest) {
         if (!taken) break;
         suffix += 1;
         resolvedUsername = base.slice(0, 39 - String(suffix).length) + suffix;
+      }
+      // Belt and suspenders: derivation should always satisfy the DB CHECK,
+      // but fail as a clean 400 rather than a constraint violation if not.
+      if (!USERNAME_RE.test(resolvedUsername)) {
+        return NextResponse.json(
+          { error: 'Could not derive a valid username from the display name — provide one explicitly' },
+          { status: 400 }
+        );
       }
     }
 

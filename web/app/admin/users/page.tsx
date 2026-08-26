@@ -19,6 +19,7 @@ import {
   Eye,
   EyeOff,
   Dices,
+  Copy,
 } from 'lucide-react';
 import type { UserProfile, Program } from '@/lib/types';
 
@@ -70,7 +71,15 @@ export default function AdminUsersPage() {
   const [groupCanInspect, setGroupCanInspect] = useState(false);
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [groupError, setGroupError] = useState<string | null>(null);
-  const [groupSuccess, setGroupSuccess] = useState<string | null>(null);
+  // Captured at creation time so the credentials survive the form reset — the
+  // password is not stored anywhere else and cannot be recovered later.
+  const [groupSuccess, setGroupSuccess] = useState<{
+    name: string;
+    username: string;
+    email: string;
+    password: string;
+  } | null>(null);
+  const [credsCopied, setCredsCopied] = useState(false);
 
   const fetchInvites = useCallback(async () => {
     try {
@@ -268,10 +277,13 @@ export default function AdminUsersPage() {
         throw new Error(data.error || 'Failed to create group account');
       }
 
-      setGroupSuccess(
-        `Group account "${groupName.trim()}" created (username: ${data.username}). ` +
-        'Share the email and password with the team — they will not be shown again.'
-      );
+      setGroupSuccess({
+        name: groupName.trim(),
+        username: data.username,
+        email: groupEmail.trim(),
+        password: groupPassword,
+      });
+      setCredsCopied(false);
       resetGroupForm();
       setShowGroupForm(false);
       fetchUsers();
@@ -614,10 +626,32 @@ export default function AdminUsersPage() {
         </Card>
       )}
 
-      {/* Group account created confirmation */}
+      {/* Group account created confirmation — the one place the password is shown */}
       {groupSuccess && (
         <div className="bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-900 rounded-lg p-4 mb-6 flex items-start justify-between gap-4">
-          <p className="text-sm text-green-800 dark:text-green-400">{groupSuccess}</p>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-green-800 dark:text-green-400">
+              Group account &quot;{groupSuccess.name}&quot; created (username: {groupSuccess.username})
+            </p>
+            <p className="text-sm text-green-800 dark:text-green-400 mt-1">
+              Share these credentials with the team — the password will not be shown again:
+            </p>
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <code className="text-sm px-2 py-1 rounded bg-green-100 dark:bg-green-900 text-green-900 dark:text-green-300 break-all">
+                {groupSuccess.email} / {groupSuccess.password}
+              </code>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(`${groupSuccess.email}\n${groupSuccess.password}`);
+                  setCredsCopied(true);
+                }}
+                className="text-green-800 dark:text-green-400 hover:opacity-70 flex-shrink-0"
+                title="Copy email and password"
+              >
+                {credsCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
           <button
             onClick={() => setGroupSuccess(null)}
             className="text-green-800 dark:text-green-400 hover:opacity-70 flex-shrink-0"
