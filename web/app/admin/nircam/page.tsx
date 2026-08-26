@@ -430,10 +430,14 @@ function AdminNircamPageInner() {
   });
 
   // Row links carry the current filter+sort state so the detail page derives
-  // prev/next from the same set (see lib/nircam-exposure-nav.ts).
+  // prev/next from the same set (see lib/nircam-exposure-nav.ts). Debounced
+  // filters, matching the fetch: while the operator is mid-keystroke in the
+  // search box the rendered rows are still the debounced set, and a link
+  // carrying the un-debounced text would hand the detail page a filter its
+  // exposure doesn't match (no prev/next context).
   const navQuery = useMemo(
-    () => buildExposureNavQuery(state.filters, state.sort, DEFAULT_SORT),
-    [state.filters, state.sort],
+    () => buildExposureNavQuery(state.debouncedFilters, state.sort, DEFAULT_SORT),
+    [state.debouncedFilters, state.sort],
   );
   const detailHref = (id: number) => `/admin/nircam/${id}${navQuery ? `?${navQuery}` : ''}`;
 
