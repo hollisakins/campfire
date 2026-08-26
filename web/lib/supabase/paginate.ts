@@ -1,6 +1,35 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient, User } from '@supabase/supabase-js';
 
 const DEFAULT_PAGE_SIZE = 5000;
+
+/**
+ * Find an auth user by email, paging through auth.admin.listUsers.
+ *
+ * GoTrue's listUsers defaults to 50 users per page and supabase-js has no
+ * direct lookup-by-email admin API, so a bare listUsers() call only ever sees
+ * the first 50 accounts — a duplicate-email check built on it silently stops
+ * working once an instance grows past that. Requires a service-role client.
+ */
+export async function findAuthUserByEmail(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  serviceClient: SupabaseClient<any, any>,
+  email: string,
+): Promise<{ user: User | null; error: Error | null }> {
+  const normalized = email.trim().toLowerCase();
+  const perPage = 1000;
+
+  for (let page = 1; ; page++) {
+    const { data, error } = await serviceClient.auth.admin.listUsers({ page, perPage });
+
+    if (error) {
+      return { user: null, error: new Error(error.message) };
+    }
+
+    const match = data.users.find(u => u.email?.toLowerCase() === normalized);
+    if (match) return { user: match, error: null };
+    if (data.users.length < perPage) return { user: null, error: null };
+  }
+}
 
 /**
  * Paginate through all results of a Supabase RPC call.

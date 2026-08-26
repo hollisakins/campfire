@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { findAuthUserByEmail } from '@/lib/supabase/paginate';
 
 /**
  * POST /api/admin/invites/[id]/resend
@@ -72,10 +73,17 @@ export async function POST(
     }
 
     // Check if user already exists in auth.users
-    const { data: existingUsers } = await serviceClient.auth.admin.listUsers();
-    const existingUser = existingUsers?.users?.find(
-      u => u.email?.toLowerCase() === invite.email.toLowerCase()
+    const { user: existingUser, error: lookupError } = await findAuthUserByEmail(
+      serviceClient,
+      invite.email
     );
+
+    if (lookupError) {
+      return NextResponse.json(
+        { error: `Failed to check existing users: ${lookupError.message}` },
+        { status: 500 }
+      );
+    }
 
     if (existingUser) {
       // Check if user has completed profile setup
