@@ -118,11 +118,14 @@ export async function PATCH(
  *
  * Delete a user. For regular users this removes the profile and program
  * access but leaves the auth.users principal (historical behavior — invited
- * users own their auth identity). For group accounts the auth principal is
- * deleted too: the account exists only as a shared credential minted by an
- * admin, and leaving it behind would let everyone holding the password keep
- * signing in as a profileless (and therefore unrestricted-by-group-rules)
- * user. user_profiles and user_program_access both cascade from auth.users.
+ * users own their auth identity). For group accounts the shared credential
+ * must actually stop working: the principal is banned first (revocation that
+ * cannot fail on data), then hard-deleted where possible. The hard delete
+ * only succeeds for accounts with no activity — comments, audit-log rows,
+ * and last_inspected_by stamps reference auth.users with no ON DELETE
+ * action — so when it fails we fall back to the profile/program-access
+ * cleanup and let the ban carry the revocation (same tombstone approach as
+ * revokeShareLink in lib/actions/share-links.ts).
  * Admin only.
  */
 export async function DELETE(
@@ -165,16 +168,32 @@ export async function DELETE(
       .single();
 
     if (target?.is_group_account) {
-      // Deleting the auth principal cascades away the profile and program
-      // access, and stops the shared credentials from authenticating.
-      const { error } = await serviceClient.auth.admin.deleteUser(userId);
+      // Ban the principal BEFORE anything that can fail on data, so the
+      // shared credentials stop authenticating no matter what happens below.
+      const { error: banError } = await serviceClient.auth.admin.updateUserById(userId, {
+        // Effectively forever (100 years); GoTrue has no "permanent" literal.
+        ban_duration: '876000h',
+      });
 
-      if (error) {
-        console.error('Error deleting group account:', error);
-        return NextResponse.json({ error: 'Failed to delete group account' }, { status: 500 });
+      if (banError) {
+        console.error('Error banning group account:', banError);
+        return NextResponse.json({ error: 'Failed to disable group account' }, { status: 500 });
       }
 
-      return NextResponse.json({ success: true });
+      // Hard-delete where possible: cascades away the profile and program
+      // access. Fails with an FK violation once the account has activity
+      // (comments etc. reference auth.users with no ON DELETE action) — in
+      // that case fall through to the profile-only cleanup below; the ban
+      // already revoked the credential.
+      const { error: deleteError } = await serviceClient.auth.admin.deleteUser(userId);
+
+      if (!deleteError) {
+        return NextResponse.json({ success: true });
+      }
+      console.warn(
+        'Group account has referencing rows; banned instead of hard-deleted:',
+        deleteError.message
+      );
     }
 
     // Delete program access first (foreign key)
