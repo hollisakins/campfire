@@ -38,6 +38,24 @@ export async function PATCH(
     // Use service client for admin mutations on other users' data
     const serviceClient = createServiceClient();
 
+    // Group accounts are never admins: a shared admin credential is
+    // unattributable. The create endpoint refuses it; refuse promotion here
+    // too so the shield toggle can't grant it after the fact.
+    if (is_admin === true) {
+      const { data: target } = await serviceClient
+        .from('user_profiles')
+        .select('is_group_account')
+        .eq('user_id', userId)
+        .single();
+
+      if (target?.is_group_account) {
+        return NextResponse.json(
+          { error: 'Group accounts cannot be given admin privileges' },
+          { status: 400 }
+        );
+      }
+    }
+
     // Update profile fields
     const profileUpdates: Record<string, unknown> = {};
     if (typeof is_admin === 'boolean') profileUpdates.is_admin = is_admin;
@@ -98,7 +116,13 @@ export async function PATCH(
 /**
  * DELETE /api/users/[id]
  *
- * Delete a user (removes from user_profiles, not auth.users).
+ * Delete a user. For regular users this removes the profile and program
+ * access but leaves the auth.users principal (historical behavior — invited
+ * users own their auth identity). For group accounts the auth principal is
+ * deleted too: the account exists only as a shared credential minted by an
+ * admin, and leaving it behind would let everyone holding the password keep
+ * signing in as a profileless (and therefore unrestricted-by-group-rules)
+ * user. user_profiles and user_program_access both cascade from auth.users.
  * Admin only.
  */
 export async function DELETE(
@@ -133,6 +157,25 @@ export async function DELETE(
   try {
     // Use service client for admin mutations on other users' data
     const serviceClient = createServiceClient();
+
+    const { data: target } = await serviceClient
+      .from('user_profiles')
+      .select('is_group_account')
+      .eq('user_id', userId)
+      .single();
+
+    if (target?.is_group_account) {
+      // Deleting the auth principal cascades away the profile and program
+      // access, and stops the shared credentials from authenticating.
+      const { error } = await serviceClient.auth.admin.deleteUser(userId);
+
+      if (error) {
+        console.error('Error deleting group account:', error);
+        return NextResponse.json({ error: 'Failed to delete group account' }, { status: 500 });
+      }
+
+      return NextResponse.json({ success: true });
+    }
 
     // Delete program access first (foreign key)
     await serviceClient

@@ -963,18 +963,21 @@ export default function AdminUsersPage() {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2">
-                        <button
-                          onClick={() => toggleAdmin(user)}
-                          disabled={savingUser === user.user_id}
-                          className="text-text-secondary hover:text-primary transition-colors disabled:opacity-50"
-                          title={user.is_admin ? 'Remove admin' : 'Make admin'}
-                        >
-                          {user.is_admin ? (
-                            <ShieldOff className="w-5 h-5" />
-                          ) : (
-                            <Shield className="w-5 h-5" />
-                          )}
-                        </button>
+                        {/* Group accounts can never be admins (enforced by the API too) */}
+                        {!user.is_group_account && (
+                          <button
+                            onClick={() => toggleAdmin(user)}
+                            disabled={savingUser === user.user_id}
+                            className="text-text-secondary hover:text-primary transition-colors disabled:opacity-50"
+                            title={user.is_admin ? 'Remove admin' : 'Make admin'}
+                          >
+                            {user.is_admin ? (
+                              <ShieldOff className="w-5 h-5" />
+                            ) : (
+                              <Shield className="w-5 h-5" />
+                            )}
+                          </button>
+                        )}
                         <button
                           onClick={() => deleteUser(user)}
                           className="text-text-secondary hover:text-red-600 dark:hover:text-red-400 transition-colors"
