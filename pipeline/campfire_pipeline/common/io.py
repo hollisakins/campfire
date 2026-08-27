@@ -6,9 +6,28 @@ import os
 from datetime import datetime
 
 
+# Process-local prefix stamped on every log() line. Parallel tile workers set
+# it to their tile name so interleaved output from the modules they call into
+# (drizzle, bkgsub, ...) stays attributable to a tile.
+_log_prefix = ''
+
+
+def set_log_prefix(prefix):
+    """Set a process-local prefix for subsequent :func:`log` lines.
+
+    Pass ``''`` to clear. Only affects the calling process — pool workers
+    each set their own.
+    """
+    global _log_prefix
+    _log_prefix = prefix
+
+
 def log(*args, **kwargs):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}]", *args, **kwargs)
+    if _log_prefix:
+        print(f"[{timestamp}] {_log_prefix}", *args, **kwargs)
+    else:
+        print(f"[{timestamp}]", *args, **kwargs)
 
 
 def atomic_save(model_or_hdul, path, header_updates=None, extra_hdus=None):

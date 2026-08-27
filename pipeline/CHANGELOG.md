@@ -46,6 +46,29 @@ Release procedure: edit the `## Unreleased` section below, then run
   Infrastructure because it changes scientific output: exposures that were
   silently quarantined now contribute to their mosaics.
 
+### Infrastructure
+- **Memory-aware tile parallelism for NIRCam `resample` + mosaic `bkgsub`.**
+  The combine tile loop (previously strictly serial: one busy core through a
+  ~12-hour tile phase on a 21-tile COSMOS filter) now dispatches tiles across
+  a forkserver pool. `-p/--processes` is a **ceiling, not a target**: the
+  scheduler sizes the pool from a budget of `MemAvailable` and a weighted
+  memory gate admits each worker's drizzle and bkgsub/split/plot stages
+  separately against per-tile footprint estimates computed from the tile's
+  own geometry (output shape, context-plane count) — bkgsub is the ~2.5–3x
+  heavier stage (measured 51–66 GB vs ~20–37 GB per COSMOS LW tile), so it
+  throttles harder while drizzles run wide, and live `MemAvailable` is
+  re-checked at every admission for shared-node safety. Failing tiles no
+  longer kill their siblings in parallel mode (failures are collected and
+  raised together); log lines from parallel workers are prefixed with their
+  tile name. `--processes 1` (the default) keeps the exact serial,
+  ordering-stable, fail-fast loop. Tuning knobs live under
+  `[nircam.resample]` (`parallel_tiles`, `mem_fraction`, `mem_margin`,
+  `mem_bkgsub_bytes_per_pixel`, `mem_drizzle_base_bytes_per_pixel`) and are
+  deliberately excluded from the manifest config hash, so enabling or tuning
+  the scheduler never marks existing tiles stale. Tile outputs are unchanged
+  — tiles are independent and the per-tile pipeline only reads the frozen
+  working copies — hence Infrastructure/PATCH.
+
 ## v0.6.0 — 2026-08-18
 
 ### Calibration

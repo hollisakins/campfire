@@ -584,6 +584,9 @@ def _run_resample(field, config, filtname, n_processes, overwrite, status,
     # tiles to drizzle (its own precise per-tile SCI-WCS selection narrows
     # further within this set). ``epoch`` subsets the drizzle inputs to the
     # named epoch and labels the mosaics with the epoch name.
+    # ``n_processes`` is a ceiling, not a target: resample_step's memory
+    # scheduler decides how many tiles actually run concurrently (see the
+    # Parallelism section of steps/resample.py).
     exposures = field.get_exposure_files(filtname, with_step='CFP_OUT',
                                          status=status, work=True, tiles=tiles,
                                          epoch=epoch)
@@ -593,7 +596,8 @@ def _run_resample(field, config, filtname, n_processes, overwrite, status,
     from campfire_pipeline.nircam.steps.resample import resample_step
     cfg = get_nircam_step_config('resample', config, field)
     resample_step(filtname, exposures, field, cfg, reduction_version,
-                  overwrite=overwrite, tiles=tiles, epoch=epoch)
+                  overwrite=overwrite, tiles=tiles, epoch=epoch,
+                  n_processes=n_processes)
 
 
 # Dispatch table: step name → callable that takes (field, config, filtname,
