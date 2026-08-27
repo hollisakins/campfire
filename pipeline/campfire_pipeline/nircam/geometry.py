@@ -26,7 +26,34 @@ from shapely.ops import unary_union
 DEFAULT_TILE_BUFFER_DEG = 0.003
 
 
-def select_overlapping_files(exposure_files, tile_polygon, *, in_shape=(2048, 2048)):
+def exposure_footprints(exposure_files, *, in_shape=(2048, 2048)):
+    """One SCI-WCS footprint ``Polygon`` per file, as ``[(file, Polygon)]``.
+
+    The footprint construction of :func:`select_overlapping_files` (four
+    ``in_shape`` corners through ``wcs_pix2world``), factored out so a caller
+    testing many tiles pays the per-file header reads ONCE and each tile's
+    selection is then pure polygon math — instead of every tile re-opening
+    every exposure.
+    """
+    nx, ny = in_shape
+    pixcoords = np.array(
+        [[0.0, 0.0], [float(nx), 0.0],
+         [float(nx), float(ny)], [0.0, float(ny)]]
+    )
+
+    footprints = []
+    for f in exposure_files:
+        with fits.open(f, ignore_missing_simple=True, memmap=False) as hdul:
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                wcs = WCS(hdul[1].header, naxis=2)
+            worldcoords = wcs.wcs_pix2world(pixcoords, 0)
+        footprints.append((f, Polygon(worldcoords)))
+    return footprints
+
+
+def select_overlapping_files(exposure_files, tile_polygon, *,
+                             in_shape=(2048, 2048), footprints=None):
     """Return the subset of ``exposure_files`` whose detector footprints
     intersect ``tile_polygon`` (a ``shapely.geometry.Polygon`` in sky
     coordinates).
@@ -36,24 +63,15 @@ def select_overlapping_files(exposure_files, tile_polygon, *, in_shape=(2048, 20
     (default 2048×2048 = NIRCam detector). NIRCam detectors are all
     2048², so the default is correct for the pipeline; the parameter
     exists so this helper can be reused for other instruments.
-    """
-    nx, ny = in_shape
-    pixcoords = np.array(
-        [[0.0, 0.0], [float(nx), 0.0],
-         [float(nx), float(ny)], [0.0, float(ny)]]
-    )
 
-    selected = []
-    for f in exposure_files:
-        with fits.open(f, ignore_missing_simple=True, memmap=False) as hdul:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                wcs = WCS(hdul[1].header, naxis=2)
-            worldcoords = wcs.wcs_pix2world(pixcoords, 0)
-        file_polygon = Polygon(worldcoords)
-        if tile_polygon.intersects(file_polygon):
-            selected.append(f)
-    return selected
+    ``footprints`` (from :func:`exposure_footprints` over the same files)
+    skips the per-file reads; selection order and membership are identical
+    either way.
+    """
+    if footprints is None:
+        footprints = exposure_footprints(exposure_files, in_shape=in_shape)
+    return [f for f, file_polygon in footprints
+            if tile_polygon.intersects(file_polygon)]
 
 
 def polygon_from_sregion(s_region):

@@ -226,8 +226,38 @@ def test_serial_path_never_dispatches(monkeypatch):
     assert visited == list(field.tiles)
 
 
+def _patch_parent_selection(monkeypatch, selected_by_tile):
+    """Stub the parent-side selection pre-pass of the parallel path.
+
+    ``selected_by_tile`` maps tile name → list the selection should return
+    (missing tiles select nothing). The footprint pass is stubbed to a
+    sentinel so the test also proves it is computed once and threaded
+    through to every per-tile selection call.
+    """
+    sentinel = object()
+    monkeypatch.setattr(resample_mod, 'exposure_footprints',
+                        lambda files: sentinel)
+
+    tile_seq = iter([])
+
+    def fake_select(files, poly, footprints=None):
+        assert footprints is sentinel
+        tile = next(tile_seq)
+        return selected_by_tile.get(tile, [])
+
+    def arm(tiles):
+        nonlocal tile_seq
+        tile_seq = iter(tiles)
+
+    monkeypatch.setattr(resample_mod, 'select_overlapping_files', fake_select)
+    return arm
+
+
 def test_parallel_path_dispatches_with_gate(monkeypatch):
     field = _field()
+    arm = _patch_parent_selection(
+        monkeypatch, {t: ['x.fits'] for t in field.tiles})
+    arm(list(field.tiles))
     calls = {}
 
     def fake_dispatch(func, tasks, n_processes=1, initializer=None,
@@ -235,7 +265,7 @@ def test_parallel_path_dispatches_with_gate(monkeypatch):
         calls.update(func=func, tasks=list(tasks), n_processes=n_processes,
                      initializer=initializer, initargs=initargs,
                      kwargs=kwargs)
-        return [{'tile': t, 'error': None} for t in tasks]
+        return [{'tile': t, 'error': None} for t, _ in tasks]
 
     monkeypatch.setattr(resample_mod, 'dispatch', fake_dispatch)
     monkeypatch.setattr(resample_mod, 'mem_available_bytes', lambda: 1 << 40)
@@ -244,12 +274,68 @@ def test_parallel_path_dispatches_with_gate(monkeypatch):
         n_processes=4,
     )
     assert calls['func'] is resample_mod._process_tile
-    assert calls['tasks'] == list(field.tiles)
+    assert calls['tasks'] == [(t, ['x.fits']) for t in field.tiles]
+    assert calls['kwargs']['use_starmap'] is True
     assert 1 < calls['n_processes'] <= 4
     assert calls['initializer'] is resample_mod._init_tile_worker
     assert isinstance(calls['initargs'][0], MemoryGate)
     assert calls['kwargs']['capture_errors'] is True
     assert calls['kwargs']['tag_logs'] is True
+
+
+def test_parallel_pool_sized_on_tiles_with_work(monkeypatch):
+    # 3 tiles, one with no overlapping exposures: the empty tile is skipped
+    # in the parent (no worker, no gate traffic) and the pool is sized on
+    # the 2 tiles that actually have work, not the raw tile list.
+    field = _field(n_tiles=3)
+    arm = _patch_parent_selection(
+        monkeypatch, {'A1': ['x.fits'], 'A3': ['x.fits']})
+    arm(list(field.tiles))
+    calls = {}
+
+    def fake_dispatch(func, tasks, n_processes=1, **kwargs):
+        calls.update(tasks=list(tasks), n_processes=n_processes)
+        return [{'tile': t, 'error': None} for t, _ in tasks]
+
+    monkeypatch.setattr(resample_mod, 'dispatch', fake_dispatch)
+    monkeypatch.setattr(resample_mod, 'mem_available_bytes', lambda: 1 << 40)
+    resample_mod.resample_step(
+        'f444w', ['x.fits'], field, {'pixel_scale': '30mas'}, 'v1',
+        n_processes=8,
+    )
+    assert calls['tasks'] == [('A1', ['x.fits']), ('A3', ['x.fits'])]
+    assert calls['n_processes'] == 2
+
+
+def test_parallel_all_tiles_empty_skips_pool(monkeypatch):
+    field = _field()
+    arm = _patch_parent_selection(monkeypatch, {})
+    arm(list(field.tiles))
+
+    def no_dispatch(*a, **k):
+        raise AssertionError('nothing to do — the pool must not spin up')
+
+    monkeypatch.setattr(resample_mod, 'dispatch', no_dispatch)
+    monkeypatch.setattr(resample_mod, 'mem_available_bytes', lambda: 1 << 40)
+    resample_mod.resample_step(
+        'f444w', ['x.fits'], field, {'pixel_scale': '30mas'}, 'v1',
+        n_processes=4,
+    )
+
+
+def test_worker_uses_parent_selection(monkeypatch):
+    # A worker handed `selected` must not re-run the selection. The bogus
+    # implementation name stops execution right after the point where the
+    # worker would have needed the selection result.
+    def boom(files, poly, footprints=None):
+        raise AssertionError('worker must not re-select')
+
+    monkeypatch.setattr(resample_mod, 'select_overlapping_files', boom)
+    kwargs = _worker_kwargs(_field())
+    kwargs['step_config'] = {'pixel_scale': '30mas',
+                             'implementation': '__test_stop__'}
+    with pytest.raises(ValueError, match='__test_stop__'):
+        resample_mod._process_tile('A1', selected=['exp1.fits'], **kwargs)
 
 
 def test_parallel_tiles_false_stays_serial(monkeypatch):
@@ -270,10 +356,13 @@ def test_parallel_tiles_false_stays_serial(monkeypatch):
 
 def test_parallel_failures_collected_and_raised(monkeypatch):
     field = _field()
+    arm = _patch_parent_selection(
+        monkeypatch, {t: ['x.fits'] for t in field.tiles})
+    arm(list(field.tiles))
 
     def fake_dispatch(func, tasks, **kwargs):
         return [{'tile': t, 'error': 'Traceback: boom' if t == 'A2' else None}
-                for t in tasks]
+                for t, _ in tasks]
 
     monkeypatch.setattr(resample_mod, 'dispatch', fake_dispatch)
     monkeypatch.setattr(resample_mod, 'mem_available_bytes', lambda: 1 << 40)

@@ -46,7 +46,9 @@ from campfire_pipeline.common.io import log, set_log_prefix
 from campfire_pipeline.common.parallel import (
     MemoryGate, _RetryOnIOError, dispatch, mem_available_bytes,
 )
-from campfire_pipeline.nircam.geometry import select_overlapping_files
+from campfire_pipeline.nircam.geometry import (
+    exposure_footprints, select_overlapping_files,
+)
 
 
 def _resolve_pixel_scale(value):
@@ -396,8 +398,28 @@ def resample_step(filtname, exposure_files, field, step_config,
     use_pool = (n_processes > 1 and len(tiles) > 1
                 and step_config.get('parallel_tiles', True))
     if use_pool:
+        # One pass over the exposures reads every footprint; per-tile
+        # selection is then pure polygon math. That both spares each worker
+        # a full re-read of the exposure headers (selection previously ran
+        # once per tile, each opening every file) and lets the pool be
+        # sized on the tiles that actually have work instead of the raw
+        # tile list.
+        footprints = exposure_footprints(exposure_files)
+        tasks = []
+        for tile in tiles:
+            selected = select_overlapping_files(
+                exposure_files, Polygon(field.get_tile_corners(tile)),
+                footprints=footprints,
+            )
+            if selected:
+                tasks.append((tile, selected))
+            else:
+                log(f"resample: no exposures overlap {tile}; skipping")
+        if not tasks:
+            return
         n_workers, budget = _plan_tile_pool(
-            tiles, field, pixel_scale_str, step_config, n_processes,
+            [tile for tile, _ in tasks], field, pixel_scale_str,
+            step_config, n_processes,
         )
         use_pool = n_workers > 1
 
@@ -408,7 +430,7 @@ def resample_step(filtname, exposure_files, field, step_config,
 
     gate = MemoryGate(budget) if budget is not None else None
     results = dispatch(
-        _process_tile, list(tiles), n_processes=n_workers,
+        _process_tile, tasks, n_processes=n_workers, use_starmap=True,
         initializer=_init_tile_worker, initargs=(gate,),
         capture_errors=True, tag_logs=True, retry_crds=True,
         **worker_kwargs,
@@ -424,7 +446,8 @@ def resample_step(filtname, exposure_files, field, step_config,
         )
 
 
-def _process_tile(tile, *, capture_errors=False, tag_logs=False, **kwargs):
+def _process_tile(tile, selected=None, *, capture_errors=False,
+                  tag_logs=False, **kwargs):
     """Pool-worker wrapper around :func:`_resample_tile`.
 
     Runs identically in-process (serial: exceptions propagate, untagged logs)
@@ -432,11 +455,14 @@ def _process_tile(tile, *, capture_errors=False, tag_logs=False, **kwargs):
     exceptions as ``{'tile', 'error'}`` so one bad tile doesn't kill its
     siblings; ``tag_logs=True`` prefixes every log line — including those
     from the drizzle/bkgsub modules this calls into — with the tile name).
+    ``selected`` carries the tile's input list when the parent already did
+    the selection (parallel mode); ``None`` makes the worker select for
+    itself (serial mode).
     """
     if tag_logs:
         set_log_prefix(f'[{tile}]')
     try:
-        _resample_tile(tile, **kwargs)
+        _resample_tile(tile, selected=selected, **kwargs)
         return {'tile': tile, 'error': None}
     except Exception:
         if not capture_errors:
@@ -449,7 +475,7 @@ def _process_tile(tile, *, capture_errors=False, tag_logs=False, **kwargs):
 
 def _resample_tile(tile, *, filtname, exposure_files, field, step_config,
                    reduction_version, pixel_scale, pixel_scale_str,
-                   overwrite, epoch, retry_crds=False):
+                   overwrite, epoch, selected=None, retry_crds=False):
     """Drizzle + background-subtract + split + plot one mosaic tile.
 
     The whole per-tile pipeline: staleness check, drizzle, optional
@@ -484,8 +510,9 @@ def _resample_tile(tile, *, filtname, exposure_files, field, step_config,
 
     log(f"  mosaic → {mosaic_file}")
 
-    tile_polygon = Polygon(field.get_tile_corners(tile))
-    selected = select_overlapping_files(exposure_files, tile_polygon)
+    if selected is None:
+        tile_polygon = Polygon(field.get_tile_corners(tile))
+        selected = select_overlapping_files(exposure_files, tile_polygon)
     if not selected:
         log(f"  no exposures overlap {tile}; skipping")
         return

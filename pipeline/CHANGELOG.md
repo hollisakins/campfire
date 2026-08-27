@@ -60,7 +60,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   re-checked at every admission for shared-node safety. Failing tiles no
   longer kill their siblings in parallel mode (failures are collected and
   raised together); log lines from parallel workers are prefixed with their
-  tile name. `--processes 1` (the default) keeps the exact serial,
+  tile name and emitted as single atomic write+flush calls so concurrent
+  workers never interleave mid-line. In parallel mode the exposure
+  footprints are read once in the parent (instead of once per tile) and the
+  pool is sized on the tiles that actually have overlapping exposures.
+  `--processes 1` (the default) keeps the exact serial,
   ordering-stable, fail-fast loop. Tuning knobs live under
   `[nircam.resample]` (`parallel_tiles`, `mem_fraction`, `mem_margin`,
   `mem_bkgsub_bytes_per_pixel`, `mem_drizzle_base_bytes_per_pixel`) and are
