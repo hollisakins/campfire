@@ -507,6 +507,65 @@ GRANT EXECUTE ON FUNCTION public.object_scoped_aggregates(INTEGER, TEXT[], BOOLE
 
 
 -- =============================================================================
+-- objects_matching_grating_filter
+-- =============================================================================
+-- Viewer-scoped grating filtering for the object-level catalog RPCs
+-- (issue #488).
+--
+-- The stored objects.gratings array is computed at deploy time across ALL
+-- member spectra — blind to publication status and spanning programs the
+-- viewer may not access (python/campfire/deploy/objects.py). Filtering on it
+-- alone matched objects whose only *visible* spectra carry none of the
+-- selected gratings (a PRISM-only row matching an M-grating filter via an
+-- unpublished or proprietary sibling spectrum), while the displayed row is
+-- scoped via object_scoped_aggregates(). This helper returns the objects.id
+-- set whose VISIBLE spectra — member targets in p_program_slugs, published
+-- unless p_include_unpublished — satisfy the grating selection:
+--
+--   'any' / 'none': objects with at least one visible spectrum in p_gratings
+--                   (callers apply IN for 'any', NOT IN for 'none')
+--   'all':          objects whose visible spectra cover every requested grating
+--
+-- It is set-returning (rather than a per-object boolean) so call sites can use
+-- an uncorrelated `o.id IN (SELECT ...)` — one hashed-subplan build per query
+-- instead of a targets↔spectra probe per candidate row, which measured ~2x
+-- slower on a 40k-object catalog. Call sites also keep the stored array as an
+-- index-backed pre-filter: the stored array is a superset of every viewer's
+-- visible set, so o.gratings &&/@> p_gratings is a NECESSARY condition for
+-- 'any'/'all' and NOT o.gratings && p_gratings is a SUFFICIENT condition for
+-- 'none'. If the deploy-time builder ever narrows what it aggregates into
+-- objects.gratings, that superset invariant breaks and the call-site
+-- pre-filters must be revisited.
+--
+-- Never returns NULL rows (callers rely on this for NOT IN three-valued-logic
+-- safety). Like object_scoped_aggregates: p_program_slugs must already be
+-- access-checked by the caller — it is the access gate, not RLS.
+CREATE OR REPLACE FUNCTION public.objects_matching_grating_filter(
+  p_gratings TEXT[],
+  p_gratings_mode TEXT,
+  p_program_slugs TEXT[],
+  p_include_unpublished BOOLEAN DEFAULT false
+)
+RETURNS SETOF INTEGER
+LANGUAGE sql STABLE
+AS $$
+  SELECT t.object_id
+  FROM targets t
+  JOIN spectra s ON s.target_id = t.target_id
+  WHERE t.object_id IS NOT NULL
+    AND t.program_slug = ANY(p_program_slugs)
+    AND (p_include_unpublished OR s.deploy_status = 'published')
+    AND s.grating = ANY(p_gratings)
+  GROUP BY t.object_id
+  HAVING p_gratings_mode <> 'all'
+      OR COUNT(DISTINCT s.grating) = (SELECT COUNT(DISTINCT g) FROM unnest(p_gratings) g);
+$$;
+
+GRANT EXECUTE ON FUNCTION public.objects_matching_grating_filter(TEXT[], TEXT, TEXT[], BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.objects_matching_grating_filter(TEXT[], TEXT, TEXT[], BOOLEAN) TO service_role;
+
+
+-- =============================================================================
 -- Device Code Auth
 -- =============================================================================
 
@@ -1567,9 +1626,17 @@ BEGIN
     AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
     AND (
       NOT v_grating_filter_active
-      OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
-      OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
-      OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+      -- Issue #488: the o.gratings array tests are index-backed pre-filters
+      -- only (deploy-time aggregate over ALL member spectra, unpublished and
+      -- inaccessible programs included); the viewer-visible decision is the
+      -- hashed IN / NOT IN over objects_matching_grating_filter() — see its
+      -- header for the invariants.
+      OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
+          AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'any', p_program_slugs, p_include_unpublished)))
+      OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
+          AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'all', p_program_slugs, p_include_unpublished)))
+      OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
+          OR o.id NOT IN (SELECT public.objects_matching_grating_filter(p_gratings, 'none', p_program_slugs, p_include_unpublished))))
     )
     AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
     AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
@@ -1702,9 +1769,17 @@ BEGIN
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
       AND (
         NOT v_grating_filter_active
-        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
-        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
-        OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+        -- Issue #488: the o.gratings array tests are index-backed pre-filters
+        -- only (deploy-time aggregate over ALL member spectra, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed IN / NOT IN over objects_matching_grating_filter() — see its
+        -- header for the invariants.
+        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
+            AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'any', p_program_slugs, p_include_unpublished)))
+        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
+            AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'all', p_program_slugs, p_include_unpublished)))
+        OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
+            OR o.id NOT IN (SELECT public.objects_matching_grating_filter(p_gratings, 'none', p_program_slugs, p_include_unpublished))))
       )
       AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
@@ -2018,9 +2093,17 @@ BEGIN
     AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
     AND (
       NOT v_grating_filter_active
-      OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
-      OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
-      OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+      -- Issue #488: the o.gratings array tests are index-backed pre-filters
+      -- only (deploy-time aggregate over ALL member spectra, unpublished and
+      -- inaccessible programs included); the viewer-visible decision is the
+      -- hashed IN / NOT IN over objects_matching_grating_filter() — see its
+      -- header for the invariants.
+      OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
+          AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'any', p_program_slugs, p_include_unpublished)))
+      OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
+          AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'all', p_program_slugs, p_include_unpublished)))
+      OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
+          OR o.id NOT IN (SELECT public.objects_matching_grating_filter(p_gratings, 'none', p_program_slugs, p_include_unpublished))))
     )
     AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
     AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
@@ -2252,9 +2335,17 @@ BEGIN
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
       AND (
         NOT v_grating_filter_active
-        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
-        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
-        OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+        -- Issue #488: the o.gratings array tests are index-backed pre-filters
+        -- only (deploy-time aggregate over ALL member spectra, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed IN / NOT IN over objects_matching_grating_filter() — see its
+        -- header for the invariants.
+        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
+            AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'any', p_program_slugs, p_include_unpublished)))
+        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
+            AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'all', p_program_slugs, p_include_unpublished)))
+        OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
+            OR o.id NOT IN (SELECT public.objects_matching_grating_filter(p_gratings, 'none', p_program_slugs, p_include_unpublished))))
       )
       AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
@@ -2717,9 +2808,17 @@ BEGIN
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
       AND (
         NOT v_grating_filter_active
-        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
-        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
-        OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+        -- Issue #488: the o.gratings array tests are index-backed pre-filters
+        -- only (deploy-time aggregate over ALL member spectra, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed IN / NOT IN over objects_matching_grating_filter() — see its
+        -- header for the invariants.
+        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
+            AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'any', p_program_slugs, p_include_unpublished)))
+        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
+            AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'all', p_program_slugs, p_include_unpublished)))
+        OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
+            OR o.id NOT IN (SELECT public.objects_matching_grating_filter(p_gratings, 'none', p_program_slugs, p_include_unpublished))))
       )
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
       AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
