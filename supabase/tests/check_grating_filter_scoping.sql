@@ -21,6 +21,7 @@ DECLARE
   v_obj_mixed INTEGER;   -- published PRISM in public program + published G395M in proprietary program
   v_obj_draft INTEGER;   -- public program only: published PRISM + draft G395M on one target
   v_json      JSONB;
+  v_row       JSONB;
   v_count     BIGINT;
   v_ids       TEXT[];
 BEGIN
@@ -120,6 +121,25 @@ BEGIN
     );
   IF v_count <> 2 THEN
     RAISE EXCEPTION 'paginated none=G395M dropped visible PRISM-only rows: count=%', v_count;
+  END IF;
+  -- Filter/display consistency: a row returned by "none of G395M" must not
+  -- itself display G395M. This guards the object_scoped_aggregates fast path,
+  -- which must fall through to the viewer-scoped recompute whenever an object
+  -- carries an unpublished member spectrum (the stored aggregates are
+  -- publication-blind).
+  IF EXISTS (
+    SELECT 1 FROM jsonb_array_elements(v_json) AS r(row)
+    WHERE r.row -> 'gratings' @> '["G395M"]'::jsonb
+  ) THEN
+    RAISE EXCEPTION 'none=G395M returned a row whose displayed gratings contain G395M: %', v_json;
+  END IF;
+  -- The draft-sibling row must display published-only aggregates.
+  SELECT r.row INTO v_row
+    FROM jsonb_array_elements(v_json) AS r(row)
+    WHERE r.row ->> 'object_id' = 'TEST-GF-DRAFT';
+  IF v_row -> 'gratings' <> '["PRISM"]'::jsonb OR (v_row ->> 'n_spectra')::int <> 1 THEN
+    RAISE EXCEPTION 'draft-sibling row displays unpublished aggregates: gratings=%, n_spectra=%',
+      v_row -> 'gratings', v_row ->> 'n_spectra';
   END IF;
 
   -- Full-access viewer: any=G395M matches the mixed object only.

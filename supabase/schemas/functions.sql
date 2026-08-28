@@ -451,16 +451,23 @@ LANGUAGE plpgsql STABLE
 AS $$
 BEGIN
   -- Fast path (perf, issue #103): when the caller can access every program this
-  -- object belongs to AND unpublished members are excluded, the viewer-scoped
-  -- recompute below is provably identical to the aggregate columns already
-  -- stored on the object -- both are the deploy-time builder's aggregation over
-  -- published members (reconcile_field_objects keeps the stored columns in
-  -- lockstep with the object row, and targets/spectra only change at deploy).
-  -- Restricting the recompute to a superset of the object's programs drops
-  -- nothing, so `o.programs <@ p_program_slugs` is exactly the "recompute ==
-  -- stored" condition. Returning the stored columns via a single PK lookup skips
-  -- the per-row targets+spectra scans that dominated get_objects_for_sync (and
-  -- the catalog list RPCs) at scale. Partial-access or draft-inclusive callers
+  -- object belongs to AND unpublished members are excluded AND every member
+  -- spectrum is published, the viewer-scoped recompute below is provably
+  -- identical to the aggregate columns already stored on the object.
+  -- The stored columns come from the deploy-time builder
+  -- (python/campfire/deploy/objects.py + reconcile), which aggregates ALL
+  -- member spectra blind to publication status — so the all-published guard is
+  -- load-bearing: without it, an object carrying a draft/revoked sibling
+  -- spectrum would display the unpublished grating (and count it in
+  -- n_spectra/max_snr) while the viewer-scoped grating FILTER (issue #488,
+  -- objects_matching_grating_filter) correctly excludes it — a filter/display
+  -- contradiction. Restricting the recompute to a superset of the object's
+  -- programs drops nothing, so `o.programs <@ p_program_slugs` plus the
+  -- no-unpublished guard is exactly the "recompute == stored" condition.
+  -- Returning the stored columns via a single PK lookup (plus a few indexed
+  -- member probes for the guard) skips the per-row targets+spectra aggregate
+  -- scans that dominated get_objects_for_sync (and the catalog list RPCs) at
+  -- scale. Partial-access, draft-inclusive, or unpublished-carrying objects
   -- fall through to the recompute, preserving the anti-leak scoping (see the
   -- header comment and supabase/tests/check_object_aggregate_scoping.sql).
   IF NOT p_include_unpublished THEN
@@ -469,7 +476,14 @@ BEGIN
            o.n_targets, o.n_spectra, o.max_snr, o.max_exposure_time
     FROM objects o
     WHERE o.id = p_object_id
-      AND o.programs <@ p_program_slugs;
+      AND o.programs <@ p_program_slugs
+      AND NOT EXISTS (
+        SELECT 1
+        FROM targets t
+        JOIN spectra s ON s.target_id = t.target_id
+        WHERE t.object_id = p_object_id
+          AND s.deploy_status <> 'published'
+      );
     IF FOUND THEN
       RETURN;
     END IF;
@@ -526,20 +540,29 @@ GRANT EXECUTE ON FUNCTION public.object_scoped_aggregates(INTEGER, TEXT[], BOOLE
 --                   (callers apply IN for 'any', NOT IN for 'none')
 --   'all':          objects whose visible spectra cover every requested grating
 --
--- It is set-returning (rather than a per-object boolean) so call sites can use
--- an uncorrelated `o.id IN (SELECT ...)` — one hashed-subplan build per query
--- instead of a targets↔spectra probe per candidate row, which measured ~2x
--- slower on a 40k-object catalog. Call sites also keep the stored array as an
--- index-backed pre-filter: the stored array is a superset of every viewer's
--- visible set, so o.gratings &&/@> p_gratings is a NECESSARY condition for
--- 'any'/'all' and NOT o.gratings && p_gratings is a SUFFICIENT condition for
--- 'none'. If the deploy-time builder ever narrows what it aggregates into
--- objects.gratings, that superset invariant breaks and the call-site
--- pre-filters must be revisited.
+-- It is set-returning (rather than a per-object boolean) so call sites can
+-- materialize it ONCE per RPC call (`v_grating_object_ids := ARRAY(SELECT
+-- ...)`) and test candidates with a hashed `o.id = ANY(...)` — a per-object
+-- boolean probe measured ~2x slower on a 40k-object catalog, and an
+-- uncorrelated IN-subplan gets rebuilt per statement (twice in the
+-- count+page RPCs). Call sites also keep the stored array as an index-backed
+-- pre-filter: the stored array is a superset of every viewer's visible set,
+-- so o.gratings &&/@> p_gratings is a NECESSARY condition for 'any'/'all' and
+-- NOT o.gratings && p_gratings is a SUFFICIENT condition for 'none'. If the
+-- deploy-time builder ever narrows what it aggregates into objects.gratings,
+-- that superset invariant breaks and the call-site pre-filters must be
+-- revisited.
 --
--- Never returns NULL rows (callers rely on this for NOT IN three-valued-logic
--- safety). Like object_scoped_aggregates: p_program_slugs must already be
--- access-checked by the caller — it is the access gate, not RLS.
+-- plpgsql + force_custom_plan (not LANGUAGE sql) is deliberate: a non-inlined
+-- SQL function body is planned with symbolic parameters, which made the
+-- planner seq-scan spectra past idx_spectra_grating and pay the 'all'-mode
+-- DISTINCT sort in every mode; custom plans with the real argument values
+-- pick the index and skip the aggregate for 'any'/'none'.
+--
+-- Never returns NULL rows (callers rely on this: NOT (id = ANY(set)) must
+-- never go three-valued NULL). Like object_scoped_aggregates: p_program_slugs
+-- must already be access-checked by the caller — it is the access gate, not
+-- RLS.
 CREATE OR REPLACE FUNCTION public.objects_matching_grating_filter(
   p_gratings TEXT[],
   p_gratings_mode TEXT,
@@ -547,18 +570,33 @@ CREATE OR REPLACE FUNCTION public.objects_matching_grating_filter(
   p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS SETOF INTEGER
-LANGUAGE sql STABLE
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
 AS $$
-  SELECT t.object_id
-  FROM targets t
-  JOIN spectra s ON s.target_id = t.target_id
-  WHERE t.object_id IS NOT NULL
-    AND t.program_slug = ANY(p_program_slugs)
-    AND (p_include_unpublished OR s.deploy_status = 'published')
-    AND s.grating = ANY(p_gratings)
-  GROUP BY t.object_id
-  HAVING p_gratings_mode <> 'all'
-      OR COUNT(DISTINCT s.grating) = (SELECT COUNT(DISTINCT g) FROM unnest(p_gratings) g);
+BEGIN
+  IF p_gratings_mode = 'all' THEN
+    RETURN QUERY
+    SELECT t.object_id
+    FROM targets t
+    JOIN spectra s ON s.target_id = t.target_id
+    WHERE t.object_id IS NOT NULL
+      AND t.program_slug = ANY(p_program_slugs)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
+      AND s.grating = ANY(p_gratings)
+    GROUP BY t.object_id
+    HAVING COUNT(DISTINCT s.grating) = (SELECT COUNT(DISTINCT g) FROM unnest(p_gratings) g);
+  ELSE
+    -- 'any' and 'none' need the same set (callers negate for 'none').
+    RETURN QUERY
+    SELECT DISTINCT t.object_id
+    FROM targets t
+    JOIN spectra s ON s.target_id = t.target_id
+    WHERE t.object_id IS NOT NULL
+      AND t.program_slug = ANY(p_program_slugs)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
+      AND s.grating = ANY(p_gratings);
+  END IF;
+END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.objects_matching_grating_filter(TEXT[], TEXT, TEXT[], BOOLEAN) TO authenticated;
@@ -1559,6 +1597,7 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_grating_object_ids INTEGER[];
   v_list_filter_active BOOLEAN;
   v_list_ids_mode TEXT;
   v_offset INTEGER;
@@ -1614,6 +1653,15 @@ BEGIN
     RETURN;
   END IF;
 
+
+  -- Issue #488: materialize the viewer-visible grating match set ONCE per call
+  -- (statements below consume it via hashed = ANY; an IN-subplan would be
+  -- rebuilt per statement — twice in the count+page RPC). See
+  -- objects_matching_grating_filter().
+  IF v_grating_filter_active THEN
+    v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
+  END IF;
+
   -- Step 1: count
   SELECT COUNT(*) INTO v_total_count
   FROM objects o
@@ -1629,14 +1677,14 @@ BEGIN
       -- Issue #488: the o.gratings array tests are index-backed pre-filters
       -- only (deploy-time aggregate over ALL member spectra, unpublished and
       -- inaccessible programs included); the viewer-visible decision is the
-      -- hashed IN / NOT IN over objects_matching_grating_filter() — see its
-      -- header for the invariants.
+      -- hashed = ANY over the once-per-call v_grating_object_ids — see
+      -- objects_matching_grating_filter() for the invariants.
       OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
-          AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'any', p_program_slugs, p_include_unpublished)))
+          AND o.id = ANY(v_grating_object_ids))
       OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
-          AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'all', p_program_slugs, p_include_unpublished)))
+          AND o.id = ANY(v_grating_object_ids))
       OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
-          OR o.id NOT IN (SELECT public.objects_matching_grating_filter(p_gratings, 'none', p_program_slugs, p_include_unpublished))))
+          OR NOT (o.id = ANY(v_grating_object_ids))))
     )
     AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
     AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
@@ -1772,14 +1820,14 @@ BEGIN
         -- Issue #488: the o.gratings array tests are index-backed pre-filters
         -- only (deploy-time aggregate over ALL member spectra, unpublished and
         -- inaccessible programs included); the viewer-visible decision is the
-        -- hashed IN / NOT IN over objects_matching_grating_filter() — see its
-        -- header for the invariants.
+        -- hashed = ANY over the once-per-call v_grating_object_ids — see
+        -- objects_matching_grating_filter() for the invariants.
         OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
-            AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'any', p_program_slugs, p_include_unpublished)))
+            AND o.id = ANY(v_grating_object_ids))
         OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
-            AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'all', p_program_slugs, p_include_unpublished)))
+            AND o.id = ANY(v_grating_object_ids))
         OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
-            OR o.id NOT IN (SELECT public.objects_matching_grating_filter(p_gratings, 'none', p_program_slugs, p_include_unpublished))))
+            OR NOT (o.id = ANY(v_grating_object_ids))))
       )
       AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
@@ -2037,6 +2085,7 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_grating_object_ids INTEGER[];
   v_list_filter_active BOOLEAN;
   v_list_ids_mode TEXT;
 BEGIN
@@ -2083,6 +2132,14 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Issue #488: materialize the viewer-visible grating match set ONCE per call
+  -- (statements below consume it via hashed = ANY; an IN-subplan would be
+  -- rebuilt per statement — twice in the count+page RPC). See
+  -- objects_matching_grating_filter().
+  IF v_grating_filter_active THEN
+    v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
+  END IF;
+
   RETURN QUERY
   SELECT o.object_id
   FROM objects o
@@ -2096,14 +2153,14 @@ BEGIN
       -- Issue #488: the o.gratings array tests are index-backed pre-filters
       -- only (deploy-time aggregate over ALL member spectra, unpublished and
       -- inaccessible programs included); the viewer-visible decision is the
-      -- hashed IN / NOT IN over objects_matching_grating_filter() — see its
-      -- header for the invariants.
+      -- hashed = ANY over the once-per-call v_grating_object_ids — see
+      -- objects_matching_grating_filter() for the invariants.
       OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
-          AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'any', p_program_slugs, p_include_unpublished)))
+          AND o.id = ANY(v_grating_object_ids))
       OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
-          AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'all', p_program_slugs, p_include_unpublished)))
+          AND o.id = ANY(v_grating_object_ids))
       OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
-          OR o.id NOT IN (SELECT public.objects_matching_grating_filter(p_gratings, 'none', p_program_slugs, p_include_unpublished))))
+          OR NOT (o.id = ANY(v_grating_object_ids))))
     )
     AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
     AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
@@ -2274,6 +2331,7 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_grating_object_ids INTEGER[];
   v_list_filter_active BOOLEAN;
   v_list_ids_mode TEXT;
   v_sort_is_text BOOLEAN;
@@ -2314,6 +2372,14 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Issue #488: materialize the viewer-visible grating match set ONCE per call
+  -- (statements below consume it via hashed = ANY; an IN-subplan would be
+  -- rebuilt per statement — twice in the count+page RPC). See
+  -- objects_matching_grating_filter().
+  IF v_grating_filter_active THEN
+    v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
+  END IF;
+
   RETURN QUERY
   WITH filtered_objects AS MATERIALIZED (
     SELECT
@@ -2338,14 +2404,14 @@ BEGIN
         -- Issue #488: the o.gratings array tests are index-backed pre-filters
         -- only (deploy-time aggregate over ALL member spectra, unpublished and
         -- inaccessible programs included); the viewer-visible decision is the
-        -- hashed IN / NOT IN over objects_matching_grating_filter() — see its
-        -- header for the invariants.
+        -- hashed = ANY over the once-per-call v_grating_object_ids — see
+        -- objects_matching_grating_filter() for the invariants.
         OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
-            AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'any', p_program_slugs, p_include_unpublished)))
+            AND o.id = ANY(v_grating_object_ids))
         OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
-            AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'all', p_program_slugs, p_include_unpublished)))
+            AND o.id = ANY(v_grating_object_ids))
         OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
-            OR o.id NOT IN (SELECT public.objects_matching_grating_filter(p_gratings, 'none', p_program_slugs, p_include_unpublished))))
+            OR NOT (o.id = ANY(v_grating_object_ids))))
       )
       AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
@@ -2734,6 +2800,7 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_grating_object_ids INTEGER[];
   v_list_filter_active BOOLEAN;
   v_list_ids_mode TEXT;
   v_page_size INTEGER;
@@ -2756,6 +2823,15 @@ BEGIN
     SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs)) INTO v_filtered_program_slugs;
   ELSE v_filtered_program_slugs := p_program_slugs; END IF;
   IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN RETURN; END IF;
+
+
+  -- Issue #488: materialize the viewer-visible grating match set ONCE per call
+  -- (statements below consume it via hashed = ANY; an IN-subplan would be
+  -- rebuilt per statement — twice in the count+page RPC). See
+  -- objects_matching_grating_filter().
+  IF v_grating_filter_active THEN
+    v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
+  END IF;
 
   RETURN QUERY
   WITH member_targets AS (
@@ -2811,14 +2887,14 @@ BEGIN
         -- Issue #488: the o.gratings array tests are index-backed pre-filters
         -- only (deploy-time aggregate over ALL member spectra, unpublished and
         -- inaccessible programs included); the viewer-visible decision is the
-        -- hashed IN / NOT IN over objects_matching_grating_filter() — see its
-        -- header for the invariants.
+        -- hashed = ANY over the once-per-call v_grating_object_ids — see
+        -- objects_matching_grating_filter() for the invariants.
         OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
-            AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'any', p_program_slugs, p_include_unpublished)))
+            AND o.id = ANY(v_grating_object_ids))
         OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
-            AND o.id IN (SELECT public.objects_matching_grating_filter(p_gratings, 'all', p_program_slugs, p_include_unpublished)))
+            AND o.id = ANY(v_grating_object_ids))
         OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
-            OR o.id NOT IN (SELECT public.objects_matching_grating_filter(p_gratings, 'none', p_program_slugs, p_include_unpublished))))
+            OR NOT (o.id = ANY(v_grating_object_ids))))
       )
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
       AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
