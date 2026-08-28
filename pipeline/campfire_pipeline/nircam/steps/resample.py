@@ -250,7 +250,11 @@ def _estimate_drizzle_bytes(npix, n_inputs, step_config):
     # With write_context = false no context cube is allocated at all (see
     # drizzle_tile), so charging for it would strand budget and needlessly
     # narrow the pool on exactly the deep tiles this option exists to rescue.
-    if not step_config.get('write_context', True):
+    # Only the campfire backend honors the option, though: jwst's
+    # Image3Pipeline always materialises CON, so its estimate must keep the
+    # term — dropping it there would under-budget the very tiles that OOM.
+    if (not step_config.get('write_context', True)
+            and step_config.get('implementation', 'jwst') == 'campfire'):
         return int(npix * base * margin)
     ctx_planes = max(1, math.ceil(max(int(n_inputs), 1) / 32))
     return int(npix * (base + 4 * ctx_planes) * margin)
@@ -393,6 +397,12 @@ def resample_step(filtname, exposure_files, field, step_config,
         tiles = list(field.tiles.keys())
     elif isinstance(tiles, str):
         tiles = [tiles]
+
+    if (not step_config.get('write_context', True)
+            and step_config.get('implementation', 'jwst') != 'campfire'):
+        log("resample: write_context = false is only honored by "
+            "implementation = 'campfire'; the jwst backend still "
+            "materialises the CON cube (and stays budgeted for it)")
 
     worker_kwargs = dict(
         filtname=filtname, exposure_files=exposure_files, field=field,

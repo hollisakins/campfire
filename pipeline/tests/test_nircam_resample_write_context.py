@@ -35,8 +35,12 @@ def test_estimator_charges_for_context_by_default():
 
 
 def test_estimator_drops_context_when_disabled():
-    est_on = _estimate_drizzle_bytes(NPIX, N_INPUTS, {'write_context': True})
-    est_off = _estimate_drizzle_bytes(NPIX, N_INPUTS, {'write_context': False})
+    # write_context is a campfire-backend option; the estimator drops the
+    # context term only when that backend is actually selected.
+    est_on = _estimate_drizzle_bytes(
+        NPIX, N_INPUTS, {'implementation': 'campfire', 'write_context': True})
+    est_off = _estimate_drizzle_bytes(
+        NPIX, N_INPUTS, {'implementation': 'campfire', 'write_context': False})
     assert est_off == int(NPIX * 40.0 * 1.3)
     # the whole point: the deep tile stops dominating the budget
     assert est_off < est_on / 5
@@ -45,9 +49,23 @@ def test_estimator_drops_context_when_disabled():
 
 def test_estimator_disabled_is_independent_of_input_count():
     """Without a cube, cost is pure output geometry — n_inputs must not matter."""
-    cfg = {'write_context': False}
+    cfg = {'implementation': 'campfire', 'write_context': False}
     assert (_estimate_drizzle_bytes(NPIX, 8, cfg)
             == _estimate_drizzle_bytes(NPIX, 100_000, cfg))
+
+
+def test_estimator_keeps_context_for_jwst_backend():
+    """jwst's Image3Pipeline ignores write_context and still materialises
+    CON, so the estimator must keep charging for it there — dropping the
+    term would under-budget exactly the deep tiles the option exists to
+    rescue. `implementation` defaults to 'jwst', so a bare
+    write_context=false keeps the term too."""
+    with_ctx = _estimate_drizzle_bytes(NPIX, N_INPUTS, {})
+    assert _estimate_drizzle_bytes(
+        NPIX, N_INPUTS, {'write_context': False}) == with_ctx
+    assert _estimate_drizzle_bytes(
+        NPIX, N_INPUTS,
+        {'implementation': 'jwst', 'write_context': False}) == with_ctx
 
 
 def test_drizzle_tile_accepts_write_context_kwarg():
