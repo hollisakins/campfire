@@ -1765,7 +1765,10 @@ BEGIN
   -- observation match set. Scoped to the full accessible p_program_slugs (not
   -- the p_filter_programs-narrowed set) to stay consistent with what rows
   -- display — see objects_matching_observation_filter().
-  v_observation_filter_active := (p_observations IS NOT NULL AND array_length(p_observations, 1) > 0);
+  -- COALESCE: array_length('{}',1) is NULL, and a NULL flag would make the
+  -- NOT-flag predicate below reject every row instead of treating an empty
+  -- selection as no filter (the pre-#491 predicate's explicit behavior).
+  v_observation_filter_active := (p_observations IS NOT NULL AND COALESCE(array_length(p_observations, 1), 0) > 0);
   IF v_observation_filter_active THEN
     v_observation_object_ids := ARRAY(SELECT public.objects_matching_observation_filter(p_observations, p_program_slugs, p_include_unpublished));
   END IF;
@@ -2272,7 +2275,10 @@ BEGIN
   -- observation match set. Scoped to the full accessible p_program_slugs (not
   -- the p_filter_programs-narrowed set) to stay consistent with what rows
   -- display — see objects_matching_observation_filter().
-  v_observation_filter_active := (p_observations IS NOT NULL AND array_length(p_observations, 1) > 0);
+  -- COALESCE: array_length('{}',1) is NULL, and a NULL flag would make the
+  -- NOT-flag predicate below reject every row instead of treating an empty
+  -- selection as no filter (the pre-#491 predicate's explicit behavior).
+  v_observation_filter_active := (p_observations IS NOT NULL AND COALESCE(array_length(p_observations, 1), 0) > 0);
   IF v_observation_filter_active THEN
     v_observation_object_ids := ARRAY(SELECT public.objects_matching_observation_filter(p_observations, p_program_slugs, p_include_unpublished));
   END IF;
@@ -2532,7 +2538,10 @@ BEGIN
   -- observation match set. Scoped to the full accessible p_program_slugs (not
   -- the p_filter_programs-narrowed set) to stay consistent with what rows
   -- display — see objects_matching_observation_filter().
-  v_observation_filter_active := (p_observations IS NOT NULL AND array_length(p_observations, 1) > 0);
+  -- COALESCE: array_length('{}',1) is NULL, and a NULL flag would make the
+  -- NOT-flag predicate below reject every row instead of treating an empty
+  -- selection as no filter (the pre-#491 predicate's explicit behavior).
+  v_observation_filter_active := (p_observations IS NOT NULL AND COALESCE(array_length(p_observations, 1), 0) > 0);
   IF v_observation_filter_active THEN
     v_observation_object_ids := ARRAY(SELECT public.objects_matching_observation_filter(p_observations, p_program_slugs, p_include_unpublished));
   END IF;

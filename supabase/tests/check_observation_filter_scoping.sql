@@ -208,7 +208,40 @@ BEGIN
     RAISE EXCEPTION 'adjacent obs=of_obs_prop wrong count for full-access viewer: total=%', v_total;
   END IF;
 
-  -- 5) Same guarantees under real RLS, as a normal authenticated viewer ------
+  -- 5) Empty selection is a no-op filter --------------------------------------
+  -- array_length('{}', 1) is NULL, so a non-null-safe active flag would go
+  -- NULL and the NOT-flag predicate would reject every row; the pre-#491
+  -- predicate explicitly treated an empty array as no filter.
+  SELECT targets, total_count INTO v_json, v_count
+    FROM public.get_filtered_objects_paginated(
+      p_program_slugs => ARRAY['zzz_of_pub'],
+      p_fields        => ARRAY['zzz_of_field'],
+      p_observations  => '{}'::text[]
+    );
+  IF v_count <> 2 THEN
+    RAISE EXCEPTION 'paginated: empty p_observations must be a no-op filter: count=%', v_count;
+  END IF;
+  SELECT COALESCE(array_agg(f.object_id ORDER BY f.object_id), '{}') INTO v_ids
+    FROM public.get_filtered_object_ids(
+      p_program_slugs => ARRAY['zzz_of_pub'],
+      p_fields        => ARRAY['zzz_of_field'],
+      p_observations  => '{}'::text[]
+    ) f;
+  IF v_ids <> ARRAY['TEST-OF-DRAFT','TEST-OF-MIXED'] THEN
+    RAISE EXCEPTION 'object_ids: empty p_observations must be a no-op filter: %', v_ids;
+  END IF;
+  SELECT total_count INTO v_total
+    FROM public.get_adjacent_objects(
+      p_current_object_id => 'TEST-OF-MIXED',
+      p_program_slugs     => ARRAY['zzz_of_pub'],
+      p_fields            => ARRAY['zzz_of_field'],
+      p_observations      => '{}'::text[]
+    );
+  IF v_total <> 2 THEN
+    RAISE EXCEPTION 'adjacent: empty p_observations must be a no-op filter: total=%', v_total;
+  END IF;
+
+  -- 6) Same guarantees under real RLS, as a normal authenticated viewer ------
   -- The RPCs are SECURITY INVOKER; zzz_of_pub is public, so it is accessible
   -- with no JWT claims set.
   PERFORM set_config('role', 'authenticated', true);
