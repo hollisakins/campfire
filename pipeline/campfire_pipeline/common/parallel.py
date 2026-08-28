@@ -129,7 +129,11 @@ class MemoryGate:
         """
         req = min(max(int(nbytes), 0), self.budget)
         start = monotonic()
-        last_warn = 0.0
+        # First "waiting" notice after the first poll timeout (~poll seconds)
+        # so even brief contention is observable in the log, then every
+        # ``warn`` seconds; the grant line reports the total wait when there
+        # was a visible one.
+        last_warn = None
         with self._cond:
             while True:
                 if self._used.value + req <= self.budget:
@@ -138,14 +142,18 @@ class MemoryGate:
                             or avail - self.reserve >= req):
                         self._used.value += req
                         if label:
+                            waited = monotonic() - start
+                            suffix = (f" after {waited:.0f}s wait"
+                                      if last_warn is not None else '')
                             log(f"memory gate: {label}: reserved "
                                 f"{req / 2**30:.1f} GiB (gate "
                                 f"{self._used.value / 2**30:.1f}/"
-                                f"{self.budget / 2**30:.1f} GiB)")
+                                f"{self.budget / 2**30:.1f} GiB)"
+                                f"{suffix}")
                         return req
                 self._cond.wait(timeout=self.poll)
                 waited = monotonic() - start
-                if waited - last_warn >= self.warn:
+                if last_warn is None or waited - last_warn >= self.warn:
                     last_warn = waited
                     log(f"memory gate: {label or 'task'} waiting "
                         f"{waited:.0f}s for {req / 2**30:.1f} GiB "

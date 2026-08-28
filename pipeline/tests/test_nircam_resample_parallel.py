@@ -130,6 +130,31 @@ def test_gate_live_pressure_vetoes_all_but_first_holder(monkeypatch):
         t.join()
 
 
+def test_gate_first_wait_notice_is_prompt(monkeypatch):
+    # A stall shorter than the 5-minute warn cadence must still be visible:
+    # the first "waiting" notice fires after the first poll timeout, and the
+    # grant line reports the total wait when there was a visible one.
+    monkeypatch.setattr(parallel_mod, 'mem_available_bytes', lambda: None)
+    lines = []
+    monkeypatch.setattr(parallel_mod, 'log', lambda *a, **k: lines.append(a[0]))
+    gate = MemoryGate(100, poll_seconds=0.01, warn_seconds=60)
+    g1 = gate.acquire(80, label='first')
+
+    def second():
+        gate.release(gate.acquire(60, label='second'))
+
+    t = threading.Thread(target=second)
+    t.start()
+    time.sleep(0.1)   # several poll timeouts, far below warn_seconds
+    assert any('second waiting' in ln for ln in lines)
+    gate.release(g1)
+    t.join()
+    granted = [ln for ln in lines if 'second: reserved' in ln]
+    assert len(granted) == 1 and 'wait' in granted[0]
+    # An uncontended acquire logs no wait suffix.
+    assert 'wait' not in next(ln for ln in lines if 'first: reserved' in ln)
+
+
 def test_mem_available_bytes_reads_something_sane():
     avail = mem_available_bytes()
     # Linux (CI, candide) reads /proc/meminfo; a platform where every source
