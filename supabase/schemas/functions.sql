@@ -2851,6 +2851,15 @@ BEGIN
   -- (statements below consume it via hashed = ANY; an IN-subplan would be
   -- rebuilt per statement — twice in the count+page RPC). See
   -- objects_matching_grating_filter().
+  --
+  -- Deliberately scoped to p_program_slugs, NOT v_filtered_program_slugs,
+  -- matching get_filtered_objects_paginated's filter scoping so this export
+  -- returns exactly the row set the catalog table shows for identical filter
+  -- args. Narrowing the filter to v_filtered_program_slugs would make exports
+  -- silently drop rows the table displays. The asymmetry a reader may notice
+  -- — this RPC's exported aggregate columns (sa.*) ARE narrowed by
+  -- p_filter_programs while the table's are not — predates the grating
+  -- filter and is a display-scoping question, not a filter one.
   IF v_grating_filter_active THEN
     v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
   END IF;
