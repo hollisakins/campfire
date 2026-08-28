@@ -454,6 +454,13 @@ LANGUAGE plpgsql STABLE
 -- those plans' cost estimates ~1000x (issue #490: enough to trip per-call JIT
 -- compilation on the CSV export).
 ROWS 1
+-- Pin the default plan-cache behavior for this function's own statements.
+-- Several callers run under SET plan_cache_mode = 'force_custom_plan' (their
+-- big NULL-guarded filter queries need it), and a calling function's SET
+-- propagates to nested statements for the whole call stack — without this pin
+-- the fast-path probes above are re-planned on every per-row lateral call
+-- (issue #490: ~0.4ms planning x 5000 rows ≈ 1.9s per CSV-export page).
+SET plan_cache_mode = 'auto'
 AS $$
 BEGIN
   -- Fast path (perf, issue #103): when the caller can access every program this

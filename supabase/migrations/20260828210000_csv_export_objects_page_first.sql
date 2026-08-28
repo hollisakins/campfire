@@ -13,17 +13,22 @@
 -- diffing full paginated exports old-vs-new across 24 filter scenarios on a
 -- seeded 40k-object catalog.
 --
--- Two planner-facing fixes ride along:
+-- Three planner-facing fixes ride along:
 --   * object_scoped_aggregates is declared ROWS 1 (it always returns exactly
 --     one row); the SRF default of 1000 inflated every lateral call site's
 --     row estimates ~1000x.
+--   * object_scoped_aggregates pins plan_cache_mode = auto: a caller's
+--     force_custom_plan propagates into its nested statements, re-planning the
+--     fast-path probes on every per-row lateral call (~1.9s/page post-#488).
 --   * get_csv_export_objects sets jit = off: force_custom_plan replans every
 --     call, so JIT compilation (triggered by the inflated estimates) was pure
 --     per-call overhead (~800ms/page).
 --
--- Function bodies are verbatim copies of supabase/schemas/functions.sql.
+-- Function bodies are verbatim copies of supabase/schemas/functions.sql and
+-- sit on top of 20260828170000_scoped_grating_filter (issue #488): they carry
+-- that migration's viewer-scoped grating filtering (v_grating_object_ids) and
+-- object_scoped_aggregates fast-path publication guard unchanged.
 -- =============================================================================
-
 -- =============================================================================
 -- object_scoped_aggregates
 -- =============================================================================
@@ -71,28 +76,71 @@ LANGUAGE plpgsql STABLE
 -- those plans' cost estimates ~1000x (issue #490: enough to trip per-call JIT
 -- compilation on the CSV export).
 ROWS 1
+-- Pin the default plan-cache behavior for this function's own statements.
+-- Several callers run under SET plan_cache_mode = 'force_custom_plan' (their
+-- big NULL-guarded filter queries need it), and a calling function's SET
+-- propagates to nested statements for the whole call stack — without this pin
+-- the fast-path probes above are re-planned on every per-row lateral call
+-- (issue #490: ~0.4ms planning x 5000 rows ≈ 1.9s per CSV-export page).
+SET plan_cache_mode = 'auto'
 AS $$
 BEGIN
   -- Fast path (perf, issue #103): when the caller can access every program this
-  -- object belongs to AND unpublished members are excluded, the viewer-scoped
-  -- recompute below is provably identical to the aggregate columns already
-  -- stored on the object -- both are the deploy-time builder's aggregation over
-  -- published members (reconcile_field_objects keeps the stored columns in
-  -- lockstep with the object row, and targets/spectra only change at deploy).
-  -- Restricting the recompute to a superset of the object's programs drops
-  -- nothing, so `o.programs <@ p_program_slugs` is exactly the "recompute ==
-  -- stored" condition. Returning the stored columns via a single PK lookup skips
-  -- the per-row targets+spectra scans that dominated get_objects_for_sync (and
-  -- the catalog list RPCs) at scale. Partial-access or draft-inclusive callers
-  -- fall through to the recompute, preserving the anti-leak scoping (see the
-  -- header comment and supabase/tests/check_object_aggregate_scoping.sql).
+  -- object belongs to AND unpublished members are excluded AND every member
+  -- spectrum is published, the viewer-scoped recompute below is provably
+  -- identical to the aggregate columns already stored on the object.
+  -- The stored columns come from the deploy-time builder
+  -- (python/campfire/deploy/objects.py + reconcile), which aggregates ALL
+  -- member spectra blind to publication status — so the all-published guard is
+  -- load-bearing: without it, an object carrying a draft/revoked sibling
+  -- spectrum would display the unpublished grating (and count it in
+  -- n_spectra/max_snr) while the viewer-scoped grating FILTER (issue #488,
+  -- objects_matching_grating_filter) correctly excludes it — a filter/display
+  -- contradiction.
+  --
+  -- The guard is TWO probes because this SECURITY INVOKER function runs under
+  -- whatever row visibility the caller has, and neither probe alone covers
+  -- both caller classes:
+  --   * NOT EXISTS unpublished — decisive for owner/service-role/admin
+  --     callers, who see every row; blind for normal authenticated viewers,
+  --     whose spectra RLS policy hides draft/revoked rows outright
+  --     (policies.sql "select_spectra_by_access").
+  --   * visible-member-spectra COUNT = stored n_spectra — detects rows RLS
+  --     hides without needing to see them (stored counts everything, so any
+  --     hidden row makes the visible count fall short); trivially true, and
+  --     so decisive-by-vacuity, for callers who see every row.
+  -- Either probe failing falls through to the recompute, which aggregates
+  -- exactly what this caller may see, published-gated. Restricting the
+  -- recompute to a superset of the object's programs drops nothing, so
+  -- `o.programs <@ p_program_slugs` plus the two probes is the
+  -- "recompute == stored" condition. Returning the stored columns via a
+  -- single PK lookup (plus a few indexed member probes) still skips the
+  -- per-row aggregate scans that dominated get_objects_for_sync (and the
+  -- catalog list RPCs) at scale. Partial-access, draft-inclusive, or
+  -- unpublished-carrying objects fall through to the recompute, preserving
+  -- the anti-leak scoping (see the header comment and
+  -- supabase/tests/check_object_aggregate_scoping.sql /
+  -- check_grating_filter_scoping.sql).
   IF NOT p_include_unpublished THEN
     RETURN QUERY
     SELECT o.programs, o.gratings, o.observations,
            o.n_targets, o.n_spectra, o.max_snr, o.max_exposure_time
     FROM objects o
     WHERE o.id = p_object_id
-      AND o.programs <@ p_program_slugs;
+      AND o.programs <@ p_program_slugs
+      AND NOT EXISTS (
+        SELECT 1
+        FROM targets t
+        JOIN spectra s ON s.target_id = t.target_id
+        WHERE t.object_id = p_object_id
+          AND s.deploy_status <> 'published'
+      )
+      AND o.n_spectra = (
+        SELECT COUNT(*)::integer
+        FROM targets t
+        JOIN spectra s ON s.target_id = t.target_id
+        WHERE t.object_id = p_object_id
+      );
     IF FOUND THEN
       RETURN;
     END IF;
@@ -200,6 +248,7 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_grating_object_ids INTEGER[];
   v_list_filter_active BOOLEAN;
   v_list_ids_mode TEXT;
   v_page_size INTEGER;
@@ -222,6 +271,24 @@ BEGIN
     SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs)) INTO v_filtered_program_slugs;
   ELSE v_filtered_program_slugs := p_program_slugs; END IF;
   IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN RETURN; END IF;
+
+
+  -- Issue #488: materialize the viewer-visible grating match set ONCE per call
+  -- (statements below consume it via hashed = ANY; an IN-subplan would be
+  -- rebuilt per statement — twice in the count+page RPC). See
+  -- objects_matching_grating_filter().
+  --
+  -- Deliberately scoped to p_program_slugs, NOT v_filtered_program_slugs,
+  -- matching get_filtered_objects_paginated's filter scoping so this export
+  -- returns exactly the row set the catalog table shows for identical filter
+  -- args. Narrowing the filter to v_filtered_program_slugs would make exports
+  -- silently drop rows the table displays. The asymmetry a reader may notice
+  -- — this RPC's exported aggregate columns (sa.*) ARE narrowed by
+  -- p_filter_programs while the table's are not — predates the grating
+  -- filter and is a display-scoping question, not a filter one.
+  IF v_grating_filter_active THEN
+    v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
+  END IF;
 
   RETURN QUERY
   -- Issue #490: page-first evaluation. The previous shape ran the per-row
@@ -250,9 +317,17 @@ BEGIN
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
       AND (
         NOT v_grating_filter_active
-        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
-        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
-        OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+        -- Issue #488: the o.gratings array tests are index-backed pre-filters
+        -- only (deploy-time aggregate over ALL member spectra, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed = ANY over the once-per-call v_grating_object_ids — see
+        -- objects_matching_grating_filter() for the invariants.
+        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
+            AND o.id = ANY(v_grating_object_ids))
+        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
+            AND o.id = ANY(v_grating_object_ids))
+        OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
+            OR NOT (o.id = ANY(v_grating_object_ids))))
       )
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
       AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
