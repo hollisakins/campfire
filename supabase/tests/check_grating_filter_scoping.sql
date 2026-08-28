@@ -189,7 +189,54 @@ BEGIN
     RAISE EXCEPTION 'object_ids none=G395M wrong rows: %', v_ids;
   END IF;
 
-  RAISE NOTICE 'OK: grating filter scoping holds (helper + paginated + object_ids RPCs).';
+  -- 4) Same guarantees under real RLS, as a normal authenticated viewer ------
+  -- The RPCs are SECURITY INVOKER, and the spectra SELECT policy hides
+  -- draft/revoked rows from non-admins outright — so the fast-path probe in
+  -- object_scoped_aggregates that looks for unpublished siblings cannot see
+  -- them here; only its visible-count-vs-stored-n_spectra probe can. This
+  -- section is what catches an RLS-blind fast path (run as owner above, RLS
+  -- is bypassed and the unpublished-probe alone would suffice).
+  -- zzz_gf_pub is public, so it is accessible with no JWT claims set.
+  PERFORM set_config('role', 'authenticated', true);
+
+  SELECT targets, total_count INTO v_json, v_count
+    FROM public.get_filtered_objects_paginated(
+      p_program_slugs => ARRAY['zzz_gf_pub'],
+      p_fields        => ARRAY['zzz_gf_field'],
+      p_gratings      => ARRAY['G395M'],
+      p_gratings_mode => 'any'
+    );
+  IF v_count <> 0 OR jsonb_array_length(v_json) <> 0 THEN
+    RAISE EXCEPTION 'authenticated: any=G395M leaked PRISM-only rows: count=%, rows=%', v_count, v_json;
+  END IF;
+
+  SELECT targets, total_count INTO v_json, v_count
+    FROM public.get_filtered_objects_paginated(
+      p_program_slugs => ARRAY['zzz_gf_pub'],
+      p_fields        => ARRAY['zzz_gf_field'],
+      p_gratings      => ARRAY['G395M'],
+      p_gratings_mode => 'none'
+    );
+  IF v_count <> 2 THEN
+    RAISE EXCEPTION 'authenticated: none=G395M dropped visible PRISM-only rows: count=%', v_count;
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM jsonb_array_elements(v_json) AS r(row)
+    WHERE r.row -> 'gratings' @> '["G395M"]'::jsonb
+  ) THEN
+    RAISE EXCEPTION 'authenticated: none=G395M returned a row displaying G395M: %', v_json;
+  END IF;
+  SELECT r.row INTO v_row
+    FROM jsonb_array_elements(v_json) AS r(row)
+    WHERE r.row ->> 'object_id' = 'TEST-GF-DRAFT';
+  IF v_row -> 'gratings' <> '["PRISM"]'::jsonb OR (v_row ->> 'n_spectra')::int <> 1 THEN
+    RAISE EXCEPTION 'authenticated: draft-sibling row displays unpublished aggregates: gratings=%, n_spectra=%',
+      v_row -> 'gratings', v_row ->> 'n_spectra';
+  END IF;
+
+  PERFORM set_config('role', 'none', true);
+
+  RAISE NOTICE 'OK: grating filter scoping holds (helper + paginated + object_ids RPCs, owner + authenticated).';
 END $$;
 
 ROLLBACK;

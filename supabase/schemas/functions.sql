@@ -461,15 +461,31 @@ BEGIN
   -- spectrum would display the unpublished grating (and count it in
   -- n_spectra/max_snr) while the viewer-scoped grating FILTER (issue #488,
   -- objects_matching_grating_filter) correctly excludes it — a filter/display
-  -- contradiction. Restricting the recompute to a superset of the object's
-  -- programs drops nothing, so `o.programs <@ p_program_slugs` plus the
-  -- no-unpublished guard is exactly the "recompute == stored" condition.
-  -- Returning the stored columns via a single PK lookup (plus a few indexed
-  -- member probes for the guard) skips the per-row targets+spectra aggregate
-  -- scans that dominated get_objects_for_sync (and the catalog list RPCs) at
-  -- scale. Partial-access, draft-inclusive, or unpublished-carrying objects
-  -- fall through to the recompute, preserving the anti-leak scoping (see the
-  -- header comment and supabase/tests/check_object_aggregate_scoping.sql).
+  -- contradiction.
+  --
+  -- The guard is TWO probes because this SECURITY INVOKER function runs under
+  -- whatever row visibility the caller has, and neither probe alone covers
+  -- both caller classes:
+  --   * NOT EXISTS unpublished — decisive for owner/service-role/admin
+  --     callers, who see every row; blind for normal authenticated viewers,
+  --     whose spectra RLS policy hides draft/revoked rows outright
+  --     (policies.sql "select_spectra_by_access").
+  --   * visible-member-spectra COUNT = stored n_spectra — detects rows RLS
+  --     hides without needing to see them (stored counts everything, so any
+  --     hidden row makes the visible count fall short); trivially true, and
+  --     so decisive-by-vacuity, for callers who see every row.
+  -- Either probe failing falls through to the recompute, which aggregates
+  -- exactly what this caller may see, published-gated. Restricting the
+  -- recompute to a superset of the object's programs drops nothing, so
+  -- `o.programs <@ p_program_slugs` plus the two probes is the
+  -- "recompute == stored" condition. Returning the stored columns via a
+  -- single PK lookup (plus a few indexed member probes) still skips the
+  -- per-row aggregate scans that dominated get_objects_for_sync (and the
+  -- catalog list RPCs) at scale. Partial-access, draft-inclusive, or
+  -- unpublished-carrying objects fall through to the recompute, preserving
+  -- the anti-leak scoping (see the header comment and
+  -- supabase/tests/check_object_aggregate_scoping.sql /
+  -- check_grating_filter_scoping.sql).
   IF NOT p_include_unpublished THEN
     RETURN QUERY
     SELECT o.programs, o.gratings, o.observations,
@@ -483,6 +499,12 @@ BEGIN
         JOIN spectra s ON s.target_id = t.target_id
         WHERE t.object_id = p_object_id
           AND s.deploy_status <> 'published'
+      )
+      AND o.n_spectra = (
+        SELECT COUNT(*)::integer
+        FROM targets t
+        JOIN spectra s ON s.target_id = t.target_id
+        WHERE t.object_id = p_object_id
       );
     IF FOUND THEN
       RETURN;
