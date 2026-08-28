@@ -960,6 +960,21 @@
     # node's core count and tune node pressure here. None of these keys enter
     # the manifest config hash — they cannot change pixels, so tuning them
     # never marks tiles stale.
+    # Write the drizzle context cube (CON) into the i2d.
+    #
+    # CON is one int32 plane per 32 inputs at FULL tile size, so it costs
+    # tile_area * 4 * ceil(n_inputs/32). On a deep tile that dwarfs everything
+    # else: a 1.15 Gpix tile with 3,471 inputs needs 109 planes = ~660 GiB of
+    # drizzle working set, against ~104 GiB for SCI+ERR+WHT+variance. That one
+    # tile can exceed a whole node and cannot be scheduled alongside anything.
+    #
+    # NOTHING IN THIS PIPELINE READS CON: `split_extensions` writes out only
+    # sci/err/wht/srcmask, and bkgsub does not touch it. It is retained purely
+    # as an output product for external consumers, so it is safe to turn off
+    # when a tile would otherwise be unschedulable. With this false the drizzle
+    # runs with `disable_ctx=True` (the path the variance drizzle already uses)
+    # and the i2d carries a 1x1x1 CON placeholder, preserving the HDU layout.
+    write_context = true
     parallel_tiles = true
     # Fraction of MemAvailable (at tile-loop start) the pool may reserve.
     mem_fraction = 0.65

@@ -97,6 +97,7 @@ def _drizzle_tile_via_campfire(
         blendheaders=resample_cfg.get('blendheaders', True),
         reduction_version=reduction_version,
         compress_context=resample_cfg.get('compress_context', True),
+        write_context=resample_cfg.get('write_context', True),
     )
 
 
@@ -246,6 +247,11 @@ def _estimate_drizzle_bytes(npix, n_inputs, step_config):
     """
     base = float(step_config.get('mem_drizzle_base_bytes_per_pixel', 40.0))
     margin = float(step_config.get('mem_margin', 1.3))
+    # With write_context = false no context cube is allocated at all (see
+    # drizzle_tile), so charging for it would strand budget and needlessly
+    # narrow the pool on exactly the deep tiles this option exists to rescue.
+    if not step_config.get('write_context', True):
+        return int(npix * base * margin)
     ctx_planes = max(1, math.ceil(max(int(n_inputs), 1) / 32))
     return int(npix * (base + 4 * ctx_planes) * margin)
 

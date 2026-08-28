@@ -47,6 +47,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   silently quarantined now contribute to their mosaics.
 
 ### Infrastructure
+- **`[nircam.resample].write_context` — opt out of the drizzle context cube.**
+  `CON` is one int32 plane per 32 inputs at FULL tile size, so it costs
+  `tile_area * 4 * ceil(n_inputs/32)`. On a deep tile it dominates everything
+  else: COSMOS f200w's `primer` has 3,471 contributing exposures on a 1.15 Gpix
+  grid — 109 planes, ~660 GiB of drizzle working set, against ~104 GiB for
+  SCI+ERR+WHT+variance combined. That single tile exceeds the memory budget of
+  every node on candide, so it cannot be scheduled alongside anything and is at
+  risk of OOM on a 512 GB node. Nothing in the pipeline reads `CON` —
+  `split_extensions` emits only sci/err/wht/srcmask and `bkgsub` does not touch
+  it — so it is retained purely as an output product for external consumers.
+  With `write_context = false` the science drizzle runs with `disable_ctx=True`
+  (the path the variance drizzle already used), the cube is never allocated,
+  and the i2d carries a 1x1x1 `CON` placeholder so the SCI/ERR/CON/WHT HDU
+  layout is unchanged. The memory estimator drops the context term to match,
+  so the pool is not narrowed by a cost that is no longer paid. Default stays
+  `true`: existing behaviour and existing products are unchanged.
 - **Memory-aware tile parallelism for NIRCam `resample` + mosaic `bkgsub`.**
   The combine tile loop (previously strictly serial: one busy core through a
   ~12-hour tile phase on a 21-tile COSMOS filter) now dispatches tiles across
