@@ -19,9 +19,16 @@ class _FakeQuery:
         self._rows = rows
         self._eq = []
         self._in = None
+        self._cols = None
         self._sink = sink
 
     def select(self, *a, **k):
+        # Honour PostgREST column projection: a column the caller did not ask
+        # for is NOT present on the returned rows. Without this the fake hands
+        # back every fixture key and a missing column in the real `.select()`
+        # goes undetected (that is how the `detector` NOT-NULL bug shipped).
+        cols = ','.join(str(x) for x in a if x)
+        self._cols = [c.strip() for c in cols.split(',') if c.strip()] or None
         return self
 
     def eq(self, col, val):
@@ -47,6 +54,9 @@ class _FakeQuery:
             rows = [r for r in rows if r.get(col) in vals]
         for col, val in self._eq:
             rows = [r for r in rows if r.get(col) == val]
+        if self._cols and '*' not in self._cols:
+            rows = [{k: v for k, v in r.items() if k in self._cols}
+                    for r in rows]
         return types.SimpleNamespace(data=rows)
 
 
@@ -144,9 +154,9 @@ def _patch_field_skip(monkeypatch, skip):
 def test_import_skip_matches_globs_additive(monkeypatch):
     _patch_field_skip(monkeypatch, ['jw1_04101_'])  # prefix glob, like fields.toml
     rows = [
-        {'field': 'cosmos', 'filter': 'f444w', 'filename': 'jw1_04101_00003_nrcalong', 'review_status': 'pending'},
-        {'field': 'cosmos', 'filter': 'f444w', 'filename': 'jw1_04101_00001_nrcalong', 'review_status': 'excluded'},  # already
-        {'field': 'cosmos', 'filter': 'f200w', 'filename': 'jw1_02101_00002_nrca1', 'review_status': 'approved'},  # no match
+        {'field': 'cosmos', 'filter': 'f444w', 'detector': 'nrcalong', 'filename': 'jw1_04101_00003_nrcalong', 'review_status': 'pending'},
+        {'field': 'cosmos', 'filter': 'f444w', 'detector': 'nrcalong', 'filename': 'jw1_04101_00001_nrcalong', 'review_status': 'excluded'},  # already
+        {'field': 'cosmos', 'filter': 'f200w', 'detector': 'nrca1', 'filename': 'jw1_02101_00002_nrca1', 'review_status': 'approved'},  # no match
     ]
     client = _patch_client(monkeypatch, rows)
     nx.import_skip('cosmos', config={})
@@ -158,9 +168,36 @@ def test_import_skip_matches_globs_additive(monkeypatch):
     assert batch[0]['review_status'] == 'excluded'
 
 
+# Columns on `nircam_exposures` that are NOT NULL with no DB default. Postgres
+# validates NOT NULL on the PROPOSED INSERT tuple BEFORE resolving ON CONFLICT,
+# so an upsert omitting any of these fails with 23502 even though import_skip
+# only ever updates a row that already exists. (`id` -> nextval, `stage` ->
+# 'uncal', `correction` -> 'none' all carry defaults and may be omitted.)
+_NOT_NULL_NO_DEFAULT = ('field', 'filter', 'detector', 'filename')
+
+
+def test_import_skip_upsert_payload_carries_not_null_columns(monkeypatch):
+    """Regression: the upsert payload omitted `detector` and every real
+    import-skip run died with 23502 (null value in column "detector").
+    The fake client cannot enforce NOT NULL, so assert the contract directly.
+    """
+    _patch_field_skip(monkeypatch, ['jw1_04101_'])
+    rows = [{'field': 'cosmos', 'filter': 'f444w', 'detector': 'nrcblong',
+             'filename': 'jw1_04101_00003_nrcblong', 'review_status': 'pending'}]
+    client = _patch_client(monkeypatch, rows)
+    nx.import_skip('cosmos', config={})
+
+    assert len(client.upserts) == 1
+    payload = client.upserts[0][0]
+    missing = [c for c in _NOT_NULL_NO_DEFAULT if payload.get(c) is None]
+    assert not missing, f"upsert payload omits NOT NULL column(s): {missing}"
+    # carried through from the row, not invented
+    assert payload['detector'] == 'nrcblong'
+
+
 def test_import_skip_dry_run_no_write(monkeypatch):
     _patch_field_skip(monkeypatch, ['jw1_04101_'])
-    rows = [{'field': 'cosmos', 'filter': 'f444w',
+    rows = [{'field': 'cosmos', 'filter': 'f444w', 'detector': 'nrcalong',
              'filename': 'jw1_04101_00003_nrcalong', 'review_status': 'pending'}]
     client = _patch_client(monkeypatch, rows)
     nx.import_skip('cosmos', config={}, dry_run=True)
