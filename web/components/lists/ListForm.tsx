@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { createList, updateList, checkSlugAvailability } from '@/lib/actions/lists';
 import { ListEmojiPicker } from './ListEmojiPicker';
 import { ListColorPicker } from './ListColorPicker';
+import { ListShareManager } from './ListShareManager';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import type { ObjectList } from '@/lib/types';
 
@@ -23,8 +24,11 @@ function nameToSlugFragment(name: string): string {
 }
 
 export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCancel }: ListFormProps) {
-  const { userProfile } = useAuth();
+  const { user, userProfile } = useAuth();
   const username = userProfile?.username ?? '';
+  // Sharing is owner-only (and meaningless on system tags)
+  const canManageSharing =
+    mode === 'edit' && !!list && !list.is_system && !!user && list.created_by === user.id;
 
   const [name, setName] = useState(list?.name ?? initialName ?? '');
   const [slug, setSlug] = useState(list?.slug ?? '');
@@ -254,6 +258,12 @@ export function ListForm({ mode, list, initialName, onSuccess, onCreated, onCanc
             <option value="public_edit">Collaborative — others can add/remove objects</option>
           </select>
         </div>
+
+        {canManageSharing && (
+          <div className="pt-3 border-t border-border">
+            <ListShareManager listId={list!.id} />
+          </div>
+        )}
       </div>
 
       <div className="flex gap-2 mt-4">

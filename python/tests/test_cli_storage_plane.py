@@ -75,3 +75,81 @@ def test_verify_has_cloud_and_json_flags():
     cli = _cli()
     params = {p.name for p in cli.commands['verify'].params}
     assert {'cloud', 'as_json', 'obs_filter'} <= params
+
+
+# --- deploy --no-mosaics ----------------------------------------------------
+# The exposures-only field deploy: a reviewer needs the exposures in the portal
+# to draw masks, but mosaics built *before* those masks exist are superseded by
+# the post-mask re-combine, so shipping them is wasted transfer.
+
+def test_deploy_has_no_mosaics_flag():
+    cli = _cli()
+    params = {p.name for p in cli.commands['deploy'].params}
+    assert 'no_mosaics' in params
+
+
+def test_no_mosaics_rejected_without_field(monkeypatch):
+    """It scopes the NIRCam mosaic stage, so it is meaningless on a NIRSpec
+    --obs deploy and must not silently no-op there.
+
+    load_config/_gate_admin are stubbed because deploy_group runs
+    `_gate_admin(load_config(...))` *before* this validation: unstubbed, a
+    sandbox with no `campfire login` session exits 1 on "Not logged in" and the
+    assertion below would pass for entirely the wrong reason.
+    """
+    import campfire.deploy.cli as dcli
+
+    monkeypatch.setattr(dcli, 'load_config', lambda *a, **k: {})
+    monkeypatch.setattr(dcli, '_announce_auth_mode', lambda *a, **k: None)
+    monkeypatch.setattr(dcli, '_gate_admin', lambda *a, **k: None)
+
+    cli = _cli()
+    res = CliRunner().invoke(cli, ['deploy', '--obs', 'ember_uds_p4',
+                                   '--no-mosaics', '--dry-run'])
+    assert res.exit_code != 0
+    assert '--no-mosaics' in res.output
+
+
+def test_no_mosaics_threads_through_to_deploy_nircam(monkeypatch):
+    """The flag must reach deploy_nircam as skip_mosaics; a dropped kwarg would
+    ship ~60 GB of superseded mosaics without any visible error."""
+    import campfire.deploy.cli as dcli
+    import campfire.deploy.nircam as dn
+
+    seen = {}
+
+    def _fake_deploy_nircam(field, config, **kw):
+        seen['field'] = field
+        seen.update(kw)
+
+    monkeypatch.setattr(dn, 'deploy_nircam', _fake_deploy_nircam)
+    monkeypatch.setattr(dcli, 'load_config', lambda *a, **k: {})
+    monkeypatch.setattr(dcli, '_announce_auth_mode', lambda *a, **k: None)
+    monkeypatch.setattr(dcli, '_gate_admin', lambda *a, **k: None)
+
+    cli = _cli()
+    res = CliRunner().invoke(cli, ['deploy', '--field', 'egs',
+                                   '--filter', 'f070w', '--no-mosaics'])
+    assert res.exit_code == 0, res.output
+    assert seen['field'] == 'egs'
+    assert seen['skip_mosaics'] is True
+    assert seen['filters'] == ['f070w']
+
+
+def test_mosaics_deployed_by_default(monkeypatch):
+    """Absent the flag, skip_mosaics must be False — the default path is
+    unchanged."""
+    import campfire.deploy.cli as dcli
+    import campfire.deploy.nircam as dn
+
+    seen = {}
+    monkeypatch.setattr(dn, 'deploy_nircam',
+                        lambda field, config, **kw: seen.update(kw))
+    monkeypatch.setattr(dcli, 'load_config', lambda *a, **k: {})
+    monkeypatch.setattr(dcli, '_announce_auth_mode', lambda *a, **k: None)
+    monkeypatch.setattr(dcli, '_gate_admin', lambda *a, **k: None)
+
+    cli = _cli()
+    res = CliRunner().invoke(cli, ['deploy', '--field', 'egs'])
+    assert res.exit_code == 0, res.output
+    assert seen['skip_mosaics'] is False

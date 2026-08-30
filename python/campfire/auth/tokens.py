@@ -4,6 +4,7 @@ Token management for CAMPFIRE Python client.
 Handles token refresh and validation.
 """
 
+import threading
 import time
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
@@ -13,6 +14,15 @@ import requests
 from ..exceptions import AuthenticationError
 from ._jwt import get_exp
 from .credentials import CredentialManager, StoredCredentials
+
+
+class _RefreshRejected(Exception):
+    """Internal: the server rejected the refresh token we presented.
+
+    Distinct from :class:`AuthenticationError` because it is often *not* fatal —
+    a concurrent refresh (another thread or process) rotates the token, and
+    retrying with the freshly-stored one succeeds. Never escapes this module.
+    """
 
 
 class TokenManager:
@@ -51,6 +61,17 @@ class TokenManager:
         self.creds_manager = credentials_manager or CredentialManager()
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "campfire-python/0.1.0"})
+
+        # Refresh is serialised: the server ROTATES the refresh token, so two
+        # threads refreshing at once means the loser POSTs a token the winner
+        # already invalidated and gets `invalid_grant` back. Deploy runs 16
+        # concurrent upload workers off one manager, so this is reached whenever
+        # a long transfer crosses the refresh threshold (issue #474).
+        # `_refresh_generation` lets a thread that waited on the lock notice
+        # that someone else already refreshed, and use that result instead of
+        # issuing a second (doomed) refresh.
+        self._refresh_lock = threading.RLock()
+        self._refresh_generation = 0
 
         # Cache the current credentials
         self._cached_creds: Optional[StoredCredentials] = None
@@ -101,9 +122,75 @@ class TokenManager:
         except (ValueError, TypeError):
             return True
 
+    def _cached_expires_in(self) -> int:
+        """Seconds until the cached access token expires (>= 0, 0 if unknown)."""
+        creds = self._cached_creds
+        if not creds or not creds.expires_at:
+            return 0
+        try:
+            expires = datetime.fromisoformat(
+                creds.expires_at.replace("Z", "+00:00")
+            )
+            delta = (expires - datetime.now(expires.tzinfo)).total_seconds()
+            return max(0, int(delta))
+        except (ValueError, TypeError):
+            return 0
+
+    def _post_refresh(self, refresh_token: str) -> Tuple[str, str, int]:
+        """One refresh round-trip. Caller must hold ``_refresh_lock``.
+
+        Raises ``_RefreshRejected`` when the server rejects the token itself, so
+        the caller can decide whether a reload-and-retry is worth attempting;
+        every other failure raises ``AuthenticationError`` directly.
+        """
+        try:
+            response = self.session.post(
+                self.refresh_endpoint,
+                json={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                },
+            )
+
+            if response.status_code == 400:
+                data = response.json()
+                error = data.get("error", "unknown_error")
+                if error in ("invalid_grant", "expired_token"):
+                    raise _RefreshRejected(error)
+                raise AuthenticationError(f"Token refresh failed: {error}")
+
+            response.raise_for_status()
+            data = response.json()
+
+            access_token = data["access_token"]
+            new_refresh_token = data["refresh_token"]
+            expires_in = data["expires_in"]
+            supabase_token = data.get("supabase_token")
+            supabase_url = data.get("supabase_url")
+            supabase_anon_key = data.get("supabase_anon_key")
+
+            # Update stored credentials
+            self.creds_manager.update_oauth_tokens(
+                access_token, new_refresh_token, expires_in,
+                supabase_token, supabase_url, supabase_anon_key,
+            )
+
+            # Reload cached credentials
+            self._load_credentials()
+            self._refresh_generation += 1
+
+            return access_token, new_refresh_token, expires_in
+
+        except requests.RequestException as e:
+            raise AuthenticationError(f"Failed to refresh token: {e}")
+
     def refresh_tokens(self) -> Tuple[str, str, int]:
         """
         Refresh the OAuth tokens.
+
+        Thread-safe: concurrent callers are serialised, and a caller that waited
+        on the lock returns the winner's freshly-rotated token rather than
+        re-refreshing with the one the winner just invalidated (issue #474).
 
         Returns
         -------
@@ -118,50 +205,47 @@ class TokenManager:
         if not self.is_oauth():
             raise AuthenticationError("Cannot refresh: not using OAuth credentials")
 
-        if not self._cached_creds or not self._cached_creds.refresh_token:
-            raise AuthenticationError("Cannot refresh: no refresh token available")
+        # Sampled before acquiring: if it moves while we wait, another thread
+        # refreshed and our view of the refresh token is stale.
+        seen_generation = self._refresh_generation
 
-        try:
-            response = self.session.post(
-                self.refresh_endpoint,
-                json={
-                    "grant_type": "refresh_token",
-                    "refresh_token": self._cached_creds.refresh_token,
-                },
-            )
-
-            if response.status_code == 400:
-                data = response.json()
-                error = data.get("error", "unknown_error")
-                if error in ("invalid_grant", "expired_token"):
-                    raise AuthenticationError(
-                        "Session expired. Please run 'campfire login' again."
+        with self._refresh_lock:
+            if self._refresh_generation != seen_generation:
+                creds = self._cached_creds
+                if creds and creds.access_token and creds.refresh_token:
+                    return (
+                        creds.access_token,
+                        creds.refresh_token,
+                        self._cached_expires_in(),
                     )
-                raise AuthenticationError(f"Token refresh failed: {error}")
 
-            response.raise_for_status()
-            data = response.json()
+            if not self._cached_creds or not self._cached_creds.refresh_token:
+                raise AuthenticationError(
+                    "Cannot refresh: no refresh token available"
+                )
 
-            access_token = data["access_token"]
-            refresh_token = data["refresh_token"]
-            expires_in = data["expires_in"]
-            supabase_token = data.get("supabase_token")
-            supabase_url = data.get("supabase_url")
-            supabase_anon_key = data.get("supabase_anon_key")
-
-            # Update stored credentials
-            self.creds_manager.update_oauth_tokens(
-                access_token, refresh_token, expires_in,
-                supabase_token, supabase_url, supabase_anon_key,
-            )
-
-            # Reload cached credentials
-            self._load_credentials()
-
-            return access_token, refresh_token, expires_in
-
-        except requests.RequestException as e:
-            raise AuthenticationError(f"Failed to refresh token: {e}")
+            try:
+                return self._post_refresh(self._cached_creds.refresh_token)
+            except _RefreshRejected:
+                # The token we sent was rejected. Another *process* may have
+                # rotated it on disk since we cached it, so reload and retry
+                # once with whatever is stored now. Only give up — and only
+                # then tell the user to log in again — if the stored token is
+                # unchanged (nothing to retry with) or is itself rejected.
+                stale = self._cached_creds.refresh_token
+                self._load_credentials()
+                current = (
+                    self._cached_creds.refresh_token
+                    if self._cached_creds else None
+                )
+                if current and current != stale:
+                    try:
+                        return self._post_refresh(current)
+                    except _RefreshRejected:
+                        pass
+                raise AuthenticationError(
+                    "Session expired. Please run 'campfire login' again."
+                )
 
     def get_valid_token(self, auto_refresh: bool = True) -> str:
         """

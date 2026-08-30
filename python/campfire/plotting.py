@@ -13,8 +13,9 @@ try:
     from plotly.subplots import make_subplots
 except ImportError:
     raise ImportError(
-        "Plotting functionality requires plotly. "
-        "Install with: pip install plotly"
+        "Interactive plotting requires the [plotting] extra. "
+        "Install with: pip install 'campfire[plotting]' (or: pip install plotly). "
+        "For a quick matplotlib plot without plotly, use SpectrumData.plot()."
     )
 
 
@@ -277,7 +278,7 @@ def plot_spectrum(
     >>> from campfire.plotting import plot_spectrum
     >>>
     >>> cf = Campfire()
-    >>> data = cf.get_spectrum_data('ember_uds_p4_123456', 'PRISM')
+    >>> data = cf.get_spectrum_data('ember_uds_p4_123456')
     >>> fig = plot_spectrum(data, redshift=2.5, show_emission_lines=True)
     >>> fig.show()
     """

@@ -95,6 +95,11 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // No link-scope check here: this route is bearer-only (validateAuth), and
+    // validateAuth refuses link accounts outright — a link visitor's browser
+    // session never reaches it, and the cookie-capable cutout routes
+    // (/cutout/fits, /cutout/figure) carry their own scope checks.
+
     // Requested size, validated once; the default (native resolution for the
     // FOV) depends on which tile stack serves the field, so it's applied below.
     const sizeParam = params.get('size');

@@ -37,6 +37,8 @@ dependencies = [
     "tqdm>=4.65.0",
     "packaging",
     "toml>=0.10",
+    # Comment-preserving TOML surgery for `campfire config pull` (#303).
+    "tomlkit>=0.12",
     # Local science stack — spectrum plotting, NIRCam cutouts, calibration &
     # stacking, plus the deploy CLI's RGB/tile/SED generation. Standard in an
     # astronomer's environment, so kept in the base install; only interactive
@@ -46,10 +48,6 @@ dependencies = [
     "photutils>=1.13",
     "reproject",
     "Pillow>=10.0",
-    # Deploy DB operations
-    "supabase>=2.0",
-    # Deploy R2 uploads (will be replaced by presigned URLs in future)
-    "boto3>=1.28",
 ]
 
 [project.scripts]
@@ -61,6 +59,26 @@ plotting = [
 ]
 specutils = [
     "specutils>=1.13",
+]
+deploy = [
+    # Deploy machines always carry the pipeline — there's no use deploying data
+    # you can't reduce. The annotation round-trips (stuck-shutter TOML writer,
+    # skip-glob Field loader, .reg→DB mask import via jwst WCS) reuse pipeline
+    # code directly, and campfire-pipeline transitively provides jwst + regions.
+    # Like campfire-layout above, campfire-pipeline is not on PyPI: a plain name
+    # so the editable dev workflow (pip install -e ./layout ./pipeline) resolves
+    # it locally. See the repo-root install.py, which installs this profile in
+    # the right order.
+    "campfire-pipeline",
+    # Deploy DB operations. Base-install code paths that touch these (e.g. the
+    # annotation half of `campfire pull`) already degrade gracefully when the
+    # import fails, so consumers never need them.
+    "supabase>=2.0",
+    # Deploy R2 uploads (will be replaced by presigned URLs in future)
+    "boto3>=1.28",
+    # calibration.py prefers spectres for flux-conserving resampling (falls back
+    # to interpolation without it); deploy-side stacking should have the real thing.
+    "spectres>=2.2",
 ]
 fitsgl = [
     # FitsGL producer (build + deploy the FITS tile-pyramid datasets that back
@@ -81,7 +99,10 @@ dev = [
     "mypy>=1.0",
     "plotly>=5.18.0",
     "specutils>=1.13",
+    "spectres>=2.2",
 ]
+# Client-side extras only — [deploy] is an operator concern and drags in the
+# full pipeline, so it is deliberately not part of [all].
 all = [
     "campfire[plotting,specutils]",
 ]

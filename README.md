@@ -34,12 +34,42 @@ See the README in each subdirectory for more detail.
 
 ### Installation
 
+The interactive installer asks which components you need (basic CLI usage,
+data reduction, deployment, web development), manages the conda environment
+(conda / mamba / micromamba, or a plain venv), installs everything in the
+right order, and verifies the result:
+
+```bash
+python3 install.py
+```
+
+Non-interactive use mirrors every prompt with a flag:
+
+```bash
+python3 install.py --profiles reduction,deploy --yes   # e.g. a reduction cluster
+python3 install.py --doctor                            # verify an existing install
+python3 install.py --help                              # all options
+```
+
+Alternatively, the classic one-shot conda env (everything, no choices):
+
 ```bash
 conda env create -f environment.yml
 conda activate campfire
 ```
 
-This installs the pipeline dependencies via conda and both Python packages — `campfire-pipeline` (`pipeline/`) and `campfire` (`python/`, the unified client + CLI + deploy tools) — in editable mode via pip.
+### Updating
+
+```bash
+git pull && python3 install.py
+```
+
+The installer remembers your previous answers (`.campfire-install.json`,
+gitignored) and converges the environment without re-asking: editable installs
+pick up code changes immediately, and the re-run applies anything else — new
+or changed dependency pins, new extras, `web/package-lock.json` drift. It
+never runs git for you, so pulling (and dealing with local changes) stays in
+your hands.
 
 ### Pipeline
 

@@ -152,6 +152,16 @@ async function attachStoredSizes(
 }
 
 /**
+ * Render an arcsec/pix scale in the same vocabulary the mosaic Scale column uses
+ * ('30mas'), so expmap and mosaic rows read as one column: 0.5 -> '500mas'.
+ * Returns null for a null/non-finite input so the cell falls back to an em-dash.
+ */
+function formatPixelScale(arcsec: unknown): string | null {
+  if (typeof arcsec !== 'number' || !Number.isFinite(arcsec) || arcsec <= 0) return null;
+  return `${Math.round(arcsec * 1000)}mas`;
+}
+
+/**
  * Fetch the per-(field, filter) exposure-coverage maps a user may see.
  *
  * Expmaps are registered in `storage_objects` (product_type `nircam_expmap`) and
@@ -191,6 +201,18 @@ export async function getNircamExpmaps(field?: string): Promise<NircamExpmapsRes
       return { expmaps: [], error: error.message, isAuthenticated: true };
     }
 
+    // Grid scale per field. An expmap FITS records its scale only in CDELT1/2 and
+    // the registry row has no scale axis, so it comes from the `fields` registry,
+    // where deploy lifts it out of <field>_layout.json. One value per field —
+    // expmap builds a single shared WCS across all of a field's filters. A failure
+    // here is non-fatal: the rows still render, just without a Scale.
+    let scaleQuery = supabase.from('fields').select('name, expmap_pixel_scale_arcsec');
+    if (field) scaleQuery = scaleQuery.eq('name', field);
+    const { data: fieldRows } = await scaleQuery;
+    const scaleByField = new Map(
+      (fieldRows || []).map((f) => [f.name as string, formatPixelScale(f.expmap_pixel_scale_arcsec)])
+    );
+
     const expmaps: NircamExpmap[] = data
       .filter((r) => r.filter)  // per-filter product; skip any unscoped row
       .map((r) => ({
@@ -198,6 +220,7 @@ export async function getNircamExpmaps(field?: string): Promise<NircamExpmapsRes
         filter: r.filter as string,
         storage_key: r.storage_key,
         file_size: r.size_bytes ?? undefined,
+        pixel_scale: scaleByField.get(r.field) ?? null,
       }));
 
     return { expmaps, isAuthenticated: true };

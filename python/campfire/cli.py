@@ -6,9 +6,8 @@ Provides commands for authentication, catalog sync, and FITS downloading:
 - campfire logout: Remove stored credentials
 - campfire whoami: Show current authenticated user
 - campfire status: Check credentials, catalog, and download status
-- campfire observations: List available observations
 - campfire sync: Sync the full object catalog (metadata only)
-- campfire download: Download FITS spectrum files
+- campfire pull: Download FITS spectrum files (`download` is a back-compat alias)
 """
 
 import shutil
@@ -157,13 +156,23 @@ def _check_client_version(base_url: str) -> None:
         latest = Version(data.get("latest", __version__))
         minimum = Version(data.get("minimum", "0.0.0"))
 
+        # Two supported install paths, and the CLI can't tell which one it came
+        # from: a repo checkout updates via install.py, while a pip-from-git
+        # install must supply campfire-layout alongside the client (it isn't on
+        # PyPI, so the single-package form can never resolve).
+        upgrade_lines = (
+            "  repo checkout:  git pull && python3 install.py\n"
+            "  pip install:    pip install -U "
+            '"campfire-layout @ git+https://github.com/hollisakins/campfire.git#subdirectory=layout" '
+            '"campfire @ git+https://github.com/hollisakins/campfire.git#subdirectory=python"'
+        )
         if current < minimum:
             click.echo(f"\n⚠ campfire v{__version__} is no longer supported "
                         f"(minimum: v{minimum}). Please update:")
-            click.echo("  pip install -U git+https://github.com/hollisakins/campfire.git#subdirectory=python")
+            click.echo(upgrade_lines)
         elif current < latest:
             click.echo(f"\n  Update available: v{__version__} → v{latest}")
-            click.echo("  pip install -U git+https://github.com/hollisakins/campfire.git#subdirectory=python")
+            click.echo(upgrade_lines)
     except Exception:
         pass  # Never block sync for a version check failure
 
@@ -184,11 +193,15 @@ def _register_deploy_group():
     """
     try:
         from campfire.deploy.cli import delete_local, deploy_group, push_cmd
+        from campfire.deploy.config_cli import config_group
         cli.add_command(deploy_group, name='deploy')
         cli.add_command(push_cmd, name='push')
         # Same command as `campfire deploy delete-local`, surfaced top-level as
         # the storage-plane verb paired with pull/push.
         cli.add_command(delete_local, name='drop-local')
+        # The config plane (issue #303): push/pull/diff for the three
+        # data-management TOMLs, mirroring the storage-plane verbs.
+        cli.add_command(config_group, name='config')
     except ImportError:
         @cli.command('deploy', hidden=False)
         def deploy_stub():
@@ -199,6 +212,12 @@ def _register_deploy_group():
         @cli.command('push', hidden=False)
         def push_stub():
             """Push local products to cloud storage. (Requires: pip install campfire[deploy])"""
+            click.echo("Deploy dependencies not installed. Run: pip install campfire[deploy]")
+            sys.exit(1)
+
+        @cli.command('config', hidden=False)
+        def config_stub():
+            """Sync data-management config with the cloud. (Requires: pip install campfire[deploy])"""
             click.echo("Deploy dependencies not installed. Run: pip install campfire[deploy]")
             sys.exit(1)
 
@@ -258,6 +277,13 @@ def login(browser: Optional[bool], base_url: Optional[str]):
 
     # Determine authentication method
     if browser is None:
+        if not sys.stdin.isatty():
+            raise click.ClickException(
+                "No interactive terminal to choose an authentication method. "
+                "Run 'campfire login --browser' (device flow; works over SSH — "
+                "open the printed URL on any machine) or "
+                "'campfire login --api-key' to paste an API key."
+            )
         click.echo("\nHow would you like to authenticate?")
         click.echo("  1. Login with web browser (recommended)")
         click.echo("  2. Paste an API key")
@@ -670,7 +696,7 @@ def sync_cmd(full: bool, base_url: Optional[str], migrate_layout: Optional[bool]
 
         if result["stale_count"] > 0:
             click.echo(f"\n⚠ {result['stale_count']} local file(s) have been updated on the server.")
-            click.echo("  Run: campfire download --stale")
+            click.echo("  Run: campfire pull --stale")
 
         # Check for client updates (non-blocking)
         _check_client_version(base_url)

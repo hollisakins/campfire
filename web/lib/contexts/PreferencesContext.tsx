@@ -7,11 +7,13 @@ import type {
   SpectrumPreferences,
   ThemeSetting,
   AccentColorName,
+  PinnedObject,
 } from '@/lib/types';
 import {
   DEFAULT_USER_PREFERENCES,
   DEFAULT_SPECTRUM_PREFERENCES,
   DEFAULT_ACCENT_COLOR,
+  MAX_PINNED_OBJECTS,
   getAccentColor,
 } from '@/lib/types';
 import { useTheme } from './ThemeContext';
@@ -25,6 +27,9 @@ interface PreferencesContextValue {
   updateTheme: (theme: ThemeSetting) => void;
   updateAccentColor: (color: AccentColorName) => void;
   updateSpectrumPreferences: (prefs: Partial<SpectrumPreferences>) => void;
+  pinnedObjects: PinnedObject[];
+  pinObject: (pin: Omit<PinnedObject, 'pinned_at'>) => void;
+  unpinObject: (targetId: string) => void;
 }
 
 const PreferencesContext = createContext<PreferencesContextValue | undefined>(undefined);
@@ -84,6 +89,7 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
           ...DEFAULT_SPECTRUM_PREFERENCES,
           ...(savedPrefs.spectrum || {}),
         },
+        pinnedObjects: savedPrefs.pinnedObjects || [],
       });
 
       // Sync theme setting with ThemeContext
@@ -145,6 +151,29 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
     }
   }, [user, debouncedSave]);
 
+  const pinObject = useCallback((pin: Omit<PinnedObject, 'pinned_at'>) => {
+    setPreferences(prev => {
+      if (
+        prev.pinnedObjects.some(p => p.target_id === pin.target_id) ||
+        prev.pinnedObjects.length >= MAX_PINNED_OBJECTS
+      ) {
+        return prev;
+      }
+      const pinnedObjects = [{ ...pin, pinned_at: new Date().toISOString() }, ...prev.pinnedObjects];
+      if (user) debouncedSave({ pinnedObjects });
+      return { ...prev, pinnedObjects };
+    });
+  }, [user, debouncedSave]);
+
+  const unpinObject = useCallback((targetId: string) => {
+    setPreferences(prev => {
+      const pinnedObjects = prev.pinnedObjects.filter(p => p.target_id !== targetId);
+      if (pinnedObjects.length === prev.pinnedObjects.length) return prev;
+      if (user) debouncedSave({ pinnedObjects });
+      return { ...prev, pinnedObjects };
+    });
+  }, [user, debouncedSave]);
+
   // Get current accent color hex based on theme
   const accentColorHex = getAccentColor(preferences.accentColor)[resolvedTheme === 'dark' ? 'dark' : 'light'];
 
@@ -159,6 +188,9 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
         updateTheme,
         updateAccentColor,
         updateSpectrumPreferences,
+        pinnedObjects: preferences.pinnedObjects,
+        pinObject,
+        unpinObject,
       }}
     >
       {children}

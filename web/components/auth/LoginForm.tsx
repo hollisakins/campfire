@@ -9,9 +9,41 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import { createClient } from '@/lib/supabase/client';
 import { AlertCircle, Loader2 } from 'lucide-react';
 
+/**
+ * Resolve the post-login destination from the `redirect` query param. Only
+ * same-origin targets are allowed (guards against open redirects), and the
+ * auth pages themselves are rejected so we never bounce in a loop. Anything
+ * missing or unsafe falls back to the home page.
+ */
+function safeRedirectPath(param: string | null): string {
+  if (!param) return '/';
+  try {
+    const url = new URL(param, window.location.origin);
+    if (url.origin !== window.location.origin) return '/';
+    const path = `${url.pathname}${url.search}${url.hash}`;
+    // A reconstructed path starting with "//" is protocol-relative (e.g. from
+    // redirect=https://<same-host>//evil.com, whose pathname is "//evil.com");
+    // navigating to it escapes the origin, so reject anything not a clean
+    // single-slash absolute path.
+    if (!path.startsWith('/') || path.startsWith('//')) return '/';
+    if (
+      path === '/login' ||
+      path.startsWith('/login?') ||
+      path === '/signup' ||
+      path.startsWith('/signup?')
+    ) {
+      return '/';
+    }
+    return path || '/';
+  } catch {
+    return '/';
+  }
+}
+
 export const LoginForm: React.FC = () => {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const redirectParam = searchParams.get('redirect');
   const { signIn, needsProfileSetup, user, loading: authLoading } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -79,8 +111,9 @@ export const LoginForm: React.FC = () => {
               return;
             }
 
-            // Profile exists - redirect to main app
-            router.push('/nirspec');
+            // Profile exists - return the user to where they were headed
+            // (or the home page by default).
+            router.push(safeRedirectPath(redirectParam));
             return;
           }
 
@@ -95,7 +128,7 @@ export const LoginForm: React.FC = () => {
     };
 
     processHashTokens();
-  }, [router]);
+  }, [router, redirectParam]);
 
   // Check for error messages in URL query params
   useEffect(() => {
@@ -112,11 +145,12 @@ export const LoginForm: React.FC = () => {
         // User is authenticated but needs to complete profile setup
         router.push('/welcome');
       } else {
-        // User is fully set up, redirect to main app
-        router.push('/nirspec');
+        // User is fully set up — return them to where they were headed
+        // (falls back to the home page).
+        router.push(safeRedirectPath(redirectParam));
       }
     }
-  }, [authLoading, processingCallback, user, needsProfileSetup, router]);
+  }, [authLoading, processingCallback, user, needsProfileSetup, router, redirectParam]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

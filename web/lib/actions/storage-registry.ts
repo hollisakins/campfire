@@ -178,6 +178,7 @@ export interface StorageObjectDetail {
   size_bytes: number;
   content_hash: string;
   sci_dq_hash: string | null;
+  wcs_hash: string | null;
   content_type: string;
   backend: string;
   bucket: string;
@@ -232,7 +233,7 @@ export async function getStorageObjectDetail(
       .from('storage_objects')
       .select(
         'id, storage_key, product_type, instrument, observation, field, exposure_ref, ' +
-        'size_bytes, content_hash, sci_dq_hash, content_type, backend, bucket, status, ' +
+        'size_bytes, content_hash, sci_dq_hash, wcs_hash, content_type, backend, bucket, status, ' +
         'cfpipe_version, deployment_id, uploaded_by, created_at, updated_at',
       )
       .eq('id', id)

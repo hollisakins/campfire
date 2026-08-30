@@ -15,6 +15,21 @@ const nextConfig: NextConfig = {
     });
     return config;
   },
+  // No CAMPFIRE page is ever indexed by a search engine (design-public-mirror.md
+  // §9). Deliberately a header on EVERY response rather than a robots.txt
+  // Disallow: Disallow blocks crawling, and a page that is never crawled is a
+  // page whose noindex is never read -- so a URL discovered from an external
+  // link can still be indexed bare. That is exactly the accidental-paste case
+  // share links must survive, so we let crawlers fetch and tell them noindex.
+  // The root-layout `robots` metadata is the HTML-level belt to this brace.
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }],
+      },
+    ];
+  },
   async redirects() {
     return [
       {

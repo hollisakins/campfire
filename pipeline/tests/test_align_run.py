@@ -1,9 +1,10 @@
-"""Tests for the field-level align phase wiring (nircam/orchestrate.run_align).
+"""Tests for the per-filter align step wiring (nircam/orchestrate._run_align).
 
-The gating test is fast (no FITS). The end-to-end tests build a real synthetic
-field — canonical exposures with a persistable gwcs + injected offset across two
-filter dirs sharing one exposure token, plus a written refcat — and run the
-phase through the same path the CLI uses.
+Align now runs as a per-filter step inside the process loop (replacing jhat),
+driven through ``run_step('align', ...)`` — the same path the CLI uses. The
+gating and pool-splitting tests are fast (no FITS). The end-to-end tests build a
+real synthetic field (canonical exposures with a persistable gwcs + injected
+offset, plus a written refcat) and run the step.
 """
 
 import os
@@ -15,8 +16,11 @@ from astropy.io import fits
 from astropy.table import Table
 
 from _align_gwcs import HAVE_PERSISTABLE_WCS, build_canonical, make_persistable_wcs
+from campfire_pipeline.nircam.association import (
+    ExposureGroup, ExposureMember, split_pools,
+)
 from campfire_pipeline.nircam.field import Field
-from campfire_pipeline.nircam.orchestrate import _active_process_steps, run_align
+from campfire_pipeline.nircam.orchestrate import _active_process_steps, run_step
 from campfire_pipeline.nircam.refcat.io import write_refcat
 
 _TOKEN = 'jw01727028001_04101_00003'
@@ -32,6 +36,52 @@ def _field(enabled, **kw):
                  step_overrides={'align': {'enabled': enabled, **kw}})
 
 
+def _stamped_pool(tmp_path, values, key='exp'):
+    """A minimal pool of one-detector 'canonicals': tiny FITS files carrying
+    the given CFP_ALGN header values (None = unstamped)."""
+    from types import SimpleNamespace
+    members = []
+    for i, value in enumerate(values):
+        path = str(tmp_path / f'{key}_nrc{i}.fits')
+        hdu = fits.PrimaryHDU()
+        if value is not None:
+            hdu.header['CFP_ALGN'] = value
+        hdu.writeto(path, overwrite=True)
+        members.append(SimpleNamespace(path=path, detector=f'nrc{i}'))
+    return SimpleNamespace(key=key, members=members, n_members=len(members))
+
+
+class _StampStatus:
+    def has(self, path, key):
+        with fits.open(path) as h:
+            return key in h[0].header
+
+
+def test_pending_pools_judges_every_member(tmp_path):
+    # The residual gate can reject a single detector inside an otherwise
+    # solved pool, so 'done' must be judged from EVERY member's stamp — a
+    # NOT_ALIGNED member anywhere in the pool (not just members[0]) keeps the
+    # pool pending on a normal re-run.
+    from campfire_pipeline.nircam.orchestrate import _pending_pools
+    rc = 'abcd1234'
+    solved = f'dof=coarse res=0.01 n=10 rc={rc}'
+    done_pool = _stamped_pool(tmp_path, [solved, solved], key='done')
+    partial = _stamped_pool(tmp_path, [solved, 'NOT_ALIGNED'], key='partial')
+    stale = _stamped_pool(tmp_path, [solved, 'dof=coarse res=0.01 n=10 rc=ffff0000'],
+                          key='stale')
+    unstamped = _stamped_pool(tmp_path, [solved, None], key='unstamped')
+
+    pending, retry = _pending_pools([done_pool, partial, stale, unstamped],
+                                    _StampStatus(), overwrite=False,
+                                    refcat_hash=rc)
+    assert [p.key for p in pending] == ['partial', 'stale', 'unstamped']
+    assert retry == 2                    # partial + stale are stamped re-attempts
+
+    pending, retry = _pending_pools([done_pool, partial], _StampStatus(),
+                                    overwrite=True, refcat_hash=rc)
+    assert [p.key for p in pending] == ['done', 'partial']   # overwrite: all
+
+
 def test_visit_membership_detects_dropped_member():
     # The cheap outlier pre-scan must re-run a visit whose membership changed
     # (e.g. a NOT_ALIGNED quarantine dropped an exposure) — otherwise resample
@@ -44,23 +94,62 @@ def test_visit_membership_detects_dropped_member():
     ]}
     all_members = ['/w/jw001_001_001_nrca1.fits', '/w/jw001_001_002_nrca1.fits']
     assert _visit_membership_matches(manifest, 'jw001', all_members)  # unchanged
-    # a member dropped (quarantined) -> mismatch -> force re-run
-    assert not _visit_membership_matches(manifest, 'jw001',
-                                         all_members[:1])
-    # a member added -> mismatch too
+    assert not _visit_membership_matches(manifest, 'jw001', all_members[:1])
     assert not _visit_membership_matches(
         manifest, 'jw001', all_members + ['/w/jw001_001_003_nrca1.fits'])
 
 
-def test_active_process_steps_gates_jhat_and_wcs_shift():
+def test_active_process_steps_swaps_jhat_for_align():
     off = [n for n, _ in _active_process_steps({}, _field(False))]
     on = [n for n, _ in _active_process_steps({}, _field(True))]
-    # align off (default): the JHAT path runs
-    assert 'jhat' in off and 'wcs_shift' in off
-    # align on: the JHAT path is removed (exactly one alignment path)
-    assert 'jhat' not in on and 'wcs_shift' not in on
-    # everything else is untouched
+    # align off (default): the JHAT path runs, no align step
+    assert 'jhat' in off and 'align' not in off
+    # align on: jhat is swapped out for align (exactly one alignment engine)
+    assert 'jhat' not in on and 'align' in on
+    # wcs_shift is KEPT in both (manual offsets for corrupted metadata)
+    assert 'wcs_shift' in off and 'wcs_shift' in on
+    # everything else untouched
     assert 'bkg' in on and 'detector1' in on
+
+
+def test_align_cfp_key_resolves_and_shows_in_status():
+    # `reset --from align` and the `status` CFP_ALGN column must work now that
+    # align is a process-loop step (it's not in the static ALL_STEPS list).
+    from campfire_pipeline.nircam.cli import _step_to_cfp_key
+    from campfire_pipeline.nircam.orchestrate import CFP_STEPS
+    assert _step_to_cfp_key('align') == 'CFP_ALGN'
+    assert _step_to_cfp_key('jhat') == 'CFP_JHAT'      # jhat still resolvable
+    assert ('align', 'CFP_ALGN') in CFP_STEPS
+    on = [k for n, k in _active_process_steps({}, _field(True)) if k]
+    assert 'CFP_ALGN' in on and 'CFP_JHAT' not in on   # align field's status column
+
+
+# --- pool splitting (fast, no FITS) -----------------------------------------
+
+def _mem(det, filt='f200w'):
+    return ExposureMember(path=f'/w/tok_{det}.fits', filter_name=filt,
+                          rootname=f'tok_{det}', detector=det)
+
+
+def test_split_pools_per_module():
+    g = ExposureGroup('tok', tuple(_mem(d)
+                                   for d in ('nrca1', 'nrca2', 'nrcb1', 'nrcb2')))
+    pools = split_pools([g], pool_modules=False)
+    assert sorted(p.key for p in pools) == ['tok:a', 'tok:b']
+    a = next(p for p in pools if p.key == 'tok:a')
+    assert sorted(m.detector for m in a.members) == ['nrca1', 'nrca2']
+
+
+def test_split_pools_pooled_keeps_group_whole():
+    g = ExposureGroup('tok', tuple(_mem(d) for d in ('nrca1', 'nrcb1')))
+    pools = split_pools([g], pool_modules=True)
+    assert len(pools) == 1 and pools[0].key == 'tok'
+
+
+def test_split_pools_single_module_not_split():
+    g = ExposureGroup('tok', tuple(_mem(d) for d in ('nrca1', 'nrca2')))
+    pools = split_pools([g], pool_modules=False)
+    assert len(pools) == 1 and pools[0].key == 'tok'
 
 
 # --- end-to-end -------------------------------------------------------------
@@ -79,8 +168,9 @@ def _inject(shape, xy, rng, noise=1.0, fwhm=2.5, amp=400.0):
 
 
 def _build_field(tmp_path, enabled=True):
-    """A field with one exposure: nrca1 in f200w + nrcalong in f444w (one token),
-    each carrying a 2 arcsec offset from the written reference catalog."""
+    """A field with one exposure spanning two filters: nrca1 in f200w +
+    nrcalong in f444w (one token), each carrying a 2 arcsec offset from the
+    written reference catalog. Align now solves each filter independently."""
     field = Field(name='cosmos', filters=['f200w', 'f444w'], files=['jw01727*'],
                   tangent_point=(80.0, -30.0), tiles={},
                   step_overrides={'align': {'enabled': enabled,
@@ -109,10 +199,19 @@ def _build_field(tmp_path, enabled=True):
     return field, refcat, xy_by_path
 
 
+def _align(field, **kw):
+    run_step('align', field, {}, filters=['f200w', 'f444w'], n_processes=1, **kw)
+
+
+def _algn_rc(value):
+    """The rc= refcat-hash token from a CFP_ALGN value string, or None."""
+    return next((t[3:] for t in str(value).split() if t.startswith('rc=')), None)
+
+
 @pytestmark_e2e
-def test_run_align_end_to_end(tmp_path):
+def test_align_step_end_to_end(tmp_path):
     field, refcat, xy_by_path = _build_field(tmp_path, enabled=True)
-    run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
+    _align(field)
 
     from jwst.datamodels import ImageModel
     ref = SkyCoord(refcat['RA'], refcat['DEC'], unit='deg')
@@ -128,74 +227,86 @@ def test_run_align_end_to_end(tmp_path):
 
 
 @pytestmark_e2e
-def test_run_align_disabled_is_noop(tmp_path):
+def test_align_step_disabled_is_noop(tmp_path):
     field, _, xy_by_path = _build_field(tmp_path, enabled=False)
-    run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
+    _align(field)
     for path in xy_by_path:
         with fits.open(path) as h:
             assert 'CFP_ALGN' not in h[0].header
 
 
 @pytestmark_e2e
-def test_run_align_idempotent(tmp_path):
+def test_align_step_idempotent(tmp_path):
     field, _, xy_by_path = _build_field(tmp_path, enabled=True)
-    run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
+    _align(field)
     mtimes = {p: os.path.getmtime(p) for p in xy_by_path}
-    run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
+    _align(field)
     assert all(os.path.getmtime(p) == mtimes[p] for p in xy_by_path)
 
 
 @pytestmark_e2e
-def test_run_align_warns_and_reattempts_not_aligned(tmp_path, capsys):
+def test_align_step_resolves_stale_refcat(tmp_path):
+    # Changing the refcat (its content hash) must re-solve on a normal re-run,
+    # not silently keep the stale solution — the rc= provenance staleness check.
+    from astropy.table import vstack
+    field, refcat, xy_by_path = _build_field(tmp_path, enabled=True)
+    _align(field)
+    stamps = {}
+    for p in xy_by_path:
+        with fits.open(p) as h:
+            stamps[p] = h[0].header['CFP_ALGN']
+        assert 'rc=' in stamps[p]                          # provenance stamped
+    # rewrite the refcat with a far (out-of-footprint) decoy row: different file
+    # hash (-> stale), but the solve itself is unchanged (row is clipped out).
+    extra = Table({'RA': [81.0], 'DEC': [-31.0]})
+    extra['mag'] = np.zeros(1, 'float32')
+    extra['mag_err'] = np.ones(1, 'float32')
+    write_refcat(vstack([refcat, extra]),
+                 os.path.join(field.refcat_dir, 'test.ecsv'), overwrite=True)
+    _align(field)
+    for p in xy_by_path:
+        with fits.open(p) as h:
+            new = h[0].header['CFP_ALGN']
+        assert _algn_rc(new) != _algn_rc(stamps[p])        # re-solved, new rc
+
+
+@pytestmark_e2e
+def test_align_step_warns_and_reattempts_not_aligned(tmp_path, capsys):
     field, _, xy_by_path = _build_field(tmp_path, enabled=True)
-    # Clobber the refcat with too few sources -> every exposure rejects to
+    # Clobber the refcat with too few sources -> every pool rejects to
     # NOT_ALIGNED (the solve's <3-source guard).
     tiny = Table({'RA': [80.0, 80.001], 'DEC': [-30.0, -30.001]})
     tiny['mag'] = np.zeros(2, 'float32')
     tiny['mag_err'] = np.ones(2, 'float32')
     write_refcat(tiny, os.path.join(field.refcat_dir, 'test.ecsv'), overwrite=True)
 
-    run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
+    _align(field)
     out1 = capsys.readouterr().out
     for path in xy_by_path:
         with fits.open(path) as h:
             assert h[0].header.get('CFP_ALGN') == 'NOT_ALIGNED'
-    assert 'FAILED alignment' in out1                 # loud end-of-command warning
+    assert 'FAILED alignment' in out1                 # loud warning
     assert _TOKEN in out1                              # lists the failed exposure
 
-    # Re-run WITHOUT --overwrite: the NOT_ALIGNED exposure is re-attempted (the
-    # user may have retuned params), not silently skipped, and warned about again.
-    run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
+    # Re-run WITHOUT --overwrite: the NOT_ALIGNED pool is re-attempted (the user
+    # may have retuned params), not silently skipped, and warned about again.
+    _align(field)
     out2 = capsys.readouterr().out
     assert 're-attempting' in out2
     assert 'FAILED alignment' in out2
 
 
 @pytestmark_e2e
-def test_run_align_cross_filter_closure_writes_all_members(tmp_path):
-    # Cross-filter dependency closure: aligning with --filters f200w still pools
-    # and WRITES the paired f444w (LW) member — one attitude corrects the whole
-    # dither, so both canonicals get a real (dof=...) CFP_ALGN stamp.
-    field, _, xy_by_path = _build_field(tmp_path, enabled=True)
-    run_align(field, {}, filters=['f200w'], n_processes=1)
-    assert len(xy_by_path) == 2                        # one f200w + one f444w member
-    for path in xy_by_path:
-        with fits.open(path) as h:
-            assert h[0].header.get('CFP_ALGN', '').startswith('dof=')
-
-
-@pytestmark_e2e
-def test_run_align_hardstops_unsupported_mode(tmp_path):
-    # An exposure in an unsupported observing mode must stop the whole align run
-    # (the user has to exclude it explicitly), not fall through generic logic.
+def test_align_step_hardstops_unsupported_mode(tmp_path):
+    # An exposure in an unsupported observing mode must stop the align step (the
+    # user has to exclude it explicitly), not fall through generic logic.
     field, _, xy_by_path = _build_field(tmp_path, enabled=True)
     for path in xy_by_path:
         with fits.open(path, mode='update') as h:
             h[0].header['EXP_TYPE'] = 'NRC_CORON'
             h.flush()
     with pytest.raises(RuntimeError, match='observing mode'):
-        run_align(field, {}, filters=['f200w', 'f444w'], n_processes=1)
-    # nothing was aligned
+        _align(field)
     for path in xy_by_path:
         with fits.open(path) as h:
             assert 'CFP_ALGN' not in h[0].header

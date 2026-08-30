@@ -201,6 +201,7 @@ export function StorageObjectDrawer({ id, onClose }: { id: number; onClose: () =
                 <Row label="Status">{obj.status}</Row>
                 <Row label="Content hash">{obj.content_hash}</Row>
                 <Row label="SCI+DQ hash">{obj.sci_dq_hash ?? '—'}</Row>
+                <Row label="WCS hash">{obj.wcs_hash ?? '—'}</Row>
                 <Row label="cfpipe version">{obj.cfpipe_version ?? '—'}</Row>
                 <Row label="Created">{fmtDate(obj.created_at)}</Row>
                 <Row label="Updated">{fmtDate(obj.updated_at)}</Row>

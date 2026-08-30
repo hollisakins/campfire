@@ -3,7 +3,9 @@
 Pure classification: no Supabase, no network. Covers the new/changed/unchanged
 split, the pushed_* stat fast path (skip without reading), identity-kind
 selection (sci_dq for NIRCam exposures vs whole-file), provisional-etag
-handling, and the confirmed-unchanged bookkeeping that arms the fast path.
+handling, the confirmed-unchanged bookkeeping that arms the fast path, and the
+two-component exposure identity (science + astrometry) with its legacy-row
+reconciliation.
 """
 
 import os
@@ -12,8 +14,11 @@ from pathlib import Path
 from campfire_layout import KeyScheme, Scope, storage_key
 
 from campfire.deploy.r2 import UploadTask
-from campfire.storage.hashing import compute_file_hash, sci_dq_hash
+from campfire.storage.hashing import (
+    compute_file_hash, exposure_identity, sci_dq_hash, wcs_hash,
+)
 from campfire.storage.plan import (
+    compose_identity,
     identity_kind_for_key,
     plan_push,
     server_identity_for,
@@ -143,7 +148,7 @@ def test_stat_fast_path_skips_without_reading(tmp_path, monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("fast path must not hash")
     monkeypatch.setattr(plan_mod, 'hash_files_parallel', _boom)
-    monkeypatch.setattr(plan_mod, 'sci_dq_hashes_parallel', _boom)
+    monkeypatch.setattr(plan_mod, 'exposure_identities_parallel', _boom)
 
     plan = plan_push([task], rows, local_rows=local, progress=False)
     assert plan.unchanged == [task]
@@ -181,10 +186,21 @@ def test_fast_path_ignored_when_server_identity_moved(tmp_path):
 
 # --- sci_dq identity end-to-end ------------------------------------------------
 
-def _exposure_task(tmp_path, name='jw001_nrca1.fits', seed=1.0):
+def _exposure_task(tmp_path, name='jw001_nrca1.fits', seed=1.0, crval=None):
     import numpy as np
     from astropy.io import fits as afits
     sci = afits.ImageHDU(np.full((4, 4), seed, dtype='f4'), name='SCI')
+    if crval is not None:
+        # A minimal but real celestial WCS on the SCI header, as the datamodel
+        # writes it — this is what a re-alignment moves.
+        sci.header['CTYPE1'] = 'RA---TAN'
+        sci.header['CTYPE2'] = 'DEC--TAN'
+        sci.header['CRPIX1'] = 2.0
+        sci.header['CRPIX2'] = 2.0
+        sci.header['CRVAL1'] = crval[0]
+        sci.header['CRVAL2'] = crval[1]
+        sci.header['CD1_1'] = -8.6e-6
+        sci.header['CD2_2'] = 8.6e-6
     dq = afits.ImageHDU(np.zeros((4, 4), dtype='i4'), name='DQ')
     hdul = afits.HDUList([afits.PrimaryHDU(), sci, dq])
     p = tmp_path / name
@@ -192,6 +208,14 @@ def _exposure_task(tmp_path, name='jw001_nrca1.fits', seed=1.0):
     key = storage_key('nircam_exposure', Scope(field='cosmos', filt='f444w'),
                       name, scheme=KeyScheme.CANONICAL)
     return UploadTask(p, key, 'application/fits')
+
+
+def _realign(path, crval):
+    """Rewrite only the WCS — exactly what `cfpipe nircam align` does."""
+    from astropy.io import fits as afits
+    with afits.open(path, mode='update') as hdul:
+        hdul['SCI'].header['CRVAL1'] = crval[0]
+        hdul['SCI'].header['CRVAL2'] = crval[1]
 
 
 def test_sci_dq_resave_with_header_change_skips(tmp_path):
@@ -228,3 +252,144 @@ def test_legacy_exposure_row_without_sci_dq_uploads(tmp_path):
     rows = {task.r2_key: _row(task.r2_key, 'sha256:' + '9' * 64, sci_dq=None)}
     plan = plan_push([task], rows, progress=False)
     assert plan.changed == [task]
+
+
+# --- astrometric identity: the re-alignment case ------------------------------
+
+def test_realignment_uploads_despite_identical_science(tmp_path):
+    # The regression this component exists for: align rewrites the WCS and does
+    # not touch one SCI or DQ pixel, so a science-only identity said "unchanged"
+    # and the cloud copy kept its pre-alignment astrometry forever.
+    task = _exposure_task(tmp_path, crval=(150.0, 2.0))
+    sci, wcs_before = exposure_identity(task.local_path)
+    rows = {task.r2_key: _row(task.r2_key, 'sha256:' + '9' * 64,
+                              sci_dq=sci, wcs_hash=wcs_before)}
+
+    _realign(task.local_path, (150.0001, 2.0001))
+    plan = plan_push([task], rows, progress=False)
+
+    assert plan.changed == [task]
+    assert plan.to_upload == [task]
+    # Science digest is genuinely unchanged — only the WCS moved.
+    assert plan.identities[task.r2_key] == sci
+    assert plan.wcs_hashes[task.r2_key] != wcs_before
+
+
+def test_resave_without_wcs_change_still_skips(tmp_path):
+    # The property that made the partial digest worth having must survive: a
+    # re-save that shifts the whole-file hash but moves neither pixels nor WCS
+    # is still an upload we skip.
+    from astropy.io import fits as afits
+    task = _exposure_task(tmp_path, crval=(150.0, 2.0))
+    sci, wcs = exposure_identity(task.local_path)
+    rows = {task.r2_key: _row(task.r2_key, 'sha256:' + '9' * 64,
+                              sci_dq=sci, wcs_hash=wcs)}
+    with afits.open(task.local_path, mode='update') as hdul:
+        hdul[0].header['DATE'] = '2026-07-27T00:00:00'
+    plan = plan_push([task], rows, progress=False)
+    assert plan.unchanged == [task]
+    assert plan.to_upload == []
+
+
+def test_both_components_must_match_to_skip(tmp_path):
+    task = _exposure_task(tmp_path, crval=(150.0, 2.0))
+    sci, wcs = exposure_identity(task.local_path)
+    # Right WCS, wrong science → upload.
+    rows = {task.r2_key: _row(task.r2_key, 'sha256:' + '9' * 64,
+                              sci_dq='sha256:' + '0' * 64, wcs_hash=wcs)}
+    assert plan_push([task], rows, progress=False).changed == [task]
+    # Right science, wrong WCS → upload.
+    rows = {task.r2_key: _row(task.r2_key, 'sha256:' + '9' * 64,
+                              sci_dq=sci, wcs_hash='sha256:' + '0' * 64)}
+    assert plan_push([task], rows, progress=False).changed == [task]
+
+
+def test_composed_identity_arms_the_stat_fast_path(tmp_path, monkeypatch):
+    task = _exposure_task(tmp_path, crval=(150.0, 2.0))
+    sci, wcs = exposure_identity(task.local_path)
+    st = os.stat(task.local_path)
+    rows = {task.r2_key: _row(task.r2_key, 'sha256:' + '9' * 64,
+                              sci_dq=sci, wcs_hash=wcs)}
+    local = {task.r2_key: {'pushed_identity': compose_identity(sci, wcs),
+                           'pushed_mtime': st.st_mtime,
+                           'pushed_size': st.st_size}}
+
+    import campfire.storage.plan as plan_mod
+
+    def _boom(*a, **k):
+        raise AssertionError("fast path must not hash")
+    monkeypatch.setattr(plan_mod, 'hash_files_parallel', _boom)
+    monkeypatch.setattr(plan_mod, 'exposure_identities_parallel', _boom)
+
+    plan = plan_push([task], rows, local_rows=local, progress=False)
+    assert plan.unchanged == [task]
+    assert plan.fast_skipped == 1
+
+
+def test_wcsless_exposure_identity_is_bare_science_digest(tmp_path):
+    # A file with no WCS cards has no astrometric component; its identity is
+    # the science digest alone, so pre-existing pushed_identity records and
+    # registry rows keep working untouched.
+    task = _exposure_task(tmp_path)
+    assert wcs_hash(task.local_path) is None
+    assert compose_identity(sci_dq_hash(task.local_path), None) == \
+        sci_dq_hash(task.local_path)
+
+
+# --- legacy-row reconciliation (no stampede on the first upgraded push) --------
+
+def test_legacy_row_reconciles_without_uploading(tmp_path):
+    # Row predates wcs_hash. The science digest matches and the cloud object is
+    # byte-identical to this file, which proves the cloud copy carries this WCS
+    # — so: no upload, and the row learns its digest.
+    task = _exposure_task(tmp_path, crval=(150.0, 2.0))
+    sci, wcs = exposure_identity(task.local_path)
+    whole = compute_file_hash(task.local_path)
+    rows = {task.r2_key: _row(task.r2_key, whole, sci_dq=sci, wcs_hash=None)}
+
+    plan = plan_push([task], rows, progress=False)
+
+    assert plan.unchanged == [task]
+    assert plan.to_upload == []
+    assert plan.backfill == [(task.r2_key, wcs)]
+    # The confirmed identity is the COMPOSED token, so the next run fast-paths
+    # against a row that now carries both components.
+    assert plan.confirmed[0][1] == compose_identity(sci, wcs)
+
+
+def test_legacy_row_with_differing_bytes_uploads(tmp_path):
+    # Same science, no recorded astrometry, and the cloud bytes are NOT ours —
+    # unprovable, so it uploads. This is the re-aligned exposure the old
+    # identity silently skipped.
+    task = _exposure_task(tmp_path, crval=(150.0, 2.0))
+    sci, wcs = exposure_identity(task.local_path)
+    rows = {task.r2_key: _row(task.r2_key, 'sha256:' + '9' * 64,
+                              sci_dq=sci, wcs_hash=None)}
+
+    plan = plan_push([task], rows, progress=False)
+
+    assert plan.changed == [task]
+    assert plan.backfill == []
+    # The whole-file hash the reconciliation computed is handed to registration
+    # rather than thrown away.
+    assert plan.whole_file[task.r2_key][0] == compute_file_hash(task.local_path)
+
+
+def test_upload_order_preserved_across_reconciliation(tmp_path):
+    # Reconciliation runs as a second pass; to_upload must still follow the
+    # input task order.
+    a = _exposure_task(tmp_path, name='jw_a_nrca1.fits', crval=(150.0, 2.0))
+    b = _exposure_task(tmp_path, name='jw_b_nrca1.fits', seed=2.0)
+    c = _exposure_task(tmp_path, name='jw_c_nrca1.fits', seed=3.0,
+                       crval=(151.0, 3.0))
+    rows = {
+        # a: legacy row, bytes differ → reconciliation says upload.
+        a.r2_key: _row(a.r2_key, 'sha256:' + '9' * 64,
+                       sci_dq=sci_dq_hash(a.local_path), wcs_hash=None),
+        # b: no row at all → new.
+        # c: identity mismatch → changed in the first pass.
+        c.r2_key: _row(c.r2_key, 'sha256:' + '9' * 64,
+                       sci_dq='sha256:' + '0' * 64, wcs_hash='sha256:' + '1' * 64),
+    }
+    plan = plan_push([a, b, c], rows, progress=False)
+    assert plan.to_upload == [a, b, c]

@@ -145,6 +145,7 @@ def row_for_key(
     status: str = 'active',
     bucket: Optional[str] = None,
     sci_dq_hash: Optional[str] = None,
+    wcs_hash: Optional[str] = None,
     stored_size_bytes: Optional[int] = None,
 ) -> dict | None:
     """Build one ``storage_objects`` row dict from a storage key + integrity info.
@@ -184,6 +185,11 @@ def row_for_key(
         # Science-only change-detection digest (epic #261, N1). Only NIRCam
         # canonical exposures carry one today; None leaves the column NULL.
         'sci_dq_hash': sci_dq_hash,
+        # Astrometric half of the same change-detection identity: a re-aligned
+        # exposure has identical SCI/DQ pixels and a different WCS, so without
+        # this the re-alignment never reaches the cloud. NULL for everything
+        # that compares on the whole-file hash.
+        'wcs_hash': wcs_hash,
         'size_bytes': int(size_bytes),
         # Bytes as stored in the bucket for transport-compressed products
         # (gzipped mosaic FITS); NULL = stored verbatim (== size_bytes, which
@@ -221,6 +227,7 @@ def build_registry_rows(
     cfpipe_version: Optional[str] = None,
     succeeded_keys: Optional[set[str]] = None,
     sci_dq_hashes: Optional[dict[str, str]] = None,
+    wcs_hashes: Optional[dict[str, str]] = None,
     max_workers: Optional[int] = None,
     precomputed: Optional[dict[str, tuple[str, int]]] = None,
     stored_sizes: Optional[dict[str, int]] = None,
@@ -238,13 +245,16 @@ def build_registry_rows(
     ``sci_dq_hashes`` optionally supplies a precomputed ``sha256:<hex>`` science-only
     digest per storage key (NIRCam exposures, epic #261) — the ``content_hash`` is
     still the whole-file sha256, but ``sci_dq_hash`` carries the science-only digest
-    that change-detection compares against.
+    that change-detection compares against. ``wcs_hashes`` supplies the astrometric
+    digest that goes with it; the pair is the exposure identity, and an exposure
+    registered without the WCS half would dedup as unchanged after a re-alignment.
 
     ``precomputed`` optionally supplies ``{r2_key: ('sha256:<hex>', size)}``
     whole-file digests already computed upstream (the push planner hashes
     changed files to decide the upload) — those files are not re-read here.
     """
     sci_dq_hashes = sci_dq_hashes or {}
+    wcs_hashes = wcs_hashes or {}
     precomputed = precomputed or {}
     stored_sizes = stored_sizes or {}
     selected: list[tuple[UploadTask, Path]] = []
@@ -274,6 +284,7 @@ def build_registry_rows(
             uploaded_by=uploaded_by,
             cfpipe_version=cfpipe_version,
             sci_dq_hash=sci_dq_hashes.get(task.r2_key),
+            wcs_hash=wcs_hashes.get(task.r2_key),
             stored_size_bytes=stored_sizes.get(task.r2_key),
         )
         if row is not None:
@@ -298,6 +309,43 @@ def set_active_deployment(client, keys: list[str], deployment_id: int) -> int:
          .update({'deployment_id': deployment_id})
          .in_('storage_key', chunk).eq('status', 'active').execute())
     return len(keys)
+
+
+def backfill_wcs_hashes(client, pairs: list[tuple[str, str]]) -> int:
+    """Record ``wcs_hash`` on legacy rows the push planner proved unchanged.
+
+    ``pairs`` is ``PushPlan.backfill``: keys whose cloud object is byte-identical
+    to the local file (whole-file sha256 == the row's ``content_hash``), so the
+    local astrometric digest describes the cloud copy too. Writing it costs no
+    transfer and completes the row's exposure identity, so the *next* push
+    compares on both components — and a subsequent re-alignment is finally seen.
+
+    Guarded with ``is_('wcs_hash', 'null')`` so this can only ever fill a hole:
+    a row another reducer has since re-uploaded (with its own, possibly
+    different, WCS) is left alone rather than being stamped with ours. Returns
+    the number of rows written.
+    """
+    if not pairs:
+        return 0
+    # Group by digest so identical values go out as one filtered UPDATE rather
+    # than one request per exposure (a field's exposures rarely share a WCS, but
+    # the grouping costs nothing and bounds the request count when they do).
+    by_hash: dict[str, list[str]] = {}
+    for key, wcs in pairs:
+        if wcs:
+            by_hash.setdefault(wcs, []).append(key)
+    written = 0
+    for wcs, keys in by_hash.items():
+        for i in range(0, len(keys), 200):
+            chunk = keys[i:i + 200]
+            resp = (client.table('storage_objects')
+                    .update({'wcs_hash': wcs})
+                    .in_('storage_key', chunk)
+                    .eq('status', 'active')
+                    .is_('wcs_hash', 'null')
+                    .execute())
+            written += len(resp.data or [])
+    return written
 
 
 def fetch_active_content_hashes(client, keys: list[str]) -> dict[str, str]:

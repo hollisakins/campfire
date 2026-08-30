@@ -219,6 +219,10 @@ def source_ids_option(f):
                    'the field; mutually exclusive with --obs.')
 @click.option('--filter', 'filter_names', multiple=True, cls=_VariadicOption,
               help='NIRCam filter(s) to deploy with --field (default: all).')
+@click.option('--no-mosaics', 'no_mosaics', is_flag=True,
+              help='NIRCam --field only: deploy exposures/expmaps/layout and '
+                   'skip the mosaic stage. For the inspect-then-rebuild loop, '
+                   'where mosaics built before masking are superseded anyway.')
 @click.option('--dry-run', is_flag=True, help='Show what would happen without making changes.')
 @click.option('--source-ids', multiple=True, type=str, default=None,
               cls=_VariadicOption, callback=_parse_source_ids,
@@ -243,8 +247,8 @@ def source_ids_option(f):
                    '(bypasses RLS + presigned URLs). For unattended / CI deploys. '
                    'Equivalent to CAMPFIRE_DEPLOY_MODE=service-role.')
 @click.pass_context
-def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids,
-                 supabase_only, force_overwrite, auto_approve,
+def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run,
+                 source_ids, supabase_only, force_overwrite, auto_approve,
                  no_shutters, no_photometry, skip_astrometry, draft, local,
                  service_role):
     """Deploy CAMPFIRE pipeline products to Supabase + object storage.
@@ -274,6 +278,10 @@ def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids
         if field and obs:
             print("Error: --field (NIRCam) and --obs (NIRSpec) are mutually exclusive.")
             sys.exit(1)
+        if no_mosaics and not field:
+            print("Error: --no-mosaics applies to the NIRCam field deploy; "
+                  "use it with --field.")
+            sys.exit(1)
         if field:
             config = load_config(config_path, local=local,
                                  service_role=ctx.obj['service_role'])
@@ -281,7 +289,8 @@ def deploy_group(ctx, config_path, obs, field, filter_names, dry_run, source_ids
             from campfire.deploy.nircam import deploy_nircam
             deploy_nircam(field, config,
                           filters=list(filter_names) if filter_names else None,
-                          dry_run=dry_run, draft=draft)
+                          dry_run=dry_run, draft=draft,
+                          skip_mosaics=no_mosaics)
             return
         if not obs:
             print("Error: --obs (NIRSpec) or --field (NIRCam) is required for full deployment.")
@@ -963,14 +972,20 @@ def photometry(ctx, config_path, field, photometry_config, dry_run, no_photoz, p
 # sync-programs subcommand
 # ---------------------------------------------------------------------------
 
-@deploy_group.command('sync-programs')
+@deploy_group.command('sync-programs', hidden=True)
 @click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
 @click.option('--dry-run', is_flag=True, help='Show what would happen without making changes.')
 @click.option('--local', is_flag=True,
               help='Use local Supabase (127.0.0.1:54321).')
 @click.pass_context
 def sync_programs(ctx, config_path, dry_run, local):
-    """Upsert all programs from $CAMPFIRE_ROOT/config/programs.toml."""
+    """Upsert all programs from $CAMPFIRE_ROOT/config/programs.toml.
+
+    Hidden legacy alias — superseded by ``campfire config push --programs``
+    (issue #303), which adds the lossless config mirror and divergence guard.
+    """
+    print("Note: `deploy sync-programs` is superseded by "
+          "`campfire config push --programs`.")
     programs_config = load_programs()
     program_slugs = list(programs_config.keys())
 
@@ -998,7 +1013,7 @@ def sync_programs(ctx, config_path, dry_run, local):
 # sync-fields subcommand  (issue #303)
 # ---------------------------------------------------------------------------
 
-@deploy_group.command('sync-fields')
+@deploy_group.command('sync-fields', hidden=True)
 @click.option('--config', 'config_path', default=None, help='Path to deploy config TOML.')
 @click.option('--field', default=None,
               help='Sync a single field (default: every field with deployed data).')
@@ -1009,12 +1024,15 @@ def sync_programs(ctx, config_path, dry_run, local):
 def sync_fields_cmd(ctx, config_path, field, dry_run, local):
     """Upsert fields.toml config into the cloud `fields` table (issue #303).
 
-    Scoped to fields that already have deployed NIRCam data (or a single
-    ``--field``). Only the config columns are written — the deploy-computed
-    coverage area and latest_deployment_id (owned by ``campfire deploy --field``)
-    are left untouched.
+    Hidden legacy alias — superseded by ``campfire config push --fields``,
+    which adds the divergence guard. Same scope: fields that already have
+    deployed NIRCam data (or a single ``--field``). Only the config columns
+    are written — the deploy-computed coverage area and latest_deployment_id
+    (owned by ``campfire deploy --field``) are left untouched.
     """
     from campfire.deploy.fields import load_fields_toml, sync_fields
+    print("Note: `deploy sync-fields` is superseded by "
+          "`campfire config push --fields`.")
 
     if not load_fields_toml():
         print("No fields.toml found (or empty) at $CAMPFIRE_ROOT/config/.")

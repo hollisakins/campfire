@@ -14,6 +14,18 @@ dependencies = [
     "toml>=0.10",
     "click>=8.0",
     "tqdm>=4.65",
+    "requests>=2.28",  # common/query.py (MAST queries), cli.py
+    "h5py>=3.10",  # common/igm.py (Inoue+14 IGM tables)
+    "Pillow>=10.0",  # nircam/rgb.py PNG output
+    # JWST-stack packages imported directly (lazily, for startup cost) — always
+    # present transitively via the jwst pin above, declared here because
+    # first-party code imports them. Versions ride with the jwst pin.
+    "crds",
+    "asdf",
+    "stdatamodels",
+    "stcal",
+    "drizzle",
+    "gwcs",
     "spectres>=2.2",
     "numba>=0.59",
     "bagpipes @ git+https://github.com/hollisakins/bagpipes.git",
@@ -21,15 +33,14 @@ dependencies = [
     "snowblind",
     "shapely",
     "photutils>=1.13",
+    "nmfwisp>=1.1.4",  # NIRCam NMF wisp templates + fit_wisp (Wu et al. 2026, arXiv:2601.15958)
     "celerite2>=0.2",  # CPU O(n) 1-D GP for the NIRCam striping estimator="gp" path
     "regions>=0.6",
-    "tomlkit>=0.13",
     "JWST_FOV_plotter>=0.4",
     "sep>=1.4.1",
     "astroquery>=0.4.7",
     "pyvo>=1.5",
-    "tweakwcs>=0.8",  # NIRCam align step: JWSTWCSCorrector/align_wcs (also transitive via jwst)
-    "tristars==0.1",  # NIRCam align step: triangle/asterism matcher (unmaintained v0.1; pin exact)
+    "tweakwcs>=0.8",  # NIRCam align: JWSTWCSCorrector/align_wcs/XYXYMatch (also transitive via jwst)
 ]
 
 [project.scripts]

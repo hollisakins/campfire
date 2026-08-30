@@ -470,16 +470,26 @@ def upsert_programs(
                 f"Known slugs: {known}."
             )
         info = programs_config[slug]
-        data = {
-            'slug': slug,
-            'program_name': info.get('program_name', slug),
-            'pi_name': info.get('pi_name', ''),
-            'description': info.get('description', ''),
-            'is_public': info.get('is_public', False),
-            'cycle': info.get('cycle'),
-        }
+        # Full config-sync row (#303): typed columns + the lossless section in
+        # `config` jsonb + hash/stamp. load_programs injects 'slug' into each
+        # section; strip it so `config` stays a faithful TOML mirror. A
+        # section jsonb can't represent (bare TOML datetimes) drops only the
+        # config mirror — this runs mid-deploy and must never fail the deploy.
+        from .config_sync import find_unjsonable, program_config_row, program_typed_row
+        section = {k: v for k, v in info.items() if k != 'slug'}
+        bad = find_unjsonable(section)
+        if bad:
+            print(f"  Warning: programs.toml [{slug}] has bare TOML "
+                  f"datetime(s) at {', '.join(bad)} — config not mirrored to "
+                  f"cloud (quote as ISO strings to enable config sync)")
+            data = program_typed_row(slug, section)
+        else:
+            data = program_config_row(slug, section)
         client.table('programs').upsert(data, on_conflict='slug').execute()
         print(f"  + {slug} ({data['program_name']})")
+        if 'config_hash' in data:
+            from .config_sync import record_synced
+            record_synced('programs', {slug: data['config_hash']})
 
 
 def upsert_observation(
@@ -491,8 +501,16 @@ def upsert_observation(
     file_globs: list[str] | None = None,
     gratings: list[str] | None = None,
     data_subdir: str | None = None,
+    config_section: dict | None = None,
 ) -> None:
-    """Upsert an observation record."""
+    """Upsert an observation record.
+
+    ``config_section`` is the raw observations.toml section; when given it is
+    mirrored losslessly into `config` jsonb with hash/stamp (#303), so stage
+    overrides and config_groups survive the round trip. A section that is not
+    JSON-representable (bare TOML datetimes) skips only the config columns —
+    the typed upsert still lands and the deploy proceeds.
+    """
     data = {
         'name': obs_name,
         'program_slug': program_slug,
@@ -505,7 +523,22 @@ def upsert_observation(
         data['gratings'] = gratings
     if data_subdir is not None:
         data['data_subdir'] = data_subdir
+    if config_section:
+        from .config_sync import config_hash, find_unjsonable
+        bad = find_unjsonable(config_section)
+        if bad:
+            print(f"  Warning: observations.toml [{obs_name}] has bare TOML "
+                  f"datetime(s) at {', '.join(bad)} — config not mirrored to "
+                  f"cloud (quote as ISO strings to enable config sync)")
+        else:
+            import datetime as _dt
+            data['config'] = config_section
+            data['config_hash'] = config_hash(config_section)
+            data['config_updated_at'] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     client.table('observations').upsert(data, on_conflict='name').execute()
+    if 'config_hash' in data:
+        from .config_sync import record_synced
+        record_synced('observations', {obs_name: data['config_hash']})
 
 
 def update_observation_pointings(

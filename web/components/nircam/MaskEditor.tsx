@@ -19,12 +19,14 @@
  *   ds9 image → svg:  svg_x = X - 0.5,  svg_y = H + 0.5 - Y
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   MousePointer2, PencilLine, Hand, Trash2, Save, Loader2, Check,
+  Copy, ClipboardPaste, Maximize,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import type { MaskPolygon, MaskRegionsPayload } from '@/lib/types';
+import { getMaskClipboard, setMaskClipboard } from '@/lib/mask-clipboard';
 import FitsCanvas, { type FitsCanvasLoad } from './FitsCanvas';
 import { STRETCH_MODES, COLORMAP_NAMES, type StretchMode, type ColormapName } from '@/lib/fits';
 import { isPngCached } from '@/lib/nircam-exposure-cache';
@@ -40,6 +42,8 @@ interface SvgPolygon {
   original_frame?: string;
   imported_from?: string;
   imported_at?: string;
+  copied_from?: string;
+  copied_at?: string;
   created_at?: string;
   modified_at?: string;
   label?: string;
@@ -54,7 +58,47 @@ interface Props {
   imageWidth: number;        // image width in pixels (= exposure NAXIS1)
   imageHeight: number;       // image height in pixels (= exposure NAXIS2)
   initialRegions: MaskRegionsPayload | null;
-  onSave: (regions: MaskRegionsPayload) => Promise<{ error?: string }>;
+  /**
+   * Persist the polygon list. `exposureKey` echoes the `exposureKey` prop the
+   * payload belongs to — the host must save to THAT row, not whatever is on
+   * screen when the call lands (a background flush dispatches while the host
+   * is already swapping exposures). `background` marks saves the operator
+   * didn't trigger from the toolbar (auto-flush on swap/unmount): the editor
+   * can't show their errors inline, so the host owns surfacing them.
+   */
+  onSave: (
+    regions: MaskRegionsPayload,
+    exposureKey?: number,
+    background?: boolean,
+  ) => Promise<{ error?: string }>;
+  /**
+   * Identity of the exposure being edited. When it changes, the editor resets
+   * to `initialRegions` — auto-flushing any unsaved edits for the previous
+   * exposure first. While it is UNCHANGED, a new `initialRegions` object
+   * (background revalidation, a triage save's row refresh) only resyncs when
+   * the editor has no unsaved edits: keying the reset off object identity
+   * wiped in-progress polygons every time the host refetched the same row.
+   * Omit only for hosts that remount the editor per exposure.
+   */
+  exposureKey?: number;
+  /**
+   * Enables the mask clipboard (copy/paste between exposures); the value is
+   * the current exposure's filename, stamped onto pasted polygons as
+   * provenance. Coordinates are raw detector pixels, so pasting is only
+   * offered onto exposures with identical dimensions. Omit to disable.
+   */
+  clipboardSource?: string;
+  /**
+   * Returns false while the host page is mid-transition to another exposure —
+   * a navigation target set synchronously (keypress) that this editor hasn't
+   * re-rendered for yet. Called with this editor's `exposureKey` so the host
+   * compares against its own navigation target. Clipboard actions check it at
+   * event time and no-op in that gap: a paste keyed there would land in the
+   * outgoing exposure's editor state and be wiped by the resync, and a copy
+   * would capture (and be attributed to) the exposure being left. Omit to
+   * always allow.
+   */
+  clipboardLive?: (exposureKey?: number) => boolean;
 }
 
 function uuid() {
@@ -87,6 +131,8 @@ function fromPayload(payload: MaskRegionsPayload | null, h: number): SvgPolygon[
     original_frame: p.original_frame,
     imported_from: p.imported_from,
     imported_at: p.imported_at,
+    copied_from: p.copied_from,
+    copied_at: p.copied_at,
     created_at: p.created_at,
     modified_at: p.modified_at,
     label: p.label,
@@ -101,6 +147,8 @@ function toPayload(polys: SvgPolygon[], h: number): MaskRegionsPayload {
     original_frame: p.original_frame,
     imported_from: p.imported_from,
     imported_at: p.imported_at,
+    copied_from: p.copied_from,
+    copied_at: p.copied_at,
     created_at: p.created_at,
     modified_at: p.modified_at ?? new Date().toISOString(),
     label: p.label,
@@ -109,8 +157,9 @@ function toPayload(polys: SvgPolygon[], h: number): MaskRegionsPayload {
   return { version: 1, polygons };
 }
 
-export default function MaskEditor({
+function MaskEditor({
   pngUrl, fitsKey, imageWidth, imageHeight, initialRegions, onSave,
+  exposureKey, clipboardSource, clipboardLive,
 }: Props) {
   const [polygons, setPolygons] = useState<SvgPolygon[]>(
     () => fromPayload(initialRegions, imageHeight)
@@ -121,18 +170,25 @@ export default function MaskEditor({
   const [dragging, setDragging] = useState<
     | { kind: 'pan'; startClient: [number, number]; startTranslate: [number, number] }
     | { kind: 'vertex'; polyId: string; vertexIndex: number }
+    | { kind: 'polygon'; polyId: string; start: SvgVertex; startVertices: SvgVertex[] }
     | null
   >(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // Transient copy/paste feedback ("copied 3", dimension-mismatch refusal).
+  const [clipMsg, setClipMsg] = useState<{ text: string; error?: boolean } | null>(null);
 
-  // The PNG actually painted. Swapped by the effect below: held across a warm
-  // navigation (seamless) but cleared to a loading state on a cold one, so we
-  // never show a stale exposure under the next one's metadata + mask.
-  const [shownUrl, setShownUrl] = useState<string | undefined>(pngUrl);
-  const swappedOnceRef = useRef(false);
+  // The PNG actually painted. Managed by the swap effect below; starts as the
+  // incoming URL only when its bytes are already decoded (retained cache), so
+  // a cold MOUNT shows the loading state too — initializing to `pngUrl`
+  // unconditionally meant a fresh mount (every prev/next remounts this page)
+  // rendered an invisible, natively-loading <img>: a blank canvas with no
+  // indicator until the full-res PNG landed.
+  const [shownUrl, setShownUrl] = useState<string | undefined>(
+    () => (pngUrl && isPngCached(pngUrl) ? pngUrl : undefined),
+  );
 
   // FITS render controls (only used when `fitsKey` is set). vmin/vmax drive the
   // display interval; 0/0 means "unset" so FitsCanvas keeps its on-load ZScale
@@ -176,8 +232,9 @@ export default function MaskEditor({
   const [scale, setScale] = useState(1);
   const [translate, setTranslate] = useState<[number, number]>([0, 0]);
 
-  // Fit-to-container on first mount.
-  useEffect(() => {
+  // Scale + center the image to the container — the initial view, re-invocable
+  // from the toolbar's fit button / `F` after zooming or panning away.
+  const fitToView = useCallback(() => {
     if (!containerRef.current) return;
     const cw = containerRef.current.clientWidth;
     const ch = containerRef.current.clientHeight;
@@ -189,23 +246,93 @@ export default function MaskEditor({
     ]);
   }, [imageWidth, imageHeight]);
 
-  // Re-sync if parent swaps exposure under us.
-  useEffect(() => {
-    setPolygons(fromPayload(initialRegions, imageHeight));
-    setDirty(false);
-    setSelectedId(null);
-    setDraftVertices([]);
-  }, [initialRegions, imageHeight]);
+  // Fit-to-container on first mount (and when the frame dimensions change).
+  useEffect(() => { fitToView(); }, [fitToView]);
 
-  // Image swap on prev/next. The initial mount already shows `pngUrl`, so skip
-  // the first run and let that image load natively. On later navigations:
+  // Which exposure (and frame height) the editor state currently belongs to,
+  // plus event-time mirrors of `polygons`/`dirty` — the swap flush below runs
+  // from effects and cleanups, which must read the values as of NOW, not as of
+  // the render their closure was created in.
+  const editedRef = useRef({ key: exposureKey, height: imageHeight });
+  const dirtyRef = useRef(false);
+  const polygonsRef = useRef(polygons);
+  polygonsRef.current = polygons;
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
+
+  // Dispatch unsaved edits for the exposure being left (fire-and-forget; the
+  // host serializes per-exposure saves and surfaces failures). Converted with
+  // the height their vertices were laid out against — the incoming exposure's
+  // dims may differ.
+  const flushEdits = useCallback(() => {
+    const edited = editedRef.current;
+    if (!dirtyRef.current || edited.key == null) return;
+    dirtyRef.current = false;
+    // Swallow transport-level rejections: background-save outcomes (including
+    // failures) are the host's to surface, and this editor instance is already
+    // showing a different exposure by the time one lands.
+    onSaveRef.current(
+      toPayload(polygonsRef.current, edited.height), edited.key, true,
+    ).catch(() => {});
+  }, []);
+
+  // Re-sync when the parent swaps or refreshes the exposure under us. The
+  // reset is keyed to `exposureKey` — NOT to `initialRegions` object identity,
+  // which changes on every same-row refetch (the background revalidation that
+  // lands 100-300 ms after arrival, a triage save's row refresh) and used to
+  // wipe in-progress polygons mid-edit. A same-key refresh only resyncs when
+  // there are no unsaved edits: the operator's working set is newer than
+  // whatever the refetch read.
+  useEffect(() => {
+    const keyChanged = editedRef.current.key !== exposureKey;
+    if (keyChanged) {
+      // Leaving an exposure with unsaved mask edits persists them, matching
+      // the triage panel's auto-save-on-nav (silently discarding drawn
+      // polygons was the old behavior, and read as data loss).
+      flushEdits();
+      editedRef.current = { key: exposureKey, height: imageHeight };
+      setPolygons(fromPayload(initialRegions, imageHeight));
+      setDirty(false);
+      dirtyRef.current = false;
+      setSelectedId(null);
+      setDraftVertices([]);
+      setClipMsg(null);
+      setSaveError(null);
+      setSavedAt(null);
+    } else {
+      editedRef.current = { key: exposureKey, height: imageHeight };
+      if (!dirtyRef.current) {
+        setPolygons(fromPayload(initialRegions, imageHeight));
+      }
+    }
+  }, [initialRegions, imageHeight, exposureKey, flushEdits]);
+
+  // Unmount still flushes: the editor unmounts on the PNG↔FITS toggle, on the
+  // host's loading state (stepping to an uncached exposure), and on leaving
+  // the page — none of which should drop drawn polygons.
+  useEffect(() => flushEdits, [flushEdits]);
+
+  // A tab close can't run the flush reliably — warn instead.
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [dirty]);
+
+  useEffect(() => {
+    if (!clipMsg) return;
+    const t = setTimeout(() => setClipMsg(null), 4000);
+    return () => clearTimeout(t);
+  }, [clipMsg]);
+
+  // Image swap, on mount and on prev/next alike:
   //   - Warm (already decoded in the retained cache): keep the current frame
   //     and swap on the ~instant decode, so the step never flashes.
   //   - Cold: blank to a loading state immediately rather than lingering on the
-  //     previous exposure's pixels (misleading beside the new metadata + mask),
-  //     then swap once the incoming image has decoded.
+  //     previous exposure's pixels (misleading beside the new metadata + mask)
+  //     or an invisible native load, then swap once the image has decoded.
   useEffect(() => {
-    if (!swappedOnceRef.current) { swappedOnceRef.current = true; return; }
     if (pngUrl === undefined) { setShownUrl(undefined); return; }
     if (!isPngCached(pngUrl)) setShownUrl(undefined);
     let cancelled = false;
@@ -218,7 +345,11 @@ export default function MaskEditor({
     return () => { cancelled = true; };
   }, [pngUrl]);
 
-  const markDirty = useCallback(() => { setDirty(true); setSavedAt(null); }, []);
+  const markDirty = useCallback(() => {
+    dirtyRef.current = true;
+    setDirty(true);
+    setSavedAt(null);
+  }, []);
 
   // ----- coordinate conversion: client (screen) → svg (PNG pixel) -----
   const clientToSvg = useCallback((clientX: number, clientY: number): SvgVertex | null => {
@@ -281,6 +412,64 @@ export default function MaskEditor({
     markDirty();
   }, [draftVertices, markDirty]);
 
+  // ----- mask clipboard (copy/paste between exposures) -----
+  // Read during render for button enablement; cheap after the first lazy
+  // sessionStorage load, and any copy re-renders via the feedback message.
+  const clipboard = clipboardSource ? getMaskClipboard() : null;
+  const clipboardFits = !!clipboard &&
+    clipboard.imageWidth === imageWidth && clipboard.imageHeight === imageHeight;
+
+  const handleCopy = useCallback(() => {
+    if (!clipboardSource || polygons.length === 0) return;
+    if (clipboardLive && !clipboardLive(exposureKey)) return;
+    setMaskClipboard({
+      polygons: toPayload(polygons, imageHeight).polygons,
+      imageWidth,
+      imageHeight,
+      sourceFilename: clipboardSource,
+      copiedAt: new Date().toISOString(),
+    });
+    setClipMsg({ text: `copied ${polygons.length} polygon${polygons.length === 1 ? '' : 's'}` });
+  }, [clipboardSource, clipboardLive, exposureKey, polygons, imageWidth, imageHeight]);
+
+  const handlePaste = useCallback(() => {
+    if (!clipboardSource) return;
+    if (clipboardLive && !clipboardLive(exposureKey)) return;
+    const clip = getMaskClipboard();
+    if (!clip) {
+      setClipMsg({ text: 'mask clipboard is empty', error: true });
+      return;
+    }
+    // Vertices are raw detector pixels: pasting across a size change (NIRCam
+    // SW vs LW) would silently land the polygons in the wrong place.
+    if (clip.imageWidth !== imageWidth || clip.imageHeight !== imageHeight) {
+      setClipMsg({
+        text: `clipboard is ${clip.imageWidth}×${clip.imageHeight}; this exposure is ${imageWidth}×${imageHeight} — not pasted`,
+        error: true,
+      });
+      return;
+    }
+    const now = new Date().toISOString();
+    // Pasted polygons are new web-authored polygons for THIS exposure: fresh
+    // id and timestamps, source 'web', with copied_from/copied_at recording
+    // where they came from. The source polygon's import lineage
+    // (original_frame/imported_*) describes a projection through the OTHER
+    // exposure's WCS, so it is deliberately not carried over.
+    const pasted: SvgPolygon[] = clip.polygons.map((p) => ({
+      id: uuid(),
+      source: 'web',
+      label: p.label,
+      copied_from: clip.sourceFilename,
+      copied_at: now,
+      created_at: now,
+      modified_at: now,
+      vertices: p.vertices.map((v) => ds9ToSvg(v, imageHeight)),
+    }));
+    setPolygons((ps) => [...ps, ...pasted]);
+    markDirty();
+    setClipMsg({ text: `pasted ${pasted.length} from ${clip.sourceFilename}` });
+  }, [clipboardSource, clipboardLive, exposureKey, imageWidth, imageHeight, markDirty]);
+
   // ----- pointer interactions -----
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     // Shift+drag, middle mouse, or inspect-mode drag → pan.
@@ -331,6 +520,22 @@ export default function MaskEditor({
               i === dragging.vertexIndex ? pt : v) }
       ));
       markDirty();
+    } else if (dragging.kind === 'polygon') {
+      const pt = clientToSvg(e.clientX, e.clientY);
+      if (!pt) return;
+      // Translate from the drag-start snapshot rather than the previous move,
+      // so accumulated float error can't skew the shape mid-drag. A plain
+      // click fires no move events, so selection alone never dirties. No
+      // zero-delta skip: with absolute offsets, delta (0,0) is how a drag
+      // that returns to its start point restores the original position.
+      const dx = pt.x - dragging.start.x;
+      const dy = pt.y - dragging.start.y;
+      setPolygons((ps) => ps.map((p) =>
+        p.id !== dragging.polyId ? p :
+          { ...p, vertices: dragging.startVertices.map((v) =>
+              ({ x: v.x + dx, y: v.y + dy })) }
+      ));
+      markDirty();
     }
   }, [dragging, clientToSvg, markDirty]);
 
@@ -339,6 +544,30 @@ export default function MaskEditor({
   // ----- keyboard: Enter/Escape (draw), Backspace (vertex undo) -----
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      const isInput = t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT';
+      // F — zoom to fit (matches the toolbar button). Plain keypress only, so
+      // it never shadows browser chords like Ctrl/⌘F.
+      if ((e.key === 'f' || e.key === 'F')
+          && !e.metaKey && !e.ctrlKey && !e.altKey && !isInput) {
+        e.preventDefault();
+        fitToView();
+        return;
+      }
+      // Ctrl/⌘ C/V — mask clipboard. Skip when typing in a form field, and
+      // yield Ctrl/⌘C to a real text selection anywhere on the page.
+      if (clipboardSource && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        const k = e.key.toLowerCase();
+        if (k === 'c' && !isInput && !window.getSelection()?.toString()) {
+          if (polygons.length > 0) { e.preventDefault(); handleCopy(); }
+          return;
+        }
+        if (k === 'v' && !isInput) {
+          e.preventDefault();
+          handlePaste();
+          return;
+        }
+      }
       if (mode === 'draw') {
         if (e.key === 'Enter') { e.preventDefault(); finalizeDraft(); }
         if (e.key === 'Escape') { e.preventDefault(); setDraftVertices([]); }
@@ -357,19 +586,35 @@ export default function MaskEditor({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [mode, selectedId, markDirty, finalizeDraft]);
+  }, [mode, selectedId, markDirty, finalizeDraft, fitToView,
+      clipboardSource, polygons.length, handleCopy, handlePaste]);
 
   const handleSave = useCallback(async () => {
+    // The exposure this save belongs to. The response can land after the host
+    // swapped exposures under this (non-remounting) instance — editor state
+    // then describes the NEW exposure and must not be touched; the host owns
+    // reporting a departed save's outcome.
+    const savedForKey = editedRef.current.key;
+    // Snapshot the dispatched list: drawing is NOT blocked while the request
+    // is in flight (only the Save button is), so by the time it resolves the
+    // canvas may hold polygons newer than this payload.
+    const dispatched = polygons;
     setSaving(true);
     setSaveError(null);
     try {
-      const result = await onSave(toPayload(polygons, imageHeight));
+      const result = await onSave(toPayload(dispatched, imageHeight), savedForKey);
+      if (editedRef.current.key !== savedForKey) return;
       if (result.error) {
         setSaveError(result.error);
-      } else {
+      } else if (polygonsRef.current === dispatched) {
+        dirtyRef.current = false;
         setDirty(false);
         setSavedAt(Date.now());
       }
+      // else: edits landed mid-flight. Leave dirty set — clearing it here
+      // would let the resync effect overwrite the canvas from the host's
+      // just-refreshed row (which predates those edits) and stop the
+      // nav auto-flush from ever persisting them.
     } finally {
       setSaving(false);
     }
@@ -399,12 +644,52 @@ export default function MaskEditor({
               <Trash2 className="w-4 h-4 text-red-500" />
             </ToolButton>
           )}
+          {clipboardSource && (
+            <>
+              <div className="w-px h-4 bg-border mx-1" />
+              <ToolButton
+                onClick={handleCopy}
+                disabled={polygons.length === 0}
+                label={polygons.length === 0
+                  ? 'Copy masks — nothing to copy'
+                  : `Copy ${polygons.length} mask${polygons.length === 1 ? '' : 's'} (Ctrl/⌘C)`}
+              >
+                <Copy className="w-4 h-4" />
+              </ToolButton>
+              <ToolButton
+                onClick={handlePaste}
+                disabled={!clipboard || !clipboardFits}
+                label={!clipboard
+                  ? 'Paste masks — clipboard empty'
+                  : !clipboardFits
+                  ? `Paste masks — clipboard is ${clipboard.imageWidth}×${clipboard.imageHeight}, this exposure is ${imageWidth}×${imageHeight}`
+                  : `Paste ${clipboard.polygons.length} mask${clipboard.polygons.length === 1 ? '' : 's'} from ${clipboard.sourceFilename} (Ctrl/⌘V)`}
+              >
+                <ClipboardPaste className="w-4 h-4" />
+              </ToolButton>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-3 text-xs text-text-secondary">
+          {clipMsg && (
+            <span className={clipMsg.error ? 'text-red-500' : 'text-primary'}>
+              {clipMsg.text}
+            </span>
+          )}
           <span>{polygons.length} polygon{polygons.length === 1 ? '' : 's'}</span>
           <span>{(scale * 100).toFixed(0)}%</span>
+          <ToolButton onClick={fitToView} label="Zoom to fit (F)">
+            <Maximize className="w-4 h-4" />
+          </ToolButton>
           {saveError && <span className="text-red-500">{saveError}</span>}
-          <Button onClick={handleSave} disabled={saving || !dirty} size="sm">
+          <Button
+            onClick={(e) => {
+              if (e.detail > 0) e.currentTarget.blur();
+              handleSave();
+            }}
+            disabled={saving || !dirty}
+            size="sm"
+          >
             {saving ? (<><Loader2 className="w-4 h-4 mr-1 animate-spin" />Saving</>) :
              savedAt && !dirty ? (<><Check className="w-4 h-4 mr-1" />Saved</>) :
              (<><Save className="w-4 h-4 mr-1" />Save</>)}
@@ -445,7 +730,8 @@ export default function MaskEditor({
               onKeyDown={(e) => e.key === 'Enter' && commitRange(rangeText.lo, rangeText.hi)}
               className="w-20 rounded border border-border bg-card px-1.5 py-0.5 font-mono text-text-primary" />
           </label>
-          <button type="button" onClick={autoStretch}
+          <button type="button"
+            onClick={(e) => { if (e.detail > 0) e.currentTarget.blur(); autoStretch(); }}
             className="rounded border border-border px-2 py-0.5 text-text-secondary hover:bg-card-hover">
             Auto
           </button>
@@ -513,7 +799,22 @@ export default function MaskEditor({
                 selected={selectedId === p.id}
                 mode={mode}
                 scale={scale}
-                onSelect={() => mode === 'edit' && setSelectedId(p.id)}
+                onBodyDown={(e) => {
+                  if (mode !== 'edit') return;
+                  // Leave shift+drag / middle mouse to the container's pan.
+                  if (e.shiftKey || e.button !== 0) return;
+                  e.stopPropagation();
+                  setSelectedId(p.id);
+                  const pt = clientToSvg(e.clientX, e.clientY);
+                  if (!pt) return;
+                  (e.target as Element).setPointerCapture?.(e.pointerId);
+                  setDragging({
+                    kind: 'polygon',
+                    polyId: p.id,
+                    start: pt,
+                    startVertices: p.vertices,
+                  });
+                }}
                 onVertexDown={(idx, e) => {
                   if (mode !== 'edit') return;
                   e.stopPropagation();
@@ -561,27 +862,33 @@ export default function MaskEditor({
 
         {/* Help footer */}
         <div className="absolute bottom-2 left-2 right-2 text-[11px] text-white/70 pointer-events-none font-mono">
-          {mode === 'inspect' && 'drag = pan • wheel = zoom • shift+drag = pan in any mode'}
+          {mode === 'inspect' && 'drag = pan • wheel = zoom • F = zoom to fit • shift+drag = pan in any mode'}
           {mode === 'draw'    && 'click = add vertex • click first vertex / Enter = close • Esc = cancel • Backspace = undo vertex'}
-          {mode === 'edit'    && 'click polygon = select • drag vertex = move • Delete = remove polygon'}
+          {mode === 'edit'    && 'click polygon = select • drag polygon = move • drag vertex = reshape • Delete = remove polygon'}
         </div>
       </div>
     </div>
   );
 }
 
+// Memoized: the host detail page re-renders on every notes keystroke and
+// saved-flag timer tick; with stable props (the host passes useCallback'd
+// onSave/clipboardLive) those renders skip the whole editor tree — polygon
+// SVG included, which is the part that grows with mask complexity.
+export default memo(MaskEditor);
+
 // ---------------------------------------------------------------------------
 // Polygon SVG shape (with vertex handles in edit mode)
 // ---------------------------------------------------------------------------
 
 function PolygonShape({
-  poly, selected, mode, scale, onSelect, onVertexDown,
+  poly, selected, mode, scale, onBodyDown, onVertexDown,
 }: {
   poly: SvgPolygon;
   selected: boolean;
   mode: Mode;
   scale: number;
-  onSelect: () => void;
+  onBodyDown: (e: React.PointerEvent) => void;
   onVertexDown: (vertexIndex: number, e: React.PointerEvent) => void;
 }) {
   const pointsStr = poly.vertices.map((v) => `${v.x},${v.y}`).join(' ');
@@ -597,7 +904,8 @@ function PolygonShape({
         fill={fill}
         stroke={stroke}
         strokeWidth={1.5 / scale}
-        onPointerDown={(e) => { if (interactive) { e.stopPropagation(); onSelect(); } }}
+        style={interactive ? { cursor: 'move' } : undefined}
+        onPointerDown={(e) => { if (interactive) onBodyDown(e); }}
       />
       {interactive && selected && poly.vertices.map((v, i) => (
         <circle
@@ -616,9 +924,10 @@ function PolygonShape({
 }
 
 function ToolButton({
-  active = false, onClick, label, children,
+  active = false, disabled = false, onClick, label, children,
 }: {
   active?: boolean;
+  disabled?: boolean;
   onClick: () => void;
   label: string;
   children: React.ReactNode;
@@ -626,10 +935,17 @@ function ToolButton({
   return (
     <button
       type="button"
-      onClick={onClick}
+      disabled={disabled}
+      onClick={(e) => {
+        // Drop mouse-click focus so a following Space press reaches the page's
+        // approve-and-next shortcut instead of re-activating this tool button.
+        // Keyboard activation (detail === 0) keeps focus.
+        if (e.detail > 0) e.currentTarget.blur();
+        onClick();
+      }}
       title={label}
       aria-label={label}
-      className={`p-1.5 rounded text-sm ${
+      className={`p-1.5 rounded text-sm disabled:opacity-30 disabled:cursor-not-allowed ${
         active
           ? 'bg-primary/15 text-primary'
           : 'text-text-secondary hover:bg-card-hover'

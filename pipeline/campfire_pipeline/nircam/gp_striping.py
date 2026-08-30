@@ -141,7 +141,8 @@ def gp_amprow_offsets(data, mask, rho, kernel_sigma=None,
                       kernel_sigma_factor=1.0, amplitude_data=None,
                       q=1.0 / np.sqrt(2.0),
                       sigma_clip_sigma=2.0, maxiters=3,
-                      ref_border=_REF_BORDER, weak_frac=0.5):
+                      ref_border=_REF_BORDER, weak_frac=0.5,
+                      zero_dc=False, min_row_pixels=0):
     """Per-amp, per-row 1/f offset via 1-D GP smoothing along the slow axis.
 
     Drop-in replacement for the per-amp-row median + full-row fallback in
@@ -210,6 +211,14 @@ def gp_amprow_offsets(data, mask, rho, kernel_sigma=None,
         std exceeds ``weak_frac * kernel_sigma`` — i.e. the GP has reverted
         toward the per-amp DC because no anchor row lies within ~rho. This
         is reported, not hidden: it flags wide source-filled gaps.
+    min_row_pixels : int
+        Amp-rows with fewer surviving background pixels than this do not
+        anchor the GP at all (they become interpolated gap rows). The yerr
+        weighting already down-weights starved rows, but a MAD-based
+        ``s_hat`` on a handful of pixels is itself unreliable and can make
+        a heavily-masked, contaminated row an overconfident anchor. 0
+        (default) keeps the legacy behavior (any row with >= 1 pixel
+        anchors).
 
     Returns
     -------
@@ -236,6 +245,7 @@ def gp_amprow_offsets(data, mask, rho, kernel_sigma=None,
     amp_ref = amplitude_data if (self_adapt and amplitude_data is not None) \
         else data
 
+    n_min = max(1, int(min_row_pixels))
     amp_stats = []
     centered = []   # per-amp-centered clean row medians, pooled over amps
     yerr_pool = []  # per-row sampling errors, pooled (amplitude floor)
@@ -244,7 +254,7 @@ def gp_amprow_offsets(data, mask, rho, kernel_sigma=None,
         y_r, s_hat, n_r = _amprow_statistics(
             data[sci, colstart:colstop], mask[sci, colstart:colstop],
             sigma_clip_sigma, maxiters)
-        good = (n_r > 0) & np.isfinite(y_r) & np.isfinite(s_hat)
+        good = (n_r >= n_min) & np.isfinite(y_r) & np.isfinite(s_hat)
         amp_stats.append((amp, colstart, colstop, y_r, s_hat, n_r, good))
         if good.any():
             sp = np.where(s_hat[good] > 0, s_hat[good], np.nan)
@@ -257,7 +267,7 @@ def gp_amprow_offsets(data, mask, rho, kernel_sigma=None,
                 ar, _, an = _amprow_statistics(
                     amp_ref[sci, colstart:colstop],
                     mask[sci, colstart:colstop], sigma_clip_sigma, maxiters)
-                ag = (an > 0) & np.isfinite(ar)
+                ag = (an >= n_min) & np.isfinite(ar)
                 if ag.any():
                     centered.append(ar[ag] - np.median(ar[ag]))
 
@@ -279,7 +289,7 @@ def gp_amprow_offsets(data, mask, rho, kernel_sigma=None,
             # Not enough anchors to fit a GP: hold the amp at its DC level
             # (robust median of whatever measured), or 0 if nothing did.
             dc = float(np.nanmedian(y_r[good])) if n_anchor else 0.0
-            horizontal[:, colstart:colstop] = dc
+            horizontal[:, colstart:colstop] = 0.0 if zero_dc else dc
             diagnostics.append(f'{amp}:{n_anchor}/--/-- (DC-only)')
             continue
 
@@ -292,12 +302,21 @@ def gp_amprow_offsets(data, mask, rho, kernel_sigma=None,
         yerr = _MEDIAN_SE_FACTOR * s_use / np.sqrt(n_r[good])
 
         # Per-amp DC mean term: robust median of the well-measured rows.
+        # With ``zero_dc`` the DC is still the GP's prior mean (so weakly
+        # anchored rows relax to the amp level, not to 0) but is removed
+        # from the returned offsets: the output is zero-DC per amp and the
+        # pedestal remains the chain's ONLY per-amp DC carrier. Without
+        # this, each GP pass re-fits a per-amp DC from row medians —
+        # a second (and third) structure-polluted estimator of the same
+        # degree of freedom, whose disagreements land as amp-edge steps.
         dc = float(np.median(y_r[good]))
 
         mu, var = _gp_predict_amp(
             rows_sci[good], y_r[good], yerr, dc,
             kernel_sigma_eff, rho, q, rows_all,
         )
+        if zero_dc:
+            mu = mu - dc
         horizontal[:, colstart:colstop] = mu[:, None]
 
         post_sigma = np.sqrt(np.clip(var, 0.0, None))

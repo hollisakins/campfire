@@ -12,7 +12,7 @@ Monorepo with several main components — see each directory's README for detail
 
 Supporting: `supabase/` (migrations), `scripts/` (one-off utilities)
 
-**Editable install order** (in the `campfire` conda env): `pip install -e ./layout && pip install -e ./pipeline && pip install -e ./python` — `campfire-layout` must precede the two packages that depend on it.
+**Editable install order** (in the `campfire` conda env): `pip install -e ./layout && pip install -e ./pipeline && pip install -e ./python` — `campfire-layout` must precede the two packages that depend on it. The repo-root `install.py` automates this (component profiles, conda env management, ordering, verification — see `install.py --help`). `campfire[deploy]` additionally depends on `campfire-pipeline` (deploy machines always carry the pipeline), resolved the same editable-first way.
 
 **FitsGL co-development** (epic #337): the `campfire[fitsgl]` extra depends on [FitsGL](https://github.com/hollisakins/fitsgl)'s `fitsgl-py` producer, which isn't on PyPI and lives in that repo's `fitsgl-py/` subdirectory. The extra pins a git dependency as the reproducible fallback (`pip install -e "./python[fitsgl]"`), but the dev convention is to check `fitsgl` out **as a sibling of this repo** and install it editable *before* the base client, so local FitsGL edits stay live and pip never fetches from git:
 
@@ -176,10 +176,15 @@ The local products tree and cloud storage are two ends of one sync relationship,
 mediated by the `storage_objects` registry (server) and its local mirror
 (`$CAMPFIRE_ROOT/meta/campfire.db`). One engine (`python/campfire/storage/` +
 `campfire/deploy/push.py`) serves both directions with content-identity dedup
-(sci_dq for NIRCam exposures, whole-file otherwise), a stat fast-path (unchanged
-files are never re-read), and per-batch registration (interrupted transfers
-resume at file granularity). **All data products live on OSN; map tiles are the
-sole R2 exception.**
+(whole-file everywhere except NIRCam exposures, which use the two-component
+**exposure identity**: `sci_dq_hash` over the SCI/DQ/CFMASK arrays *and*
+`wcs_hash` over the WCS header cards — both must match to skip an upload,
+because `align`/`wcs_shift` move an exposure's astrometry without touching a
+science pixel), a stat fast-path (unchanged files are never re-read), and
+per-batch registration (interrupted transfers resume at file granularity).
+Registry rows predating `wcs_hash` are reconciled against `content_hash` and
+backfilled in place, so upgrading never stampedes a full re-upload. **All data
+products live on OSN; map tiles are the sole R2 exception.**
 
 ```bash
 campfire sync                          # refresh the local index (never touches the tree)
@@ -195,6 +200,39 @@ Slow-link workflow (CANDIDE→OSN): `campfire push` for the heavy bytes
 already landed and attaches it to the new deployment. `download` remains an
 alias of `pull`.
 
+### Config plane (issue #303)
+
+The storage plane moves bytes; the **config plane** moves the three
+data-management TOMLs (`programs.toml` / `observations.toml` / `fields.toml`)
+with the same verbs. The cloud registry (`programs` / `observations` /
+`fields` tables) is the source of truth: each row mirrors its TOML section
+losslessly in `config` jsonb (stage overrides, tile WCS, everything) with a
+canonical sha256 in `config_hash`.
+
+```bash
+campfire config push [--programs|--observations|--fields|--obs X|--field Y]  # local → cloud (admin)
+campfire config pull [--theirs]        # cloud → local TOMLs, comment-preserving (any logged-in user)
+campfire config diff                   # three-way divergence report (read-only)
+campfire config retire <kind> <name> [--undo]  # soft-retire a definition (admin; rename = retire + push)
+```
+
+Reconciliation is three-way per section against the last-synced hash in
+`$CAMPFIRE_ROOT/meta/config_sync_state.json`: push refuses to clobber a cloud
+section someone else changed (`--force` to override), pull refuses to clobber
+local hand-edits (local-ahead sections are kept; true conflicts prompt, or
+`--theirs`). Pull rewrites only changed sections via tomlkit, preserving
+comments and formatting elsewhere. Rows are never deleted — removal is the
+explicit `config retire` (never inferred from a section missing locally),
+which pull skips and push refuses; `--undo` re-activates. `fields.programs`
+is resolved at write time by mapping the field's `jwst_program_ids` through
+`observations` rows; unresolved writes omit the column rather than clobber
+it. Bare TOML datetimes are rejected at push
+(they wouldn't survive the jsonb round trip — use quoted ISO strings).
+`campfire deploy` still upserts the config of what it deploys automatically;
+`config push` is the explicit/bulk path. `deploy sync-programs` /
+`deploy sync-fields` are hidden legacy aliases now. This is what lets an
+ephemeral container bootstrap: `campfire config pull` → reduce → deploy.
+
 ### Deploy CLI (publication)
 
 `campfire deploy` = push (via the shared engine) + catalog upserts + deployment
@@ -206,7 +244,7 @@ campfire deploy --obs <obs_name>                         # full deploy
 campfire deploy --obs <obs_name> --dry-run               # validate only
 campfire deploy pointings --obs <obs_name>               # pointings JSONB backfill
 campfire deploy tiles --field cosmos --filter f444w      # map tiles
-campfire deploy sync-programs                            # upsert from programs.toml
+campfire config push --programs                          # programs.toml → cloud (config plane)
 ```
 
 Migration-era one-time tools (the `deploy registry` subgroup —

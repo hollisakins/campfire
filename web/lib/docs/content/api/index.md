@@ -35,7 +35,10 @@ pip install \
 ```bash
 campfire login                    # browser-based OAuth
 campfire sync                     # pulls full catalog (metadata only, ~seconds)
+campfire download --obs ember_uds_p4   # bulk-fetch a selection's FITS (--program / --field / --all also work)
 ```
+
+`campfire download` (alias `campfire pull`) grabs FITS in bulk up front; the `Campfire` client below also downloads lazily on first access, so the bulk step is optional. See the [CLI Reference](/docs/api/cli#downloading-fits-files) for every filter and option.
 
 ```python
 from campfire import Campfire

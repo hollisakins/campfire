@@ -2,18 +2,99 @@
 
 import React from 'react';
 import Link from 'next/link';
+import { SignInLink } from '@/components/auth/SignInLink';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { ListBadge } from '@/components/lists/ListBadge';
 import { Card } from '@/components/ui/Card';
 import { useListsOverviewQuery } from '@/lib/hooks/useListsQuery';
-import { LogIn, Loader2, Tag, Hash, User, Shield } from 'lucide-react';
+import { LogIn, Loader2, Tag, Hash, User, Shield, Users } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import type { ObjectListOverview } from '@/lib/types';
+
+function TagsTable({ lists }: { lists: ObjectListOverview[] }) {
+  return (
+    <Card className="overflow-hidden">
+      <table className="w-full">
+        <thead>
+          <tr className="bg-table-header border-b border-border">
+            <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-text-secondary">Tag</th>
+            <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-text-secondary hidden md:table-cell">Description</th>
+            <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-text-secondary">Type</th>
+            <th className="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-text-secondary">Objects</th>
+            <th className="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-text-secondary hidden sm:table-cell">Creator</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lists.map(list => (
+            <tr key={list.id} className="border-b border-border last:border-0 hover:bg-card-hover transition-colors">
+              <td className="px-4 py-3">
+                <Link href={`/nirspec/tags/${list.slug}`} className="flex items-center gap-2.5">
+                  {list.icon ? (
+                    <span className="text-lg flex-shrink-0">{list.icon}</span>
+                  ) : list.color ? (
+                    <span className="w-4 h-4 rounded-full flex-shrink-0" style={{ backgroundColor: list.color }} />
+                  ) : (
+                    <Tag className="w-4 h-4 text-text-secondary flex-shrink-0" />
+                  )}
+                  <div className="min-w-0">
+                    <span className="font-medium text-text-primary">{list.name}</span>
+                    <span className="ml-2 text-xs font-mono text-text-secondary">#{list.slug}</span>
+                  </div>
+                </Link>
+              </td>
+              <td className="px-4 py-3 hidden md:table-cell">
+                <span className="text-sm text-text-secondary line-clamp-1">{list.description || '—'}</span>
+              </td>
+              <td className="px-4 py-3">
+                <span className="inline-flex items-center gap-1">
+                  <ListBadge visibility={list.visibility} />
+                  {list.shared_role && (
+                    <span className="inline-flex items-center gap-1 rounded-full font-medium text-[10px] px-1.5 py-0.5 bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300">
+                      <Users className="w-2.5 h-2.5" />
+                      {list.shared_role === 'editor' ? 'Can edit' : 'Can view'}
+                    </span>
+                  )}
+                </span>
+              </td>
+              <td className="px-4 py-3 text-right">
+                <span className="inline-flex items-center gap-1 text-sm text-text-secondary">
+                  <Hash className="w-3 h-3" />
+                  {list.member_count.toLocaleString()}
+                </span>
+              </td>
+              <td className="px-4 py-3 text-right hidden sm:table-cell">
+                {list.is_system ? (
+                  <span className="inline-flex items-center gap-1 rounded-full font-medium text-[10px] px-1.5 py-0.5 bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300">
+                    <Shield className="w-2.5 h-2.5" />
+                    System
+                  </span>
+                ) : list.creator_name ? (
+                  <span className="inline-flex items-center gap-1 text-sm text-text-secondary">
+                    <User className="w-3 h-3" />
+                    {list.creator_name}
+                  </span>
+                ) : (
+                  <span className="text-sm text-text-secondary">—</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
 
 export default function ListsPage() {
   const { user, loading: authLoading } = useAuth();
   const { data, isLoading } = useListsOverviewQuery(!authLoading && !!user);
   const lists = data?.lists ?? [];
   const error = data?.error ?? null;
+
+  // Tags shared with the current user (issue #450) get their own grouping.
+  const sharedLists = lists.filter(l => l.shared_role && l.created_by !== user?.id);
+  const sharedIds = new Set(sharedLists.map(l => l.id));
+  const otherLists = lists.filter(l => !sharedIds.has(l.id));
 
   const breadcrumbs = [
     { label: 'CAMPFIRE', href: '/' },
@@ -35,13 +116,12 @@ export default function ListsPage() {
           <p className="text-text-secondary mb-6 max-w-md">
             Please sign in with your CAMPFIRE account to browse tags.
           </p>
-          <Link
-            href="/login"
+          <SignInLink
             className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             <LogIn className="w-5 h-5" />
             Sign In
-          </Link>
+          </SignInLink>
         </div>
       </div>
     );
@@ -80,67 +160,26 @@ export default function ListsPage() {
           <p className="text-text-secondary">No tags available yet.</p>
         </div>
       ) : (
-        <Card className="overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="bg-table-header border-b border-border">
-                <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-text-secondary">Tag</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-text-secondary hidden md:table-cell">Description</th>
-                <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-text-secondary">Type</th>
-                <th className="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-text-secondary">Objects</th>
-                <th className="px-4 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-text-secondary hidden sm:table-cell">Creator</th>
-              </tr>
-            </thead>
-            <tbody>
-              {lists.map(list => (
-                <tr key={list.id} className="border-b border-border last:border-0 hover:bg-card-hover transition-colors">
-                  <td className="px-4 py-3">
-                    <Link href={`/nirspec/tags/${list.slug}`} className="flex items-center gap-2.5">
-                      {list.icon ? (
-                        <span className="text-lg flex-shrink-0">{list.icon}</span>
-                      ) : list.color ? (
-                        <span className="w-4 h-4 rounded-full flex-shrink-0" style={{ backgroundColor: list.color }} />
-                      ) : (
-                        <Tag className="w-4 h-4 text-text-secondary flex-shrink-0" />
-                      )}
-                      <div className="min-w-0">
-                        <span className="font-medium text-text-primary">{list.name}</span>
-                        <span className="ml-2 text-xs font-mono text-text-secondary">#{list.slug}</span>
-                      </div>
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 hidden md:table-cell">
-                    <span className="text-sm text-text-secondary line-clamp-1">{list.description || '—'}</span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <ListBadge visibility={list.visibility} />
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <span className="inline-flex items-center gap-1 text-sm text-text-secondary">
-                      <Hash className="w-3 h-3" />
-                      {list.member_count.toLocaleString()}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right hidden sm:table-cell">
-                    {list.is_system ? (
-                      <span className="inline-flex items-center gap-1 rounded-full font-medium text-[10px] px-1.5 py-0.5 bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300">
-                        <Shield className="w-2.5 h-2.5" />
-                        System
-                      </span>
-                    ) : list.creator_name ? (
-                      <span className="inline-flex items-center gap-1 text-sm text-text-secondary">
-                        <User className="w-3 h-3" />
-                        {list.creator_name}
-                      </span>
-                    ) : (
-                      <span className="text-sm text-text-secondary">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
+        <div className="space-y-8">
+          {sharedLists.length > 0 && (
+            <div>
+              <h2 className="flex items-center gap-2 text-lg font-semibold text-text-primary mb-3">
+                <Users className="w-5 h-5 text-primary" />
+                Shared with you
+              </h2>
+              <TagsTable lists={sharedLists} />
+            </div>
+          )}
+          <div>
+            {sharedLists.length > 0 && (
+              <h2 className="flex items-center gap-2 text-lg font-semibold text-text-primary mb-3">
+                <Tag className="w-5 h-5 text-primary" />
+                All tags
+              </h2>
+            )}
+            <TagsTable lists={otherLists} />
+          </div>
+        </div>
       )}
     </div>
   );

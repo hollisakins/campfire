@@ -2,6 +2,7 @@
 
 import React, { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { SignInLink } from '@/components/auth/SignInLink';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Database, Download, FileText, ExternalLink, LogIn } from 'lucide-react';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
@@ -197,13 +198,12 @@ function MetadataPageContent() {
             Access to JWST program information requires authentication. Please sign in
             with your CAMPFIRE account to browse programs and observations.
           </p>
-          <Link
-            href="/login"
+          <SignInLink
             className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             <LogIn className="w-5 h-5" />
             Sign In
-          </Link>
+          </SignInLink>
         </div>
       </div>
     );

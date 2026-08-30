@@ -521,7 +521,7 @@ ALTER TABLE "public"."objects" OWNER TO "postgres";
 COMMENT ON TABLE "public"."objects" IS 'Unique sky positions cross-matched across programs. One object groups one or more targets observed within ~0.2 arcsec. Aggregate columns (n_targets, programs, max_snr, etc.) refreshed by reconcile_field_objects() at deploy time; redshift / redshift_quality / inspection state are user-editable and persist across reconciliation.';
 
 
-COMMENT ON COLUMN "public"."objects"."redshift_auto" IS 'Phase A: per-object auto-fit redshift, computed post-reconciliation by compute_object_redshift_auto() from the best member spectrum under a grating-priority hierarchy (PRISM > medium > high-res, tiebreak on exposure_time). Empty until Phase D migration.';
+COMMENT ON COLUMN "public"."objects"."redshift_auto" IS 'Phase A: per-object auto-fit redshift, computed post-reconciliation by compute_object_redshift_auto() from the best member spectrum under a grating-priority hierarchy (PRISM > G395M > G395H > G235M > G235H > G140M > G140H, tiebreak on exposure_time); when a grating auto-fit agrees with the PRISM anchor within |dz|/(1+z) < 0.01, the best such grating redshift is adopted for its higher precision. Empty until Phase D migration.';
 
 
 COMMENT ON COLUMN "public"."objects"."redshift_inspected" IS 'Phase A: user-set redshift override at the object level. Empty until Phase D migration. After the pin-on-signoff migration, also populated automatically (= redshift_auto, with inspected_used_auto = true) when an inspector commits a quality flag without typing a numeric override — this stabilizes the displayed redshift across reprocessing.';
@@ -631,6 +631,24 @@ ALTER TABLE "public"."list_audit_log" OWNER TO "postgres";
 
 
 
+CREATE TABLE IF NOT EXISTS "public"."object_list_shares" (
+    "id" integer NOT NULL,
+    "list_id" integer NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "role" "text" DEFAULT 'viewer'::"text" NOT NULL,
+    "granted_by" "uuid",
+    "granted_at" timestamp with time zone DEFAULT "now"(),
+    CONSTRAINT "object_list_shares_role_check" CHECK (("role" = ANY (ARRAY['viewer'::"text", 'editor'::"text"])))
+);
+
+
+ALTER TABLE "public"."object_list_shares" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."object_list_shares" IS 'Per-user sharing grants on object_lists (issue #450). A share gives the grantee visibility of the list regardless of its visibility setting; role=editor additionally allows adding/removing members (same scope as public_edit — list metadata stays owner-only). Owner manages shares; grantees can remove their own share (leave).';
+
+
+
 CREATE TABLE IF NOT EXISTS "public"."observations" (
     "name" "text" NOT NULL,
     "program_slug" "text" NOT NULL,
@@ -641,7 +659,19 @@ CREATE TABLE IF NOT EXISTS "public"."observations" (
     "file_globs" "text"[] NOT NULL DEFAULT '{}',
     "gratings" "text"[] NOT NULL DEFAULT '{}',
     "data_subdir" "text",
-    "pointings" "jsonb"
+    "pointings" "jsonb",
+    -- Config sync (issue #303): the observations.toml [<name>] section mirrored
+    -- losslessly (stage overrides, config_groups — everything the typed columns
+    -- above drop), so a reducer or ephemeral container can regenerate the local
+    -- TOML from the cloud. config_hash is the client-computed sha256 of the
+    -- canonical JSON form of the section (sorted keys), the divergence token for
+    -- `campfire config pull/push/diff`; config_updated_at stamps the last sync.
+    -- retired_at soft-retires a renamed/removed definition — sync is additive,
+    -- rows are never deleted (storage_objects FKs + provenance history).
+    "config" "jsonb",
+    "config_hash" "text",
+    "config_updated_at" timestamp with time zone,
+    "retired_at" timestamp with time zone
 );
 
 
@@ -711,7 +741,13 @@ CREATE TABLE IF NOT EXISTS "public"."programs" (
     "description" "text",
     "cycle" integer,
     "is_public" boolean DEFAULT false,
-    "created_at" timestamp with time zone DEFAULT "now"()
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    -- Config sync (issue #303) — same contract as observations: lossless
+    -- programs.toml section, canonical-JSON sha256, last-sync stamp, soft retire.
+    "config" "jsonb",
+    "config_hash" "text",
+    "config_updated_at" timestamp with time zone,
+    "retired_at" timestamp with time zone
 );
 
 
@@ -727,8 +763,9 @@ ALTER TABLE "public"."programs" OWNER TO "postgres";
 -- the commonly-queried bits are also lifted into typed columns. `latest_deployment_id`
 -- mirrors observations. `coverage_area_*` are deploy-computed from <field>_layout.json
 -- (exact survey area = non-zero pixels of the stacked exposure map x pixel area);
--- sync-fields upserts only config columns so it never clobbers them. Read by
--- get_nircam_fields / get_nircam_field_summary.
+-- `expmap_pixel_scale_arcsec` comes from the same file. sync-fields upserts only
+-- config columns so it never clobbers them. Read by get_nircam_fields /
+-- get_nircam_field_summary / getNircamExpmaps.
 CREATE TABLE IF NOT EXISTS "public"."fields" (
     "name" "text" NOT NULL,
     "display_name" "text",
@@ -744,8 +781,21 @@ CREATE TABLE IF NOT EXISTS "public"."fields" (
     "config" "jsonb",
     "coverage_area_arcmin2" double precision,
     "coverage_area_deg2" double precision,
+    -- Pixel scale (arcsec/pix) of the field's exposure-map grid. Deploy-owned,
+    -- from <field>_layout.json. One value per field: expmap builds a single
+    -- shared auto-WCS across every filter in the invocation, so all of a
+    -- field's expmap FITS are pixel-registered on the same grid. Unlike the
+    -- mosaics (whose scale is a key axis in nircam_images) an expmap carries
+    -- its scale only in CDELT1/2, so the web table has nothing else to read.
+    "expmap_pixel_scale_arcsec" double precision,
     "latest_deployment_id" integer,
     "created_at" timestamp with time zone DEFAULT "now"(),
+    -- Config sync (issue #303) — same contract as observations/programs. The
+    -- lossless section already lives in `config` above; these add the canonical
+    -- sha256 divergence token, the last-sync stamp, and soft retirement.
+    "config_hash" "text",
+    "config_updated_at" timestamp with time zone,
+    "retired_at" timestamp with time zone,
     CONSTRAINT "fields_pkey" PRIMARY KEY ("name")
 );
 
@@ -818,6 +868,14 @@ CREATE TABLE IF NOT EXISTS "public"."nircam_exposures" (
     "image_height" integer,
     "mask_regions" "jsonb",
     "notes" "text",
+    -- Last-writer-wins guard for triage review writes (web outbox): the
+    -- client stamps each staged decision with its decision time, and the
+    -- review API only applies an update when this column is null or <= the
+    -- incoming stamp — so a delayed retry or keepalive duplicate of an older
+    -- decision can never overwrite a newer one. timestamptz (unlike the
+    -- legacy created/updated columns) because it round-trips a client epoch
+    -- unambiguously.
+    "review_decided_at" timestamp with time zone,
     "created_at" timestamp without time zone DEFAULT "now"(),
     "updated_at" timestamp without time zone DEFAULT "now"()
 );
@@ -1006,6 +1064,16 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- checks; sci_dq_hash is only a change-detection key. NULL for products with
     -- no partial digest (everything except nircam_exposure today).
     "sci_dq_hash" "text",
+    -- Astrometric half of the same change-detection identity. sci_dq_hash alone
+    -- is blind to a re-ALIGNMENT: the align (and wcs_shift) steps rewrite an
+    -- exposure's WCS without touching a single SCI or DQ pixel, so a re-aligned
+    -- exposure deduped as "unchanged" and the cloud copy kept its pre-alignment
+    -- astrometry indefinitely. Deploy now requires BOTH digests to match before
+    -- skipping an upload. sha256 over the WCS-defining header cards (see
+    -- campfire.storage.hashing.wcs_hash). NULL for products that compare on the
+    -- whole-file hash, and on exposure rows written before this column existed —
+    -- the push planner reconciles those against content_hash and backfills.
+    "wcs_hash" "text",
     "size_bytes" bigint NOT NULL,
     -- Bytes as stored in the bucket for transport-compressed products (gzipped
     -- mosaic FITS, epic #261 / PR #383); NULL = stored verbatim. size_bytes
@@ -1038,6 +1106,9 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- sci_dq_hash, when present, is always an authoritative sha256 (no provisional
     -- etag form — it is computed from the local FITS arrays, never a HEAD).
     CONSTRAINT "storage_objects_sci_dq_hash_check" CHECK (("sci_dq_hash" IS NULL OR "sci_dq_hash" ~ '^sha256:'::"text")),
+    -- wcs_hash, like sci_dq_hash, is always an authoritative sha256 when present
+    -- (computed from the local FITS header cards, never from a HEAD).
+    CONSTRAINT "storage_objects_wcs_hash_check" CHECK (("wcs_hash" IS NULL OR "wcs_hash" ~ '^sha256:'::"text")),
     -- product_type tracks the campfire_layout PRODUCTS registry (every entry with a
     -- non-null bucket). A new cloud-backed product type requires a migration here.
     CONSTRAINT "storage_objects_product_type_check" CHECK (("product_type" = ANY (ARRAY[
@@ -1082,7 +1153,9 @@ COMMENT ON COLUMN "public"."storage_objects"."filter" IS 'Typed, indexed scope c
 
 COMMENT ON COLUMN "public"."storage_objects"."exposure_ref" IS 'Stable per-exposure reference for intermediate products (nircam rootname; nirspec (root,nod,detector,source) tuple). Backs the partial unique (product_type, exposure_ref) WHERE status=''active'' — one current object per product/exposure.';
 
-COMMENT ON COLUMN "public"."storage_objects"."sci_dq_hash" IS 'Science-only sha256(SCI+DQ) change-detection digest (epic #261, N1). Lets deploy skip re-uploading a NIRCam canonical exposure whose science is unchanged even though its whole-file content_hash shifted (pipeline re-save bumps header timestamps). content_hash remains the authoritative whole-file integrity token; this is never used for download/copy verification. NULL for products without a partial digest.';
+COMMENT ON COLUMN "public"."storage_objects"."sci_dq_hash" IS 'Science-only sha256(SCI+DQ) change-detection digest (epic #261, N1). Lets deploy skip re-uploading a NIRCam canonical exposure whose science is unchanged even though its whole-file content_hash shifted (pipeline re-save bumps header timestamps). Paired with wcs_hash: BOTH must match for deploy to skip an upload, since the array digest alone cannot see a re-alignment. content_hash remains the authoritative whole-file integrity token; this is never used for download/copy verification. NULL for products without a partial digest.';
+
+COMMENT ON COLUMN "public"."storage_objects"."wcs_hash" IS 'Astrometric change-detection digest: sha256 over the WCS-defining header cards of a NIRCam canonical exposure. The companion to sci_dq_hash — the align and wcs_shift steps rewrite an exposure''s WCS without touching a SCI or DQ pixel, so a science-only identity skipped re-aligned exposures and left the cloud copy on its pre-alignment astrometry. Never used for download/copy verification. NULL for whole-file-identity products, and on exposure rows written before this column existed (the push planner reconciles those against content_hash and backfills the digest without re-uploading).';
 
 COMMENT ON COLUMN "public"."storage_objects"."status" IS 'active = current object; superseded = replaced by a newer hash (tombstone, GC-eligible later); revoked = un-published. Only active rows count toward the budget and the partial-unique constraint.';
 
@@ -1109,7 +1182,7 @@ CREATE TABLE IF NOT EXISTS "public"."deploy_events" (
     "host" "text",
     "metadata" "jsonb",
     "occurred_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text"])))
+    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text", 'config_sync'::"text"])))
 );
 
 
@@ -1443,6 +1516,22 @@ ALTER SEQUENCE "public"."list_audit_log_id_seq" OWNED BY "public"."list_audit_lo
 
 
 
+CREATE SEQUENCE IF NOT EXISTS "public"."object_list_shares_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE "public"."object_list_shares_id_seq" OWNER TO "postgres";
+
+
+ALTER SEQUENCE "public"."object_list_shares_id_seq" OWNED BY "public"."object_list_shares"."id";
+
+
+
 CREATE TABLE IF NOT EXISTS "public"."user_profiles" (
     "user_id" "uuid" NOT NULL,
     "username" "text" NOT NULL,
@@ -1453,7 +1542,26 @@ CREATE TABLE IF NOT EXISTS "public"."user_profiles" (
     "can_inspect" boolean DEFAULT false,
     "is_admin" boolean DEFAULT false,
     "preferences" "jsonb" DEFAULT '{}'::"jsonb",
-    CONSTRAINT "user_profiles_username_check" CHECK (("username" ~ '^[a-z0-9][a-z0-9._-]{0,38}[a-z0-9]$'::"text"))
+    -- Share links (docs/design-public-mirror.md): a link account is a synthetic
+    -- principal backing one share_links row. It authenticates like any other
+    -- user -- which is the whole point, since every reader then works unchanged
+    -- -- so this flag is the discriminator every narrowing rule keys on. It is
+    -- the input to public.is_link_account(); see the link_* helpers in
+    -- functions.sql and the scope conjuncts throughout policies.sql.
+    -- Never set on a human account.
+    "is_link_account" boolean NOT NULL DEFAULT false,
+    CONSTRAINT "user_profiles_username_check" CHECK (("username" ~ '^[a-z0-9][a-z0-9._-]{0,38}[a-z0-9]$'::"text")),
+    -- A link account is read-only, structurally. Every write policy already
+    -- gates on can_comment()/can_inspect()/is_admin(), so in principle the mint
+    -- code setting them false is enough -- but `can_comment` DEFAULTS TO TRUE,
+    -- so a mint path that simply forgets to pass it produces a share link whose
+    -- holder can comment on the archive. Enforce it here instead of trusting
+    -- every present and future caller to remember.
+    CONSTRAINT "user_profiles_link_account_readonly" CHECK (
+        NOT ("is_link_account" AND (COALESCE("can_comment", false)
+                                    OR COALESCE("can_inspect", false)
+                                    OR COALESCE("is_admin", false)))
+    )
 );
 
 
@@ -1473,6 +1581,65 @@ CREATE TABLE IF NOT EXISTS "public"."user_program_access" (
 
 
 ALTER TABLE "public"."user_program_access" OWNER TO "postgres";
+
+
+-- Share links (docs/design-public-mirror.md): an admin-minted URL that exposes
+-- exactly one NIRCam field or one NIRSpec observation to someone with no
+-- CAMPFIRE account.
+--
+-- Scoped to a FIELD OR OBSERVATION, never to a deployment. A scope is deployed
+-- many times and any one deployment may be narrower than the scope (a
+-- source_ids_filter subset, a few filters, one grating re-reduction), so a link
+-- shows the scope's CURRENT state rather than a snapshot taken at mint time.
+-- Redeploying updates what the link shows with no admin action. The scope CHECK
+-- deliberately mirrors deployments_scope_check.
+--
+-- Each row is backed by a synthetic `auth.users` principal (link_user_id, the
+-- "link account") whose profile carries is_link_account. That is what makes the
+-- whole feature cheap: the visitor authenticates like any other user, so every
+-- existing reader works unchanged, and the entire security story is the
+-- narrowing conjuncts in policies.sql.
+--
+-- Links never expire by default, and revocation is per link, so `revoked_at` is
+-- the ONLY thing that ever takes a link out of circulation.
+CREATE TABLE IF NOT EXISTS "public"."share_links" (
+    -- 32 url-safe random chars (~190 bits). The URL path segment; also the PK.
+    "token" "text" NOT NULL,
+    "label" "text" NOT NULL,
+    "observation" "text",
+    "field" "text",
+    "link_user_id" "uuid" NOT NULL,
+    -- Password for link_user_id, used by /s/<token> to mint a cookie session.
+    -- Plaintext by necessity (we must present it to GoTrue), which is why the
+    -- column-level grant below withholds it from `authenticated` entirely --
+    -- only service_role can read it, so it never reaches a browser even for an
+    -- admin. Low-value by construction: it authenticates a principal that can
+    -- read one scope and write nothing.
+    "link_password" "text" NOT NULL,
+    -- Opt-in: also expose draft (in-prep) rows inside the scope. This is what
+    -- makes "reduce it for a colleague without publishing it" work -- see
+    -- `campfire deploy --in-prep` and the draft gates in policies.sql. Spans
+    -- deployments: it means every draft row currently in the scope, including a
+    -- re-reduction staged after the link was minted.
+    "include_drafts" boolean NOT NULL DEFAULT false,
+    -- Per-link opt-out from FITS downloads. Default true (link holders can
+    -- download); present so the opt-out exists without being in the way.
+    "allow_download" boolean NOT NULL DEFAULT true,
+    "created_by" "uuid" NOT NULL,
+    "created_at" timestamp with time zone NOT NULL DEFAULT "now"(),
+    -- NULL (the default) = never expires. Set for the occasional bounded share.
+    "expires_at" timestamp with time zone,
+    "revoked_at" timestamp with time zone,
+    "last_seen_at" timestamp with time zone,
+    "view_count" integer NOT NULL DEFAULT 0,
+    CONSTRAINT "share_links_scope_check" CHECK (("num_nonnulls"("observation", "field") = 1))
+);
+
+
+ALTER TABLE "public"."share_links" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."share_links" IS 'Admin-minted share links scoped to one NIRCam field or NIRSpec observation. Each row is backed by a synthetic link account (link_user_id). See docs/design-public-mirror.md.';
 
 
 -- ---------------------------------------------------------------------------
@@ -1551,6 +1718,10 @@ ALTER TABLE ONLY "public"."object_photometry" ALTER COLUMN "id" SET DEFAULT "nex
 
 
 ALTER TABLE ONLY "public"."list_audit_log" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."list_audit_log_id_seq"'::"regclass");
+
+
+
+ALTER TABLE ONLY "public"."object_list_shares" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."object_list_shares_id_seq"'::"regclass");
 
 
 
@@ -1804,6 +1975,16 @@ ALTER TABLE ONLY "public"."object_list_members"
     ADD CONSTRAINT "object_list_members_list_id_ra_dec_key" UNIQUE ("list_id", "ra", "dec");
 
 
+
+ALTER TABLE ONLY "public"."object_list_shares"
+    ADD CONSTRAINT "object_list_shares_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."object_list_shares"
+    ADD CONSTRAINT "object_list_shares_list_id_user_id_key" UNIQUE ("list_id", "user_id");
+
+
 ALTER TABLE ONLY "public"."object_photometry"
     ADD CONSTRAINT "object_photometry_pkey" PRIMARY KEY ("id");
 
@@ -1825,6 +2006,19 @@ ALTER TABLE ONLY "public"."user_profiles"
 
 ALTER TABLE ONLY "public"."user_profiles"
     ADD CONSTRAINT "user_profiles_username_key" UNIQUE ("username");
+
+
+
+ALTER TABLE ONLY "public"."share_links"
+    ADD CONSTRAINT "share_links_pkey" PRIMARY KEY ("token");
+
+
+
+-- One link account backs exactly one share link. Revoking a link deletes the
+-- account (so any live cookie session dies at its next token refresh), which
+-- cascades the row away with it.
+ALTER TABLE ONLY "public"."share_links"
+    ADD CONSTRAINT "share_links_link_user_id_key" UNIQUE ("link_user_id");
 
 
 
@@ -1969,6 +2163,21 @@ ALTER TABLE ONLY "public"."list_audit_log"
 
 
 
+ALTER TABLE ONLY "public"."object_list_shares"
+    ADD CONSTRAINT "object_list_shares_list_id_fkey" FOREIGN KEY ("list_id") REFERENCES "public"."object_lists"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."object_list_shares"
+    ADD CONSTRAINT "object_list_shares_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."object_list_shares"
+    ADD CONSTRAINT "object_list_shares_granted_by_fkey" FOREIGN KEY ("granted_by") REFERENCES "auth"."users"("id");
+
+
+
 -- Subject FKs use ON DELETE SET NULL (not CASCADE) so pipeline churn
 -- (delete-then-reinsert of a reprocessed spectrum, object rebuild) doesn't
 -- wipe the audit trail.  Paired with the relaxed <= 1 subject-check above.
@@ -2062,6 +2271,24 @@ ALTER TABLE ONLY "public"."user_program_access"
 
 ALTER TABLE ONLY "public"."user_program_access"
     ADD CONSTRAINT "user_program_access_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
+
+
+
+-- Deleting the link account is the revocation primitive; the link row follows.
+ALTER TABLE ONLY "public"."share_links"
+    ADD CONSTRAINT "share_links_link_user_id_fkey" FOREIGN KEY ("link_user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."share_links"
+    ADD CONSTRAINT "share_links_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "auth"."users"("id");
+
+
+
+-- No FK on `observation`/`field`: the scope name is the durable identity of the
+-- share, and an observation can be un-deployed and re-deployed under the same
+-- name (`campfire deploy remove` deletes the row). A link whose scope row is
+-- momentarily absent shows nothing, which is correct; it should not be deleted.
 
 
 
@@ -2194,6 +2421,12 @@ GRANT ALL ON TABLE "public"."list_audit_log" TO "service_role";
 
 
 
+GRANT ALL ON TABLE "public"."object_list_shares" TO "anon";
+GRANT ALL ON TABLE "public"."object_list_shares" TO "authenticated";
+GRANT ALL ON TABLE "public"."object_list_shares" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "public"."observations" TO "anon";
 GRANT ALL ON TABLE "public"."observations" TO "authenticated";
 GRANT ALL ON TABLE "public"."observations" TO "service_role";
@@ -2237,6 +2470,32 @@ GRANT ALL ON TABLE "public"."nirspec_source_review" TO "service_role";
 -- deploy_events is an admin/internal audit log (RLS admin-only); not granted to anon.
 GRANT ALL ON TABLE "public"."deploy_events" TO "authenticated";
 GRANT ALL ON TABLE "public"."deploy_events" TO "service_role";
+
+
+-- share_links is admin-only (RLS); not granted to anon.
+--
+-- The column list is the point: `link_password` is a live credential, and
+-- admins browse the portal through `authenticated` like everyone else. RLS is
+-- row-level and cannot withhold a column, so withhold it with the grant. A
+-- table-level GRANT SELECT would cover every column no matter what column
+-- REVOKEs follow (a column REVOKE only subtracts column-level grants, never a
+-- table-level one), so SELECT is granted as an explicit list that omits
+-- link_password. Only service_role -- i.e. the /s/<token> route on the server
+-- -- can read it, so the credential never reaches a browser even for an admin
+-- who can see every other column of the row. A new column added to the table
+-- stays invisible to the portal until it is added here.
+--
+-- The REVOKE ALL is load-bearing: the default privileges above grant ALL to
+-- `authenticated` on every new table, so omitting a GRANT here would not be
+-- enough -- the table-level SELECT has to be explicitly taken back.
+REVOKE ALL ON TABLE "public"."share_links" FROM "anon";
+REVOKE ALL ON TABLE "public"."share_links" FROM "authenticated";
+GRANT INSERT, UPDATE, DELETE ON TABLE "public"."share_links" TO "authenticated";
+GRANT SELECT ("token", "label", "observation", "field", "link_user_id",
+              "include_drafts", "allow_download", "created_by", "created_at",
+              "expires_at", "revoked_at", "last_seen_at", "view_count")
+  ON TABLE "public"."share_links" TO "authenticated";
+GRANT ALL ON TABLE "public"."share_links" TO "service_role";
 
 
 -- deploy_scope_state is admin/internal concurrency state (RLS admin-only); not anon.
@@ -2414,6 +2673,12 @@ GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "service_role";
 GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "anon";
 GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "anon";
+GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "service_role";
 
 
 

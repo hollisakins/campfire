@@ -38,6 +38,33 @@ export async function PATCH(
     // Use service client for admin mutations on other users' data
     const serviceClient = createServiceClient();
 
+    // Group accounts are never admins: a shared admin credential is
+    // unattributable. The create endpoint refuses it; refuse promotion here
+    // too so the shield toggle can't grant it after the fact. Fail closed:
+    // this check is the sole enforcement of the invariant (there is no DB
+    // constraint), so a failed lookup must block the promotion, not allow it.
+    if (is_admin === true) {
+      const { data: target, error: targetError } = await serviceClient
+        .from('user_profiles')
+        .select('is_group_account')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (targetError) {
+        console.error('Error checking target profile:', targetError);
+        return NextResponse.json(
+          { error: 'Failed to verify the target account — admin status not changed' },
+          { status: 500 }
+        );
+      }
+      if (target?.is_group_account) {
+        return NextResponse.json(
+          { error: 'Group accounts cannot be given admin privileges' },
+          { status: 400 }
+        );
+      }
+    }
+
     // Update profile fields
     const profileUpdates: Record<string, unknown> = {};
     if (typeof is_admin === 'boolean') profileUpdates.is_admin = is_admin;
@@ -98,7 +125,16 @@ export async function PATCH(
 /**
  * DELETE /api/users/[id]
  *
- * Delete a user (removes from user_profiles, not auth.users).
+ * Delete a user. For regular users this removes the profile and program
+ * access but leaves the auth.users principal (historical behavior — invited
+ * users own their auth identity). For group accounts the shared credential
+ * must actually stop working, so the principal is additionally banned. It is
+ * deliberately NOT hard-deleted: download_log, code_redemptions, and
+ * password_reset_log cascade from auth.users, so a hard delete would
+ * silently destroy the audit trail of what the shared login accessed (and
+ * for accounts with comments it would fail outright on the NO ACTION FKs).
+ * The banned, profileless principal is the tombstone — same approach as
+ * revokeShareLink in lib/actions/share-links.ts.
  * Admin only.
  */
 export async function DELETE(
@@ -133,6 +169,38 @@ export async function DELETE(
   try {
     // Use service client for admin mutations on other users' data
     const serviceClient = createServiceClient();
+
+    // Fail closed: if we cannot tell whether this is a group account, do not
+    // delete anything — a fall-through here would remove the profile while
+    // leaving a shared credential authenticating with no visible trace.
+    const { data: target, error: targetError } = await serviceClient
+      .from('user_profiles')
+      .select('is_group_account')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (targetError) {
+      console.error('Error checking target profile:', targetError);
+      return NextResponse.json(
+        { error: 'Failed to verify the target account — nothing was deleted' },
+        { status: 500 }
+      );
+    }
+
+    if (target?.is_group_account) {
+      // Ban the principal BEFORE the row deletes below, so the shared
+      // credentials stop authenticating no matter what happens after. No
+      // auth.admin.deleteUser here — see the handler doc comment.
+      const { error: banError } = await serviceClient.auth.admin.updateUserById(userId, {
+        // Effectively forever (100 years); GoTrue has no "permanent" literal.
+        ban_duration: '876000h',
+      });
+
+      if (banError) {
+        console.error('Error banning group account:', banError);
+        return NextResponse.json({ error: 'Failed to disable group account' }, { status: 500 });
+      }
+    }
 
     // Delete program access first (foreign key)
     await serviceClient

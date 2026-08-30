@@ -8,6 +8,8 @@ stale tiles need to be re-mosaicked when new data arrives.
 import hashlib
 import json
 import os
+import re
+import warnings
 from datetime import datetime, timezone
 
 from astropy.io import fits
@@ -25,6 +27,10 @@ def compute_file_hash(filepath):
 
     Only hashing the science data (not padding or auxiliary HDUs) keeps this
     fast and deterministic across different astropy write orderings.
+
+    This is the *pixel* half of an input's identity. It says nothing about
+    where those pixels sit on the sky — see :func:`compute_wcs_hash`, which
+    :func:`file_unchanged` compares alongside it.
 
     Parameters
     ----------
@@ -51,6 +57,71 @@ def compute_file_hash(filepath):
     return f'sha256:{h.hexdigest()}'
 
 
+# The header cards that define an input's sky mapping. A whitelist rather than
+# a denylist: the digest must move when the astrometry moves and never on a
+# plain re-save (a re-save that looks "modified" costs a needless re-drizzle of
+# every tile the file touches). Mirrored client-side in
+# ``campfire.storage.hashing`` — the client cannot import the pipeline, so the
+# recipe is written out in both places and the two must stay in step.
+_WCS_KEY_RE = re.compile(
+    r'^(?:'
+    r'WCSAXES|RADESYS|EQUINOX|LONPOLE|LATPOLE'
+    r'|C(?:TYPE|UNIT|RPIX|RVAL|DELT|ROTA)\d+'
+    r'|CD\d+_\d+|PC\d+_\d+'
+    r'|[AB]P?_ORDER|[AB]P?_DMAX|[AB]P?_\d+_\d+'
+    r'|V[23]_REF|VPARITY|VA_SCALE|ROLL_REF|RA_REF|DEC_REF'
+    r'|S_REGION'
+    r')$'
+)
+
+_WCS_DIGEST_VERSION = b'campfire-wcs-1\n'
+_WCS_HEADER_EXTS = (0, 'SCI')
+
+
+def compute_wcs_hash(filepath):
+    """SHA-256 over a FITS file's WCS-defining header cards, or ``None``.
+
+    The astrometric half of an input's identity. ``align`` and ``wcs_shift``
+    rewrite an exposure's WCS *without touching a science pixel*, so
+    :func:`compute_file_hash` cannot see a re-alignment — a CRF regenerated with
+    corrected astrometry but identical SCI/DQ hashes the same as before, and the
+    tile that consumed it is judged up to date while its inputs have moved on
+    the sky.
+
+    ``None`` means the file carries no WCS cards at all (or could not be read);
+    :func:`file_unchanged` treats that as "no astrometric component", never as
+    a match.
+
+    Digests the FITS (SIP-approximated) WCS that ``update_fits_wcsinfo`` writes
+    from the authoritative gwcs on every solve, not the gwcs in the embedded
+    ASDF extension — those bytes carry a save timestamp and would churn on every
+    re-save, defeating the point of a partial digest. The two disagree only when
+    ``update_fits_wcsinfo`` fails, which ``align`` logs.
+    """
+    h = hashlib.sha256()
+    h.update(_WCS_DIGEST_VERSION)
+    found = False
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            with fits.open(filepath, memmap=False, lazy_load_hdus=True) as hdul:
+                for ext in _WCS_HEADER_EXTS:
+                    try:
+                        header = hdul[ext].header
+                    except (KeyError, IndexError):
+                        continue
+                    # Sorted, so card order in the file cannot move the digest;
+                    # repr() round-trips a float's full precision exactly, so a
+                    # re-save writing the same numbers hashes the same.
+                    for key in sorted(k for k in header if _WCS_KEY_RE.match(k)):
+                        h.update(
+                            f'{ext}|{key}={header[key]!r}\n'.encode('utf-8', 'replace'))
+                        found = True
+    except Exception:
+        return None
+    return f'sha256:{h.hexdigest()}' if found else None
+
+
 def file_stat(filepath):
     """Return ``(size, mtime_ns)`` for fast change detection."""
     st = os.stat(filepath)
@@ -64,6 +135,13 @@ def file_unchanged(filepath, old_entry):
     match the current stat, the file hasn't been rewritten — skip the
     SHA-256 read entirely. Otherwise fall back to recomputing the content
     hash and comparing.
+
+    The astrometric digest is compared **only when the old entry carries one**.
+    Manifests written before ``wcs_hash`` existed therefore keep their current
+    verdicts instead of declaring every input modified — a recipe change that
+    invalidated every manifest at once would re-drizzle every field's every tile
+    on the next run. Those entries pick up the digest the next time the manifest
+    is rewritten, and ``--overwrite`` forces the rebuild in the meantime.
     """
     size = old_entry.get('size')
     mtime_ns = old_entry.get('mtime_ns')
@@ -71,7 +149,12 @@ def file_unchanged(filepath, old_entry):
         cur_size, cur_mtime = file_stat(filepath)
         if cur_size == size and cur_mtime == mtime_ns:
             return True
-    return compute_file_hash(filepath) == old_entry.get('file_hash')
+    if compute_file_hash(filepath) != old_entry.get('file_hash'):
+        return False
+    old_wcs = old_entry.get('wcs_hash')
+    if old_wcs and compute_wcs_hash(filepath) != old_wcs:
+        return False
+    return True
 
 
 def input_entry(filepath, extra=None):
@@ -80,6 +163,9 @@ def input_entry(filepath, extra=None):
     entry = {
         'filename': os.path.basename(filepath),
         'file_hash': compute_file_hash(filepath),
+        # Astrometric digest: without it a re-aligned input (same pixels, new
+        # WCS) reads as unchanged and its tiles are never rebuilt.
+        'wcs_hash': compute_wcs_hash(filepath),
         'size': size,
         'mtime_ns': mtime_ns,
     }
@@ -122,6 +208,113 @@ def build_mosaic_name(filtname, field_name, pixel_scale, tile, epoch=None,
     if epoch:
         name = f'{name}_{epoch}'
     return name
+
+
+# Bump whenever the mosaic bkgsub *algorithm* changes results at identical
+# settings, so existing manifests hash stale and get_stale_tiles / the
+# resample-step skip logic rebuild their tiles. v2 = negativity guard
+# rollout + tier-0 pre-tier removal (both change pixels at the default
+# config, so the bump — not any key below — is what marks pre-guard tiles
+# stale).
+_BKGSUB_ALGORITHM_VERSION = 2
+
+# Every SubtractBackground setting that changes mosaic pixels, with the
+# defaults resample_step applies. Single source of truth: the config hash
+# below and the SubtractBackground construction in steps/resample.py both
+# iterate this dict, so a new tunable (or a default change) can never be
+# applied without also invalidating the tiles it affects. ``wht_aware`` is
+# deliberately absent — it is hashed separately (non-default-only, for
+# historical-hash compatibility) and passed explicitly by resample_step.
+BKGSUB_PIXEL_DEFAULTS = {
+    'ring_radius_in': 80,
+    'ring_width': 4,
+    'ring_downsample': 4,
+    'ring_clip_max_sigma': 5.0,
+    'ring_clip_box_size': 100,
+    'ring_clip_filter_size': 3,
+    'tier_kernel_size': [25, 15, 5, 2],
+    'tier_npixels': [15, 10, 3, 1],
+    'tier_nsigma': [1.5, 1.5, 1.5, 1.5],
+    'tier_dilate_size': [33, 25, 21, 19],
+    'bg_box_size': 10,
+    'bg_filter_size': 5,
+    'bg_exclude_percentile': 90,
+    'bg_sigma': 3,
+    'bg_interpolator': 'zoom',
+    'bg_reject': False,
+    'bg_reject_sigma_hi': 4.0,
+    'bg_reject_sigma_lo': 3.0,
+    'bg_reject_percentile': 60.0,
+    'bg_reject_dilate': 40.0,
+    'bg_guard': True,
+    'guard_ceiling_boxes': [32, 64, 128],
+    'guard_ceiling_k': 2.0,
+    'guard_ceiling_sigma_upper': 1.0,
+    'guard_trough_sigmas': [5.0, 15.0],
+    'guard_trough_t': 2.0,
+    'guard_trough_npix': 8.0,
+    'guard_trough_max_iter': 12,
+}
+
+
+# Primary-header keyword stamped on a mosaic i2d once its on-disk pixels have
+# been background-subtracted (issue #427). This stamp — not the existence of
+# the ``_i2d_before_bkgsub.fits`` snapshot — is the authoritative bkgsub-done
+# record, so the snapshot is a pure rollback convenience that can be deleted
+# to reclaim space. Not part of the ``cfp`` exposure keysets: those track the
+# per-exposure canonical chain, while this lives on the per-tile mosaic.
+MOSAIC_BKGSUB_KEY = 'CFP_BKGS'
+
+
+def bkgsub_stamp_value(resample_cfg):
+    """Value for the :data:`MOSAIC_BKGSUB_KEY` mosaic stamp.
+
+    Records *what* ran, not just that it ran: the bkgsub algorithm version
+    plus a short hash of every pixel-affecting SubtractBackground setting
+    (:data:`BKGSUB_PIXEL_DEFAULTS`, and ``wht_aware`` when non-default —
+    the same fields :func:`_resample_config_hash` folds in). Readers decide
+    skip-vs-rerun from the stamp's *presence*; the value is provenance for
+    after-the-fact debugging.
+    """
+    params = {k: resample_cfg.get(k, d)
+              for k, d in BKGSUB_PIXEL_DEFAULTS.items()}
+    if not resample_cfg.get('wht_aware', True):
+        params['wht_aware'] = False
+    digest = hashlib.sha256(
+        json.dumps(params, sort_keys=True).encode()).hexdigest()[:12]
+    return f'v{_BKGSUB_ALGORITHM_VERSION} cfg={digest}'
+
+
+def _resample_config_hash(resample_cfg, pixel_scale):
+    """Hash the resample config fields that affect mosaic pixels.
+
+    Single source of truth for :func:`create_manifest` and
+    :func:`check_config_changed` so the two can never drift. When
+    background subtraction is enabled, the hash folds in every bkgsub
+    setting that changes pixels (:data:`BKGSUB_PIXEL_DEFAULTS`) plus the
+    bkgsub algorithm version, so both tuning changes and behavior changes
+    at identical settings mark tiles stale — resample_step skips bkgsub
+    entirely for a tile whose manifest is current and whose i2d carries the
+    :data:`MOSAIC_BKGSUB_KEY` stamp (legacy fallback: an existing
+    ``_i2d_before_bkgsub.fits``), so a stale hash is the *only* thing that
+    reruns it.
+    ``wht_aware`` is folded in only when *disabled* (non-default), keeping
+    historical hashes for the common case.
+    """
+    cfg = {
+        'pixfrac': resample_cfg.get('pixfrac', 1),
+        'kernel': resample_cfg.get('kernel', 'square'),
+        'pixel_scale': pixel_scale,
+        'background_subtract': resample_cfg.get('background_subtract', True),
+    }
+    if not resample_cfg.get('wht_aware', True):
+        cfg['wht_aware'] = False
+    if cfg['background_subtract']:
+        cfg['bkgsub_algorithm'] = _BKGSUB_ALGORITHM_VERSION
+        for key, default in BKGSUB_PIXEL_DEFAULTS.items():
+            cfg[key] = resample_cfg.get(key, default)
+    config_str = json.dumps(cfg, sort_keys=True)
+    return f'sha256:{hashlib.sha256(config_str.encode()).hexdigest()}'
 
 
 # ---------------------------------------------------------------------------
@@ -176,13 +369,7 @@ def create_manifest(mosaic_name, field, filtname, tile, pixel_scale,
         inputs.append(input_entry(f, extra=extra))
 
     # Hash the relevant processing config so we can detect config changes too
-    config_str = json.dumps({
-        'pixfrac': resample_cfg.get('pixfrac', 1),
-        'kernel': resample_cfg.get('kernel', 'square'),
-        'pixel_scale': pixel_scale,
-        'background_subtract': resample_cfg.get('background_subtract', True),
-    }, sort_keys=True)
-    config_hash = f'sha256:{hashlib.sha256(config_str.encode()).hexdigest()}'
+    config_hash = _resample_config_hash(resample_cfg, pixel_scale)
 
     return {
         'mosaic_name': mosaic_name,
@@ -311,13 +498,7 @@ def check_config_changed(manifest_path, stage_config, pixel_scale):
         return True
 
     resample_cfg = stage_config.get('resample', {})
-    config_str = json.dumps({
-        'pixfrac': resample_cfg.get('pixfrac', 1),
-        'kernel': resample_cfg.get('kernel', 'square'),
-        'pixel_scale': pixel_scale,
-        'background_subtract': resample_cfg.get('background_subtract', True),
-    }, sort_keys=True)
-    current_hash = f'sha256:{hashlib.sha256(config_str.encode()).hexdigest()}'
+    current_hash = _resample_config_hash(resample_cfg, pixel_scale)
 
     return current_hash != manifest.get('config_hash')
 

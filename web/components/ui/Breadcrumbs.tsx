@@ -1,6 +1,9 @@
+'use client';
+
 import React from 'react';
 import Link from 'next/link';
 import { ChevronRight } from 'lucide-react';
+import { useAuth } from '@/lib/contexts/AuthContext';
 
 interface BreadcrumbItem {
   label: string;
@@ -13,6 +16,12 @@ interface BreadcrumbsProps {
 }
 
 export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({ items, className = '' }) => {
+  // Share-link visitors get no breadcrumbs (docs/design-public-mirror.md §7):
+  // every ancestor crumb points outside the shared scope, so the trail reads as
+  // an invitation to explore a site that renders empty for them.
+  const { isLinkAccount } = useAuth();
+  if (isLinkAccount) return null;
+
   return (
     <nav className={`flex items-center space-x-2 text-sm ${className}`}>
       {items.map((item, index) => {

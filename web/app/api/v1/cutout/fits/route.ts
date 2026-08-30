@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { isAdminUser } from '@/lib/api-helpers';
+import { isAdminUser, getLinkScope } from '@/lib/api-helpers';
 import { resolveFieldScienceSource, UnknownBandError } from '@/lib/cutout/source';
 import { buildFitsCutout, CutoutTooLargeError } from '@/lib/cutout/science';
 import { resolveRequestUser, parseScienceParams, safeToken } from '../science-params';
@@ -34,6 +34,28 @@ export async function GET(request: NextRequest) {
   const { field, ra, dec, fovArcsec, bands, targetScaleArcsec } = parsed;
 
   try {
+    // This route authorizes via service-role queries, not RLS, so the link
+    // scope must be enforced here (docs/design-public-mirror.md §5.5): a link
+    // session may only cut out its own field (observation-scoped links have no
+    // field axis at all), and FITS bytes honour the link's download opt-out.
+    // The cross-scope refusal is a 404 indistinguishable from a missing
+    // dataset, so probing field names confirms nothing.
+    const linkScope = await getLinkScope(userId);
+    if (linkScope) {
+      if (!linkScope.active || linkScope.field === null || linkScope.field !== field) {
+        return NextResponse.json(
+          { error: 'No FitsGL dataset for this field' },
+          { status: 404 }
+        );
+      }
+      if (!linkScope.allowDownload) {
+        return NextResponse.json(
+          { error: 'This share link does not permit FITS downloads' },
+          { status: 403 }
+        );
+      }
+    }
+
     const isAdmin = await isAdminUser(userId);
     const supabase = createServiceClient();
 

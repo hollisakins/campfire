@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getS3ClientForBackend, getBucketNameForBackend, type DataBackend } from '@/lib/storage';
+import { filenameSearchPattern } from '@/lib/admin/exposure-search';
 import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 
 export interface ExposurePngUrls {
@@ -30,6 +31,23 @@ async function requireAdmin() {
   return supabase;
 }
 
+// Fast-path guard for the triage hot loop (save + prev/next + prefetch).
+// requireAdmin() spends two sequential network round trips before the real
+// query — auth.getUser() re-validates the JWT against Supabase Auth, then
+// user_profiles is read — purely to produce a clean error message: every table
+// and RPC the hot-path functions touch is already admin-gated at the database
+// (nircam_exposures RLS policies; the get_admin_exposure_* RPCs' explicit
+// is_admin() checks), so a non-admin session gets zero rows or an RPC error,
+// never data. Here we only confirm a session exists (a cookie read, no
+// network) and let the database be the authority. Keep requireAdmin for
+// anything not fully RLS/RPC-gated (e.g. the nircam_reduction_progress view).
+async function requireSession() {
+  const supabase = await createClient();
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error('Not authenticated');
+  return supabase;
+}
+
 // ---------------------------------------------------------------------------
 // Read
 // ---------------------------------------------------------------------------
@@ -47,6 +65,8 @@ export interface ExposureFilters {
   reviewStatus?: string;
   stage?: string;
   correction?: string;
+  /** Raw wildcard filename search ("jw01727001*"); glob → ILIKE happens at the RPC boundary. */
+  search?: string;
 }
 
 export interface ExposureSort {
@@ -66,6 +86,7 @@ function rpcExposureParams(params?: ExposureFilters & ExposureSort) {
     p_review_status: params?.reviewStatus ?? null,
     p_stage: params?.stage ?? null,
     p_correction: params?.correction ?? null,
+    p_search: filenameSearchPattern(params?.search),
     p_sort_column: params?.sortColumn ?? 'filename',
     p_sort_direction: params?.sortDirection ?? 'asc',
   };
@@ -78,7 +99,7 @@ export async function getNircamExposures(params?: ExposureFilters & ExposureSort
   pageSize?: number;   // default 50
 }): Promise<ExposuresResult> {
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
 
     const { data, error } = await supabase.rpc('get_admin_exposures', {
       ...rpcExposureParams(params),
@@ -130,7 +151,7 @@ export async function getExposureNeighbors(
     prevId: null, nextId: null, position: null, total: 0, windowIds: [],
   };
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
 
     const { data, error } = await supabase.rpc('get_admin_exposure_neighbors', {
       p_current_id: currentId,
@@ -164,7 +185,7 @@ export async function getNircamExposureById(id: number): Promise<{
   error?: string;
 }> {
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
 
     const { data, error } = await supabase
       .from('nircam_exposures')
@@ -185,7 +206,124 @@ export async function getNircamExposureById(id: number): Promise<{
   }
 }
 
+// ---------------------------------------------------------------------------
+// Related exposures (same visit / simultaneous SW+LW)
+// ---------------------------------------------------------------------------
+
+export interface RelatedExposure {
+  id: number;
+  filename: string;
+  filter: string;
+  detector: string;
+  review_status: NircamExposure['review_status'];
+  masked: boolean;
+}
+
+export interface RelatedExposuresResult {
+  /**
+   * Exposures read out at the same moment as this one through the other
+   * channel of the same module: NIRCam's dichroic feeds a module's SW
+   * (nrc[ab]1-4) and LW (nrc[ab]long) detectors from the same sky
+   * simultaneously, so an artifact here (satellite trail, scattered light,
+   * a bright transient) usually shows up in these too.
+   */
+  simultaneous: RelatedExposure[];
+  /** Everything else sharing this exposure's visit (self + simultaneous excluded). */
+  sameVisit: RelatedExposure[];
+  error?: string;
+}
+
+// JWST filename: {visit}_{visitgroup+seq+activity}_{exposure}_{detector}[.fits]
+function parseExposureName(filename: string): { act: string; exp: string } | null {
+  const parts = filename.replace(/\.fits$/, '').split('_');
+  return parts.length >= 4 ? { act: parts[1], exp: parts[2] } : null;
+}
+
+// Mirrors the pipeline's module_of/channel_of (campfire_pipeline/nircam/
+// association.py): the deployed `detector` column holds the FITS DETECTOR
+// header value verbatim, which is uppercase (NRCALONG) — and nrca5/nrcb5 are
+// aliases for the LW detectors — so normalize before classifying.
+const detectorModule = (detector: string) => detector.toLowerCase().slice(0, 4); // 'nrca' | 'nrcb'
+function detectorChannel(detector: string): 'sw' | 'lw' {
+  const d = detector.toLowerCase();
+  return d.endsWith('long') || d.endsWith('5') ? 'lw' : 'sw';
+}
+
+/**
+ * The other exposures a triage decision here might implicate: everything in
+ * the same visit (split out: the simultaneously-read other-channel exposures
+ * of the same module). Feeds the detail page's "Related exposures" panel —
+ * quick jumps to siblings that likely share the same problem.
+ */
+export async function getRelatedExposures(id: number): Promise<RelatedExposuresResult> {
+  const empty: RelatedExposuresResult = { simultaneous: [], sameVisit: [] };
+  try {
+    const supabase = await requireSession();
+
+    const { data: cur, error } = await supabase
+      .from('nircam_exposures')
+      .select('id, field, visit, filename, detector')
+      .eq('id', id)
+      .single();
+    if (error) return { ...empty, error: error.message };
+    // No visit recorded (pre-backfill row or unparseable filename) — nothing
+    // to relate on.
+    if (!cur?.visit) return empty;
+
+    const { data, error: listErr } = await supabase
+      .from('nircam_exposures')
+      .select('id, filename, filter, detector, review_status, mask_regions')
+      .eq('field', cur.field)
+      .eq('visit', cur.visit)
+      .neq('id', id)
+      .order('filename');
+    if (listErr) return { ...empty, error: listErr.message };
+
+    const curName = parseExposureName(cur.filename);
+    const curModule = detectorModule(cur.detector);
+    const curChannel = detectorChannel(cur.detector);
+
+    const out = empty;
+    for (const r of data ?? []) {
+      const rel: RelatedExposure = {
+        id: r.id,
+        filename: r.filename,
+        filter: r.filter,
+        detector: r.detector,
+        review_status: r.review_status,
+        masked: ((r.mask_regions as MaskRegionsPayload | null)?.polygons?.length ?? 0) > 0,
+      };
+      const name = parseExposureName(r.filename);
+      const simultaneous = !!curName && !!name &&
+        name.act === curName.act && name.exp === curName.exp &&
+        detectorModule(r.detector) === curModule &&
+        detectorChannel(r.detector) !== curChannel;
+      (simultaneous ? out.simultaneous : out.sameVisit).push(rel);
+    }
+    return out;
+  } catch (err) {
+    return {
+      ...empty,
+      error: err instanceof Error ? err.message : 'Failed to fetch related exposures',
+    };
+  }
+}
+
 const PNG_PRESIGN_TTL_SECONDS = 3600;
+
+export interface PresignExposurePngsResult {
+  /**
+   * Presigned urls per requested id. An id maps to null urls when the
+   * exposure genuinely has no PNG (cacheable by the client), and is ABSENT
+   * when its urls could not be produced this call (retryable) — the
+   * distinction matters because the client caches these for ~50 min, and a
+   * transient failure cached as "no PNG" used to blank the viewer for the
+   * rest of the session.
+   */
+  urls: Record<number, ExposurePngUrls>;
+  /** Set when any requested id could not be signed (those ids are omitted). */
+  error?: string;
+}
 
 /**
  * Presigned GET URLs for a batch of exposures' preview + full PNGs, keyed by
@@ -200,30 +338,32 @@ const PNG_PRESIGN_TTL_SECONDS = 3600;
  * `OSN_READ_ENABLED`-gated dual-read helper, which would divert to R2 when the
  * flag is off, and legacy R2 rows still resolve via their `r2` registry entry).
  *
- * ALWAYS returns an entry for every requested id (null urls when a PNG is
- * absent or a single sign fails) so the caller can distinguish "no PNG" from
- * "still presigning" and never wedges on a spinner. URLs live ~1h (covers a
- * viewing session + the sibling prefetch window).
+ * URLs live ~1h (covers a viewing session + the sibling prefetch window).
  */
 export async function presignExposurePngs(
   ids: number[],
-): Promise<Record<number, ExposurePngUrls>> {
-  const out: Record<number, ExposurePngUrls> = Object.fromEntries(
-    ids.map((i) => [i, { preview: null, full: null } as ExposurePngUrls]),
-  );
-  if (ids.length === 0) return out;
+): Promise<PresignExposurePngsResult> {
+  if (ids.length === 0) return { urls: {} };
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
     const { data, error } = await supabase
       .from('nircam_exposures')
       .select('id, png_path, full_png_path')
       .in('id', ids);
-    if (error || !data) return out;
+    if (error || !data) {
+      return { urls: {}, error: error?.message ?? 'Exposure lookup failed' };
+    }
+
+    // An id the select didn't return doesn't exist (or isn't visible) — no
+    // PNG will ever materialize for it, so a null-urls entry is cacheable.
+    const out: Record<number, ExposurePngUrls> = Object.fromEntries(
+      ids.map((i) => [i, { preview: null, full: null } as ExposurePngUrls]),
+    );
 
     const keys = [...new Set(
       data.flatMap((r) => [r.png_path, r.full_png_path].filter(Boolean) as string[]),
     )];
-    if (keys.length === 0) return out;
+    if (keys.length === 0) return { urls: out };
 
     // Resolve each object's home backend from the registry (admin RLS sees all
     // rows); default OSN for anything unregistered — canonical PNGs are OSN.
@@ -238,6 +378,7 @@ export async function presignExposurePngs(
 
     // Presign per key, resilient: one unsignable key doesn't sink the batch.
     const urlByKey = new Map<string, string>();
+    const failedKeys = new Set<string>();
     await Promise.all(keys.map(async (k) => {
       try {
         const backend: DataBackend = backendByKey.get(k) === 'r2' ? 'r2' : 'osn';
@@ -249,18 +390,37 @@ export async function presignExposurePngs(
         urlByKey.set(k, url);
       } catch (err) {
         console.error(`presignExposurePngs: failed to sign ${k}:`, err);
+        failedKeys.add(k);
       }
     }));
 
+    let anyFailed = false;
     for (const r of data) {
-      out[r.id] = {
-        preview: r.png_path ? urlByKey.get(r.png_path) ?? null : null,
-        full: r.full_png_path ? urlByKey.get(r.full_png_path) ?? null : null,
-      };
+      const rowFailed =
+        (r.png_path && failedKeys.has(r.png_path)) ||
+        (r.full_png_path && failedKeys.has(r.full_png_path));
+      if (rowFailed) anyFailed = true;
+      const preview = r.png_path ? urlByKey.get(r.png_path) ?? null : null;
+      const full = r.full_png_path ? urlByKey.get(r.full_png_path) ?? null : null;
+      if (rowFailed && preview === null && full === null) {
+        // Nothing signed for this row — retryable, not "no PNG": omit the id
+        // entirely so the client doesn't cache the failure.
+        delete out[r.id];
+        continue;
+      }
+      // Per-key, not per-row: one unsignable key (e.g. a mixed-backend row
+      // whose other backend is misconfigured) must not sink a URL that DID
+      // sign — the viewer falls back full↔preview on its own.
+      out[r.id] = { preview, full };
     }
-    return out;
-  } catch {
-    return out;
+    return anyFailed
+      ? { urls: out, error: 'Failed to sign some exposure image URLs' }
+      : { urls: out };
+  } catch (err) {
+    return {
+      urls: {},
+      error: err instanceof Error ? err.message : 'Presign failed',
+    };
   }
 }
 
@@ -268,39 +428,12 @@ export async function presignExposurePngs(
 // Update
 // ---------------------------------------------------------------------------
 
-export async function updateExposureReview(
-  id: number,
-  updates: {
-    review_status?: 'pending' | 'approved' | 'excluded';
-    correction?: 'none' | 'needed' | 'done';
-    notes?: string;
-  },
-): Promise<{ exposure: NircamExposure | null; error?: string }> {
-  try {
-    const supabase = await requireAdmin();
-
-    const { data, error } = await supabase
-      .from('nircam_exposures')
-      .update({
-        ...updates,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) {
-      return { exposure: null, error: error.message };
-    }
-
-    return { exposure: data };
-  } catch (err) {
-    return {
-      exposure: null,
-      error: err instanceof Error ? err.message : 'Failed to update exposure',
-    };
-  }
-}
+// Triage review updates (review_status / correction / notes) intentionally
+// have no server action: they go through POST /api/admin/nircam/review via
+// the durable outbox (lib/nircam-review-outbox.ts), which needs a transport
+// with timeout, retry, and keepalive — none of which server actions expose.
+// The route carries the review_decided_at last-writer-wins guard that makes
+// its at-least-once delivery safe.
 
 // ---------------------------------------------------------------------------
 // Mask polygons
@@ -319,7 +452,7 @@ export async function saveExposureMaskRegions(
   regions: MaskRegionsPayload,
 ): Promise<{ exposure: NircamExposure | null; error?: string }> {
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
     const hasPolygons = (regions?.polygons?.length ?? 0) > 0;
 
     const { data, error } = await supabase
@@ -350,28 +483,18 @@ export async function saveExposureMaskRegions(
 // Reduction progress (aggregated view)
 // ---------------------------------------------------------------------------
 
+// One row per (field, filter, detector) — matches the columns of the
+// nircam_reduction_progress view. Callers aggregate back up to filter/field
+// grain; detector grain exists to power per-detector pending quick-filters.
 export interface ReductionProgress {
   field: string;
   filter: string;
+  detector: string;
   total: number;
-  // Per-step counts (matches the columns in the nircam_reduction_progress view)
-  at_uncal: number;
-  at_detector1: number;
-  at_persistence: number;
-  at_wisp: number;
-  at_image2: number;
-  at_edge: number;
-  at_bkg: number;
-  at_diag_striping: number;
-  at_wcs_shift: number;
-  at_preview: number;
-  at_jhat: number;
-  at_apply_mask: number;
-  at_bad_pixel: number;
-  at_outlier: number;
   pending_review: number;
   approved: number;
   excluded: number;
+  masked: number;
   needs_correction: number;
 }
 
@@ -386,7 +509,8 @@ export async function getReductionProgress(): Promise<{
       .from('nircam_reduction_progress')
       .select('*')
       .order('field')
-      .order('filter');
+      .order('filter')
+      .order('detector');
 
     if (error) {
       return { progress: [], error: error.message };
@@ -401,44 +525,11 @@ export async function getReductionProgress(): Promise<{
   }
 }
 
-// ---------------------------------------------------------------------------
-// Excluded exposures (copy-paste source for fields.toml skip=[])
-// ---------------------------------------------------------------------------
-
-export interface ExcludedExposure {
-  field: string;
-  filter: string;
-  filename: string;
-  notes: string | null;
-}
-
-export async function getExcludedExposures(): Promise<{
-  excluded: ExcludedExposure[];
-  error?: string;
-}> {
-  try {
-    const supabase = await requireAdmin();
-
-    const { data, error } = await supabase
-      .from('nircam_exposures')
-      .select('field, filter, filename, notes')
-      .eq('review_status', 'excluded')
-      .order('field')
-      .order('filter')
-      .order('filename');
-
-    if (error) {
-      return { excluded: [], error: error.message };
-    }
-
-    return { excluded: data || [] };
-  } catch (err) {
-    return {
-      excluded: [],
-      error: err instanceof Error ? err.message : 'Failed to fetch excluded exposures',
-    };
-  }
-}
+// The former getExcludedExposures action (copy-paste source for fields.toml
+// skip=[]) is gone: exclusions reach the pipeline automatically via
+// `campfire pull` → reference/nircam/<field>/exposures.json
+// (campfire.deploy.nircam_exclusions.pull_exclusions), which
+// Field._load_excluded_exposures merges into the effective skip list.
 
 // ---------------------------------------------------------------------------
 // Filter options (for dropdowns)
@@ -454,7 +545,7 @@ export async function getExposureFilterOptions(): Promise<{
   error?: string;
 }> {
   try {
-    const supabase = await requireAdmin();
+    const supabase = await requireSession();
 
     const { data, error } = await supabase.rpc('get_admin_exposure_facets');
 

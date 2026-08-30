@@ -23,6 +23,17 @@ export function setCachedExposure(exp: NircamExposure): void {
   cache.set(exp.id, exp);
 }
 
+/**
+ * Drop a row whose cached value can no longer be trusted — e.g. an optimistic
+ * write whose save failed AND whose revert refetch also failed. Deleting beats
+ * leaving the never-persisted row in place: the next visit misses the cache
+ * and refetches the server's truth instead of painting the attempted value as
+ * if it had stuck.
+ */
+export function deleteCachedExposure(id: number): void {
+  cache.delete(id);
+}
+
 export function clearExposureCache(): void {
   cache.clear();
 }
@@ -126,4 +137,114 @@ export function getCachedPngUrls(id: number): ExposurePngUrls | undefined {
 
 export function setCachedPngUrls(id: number, urls: ExposurePngUrls): void {
   pngUrlCache.set(id, { urls, signedAt: Date.now() });
+}
+
+/**
+ * In-flight MASK saves + the most recent save failure.
+ *
+ * Triage review decisions no longer register here — they ride the durable
+ * outbox (lib/nircam-review-outbox.ts), whose queued/acked state is what
+ * readers consult (via overlayReviewDecisions) instead of a suppression
+ * marker. Mask saves still use the plain server-action transport, so their
+ * in-flight ids are tracked here at module scope (surviving the page remount)
+ * for two consumers:
+ *
+ *  - the background revalidation and sibling prefetch, which must not
+ *    overwrite the cache with a row snapshotted before an in-flight mask
+ *    write commits (mask_regions is the one field family the review overlay
+ *    cannot reconstruct); and
+ *  - the beforeunload warning, since an in-flight mask save dies with the
+ *    tab.
+ *
+ * The save-failure banner is shared: mask saves and the outbox both raise it.
+ *
+ * Subscribed via useSyncExternalStore: the snapshot is a monotonic version
+ * counter; consumers read the actual values after the version changes.
+ */
+
+export interface ExposureSaveError {
+  id: number;
+  filename: string;
+  message: string;
+  /**
+   * How the failure should read to the operator. 'retrying' — the outbox
+   * still holds the decision and keeps retrying (transient transport/server
+   * trouble); the banner is informational and clears itself when a retry
+   * lands. 'permanent' (default when absent) — the write was rejected and
+   * dropped; the operator must re-apply the decision.
+   */
+  kind?: 'retrying' | 'permanent';
+}
+
+const pendingSaveIds = new Map<number, number>(); // id → in-flight save count
+let saveError: ExposureSaveError | null = null;
+let saveStateVersion = 0;
+const saveStateListeners = new Set<() => void>();
+
+function emitSaveState(): void {
+  saveStateVersion++;
+  for (const listener of saveStateListeners) listener();
+}
+
+export function subscribeSaveState(listener: () => void): () => void {
+  saveStateListeners.add(listener);
+  return () => saveStateListeners.delete(listener);
+}
+
+export function getSaveStateVersion(): number {
+  return saveStateVersion;
+}
+
+export function hasPendingSave(id: number): boolean {
+  return pendingSaveIds.has(id);
+}
+
+/** Any save still in flight, for the beforeunload "decisions unsaved" guard. */
+export function hasAnyPendingSave(): boolean {
+  return pendingSaveIds.size > 0;
+}
+
+export function beginPendingSave(id: number): void {
+  pendingSaveIds.set(id, (pendingSaveIds.get(id) ?? 0) + 1);
+  emitSaveState();
+}
+
+export function endPendingSave(id: number): void {
+  const n = pendingSaveIds.get(id) ?? 0;
+  if (n > 1) pendingSaveIds.set(id, n - 1);
+  else pendingSaveIds.delete(id);
+  emitSaveState();
+}
+
+export function getSaveError(): ExposureSaveError | null {
+  return saveError;
+}
+
+export function setSaveError(err: ExposureSaveError | null): void {
+  saveError = err;
+  emitSaveState();
+}
+
+/**
+ * Per-exposure save queue for MASK saves: saves for the same row run strictly
+ * in dispatch order. Fire-and-forget flushes mean two mask writes for one
+ * exposure can be in flight together (toolbar Save racing the editor's
+ * auto-flush on navigation); if the transport reordered them, the older
+ * polygons would win in the database and the cache. Chaining per id makes
+ * dispatch order the commit order regardless of transport behavior. Saves
+ * for different exposures stay independent. (Triage review writes don't
+ * queue here — the outbox's review_decided_at last-writer-wins guard handles
+ * their ordering server-side.)
+ */
+const saveQueues = new Map<number, Promise<unknown>>();
+
+export function enqueueSave<T>(id: number, task: () => Promise<T>): Promise<T> {
+  const prev = saveQueues.get(id) ?? Promise.resolve();
+  const run = prev.then(task, task);
+  const tail = run.then(() => undefined, () => undefined);
+  saveQueues.set(id, tail);
+  tail.then(() => {
+    if (saveQueues.get(id) === tail) saveQueues.delete(id);
+  });
+  return run;
 }
