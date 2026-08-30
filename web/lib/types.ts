@@ -781,6 +781,10 @@ export interface BaseActivity {
   type: ActivityType;
   target_db_id: number;
   target_display_id: string;     // e.g., "ember_uds_p4_123456"
+  // Which kind of subject target_display_id names — decides the link route:
+  // 'object' → /nirspec/objects/<id>, 'target' → /nirspec/targets/<id> (the
+  // redirect shim), 'spectrum' ("target/GRATING") has no resolving route.
+  subject_kind: 'target' | 'object' | 'spectrum' | null;
   user_id: string;
   timestamp: string;
   user_profile?: UserProfile;

@@ -32,6 +32,7 @@ interface FeedRow {
   new_value: number | null;
   user_full_name: string | null;
   user_is_group_account: boolean;
+  subject_kind: 'target' | 'object' | 'spectrum' | null;
   total_count: number;
 }
 
@@ -113,6 +114,7 @@ export async function GET(request: NextRequest) {
         id: row.id,
         target_db_id: row.target_db_id,
         target_display_id: row.target_display_id,
+        subject_kind: row.subject_kind,
         user_id: row.user_id,
         timestamp: row.ts,
         user_profile: row.user_id
