@@ -35,7 +35,6 @@ BATCH_SIZE = 500
 
 # ---------------------------------------------------------------------------
 # Filter wavelengths (microns): (pivot, blue_edge, red_edge)
-# Extracted from deploy/campfire_deploy/generate_sed.py
 # ---------------------------------------------------------------------------
 
 FILTER_WAVELENGTHS = {

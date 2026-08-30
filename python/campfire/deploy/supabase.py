@@ -564,7 +564,6 @@ def batch_upsert_objects(
     objects: list[dict],
     field: str,
     force_overwrite: bool,
-    objects_with_sed: set[str] | None = None,
     batch_size: int = 500,
 ) -> int:
     """
@@ -579,7 +578,6 @@ def batch_upsert_objects(
         objects: List of dicts from summary.get_unique_objects()
         field: Field name
         force_overwrite: Whether to reset inspection data
-        objects_with_sed: Set of object_ids that have SED plots
         batch_size: Records per batch
 
     Returns:
@@ -587,8 +585,6 @@ def batch_upsert_objects(
     """
     if not objects:
         return 0, []
-    if objects_with_sed is None:
-        objects_with_sed = set()
 
     target_ids = [o['object_id'] for o in objects]
     existing = check_existing_objects(client, target_ids)
@@ -605,7 +601,6 @@ def batch_upsert_objects(
     for obj in objects:
         oid = obj['object_id']
         is_existing = oid in existing
-        has_sed = oid in objects_with_sed
 
         data = {
             'target_id': oid,
@@ -615,7 +610,6 @@ def batch_upsert_objects(
             'ra': obj['ra'],
             'dec': obj['dec'],
             'redshift_auto': obj['redshift_best'],
-            'has_sed_plot': has_sed,
         }
 
         if is_existing:
@@ -742,23 +736,6 @@ def recompute_target_aggregates(
         total += result.data or 0
 
     return total
-
-
-def update_has_sed_plot(
-    client: Client,
-    target_ids: set[str],
-    batch_size: int = 500,
-) -> int:
-    """Set has_sed_plot = true for the given target IDs."""
-    if not target_ids:
-        return 0
-
-    id_list = list(target_ids)
-    for i in range(0, len(id_list), batch_size):
-        batch = id_list[i:i + batch_size]
-        client.table('targets').update({'has_sed_plot': True}).in_('target_id', batch).execute()
-
-    return len(id_list)
 
 
 def deploy_slits(

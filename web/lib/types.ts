@@ -574,7 +574,6 @@ export interface SpectrumTarget extends DbTarget {
   max_exposure_time?: number;
   num_gratings?: number;
   comments?: CommentWithUser[];
-  hasSedPlot?: boolean;
   parent_object_id?: string;
   // Objects mode fields (populated when viewing objects)
   n_targets?: number;
@@ -605,7 +604,6 @@ export interface ObjectMemberTarget {
   ra: number;
   dec: number;
   redshift_auto: number | null;
-  has_sed_plot: boolean;
   max_snr: number | null;
   max_exposure_time: number | null;
   spectra: Spectrum[];

@@ -327,9 +327,6 @@ export async function getSpectrumById(targetId: string): Promise<{
       ? Math.max(...spectra.map(s => s.signal_to_noise || 0))
       : null;
 
-    // Use has_sed_plot from database (populated during deployment)
-    const hasSedPlot = data.has_sed_plot ?? false;
-
     const spectrumTarget: SpectrumTarget = {
       id: data.id,
       target_id: data.target_id,
@@ -351,7 +348,6 @@ export async function getSpectrumById(targetId: string): Promise<{
       spectra: spectra,
       max_snr: maxSnr ?? undefined,
       num_gratings: spectra.length,
-      hasSedPlot,
       parent_object_id: data.parent_object?.object_id ?? undefined,
     };
 
@@ -500,7 +496,6 @@ export async function getObjectById(objectId: string): Promise<{
       ra: m.ra,
       dec: m.dec,
       redshift_auto: m.redshift_auto,
-      has_sed_plot: m.has_sed_plot ?? false,
       max_snr: m.max_snr,
       max_exposure_time: m.max_exposure_time,
       spectra: m.spectra || [],
