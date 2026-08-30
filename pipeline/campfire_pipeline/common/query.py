@@ -28,6 +28,16 @@ from campfire_layout import Scope, raw_dir as layout_raw_dir, raw_path
 BASE_URL = "https://mast.stsci.edu/search/jwst/api/v0.1"
 
 
+class MastTransientError(RuntimeError):
+    """A MAST query failed in a way that a later re-run is likely to fix.
+
+    Raised only for transient server-side conditions (batches that never
+    stopped timing out, or an empty ``200`` for filesets that exist), never
+    for programming errors — so callers can present it as a re-run hint
+    without swallowing unrelated ``RuntimeError``s.
+    """
+
+
 def _looks_like_float(token):
     """True if ``token`` parses as a Python float (e.g. ``"215.0"``, ``"-3.5"``)."""
     try:
@@ -183,12 +193,14 @@ def search_filesets(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
 
 
 def _list_products_request(batch, headers, max_retries=5, timeout=120):
-    """GET /list_products for one batch with exponential backoff on 429/5xx
-    and on transient network errors (Timeout, ConnectionError).
+    """GET /list_products for one batch with exponential backoff on 429/5xx,
+    on transient network errors (Timeout, ConnectionError), and on an empty
+    ``200`` response for a non-empty batch.
 
     Honours the ``Retry-After`` response header when present; otherwise
     falls back to ``2**attempt`` seconds (1, 2, 4, 8, 16). Raises the
-    underlying exception or HTTPError if all retries are exhausted.
+    underlying exception, HTTPError, or ``MastTransientError`` if all
+    retries are exhausted.
     """
     for attempt in range(max_retries):
         try:
@@ -218,7 +230,25 @@ def _list_products_request(batch, headers, max_retries=5, timeout=120):
             continue
 
         resp.raise_for_status()
-        return resp.json()["products"]
+        products = resp.json()["products"]
+        if batch and not products:
+            # A fileset always has products, so an empty list for a non-empty
+            # batch is a transient failure wearing a success code: under load
+            # (large programs whose product lists take ~30s to build) MAST
+            # intermittently answers 200 with an empty `products` array
+            # instead of a 429/5xx. Back off and retry exactly as for a 429;
+            # if it never fills in, raise so the caller's round loop can
+            # isolate and retry this batch rather than silently dropping its
+            # filesets.
+            if attempt + 1 == max_retries:
+                raise MastTransientError(
+                    f"MAST /list_products returned an empty 200 for all "
+                    f"{len(batch)} fileset(s) in this batch, across "
+                    f"{max_retries} attempts"
+                )
+            time.sleep(float(2 ** attempt) + random.uniform(0, 1))
+            continue
+        return products
     return []  # unreachable; loop above always returns or raises
 
 
@@ -228,14 +258,17 @@ def list_products_batched(filesets, batch_size=25, token=None, workers=4,
 
     Returns a flat list of all product dicts across all filesets. Batches
     are dispatched concurrently via a ThreadPoolExecutor; each request
-    retries on 429 / 5xx with exponential backoff (honouring ``Retry-After``).
+    retries on 429 / 5xx — and on an empty ``200``, which MAST returns
+    intermittently under load for filesets that do have products — with
+    exponential backoff (honouring ``Retry-After``).
 
     A batch that exhausts its per-request retries is isolated rather than
     aborting the whole run: failed batches are collected and retried in up
     to ``max_rounds`` successive rounds, so a few persistently-slow
     ``/list_products`` responses don't discard the batches that already
     succeeded. If batches still fail after the final round, raises
-    ``RuntimeError`` listing how many.
+    ``MastTransientError`` listing how many — an incomplete product list is
+    never returned as if it were the whole answer.
     """
     fileset_names = [f["fileSetName"] for f in filesets]
     if not fileset_names:
@@ -260,7 +293,7 @@ def list_products_batched(filesets, batch_size=25, token=None, workers=4,
                 break
             if round_num > 1:
                 print(f"  Retrying {len(pending)} batch(es) that timed out "
-                      f"(round {round_num}/{max_rounds})...")
+                      f"or came back empty (round {round_num}/{max_rounds})...")
             failed = []
             round_workers = max(1, min(workers, len(pending)))
             with concurrent.futures.ThreadPoolExecutor(
@@ -273,7 +306,8 @@ def list_products_batched(filesets, batch_size=25, token=None, workers=4,
                     for fut in concurrent.futures.as_completed(future_to_batch):
                         try:
                             products = fut.result()
-                        except (requests.RequestException, OSError):
+                        except (requests.RequestException, OSError,
+                                MastTransientError):
                             failed.append(future_to_batch[fut])
                             continue
                         all_products.extend(products)
@@ -285,22 +319,21 @@ def list_products_batched(filesets, batch_size=25, token=None, workers=4,
 
     if pending:
         failed_filesets = sum(len(b) for b in pending)
-        raise RuntimeError(
+        raise MastTransientError(
             f"{len(pending)} of {len(batches)} product-list batches "
             f"({failed_filesets} filesets) still failed after {max_rounds} "
-            f"rounds — MAST /list_products kept timing out. Try re-running "
-            f"the download command, or wait and retry when MAST is less loaded."
+            f"rounds — MAST /list_products kept timing out or answering with "
+            f"an empty 200. Try re-running the download command, or wait and "
+            f"retry when MAST is less loaded."
         )
 
-    # Every batch reported success (HTTP 200), yet not one product came back
-    # for filesets that the search just confirmed exist. That's not a genuine
-    # "no products" result — a fileset always has products — so MAST returned
-    # 200 with an empty `products` list, which it does intermittently when the
-    # endpoint is loaded (large programs whose product lists take ~30s to
-    # build). Treat it as the transient failure it is rather than silently
-    # reporting "no matching files."
+    # Backstop: the per-batch empty-200 check above should already have
+    # failed every batch that contributed nothing, so reaching here with no
+    # products at all means something upstream changed. Either way it is not
+    # a genuine "no products" answer — a fileset the search matched always
+    # has products — so never let it fall through to "No matching files."
     if not all_products:
-        raise RuntimeError(
+        raise MastTransientError(
             f"MAST /list_products returned 0 products for {len(fileset_names)} "
             f"fileset(s) that the search matched — a fileset always has "
             f"products, so this is a transient MAST failure (an empty 200 "

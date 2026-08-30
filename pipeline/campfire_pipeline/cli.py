@@ -179,7 +179,9 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
     reduction can begin while uncal files are still downloading.
     """
     import requests
-    from campfire_pipeline.common.query import download_jwst_data
+    from campfire_pipeline.common.query import (
+        MastTransientError, download_jwst_data,
+    )
 
     instrument_upper = instrument.upper()
 
@@ -239,10 +241,13 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
                 "is rejected by MAST's resolver."
             )
         raise click.ClickException(msg)
-    except RuntimeError as e:
+    except MastTransientError as e:
         # Transient MAST /list_products failures (batches that never stopped
-        # timing out, or an empty 200 for filesets that exist) surface as
-        # RuntimeError with a re-run hint — show it cleanly, not as a traceback.
+        # timing out, or an empty 200 for filesets that exist) carry their own
+        # re-run hint — show it cleanly, not as a traceback. Deliberately not
+        # a bare `except RuntimeError`: every other RuntimeError raised
+        # anywhere under download_jwst_data is a real bug and keeps its
+        # traceback.
         raise click.ClickException(str(e))
     except KeyboardInterrupt:
         click.echo("\n\nInterrupted. Re-run to resume (existing files will be skipped).")

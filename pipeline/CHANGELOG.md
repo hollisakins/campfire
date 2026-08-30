@@ -328,15 +328,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   distinguishable and the subtraction stays invertible.
 
 ### Infrastructure
-- `cfpipe download` no longer silently reports "No matching files found" when
-  MAST's `/list_products` returns an empty `200` for filesets the search just
-  matched. Under load (large programs whose product lists take ~30s to build),
-  MAST intermittently answers `200` with an empty `products` array instead of a
-  429/5xx; the batch was counted as a success and the run exited claiming zero
-  products. `list_products_batched` now raises a re-run-hint `RuntimeError` when
-  a non-empty set of filesets yields zero products, and the `download` CLI
-  catches `RuntimeError` to print it cleanly (this also fixes the pre-existing
-  "batches kept timing out" `RuntimeError` dumping a bare traceback).
+- `cfpipe download` no longer silently drops filesets when MAST's
+  `/list_products` returns an empty `200`. Under load (large programs whose
+  product lists take ~30s to build), MAST intermittently answers `200` with an
+  empty `products` array instead of a 429/5xx; the batch was counted as a
+  success, so the run either exited claiming "No matching files found" or —
+  the commoner case, since the failure is per-request and a large program is
+  split into many batches — downloaded a *subset* and reported success while
+  the affected filesets' uncals were silently absent. An empty `200` for a
+  non-empty batch is now treated exactly like a 429: retried with backoff
+  in-request, then isolated and retried across rounds, and if it never fills
+  in the run fails with a re-run hint instead of returning a partial product
+  list. The two transient MAST failures (this and the pre-existing "batches
+  kept timing out") now raise a dedicated `MastTransientError`, which the
+  `download` CLI catches to print cleanly — a narrow catch, so every other
+  `RuntimeError` under `download_jwst_data` keeps its traceback rather than
+  being mislabelled a MAST hiccup.
 - **A git timeout can no longer masquerade as a version answer (#463).**
   `CMPFRVER` resolution shells out to `git`, and under NFS contention any of
   those calls can time out; each timeout previously fell into a different
