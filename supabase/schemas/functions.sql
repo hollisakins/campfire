@@ -639,6 +639,68 @@ GRANT EXECUTE ON FUNCTION public.objects_matching_grating_filter(TEXT[], TEXT, T
 
 
 -- =============================================================================
+-- objects_matching_observation_filter
+-- =============================================================================
+-- Viewer-scoped observation filtering for the object-level catalog RPCs
+-- (issue #491 — same root cause as #488, on the observations axis).
+--
+-- The stored objects.observations array is computed at deploy time across ALL
+-- member targets — blind to publication status and spanning programs the
+-- viewer may not access (python/campfire/deploy/objects.py). Filtering on it
+-- alone matched objects whose only member in a selected observation is
+-- invisible to the viewer (proprietary program, or draft-only member), while
+-- the displayed row — scoped via object_scoped_aggregates() — hides that
+-- observation. This helper returns the objects.id set with at least one
+-- VISIBLE member target in p_observations: member targets in
+-- p_program_slugs, contributing a published spectrum unless
+-- p_include_unpublished — the same member gate as object_scoped_aggregates
+-- (observations live on targets, so no spectra join is needed; the
+-- denormalized targets.has_published_spectrum is the publication gate).
+-- Observations only need 'any' semantics — there is no mode parameter.
+--
+-- It is set-returning (rather than a per-object boolean) so call sites can
+-- materialize it ONCE per RPC call (`v_observation_object_ids := ARRAY(SELECT
+-- ...)`) and test candidates with a hashed `o.id = ANY(...)`. Call sites also
+-- keep the stored array as an index-backed pre-filter: the stored array is a
+-- superset of every viewer's visible set, so o.observations && p_observations
+-- is a NECESSARY condition. If the deploy-time builder ever narrows what it
+-- aggregates into objects.observations, that superset invariant breaks and
+-- the call-site pre-filters must be revisited.
+--
+-- plpgsql + force_custom_plan for the same reason as
+-- objects_matching_grating_filter: custom plans with the real argument values
+-- pick idx_targets_observation instead of planning symbolically.
+--
+-- Never returns NULL rows (t.object_id IS NOT NULL). Like
+-- object_scoped_aggregates: p_program_slugs must already be access-checked by
+-- the caller — it is the access gate, not RLS. Callers pass the full
+-- accessible p_program_slugs (not the p_filter_programs-narrowed set) to stay
+-- consistent with what the returned rows display.
+CREATE OR REPLACE FUNCTION public.objects_matching_observation_filter(
+  p_observations TEXT[],
+  p_program_slugs TEXT[],
+  p_include_unpublished BOOLEAN DEFAULT false
+)
+RETURNS SETOF INTEGER
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT DISTINCT t.object_id
+  FROM targets t
+  WHERE t.object_id IS NOT NULL
+    AND t.program_slug = ANY(p_program_slugs)
+    AND (p_include_unpublished OR t.has_published_spectrum)
+    AND t.observation = ANY(p_observations);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.objects_matching_observation_filter(TEXT[], TEXT[], BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.objects_matching_observation_filter(TEXT[], TEXT[], BOOLEAN) TO service_role;
+
+
+-- =============================================================================
 -- Device Code Auth
 -- =============================================================================
 
@@ -1633,6 +1695,8 @@ DECLARE
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
   v_grating_object_ids INTEGER[];
+  v_observation_filter_active BOOLEAN;
+  v_observation_object_ids INTEGER[];
   v_list_filter_active BOOLEAN;
   v_list_ids_mode TEXT;
   v_offset INTEGER;
@@ -1697,6 +1761,18 @@ BEGIN
     v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
   END IF;
 
+  -- Issue #491: same once-per-call materialization for the viewer-visible
+  -- observation match set. Scoped to the full accessible p_program_slugs (not
+  -- the p_filter_programs-narrowed set) to stay consistent with what rows
+  -- display — see objects_matching_observation_filter().
+  -- COALESCE: array_length('{}',1) is NULL, and a NULL flag would make the
+  -- NOT-flag predicate below reject every row instead of treating an empty
+  -- selection as no filter (the pre-#491 predicate's explicit behavior).
+  v_observation_filter_active := (p_observations IS NOT NULL AND COALESCE(array_length(p_observations, 1), 0) > 0);
+  IF v_observation_filter_active THEN
+    v_observation_object_ids := ARRAY(SELECT public.objects_matching_observation_filter(p_observations, p_program_slugs, p_include_unpublished));
+  END IF;
+
   -- Step 1: count
   SELECT COUNT(*) INTO v_total_count
   FROM objects o
@@ -1721,7 +1797,16 @@ BEGIN
       OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
           OR NOT (o.id = ANY(v_grating_object_ids))))
     )
-    AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
+    AND (
+      NOT v_observation_filter_active
+      -- Issue #491: the o.observations && test is an index-backed pre-filter
+      -- only (deploy-time aggregate over ALL member targets, unpublished and
+      -- inaccessible programs included); the viewer-visible decision is the
+      -- hashed = ANY over the once-per-call v_observation_object_ids — see
+      -- objects_matching_observation_filter() for the invariants.
+      OR (o.observations && p_observations
+          AND o.id = ANY(v_observation_object_ids))
+    )
     AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
     AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
     AND (p_redshift_max IS NULL OR o.redshift <= p_redshift_max)
@@ -1864,7 +1949,16 @@ BEGIN
         OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
             OR NOT (o.id = ANY(v_grating_object_ids))))
       )
-      AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
+      AND (
+        NOT v_observation_filter_active
+        -- Issue #491: the o.observations && test is an index-backed pre-filter
+        -- only (deploy-time aggregate over ALL member targets, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed = ANY over the once-per-call v_observation_object_ids — see
+        -- objects_matching_observation_filter() for the invariants.
+        OR (o.observations && p_observations
+            AND o.id = ANY(v_observation_object_ids))
+      )
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
       AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
       AND (p_redshift_max IS NULL OR o.redshift <= p_redshift_max)
@@ -2121,6 +2215,8 @@ DECLARE
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
   v_grating_object_ids INTEGER[];
+  v_observation_filter_active BOOLEAN;
+  v_observation_object_ids INTEGER[];
   v_list_filter_active BOOLEAN;
   v_list_ids_mode TEXT;
 BEGIN
@@ -2175,6 +2271,18 @@ BEGIN
     v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
   END IF;
 
+  -- Issue #491: same once-per-call materialization for the viewer-visible
+  -- observation match set. Scoped to the full accessible p_program_slugs (not
+  -- the p_filter_programs-narrowed set) to stay consistent with what rows
+  -- display — see objects_matching_observation_filter().
+  -- COALESCE: array_length('{}',1) is NULL, and a NULL flag would make the
+  -- NOT-flag predicate below reject every row instead of treating an empty
+  -- selection as no filter (the pre-#491 predicate's explicit behavior).
+  v_observation_filter_active := (p_observations IS NOT NULL AND COALESCE(array_length(p_observations, 1), 0) > 0);
+  IF v_observation_filter_active THEN
+    v_observation_object_ids := ARRAY(SELECT public.objects_matching_observation_filter(p_observations, p_program_slugs, p_include_unpublished));
+  END IF;
+
   RETURN QUERY
   SELECT o.object_id
   FROM objects o
@@ -2197,7 +2305,16 @@ BEGIN
       OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
           OR NOT (o.id = ANY(v_grating_object_ids))))
     )
-    AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
+    AND (
+      NOT v_observation_filter_active
+      -- Issue #491: the o.observations && test is an index-backed pre-filter
+      -- only (deploy-time aggregate over ALL member targets, unpublished and
+      -- inaccessible programs included); the viewer-visible decision is the
+      -- hashed = ANY over the once-per-call v_observation_object_ids — see
+      -- objects_matching_observation_filter() for the invariants.
+      OR (o.observations && p_observations
+          AND o.id = ANY(v_observation_object_ids))
+    )
     AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
     AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
     AND (p_redshift_max IS NULL OR o.redshift <= p_redshift_max)
@@ -2367,6 +2484,8 @@ DECLARE
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
   v_grating_object_ids INTEGER[];
+  v_observation_filter_active BOOLEAN;
+  v_observation_object_ids INTEGER[];
   v_list_filter_active BOOLEAN;
   v_list_ids_mode TEXT;
   v_sort_is_text BOOLEAN;
@@ -2415,6 +2534,18 @@ BEGIN
     v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
   END IF;
 
+  -- Issue #491: same once-per-call materialization for the viewer-visible
+  -- observation match set. Scoped to the full accessible p_program_slugs (not
+  -- the p_filter_programs-narrowed set) to stay consistent with what rows
+  -- display — see objects_matching_observation_filter().
+  -- COALESCE: array_length('{}',1) is NULL, and a NULL flag would make the
+  -- NOT-flag predicate below reject every row instead of treating an empty
+  -- selection as no filter (the pre-#491 predicate's explicit behavior).
+  v_observation_filter_active := (p_observations IS NOT NULL AND COALESCE(array_length(p_observations, 1), 0) > 0);
+  IF v_observation_filter_active THEN
+    v_observation_object_ids := ARRAY(SELECT public.objects_matching_observation_filter(p_observations, p_program_slugs, p_include_unpublished));
+  END IF;
+
   RETURN QUERY
   WITH filtered_objects AS MATERIALIZED (
     SELECT
@@ -2448,7 +2579,16 @@ BEGIN
         OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
             OR NOT (o.id = ANY(v_grating_object_ids))))
       )
-      AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
+      AND (
+        NOT v_observation_filter_active
+        -- Issue #491: the o.observations && test is an index-backed pre-filter
+        -- only (deploy-time aggregate over ALL member targets, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed = ANY over the once-per-call v_observation_object_ids — see
+        -- objects_matching_observation_filter() for the invariants.
+        OR (o.observations && p_observations
+            AND o.id = ANY(v_observation_object_ids))
+      )
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
       AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
       AND (p_redshift_max IS NULL OR o.redshift <= p_redshift_max)

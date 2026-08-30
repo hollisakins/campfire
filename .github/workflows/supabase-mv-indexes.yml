@@ -7,8 +7,10 @@ name: Supabase schema guards
 #   not track MV indexes, so a migra-generated drop/recreate can silently
 #   strip them).
 # - check_object_aggregate_scoping.sql / check_grating_filter_scoping.sql /
-#   check_share_link_scoping.sql: viewer-scoping invariants on the catalog
-#   RPCs (anti-leak aggregates, issue-#488 grating filtering, share links).
+#   check_observation_filter_scoping.sql / check_share_link_scoping.sql:
+#   viewer-scoping invariants on the catalog RPCs (anti-leak aggregates,
+#   issue-#488 grating filtering, issue-#491 observation filtering, share
+#   links).
 
 on:
   pull_request:
