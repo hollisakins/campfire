@@ -20,10 +20,20 @@ ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
 
 -- All authenticated users can read all profiles (needed for comment author
 -- names, inspection tracking "last inspected by", admin user list).
+--
+-- EXCEPT link accounts (docs/design-public-mirror.md §5.4), which see only
+-- themselves. This is the sharpest edge in the whole share-link feature: a link
+-- account is a real authenticated principal, so without this conjunct handing
+-- someone a share link would also hand them the name and username of every
+-- CAMPFIRE user. It reads its own row so AuthContext can resolve
+-- is_link_account and strip the nav.
 DROP POLICY IF EXISTS "authenticated_select_profiles" ON user_profiles;
 CREATE POLICY "authenticated_select_profiles"
   ON user_profiles FOR SELECT TO authenticated
-  USING (true);
+  USING (
+    (SELECT NOT public.is_link_account())
+    OR user_id = (SELECT auth.uid())
+  );
 
 -- Users can update their own profile (name, preferences).
 DROP POLICY IF EXISTS "self_update_profile" ON user_profiles;
@@ -91,12 +101,21 @@ ALTER TABLE programs ENABLE ROW LEVEL SECURITY;
 
 -- Public programs visible to all authenticated users.
 -- Private programs visible only to users with explicit access.
+--
+-- Link accounts (docs/design-public-mirror.md §5.4) see only the program their
+-- scope belongs to -- accessible_program_slugs() already excludes the is_public
+-- union for them, and this policy has to say the same thing directly since it
+-- predates that helper and tests is_public inline.
 DROP POLICY IF EXISTS "accessible_programs_select" ON programs;
 CREATE POLICY "accessible_programs_select"
   ON programs FOR SELECT TO authenticated
   USING (
-    is_public = true
-    OR slug IN (SELECT program_slug FROM user_program_access WHERE user_id = (SELECT auth.uid()))
+    CASE WHEN (SELECT public.is_link_account()) THEN
+      slug = ANY((SELECT public.accessible_program_slugs())::text[])
+    ELSE
+      is_public = true
+      OR slug IN (SELECT program_slug FROM user_program_access WHERE user_id = (SELECT auth.uid()))
+    END
   );
 
 -- Admins can see all programs (including private ones without access).
@@ -128,15 +147,30 @@ ALTER TABLE fields ENABLE ROW LEVEL SECURITY;
 -- A field is visible once it has at least one published NIRCam mosaic — mirrors
 -- the deploy_status gate on nircam_images so a field's config (name, filters,
 -- tangent point) is not exposed while its data is still draft. Admins see all.
+--
+-- Link accounts (docs/design-public-mirror.md §5.3) see only their own field's
+-- config row, and only when the link may see some mosaic of it -- an
+-- include_drafts link can see a field whose data is still entirely in prep,
+-- which is exactly the "shared but not published" case.
 DROP POLICY IF EXISTS "accessible_fields_select" ON fields;
 CREATE POLICY "accessible_fields_select"
   ON fields FOR SELECT TO authenticated
   USING (
-    EXISTS (
-      SELECT 1 FROM nircam_images ni
-      WHERE ni.field = fields.name AND ni.deploy_status = 'published'
-    )
-    OR (SELECT public.is_admin())
+    CASE WHEN (SELECT public.is_link_account()) THEN
+      name = (SELECT public.link_field())
+      AND EXISTS (
+        SELECT 1 FROM nircam_images ni
+        WHERE ni.field = fields.name
+          AND (ni.deploy_status = 'published'
+               OR (ni.deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
+      )
+    ELSE
+      EXISTS (
+        SELECT 1 FROM nircam_images ni
+        WHERE ni.field = fields.name AND ni.deploy_status = 'published'
+      )
+      OR (SELECT public.is_admin())
+    END
   );
 
 -- Admins can insert/update fields (deploy CLI: sync-fields + nircam deploy).
@@ -159,11 +193,15 @@ CREATE POLICY "admin_fields_update"
 ALTER TABLE observations ENABLE ROW LEVEL SECURITY;
 
 -- Observations visible if the parent program is accessible.
+-- Share links (docs/design-public-mirror.md §5.2): a link sees only the one
+-- observation it was minted for, not its program's siblings.
 DROP POLICY IF EXISTS "accessible_observations_select" ON observations;
 CREATE POLICY "accessible_observations_select"
   ON observations FOR SELECT TO authenticated
   USING (
     program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+    AND ((SELECT NOT public.is_link_account())
+         OR name = (SELECT public.link_observation()))
   );
 
 -- Admins can insert observations (deploy CLI).
@@ -195,7 +233,14 @@ CREATE POLICY "select_targets_by_access"
     -- B1 (#217): hide targets whose only spectra are unpublished. Covers the
     -- target-derived readers that never join spectra (map markers, sed-plot,
     -- /api/targets/[id], tile-thumbnail). Admins see all.
-    AND (has_published_spectrum OR (SELECT public.is_admin()))
+    AND (has_published_spectrum OR (SELECT public.is_admin())
+         OR (SELECT public.link_sees_drafts()))
+    -- Share links (docs/design-public-mirror.md §5.2): narrow from the whole
+    -- program to the one shared observation. accessible_program_slugs() already
+    -- pinned a link to its scope's program, but a program can hold many
+    -- observations and only one of them was shared.
+    AND ((SELECT NOT public.is_link_account())
+         OR observation = (SELECT public.link_observation()))
   );
 
 -- Users with can_inspect permission can update targets in accessible programs.
@@ -246,7 +291,17 @@ CREATE POLICY "select_objects_by_access"
     programs && (SELECT public.accessible_program_slugs())
     -- B1 (#217): hide objects whose only member spectra are unpublished. Admins
     -- see all. has_published_spectrum is recomputed by reconcile from members.
-    AND (has_published_spectrum OR (SELECT public.is_admin()))
+    AND (has_published_spectrum OR (SELECT public.is_admin())
+         OR (SELECT public.link_sees_drafts()))
+    -- Share links (docs/design-public-mirror.md §5.2). Array-overlap form: an
+    -- object is a cross-observation merge, so it is in scope when the shared
+    -- observation is ANY of its members. The object's OTHER members stay hidden
+    -- at the target/spectrum level, so a link sees the object as a stub carrying
+    -- only its own observation's spectra -- which is the intended behaviour, not
+    -- an accident: the colleague sees their reduction of a source, not everyone
+    -- else's.
+    AND ((SELECT NOT public.is_link_account())
+         OR observations && ARRAY[(SELECT public.link_observation())]::text[])
   );
 
 -- Admins can insert objects (deploy CLI: objects rebuild).
@@ -300,6 +355,9 @@ CREATE POLICY "admin_objects_delete"
 ALTER TABLE object_photometry ENABLE ROW LEVEL SECURITY;
 
 -- Photometry visible if the linked object is accessible.
+-- The object subquery mirrors select_objects_by_access, including its share-link
+-- conjuncts (docs/design-public-mirror.md §5.2). Re-derived inline rather than
+-- inherited, matching how this policy already re-derives the program check.
 DROP POLICY IF EXISTS "select_object_photometry_by_access" ON object_photometry;
 CREATE POLICY "select_object_photometry_by_access"
   ON object_photometry FOR SELECT
@@ -308,7 +366,10 @@ CREATE POLICY "select_object_photometry_by_access"
       SELECT o.id FROM objects o
       WHERE o.programs && (SELECT public.accessible_program_slugs())
         -- B1 (#217): no photometry for objects with no published spectrum.
-        AND (o.has_published_spectrum OR (SELECT public.is_admin()))
+        AND (o.has_published_spectrum OR (SELECT public.is_admin())
+             OR (SELECT public.link_sees_drafts()))
+        AND ((SELECT NOT public.is_link_account())
+             OR o.observations && ARRAY[(SELECT public.link_observation())]::text[])
     )
   );
 
@@ -338,13 +399,31 @@ CREATE POLICY "admin_object_photometry_delete"
 
 ALTER TABLE object_lists ENABLE ROW LEVEL SECURITY;
 
--- Users can see: their own lists + public lists + public_edit lists.
+-- Users can see: their own lists + public lists + public_edit lists + lists
+-- shared with them (issue #450). viewable_list_ids() (SECURITY DEFINER,
+-- functions.sql) is the single authority for that predicate.
+--
+-- The direct created_by disjunct is NOT redundant with viewable_list_ids()
+-- (issue #469): SELECT policies are also enforced on rows returned by
+-- INSERT ... RETURNING, and viewable_list_ids() is STABLE, so it runs under
+-- the statement's snapshot and cannot see the row being inserted. Without the
+-- direct check, createList's insert().select() fails with an RLS violation
+-- for every non-admin. Evaluated against the candidate row itself, the
+-- disjunct passes for owned rows (and short-circuits the function call).
+--
+-- Link accounts (docs/design-public-mirror.md §5.4) see no lists at all. A list
+-- is a curation artifact of the CAMPFIRE community, not part of a data scope --
+-- its name and description would leak collaborators' working notes to an
+-- outside viewer. Members are separately gated (select_list_members).
 DROP POLICY IF EXISTS "select_lists" ON object_lists;
 CREATE POLICY "select_lists"
   ON object_lists FOR SELECT TO authenticated
   USING (
-    created_by = (SELECT auth.uid())
-    OR visibility IN ('public_read', 'public_edit')
+    (SELECT NOT public.is_link_account())
+    AND (
+      created_by = (SELECT auth.uid())
+      OR id IN (SELECT public.viewable_list_ids())
+    )
   );
 
 -- Users can create lists (owned by them, non-system, non-group-account).
@@ -385,24 +464,22 @@ CREATE POLICY "admin_manage_lists"
 ALTER TABLE object_list_members ENABLE ROW LEVEL SECURITY;
 
 -- Members visible if:
---   1. The list is visible to the user, AND
+--   1. The list is visible to the user (owner / public / shared), AND
 --   2. The matched object (if any) has at least one accessible program
--- Members with NULL object_id (orphaned) are visible to the list owner
--- OR to anyone if the list is public_edit (so co-editors can see orphans).
+-- Members with NULL object_id (orphaned) are visible to anyone who can edit
+-- the list's members (owner, public_edit, editor-role share) — co-editors
+-- need to see orphans; read-only viewers don't.
+-- Link accounts (docs/design-public-mirror.md §5.4) see no list members: they
+-- see no lists at all (select_lists), and membership would leak which sources
+-- CAMPFIRE users have curated together.
 DROP POLICY IF EXISTS "select_list_members" ON object_list_members;
 CREATE POLICY "select_list_members"
   ON object_list_members FOR SELECT TO authenticated
   USING (
-    list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility IN ('public_read', 'public_edit')
-    )
+    (SELECT NOT public.is_link_account())
+    AND list_id IN (SELECT public.viewable_list_ids())
     AND (
-      (object_id IS NULL AND list_id IN (
-        SELECT id FROM object_lists
-        WHERE created_by = (SELECT auth.uid()) OR visibility = 'public_edit'
-      ))
+      (object_id IS NULL AND list_id IN (SELECT public.member_editable_list_ids()))
       OR object_id IN (
         SELECT o.id FROM objects o
         WHERE o.programs && (SELECT public.accessible_program_slugs())
@@ -413,52 +490,37 @@ CREATE POLICY "select_list_members"
     )
   );
 
--- can_comment users can add members to own lists + public_edit lists.
+-- can_comment users can add members to own lists + public_edit lists +
+-- editor-role shared lists.
 DROP POLICY IF EXISTS "insert_list_members" ON object_list_members;
 CREATE POLICY "insert_list_members"
   ON object_list_members FOR INSERT TO authenticated
   WITH CHECK (
     (SELECT public.can_comment())
-    AND list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility = 'public_edit'
-    )
+    AND list_id IN (SELECT public.member_editable_list_ids())
   );
 
--- can_comment users can update members in own lists + public_edit lists
+-- can_comment users can update members in member-editable lists
 -- (needed for upsert ON CONFLICT DO UPDATE when re-linking coordinate entries).
 DROP POLICY IF EXISTS "update_list_members" ON object_list_members;
 CREATE POLICY "update_list_members"
   ON object_list_members FOR UPDATE TO authenticated
   USING (
     (SELECT public.can_comment())
-    AND list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility = 'public_edit'
-    )
+    AND list_id IN (SELECT public.member_editable_list_ids())
   )
   WITH CHECK (
     (SELECT public.can_comment())
-    AND list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility = 'public_edit'
-    )
+    AND list_id IN (SELECT public.member_editable_list_ids())
   );
 
--- can_comment users can remove members from own lists + public_edit lists.
+-- can_comment users can remove members from member-editable lists.
 DROP POLICY IF EXISTS "delete_list_members" ON object_list_members;
 CREATE POLICY "delete_list_members"
   ON object_list_members FOR DELETE TO authenticated
   USING (
     (SELECT public.can_comment())
-    AND list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility = 'public_edit'
-    )
+    AND list_id IN (SELECT public.member_editable_list_ids())
   );
 
 -- Admins can manage all list members.
@@ -474,22 +536,90 @@ CREATE POLICY "admin_manage_list_members"
 
 ALTER TABLE list_audit_log ENABLE ROW LEVEL SECURITY;
 
--- Audit log visible if the parent list is visible.
+-- Audit log visible if the parent list is visible (owner / public / shared).
+-- Link accounts see no lists (select_lists), so the same conjunct keeps their
+-- edit history hidden too -- restated here rather than inherited, matching how
+-- every other policy in this file re-derives its access check inline.
 DROP POLICY IF EXISTS "select_list_audit" ON list_audit_log;
 CREATE POLICY "select_list_audit"
   ON list_audit_log FOR SELECT TO authenticated
   USING (
-    list_id IN (
-      SELECT id FROM object_lists
-      WHERE created_by = (SELECT auth.uid())
-         OR visibility IN ('public_read', 'public_edit')
-    )
+    (SELECT NOT public.is_link_account())
+    AND list_id IN (SELECT public.viewable_list_ids())
   );
 
 -- Admins can see all list audit entries.
 DROP POLICY IF EXISTS "admin_select_list_audit" ON list_audit_log;
 CREATE POLICY "admin_select_list_audit"
   ON list_audit_log FOR SELECT TO authenticated
+  USING ((SELECT public.is_admin()));
+
+
+-- =============================================================================
+-- object_list_shares  (tag sharing, issue #450)
+-- =============================================================================
+-- NOTE: policies here reference object_lists via plain subqueries; that is
+-- safe from RLS recursion because the object_lists policies reach shares only
+-- through the SECURITY DEFINER helpers (viewable_list_ids et al.), which do
+-- not re-enter policy evaluation.
+
+ALTER TABLE object_list_shares ENABLE ROW LEVEL SECURITY;
+
+-- Grantees see their own share rows; list owners see all shares on their lists.
+DROP POLICY IF EXISTS "select_list_shares" ON object_list_shares;
+CREATE POLICY "select_list_shares"
+  ON object_list_shares FOR SELECT TO authenticated
+  USING (
+    user_id = (SELECT auth.uid())
+    OR list_id IN (
+      SELECT id FROM object_lists WHERE created_by = (SELECT auth.uid())
+    )
+  );
+
+-- Only the list owner grants shares, on their own non-system lists. granted_by
+-- is stamped with the grantor; self-shares are pointless and disallowed.
+DROP POLICY IF EXISTS "insert_list_shares" ON object_list_shares;
+CREATE POLICY "insert_list_shares"
+  ON object_list_shares FOR INSERT TO authenticated
+  WITH CHECK (
+    granted_by = (SELECT auth.uid())
+    AND user_id <> (SELECT auth.uid())
+    AND list_id IN (
+      SELECT id FROM object_lists
+      WHERE created_by = (SELECT auth.uid()) AND is_system = false
+    )
+  );
+
+-- Only the list owner changes a share's role.
+DROP POLICY IF EXISTS "update_list_shares" ON object_list_shares;
+CREATE POLICY "update_list_shares"
+  ON object_list_shares FOR UPDATE TO authenticated
+  USING (
+    list_id IN (
+      SELECT id FROM object_lists WHERE created_by = (SELECT auth.uid())
+    )
+  )
+  WITH CHECK (
+    list_id IN (
+      SELECT id FROM object_lists WHERE created_by = (SELECT auth.uid())
+    )
+  );
+
+-- The list owner revokes shares; grantees can remove their own share (leave).
+DROP POLICY IF EXISTS "delete_list_shares" ON object_list_shares;
+CREATE POLICY "delete_list_shares"
+  ON object_list_shares FOR DELETE TO authenticated
+  USING (
+    user_id = (SELECT auth.uid())
+    OR list_id IN (
+      SELECT id FROM object_lists WHERE created_by = (SELECT auth.uid())
+    )
+  );
+
+-- Admins can manage all shares.
+DROP POLICY IF EXISTS "admin_manage_list_shares" ON object_list_shares;
+CREATE POLICY "admin_manage_list_shares"
+  ON object_list_shares
   USING ((SELECT public.is_admin()));
 
 
@@ -512,7 +642,13 @@ CREATE POLICY "select_spectra_by_access"
     -- 'draft' and 'revoked' are hidden. This is the sole gate for the user-client
     -- web routes that read spectra directly and never call an RPC (/api/spectrum,
     -- /api/download, /api/redshift-fit, /api/spectrum-thumbnail). Admins see all.
-    AND (deploy_status = 'published' OR (SELECT public.is_admin()))
+    --
+    -- ...and, since share links (docs/design-public-mirror.md §6), an
+    -- include_drafts link account -- but only for rows already inside its scope,
+    -- which the targets subquery above enforces. 'revoked' stays hidden from
+    -- links too: link_sees_drafts() relaxes the gate to draft, never past it.
+    AND (deploy_status = 'published' OR (SELECT public.is_admin())
+         OR (deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
   );
 
 -- Admins can insert spectra (deploy CLI).
@@ -569,23 +705,31 @@ CREATE POLICY "update_spectra_dq_by_access"
 ALTER TABLE comments ENABLE ROW LEVEL SECURITY;
 
 -- Comments visible if their parent target or object is in an accessible program.
+-- Link accounts (docs/design-public-mirror.md §5.4) see no comments at all.
+-- Unlike photometry, a comment is not part of the data -- it is CAMPFIRE users
+-- talking to each other about a source, often candidly and often about sources
+-- the link holder can legitimately see. Scoping it to the shared observation
+-- would still expose that discussion, so deny outright rather than narrow.
 DROP POLICY IF EXISTS "select_comments_by_access" ON comments;
 CREATE POLICY "select_comments_by_access"
   ON comments FOR SELECT
   USING (
-    -- Target-level comments
-    (target_id IS NOT NULL AND target_id IN (
-      SELECT t.id FROM targets t
-      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
-        AND (t.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
-    ))
-    OR
-    -- Object-level comments
-    (target_id IS NULL AND object_id IS NOT NULL AND object_id IN (
-      SELECT o.id FROM objects o
-      WHERE o.programs && (SELECT public.accessible_program_slugs())
-        AND (o.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
-    ))
+    (SELECT NOT public.is_link_account())
+    AND (
+      -- Target-level comments
+      (target_id IS NOT NULL AND target_id IN (
+        SELECT t.id FROM targets t
+        WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+          AND (t.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
+      ))
+      OR
+      -- Object-level comments
+      (target_id IS NULL AND object_id IS NOT NULL AND object_id IN (
+        SELECT o.id FROM objects o
+        WHERE o.programs && (SELECT public.accessible_program_slugs())
+          AND (o.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
+      ))
+    )
   );
 
 -- Users with can_comment permission can insert comments on accessible targets or objects.
@@ -619,26 +763,33 @@ ALTER TABLE flag_audit_log ENABLE ROW LEVEL SECURITY;
 -- Audit log visible if the parent target/object/spectrum is in an accessible
 -- program. Rows now point at exactly one of the three subject columns
 -- (enforced by the table check constraint), so we OR across them.
+-- Link accounts (docs/design-public-mirror.md §5.4) see no audit history, for
+-- the same reason they see no comments: it is a record of CAMPFIRE users'
+-- inspection decisions (who changed what quality flag, when), not data about
+-- the scope.
 DROP POLICY IF EXISTS "select_audit_by_access" ON flag_audit_log;
 CREATE POLICY "select_audit_by_access"
   ON flag_audit_log FOR SELECT
   USING (
-    (target_id IS NOT NULL AND target_id IN (
-      SELECT t.id FROM targets t
-      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
-        AND (t.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
-    ))
-    OR (object_id IS NOT NULL AND object_id IN (
-      SELECT o.id FROM objects o
-      WHERE o.programs && (SELECT public.accessible_program_slugs())
-        AND (o.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
-    ))
-    OR (spectrum_id IS NOT NULL AND spectrum_id IN (
-      SELECT s.id FROM spectra s
-      JOIN targets t ON t.target_id = s.target_id
-      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
-        AND (s.deploy_status = 'published' OR (SELECT public.is_admin()))  -- B1 (#217)
-    ))
+    (SELECT NOT public.is_link_account())
+    AND (
+      (target_id IS NOT NULL AND target_id IN (
+        SELECT t.id FROM targets t
+        WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+          AND (t.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
+      ))
+      OR (object_id IS NOT NULL AND object_id IN (
+        SELECT o.id FROM objects o
+        WHERE o.programs && (SELECT public.accessible_program_slugs())
+          AND (o.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
+      ))
+      OR (spectrum_id IS NOT NULL AND spectrum_id IN (
+        SELECT s.id FROM spectra s
+        JOIN targets t ON t.target_id = s.target_id
+        WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+          AND (s.deploy_status = 'published' OR (SELECT public.is_admin()))  -- B1 (#217)
+      ))
+    )
   );
 
 -- Authenticated users can insert audit entries when they have access to the
@@ -677,10 +828,23 @@ ALTER TABLE nircam_images ENABLE ROW LEVEL SECURITY;
 -- Published mosaics are public science (a field spans multiple programs, so there
 -- is no per-program scope — published => visible to everyone); draft/revoked are
 -- admin-only (epic #261, N2). Mirrors the spectra deploy_status gate.
+-- Link accounts (docs/design-public-mirror.md §5.3) see only their own field's
+-- mosaics, plus that field's drafts when the link opted in. NIRCam carries no
+-- program gating at all -- a field spans programs, so accessible_program_slugs()
+-- has nothing to say here -- which makes the field name the ONLY thing standing
+-- between a link and every published mosaic in the archive.
 DROP POLICY IF EXISTS "authenticated_select_nircam" ON nircam_images;
 CREATE POLICY "authenticated_select_nircam"
   ON nircam_images FOR SELECT TO authenticated
-  USING (deploy_status = 'published' OR (SELECT public.is_admin()));
+  USING (
+    CASE WHEN (SELECT public.is_link_account()) THEN
+      field = (SELECT public.link_field())
+      AND (deploy_status = 'published'
+           OR (deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
+    ELSE
+      deploy_status = 'published' OR (SELECT public.is_admin())
+    END
+  );
 
 -- Admins write the mosaic index. The NIRCam mosaic deploy (`campfire deploy
 -- --field`) runs in login mode through RLS and upserts these rows
@@ -857,30 +1021,52 @@ CREATE POLICY "admin_select_storage_objects"
 -- status). Drafts/revoked and out-of-program rows stay hidden (admins see them via
 -- admin_select_storage_objects above). Rows with neither a spectrum_id nor a
 -- deployment_id (e.g. backfilled NIRCam) are admin-only until those land.
+--
+-- Share links (docs/design-public-mirror.md §5.2/§5.3) enter here in two ways.
+-- allow_download gates the whole policy: a link minted with downloads off sees
+-- catalog rows and plots but cannot presign a single byte, because every
+-- download path in the portal and the API runs through storage_objects. Then
+-- each branch is narrowed to the link's own scope -- spectrum-family rows by
+-- their target's observation, deployment-level rows by the deployment's scope.
+--
+-- The `d.field IS NOT NULL` shortcut below is load-bearing for the opposite
+-- reason it usually is: a published field deployment is public to every
+-- CAMPFIRE user precisely because it has no program scope, which means the link
+-- narrowing here is the ONLY thing keeping a field link off every other field's
+-- FITS.
 DROP POLICY IF EXISTS "select_storage_objects_by_access" ON storage_objects;
 CREATE POLICY "select_storage_objects_by_access"
   ON storage_objects FOR SELECT TO authenticated
   USING (
     status = 'active'
+    AND ((SELECT NOT public.is_link_account())
+         OR (SELECT public.link_allows_download()))
     AND (
       (storage_objects.spectrum_id IS NOT NULL AND EXISTS (
          SELECT 1 FROM spectra s
          JOIN targets t ON t.target_id = s.target_id
          WHERE s.spectrum_id = storage_objects.spectrum_id
-           AND s.deploy_status = 'published'
-           AND t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])))
+           AND (s.deploy_status = 'published'
+                OR (s.deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
+           AND t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+           AND ((SELECT NOT public.is_link_account())
+                OR t.observation = (SELECT public.link_observation()))))
       OR
       (storage_objects.spectrum_id IS NULL AND storage_objects.deployment_id IS NOT NULL AND EXISTS (
          SELECT 1 FROM deployments d
          LEFT JOIN observations o ON o.name = d.observation
          WHERE d.id = storage_objects.deployment_id
-           AND d.status = 'published'
+           AND (d.status = 'published'
+                OR (d.status = 'draft' AND (SELECT public.link_sees_drafts())))
            AND (
              -- NIRCam field-scoped deploy (epic #261, N1): a field spans multiple
              -- programs, so there is no per-program scope — a published field
              -- deployment is public to everyone. Draft/revoked stay admin-only.
              d.field IS NOT NULL
-             OR o.program_slug = ANY((SELECT public.accessible_program_slugs())::text[]))))
+             OR o.program_slug = ANY((SELECT public.accessible_program_slugs())::text[]))
+           AND ((SELECT NOT public.is_link_account())
+                OR d.observation = (SELECT public.link_observation())
+                OR d.field = (SELECT public.link_field()))))
     )
   );
 
@@ -918,10 +1104,20 @@ CREATE POLICY "authenticated_select_flags"
 ALTER TABLE map_layers ENABLE ROW LEVEL SECURITY;
 
 -- All authenticated users can read map layers.
+--
+-- A link account (docs/design-public-mirror.md §5.3) sees only its own field's
+-- layers. The tiles themselves are served from a public CDN base URL with no
+-- auth, so this controls which layers are DISCOVERABLE -- exactly the same
+-- protection every other user has, no more and no less. An observation-scoped
+-- link gets nothing here: link_field() is NULL for it, and NULL = field is
+-- never true.
 DROP POLICY IF EXISTS "Authenticated users can read map layers" ON map_layers;
 CREATE POLICY "Authenticated users can read map layers"
   ON map_layers FOR SELECT TO authenticated
-  USING (true);
+  USING (
+    (SELECT NOT public.is_link_account())
+    OR field = (SELECT public.link_field())
+  );
 
 -- Admins have full access to map layers (deploy CLI: tile registration).
 DROP POLICY IF EXISTS "admin_map_layers_all" ON map_layers;
@@ -953,12 +1149,25 @@ ALTER TABLE fitsgl_datasets ENABLE ROW LEVEL SECURITY;
 -- SECURITY DEFINER fitsgl_dataset_is_public() so it can see the draft rows a
 -- non-admin's own RLS would hide (mirrors how the PNG map only shows deliberately-
 -- published tiles). Admins see every dataset.
+-- Link accounts (docs/design-public-mirror.md §5.3) see only their own field's
+-- datasets. The is_public derivation still applies on top: a link account is not
+-- an admin, so a composite mixing published and draft mosaics stays hidden the
+-- same way it does for everyone else. Deliberately NOT relaxed for
+-- include_drafts links -- fitsgl_dataset_is_public() guards a pyramid built from
+-- ALL the dataset's backing mosaics, and there is no per-link way to serve a
+-- partially-draft pyramid without leaking the draft imagery wholesale.
 DROP POLICY IF EXISTS "authenticated_select_fitsgl_datasets" ON fitsgl_datasets;
 CREATE POLICY "authenticated_select_fitsgl_datasets"
   ON fitsgl_datasets FOR SELECT TO authenticated
   USING (
-    (SELECT public.is_admin())
-    OR public.fitsgl_dataset_is_public(field, tiles, bands, pixel_scale)
+    (
+      (SELECT NOT public.is_link_account())
+      OR field = (SELECT public.link_field())
+    )
+    AND (
+      (SELECT public.is_admin())
+      OR public.fitsgl_dataset_is_public(field, tiles, bands, pixel_scale)
+    )
   );
 
 -- Admins have full access (login-mode deploy CLI upserts through RLS).
@@ -987,14 +1196,28 @@ ALTER TABLE slit_regions ENABLE ROW LEVEL SECURITY;
 -- hidden only when a matching objects row exists AND is unpublished — orphan
 -- slits (no objects row) stay visible, so there is zero change while everything
 -- is published. Program-scoping of this table is tracked in #229.
+-- Link accounts (docs/design-public-mirror.md §5.2) see only their own
+-- observation's slits. This policy has no program gate at all -- it is
+-- admin-or-not-unpublished -- so without the scope conjunct a NIRSpec link would
+-- expose slit geometry for every observation in the archive. The table carries
+-- `observation` directly (fk_slit_regions_observation), so the narrowing is a
+-- plain equality; a field-scoped link gets nothing, since link_observation() is
+-- NULL for it.
 DROP POLICY IF EXISTS "Authenticated users can view slit regions" ON slit_regions;
 CREATE POLICY "Authenticated users can view slit regions"
   ON slit_regions FOR SELECT TO authenticated
   USING (
-    (SELECT public.is_admin())
-    OR NOT EXISTS (
-      SELECT 1 FROM objects o
-      WHERE o.object_id = slit_regions.object_id AND o.has_published_spectrum = false
+    (
+      (SELECT NOT public.is_link_account())
+      OR observation = (SELECT public.link_observation())
+    )
+    AND (
+      (SELECT public.is_admin())
+      OR (SELECT public.link_sees_drafts())
+      OR NOT EXISTS (
+        SELECT 1 FROM objects o
+        WHERE o.object_id = slit_regions.object_id AND o.has_published_spectrum = false
+      )
     )
   );
 
@@ -1023,14 +1246,24 @@ ALTER TABLE shutters ENABLE ROW LEVEL SECURITY;
 -- zero change while everything is published. NOTE: the /api/v1/shutters route and
 -- the get_*_shutters RPCs run under the service role (RLS bypassed) and gate
 -- separately. Program-scoping of this table is tracked in #229.
+-- Same shape as slit_regions above: no program gate of its own, so the share
+-- link scope conjunct is what keeps a NIRSpec link off every other
+-- observation's shutter layout (docs/design-public-mirror.md §5.2).
 DROP POLICY IF EXISTS "Authenticated users can view shutters" ON shutters;
 CREATE POLICY "Authenticated users can view shutters"
   ON shutters FOR SELECT TO authenticated
   USING (
-    (SELECT public.is_admin())
-    OR NOT EXISTS (
-      SELECT 1 FROM objects o
-      WHERE o.object_id = shutters.object_id AND o.has_published_spectrum = false
+    (
+      (SELECT NOT public.is_link_account())
+      OR observation = (SELECT public.link_observation())
+    )
+    AND (
+      (SELECT public.is_admin())
+      OR (SELECT public.link_sees_drafts())
+      OR NOT EXISTS (
+        SELECT 1 FROM objects o
+        WHERE o.object_id = shutters.object_id AND o.has_published_spectrum = false
+      )
     )
   );
 
@@ -1054,10 +1287,32 @@ CREATE POLICY "admin_shutters_delete"
 ALTER TABLE deployments ENABLE ROW LEVEL SECURITY;
 
 -- All authenticated users can read the deployment log (transparency).
+--
+-- A link account (docs/design-public-mirror.md §5.4) sees only deployments of
+-- its OWN scope. Narrowed rather than denied outright, deliberately: the
+-- provenance a colleague looking at someone else's reduction most needs
+-- (cfpipe_version, CRDS context, who deployed it and when) lives on these rows,
+-- and the scope metadata block will read them. Without the conjunct, though, a
+-- link would expose the full deploy history of every field and observation in
+-- the archive.
+--
+-- Draft deployments stay hidden unless the link opted into drafts -- otherwise
+-- the mere existence of an unpublished re-reduction leaks through the log even
+-- though none of its data does.
 DROP POLICY IF EXISTS "authenticated_select_deployments" ON deployments;
 CREATE POLICY "authenticated_select_deployments"
   ON deployments FOR SELECT TO authenticated
-  USING (true);
+  USING (
+    (SELECT NOT public.is_link_account())
+    OR (
+      (
+        observation = (SELECT public.link_observation())
+        OR field = (SELECT public.link_field())
+      )
+      AND (status = 'published'
+           OR (status = 'draft' AND (SELECT public.link_sees_drafts())))
+    )
+  );
 
 -- Admins can insert deployment log entries (deploy CLI).
 DROP POLICY IF EXISTS "admin_deployments_insert" ON deployments;
@@ -1119,17 +1374,27 @@ CREATE POLICY "admin_delete_invites"
 
 ALTER TABLE access_codes ENABLE ROW LEVEL SECURITY;
 
--- Admins can manage all access codes (all operations).
+-- Admins can manage all access codes (all operations). Codes are secrets:
+-- there is deliberately NO broader SELECT policy — redemption goes through the
+-- SECURITY DEFINER redeem_access_code() RPC, so non-admins can never enumerate
+-- codes (a public "read active codes" policy previously allowed exactly that).
 DROP POLICY IF EXISTS "admin_manage_codes" ON access_codes;
 CREATE POLICY "admin_manage_codes"
   ON access_codes
   USING ((SELECT public.is_admin()));
 
--- Anyone can read active codes (for code redemption flow).
-DROP POLICY IF EXISTS "Anyone can read active codes" ON access_codes;
-CREATE POLICY "Anyone can read active codes"
+-- Users can read codes they have already redeemed (the profile page's
+-- redemption history embeds access_codes via code_redemptions). Redeeming
+-- required knowing the code, so this reveals nothing new; unredeemed codes
+-- stay invisible to non-admins.
+DROP POLICY IF EXISTS "Users can read own redeemed codes" ON access_codes;
+CREATE POLICY "Users can read own redeemed codes"
   ON access_codes FOR SELECT
-  USING (is_active = true);
+  USING (EXISTS (
+    SELECT 1 FROM code_redemptions
+    WHERE code_redemptions.code_id = access_codes.id
+      AND code_redemptions.user_id = (SELECT auth.uid())
+  ));
 
 
 -- =============================================================================
@@ -1273,11 +1538,17 @@ CREATE POLICY "Users can view own API keys"
   ON api_keys FOR SELECT TO authenticated
   USING ((SELECT auth.uid()) = user_id);
 
--- Users can create own API keys.
+-- Users can create own API keys. Link accounts cannot (docs/design-public-mirror.md
+-- §5.5): an sk_ key is a durable credential that outlives revocation, and the
+-- programmatic API refuses link accounts anyway (validateAuth) -- refuse the
+-- mint at the source too, mirroring authorize_device_code.
 DROP POLICY IF EXISTS "Users can create own API keys" ON api_keys;
 CREATE POLICY "Users can create own API keys"
   ON api_keys FOR INSERT TO authenticated
-  WITH CHECK ((SELECT auth.uid()) = user_id);
+  WITH CHECK (
+    (SELECT auth.uid()) = user_id
+    AND (SELECT NOT public.is_link_account())
+  );
 
 -- Users can update own API keys.
 DROP POLICY IF EXISTS "Users can update own API keys" ON api_keys;
@@ -1291,3 +1562,29 @@ DROP POLICY IF EXISTS "Users can delete own API keys" ON api_keys;
 CREATE POLICY "Users can delete own API keys"
   ON api_keys FOR DELETE TO authenticated
   USING ((SELECT auth.uid()) = user_id);
+
+
+-- =============================================================================
+-- share_links  (docs/design-public-mirror.md)
+-- =============================================================================
+
+ALTER TABLE share_links ENABLE ROW LEVEL SECURITY;
+
+-- Admin-only, in every direction. A share link is an access grant, so only the
+-- operators who mint them can see or change them.
+--
+-- Note what is deliberately absent: no "link accounts can read their own row"
+-- policy. A link account never needs it -- the four link_* helpers in
+-- functions.sql are SECURITY DEFINER precisely so they can resolve the caller's
+-- scope without the caller being able to read share_links itself. Giving a link
+-- account read access here would hand it its own token and, worse, the
+-- link_password column.
+--
+-- The password is additionally withheld from `authenticated` by a column-level
+-- REVOKE in tables.sql, so it stays unreadable even for admins -- RLS is
+-- row-level and cannot express that on its own.
+DROP POLICY IF EXISTS "admin_manage_share_links" ON share_links;
+CREATE POLICY "admin_manage_share_links"
+  ON share_links TO authenticated
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));

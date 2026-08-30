@@ -18,9 +18,6 @@ CREATE INDEX IF NOT EXISTS idx_targets_coords
 CREATE INDEX IF NOT EXISTS idx_targets_field_observation
     ON public.targets USING btree (field, observation);
 
-CREATE INDEX IF NOT EXISTS idx_targets_has_sed_plot
-    ON public.targets USING btree (has_sed_plot) WHERE (has_sed_plot = true);
-
 CREATE INDEX IF NOT EXISTS idx_targets_target_id_trgm
     ON public.targets USING gin (target_id public.gin_trgm_ops);
 
@@ -129,6 +126,15 @@ CREATE INDEX IF NOT EXISTS idx_list_members_list_id_object_id
 
 CREATE INDEX IF NOT EXISTS idx_list_members_coords
     ON public.object_list_members USING btree (ra, dec);
+
+
+-- =============================================================================
+-- object_list_shares  (tag sharing, issue #450)
+-- =============================================================================
+-- (list_id, user_id) lookups are covered by the table's unique constraint.
+
+CREATE INDEX IF NOT EXISTS idx_list_shares_user_id
+    ON public.object_list_shares USING btree (user_id);
 
 
 -- =============================================================================
@@ -590,6 +596,24 @@ CREATE INDEX IF NOT EXISTS idx_fitsgl_datasets_field
 -- At most one default (fiducial composite) dataset per field.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_fitsgl_datasets_field_default
     ON public.fitsgl_datasets USING btree (field) WHERE (is_default = true);
+
+
+-- =============================================================================
+-- share_links (docs/design-public-mirror.md)
+-- =============================================================================
+
+-- The hot path: every RLS-narrowing helper (is_link_account, link_observation,
+-- link_field, link_sees_drafts) resolves the caller's link by link_user_id, on
+-- every query a link account makes. Served by share_links_link_user_id_key
+-- (UNIQUE), so no separate index is needed -- noted here so nobody adds one.
+
+-- Admin panel: "which links point at this scope?", and the prefilled Share
+-- affordance on a field / observation page.
+CREATE INDEX IF NOT EXISTS idx_share_links_observation
+    ON public.share_links USING btree (observation) WHERE (observation IS NOT NULL);
+
+CREATE INDEX IF NOT EXISTS idx_share_links_field
+    ON public.share_links USING btree (field) WHERE (field IS NOT NULL);
 
 
 -- NOTE: Materialized view indexes (mv_programs_overview, mv_filter_options)

@@ -1,0 +1,3 @@
+out*/
+*.npz
+__pycache__/

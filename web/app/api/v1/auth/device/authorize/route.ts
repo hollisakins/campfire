@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { authorizeDeviceCode, denyDeviceCode } from '@/lib/auth/device-flow';
+import { getLinkScope } from '@/lib/api-helpers';
 
 /**
  * POST /api/v1/auth/device/authorize
@@ -31,6 +32,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: 'unauthorized', error_description: 'You must be logged in' },
         { status: 401 }
+      );
+    }
+
+    // Share-link sessions must never mint durable API credentials — a device
+    // token would outlive revocation and bypass the link's RLS scoping.
+    // authorize_device_code() also refuses link accounts server-side; this is
+    // the legible error for the UI.
+    if (await getLinkScope(user.id)) {
+      return NextResponse.json(
+        { error: 'forbidden', error_description: 'Share-link sessions cannot authorize API access' },
+        { status: 403 }
       );
     }
 

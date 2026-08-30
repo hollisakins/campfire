@@ -431,7 +431,7 @@ class Field:
         # to recognize per-field step overrides and to exclude them from the
         # tile-detection loop below.
         known_steps = {
-            'detector1', 'persistence', 'wisp', 'image2',
+            'detector1', 'jackknife', 'persistence', 'wisp', 'image2',
             'edge', 'bkg', 'diag_striping',
             'wcs_shift', 'jhat', 'align',
             'apply_mask', 'bad_pixel', 'outlier', 'resample',
@@ -891,8 +891,9 @@ class Field:
           force it in with ``combine --include-unaligned``.
         * **no ``CFP_ALGN`` at all** — align has not solved this exposure (it was
           never run, was run over a different filter/tile subset, or its worker
-          died). Since an align-enabled field skips ``jhat``/``wcs_shift``, this
-          exposure has *no* astrometric correction. Run ``cfpipe nircam align``.
+          died). Since an align-enabled field replaces ``jhat``, this exposure
+          has no automatic astrometric correction (at most a manual
+          ``wcs_shift`` offset). Run ``cfpipe nircam align``.
 
         This is the one gate into the working tree; we also delete any stale
         working copy so a lingering copy can't sneak into the work-tree glob the

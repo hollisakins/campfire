@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { SignInLink } from '@/components/auth/SignInLink';
 import { notFound } from 'next/navigation';
 import { Metadata } from 'next';
 import { LogIn } from 'lucide-react';
@@ -93,13 +94,12 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
           <p className="text-text-secondary mb-6 max-w-md">
             Access to object details requires authentication.
           </p>
-          <Link
-            href="/login"
+          <SignInLink
             className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
           >
             <LogIn className="w-5 h-5" />
             Sign In
-          </Link>
+          </SignInLink>
         </div>
       </div>
     );

@@ -21,7 +21,7 @@ export const SignupForm: React.FC = () => {
   // If an already-authenticated user lands here, send them onward.
   useEffect(() => {
     if (!authLoading && user) {
-      router.push(needsProfileSetup ? '/welcome' : '/nirspec');
+      router.push(needsProfileSetup ? '/welcome' : '/');
     }
   }, [authLoading, user, needsProfileSetup, router]);
 
@@ -31,9 +31,14 @@ export const SignupForm: React.FC = () => {
     setLoading(true);
 
     try {
-      const { error } = await signUp(email.trim(), password, fullName.trim());
+      const { error, existingAccount } = await signUp(email.trim(), password, fullName.trim());
       if (error) {
         setError(error.message);
+      } else if (existingAccount) {
+        setError(
+          'An account with this email already exists. Sign in instead — or use ' +
+          '"Forgot password?" on the sign-in page if you need to reset it.'
+        );
       } else {
         // Email confirmation is required, so there is no session yet.
         setSubmitted(true);
@@ -143,17 +148,17 @@ export const SignupForm: React.FC = () => {
             className="w-full px-4 py-2 bg-background text-text-primary placeholder:text-text-tertiary border border-border-strong rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary"
             placeholder="••••••••"
             required
-            minLength={6}
+            minLength={8}
             disabled={loading}
           />
-          <p className="text-xs text-text-secondary mt-1">At least 6 characters.</p>
+          <p className="text-xs text-text-secondary mt-1">At least 8 characters.</p>
         </div>
 
         <Button
           type="submit"
           variant="primary"
           className="w-full mt-6"
-          disabled={loading || !email.trim() || !fullName.trim() || password.length < 6}
+          disabled={loading || !email.trim() || !fullName.trim() || password.length < 8}
         >
           {loading ? 'Creating account...' : 'Create Account'}
         </Button>

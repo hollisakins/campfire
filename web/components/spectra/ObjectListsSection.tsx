@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useTransition, useRef, useImperativeHandle } from 'react';
+import { createPortal } from 'react-dom';
 import { Plus, X, Loader2, Check, AlertCircle, Search, Tag } from 'lucide-react';
 import { getListsWithMembership, addObjectToList, removeObjectFromList } from '@/lib/actions/lists';
 import { ListForm } from '@/components/lists/ListForm';
@@ -70,10 +71,10 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
   const { user, userProfile } = useAuth();
   const canEdit = !!userProfile?.can_comment;
 
-  /** Check if the current user can edit a specific list (owner or public_edit). */
+  /** Check if the current user can edit a specific list (owner, public_edit, or editor share). */
   const canEditList = useCallback((list: ObjectListWithMembership) => {
     if (!canEdit) return false;
-    return list.created_by === user?.id || list.visibility === 'public_edit';
+    return list.created_by === user?.id || list.visibility === 'public_edit' || list.shared_role === 'editor';
   }, [canEdit, user?.id]);
 
   const [lists, setLists] = useState<ObjectListWithMembership[]>([]);
@@ -350,23 +351,32 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
         </div>
       )}
 
-      {/* Create tag modal */}
-      {showCreateModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      {/* Create tag modal — portaled to <body> so `fixed` is viewport-relative
+          (an ancestor with a CSS transform, e.g. FloatingInspectionPanel's
+          -translate-x-1/2, would otherwise become its containing block) */}
+      {showCreateModal && createPortal(
+        <div className="fixed inset-0 z-[100] overflow-y-auto">
+          <div className="fixed inset-0 bg-black/50" aria-hidden="true" />
+          {/* The overlay scrolls (not the form wrapper) so the absolutely
+              positioned emoji picker inside ListForm is never clipped */}
           <div
-            className="absolute inset-0 bg-black/50"
-            onClick={() => setShowCreateModal(false)}
-          />
-          <div className="relative w-full max-w-md mx-4">
-            <ListForm
-              mode="create"
-              initialName={createInitialName}
-              onCreated={handleTagCreated}
-              onSuccess={() => setShowCreateModal(false)}
-              onCancel={() => setShowCreateModal(false)}
-            />
+            className="relative flex min-h-full items-center justify-center p-4"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowCreateModal(false);
+            }}
+          >
+            <div className="w-full max-w-md">
+              <ListForm
+                mode="create"
+                initialName={createInitialName}
+                onCreated={handleTagCreated}
+                onSuccess={() => setShowCreateModal(false)}
+                onCancel={() => setShowCreateModal(false)}
+              />
+            </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

@@ -1,18 +1,23 @@
-name: Supabase MV index guard
+name: Supabase schema guards
 
-# Asserts that every public materialized view has a unique index after applying
-# all migrations. Without one, REFRESH MATERIALIZED VIEW CONCURRENTLY fails and
-# the deploy CLI's cache refreshes soft-fail (the views go stale). migra does
-# not track MV indexes, so a migra-generated drop/recreate can silently strip
-# them — this guard catches that at PR time.
+# Runs every self-contained guard in supabase/tests/ (check_*.sql, each
+# BEGIN ... ROLLBACK) against a database built from the migration chain:
+# - check_mv_unique_indexes.sql: every public materialized view must have a
+#   unique index (REFRESH ... CONCURRENTLY fails without one, and migra does
+#   not track MV indexes, so a migra-generated drop/recreate can silently
+#   strip them).
+# - check_object_aggregate_scoping.sql / check_grating_filter_scoping.sql /
+#   check_observation_filter_scoping.sql / check_share_link_scoping.sql:
+#   viewer-scoping invariants on the catalog RPCs (anti-leak aggregates,
+#   issue-#488 grating filtering, issue-#491 observation filtering, share
+#   links).
 
 on:
   pull_request:
     paths:
       - "supabase/migrations/**"
-      - "supabase/schemas/views.sql"
-      - "supabase/schemas/indexes.sql"
-      - "supabase/tests/check_mv_unique_indexes.sql"
+      - "supabase/schemas/**"
+      - "supabase/tests/**"
       - ".github/workflows/supabase-mv-indexes.yml"
 
 # Cancel superseded runs on the same PR to save Actions minutes.
@@ -21,6 +26,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Job id kept from the original MV-only guard so existing branch-protection
+  # required checks stay valid.
   check-mv-indexes:
     runs-on: ubuntu-latest
     permissions:
@@ -41,14 +48,18 @@ jobs:
         run: supabase db start
 
       - name: Apply migrations
-        # Migrations only (no seed): the MV index invariant is independent of
-        # row data, and skipping the seed keeps this guard fast and focused.
+        # Migrations only (no seed): the guards build their own fixtures
+        # inside rolled-back transactions, and skipping the seed keeps this
+        # job fast and focused.
         run: supabase db reset --no-seed
 
-      - name: Assert materialized views have unique indexes
+      - name: Run schema guard tests
         # Fixed local connection string (db.port = 54322 in supabase/config.toml).
         env:
           DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
         run: |
-          psql "$DB_URL" -v ON_ERROR_STOP=1 \
-            -f supabase/tests/check_mv_unique_indexes.sql
+          set -e
+          for f in supabase/tests/check_*.sql; do
+            echo "== $f"
+            psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done

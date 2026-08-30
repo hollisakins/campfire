@@ -76,9 +76,16 @@ export async function GET(request: NextRequest) {
       ? hasPhotometryParam.toLowerCase() === 'true'
       : null;
 
-    // Pagination
+    // Pagination (limit 1..10000 so limit=0 can't produce NaN pages and a
+    // single request can't ask for an unbounded page)
     const limit = parseInt(searchParams.get('limit') || '1000', 10);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
+    if (!Number.isFinite(limit) || limit < 1 || limit > 10000 || !Number.isFinite(offset) || offset < 0) {
+      return NextResponse.json(
+        { error: 'Invalid pagination: limit must be 1-10000 and offset must be >= 0' },
+        { status: 400 }
+      );
+    }
     const page = Math.floor(offset / limit) + 1;
 
     // Sort
@@ -108,6 +115,7 @@ export async function GET(request: NextRequest) {
       p_inspected_only: inspectedOnly,
       p_needs_review: needsReview,
       p_list_ids: listIds,
+      p_list_ids_mode: searchParams.get('list_ids_mode') || 'any',
       p_coord_ra: coordRa,
       p_coord_dec: coordDec,
       p_radius_degrees: radiusDegrees,

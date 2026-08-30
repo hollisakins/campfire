@@ -148,23 +148,105 @@
 [nircam.detector1]
     clean_flicker_noise = false
 
+[nircam.jackknife]
+    # Re-zero jump-segmented ramp fits against the exposure's frame-common
+    # ramp curvature (the snowball-circle / CR-speckle zero-point bias).
+    # Self-calibrating per exposure: one extra RampFitStep on the real ramp
+    # with candidate flag patterns assigned to clean pixels. See
+    # steps/jackknife.py for the mechanism and known limits.
+    enabled = true
+    max_patterns = 256            # cap on calibrated flag patterns
+    min_pixels_per_pattern = 2000 # clean-pixel budget that sets the adaptive cap
+    min_pixels_per_cell = 500     # (zone, pattern) floor before frame-global fallback
+    zones = 8                     # 4 amp columns x 2 halves; forced to 1 off full-frame
+    bright_clip_sigma = 5.0       # clean-sky selection (no SRCMASK exists yet)
+
 [nircam.persistence]
     # No tunable parameters; reserved for future snowblind config.
 
 [nircam.wisp]
-    apply_flat = true
+    # Subtraction method: "nmf" (multi-component NMF, Wu et al. 2026 /
+    # arXiv:2601.15958, via the nmfwisp package) or "template" (legacy scaled
+    # STScI template). "nmf" automatically falls back to "template" for any
+    # (detector, filter) nmfwisp ships no template for (e.g. F140M).
+    method = "nmf"
+    nmf_correct_1f = false     # let nmfwisp iterate 1/f during the fit; off because
+                               # campfire removes striping in the later bkg step
+    mask_nsigma = 3            # detection threshold (sigma) for the source mask used
+                               # in the wisp fit. Lower masks fainter source wings that
+                               # would otherwise be fit as wisp flux (a sweep showed the
+                               # old 5.5 inflated the wisp amplitude ~20%). Applies to
+                               # both methods.
+    mask_dilate = 8            # binary-dilation iterations grown onto the source mask
+                               # before fitting, to swallow wings past the nsigma
+                               # isophote (0 disables). Secondary to mask_nsigma;
+                               # nsigma=3 + dilate=8 sit on the converged plateau.
+    mask_iterations = 5        # NMF only: max source-mask/amplitude passes. The
+                               # first mask is built on a frame that still contains
+                               # the wisp, so detect_sources treats a bright wisp as
+                               # a source and masks the pixels the solve scores —
+                               # under-subtracting bright wisps, and at the extreme
+                               # starving the region entirely (A2744/F200W nrcb4: the
+                               # wisp core is 7.6 sigma over sky against a 3-sigma
+                               # threshold, 97.6% of t50 is detected, and t50 & ~mask
+                               # hits ZERO px, forcing the hSNR fallback and a
+                               # -0.006..-0.014 MJy/sr over-subtracted bowl).
+                               # Re-detecting on the subtracted frame fixes it;
+                               # converges in 2-4 passes. 1 = single-pass (legacy).
+    # Which pixels the NMF amplitude solve scores. "hsnr" = the template's own
+    # MASK_hSNR extension (nmfwisp behaviour); "tNN" = pixels above NN% of the
+    # summed template's peak. MASK_hSNR is misnamed — on nrcb4 F200W it is
+    # ~511k pixels of which ~90% sit below 20% of the template peak, and a
+    # mirrored-model null test returns as much signal from those as the real
+    # ones, i.e. they measure large-scale background. Being ~200x more numerous
+    # they set the fit, and NNLS then zeros the components that carry the
+    # filament (W=[0.54,0,0] on nrcb4 F200W). At "t50" the same exposure gives
+    # [0.84,0.70,0.75] and the filament clears — including in the DELIVERED
+    # frame, where it otherwise survives bkg (a 64 px background mesh cannot
+    # follow a narrow filament).
+    nmf_fit_region = "t50"
+    # Pixel weighting for the solve. "ivar" = the ERR array (nmfwisp
+    # behaviour); "flat" = uniform. ERR carries a Poisson term computed from
+    # the *measured* signal (spearman(err, data) = +0.63..+0.70 on every wisp
+    # detector), so positive excesses are down-weighted and the amplitude is
+    # biased low. "flat" removes that bias but is DANGEROUS on low-wisp frames:
+    # across a 23-pair matrix it over-subtracts (mean core residual -0.38 sigma
+    # at hsnr, worst -1.54), and on frames with little wisp it has blown up to
+    # W=16. Prefer moving nmf_fit_region over switching this.
+    nmf_fit_sigma = "ivar"
+    apply_flat = true          # template method: flat-field the fitting copy
     use_custom_flat = false
     plot = true
 
 [nircam.bkg]
     # Unified background step (replaces striping + sky + variance). Builds ONE
-    # source mask (SubtractBackground, mask-only — NO 2-D background subtraction;
-    # the astrophysical sky is left for the mosaic) and shares it across an
-    # iterative per-amp chain: per-amp pedestal (owns the per-exposure DC) ->
-    # column median -> amp-row GP rho~5 (fine 1/f) -> amp-row GP rho~20 (amp-row
-    # banding). See docs/design-nircam-unified-background.md.
+    # source mask (SubtractBackground, mask-only by default — the astrophysical
+    # sky is left for the mosaic) and shares it across an iterative per-amp
+    # chain: per-amp pedestal (owns the per-exposure DC) -> column median ->
+    # amp-row GP rho~5 (fine 1/f) -> amp-row GP rho~20 (amp-row banding).
+    # See docs/design-nircam-unified-background.md.
     n_iterations = 3
     plot = true
+    # Applied 2-D background per exposure. Each iteration fits Background2D on
+    # the running residual (see [nircam.bkg.bkg2d]) and subtracts the model.
+    #
+    # ON BY DEFAULT (was opt-in). This makes the package agree with the
+    # long-standing practice it was written for: the reduction config here has
+    # set subtract_2d = true for EVERY NIRCam field, blank and cluster alike,
+    # for the life of the unified bkg step — the false default was already the
+    # path nothing ran on.
+    #
+    # KNOW THE TRADE: a fine-box fit removes ICL and bright-galaxy wings by
+    # construction. That is the point on cluster fields; on blank fields it
+    # also removes real extended wing/sky structure. What bounds the loss is
+    # the [nircam.bkg.bkg2d] box_size / extra_dilate pair, chosen by the
+    # synthetic cluster sweep for zero median aperture-flux loss on compact,
+    # extended AND bright galaxies simultaneously. Set false to leave the
+    # astrophysical sky in place for the mosaic to handle.
+    #
+    # NOTE: the per-exposure skip is CFP_BKG-presence-based, so flipping this
+    # on already-processed exposures needs --overwrite (or reset --from image2).
+    subtract_2d = true
 
     [nircam.bkg.mask]
         # SubtractBackground mask config (mask only). Mosaic-like depth: the
@@ -184,6 +266,36 @@
         # detection): they carry residual signal that would bias the per-amp
         # estimate; the GP tolerates the extra masking.
         mask_aggressive_dq = true
+        # Pathology guard: if any aggressive-DQ class blankets more than this
+        # fraction of a frame it is broken calibration (e.g. JUMP_DET runaway on
+        # low-NGROUPS ramps), not real transients — including it would starve the
+        # Background2D detrend and hard-fail the step. That bit is dropped from
+        # the fit mask for that exposure only (underlying pixels kept as sky).
+        # 1.0 disables the guard.
+        #
+        # Lowered 0.85 -> 0.50 (2026-07-27). 0.85 only caught near-total
+        # blankets and let a real runaway through: A2744 f444w
+        # jw03073008001_03201 carries JUMP_DET on 79-81% of every LW detector,
+        # so the guard missed by ~4 points. Folding that bit into the fit mask
+        # left 11.4% of pixels usable and a median of 58 unmasked pixels per
+        # amp-row (a healthy frame has 279). The amp-row GP then estimates each
+        # row offset from ~58 pixels; its self-adapting amplitude clamps to the
+        # noise floor sigma/sqrt(n), which the small n inflates, and the
+        # resulting noise-dominated offsets are applied to ALL pixels —
+        # including the 81% the fit never saw — INJECTING row/column structure
+        # rather than removing it. Measured on that exposure: masked row sigma
+        # 0.00050 (no 1/f) -> 0.00084 (with 1/f) at 0.85, versus 0.00011 at
+        # 0.50. A depth-matched healthy control is unchanged by the switch
+        # (0.00013 either way), so this only alters frames the guard should
+        # always have caught. Across a2744 f444w (540 detectors) 8 sit in the
+        # 50-85% band this newly catches; the population median is 8.7%, so
+        # normal frames are nowhere near the threshold.
+        #
+        # NOTE: the real failure condition is "too few pixels per amp-row
+        # survive to fit", not "one DQ bit exceeds X%". A guard on the resulting
+        # usable fraction would catch this class without a tuned constant; this
+        # change is the minimal, low-risk fix.
+        mask_aggressive_dq_max_frac = 0.50
 
         [nircam.bkg.mask.pixel_scale_factor]
             # Mask length params are angular scales in px, tuned at 30 mas.
@@ -193,10 +305,16 @@
             lw = 0.5
 
     [nircam.bkg.pedestal]
-        # Per-amp DC pedestal owns the per-exposure DC (skymatch): there is no
+        # DC pedestal owns the per-exposure DC (skymatch): there is no
         # inter-exposure SkyMatchStep, so this term zeroes each frame to a
         # common level before drizzle. Its frame mean is meta.background.level.
-        scope = "per_amp"
+        # scope: "auto" (default) = per-amp normally, one full-frame DC when
+        # subtract_2d is on — a per-amp pedestal turns a smooth sky gradient
+        # into a sawtooth the Background2D mesh can't reproduce (amp-boundary
+        # ringing); with the 2-D fit owning the gradient, real per-amp DC
+        # steps are left to the per-amp amp-row GP. Explicit "per_amp" /
+        # "frame" override the auto resolution.
+        scope = "auto"
         sigma = 3.0
 
     [nircam.bkg.striping]
@@ -208,6 +326,27 @@
         # Rebuild the source mask each iteration on the running residual (it
         # sharpens as the frame flattens). Set false to mask once (cheaper).
         remask_each_iter = true
+        # Grow the source tiers by this many px (angular, channel-scaled like
+        # the mask params) for the 1/f fit mask ONLY (column pattern + amp-row
+        # terms; detrend/pedestal/bkg2d keep their own masks). Pushes the
+        # amp-row anchors away from bright-galaxy halos — the mask tiers
+        # structurally cannot reach them (the ring-median pre-filter removes
+        # structure broader than its radius before detection), and
+        # halo-contaminated anchors are what the per-amp GP broadcasts into
+        # the amp-blocky oversubtraction around bright multi-amp sources.
+        # The GP interpolates across the widened gaps (rho_long's job),
+        # reverting to the per-amp DC where nothing anchors. 0 = off (legacy
+        # behavior). Under evaluation on the amprow_halo synthetic harness
+        # (experiments/amprow_halo).
+        extra_dilate = 0
+        # With extra_dilate > 0: grow ONLY source-tier footprints of at least
+        # this many px^2 (angular, channel-scaled x f^2). Growing every tier
+        # starves the amp-row anchors frame-wide (hundreds of faint sources
+        # each donate a grown disk) and the GP then follows sampling noise —
+        # measured on the amprow_halo harness: injected row/column striping
+        # and a remask runaway at extra_dilate=150. The artifact drivers are
+        # the few LARGE footprints; 0 grows everything (not recommended).
+        extra_dilate_min_area = 0
 
         [nircam.bkg.striping.gp]
             # rho = SHOTerm correlation length in *rows* (frozen; a detector
@@ -222,10 +361,169 @@
             q = 0.70710678
             sigma_clip = 2.0
             weak_frac = 0.5
+            # Amp-rows with fewer surviving background pixels than this do
+            # not anchor the GP (they become interpolated gap rows): a
+            # MAD-based sigma on a handful of pixels can make a starved,
+            # contaminated row an overconfident anchor. 0 = legacy (any row
+            # with >= 1 pixel anchors). Under evaluation on the amprow_halo
+            # harness alongside striping.extra_dilate.
+            min_row_pixels = 0
 
     [nircam.bkg.variance]
         # VAR_RNOISE rescale (folded in; uses the shared final source mask).
         block_size = 7
+
+    [nircam.bkg.detrend]
+        # CONDITIONING detrend: a fit-only, zero-median 2-D structure model
+        # subtracted from the measurement copies so the pedestal / 1/f terms
+        # never see sky gradients or diffuse (scattered-light) structure —
+        # the per-amp terms would otherwise absorb them asymmetrically and
+        # imprint seams at the amp boundaries (cols 512/1024/1536). Never
+        # subtracted from SCI, so flux conservation cannot constrain it.
+        # COARSE box (R. Endsley's design, confirmed by the rj0911
+        # detrend-box A/B 2026-07-17): a coarse mesh conditions the smooth
+        # component — the actual seam driver — while being structurally
+        # unable to absorb banding/amp-DC detail; fine boxes were slightly
+        # WORSE on real frames despite the provisional-1/f theft protection.
+        # box_size is an angular scale in px at SW native ~31 mas,
+        # channel-scaled like the mask params (256 -> 128 px LW native,
+        # matching Endsley's bw=128).
+        enabled = true
+        # y (row) box. In anisotropic mode (box_size_x > 0, the default) this
+        # is SCALE-EXEMPT and means native ROWS in both channels — rho is a
+        # readout property in rows, so the banding attenuation depends on rows
+        # spanned, not angle subtended. In legacy square mode (box_size_x = 0)
+        # it is channel-scaled as an angular length, as before (256 -> 128 LW).
+        box_size = 96
+        # Anisotropic conditioning (opt-in): when > 0, box_size becomes the
+        # y (row) box and box_size_x sets a finer x box, e.g. 96 / 32.
+        # Rationale: banding is fine in y and constant in x within an amp;
+        # the halo/wing structure the amp-row terms steal is smooth in both.
+        # A y-coarse mesh is banding-blind by construction (a 64-row box
+        # averages a rho~20 pattern to ~6%, 96 rows to ~4%) while the fine x
+        # box follows halo column profiles near bright galaxies where the
+        # square coarse box cannot; fit full-width, it is also continuous
+        # across amp boundaries, so amp-DEPENDENT banding is unrepresentable
+        # at any scale. The rj0911 "fine boxes worse" A/B used SQUARE fine
+        # boxes (fine in y too — the configuration that absorbs banding);
+        # anisotropy was untested. Trade: common-mode row structure at
+        # ~50-150 rows may be conditioned away and underfit by h. filter_size
+        # may be a 2-list [y, x] (use [1, 5] to keep full y mesh resolution).
+        # 0 = square legacy box.
+        #
+        # ON BY DEFAULT since the real-frame validation on A2744 (32 exposures
+        # rebuilt from uncal, three arms, judged by eye on post-bkg SCI at a
+        # stretch held common across arms — 96x32 with bkg2d.reject = false was
+        # preferred over the square-box production configuration). Details and
+        # the rejected alternatives: docs/findings-aniso-detrend-a2744.md.
+        box_size_x = 32
+        # [y, x]. y = 1 keeps full mesh resolution in the row direction, which
+        # is the point of the anisotropic mesh; the x median filter smooths
+        # across columns. A scalar is still accepted (applied to both axes).
+        filter_size = [1, 5]
+        sigma = 3.0
+        exclude_percentile = 90
+
+    [nircam.bkg.bkg2d]
+        # APPLIED 2-D background fit (only used when subtract_2d = true):
+        # the sky-match / ICL-removal subtraction. Deliberately SMOOTH —
+        # its parameters are set by flux conservation, not flatness (the
+        # detrend above owns flatness for the 1/f fit). Length params
+        # (box_size, extra_dilate, reject_dilate) are angular scales in px
+        # tuned at SW native ~31 mas; rescaled per channel via
+        # [nircam.bkg.mask.pixel_scale_factor] like the mask params.
+        # box_size 32 px SW (~1") + filter_size 3 + extra_dilate 20.
+        #
+        # WAS box_size 64 / filter_size 5, chosen by the synthetic cluster
+        # sweep (experiments/bkg2d_synthetic, arm b64_d20) for zero median
+        # aperture-flux loss with ICL removal ~0.6. That pair leaves COMMON-MODE
+        # ROW BANDING in the delivered exposures, which costs mosaic DEPTH:
+        # un-sky-matched frames stacked together add variance that never
+        # averages down, and the mosaic bkgsub removing the mean structure
+        # afterwards cannot recover it.
+        #
+        # WHY 64/5 could not remove it: filter_size is a median filter over the
+        # LOW-RESOLUTION MESH, in units of MESH CELLS — so 5 cells x 64 px is a
+        # ~320 px (~10") footprint, far too coarse for the ~128-row (~4")
+        # structure. Meanwhile the fit-only conditioning detrend (96 rows,
+        # filter_size [1,5] -> full row resolution) CAN represent that
+        # structure, absorbs it into a model that is never subtracted, and so
+        # leaves the amp-row GP nothing to fit. See the trade already noted in
+        # [nircam.bkg.detrend]: "common-mode row structure at ~50-150 rows may
+        # be conditioned away and underfit by h".
+        #
+        # MEASURED on 6 COSMOS f150w frames, real pipeline reruns from uncal
+        # spanning the banding distribution (docs + scripts/claude/cosmos-reproc):
+        #   arm            banding(x noise)  compact  intermed  large   pixel sigma
+        #   64/5 (was)          1.76          ref      ref      ref      1.000
+        #   64/1                0.56        -0.21%   -0.01%   +0.01%     0.998
+        #   32/3 (now)          0.57        +0.24%   -0.05%   -0.01%     0.998
+        #   10/5 (mosaic mesh)  0.60        -0.58%   -0.02%   -0.08%     0.998
+        #   256/5 (control)     3.36        +1.60%   +0.15%   +0.06%     1.012
+        # 32/3 and 64/1 are statistically tied; 32/3 is chosen because
+        # filter_size 3 retains mesh outlier rejection that filter_size 1
+        # discards entirely. The 256/5 control confirms the metrics respond in
+        # the physically correct direction (a too-coarse mesh under-subtracts,
+        # inflating apertures).
+        #
+        # KNOWN COST: DIFFRACTION-SPIKE FLUX. The finer mesh removes ~1% of a
+        # bright star's diffraction spike (-1.03% over 4,832 px). Verified as a
+        # spike, not assumed: two elongated segments 1,530 and 1,745 px from the
+        # star, major axes 9.0 and 7.9 deg off the star-centroid position angle,
+        # both at PA -29.3 deg (one spike split by the detection threshold).
+        # This is REAL PSF FLUX, not contamination — it matters for PSF
+        # modelling and for bright-star photometry in large apertures.
+        # Compact sources in the same frame move -0.03%, and the intermediate
+        # (-0.05%) / large (-0.01%) bins are flat, so the loss is confined to the
+        # extended PSF rather than to source photometry generally.
+        # Measured on ONE star in ONE frame — characterise further before
+        # relying on spike photometry anywhere in the field.
+        # Where in the per-iteration chain the applied fit runs.
+        #   "last" (legacy default): fit on the 1/f-corrected residual, AFTER
+        #       the amp-row terms. Unmasked halo/wing flux around bright
+        #       multi-amp galaxies then leaks into the clipped amp-row
+        #       medians first and is broadcast across each amp's width —
+        #       amp-blocky oversubtraction with hard edges at cols
+        #       512/1024/1536 — and the 2-D fit can never reclaim it (it
+        #       only ever sees the post-h residual; corrections accumulate
+        #       one-way across iterations).
+        #   "first": fit on resid - ped with the halo intact, and condition
+        #       the 1/f measurement on the fitted model, so smooth structure
+        #       is claimed by the smooth model. Recommended for the
+        #       bright-galaxy fields subtract_2d exists for; kept opt-in
+        #       pending the real-frame A/B (docs/handoff-bkg2d-fit-order.md).
+        #       CAUTION: pair with reject = false — the map-outlier reject
+        #       below flags the halo bump in the first-order map as leaked
+        #       source flux and refits it away, cancelling the benefit
+        #       (measured on the synthetic amp-spanning-halo scene; the step
+        #       logs a warning on this combination).
+        fit_order = "last"
+        box_size = 32
+        filter_size = 3
+        sigma = 3.0
+        exclude_percentile = 90
+        # Grow the source tiers (not off-detector/DQ) by this many px for the
+        # 2-D fit only; the 1/f chain keeps the ungrown mask. >~80 px starts
+        # to hurt: interpolation across the huge holes biases bright sources
+        # low, and >~150 px degrades the sky fit itself.
+        extra_dilate = 20
+        # Background-map outlier rejection: refit once with map regions beyond
+        # med + hi*sigma / med - lo*sigma masked (sigma from the lowest
+        # reject_percentile of map values), grown by reject_dilate px. Guards
+        # against source flux leaking through the mask into the fine-box fit.
+        #
+        # Default flipped to FALSE alongside the anisotropic conditioning
+        # detrend: on real A2744 frames the preferred arm was aniso +
+        # reject = false (the reject re-flags extended halo/wing bumps in the
+        # background map as leaked source flux and refits them away, undoing
+        # part of what the conditioning buys). Only affects subtract_2d
+        # fields, since bkg2d runs nowhere else. Set true to restore the
+        # leaked-compact-source guard. See docs/findings-aniso-detrend-a2744.md.
+        reject = false
+        reject_sigma_hi = 4.0
+        reject_sigma_lo = 3.0
+        reject_percentile = 60.0
+        reject_dilate = 40
 
 [nircam.image2]
     use_custom_flat = false
@@ -343,36 +641,164 @@
     #     [<field>.align]
     #         enabled = true
     #         refcat  = "<file>.ecsv"   # in the field's astrom_cats dir
-    # With align enabled the process phase skips jhat + wcs_shift (exactly one
-    # alignment path per field).
+    # With align enabled the process phase replaces `jhat` with `align`
+    # (`wcs_shift` still runs first, to apply manual offsets for exposures with
+    # corrupted pointing metadata).
     enabled = false
-    fitgeom = "rshift"          # per-exposure shared shift + rotation (SIAF fixed)
-    tolerance = 0.05            # arcsec; free a per-detector shift above this
-    adaptive = true             # adaptive per-detector shift when over tolerance
-    adaptive_min_matches = 3
-    match_radius = 0.5          # arcsec; NN radius for per-detector residuals
-    min_matched = 4             # reject-to-identity below this many 1-to-1 matches
-    # Shared fit: footprint-clip the refcat, then bootstrap (triangle matcher,
-    # capped) -> all-source robust refine (XYXYMatch). The cap bounds only the
-    # bootstrap; the fit rests on the uncapped refine.
-    ref_border_arcmin = 0.5     # refcat footprint margin (sized for acquisition
-                                # pointing error); arcmin
-    bootstrap_max = 150         # brightest-N vertex cap, triangle BOOTSTRAP only
-    refine_searchrad = 2.0      # arcsec; XYXYMatch search radius (refine passes)
-    refine_tolerance = 0.5      # arcsec; XYXYMatch match tolerance (refine passes)
-    refine_niter = 3            # max refine match->fit iterations (converges early)
-    # Detection quality selection (per detector, no count cap):
-    nsigma = 5.0                # detection threshold (convolved background sigma)
-    snr_min = 5.0               # drop detections below this peak SNR (peak/bkg-rms)
-    fwhm = 2.5                  # fallback detection PSF FWHM (px); per-filter
-                                # override below
+    # --- Coarse: pooled per-module (or per-channel) shift+rotation --------------
+    # One rshift is fit from all of a module's detectors at once (SIAF fixed),
+    # matched to the refcat by the JHAT-ported OffsetHistogramMatch: a 2-D
+    # pairwise-offset histogram grabs the gross translation (pass 0 only),
+    # then every image source is 1-NN-paired to the refcat and the TRUE pairs
+    # are selected by consensus — they pile into one narrow peak of the
+    # per-axis offset histogram (rotation-slope scan + sigma clip) while false
+    # pairs scatter. Nothing is pair-enumerated, so the matcher cannot hit
+    # tweakwcs/stimage's MatchSourceConfusionError on clustered extragalactic
+    # catalogs (39% of COSMOS LW exposures under the previous XYXYMatch).
+    # All detectors of a pool share ONE offset histogram, so pooling makes the
+    # consensus peak stronger, not weaker.
+    # true: pool both modules into ONE coarse fit; false: fit per module (A, B
+    # separate). Pooling was previously off because a spurious per-module SIAF
+    # offset could cross-contaminate the shared fit. The offset that motivated
+    # that caution turned out NOT to be SIAF — it is differential velocity
+    # aberration (a scale a pooled rshift cannot express), now removed
+    # deterministically by `dva_repivot`, so the original objection no longer
+    # applies. With that fix plus significance-based fine-fit acceptance, a
+    # pooled solve leaves no per-module systematic: measured on f410m, the
+    # module-to-module offset against the reference catalog is 0.26 mas with
+    # 93.3% of detectors carrying their own fine fit.
+    # Pooling is established SAFE; its BENEFIT is not quantified — on f410m
+    # under the old acceptance test it was a wash (0.215 vs 0.210 mas), and no
+    # matched non-pooled arm was run under the new one. It is on because a
+    # shared coarse fit is better conditioned (twice the sources for LW, where a
+    # per-module pool is a single detector), which should help sparse or
+    # low-match exposures — the regime that is still untested.
+    pool_modules      = true
+    # --- Differential velocity aberration (DVA) re-reference ------------------
+    # jwst's assign_wcs corrects DVA per detector, scaling about THAT detector's
+    # own aperture reference (dva_corr_model(va_scale, v2_ref, v3_ref) builds
+    # v' = v_ref + va_scale*(v - v_ref)). Each reference point therefore never
+    # moves, and the SEPARATION between two detectors' reference points keeps the
+    # full uncorrected aberration: (1 - va_scale) * |dv_ref|. For the NIRCam LW
+    # pair (|dv_ref| = 175.34") at COSMOS's |1 - va_scale| ~ 1e-4 that is ~13 mas
+    # — measured on 3258 COSMOS LW exposures as a module-to-module differential
+    # matching this prediction in sign and magnitude.
+    #
+    # That residual is a pure SCALE about a point outside each detector, which a
+    # pooled `rshift` cannot express — so it is exactly what makes pool_modules
+    # lossy. Re-referencing every detector of a pool to one shared pivot removes
+    # it (a per-detector shift of (va_scale-1)*(v_ref - v_pivot)).
+    #
+    # A strict no-op for a single-detector pool (LW with pool_modules=false), so
+    # it is safe on by default; for a multi-detector SW pool it also removes the
+    # smaller intra-pool residual (~5 mas across a module's ~130" span).
+    dva_repivot       = true    # re-reference DVA to a pool-common pivot
+    dva_pivot         = "pool"  # "pool": centroid of the pool's v2_ref/v3_ref
+                                #   (leaves the pool's mean position unchanged);
+                                # "boresight": V2=V3=0
+    coarse_searchrad  = 70.0    # arcsec; gross-shift 2-D-hist radius (>= max
+                                # acquisition offset to recover; 70" covers 60")
+    refine_niter      = 3       # coarse match->fit->rematch iters (recovers roll)
+    # Histogram-consensus knobs (JHAT names/values — the validated COSMOS
+    # [nircam.jhat] configuration). *_px values are IMAGE PIXELS, converted to
+    # tangent-plane arcsec per pool, so SW/LW each get physical values.
+    d2d_max           = 1.5     # arcsec; drop 1-NN pairs farther than this
+                                # (after the gross shift)
+    binsize_px        = 0.02    # offset-histogram bin (px)
+    gaussian_sigma_px = 0.2     # histogram smoothing sigma (px)
+    rough_cut_px_min  = 2.5     # clamp on the rough cut around the peak (px);
+    rough_cut_px_max  = 2.5     # min = max = 2.5 pins it, as JHAT ran on COSMOS
+    nfwhm             = 2.5     # rough cut = nfwhm * peak FWHM before clamping
+    hist_nsigma       = 3.0     # sigma-clip of the de-rotated offsets
+    histocut_order    = "dxdy"  # cut dx-vs-y first ("dxdy") or dy-vs-x ("dydx")
+    slope_max         = 0.0048828125  # rotation-scan half-range, dimensionless
+                                      # (= JHAT's 10px/2048px ~ 0.28 deg)
+    slope_nsteps      = 200     # rotation-scan steps across [-slope_max, +]
+    # delta_mag_lim = [-3.0, 4.0]   # keep a 1-NN pair only if image_mag -
+                                # refcat_mag lies in this window (JHAT's COSMOS
+                                # value). Needs calibrated detection mags (auto
+                                # when frames are MJy/sr) AND a refcat whose
+                                # 'mag' zeropoint is trustworthy — refcat mags
+                                # are heterogeneous across build backends, so
+                                # this stays off by default. Pairs missing
+                                # either mag are never cut.
+    # --- Fine: per-detector fit on top of the coarse ---------------------------
+    # EVERY detector with enough verified (mutual-NN) matches gets an
+    # individual fit on its pre-matched pairs — jhat fits every detector,
+    # always, and a sub-tolerance systematic SIAF offset must not survive just
+    # because it is small. fine_fitgeom is the CEILING dof; each detector
+    # falls down the ladder (general -> rshift -> shift -> keep-coarse) by its
+    # match count; the floors are the guard against noise-chasing fits
+    # (fine_min_shift = jhat's own minobj = 3). jhat only ever fits rshift per
+    # detector, so rshift is the default ceiling.
+    fine_fitgeom      = "rshift"  # "general" | "rshift" | "shift"
+    fine_min_general  = 10        # >= this many 1-to-1 matches -> allow general
+    fine_min_rshift   = 4         # >= this -> allow rshift
+    fine_min_shift    = 3         # >= this -> allow shift; below -> keep coarse
+                                  # (= jhat's tweakreg minobj)
+    # Acceptance: take the per-detector fit when the shift it applies is
+    # SIGNIFICANT against the noise adopting it costs, t = |shift|/(sigma/sqrt n).
+    # Keeping the pooled coarse attitude is right when a detector has no offset
+    # of its own (the pool averages ~M times more pairs); the per-detector fit is
+    # right when its offset exceeds the noise of estimating it. Choosing on a
+    # residual IMPROVEMENT instead cannot express that trade-off — the fit is
+    # judged on a re-matched sample rather than the one it minimized, so with no
+    # offset present it is a coin flip.
+    # Measured on COSMOS f410m (2-detector pools) and f210m (8-detector pools)
+    # with the fine fit disabled, so the per-detector offsets were observed
+    # unbiased: median t = 3.1 / 3.4 against a null expectation of 1.18 — real
+    # offsets of 3.0 / 5.0 mas versus 1.0 / 1.4 mas of fit noise. The old
+    # residual test behaved like t > 3, accepting only 44% / 59% and leaving
+    # 1.69 / 1.96 mas of per-detector error; 1.4 leaves 0.94 / 1.39 mas.
+    # Theory agrees: minimum MSE sits at sqrt(2 - 1/M) = 1.22 (M=2) .. 1.41
+    # (M=8), and the empirical optimum landed on exactly those values. The
+    # optimum is FLAT over 1.0-1.5, so the exact choice is not delicate.
+    # 0 accepts every fit that does not degrade the residual.
+    fine_min_significance = 1.4
+    tolerance         = 0.05      # arcsec; QA/reporting only — flags a detector
+                                  # as within tolerance; gates nothing
+    match_radius      = 0.5       # arcsec; 1-to-1 NN radius for residuals + fine match
+    min_matched       = 6         # per-pool reject-to-NOT_ALIGNED floor (1-to-1)
+    min_coverage_arcsec = 5.0     # matched sources must span >= this (conditions rot)
+    ref_border_arcmin = 1.2     # refcat footprint margin (>= coarse_searchrad); arcmin
+    # Backstop residual gate: any detector whose final 1-to-1 residual exceeds
+    # this (arcsec) is individually rejected to NOT_ALIGNED (WCS preserved,
+    # quarantined from combine) — no plausible-but-wrong solution may reach a
+    # mosaic. Healthy solves sit at ~0.02-0.03"; the COSMOS A2/A3
+    # misregistrations this guards against sat at 0.20-0.24".
+    max_residual_arcsec = 0.1
+    # --- Detection (per detector, no count cap) --------------------------------
+    # SEP segmentation of the SNR map (sci/err), mirroring the refcat build
+    # (refcat/extract.py) so image-side detections correspond to refcat
+    # entries. Point-source (DAOStarFinder) detection is retired: over bright
+    # extended galaxies it found thousands of *bright* substructure peaks
+    # tracing the same galaxy clustering as the refcat, and the coarse
+    # gross-shift 2-D offset histogram grew clustering-scale peaks that could
+    # beat the true offset — dragging well-pointed exposures tens of arcsec
+    # (COSMOS A2/A3 f277w). Detection magnitudes are CALIBRATED AB whenever
+    # the frame is MJy/sr with PIXAR_SR (Kron photometry + JHAT's zeropoint
+    # convention) — so objmag_lim takes real AB values; on a frame with no
+    # zeropoint the cut is skipped loudly rather than applied to instrumental
+    # mags.
+    snr_thresh = 3.0            # per-pixel detection threshold on the SNR map
+    minarea = 15                # min connected pixels above snr_thresh
+    deblend_nthresh = 32        # SEP deblender: number of thresholds
+    deblend_cont = 0.001        # SEP deblender: min contrast
+    snr_min = 10.0              # drop sources below this integrated flux SNR
+                                # (flux/fluxerr; same cut as the refcat build)
     edge = 8                    # drop detections within this many px of a border
+    fwhm = 1.5                  # fallback matched-filter kernel FWHM (px);
+                                # per-filter override below
+    # objmag_lim = [19.0, 28.0] # keep only this AB-mag window (JHAT's COSMOS
+                                # value); off by default — DQ saturation
+                                # masking already guards the bright end
 
-    # Per-filter detection PSF FWHM (detector pixels). NIRCam's PSF core runs
-    # from ~F070W to ~F480M, so one fwhm is wrong across the SW+LW channels; the
-    # align worker keys detection off each member's filter, falling back to the
-    # scalar `fwhm` above for any filter not listed. Values ≈ PSF-core FWHM /
-    # pixel-scale — approximate; tune per field on real data.
+    # Per-filter matched-filter kernel FWHM (detector pixels) — the kernel
+    # should track the PSF core, which runs from ~F070W to ~F480M, so one fwhm
+    # is wrong across the SW+LW channels; the align worker keys detection off
+    # each member's filter, falling back to the scalar `fwhm` above for any
+    # filter not listed. Values ≈ PSF-core FWHM / pixel-scale — approximate;
+    # tune per field on real data.
     [nircam.align.psf_fwhm_by_filter]
         f070w = 1.5
         f090w = 1.6
@@ -404,6 +830,53 @@
     threshold = 0.8
 
 [nircam.outlier]
+    # Waterfall growth of large OUTLIER DQ regions (opt-in). Detector-fixed
+    # artifacts (scattered-light arcs/glints) move on-sky between dithers so
+    # outlier detection flags their bright cores, but the sub-threshold
+    # wings survive into the mosaic. When enabled, connected OUTLIER
+    # components with area >= grow_min_area px seed a hysteresis expansion
+    # ("waterfall", SExtractor-isophote style): each seed floods through
+    # connected pixels of the smoothed residual above grow_expand_nsigma
+    # sigma, so the mask follows the artifact's actual morphology and stops
+    # at the (flat, post-bkg) background. Small components (cosmic rays,
+    # galaxy-core speckles) are untouched — rj0911 F444W: ~5 large vs
+    # ~13000 small components/frame. Guards: components expanding beyond
+    # grow_max_factor x their seed area (bright-star halos flooding their
+    # own PSF wings) fall back to a plain grow_radius px dilation of the
+    # seed. Grown px are flagged OUTLIER|DO_NOT_USE; depth cost is one
+    # dither, confined to artifact neighbourhoods (<1% of frame).
+    #
+    # grow_deblend: photutils-deblend each expanded region (multi-threshold
+    # watershed on the smoothed residual) and release deblended children
+    # that contain no seed pixels AND peak >2x above the seeded artifact —
+    # neighbouring galaxies whose isophotes touch the artifact's wings keep
+    # their depth instead of being masked. The peak-ratio guard keeps the
+    # artifact's own noise-split wing chunks masked (watershed alone
+    # over-segments flat-topped elongated artifacts).
+    #
+    # grow_negative: seeds sitting on negative residuals (oversubtracted
+    # wisp/background regions — the base detection thresholds |sci-blot|,
+    # so both signs seed) expand through connected pixels *below*
+    # -grow_expand_nsigma sigma instead of above. Self-limiting: if every
+    # dither is oversubtracted identically the median matches them and no
+    # seed forms, so only exposures that disagree with the ensemble are
+    # rejected.
+    # grow_edge_buffer: OUTLIER pixels within this many px of the frame
+    # edge never seed growth (per-pixel; a large artifact reaching the
+    # edge still seeds from its deeper interior part). Detection flags
+    # near-contiguous strips along trimmed exposure edges and the
+    # saturated cores of stars falling near the edge — both would
+    # otherwise seed floods into real sources at the frame boundary.
+    # (Weightless pixels — already DO_NOT_USE before detection — are
+    # additionally always excluded from seeding, no knob.)
+    grow_large_regions = false
+    grow_min_area = 100
+    grow_expand_nsigma = 1.5
+    grow_max_factor = 40
+    grow_radius = 12
+    grow_deblend = true
+    grow_negative = true
+    grow_edge_buffer = 50
     # implementation = "jwst" routes outlier detection through
     # `jwst.pipeline.calwebb_image3.Image3Pipeline` per visit (with
     # intra-program cross-visit overlap padding). "campfire" runs the
@@ -438,6 +911,23 @@
 
 [nircam.resample]
     mode = "tile"
+    # Write the drizzle CONTEXT extension tile-compressed (GZIP_1, lossless).
+    # CON is one int32 plane per 32 inputs, each at FULL tile size, so its cost
+    # is tile_area * n_inputs/32 and it dominates the i2d: an a2744 1.26 Gpix
+    # tile with 534 inputs needs 17 planes = 80 GiB, against 14 GiB for
+    # SCI+ERR+WHT combined. Almost every bit is zero (a pixel is touched by a
+    # handful of inputs, not hundreds), so it compresses ~50x. Measured on that
+    # tile: ~95 GiB -> ~16 GiB.
+    # `hdul['CON'].data` reads back identically through astropy; nothing in this
+    # repository reads CON at all. Set false if an external, non-astropy reader
+    # needs a plain ImageHDU.
+    # Applies to both `implementation` backends, but the cost differs: the
+    # campfire backend saves a CON placeholder and swaps the compressed
+    # extension in, so the uncompressed array never reaches the disk, while the
+    # jwst backend writes it first (inside jwst's own resample step) and then
+    # rewrites the i2d compressed — one extra read+write per tile. Peak RSS is
+    # the same either way; the rewrite streams CON tile-by-tile.
+    compress_context = true
     # implementation = "jwst" routes the per-tile drizzle through
     # `jwst.pipeline.calwebb_image3.Image3Pipeline` (stcal Resample,
     # the historical default). "campfire" uses the campfire-native
@@ -453,12 +943,29 @@
     pixfrac = 1
     kernel = "square"
     background_subtract = true
+    # Keep the full-size _i2d_before_bkgsub.fits rollback snapshot after
+    # subtracting the mosaic background. The bkgsub-done record is the
+    # CFP_BKGS stamp on the i2d itself (issue #427), so the snapshot is a
+    # pure convenience copy: deletable at any time to reclaim space, and
+    # skippable up front by setting this false (its only cost is losing the
+    # rollback and the _bkgsub.png before/after plot).
+    keep_pre_bkgsub = true
     ring_radius_in = 80
     ring_width = 4
     ring_downsample = 4
     ring_clip_max_sigma = 5.0
     ring_clip_box_size = 100
     ring_clip_filter_size = 3
+    # Compact-source detection cascade (aggressive -> fine). The former
+    # "tier 0" giant-galaxy pre-tier (100 sigma / 30k px core, 600 px
+    # dilation) was REMOVED together with the introduction of bg_guard: the
+    # A2744 120" A/B showed the fit inside a tier-0 hole is pure
+    # extrapolation (negative area ~3x worse than without the tier, ~9x
+    # worse even after guard cleanup), and the tier never fired on the
+    # envelope-dominated BCGs it was meant to protect. The guard bounds the
+    # background with the observed flux floor instead — it works under
+    # masks, so no protective hole is needed. See nircam/bkgsub.py and
+    # pipeline/experiments/bkg_nonneg.
     tier_kernel_size = [25, 15, 5, 2]
     tier_npixels = [15, 10, 3, 1]
     tier_nsigma = [1.5, 1.5, 1.5, 1.5]
@@ -468,6 +975,53 @@
     bg_exclude_percentile = 90
     bg_sigma = 3
     bg_interpolator = "zoom"
+    # Depth-aware source masking (issue: variable-depth tiles). Detection and
+    # ring-clip thresholds run on the noise-equalized image SCI*sqrt(WHT), so
+    # one global RMS threshold holds at every depth. With the flux-space
+    # thresholds a deep-dominated tile pins the global RMS to the deep value
+    # and mass-flags shallow-coverage noise as sources — the 2-D fit then has
+    # no data there and extrapolates, leaving (or inventing) background
+    # structure in the shallow regions. Uniform-depth tiles are unaffected.
+    # false = legacy flux-space thresholds.
+    wht_aware = true
+    # Background-map outlier rejection for the MOSAIC-level fit (same guard
+    # as [nircam.bkg.bkg2d].reject; see SubtractBackground.bg_reject*).
+    # Default off: existing mosaics stay byte-identical and keep their
+    # config_hash. Enabling it per field changes the tile hash, forcing a
+    # rebuild. rj0911 F444W A/B (2026-07-17): extended residual-ICL removal
+    # was IDENTICAL either way (too smooth to trip the threshold) and the
+    # guard conserved compact BCG-envelope light — but it flagged a large
+    # contiguous scattered-light patch (~5% of coverage) and the refit
+    # imprinted box-scale steps at the reject-region boundary, visibly
+    # degrading the mosaic. The guard suits compact-bump leakage (bright
+    # stars on blank fields), not frames with large contiguous artifacts.
+    # A/B per field before adopting.
+    bg_reject = false
+    bg_reject_sigma_hi = 4.0
+    bg_reject_sigma_lo = 3.0
+    bg_reject_percentile = 60.0
+    bg_reject_dilate = 40.0
+    # Negativity guard (see SubtractBackground.bg_guard in nircam/bkgsub.py):
+    # constrains the final background map so the subtracted mosaic carries no
+    # statistically significant negative structure (true flux >= 0 makes the
+    # observed flux floor an upper bound on the background, even under
+    # masks). Two data-side corrections: a maskless one-sided ceiling capping
+    # the background mesh (multi-scale min over guard_ceiling_boxes,
+    # self-calibrated on quiet sky, k-sigma slack), then a detection-gated
+    # iterated trough pass lifting coherent negative residual regions to the
+    # -t sigma floor. Noise model is s/sqrt(WHT) (source-independent).
+    # Default ON: validated on A2744 F444W 120" cutouts (cluster core
+    # negative structure 159k px -> 1.3k px, empty-aperture medians
+    # unchanged; blank-tile null is a near-no-op by construction of the
+    # gate). NOTE: enabling changes tile config hashes -> mosaic rebuild.
+    bg_guard = true
+    guard_ceiling_boxes = [32, 64, 128]
+    guard_ceiling_k = 2.0
+    guard_ceiling_sigma_upper = 1.0
+    guard_trough_sigmas = [5.0, 15.0]
+    guard_trough_t = 2.0
+    guard_trough_npix = 8.0
+    guard_trough_max_iter = 12
     split_extensions = true
     plot = true
     plot_downsample = 4

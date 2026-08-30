@@ -75,6 +75,38 @@ def peramp_pedestal(data, mask, sigma=3.0, maxiters=3):
     return ped, per_amp
 
 
+def frame_pedestal(data, mask, sigma=3.0, maxiters=3):
+    """Single full-frame DC pedestal (σ-clipped median of unmasked pixels).
+
+    The ``scope='frame'`` alternative to :func:`peramp_pedestal`, used when
+    the bkg step's applied 2-D background is on: a per-amp pedestal turns a
+    smooth sky gradient into a per-amp sawtooth that the smooth Background2D
+    mesh cannot reproduce, ringing at the amp boundaries. With one frame DC
+    the 2-D fit owns the gradient; any real per-amp DC steps are left to the
+    per-amp amp-row GP (which can carry a constant per amp).
+
+    Same return contract as :func:`peramp_pedestal`: ``(ped, per_amp)`` with
+    the single DC broadcast across every amp's science columns (reference
+    columns stay 0) and repeated per amp in the dict.
+    """
+    ped = np.zeros(data.shape)
+    vals = data[~mask & np.isfinite(data)]
+    if vals.size:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            _, dc, _ = sigma_clipped_stats(vals, sigma=sigma,
+                                           maxiters=maxiters)
+        dc = float(dc) if np.isfinite(dc) else 0.0
+    else:
+        dc = 0.0
+    per_amp = {}
+    for amp in ('A', 'B', 'C', 'D'):
+        _, _, colstart, colstop = NIR_AMPS[amp]['data']
+        ped[:, colstart:colstop] = dc
+        per_amp[amp] = dc
+    return ped, per_amp
+
+
 # ---------------------------------------------------------------------------
 # Per-column (vertical) 1/f term
 # ---------------------------------------------------------------------------

@@ -245,6 +245,7 @@ export function AdvancedFiltersPanel({
       max_exposure_time_min: null,
       max_exposure_time_max: null,
       list_ids: [],
+      list_ids_mode: 'any',
       dq_flags: [],
       dq_flags_mode: 'any',
     });
@@ -542,9 +543,8 @@ export function AdvancedFiltersPanel({
                 options={listOptions}
                 selected={filters.list_ids ?? []}
                 onChange={(s) => onFiltersChange({ ...filters, list_ids: s as number[] })}
-                mode="any"
-                onModeChange={() => {}}
-                hideModeSelector
+                mode={filters.list_ids_mode}
+                onModeChange={(m) => onFiltersChange({ ...filters, list_ids_mode: m })}
               />
             </div>
           )}

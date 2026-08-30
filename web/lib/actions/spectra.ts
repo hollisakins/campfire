@@ -1,8 +1,9 @@
 'use server';
 
 import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { getAccessibleProgramSlugs } from '@/lib/accessible-programs';
 import { paginateRpc } from '@/lib/supabase/paginate';
-import type { SpectrumTarget, Program, Spectrum, ObjectDetail, ObjectMemberTarget } from '@/lib/types';
+import type { SpectrumTarget, Program, Spectrum, ObjectDetail, ObjectMemberTarget, PinnedObjectMetadata } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
 import type { FilterOptions } from './filter-params';
 export type { FilterOptions, FilterMode } from './filter-params';
@@ -73,15 +74,11 @@ export async function getSpectra(
   }
 
   try {
-    // Determine which programs the user can access (parallel queries)
-    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
-    ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+    // Which programs can this user access? One RPC to the SQL authority
+    // (accessible_program_slugs) rather than a hand-rolled grants + public
+    // union: the union is wrong for link accounts (scoped program only, no
+    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
+    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
 
     if (accessibleProgramSlugs.length === 0) {
       return {
@@ -124,6 +121,7 @@ export async function getSpectra(
         p_needs_review: rpcParams.p_needs_review,
         p_has_photometry: rpcParams.p_has_photometry,
         p_list_ids: rpcParams.p_list_ids,
+        p_list_ids_mode: rpcParams.p_list_ids_mode,
         p_coord_ra: rpcParams.p_coord_ra,
         p_coord_dec: rpcParams.p_coord_dec,
         p_radius_degrees: rpcParams.p_radius_degrees,
@@ -289,15 +287,11 @@ export async function getSpectrumById(targetId: string): Promise<{
   }
 
   try {
-    // Determine which programs the user can access (parallel queries)
-    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
-    ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+    // Which programs can this user access? One RPC to the SQL authority
+    // (accessible_program_slugs) rather than a hand-rolled grants + public
+    // union: the union is wrong for link accounts (scoped program only, no
+    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
+    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
 
     const { data, error } = await supabase
       .from('targets')
@@ -333,9 +327,6 @@ export async function getSpectrumById(targetId: string): Promise<{
       ? Math.max(...spectra.map(s => s.signal_to_noise || 0))
       : null;
 
-    // Use has_sed_plot from database (populated during deployment)
-    const hasSedPlot = data.has_sed_plot ?? false;
-
     const spectrumTarget: SpectrumTarget = {
       id: data.id,
       target_id: data.target_id,
@@ -357,7 +348,6 @@ export async function getSpectrumById(targetId: string): Promise<{
       spectra: spectra,
       max_snr: maxSnr ?? undefined,
       num_gratings: spectra.length,
-      hasSedPlot,
       parent_object_id: data.parent_object?.object_id ?? undefined,
     };
 
@@ -442,16 +432,12 @@ export async function getObjectById(objectId: string): Promise<{
   }
 
   try {
-    // Fetch access data, public programs, and object row in parallel
-    const [{ data: accessData }, { data: publicPrograms }, { data: obj, error: objError }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
+    // Fetch the accessible-slug list (SQL authority — see
+    // web/lib/accessible-programs.ts) and the object row in parallel.
+    const [accessibleProgramSlugs, { data: obj, error: objError }] = await Promise.all([
+      getAccessibleProgramSlugs(supabase),
       supabase.from('objects').select('*').eq('object_id', objectId).single(),
     ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
 
     if (objError || !obj) {
       return {
@@ -510,7 +496,6 @@ export async function getObjectById(objectId: string): Promise<{
       ra: m.ra,
       dec: m.dec,
       redshift_auto: m.redshift_auto,
-      has_sed_plot: m.has_sed_plot ?? false,
       max_snr: m.max_snr,
       max_exposure_time: m.max_exposure_time,
       spectra: m.spectra || [],
@@ -628,6 +613,68 @@ export async function getObjectMetadata(objectId: string): Promise<{
 }
 
 /**
+ * Resolve display metadata (field, redshift, quality) for the user's pinned
+ * objects. Pins are stored in user_profiles.preferences as bare references
+ * (id + route) because that column is readable by all authenticated users;
+ * this action resolves the metadata under the caller's own RLS scope, so
+ * pins pointing at programs the caller can't access simply don't resolve.
+ */
+export async function getPinnedObjectsMetadata(
+  pins: { target_id: string; route: 'objects' | 'targets' }[]
+): Promise<{ metadata: Record<string, PinnedObjectMetadata>; isAuthenticated: boolean }> {
+  const supabase = await createClient();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return { metadata: {}, isAuthenticated: false };
+  }
+
+  // Defensive cap — the UI limits pins to MAX_PINNED_OBJECTS, but the action
+  // shouldn't trust its input size.
+  const bounded = pins.slice(0, 50);
+  const objectIds = bounded.filter(p => p.route === 'objects').map(p => p.target_id);
+  const targetIds = bounded.filter(p => p.route === 'targets').map(p => p.target_id);
+
+  const metadata: Record<string, PinnedObjectMetadata> = {};
+
+  try {
+    const [objectsRes, targetsRes] = await Promise.all([
+      objectIds.length > 0
+        ? supabase
+            .from('objects')
+            .select('object_id, field, redshift, redshift_quality')
+            .in('object_id', objectIds)
+        : Promise.resolve({ data: [] as { object_id: string; field: string; redshift: number | null; redshift_quality: number }[], error: null }),
+      targetIds.length > 0
+        ? supabase
+            .from('targets')
+            .select('target_id, field, redshift, redshift_quality')
+            .in('target_id', targetIds)
+        : Promise.resolve({ data: [] as { target_id: string; field: string; redshift: number | null; redshift_quality: number }[], error: null }),
+    ]);
+
+    for (const row of objectsRes.data || []) {
+      metadata[row.object_id] = {
+        field: row.field,
+        redshift: row.redshift,
+        redshift_quality: row.redshift_quality,
+      };
+    }
+    for (const row of targetsRes.data || []) {
+      metadata[row.target_id] = {
+        field: row.field,
+        redshift: row.redshift,
+        redshift_quality: row.redshift_quality,
+      };
+    }
+
+    return { metadata, isAuthenticated: true };
+  } catch {
+    return { metadata: {}, isAuthenticated: true };
+  }
+}
+
+/**
  * Fetch available filter options (programs and fields the user has access to).
  * Includes public programs + programs the user has explicit access to.
  */
@@ -646,17 +693,12 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
   }
 
   try {
-    // Fetch user access and all programs in parallel
-    const [{ data: accessData, error: accessError }, { data: allPrograms, error: programsError }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
+    // Fetch the accessible-slug list (SQL authority — see
+    // web/lib/accessible-programs.ts) and all RLS-visible programs in parallel.
+    const [accessibleSlugList, { data: allPrograms, error: programsError }] = await Promise.all([
+      getAccessibleProgramSlugs(supabase),
       supabase.from('programs').select('*'),
     ]);
-
-    if (accessError) {
-      console.error('Error fetching program access:', accessError);
-    }
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
 
     if (programsError) {
       console.error('Error fetching programs:', programsError);
@@ -668,9 +710,10 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
       };
     }
 
-    // Filter to programs that are public OR user has explicit access
+    // Filter to the accessible set. The old form (is_public OR explicit
+    // grant) was wrong for link accounts, whose scoped program is neither.
     const accessiblePrograms = (allPrograms || []).filter(
-      p => p.is_public || explicitAccessSlugs.includes(p.slug)
+      p => accessibleSlugList.includes(p.slug)
     );
 
     if (accessiblePrograms.length === 0) {
@@ -763,14 +806,11 @@ export async function getInspectionQueueIds(
   }
 
   try {
-    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
-    ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+    // Which programs can this user access? One RPC to the SQL authority
+    // (accessible_program_slugs) rather than a hand-rolled grants + public
+    // union: the union is wrong for link accounts (scoped program only, no
+    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
+    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
 
     if (accessibleProgramSlugs.length === 0) {
       return { ids: [] };
@@ -840,14 +880,11 @@ export async function getAdjacentObjectIds(
   }
 
   try {
-    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
-    ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+    // Which programs can this user access? One RPC to the SQL authority
+    // (accessible_program_slugs) rather than a hand-rolled grants + public
+    // union: the union is wrong for link accounts (scoped program only, no
+    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
+    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
 
     if (accessibleProgramSlugs.length === 0) {
       return { prev: null, next: null, currentIndex: 0, total: 0 };

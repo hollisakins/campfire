@@ -131,11 +131,15 @@ DROP VIEW IF EXISTS public.targets_with_flags;
 
 
 -- 5. nircam_reduction_progress
---    Aggregated reduction progress per field/filter for the admin dashboard.
---    Bucketed by the canonical NIRCam pipeline step names (matching
---    `cfpipe nircam <step>` and the campfire_pipeline.common.cfp.CFP_KEYS
---    chain). `uncal` means the raw exposure exists but no canonical file
---    has been produced yet by `detector1`.
+--    Inspection-triage progress per field/filter/detector for the admin
+--    dashboard. The per-stage at_<step> distribution columns were dropped
+--    (2026-07 dashboard redesign): whole filters sit at the same pipeline
+--    stage in practice, so the distribution carried no signal. The view now
+--    answers the questions reviewers actually have — how far along is
+--    inspection (approved+excluded vs total), how many masks exist, and
+--    which detectors still have pending exposures (feeding the dashboard's
+--    quick-filter links). Detector granularity is aggregated back up to
+--    filter/field client-side.
 DROP VIEW IF EXISTS public.nircam_reduction_progress;
 -- security_invoker (B1): this was a plain (definer) view that bypassed the
 -- admin-only RLS on nircam_exposures, leaking QA aggregates to all authenticated
@@ -146,31 +150,16 @@ WITH (security_invoker = true) AS
 SELECT
     field,
     filter,
+    detector,
     count(*) AS total,
-    -- Per-step distribution: count of exposures whose highest-completed
-    -- CFP key is exactly this step. (Diag_striping and wcs_shift are
-    -- opt-in; expect zeros for fields that don't enable them.)
-    count(*) FILTER (WHERE stage = 'uncal')         AS at_uncal,
-    count(*) FILTER (WHERE stage = 'detector1')     AS at_detector1,
-    count(*) FILTER (WHERE stage = 'persistence')   AS at_persistence,
-    count(*) FILTER (WHERE stage = 'wisp')          AS at_wisp,
-    count(*) FILTER (WHERE stage = 'image2')        AS at_image2,
-    count(*) FILTER (WHERE stage = 'edge')          AS at_edge,
-    -- bkg unifies the former striping/sky/variance stages
-    count(*) FILTER (WHERE stage = 'bkg')           AS at_bkg,
-    count(*) FILTER (WHERE stage = 'diag_striping') AS at_diag_striping,
-    count(*) FILTER (WHERE stage = 'wcs_shift')     AS at_wcs_shift,
-    count(*) FILTER (WHERE stage = 'preview')       AS at_preview,
-    count(*) FILTER (WHERE stage = 'jhat')          AS at_jhat,
-    count(*) FILTER (WHERE stage = 'apply_mask')    AS at_apply_mask,
-    count(*) FILTER (WHERE stage = 'bad_pixel')     AS at_bad_pixel,
-    count(*) FILTER (WHERE stage = 'outlier')       AS at_outlier,
-    -- Triage summary
+    -- Triage summary. "Masked" is derived state: a non-null mask_regions is
+    -- the sole signal (matches the admin exposure table's Masked column).
     count(*) FILTER (WHERE review_status = 'pending')  AS pending_review,
     count(*) FILTER (WHERE review_status = 'approved') AS approved,
     count(*) FILTER (WHERE review_status = 'excluded') AS excluded,
+    count(*) FILTER (WHERE mask_regions IS NOT NULL)   AS masked,
     count(*) FILTER (WHERE correction = 'needed')      AS needs_correction
 FROM public.nircam_exposures
-GROUP BY field, filter;
+GROUP BY field, filter, detector;
 
 GRANT SELECT ON public.nircam_reduction_progress TO authenticated;

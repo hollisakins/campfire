@@ -68,33 +68,206 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.is_group_account() TO authenticated;
 
+-- =============================================================================
+-- Share links (docs/design-public-mirror.md)
+-- =============================================================================
+-- A share link is backed by a synthetic authenticated principal (a "link
+-- account"). Because it authenticates like any other user, every reader in the
+-- portal works unchanged -- and the entire security story is the narrowing
+-- conjuncts these four helpers feed throughout policies.sql.
+--
+-- All four are argument-free on purpose. A policy conjunct written as
+--     (SELECT public.link_observation()) = t.observation
+-- evaluates the helper ONCE PER QUERY (Postgres treats the scalar subquery as
+-- an InitPlan), whereas a row-varying call like link_ok(t.observation) would
+-- run per row. `targets` and `spectra` back the big paginated table queries, so
+-- that difference is the hot path of the whole portal. This is the same reason
+-- every policy in this schema wraps is_admin() as `(SELECT public.is_admin())`.
+--
+-- SECURITY DEFINER because a link account cannot read share_links (RLS there is
+-- admin-only) and must not be able to.
+
+CREATE OR REPLACE FUNCTION public.is_link_account()
+RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT COALESCE(
+    (SELECT is_link_account FROM user_profiles WHERE user_id = auth.uid()),
+    false
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION public.is_link_account() TO authenticated;
+
+
+-- The scoped observation for the calling link account, or NULL for everyone
+-- else (and for a field-scoped link). A revoked or expired link resolves to
+-- NULL on BOTH axes, so its session reads nothing even before the account is
+-- deleted -- revocation takes effect on the next query, not the next refresh.
+CREATE OR REPLACE FUNCTION public.link_observation()
+RETURNS text
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT sl.observation
+  FROM share_links sl
+  WHERE sl.link_user_id = auth.uid()
+    AND sl.revoked_at IS NULL
+    AND (sl.expires_at IS NULL OR sl.expires_at > now());
+$$;
+
+GRANT EXECUTE ON FUNCTION public.link_observation() TO authenticated;
+
+
+CREATE OR REPLACE FUNCTION public.link_field()
+RETURNS text
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT sl.field
+  FROM share_links sl
+  WHERE sl.link_user_id = auth.uid()
+    AND sl.revoked_at IS NULL
+    AND (sl.expires_at IS NULL OR sl.expires_at > now());
+$$;
+
+GRANT EXECUTE ON FUNCTION public.link_field() TO authenticated;
+
+
+-- Whether this link may also see draft (in-prep) rows inside its scope. This is
+-- what makes "reduce it for a colleague without publishing it" work: deploy
+-- with `campfire deploy --in-prep`, then mint a link with include_drafts.
+--
+-- NOTE this widens an invariant that used to be absolute: before share links,
+-- deploy_status='draft' meant "admins only", full stop. It now means "admins,
+-- plus a link account scoped to that row". Still narrow -- link_sees_drafts()
+-- only ever appears ANDed with a scope match -- but the next person reading
+-- these policies deserves to know the rule has an exception.
+CREATE OR REPLACE FUNCTION public.link_sees_drafts()
+RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT COALESCE(
+    (SELECT sl.include_drafts
+     FROM share_links sl
+     WHERE sl.link_user_id = auth.uid()
+       AND sl.revoked_at IS NULL
+       AND (sl.expires_at IS NULL OR sl.expires_at > now())),
+    false
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION public.link_sees_drafts() TO authenticated;
+
+
+-- Whether this link may download FITS. Gates the whole storage_objects select
+-- policy, which every download path in the portal and the API runs through.
+--
+-- MUST be a SECURITY DEFINER helper rather than an inline subquery over
+-- share_links: that table is admin-only under RLS, so a policy reading it
+-- directly evaluates to no-rows for the very link account it is deciding
+-- about -- silently denying every download instead of honouring the flag.
+CREATE OR REPLACE FUNCTION public.link_allows_download()
+RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT COALESCE(
+    (SELECT sl.allow_download
+     FROM share_links sl
+     WHERE sl.link_user_id = auth.uid()
+       AND sl.revoked_at IS NULL
+       AND (sl.expires_at IS NULL OR sl.expires_at > now())),
+    false
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION public.link_allows_download() TO authenticated;
+
+
 CREATE OR REPLACE FUNCTION public.accessible_program_slugs()
 RETURNS text[]
 LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT COALESCE(array_agg(DISTINCT slug), '{}')
-  FROM (
-    SELECT program_slug AS slug
-    FROM user_program_access
-    WHERE user_id = auth.uid()
-    UNION
-    SELECT slug
-    FROM programs
-    WHERE is_public = true
-    UNION
-    -- Admins (the operators) inherit access to every program. This is the
-    -- single point where admin access is granted to all program-gated data:
-    -- every RLS SELECT policy routes through accessible_program_slugs(), so
-    -- this lets admins read back rows they deploy for private programs
-    -- (otherwise an upsert's RETURNING fails the SELECT policy -> 42501).
-    SELECT slug
-    FROM programs
-    WHERE public.is_admin()
-  ) sub;
+  -- Share links (docs/design-public-mirror.md §5.1): a link account gets ONLY
+  -- the program of its scoped observation. No user_program_access union (it has
+  -- no grants), no is_public union, no admin union.
+  --
+  -- Dropping is_public is the load-bearing part. Without it, handing someone a
+  -- share link would hand them every public program in the archive -- and
+  -- because ~20 policies route through this function, that one omission would
+  -- leak through all of them at once. A field-scoped link gets '{}': NIRCam is
+  -- not program-gated at all, so its narrowing lives on the field axis instead.
+  SELECT CASE WHEN public.is_link_account() THEN
+    COALESCE(
+      (SELECT array_agg(DISTINCT o.program_slug)
+       FROM observations o
+       WHERE o.name = public.link_observation()),
+      '{}'::text[]
+    )
+  ELSE
+    COALESCE(
+      (SELECT array_agg(DISTINCT slug)
+       FROM (
+         SELECT program_slug AS slug
+         FROM user_program_access
+         WHERE user_id = auth.uid()
+         UNION
+         SELECT slug
+         FROM programs
+         WHERE is_public = true
+         UNION
+         -- Admins (the operators) inherit access to every program. This is the
+         -- single point where admin access is granted to all program-gated data:
+         -- every RLS SELECT policy routes through accessible_program_slugs(), so
+         -- this lets admins read back rows they deploy for private programs
+         -- (otherwise an upsert's RETURNING fails the SELECT policy -> 42501).
+         SELECT slug
+         FROM programs
+         WHERE public.is_admin()
+       ) sub),
+      '{}'::text[]
+    )
+  END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.accessible_program_slugs() TO authenticated;
+
+-- Tag sharing (issue #450). These two helpers are the single authority for
+-- "which lists can the caller see / edit members of": owner + public visibility
+-- + per-user object_list_shares grants. SECURITY DEFINER so RLS policies on
+-- object_lists / object_list_members / list_audit_log can call them without
+-- recursing into each table's own policies.
+CREATE OR REPLACE FUNCTION public.viewable_list_ids()
+RETURNS SETOF integer
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT id FROM object_lists
+  WHERE created_by = auth.uid()
+     OR visibility IN ('public_read', 'public_edit')
+     OR id IN (SELECT list_id FROM object_list_shares WHERE user_id = auth.uid());
+$$;
+
+GRANT EXECUTE ON FUNCTION public.viewable_list_ids() TO authenticated;
+
+-- Lists whose MEMBERS the caller may add/remove (list metadata stays
+-- owner-only): owner + public_edit + editor-role shares.
+CREATE OR REPLACE FUNCTION public.member_editable_list_ids()
+RETURNS SETOF integer
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT id FROM object_lists
+  WHERE created_by = auth.uid()
+     OR visibility = 'public_edit'
+     OR id IN (SELECT list_id FROM object_list_shares WHERE user_id = auth.uid() AND role = 'editor');
+$$;
+
+GRANT EXECUTE ON FUNCTION public.member_editable_list_ids() TO authenticated;
 
 
 -- Whether a FitsGL dataset (epic #337, Phase 3) is public: every backing mosaic it
@@ -275,28 +448,77 @@ RETURNS TABLE(
   max_exposure_time DOUBLE PRECISION
 )
 LANGUAGE plpgsql STABLE
+-- Exactly one row per call, always. Without ROWS 1 the planner assumes the
+-- SRF default of 1000 rows per call, which multiplies through every
+-- `LEFT JOIN LATERAL object_scoped_aggregates(...)` call site and inflates
+-- those plans' cost estimates ~1000x (issue #490: enough to trip per-call JIT
+-- compilation on the CSV export).
+ROWS 1
+-- Pin the default plan-cache behavior for this function's own statements.
+-- Several callers run under SET plan_cache_mode = 'force_custom_plan' (their
+-- big NULL-guarded filter queries need it), and a calling function's SET
+-- propagates to nested statements for the whole call stack — without this pin
+-- the fast-path probes above are re-planned on every per-row lateral call
+-- (issue #490: ~0.4ms planning x 5000 rows ≈ 1.9s per CSV-export page).
+SET plan_cache_mode = 'auto'
 AS $$
 BEGIN
   -- Fast path (perf, issue #103): when the caller can access every program this
-  -- object belongs to AND unpublished members are excluded, the viewer-scoped
-  -- recompute below is provably identical to the aggregate columns already
-  -- stored on the object -- both are the deploy-time builder's aggregation over
-  -- published members (reconcile_field_objects keeps the stored columns in
-  -- lockstep with the object row, and targets/spectra only change at deploy).
-  -- Restricting the recompute to a superset of the object's programs drops
-  -- nothing, so `o.programs <@ p_program_slugs` is exactly the "recompute ==
-  -- stored" condition. Returning the stored columns via a single PK lookup skips
-  -- the per-row targets+spectra scans that dominated get_objects_for_sync (and
-  -- the catalog list RPCs) at scale. Partial-access or draft-inclusive callers
-  -- fall through to the recompute, preserving the anti-leak scoping (see the
-  -- header comment and supabase/tests/check_object_aggregate_scoping.sql).
+  -- object belongs to AND unpublished members are excluded AND every member
+  -- spectrum is published, the viewer-scoped recompute below is provably
+  -- identical to the aggregate columns already stored on the object.
+  -- The stored columns come from the deploy-time builder
+  -- (python/campfire/deploy/objects.py + reconcile), which aggregates ALL
+  -- member spectra blind to publication status — so the all-published guard is
+  -- load-bearing: without it, an object carrying a draft/revoked sibling
+  -- spectrum would display the unpublished grating (and count it in
+  -- n_spectra/max_snr) while the viewer-scoped grating FILTER (issue #488,
+  -- objects_matching_grating_filter) correctly excludes it — a filter/display
+  -- contradiction.
+  --
+  -- The guard is TWO probes because this SECURITY INVOKER function runs under
+  -- whatever row visibility the caller has, and neither probe alone covers
+  -- both caller classes:
+  --   * NOT EXISTS unpublished — decisive for owner/service-role/admin
+  --     callers, who see every row; blind for normal authenticated viewers,
+  --     whose spectra RLS policy hides draft/revoked rows outright
+  --     (policies.sql "select_spectra_by_access").
+  --   * visible-member-spectra COUNT = stored n_spectra — detects rows RLS
+  --     hides without needing to see them (stored counts everything, so any
+  --     hidden row makes the visible count fall short); trivially true, and
+  --     so decisive-by-vacuity, for callers who see every row.
+  -- Either probe failing falls through to the recompute, which aggregates
+  -- exactly what this caller may see, published-gated. Restricting the
+  -- recompute to a superset of the object's programs drops nothing, so
+  -- `o.programs <@ p_program_slugs` plus the two probes is the
+  -- "recompute == stored" condition. Returning the stored columns via a
+  -- single PK lookup (plus a few indexed member probes) still skips the
+  -- per-row aggregate scans that dominated get_objects_for_sync (and the
+  -- catalog list RPCs) at scale. Partial-access, draft-inclusive, or
+  -- unpublished-carrying objects fall through to the recompute, preserving
+  -- the anti-leak scoping (see the header comment and
+  -- supabase/tests/check_object_aggregate_scoping.sql /
+  -- check_grating_filter_scoping.sql).
   IF NOT p_include_unpublished THEN
     RETURN QUERY
     SELECT o.programs, o.gratings, o.observations,
            o.n_targets, o.n_spectra, o.max_snr, o.max_exposure_time
     FROM objects o
     WHERE o.id = p_object_id
-      AND o.programs <@ p_program_slugs;
+      AND o.programs <@ p_program_slugs
+      AND NOT EXISTS (
+        SELECT 1
+        FROM targets t
+        JOIN spectra s ON s.target_id = t.target_id
+        WHERE t.object_id = p_object_id
+          AND s.deploy_status <> 'published'
+      )
+      AND o.n_spectra = (
+        SELECT COUNT(*)::integer
+        FROM targets t
+        JOIN spectra s ON s.target_id = t.target_id
+        WHERE t.object_id = p_object_id
+      );
     IF FOUND THEN
       RETURN;
     END IF;
@@ -334,6 +556,151 @@ GRANT EXECUTE ON FUNCTION public.object_scoped_aggregates(INTEGER, TEXT[], BOOLE
 
 
 -- =============================================================================
+-- objects_matching_grating_filter
+-- =============================================================================
+-- Viewer-scoped grating filtering for the object-level catalog RPCs
+-- (issue #488).
+--
+-- The stored objects.gratings array is computed at deploy time across ALL
+-- member spectra — blind to publication status and spanning programs the
+-- viewer may not access (python/campfire/deploy/objects.py). Filtering on it
+-- alone matched objects whose only *visible* spectra carry none of the
+-- selected gratings (a PRISM-only row matching an M-grating filter via an
+-- unpublished or proprietary sibling spectrum), while the displayed row is
+-- scoped via object_scoped_aggregates(). This helper returns the objects.id
+-- set whose VISIBLE spectra — member targets in p_program_slugs, published
+-- unless p_include_unpublished — satisfy the grating selection:
+--
+--   'any' / 'none': objects with at least one visible spectrum in p_gratings
+--                   (callers apply IN for 'any', NOT IN for 'none')
+--   'all':          objects whose visible spectra cover every requested grating
+--
+-- It is set-returning (rather than a per-object boolean) so call sites can
+-- materialize it ONCE per RPC call (`v_grating_object_ids := ARRAY(SELECT
+-- ...)`) and test candidates with a hashed `o.id = ANY(...)` — a per-object
+-- boolean probe measured ~2x slower on a 40k-object catalog, and an
+-- uncorrelated IN-subplan gets rebuilt per statement (twice in the
+-- count+page RPCs). Call sites also keep the stored array as an index-backed
+-- pre-filter: the stored array is a superset of every viewer's visible set,
+-- so o.gratings &&/@> p_gratings is a NECESSARY condition for 'any'/'all' and
+-- NOT o.gratings && p_gratings is a SUFFICIENT condition for 'none'. If the
+-- deploy-time builder ever narrows what it aggregates into objects.gratings,
+-- that superset invariant breaks and the call-site pre-filters must be
+-- revisited.
+--
+-- plpgsql + force_custom_plan (not LANGUAGE sql) is deliberate: a non-inlined
+-- SQL function body is planned with symbolic parameters, which made the
+-- planner seq-scan spectra past idx_spectra_grating and pay the 'all'-mode
+-- DISTINCT sort in every mode; custom plans with the real argument values
+-- pick the index and skip the aggregate for 'any'/'none'.
+--
+-- Never returns NULL rows (callers rely on this: NOT (id = ANY(set)) must
+-- never go three-valued NULL). Like object_scoped_aggregates: p_program_slugs
+-- must already be access-checked by the caller — it is the access gate, not
+-- RLS.
+CREATE OR REPLACE FUNCTION public.objects_matching_grating_filter(
+  p_gratings TEXT[],
+  p_gratings_mode TEXT,
+  p_program_slugs TEXT[],
+  p_include_unpublished BOOLEAN DEFAULT false
+)
+RETURNS SETOF INTEGER
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+AS $$
+BEGIN
+  IF p_gratings_mode = 'all' THEN
+    RETURN QUERY
+    SELECT t.object_id
+    FROM targets t
+    JOIN spectra s ON s.target_id = t.target_id
+    WHERE t.object_id IS NOT NULL
+      AND t.program_slug = ANY(p_program_slugs)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
+      AND s.grating = ANY(p_gratings)
+    GROUP BY t.object_id
+    HAVING COUNT(DISTINCT s.grating) = (SELECT COUNT(DISTINCT g) FROM unnest(p_gratings) g);
+  ELSE
+    -- 'any' and 'none' need the same set (callers negate for 'none').
+    RETURN QUERY
+    SELECT DISTINCT t.object_id
+    FROM targets t
+    JOIN spectra s ON s.target_id = t.target_id
+    WHERE t.object_id IS NOT NULL
+      AND t.program_slug = ANY(p_program_slugs)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
+      AND s.grating = ANY(p_gratings);
+  END IF;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.objects_matching_grating_filter(TEXT[], TEXT, TEXT[], BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.objects_matching_grating_filter(TEXT[], TEXT, TEXT[], BOOLEAN) TO service_role;
+
+
+-- =============================================================================
+-- objects_matching_observation_filter
+-- =============================================================================
+-- Viewer-scoped observation filtering for the object-level catalog RPCs
+-- (issue #491 — same root cause as #488, on the observations axis).
+--
+-- The stored objects.observations array is computed at deploy time across ALL
+-- member targets — blind to publication status and spanning programs the
+-- viewer may not access (python/campfire/deploy/objects.py). Filtering on it
+-- alone matched objects whose only member in a selected observation is
+-- invisible to the viewer (proprietary program, or draft-only member), while
+-- the displayed row — scoped via object_scoped_aggregates() — hides that
+-- observation. This helper returns the objects.id set with at least one
+-- VISIBLE member target in p_observations: member targets in
+-- p_program_slugs, contributing a published spectrum unless
+-- p_include_unpublished — the same member gate as object_scoped_aggregates
+-- (observations live on targets, so no spectra join is needed; the
+-- denormalized targets.has_published_spectrum is the publication gate).
+-- Observations only need 'any' semantics — there is no mode parameter.
+--
+-- It is set-returning (rather than a per-object boolean) so call sites can
+-- materialize it ONCE per RPC call (`v_observation_object_ids := ARRAY(SELECT
+-- ...)`) and test candidates with a hashed `o.id = ANY(...)`. Call sites also
+-- keep the stored array as an index-backed pre-filter: the stored array is a
+-- superset of every viewer's visible set, so o.observations && p_observations
+-- is a NECESSARY condition. If the deploy-time builder ever narrows what it
+-- aggregates into objects.observations, that superset invariant breaks and
+-- the call-site pre-filters must be revisited.
+--
+-- plpgsql + force_custom_plan for the same reason as
+-- objects_matching_grating_filter: custom plans with the real argument values
+-- pick idx_targets_observation instead of planning symbolically.
+--
+-- Never returns NULL rows (t.object_id IS NOT NULL). Like
+-- object_scoped_aggregates: p_program_slugs must already be access-checked by
+-- the caller — it is the access gate, not RLS. Callers pass the full
+-- accessible p_program_slugs (not the p_filter_programs-narrowed set) to stay
+-- consistent with what the returned rows display.
+CREATE OR REPLACE FUNCTION public.objects_matching_observation_filter(
+  p_observations TEXT[],
+  p_program_slugs TEXT[],
+  p_include_unpublished BOOLEAN DEFAULT false
+)
+RETURNS SETOF INTEGER
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT DISTINCT t.object_id
+  FROM targets t
+  WHERE t.object_id IS NOT NULL
+    AND t.program_slug = ANY(p_program_slugs)
+    AND (p_include_unpublished OR t.has_published_spectrum)
+    AND t.observation = ANY(p_observations);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.objects_matching_observation_filter(TEXT[], TEXT[], BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.objects_matching_observation_filter(TEXT[], TEXT[], BOOLEAN) TO service_role;
+
+
+-- =============================================================================
 -- Device Code Auth
 -- =============================================================================
 
@@ -344,6 +711,26 @@ AS $$
 DECLARE
   updated_rows INTEGER;
 BEGIN
+  -- A JWT-bearing caller can only authorize a code for THEMSELVES: p_user_id
+  -- is caller-supplied and this function is EXECUTEable by `authenticated`, so
+  -- without the binding a session could mint an API credential for an
+  -- arbitrary user id. Service-role callers (the web routes) pass through.
+  IF (SELECT auth.role()) <> 'service_role'
+     AND (auth.uid() IS NULL OR p_user_id IS DISTINCT FROM auth.uid()) THEN
+    RETURN false;
+  END IF;
+
+  -- Share links (docs/design-public-mirror.md §5.5): a link account must never
+  -- mint a durable API credential. Its cookie session is scoped by RLS, but a
+  -- device-flow token would outlive revocation and be honoured by API-layer
+  -- authorization paths. Fail closed at the source of the grant.
+  IF EXISTS (
+    SELECT 1 FROM public.user_profiles up
+    WHERE up.user_id = p_user_id AND up.is_link_account
+  ) THEN
+    RETURN false;
+  END IF;
+
   UPDATE device_codes
   SET
     status = 'authorized',
@@ -381,6 +768,95 @@ $$;
 GRANT ALL ON FUNCTION public.check_device_code_status(text) TO anon;
 GRANT ALL ON FUNCTION public.check_device_code_status(text) TO authenticated;
 GRANT ALL ON FUNCTION public.check_device_code_status(text) TO service_role;
+
+
+
+
+-- =============================================================================
+-- Access Code Redemption
+-- =============================================================================
+
+-- Redeems an access code for the calling user in a single transaction.
+-- SECURITY DEFINER so codes never need to be readable by non-admins (the
+-- access_codes SELECT policy is admin-only); the row lock (FOR UPDATE) makes
+-- the max_uses check + use_count increment atomic under concurrent redemptions.
+-- Returns a jsonb object whose 'status' key the API route maps to HTTP codes.
+CREATE OR REPLACE FUNCTION public.redeem_access_code(p_code text)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_code access_codes%ROWTYPE;
+  v_slugs text[];
+BEGIN
+  IF v_uid IS NULL THEN
+    RETURN jsonb_build_object('status', 'unauthenticated');
+  END IF;
+
+  IF public.is_group_account() THEN
+    RETURN jsonb_build_object('status', 'group_account');
+  END IF;
+
+  SELECT * INTO v_code
+  FROM access_codes
+  WHERE code = p_code AND is_active = true
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('status', 'invalid');
+  END IF;
+
+  IF v_code.expires_at IS NOT NULL AND v_code.expires_at < NOW() THEN
+    RETURN jsonb_build_object('status', 'expired');
+  END IF;
+
+  IF v_code.max_uses IS NOT NULL AND v_code.use_count >= v_code.max_uses THEN
+    RETURN jsonb_build_object('status', 'exhausted');
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM code_redemptions
+    WHERE code_id = v_code.id AND user_id = v_uid
+  ) THEN
+    RETURN jsonb_build_object('status', 'already_redeemed');
+  END IF;
+
+  IF v_code.grants_all_programs THEN
+    SELECT array_agg(slug) INTO v_slugs FROM programs;
+  ELSE
+    v_slugs := v_code.program_slugs;
+  END IF;
+
+  IF v_slugs IS NULL OR array_length(v_slugs, 1) IS NULL THEN
+    RETURN jsonb_build_object('status', 'no_programs');
+  END IF;
+
+  INSERT INTO user_program_access (user_id, program_slug, granted_by)
+  SELECT v_uid, slug, v_code.created_by
+  FROM unnest(v_slugs) AS slug
+  ON CONFLICT (user_id, program_slug) DO NOTHING;
+
+  INSERT INTO code_redemptions (code_id, user_id)
+  VALUES (v_code.id, v_uid);
+
+  UPDATE access_codes
+  SET use_count = use_count + 1
+  WHERE id = v_code.id;
+
+  RETURN jsonb_build_object(
+    'status', 'ok',
+    'grants_all_programs', v_code.grants_all_programs,
+    'programs_granted', COALESCE(array_length(v_slugs, 1), 0)
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.redeem_access_code(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.redeem_access_code(text) FROM anon;
+GRANT EXECUTE ON FUNCTION public.redeem_access_code(text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.redeem_access_code(text) TO service_role;
 
 
 
@@ -486,7 +962,8 @@ BEGIN
     JOIN object_lists ol ON ol.id = olm.list_id
     WHERE olm.object_id IN (SELECT id FROM matched)
       AND (ol.created_by = p_user_id
-           OR ol.visibility IN ('public_read', 'public_edit'))
+           OR ol.visibility IN ('public_read', 'public_edit')
+           OR ol.id IN (SELECT list_id FROM object_list_shares WHERE user_id = p_user_id))
     GROUP BY olm.object_id
   ),
   -- Count CTEs are gated on p_include_counts; when FALSE the planner
@@ -809,7 +1286,8 @@ BEGIN
     ) ORDER BY ol.is_system DESC, ol.name)
     FROM object_lists ol
     WHERE ol.created_by = p_user_id
-       OR ol.visibility IN ('public_read', 'public_edit')),
+       OR ol.visibility IN ('public_read', 'public_edit')
+       OR ol.id IN (SELECT list_id FROM object_list_shares WHERE user_id = p_user_id)),
     '[]'::jsonb
   );
 END;
@@ -840,6 +1318,8 @@ DROP FUNCTION IF EXISTS public.get_filtered_spectra_paginated(
   DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT, INTEGER, INTEGER, BOOLEAN
 );
 
+DROP FUNCTION IF EXISTS public.get_filtered_spectra_paginated;
+
 CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_program_slugs TEXT[],
   p_filter_programs TEXT[] DEFAULT NULL,
@@ -858,6 +1338,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
+  p_list_ids_mode TEXT DEFAULT 'any',
   p_search TEXT DEFAULT NULL,
   p_inspected_only BOOLEAN DEFAULT NULL,
   p_needs_review BOOLEAN DEFAULT NULL,
@@ -885,6 +1366,8 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_list_filter_active BOOLEAN;
+  v_list_ids_mode TEXT;
   v_offset INTEGER;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
@@ -900,6 +1383,12 @@ BEGIN
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN
     v_gratings_mode := 'any';
+  END IF;
+
+  v_list_filter_active := (p_list_ids IS NOT NULL AND array_length(p_list_ids, 1) > 0);
+  v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
+  IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN
+    v_list_ids_mode := 'any';
   END IF;
 
   IF p_sort_direction NOT IN ('asc', 'desc') THEN
@@ -1004,9 +1493,19 @@ BEGIN
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_exclude) = 0)
-      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
-          SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-      ))
+      AND (
+        NOT v_list_filter_active
+        OR (v_list_ids_mode = 'any' AND t.object_id IN (
+            SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+        OR (v_list_ids_mode = 'all' AND (
+            SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+            WHERE olm.object_id = t.object_id AND olm.list_id = ANY(p_list_ids)
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND (t.object_id IS NULL OR t.object_id NOT IN (
+            SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        )))
+      )
       AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
@@ -1149,6 +1648,8 @@ GRANT EXECUTE ON FUNCTION public.get_filtered_spectra_paginated TO service_role;
 -- (one row per unique sky position, cross-matched across programs)
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_filtered_objects_paginated;
+
 CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_program_slugs TEXT[],
   p_filter_programs TEXT[] DEFAULT NULL,
@@ -1167,6 +1668,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_inspected_only BOOLEAN DEFAULT NULL,
   p_needs_review BOOLEAN DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
+  p_list_ids_mode TEXT DEFAULT 'any',
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
@@ -1192,6 +1694,11 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_grating_object_ids INTEGER[];
+  v_observation_filter_active BOOLEAN;
+  v_observation_object_ids INTEGER[];
+  v_list_filter_active BOOLEAN;
+  v_list_ids_mode TEXT;
   v_offset INTEGER;
   v_total_count BIGINT;
 BEGIN
@@ -1205,6 +1712,11 @@ BEGIN
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN
     v_gratings_mode := 'any';
+  END IF;
+  v_list_filter_active := (p_list_ids IS NOT NULL AND array_length(p_list_ids, 1) > 0);
+  v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
+  IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN
+    v_list_ids_mode := 'any';
   END IF;
 
   IF p_sort_direction NOT IN ('asc', 'desc') THEN
@@ -1240,6 +1752,27 @@ BEGIN
     RETURN;
   END IF;
 
+
+  -- Issue #488: materialize the viewer-visible grating match set ONCE per call
+  -- (statements below consume it via hashed = ANY; an IN-subplan would be
+  -- rebuilt per statement — twice in the count+page RPC). See
+  -- objects_matching_grating_filter().
+  IF v_grating_filter_active THEN
+    v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
+  END IF;
+
+  -- Issue #491: same once-per-call materialization for the viewer-visible
+  -- observation match set. Scoped to the full accessible p_program_slugs (not
+  -- the p_filter_programs-narrowed set) to stay consistent with what rows
+  -- display — see objects_matching_observation_filter().
+  -- COALESCE: array_length('{}',1) is NULL, and a NULL flag would make the
+  -- NOT-flag predicate below reject every row instead of treating an empty
+  -- selection as no filter (the pre-#491 predicate's explicit behavior).
+  v_observation_filter_active := (p_observations IS NOT NULL AND COALESCE(array_length(p_observations, 1), 0) > 0);
+  IF v_observation_filter_active THEN
+    v_observation_object_ids := ARRAY(SELECT public.objects_matching_observation_filter(p_observations, p_program_slugs, p_include_unpublished));
+  END IF;
+
   -- Step 1: count
   SELECT COUNT(*) INTO v_total_count
   FROM objects o
@@ -1252,11 +1785,28 @@ BEGIN
     AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
     AND (
       NOT v_grating_filter_active
-      OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
-      OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
-      OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+      -- Issue #488: the o.gratings array tests are index-backed pre-filters
+      -- only (deploy-time aggregate over ALL member spectra, unpublished and
+      -- inaccessible programs included); the viewer-visible decision is the
+      -- hashed = ANY over the once-per-call v_grating_object_ids — see
+      -- objects_matching_grating_filter() for the invariants.
+      OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
+          AND o.id = ANY(v_grating_object_ids))
+      OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
+          AND o.id = ANY(v_grating_object_ids))
+      OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
+          OR NOT (o.id = ANY(v_grating_object_ids))))
     )
-    AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
+    AND (
+      NOT v_observation_filter_active
+      -- Issue #491: the o.observations && test is an index-backed pre-filter
+      -- only (deploy-time aggregate over ALL member targets, unpublished and
+      -- inaccessible programs included); the viewer-visible decision is the
+      -- hashed = ANY over the once-per-call v_observation_object_ids — see
+      -- objects_matching_observation_filter() for the invariants.
+      OR (o.observations && p_observations
+          AND o.id = ANY(v_observation_object_ids))
+    )
     AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
     AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
     AND (p_redshift_max IS NULL OR o.redshift <= p_redshift_max)
@@ -1293,10 +1843,21 @@ BEGIN
         ))) <= p_radius_degrees
       )
     )
-    AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
-        SELECT olm.object_id FROM object_list_members olm
-        WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-    ))
+    AND (
+      NOT v_list_filter_active
+      OR (v_list_ids_mode = 'any' AND o.id IN (
+          SELECT olm.object_id FROM object_list_members olm
+          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
+      OR (v_list_ids_mode = 'all' AND (
+          SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+          WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
+      ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+      OR (v_list_ids_mode = 'none' AND o.id NOT IN (
+          SELECT olm.object_id FROM object_list_members olm
+          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
+    )
     AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
     AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
     AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
@@ -1376,11 +1937,28 @@ BEGIN
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
       AND (
         NOT v_grating_filter_active
-        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
-        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
-        OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+        -- Issue #488: the o.gratings array tests are index-backed pre-filters
+        -- only (deploy-time aggregate over ALL member spectra, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed = ANY over the once-per-call v_grating_object_ids — see
+        -- objects_matching_grating_filter() for the invariants.
+        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
+            AND o.id = ANY(v_grating_object_ids))
+        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
+            AND o.id = ANY(v_grating_object_ids))
+        OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
+            OR NOT (o.id = ANY(v_grating_object_ids))))
       )
-      AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
+      AND (
+        NOT v_observation_filter_active
+        -- Issue #491: the o.observations && test is an index-backed pre-filter
+        -- only (deploy-time aggregate over ALL member targets, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed = ANY over the once-per-call v_observation_object_ids — see
+        -- objects_matching_observation_filter() for the invariants.
+        OR (o.observations && p_observations
+            AND o.id = ANY(v_observation_object_ids))
+      )
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
       AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
       AND (p_redshift_max IS NULL OR o.redshift <= p_redshift_max)
@@ -1417,10 +1995,21 @@ BEGIN
           ))) <= p_radius_degrees
         )
       )
-      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
-          SELECT olm.object_id FROM object_list_members olm
-          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-      ))
+      AND (
+        NOT v_list_filter_active
+        OR (v_list_ids_mode = 'any' AND o.id IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+        OR (v_list_ids_mode = 'all' AND (
+            SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+            WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND o.id NOT IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+      )
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
       AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
@@ -1494,10 +2083,13 @@ BEGIN
         'field', fo.field,
         'ra', fo.ra,
         'dec', fo.dec,
-        -- Aggregates scoped to the viewer's accessible (+ filtered) programs so
-        -- mixed-program objects don't leak proprietary member metadata. Filter
-        -- and sort above still run on the global o.* columns (display-only
-        -- scoping); the substitution happens only on the paginated result set.
+        -- Aggregates scoped to the viewer's accessible programs so mixed-program
+        -- objects don't leak proprietary member metadata. Deliberately NOT
+        -- narrowed by p_filter_programs: a program filter selects which objects
+        -- appear (overlap test above), but each row still shows the object's
+        -- full accessible programs/observations. Filter and sort above run on
+        -- the global o.* columns; the substitution happens only on the
+        -- paginated result set.
         'n_targets', sa.n_targets,
         'n_spectra', sa.n_spectra,
         'programs', sa.programs,
@@ -1533,7 +2125,11 @@ BEGIN
           )
           FROM targets t
           WHERE t.object_id = fo.id
-            AND t.program_slug = ANY(v_filtered_program_slugs)
+            AND t.program_slug = ANY(p_program_slugs)
+            -- Same publication gate as object_scoped_aggregates: the RPC is
+            -- reached via the service-role client (/api/v1/objects), so RLS
+            -- won't hide draft-only members here.
+            AND (p_include_unpublished OR t.has_published_spectrum)
           ),
           '[]'::jsonb
         ),
@@ -1554,7 +2150,7 @@ BEGIN
         )
       ) AS obj_json
     FROM filtered_objects fo
-    LEFT JOIN LATERAL public.object_scoped_aggregates(fo.id, v_filtered_program_slugs, p_include_unpublished) sa ON true
+    LEFT JOIN LATERAL public.object_scoped_aggregates(fo.id, p_program_slugs, p_include_unpublished) sa ON true
   )
   SELECT
     COALESCE(jsonb_agg(wm.obj_json), '[]'::jsonb),
@@ -1574,6 +2170,8 @@ GRANT EXECUTE ON FUNCTION public.get_filtered_objects_paginated TO service_role;
 -- (lightweight: returns only object_id strings for map marker filtering)
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_filtered_object_ids;
+
 CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_program_slugs TEXT[],
   p_filter_programs TEXT[] DEFAULT NULL,
@@ -1592,6 +2190,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_inspected_only BOOLEAN DEFAULT NULL,
   p_needs_review BOOLEAN DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
+  p_list_ids_mode TEXT DEFAULT 'any',
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
@@ -1615,6 +2214,11 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_grating_object_ids INTEGER[];
+  v_observation_filter_active BOOLEAN;
+  v_observation_object_ids INTEGER[];
+  v_list_filter_active BOOLEAN;
+  v_list_ids_mode TEXT;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
   v_comment_search_active := (
@@ -1626,6 +2230,11 @@ BEGIN
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN
     v_gratings_mode := 'any';
+  END IF;
+  v_list_filter_active := (p_list_ids IS NOT NULL AND array_length(p_list_ids, 1) > 0);
+  v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
+  IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN
+    v_list_ids_mode := 'any';
   END IF;
 
   IF p_sort_direction NOT IN ('asc', 'desc') THEN
@@ -1654,6 +2263,26 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Issue #488: materialize the viewer-visible grating match set ONCE per call
+  -- (statements below consume it via hashed = ANY; an IN-subplan would be
+  -- rebuilt per statement — twice in the count+page RPC). See
+  -- objects_matching_grating_filter().
+  IF v_grating_filter_active THEN
+    v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
+  END IF;
+
+  -- Issue #491: same once-per-call materialization for the viewer-visible
+  -- observation match set. Scoped to the full accessible p_program_slugs (not
+  -- the p_filter_programs-narrowed set) to stay consistent with what rows
+  -- display — see objects_matching_observation_filter().
+  -- COALESCE: array_length('{}',1) is NULL, and a NULL flag would make the
+  -- NOT-flag predicate below reject every row instead of treating an empty
+  -- selection as no filter (the pre-#491 predicate's explicit behavior).
+  v_observation_filter_active := (p_observations IS NOT NULL AND COALESCE(array_length(p_observations, 1), 0) > 0);
+  IF v_observation_filter_active THEN
+    v_observation_object_ids := ARRAY(SELECT public.objects_matching_observation_filter(p_observations, p_program_slugs, p_include_unpublished));
+  END IF;
+
   RETURN QUERY
   SELECT o.object_id
   FROM objects o
@@ -1664,11 +2293,28 @@ BEGIN
     AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
     AND (
       NOT v_grating_filter_active
-      OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
-      OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
-      OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+      -- Issue #488: the o.gratings array tests are index-backed pre-filters
+      -- only (deploy-time aggregate over ALL member spectra, unpublished and
+      -- inaccessible programs included); the viewer-visible decision is the
+      -- hashed = ANY over the once-per-call v_grating_object_ids — see
+      -- objects_matching_grating_filter() for the invariants.
+      OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
+          AND o.id = ANY(v_grating_object_ids))
+      OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
+          AND o.id = ANY(v_grating_object_ids))
+      OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
+          OR NOT (o.id = ANY(v_grating_object_ids))))
     )
-    AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
+    AND (
+      NOT v_observation_filter_active
+      -- Issue #491: the o.observations && test is an index-backed pre-filter
+      -- only (deploy-time aggregate over ALL member targets, unpublished and
+      -- inaccessible programs included); the viewer-visible decision is the
+      -- hashed = ANY over the once-per-call v_observation_object_ids — see
+      -- objects_matching_observation_filter() for the invariants.
+      OR (o.observations && p_observations
+          AND o.id = ANY(v_observation_object_ids))
+    )
     AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
     AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
     AND (p_redshift_max IS NULL OR o.redshift <= p_redshift_max)
@@ -1705,10 +2351,21 @@ BEGIN
         ))) <= p_radius_degrees
       )
     )
-    AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
-        SELECT olm.object_id FROM object_list_members olm
-        WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-    ))
+    AND (
+      NOT v_list_filter_active
+      OR (v_list_ids_mode = 'any' AND o.id IN (
+          SELECT olm.object_id FROM object_list_members olm
+          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
+      OR (v_list_ids_mode = 'all' AND (
+          SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+          WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
+      ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+      OR (v_list_ids_mode = 'none' AND o.id NOT IN (
+          SELECT olm.object_id FROM object_list_members olm
+          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+      ))
+    )
     AND (
       NOT v_comment_search_active
       -- Uncorrelated semijoin; see get_filtered_objects_paginated for rationale.
@@ -1781,6 +2438,8 @@ GRANT EXECUTE ON FUNCTION public.get_filtered_object_ids TO service_role;
 -- get_adjacent_objects
 -- =============================================================================
 
+DROP FUNCTION IF EXISTS public.get_adjacent_objects;
+
 CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_current_object_id TEXT,
   p_program_slugs TEXT[],
@@ -1800,6 +2459,7 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_inspected_only BOOLEAN DEFAULT NULL,
   p_needs_review BOOLEAN DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
+  p_list_ids_mode TEXT DEFAULT 'any',
   p_coord_ra DOUBLE PRECISION DEFAULT NULL,
   p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
@@ -1823,6 +2483,11 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_grating_object_ids INTEGER[];
+  v_observation_filter_active BOOLEAN;
+  v_observation_object_ids INTEGER[];
+  v_list_filter_active BOOLEAN;
+  v_list_ids_mode TEXT;
   v_sort_is_text BOOLEAN;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
@@ -1834,6 +2499,9 @@ BEGIN
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN v_gratings_mode := 'any'; END IF;
+  v_list_filter_active := (p_list_ids IS NOT NULL AND array_length(p_list_ids, 1) > 0);
+  v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
+  IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN v_list_ids_mode := 'any'; END IF;
   IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
   IF NOT (p_sort_column IN (
     'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
@@ -1858,6 +2526,26 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Issue #488: materialize the viewer-visible grating match set ONCE per call
+  -- (statements below consume it via hashed = ANY; an IN-subplan would be
+  -- rebuilt per statement — twice in the count+page RPC). See
+  -- objects_matching_grating_filter().
+  IF v_grating_filter_active THEN
+    v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
+  END IF;
+
+  -- Issue #491: same once-per-call materialization for the viewer-visible
+  -- observation match set. Scoped to the full accessible p_program_slugs (not
+  -- the p_filter_programs-narrowed set) to stay consistent with what rows
+  -- display — see objects_matching_observation_filter().
+  -- COALESCE: array_length('{}',1) is NULL, and a NULL flag would make the
+  -- NOT-flag predicate below reject every row instead of treating an empty
+  -- selection as no filter (the pre-#491 predicate's explicit behavior).
+  v_observation_filter_active := (p_observations IS NOT NULL AND COALESCE(array_length(p_observations, 1), 0) > 0);
+  IF v_observation_filter_active THEN
+    v_observation_object_ids := ARRAY(SELECT public.objects_matching_observation_filter(p_observations, p_program_slugs, p_include_unpublished));
+  END IF;
+
   RETURN QUERY
   WITH filtered_objects AS MATERIALIZED (
     SELECT
@@ -1879,11 +2567,28 @@ BEGIN
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
       AND (
         NOT v_grating_filter_active
-        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
-        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
-        OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+        -- Issue #488: the o.gratings array tests are index-backed pre-filters
+        -- only (deploy-time aggregate over ALL member spectra, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed = ANY over the once-per-call v_grating_object_ids — see
+        -- objects_matching_grating_filter() for the invariants.
+        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
+            AND o.id = ANY(v_grating_object_ids))
+        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
+            AND o.id = ANY(v_grating_object_ids))
+        OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
+            OR NOT (o.id = ANY(v_grating_object_ids))))
       )
-      AND (p_observations IS NULL OR array_length(p_observations, 1) IS NULL OR o.observations && p_observations)
+      AND (
+        NOT v_observation_filter_active
+        -- Issue #491: the o.observations && test is an index-backed pre-filter
+        -- only (deploy-time aggregate over ALL member targets, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed = ANY over the once-per-call v_observation_object_ids — see
+        -- objects_matching_observation_filter() for the invariants.
+        OR (o.observations && p_observations
+            AND o.id = ANY(v_observation_object_ids))
+      )
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
       AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
       AND (p_redshift_max IS NULL OR o.redshift <= p_redshift_max)
@@ -1908,10 +2613,21 @@ BEGIN
         o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
         AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
       ))
-      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
-          SELECT olm.object_id FROM object_list_members olm
-          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-      ))
+      AND (
+        NOT v_list_filter_active
+        OR (v_list_ids_mode = 'any' AND o.id IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+        OR (v_list_ids_mode = 'all' AND (
+            SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+            WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND o.id NOT IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+      )
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
       AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
@@ -2024,18 +2740,27 @@ GRANT EXECUTE ON FUNCTION public.get_adjacent_objects TO service_role;
 -- get_csv_export_spectra
 -- =============================================================================
 
--- Phase D: dropped spectral_features filtering (deprecated). redshift_quality
--- and redshift now read from the parent object via the targets→objects FK.
--- redshift_auto + dq_flags are per-spectrum (from spectra). Signature change
--- requires DROP first; CREATE OR REPLACE alone can't widen the RETURNS row.
+-- Issue #412: keyset pagination. PostgREST applies .range() LIMIT/OFFSET
+-- OUTSIDE a set-returning function, so the old offset-paged export fully
+-- materialized and sorted the WHOLE filtered result set on every page —
+-- pages × O(N log N) — and blew through the authenticated role's 8s
+-- statement_timeout at ~16k rows. The caller now passes p_after_id (spectra.id
+-- PK cursor; spectrum_id is not uniquely constrained) and p_page_size; the
+-- LIMIT lives inside the query, each page is one index-bounded scan in id
+-- order, and total work across an export stays O(N). Rows come back in
+-- spectra.id order — the web action re-sorts in JS for cosmetic CSV ordering,
+-- so p_sort_column/p_sort_direction are gone. RETURNS gains id + observation;
+-- signature/RETURNS changes require DROP first.
 DROP FUNCTION IF EXISTS public.get_csv_export_spectra(
   TEXT[], TEXT[], TEXT[], TEXT[], TEXT, TEXT[], INTEGER[],
   DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION,
   DOUBLE PRECISION, DOUBLE PRECISION,
-  INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER,
-  INTEGER[], TEXT, BOOLEAN, BOOLEAN, TEXT, TEXT, UUID,
-  DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT
+  INTEGER, INTEGER, INTEGER,
+  INTEGER[], TEXT, BOOLEAN, BOOLEAN, BOOLEAN, TEXT, TEXT, UUID,
+  DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT, BOOLEAN
 );
+
+DROP FUNCTION IF EXISTS public.get_csv_export_spectra;
 
 CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_program_slugs TEXT[], p_filter_programs TEXT[] DEFAULT NULL,
@@ -2048,6 +2773,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_dq_flags_include_any INTEGER DEFAULT NULL, p_dq_flags_include_all INTEGER DEFAULT NULL,
   p_dq_flags_exclude INTEGER DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
+  p_list_ids_mode TEXT DEFAULT 'any',
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
   p_needs_review BOOLEAN DEFAULT NULL,
   p_has_photometry BOOLEAN DEFAULT NULL,
@@ -2055,11 +2781,12 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_comment_user_id UUID DEFAULT NULL,
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
-  p_sort_column TEXT DEFAULT 'target_id', p_sort_direction TEXT DEFAULT 'asc',
-  p_include_unpublished BOOLEAN DEFAULT false
+  p_include_unpublished BOOLEAN DEFAULT false,
+  p_after_id INTEGER DEFAULT NULL, p_page_size INTEGER DEFAULT 5000
 )
 RETURNS TABLE(
-  spectrum_id TEXT, target_id TEXT, grating TEXT, field TEXT, ra DOUBLE PRECISION, "dec" DOUBLE PRECISION,
+  id INTEGER, spectrum_id TEXT, target_id TEXT, grating TEXT, field TEXT, observation TEXT,
+  ra DOUBLE PRECISION, "dec" DOUBLE PRECISION,
   redshift NUMERIC, redshift_quality INTEGER, redshift_auto DOUBLE PRECISION,
   signal_to_noise DOUBLE PRECISION,
   exposure_time DOUBLE PRECISION, fits_path TEXT, program_slug TEXT, program_name TEXT,
@@ -2067,22 +2794,26 @@ RETURNS TABLE(
   dq_flags INTEGER,
   lists TEXT
 )
-LANGUAGE plpgsql STABLE SET plan_cache_mode = 'force_custom_plan'
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+SET statement_timeout = '120s'
 AS $$
 DECLARE
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
+  v_list_filter_active BOOLEAN;
+  v_list_ids_mode TEXT;
+  v_page_size INTEGER;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
   v_comment_search_active := (p_comment_search IS NOT NULL AND p_comment_search != '' AND p_comment_search_scope IN ('just_me', 'everyone'));
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
-  IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
-  IF NOT (p_sort_column IN ('target_id', 'spectrum_id', 'field', 'observation', 'ra', 'dec', 'redshift', 'redshift_quality', 'redshift_auto', 'signal_to_noise', 'exposure_time', 'grating')
-       OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
-    p_sort_column := 'spectrum_id';
-  END IF;
+  v_list_filter_active := (p_list_ids IS NOT NULL AND array_length(p_list_ids, 1) > 0);
+  v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
+  IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN v_list_ids_mode := 'any'; END IF;
+  v_page_size := LEAST(GREATEST(COALESCE(p_page_size, 5000), 1), 10000);
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs)) INTO v_filtered_program_slugs;
   ELSE v_filtered_program_slugs := p_program_slugs; END IF;
@@ -2094,10 +2825,11 @@ BEGIN
     FROM object_list_members olm
     JOIN object_lists ol ON ol.id = olm.list_id
     WHERE ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit')
+       OR ol.id IN (SELECT list_id FROM object_list_shares WHERE user_id = auth.uid())
     GROUP BY olm.object_id
   ),
   filtered_spectra AS (
-    SELECT s.spectrum_id, t.target_id, s.grating, t.field, t.ra, t.dec,
+    SELECT s.id, s.spectrum_id, t.target_id, s.grating, t.field, t.ra, t.dec,
       o.redshift, o.redshift_quality,
       s.redshift_auto,
       s.signal_to_noise, s.exposure_time, s.fits_path, t.program_slug, t.observation,
@@ -2112,6 +2844,7 @@ BEGIN
     LEFT JOIN objects o ON o.id = t.object_id
     LEFT JOIN visible_lists vl ON vl.object_id = t.object_id
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
+      AND (p_after_id IS NULL OR s.id > p_after_id)
       AND (o.id IS NULL OR o.is_active = true)
       AND (NOT v_grating_filter_active OR s.grating = ANY(p_gratings))
       -- B1: hide unpublished spectra (fail-closed; admin opt-in only).
@@ -2125,9 +2858,19 @@ BEGIN
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_exclude) = 0)
-      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR t.object_id IN (
-          SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-      ))
+      AND (
+        NOT v_list_filter_active
+        OR (v_list_ids_mode = 'any' AND t.object_id IN (
+            SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+        OR (v_list_ids_mode = 'all' AND (
+            SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+            WHERE olm.object_id = t.object_id AND olm.list_id = ANY(p_list_ids)
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND (t.object_id IS NULL OR t.object_id NOT IN (
+            SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        )))
+      )
       AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND COALESCE(o.redshift_quality, 0) = 0))
       AND (p_needs_review IS NULL
@@ -2149,40 +2892,16 @@ BEGIN
         AND t.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)))
   ),
   distance_filtered AS (SELECT fs.* FROM filtered_spectra fs WHERE NOT v_coord_search_active OR fs.distance <= p_radius_degrees)
-  SELECT df.spectrum_id, df.target_id, df.grating, df.field, df.ra, df.dec, df.redshift, df.redshift_quality, df.redshift_auto,
+  SELECT df.id, df.spectrum_id, df.target_id, df.grating, df.field, df.observation,
+    df.ra, df.dec, df.redshift, df.redshift_quality, df.redshift_auto,
     df.signal_to_noise, df.exposure_time, df.fits_path, df.program_slug,
     pr.program_name, df.last_inspected_at, up.full_name AS last_inspected_by,
     df.distance, df.dq_flags, df.lists
   FROM distance_filtered df
   LEFT JOIN programs pr ON pr.slug = df.program_slug
   LEFT JOIN user_profiles up ON up.user_id = df.last_inspected_by
-  ORDER BY
-    CASE WHEN v_coord_search_active THEN df.distance END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'spectrum_id' AND p_sort_direction = 'asc' THEN df.spectrum_id END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'spectrum_id' AND p_sort_direction = 'desc' THEN df.spectrum_id END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'target_id' AND p_sort_direction = 'asc' THEN df.target_id END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'target_id' AND p_sort_direction = 'desc' THEN df.target_id END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'field' AND p_sort_direction = 'asc' THEN df.field END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'field' AND p_sort_direction = 'desc' THEN df.field END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'observation' AND p_sort_direction = 'asc' THEN df.observation END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'observation' AND p_sort_direction = 'desc' THEN df.observation END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'ra' AND p_sort_direction = 'asc' THEN df.ra END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'ra' AND p_sort_direction = 'desc' THEN df.ra END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'dec' AND p_sort_direction = 'asc' THEN df.dec END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'dec' AND p_sort_direction = 'desc' THEN df.dec END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift' AND p_sort_direction = 'asc' THEN df.redshift END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift' AND p_sort_direction = 'desc' THEN df.redshift END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_quality' AND p_sort_direction = 'asc' THEN df.redshift_quality END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_quality' AND p_sort_direction = 'desc' THEN df.redshift_quality END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_auto' AND p_sort_direction = 'asc' THEN df.redshift_auto END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_auto' AND p_sort_direction = 'desc' THEN df.redshift_auto END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'signal_to_noise' AND p_sort_direction = 'asc' THEN df.signal_to_noise END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'signal_to_noise' AND p_sort_direction = 'desc' THEN df.signal_to_noise END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'exposure_time' AND p_sort_direction = 'asc' THEN df.exposure_time END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'exposure_time' AND p_sort_direction = 'desc' THEN df.exposure_time END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'grating' AND p_sort_direction = 'asc' THEN df.grating END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'grating' AND p_sort_direction = 'desc' THEN df.grating END DESC NULLS LAST,
-    df.target_id ASC, df.grating ASC;
+  ORDER BY df.id ASC
+  LIMIT v_page_size;
 END;
 $$;
 
@@ -2194,16 +2913,21 @@ GRANT EXECUTE ON FUNCTION public.get_csv_export_spectra TO authenticated;
 -- (one row per sky-object for CSV download in objects view mode)
 -- =============================================================================
 
--- Phase D: RETURNS columns expanded with per-object inspection fields.
--- CREATE OR REPLACE can't widen the row, so drop first.
+-- Issue #412: keyset pagination — same rationale as get_csv_export_spectra
+-- above. Cursor is objects.object_id (UNIQUE, objects_object_id_key); the
+-- LIMIT lives inside the query so each page is one index-bounded scan and an
+-- export's total work stays O(N). Sort params removed (the web action
+-- re-sorts in JS). Signature change requires DROP first.
 DROP FUNCTION IF EXISTS public.get_csv_export_objects(
   TEXT[], TEXT[], TEXT[], TEXT[], TEXT, INTEGER[],
   DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION,
   DOUBLE PRECISION, DOUBLE PRECISION,
-  TEXT, BOOLEAN, INTEGER[],
+  TEXT, BOOLEAN, BOOLEAN, INTEGER[],
   DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION,
-  BOOLEAN, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT
+  BOOLEAN, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT, UUID, TEXT, TEXT, BOOLEAN
 );
+
+DROP FUNCTION IF EXISTS public.get_csv_export_objects;
 
 CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_program_slugs TEXT[], p_filter_programs TEXT[] DEFAULT NULL,
@@ -2216,14 +2940,15 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_search TEXT DEFAULT NULL, p_inspected_only BOOLEAN DEFAULT NULL,
   p_needs_review BOOLEAN DEFAULT NULL,
   p_list_ids INTEGER[] DEFAULT NULL,
+  p_list_ids_mode TEXT DEFAULT 'any',
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
   p_has_photometry BOOLEAN DEFAULT NULL,
   p_photo_z_min DOUBLE PRECISION DEFAULT NULL, p_photo_z_max DOUBLE PRECISION DEFAULT NULL,
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
-  p_sort_column TEXT DEFAULT 'object_id', p_sort_direction TEXT DEFAULT 'asc',
-  p_include_unpublished BOOLEAN DEFAULT false
+  p_include_unpublished BOOLEAN DEFAULT false,
+  p_after_object_id TEXT DEFAULT NULL, p_page_size INTEGER DEFAULT 5000
 )
 RETURNS TABLE(
   object_id TEXT, field TEXT, ra DOUBLE PRECISION, "dec" DOUBLE PRECISION,
@@ -2240,7 +2965,13 @@ RETURNS TABLE(
   photo_z_err_lo DOUBLE PRECISION, photo_z_err_hi DOUBLE PRECISION,
   photometry JSONB
 )
-LANGUAGE plpgsql STABLE SET plan_cache_mode = 'force_custom_plan'
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+-- force_custom_plan replans (and would re-JIT) on every call, so JIT
+-- compilation is pure per-call overhead here — ~800ms/page when the CTE join
+-- misestimates push the plan cost over the JIT thresholds (issue #490).
+SET jit = 'off'
+SET statement_timeout = '120s'
 AS $$
 DECLARE
   v_filtered_program_slugs TEXT[];
@@ -2248,6 +2979,10 @@ DECLARE
   v_comment_search_active BOOLEAN;
   v_grating_filter_active BOOLEAN;
   v_gratings_mode TEXT;
+  v_grating_object_ids INTEGER[];
+  v_list_filter_active BOOLEAN;
+  v_list_ids_mode TEXT;
+  v_page_size INTEGER;
 BEGIN
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
   v_comment_search_active := (
@@ -2258,71 +2993,72 @@ BEGIN
   v_grating_filter_active := (p_gratings IS NOT NULL AND array_length(p_gratings, 1) > 0);
   v_gratings_mode := COALESCE(p_gratings_mode, 'any');
   IF v_gratings_mode NOT IN ('any', 'all', 'none') THEN v_gratings_mode := 'any'; END IF;
-  IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
-  IF NOT (p_sort_column IN (
-    'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
-    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
-  ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
-    p_sort_column := 'object_id';
-  END IF;
+  v_list_filter_active := (p_list_ids IS NOT NULL AND array_length(p_list_ids, 1) > 0);
+  v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
+  IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN v_list_ids_mode := 'any'; END IF;
+  v_page_size := LEAST(GREATEST(COALESCE(p_page_size, 5000), 1), 10000);
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs)) INTO v_filtered_program_slugs;
   ELSE v_filtered_program_slugs := p_program_slugs; END IF;
   IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN RETURN; END IF;
 
+
+  -- Issue #488: materialize the viewer-visible grating match set ONCE per call
+  -- (statements below consume it via hashed = ANY; an IN-subplan would be
+  -- rebuilt per statement — twice in the count+page RPC). See
+  -- objects_matching_grating_filter().
+  --
+  -- Deliberately scoped to p_program_slugs, NOT v_filtered_program_slugs,
+  -- matching get_filtered_objects_paginated's filter scoping so this export
+  -- returns exactly the row set the catalog table shows for identical filter
+  -- args. Narrowing the filter to v_filtered_program_slugs would make exports
+  -- silently drop rows the table displays. The asymmetry a reader may notice
+  -- — this RPC's exported aggregate columns (sa.*) ARE narrowed by
+  -- p_filter_programs while the table's are not — predates the grating
+  -- filter and is a display-scoping question, not a filter one.
+  IF v_grating_filter_active THEN
+    v_grating_object_ids := ARRAY(SELECT public.objects_matching_grating_filter(p_gratings, v_gratings_mode, p_program_slugs, p_include_unpublished));
+  END IF;
+
   RETURN QUERY
-  WITH member_targets AS (
-    SELECT t.object_id, string_agg(t.target_id, ';' ORDER BY t.target_id) AS member_target_ids
-    FROM targets t
-    WHERE t.program_slug = ANY(v_filtered_program_slugs)
-    GROUP BY t.object_id
-  ),
-  visible_lists AS (
-    SELECT olm.object_id, string_agg(ol.slug, ';' ORDER BY ol.slug) AS lists
-    FROM object_list_members olm
-    JOIN object_lists ol ON ol.id = olm.list_id
-    WHERE ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit')
-    GROUP BY olm.object_id
-  ),
-  filtered_objects AS (
-    SELECT o.object_id, o.field, o.ra, o.dec,
+  -- Issue #490: page-first evaluation. The previous shape ran the per-row
+  -- laterals (object_scoped_aggregates, photometry) for every row that passed
+  -- the cheap filters — before the LIMIT — and the member_targets /
+  -- visible_lists CTEs aggregated over the whole catalog, so per-page cost
+  -- scaled with catalog size instead of page size. Select the page of ids
+  -- first (cheap objects-only filters + keyset + LIMIT), then join the
+  -- expensive work against just that page. MATERIALIZED fences the page so
+  -- the planner can't push the laterals back under the LIMIT.
+  WITH page_objects AS MATERIALIZED (
+    SELECT o.id, o.object_id, o.field, o.ra, o.dec,
       o.redshift, o.redshift_quality,
       o.redshift_inspected, o.redshift_auto,
-      o.last_inspected_at, up.full_name AS last_inspected_by,
+      o.last_inspected_at, o.last_inspected_by,
       o.last_data_change_at, o.staleness_reason, o.version,
-      -- Aggregates scoped to accessible (+ filtered) programs so mixed-program
-      -- objects don't export proprietary member metadata. See
-      -- object_scoped_aggregates().
-      sa.n_targets, sa.n_spectra,
-      array_to_string(sa.programs, ';') AS programs,
-      array_to_string(sa.gratings, ';') AS gratings,
-      sa.max_snr, sa.max_exposure_time,
-      mt.member_target_ids,
       CASE WHEN v_coord_search_active THEN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) * POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2))))
       ELSE NULL END AS distance,
-      vl.lists,
-      o.has_photometry, o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi,
-      phot.photometry
+      o.has_photometry, o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi
     FROM objects o
-    LEFT JOIN member_targets mt ON mt.object_id = o.id
-    LEFT JOIN visible_lists vl ON vl.object_id = o.id
-    LEFT JOIN user_profiles up ON up.user_id = o.last_inspected_by
-    LEFT JOIN LATERAL public.object_scoped_aggregates(o.id, v_filtered_program_slugs, p_include_unpublished) sa ON true
-    LEFT JOIN LATERAL (
-      SELECT op.photometry FROM object_photometry op
-      WHERE op.object_id = o.id ORDER BY op.updated_at DESC LIMIT 1
-    ) phot ON true
     WHERE o.programs && v_filtered_program_slugs
+      AND (p_after_object_id IS NULL OR o.object_id > p_after_object_id)
       AND o.is_active = true
       AND (p_include_unpublished OR o.has_published_spectrum)
       AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
       AND (
         NOT v_grating_filter_active
-        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings)
-        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings)
-        OR (v_gratings_mode = 'none' AND NOT o.gratings && p_gratings)
+        -- Issue #488: the o.gratings array tests are index-backed pre-filters
+        -- only (deploy-time aggregate over ALL member spectra, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed = ANY over the once-per-call v_grating_object_ids — see
+        -- objects_matching_grating_filter() for the invariants.
+        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
+            AND o.id = ANY(v_grating_object_ids))
+        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
+            AND o.id = ANY(v_grating_object_ids))
+        OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
+            OR NOT (o.id = ANY(v_grating_object_ids))))
       )
       AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
       AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
@@ -2345,11 +3081,26 @@ BEGIN
       AND (NOT v_coord_search_active OR (
         o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
         AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
+        -- Exact haversine cut lives inside the page selection (it used to be a
+        -- post-CTE distance_filtered pass) so the LIMIT counts only surviving
+        -- rows and the keyset cursor stays correct.
+        AND 2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) * POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)))) <= p_radius_degrees
       ))
-      AND (p_list_ids IS NULL OR array_length(p_list_ids, 1) IS NULL OR o.id IN (
-          SELECT olm.object_id FROM object_list_members olm
-          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-      ))
+      AND (
+        NOT v_list_filter_active
+        OR (v_list_ids_mode = 'any' AND o.id IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+        OR (v_list_ids_mode = 'all' AND (
+            SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+            WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND o.id NOT IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+      )
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
       AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
@@ -2377,45 +3128,52 @@ BEGIN
             )
         )
       )
+    ORDER BY o.object_id ASC
+    LIMIT v_page_size
   ),
-  distance_filtered AS (SELECT fo.* FROM filtered_objects fo WHERE NOT v_coord_search_active OR fo.distance <= p_radius_degrees)
-  SELECT df.object_id, df.field, df.ra, df.dec,
-    df.redshift, df.redshift_quality,
-    df.redshift_inspected, df.redshift_auto,
-    df.last_inspected_at, df.last_inspected_by,
-    df.last_data_change_at, df.staleness_reason, df.version,
-    df.n_targets, df.n_spectra,
-    df.programs, df.gratings,
-    df.max_snr, df.max_exposure_time,
-    df.member_target_ids, df.distance, df.lists,
-    df.has_photometry, df.photo_z, df.photo_z_err_lo, df.photo_z_err_hi,
-    df.photometry
-  FROM distance_filtered df
-  ORDER BY
-    CASE WHEN v_coord_search_active THEN df.distance END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'object_id' AND p_sort_direction = 'asc' THEN df.object_id END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'object_id' AND p_sort_direction = 'desc' THEN df.object_id END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'field' AND p_sort_direction = 'asc' THEN df.field END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'field' AND p_sort_direction = 'desc' THEN df.field END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'ra' AND p_sort_direction = 'asc' THEN df.ra END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'ra' AND p_sort_direction = 'desc' THEN df.ra END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'dec' AND p_sort_direction = 'asc' THEN df.dec END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'dec' AND p_sort_direction = 'desc' THEN df.dec END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift' AND p_sort_direction = 'asc' THEN df.redshift END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift' AND p_sort_direction = 'desc' THEN df.redshift END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_quality' AND p_sort_direction = 'asc' THEN df.redshift_quality END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'redshift_quality' AND p_sort_direction = 'desc' THEN df.redshift_quality END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'n_targets' AND p_sort_direction = 'asc' THEN df.n_targets END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'n_targets' AND p_sort_direction = 'desc' THEN df.n_targets END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'n_spectra' AND p_sort_direction = 'asc' THEN df.n_spectra END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'n_spectra' AND p_sort_direction = 'desc' THEN df.n_spectra END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_snr' AND p_sort_direction = 'asc' THEN df.max_snr END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN df.max_snr END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_exposure_time' AND p_sort_direction = 'asc' THEN df.max_exposure_time END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'max_exposure_time' AND p_sort_direction = 'desc' THEN df.max_exposure_time END DESC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'photo_z' AND p_sort_direction = 'asc' THEN df.photo_z END ASC NULLS LAST,
-    CASE WHEN NOT v_coord_search_active AND p_sort_column = 'photo_z' AND p_sort_direction = 'desc' THEN df.photo_z END DESC NULLS LAST,
-    df.object_id ASC;
+  -- Both aggregation CTEs are restricted to the page's ids — previously they
+  -- aggregated targets / list memberships for the entire catalog on every page.
+  member_targets AS (
+    SELECT t.object_id, string_agg(t.target_id, ';' ORDER BY t.target_id) AS member_target_ids
+    FROM targets t
+    WHERE t.object_id IN (SELECT po.id FROM page_objects po)
+      AND t.program_slug = ANY(v_filtered_program_slugs)
+    GROUP BY t.object_id
+  ),
+  visible_lists AS (
+    SELECT olm.object_id, string_agg(ol.slug, ';' ORDER BY ol.slug) AS lists
+    FROM object_list_members olm
+    JOIN object_lists ol ON ol.id = olm.list_id
+    WHERE olm.object_id IN (SELECT po.id FROM page_objects po)
+      AND (ol.created_by = auth.uid() OR ol.visibility IN ('public_read', 'public_edit')
+           OR ol.id IN (SELECT list_id FROM object_list_shares WHERE user_id = auth.uid()))
+    GROUP BY olm.object_id
+  )
+  SELECT po.object_id, po.field, po.ra, po.dec,
+    po.redshift, po.redshift_quality,
+    po.redshift_inspected, po.redshift_auto,
+    po.last_inspected_at, up.full_name AS last_inspected_by,
+    po.last_data_change_at, po.staleness_reason, po.version,
+    -- Aggregates scoped to accessible (+ filtered) programs so mixed-program
+    -- objects don't export proprietary member metadata. See
+    -- object_scoped_aggregates().
+    sa.n_targets, sa.n_spectra,
+    array_to_string(sa.programs, ';') AS programs,
+    array_to_string(sa.gratings, ';') AS gratings,
+    sa.max_snr, sa.max_exposure_time,
+    mt.member_target_ids, po.distance, vl.lists,
+    po.has_photometry, po.photo_z, po.photo_z_err_lo, po.photo_z_err_hi,
+    phot.photometry
+  FROM page_objects po
+  LEFT JOIN member_targets mt ON mt.object_id = po.id
+  LEFT JOIN visible_lists vl ON vl.object_id = po.id
+  LEFT JOIN user_profiles up ON up.user_id = po.last_inspected_by
+  LEFT JOIN LATERAL public.object_scoped_aggregates(po.id, v_filtered_program_slugs, p_include_unpublished) sa ON true
+  LEFT JOIN LATERAL (
+    SELECT op.photometry FROM object_photometry op
+    WHERE op.object_id = po.id ORDER BY op.updated_at DESC LIMIT 1
+  ) phot ON true
+  ORDER BY po.object_id ASC;
 END;
 $$;
 
@@ -3660,7 +4418,9 @@ CREATE OR REPLACE FUNCTION public.get_admin_exposures(
   p_sort_column text DEFAULT 'filename',   -- 'filename' = the compound (field, filter, filename) list order
   p_sort_direction text DEFAULT 'asc',
   p_page integer DEFAULT 1,
-  p_page_size integer DEFAULT 50
+  p_page_size integer DEFAULT 50,
+  p_search text DEFAULT NULL               -- ILIKE pattern on filename; callers pre-translate
+                                           -- the operator's glob (web/lib/admin/exposure-search.ts)
 )
 RETURNS TABLE (
   id integer,
@@ -3681,6 +4441,11 @@ RETURNS TABLE (
   image_height integer,
   mask_regions jsonb,
   notes text,
+  -- Carried so the web client's review-decision overlay can compare its
+  -- acked/queued stamps against the row instead of treating list rows as
+  -- stampless (which would let a stale overlay shadow a newer decision made
+  -- from another device for the rest of the session).
+  review_decided_at timestamptz,
   created_at timestamp without time zone,
   updated_at timestamp without time zone,
   total_count bigint
@@ -3705,7 +4470,8 @@ BEGIN
   SELECT e.id, e.field, e.filter, e.detector, e.filename, e.visit, e.date_obs,
          e.ra_center, e.dec_center, e.stage, e.review_status,
          e.correction, e.png_path, e.full_png_path, e.image_width,
-         e.image_height, e.mask_regions, e.notes, e.created_at, e.updated_at,
+         e.image_height, e.mask_regions, e.notes, e.review_decided_at,
+         e.created_at, e.updated_at,
          count(*) OVER ()
   FROM nircam_exposures e
   WHERE (p_field IS NULL OR e.field = p_field)
@@ -3714,6 +4480,7 @@ BEGIN
     AND (p_review_status IS NULL OR e.review_status = p_review_status)
     AND (p_stage IS NULL OR e.stage = p_stage)
     AND (p_correction IS NULL OR e.correction = p_correction)
+    AND (p_search IS NULL OR p_search = '' OR e.filename ILIKE p_search)
   ORDER BY
     -- Keep in lockstep with get_admin_exposure_neighbors.
     CASE WHEN p_sort_column = 'filename' AND p_sort_direction = 'asc'  THEN e.field END ASC,
@@ -3758,7 +4525,8 @@ CREATE OR REPLACE FUNCTION public.get_admin_exposure_neighbors(
   p_correction text DEFAULT NULL,
   p_sort_column text DEFAULT 'filename',
   p_sort_direction text DEFAULT 'asc',
-  p_window integer DEFAULT 3
+  p_window integer DEFAULT 3,
+  p_search text DEFAULT NULL   -- ILIKE pattern on filename; same contract as get_admin_exposures
 )
 RETURNS TABLE (
   id integer,
@@ -3815,6 +4583,7 @@ BEGIN
       AND (p_review_status IS NULL OR e.review_status = p_review_status)
       AND (p_stage IS NULL OR e.stage = p_stage)
         AND (p_correction IS NULL OR e.correction = p_correction)
+        AND (p_search IS NULL OR p_search = '' OR e.filename ILIKE p_search)
   ),
   cur AS (
     SELECT r.rn AS rn0 FROM ranked r WHERE r.exp_id = p_current_id
@@ -4125,7 +4894,7 @@ BEGIN
     RAISE EXCEPTION 'Access denied: Admin privileges required';
   END IF;
 
-  IF p_action NOT IN ('upload', 'publish', 'revoke', 'recover', 'supersede', 'delete') THEN
+  IF p_action NOT IN ('upload', 'publish', 'revoke', 'recover', 'supersede', 'delete', 'config_sync') THEN
     RAISE EXCEPTION 'Invalid deploy_event action: %', p_action;
   END IF;
 
@@ -5101,11 +5870,22 @@ GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_
 -- moving a value out from under an inspector.
 --
 -- Staleness signal: when redshift_auto changes for an already-signed-off
--- object (quality >= 2), we still flag staleness_reason='reprocessed' and
+-- object (quality >= 2), we flag staleness_reason='reprocessed' and
 -- bump last_data_change_at so the UI surfaces a "Needs Review" badge.
 -- The pinned displayed redshift is unchanged, but the inspector should
 -- know the underlying fit shifted in case they want to update their
 -- override or reaffirm the existing one.
+--
+-- The badge only fires on solution-level changes: a shift within the same
+-- (1+z)-scaled z_delta tolerance used for grating refinement is by
+-- definition the same redshift solution at different precision (e.g. the
+-- PRISM anchor being swapped for a consistent grating fit) and does not
+-- warrant re-review. Appearing/disappearing values always badge.
+-- Selection rule: the best member spectrum by explicit grating priority
+-- (PRISM > G395M > G395H > G235M > G235H > G140M > G140H, tiebreak on
+-- exposure_time, then id) anchors the value. When that anchor is PRISM and
+-- a grating spectrum's auto-fit agrees with it within |dz|/(1+z) < z_delta,
+-- the best such grating redshift is adopted instead for its higher precision.
 CREATE OR REPLACE FUNCTION public.compute_object_redshift_auto(p_field TEXT)
 RETURNS INTEGER
 LANGUAGE plpgsql
@@ -5117,29 +5897,61 @@ SET statement_timeout = '300s'
 AS $$
 DECLARE
   n INTEGER;
+  -- (1+z)-scaled tolerance for a grating auto-fit to count as consistent
+  -- with the PRISM anchor: |z_grating - z_prism| / (1 + z_prism) < z_delta.
+  -- Also the re-review threshold: auto-fit shifts smaller than this are the
+  -- same solution at different precision and do not badge inspected objects.
+  z_delta CONSTANT DOUBLE PRECISION := 0.01;
 BEGIN
   WITH computed AS (
     SELECT o.id,
            o.redshift_auto AS old_auto,
            o.redshift_quality AS quality,
-           (
-             SELECT s.redshift_auto
-             FROM targets t
-             JOIN spectra s ON s.target_id = t.target_id
-             WHERE t.object_id = o.id
-               AND s.redshift_auto IS NOT NULL
-             ORDER BY
+           best.new_val
+    FROM objects o
+    LEFT JOIN LATERAL (
+      WITH members AS (
+        SELECT s.redshift_auto AS z,
+               s.exposure_time,
+               s.id,
                CASE
                  WHEN s.grating = 'PRISM' THEN 0
-                 WHEN s.grating IN ('G140M', 'G235M', 'G395M') THEN 1
-                 WHEN s.grating IN ('G140H', 'G235H', 'G395H') THEN 2
-                 ELSE 3
-               END ASC,
-               s.exposure_time DESC NULLS LAST,
-               s.id ASC
-             LIMIT 1
-           ) AS new_val
-    FROM objects o
+                 WHEN s.grating = 'G395M' THEN 1
+                 WHEN s.grating = 'G395H' THEN 2
+                 WHEN s.grating = 'G235M' THEN 3
+                 WHEN s.grating = 'G235H' THEN 4
+                 WHEN s.grating = 'G140M' THEN 5
+                 WHEN s.grating = 'G140H' THEN 6
+                 ELSE 7
+               END AS priority
+        FROM targets t
+        JOIN spectra s ON s.target_id = t.target_id
+        WHERE t.object_id = o.id
+          AND s.redshift_auto IS NOT NULL
+      ),
+      prism AS (
+        SELECT z FROM members WHERE priority = 0
+        ORDER BY exposure_time DESC NULLS LAST, id ASC
+        LIMIT 1
+      ),
+      -- Best member outright: PRISM if present, else best grating.
+      base AS (
+        SELECT z FROM members
+        ORDER BY priority ASC, exposure_time DESC NULLS LAST, id ASC
+        LIMIT 1
+      ),
+      -- PRISM-consistent refinement: best known grating whose auto-fit
+      -- agrees with the PRISM anchor. Empty when no PRISM member exists.
+      refined AS (
+        SELECT m.z
+        FROM members m, prism p
+        WHERE m.priority BETWEEN 1 AND 6
+          AND ABS(m.z - p.z) / (1.0 + p.z) < z_delta
+        ORDER BY m.priority ASC, m.exposure_time DESC NULLS LAST, m.id ASC
+        LIMIT 1
+      )
+      SELECT COALESCE((SELECT z FROM refined), (SELECT z FROM base)) AS new_val
+    ) best ON TRUE
     WHERE o.field = p_field
   )
   UPDATE objects o
@@ -5147,12 +5959,16 @@ BEGIN
       staleness_reason = CASE
         WHEN c.quality >= 2
              AND c.old_auto IS DISTINCT FROM c.new_val
+             AND (c.old_auto IS NULL OR c.new_val IS NULL
+                  OR ABS(c.new_val - c.old_auto) / (1.0 + c.old_auto) >= z_delta)
         THEN 'reprocessed'
         ELSE o.staleness_reason
       END,
       last_data_change_at = CASE
         WHEN c.quality >= 2
              AND c.old_auto IS DISTINCT FROM c.new_val
+             AND (c.old_auto IS NULL OR c.new_val IS NULL
+                  OR ABS(c.new_val - c.old_auto) / (1.0 + c.old_auto) >= z_delta)
         THEN NOW()
         ELSE o.last_data_change_at
       END,

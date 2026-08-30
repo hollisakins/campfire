@@ -108,11 +108,35 @@ def test_srcmask_preserved(tmp_path):
             assert 'SRCMASK' in h
 
 
-def test_wcs_bak_written(tmp_path):
+def test_algn_bak_written(tmp_path):
     members, refcat, _ = _make_exposure(tmp_path, n_det=1)
     align_exposure_group(members, refcat, config={})
     with fits.open(members[0].path) as h:
-        assert 'WCS_BAK' in h
+        assert 'ALGN_BAK' in h          # align's own pre-align backup
+
+
+def test_ignores_and_preserves_wcs_shift_bak(tmp_path):
+    # wcs_shift runs before align and stashes the pre-*shift* WCS in WCS_BAK.
+    # align must solve from the current (wcs_shift-corrected) meta.wcs — NOT
+    # WCS_BAK — and leave WCS_BAK intact. Inject a far-off bogus WCS_BAK: if align
+    # wrongly solved from it the footprint clip would starve -> NOT_ALIGNED.
+    from campfire_pipeline.nircam.align.apply import (
+        _serialize_gwcs_to_hdu, WCS_BAK_EXTNAME)
+    members, refcat, _ = _make_exposure(tmp_path, n_det=1)
+    bogus = make_persistable_wcs(ra_ref=90.0, dec_ref=-10.0)   # far from the frame
+    bogus_hdu = _serialize_gwcs_to_hdu(bogus, name=WCS_BAK_EXTNAME)
+    bogus_bytes = bytes(bogus_hdu.data)
+    with fits.open(members[0].path) as h:
+        h.append(bogus_hdu)
+        h.writeto(members[0].path, overwrite=True)
+
+    align_exposure_group(members, refcat, config={})
+
+    assert _cfp_algn(members[0].path).startswith('dof=')  # solved from meta.wcs
+    with fits.open(members[0].path) as h:
+        assert 'ALGN_BAK' in h                            # align's backup written
+        assert 'WCS_BAK' in h                             # wcs_shift's preserved
+        assert bytes(h['WCS_BAK'].data) == bogus_bytes    # ... byte-for-byte
 
 
 # --- NOT_ALIGNED ------------------------------------------------------------
@@ -136,6 +160,38 @@ def test_not_aligned_preserves_wcs(tmp_path):
         after = tuple(float(v) for v in mo.meta.wcs(500.0, 700.0))
         mo.close()
         assert np.allclose(after, before[m.path], atol=1e-12)   # WCS untouched
+
+
+def test_not_aligned_clears_scalar_diagnostics(tmp_path):
+    """A file re-solved to NOT_ALIGNED must not keep the counts and peak
+    contrasts of the earlier SUCCESSFUL solve standing beside the rejection —
+    they would read as provenance for the rejected attempt."""
+    from astropy.io import fits
+
+    from campfire_pipeline.nircam.align.apply import (ALGN_DIAG_COMMENTS,
+                                                      ALGN_UNDEF)
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2, seed=3)
+
+    sol = align_exposure_group(members, refcat, config={})
+    assert sol.status == 'SOLVED'
+    measured = [k for k in ALGN_DIAG_COMMENTS
+                if k != 'ALGNSTAL'
+                and fits.getheader(members[0].path, 0).get(k) != ALGN_UNDEF]
+    assert measured, 'expected the successful solve to record some diagnostics'
+
+    # now force a rejection on the same files
+    rng = np.random.default_rng(99)
+    badref = Table({'RA': 80.0 + rng.uniform(-0.05, 0.05, 30),
+                    'DEC': -30.0 + rng.uniform(-0.05, 0.05, 30)})
+    assert align_exposure_group(members, badref, config={},
+                                overwrite=True).status == 'NOT_ALIGNED'
+    for m in members:
+        hdr = fits.getheader(m.path, 0)
+        assert hdr['ALGNSTAL'] is True
+        for key in ALGN_DIAG_COMMENTS:
+            if key == 'ALGNSTAL':
+                continue
+            assert hdr[key] == ALGN_UNDEF, f'{key} kept a stale value'
 
 
 # --- idempotency / overwrite ------------------------------------------------
@@ -186,19 +242,112 @@ def test_overwrite_does_not_double_correct(tmp_path):
         assert _reload_residual(m.path, xy[m.detector], refcat) < 0.05
 
 
-# --- adaptive end-to-end ----------------------------------------------------
+def test_residual_gate_threads_from_config(tmp_path):
+    # [<field>.align].max_residual_arcsec must reach the solve: a 0 gate rejects
+    # every detector (any real residual is > 0), so the pool stamps NOT_ALIGNED
+    # and the WCS stays untouched.
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2)
+    sol = align_exposure_group(members, refcat,
+                               config={'max_residual_arcsec': 0.0})
+    assert sol.status == 'NOT_ALIGNED'
+    for m in members:
+        assert _cfp_algn(m.path) == 'NOT_ALIGNED'
 
-def test_adaptive_dof_recorded(tmp_path):
-    # Detector 4 carries a 0.6" per-detector offset — large enough that the
-    # all-source shared refine sigma-clips it (rather than tilting the whole
-    # exposure to absorb it), so its residual survives above tolerance and the
-    # adaptive shift-only refit frees it. match_radius=0.8 keeps its sources
+
+# --- fine per-detector fit end-to-end ---------------------------------------
+
+def test_fine_dof_recorded(tmp_path):
+    # Detector 4 carries a 0.6" per-detector offset — large enough that after the
+    # pooled coarse fit its residual survives above tolerance, so the gated fine
+    # fit frees it (default ceiling rshift). match_radius=0.8 keeps its sources
     # matchable at that offset.
     members, refcat, _ = _make_exposure(
         tmp_path, n_det=5, offset=(2.0, 0.0), per_det_extra={4: (0.0, 0.6)})
     align_exposure_group(members, refcat,
                          config={'tolerance': 0.15, 'match_radius': 0.8})
-    # detectors 0-3 stay on the shared solution; detector 4 (nrcb1) is freed
-    for m in members[:4]:
-        assert 'dof=shared' in _cfp_algn(m.path)
-    assert 'dof=shift' in _cfp_algn(members[4].path)
+    # detector 4 (nrcb1)'s 0.6" offset trips tolerance; the gated fine fit frees
+    # it (default ceiling rshift). The fit is per-detector, not a global re-fit,
+    # so unperturbed good detectors keep the pooled coarse attitude.
+    assert 'dof=rshift' in _cfp_algn(members[4].path)
+    assert any('dof=coarse' in _cfp_algn(m.path) for m in members[:4])
+
+
+# --- diagnostics (ALGNCAT + ALGN* keywords) ---------------------------------
+
+def test_algncat_written_and_matches_the_written_wcs(tmp_path):
+    # The per-source catalog exists so overlapping exposures can be cross-checked
+    # WITHOUT drizzling: its ra/dec must therefore be the positions the file's own
+    # (corrected) WCS gives, and its rows must line up with the detections.
+    from campfire_pipeline.nircam.align.apply import ALGNCAT_EXTNAME
+    from jwst.datamodels import ImageModel
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2, offset=(2.0, 0.0))
+    sol = align_exposure_group(members, refcat, config={})
+    assert sol.status == 'SOLVED'
+
+    by_det = {d.detector: d for d in sol.detectors}
+    for m in members:
+        with fits.open(m.path) as h:
+            assert ALGNCAT_EXTNAME in h
+            cat = Table(h[ALGNCAT_EXTNAME].data)
+        assert len(cat) == by_det[m.detector].n_detected > 0
+        assert int(np.count_nonzero(cat['matched'])) == by_det[m.detector].n_matched
+        mo = ImageModel(m.path, memmap=False)
+        ra, dec = mo.meta.wcs(np.asarray(cat['x'], float),
+                             np.asarray(cat['y'], float))
+        mo.close()
+        assert np.allclose(ra, cat['ra'], atol=1e-9)
+        assert np.allclose(dec, cat['dec'], atol=1e-9)
+        # matched rows carry the refcat position (values, not indices) and the
+        # separation that got them accepted; unmatched rows carry neither.
+        got = cat['matched'].astype(bool)
+        assert np.all(np.isfinite(cat['ref_ra'][got]))
+        assert np.all(np.isnan(cat['ref_ra'][~got]))
+        assert np.all(cat['sep_arcsec'][got] <= 0.5)
+
+
+def test_algn_diag_keywords_all_present(tmp_path):
+    from campfire_pipeline.nircam.align.apply import ALGN_DIAG_COMMENTS
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2)
+    align_exposure_group(members, refcat, config={})
+    with fits.open(members[0].path) as h:
+        hdr = h[0].header
+        # every key present (unmeasured ones carry the UNDEF sentinel, never a
+        # missing card — silence would let a re-solve leave a stale number)
+        for key, comment in ALGN_DIAG_COMMENTS.items():
+            assert key in hdr, key
+            assert hdr.comments[key] == comment
+        assert hdr['ALGNNDET'] > 0
+        assert hdr['ALGNNREF'] > 0
+        assert hdr['ALGNSTAL'] is False
+
+
+def test_algncat_replaced_not_accumulated_on_overwrite(tmp_path):
+    from campfire_pipeline.nircam.align.apply import ALGNCAT_EXTNAME
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2)
+    align_exposure_group(members, refcat, config={})
+    align_exposure_group(members, refcat, config={}, overwrite=True)
+    align_exposure_group(members, refcat, config={}, overwrite=True)
+    for m in members:
+        with fits.open(m.path) as h:
+            assert [x.name for x in h].count(ALGNCAT_EXTNAME) == 1
+
+
+def test_not_aligned_rerun_marks_algncat_stale(tmp_path):
+    # A NOT_ALIGNED re-run keeps the WCS it already had, so a previous solve's
+    # ALGNCAT no longer describes it. The extension is left in place (dropping it
+    # would dangle the datamodel's extra_fits reference) and flagged instead.
+    from campfire_pipeline.nircam.align.apply import ALGNCAT_EXTNAME
+    members, refcat, _ = _make_exposure(tmp_path, n_det=2, seed=3)
+    assert align_exposure_group(members, refcat, config={}).status == 'SOLVED'
+    with fits.open(members[0].path) as h:
+        assert h[0].header['ALGNSTAL'] is False
+
+    rng = np.random.default_rng(99)
+    badref = Table({'RA': 80.0 + rng.uniform(-0.05, 0.05, 30),
+                    'DEC': -30.0 + rng.uniform(-0.05, 0.05, 30)})
+    sol = align_exposure_group(members, badref, config={}, overwrite=True)
+    assert sol.status == 'NOT_ALIGNED'
+    for m in members:
+        with fits.open(m.path) as h:
+            assert h[0].header['ALGNSTAL'] is True
+            assert ALGNCAT_EXTNAME in h        # kept, but flagged as stale

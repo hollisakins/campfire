@@ -3,14 +3,17 @@ import { createClient } from '@/lib/supabase/server';
 import { generateDownloadUrl } from '@/lib/r2';
 import { deriveSibling } from '@/lib/layout';
 
+// Non-finite values in the deploy-side FITS arrays are serialized as JSON
+// null (see python/campfire/deploy/generate.py); scalars are null when the
+// chi2 grid has no finite minimum. Consumers must guard before arithmetic.
 export interface RedshiftFitData {
-  redshift: number;
-  chi2_min: number;
-  confidence: number;
+  redshift: number | null;
+  chi2_min: number | null;
+  confidence: number | null;
   z_grid: number[];
-  chi2_grid: number[];
-  model_wave: number[];
-  model_fnu: number[];
+  chi2_grid: (number | null)[];
+  model_wave: (number | null)[];
+  model_fnu: (number | null)[];
 }
 
 /**

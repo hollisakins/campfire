@@ -38,6 +38,10 @@ const themeScript = `
 export const metadata: Metadata = {
   title: 'CAMPFIRE - JWST Spectroscopy Archive',
   description: 'COSMOS Archive of MultiPle-Field Internal Reductions & Extractions',
+  // Nothing in CAMPFIRE is indexed (design-public-mirror.md §9). The
+  // X-Robots-Tag header in next.config.ts covers responses this cannot reach
+  // (redirects, API routes); this covers crawlers that only parse HTML.
+  robots: { index: false, follow: false },
 };
 
 export default function RootLayout({

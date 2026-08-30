@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import { validateAccessToken } from '@/lib/auth/tokens';
+import { getLinkScope } from '@/lib/api-helpers';
 
 /**
  * Hash an API key using SHA-256
@@ -31,13 +32,24 @@ export async function validateAuth(request: NextRequest): Promise<string | null>
   }
 
   // Route to appropriate validator based on token format
-  if (token.startsWith('sk_')) {
-    // API key authentication
-    return validateApiKeyToken(token);
-  } else {
-    // JWT access token authentication
-    return validateAccessToken(token);
+  const userId = token.startsWith('sk_')
+    ? await validateApiKeyToken(token) // API key authentication
+    : await validateAccessToken(token); // JWT access token authentication
+  if (!userId) return null;
+
+  // Share links (docs/design-public-mirror.md §5.5): the programmatic API is
+  // closed to link accounts, full stop. Every bearer-authorized /api/v1 route
+  // authorizes at program grain (getAccessiblePrograms), which cannot express
+  // "one observation" or the download opt-out — so a link visitor lifting the
+  // JWT out of their own cookie jar (it is not httpOnly) or presenting an old
+  // sk_ key must resolve to no credential at all, not to program-wide access.
+  // The shared view itself never goes through here: browser pages use the
+  // cookie session, and the cookie-capable cutout routes carry their own
+  // link-scope checks.
+  if (await getLinkScope(userId)) {
+    return null;
   }
+  return userId;
 }
 
 /**

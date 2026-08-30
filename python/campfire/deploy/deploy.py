@@ -297,6 +297,7 @@ def _deploy_intermediates_only(
         file_globs=file_globs or None,
         gratings=obs_cfg.get('gratings') or None,
         data_subdir=obs_cfg.get('data_subdir'),
+        config_section=obs_cfg or None,
     )
 
     scope = Scope(obs=obs_name)
@@ -644,6 +645,7 @@ def deploy_observation(
         file_globs=file_globs if file_globs else None,
         gratings=obs_gratings if obs_gratings else None,
         data_subdir=obs_data_subdir,
+        config_section=obs_config or None,
     )
     print()
 

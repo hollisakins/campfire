@@ -65,6 +65,7 @@ _PNG_CONTENT_TYPE = 'image/png'
 # Each entry: (CFP_* keyword, stage value to report).
 _CFP_TO_STAGE = [
     ('CFP_DET1', 'detector1'),
+    ('CFP_JACK', 'jackknife'),
     ('CFP_PERS', 'persistence'),
     ('CFP_WISP', 'wisp'),
     ('CFP_IMG2', 'image2'),
@@ -228,8 +229,19 @@ def _read_exposure_metadata(path):
             info['combine_stamped'] = ('CFP_BPIX' in hdr0 or 'CFP_OUT' in hdr0)
             info['date_obs'] = hdr0.get('DATE-OBS')
             info['detector'] = hdr0.get('DETECTOR', info['detector'])
-            if len(hdul) > 1:
+            # Index HDU 1 directly rather than testing len(hdul): len() forces
+            # astropy to enumerate *every* HDU, parsing the full structure of a
+            # ~120 MB exposure just to learn whether a second one exists. That
+            # dominated discover_exposures — 9-14x slower than this form on
+            # COSMOS LW, measured cold-vs-cold on disjoint file slices. The
+            # cost is header parsing, not I/O (a warm page cache barely helps),
+            # so parallelising the scan would have masked it rather than fixed
+            # it. Lazy loading stops at HDU 1.
+            try:
                 sci_hdr = hdul[1].header
+            except IndexError:
+                sci_hdr = None
+            if sci_hdr is not None:
                 ra = sci_hdr.get('CRVAL1')
                 dec = sci_hdr.get('CRVAL2')
                 if ra is not None and dec is not None:
@@ -423,7 +435,7 @@ def _provenance_from_header(path):
         return None, None, None
 
 
-def _read_field_provenance(dirs, field, filters):
+def _read_field_provenance(dirs, field, filters, *, prefer_mosaic=True):
     """Best-effort ``(cfpipe_version, jwst_version, crds_context)`` for a field.
 
     Prefer the local ``i2d`` mosaic header (the combined science product) — the
@@ -437,9 +449,15 @@ def _read_field_provenance(dirs, field, filters):
     exposure deploy (no mosaic yet) now records real provenance instead of NULL
     (audit B2). Returns ``(None, None, None)`` only when the field has neither a
     readable i2d nor a readable exposure.
+
+    ``prefer_mosaic=False`` skips the mosaic entirely and reads the exposures.
+    Set it when the mosaics are not part of this deployment (``--no-mosaics``):
+    an on-disk i2d left over from an earlier reduction would otherwise stamp the
+    deployment with the provenance of a product it is not shipping, and the
+    whole point of that mode is that the exposures have moved on from it.
     """
     try:
-        mosaics = discover_mosaics(dirs, field, filters)
+        mosaics = discover_mosaics(dirs, field, filters) if prefer_mosaic else []
     except Exception:
         mosaics = []
     if mosaics:
@@ -460,7 +478,8 @@ def _read_field_provenance(dirs, field, filters):
     return None, None, None
 
 
-def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
+def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
+                  skip_mosaics=False):
     """Push NIRCam exposure state to OSN + Supabase (epic #261, N1).
 
     Records a **field-scoped deployment** (provenance + the draft->published
@@ -489,6 +508,13 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     draft : bool
         If True, record the deployment as ``draft`` (admin-only) for review;
         otherwise ``published`` (public) immediately.
+    skip_mosaics : bool
+        If True, deploy exposures/expmaps/layout only and skip the mosaic
+        stage entirely (no discovery, no upload, no ``mosaics`` rows). For the
+        inspect-then-rebuild loop: a reviewer needs the exposures in the portal
+        to draw masks, but the mosaics built *before* those masks exist are
+        superseded by the post-mask re-combine, so shipping them is wasted
+        transfer over a slow link. The mosaics ride the next deploy.
     """
     dirs = _resolve_nircam_dirs(field)
 
@@ -518,12 +544,21 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     # Scope mosaic discovery to what the current fields.toml declares — a stray
     # on-disk tile/epoch from a former config must not ride into the cloud (this is
     # the guard; the count + the actual upload both use this same scoped list).
-    try:
-        mosaics_to_deploy = scope_mosaics_to_fields_toml(
-            deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    if skip_mosaics:
+        # Skip discovery too, not just the upload: with no mosaic shipping this
+        # run, a stray on-disk tile is not this deploy's problem, and the
+        # fields.toml scope check would otherwise abort a perfectly good
+        # exposure deploy over a mosaic we were never going to send.
+        mosaics_to_deploy = []
+        print("Mosaics: SKIPPED (--no-mosaics) — exposures, expmaps and "
+              "layout only.")
+    else:
+        try:
+            mosaics_to_deploy = scope_mosaics_to_fields_toml(
+                deployable_mosaics(discover_mosaics(dirs, field, filters)), field)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
     n_mosaics = len(mosaics_to_deploy)
     print(f"Discovered {len(exposures)} canonical exposure(s), "
           f"{len(expmap_tasks)} expmap file(s), {n_mosaics} mosaic(s), "
@@ -607,7 +642,10 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     # the version cards, so an exposure-only --draft deploy (no mosaic yet)
     # records NULL provenance — the pipeline version that produced the exposures
     # is not stamped on exposure headers.
-    cfpipe_version, jwst_version, crds_context = _read_field_provenance(dirs, field, filters)
+    # With --no-mosaics the mosaics are not part of this deployment, so a stale
+    # on-disk i2d must not supply its provenance: read the exposures instead.
+    cfpipe_version, jwst_version, crds_context = _read_field_provenance(
+        dirs, field, filters, prefer_mosaic=not skip_mosaics)
 
     # Record the field-scoped deployment up front — it is the provenance anchor and
     # the draft/published visibility gate every registered object hangs off.
@@ -629,8 +667,11 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     png_upload_list = [t[0] for t in png_tasks]
     osn_tasks = fits_tasks + expmap_tasks + png_upload_list + layout_tasks
     store = open_reducer_store()
+    # apply_backfill: this path is past every dry-run return, so it is a real
+    # deploy — legacy exposure rows proven unchanged can learn their wcs_hash.
     plan, _server_rows = plan_remote_push(
-        client, store, osn_tasks, backend=_CANONICAL_BACKEND)
+        client, store, osn_tasks, backend=_CANONICAL_BACKEND,
+        apply_backfill=True)
     print(f"\nPlan: {plan.summary()}")
 
     # --- Upload new/changed products to OSN, registering per batch -----------
@@ -640,7 +681,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     # whole-file digest for download/copy verification. Registration is durable
     # per batch (registration_flusher), so an interrupted deploy resumes at file
     # granularity instead of re-uploading everything already landed.
-    upload_workers = _upload_workers()
+    upload_workers = _upload_workers(_CANONICAL_BACKEND)
     n_failed = 0
     osn_uploaded: set[str] = set()
     flusher = registration_flusher(
@@ -687,9 +728,12 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False):
     # --- Mosaics: deploy under the same field deployment (epic #261, N2) ----
     # Reuse the fields.toml-scoped list computed up front (single discovery +
     # single skip-log; stray tiles/epochs were already filtered out above).
-    mosaic_stats = _deploy_field_mosaics(dirs, field, config, client, filters,
-                                         deployment_id, draft, user_id, store=store,
-                                         mosaics=mosaics_to_deploy)
+    if skip_mosaics:
+        mosaic_stats = None
+    else:
+        mosaic_stats = _deploy_field_mosaics(dirs, field, config, client, filters,
+                                             deployment_id, draft, user_id, store=store,
+                                             mosaics=mosaics_to_deploy)
 
     # --- Field registry: upsert the fields.toml config + deploy-computed survey
     # area (issue #303). Rides the deploy so a field row exists exactly for fields
@@ -1072,11 +1116,11 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     flusher = registration_flusher(
         client, store, plan, backend=_CANONICAL_BACKEND,
         deployment_id=deployment_id, uploaded_by=user_id,
-        max_workers=_upload_workers(), stored_sizes=stored_sizes)
+        max_workers=_upload_workers(_CANONICAL_BACKEND), stored_sizes=stored_sizes)
     if plan.to_upload:
         print(f"  Uploading {len(plan.to_upload)} mosaic file(s) to OSN...")
         success, failed, failures = upload_files_parallel(
-            config, plan.to_upload, desc='OSN mosaic uploads', max_workers=_upload_workers(),
+            config, plan.to_upload, desc='OSN mosaic uploads', max_workers=_upload_workers(_CANONICAL_BACKEND),
             succeeded_out=uploaded, backend=_CANONICAL_BACKEND,
             on_success=flusher.add, stored_sizes_out=stored_sizes)
         flusher.flush()

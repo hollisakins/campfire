@@ -2,11 +2,12 @@
 
 import { getSpectra } from './spectra';
 import type { SortColumn, SortDirection, ViewMode } from './spectra-types';
-import { FITS_DOWNLOAD_FILE_LIMIT } from './spectra-types';
+import { FITS_DOWNLOAD_FILE_LIMIT, CSV_EXPORT_ROW_LIMIT } from './spectra-types';
 import type { FilterOptions } from './filter-params';
 import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
-import { paginateRpc } from '@/lib/supabase/paginate';
+import { getAccessibleProgramSlugs } from '@/lib/accessible-programs';
+import { paginateRpcKeyset } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
 import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
@@ -59,12 +60,16 @@ interface ObjectsCsvRow {
 }
 
 interface SpectraCsvRow {
-  spectrum_id?: string;
+  id: number;                  // spectra PK — keyset cursor, not a CSV column
+  spectrum_id: string | null;
   target_id: string;
   grating: string;
   field: string;
+  observation: string;         // sort-only, not a CSV column
   ra: number;
   dec: number;
+  redshift: number | null;          // sort-only; parent-object state lives in the objects CSV
+  redshift_quality: number | null;  // sort-only
   redshift_auto: number | null;
   signal_to_noise: number | null;
   exposure_time: number | null;
@@ -78,9 +83,14 @@ interface SpectraCsvRow {
 
 /**
  * Generate a CSV file from filtered spectra results.
- * Uses a lightweight RPC that returns flat rows — no JSONB object building
- * or nested spectra subqueries, so it handles large result sets (7k+) without
- * hitting statement timeouts.
+ *
+ * Rows are fetched through keyset-paginated RPCs (issue #412): each page is an
+ * index-bounded scan continuing from a unique-key cursor, so total DB work
+ * stays proportional to the result set — offset paging re-executed and
+ * re-sorted the whole query per page and hit the 8s statement timeout at
+ * ~16k rows. The RPCs return rows in cursor-key order; the user's on-screen
+ * sort is applied here in JS (see sortCsvRows). Exports are capped at
+ * CSV_EXPORT_ROW_LIMIT, matching the warning shown in the download dropdown.
  */
 export async function generateCSV(
   filters: FilterOptions,
@@ -96,25 +106,17 @@ export async function generateCSV(
       return { csv: null, error: 'Not authenticated' };
     }
 
-    // Determine accessible programs (parallel queries)
-    const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
-      supabase.from('user_program_access').select('program_slug').eq('user_id', user.id),
-      supabase.from('programs').select('slug').eq('is_public', true),
-    ]);
-
-    const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-    const publicProgramSlugs = (publicPrograms || []).map(p => p.slug);
-    const accessibleProgramSlugs = [...new Set([...publicProgramSlugs, ...explicitAccessSlugs])];
+    // Which programs can this user access? One RPC to the SQL authority
+    // (accessible_program_slugs) rather than a hand-rolled grants + public
+    // union: the union is wrong for link accounts (scoped program only, no
+    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
+    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
 
     if (accessibleProgramSlugs.length === 0) {
       return { csv: null, error: 'No accessible programs' };
     }
 
-    const rpcParams = {
-      ...buildFilterParams(filters, accessibleProgramSlugs, user.id),
-      p_sort_column: sortColumn,
-      p_sort_direction: sortDirection,
-    };
+    const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     const includeDistance = filters.coordinate_search !== null;
 
@@ -126,17 +128,25 @@ export async function generateCSV(
         p_observations: _obs,
         p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
         ...objectsParams
-      } = { ...rpcParams, p_sort_column: sortColumn, p_sort_direction: sortDirection };
+      } = rpcParams;
       /* eslint-enable @typescript-eslint/no-unused-vars */
 
-      const { data: rows, error: rpcError } = await paginateRpc<ObjectsCsvRow>(
-        supabase, 'get_csv_export_objects', objectsParams,
+      const { data: rows, error: rpcError } = await paginateRpcKeyset<ObjectsCsvRow>(
+        supabase, 'get_csv_export_objects', { ...objectsParams },
+        { cursorParam: 'p_after_object_id', getCursor: r => r.object_id, maxRows: CSV_EXPORT_ROW_LIMIT },
       );
 
       if (rpcError) {
         console.error('Error fetching objects CSV data:', rpcError);
         return { csv: null, error: rpcError.message };
       }
+
+      sortCsvRows(
+        rows,
+        includeDistance ? OBJECTS_CSV_SORT.distance : (OBJECTS_CSV_SORT[sortColumn] ?? OBJECTS_CSV_SORT.object_id),
+        includeDistance ? 'asc' : sortDirection,
+        [r => r.object_id],
+      );
       const csv = objectsRowsToCsv(rows, includeDistance);
 
       const objectIds = rows.map(r => r.object_id);
@@ -153,14 +163,22 @@ export async function generateCSV(
     }
 
     // Spectra mode: one row per (target_id, grating).
-    const { data: rows, error: rpcError } = await paginateRpc<SpectraCsvRow>(
-      supabase, 'get_csv_export_spectra', rpcParams,
+    const { data: rows, error: rpcError } = await paginateRpcKeyset<SpectraCsvRow>(
+      supabase, 'get_csv_export_spectra', { ...rpcParams },
+      { cursorParam: 'p_after_id', getCursor: r => r.id, maxRows: CSV_EXPORT_ROW_LIMIT },
     );
 
     if (rpcError) {
       console.error('Error fetching spectra CSV data:', rpcError);
       return { csv: null, error: rpcError.message };
     }
+
+    sortCsvRows(
+      rows,
+      includeDistance ? SPECTRA_CSV_SORT.distance : (SPECTRA_CSV_SORT[sortColumn] ?? SPECTRA_CSV_SORT.spectrum_id),
+      includeDistance ? 'asc' : sortDirection,
+      [r => r.target_id, r => r.grating],
+    );
     const csv = spectraRowsToCsv(rows, includeDistance);
 
     const targetIds = [...new Set(rows.map(r => r.target_id))];
@@ -185,6 +203,77 @@ export async function generateCSV(
  */
 function expandBitmask(bitmask: number, flags: FlagDef[]): number[] {
   return flags.map(flag => (bitmask & flag.value) !== 0 ? 1 : 0);
+}
+
+type CsvSortValue = string | number | null | undefined;
+
+// Sortable columns per mode, keyed by SortColumn. Doubles as the whitelist the
+// old SQL ORDER BY enforced: an unknown column falls back to the mode default.
+const OBJECTS_CSV_SORT: Partial<Record<SortColumn, (r: ObjectsCsvRow) => CsvSortValue>> = {
+  object_id: r => r.object_id,
+  field: r => r.field,
+  ra: r => r.ra,
+  dec: r => r.dec,
+  redshift: r => r.redshift,
+  redshift_quality: r => r.redshift_quality,
+  n_targets: r => r.n_targets,
+  n_spectra: r => r.n_spectra,
+  max_snr: r => r.max_snr,
+  max_exposure_time: r => r.max_exposure_time,
+  photo_z: r => r.photo_z,
+  distance: r => r.distance,
+};
+
+const SPECTRA_CSV_SORT: Partial<Record<SortColumn, (r: SpectraCsvRow) => CsvSortValue>> = {
+  spectrum_id: r => r.spectrum_id,
+  target_id: r => r.target_id,
+  field: r => r.field,
+  observation: r => r.observation,
+  program_slug: r => r.program_slug,
+  ra: r => r.ra,
+  dec: r => r.dec,
+  redshift: r => r.redshift,
+  redshift_quality: r => r.redshift_quality,
+  redshift_auto: r => r.redshift_auto,
+  signal_to_noise: r => r.signal_to_noise,
+  exposure_time: r => r.exposure_time,
+  grating: r => r.grating,
+  distance: r => r.distance,
+};
+
+/**
+ * Order rows for the CSV in place. The keyset RPCs return rows in cursor-key
+ * order (issue #412); the user's on-screen sort is applied here instead —
+ * sorting the full export in JS costs milliseconds, versus the database
+ * re-sorting the entire result set once per page. Mirrors the old SQL
+ * semantics: distance wins whenever a coordinate search is active (callers
+ * pass the distance accessor and 'asc'), nulls sort last in both directions,
+ * and ties break ascending on the stable unique key(s).
+ */
+function sortCsvRows<T>(
+  rows: T[],
+  primary: ((r: T) => CsvSortValue) | undefined,
+  direction: SortDirection,
+  tiebreaks: ((r: T) => CsvSortValue)[],
+): void {
+  const dir = direction === 'desc' ? -1 : 1;
+  const accessors: [(r: T) => CsvSortValue, number][] = [
+    ...(primary ? [[primary, dir] as [(r: T) => CsvSortValue, number]] : []),
+    ...tiebreaks.map(tb => [tb, 1] as [(r: T) => CsvSortValue, number]),
+  ];
+  rows.sort((x, y) => {
+    for (const [accessor, d] of accessors) {
+      const a = accessor(x);
+      const b = accessor(y);
+      if (a == null || b == null) {
+        if (a != null) return -1; // NULLS LAST regardless of direction
+        if (b != null) return 1;
+        continue;
+      }
+      if (a !== b) return a < b ? -1 * d : d;
+    }
+    return 0;
+  });
 }
 
 /**
@@ -386,6 +475,17 @@ export async function generateCsvFilename(viewMode: string = 'objects'): Promise
  * presigned URL is HMAC-signed so the credential-free proxy Worker will fetch
  * only URLs we authorized. The browser fetches each proxy URL (which supplies
  * CORS) and zips the results client-side.
+ *
+ * The download unit follows the view the user filtered in. In spectra mode the
+ * on-screen rows ARE spectra, so the spectra RPC's per-spectrum filtering is
+ * exactly the visible set. In objects mode the filters select OBJECTS on
+ * aggregate semantics (e.g. max_snr = the object's best spectrum), so the same
+ * parameters must NOT be re-run through the spectra RPC: there `max_snr_min`
+ * drops each sibling spectrum below the cutoff individually, silently omitting
+ * files of objects the table shows as matching (a PRISM whose G395M carried the
+ * object past the cutoff simply vanished from the ZIP). Instead, derive the
+ * object set with the objects RPC and download every published spectrum of its
+ * member targets.
  */
 export async function generateFitsDownloadUrl(
   filters: FilterOptions,
@@ -406,45 +506,105 @@ export async function generateFitsDownloadUrl(
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    // Fetch filtered results via spectra mode — that RPC returns one row per
-    // (target, grating) with the FITS path attached, and result.total is the
-    // count over spectra (the same unit this download acts on).
-    const result = await getSpectra(
-      filters,
-      1, // page
-      FITS_DOWNLOAD_FILE_LIMIT, // pageSize
-      sortColumn === 'object_id' ? 'target_id' : sortColumn,
-      sortDirection,
-      'spectra'
-    );
+    let keys: string[];
+    let downloadTargetIds: string[];
 
-    if (result.error) {
-      return { files: null, zipFilename: null, error: result.error };
-    }
+    if (viewMode === 'objects') {
+      // Objects view: resolve the matching objects with the SAME RPC the table
+      // uses, so the download set is exactly the objects on screen.
+      const result = await getSpectra(
+        filters,
+        1, // page
+        FITS_DOWNLOAD_FILE_LIMIT, // pageSize (objects ≤ files, so overflow is caught below)
+        sortColumn,
+        sortDirection,
+        'objects'
+      );
 
-    // Guard against silent truncation. The UI gate is computed from the current
-    // view's count — in the default objects view that is the OBJECT count, but
-    // one object commonly fans out to 2-3 spectra, so the gate can stay enabled
-    // while the spectra total exceeds the page we fetched. result.total is the
-    // authoritative spectra count from the same RPC; if it exceeds what we
-    // pulled, refuse with a clear, actionable error rather than handing back a
-    // biased first-N-of-M ZIP that looks complete (a reproducibility hazard).
-    if (result.total > result.spectra.length) {
-      return {
-        files: null, zipFilename: null,
-        error: `This filter set has ${result.total.toLocaleString()} spectra, which exceeds the ${FITS_DOWNLOAD_FILE_LIMIT.toLocaleString()}-file ZIP limit. Refine your filters, or use the CSV export (which includes every fits_path) to fetch the full set.`,
-      };
-    }
-
-    // Extract all FITS file paths from spectra on each target
-    const keys: string[] = [];
-    const filenames: string[] = [];
-    for (const obj of result.spectra) {
-      for (const spec of obj.spectra) {
-        keys.push(spec.fits_path);
-        filenames.push(spec.fits_path.split('/').pop() || spec.fits_path);
+      if (result.error) {
+        return { files: null, zipFilename: null, error: result.error };
       }
+
+      if (result.total > result.spectra.length) {
+        return {
+          files: null, zipFilename: null,
+          error: `This filter set matches ${result.total.toLocaleString()} objects, which exceeds the ${FITS_DOWNLOAD_FILE_LIMIT.toLocaleString()}-file ZIP limit. Refine your filters, or use the CSV export (which includes every fits_path) to fetch the full set.`,
+        };
+      }
+
+      // Member targets are already scoped to the caller's accessible programs
+      // by the objects RPC; re-reading spectra below runs under the caller's
+      // RLS session, so nothing outside their access is ever presigned.
+      const memberTargetIds = [...new Set(
+        result.spectra.flatMap(obj => (obj.member_targets ?? []).map(m => m.target_id))
+      )];
+
+      // Chunked so the `.in()` list never overflows the PostgREST request URL.
+      const rows: { fits_path: string; target_id: string }[] = [];
+      const TARGET_CHUNK = 100;
+      for (let i = 0; i < memberTargetIds.length; i += TARGET_CHUNK) {
+        const { data, error: queryError } = await supabase
+          .from('spectra')
+          .select('fits_path, target_id')
+          .eq('deploy_status', 'published')
+          .in('target_id', memberTargetIds.slice(i, i + TARGET_CHUNK));
+        if (queryError) {
+          console.error('Error authorizing FITS download:', queryError);
+          return { files: null, zipFilename: null, error: 'Failed to authorize download' };
+        }
+        rows.push(...(data ?? []));
+      }
+
+      // Deterministic archive order: group files by target.
+      rows.sort((a, b) =>
+        a.target_id.localeCompare(b.target_id) || a.fits_path.localeCompare(b.fits_path)
+      );
+      keys = [...new Set(rows.map(r => r.fits_path))];
+      downloadTargetIds = [...new Set(rows.map(r => r.target_id))];
+
+      // The UI gate counts objects, but objects fan out to several spectra, so
+      // the file total can exceed the limit while the gate stays enabled.
+      // Refuse rather than truncating into a biased first-N-of-M ZIP.
+      if (keys.length > FITS_DOWNLOAD_FILE_LIMIT) {
+        return {
+          files: null, zipFilename: null,
+          error: `This filter set matches ${keys.length.toLocaleString()} spectra, which exceeds the ${FITS_DOWNLOAD_FILE_LIMIT.toLocaleString()}-file ZIP limit. Refine your filters, or use the CSV export (which includes every fits_path) to fetch the full set.`,
+        };
+      }
+    } else {
+      // Spectra view: one on-screen row per (target, grating); the spectra RPC's
+      // per-spectrum filtering matches the visible rows exactly, and
+      // result.total is the count over spectra (the same unit this download
+      // acts on).
+      const result = await getSpectra(
+        filters,
+        1, // page
+        FITS_DOWNLOAD_FILE_LIMIT, // pageSize
+        sortColumn === 'object_id' ? 'target_id' : sortColumn,
+        sortDirection,
+        'spectra'
+      );
+
+      if (result.error) {
+        return { files: null, zipFilename: null, error: result.error };
+      }
+
+      // Guard against silent truncation: result.total is the authoritative
+      // spectra count from the same RPC; if it exceeds the page we pulled,
+      // refuse with a clear, actionable error rather than handing back a
+      // biased first-N-of-M ZIP that looks complete (a reproducibility hazard).
+      if (result.total > result.spectra.length) {
+        return {
+          files: null, zipFilename: null,
+          error: `This filter set has ${result.total.toLocaleString()} spectra, which exceeds the ${FITS_DOWNLOAD_FILE_LIMIT.toLocaleString()}-file ZIP limit. Refine your filters, or use the CSV export (which includes every fits_path) to fetch the full set.`,
+        };
+      }
+
+      keys = result.spectra.flatMap(obj => obj.spectra.map(spec => spec.fits_path));
+      downloadTargetIds = [...new Set(result.spectra.map(s => s.target_id))];
     }
+
+    const filenames = keys.map(k => k.split('/').pop() || k);
 
     if (keys.length === 0) {
       return { files: null, zipFilename: null, error: 'No FITS files found for selected objects' };
@@ -468,12 +628,11 @@ export async function generateFitsDownloadUrl(
 
     // Track ZIP download (fire-and-forget)
     if (user) {
-      const targetIds = result.spectra.map(s => s.target_id);
       trackDownload({
         userId: user.id,
         downloadType: 'fits_zip',
-        targetIds,
-        targetCount: targetIds.length,
+        targetIds: downloadTargetIds,
+        targetCount: downloadTargetIds.length,
         fileCount: files.length,
         filterSnapshot: filters as unknown as Record<string, unknown>,
       });

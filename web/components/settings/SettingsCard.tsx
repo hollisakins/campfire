@@ -7,9 +7,7 @@ import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import type { ThemeSetting, Colorscale2D, FluxUnit } from '@/lib/types';
-import { ACCENT_COLORS } from '@/lib/types';
-
-const COLORSCALE_OPTIONS: Colorscale2D[] = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis', 'Greys'];
+import { ACCENT_COLORS, COLORSCALE_2D_OPTIONS } from '@/lib/types';
 
 export const SettingsCard: React.FC = () => {
   const { theme, setTheme, resolvedTheme } = useTheme();
@@ -168,7 +166,7 @@ export const SettingsCard: React.FC = () => {
               disabled={isGroupAccount}
               className={`px-4 py-2 text-sm border border-border-strong rounded-lg bg-card text-text-primary focus:outline-none focus:ring-2 focus:ring-primary ${isGroupAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
-              {COLORSCALE_OPTIONS.map((scale) => (
+              {COLORSCALE_2D_OPTIONS.map((scale) => (
                 <option key={scale} value={scale}>
                   {scale}
                 </option>

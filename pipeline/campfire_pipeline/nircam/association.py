@@ -216,8 +216,9 @@ def unsupported_mode_reason(path):
     """Short reason string if *path*'s observing mode is unsupported, else None.
 
     Reads the primary header only (``EXP_TYPE``, ``SUBARRAY``) — this is the one
-    place the association layer opens a FITS, called by ``run_align`` to gate a
-    physical exposure, not on the filename-only grouping path. Align supports
+    place the association layer opens a FITS, called by the align step
+    (``orchestrate._run_align``) to gate a physical exposure, not on the
+    filename-only grouping path. Align supports
     full-frame ``NRC_IMAGE``; a coronagraph / TSO / WFSS ``EXP_TYPE`` or a
     non-``FULL`` ``SUBARRAY`` is rejected. Missing metadata is treated leniently
     (returns None) — a header that doesn't declare a mode is not assumed bad.
@@ -278,3 +279,35 @@ def build_exposure_groups(field, filters=None, *, skip=None, with_step=None,
         for key, members in buckets.items()
     ]
     return sorted(groups, key=lambda g: g.key)
+
+
+def split_pools(groups, *, pool_modules=False) -> List[ExposureGroup]:
+    """Split each exposure group into the **pools** that share one coarse fit.
+
+    The align coarse solve fits one rigid shift+rotation per pool. With
+    ``pool_modules`` (or a single-module group) the whole group is one pool —
+    the default; otherwise each NIRCam module (A, B) becomes its own pool, so
+    module A's detectors and module B's are tied to the reference independently
+    (for SW; LW-per-module is a single detector, the jhat-equivalent).
+
+    Pooling was previously off out of concern that a spurious per-module SIAF
+    offset would cross-contaminate the shared fit. The offset that motivated
+    that caution is not SIAF — it is differential velocity aberration, a scale
+    no pooled ``rshift`` can express, now removed deterministically upstream
+    (``align/dva.py``). With that fix a pooled solve leaves no per-module
+    systematic against the reference catalog (0.26 mas on f410m).
+
+    Pool keys carry a ``:<module>`` suffix so per-pool provenance/logging stays
+    distinct. A group with any unknown-module member is never split (kept whole),
+    so an unrecognized detector token can never be silently dropped from a pool.
+    """
+    pools = []
+    for g in groups:
+        mods = sorted(g.modules)
+        if pool_modules or len(mods) <= 1 or any(not m.module for m in g.members):
+            pools.append(g)
+            continue
+        for mod in mods:
+            members = tuple(m for m in g.members if m.module == mod)
+            pools.append(ExposureGroup(key=f'{g.key}:{mod}', members=members))
+    return pools

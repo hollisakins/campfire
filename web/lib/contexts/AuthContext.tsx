@@ -19,9 +19,16 @@ interface AuthContextType {
   loading: boolean;
   needsProfileSetup: boolean; // True if user is authenticated but has no profile
   needsAccessCode: boolean; // True if user has no proprietary program access
+  // True when this session came from a share link. Drives the stripped nav and
+  // suppresses account-oriented UI the visitor has no account for.
+  isLinkAccount: boolean;
   programAccess: ProgramAccessInfo | null;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
-  signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null }>;
+  signUp: (
+    email: string,
+    password: string,
+    fullName: string
+  ) => Promise<{ error: Error | null; existingAccount?: boolean }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>; // Manually refresh profile after setup
   checkProgramAccess: () => Promise<void>; // Refresh program access state
@@ -87,6 +94,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (error) throw error;
       setUserProfile(data);
       setNeedsProfileSetup(false);
+
+      // Share links (docs/design-public-mirror.md §7): a link account has no
+      // program grants by design -- its scope comes from share_links, not
+      // user_program_access -- so the access-code prompt would fire on every
+      // shared view and send the visitor to a /profile page they cannot use.
+      // Skip the whole check for them.
+      if (data?.is_link_account) {
+        setProgramAccess(null);
+        setNeedsAccessCode(false);
+        return;
+      }
 
       // Check program access after fetching profile
       await fetchProgramAccess();
@@ -161,7 +179,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return !!existing;
       });
 
-      const { error } = await supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
@@ -182,7 +200,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (error) throw error;
 
-      return { error: null };
+      // With email confirmation enabled, Supabase obfuscates duplicate-email
+      // signups: it returns a fake user with no identities instead of an error.
+      // No confirmation email will arrive, so surface it rather than showing a
+      // false "check your inbox" success.
+      const existingAccount = !!data.user && (data.user.identities?.length ?? 0) === 0;
+
+      return { error: null, existingAccount };
     } catch (error) {
       return { error: error as Error };
     }
@@ -202,6 +226,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loading,
     needsProfileSetup,
     needsAccessCode,
+    isLinkAccount: userProfile?.is_link_account === true,
     programAccess,
     signIn,
     signUp,

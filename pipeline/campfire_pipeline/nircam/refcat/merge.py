@@ -18,6 +18,7 @@ from astropy.coordinates import SkyCoord
 from astropy.table import Table, vstack
 
 from campfire_pipeline.common.io import log
+from campfire_pipeline.nircam.refcat.io import has_proper_motion
 
 
 def merge_refcats(catalogs, *, labels=None, match_radius=3.0 * u.arcsec):
@@ -83,6 +84,20 @@ def merge_refcats(catalogs, *, labels=None, match_radius=3.0 * u.arcsec):
 
     merged = vstack(pieces, metadata_conflicts="silent")
     info["n_total"] = len(merged)
+
+    # First-wins dedup means a base row's fields (including proper motions) win
+    # over any positionally-matched row from a later catalog. If the base has no
+    # proper motions but a later catalog does, every deduplicated star silently
+    # loses its PM — an arcsec-scale error for high-PM stars at the align epoch.
+    if not has_proper_motion(catalogs[0]):
+        pm_later = [lab for cat, lab in zip(catalogs[1:], labels[1:])
+                    if has_proper_motion(cat)]
+        if pm_later:
+            log(f"WARNING: refcat merge: base catalog {labels[0]!r} has no "
+                f"proper-motion columns but later catalog(s) {pm_later!r} do; "
+                f"proper motions are discarded for deduplicated rows. List the "
+                f"proper-motion (e.g. Gaia) catalog first to keep them.")
+
     return merged, info
 
 

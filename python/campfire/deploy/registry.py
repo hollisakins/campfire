@@ -2,24 +2,18 @@
 storage_objects registry — the shadow index of cloud storage (epic #210, F1).
 
 Every object CAMPFIRE deploys to the data bucket gets one row here, keyed by its
-canonical storage key (from the ``campfire_layout`` contract). The registry is:
-
-* written **going-forward** by deploy (``build_registry_rows`` +
-  ``upsert_storage_objects``, called from the deploy hooks after a successful
-  upload), and
-* **backfilled** from historical pointers and bucket orphans
-  (``backfill`` / ``reconcile`` / ``budget``, wired to the
-  ``campfire deploy registry`` CLI subgroup).
-
-It is a **shadow** index in F1: additive and inert. Nothing reads it as
-authoritative until a coverage gate (``reconcile``) proves 100% of live pointers
-have rows and deploy has written rows for a full cycle.
+canonical storage key (from the ``campfire_layout`` contract). The registry is
+written by deploy (``build_registry_rows`` + ``upsert_storage_objects``, called
+from the deploy hooks after a successful upload) and verified against the live
+DB pointers and bucket contents by ``campfire verify --cloud``
+(``cloud_reconcile_report``). The one-time A1/A2 migration machinery (backfill /
+R2→OSN copy / prune, formerly the ``campfire deploy registry`` CLI subgroup)
+was removed after the migrations completed (issue #371).
 
 content_hash is scheme-prefixed: ``sha256:<hex>`` is authoritative (we hash the
-local file we just uploaded; spectra backfill reuses the stored ``file_hash``);
-``etag:<hex>`` is provisional, taken from an S3 ``LIST``/``HEAD`` (no GET) for
-backfilled/orphan objects with no stored sha256. The A1 copy+verify pass (#215)
-upgrades ``etag:`` → ``sha256:`` when it reads the bytes to copy.
+local file we just uploaded); ``etag:<hex>`` is provisional, taken from an S3
+``LIST``/``HEAD`` (no GET) by the retired migration-era backfill — the A1
+copy+verify pass (#215) upgraded ``etag:`` → ``sha256:`` as it read the bytes.
 
 Tiles are intentionally **not** registered per-object (decision F1-B): they stay
 on R2, number in the tens of thousands per field/filter, and are already
@@ -29,7 +23,6 @@ byte-aggregated in ``map_layers.total_size_bytes`` (the budget RPC unions both).
 from __future__ import annotations
 
 import os
-import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,7 +38,7 @@ from campfire_layout import (
 )
 from campfire_layout.products import get as get_product
 
-from campfire.deploy.r2 import UploadTask, download_to_path, upload_to_r2
+from campfire.deploy.r2 import UploadTask
 
 # Supabase upsert batch size — matches batch_upsert_spectra.
 UPSERT_BATCH = 500
@@ -152,6 +145,7 @@ def row_for_key(
     status: str = 'active',
     bucket: Optional[str] = None,
     sci_dq_hash: Optional[str] = None,
+    wcs_hash: Optional[str] = None,
     stored_size_bytes: Optional[int] = None,
 ) -> dict | None:
     """Build one ``storage_objects`` row dict from a storage key + integrity info.
@@ -191,6 +185,11 @@ def row_for_key(
         # Science-only change-detection digest (epic #261, N1). Only NIRCam
         # canonical exposures carry one today; None leaves the column NULL.
         'sci_dq_hash': sci_dq_hash,
+        # Astrometric half of the same change-detection identity: a re-aligned
+        # exposure has identical SCI/DQ pixels and a different WCS, so without
+        # this the re-alignment never reaches the cloud. NULL for everything
+        # that compares on the whole-file hash.
+        'wcs_hash': wcs_hash,
         'size_bytes': int(size_bytes),
         # Bytes as stored in the bucket for transport-compressed products
         # (gzipped mosaic FITS); NULL = stored verbatim (== size_bytes, which
@@ -228,6 +227,7 @@ def build_registry_rows(
     cfpipe_version: Optional[str] = None,
     succeeded_keys: Optional[set[str]] = None,
     sci_dq_hashes: Optional[dict[str, str]] = None,
+    wcs_hashes: Optional[dict[str, str]] = None,
     max_workers: Optional[int] = None,
     precomputed: Optional[dict[str, tuple[str, int]]] = None,
     stored_sizes: Optional[dict[str, int]] = None,
@@ -245,13 +245,16 @@ def build_registry_rows(
     ``sci_dq_hashes`` optionally supplies a precomputed ``sha256:<hex>`` science-only
     digest per storage key (NIRCam exposures, epic #261) — the ``content_hash`` is
     still the whole-file sha256, but ``sci_dq_hash`` carries the science-only digest
-    that change-detection compares against.
+    that change-detection compares against. ``wcs_hashes`` supplies the astrometric
+    digest that goes with it; the pair is the exposure identity, and an exposure
+    registered without the WCS half would dedup as unchanged after a re-alignment.
 
     ``precomputed`` optionally supplies ``{r2_key: ('sha256:<hex>', size)}``
     whole-file digests already computed upstream (the push planner hashes
     changed files to decide the upload) — those files are not re-read here.
     """
     sci_dq_hashes = sci_dq_hashes or {}
+    wcs_hashes = wcs_hashes or {}
     precomputed = precomputed or {}
     stored_sizes = stored_sizes or {}
     selected: list[tuple[UploadTask, Path]] = []
@@ -281,6 +284,7 @@ def build_registry_rows(
             uploaded_by=uploaded_by,
             cfpipe_version=cfpipe_version,
             sci_dq_hash=sci_dq_hashes.get(task.r2_key),
+            wcs_hash=wcs_hashes.get(task.r2_key),
             stored_size_bytes=stored_sizes.get(task.r2_key),
         )
         if row is not None:
@@ -305,6 +309,43 @@ def set_active_deployment(client, keys: list[str], deployment_id: int) -> int:
          .update({'deployment_id': deployment_id})
          .in_('storage_key', chunk).eq('status', 'active').execute())
     return len(keys)
+
+
+def backfill_wcs_hashes(client, pairs: list[tuple[str, str]]) -> int:
+    """Record ``wcs_hash`` on legacy rows the push planner proved unchanged.
+
+    ``pairs`` is ``PushPlan.backfill``: keys whose cloud object is byte-identical
+    to the local file (whole-file sha256 == the row's ``content_hash``), so the
+    local astrometric digest describes the cloud copy too. Writing it costs no
+    transfer and completes the row's exposure identity, so the *next* push
+    compares on both components — and a subsequent re-alignment is finally seen.
+
+    Guarded with ``is_('wcs_hash', 'null')`` so this can only ever fill a hole:
+    a row another reducer has since re-uploaded (with its own, possibly
+    different, WCS) is left alone rather than being stamped with ours. Returns
+    the number of rows written.
+    """
+    if not pairs:
+        return 0
+    # Group by digest so identical values go out as one filtered UPDATE rather
+    # than one request per exposure (a field's exposures rarely share a WCS, but
+    # the grouping costs nothing and bounds the request count when they do).
+    by_hash: dict[str, list[str]] = {}
+    for key, wcs in pairs:
+        if wcs:
+            by_hash.setdefault(wcs, []).append(key)
+    written = 0
+    for wcs, keys in by_hash.items():
+        for i in range(0, len(keys), 200):
+            chunk = keys[i:i + 200]
+            resp = (client.table('storage_objects')
+                    .update({'wcs_hash': wcs})
+                    .in_('storage_key', chunk)
+                    .eq('status', 'active')
+                    .is_('wcs_hash', 'null')
+                    .execute())
+            written += len(resp.data or [])
+    return written
 
 
 def fetch_active_content_hashes(client, keys: list[str]) -> dict[str, str]:
@@ -377,60 +418,6 @@ def upsert_storage_objects(client, rows: list[dict], batch_size: int = UPSERT_BA
     return len(rows)
 
 
-def relocate_objects(client, rows: list[dict]) -> int:
-    """Re-home registry rows in place by primary key ``id`` (epic #210 / #215).
-
-    The R2->OSN copy changes a row's ``backend``, ``storage_key`` (legacy->canonical)
-    and ``content_hash`` (etag->sha256) all at once.
-
-    This must be a real per-row **UPDATE keyed on ``id``** — NOT an upsert.
-    ``upsert_storage_objects``' conflict target is ``(backend, bucket, storage_key)``;
-    since all three change, an upsert there would INSERT a second row (and for
-    exposure products violate the partial-unique). Upserting on the PK ``id`` does
-    NOT help either: PostgreSQL evaluates NOT NULL on the candidate INSERT tuple
-    *before* the ``ON CONFLICT`` arbiter, so a partial payload (omitting the other
-    NOT NULL columns ``bucket``/``content_type``/``product_type``) raises a not-null
-    violation before it can route to DO UPDATE. A bare UPDATE only touches the named
-    columns and never validates the omitted ones — the only correct in-place mutation.
-    ``product_type``/``exposure_ref``/``status`` are untouched, so the partial-unique
-    ``(product_type, exposure_ref) WHERE status='active'`` always holds and exactly
-    one active row per logical object survives.
-
-    Each row carries its existing ``id`` plus the changed columns. Updates are
-    independent and idempotent; a crash mid-loop is resume-safe because already-
-    migrated rows are ``backend='osn'`` and the copy's candidate query only selects
-    ``backend='r2'`` rows. Returns rows written.
-    """
-    if not rows:
-        return 0
-    for row in rows:
-        payload = {k: v for k, v in row.items() if k != 'id'}
-        client.table('storage_objects').update(payload).eq('id', row['id']).execute()
-    return len(rows)
-
-
-def relocate_objects_batch(client, rows: list[dict], batch_size: int = UPSERT_BATCH) -> int:
-    """Batched in-place relocate via full-row ``upsert(on_conflict='id')``.
-
-    Each row must be **complete** — carry every NOT NULL column — because Postgres
-    validates the candidate INSERT tuple before the ON CONFLICT arbiter; a partial
-    payload would raise a not-null violation (the same trap that rules out a partial
-    id-upsert in :func:`relocate_objects`). Verified against real Postgres: a full-row
-    id-upsert updates in place with no duplicate rows.
-
-    This is the throughput path for the parallel copy: S3 workers (boto3, thread-safe)
-    hand complete rows to the **single** calling thread, which batches the DB writes
-    here. The supabase client must never be used from multiple threads at once — its
-    HTTP/2 connection segfaults under concurrent access — so all relocation funnels
-    through this one-thread batched call. Returns rows written.
-    """
-    if not rows:
-        return 0
-    for i in range(0, len(rows), batch_size):
-        client.table('storage_objects').upsert(rows[i:i + batch_size], on_conflict='id').execute()
-    return len(rows)
-
-
 # ---------------------------------------------------------------------------
 # Reconciliation (the coverage gate) — pure set logic, unit-testable
 # ---------------------------------------------------------------------------
@@ -456,6 +443,17 @@ class ReconcileReport:
             f"(missing={len(self.missing)}, dangling={len(self.dangling)}, "
             f"orphans={len(self.orphans)}, adoptable={len(self.adoptable)})"
         )
+
+
+def canonical_key_for(legacy_key: str) -> str:
+    """Derive the CANONICAL storage key for an existing (legacy) key.
+
+    ``parse_key`` resolves product_type/scope/filename for either scheme, then
+    ``storage_key(..., scheme=CANONICAL)`` rebuilds the canonical (``data/`` +
+    relpath) form. Raises ``LayoutError`` for unknown/unsafe keys.
+    """
+    pk = parse_key(legacy_key)
+    return storage_key(pk.product_type, pk.scope, pk.filename, scheme=KeyScheme.CANONICAL)
 
 
 def _canonical_identity(key: str) -> str:
@@ -670,12 +668,11 @@ def _data_client_and_bucket(config: dict, *, max_pool_connections: Optional[int]
 
 
 def _osn_client_and_bucket(config: dict, *, max_pool_connections: Optional[int] = None):
-    """Resolve a boto3 client + bucket + label for the OSN data destination.
+    """Resolve a boto3 client + bucket + label for the OSN data backend.
 
-    The R2->OSN copy (#215) holds this dest client alongside the R2 'data' source
-    (``_data_client_and_bucket``). Requires the ``[r2_osn]`` config section
-    (CAMPFIRE_S3_OSN_* env). The returned label is normally ``'osn'`` and is what
-    the relocated rows record in ``storage_objects.backend``.
+    Used by ``list_bucket_keys(purpose='osn')`` (the ``campfire verify --cloud``
+    LIST). Requires the ``[r2_osn]`` config section (CAMPFIRE_S3_OSN_* env).
+    The returned label is normally ``'osn'``.
     """
     from campfire.deploy.backend import make_s3_client, resolve_backend
     bcfg = resolve_backend(config, 'osn')
@@ -761,13 +758,6 @@ def cloud_reconcile_report(config: dict, client, *, include_buckets: bool = True
     return report
 
 
-def head_object(config: dict, key: str) -> tuple[str | None, int | None]:
-    """HEAD a data-bucket object → (content_hash 'etag:<x>', size_bytes)."""
-    client, bucket, _ = _data_client_and_bucket(config)
-    resp = client.head_object(Bucket=bucket, Key=key)
-    return normalize_etag(resp.get('ETag')), resp.get('ContentLength')
-
-
 def resolve_backend_label(config: dict) -> str:
     """Data-backend label ('r2'|'osn') from config, defaulting to 'r2'.
 
@@ -779,592 +769,3 @@ def resolve_backend_label(config: dict) -> str:
         return resolve_backend(config, 'data').backend
     except Exception:
         return 'r2'
-
-
-# ---------------------------------------------------------------------------
-# Backfill orchestrators (used by `campfire deploy registry backfill`)
-# ---------------------------------------------------------------------------
-
-def active_osn_canonical_keys(client, bucket: str = 'data') -> set[str]:
-    """All active OSN storage keys (canonical) — the set of already-migrated objects.
-
-    Backfill consults this to stay **migration-aware**: after the R2->OSN re-key the
-    registry tracks an object by its canonical key while R2 *retains* the legacy
-    bytes, so a naive backfill (reading spectra.fits_path, or listing R2) re-discovers
-    the legacy key as "missing" and resurrects a duplicate r2-legacy row. Skipping any
-    key whose canonical form is already here prevents that.
-    """
-    keys: set[str] = set()
-    start = 0
-    page = 1000
-    while True:
-        rows = (
-            client.table('storage_objects').select('storage_key')
-            .eq('backend', 'osn').eq('bucket', bucket).eq('status', 'active')
-            .order('id').range(start, start + page - 1).execute().data or []
-        )
-        for r in rows:
-            if r.get('storage_key'):
-                keys.add(r['storage_key'])
-        if len(rows) < page:
-            break
-        start += page
-    return keys
-
-
-def backfill_spectra(
-    client, *, backend: str, dry_run: bool = False,
-    migrated_keys: Optional[set] = None,
-) -> tuple[int, int, int]:
-    """Backfill registry rows from ``spectra`` (authoritative sha256 + size).
-
-    Reuses the stored ``file_hash`` (sha256) and ``file_size``; no bucket access
-    needed. Migration-aware: an object whose canonical key is already an active OSN
-    row (``migrated_keys``) is skipped rather than re-registered as an r2 duplicate.
-    Returns ``(n_rows, n_no_hash, n_already_migrated)``.
-    """
-    migrated = migrated_keys if migrated_keys is not None else set()
-    rows: list[dict] = []
-    skipped = 0
-    already = 0
-    for r in _iter_rows(client, 'spectra', 'fits_path, file_hash, file_size'):
-        key = r.get('fits_path')
-        if not key:
-            continue
-        try:
-            if canonical_key_for(key) in migrated:
-                already += 1
-                continue
-        except LayoutError:
-            pass  # unmappable key — row_for_key will reject it below
-        content_hash = normalize_sha256(r.get('file_hash'))
-        if not content_hash:
-            skipped += 1
-            continue
-        size = r.get('file_size')
-        if size is None:
-            skipped += 1
-            continue
-        row = row_for_key(
-            key,
-            backend=backend,
-            content_hash=content_hash,
-            size_bytes=int(size),
-            content_type='application/fits',
-        )
-        if row is not None:
-            rows.append(row)
-    if not dry_run:
-        upsert_storage_objects(client, rows)
-    return len(rows), skipped, already
-
-
-def backfill_via_head(
-    client,
-    config: dict,
-    pointers: Iterable[str],
-    *,
-    backend: str,
-    content_type: str = 'application/octet-stream',
-    dry_run: bool = False,
-    max_workers: int = 16,
-) -> tuple[int, int]:
-    """Backfill rows for keys with no stored hash (nircam, orphans) via S3 HEAD.
-
-    HEAD yields size + ETag (no GET), recorded as a provisional ``etag:`` hash.
-    Returns ``(n_rows, n_failed)`` where failed = HEAD error or unparseable key.
-
-    The HEADs run in a thread pool against a **single reused** S3 client. The old
-    serial path rebuilt a boto3 client per key and blocked on each round-trip — for
-    a few thousand nircam pointers that was ~15 min, and the orphan pass (tens of
-    thousands of objects) was effectively unusable. Pooling cuts it to minutes.
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from campfire.deploy.backend import make_s3_client, resolve_backend
-
-    keys = [k for k in pointers if k]
-    if not keys:
-        return 0, 0
-
-    bcfg = resolve_backend(config, 'data')
-    s3 = make_s3_client(bcfg, max_pool_connections=max_workers)
-    bucket = bcfg.bucket
-
-    def _head_row(key: str) -> dict | None:
-        """HEAD one key and build its row, or raise/return None on failure."""
-        resp = s3.head_object(Bucket=bucket, Key=key)
-        content_hash = normalize_etag(resp.get('ETag'))
-        size = resp.get('ContentLength')
-        if not content_hash or size is None:
-            return None
-        return row_for_key(
-            key, backend=backend, content_hash=content_hash,
-            size_bytes=int(size), content_type=content_type,
-        )
-
-    rows: list[dict] = []
-    failed = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = {ex.submit(_head_row, key): key for key in keys}
-        for fut in as_completed(futures):
-            try:
-                row = fut.result()
-            except Exception:
-                failed += 1          # HEAD error (missing object, etc.)
-                continue
-            if row is None:
-                failed += 1          # no ETag/size, or unparseable/unknown key
-                continue
-            rows.append(row)
-    if not dry_run:
-        upsert_storage_objects(client, rows)
-    return len(rows), failed
-
-
-# ---------------------------------------------------------------------------
-# R2 -> OSN copy + re-key + verify (epic #210, Track A / #215)
-# ---------------------------------------------------------------------------
-
-# Live products migrated by default. RGB/SED are dead (no web call sites, superseded
-# by the on-the-fly cutout API) and deliberately excluded; dual-read serves any
-# non-migrated object from R2 by fallback, so omission is self-correcting.
-DEFAULT_COPY_PRODUCT_TYPES = (
-    'nirspec_spec',
-    'spectrum_json',
-    'zfit',
-    'photometry_pz',
-    'nirspec_spectrum_exposure',
-    'nirspec_rate',
-)
-
-
-class CopyError(Exception):
-    """A single object failed to copy/verify (skip it; never abort the run)."""
-
-
-@dataclass
-class CopyReport:
-    """Outcome of an R2->OSN copy pass."""
-    planned: list[tuple] = field(default_factory=list)    # (legacy, canonical, size) — dry-run
-    copied: list[tuple] = field(default_factory=list)     # (legacy, canonical, size)
-    skipped: list[tuple] = field(default_factory=list)    # (legacy, reason) — unparseable/underivable
-    failed: list[tuple] = field(default_factory=list)     # (legacy, reason) — transfer/verify error
-
-    @property
-    def bytes_copied(self) -> int:
-        return sum(sz for _, _, sz in self.copied)
-
-    @property
-    def bytes_planned(self) -> int:
-        return sum(sz for _, _, sz in self.planned)
-
-    @property
-    def ok(self) -> bool:
-        """True when nothing failed (skips are reported but not fatal on their own)."""
-        return not self.failed
-
-    def summary(self) -> str:
-        if self.planned:
-            return (f"plan: {len(self.planned)} object(s), {self.bytes_planned} bytes; "
-                    f"skipped={len(self.skipped)}")
-        return (f"copied={len(self.copied)} ({self.bytes_copied} bytes), "
-                f"skipped={len(self.skipped)}, failed={len(self.failed)}")
-
-
-def canonical_key_for(legacy_key: str) -> str:
-    """Derive the CANONICAL storage key for an existing (legacy) key.
-
-    ``parse_key`` resolves product_type/scope/filename for either scheme, then
-    ``storage_key(..., scheme=CANONICAL)`` rebuilds the canonical (``data/`` +
-    relpath) form. Raises ``LayoutError`` for unknown/unsafe keys.
-    """
-    pk = parse_key(legacy_key)
-    return storage_key(pk.product_type, pk.scope, pk.filename, scheme=KeyScheme.CANONICAL)
-
-
-def copy_candidates(
-    client,
-    *,
-    observations: Optional[Iterable[str]] = None,
-    fields: Optional[Iterable[str]] = None,
-    product_types: Optional[Iterable[str]] = None,
-    limit: Optional[int] = None,
-    bucket: str = 'data',
-) -> list[dict]:
-    """Active ``backend='r2'`` registry rows eligible for migration to OSN.
-
-    Filtering ``backend='r2'`` means already-migrated (``osn``) rows are invisible,
-    so re-running the copy is idempotent/resumable for free. Optional scope filters
-    narrow to specific observations/fields/product types. ``product_types`` defaults
-    to :data:`DEFAULT_COPY_PRODUCT_TYPES` (excludes dead rgb/sed).
-
-    Paginates with a stable id order: a single ``.execute()`` is silently capped at
-    PostgREST's max-rows (so a >cap candidate set would be truncated and the copy
-    would migrate only a prefix). ``limit``, when given, caps the total returned
-    (for piloting); otherwise every matching row is returned.
-    """
-    types = list(product_types) if product_types is not None else list(DEFAULT_COPY_PRODUCT_TYPES)
-
-    def _page(start: int, end: int):
-        q = (
-            client.table('storage_objects')
-            # Full column set: the parallel copy upserts these rows back in place
-            # (on_conflict='id'), so every NOT NULL column must be present.
-            .select('id, backend, bucket, storage_key, content_hash, size_bytes, '
-                    'content_type, product_type, status, observation, field, '
-                    'exposure_ref, spectrum_id')
-            .eq('backend', 'r2')
-            .eq('bucket', bucket)
-            .eq('status', 'active')
-        )
-        if types:
-            q = q.in_('product_type', types)
-        if observations:
-            q = q.in_('observation', list(observations))
-        if fields:
-            q = q.in_('field', list(fields))
-        return q.order('id').range(start, end).execute().data or []
-
-    out: list[dict] = []
-    start = 0
-    page = 1000
-    while True:
-        rows = _page(start, start + page - 1)
-        out.extend(rows)
-        if limit and len(out) >= limit:
-            return out[:limit]
-        if len(rows) < page:
-            break
-        start += page
-    return out
-
-
-def _migrate_one(
-    row: dict,
-    *,
-    src_client, src_bucket: str,
-    dst_client, dst_bucket: str,
-    verify_readback: bool,
-    tmp_dir: Optional[str] = None,
-) -> tuple[str, str, int]:
-    """Copy one object R2->OSN and verify. Returns ``(canonical_key, sha256, size)``.
-
-    GET (R2) -> temp -> hash -> [drift guard / etag->sha256 upgrade] -> PUT (OSN
-    canonical) -> verify. Raises :class:`CopyError` on any integrity failure; the
-    caller records it and moves on WITHOUT relocating the row (so the object stays
-    ``r2``-legacy and dual-read keeps serving R2 — safe).
-    """
-    legacy = row['storage_key']
-    canonical = canonical_key_for(legacy)
-    content_type = row.get('content_type') or 'application/octet-stream'
-
-    # mkstemp opens an fd we don't use (download_file opens its own handle); close
-    # it immediately or a bulk run leaks two fds per object and hits RLIMIT_NOFILE.
-    _fd, _name = tempfile.mkstemp(dir=tmp_dir, prefix='cfcopy_')
-    os.close(_fd)
-    tmp = Path(_name)
-    rb_tmp: Optional[Path] = None
-    try:
-        download_to_path(src_client, src_bucket, legacy, tmp)
-        sha, size = hash_file(tmp)
-
-        existing = row.get('content_hash') or ''
-        if existing.startswith('sha256:') and existing != sha:
-            raise CopyError(
-                f"sha256 drift: registry has {existing} but downloaded bytes hash to {sha}"
-            )
-
-        upload_to_r2(dst_client, dst_bucket, tmp, canonical, content_type)
-
-        if verify_readback:
-            _rb_fd, _rb_name = tempfile.mkstemp(dir=tmp_dir, prefix='cfcopyrb_')
-            os.close(_rb_fd)
-            rb_tmp = Path(_rb_name)
-            download_to_path(dst_client, dst_bucket, canonical, rb_tmp)
-            rb_sha, rb_size = hash_file(rb_tmp)
-            if rb_sha != sha:
-                raise CopyError(
-                    f"readback hash mismatch on OSN: expected {sha}, got {rb_sha}"
-                )
-        else:
-            head = dst_client.head_object(Bucket=dst_bucket, Key=canonical)
-            if head.get('ContentLength') != size:
-                raise CopyError(
-                    f"readback size mismatch on OSN: expected {size}, "
-                    f"got {head.get('ContentLength')}"
-                )
-        return canonical, sha, size
-    finally:
-        tmp.unlink(missing_ok=True)
-        if rb_tmp is not None:
-            rb_tmp.unlink(missing_ok=True)
-
-
-def copy_objects(
-    client,
-    *,
-    src_client, src_bucket: str,
-    dst_client, dst_bucket: str,
-    dst_backend: str = 'osn',
-    observations: Optional[Iterable[str]] = None,
-    fields: Optional[Iterable[str]] = None,
-    product_types: Optional[Iterable[str]] = None,
-    limit: Optional[int] = None,
-    dry_run: bool = True,
-    verify_readback: bool = True,
-    tmp_dir: Optional[str] = None,
-    progress: bool = False,
-    max_workers: int = 8,
-) -> CopyReport:
-    """Migrate active data objects R2->OSN, re-key to canonical, verify, relocate.
-
-    Per object: derive the canonical key (skip + report ``LayoutError``); when not
-    ``dry_run``, GET from ``src``, hash, PUT to ``dst`` (canonical), verify
-    (readback hash by default; size-match if ``verify_readback`` is False), then
-    relocate the registry row **in place by id** to ``osn``+canonical+``sha256:``.
-    The DB flip happens strictly AFTER verify, so dual-read never points at an
-    unverified/missing OSN object; until the flip, dual-read serves the retained R2
-    bytes. Per-object failures are recorded and skipped — the run continues.
-
-    Concurrency split (load-bearing): the **S3** work (GET/hash/PUT/readback) runs
-    across a thread pool of ``max_workers`` because boto3 clients are thread-safe;
-    the boto3 clients must be built with a connection pool >= ``max_workers`` (the
-    CLI sizes them). The **DB** writes do NOT run in the workers — the supabase
-    client's HTTP/2 connection is not thread-safe and segfaults under concurrent use
-    — so every worker hands its verified, complete row back to this single calling
-    thread, which flips them in batches via :func:`relocate_objects_batch`.
-    Resume-safe: a crash flips at most the last unflushed batch late, and the
-    candidate query only re-selects ``backend='r2'`` rows, so a re-run re-copies just
-    the remainder idempotently.
-
-    ``dry_run`` (the default) only derives + plans (no transfer, no DB write).
-    """
-    candidates = copy_candidates(
-        client, observations=observations, fields=fields,
-        product_types=product_types, limit=limit,
-    )
-    report = CopyReport()
-
-    if dry_run:
-        for row in candidates:
-            legacy = row.get('storage_key')
-            if not legacy:
-                continue
-            try:
-                canonical = canonical_key_for(legacy)
-            except LayoutError as e:
-                report.skipped.append((legacy, f'unknown/unsafe key: {e}'))
-                continue
-            report.planned.append((legacy, canonical, int(row.get('size_bytes') or 0)))
-        return report
-
-    # Pre-filter unmappable keys (cheap, no I/O) so the pool only does real work.
-    work: list[dict] = []
-    for row in candidates:
-        legacy = row.get('storage_key')
-        if not legacy:
-            continue
-        try:
-            canonical_key_for(legacy)
-        except LayoutError as e:
-            report.skipped.append((legacy, f'unknown/unsafe key: {e}'))
-            continue
-        work.append(row)
-
-    def _copy_one(row: dict) -> tuple:
-        """Worker (S3 ONLY — never touches Supabase): GET+hash+PUT+verify one object.
-
-        The Supabase client is NOT thread-safe (its HTTP/2 connection segfaults under
-        concurrent multi-thread use), so workers do only boto3 work (which IS thread-
-        safe) and hand the verified, fully-formed registry row back to the single
-        calling thread for the DB write. Returns ('copied', legacy, canonical, size,
-        upsert_row) or ('failed', legacy, error).
-        """
-        legacy = row['storage_key']
-        try:
-            canonical, sha, size = _migrate_one(
-                row, src_client=src_client, src_bucket=src_bucket,
-                dst_client=dst_client, dst_bucket=dst_bucket,
-                verify_readback=verify_readback, tmp_dir=tmp_dir,
-            )
-        except Exception as e:  # CopyError or any boto3/IO error — skip this object
-            return ('failed', legacy, str(e))
-        # A COMPLETE row for the in-place upsert(on_conflict='id'): the candidate row
-        # carries every NOT NULL column (so the candidate INSERT tuple is valid before
-        # the ON CONFLICT arbiter), and we override only the migrated fields. The bytes
-        # are verified on OSN at this point; the row is not flipped until the main
-        # thread flushes the batch.
-        upsert_row = {
-            **row,
-            'backend': dst_backend,
-            'storage_key': canonical,
-            'content_hash': sha,
-            'size_bytes': int(size),
-            'updated_at': datetime.now(timezone.utc).isoformat(),
-        }
-        return ('copied', legacy, canonical, int(size), upsert_row)
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    bar = None
-    if progress:
-        from tqdm import tqdm
-        bar = tqdm(total=len(work), desc='Copying R2->OSN', unit='obj')
-
-    # All DB writes happen HERE, on the single calling thread, batched. Workers only
-    # do (thread-safe) S3; a crash flips at most the last unflushed batch's worth of
-    # rows late, which a resume re-copies idempotently.
-    relocate_batch: list[dict] = []
-
-    def _flush():
-        if relocate_batch:
-            relocate_objects_batch(client, relocate_batch)
-            relocate_batch.clear()
-
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = [ex.submit(_copy_one, row) for row in work]
-        for fut in as_completed(futures):
-            result = fut.result()
-            if result[0] == 'failed':
-                report.failed.append((result[1], result[2]))
-            else:
-                _, legacy, canonical, size, upsert_row = result
-                report.copied.append((legacy, canonical, size))
-                relocate_batch.append(upsert_row)
-                if len(relocate_batch) >= UPSERT_BATCH:
-                    _flush()
-            if bar is not None:
-                bar.update(1)
-        _flush()
-    if bar is not None:
-        bar.close()
-
-    return report
-
-
-def find_migration_conflicts(
-    client,
-    *,
-    observations: Optional[Iterable[str]] = None,
-    bucket: str = 'data',
-) -> list[str]:
-    """Detect freeze-violation duplicates (epic #210 / #215 gap G1).
-
-    During the shadow window a re-deploy of an already-migrated observation writes a
-    fresh ``r2``-legacy row whose canonical form collides with an existing
-    ``osn``-canonical row → two active rows for one logical object (dual-read would
-    serve stale OSN bytes). Returns the legacy keys whose canonical form already has
-    an active ``osn`` row, so the copy command can warn before running.
-    """
-    candidates = copy_candidates(client, observations=observations, bucket=bucket)
-    if not candidates:
-        return []
-    # Map each candidate (r2-legacy) to its canonical form.
-    canon_by_legacy: dict[str, str] = {}
-    for row in candidates:
-        legacy = row.get('storage_key')
-        if not legacy:
-            continue
-        try:
-            canon_by_legacy[legacy] = canonical_key_for(legacy)
-        except LayoutError:
-            continue
-    if not canon_by_legacy:
-        return []
-    wanted = set(canon_by_legacy.values())
-
-    # Collect the active osn storage_keys and intersect LOCALLY. We deliberately do
-    # NOT filter by `storage_key IN (...)`: that list is hundreds of ~70-char keys
-    # and overflows the PostgREST request URI (Kong returns a bare 400 'Bad Request').
-    # Scope by observation when given (a short list) so the scan stays small; an osn
-    # row's observation is preserved by relocate, so a collision shares the obs.
-    present: set[str] = set()
-    start = 0
-    page = 1000
-    while True:
-        q = (
-            client.table('storage_objects')
-            .select('storage_key')
-            .eq('backend', 'osn')
-            .eq('bucket', bucket)
-            .eq('status', 'active')
-            .order('id')
-            .range(start, start + page - 1)
-        )
-        if observations:
-            q = q.in_('observation', list(observations))
-        rows = q.execute().data or []
-        for r in rows:
-            k = r.get('storage_key')
-            if k and k in wanted:
-                present.add(k)
-        if len(rows) < page:
-            break
-        start += page
-    return [legacy for legacy, canon in canon_by_legacy.items() if canon in present]
-
-
-# ---------------------------------------------------------------------------
-# Registry cleanup (`campfire deploy registry prune`)
-# ---------------------------------------------------------------------------
-
-def find_r2_duplicate_ids(client, bucket: str = 'data') -> list[int]:
-    """IDs of active ``r2`` rows whose canonical key is already an active ``osn`` row.
-
-    These are duplicates left by a migration-unaware backfill (it resurrected the
-    retained R2 legacy key for an object already on OSN). The OSN row is
-    authoritative; these r2 rows are stale and safe to delete.
-    """
-    osn = active_osn_canonical_keys(client, bucket)
-    if not osn:
-        return []
-    dup_ids: list[int] = []
-    start = 0
-    page = 1000
-    while True:
-        rows = (
-            client.table('storage_objects').select('id, storage_key')
-            .eq('backend', 'r2').eq('bucket', bucket).eq('status', 'active')
-            .order('id').range(start, start + page - 1).execute().data or []
-        )
-        for r in rows:
-            k = r.get('storage_key')
-            if not k:
-                continue
-            try:
-                if canonical_key_for(k) in osn:
-                    dup_ids.append(r['id'])
-            except LayoutError:
-                continue
-        if len(rows) < page:
-            break
-        start += page
-    return dup_ids
-
-
-def find_dead_product_ids(client, bucket: str = 'data') -> list[int]:
-    """IDs of rows for dead product types (rgb/sed) that should never be registered."""
-    ids: list[int] = []
-    for pt in sorted(UNREGISTERED_PRODUCT_TYPES):
-        start = 0
-        page = 1000
-        while True:
-            rows = (
-                client.table('storage_objects').select('id')
-                .eq('product_type', pt).eq('bucket', bucket)
-                .order('id').range(start, start + page - 1).execute().data or []
-            )
-            ids.extend(r['id'] for r in rows if r.get('id') is not None)
-            if len(rows) < page:
-                break
-            start += page
-    return ids
-
-
-def delete_objects(client, ids: list[int], batch_size: int = UPSERT_BATCH) -> int:
-    """Hard-delete registry rows by primary key, batched. Returns count deleted."""
-    if not ids:
-        return 0
-    for i in range(0, len(ids), batch_size):
-        client.table('storage_objects').delete().in_('id', ids[i:i + batch_size]).execute()
-    return len(ids)

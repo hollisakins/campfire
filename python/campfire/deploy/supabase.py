@@ -470,16 +470,26 @@ def upsert_programs(
                 f"Known slugs: {known}."
             )
         info = programs_config[slug]
-        data = {
-            'slug': slug,
-            'program_name': info.get('program_name', slug),
-            'pi_name': info.get('pi_name', ''),
-            'description': info.get('description', ''),
-            'is_public': info.get('is_public', False),
-            'cycle': info.get('cycle'),
-        }
+        # Full config-sync row (#303): typed columns + the lossless section in
+        # `config` jsonb + hash/stamp. load_programs injects 'slug' into each
+        # section; strip it so `config` stays a faithful TOML mirror. A
+        # section jsonb can't represent (bare TOML datetimes) drops only the
+        # config mirror — this runs mid-deploy and must never fail the deploy.
+        from .config_sync import find_unjsonable, program_config_row, program_typed_row
+        section = {k: v for k, v in info.items() if k != 'slug'}
+        bad = find_unjsonable(section)
+        if bad:
+            print(f"  Warning: programs.toml [{slug}] has bare TOML "
+                  f"datetime(s) at {', '.join(bad)} — config not mirrored to "
+                  f"cloud (quote as ISO strings to enable config sync)")
+            data = program_typed_row(slug, section)
+        else:
+            data = program_config_row(slug, section)
         client.table('programs').upsert(data, on_conflict='slug').execute()
         print(f"  + {slug} ({data['program_name']})")
+        if 'config_hash' in data:
+            from .config_sync import record_synced
+            record_synced('programs', {slug: data['config_hash']})
 
 
 def upsert_observation(
@@ -491,8 +501,16 @@ def upsert_observation(
     file_globs: list[str] | None = None,
     gratings: list[str] | None = None,
     data_subdir: str | None = None,
+    config_section: dict | None = None,
 ) -> None:
-    """Upsert an observation record."""
+    """Upsert an observation record.
+
+    ``config_section`` is the raw observations.toml section; when given it is
+    mirrored losslessly into `config` jsonb with hash/stamp (#303), so stage
+    overrides and config_groups survive the round trip. A section that is not
+    JSON-representable (bare TOML datetimes) skips only the config columns —
+    the typed upsert still lands and the deploy proceeds.
+    """
     data = {
         'name': obs_name,
         'program_slug': program_slug,
@@ -505,7 +523,22 @@ def upsert_observation(
         data['gratings'] = gratings
     if data_subdir is not None:
         data['data_subdir'] = data_subdir
+    if config_section:
+        from .config_sync import config_hash, find_unjsonable
+        bad = find_unjsonable(config_section)
+        if bad:
+            print(f"  Warning: observations.toml [{obs_name}] has bare TOML "
+                  f"datetime(s) at {', '.join(bad)} — config not mirrored to "
+                  f"cloud (quote as ISO strings to enable config sync)")
+        else:
+            import datetime as _dt
+            data['config'] = config_section
+            data['config_hash'] = config_hash(config_section)
+            data['config_updated_at'] = _dt.datetime.now(_dt.timezone.utc).isoformat()
     client.table('observations').upsert(data, on_conflict='name').execute()
+    if 'config_hash' in data:
+        from .config_sync import record_synced
+        record_synced('observations', {obs_name: data['config_hash']})
 
 
 def update_observation_pointings(
@@ -531,7 +564,6 @@ def batch_upsert_objects(
     objects: list[dict],
     field: str,
     force_overwrite: bool,
-    objects_with_sed: set[str] | None = None,
     batch_size: int = 500,
 ) -> int:
     """
@@ -546,7 +578,6 @@ def batch_upsert_objects(
         objects: List of dicts from summary.get_unique_objects()
         field: Field name
         force_overwrite: Whether to reset inspection data
-        objects_with_sed: Set of object_ids that have SED plots
         batch_size: Records per batch
 
     Returns:
@@ -554,8 +585,6 @@ def batch_upsert_objects(
     """
     if not objects:
         return 0, []
-    if objects_with_sed is None:
-        objects_with_sed = set()
 
     target_ids = [o['object_id'] for o in objects]
     existing = check_existing_objects(client, target_ids)
@@ -572,7 +601,6 @@ def batch_upsert_objects(
     for obj in objects:
         oid = obj['object_id']
         is_existing = oid in existing
-        has_sed = oid in objects_with_sed
 
         data = {
             'target_id': oid,
@@ -582,7 +610,6 @@ def batch_upsert_objects(
             'ra': obj['ra'],
             'dec': obj['dec'],
             'redshift_auto': obj['redshift_best'],
-            'has_sed_plot': has_sed,
         }
 
         if is_existing:
@@ -709,23 +736,6 @@ def recompute_target_aggregates(
         total += result.data or 0
 
     return total
-
-
-def update_has_sed_plot(
-    client: Client,
-    target_ids: set[str],
-    batch_size: int = 500,
-) -> int:
-    """Set has_sed_plot = true for the given target IDs."""
-    if not target_ids:
-        return 0
-
-    id_list = list(target_ids)
-    for i in range(0, len(id_list), batch_size):
-        batch = id_list[i:i + batch_size]
-        client.table('targets').update({'has_sed_plot': True}).in_('target_id', batch).execute()
-
-    return len(id_list)
 
 
 def deploy_slits(
