@@ -4897,11 +4897,19 @@ BEGIN
         WHERE ne.review_status = 'pending'
           AND EXISTS (SELECT 1 FROM deployments d
                       WHERE d.field = ne.field AND d.status = 'published')),
+      -- Both NIRSpec review grains: an observation whose rate files are fully
+      -- triaged can still carry pending nod exposures, and the mandate covers
+      -- both (PR #495 review).
       'published_obs_with_pending', (
-        SELECT count(DISTINCT re.observation) FROM nirspec_rate_exposures re
-        WHERE re.review_status = 'pending'
-          AND EXISTS (SELECT 1 FROM deployments d
-                      WHERE d.observation = re.observation AND d.status = 'published'))
+        SELECT count(DISTINCT p.obs) FROM (
+          SELECT re.observation AS obs FROM nirspec_rate_exposures re
+          WHERE re.review_status = 'pending'
+          UNION
+          SELECT se.observation FROM spectrum_exposures se
+          WHERE se.review_status = 'pending'
+        ) p
+        WHERE EXISTS (SELECT 1 FROM deployments d
+                      WHERE d.observation = p.obs AND d.status = 'published'))
     ),
     'storage', json_build_object(
       'reclaimable_bytes', v_storage.reclaimable_bytes,
@@ -4981,11 +4989,16 @@ BEGIN
       'config_never_pushed', (
         (SELECT count(*) FROM observations o WHERE o.config_hash IS NULL AND o.retired_at IS NULL)
         + (SELECT count(*) FROM fields fl WHERE fl.config_hash IS NULL AND fl.retired_at IS NULL)),
+      -- "Live" means the latest deployment is PUBLISHED — a retired scope
+      -- whose deployment was already revoked (or never left draft) is not an
+      -- attention item (PR #495 review).
       'retired_with_live_deployment', (
         (SELECT count(*) FROM observations o
-         WHERE o.retired_at IS NOT NULL AND o.latest_deployment_id IS NOT NULL)
+         JOIN deployments d ON d.id = o.latest_deployment_id
+         WHERE o.retired_at IS NOT NULL AND d.status = 'published')
         + (SELECT count(*) FROM fields fl
-           WHERE fl.retired_at IS NOT NULL AND fl.latest_deployment_id IS NOT NULL)),
+           JOIN deployments d ON d.id = fl.latest_deployment_id
+           WHERE fl.retired_at IS NOT NULL AND d.status = 'published')),
       'never_deployed', (
         (SELECT count(*) FROM observations o
          WHERE o.latest_deployment_id IS NULL AND o.retired_at IS NULL)
