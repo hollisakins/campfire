@@ -64,7 +64,11 @@ export const ATTENTION_RULES: AttentionRule[] = [
     severity: 'act',
     stage: 'PUBLISH',
     href: '/admin/deployments?status=draft',
-    label: `draft deployments older than ${DRAFT_STALE_DAYS}d`,
+    // The RPC exposes only the total draft count and the oldest draft's age,
+    // so the rule fires on the age threshold but the count (and label) cover
+    // ALL waiting drafts — never claim an age-filtered count we don't have
+    // (PR #495 review).
+    label: 'draft deployments waiting to publish',
     value: ({ summary }) =>
       ageDays(summary.deployments.oldest_draft_at) > DRAFT_STALE_DAYS
         ? summary.deployments.drafts : 0,
@@ -188,7 +192,9 @@ export const ATTENTION_RULES: AttentionRule[] = [
     severity: 'info',
     stage: 'STORAGE',
     href: '/admin/intermediate-products?status=superseded',
-    label: 'reclaimable bytes in superseded/revoked objects',
+    // value is an OBJECT count; the byte figure lives in detail — keep the
+    // label's units matching the number it sits next to (PR #495 review).
+    label: 'objects with reclaimable storage (superseded/revoked)',
     value: ({ summary }) =>
       summary.storage.reclaimable_bytes > RECLAIMABLE_MIN_BYTES
         ? summary.storage.reclaimable_count : 0,
