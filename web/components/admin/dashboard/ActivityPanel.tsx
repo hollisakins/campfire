@@ -33,7 +33,7 @@ export function ActivityPanel({
 }) {
   const counters = summary?.activity;
   return (
-    <Panel icon={MessageSquare} title="Inspection activity" right={<ViewAllLink href="/admin/activity" />}>
+    <Panel icon={MessageSquare} title="Recent review activity" right={<ViewAllLink href="/admin/activity" />}>
       {loading ? (
         <SkeletonRows n={7} />
       ) : error || !rows ? (

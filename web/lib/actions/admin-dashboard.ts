@@ -253,36 +253,6 @@ export async function getRecentAdminActivity(limit = 8): Promise<RecentActivityR
 }
 
 // --------------------------------------------------------------------------
-// get_lifecycle_status — existing RPC, never called by the web before.
-// Effectively constant per deploy; cache for the session.
-// --------------------------------------------------------------------------
-
-export interface LifecycleStatus {
-  enabled: boolean;
-  version: number;
-  checks: Record<string, boolean>;
-}
-
-export interface LifecycleStatusResult {
-  status: LifecycleStatus | null;
-  error?: string;
-}
-
-export async function getLifecycleStatus(): Promise<LifecycleStatusResult> {
-  try {
-    const { supabase } = await requireAdmin();
-    const { data, error } = await supabase.rpc('get_lifecycle_status');
-    if (error) return { status: null, error: error.message };
-    return { status: data as unknown as LifecycleStatus };
-  } catch (err) {
-    return {
-      status: null,
-      error: err instanceof Error ? err.message : 'Failed to load lifecycle status',
-    };
-  }
-}
-
-// --------------------------------------------------------------------------
 // get_database_overview with drafts included — the admin footer wants the
 // whole archive, not just the published slice the public wrapper requests.
 // --------------------------------------------------------------------------
@@ -328,40 +298,6 @@ export async function getArchiveOverview(): Promise<ArchiveOverviewResult> {
     return {
       overview: null,
       error: err instanceof Error ? err.message : 'Failed to load archive overview',
-    };
-  }
-}
-
-// --------------------------------------------------------------------------
-// get_download_stats — same RPC the downloads page uses, reached through a
-// server action so the dashboard keeps one data-access pattern.
-// --------------------------------------------------------------------------
-
-export interface DownloadStats {
-  total_downloads: number;
-  unique_users: number;
-  total_files: number;
-  total_targets: number;
-  by_type: Record<string, number> | null;
-  downloads_by_day: { day: string; count: number }[] | null;
-  most_downloaded_targets: { target_id: string; download_count: number }[] | null;
-}
-
-export interface DownloadStatsResult {
-  stats: DownloadStats | null;
-  error?: string;
-}
-
-export async function getAdminDownloadStats(days = 30): Promise<DownloadStatsResult> {
-  try {
-    const { supabase } = await requireAdmin();
-    const { data, error } = await supabase.rpc('get_download_stats', { p_days: days });
-    if (error) return { stats: null, error: error.message };
-    return { stats: data as unknown as DownloadStats };
-  } catch (err) {
-    return {
-      stats: null,
-      error: err instanceof Error ? err.message : 'Failed to load download stats',
     };
   }
 }
