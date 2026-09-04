@@ -3262,6 +3262,9 @@ GRANT EXECUTE ON FUNCTION public.refresh_programs_overview TO authenticated;
 -- sets them, even for anon), i.e. the superuser SQL editor, pg_cron and the
 -- deploy CLI in service-role mode. That is exactly the trust the
 -- table-backed RPCs already extend them, since those bypass RLS too.
+-- An unauthenticated JWT session (the anon key) gets nothing: every table
+-- this stands in for is `FOR SELECT TO authenticated`, and
+-- accessible_program_slugs() alone would still hand anon the public slugs.
 CREATE OR REPLACE FUNCTION public.scoped_program_slugs(p_program_slugs text[])
 RETURNS text[]
 LANGUAGE sql STABLE SECURITY DEFINER
@@ -3271,6 +3274,7 @@ AS $$
     WHEN auth.role() = 'service_role'
       OR COALESCE(current_setting('request.jwt.claims', true), '') = ''
       THEN COALESCE(p_program_slugs, '{}'::text[])
+    WHEN auth.uid() IS NULL THEN '{}'::text[]
     ELSE COALESCE(ARRAY(
       SELECT unnest(COALESCE(p_program_slugs, '{}'::text[]))
       INTERSECT
@@ -3279,6 +3283,7 @@ AS $$
   END;
 $$;
 
+REVOKE ALL ON FUNCTION public.scoped_program_slugs(text[]) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.scoped_program_slugs(text[]) TO authenticated, service_role;
 
 
@@ -3311,25 +3316,35 @@ SET search_path = public
 AS $$
 DECLARE
   v_slugs text[] := public.scoped_program_slugs(p_program_slugs);
+  v_link boolean := public.is_link_account();
   v_unpublished boolean := p_include_unpublished
     AND (auth.role() = 'service_role'
          OR COALESCE(current_setting('request.jwt.claims', true), '') = ''
          OR public.is_admin());
+  -- Callers whose RLS view included draft data before these readers went
+  -- SECURITY DEFINER (admins; share links minted with include_drafts) keep
+  -- the live aggregate, where p_include_unpublished decides what is
+  -- counted; the published-only snapshot would drop their draft-only
+  -- observations entirely.
+  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts();
 BEGIN
-  IF NOT v_unpublished THEN
+  IF NOT v_live THEN
     RETURN QUERY
     SELECT mv.observation, mv.program_slug, mv.program_name, mv.field,
       mv.target_count, mv.spectrum_count, mv.total_size_bytes,
       mv.pointings,
       mv.crds_context, mv.cfpipe_version, mv.jwst_version,
       mv.reduced_at, mv.deployed_at,
-      mv.deployed_by_username, mv.deployed_by_full_name,
+      -- Deployer identity stays hidden from share links, as user_profiles
+      -- RLS hid it before the reader went SECURITY DEFINER.
+      CASE WHEN v_link THEN NULL ELSE mv.deployed_by_username END,
+      CASE WHEN v_link THEN NULL ELSE mv.deployed_by_full_name END,
       mv.n_patches_since_full, mv.last_patch_at
     FROM public.mv_observations_overview mv
     WHERE mv.program_slug = ANY(v_slugs)
       -- Share links see only the observation they were minted for (mirrors
       -- accessible_observations_select; the matview has no RLS to do it).
-      AND ((SELECT NOT public.is_link_account()) OR mv.observation = (SELECT public.link_observation()))
+      AND (NOT v_link OR mv.observation = (SELECT public.link_observation()))
       -- The live aggregate only yields observations that have targets.
       AND mv.target_count > 0
     ORDER BY mv.observation;
@@ -3351,6 +3366,7 @@ BEGIN
       -- B1: unpublished spectra don't contribute to counts/size (targets still appear).
       AND (p_include_unpublished OR s.deploy_status = 'published')
     WHERE t.program_slug = ANY(v_slugs)
+      AND (NOT v_link OR t.observation = (SELECT public.link_observation()))
     GROUP BY t.observation, t.program_slug, p.program_name, t.field
   )
   SELECT s.observation, s.program_slug, s.program_name, s.field,
@@ -3359,7 +3375,8 @@ BEGIN
     full_dep.crds_context,
     full_dep.cfpipe_version, full_dep.jwst_version,
     full_dep.reduced_at, full_dep.deployed_at,
-    full_dep.deployed_by_username, full_dep.deployed_by_full_name,
+    CASE WHEN v_link THEN NULL ELSE full_dep.deployed_by_username END,
+    CASE WHEN v_link THEN NULL ELSE full_dep.deployed_by_full_name END,
     COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
     patches.last_patch_at
   FROM stats s
@@ -3386,6 +3403,7 @@ BEGIN
 END;
 $$;
 
+REVOKE ALL ON FUNCTION public.get_observation_stats(text[], boolean) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
 
 
@@ -3415,25 +3433,35 @@ SET search_path = public
 AS $$
 DECLARE
   v_slugs text[] := public.scoped_program_slugs(p_program_slugs);
+  v_link boolean := public.is_link_account();
   v_unpublished boolean := p_include_unpublished
     AND (auth.role() = 'service_role'
          OR COALESCE(current_setting('request.jwt.claims', true), '') = ''
          OR public.is_admin());
+  -- Callers whose RLS view included draft data before these readers went
+  -- SECURITY DEFINER (admins; share links minted with include_drafts) keep
+  -- the live aggregate, where p_include_unpublished decides what is
+  -- counted; the published-only snapshot would drop their draft-only
+  -- observations entirely.
+  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts();
 BEGIN
-  IF NOT v_unpublished THEN
+  IF NOT v_live THEN
     RETURN QUERY
     SELECT mv.observation, mv.program_slug, mv.program_name, mv.field,
       mv.cycle, mv.gratings, mv.pointing_count, mv.pointings,
       mv.target_count, mv.spectrum_count, mv.total_size_bytes,
       mv.crds_context, mv.cfpipe_version, mv.jwst_version,
       mv.reduced_at, mv.deployed_at,
-      mv.deployed_by_username, mv.deployed_by_full_name,
+      -- Deployer identity stays hidden from share links, as user_profiles
+      -- RLS hid it before the reader went SECURITY DEFINER.
+      CASE WHEN v_link THEN NULL ELSE mv.deployed_by_username END,
+      CASE WHEN v_link THEN NULL ELSE mv.deployed_by_full_name END,
       mv.n_patches_since_full, mv.last_patch_at
     FROM public.mv_observations_overview mv
     WHERE mv.program_slug = ANY(v_slugs)
       -- Share links see only the observation they were minted for (mirrors
       -- accessible_observations_select; the matview has no RLS to do it).
-      AND ((SELECT NOT public.is_link_account()) OR mv.observation = (SELECT public.link_observation()))
+      AND (NOT v_link OR mv.observation = (SELECT public.link_observation()))
     ORDER BY mv.program_slug, mv.observation;
     RETURN;
   END IF;
@@ -3451,6 +3479,7 @@ BEGIN
       -- B1: unpublished spectra don't contribute to counts/size/gratings.
       AND (p_include_unpublished OR s.deploy_status = 'published')
     WHERE t.program_slug = ANY(v_slugs)
+      AND (NOT v_link OR t.observation = (SELECT public.link_observation()))
     GROUP BY t.observation, t.program_slug
   )
   SELECT
@@ -3471,7 +3500,8 @@ BEGIN
     full_dep.crds_context,
     full_dep.cfpipe_version, full_dep.jwst_version,
     full_dep.reduced_at, full_dep.deployed_at,
-    full_dep.deployed_by_username, full_dep.deployed_by_full_name,
+    CASE WHEN v_link THEN NULL ELSE full_dep.deployed_by_username END,
+    CASE WHEN v_link THEN NULL ELSE full_dep.deployed_by_full_name END,
     COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
     patches.last_patch_at
   FROM public.observations o
@@ -3496,10 +3526,12 @@ BEGIN
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
   ) patches ON true
   WHERE o.program_slug = ANY(v_slugs)
+    AND (NOT v_link OR o.name = (SELECT public.link_observation()))
   ORDER BY o.program_slug, o.name;
 END;
 $$;
 
+REVOKE ALL ON FUNCTION public.get_observations_overview(text[], boolean) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_observations_overview TO authenticated;
 
 
@@ -3521,6 +3553,8 @@ BEGIN
 END;
 $$;
 
+-- Default privileges hand every new function to anon; take that back.
+REVOKE ALL ON FUNCTION public.refresh_observations_overview() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.refresh_observations_overview TO authenticated;
 
 CREATE OR REPLACE FUNCTION public.refresh_all_matviews()
@@ -3534,6 +3568,10 @@ BEGIN
   REFRESH MATERIALIZED VIEW CONCURRENTLY public.mv_observations_overview;
 END;
 $$;
+
+-- Runs as postgres (pg_cron) and from set_deployment_status (SECURITY
+-- DEFINER); no client role needs it.
+REVOKE ALL ON FUNCTION public.refresh_all_matviews() FROM PUBLIC, anon, authenticated;
 
 -- Nightly backstop. pg_cron is present on prod (one existing job) but not on
 -- every environment the schema loads into (preview branches, throwaway PGs),
