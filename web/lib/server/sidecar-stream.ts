@@ -31,6 +31,9 @@ export async function streamSidecar(
   const headers = new Headers({
     'Content-Type': 'application/json',
     'Cache-Control': cacheControl,
+    // Every caller caches beyond a session under a cookie (or bearer)
+    // identity, and sign-out does not clear the HTTP cache (D-C).
+    Vary: 'Cookie',
   });
   // Only meaningful when the upstream body is stored verbatim; the platform
   // may still re-encode the function's response and drop it.

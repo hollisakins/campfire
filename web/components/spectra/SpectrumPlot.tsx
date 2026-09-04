@@ -119,10 +119,12 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // The full query waits for the url resolve (which the 1-D fetch awaits
   // anyway, so this costs no latency) and is skipped when the 1-D query
   // already delivers the full payload (pre-backfill spectra).
+  // A failed resolve settles too: the payload fetchers then stream from the
+  // app routes, and the full query must still run for the heatmap.
   const sidecarUrls = useSpectrumSidecarUrls(fitsPath);
   const fullQuery = useSpectrumJson(
     fitsPath,
-    sidecarUrls.isSuccess && fullPayloadIsSeparate(sidecarUrls.data),
+    !sidecarUrls.isPending && fullPayloadIsSeparate(sidecarUrls.data),
   );
   const fitQuery = useRedshiftFit(fitsPath);
   const data = oneDQuery.data ?? null;

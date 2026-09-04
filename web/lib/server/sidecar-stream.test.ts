@@ -20,6 +20,7 @@ describe('streamSidecar', () => {
     expect(res.headers.get('Content-Type')).toBe('application/json');
     expect(res.headers.get('Content-Length')).toBe('14');
     expect(res.headers.get('Cache-Control')).toBe('private, max-age=1');
+    expect(res.headers.get('Vary')).toBe('Cookie');
     expect(await res.text()).toBe('{"wave":[1,2]}');
   });
 

@@ -5,7 +5,9 @@ One-time backfill: persist the zfit scalars (chi2_min, confidence) onto
 
 New deploys write both columns from the summary ECSV; this fills rows that
 predate the columns so the object page's redshift-fit summary fetches no
-sidecar for them. Rows whose zfit sidecar does not exist keep NULL (no fit).
+sidecar for them, and fills a NULL redshift_auto from the same sidecar (rows
+from before per-grating redshift_auto existed; never overwrites a value).
+Rows whose zfit sidecar does not exist keep NULL (no fit).
 
 Runs in service-role mode against OSN (read-only GETs; only the DB is written).
 
@@ -43,7 +45,7 @@ def fetch_rows(sb, obs: str | None) -> list[dict]:
     rows: list[dict] = []
     offset = 0
     while True:
-        q = (sb.table('spectra').select('id, fits_path, observation')
+        q = (sb.table('spectra').select('id, fits_path, observation, redshift_auto')
              .is_('chi2_min', 'null').order('id').range(offset, offset + PAGE - 1))
         if obs:
             q = q.eq('observation', obs)
@@ -89,6 +91,13 @@ def main() -> int:
                 return row['id'], None, 'no-fit'
             return row['id'], None, f'error: {e}'
         patch = {'chi2_min': _finite(data.get('chi2_min')), 'confidence': _finite(data.get('confidence'))}
+        # Pre-Phase-B rows carry no per-grating redshift_auto; the fit summary
+        # reads the redshift from the row once the scalars are present, so fill
+        # it from the same sidecar — fill only, never overwrite a deployed value.
+        if row.get('redshift_auto') is None:
+            z = _finite(data.get('redshift'))
+            if z is not None:
+                patch['redshift_auto'] = z
         if patch['chi2_min'] is None and patch['confidence'] is None:
             return row['id'], None, 'no-scalars'
         return row['id'], patch, 'ok'

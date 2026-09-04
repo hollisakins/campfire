@@ -54,10 +54,19 @@ export function spectrumSidecarsQueryOptions(fitsPath: string) {
   };
 }
 
+const NO_FRONT: SpectrumSidecarUrls = { front: false, spectrum: null, spectrum_1d: null, zfit: null };
+
 /** The resolved sidecar urls for a path, from the cache or one resolve call
- * shared by every sidecar query of the same path. */
-function sidecarUrls(client: QueryClient, fitsPath: string): Promise<SpectrumSidecarUrls> {
-  return client.fetchQuery(spectrumSidecarsQueryOptions(fitsPath));
+ * shared by every sidecar query of the same path. A failed resolve is not a
+ * failed spectrum: it answers as "front off", and the streaming routes (which
+ * run their own access check) decide. */
+async function sidecarUrls(client: QueryClient, fitsPath: string): Promise<SpectrumSidecarUrls> {
+  try {
+    return await client.fetchQuery(spectrumSidecarsQueryOptions(fitsPath));
+  } catch (err) {
+    console.warn('sidecar resolve failed; falling back to the streaming routes', err);
+    return NO_FRONT;
+  }
 }
 
 async function fetchJsonFrom(url: string, fallback: string): Promise<Response> {
