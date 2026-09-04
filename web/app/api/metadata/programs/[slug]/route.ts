@@ -2,6 +2,8 @@ import { NextRequest } from 'next/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { getProgramDetail } from '@/lib/server/programs';
 
+export type { ProgramDetailResult as ProgramDetailResponse } from '@/lib/server/programs';
+
 const NO_STORE = { 'Cache-Control': 'private, no-store' };
 
 /**
@@ -17,6 +19,7 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ sl
   const { user } = await getRequestIdentity();
   if (!user) return Response.json({ error: 'Unauthorized' }, { status: 401 });
   const { slug } = await context.params;
-  const result = await getProgramDetail(decodeURIComponent(slug));
+  // Next has already percent-decoded the segment; decoding again would throw on a bare '%'.
+  const result = await getProgramDetail(slug);
   return Response.json(result, { headers: NO_STORE });
 }

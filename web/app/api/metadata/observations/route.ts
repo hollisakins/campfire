@@ -1,6 +1,8 @@
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { getObservationsOverview } from '@/lib/server/programs';
 
+export type { ObservationsOverviewResult as ObservationsOverviewResponse } from '@/lib/server/programs';
+
 const NO_STORE = { 'Cache-Control': 'private, no-store' };
 
 /**

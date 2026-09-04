@@ -1,6 +1,8 @@
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { getProgramsOverview } from '@/lib/server/programs';
 
+export type { ProgramsOverviewResult as ProgramsOverviewResponse } from '@/lib/server/programs';
+
 const NO_STORE = { 'Cache-Control': 'private, no-store' };
 
 /**

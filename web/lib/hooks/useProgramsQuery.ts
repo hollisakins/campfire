@@ -2,12 +2,10 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '@/lib/fetch-json';
-import type {
-  ProgramsOverviewResult,
-  ProgramDetailResult,
-  ObservationsOverviewResult,
-  DatabaseOverviewResult,
-} from '@/lib/server/programs';
+import type { ProgramsOverviewResponse } from '@/app/api/metadata/programs/route';
+import type { ProgramDetailResponse } from '@/app/api/metadata/programs/[slug]/route';
+import type { ObservationsOverviewResponse } from '@/app/api/metadata/observations/route';
+import type { DatabaseOverviewResponse } from '@/app/api/metadata/overview/route';
 
 // The metadata page fires three of these on mount. As server actions they
 // ran one after the other (Next serializes action POSTs per client); as GET
@@ -15,37 +13,37 @@ import type {
 // Keys carry no viewer identity — the QueryClient is cleared on sign-out.
 
 export function useProgramsOverviewQuery(enabled: boolean = true) {
-  return useQuery<ProgramsOverviewResult>({
+  return useQuery<ProgramsOverviewResponse>({
     queryKey: ['programsOverview'],
-    queryFn: ({ signal }) => fetchJson<ProgramsOverviewResult>('/api/metadata/programs', { signal }),
+    queryFn: ({ signal }) => fetchJson<ProgramsOverviewResponse>('/api/metadata/programs', { signal }),
     staleTime: 10 * 60 * 1000, // 10 minutes - program stats rarely change
     enabled,
   });
 }
 
 export function useProgramDetailQuery(programSlug: string, enabled: boolean = true) {
-  return useQuery<ProgramDetailResult>({
+  return useQuery<ProgramDetailResponse>({
     queryKey: ['programDetail', programSlug],
     queryFn: ({ signal }) =>
-      fetchJson<ProgramDetailResult>(`/api/metadata/programs/${encodeURIComponent(programSlug)}`, { signal }),
+      fetchJson<ProgramDetailResponse>(`/api/metadata/programs/${encodeURIComponent(programSlug)}`, { signal }),
     staleTime: 10 * 60 * 1000,
     enabled: enabled && !!programSlug,
   });
 }
 
 export function useObservationsOverviewQuery(enabled: boolean = true) {
-  return useQuery<ObservationsOverviewResult>({
+  return useQuery<ObservationsOverviewResponse>({
     queryKey: ['observationsOverview'],
-    queryFn: ({ signal }) => fetchJson<ObservationsOverviewResult>('/api/metadata/observations', { signal }),
+    queryFn: ({ signal }) => fetchJson<ObservationsOverviewResponse>('/api/metadata/observations', { signal }),
     staleTime: 10 * 60 * 1000,
     enabled,
   });
 }
 
 export function useDatabaseOverviewQuery(enabled: boolean = true) {
-  return useQuery<DatabaseOverviewResult>({
+  return useQuery<DatabaseOverviewResponse>({
     queryKey: ['databaseOverview'],
-    queryFn: ({ signal }) => fetchJson<DatabaseOverviewResult>('/api/metadata/overview', { signal }),
+    queryFn: ({ signal }) => fetchJson<DatabaseOverviewResponse>('/api/metadata/overview', { signal }),
     staleTime: 10 * 60 * 1000,
     enabled,
   });

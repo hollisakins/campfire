@@ -1,6 +1,8 @@
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { getDatabaseOverview } from '@/lib/server/programs';
 
+export type { DatabaseOverviewResult as DatabaseOverviewResponse } from '@/lib/server/programs';
+
 const NO_STORE = { 'Cache-Control': 'private, no-store' };
 
 /**
