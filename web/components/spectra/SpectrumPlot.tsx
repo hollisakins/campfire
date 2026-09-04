@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
-import { useSpectrumJson, useSpectrum1d, useRedshiftFit } from '@/lib/hooks/useSpectrumJson';
+import { useSpectrumJson, useSpectrum1d, useRedshiftFit, useSpectrumSidecarUrls, fullPayloadIsSeparate } from '@/lib/hooks/useSpectrumJson';
 import type { SpectrumData } from '@/app/api/spectrum/route';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
@@ -116,7 +116,14 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // before the sidecar existed answers the 1-D query with its full payload,
   // which then serves the heatmap too.
   const oneDQuery = useSpectrum1d(fitsPath);
-  const fullQuery = useSpectrumJson(fitsPath);
+  // The full query waits for the url resolve (which the 1-D fetch awaits
+  // anyway, so this costs no latency) and is skipped when the 1-D query
+  // already delivers the full payload (pre-backfill spectra).
+  const sidecarUrls = useSpectrumSidecarUrls(fitsPath);
+  const fullQuery = useSpectrumJson(
+    fitsPath,
+    sidecarUrls.isSuccess && fullPayloadIsSeparate(sidecarUrls.data),
+  );
   const fitQuery = useRedshiftFit(fitsPath);
   const data = oneDQuery.data ?? null;
   const heat: SpectrumData | null =

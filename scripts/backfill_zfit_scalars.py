@@ -81,13 +81,13 @@ def main() -> int:
         key = zfit_key(row['fits_path'])
         try:
             obj = s3.get_object(Bucket=bcfg.bucket, Key=key)
+            data = json.load(obj['Body'])
         except s3.exceptions.NoSuchKey:
             return row['id'], None, 'no-fit'
         except Exception as e:  # noqa: BLE001
             if 'NoSuchKey' in str(e) or '404' in str(e):
                 return row['id'], None, 'no-fit'
             return row['id'], None, f'error: {e}'
-        data = json.load(obj['Body'])
         patch = {'chi2_min': _finite(data.get('chi2_min')), 'confidence': _finite(data.get('confidence'))}
         if patch['chi2_min'] is None and patch['confidence'] is None:
             return row['id'], None, 'no-scalars'

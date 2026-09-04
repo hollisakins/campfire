@@ -19,6 +19,7 @@ import { useQuery, useQueries, useQueryClient, type QueryClient } from '@tanstac
 import type { SpectrumData, SpectrumData1D } from '@/app/api/spectrum/route';
 import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 import type { SpectrumSidecarUrls } from '@/app/api/spectrum/sidecars/route';
+import { fetchJson } from '@/lib/fetch-json';
 
 // Sidecars only change on a re-deploy, and the routes already let the browser
 // keep them for a day; 30 min is long enough for a whole inspection session.
@@ -40,10 +41,8 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
   return fallback;
 }
 
-export async function fetchSidecarUrls(fitsPath: string): Promise<SpectrumSidecarUrls> {
-  const res = await fetch(`/api/spectrum/sidecars?path=${encodeURIComponent(fitsPath)}`);
-  if (!res.ok) throw new Error(await errorMessage(res, 'Failed to resolve spectrum'));
-  return res.json();
+export function fetchSidecarUrls(fitsPath: string): Promise<SpectrumSidecarUrls> {
+  return fetchJson<SpectrumSidecarUrls>(`/api/spectrum/sidecars?path=${encodeURIComponent(fitsPath)}`);
 }
 
 export function spectrumSidecarsQueryOptions(fitsPath: string) {
@@ -247,10 +246,35 @@ export function prefetchSpectrumSidecars(
   fitsPaths: string[],
 ): Promise<void> {
   return Promise.all(
-    fitsPaths.flatMap((p) => [
-      queryClient.prefetchQuery(spectrum1dQueryOptions(queryClient, p)),
-      queryClient.prefetchQuery(spectrumJsonQueryOptions(queryClient, p)),
-      queryClient.prefetchQuery(redshiftFitQueryOptions(queryClient, p)),
-    ]),
+    fitsPaths.map(async (p) => {
+      const urls = await queryClient.fetchQuery(spectrumSidecarsQueryOptions(p)).catch(() => null);
+      await Promise.all([
+        queryClient.prefetchQuery(spectrum1dQueryOptions(queryClient, p)),
+        // The full payload is a separate download only when the 1-D sidecar
+        // is a distinct object; otherwise the 1-D query already carries it.
+        fullPayloadIsSeparate(urls)
+          ? queryClient.prefetchQuery(spectrumJsonQueryOptions(queryClient, p))
+          : Promise.resolve(),
+        queryClient.prefetchQuery(redshiftFitQueryOptions(queryClient, p)),
+      ]);
+    }),
   ).then(() => trimSpectrumCache(queryClient));
+}
+
+/**
+ * Whether fetching the full spectrum JSON would download anything the 1-D
+ * query does not already deliver. A spectrum deployed before the 1-D sidecar
+ * existed (front on, `spectrum_1d` null) answers the 1-D query with its full
+ * payload, so a second download of the same bytes is pure waste; with the
+ * front off the route decides server-side and the client cannot tell, so
+ * the full query runs (pre-backfill dev only).
+ */
+export function fullPayloadIsSeparate(urls: SpectrumSidecarUrls | null | undefined): boolean {
+  if (!urls) return true;
+  return !(urls.front && urls.spectrum_1d === null && urls.spectrum !== null);
+}
+
+/** The resolved sidecar urls as a query (shared with every sidecar fetch). */
+export function useSpectrumSidecarUrls(fitsPath: string, enabled = true) {
+  return useQuery({ ...spectrumSidecarsQueryOptions(fitsPath), enabled });
 }
