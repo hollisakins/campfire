@@ -128,6 +128,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (error) {
       console.error('Error fetching user profile:', error);
       setUserProfile(null);
+      // Not fetched after all: let the next auth event for this user (e.g.
+      // TOKEN_REFRESHED on tab refocus) retry instead of being deduped away.
+      if (profileUserIdRef.current === userId) profileUserIdRef.current = null;
     } finally {
       setLoading(false);
     }

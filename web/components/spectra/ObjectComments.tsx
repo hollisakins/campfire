@@ -62,8 +62,12 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
   const containerRef = useRef<HTMLDivElement>(null);
   const inView = useInView(containerRef);
 
+  // The viewer's id is part of the key: comments are RLS-scoped per user
+  // (select_comments_by_access), and the QueryClient outlives a sign-out /
+  // sign-in on the same tab, so a key without it would replay one user's
+  // comments to the next.
   const commentsQuery = useQuery<AggregatedComment[]>({
-    queryKey: ['object-comments', objectDbId, memberDbIds],
+    queryKey: ['object-comments', user?.id ?? null, objectDbId, memberDbIds],
     enabled: !!user && inView,
     queryFn: async () => {
       const scope = memberDbIds.length > 0
@@ -123,7 +127,7 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
       if (insertError) throw insertError;
 
       setNewComment('');
-      await queryClient.invalidateQueries({ queryKey: ['object-comments', objectDbId] });
+      await queryClient.invalidateQueries({ queryKey: ['object-comments', user.id, objectDbId] });
     } catch (err) {
       console.error('Error posting comment:', err);
       setError('Failed to post comment');
