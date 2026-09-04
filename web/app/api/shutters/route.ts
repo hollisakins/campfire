@@ -19,6 +19,10 @@ export interface NearbyShuttersResponse {
 // about an hour in practice.
 const PRIVATE_DAY = 'private, max-age=86400, stale-while-revalidate=86400';
 const CACHE_HEADERS = { 'Cache-Control': PRIVATE_DAY, Vary: 'Cookie' };
+// Without the version token the URL cannot change on a deployment, so the
+// response must not outlive the request (a caller outside an
+// AssetVersionProvider, or one that could not resolve the versions).
+const NO_STORE_HEADERS = { 'Cache-Control': 'private, no-store' };
 
 /**
  * GET /api/shutters?ra=<deg>&dec=<deg>&field=<field>&fov=<arcsec>[&v=<asset version>]
@@ -28,7 +32,8 @@ const CACHE_HEADERS = { 'Cache-Control': PRIVATE_DAY, Vary: 'Cookie' };
  * #506): as an action this read queued behind every other action on the
  * object page and was uncacheable for geometry that never changes. Reads run
  * under the caller's RLS session via get_nearby_shutters (SECURITY INVOKER).
- * `v` is an opaque cache-key token and is not read.
+ * `v` is an opaque cache-key token; its presence decides whether the
+ * response may be browser-cached at all (see NO_STORE_HEADERS).
  */
 export async function GET(request: NextRequest) {
   const { user, supabase } = await getRequestIdentity();
@@ -60,7 +65,7 @@ export async function GET(request: NextRequest) {
       return Response.json({ error: error.message }, { status: 500 });
     }
     const body: NearbyShuttersResponse = { shutters: (data ?? []) as Shutter[] };
-    return Response.json(body, { headers: CACHE_HEADERS });
+    return Response.json(body, { headers: sp.get('v') ? CACHE_HEADERS : NO_STORE_HEADERS });
   } catch (err) {
     console.error('nearby shutters error:', err);
     return Response.json({ error: 'Failed to load shutters' }, { status: 500 });
