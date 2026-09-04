@@ -1,4 +1,11 @@
-'use server';
+// Metadata-page reads: programs / observations overview and the scope
+// summary. Plain server module, NOT server actions (perf T2-C, #506,
+// decision D-C): the /nirspec/metadata page fires three of these on mount and
+// Next serializes server-action POSTs per client, so they ran one after the
+// other. Each is exposed by a GET route under app/api/metadata/ and consumed
+// through lib/hooks/useProgramsQuery.ts. Identity is request-scoped
+// (getRequestIdentity), so a route calling one of these pays no extra lookup.
+import 'server-only';
 
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { getAccessContext } from '@/lib/auth/access-context';

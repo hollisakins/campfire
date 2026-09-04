@@ -3,7 +3,7 @@
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { Search, Telescope, MapPin, Users, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import type { ProgramOverview, ObservationOverview } from '@/lib/actions/programs';
+import type { ProgramOverview, ObservationOverview } from '@/lib/server/programs';
 
 type ResultKind = 'program' | 'observation' | 'pi';
 

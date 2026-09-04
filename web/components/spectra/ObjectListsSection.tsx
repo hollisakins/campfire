@@ -1,9 +1,12 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useTransition, useRef, useImperativeHandle } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useTransition, useRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import { Plus, X, Loader2, Check, AlertCircle, Search, Tag } from 'lucide-react';
-import { getListsWithMembership, addObjectToList, removeObjectFromList } from '@/lib/actions/lists';
+import { addObjectToList, removeObjectFromList } from '@/lib/actions/lists';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { fetchJson } from '@/lib/fetch-json';
+import type { ListsMembershipResponse } from '@/app/api/lists/membership/route';
 import { ListForm } from '@/components/lists/ListForm';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { getContrastColor } from '@/lib/flags';
@@ -54,6 +57,8 @@ function darkenColor(hex: string, percent: number): string {
   return '#' + ((rHex << 16) | (gHex << 8) | bHex).toString(16).padStart(6, '0');
 }
 
+const NO_LISTS: ObjectListWithMembership[] = [];
+
 export interface ObjectListsSectionHandle {
   openDropdown: () => void;
 }
@@ -77,8 +82,27 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
     return list.created_by === user?.id || list.visibility === 'public_edit' || list.shared_role === 'editor';
   }, [canEdit, user?.id]);
 
-  const [lists, setLists] = useState<ObjectListWithMembership[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Membership is read through a GET route (#506) in a TanStack query keyed
+  // on the object: it runs alongside the page's other reads instead of
+  // queueing behind them as a server action, aborts if the user moves on,
+  // dedupes with a re-mount, and is cleared with the rest of the QueryClient
+  // on sign-out. Adds/removes stay actions and patch the cached entry.
+  const queryClient = useQueryClient();
+  const listsKey = useMemo(() => ['listsMembership', objectId] as const, [objectId]);
+  const listsQuery = useQuery<ListsMembershipResponse>({
+    queryKey: listsKey,
+    queryFn: ({ signal }) => fetchJson<ListsMembershipResponse>(`/api/lists/membership?object=${objectId}`, { signal }),
+    staleTime: 60 * 1000,
+  });
+  const lists = listsQuery.data?.lists ?? NO_LISTS;
+  const loading = listsQuery.isPending;
+  const patchLists = useCallback(
+    (fn: (prev: ObjectListWithMembership[]) => ObjectListWithMembership[]) =>
+      queryClient.setQueryData<ListsMembershipResponse>(listsKey, (prev) =>
+        prev ? { lists: fn(prev.lists) } : prev,
+      ),
+    [queryClient, listsKey],
+  );
   const [showDropdown, setShowDropdown] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [createInitialName, setCreateInitialName] = useState('');
@@ -91,13 +115,6 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
   useImperativeHandle(ref, () => ({
     openDropdown: () => setShowDropdown(true),
   }), []);
-
-  useEffect(() => {
-    getListsWithMembership(objectId).then(({ lists: data }) => {
-      setLists(data);
-      setLoading(false);
-    });
-  }, [objectId]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -163,12 +180,12 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
       if (error) {
         setToast({ type: 'error', message: `Failed to tag with ${list.name}` });
       } else {
-        setLists(prev => prev.map(l => l.id === list.id ? { ...l, is_member: true } : l));
+        patchLists(prev => prev.map(l => l.id === list.id ? { ...l, is_member: true } : l));
         setSearchTerm('');
         setToast({ type: 'success', message: `Tagged with ${list.name}` });
       }
     });
-  }, [objectId, ra, dec]);
+  }, [objectId, ra, dec, patchLists]);
 
   const handleRemove = useCallback((list: ObjectListWithMembership) => {
     startTransition(async () => {
@@ -176,11 +193,11 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
       if (error) {
         setToast({ type: 'error', message: `Failed to remove tag ${list.name}` });
       } else {
-        setLists(prev => prev.map(l => l.id === list.id ? { ...l, is_member: false } : l));
+        patchLists(prev => prev.map(l => l.id === list.id ? { ...l, is_member: false } : l));
         setToast({ type: 'success', message: `Removed tag ${list.name}` });
       }
     });
-  }, [objectId]);
+  }, [objectId, patchLists]);
 
   const handleOpenCreateModal = useCallback(() => {
     setCreateInitialName(searchTerm.trim());
@@ -197,10 +214,10 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
         return;
       }
 
-      setLists(prev => [...prev, { ...newList, is_member: true } as ObjectListWithMembership]);
+      patchLists(prev => [...prev, { ...newList, is_member: true } as ObjectListWithMembership]);
       setToast({ type: 'success', message: `Created and tagged with ${newList.name}` });
     });
-  }, [objectId, ra, dec]);
+  }, [objectId, ra, dec, patchLists]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {

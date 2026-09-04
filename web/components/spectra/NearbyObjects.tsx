@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useMemo, useRef } from 'react';
 import Link from 'next/link';
-import { getSpectra } from '@/lib/actions/spectra';
+import { useNearbyObjectsQuery } from '@/lib/hooks/useNearbyObjectsQuery';
 import { useInView } from '@/lib/hooks/useInView';
-import { SpectrumTarget, QUALITY_LABELS } from '@/lib/types';
+import { QUALITY_LABELS } from '@/lib/types';
 import { formatDistance } from '@/lib/utils/coordinate-parser';
 import { Card } from '@/components/ui/Card';
 
@@ -16,68 +16,35 @@ interface NearbyObjectsProps {
   excludeTargetIds?: string[];
 }
 
+const RADIUS_ARCSEC = 60; // 1 arcmin
+const LIMIT = 10;
+
 export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
   ra,
   dec,
   currentTargetId,
   excludeTargetIds,
 }) => {
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [nearbyObjects, setNearbyObjects] = useState<SpectrumTarget[]>([]);
-
-  // This card renders last on the page, and its 1-arcmin cone search runs
-  // the full catalog RPC (~0.5 s / 135 k buffers for ≤10 rows). Server
-  // actions serialize per client, so firing it on mount queued ahead of the
-  // spectrum, shutter and comment reads above the fold. Fetch only once the
-  // card is about to scroll into view (#499).
+  // This card renders last on the page; fetch only once it is about to
+  // scroll into view (#499). The read is a GET route backed by a purpose-built
+  // cone RPC (#506) — it used to be the 33-parameter list RPC through a
+  // server action, which queued ahead of the reads above the fold.
   const containerRef = useRef<HTMLDivElement>(null);
   const inView = useInView(containerRef);
 
-  useEffect(() => {
-    if (!inView) return;
+  const query = useNearbyObjectsQuery({
+    ra, dec, radiusArcsec: RADIUS_ARCSEC, limit: LIMIT, exclude: currentTargetId, enabled: inView,
+  });
 
-    const fetchNearbyObjects = async () => {
-      setLoading(true);
-      setError(null);
+  const nearbyObjects = useMemo(() => {
+    const rows = query.data?.objects ?? [];
+    if (!excludeTargetIds || excludeTargetIds.length === 0) return rows;
+    const excludeSet = new Set(excludeTargetIds);
+    return rows.filter((obj) => !excludeSet.has(obj.object_id));
+  }, [query.data, excludeTargetIds]);
 
-      try {
-        const result = await getSpectra(
-          {
-            coordinate_search: {
-              ra,
-              dec,
-              radius: 1,
-              radius_unit: 'arcmin',
-            },
-          },
-          1, // page
-          10, // pageSize
-          'object_id', // server overrides this with distance when coord search is active
-          'asc',
-          'objects',
-        );
-
-        if (result.error) {
-          setError(result.error);
-        } else {
-          // Filter out the current object and any excluded targets
-          const excludeSet = new Set([currentTargetId, ...(excludeTargetIds || [])]);
-          const filtered = result.spectra.filter(
-            (obj) => !excludeSet.has(obj.target_id)
-          );
-          setNearbyObjects(filtered);
-        }
-      } catch (err) {
-        setError('Failed to fetch nearby objects');
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchNearbyObjects();
-  }, [ra, dec, currentTargetId, inView]);
+  const loading = !inView || query.isPending;
+  const error = query.isError ? query.error.message : null;
 
   // Helper to get quality info
   const getQualityInfo = (quality: number) => {
@@ -165,17 +132,15 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
                   >
                     <td className="py-3 px-4">
                       <Link
-                        href={`/nirspec/objects/${encodeURIComponent(obj.target_id)}`}
+                        href={`/nirspec/objects/${encodeURIComponent(obj.object_id)}`}
                         className="text-sm font-mono text-primary hover:underline"
                       >
-                        {obj.target_id}
+                        {obj.object_id}
                       </Link>
                     </td>
                     <td className="py-3 px-4">
                       <span className="text-sm font-mono text-text-primary">
-                        {obj.distance != null
-                          ? formatDistance(obj.distance)
-                          : 'N/A'}
+                        {formatDistance(obj.distance)}
                       </span>
                     </td>
                     <td className="py-3 px-4">

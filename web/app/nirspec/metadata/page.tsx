@@ -34,7 +34,7 @@ import {
   pointingsToDs9,
   downloadBlob,
 } from '@/lib/pointings';
-import type { ProgramOverview, ObservationOverview } from '@/lib/actions/programs';
+import type { ProgramOverview, ObservationOverview } from '@/lib/server/programs';
 
 function applyProgramFilters(
   programs: ProgramOverview[],

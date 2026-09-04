@@ -3,133 +3,75 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
-import { lookupInCache, isAtCacheBoundary } from '@/lib/navigation-cache';
-import { getAdjacentObjectIds, type FilterOptions } from '@/lib/actions/spectra';
+import { lookupInCache, isAtCacheBoundary, type NavLookupResult } from '@/lib/navigation-cache';
+import { useAdjacentObjectsQuery } from '@/lib/hooks/useAdjacentObjectsQuery';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 
 interface ObjectNavigationProps {
   /** IAU object_id of the current object. */
   targetId: string;
-  filters: Partial<FilterOptions>;
   sortColumn: SortColumn;
   sortDirection: SortDirection;
-  filterStr: string; // URL params string for navigation links
+  /** The list page's URL parameter string (filters + sort): navigation links
+   *  carry it, the session cache is validated against it, and the server
+   *  fallback (GET /api/objects/adjacent) parses it. */
+  filterStr: string;
   className?: string;
 }
 
-interface NavState {
-  prev: string | null;
-  next: string | null;
-  index: number;
-  total: number;
-  loading: boolean;
-  source: 'cache' | 'server' | 'none';
+interface CacheLookup {
+  hit: NavLookupResult | null;
+  atStart: boolean;
+  atEnd: boolean;
 }
 
 /**
  * Client component for detail page navigation.
- * Uses sessionStorage cache for instant lookup, falls back to server query on miss.
+ * Uses sessionStorage cache for instant lookup, falls back to a server query
+ * on a miss or at a page boundary.
  */
 export function ObjectNavigation({
   targetId,
-  filters,
   sortColumn,
   sortDirection,
   filterStr,
   className = '',
 }: ObjectNavigationProps) {
-  const [nav, setNav] = useState<NavState>({
-    prev: null,
-    next: null,
-    index: 0,
-    total: 0,
-    loading: true,
-    source: 'none',
-  });
-
   const basePath = '/nirspec/objects';
+  const sortKey = `${sortColumn}_${sortDirection}`;
 
+  // sessionStorage is client-only: read it in an effect so the server render
+  // and the first client render agree (both "loading").
+  const [cache, setCache] = useState<CacheLookup | null>(null);
   useEffect(() => {
-    let cancelled = false;
+    const hit = lookupInCache(targetId, filterStr, sortKey);
+    const boundary = hit ? isAtCacheBoundary(targetId) : { atStart: false, atEnd: false };
+    setCache({ hit, ...boundary });
+  }, [targetId, filterStr, sortKey]);
 
-    async function loadNavigation() {
-      // First, try sessionStorage cache for instant response
-      const sortKey = `${sortColumn}_${sortDirection}`;
-      const cached = lookupInCache(targetId, filterStr, sortKey);
+  // Server fallback only on a cache miss or at a boundary (a direction the
+  // cached page cannot answer). A GET route, not a server action (#506): it
+  // runs alongside the page's other reads and aborts if the user moves on.
+  const needServer = cache !== null && (!cache.hit || cache.atStart || cache.atEnd);
+  const adjacent = useAdjacentObjectsQuery(targetId, filterStr, needServer);
 
-      if (cached) {
-        // Check if we're at a boundary and might need server data
-        const boundary = isAtCacheBoundary(targetId);
-
-        // If we have valid prev/next from cache, use it
-        if (!boundary.atStart && !boundary.atEnd) {
-          if (!cancelled) {
-            setNav({
-              prev: cached.prev,
-              next: cached.next,
-              index: cached.index,
-              total: cached.total,
-              loading: false,
-              source: 'cache',
-            });
-          }
-          return;
-        }
-
-        // At boundary - show cached data but fetch server data for missing direction
-        if (!cancelled) {
-          setNav({
-            prev: cached.prev,
-            next: cached.next,
-            index: cached.index,
-            total: cached.total,
-            loading: true, // Still loading the missing prev/next
-            source: 'cache',
-          });
-        }
-      }
-
-      // Fall back to server query
-      try {
-        const result = await getAdjacentObjectIds(targetId, filters, sortColumn, sortDirection);
-
-        if (!cancelled) {
-          setNav({
-            prev: result.prev,
-            next: result.next,
-            index: result.currentIndex,
-            total: result.total,
-            loading: false,
-            source: 'server',
-          });
-        }
-      } catch (error) {
-        console.error('Failed to fetch adjacent items:', error);
-        if (!cancelled) {
-          // Keep cached data if available, otherwise show unknown state
-          setNav(prev => ({
-            ...prev,
-            loading: false,
-            source: prev.source === 'cache' ? 'cache' : 'none',
-          }));
-        }
-      }
-    }
-
-    loadNavigation();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [targetId, filters, sortColumn, sortDirection, filterStr]);
+  // Server answers win where they exist; the cache fills the rest (and
+  // everything, if the server call fails).
+  const hit = cache?.hit ?? null;
+  const server = adjacent.data;
+  const prev = server ? server.prev : hit?.prev ?? null;
+  const next = server ? server.next : hit?.next ?? null;
+  const index = server && server.currentIndex > 0 ? server.currentIndex : hit?.index ?? 0;
+  const total = server && server.total > 0 ? server.total : hit?.total ?? 0;
+  const loading = cache === null || (needServer && adjacent.isPending);
 
   // Build navigation URLs
-  const prevHref = nav.prev
-    ? `${basePath}/${encodeURIComponent(nav.prev)}${filterStr ? `?${filterStr}` : ''}`
+  const prevHref = prev
+    ? `${basePath}/${encodeURIComponent(prev)}${filterStr ? `?${filterStr}` : ''}`
     : undefined;
 
-  const nextHref = nav.next
-    ? `${basePath}/${encodeURIComponent(nav.next)}${filterStr ? `?${filterStr}` : ''}`
+  const nextHref = next
+    ? `${basePath}/${encodeURIComponent(next)}${filterStr ? `?${filterStr}` : ''}`
     : undefined;
 
   return (
@@ -149,10 +91,10 @@ export function ObjectNavigation({
       )}
 
       <span className="text-sm font-medium text-text-primary min-w-[60px] text-center">
-        {nav.loading ? (
+        {loading ? (
           <Loader2 className="w-4 h-4 animate-spin inline" />
-        ) : nav.index > 0 && nav.total > 0 ? (
-          `${nav.index} of ${nav.total}`
+        ) : index > 0 && total > 0 ? (
+          `${index} of ${total}`
         ) : (
           '? of ?'
         )}

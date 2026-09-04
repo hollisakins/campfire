@@ -11,7 +11,7 @@ import {
   Globe,
   Lock,
 } from 'lucide-react';
-import type { ProgramOverview } from '@/lib/actions/programs';
+import type { ProgramOverview } from '@/lib/server/programs';
 
 function formatNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

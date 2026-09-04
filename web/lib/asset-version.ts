@@ -9,9 +9,13 @@
 //
 // The version is an opaque short hash over everything that can change what a
 // cutout of that field renders: every `map_layers.tile_version` for the field
-// and the default FitsGL field dataset's prefix + deploy time. Server-only:
-// reads via the service client and memoizes in the Next data cache for five
-// minutes, so a redeployed field's thumbnails change URL within that window.
+// and the default FitsGL field dataset's prefix + deploy time. The global
+// token additionally folds in the latest NIRSpec deployment time, because
+// `/api/shutters` (the cutout's shutter overlay, browser-cached for a day
+// under the same token — #506) changes only when an observation is deployed.
+// Server-only: reads via the service client and memoizes in the Next data
+// cache for five minutes, so a redeployed field's thumbnails change URL
+// within that window.
 //
 // Exposure: the per-field map (`byField`) is keyed by field name and covers
 // every field in the DB, draft-backed datasets included — it must stay on the
@@ -47,12 +51,19 @@ function shortHash(input: string): string {
 
 async function computeAssetVersions(): Promise<AssetVersions> {
   const supabase = createServiceClient();
-  const [{ data: layers }, { data: datasets }] = await Promise.all([
+  const [{ data: layers }, { data: datasets }, { data: latestDeploy }] = await Promise.all([
     supabase.from('map_layers').select('field, filter, tile_version'),
     supabase
       .from('fitsgl_datasets')
       .select('field, prefix, deployed_at, source_hashes, is_default')
       .eq('kind', 'field'),
+    // Shutter geometry only changes with a deployment (see header).
+    supabase
+      .from('deployments')
+      .select('deployed_at')
+      .order('deployed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
   ]);
 
   // field → sorted list of version inputs
@@ -84,7 +95,9 @@ async function computeAssetVersions(): Promise<AssetVersions> {
   for (const field of fields) {
     versions[field] = shortHash(inputs.get(field)!.sort().join('|'));
   }
-  const global = shortHash(fields.map((f) => `${f}=${versions[f]}`).join('|'));
+  const global = shortHash(
+    fields.map((f) => `${f}=${versions[f]}`).join('|') + `|deploy=${latestDeploy?.deployed_at ?? ''}`,
+  );
   return { byField: versions, global };
 }
 

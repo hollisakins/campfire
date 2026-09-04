@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { Database, Telescope, MapPin, Hash, Layers, HardDrive, Clock } from 'lucide-react';
-import type { DatabaseOverview } from '@/lib/actions/programs';
+import type { DatabaseOverview } from '@/lib/server/programs';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';

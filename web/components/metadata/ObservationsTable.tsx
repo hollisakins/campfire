@@ -20,7 +20,7 @@ import {
 } from '@/components/ui/ColumnVisibilityDropdown';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ProvenanceCell } from './ProvenanceCell';
-import type { ObservationOverview } from '@/lib/actions/programs';
+import type { ObservationOverview } from '@/lib/server/programs';
 
 const COLUMN_DEFS: ColumnDefinition[] = [
   { id: 'observation', label: 'Observation', alwaysVisible: true },

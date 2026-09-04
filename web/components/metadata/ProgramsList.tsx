@@ -4,7 +4,7 @@ import React from 'react';
 import { Telescope } from 'lucide-react';
 import { ProgramRow } from './ProgramRow';
 import { EmptyState } from '@/components/ui/EmptyState';
-import type { ProgramOverview } from '@/lib/actions/programs';
+import type { ProgramOverview } from '@/lib/server/programs';
 
 interface ProgramsListProps {
   programs: ProgramOverview[];

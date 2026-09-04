@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React from 'react';
 import { ExternalLink } from 'lucide-react';
-import { getSpectra } from '@/lib/actions/spectra';
-import { SpectrumTarget, QUALITY_LABELS } from '@/lib/types';
+import { useNearbyObjectsQuery } from '@/lib/hooks/useNearbyObjectsQuery';
+import { QUALITY_LABELS } from '@/lib/types';
 import { formatDistance } from '@/lib/utils/coordinate-parser';
 
 interface NearbyObjectsPreviewProps {
@@ -17,6 +17,9 @@ interface NearbyObjectsPreviewProps {
   onNavigate: (objectId: string) => void;
 }
 
+const RADIUS_ARCSEC = 0.3;
+const LIMIT = 6;
+
 export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
   ra,
   dec,
@@ -24,49 +27,17 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
   queueIds,
   onNavigate,
 }) => {
-  const [loading, setLoading] = useState(true);
-  const [nearbyObjects, setNearbyObjects] = useState<SpectrumTarget[]>([]);
-  const currentIdRef = useRef(currentObjectId);
-
-  useEffect(() => {
-    currentIdRef.current = currentObjectId;
-
-    const fetchNearby = async () => {
-      setLoading(true);
-      try {
-        const result = await getSpectra(
-          {
-            coordinate_search: { ra, dec, radius: 0.3, radius_unit: 'arcsec' },
-          },
-          1,
-          6,
-          'object_id',
-          'asc',
-          'objects',
-        );
-
-        if (currentIdRef.current !== currentObjectId) return;
-
-        if (!result.error) {
-          const filtered = result.spectra.filter(obj => obj.target_id !== currentObjectId);
-          setNearbyObjects(filtered);
-        } else {
-          setNearbyObjects([]);
-        }
-      } catch {
-        if (currentIdRef.current === currentObjectId) setNearbyObjects([]);
-      } finally {
-        if (currentIdRef.current === currentObjectId) setLoading(false);
-      }
-    };
-
-    fetchNearby();
-  }, [ra, dec, currentObjectId]);
+  // GET route + cone RPC (#506); keyed on the coordinates, so switching
+  // objects in the overlay never shows a stale neighbour list.
+  const query = useNearbyObjectsQuery({
+    ra, dec, radiusArcsec: RADIUS_ARCSEC, limit: LIMIT, exclude: currentObjectId,
+  });
+  const nearbyObjects = query.data?.objects ?? [];
 
   const getQualityIcon = (quality: number) =>
     QUALITY_LABELS.find(q => q.value === quality)?.icon || '';
 
-  if (loading) {
+  if (query.isPending) {
     return (
       <div className="px-4 py-3 border-b border-border">
         <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wide">
@@ -91,10 +62,8 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
       </h3>
       <div className="space-y-0.5">
         {nearbyObjects.map(obj => {
-          // In objects mode the row's `target_id` field carries the IAU object_id.
-          const objId = obj.target_id;
+          const objId = obj.object_id;
           const inQueue = queueIdSet.has(objId);
-          const gratings = obj.gratings ?? obj.spectra.map(s => s.grating);
 
           return (
             <button
@@ -114,14 +83,14 @@ export const NearbyObjectsPreview: React.FC<NearbyObjectsPreviewProps> = ({
                   {objId}
                 </span>
                 <span className="font-mono text-text-secondary dark:text-text-tertiary flex-shrink-0">
-                  {obj.distance != null ? formatDistance(obj.distance) : ''}
+                  {formatDistance(obj.distance)}
                 </span>
                 {!inQueue && (
                   <ExternalLink className="w-3 h-3 text-text-secondary dark:text-text-tertiary flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
                 )}
               </div>
               <div className="flex items-center gap-1 mt-0.5 ml-5">
-                {gratings.map(g => (
+                {obj.gratings.map(g => (
                   <span
                     key={g}
                     className="px-1 rounded text-[10px] leading-tight bg-card dark:bg-card-hover text-text-secondary"
