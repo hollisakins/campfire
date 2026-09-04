@@ -95,3 +95,20 @@ def test_get_unique_objects_sanitizes_redshift():
 
     objects = get_unique_objects(t)
     assert objects[0]['redshift_best'] is None
+
+
+def test_get_spectra_records_carries_rls_scope_columns():
+    """Perf T2-A (#504): observation always, program_slug when the ECSV meta has it.
+
+    The database trigger owns both columns; the deploy sends them as belt and
+    braces, so they must agree with the targets upsert built from the same
+    summary (program_slug from meta, observation from the obs name).
+    """
+    t = _spectra_table()
+    r1, r2 = get_spectra_records(t, 'obs1')
+    assert r1['observation'] == 'obs1' and r2['observation'] == 'obs1'
+    assert 'program_slug' not in r1  # old ECSV: no meta, let the trigger fill it
+
+    t.meta['program_slug'] = 'capers'
+    r1, r2 = get_spectra_records(t, 'obs1')
+    assert r1['program_slug'] == 'capers' and r2['program_slug'] == 'capers'

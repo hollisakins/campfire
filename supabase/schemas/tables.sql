@@ -339,6 +339,17 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     -- row keeps it published; forgetting to *filter* a reader is the hazard the
     -- predicate guards). Mirrors storage_objects.status.
     "deploy_status" "text" NOT NULL DEFAULT 'published' CONSTRAINT "spectra_deploy_status_check" CHECK (("deploy_status" = ANY (ARRAY['draft'::"text", 'published'::"text", 'revoked'::"text"]))),
+    -- Perf T2-A (#504, decision D-A): the parent target's program and
+    -- observation, denormalized so the RLS policies on this table (and on
+    -- storage_objects, which routes through it) are row-local instead of
+    -- materializing every accessible target per read. Owned by the
+    -- sync_spectra_target_scope trigger: any INSERT, or UPDATE of target_id /
+    -- program_slug / observation, re-copies both from targets, so a client
+    -- value is accepted only when it already agrees with the parent; a later
+    -- change to the target row cascades via propagate_target_scope_to_spectra.
+    -- The deploy CLI still sends both explicitly (belt and braces).
+    "program_slug" "text" NOT NULL,
+    "observation" "text" NOT NULL,
     -- Stable per-spectrum identifier derived from fits_path: strips the leading
     -- directory and the trailing "_spec.fits" suffix (e.g. ember_cosmos_p1_prism_clear_12345).
     -- Generated/stored so it stays in sync with fits_path with no application code path.
@@ -1360,7 +1371,16 @@ CREATE TABLE IF NOT EXISTS "public"."shutters" (
     "aperture_name" "text" DEFAULT 'MSA'::"text" NOT NULL,
     "aperture_width_arcsec" double precision DEFAULT 0.22 NOT NULL,
     "aperture_height_arcsec" double precision DEFAULT 0.46 NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"()
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    -- Perf T2-A (#504): the B1 (#217) publication gate, denormalized from the
+    -- shutter's target (shutters.object_id is the target_id namespace) so the
+    -- read policy is row-local instead of probing objects once per shutter
+    -- (a 5 000-row map page cost ~30 k buffers for non-admins). Owned by the
+    -- sync_shutter_publication trigger on insert and cascaded from
+    -- targets.has_published_spectrum by propagate_target_publication_to_shutters;
+    -- a shutter with no targets row stays visible (default true), matching the
+    -- orphan behaviour of the old NOT EXISTS form.
+    "has_published_spectrum" boolean NOT NULL DEFAULT true
 );
 
 

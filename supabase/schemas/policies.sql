@@ -358,13 +358,22 @@ ALTER TABLE object_photometry ENABLE ROW LEVEL SECURITY;
 -- The object subquery mirrors select_objects_by_access, including its share-link
 -- conjuncts (docs/design-public-mirror.md §5.2). Re-derived inline rather than
 -- inherited, matching how this policy already re-derives the program check.
+--
+-- Perf T2-A (#504): correlated on the object PRIMARY KEY rather than
+-- `object_id IN (SELECT o.id ...)`. Under PostgREST's generic plans the IN form
+-- hashed every accessible object (~1 100 buffers, 21 ms) to answer a one-row
+-- read; the PK probe costs ~4 buffers per photometry row. This is the shape
+-- the audit's crossover analysis (~2 400 rows) endorses for a table that is
+-- only ever read one object at a time -- it is not the blanket EXISTS rewrite
+-- the audit warns against for spectra, which gets a denormalized column instead.
 DROP POLICY IF EXISTS "select_object_photometry_by_access" ON object_photometry;
 CREATE POLICY "select_object_photometry_by_access"
   ON object_photometry FOR SELECT
   USING (
-    object_id IN (
-      SELECT o.id FROM objects o
-      WHERE o.programs && (SELECT public.accessible_program_slugs())
+    object_id IS NOT NULL AND EXISTS (
+      SELECT 1 FROM objects o
+      WHERE o.id = object_photometry.object_id
+        AND o.programs && (SELECT public.accessible_program_slugs())
         -- B1 (#217): no photometry for objects with no published spectrum.
         AND (o.has_published_spectrum OR (SELECT public.is_admin())
              OR (SELECT public.link_sees_drafts()))
@@ -630,14 +639,24 @@ CREATE POLICY "admin_manage_list_shares"
 ALTER TABLE spectra ENABLE ROW LEVEL SECURITY;
 
 -- Spectra visible if their parent target is in an accessible program.
+--
+-- Perf T2-A (#504, decision D-A): row-local. program_slug and observation are
+-- copies of the parent target's columns (trigger-owned, see triggers.sql §5d),
+-- so the program gate is the same `= ANY((SELECT ...))` shape targets and
+-- objects use (2-5 buffers) instead of `target_id IN (SELECT ... FROM targets)`,
+-- which under PostgREST's generic plans hashed every accessible target
+-- (~35 k rows, ~9.7 k buffers on prod) before looking at the row.
+-- storage_objects inherits the win: its spectrum branch probes this table.
 DROP POLICY IF EXISTS "select_spectra_by_access" ON spectra;
 CREATE POLICY "select_spectra_by_access"
   ON spectra FOR SELECT
   USING (
-    target_id IN (
-      SELECT t.target_id FROM targets t
-      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
-    )
+    program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+    -- Share links (docs/design-public-mirror.md §5.2): narrow from the whole
+    -- program to the one shared observation. The old targets subquery got this
+    -- for free from select_targets_by_access; row-local means restating it.
+    AND ((SELECT NOT public.is_link_account())
+         OR observation = (SELECT public.link_observation()))
     -- B1 (#217): PRIMARY per-row gate. Only 'published' spectra reach non-admins;
     -- 'draft' and 'revoked' are hidden. This is the sole gate for the user-client
     -- web routes that read spectra directly and never call an RPC (/api/spectrum,
@@ -645,8 +664,9 @@ CREATE POLICY "select_spectra_by_access"
     --
     -- ...and, since share links (docs/design-public-mirror.md §6), an
     -- include_drafts link account -- but only for rows already inside its scope,
-    -- which the targets subquery above enforces. 'revoked' stays hidden from
-    -- links too: link_sees_drafts() relaxes the gate to draft, never past it.
+    -- which the program + observation conjuncts above enforce. 'revoked' stays
+    -- hidden from links too: link_sees_drafts() relaxes the gate to draft,
+    -- never past it.
     AND (deploy_status = 'published' OR (SELECT public.is_admin())
          OR (deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
   );
@@ -680,20 +700,15 @@ CREATE POLICY "update_spectra_dq_by_access"
   ON spectra FOR UPDATE TO authenticated
   USING (
     (SELECT public.can_inspect())
-    AND target_id IN (
-      SELECT t.target_id FROM targets t
-      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
-    )
+    -- Perf T2-A (#504): row-local, same as select_spectra_by_access.
+    AND program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     -- B1 (#217): a non-admin inspector cannot set DQ flags on an unpublished
     -- spectrum (can't see it via the select policy either).
     AND (deploy_status = 'published' OR (SELECT public.is_admin()))
   )
   WITH CHECK (
     (SELECT public.can_inspect())
-    AND target_id IN (
-      SELECT t.target_id FROM targets t
-      WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
-    )
+    AND program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     AND (deploy_status = 'published' OR (SELECT public.is_admin()))
   );
 
@@ -710,6 +725,18 @@ ALTER TABLE comments ENABLE ROW LEVEL SECURITY;
 -- talking to each other about a source, often candidly and often about sources
 -- the link holder can legitimately see. Scoping it to the shared observation
 -- would still expose that discussion, so deny outright rather than narrow.
+--
+-- Perf T2-A (#504): both branches are correlated on the parent PRIMARY KEY
+-- (targets.id / objects.id) instead of `IN (SELECT ... FROM targets/objects)`.
+-- The IN form was prod's single most expensive statement: under PostgREST's
+-- generic plans it hashed every accessible target (~35 k rows, ~9.7 k buffers,
+-- 230 ms mean over 166 k calls = 37 % of all DB time) to answer a read that
+-- returns a handful of rows. The PK probe is ~4 buffers per comment. comments
+-- is a few hundred rows and is only ever read per target / object / author,
+-- so it sits far below the audit's ~2 400-row crossover where a correlated
+-- probe stops paying; a denormalized column here would add a sync surface
+-- (objects.programs changes at every reconcile, comments are re-pointed by
+-- rebuilds) for no measurable gain.
 DROP POLICY IF EXISTS "select_comments_by_access" ON comments;
 CREATE POLICY "select_comments_by_access"
   ON comments FOR SELECT
@@ -717,16 +744,18 @@ CREATE POLICY "select_comments_by_access"
     (SELECT NOT public.is_link_account())
     AND (
       -- Target-level comments
-      (target_id IS NOT NULL AND target_id IN (
-        SELECT t.id FROM targets t
-        WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+      (target_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM targets t
+        WHERE t.id = comments.target_id
+          AND t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
           AND (t.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
       ))
       OR
       -- Object-level comments
-      (target_id IS NULL AND object_id IS NOT NULL AND object_id IN (
-        SELECT o.id FROM objects o
-        WHERE o.programs && (SELECT public.accessible_program_slugs())
+      (target_id IS NULL AND object_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM objects o
+        WHERE o.id = comments.object_id
+          AND o.programs && (SELECT public.accessible_program_slugs())
           AND (o.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
       ))
     )
@@ -739,15 +768,17 @@ CREATE POLICY "insert_comments_by_access"
   WITH CHECK (
     (
       -- Target-level comments
-      (target_id IS NOT NULL AND target_id IN (
-        SELECT t.id FROM targets t
-        WHERE t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+      (target_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM targets t
+        WHERE t.id = comments.target_id
+          AND t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
       ))
       OR
       -- Object-level comments
-      (target_id IS NULL AND object_id IS NOT NULL AND object_id IN (
-        SELECT o.id FROM objects o
-        WHERE o.programs && (SELECT public.accessible_program_slugs())
+      (target_id IS NULL AND object_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM objects o
+        WHERE o.id = comments.object_id
+          AND o.programs && (SELECT public.accessible_program_slugs())
       ))
     )
     AND (SELECT public.can_comment())
@@ -1007,20 +1038,29 @@ CREATE POLICY "admin_select_deploy_scope_state"
 
 ALTER TABLE storage_objects ENABLE ROW LEVEL SECURITY;
 
--- Admins can read all storage objects.
+-- Perf T2-A (#504, audit DB-17): the former admin_select_storage_objects policy
+-- is folded into select_storage_objects_by_access below as its first
+-- disjunct. Two permissive SELECT policies on one table are OR-ed by the
+-- planner anyway, but each is a separate qual and the admin one forced the
+-- program-member branch to be evaluated alongside it on every admin read.
 DROP POLICY IF EXISTS "admin_select_storage_objects" ON storage_objects;
-CREATE POLICY "admin_select_storage_objects"
-  ON storage_objects FOR SELECT TO authenticated
-  USING ((SELECT public.is_admin()));
 
--- Program members can read PUBLISHED, active storage objects in programs they can
--- access. Mirrors the spectra/targets B1 (#217) publish gate without depending on
--- the (often-NULL) observation column: spectrum-family rows simply inherit their
--- parent spectrum's visibility (program access + published); exposure/object-level
--- rows are gated by their deployment (program via its observation + published
--- status). Drafts/revoked and out-of-program rows stay hidden (admins see them via
--- admin_select_storage_objects above). Rows with neither a spectrum_id nor a
--- deployment_id (e.g. backfilled NIRCam) are admin-only until those land.
+-- Admins read everything. Program members can read PUBLISHED, active storage
+-- objects in programs they can access. Mirrors the spectra/targets B1 (#217)
+-- publish gate without depending on the (often-NULL) observation column:
+-- spectrum-family rows simply inherit their parent spectrum's visibility
+-- (program access + published); exposure/object-level rows are gated by their
+-- deployment (program via its observation + published status). Drafts/revoked
+-- and out-of-program rows stay hidden from non-admins. Rows with neither a
+-- spectrum_id nor a deployment_id (e.g. backfilled NIRCam) are admin-only until
+-- those land.
+--
+-- Perf T2-A (#504): the spectrum branch reads spectra.program_slug /
+-- spectra.observation (trigger-owned copies of the target's columns) instead of
+-- joining targets, so the probe is one index lookup on spectra(spectrum_id) and
+-- the spectra RLS it runs under is itself row-local now. Before, the nested
+-- select_spectra_by_access hashed every accessible target per row (~900
+-- buffers for a one-row read on the download / manifest path).
 --
 -- Share links (docs/design-public-mirror.md §5.2/§5.3) enter here in two ways.
 -- allow_download gates the whole policy: a link minted with downloads off sees
@@ -1038,19 +1078,20 @@ DROP POLICY IF EXISTS "select_storage_objects_by_access" ON storage_objects;
 CREATE POLICY "select_storage_objects_by_access"
   ON storage_objects FOR SELECT TO authenticated
   USING (
+    (SELECT public.is_admin())
+    OR (
     status = 'active'
     AND ((SELECT NOT public.is_link_account())
          OR (SELECT public.link_allows_download()))
     AND (
       (storage_objects.spectrum_id IS NOT NULL AND EXISTS (
          SELECT 1 FROM spectra s
-         JOIN targets t ON t.target_id = s.target_id
          WHERE s.spectrum_id = storage_objects.spectrum_id
            AND (s.deploy_status = 'published'
                 OR (s.deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
-           AND t.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+           AND s.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
            AND ((SELECT NOT public.is_link_account())
-                OR t.observation = (SELECT public.link_observation()))))
+                OR s.observation = (SELECT public.link_observation()))))
       OR
       (storage_objects.spectrum_id IS NULL AND storage_objects.deployment_id IS NOT NULL AND EXISTS (
          SELECT 1 FROM deployments d
@@ -1067,6 +1108,7 @@ CREATE POLICY "select_storage_objects_by_access"
            AND ((SELECT NOT public.is_link_account())
                 OR d.observation = (SELECT public.link_observation())
                 OR d.field = (SELECT public.link_field()))))
+    )
     )
   );
 
@@ -1240,12 +1282,21 @@ CREATE POLICY "admin_slit_regions_delete"
 
 ALTER TABLE shutters ENABLE ROW LEVEL SECURITY;
 
--- All authenticated users can read shutters, EXCEPT those belonging to an object
--- whose spectra are all unpublished (B1 #217). NOT EXISTS form: hidden only when a
--- matching objects row exists AND is unpublished — orphan shutters stay visible,
--- zero change while everything is published. NOTE: the /api/v1/shutters route and
--- the get_*_shutters RPCs run under the service role (RLS bypassed) and gate
--- separately. Program-scoping of this table is tracked in #229.
+-- All authenticated users can read shutters, EXCEPT those belonging to a target
+-- with no published spectrum (B1 #217).
+--
+-- Perf T2-A (#504, audit DB-V1): row-local. has_published_spectrum is a
+-- trigger-owned copy of the shutter's target's flag (triggers.sql §5d), so the
+-- gate is a column test instead of the old per-row NOT EXISTS probe into
+-- objects, which cost a 5 000-row map page ~30 k buffers for non-admins (8× an
+-- admin's). Semantics are the target's, not the object's: shutters.object_id
+-- is the target_id namespace, and the old objects join only ever matched the
+-- object's namesake target, so a draft re-observation of a published object
+-- used to expose its MSA geometry. A shutter with no targets row keeps the
+-- default (true) and stays visible, as orphans did before. NOTE: the
+-- get_*_shutters RPCs are SECURITY INVOKER, so this policy is their gate;
+-- /api/v1/shutters runs under the service role and gates separately.
+-- Program-scoping of this table is tracked in #229.
 -- Same shape as slit_regions above: no program gate of its own, so the share
 -- link scope conjunct is what keeps a NIRSpec link off every other
 -- observation's shutter layout (docs/design-public-mirror.md §5.2).
@@ -1258,12 +1309,9 @@ CREATE POLICY "Authenticated users can view shutters"
       OR observation = (SELECT public.link_observation())
     )
     AND (
-      (SELECT public.is_admin())
+      has_published_spectrum
+      OR (SELECT public.is_admin())
       OR (SELECT public.link_sees_drafts())
-      OR NOT EXISTS (
-        SELECT 1 FROM objects o
-        WHERE o.object_id = shutters.object_id AND o.has_published_spectrum = false
-      )
     )
   );
 
