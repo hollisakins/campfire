@@ -5555,7 +5555,6 @@ $$;
 REVOKE ALL ON FUNCTION public.refresh_filter_options() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.refresh_filter_options TO authenticated, service_role;
 
-GRANT ALL ON FUNCTION public.refresh_filter_options() TO anon;
 GRANT ALL ON FUNCTION public.refresh_filter_options() TO authenticated;
 GRANT ALL ON FUNCTION public.refresh_filter_options() TO service_role;
 
