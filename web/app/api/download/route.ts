@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { generateDownloadUrl, generateDownloadUrls } from '@/lib/r2';
 import { trackDownload, extractTargetIdFromFitsPath } from '@/lib/actions/download-tracking';
 
@@ -10,10 +10,7 @@ import { trackDownload, extractTargetIdFromFitsPath } from '@/lib/actions/downlo
  * Requires authentication.
  */
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-
-  // Check authentication
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json(
@@ -85,10 +82,7 @@ export async function GET(request: NextRequest) {
  * Body: { paths: string[] }
  */
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-
-  // Check authentication
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json(

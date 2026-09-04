@@ -1,7 +1,8 @@
 'use server';
 
-import { createClient, createServiceClient } from '@/lib/supabase/server';
-import { getAccessibleProgramSlugs } from '@/lib/accessible-programs';
+import { createServiceClient } from '@/lib/supabase/server';
+import { getAccessContext } from '@/lib/auth/access-context';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { paginateRpc } from '@/lib/supabase/paginate';
 import type { SpectrumTarget, Program, Spectrum, ObjectDetail, ObjectMemberTarget, PinnedObjectMetadata } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
@@ -65,10 +66,7 @@ export async function getSpectra(
   } = {}
 ): Promise<PaginatedSpectraResult> {
   const includeCount = options.includeCount ?? true;
-  const supabase = await createClient();
-
-  // Check if user is authenticated
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return {
@@ -86,8 +84,8 @@ export async function getSpectra(
     // Which programs can this user access? One RPC to the SQL authority
     // (accessible_program_slugs) rather than a hand-rolled grants + public
     // union: the union is wrong for link accounts (scoped program only, no
-    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
-    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
+    // is_public) and admins (every program). See web/lib/auth/access-context.ts.
+    const accessibleProgramSlugs = (await getAccessContext(user.id)).accessibleSlugs;
 
     if (accessibleProgramSlugs.length === 0) {
       return {
@@ -288,10 +286,7 @@ export async function getSpectrumById(targetId: string): Promise<{
   error?: string;
   isAuthenticated: boolean;
 }> {
-  const supabase = await createClient();
-
-  // Check if user is authenticated
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return {
@@ -304,8 +299,8 @@ export async function getSpectrumById(targetId: string): Promise<{
     // Which programs can this user access? One RPC to the SQL authority
     // (accessible_program_slugs) rather than a hand-rolled grants + public
     // union: the union is wrong for link accounts (scoped program only, no
-    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
-    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
+    // is_public) and admins (every program). See web/lib/auth/access-context.ts.
+    const accessibleProgramSlugs = (await getAccessContext(user.id)).accessibleSlugs;
 
     const { data, error } = await supabase
       .from('targets')
@@ -437,9 +432,7 @@ export async function getObjectById(objectId: string): Promise<{
   error?: string;
   isAuthenticated: boolean;
 }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return { object: null, isAuthenticated: false };
@@ -447,9 +440,9 @@ export async function getObjectById(objectId: string): Promise<{
 
   try {
     // Fetch the accessible-slug list (SQL authority — see
-    // web/lib/accessible-programs.ts) and the object row in parallel.
+    // web/lib/auth/access-context.ts) and the object row in parallel.
     const [accessibleProgramSlugs, { data: obj, error: objError }] = await Promise.all([
-      getAccessibleProgramSlugs(supabase),
+      getAccessContext(user.id).then(a => a.accessibleSlugs),
       supabase.from('objects').select('*').eq('object_id', objectId).single(),
     ]);
 
@@ -639,9 +632,7 @@ export async function getObjectMetadata(objectId: string): Promise<{
 export async function getPinnedObjectsMetadata(
   pins: { target_id: string; route: 'objects' | 'targets' }[]
 ): Promise<{ metadata: Record<string, PinnedObjectMetadata>; isAuthenticated: boolean }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) {
     return { metadata: {}, isAuthenticated: false };
   }
@@ -696,10 +687,7 @@ export async function getPinnedObjectsMetadata(
  * Includes public programs + programs the user has explicit access to.
  */
 export async function getFilterOptions(): Promise<FilterOptionsResult> {
-  const supabase = await createClient();
-
-  // Check if user is authenticated
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return {
@@ -711,9 +699,9 @@ export async function getFilterOptions(): Promise<FilterOptionsResult> {
 
   try {
     // Fetch the accessible-slug list (SQL authority — see
-    // web/lib/accessible-programs.ts) and all RLS-visible programs in parallel.
+    // web/lib/auth/access-context.ts) and all RLS-visible programs in parallel.
     const [accessibleSlugList, { data: allPrograms, error: programsError }] = await Promise.all([
-      getAccessibleProgramSlugs(supabase),
+      getAccessContext(user.id).then(a => a.accessibleSlugs),
       supabase.from('programs').select('*'),
     ]);
 
@@ -814,9 +802,7 @@ export async function getInspectionQueueIds(
   sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc',
 ): Promise<{ ids: string[]; error?: string }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return { ids: [], error: 'Not authenticated' };
@@ -826,8 +812,8 @@ export async function getInspectionQueueIds(
     // Which programs can this user access? One RPC to the SQL authority
     // (accessible_program_slugs) rather than a hand-rolled grants + public
     // union: the union is wrong for link accounts (scoped program only, no
-    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
-    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
+    // is_public) and admins (every program). See web/lib/auth/access-context.ts.
+    const accessibleProgramSlugs = (await getAccessContext(user.id)).accessibleSlugs;
 
     if (accessibleProgramSlugs.length === 0) {
       return { ids: [] };
@@ -888,9 +874,7 @@ export async function getAdjacentObjectIds(
   currentIndex: number;
   total: number;
 }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return { prev: null, next: null, currentIndex: 0, total: 0 };
@@ -900,8 +884,8 @@ export async function getAdjacentObjectIds(
     // Which programs can this user access? One RPC to the SQL authority
     // (accessible_program_slugs) rather than a hand-rolled grants + public
     // union: the union is wrong for link accounts (scoped program only, no
-    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
-    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
+    // is_public) and admins (every program). See web/lib/auth/access-context.ts.
+    const accessibleProgramSlugs = (await getAccessContext(user.id)).accessibleSlugs;
 
     if (accessibleProgramSlugs.length === 0) {
       return { prev: null, next: null, currentIndex: 0, total: 0 };

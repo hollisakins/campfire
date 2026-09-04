@@ -1,6 +1,8 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
+import { getAccessContext } from '@/lib/auth/access-context';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import type {
   ObjectList,
   ObjectListMember,
@@ -88,9 +90,7 @@ export async function getAvailableLists(): Promise<{
   lists: ObjectList[];
   error?: string;
 }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   const [{ data, error }, shareRoles] = await Promise.all([
     supabase
@@ -120,9 +120,7 @@ export async function getListsWithMembership(objectId: number): Promise<{
   lists: ObjectListWithMembership[];
   error?: string;
 }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   const [listsResult, membersResult, shareRoles] = await Promise.all([
     supabase
@@ -161,17 +159,10 @@ export async function addObjectToList(
   ra: number,
   dec: number,
 ): Promise<{ error?: string }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('can_comment')
-    .eq('user_id', user.id)
-    .single();
-  if (!profile?.can_comment) return { error: 'You do not have permission to edit tags' };
+  if (!(await getAccessContext(user.id)).canComment) return { error: 'You do not have permission to edit tags' };
 
   // Verify user can edit this list (owner, public_edit, or editor share)
   const { ok, error: checkError } = await canEditListMembers(supabase, listId, user.id);
@@ -201,17 +192,10 @@ export async function removeObjectFromList(
   listId: number,
   objectId: number,
 ): Promise<{ error?: string }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('can_comment')
-    .eq('user_id', user.id)
-    .single();
-  if (!profile?.can_comment) return { error: 'You do not have permission to edit tags' };
+  if (!(await getAccessContext(user.id)).canComment) return { error: 'You do not have permission to edit tags' };
 
   // Verify user can edit this list (owner, public_edit, or editor share)
   const { ok, error: checkError } = await canEditListMembers(supabase, listId, user.id);
@@ -289,9 +273,7 @@ export async function createList(
   color?: string | null,
   slug?: string,
 ): Promise<{ list?: ObjectList; error?: string }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) {
     return { error: 'Not authenticated' };
   }
@@ -386,9 +368,7 @@ export async function createList(
  * Delete a user list (cannot delete system lists).
  */
 export async function deleteList(listId: number): Promise<{ error?: string }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
   const { data: list } = await supabase
@@ -419,9 +399,7 @@ export async function updateList(
   listId: number,
   updates: { name?: string; slug?: string; description?: string; visibility?: 'private' | 'public_read' | 'public_edit'; icon?: string | null; color?: string | null },
 ): Promise<{ error?: string }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
   const { data: list } = await supabase
@@ -491,9 +469,7 @@ export async function getListsOverview(): Promise<{
   lists: ObjectListOverview[];
   error?: string;
 }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   const [{ data, error }, shareRoles] = await Promise.all([
     supabase
@@ -551,7 +527,7 @@ export async function getListBySlug(
   }
 
   // Creator name + current user's share role (issue #450)
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user } = await getRequestIdentity();
   const [nameMap, shareResult] = await Promise.all([
     listData.created_by
       ? fetchCreatorNames(supabase, [listData.created_by])
@@ -640,9 +616,7 @@ export async function getMyLists(): Promise<{
   lists: ObjectListOverview[];
   error?: string;
 }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) {
     return { lists: [], error: 'Not authenticated' };
   }
@@ -728,9 +702,7 @@ export async function searchUsersForSharing(query: string): Promise<{
   const trimmed = query.trim();
   if (trimmed.length < 2) return { users: [] };
 
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) return { users: [], error: 'Not authenticated' };
 
   // Escape ILIKE wildcards, then double-quote the value for the or() filter —
@@ -761,9 +733,7 @@ export async function addListShare(
   granteeUserId: string,
   role: ListShareRole,
 ): Promise<{ error?: string }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
   const { data: list } = await supabase
@@ -802,9 +772,7 @@ export async function updateListShare(
   shareId: number,
   role: ListShareRole,
 ): Promise<{ error?: string }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
   const { data, error } = await supabase
@@ -828,9 +796,7 @@ export async function updateListShare(
  * Leave a tag that was shared with the current user (delete own share).
  */
 export async function leaveSharedList(listId: number): Promise<{ error?: string }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
   const { data, error } = await supabase
@@ -855,9 +821,7 @@ export async function leaveSharedList(listId: number): Promise<{ error?: string 
  * remove their own share (leave the tag).
  */
 export async function removeListShare(shareId: number): Promise<{ error?: string }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
   const { data, error } = await supabase

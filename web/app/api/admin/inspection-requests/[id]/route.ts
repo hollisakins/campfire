@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { isAdminUser } from '@/lib/api-helpers';
+import { getRequestIdentity } from '@/lib/auth/identity';
+import { createServiceClient } from '@/lib/supabase/server';
 import { sendInspectionDecisionNotification } from '@/lib/email/resend';
 
 /**
@@ -15,8 +17,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
@@ -24,13 +25,7 @@ export async function PATCH(
 
   const serviceClient = createServiceClient();
 
-  const { data: profile } = await serviceClient
-    .from('user_profiles')
-    .select('is_admin')
-    .eq('user_id', user.id)
-    .single();
-
-  if (!profile?.is_admin) {
+  if (!(await isAdminUser(user.id))) {
     return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
   }
 

@@ -1,8 +1,8 @@
 import { SignInLink } from '@/components/auth/SignInLink';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { LogIn } from 'lucide-react';
 import { getFitsglDatasets } from '@/lib/actions/map';
 import { getNircamFields } from '@/lib/actions/nircam';
-import { createClient } from '@/lib/supabase/server';
 import { CutoutsContent } from './CutoutsContent';
 
 export const dynamic = 'force-dynamic';
@@ -24,8 +24,7 @@ export default async function NircamFieldCutoutsPage({ params, searchParams }: C
   const sp = await searchParams;
   const str = (v: string | string[] | undefined) => (typeof v === 'string' ? v : undefined);
 
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user } = await getRequestIdentity();
 
   if (!user) {
     return (

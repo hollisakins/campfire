@@ -87,7 +87,8 @@ Requires `.env.local` with Supabase + R2 credentials (see `web/README.md`).
 - **Server actions**: `web/lib/actions/` with `"use server"` directive
 - **Types**: `web/lib/types.ts` (DB types), `web/lib/actions/spectra-types.ts` (sort columns)
 - **Flags**: `web/lib/flags.ts` — bitmask flags (spectral features, object flags, DQ) + quality enum
-- **Auth**: `useAuth()` from `web/lib/contexts/AuthContext.tsx`
+- **Auth (client)**: `useAuth()` from `web/lib/contexts/AuthContext.tsx`
+- **Auth (server)**: identity is resolved once per request — `getRequestIdentity()` / `getRequestPrincipal()` / `requireAdmin()` from `web/lib/auth/identity.ts` (cookie session verified locally against `SUPABASE_JWT_SECRET`; `middleware.ts` refreshes the cookie), and `getAccessContext(userId)` from `web/lib/auth/access-context.ts` (60 s per-user memo of admin flag, share-link scope and accessible program slugs, mirroring `accessible_program_slugs()`). Bearer `/api/v1` routes go through `validateAuth()` / `authenticateApiRequest()` in `web/lib/api-auth.ts`. Never call `supabase.auth.getUser()` or read `SUPABASE_SERVICE_ROLE_KEY` directly — ESLint rejects both; use `createServiceClient()` from `web/lib/supabase/service.ts`.
 - **Theme/Prefs**: `useTheme()` and `usePreferences()` from respective contexts in `web/lib/contexts/`
 - **Plotting**: `web/components/spectra/plotting-utils.ts`
 

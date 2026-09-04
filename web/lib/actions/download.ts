@@ -1,12 +1,13 @@
 'use server';
 
 import { getSpectra } from './spectra';
+import { getAccessContext } from '@/lib/auth/access-context';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import type { SortColumn, SortDirection, ViewMode } from './spectra-types';
 import { FITS_DOWNLOAD_FILE_LIMIT, CSV_EXPORT_ROW_LIMIT } from './spectra-types';
 import type { FilterOptions } from './filter-params';
 import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
-import { getAccessibleProgramSlugs } from '@/lib/accessible-programs';
 import { paginateRpcKeyset } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
 import { DQ_FLAGS } from '@/lib/flags';
@@ -99,8 +100,7 @@ export async function generateCSV(
   viewMode: ViewMode = 'objects'
 ): Promise<{ csv: string | null; error: string | null }> {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const { user, supabase } = await getRequestIdentity();
 
     if (!user) {
       return { csv: null, error: 'Not authenticated' };
@@ -109,8 +109,8 @@ export async function generateCSV(
     // Which programs can this user access? One RPC to the SQL authority
     // (accessible_program_slugs) rather than a hand-rolled grants + public
     // union: the union is wrong for link accounts (scoped program only, no
-    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
-    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
+    // is_public) and admins (every program). See web/lib/auth/access-context.ts.
+    const accessibleProgramSlugs = (await getAccessContext(user.id)).accessibleSlugs;
 
     if (accessibleProgramSlugs.length === 0) {
       return { csv: null, error: 'No accessible programs' };
@@ -503,8 +503,7 @@ export async function generateFitsDownloadUrl(
     }
 
     // Get user for tracking
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const { user, supabase } = await getRequestIdentity();
 
     let keys: string[];
     let downloadTargetIds: string[];
@@ -685,8 +684,7 @@ export async function generateObjectFitsDownloadUrls(
       };
     }
 
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const { user, supabase } = await getRequestIdentity();
     if (!user) {
       return { files: null, zipFilename: null, error: 'Not authenticated' };
     }

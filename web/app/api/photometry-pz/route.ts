@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { generateDownloadUrl } from '@/lib/r2';
 import { storageKey } from '@/lib/layout';
 
@@ -13,9 +13,7 @@ import { storageKey } from '@/lib/layout';
  * The field is derived from the DB record, not from user input.
  */
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json(

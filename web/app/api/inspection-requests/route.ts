@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { sendInspectionRequestNotification } from '@/lib/email/resend';
 
 /**
@@ -9,8 +9,7 @@ import { sendInspectionRequestNotification } from '@/lib/email/resend';
  * Used by the profile role/permissions card to reflect a pending request.
  */
 export async function GET() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
@@ -42,8 +41,7 @@ export async function GET() {
  * Body: { message?: string }
  */
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });

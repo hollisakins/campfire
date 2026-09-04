@@ -1,6 +1,6 @@
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
 
 export interface Session {
   id: string;
@@ -21,9 +21,7 @@ export interface SessionsResult {
  * Queries the refresh_tokens table — RLS scopes to the authenticated user.
  */
 export async function getUserSessions(): Promise<SessionsResult> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return { sessions: [], error: 'Authentication required' };
@@ -54,9 +52,7 @@ export async function getUserSessions(): Promise<SessionsResult> {
  * Uses the existing revoke_refresh_token RPC (SECURITY DEFINER, validates ownership).
  */
 export async function revokeSession(sessionId: string): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return { success: false, error: 'Authentication required' };

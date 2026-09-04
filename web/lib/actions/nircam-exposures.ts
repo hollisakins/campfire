@@ -1,6 +1,6 @@
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
+import { getRequestIdentity, requireAdmin as requireAdminIdentity } from '@/lib/auth/identity';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getS3ClientForBackend, getBucketNameForBackend, type DataBackend } from '@/lib/storage';
@@ -17,34 +17,22 @@ export interface ExposurePngUrls {
 // ---------------------------------------------------------------------------
 
 async function requireAdmin() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('Not authenticated');
-
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('is_admin')
-    .eq('user_id', user.id)
-    .single();
-
-  if (!profile?.is_admin) throw new Error('Admin access required');
+  const { supabase } = await requireAdminIdentity();
   return supabase;
 }
 
 // Fast-path guard for the triage hot loop (save + prev/next + prefetch).
-// requireAdmin() spends two sequential network round trips before the real
-// query — auth.getUser() re-validates the JWT against Supabase Auth, then
-// user_profiles is read — purely to produce a clean error message: every table
-// and RPC the hot-path functions touch is already admin-gated at the database
-// (nircam_exposures RLS policies; the get_admin_exposure_* RPCs' explicit
-// is_admin() checks), so a non-admin session gets zero rows or an RPC error,
-// never data. Here we only confirm a session exists (a cookie read, no
-// network) and let the database be the authority. Keep requireAdmin for
-// anything not fully RLS/RPC-gated (e.g. the nircam_reduction_progress view).
+// requireAdmin() resolves the memoized access context purely to produce a
+// clean error message: every table and RPC the hot-path functions touch is
+// already admin-gated at the database (nircam_exposures RLS policies; the
+// get_admin_exposure_* RPCs' explicit is_admin() checks), so a non-admin
+// session gets zero rows or an RPC error, never data. Here we only confirm a
+// verified session exists (a cookie read + local signature check, no network)
+// and let the database be the authority. Keep requireAdmin for anything not
+// fully RLS/RPC-gated (e.g. the nircam_reduction_progress view).
 async function requireSession() {
-  const supabase = await createClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) throw new Error('Not authenticated');
+  const { user, supabase } = await getRequestIdentity();
+  if (!user) throw new Error('Not authenticated');
   return supabase;
 }
 

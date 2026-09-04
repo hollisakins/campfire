@@ -19,6 +19,8 @@ Create a `.env.local` file with the following:
 NEXT_PUBLIC_SUPABASE_URL=       # Supabase project URL
 NEXT_PUBLIC_SUPABASE_ANON_KEY=  # Supabase anon/public key
 SUPABASE_SERVICE_ROLE_KEY=      # Supabase service role key (server-only)
+SUPABASE_JWT_SECRET=            # Project JWT secret: verifies session cookies locally, signs deploy-CLI tokens
+JWT_SECRET=                     # HS256 secret for campfire-issued API access tokens
 
 # Object storage — "data" bucket (spectra, RGB, SED, photometry, …).
 # Neutral S3_* names are canonical; R2_* names are accepted as aliases.

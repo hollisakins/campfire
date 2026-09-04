@@ -1,6 +1,6 @@
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { generateApiKey } from '@/lib/api-auth';
 
 export interface ApiKey {
@@ -28,10 +28,7 @@ export interface ApiKeysResult {
  * Create a new API key for the current user
  */
 export async function createUserApiKey(name?: string): Promise<CreateApiKeyResult> {
-  const supabase = await createClient();
-
-  // Check authentication
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return {
@@ -78,10 +75,7 @@ export async function createUserApiKey(name?: string): Promise<CreateApiKeyResul
  * Get all API keys for the current user
  */
 export async function getUserApiKeys(): Promise<ApiKeysResult> {
-  const supabase = await createClient();
-
-  // Check authentication
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return {
@@ -121,10 +115,7 @@ export async function getUserApiKeys(): Promise<ApiKeysResult> {
  * Revoke (deactivate) an API key
  */
 export async function revokeApiKey(keyId: string): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient();
-
-  // Check authentication
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return {
@@ -165,10 +156,7 @@ export async function revokeApiKey(keyId: string): Promise<{ success: boolean; e
  * Delete an API key permanently
  */
 export async function deleteApiKey(keyId: string): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient();
-
-  // Check authentication
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return {

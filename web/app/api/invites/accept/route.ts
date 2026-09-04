@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
+import { createServiceClient } from '@/lib/supabase/server';
 import { USERNAME_REGEX } from '@/lib/utils/username';
 
 /**
@@ -16,10 +17,9 @@ import { USERNAME_REGEX } from '@/lib/utils/username';
 export async function POST(request: NextRequest) {
   try {
     // Get authenticated user from session
-    const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const { user, supabase } = await getRequestIdentity();
 
-    if (authError || !user || !user.email) {
+    if (!user || !user.email) {
       return NextResponse.json(
         { error: 'Authentication required' },
         { status: 401 }

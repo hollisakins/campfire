@@ -1,11 +1,12 @@
 import { NextRequest } from 'next/server';
+import { isAdminUser } from '@/lib/api-helpers';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import {
   getS3ClientForBackend,
   getBucketNameForBackend,
   type DataBackend,
 } from '@/lib/storage';
-import { createClient } from '@/lib/supabase/server';
 
 export const runtime = 'nodejs';
 // Streams a multi-MB PNG from OSN through the function (#497).
@@ -29,17 +30,10 @@ export const maxDuration = 60;
  * itself, and letting the HTTP cache keep a second multi-GB copy helps nobody.
  */
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) return new Response('Unauthorized', { status: 401 });
 
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('is_admin')
-    .eq('user_id', user.id)
-    .single();
-  if (!profile?.is_admin) return new Response('Forbidden', { status: 403 });
+  if (!(await isAdminUser(user.id))) return new Response('Forbidden', { status: 403 });
 
   const idParam = request.nextUrl.searchParams.get('id');
   const id = Number(idParam);

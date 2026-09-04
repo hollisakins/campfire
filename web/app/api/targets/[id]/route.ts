@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
 
 /**
  * GET /api/targets/[id]
@@ -17,9 +17,7 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid target ID' }, { status: 400 });
   }
 
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });

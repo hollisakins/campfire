@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { checkUserProgramAccess } from '@/lib/api-helpers';
-import { createClient } from '@/lib/supabase/server';
 
 /**
  * POST /api/profile/program-access
@@ -9,10 +9,7 @@ import { createClient } from '@/lib/supabase/server';
  * Returns: { hasProprietaryAccess, grantedPrograms, publicPrograms }
  */
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-
-  // Check authentication
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });

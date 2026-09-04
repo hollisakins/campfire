@@ -1,8 +1,11 @@
 // Server-side Supabase setup
 
 import { createServerClient } from '@supabase/ssr';
-import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
+
+// The service-role client lives in ./service (no next/headers import) and is
+// re-exported here for the many existing call sites.
+export { createServiceClient } from './service';
 
 export const createClient = async () => {
   const cookieStore = await cookies();
@@ -20,31 +23,12 @@ export const createClient = async () => {
             cookieStore.set(name, value, options)
           );
         } catch {
-          // The `setAll` method was called from a Server Component.
-          // This can be ignored if you have middleware refreshing
-          // user sessions.
+          // Called from a Server Component, which cannot write cookies.
+          // Safe to ignore: middleware.ts refreshes the session cookie
+          // before the render, so this only fires on a stale token that
+          // middleware did not see (perf T2-B, #505).
         }
       },
-    },
-  });
-};
-
-/**
- * Create a Supabase client with service role key for admin operations.
- * This bypasses RLS and should only be used for admin API routes.
- */
-export const createServiceClient = () => {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-
-  if (!serviceRoleKey) {
-    throw new Error('SUPABASE_SERVICE_ROLE_KEY is not configured');
-  }
-
-  return createSupabaseClient(supabaseUrl, serviceRoleKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
     },
   });
 };

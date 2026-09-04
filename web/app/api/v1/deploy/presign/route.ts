@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isAdminUser } from '@/lib/api-helpers';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { validateAuth } from '@/lib/api-auth';
-import { createClient } from '@supabase/supabase-js';
 import {
   getS3Client,
   getBucketName,
@@ -54,17 +54,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Check admin role
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    const { data: profile } = await supabase
-      .from('user_profiles')
-      .select('is_admin')
-      .eq('user_id', userId)
-      .single();
-
-    if (!profile?.is_admin) {
+    if (!(await isAdminUser(userId))) {
       return NextResponse.json(
         { error: 'forbidden', error_description: 'Admin access required for deployment' },
         { status: 403 }

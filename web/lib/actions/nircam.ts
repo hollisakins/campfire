@@ -1,5 +1,6 @@
 'use server';
 
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { createClient } from '@/lib/supabase/server';
 import { paginateQuery } from '@/lib/supabase/paginate';
 import { generateDownloadUrls } from '@/lib/r2';
@@ -56,10 +57,7 @@ export interface NircamFieldImagesResult {
  * Returns all matching images for client-side filtering/sorting.
  */
 export async function getNircamImages(field?: string): Promise<NircamImagesResult> {
-  const supabase = await createClient();
-
-  // Check if user is authenticated
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return {
@@ -171,9 +169,7 @@ function formatPixelScale(arcsec: unknown): string | null {
  * bespoke access logic here, mirroring how mosaics rely on `nircam_images` RLS.
  */
 export async function getNircamExpmaps(field?: string): Promise<NircamExpmapsResult> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) {
     return { expmaps: [], isAuthenticated: false };
   }
@@ -237,9 +233,7 @@ export async function getNircamExpmaps(field?: string): Promise<NircamExpmapsRes
  * ready-to-render <img> URL here so the client never handles storage keys.
  */
 export async function getNircamFields(): Promise<NircamFieldsResult> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) {
     return { fields: [], isAuthenticated: false };
   }
@@ -286,9 +280,7 @@ export async function getNircamFields(): Promise<NircamFieldsResult> {
  * and unauthorized fields identically.
  */
 export async function getNircamFieldSummary(field: string): Promise<NircamFieldSummaryResult> {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) {
     return { summary: null, isAuthenticated: false };
   }
@@ -351,8 +343,7 @@ export async function getNircamFieldSummary(field: string): Promise<NircamFieldS
 export async function getNircamFieldImages(field: string): Promise<NircamFieldImagesResult> {
   const empty: NircamFieldImagesResult = { layoutUrl: null, expmapPlots: {}, thumbnails: {}, quicklooks: {} };
 
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) return empty;
 
   try {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createServiceClient } from '@/lib/supabase/service';
 import { validateAuth } from '@/lib/api-auth';
 import { isAdminUser } from '@/lib/api-helpers';
 
@@ -29,10 +29,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
-    );
+    const supabase = createServiceClient();
 
     const { data, error } = await supabase.rpc('get_storage_budget');
     if (error) {

@@ -1,7 +1,7 @@
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
-import { getAccessibleProgramSlugs } from '@/lib/accessible-programs';
+import { getRequestIdentity } from '@/lib/auth/identity';
+import { getAccessContext } from '@/lib/auth/access-context';
 import type { Pointing } from '@/lib/types';
 
 export interface ProgramOverview {
@@ -97,8 +97,7 @@ export interface DatabaseOverviewResult {
 }
 
 export async function getProgramsOverview(): Promise<ProgramsOverviewResult> {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return { programs: [], isAuthenticated: false };
@@ -146,8 +145,7 @@ export async function getProgramsOverview(): Promise<ProgramsOverviewResult> {
 }
 
 export async function getProgramDetail(programSlug: string): Promise<ProgramDetailResult> {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return { program: null, observations: [], isAuthenticated: false };
@@ -229,8 +227,7 @@ export async function getProgramDetail(programSlug: string): Promise<ProgramDeta
 }
 
 export async function getObservationsOverview(): Promise<ObservationsOverviewResult> {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return { observations: [], isAuthenticated: false };
@@ -238,10 +235,10 @@ export async function getObservationsOverview(): Promise<ObservationsOverviewRes
 
   try {
     // Accessible slugs straight from the SQL authority (see
-    // web/lib/accessible-programs.ts), then scope the heavy RPC server-side.
+    // web/lib/auth/access-context.ts), then scope the heavy RPC server-side.
     // Avoids hitting mv_programs_overview (via get_programs_overview) just to
     // discover slugs, and is correct for link accounts and admins.
-    const accessibleSlugs = await getAccessibleProgramSlugs(supabase);
+    const accessibleSlugs = (await getAccessContext(user.id)).accessibleSlugs;
 
     if (accessibleSlugs.length === 0) {
       return { observations: [], isAuthenticated: true };
@@ -289,8 +286,7 @@ export async function getObservationsOverview(): Promise<ObservationsOverviewRes
 }
 
 export async function getDatabaseOverview(): Promise<DatabaseOverviewResult> {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return { overview: null, isAuthenticated: false };

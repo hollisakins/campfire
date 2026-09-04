@@ -4,28 +4,21 @@
 // only to viewers who can access at least one of its programs — mirroring how
 // targets/spectra visibility works via `accessible_program_slugs()`.
 
-import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { getRequestPrincipal } from '@/lib/auth/identity';
+import { createServiceClient } from '@/lib/supabase/service';
 import { getAllUpdates } from './loader';
 import type { UpdateEntry } from './types';
 
 /** Program slugs the current viewer may see:
- *  - signed-in: `accessible_program_slugs()` (public ∪ explicit grants)
+ *  - signed-in: the memoized access context (mirrors accessible_program_slugs())
  *  - anonymous: public programs only (follows each program's `is_public` flag)
  *
  *  Fails closed (empty set) on any error, so gated entries are hidden rather
  *  than leaked. */
 export async function getAccessibleProgramSlugs(): Promise<Set<string>> {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (user) {
-      const { data, error } = await supabase.rpc('accessible_program_slugs');
-      if (error) throw error;
-      return new Set((data as string[] | null) ?? []);
-    }
+    const principal = await getRequestPrincipal();
+    if (principal) return new Set(principal.access.accessibleSlugs);
 
     // Anonymous: RLS blocks the `anon` role from reading `programs`, so use the
     // service client for this read-only lookup of public slugs (public info).

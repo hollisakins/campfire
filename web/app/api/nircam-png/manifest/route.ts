@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { EXPOSURE_SORT_KEYS } from '@/lib/admin/sort-keys';
 import { filenameSearchPattern } from '@/lib/admin/exposure-search';
 
@@ -26,9 +26,8 @@ import { filenameSearchPattern } from '@/lib/admin/exposure-search';
  * an empty manifest, never data — same posture as the hot-path actions.
  */
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) return new Response('Unauthorized', { status: 401 });
+  const { user, supabase } = await getRequestIdentity();
+  if (!user) return new Response('Unauthorized', { status: 401 });
 
   const sp = request.nextUrl.searchParams;
   const sortParam = sp.get('sort');

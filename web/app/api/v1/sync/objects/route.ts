@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createServiceClient } from '@/lib/supabase/service';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessibleProgramsCached, isAdminUserCached } from '@/lib/api-helpers';
+import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 
 /**
  * GET /api/v1/sync/objects
@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const accessibleProgramSlugs = await getAccessibleProgramsCached(userId);
+    const accessibleProgramSlugs = await getAccessiblePrograms(userId);
 
     if (accessibleProgramSlugs.length === 0) {
       return NextResponse.json({
@@ -47,14 +47,12 @@ export async function GET(request: NextRequest) {
     const updatedSince = searchParams.get('updated_since') || null;
     const includeCounts = searchParams.get('include_counts') !== 'false';
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    const supabase = createServiceClient();
 
     // Admins can opt in to syncing objects with no published spectrum;
     // everyone else is fail-closed to published-backed objects. No-op in B1.
     const includeUnpublished =
-      searchParams.get('include_unpublished') === 'true' && (await isAdminUserCached(userId));
+      searchParams.get('include_unpublished') === 'true' && (await isAdminUser(userId));
 
     const { data, error } = await supabase.rpc('get_objects_for_sync', {
       p_program_slugs: accessibleProgramSlugs,

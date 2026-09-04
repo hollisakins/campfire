@@ -1,8 +1,8 @@
 import { NextRequest } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import { validateAccessToken } from '@/lib/auth/tokens';
-import { getLinkScope } from '@/lib/api-helpers';
+import { getAccessContext, type AccessContext } from '@/lib/auth/access-context';
+import { createServiceClient } from '@/lib/supabase/service';
 
 /**
  * Hash an API key using SHA-256
@@ -12,85 +12,97 @@ export function hashApiKey(apiKey: string): string {
   return crypto.createHash('sha256').update(apiKey).digest('hex');
 }
 
+/** A bearer-authenticated /api/v1 caller. */
+export interface ApiPrincipal {
+  userId: string;
+  method: 'api_key' | 'access_token';
+  /** Memoized (lib/auth/access-context.ts): admin flag, program set, link scope. */
+  access: AccessContext;
+}
+
 /**
- * Validate authentication from request headers
- * Supports both API keys (sk_*) and JWT access tokens
- * Returns user_id if valid, null otherwise
+ * Authenticate a bearer request (API key `sk_*` or campfire JWT) and resolve
+ * its access context in the same step.
+ *
+ * Preamble cost (perf T2-B, #505): the credential check is the one
+ * unavoidable hop for an API key (validate_api_key — kept uncached so key
+ * revocation is immediate) and zero hops for a JWT (verified locally with
+ * jose); the access context is a memo hit for every request after the first
+ * in a 60 s window. Routes that then call isAdminUser() /
+ * getAccessiblePrograms() / getLinkScope() are reading the same memo.
  */
-export async function validateAuth(request: NextRequest): Promise<string | null> {
-  // Get token from Authorization header
+export async function authenticateApiRequest(request: NextRequest): Promise<ApiPrincipal | null> {
   const authHeader = request.headers.get('authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return null;
-  }
+  const token = authHeader.slice('Bearer '.length).trim();
+  if (!token) return null;
 
-  const token = authHeader.replace('Bearer ', '');
-
-  if (!token) {
-    return null;
-  }
-
-  // Route to appropriate validator based on token format
-  const userId = token.startsWith('sk_')
-    ? await validateApiKeyToken(token) // API key authentication
-    : await validateAccessToken(token); // JWT access token authentication
+  const method: ApiPrincipal['method'] = token.startsWith('sk_') ? 'api_key' : 'access_token';
+  const userId =
+    method === 'api_key'
+      ? await validateApiKeyToken(token)
+      : await validateAccessToken(token);
   if (!userId) return null;
+
+  const access = await getAccessContext(userId);
 
   // Share links (docs/design-public-mirror.md §5.5): the programmatic API is
   // closed to link accounts, full stop. Every bearer-authorized /api/v1 route
-  // authorizes at program grain (getAccessiblePrograms), which cannot express
+  // authorizes at program grain (accessibleSlugs), which cannot express
   // "one observation" or the download opt-out — so a link visitor lifting the
   // JWT out of their own cookie jar (it is not httpOnly) or presenting an old
   // sk_ key must resolve to no credential at all, not to program-wide access.
   // The shared view itself never goes through here: browser pages use the
   // cookie session, and the cookie-capable cutout routes carry their own
-  // link-scope checks.
-  if (await getLinkScope(userId)) {
-    return null;
-  }
-  return userId;
+  // link-scope checks. An unreadable profile also lands here (fail-closed).
+  if (access.isLinkAccount) return null;
+
+  return { userId, method, access };
 }
 
 /**
- * Validate API key from request headers
- * Returns user_id if valid, null otherwise
- * @deprecated Use validateAuth instead for unified auth handling
+ * Validate authentication from request headers.
+ * Supports both API keys (sk_*) and JWT access tokens.
+ * Returns user_id if valid, null otherwise.
+ *
+ * Thin wrapper over authenticateApiRequest() for the routes that only need
+ * the id; the access context it resolved stays memoized for the helpers in
+ * lib/api-helpers.ts, so calling those afterwards costs no extra query.
  */
-export async function validateApiKey(request: NextRequest): Promise<string | null> {
-  // Get API key from Authorization header
-  const authHeader = request.headers.get('authorization');
+export async function validateAuth(request: NextRequest): Promise<string | null> {
+  return (await authenticateApiRequest(request))?.userId ?? null;
+}
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return null;
+// `last_used_at` is informational (shown on the API keys page). Writing it on
+// every request put an UPDATE on the hot path of a sync fan-out that makes
+// hundreds of calls with the same key; once per key per window per instance
+// is plenty (#505).
+const LAST_USED_TOUCH_INTERVAL_MS = 5 * 60_000;
+const LAST_USED_MAX_TRACKED = 1000;
+const lastUsedTouched = new Map<string, number>();
+
+function shouldTouchLastUsed(keyHash: string, now: number): boolean {
+  const last = lastUsedTouched.get(keyHash);
+  if (last !== undefined && now - last < LAST_USED_TOUCH_INTERVAL_MS) return false;
+  if (lastUsedTouched.size >= LAST_USED_MAX_TRACKED) {
+    for (const [k, t] of lastUsedTouched) {
+      if (now - t >= LAST_USED_TOUCH_INTERVAL_MS) lastUsedTouched.delete(k);
+    }
   }
-
-  const apiKey = authHeader.replace('Bearer ', '');
-
-  if (!apiKey || !apiKey.startsWith('sk_')) {
-    return null;
-  }
-
-  return validateApiKeyToken(apiKey);
+  lastUsedTouched.set(keyHash, now);
+  return true;
 }
 
 /**
- * Validate an API key token string
- * Internal function used by both validateAuth and validateApiKey
+ * Validate an API key token string; returns the owning user_id or null.
  */
 async function validateApiKeyToken(apiKey: string): Promise<string | null> {
-  // Create service role client to bypass RLS
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-  // Hash the API key
+  const supabase = createServiceClient();
   const keyHash = hashApiKey(apiKey);
 
-  // Validate using the database function
   const { data, error } = await supabase.rpc('validate_api_key', {
-    key_hash_input: keyHash
+    key_hash_input: keyHash,
   });
 
   if (error || !data || data.length === 0) {
@@ -103,15 +115,15 @@ async function validateApiKeyToken(apiKey: string): Promise<string | null> {
     return null;
   }
 
-  // Update last_used_at timestamp asynchronously (don't wait for it)
-  supabase.rpc('update_api_key_last_used', {
-    key_hash_input: keyHash
-  }).then(
-    () => {},
-    (err) => {
-      console.error('Failed to update API key last_used_at:', err);
-    }
-  );
+  if (shouldTouchLastUsed(keyHash, Date.now())) {
+    // Fire-and-forget; never on the response path.
+    supabase.rpc('update_api_key_last_used', { key_hash_input: keyHash }).then(
+      () => {},
+      (err) => {
+        console.error('Failed to update API key last_used_at:', err);
+      }
+    );
+  }
 
   return result.user_id;
 }
@@ -128,34 +140,4 @@ export function generateApiKey(): { key: string; prefix: string; hash: string } 
   const hash = hashApiKey(key);
 
   return { key, prefix, hash };
-}
-
-/**
- * Check if user has access to a specific program based on RLS policies
- * This leverages the existing RLS infrastructure
- */
-export async function checkProgramAccess(
-  userId: string,
-  programSlug: string
-): Promise<boolean> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-
-  const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-    global: {
-      headers: {
-        // Set the user context for RLS
-        'sb-user-id': userId
-      }
-    }
-  });
-
-  // Try to fetch a program - RLS will filter based on user access
-  const { data, error } = await supabase
-    .from('programs')
-    .select('slug')
-    .eq('slug', programSlug)
-    .single();
-
-  return !error && !!data;
 }
