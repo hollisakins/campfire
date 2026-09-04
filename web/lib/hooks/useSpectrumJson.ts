@@ -71,9 +71,34 @@ export function useRedshiftFits(fitsPaths: string[]) {
   return useQueries({ queries: fitsPaths.map((p) => redshiftFitQueryOptions(p)) });
 }
 
+/** Cap on cached spectrum payloads (the 2-D S/N array dominates; ~0.5 MB
+ *  each). An inspection session prefetches every grating of the current,
+ *  next and previous object, so a sustained run would otherwise hold every
+ *  spectrum visited for gcTime. Same bound the module LRU this replaced had. */
+const MAX_CACHED_SPECTRA = 24;
+
+/**
+ * Drop the oldest unobserved spectrum entries beyond MAX_CACHED_SPECTRA
+ * (their fit siblings go with them). Entries a mounted component is reading
+ * are never evicted.
+ */
+export function trimSpectrumCache(queryClient: QueryClient): void {
+  const cache = queryClient.getQueryCache();
+  const idle = cache
+    .findAll({ queryKey: ['spectrum-json'] })
+    .filter((q) => q.getObserversCount() === 0)
+    .sort((a, b) => b.state.dataUpdatedAt - a.state.dataUpdatedAt);
+  for (const q of idle.slice(MAX_CACHED_SPECTRA)) {
+    const fitsPath = q.queryKey[1] as string;
+    queryClient.removeQueries({ queryKey: spectrumJsonKey(fitsPath), exact: true });
+    queryClient.removeQueries({ queryKey: redshiftFitKey(fitsPath), exact: true });
+  }
+}
+
 /**
  * Warm the cache for every spectrum of an object (inspection mode: instant
- * tab switching and prev/next). Already-fresh entries are skipped.
+ * tab switching and prev/next). Already-fresh entries are skipped; the cache
+ * is trimmed to MAX_CACHED_SPECTRA idle entries afterwards.
  */
 export function prefetchSpectrumSidecars(
   queryClient: QueryClient,
@@ -84,5 +109,5 @@ export function prefetchSpectrumSidecars(
       queryClient.prefetchQuery(spectrumJsonQueryOptions(p)),
       queryClient.prefetchQuery(redshiftFitQueryOptions(p)),
     ]),
-  ).then(() => undefined);
+  ).then(() => trimSpectrumCache(queryClient));
 }

@@ -104,10 +104,15 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
   step = 0.01,
 }) => {
   const [inputValue, setInputValue] = React.useState(redshift.toFixed(4));
+  // The range input is bound to this local value, not the (throttled) prop:
+  // React would otherwise snap the thumb back to the stale prop between
+  // frames while dragging.
+  const [sliderValue, setSliderValue] = React.useState(redshift);
 
-  // Update input when redshift prop changes
+  // Update input + slider when redshift prop changes
   React.useEffect(() => {
     setInputValue(redshift.toFixed(4));
+    setSliderValue(redshift);
   }, [redshift]);
 
   // The range input fires `input` events far faster than a Plotly relayout
@@ -148,6 +153,7 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
 
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = parseFloat(e.target.value);
+    setSliderValue(newValue);
     setInputValue(newValue.toFixed(4));
     scheduleChange(newValue);
   };
@@ -192,7 +198,7 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
       </div>
       <input
         type="range"
-        value={redshift}
+        value={sliderValue}
         onChange={handleSliderChange}
         min={min}
         max={max}
