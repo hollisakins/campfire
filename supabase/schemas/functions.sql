@@ -3323,10 +3323,22 @@ DECLARE
          OR public.is_admin());
   -- Callers whose RLS view included draft data before these readers went
   -- SECURITY DEFINER (admins; share links minted with include_drafts) keep
-  -- the live aggregate, where p_include_unpublished decides what is
-  -- counted; the published-only snapshot would drop their draft-only
-  -- observations entirely.
+  -- the live aggregate; the published-only snapshot would drop their
+  -- draft-only observations entirely.
   v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts();
+  -- What the live path may count, derived from the caller's authorization,
+  -- never from the raw p_include_unpublished argument: a drafts link sees
+  -- published + draft (policies: select_spectra_by_access /
+  -- authenticated_select_deployments), an admin sees published spectra
+  -- unless opted in, and every deployment (as RLS lets admins).
+  v_spectra_statuses text[] := CASE
+    WHEN v_unpublished THEN ARRAY['draft', 'published', 'revoked']
+    WHEN public.link_sees_drafts() THEN ARRAY['published', 'draft']
+    ELSE ARRAY['published'] END;
+  v_dep_statuses text[] := CASE
+    WHEN v_unpublished OR public.is_admin() THEN ARRAY['draft', 'published', 'revoked']
+    WHEN public.link_sees_drafts() THEN ARRAY['published', 'draft']
+    ELSE ARRAY['published'] END;
 BEGIN
   IF NOT v_live THEN
     RETURN QUERY
@@ -3363,8 +3375,8 @@ BEGIN
     FROM targets t
     JOIN programs p ON p.slug = t.program_slug
     LEFT JOIN spectra s ON s.target_id = t.target_id
-      -- B1: unpublished spectra don't contribute to counts/size (targets still appear).
-      AND (p_include_unpublished OR s.deploy_status = 'published')
+      -- Only the statuses this caller is authorized for (targets still appear).
+      AND s.deploy_status = ANY(v_spectra_statuses)
     WHERE t.program_slug = ANY(v_slugs)
       AND (NOT v_link OR t.observation = (SELECT public.link_observation()))
     GROUP BY t.observation, t.program_slug, p.program_name, t.field
@@ -3389,6 +3401,7 @@ BEGIN
     FROM public.deployments d
     LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
     WHERE d.observation = s.observation AND d.source_ids_filter IS NULL
+      AND d.status = ANY(v_dep_statuses)
     ORDER BY d.deployed_at DESC
     LIMIT 1
   ) full_dep ON true
@@ -3397,6 +3410,7 @@ BEGIN
     FROM public.deployments d
     WHERE d.observation = s.observation
       AND d.source_ids_filter IS NOT NULL
+      AND d.status = ANY(v_dep_statuses)
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
   ) patches ON true
   ORDER BY s.observation;
@@ -3440,10 +3454,22 @@ DECLARE
          OR public.is_admin());
   -- Callers whose RLS view included draft data before these readers went
   -- SECURITY DEFINER (admins; share links minted with include_drafts) keep
-  -- the live aggregate, where p_include_unpublished decides what is
-  -- counted; the published-only snapshot would drop their draft-only
-  -- observations entirely.
+  -- the live aggregate; the published-only snapshot would drop their
+  -- draft-only observations entirely.
   v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts();
+  -- What the live path may count, derived from the caller's authorization,
+  -- never from the raw p_include_unpublished argument: a drafts link sees
+  -- published + draft (policies: select_spectra_by_access /
+  -- authenticated_select_deployments), an admin sees published spectra
+  -- unless opted in, and every deployment (as RLS lets admins).
+  v_spectra_statuses text[] := CASE
+    WHEN v_unpublished THEN ARRAY['draft', 'published', 'revoked']
+    WHEN public.link_sees_drafts() THEN ARRAY['published', 'draft']
+    ELSE ARRAY['published'] END;
+  v_dep_statuses text[] := CASE
+    WHEN v_unpublished OR public.is_admin() THEN ARRAY['draft', 'published', 'revoked']
+    WHEN public.link_sees_drafts() THEN ARRAY['published', 'draft']
+    ELSE ARRAY['published'] END;
 BEGIN
   IF NOT v_live THEN
     RETURN QUERY
@@ -3476,8 +3502,8 @@ BEGIN
         FILTER (WHERE s.grating IS NOT NULL) AS gratings
     FROM public.targets t
     LEFT JOIN public.spectra s ON s.target_id = t.target_id
-      -- B1: unpublished spectra don't contribute to counts/size/gratings.
-      AND (p_include_unpublished OR s.deploy_status = 'published')
+      -- Only the statuses this caller is authorized for.
+      AND s.deploy_status = ANY(v_spectra_statuses)
     WHERE t.program_slug = ANY(v_slugs)
       AND (NOT v_link OR t.observation = (SELECT public.link_observation()))
     GROUP BY t.observation, t.program_slug
@@ -3515,6 +3541,7 @@ BEGIN
     FROM public.deployments d
     LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
     WHERE d.observation = o.name AND d.source_ids_filter IS NULL
+      AND d.status = ANY(v_dep_statuses)
     ORDER BY d.deployed_at DESC
     LIMIT 1
   ) full_dep ON true
@@ -3523,6 +3550,7 @@ BEGIN
     FROM public.deployments d
     WHERE d.observation = o.name
       AND d.source_ids_filter IS NOT NULL
+      AND d.status = ANY(v_dep_statuses)
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
   ) patches ON true
   WHERE o.program_slug = ANY(v_slugs)
