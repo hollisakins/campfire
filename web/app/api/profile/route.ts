@@ -17,31 +17,73 @@ export async function GET() {
   }
 
   try {
-    // Fetch user profile
-    const { data: profile, error: profileError } = await supabase
-      .from('user_profiles')
-      .select('*')
-      .eq('user_id', user.id)
-      .single();
+    // Six independent reads, one round trip's worth of wall time instead of
+    // six serial Vercel→Supabase hops (#497).
+    const [
+      { data: profile, error: profileError },
+      { data: accessData },
+      { data: allPrograms },
+      { data: redemptions },
+      { data: statsData },
+      { data: recentComments, count: totalComments },
+    ] = await Promise.all([
+      // User profile
+      supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('user_id', user.id)
+        .single(),
+      // Explicit program access
+      supabase
+        .from('user_program_access')
+        .select('program_slug, granted_at')
+        .eq('user_id', user.id),
+      // All programs
+      supabase
+        .from('programs')
+        .select('*')
+        .order('program_name'),
+      // Code redemptions
+      supabase
+        .from('code_redemptions')
+        .select(`
+          id,
+          redeemed_at,
+          access_codes (code, description)
+        `)
+        .eq('user_id', user.id)
+        .order('redeemed_at', { ascending: false }),
+      // User stats via batched RPC
+      supabase.rpc('get_user_profile_stats', { p_user_id: user.id }),
+      // Recent comments with target/object info (for comment history)
+      supabase
+        .from('comments')
+        .select(`
+          id,
+          content,
+          created_at,
+          edited_at,
+          targets (
+            id,
+            target_id
+          ),
+          objects (
+            id,
+            object_id
+          )
+        `, { count: 'exact' })
+        .eq('user_id', user.id)
+        .eq('is_deleted', false)
+        .order('created_at', { ascending: false })
+        .limit(5),
+    ]);
 
     if (profileError) {
       console.error('Error fetching profile:', profileError);
       return NextResponse.json({ error: 'Failed to fetch profile' }, { status: 500 });
     }
 
-    // Fetch user's explicit program access
-    const { data: accessData } = await supabase
-      .from('user_program_access')
-      .select('program_slug, granted_at')
-      .eq('user_id', user.id);
-
     const explicitAccessSlugs = (accessData || []).map(a => a.program_slug);
-
-    // Fetch all programs
-    const { data: allPrograms } = await supabase
-      .from('programs')
-      .select('*')
-      .order('program_name');
 
     // Annotate programs with access info
     const programsWithAccess = (allPrograms || []).map(program => ({
@@ -54,44 +96,7 @@ export async function GET() {
           : 'none',
     }));
 
-    // Fetch code redemptions
-    const { data: redemptions } = await supabase
-      .from('code_redemptions')
-      .select(`
-        id,
-        redeemed_at,
-        access_codes (code, description)
-      `)
-      .eq('user_id', user.id)
-      .order('redeemed_at', { ascending: false });
-
-    // Fetch user stats using batched RPC (reduces 5 queries to 1)
-    const { data: statsData } = await supabase
-      .rpc('get_user_profile_stats', { p_user_id: user.id });
-
     const userStats = statsData as { targets_inspected: number; comments_posted: number; last_activity: string | null } | null;
-
-    // Fetch recent comments with target/object info (for comment history)
-    const { data: recentComments, count: totalComments } = await supabase
-      .from('comments')
-      .select(`
-        id,
-        content,
-        created_at,
-        edited_at,
-        targets (
-          id,
-          target_id
-        ),
-        objects (
-          id,
-          object_id
-        )
-      `, { count: 'exact' })
-      .eq('user_id', user.id)
-      .eq('is_deleted', false)
-      .order('created_at', { ascending: false })
-      .limit(5);
 
     // Transform comments to match CommentHistoryItem interface
     // Supabase types infer FKs as array, but runtime returns single object for many-to-one

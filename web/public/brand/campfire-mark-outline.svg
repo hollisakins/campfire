@@ -1,0 +1,11 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">CAMPFIRE outline mark</title>
+  <desc id="desc">An outline ember flame in front of a hexagonal JWST mirror motif.</desc>
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <path d="M128 24L203.34 67.5V154.5L128 198L52.66 154.5V67.5L128 24Z" stroke="#7F8EA3" stroke-width="10"/>
+    <path d="M128 63L169.57 87V135L128 159L86.43 135V87L128 63Z" stroke="#D7CBB9" stroke-width="5"/>
+    <path d="M128 24V63M203.34 67.5L169.57 87M203.34 154.5L169.57 135M128 198V159M52.66 154.5L86.43 135M52.66 67.5L86.43 87" stroke="#B8AEC6" stroke-width="4"/>
+  </g>
+  <path d="M129.5 224C94.71 224 66.5 197.39 66.5 164.57C66.5 141.57 78.12 122.68 95.49 109.16C95.49 128.25 104.62 142.87 104.62 142.87C104.62 116.49 119.74 91.66 148.02 67.5C148.02 99.19 169.07 113.42 179.52 135.42C185.92 148.9 190.5 161.69 190.5 176.39C190.5 202.69 163.83 224 129.5 224Z" stroke="#C63F0C" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M130.5 224C106.79 224 89.5 207.24 89.5 185.93C89.5 172.13 96.96 159.62 111.28 149.05C111.28 162.98 119.74 173.31 119.74 173.31C119.74 155.8 128.78 141.28 146.44 127.06C147.01 146.36 164.67 157.65 169.46 174.02C170.51 177.61 171.05 181.04 171.05 184.32C171.05 206.38 154.34 224 130.5 224Z" stroke="#FB923C" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

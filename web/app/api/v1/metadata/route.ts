@@ -81,7 +81,8 @@ export async function GET(request: NextRequest) {
     });
 
     // Cache for 5 minutes - filter options only change on data deployments
-    response.headers.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
+    // Per-user (accessible programs) and bearer-authenticated: never shared (#497).
+    response.headers.set('Cache-Control', 'private, max-age=300, stale-while-revalidate=60');
 
     return response;
   } catch (error) {

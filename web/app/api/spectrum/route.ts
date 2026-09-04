@@ -80,8 +80,11 @@ export async function GET(request: NextRequest) {
 
     const data: SpectrumData = await response.json();
 
+    // Program-scoped, cookie-authenticated: browser-cacheable for a day, never
+    // shared-cacheable — Vercel's edge serves `public` responses to any caller
+    // of the same URL, cookie or not (#497).
     const response2 = NextResponse.json(data);
-    response2.headers.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
+    response2.headers.set('Cache-Control', 'private, max-age=86400, stale-while-revalidate=3600');
     return response2;
   } catch (error) {
     console.error('Error fetching spectrum data:', error);

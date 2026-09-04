@@ -44,18 +44,26 @@ export async function assembleRegion(plan: CutoutPlan, baseUrl: string): Promise
 
   const base = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
 
-  for (const [filename, tiles] of bySupertile(plan)) {
-    const file = await FpackFile.open(base + filename, undefined, undefined);
-    for (const t of tiles) {
-      const px = await file.getTile(t.localX, t.localY);
-      const dims = file.tileDims(t.localX, t.localY);
-      // The tile's origin in level pixels (global tile index × the fpack tile edge).
-      // ztile1/ztile2 is the supertile's fpack tile size; a v1 level tiles at that.
-      const originX = t.tile.tileX * file.ztile1;
-      const originY = t.tile.tileY * file.ztile2;
-      blit(px, dims.width, dims.height, originX - pixelBbox.x0, originY - pixelBbox.y0, data, width, height);
-    }
-  }
+  // Every supertile opens, and every tile range-fetches + decodes, concurrently:
+  // the per-request cost is network latency, not CPU, and each tile blits into
+  // a disjoint region of `data` (FpackFile shares its index fetch across
+  // concurrent getTile calls). Was strictly serial — N+M round trips (#497).
+  await Promise.all(
+    [...bySupertile(plan)].map(async ([filename, tiles]) => {
+      const file = await FpackFile.open(base + filename, undefined, undefined);
+      await Promise.all(
+        tiles.map(async (t) => {
+          const px = await file.getTile(t.localX, t.localY);
+          const dims = file.tileDims(t.localX, t.localY);
+          // The tile's origin in level pixels (global tile index × the fpack tile edge).
+          // ztile1/ztile2 is the supertile's fpack tile size; a v1 level tiles at that.
+          const originX = t.tile.tileX * file.ztile1;
+          const originY = t.tile.tileY * file.ztile2;
+          blit(px, dims.width, dims.height, originX - pixelBbox.x0, originY - pixelBbox.y0, data, width, height);
+        }),
+      );
+    }),
+  );
   return { data, width, height, x0: pixelBbox.x0, y0: pixelBbox.y0 };
 }
 

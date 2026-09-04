@@ -1,0 +1,53 @@
+name: Web bundle budget
+
+# First-Load-JS budget per app route (perf T1-7 / #503): builds the web app
+# with placeholder Supabase env (build-time only; no network calls succeed or
+# are needed) and runs web/scripts/check-bundle-budget.mjs, which sums the
+# gzipped client chunks each route loads and fails above 250 kB (per-route
+# overrides live in the script, with reasons).
+
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/web-bundle-budget.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle-budget:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
+          SUPABASE_SERVICE_ROLE_KEY: placeholder-service-key
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+
+      - name: Check bundle budget
+        run: npm run budget

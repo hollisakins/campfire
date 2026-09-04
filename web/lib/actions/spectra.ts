@@ -54,8 +54,17 @@ export async function getSpectra(
   pageSize: number = 50,
   sortColumn: SortColumn = 'object_id',
   sortDirection: SortDirection = 'asc',
-  viewMode: ViewMode = 'objects'
+  viewMode: ViewMode = 'objects',
+  options: {
+    /**
+     * Ask the RPC for the exact total (a second full pass over the filter).
+     * The list hook passes false once it knows the count for a filter set;
+     * the result then carries total = -1 / totalPages = -1 (#501).
+     */
+    includeCount?: boolean;
+  } = {}
 ): Promise<PaginatedSpectraResult> {
+  const includeCount = options.includeCount ?? true;
   const supabase = await createClient();
 
   // Check if user is authenticated
@@ -132,6 +141,7 @@ export async function getSpectra(
         p_sort_direction: sortDirection,
         p_page: page,
         p_page_size: pageSize,
+        p_include_count: includeCount,
       };
     } else {
       callParams = {
@@ -141,6 +151,7 @@ export async function getSpectra(
         p_page: page,
         p_page_size: pageSize,
         p_include_thumbnails: true,
+        p_include_count: includeCount,
       };
     }
 
@@ -164,7 +175,9 @@ export async function getSpectra(
     // The RPC returns a single row with targets array and total_count
     const result = data?.[0] || { targets: [], total_count: 0 };
     const targets = result.targets || [];
-    const totalCount = Number(result.total_count) || 0;
+    // -1 = count skipped (p_include_count false); the caller fills it in.
+    const rawCount = Number(result.total_count);
+    const totalCount = Number.isFinite(rawCount) ? rawCount : 0;
 
     // Transform the JSONB targets to SpectrumTarget format
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -239,14 +252,15 @@ export async function getSpectra(
     });
 
     // Determine if we have the complete dataset (all matching rows fit in one page)
-    const isComplete = totalCount <= pageSize;
+    const countKnown = totalCount >= 0;
+    const isComplete = countKnown && totalCount <= pageSize;
 
     return {
       spectra: spectraTargets,
-      total: totalCount,
+      total: countKnown ? totalCount : -1,
       page,
       pageSize,
-      totalPages: Math.ceil(totalCount / pageSize),
+      totalPages: countKnown ? Math.ceil(totalCount / pageSize) : -1,
       isComplete,
       isAuthenticated: true,
     };

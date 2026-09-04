@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useMemo } from 'react';
-import type { TOCItem } from './MarkdownRenderer';
+import type { TOCItem } from '@/lib/docs/toc';
 
 interface TableOfContentsProps {
   items: TOCItem[];

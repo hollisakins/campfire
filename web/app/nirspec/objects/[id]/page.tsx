@@ -8,6 +8,7 @@ import { ReturnToMapButton } from '@/components/map/ReturnToMapButton';
 import { ObjectNavigation } from '@/components/spectra/ObjectNavigation';
 import { UnifiedObjectPage } from '@/components/spectra/UnifiedObjectPage';
 import { getObjectById, getObjectMetadata } from '@/lib/actions/spectra';
+import { getAssetVersions, assetVersionFor } from '@/lib/asset-version';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
 
 interface ObjectDetailPageProps {
@@ -36,7 +37,8 @@ export async function generateMetadata({ params }: ObjectDetailPageProps): Promi
       title: objectId,
       description: `${redshiftText} | ${metadata.field}`,
       images: [{
-        url: `/api/og-image/${encodeURIComponent(objectId)}`,
+        // kind + asset version: see /api/og-image and lib/asset-version.ts (#497)
+        url: `/api/og-image/${encodeURIComponent(objectId)}?kind=object&v=${assetVersionFor(await getAssetVersions(), metadata.field)}`,
         width: 300,
         height: 300,
         alt: `RGB thumbnail for ${objectId}`,

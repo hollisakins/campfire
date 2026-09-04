@@ -6,6 +6,9 @@ import { resolveFieldScienceSource, UnknownBandError } from '@/lib/cutout/source
 import { renderFigurePng } from '@/lib/cutout/figure';
 import { resolveRequestUser, parseScienceParams } from '../science-params';
 
+// Multi-band tile decode on a cold instance can exceed a short function budget (#497).
+export const maxDuration = 60;
+
 /** Single-band panel stretches (trilogy is an RGB-composite mode, not offered here). */
 const FIGURE_STRETCHES: StretchMode[] = ['linear', 'log', 'sqrt', 'asinh'];
 

@@ -2,11 +2,12 @@
 
 import React, { useState } from 'react';
 import { Eye, EyeOff, Download } from 'lucide-react';
-import { TileThumbnail } from './TileThumbnail';
+import { TileThumbnail, type TileThumbnailKind } from './TileThumbnail';
 import { generateShutterRegion } from '@/lib/actions/shutter-region';
 
 interface TileThumbnailWithToggleProps {
   targetId: string;
+  kind: TileThumbnailKind;
   size?: number;
   displaySize?: number;
   fov?: number;
@@ -28,6 +29,7 @@ interface TileThumbnailWithToggleProps {
  */
 export const TileThumbnailWithToggle: React.FC<TileThumbnailWithToggleProps> = ({
   targetId,
+  kind,
   size = 600,
   displaySize = 300,
   fov = 3.2,
@@ -67,6 +69,7 @@ export const TileThumbnailWithToggle: React.FC<TileThumbnailWithToggleProps> = (
     <div className="space-y-2">
       <TileThumbnail
         targetId={targetId}
+        kind={kind}
         size={size}
         displaySize={displaySize}
         fov={fov}

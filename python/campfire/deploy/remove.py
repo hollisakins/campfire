@@ -26,6 +26,7 @@ from campfire.deploy.supabase import (
     log_deploy_event,
     refresh_filter_options,
     refresh_programs_overview,
+    refresh_observations_overview,
 )
 
 
@@ -305,5 +306,6 @@ def remove_observation(
     print(f"\nRefreshing materialized views...")
     refresh_filter_options(sb)
     refresh_programs_overview(sb)
+    refresh_observations_overview(sb)
 
     print(f"\nRemoved observation '{obs_name}'.")
