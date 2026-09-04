@@ -60,7 +60,7 @@ export async function GET(request: NextRequest) {
     if (frontUrl) {
       return NextResponse.redirect(frontUrl, {
         status: 302,
-        headers: { 'Cache-Control': 'private, max-age=3600' },
+        headers: { 'Cache-Control': 'private, max-age=3600', Vary: 'Cookie' },
       });
     }
 

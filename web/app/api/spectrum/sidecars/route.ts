@@ -25,7 +25,10 @@ const NO_FRONT: SpectrumSidecarUrls = { front: false, spectrum: null, spectrum_1
  * ONE access check per spectrum per page (perf T2-D2, #508): resolves the
  * spectrum JSON, its 1-D sidecar and the zfit JSON to delivery-front urls in
  * one go, so the client fetches all three from the Worker (edge-cached per
- * content hash) with no further round trip through the app. Replaces the
+ * content hash) with no further round trip through the app. A null url
+ * with `front: true` is not proof of absence (registry row not active yet,
+ * presign failed): the client falls back to the streaming route for that
+ * one sidecar, and only that route's 404 means "no such product". Replaces the
  * per-route `spectra WHERE fits_path` lookups /api/spectrum and
  * /api/redshift-fit each ran (prod's #2 query shape).
  */
@@ -51,8 +54,9 @@ export async function GET(request: NextRequest) {
     }
 
     // Front urls are stable for at least one 6 h presign window; the answer
-    // may sit in the browser cache for an hour.
-    const headers = { 'Cache-Control': 'private, max-age=3600' };
+    // may sit in the browser cache for an hour — with Vary: Cookie, since
+    // sign-out does not clear the HTTP cache (D-C).
+    const headers = { 'Cache-Control': 'private, max-age=3600', Vary: 'Cookie' };
     if (!cdnFrontBase()) {
       return NextResponse.json(NO_FRONT, { headers });
     }
