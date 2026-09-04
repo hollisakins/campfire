@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createServiceClient } from '@/lib/supabase/service';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import { generateDownloadUrls } from '@/lib/r2';
@@ -60,10 +60,7 @@ export async function POST(request: NextRequest) {
     const accessibleProgramSlugs = await getAccessiblePrograms(userId);
     const admin = await isAdminUser(userId);
 
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
-    );
+    const supabase = createServiceClient();
 
     // Authorize each key against the caller's scope (admins → all active rows).
     const { data: allowedRows, error } = await supabase.rpc('filter_accessible_storage_keys', {

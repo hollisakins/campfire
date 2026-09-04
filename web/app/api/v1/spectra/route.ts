@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createServiceClient } from '@/lib/supabase/service';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import { generateDownloadUrl } from '@/lib/r2';
@@ -51,9 +51,7 @@ export async function GET(request: NextRequest) {
 
     // Verify user has access to this file by checking if the spectrum exists
     // and belongs to a program the user has access to
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    const supabase = createServiceClient();
 
     // Service-role read bypasses RLS, so gate unpublished spectra here: a
     // non-admin must never resolve an draft/revoked FITS by path. No-op in B1.

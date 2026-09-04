@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { createClient } from '@supabase/supabase-js';
+import { createServiceClient } from '@/lib/supabase/service';
 import { SignJWT, jwtVerify, JWTPayload } from 'jose';
 
 // Token configuration
@@ -137,9 +137,7 @@ export async function createRefreshToken(
   clientIp?: string,
   userAgent?: string
 ): Promise<{ token: string; expiresAt: Date }> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createServiceClient();
 
   const token = generateRefreshToken();
   const tokenHash = hashRefreshToken(token);
@@ -169,9 +167,7 @@ export async function createRefreshToken(
 export async function validateRefreshToken(
   token: string
 ): Promise<{ userId: string; tokenId: string } | null> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createServiceClient();
 
   const tokenHash = hashRefreshToken(token);
 
@@ -210,9 +206,7 @@ export async function rotateRefreshToken(
   expiresIn: number;
   userId: string;
 } | null> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createServiceClient();
 
   const oldTokenHash = hashRefreshToken(oldToken);
   const newToken = generateRefreshToken();
@@ -261,9 +255,7 @@ export async function revokeRefreshToken(
   tokenId: string,
   userId: string
 ): Promise<boolean> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createServiceClient();
 
   const { data, error } = await supabase.rpc('revoke_refresh_token', {
     p_token_id: tokenId,
@@ -282,9 +274,7 @@ export async function revokeRefreshToken(
  * Revoke all refresh tokens for a user
  */
 export async function revokeAllUserRefreshTokens(userId: string): Promise<number> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createServiceClient();
 
   const { data, error } = await supabase.rpc('revoke_all_user_refresh_tokens', {
     p_user_id: userId,
@@ -302,9 +292,7 @@ export async function revokeAllUserRefreshTokens(userId: string): Promise<number
  * Get user email by user_id (for token generation)
  */
 export async function getUserEmail(userId: string): Promise<string | null> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createServiceClient();
 
   const { data, error } = await supabase.auth.admin.getUserById(userId);
 

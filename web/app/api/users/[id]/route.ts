@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { invalidateAccessContext } from '@/lib/auth/access-context';
+import { isAdminUser } from '@/lib/api-helpers';
+import { getRequestIdentity } from '@/lib/auth/identity';
+import { createServiceClient } from '@/lib/supabase/server';
 
 /**
  * PATCH /api/users/[id]
@@ -12,22 +15,13 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id: userId } = await params;
-  const supabase = await createClient();
-
-  // Check authentication and admin status
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
   }
 
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('is_admin')
-    .eq('user_id', user.id)
-    .single();
-
-  if (!profile?.is_admin) {
+  if (!(await isAdminUser(user.id))) {
     return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
   }
 
@@ -115,6 +109,10 @@ export async function PATCH(
       }
     }
 
+    // Flags or grants changed: forget the memoized access set on this
+    // instance (#505). Other instances converge within the memo TTL.
+    invalidateAccessContext(userId);
+
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Error:', error);
@@ -142,10 +140,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id: userId } = await params;
-  const supabase = await createClient();
-
-  // Check authentication and admin status
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
@@ -156,13 +151,7 @@ export async function DELETE(
     return NextResponse.json({ error: 'Cannot delete your own account' }, { status: 400 });
   }
 
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('is_admin')
-    .eq('user_id', user.id)
-    .single();
-
-  if (!profile?.is_admin) {
+  if (!(await isAdminUser(user.id))) {
     return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
   }
 
@@ -218,6 +207,10 @@ export async function DELETE(
       console.error('Error deleting user:', error);
       return NextResponse.json({ error: 'Failed to delete user' }, { status: 500 });
     }
+
+    // The principal may still authenticate (see the doc comment), so its
+    // memoized grants / admin flag must not outlive the rows (#505).
+    invalidateAccessContext(userId);
 
     return NextResponse.json({ success: true });
   } catch (error) {

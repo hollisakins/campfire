@@ -1,7 +1,8 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
-import { getAccessibleProgramSlugs } from '@/lib/accessible-programs';
+import { getAccessContext } from '@/lib/auth/access-context';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { paginateRpc, paginateRpcKeyset, paginateQuery } from '@/lib/supabase/paginate';
 import type { WCSParams } from '@/lib/utils/wcs';
 import type { FilterOptions } from './filter-params';
@@ -145,8 +146,7 @@ export interface ShuttersResult {
 export async function getMapLayers(
   field?: string
 ): Promise<MapLayersResult> {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return { layers: [], isAuthenticated: false };
@@ -179,8 +179,7 @@ export async function getMapLayers(
  * dataset; otherwise it falls back to Leaflet PNG tiles.
  */
 export async function getFitsglDatasets(field?: string): Promise<FitsglDataset[]> {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) return [];
 
   let query = supabase
@@ -255,8 +254,7 @@ export async function getFieldObjectMarkers(
 export async function getFilteredObjectIds(
   filters: FilterOptions
 ): Promise<{ objectIds: string[]; error?: string }> {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return { objectIds: [], error: 'Not authenticated' };
@@ -266,8 +264,8 @@ export async function getFilteredObjectIds(
     // Which programs can this user access? One RPC to the SQL authority
     // (accessible_program_slugs) rather than a hand-rolled grants + public
     // union: the union is wrong for link accounts (scoped program only, no
-    // is_public) and admins (every program). See web/lib/accessible-programs.ts.
-    const accessibleProgramSlugs = await getAccessibleProgramSlugs(supabase);
+    // is_public) and admins (every program). See web/lib/auth/access-context.ts.
+    const accessibleProgramSlugs = (await getAccessContext(user.id)).accessibleSlugs;
 
     if (accessibleProgramSlugs.length === 0) {
       return { objectIds: [] };

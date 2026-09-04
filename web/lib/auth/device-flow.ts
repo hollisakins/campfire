@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { createClient } from '@supabase/supabase-js';
+import { createServiceClient } from '@/lib/supabase/service';
 
 // Base-20 alphabet excluding confusable characters (0/O, 1/l/I)
 const USER_CODE_ALPHABET = 'BCDFGHJKMNPQRSTVWXYZ';
@@ -55,9 +55,7 @@ export async function createDeviceAuthorization(
   expiresIn: number;
   interval: number;
 }> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createServiceClient();
 
   const deviceCode = generateDeviceCode();
   const userCode = generateUserCode();
@@ -98,9 +96,7 @@ export async function checkDeviceCodeStatus(
   status: 'pending' | 'authorized' | 'denied' | 'expired' | 'not_found';
   userId?: string;
 }> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createServiceClient();
 
   const { data, error } = await supabase.rpc('check_device_code_status', {
     p_device_code: deviceCode,
@@ -129,9 +125,7 @@ export async function authorizeDeviceCode(
   userCode: string,
   userId: string
 ): Promise<boolean> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createServiceClient();
 
   const normalizedCode = normalizeUserCode(userCode);
 
@@ -152,9 +146,7 @@ export async function authorizeDeviceCode(
  * Deny a device code (called when user denies in browser)
  */
 export async function denyDeviceCode(userCode: string): Promise<boolean> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createServiceClient();
 
   const normalizedCode = normalizeUserCode(userCode);
 
@@ -175,9 +167,7 @@ export async function denyDeviceCode(userCode: string): Promise<boolean> {
  * Returns user_id if successful, null otherwise
  */
 export async function consumeDeviceCode(deviceCode: string): Promise<string | null> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createServiceClient();
 
   const { data, error } = await supabase.rpc('consume_device_code', {
     p_device_code: deviceCode,
@@ -201,9 +191,7 @@ export async function getDeviceCodeByUserCode(
   isExpired: boolean;
   isPending: boolean;
 } | null> {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createServiceClient();
 
   const normalizedCode = normalizeUserCode(userCode);
 

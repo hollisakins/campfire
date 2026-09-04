@@ -1,6 +1,6 @@
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
+import { requireAdmin as requireAdminIdentity } from '@/lib/auth/identity';
 import { NIRSPEC_RATE_SORT_KEYS } from '@/lib/admin/sort-keys';
 import type { NirspecRateExposure, MaskRegionsPayload } from '@/lib/types';
 
@@ -9,17 +9,7 @@ import type { NirspecRateExposure, MaskRegionsPayload } from '@/lib/types';
 // ---------------------------------------------------------------------------
 
 async function requireAdmin() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('Not authenticated');
-
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('is_admin')
-    .eq('user_id', user.id)
-    .single();
-
-  if (!profile?.is_admin) throw new Error('Admin access required');
+  const { supabase } = await requireAdminIdentity();
   return supabase;
 }
 

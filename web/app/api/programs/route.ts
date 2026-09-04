@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { isAdminUser } from '@/lib/api-helpers';
+import { getRequestIdentity } from '@/lib/auth/identity';
 
 /**
  * GET /api/programs
@@ -9,10 +10,7 @@ import { createClient } from '@/lib/supabase/server';
  * - For non-admins (or unauthenticated): Returns basic program list (slug, program_name)
  */
 export async function GET() {
-  const supabase = await createClient();
-
-  // Check authentication and admin status
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   // If not authenticated, return basic program list
   if (!user) {
@@ -34,14 +32,8 @@ export async function GET() {
     }
   }
 
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('is_admin')
-    .eq('user_id', user.id)
-    .single();
-
   // If not admin, return basic program list
-  if (!profile?.is_admin) {
+  if (!(await isAdminUser(user.id))) {
     try {
       const { data: programs, error } = await supabase
         .from('programs')

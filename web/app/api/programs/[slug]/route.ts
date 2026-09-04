@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { invalidateAccessContext } from '@/lib/auth/access-context';
+import { isAdminUser } from '@/lib/api-helpers';
+import { getRequestIdentity } from '@/lib/auth/identity';
 
 /**
  * PATCH /api/programs/[slug]
@@ -17,22 +19,13 @@ export async function PATCH(
     return NextResponse.json({ error: 'Invalid program slug' }, { status: 400 });
   }
 
-  const supabase = await createClient();
-
-  // Check authentication and admin status
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
   }
 
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('is_admin')
-    .eq('user_id', user.id)
-    .single();
-
-  if (!profile?.is_admin) {
+  if (!(await isAdminUser(user.id))) {
     return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
   }
 
@@ -60,6 +53,10 @@ export async function PATCH(
       console.error('Error updating program:', error);
       return NextResponse.json({ error: 'Failed to update program' }, { status: 500 });
     }
+
+    // A public/private flip changes every non-admin's accessible set, so drop
+    // the whole memo on this instance (#505); others converge within the TTL.
+    if ('is_public' in updates) invalidateAccessContext();
 
     return NextResponse.json({ program: updatedProgram });
   } catch (error) {

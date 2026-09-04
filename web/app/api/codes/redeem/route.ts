@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { invalidateAccessContext } from '@/lib/auth/access-context';
+import { getRequestIdentity } from '@/lib/auth/identity';
 
 /**
  * POST /api/codes/redeem
@@ -24,10 +25,7 @@ const STATUS_RESPONSES: Record<string, { error: string; http: number }> = {
 };
 
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-
-  // Check authentication
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json(
@@ -74,6 +72,10 @@ export async function POST(request: NextRequest) {
       }
       return NextResponse.json({ error: mapped.error }, { status: mapped.http });
     }
+
+    // New grants: drop this instance's memoized access set so the next
+    // request from this user sees them at once (#505).
+    invalidateAccessContext(user.id);
 
     return NextResponse.json({
       success: true,

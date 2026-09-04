@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { getAccessContext } from '@/lib/auth/access-context';
+import { getRequestIdentity } from '@/lib/auth/identity';
 
 /**
  * PATCH /api/objects/[id]/inspect
@@ -29,20 +30,13 @@ export async function PATCH(
     return NextResponse.json({ error: 'Invalid object ID' }, { status: 400 });
   }
 
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
   }
 
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('can_inspect')
-    .eq('user_id', user.id)
-    .single();
-
-  if (!profile?.can_inspect) {
+  if (!(await getAccessContext(user.id)).canInspect) {
     return NextResponse.json({ error: 'Permission denied' }, { status: 403 });
   }
 

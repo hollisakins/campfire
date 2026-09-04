@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { authorizeDeviceCode, denyDeviceCode } from '@/lib/auth/device-flow';
 import { getLinkScope } from '@/lib/api-helpers';
 
@@ -25,10 +25,9 @@ import { getLinkScope } from '@/lib/api-helpers';
 export async function POST(request: NextRequest) {
   try {
     // Get authenticated user from session
-    const supabase = await createClient();
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const { user } = await getRequestIdentity();
 
-    if (authError || !user) {
+    if (!user) {
       return NextResponse.json(
         { error: 'unauthorized', error_description: 'You must be logged in' },
         { status: 401 }

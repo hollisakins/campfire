@@ -5,16 +5,15 @@
 // canonical endpoints), and resolve bands through `resolveFieldScienceSource`.
 
 import { NextRequest, NextResponse } from 'next/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { validateAuth } from '@/lib/api-auth';
-import { createClient } from '@/lib/supabase/server';
 
 /** Authenticated user id via Bearer token (API key / JWT) or cookie session. */
 export async function resolveRequestUser(request: NextRequest): Promise<string | null> {
   if (request.headers.get('authorization')) {
     return validateAuth(request);
   }
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user } = await getRequestIdentity();
   return user?.id ?? null;
 }
 

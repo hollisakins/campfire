@@ -1,7 +1,9 @@
 'use server';
 
 import { createHash, randomBytes } from 'crypto';
-import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { invalidateAccessContext } from '@/lib/auth/access-context';
+import { requireAdmin as requireAdminIdentity } from '@/lib/auth/identity';
+import { createServiceClient } from '@/lib/supabase/server';
 
 // ---------------------------------------------------------------------------
 // Share links (docs/design-public-mirror.md).
@@ -42,17 +44,7 @@ function linkUsername(token: string): string {
 }
 
 async function requireAdmin() {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('Not authenticated');
-
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('is_admin')
-    .eq('user_id', user.id)
-    .single();
-
-  if (!profile?.is_admin) throw new Error('Admin access required');
+  const { supabase, user } = await requireAdminIdentity();
   return { supabase, userId: user.id };
 }
 
@@ -230,6 +222,8 @@ export async function revokeShareLink(token: string): Promise<{ error?: string }
       .update({ revoked_at: new Date().toISOString() })
       .eq('token', token);
     if (stampError) return { error: `Failed to revoke: ${stampError.message}` };
+    // The link account's memoized scope must die with the stamp (#505).
+    invalidateAccessContext(link.link_user_id);
 
     const { error: banError } = await service.auth.admin.updateUserById(link.link_user_id, {
       // Effectively forever (100 years); GoTrue has no "permanent" literal.

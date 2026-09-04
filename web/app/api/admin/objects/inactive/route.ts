@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient, createServiceClient } from '@/lib/supabase/server';
+import { isAdminUser } from '@/lib/api-helpers';
+import { getRequestIdentity } from '@/lib/auth/identity';
+import { createServiceClient } from '@/lib/supabase/server';
 
 /**
  * /api/admin/objects/inactive
@@ -15,18 +17,12 @@ import { createClient, createServiceClient } from '@/lib/supabase/server';
  */
 
 async function requireAdmin(request: NextRequest) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user } = await getRequestIdentity();
   if (!user) {
     return { error: NextResponse.json({ error: 'Authentication required' }, { status: 401 }) };
   }
   const service = createServiceClient();
-  const { data: profile } = await service
-    .from('user_profiles')
-    .select('is_admin')
-    .eq('user_id', user.id)
-    .single();
-  if (!profile?.is_admin) {
+  if (!(await isAdminUser(user.id))) {
     return { error: NextResponse.json({ error: 'Admin access required' }, { status: 403 }) };
   }
   return { service, userId: user.id };

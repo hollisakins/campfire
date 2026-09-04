@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createServiceClient } from '@/lib/supabase/service';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessibleProgramsCached, isAdminUserCached } from '@/lib/api-helpers';
+import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 
 /**
  * GET /api/v1/sync/storage
@@ -34,8 +34,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const accessibleProgramSlugs = await getAccessibleProgramsCached(userId);
-    const admin = await isAdminUserCached(userId);
+    const accessibleProgramSlugs = await getAccessiblePrograms(userId);
+    const admin = await isAdminUser(userId);
 
     // Non-admins with no program access have nothing to mirror. Admins fall
     // through (the RPC returns the full mirror regardless of program list).
@@ -55,10 +55,7 @@ export async function GET(request: NextRequest) {
     const updatedSince = searchParams.get('updated_since') || null;
     const includeCounts = searchParams.get('include_counts') !== 'false';
 
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
-    );
+    const supabase = createServiceClient();
 
     const { data, error } = await supabase.rpc('get_storage_objects_for_sync', {
       p_program_slugs: accessibleProgramSlugs,

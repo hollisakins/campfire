@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import {
   compositeTileThumbnail,
   TRANSPARENT_GIF,
@@ -35,10 +35,7 @@ type Kind = 'object' | 'target';
  * `v` is an opaque cache-key token (lib/asset-version.ts) and is not read.
  */
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-
-  // Auth check
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
   if (!user) {
     return new Response(TRANSPARENT_GIF, {
       status: 401,

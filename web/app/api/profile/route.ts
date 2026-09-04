@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
 import { USERNAME_REGEX } from '@/lib/utils/username';
 
 /**
@@ -8,9 +8,7 @@ import { USERNAME_REGEX } from '@/lib/utils/username';
  * Fetch the current user's profile and program access.
  */
 export async function GET() {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
@@ -143,9 +141,7 @@ export async function GET() {
  * Update the current user's profile.
  */
 export async function PATCH(request: NextRequest) {
-  const supabase = await createClient();
-
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
     return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
