@@ -398,7 +398,12 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         maxSize: 56,
         header: () => <span className="sr-only">Image</span>,
         cell: ({ row }) => (
-          <TileThumbnail targetId={row.original.target_id} size={48} />
+          <TileThumbnail
+            targetId={row.original.target_id}
+            kind={isObjectsMode ? 'object' : 'target'}
+            field={row.original.field}
+            size={48}
+          />
         ),
         enableSorting: false,
       },

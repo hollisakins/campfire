@@ -87,8 +87,11 @@ export async function GET(request: NextRequest) {
 
     const data: RedshiftFitData = await response.json();
 
+    // Program-scoped, cookie-authenticated: browser-cacheable for a day, never
+    // shared-cacheable — Vercel's edge serves `public` responses to any caller
+    // of the same URL, cookie or not (#497).
     const resp = NextResponse.json(data);
-    resp.headers.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
+    resp.headers.set('Cache-Control', 'private, max-age=86400, stale-while-revalidate=3600');
     return resp;
   } catch (error) {
     console.error('Error fetching redshift fit data:', error);

@@ -10,6 +10,14 @@ import type { WCSParams } from '@/lib/utils/wcs';
 import { resolveFieldCutoutSource } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 
+// Tile decode + reprojection + PNG encode for up to 2048 px on a cold instance (#497).
+export const maxDuration = 60;
+
+// Bearer-authenticated and program-scoped: bearer requests bypass Vercel's
+// shared cache anyway, so `private` states the truth for the client's own
+// cache instead of an inert `public` (#497).
+const PRIVATE_LONG = 'private, max-age=604800, stale-while-revalidate=86400';
+
 /**
  * GET /api/v1/cutout?object_id=<id>&size=<px>&fov=<arcsec>
  *
@@ -136,11 +144,9 @@ export async function GET(request: NextRequest) {
           status: 200,
           headers: {
             'Content-Type': 'image/png',
-            // A draft-backed render (admin API key) must never enter a shared
+            // A draft-backed render (admin API key) must not sit in any
             // cache keyed on the URL alone.
-            'Cache-Control': fitsglSrc.isPublic
-              ? 'public, max-age=604800, stale-while-revalidate=86400'
-              : 'private, no-store',
+            'Cache-Control': fitsglSrc.isPublic ? PRIVATE_LONG : 'private, no-store',
           },
         });
       } catch (err) {
@@ -186,7 +192,7 @@ export async function GET(request: NextRequest) {
       status: 200,
       headers: {
         'Content-Type': 'image/png',
-        'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400',
+        'Cache-Control': PRIVATE_LONG,
       },
     });
   } catch (error) {

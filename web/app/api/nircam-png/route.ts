@@ -8,6 +8,8 @@ import {
 import { createClient } from '@/lib/supabase/server';
 
 export const runtime = 'nodejs';
+// Streams a multi-MB PNG from OSN through the function (#497).
+export const maxDuration = 60;
 
 /**
  * GET /api/nircam-png?id=<exposure id>

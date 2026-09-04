@@ -44,6 +44,7 @@ export const DashboardPanel: React.FC<DashboardPanelProps> = ({
       <div className="p-4 flex justify-center border-b border-border flex-shrink-0">
         <TileThumbnail
           targetId={object.object_id}
+          kind="object"
           size={560}
           displaySize={280}
           fov={3.2}

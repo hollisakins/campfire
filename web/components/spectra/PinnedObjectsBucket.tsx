@@ -12,11 +12,14 @@ import {
   type PinnedObject,
   type PinnedObjectMetadata,
 } from '@/lib/types';
-import { TileThumbnail } from './TileThumbnail';
+import { TileThumbnail, type TileThumbnailKind } from './TileThumbnail';
 
 // Delay before the panel collapses after the pointer leaves, so the hover
 // path from chip to panel is forgiving of small gaps and diagonal movement.
 const CLOSE_DELAY_MS = 200;
+
+const pinKind = (pin: PinnedObject): TileThumbnailKind =>
+  pin.route === 'objects' ? 'object' : 'target';
 
 const detailHref = (pin: PinnedObject) =>
   `/nirspec/${pin.route}/${encodeURIComponent(pin.target_id)}`;
@@ -36,7 +39,7 @@ const PinnedCard: React.FC<{
       className="group/pin flex items-center gap-3 p-2 rounded-lg hover:bg-card-hover transition-colors animate-slide-in-up"
       style={{ animationDelay: `${index * 30}ms` }}
     >
-      <TileThumbnail targetId={pin.target_id} size={40} className="flex-shrink-0" />
+      <TileThumbnail targetId={pin.target_id} kind={pinKind(pin)} size={40} className="flex-shrink-0" />
       <div className="flex-1 min-w-0">
         <p className="text-sm font-mono text-text-primary truncate group-hover/pin:text-primary transition-colors">
           {pin.target_id}
@@ -185,7 +188,7 @@ export const PinnedObjectsBucket: React.FC = () => {
                   key={pin.target_id}
                   className={`block rounded ring-2 ring-card ${i > 0 ? '-ml-1.5' : ''}`}
                 >
-                  <TileThumbnail targetId={pin.target_id} size={20} />
+                  <TileThumbnail targetId={pin.target_id} kind={pinKind(pin)} size={20} />
                 </span>
               ))}
             </span>

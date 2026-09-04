@@ -64,7 +64,13 @@ export async function GET(request: NextRequest) {
     }
 
     const pzData = await r2Response.json();
-    return NextResponse.json(pzData);
+    const resp = NextResponse.json(pzData);
+    // ~0.5 MB sidecar re-sent on every object-page view before this (#497).
+    // Program-scoped → private. One day, not a week: the URL is keyed by
+    // object_id with no version token, and a photometry re-deploy overwrites
+    // the sidecar in place, so a longer lifetime would pin stale P(z).
+    resp.headers.set('Cache-Control', 'private, max-age=86400');
+    return resp;
   } catch (error) {
     console.error('Error generating P(z) sidecar URL:', error);
     return NextResponse.json(

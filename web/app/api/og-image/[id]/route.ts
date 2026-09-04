@@ -7,13 +7,26 @@ import {
 import { resolveFieldCutoutSource } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 
+// Tile decode + reprojection + PNG encode on a cold instance (#497).
+export const maxDuration = 60;
+
+type Kind = 'object' | 'target';
+
 /**
- * GET /api/og-image/[id]
+ * GET /api/og-image/[id]?kind=object|target[&v=<asset version>]
  *
  * Serves tile-composited RGB images publicly for social media crawlers.
  * - No authentication required (unlike /api/tile-thumbnail)
  * - Returns image bytes directly
- * - Aggressive caching (1 week) since tiles rarely change
+ * - Aggressive caching (1 week) since tiles rarely change; the `v` token
+ *   (lib/asset-version.ts) changes the URL when a field's imagery is
+ *   re-deployed, so the week-long shared cache needs no purge path.
+ *
+ * Anonymous + shared-cached means this route may only ever show what an
+ * anonymous visitor could see: the id must resolve to a published row whose
+ * program is public (`programs.is_public`), else 404 (#497). `kind` selects
+ * the catalog (see /api/tile-thumbnail); absent, the legacy targets-then-
+ * objects probe applies.
  */
 export async function GET(
   request: NextRequest,
@@ -22,32 +35,50 @@ export async function GET(
   const { id } = await params;
   const targetId = decodeURIComponent(id);
 
+  const kindParam = request.nextUrl.searchParams.get('kind');
+  if (kindParam !== null && kindParam !== 'object' && kindParam !== 'target') {
+    return new Response('Image not found', { status: 404 });
+  }
+  const kind = kindParam as Kind | null;
+
   try {
     const supabase = createServiceClient();
 
-    // Look up coordinates — try targets first, fall back to objects
+    // This endpoint is PUBLIC (no auth) and uses the service-role client, so it
+    // must surface nothing an anonymous visitor could not see: the row must
+    // carry >=1 published spectrum (has_published_spectrum) AND belong to a
+    // public program. A target has one program; an object is public when any
+    // of its programs is (its coordinates are then already visible).
+    const { data: publicPrograms } = await supabase
+      .from('programs')
+      .select('slug')
+      .eq('is_public', true)
+      .is('retired_at', null);
+    const publicSlugs = (publicPrograms ?? []).map((p) => p.slug);
+    if (publicSlugs.length === 0) {
+      return new Response('Image not found', { status: 404 });
+    }
+
     let obj: { ra: number; dec: number; field: string } | null = null;
 
-    // This endpoint is PUBLIC (no auth) and uses the service-role client, so it
-    // must surface nothing about unpublished data: require >=1 published
-    // spectrum (has_published_spectrum) on the target/object, else 404 below.
-    // No-op in B1. (Program-level gating is out of scope — pre-existing #229.)
-    const { data: target } = await supabase
-      .from('targets')
-      .select('ra, dec, field')
-      .eq('target_id', targetId)
-      .eq('has_published_spectrum', true)
-      .single();
-
-    if (target) {
+    if (kind !== 'object') {
+      const { data: target } = await supabase
+        .from('targets')
+        .select('ra, dec, field')
+        .eq('target_id', targetId)
+        .eq('has_published_spectrum', true)
+        .in('program_slug', publicSlugs)
+        .maybeSingle();
       obj = target;
-    } else {
+    }
+    if (!obj && kind !== 'target') {
       const { data: object } = await supabase
         .from('objects')
         .select('ra, dec, field')
         .eq('object_id', targetId)
         .eq('has_published_spectrum', true)
-        .single();
+        .overlaps('programs', publicSlugs)
+        .maybeSingle();
       obj = object;
     }
 
