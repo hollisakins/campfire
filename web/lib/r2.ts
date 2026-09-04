@@ -52,6 +52,12 @@ export interface ResolvedObject {
   backend: DataBackend;
   key: string;
   contentHash: string | null;
+  /** When the registry row was last (re)registered — storage_objects.updated_at
+   * as unix seconds; bumps on every re-deploy, after the bytes landed. The
+   * delivery front binds it into the object token so the Worker can tell an
+   * in-place overwrite (upstream Last-Modified newer than this) from the
+   * bytes the hash names. null when the key has no active row. */
+  registeredAt: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,6 +76,7 @@ const REGISTRY_MEMO_MAX = 4096;
 interface RegistryEntry {
   backend: DataBackend;
   contentHash: string;
+  registeredAt: number | null;
   at: number;
 }
 
@@ -119,7 +126,7 @@ export async function resolveObjectBackends(keys: string[]): Promise<ResolvedObj
   // caller passed a canonical key (the client mirror holds canonical keys after
   // migration). This is the rollback / fail-open answer for every key.
   const r2Only = (): ResolvedObject[] =>
-    keys.map((key) => ({ backend: 'r2' as const, key: toLegacyKeySafe(key), contentHash: null }));
+    keys.map((key) => ({ backend: 'r2' as const, key: toLegacyKeySafe(key), contentHash: null, registeredAt: null }));
 
   if (!osnReadEnabled()) return r2Only();
 
@@ -154,14 +161,16 @@ export async function resolveObjectBackends(keys: string[]): Promise<ResolvedObj
         const chunk = toLookup.slice(i, i + LOOKUP_CHUNK);
         const { data, error } = await supabase
           .from('storage_objects')
-          .select('storage_key, backend, content_hash')
+          .select('storage_key, backend, content_hash, updated_at')
           .in('storage_key', chunk)
           .eq('status', 'active');
         if (error) throw error;
         for (const row of data ?? []) {
+          const registeredMs = row.updated_at ? Date.parse(String(row.updated_at)) : NaN;
           const entry: RegistryEntry = {
             backend: row.backend as DataBackend,
             contentHash: String(row.content_hash),
+            registeredAt: Number.isFinite(registeredMs) ? Math.floor(registeredMs / 1000) : null,
             at: Date.now(),
           };
           rowByCanonical.set(row.storage_key as string, entry);
@@ -177,9 +186,14 @@ export async function resolveObjectBackends(keys: string[]): Promise<ResolvedObj
       // there; every other case reads R2 under the legacy key. The content
       // identity rides along either way (an r2 row is still the same bytes).
       if (canonical && row?.backend === 'osn') {
-        return { backend: 'osn' as const, key: canonical, contentHash: row.contentHash };
+        return { backend: 'osn' as const, key: canonical, contentHash: row.contentHash, registeredAt: row.registeredAt };
       }
-      return { backend: 'r2' as const, key: toLegacyKeySafe(key), contentHash: row?.contentHash ?? null };
+      return {
+        backend: 'r2' as const,
+        key: toLegacyKeySafe(key),
+        contentHash: row?.contentHash ?? null,
+        registeredAt: row?.registeredAt ?? null,
+      };
     });
   } catch (err) {
     console.error('[dual-read] backend resolution failed; falling back to R2:', err);

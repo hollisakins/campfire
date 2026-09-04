@@ -6,12 +6,17 @@ import {
   upstreamPathMatchesKey,
   contentTypeFor,
   objectCacheKey,
+  isRegisteredBytes,
+  isNotModified,
 } from './object';
 
 const SECRET = 'test-shared-secret';
 const KEY = 'data/products/nirspec/obs/x_spec.json';
 const HASH = 'sha256:0123abcd';
 const UPSTREAM = `https://uaz1.osn.mghpcc.org/campfire-jwst/${KEY}?X-Amz-Signature=deadbeef`;
+/** The registered bytes were written at noon and registered a minute later. */
+const UPSTREAM_LAST_MODIFIED = 'Thu, 04 Sep 2026 12:00:00 GMT';
+const REGISTERED = Math.floor(Date.parse(UPSTREAM_LAST_MODIFIED) / 1000) + 60;
 const ENV = { JWT_SECRET: SECRET, ALLOWED_ORIGINS: 'https://campfire.hollisakins.com', ALLOWED_FETCH_HOSTS: 'uaz1.osn.mghpcc.org' };
 
 // Mirror of the app's mint (lib/server/worker-token.ts) — proves sign/verify agree.
@@ -23,14 +28,17 @@ async function sign(message: string, secret: string): Promise<string> {
   return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
-async function objectUrl(opts: { key?: string; hash?: string; exp?: number; upstream?: string; secret?: string } = {}) {
+async function objectUrl(
+  opts: { key?: string; hash?: string; exp?: number; registered?: number; upstream?: string; secret?: string } = {},
+) {
   const key = opts.key ?? KEY;
   const hash = opts.hash ?? HASH;
   const exp = String(opts.exp ?? Math.floor(Date.now() / 1000) + 3600);
+  const registered = String(opts.registered ?? REGISTERED);
   const upstream = opts.upstream ?? UPSTREAM;
-  const t = await sign(objectTokenMessage(key, hash, exp, upstream), opts.secret ?? SECRET);
+  const t = await sign(objectTokenMessage(key, hash, exp, upstream, registered), opts.secret ?? SECRET);
   const path = key.split('/').map(encodeURIComponent).join('/');
-  return `https://campfire-download.hollisakins.com/o/${path}?h=${encodeURIComponent(hash)}&e=${exp}&t=${t}&u=${encodeURIComponent(upstream)}`;
+  return `https://campfire-download.hollisakins.com/o/${path}?h=${encodeURIComponent(hash)}&e=${exp}&r=${registered}&t=${t}&u=${encodeURIComponent(upstream)}`;
 }
 
 /** A tiny in-memory stand-in for the Workers Cache API (full objects only;
@@ -84,6 +92,28 @@ describe('object helpers', () => {
     expect(contentTypeFor('a/b.bin', 'application/octet-stream')).toBe('application/octet-stream');
   });
 
+  it('treats an upstream as the registered bytes only when Last-Modified does not postdate the registration', () => {
+    const h = (lm?: string) => new Headers(lm ? { 'Last-Modified': lm } : {});
+    const t0 = Date.parse('2026-09-04T12:00:00Z') / 1000;
+    expect(isRegisteredBytes(h('Thu, 04 Sep 2026 11:59:00 GMT'), t0)).toBe(true);
+    expect(isRegisteredBytes(h('Thu, 04 Sep 2026 12:05:00 GMT'), t0)).toBe(true); // clock skew
+    expect(isRegisteredBytes(h('Thu, 04 Sep 2026 13:00:00 GMT'), t0)).toBe(false); // overwrite
+    expect(isRegisteredBytes(h(), t0)).toBe(false);
+    expect(isRegisteredBytes(h('garbage'), t0)).toBe(false);
+  });
+
+  it('matches conditional validators weakly', () => {
+    const answer = new Headers({ ETag: '"abc"', 'Last-Modified': 'Thu, 04 Sep 2026 12:00:00 GMT' });
+    const req = (h: Record<string, string>) => new Request('https://x/', { headers: h });
+    expect(isNotModified(req({ 'If-None-Match': '"abc"' }), answer)).toBe(true);
+    expect(isNotModified(req({ 'If-None-Match': 'W/"abc"' }), answer)).toBe(true);
+    expect(isNotModified(req({ 'If-None-Match': '"nope", "abc"' }), answer)).toBe(true);
+    expect(isNotModified(req({ 'If-None-Match': '"nope"' }), answer)).toBe(false);
+    expect(isNotModified(req({ 'If-Modified-Since': 'Thu, 04 Sep 2026 12:00:00 GMT' }), answer)).toBe(true);
+    expect(isNotModified(req({ 'If-Modified-Since': 'Thu, 04 Sep 2026 11:00:00 GMT' }), answer)).toBe(false);
+    expect(isNotModified(req({}), answer)).toBe(false);
+  });
+
   it('keys the cache by key + hash on the Worker origin, never by the presigned url', () => {
     const k = objectCacheKey('https://w.example', KEY, HASH);
     expect(k).toBe(`https://w.example/_cache/o/${KEY}?h=${encodeURIComponent(HASH)}`);
@@ -93,8 +123,11 @@ describe('object helpers', () => {
 
 describe('/o/ handler', () => {
   let fetched: { url: string; init?: RequestInit }[];
+  /** What the upstream currently holds: the registered bytes, or an overwrite. */
+  let upstreamLastModified: string;
   beforeEach(() => {
     fetched = [];
+    upstreamLastModified = UPSTREAM_LAST_MODIFIED;
     vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
       fetched.push({ url: input, init });
       const range = (init?.headers as Record<string, string> | undefined)?.Range;
@@ -104,16 +137,76 @@ describe('/o/ handler', () => {
         const s = Number(m[1]), e = Number(m[2]);
         return new Response(body.slice(s, e + 1), {
           status: 206,
-          headers: { 'Content-Type': 'binary/octet-stream', 'Content-Range': `bytes ${s}-${e}/${body.length}`, 'Content-Length': String(e - s + 1) },
+          headers: {
+            'Content-Type': 'binary/octet-stream',
+            'Content-Range': `bytes ${s}-${e}/${body.length}`,
+            'Content-Length': String(e - s + 1),
+            'Last-Modified': upstreamLastModified,
+          },
         });
       }
       return new Response(body, {
         status: 200,
-        headers: { 'Content-Type': 'binary/octet-stream', 'Content-Length': String(body.length), ETag: '"abc"' },
+        headers: {
+          'Content-Type': 'binary/octet-stream',
+          'Content-Length': String(body.length),
+          ETag: '"abc"',
+          'Last-Modified': upstreamLastModified,
+        },
       });
     });
   });
   afterEach(() => vi.unstubAllGlobals());
+
+  it('serves but never stores an upstream overwritten after its registration (full GET and Range fill)', async () => {
+    const { cache, store } = fakeCache();
+    vi.stubGlobal('caches', { default: cache });
+    const pending: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (p: Promise<unknown>) => { pending.push(p); } };
+    // A re-deploy overwrote the path a day after the url's row was registered.
+    upstreamLastModified = 'Fri, 05 Sep 2026 12:00:00 GMT';
+
+    const full = await worker.fetch(new Request(await objectUrl()), ENV, ctx as never);
+    expect(full.status).toBe(200);
+    expect(await full.text()).toBe('ABCDEFGHIJ');
+    expect(full.headers.get('X-Cache')).toBe('MISS');
+    await Promise.all(pending);
+    expect(store.size).toBe(0);
+
+    const ranged = await worker.fetch(new Request(await objectUrl(), { headers: { Range: 'bytes=0-2' } }), ENV, ctx as never);
+    expect(ranged.status).toBe(206);
+    expect(await ranged.text()).toBe('ABC');
+    await Promise.all(pending);
+    expect(store.size).toBe(0);
+
+    // A url minted after the re-deploy (a newer registration) fills the slot.
+    const fresh = await objectUrl({ hash: 'sha256:new', registered: Math.floor(Date.parse(upstreamLastModified) / 1000) + 60 });
+    await (await worker.fetch(new Request(fresh), ENV, ctx as never)).text();
+    await Promise.all(pending);
+    expect(store.size).toBe(1);
+  });
+
+  it('answers a matching If-None-Match with 304 from the cache and from upstream', async () => {
+    const { cache } = fakeCache();
+    vi.stubGlobal('caches', { default: cache });
+    const pending: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (p: Promise<unknown>) => { pending.push(p); } };
+
+    const miss = await worker.fetch(new Request(await objectUrl(), { headers: { 'If-None-Match': '"abc"' } }), ENV, ctx as never);
+    expect(miss.status).toBe(304);
+    expect(await miss.text()).toBe('');
+    expect(miss.headers.get('ETag')).toBe('"abc"');
+    expect(miss.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    await Promise.all(pending);
+
+    const hit = await worker.fetch(new Request(await objectUrl(), { headers: { 'If-None-Match': 'W/"abc", "other"' } }), ENV, ctx as never);
+    expect(hit.status).toBe(304);
+    expect(hit.headers.get('X-Cache')).toBe('HIT');
+
+    const changed = await worker.fetch(new Request(await objectUrl(), { headers: { 'If-None-Match': '"zzz"' } }), ENV, ctx as never);
+    expect(changed.status).toBe(200);
+    expect(await changed.text()).toBe('ABCDEFGHIJ');
+  });
 
   it('answers the preflight with * and Range allowed', async () => {
     const res = await worker.fetch(new Request(await objectUrl(), { method: 'OPTIONS' }), ENV);

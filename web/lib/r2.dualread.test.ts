@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // --- registry (service-role client) -----------------------------------------
-let dbRows: Array<{ storage_key: string; backend: string; content_hash?: string }> = [];
+let dbRows: Array<{ storage_key: string; backend: string; content_hash?: string; updated_at?: string }> = [];
 let dbError: unknown = null;
 let dbCalls = 0;
 
@@ -82,14 +82,14 @@ describe('resolveObjectBackends — kill switch', () => {
   it('OSN_READ_ENABLED off => R2 + input key, no DB query', async () => {
     vi.stubEnv('OSN_READ_ENABLED', '');
     const out = await resolveObjectBackends([LEGACY]);
-    expect(out).toEqual([{ backend: 'r2', key: LEGACY, contentHash: null }]);
+    expect(out).toEqual([{ backend: 'r2', key: LEGACY, contentHash: null, registeredAt: null }]);
     expect(dbCalls).toBe(0);
   });
 
   it('OSN_READ_ENABLED off + canonical input => R2 under the LEGACY key (rollback)', async () => {
     vi.stubEnv('OSN_READ_ENABLED', '');
     const out = await resolveObjectBackends([CANON]);
-    expect(out).toEqual([{ backend: 'r2', key: LEGACY, contentHash: null }]);
+    expect(out).toEqual([{ backend: 'r2', key: LEGACY, contentHash: null, registeredAt: null }]);
     expect(dbCalls).toBe(0);
   });
 });
@@ -100,32 +100,32 @@ describe('resolveObjectBackends — flag on', () => {
   it('migrated osn row => OSN + canonical key', async () => {
     dbRows = [{ storage_key: CANON, backend: 'osn', content_hash: 'sha256:aa' }];
     const out = await resolveObjectBackends([LEGACY]);
-    expect(out).toEqual([{ backend: 'osn', key: CANON, contentHash: 'sha256:aa' }]);
+    expect(out).toEqual([{ backend: 'osn', key: CANON, contentHash: 'sha256:aa', registeredAt: null }]);
     expect(dbCalls).toBe(1);
   });
 
   it('no registry row => R2 + input (legacy) key', async () => {
     dbRows = [];
     const out = await resolveObjectBackends([LEGACY]);
-    expect(out).toEqual([{ backend: 'r2', key: LEGACY, contentHash: null }]);
+    expect(out).toEqual([{ backend: 'r2', key: LEGACY, contentHash: null, registeredAt: null }]);
   });
 
   it('row present but backend r2 => R2 + input key (never sign R2 with a canonical key)', async () => {
     dbRows = [{ storage_key: CANON, backend: 'r2', content_hash: 'sha256:bb' }];
     const out = await resolveObjectBackends([LEGACY]);
-    expect(out).toEqual([{ backend: 'r2', key: LEGACY, contentHash: 'sha256:bb' }]);
+    expect(out).toEqual([{ backend: 'r2', key: LEGACY, contentHash: 'sha256:bb', registeredAt: null }]);
   });
 
   it('already-canonical input + migrated row => OSN + canonical (idempotent)', async () => {
     dbRows = [{ storage_key: CANON, backend: 'osn', content_hash: 'sha256:aa' }];
     const out = await resolveObjectBackends([CANON]);
-    expect(out).toEqual([{ backend: 'osn', key: CANON, contentHash: 'sha256:aa' }]);
+    expect(out).toEqual([{ backend: 'osn', key: CANON, contentHash: 'sha256:aa', registeredAt: null }]);
   });
 
   it('DB error => fail open to R2 for all keys', async () => {
     dbError = new Error('supabase down');
     const out = await resolveObjectBackends([LEGACY]);
-    expect(out).toEqual([{ backend: 'r2', key: LEGACY, contentHash: null }]);
+    expect(out).toEqual([{ backend: 'r2', key: LEGACY, contentHash: null, registeredAt: null }]);
   });
 
   it('canonical input + DB error => fail open to R2 under the LEGACY key', async () => {
@@ -133,7 +133,7 @@ describe('resolveObjectBackends — flag on', () => {
     // under the legacy key, so fail-open must re-key canonical -> legacy.
     dbError = new Error('supabase down');
     const out = await resolveObjectBackends([CANON]);
-    expect(out).toEqual([{ backend: 'r2', key: LEGACY, contentHash: null }]);
+    expect(out).toEqual([{ backend: 'r2', key: LEGACY, contentHash: null, registeredAt: null }]);
   });
 
   it('chunks the registry lookup for large key sets and still diverts', async () => {
@@ -147,16 +147,16 @@ describe('resolveObjectBackends — flag on', () => {
 
     const out = await resolveObjectBackends(keys);
 
-    expect(out[123]).toEqual({ backend: 'osn', key: migratedCanon, contentHash: 'sha256:cc' });
-    expect(out[0]).toEqual({ backend: 'r2', key: keys[0], contentHash: null });
+    expect(out[123]).toEqual({ backend: 'osn', key: migratedCanon, contentHash: 'sha256:cc', registeredAt: null });
+    expect(out[0]).toEqual({ backend: 'r2', key: keys[0], contentHash: null, registeredAt: null });
     expect(dbCalls).toBeGreaterThan(1); // not one URL-overflowing .in()
   });
 
   it('unparseable key => R2 fallback, still resolves the others', async () => {
     dbRows = [{ storage_key: CANON, backend: 'osn', content_hash: 'sha256:aa' }];
     const out = await resolveObjectBackends(['garbage/not/a/key', LEGACY]);
-    expect(out[0]).toEqual({ backend: 'r2', key: 'garbage/not/a/key', contentHash: null });
-    expect(out[1]).toEqual({ backend: 'osn', key: CANON, contentHash: 'sha256:aa' });
+    expect(out[0]).toEqual({ backend: 'r2', key: 'garbage/not/a/key', contentHash: null, registeredAt: null });
+    expect(out[1]).toEqual({ backend: 'osn', key: CANON, contentHash: 'sha256:aa', registeredAt: null });
   });
 });
 
@@ -180,7 +180,7 @@ describe('resolveObjectBackends — registry memo (perf T2-D1)', () => {
     await resolveObjectBackends([LEGACY]);
     expect(dbCalls).toBe(1);
     const out = await resolveObjectBackends([CANON]);
-    expect(out).toEqual([{ backend: 'osn', key: CANON, contentHash: 'sha256:aa' }]);
+    expect(out).toEqual([{ backend: 'osn', key: CANON, contentHash: 'sha256:aa', registeredAt: null }]);
     expect(dbCalls).toBe(1);
   });
 
@@ -189,7 +189,7 @@ describe('resolveObjectBackends — registry memo (perf T2-D1)', () => {
     await resolveObjectBackends([LEGACY]);
     dbRows = [{ storage_key: CANON, backend: 'osn', content_hash: 'sha256:aa' }];
     const out = await resolveObjectBackends([LEGACY]);
-    expect(out).toEqual([{ backend: 'osn', key: CANON, contentHash: 'sha256:aa' }]);
+    expect(out).toEqual([{ backend: 'osn', key: CANON, contentHash: 'sha256:aa', registeredAt: null }]);
     expect(dbCalls).toBe(2);
   });
 
@@ -204,6 +204,16 @@ describe('resolveObjectBackends — registry memo (perf T2-D1)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('resolveObjectBackends — registration time', () => {
+  it('carries storage_objects.updated_at as unix seconds, null without a row', async () => {
+    vi.stubEnv('OSN_READ_ENABLED', 'true');
+    dbRows = [{ storage_key: CANON, backend: 'osn', content_hash: 'sha256:aa', updated_at: '2026-09-04T12:00:00+00:00' }];
+    const [withRow, withoutRow] = await resolveObjectBackends([CANON, 'data/products/nirspec/other/x_spec.fits']);
+    expect(withRow.registeredAt).toBe(Date.parse('2026-09-04T12:00:00Z') / 1000);
+    expect(withoutRow.registeredAt).toBeNull();
   });
 });
 
@@ -233,9 +243,9 @@ describe('presignResolvedStable', () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(base + 1000);
-      const a = await presignResolvedStable({ backend: 'osn', key: CANON, contentHash: 'sha256:aa' });
+      const a = await presignResolvedStable({ backend: 'osn', key: CANON, contentHash: 'sha256:aa', registeredAt: null });
       vi.setSystemTime(base + w - 1000);
-      const b = await presignResolvedStable({ backend: 'osn', key: CANON, contentHash: 'sha256:aa' });
+      const b = await presignResolvedStable({ backend: 'osn', key: CANON, contentHash: 'sha256:aa', registeredAt: null });
       expect(a.url).toBe(b.url);
       expect(a.exp).toBe(b.exp);
       expect(a.exp).toBe(base / 1000 + 2 * STABLE_PRESIGN_WINDOW_SECONDS);
@@ -247,7 +257,7 @@ describe('presignResolvedStable', () => {
 
       // The next window is a different url: the signing date moved.
       vi.setSystemTime(base + w + 1000);
-      const c = await presignResolvedStable({ backend: 'osn', key: CANON, contentHash: 'sha256:aa' });
+      const c = await presignResolvedStable({ backend: 'osn', key: CANON, contentHash: 'sha256:aa', registeredAt: null });
       expect(c.url).not.toBe(a.url);
     } finally {
       vi.useRealTimers();

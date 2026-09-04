@@ -16,8 +16,10 @@ Cloudflare Worker with two credential-free endpoints:
 Next.js route (RLS authorizes the read; lib/server/cdn-front.ts mints the url)
     |  resolves the registry row (backend + content_hash, 60 s memo),
     |  presigns upstream on a 6 h window (stable url), HMAC-signs the token
-Browser  ->  GET /o/<key>?h=<content_hash>&e=<exp>&t=<token>&u=<presigned upstream>
-    |  Worker verifies t = HMAC(JWT_SECRET, "campfire-o-v1\n<key>\n<h>\n<e>\n<u>")
+Browser  ->  GET /o/<key>?h=<content_hash>&e=<exp>&r=<registered>&t=<token>&u=<presigned upstream>
+    |  Worker verifies t = HMAC(JWT_SECRET, "campfire-o-v2\n<key>\n<h>\n<e>\n<u>\n<r>")
+    |  (r = the registry row's updated_at; an upstream whose Last-Modified is
+    |   newer was overwritten in place and is served but never cached)
     |  on EVERY serve; checks u is https, host-allowlisted, and names <key>
     |  Cache API lookup keyed by (key, content_hash) — Range answered as 206
     |  miss: fetch u (Range forwarded, redirects refused), stream back with the

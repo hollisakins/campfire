@@ -5,11 +5,12 @@
  * The app authorizes a read (RLS), resolves the object's registry row, and
  * mints ONE url per product:
  *
- *   GET /o/<storage key>?h=<content_hash>&e=<unix exp>&t=<token>&u=<presigned upstream>
+ *   GET /o/<storage key>?h=<content_hash>&e=<unix exp>&r=<unix registered>&t=<token>&u=<presigned upstream>
  *
- * `t` is HMAC-SHA256(JWT_SECRET, "campfire-o-v1\n<key>\n<hash>\n<exp>\n<u>"),
- * so a token authorizes exactly one (key, hash, upstream) triple until `exp`.
- * The Worker verifies it on EVERY serve, cache hits included, then:
+ * `t` is HMAC-SHA256(JWT_SECRET, "campfire-o-v2\n<key>\n<hash>\n<exp>\n<u>\n<r>"),
+ * so a token authorizes exactly one (key, hash, upstream, registration time)
+ * tuple until `exp`. The Worker verifies it on EVERY serve, cache hits
+ * included, then:
  *
  *   - serves from the Cache API when the (key, hash) pair is cached — Range
  *     requests are answered from the cached full object as 206;
@@ -28,13 +29,17 @@
  * upstream url churns (SigV4 date + expiry); the app signs it on a fixed time
  * window so the whole `/o/` url is stable long enough for the browser cache.
  *
- * Known window: the upstream path is mutable, and a url minted before an
- * in-place overwrite stays valid for up to two presign windows (12 h). A
- * cache MISS on such a url in that window stores the NEW bytes under the OLD
- * hash — never older bytes than the product's current ones, but a mixed pair
- * (e.g. a 1-D sidecar and full JSON from different deploys) is possible for
- * those 12 h. The Worker cannot check a sha256 within its CPU budget; the
- * app's registry memo (60 s) bounds how long old hashes are still minted.
+ * Binding the hash to the bytes: the upstream path is mutable, and a url
+ * minted before an in-place overwrite stays valid for up to two presign
+ * windows (12 h). The Worker cannot afford a sha256 of the body, so the
+ * token carries `r`, the registry row's registration time (bumped on every
+ * re-deploy, after the bytes landed), and a full object is only stored when
+ * the upstream's Last-Modified is not newer than `r` (plus clock skew). An
+ * overwritten object is still served — those are the product's current
+ * bytes, the same the app's own proxy would stream — but never cached under
+ * the old hash; a url minted after the re-deploy carries the new `r` and
+ * fills the new slot. Conditional requests (If-None-Match /
+ * If-Modified-Since) are answered 304 from whichever copy would have served.
  *
  * CORS is `*`: the token IS the authorization (no cookies ride along), and a
  * fetch that reached here via a cross-origin redirect carries `Origin: null`,
@@ -54,7 +59,13 @@ export interface ObjectContext {
   waitUntil(promise: Promise<unknown>): void;
 }
 
-const TOKEN_VERSION = 'campfire-o-v1';
+const TOKEN_VERSION = 'campfire-o-v2';
+
+/** How much newer than its registration an upstream's Last-Modified may be
+ * and still be the registered bytes: the upload completes before the row is
+ * written, so a genuine object is older than `r`; this only absorbs clock
+ * skew between the object store and the database. */
+const REGISTRATION_SKEW_SECONDS = 10 * 60;
 
 /** Browser-side lifetime of a served object. The url carries the hash and a
  * token that expires, so a cached copy can never outlive its authorization by
@@ -70,8 +81,42 @@ const EXPOSE_HEADERS =
   'Content-Length, Content-Range, Accept-Ranges, Content-Type, ETag, Last-Modified, X-Cache';
 
 /** The message a token signs — mirrored by the app's mint (lib/server/cdn-front.ts). */
-export function objectTokenMessage(key: string, hash: string, exp: string, upstream: string): string {
-  return [TOKEN_VERSION, key, hash, exp, upstream].join('\n');
+export function objectTokenMessage(key: string, hash: string, exp: string, upstream: string, registered: string): string {
+  return [TOKEN_VERSION, key, hash, exp, upstream, registered].join('\n');
+}
+
+/** Whether a full upstream answer is the registered bytes and may fill the
+ * (key, hash) slot: its Last-Modified must exist and not postdate the
+ * registration (plus skew). No Last-Modified => not provably the registered
+ * object => never cached. */
+export function isRegisteredBytes(upstreamHeaders: Headers, registeredAt: number): boolean {
+  const lm = upstreamHeaders.get('Last-Modified');
+  if (!lm) return false;
+  const lmSeconds = Date.parse(lm) / 1000;
+  if (!Number.isFinite(lmSeconds)) return false;
+  return lmSeconds <= registeredAt + REGISTRATION_SKEW_SECONDS;
+}
+
+/** A conditional request whose validators match the answer gets a 304. ETag
+ * comparison is weak (`W/` stripped) — the stored copy carries the upstream's
+ * ETag verbatim, so a browser's revalidation of an earlier serve matches. */
+export function isNotModified(request: Request, answer: Headers): boolean {
+  const inm = request.headers.get('If-None-Match');
+  if (inm) {
+    const etag = answer.get('ETag');
+    if (!etag) return false;
+    if (inm.trim() === '*') return true;
+    const strip = (t: string) => t.trim().replace(/^W\//, '');
+    return inm.split(',').some((t) => strip(t) === strip(etag));
+  }
+  const ims = request.headers.get('If-Modified-Since');
+  if (ims) {
+    const lm = answer.get('Last-Modified');
+    if (!lm) return false;
+    const a = Date.parse(lm), b = Date.parse(ims);
+    return Number.isFinite(a) && Number.isFinite(b) && a <= b;
+  }
+  return false;
 }
 
 /** Decode the `/o/<key>` path segment-wise; null on anything that is not a
@@ -162,7 +207,8 @@ function preflight(): Response {
 const PASSTHROUGH_HEADERS = ['Content-Length', 'Content-Range', 'ETag', 'Last-Modified'];
 
 /** The outward response for a served (hit or miss) object. */
-function serve(src: Response, key: string, xcache: 'HIT' | 'MISS', method: string): Response {
+function serve(src: Response, key: string, xcache: 'HIT' | 'MISS', request: Request): Response {
+  const method = request.method;
   const headers = new Headers();
   headers.set('Content-Type', contentTypeFor(key, src.headers.get('Content-Type')));
   for (const h of PASSTHROUGH_HEADERS) {
@@ -174,6 +220,11 @@ function serve(src: Response, key: string, xcache: 'HIT' | 'MISS', method: strin
   headers.set('Access-Control-Allow-Origin', '*');
   headers.set('Access-Control-Expose-Headers', EXPOSE_HEADERS);
   headers.set('X-Cache', xcache);
+  if (src.status === 200 && isNotModified(request, headers)) {
+    src.body?.cancel().catch(() => {});
+    headers.delete('Content-Length');
+    return new Response(null, { status: 304, headers });
+  }
   if (method === 'HEAD') {
     src.body?.cancel().catch(() => {});
     return new Response(null, { status: src.status, headers });
@@ -188,13 +239,14 @@ const fills = new Map<string, Promise<void>>();
 
 /** Fetch the whole object and store it under the (key, hash) slot. Never
  * throws; a failed fill just leaves the slot cold for the next miss. */
-function fillInBackground(cache: Cache, cacheKey: string, key: string, upstream: string): Promise<void> {
+function fillInBackground(cache: Cache, cacheKey: string, key: string, upstream: string, registeredAt: number): Promise<void> {
   const inflight = fills.get(cacheKey);
   if (inflight) return inflight;
   const fill = (async () => {
     try {
       const full = await fetch(upstream, { redirect: 'manual' });
-      if (full.status !== 200 || !full.body) {
+      if (full.status !== 200 || !full.body || !isRegisteredBytes(full.headers, registeredAt)) {
+        if (full.status === 200) console.warn('not caching', key, ': upstream is newer than its registration');
         full.body?.cancel().catch(() => {});
         return;
       }
@@ -238,10 +290,11 @@ export async function handleObject(
   const key = decodeObjectKey(url.pathname.slice('/o/'.length));
   const hash = url.searchParams.get('h');
   const exp = url.searchParams.get('e');
+  const registered = url.searchParams.get('r');
   const token = url.searchParams.get('t');
   const upstream = url.searchParams.get('u');
-  if (!key || !hash || !exp || !token || !upstream) {
-    return objectError('Missing key, h, e, t or u', 400);
+  if (!key || !hash || !exp || !registered || !token || !upstream) {
+    return objectError('Missing key, h, e, r, t or u', 400);
   }
 
   // Authorization on every serve, cache hits included.
@@ -249,7 +302,9 @@ export async function handleObject(
   if (!/^\d+$/.test(exp) || !Number.isFinite(expSeconds) || expSeconds * 1000 < Date.now()) {
     return objectError('Token expired', 403);
   }
-  const valid = await verifySignature(objectTokenMessage(key, hash, exp, upstream), token, env.JWT_SECRET);
+  if (!/^\d+$/.test(registered)) return objectError('Invalid registration time', 400);
+  const registeredAt = Number(registered);
+  const valid = await verifySignature(objectTokenMessage(key, hash, exp, upstream, registered), token, env.JWT_SECRET);
   if (!valid) return objectError('Invalid token', 403);
 
   // The upstream is bound by the token, but check it anyway (defense in
@@ -268,7 +323,7 @@ export async function handleObject(
   if (cache) {
     // The Cache API answers a Range request from a stored full object as 206.
     const hit = await cache.match(new Request(cacheKey, range ? { headers: { Range: range } } : {}));
-    if (hit) return serve(hit, key, 'HIT', request.method);
+    if (hit) return serve(hit, key, 'HIT', request);
   }
 
   // Presigned GET: the SigV4 signature covers the method, so always GET
@@ -285,7 +340,7 @@ export async function handleObject(
     up.body?.cancel().catch(() => {});
     return objectError('Not found', 404);
   }
-  if (up.status === 416) return serve(up, key, 'MISS', request.method);
+  if (up.status === 416) return serve(up, key, 'MISS', request);
   if (!(up.status === 200 || up.status === 206) || !up.body) {
     up.body?.cancel().catch(() => {});
     return objectError(`Upstream fetch failed (${up.status})`, 502);
@@ -295,8 +350,16 @@ export async function handleObject(
   // may fill the (key, hash) slot — so a Range or HEAD miss fills it with
   // its own full-object GET in the background.
   if (range || up.status !== 200 || !cache || request.method === 'HEAD') {
-    if (cache && ctx) ctx.waitUntil(fillInBackground(cache, cacheKey, key, upstream));
-    return serve(up, key, 'MISS', request.method);
+    if (cache && ctx) ctx.waitUntil(fillInBackground(cache, cacheKey, key, upstream, registeredAt));
+    return serve(up, key, 'MISS', request);
+  }
+
+  // An upstream newer than the token's registration is an in-place
+  // overwrite: serve it (the product's current bytes), never store it under
+  // the old hash.
+  if (!isRegisteredBytes(up.headers, registeredAt)) {
+    console.warn('not caching', key, ': upstream is newer than its registration');
+    return serve(up, key, 'MISS', request);
   }
 
   const [toClient, toStore] = up.body.tee();
@@ -305,5 +368,5 @@ export async function handleObject(
     console.error('cache.put failed for', key, err);
   });
   if (ctx) ctx.waitUntil(put);
-  return serve(new Response(toClient, { status: 200, headers: up.headers }), key, 'MISS', request.method);
+  return serve(new Response(toClient, { status: 200, headers: up.headers }), key, 'MISS', request);
 }
