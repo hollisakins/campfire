@@ -3,13 +3,45 @@ import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 vi.mock('next/server', () => ({ after: () => { throw new Error('no request scope'); } }));
+const s3 = vi.hoisted(() => ({ sends: 0, fail: false }));
 vi.mock('@/lib/storage', () => ({
-  getS3Client: () => ({ send: async () => ({}) }),
+  getS3Client: () => ({
+    send: async () => {
+      s3.sends += 1;
+      if (s3.fail) throw new Error('NotFound');
+      return {};
+    },
+  }),
   getBucketName: () => 'campfire-tiles',
   getPublicUrlBase: () => 'https://campfire-tiles.example/',
 }));
 
-import { cutoutStoreKey, storeSizeFor, cutoutStoreFor, CUTOUT_SIZE_LADDER, snapFov, onFovGrid, CUTOUT_STORE_SIZES } from './store';
+import {
+  cutoutStoreKey,
+  storeSizeFor,
+  cutoutStoreFor,
+  cutoutStoreHas,
+  CUTOUT_SIZE_LADDER,
+  snapFov,
+  onFovGrid,
+  CUTOUT_STORE_SIZES,
+} from './store';
+
+describe('cutoutStoreHas', () => {
+  it('HEADs on every call — no positive memo that could outlive a re-deploy purge', async () => {
+    s3.sends = 0;
+    s3.fail = false;
+    const key = 'cutouts/egs/vabc/300/5/214.8250000_+52.8250000.png';
+    expect(await cutoutStoreHas(key)).toBe(true);
+    expect(await cutoutStoreHas(key)).toBe(true);
+    expect(s3.sends).toBe(2);
+    // The object was purged: the very next read says so.
+    s3.fail = true;
+    expect(await cutoutStoreHas(key)).toBe(false);
+    expect(s3.sends).toBe(3);
+    s3.fail = false;
+  });
+});
 
 describe('storeSizeFor', () => {
   it('rounds browser sizes up to the ladder and keeps larger sizes exact', () => {

@@ -117,7 +117,6 @@ function storeBase(): string | null {
 /** Test hook. */
 export function _resetCutoutStore(): void {
   availability = null;
-  known.clear();
 }
 
 /** The store entry for an input, or null when the store is not configured. */
@@ -128,37 +127,17 @@ export function cutoutStoreFor(i: CutoutStoreInput): CutoutStoreEntry | null {
   return { key, url: `${base}/${key}` };
 }
 
-/** Keys known to exist (rendered or HEAD-verified by this instance), so a hot
- * object costs no storage round trip. Bounded (insertion-order eviction) and
- * short-lived: a re-deploy purges the field's prefix, and until the imaging
- * version rolls (the asset-version memo, 5 min) a warm instance may still
- * build the old key — it must re-HEAD rather than 302 to a deleted object. */
-const known = new Map<string, number>();
-const KNOWN_MAX = 20_000;
-const KNOWN_TTL_MS = 5 * 60 * 1000;
-function remember(key: string): void {
-  if (known.size >= KNOWN_MAX) {
-    const oldest = known.keys().next().value;
-    if (oldest !== undefined) known.delete(oldest);
-  }
-  known.set(key, Date.now());
-}
-function isKnown(key: string): boolean {
-  const at = known.get(key);
-  if (at === undefined) return false;
-  if (Date.now() - at > KNOWN_TTL_MS) {
-    known.delete(key);
-    return false;
-  }
-  return true;
-}
-
-/** Whether the object is in the store (memo, else one HEAD). Never throws. */
+/** Whether the object is in the store: one HEAD, every time. Never throws.
+ *
+ * Deliberately no positive memo: a re-deploy purges the field's prefix, and
+ * until the imaging version rolls (the asset-version memo, 5 min) a warm
+ * instance still builds the old key — a remembered "present" would 302 to a
+ * deleted object for that whole window, whereas a HEAD miss just re-renders
+ * (and re-stores under the soon-orphaned key, which the lifecycle rule
+ * expires). A HEAD against R2 is a few tens of ms; a render is seconds. */
 export async function cutoutStoreHas(key: string): Promise<boolean> {
-  if (isKnown(key)) return true;
   try {
     await getS3Client('tiles').send(new HeadObjectCommand({ Bucket: getBucketName('tiles'), Key: key }));
-    remember(key);
     return true;
   } catch {
     return false;
@@ -171,7 +150,6 @@ export async function cutoutStoreRead(key: string): Promise<ReadableStream | nul
   try {
     const obj = await getS3Client('tiles').send(new GetObjectCommand({ Bucket: getBucketName('tiles'), Key: key }));
     if (!obj.Body) return null;
-    remember(key);
     return obj.Body.transformToWebStream();
   } catch {
     return null;
@@ -193,7 +171,6 @@ export function storeCutoutInBackground(key: string, png: Buffer): void {
         ContentType: 'image/png',
         CacheControl: STORED_CACHE_CONTROL,
       }))
-      .then(() => remember(key))
       .catch((err) => console.error(`cutout store: put failed for ${key}:`, err));
   try {
     after(put);

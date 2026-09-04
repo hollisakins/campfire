@@ -50,6 +50,17 @@ function shortHash(input: string): string {
   return createHash('sha1').update(input).digest('hex').slice(0, 10);
 }
 
+/** Last publish state seen per dataset prefix. A transient
+ * fitsgl_dataset_is_public failure reuses it rather than hashing a
+ * placeholder — which would roll the field's version (every cutout url, a
+ * never-purged store prefix) for the memo window and back again. */
+const lastPublicity = new Map<string, string>();
+
+/** Thrown when a dataset's publish state cannot be determined and no earlier
+ * answer exists: getAssetVersions then yields no versions for this request
+ * (nothing is stored under a guessed key) and the next request retries. */
+class PublicityUnavailable extends Error {}
+
 async function computeAssetVersions(): Promise<AssetVersions> {
   const supabase = createServiceClient();
   const [{ data: layers }, { data: datasets }, { data: latestDeploy }] = await Promise.all([
@@ -97,8 +108,16 @@ async function computeAssetVersions(): Promise<AssetVersions> {
       p_bands: ds.bands,
       p_pixel_scale: ds.pixel_scale,
     });
-    if (pubErr) console.error(`fitsgl_dataset_is_public failed for field ${field}:`, pubErr);
-    const publicity = pubErr ? 'unknown' : String(Boolean(isPublic));
+    let publicity: string;
+    if (pubErr) {
+      console.error(`fitsgl_dataset_is_public failed for field ${field}:`, pubErr);
+      const last = lastPublicity.get(ds.prefix);
+      if (last === undefined) throw new PublicityUnavailable(`publish state unknown for ${ds.prefix}`);
+      publicity = last;
+    } else {
+      publicity = String(Boolean(isPublic));
+      lastPublicity.set(ds.prefix, publicity);
+    }
     push(field, `fitsgl:${ds.prefix}:${ds.deployed_at}:${JSON.stringify(ds.source_hashes ?? null)}:public=${publicity}`);
   }
 
@@ -116,7 +135,10 @@ async function computeAssetVersions(): Promise<AssetVersions> {
 /**
  * Current imaging asset versions, memoized for five minutes. Never throws: a
  * lookup failure yields empty versions, and callers then omit `v=` (today's
- * behaviour) rather than failing a page render over a cache-key nicety.
+ * behaviour) and leave the cutout store alone (the routes only store under a
+ * field that has a version) rather than failing a page render over a
+ * cache-key nicety. A thrown compute is not memoized, so the next request
+ * retries.
  */
 export async function getAssetVersions(): Promise<AssetVersions> {
   try {

@@ -466,13 +466,19 @@ def run_deploy(field, *, config, client, tile=None, pixel_scale='30mas',
         click.echo(f"  Warning: could not set descriptor Cache-Control: {e}")
 
     # The stored cutouts of this field are keyed on the previous imaging
-    # version now (perf T2-D3, #509). Best effort; the bucket's lifecycle rule
-    # is the backstop.
-    try:
-        n = purge_cutout_store(creds, field)
-        click.echo(f"  Purged {n} stored cutout(s) for {field}")
-    except Exception as e:  # noqa: BLE001 — never fail a deploy over cache cleanup
-        click.echo(f"  Warning: could not purge the cutout store for {field}: {e}")
+    # version now (perf T2-D3, #509). Only the field-kind (composite) dataset
+    # feeds that version (lib/asset-version.ts hashes `kind = 'field'` rows;
+    # lib/cutout/source.ts renders from it), so a single-tile deploy leaves
+    # every key as it was and must not empty the store under live keys.
+    # Best effort; the bucket's lifecycle rule is the backstop.
+    if tile is None:
+        try:
+            n = purge_cutout_store(creds, field)
+            click.echo(f"  Purged {n} stored cutout(s) for {field}")
+        except Exception as e:  # noqa: BLE001 — never fail a deploy over cache cleanup
+            click.echo(f"  Warning: could not purge the cutout store for {field}: {e}")
+    else:
+        click.echo(f"  (cutout store for {field} kept: a tile dataset does not move the imaging version)")
 
     click.echo(f"\n✓ Deployed {name}: {len(result.uploaded)} uploaded, "
                f"{len(result.deleted)} removed")

@@ -118,6 +118,7 @@ def upload_tiles(
             (d.name, d) for d in sorted(field_dir.iterdir()) if d.is_dir()
         ]
 
+    version_moved = False
     for fname, fdir in filters_to_upload:
         png_files = sorted(fdir.rglob('*.png'))
 
@@ -173,12 +174,20 @@ def upload_tiles(
                 'p_field': field, 'p_filter': fname,
             }).execute()
             print(f"  Bumped tile_version for {field}/{fname}")
+            version_moved = True
         except Exception as e:
             print(f"  Warning: Failed to bump tile_version: {e}")
 
-    # Every stored cutout of the field is keyed on the old imaging version now.
+    # Every stored cutout of the field is keyed on the old imaging version
+    # now — but only once a tile_version bump actually moved that version.
+    # If every bump failed the web keeps building the same keys, and an
+    # emptied store would just re-render the whole field for nothing.
     if not dry_run:
-        purge_cutout_store(config, field)
+        if version_moved:
+            purge_cutout_store(config, field)
+        else:
+            print(f"  (cutout store for {field} kept: no tile_version bump landed, "
+                  "so the imaging version did not move)")
 
 
 # ============================================
