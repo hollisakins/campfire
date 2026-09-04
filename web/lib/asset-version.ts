@@ -9,7 +9,8 @@
 //
 // The version is an opaque short hash over everything that can change what a
 // cutout of that field renders: every `map_layers.tile_version` for the field
-// and the default FitsGL field dataset's prefix + deploy time. The global
+// and the default FitsGL field dataset's prefix, deploy time, backing mosaic
+// hashes and publish state. The global
 // token additionally folds in the latest NIRSpec deployment time, because
 // `/api/shutters` (the cutout's shutter overlay, browser-cached for a day
 // under the same token — #506) changes only when an observation is deployed.
@@ -55,7 +56,7 @@ async function computeAssetVersions(): Promise<AssetVersions> {
     supabase.from('map_layers').select('field, filter, tile_version'),
     supabase
       .from('fitsgl_datasets')
-      .select('field, prefix, deployed_at, source_hashes, is_default')
+      .select('field, prefix, deployed_at, source_hashes, is_default, tiles, bands, pixel_scale')
       .eq('kind', 'field'),
     // Shutter geometry only changes with a deployment (see header).
     supabase
@@ -86,8 +87,19 @@ async function computeAssetVersions(): Promise<AssetVersions> {
     // source_hashes (the backing mosaics' content hashes) tracks the
     // pyramid's pixels; deployed_at is stamped by every FitsGL deploy (#509)
     // so a rebuild with the same mosaics but a changed fitsgl.json (band
-    // selection, stretch, trilogy knobs) still moves the version.
-    push(field, `fitsgl:${ds.prefix}:${ds.deployed_at}:${JSON.stringify(ds.source_hashes ?? null)}`);
+    // selection, stretch, trilogy knobs) still moves the version. The
+    // publish state is part of it too: a publish or unpublish of the backing
+    // mosaics changes what a render of this field may show, and the cutout
+    // store keys on this version (#509).
+    const { data: isPublic, error: pubErr } = await supabase.rpc('fitsgl_dataset_is_public', {
+      p_field: ds.field,
+      p_tiles: ds.tiles,
+      p_bands: ds.bands,
+      p_pixel_scale: ds.pixel_scale,
+    });
+    if (pubErr) console.error(`fitsgl_dataset_is_public failed for field ${field}:`, pubErr);
+    const publicity = pubErr ? 'unknown' : String(Boolean(isPublic));
+    push(field, `fitsgl:${ds.prefix}:${ds.deployed_at}:${JSON.stringify(ds.source_hashes ?? null)}:public=${publicity}`);
   }
 
   const versions: Record<string, string> = {};

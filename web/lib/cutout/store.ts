@@ -10,7 +10,8 @@
 //
 // `version` is the field's imaging asset version (lib/asset-version.ts): a
 // hash over every map_layers.tile_version and the FitsGL dataset's backing
-// mosaic hashes, so a field re-deploy moves every cutout to a new prefix and
+// mosaic hashes, deploy time and publish state, so a field re-deploy (or a
+// publish / unpublish) moves every cutout to a new prefix and
 // the old one is orphaned for the bucket's lifecycle rule to expire (30 days
 // on `cutouts/`, set on the bucket — see the PR / DEPLOYMENT notes).
 //
@@ -40,6 +41,26 @@ export const CUTOUT_SIZE_LADDER = [64, 300, 600] as const;
 export function storeSizeFor(requested: number): number {
   for (const s of CUTOUT_SIZE_LADDER) if (requested <= s) return s;
   return Math.round(requested);
+}
+
+/** Sizes the API route may store at (the browser ladder plus two larger
+ * rungs). Anything else — and any off-grid fov — renders exactly as asked
+ * and is not stored, so a caller cannot mint an unbounded number of
+ * objects into the bucket by sweeping size or fov. */
+export const CUTOUT_STORE_SIZES: readonly number[] = [64, 300, 600, 1024, 2048];
+
+/** Field-of-view grid the store keys on, in arcsec. 0.1" is well below what a
+ * thumbnail viewer can tell apart and keeps the key space bounded. */
+export const CUTOUT_FOV_STEP = 0.1;
+
+/** `fov` snapped to the store grid (what the browser routes render at). */
+export function snapFov(fov: number): number {
+  return Number((Math.round(fov / CUTOUT_FOV_STEP) * CUTOUT_FOV_STEP).toFixed(3));
+}
+
+/** Whether `fov` already sits on the store grid (the API route stores only then). */
+export function onFovGrid(fov: number): boolean {
+  return Math.abs(snapFov(fov) - fov) < 1e-6;
 }
 
 export interface CutoutStoreInput {

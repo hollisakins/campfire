@@ -9,7 +9,7 @@ vi.mock('@/lib/storage', () => ({
   getPublicUrlBase: () => 'https://campfire-tiles.example/',
 }));
 
-import { cutoutStoreKey, storeSizeFor, cutoutStoreFor, CUTOUT_SIZE_LADDER } from './store';
+import { cutoutStoreKey, storeSizeFor, cutoutStoreFor, CUTOUT_SIZE_LADDER, snapFov, onFovGrid, CUTOUT_STORE_SIZES } from './store';
 
 describe('storeSizeFor', () => {
   it('rounds browser sizes up to the ladder and keeps larger sizes exact', () => {
@@ -49,5 +49,17 @@ describe('cutoutStoreFor', () => {
   it('joins the public tiles base and the key', () => {
     const e = cutoutStoreFor({ field: 'egs', version: 'v1', size: 64, fov: 5, ra: 1, dec: 1 });
     expect(e?.url).toBe('https://campfire-tiles.example/cutouts/egs/vv1/64/5/1.0000000_+1.0000000.png');
+  });
+});
+
+describe('fov grid', () => {
+  it('snaps to 0.1" and reports grid membership', () => {
+    expect(snapFov(5)).toBe(5);
+    expect(snapFov(3.2)).toBe(3.2);
+    expect(snapFov(3.24)).toBe(3.2);
+    expect(snapFov(3.26)).toBe(3.3);
+    expect(onFovGrid(3.2)).toBe(true);
+    expect(onFovGrid(3.24)).toBe(false);
+    expect(CUTOUT_STORE_SIZES).toEqual([64, 300, 600, 1024, 2048]);
   });
 });

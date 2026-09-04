@@ -10,7 +10,7 @@ import type { WCSParams } from '@/lib/utils/wcs';
 import { resolveFieldCutoutSourceResult } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 import { getAssetVersions } from '@/lib/asset-version';
-import { cutoutStoreFor, cutoutStoreHas, storeCutoutInBackground } from '@/lib/cutout/store';
+import { CUTOUT_STORE_SIZES, cutoutStoreFor, cutoutStoreHas, onFovGrid, storeCutoutInBackground } from '@/lib/cutout/store';
 
 // Tile decode + reprojection + PNG encode for up to 2048 px on a cold instance (#497).
 export const maxDuration = 60;
@@ -44,7 +44,8 @@ const STORE_REDIRECT_CACHE = 'private, max-age=86400';
  * edge cache, so every CLI call used to render. A cutout already rendered for
  * the same inputs answers with a 302 to its CDN url (HTTP clients follow it;
  * the bearer token is not forwarded cross-host); a fresh render is written to
- * the store after the response. The requested size is kept exactly.
+ * the store after the response. The requested size is always honored; only
+ * ladder / native sizes on a 0.1" fov grid are stored.
  */
 export async function GET(request: NextRequest) {
   const userId = await validateAuth(request);
@@ -143,8 +144,12 @@ export async function GET(request: NextRequest) {
     ]);
     const fieldVersion = versions.byField[obj.field];
     const publicImagery = fitsglSrc ? fitsglSrc.isPublic : true;
+    // The requested size is honored exactly; the store is used only for
+    // sizes it keys on (the ladder, or the fov's native size) and for a fov
+    // on the store grid, so sweeping size or fov cannot inflate the bucket.
     const storeFor = (outputSize: number) =>
-      publicImagery && fieldVersion
+      publicImagery && fieldVersion && onFovGrid(fov)
+        && (requestedSize === null || CUTOUT_STORE_SIZES.includes(outputSize))
         ? cutoutStoreFor({ field: obj.field, version: fieldVersion, size: outputSize, fov, ra: obj.ra, dec: obj.dec })
         : null;
 

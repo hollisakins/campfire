@@ -8,7 +8,7 @@ import {
 import { resolveFieldCutoutSourceResult } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 import { getAssetVersions } from '@/lib/asset-version';
-import { cutoutStoreFor, cutoutStoreHas, storeCutoutInBackground, storeSizeFor } from '@/lib/cutout/store';
+import { cutoutStoreFor, cutoutStoreHas, snapFov, storeCutoutInBackground, storeSizeFor } from '@/lib/cutout/store';
 
 // Tile decode + reprojection + PNG encode can exceed a short function budget
 // for a 600 px render on a cold instance (#497).
@@ -77,7 +77,9 @@ export async function GET(request: NextRequest) {
   const kind = kindParam as Kind | null;
 
   const size = Math.min(600, Math.max(16, parseInt(params.get('size') || '96', 10)));
-  const fov = Math.min(30, Math.max(1, parseFloat(params.get('fov') || '5')));
+  // Snapped to the store's 0.1" grid so the key space stays bounded (#509);
+  // the difference is invisible at thumbnail sizes.
+  const fov = snapFov(Math.min(30, Math.max(1, parseFloat(params.get('fov') || '5'))));
 
   try {
     // Look up coordinates in the table the caller named (legacy: targets, then objects)
