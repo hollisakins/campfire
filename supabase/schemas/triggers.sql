@@ -253,12 +253,102 @@ BEGIN
        OR OLD.date_obs IS DISTINCT FROM NEW.date_obs
        OR OLD.redshift_auto IS DISTINCT FROM NEW.redshift_auto
        OR OLD.created_at IS DISTINCT FROM NEW.created_at
+       OR OLD.program_slug IS DISTINCT FROM NEW.program_slug
+       OR OLD.observation IS DISTINCT FROM NEW.observation
     THEN
         RAISE EXCEPTION 'Non-admin updates to spectra may only change dq_flags'
             USING ERRCODE = '42501';  -- insufficient_privilege
     END IF;
 
     RETURN NEW;
+END;
+$$;
+
+
+-- 5d. Row-local RLS scope columns (perf T2-A, #504, decision D-A)
+--
+--     spectra.program_slug / spectra.observation and
+--     shutters.has_published_spectrum are copies of parent-target state that
+--     let the read policies on those tables test the row itself instead of
+--     materializing every accessible target (spectra) or probing objects once
+--     per row (shutters). Four triggers own the copies; nothing else writes
+--     them, and a client-supplied value is only ever accepted when it already
+--     agrees with the parent:
+--
+--       sync_spectra_target_scope            spectra  BEFORE INSERT / UPDATE OF target_id, program_slug, observation
+--       propagate_target_scope_to_spectra    targets  AFTER  UPDATE OF program_slug, observation
+--       sync_shutter_publication             shutters BEFORE INSERT / UPDATE OF object_id, has_published_spectrum
+--       propagate_target_publication_to_shutters  targets AFTER UPDATE OF has_published_spectrum
+--
+--     shutters.object_id is the target_id namespace (both come from the
+--     observation's ECSV object_id), so a shutter follows its TARGET's
+--     publication state -- the same gate select_targets_by_access applies --
+--     and one with no targets row stays visible (fail-closed default true),
+--     matching the orphan behaviour of the old NOT EXISTS form.
+--
+--     SECURITY DEFINER: the BEFORE triggers run for non-admin DQ updates too,
+--     and those callers only see targets through RLS. The parent lookup must
+--     not depend on the caller's visibility.
+DROP FUNCTION IF EXISTS public.sync_spectra_target_scope CASCADE;
+
+CREATE OR REPLACE FUNCTION public.sync_spectra_target_scope() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    SELECT t.program_slug, t.observation
+      INTO NEW.program_slug, NEW.observation
+      FROM targets t
+     WHERE t.target_id = NEW.target_id;
+    -- No parent row: both land NULL and the NOT NULL constraints reject the
+    -- row (the FK spectra_target_id_fkey would too). No RAISE needed here.
+    RETURN NEW;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.propagate_target_scope_to_spectra CASCADE;
+
+CREATE OR REPLACE FUNCTION public.propagate_target_scope_to_spectra() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    UPDATE spectra s
+       SET program_slug = NEW.program_slug,
+           observation  = NEW.observation
+     WHERE s.target_id = NEW.target_id
+       AND (s.program_slug IS DISTINCT FROM NEW.program_slug
+            OR s.observation IS DISTINCT FROM NEW.observation);
+    RETURN NULL;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.sync_shutter_publication CASCADE;
+
+CREATE OR REPLACE FUNCTION public.sync_shutter_publication() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    NEW.has_published_spectrum := COALESCE(
+        (SELECT t.has_published_spectrum FROM targets t WHERE t.target_id = NEW.object_id),
+        true);
+    RETURN NEW;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.propagate_target_publication_to_shutters CASCADE;
+
+CREATE OR REPLACE FUNCTION public.propagate_target_publication_to_shutters() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    UPDATE shutters s
+       SET has_published_spectrum = NEW.has_published_spectrum
+     WHERE s.object_id = NEW.target_id
+       AND s.has_published_spectrum IS DISTINCT FROM NEW.has_published_spectrum;
+    RETURN NULL;
 END;
 $$;
 
@@ -451,6 +541,39 @@ DROP TRIGGER IF EXISTS enforce_spectra_dq_user_update_scope_trigger ON public.sp
 CREATE TRIGGER enforce_spectra_dq_user_update_scope_trigger
   BEFORE UPDATE ON public.spectra
   FOR EACH ROW EXECUTE FUNCTION public.enforce_spectra_dq_user_update_scope();
+
+
+-- Row-local RLS scope columns (perf T2-A, #504). See section 5d above.
+-- spectra.program_slug / observation follow the parent target ...
+DROP TRIGGER IF EXISTS sync_spectra_target_scope_trigger ON public.spectra;
+CREATE TRIGGER sync_spectra_target_scope_trigger
+  BEFORE INSERT OR UPDATE OF target_id, program_slug, observation ON public.spectra
+  FOR EACH ROW EXECUTE FUNCTION public.sync_spectra_target_scope();
+
+-- ... and cascade when the target itself moves (never in practice; keeps the
+-- invariant structural rather than procedural).
+DROP TRIGGER IF EXISTS propagate_target_scope_to_spectra_trigger ON public.targets;
+CREATE TRIGGER propagate_target_scope_to_spectra_trigger
+  AFTER UPDATE OF program_slug, observation ON public.targets
+  FOR EACH ROW
+  WHEN (OLD.program_slug IS DISTINCT FROM NEW.program_slug
+        OR OLD.observation IS DISTINCT FROM NEW.observation)
+  EXECUTE FUNCTION public.propagate_target_scope_to_spectra();
+
+-- shutters.has_published_spectrum follows the target on insert ...
+DROP TRIGGER IF EXISTS sync_shutter_publication_trigger ON public.shutters;
+CREATE TRIGGER sync_shutter_publication_trigger
+  BEFORE INSERT OR UPDATE OF object_id, has_published_spectrum ON public.shutters
+  FOR EACH ROW EXECUTE FUNCTION public.sync_shutter_publication();
+
+-- ... and whenever recompute_has_published_spectrum flips the target
+-- (publish / revoke / recover / reconcile).
+DROP TRIGGER IF EXISTS propagate_target_publication_to_shutters_trigger ON public.targets;
+CREATE TRIGGER propagate_target_publication_to_shutters_trigger
+  AFTER UPDATE OF has_published_spectrum ON public.targets
+  FOR EACH ROW
+  WHEN (OLD.has_published_spectrum IS DISTINCT FROM NEW.has_published_spectrum)
+  EXECUTE FUNCTION public.propagate_target_publication_to_shutters();
 
 
 -- List membership audit (unchanged from pre-Phase-D)

@@ -130,7 +130,7 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
     Build per-spectrum records for Supabase spectra upserts.
 
     Returns list of dicts with keys:
-        target_id, grating, fits_path (R2 key),
+        target_id, grating, fits_path (R2 key), observation, program_slug,
         signal_to_noise, exposure_time, file_hash, file_size,
         cfpipe_version, crds_context, jwst_version, date_obs, reduced_at,
         redshift_auto (per-grating zfit; Phase B)
@@ -139,11 +139,19 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
     (via the summary ECSV) — never recomputed — so a flux value traces back to
     the exact pipeline version, CRDS context, and reduction time.
 
+    `observation` / `program_slug` are the row-local RLS scope columns
+    (perf T2-A, #504). The database owns them: the sync_spectra_target_scope
+    trigger re-copies both from the parent targets row on every insert/upsert,
+    so what is sent here is belt and braces (and must agree with the targets
+    upsert built from the same summary, which it does by construction).
+    `program_slug` is omitted for old ECSVs whose metadata lacks it.
+
     `dq_flags` is intentionally absent: the pipeline does not produce
     per-spectrum DQ. New rows pick up the column default (0); existing rows
     keep whatever the inspection API has set (PostgREST upsert only updates
     columns present in the request body).
     """
+    meta_program_slug = _clean_str(summary.meta.get('program_slug'))
     # cfpipe_version is the single pipeline-version string. Prefer the per-row
     # value (read verbatim from each product's CMPFRVER header, so a
     # [pipeline].version override flows through); fall back to the observation-
@@ -173,6 +181,7 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
             'target_id': row['object_id'],
             'grating': row['grating'],
             'fits_path': r2_key,
+            'observation': obs_name,
             'signal_to_noise': _finite_or_none(row['signal_to_noise']),
             'exposure_time': _finite_or_none(row['exposure_time']),
             'file_hash': row['file_hash'],
@@ -189,6 +198,8 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
         date_obs = _clean_str(row['date_obs']) if has_date_obs else None
         reduced_at = (_clean_str(row['reduced_at']) if has_reduced_at else None) or meta_reduced_at
 
+        if meta_program_slug:
+            rec['program_slug'] = meta_program_slug
         if cfpipe_version:
             rec['cfpipe_version'] = cfpipe_version
         if jwst_version:
