@@ -47,7 +47,8 @@ import {
   type ViewerConfig,
   type ViewerFrameInfo,
 } from '@fitsgl/core';
-import type { FitsglDataset, MapObjectMarker, SlitRegion, Shutter } from '@/lib/actions/map';
+import type { FitsglDataset, MapObjectMarker, SlitRegion, Shutter, SkyBbox } from '@/lib/actions/map';
+import { WHOLE_FIELD_BBOX } from '@/lib/hooks/useFieldSlits';
 import { MARKER_QUALITY_COLORS, QUALITY_LABELS } from '@/lib/types';
 import { makeFitsglWorker } from '@/lib/fits/fitsglWorker';
 import { getObservationColor } from './observation-colors';
@@ -97,6 +98,9 @@ interface FitsGLMapSurfaceProps {
   onToggleShutters: (visible: boolean) => void;
   /** Restricts the drawn shutters to those whose target belongs to a filtered object. */
   shutterFilter?: (shutter: SlitRegion | Shutter) => boolean;
+  /** Sky box of the current view after each (debounced) pan/zoom — scopes
+   *  the shutter query to what is on screen (perf T1-6 / #502). */
+  onViewBounds?: (bbox: SkyBbox | null) => void;
   /** Live RA/Dec under the cursor → shared CoordinateOverlay (null on leave). */
   onCursorCoords: (coords: { ra: number; dec: number } | null) => void;
   /** Right-click at a sky position → shared MapContextMenu. */
@@ -225,6 +229,7 @@ export function FitsGLMapSurface({
   showShutters,
   onToggleShutters,
   shutterFilter,
+  onViewBounds,
   onCursorCoords,
   onContextMenu,
   onOpenFilters,
@@ -297,8 +302,10 @@ export function FitsGLMapSurface({
   // construction, so their closures must never capture stale props).
   const onCursorCoordsRef = useRef(onCursorCoords);
   const onContextMenuRef = useRef(onContextMenu);
+  const onViewBoundsRef = useRef(onViewBounds);
   const seedFromFrameRef = useRef(display.seedFromFrame);
   useEffect(() => { onCursorCoordsRef.current = onCursorCoords; }, [onCursorCoords]);
+  useEffect(() => { onViewBoundsRef.current = onViewBounds; }, [onViewBounds]);
   useEffect(() => { onContextMenuRef.current = onContextMenu; }, [onContextMenu]);
   useEffect(() => { seedFromFrameRef.current = display.seedFromFrame; }, [display.seedFromFrame]);
 
@@ -465,6 +472,30 @@ export function FitsGLMapSurface({
         params.dec = sky.dec.toFixed(4);
       }
       updateMapUrl(params);
+      // View box for the shutter query: the root's four corners → world px →
+      // sky. Null (whole field) if the viewer can't map a corner yet.
+      const report = onViewBoundsRef.current;
+      if (report && h && wcs) {
+        const rect = rootRef.current?.getBoundingClientRect();
+        const corners = rect
+          ? [[rect.left, rect.top], [rect.right, rect.top], [rect.left, rect.bottom], [rect.right, rect.bottom]]
+              .map(([cx, cy]) => h.screenToImage(cx, cy))
+          : [];
+        if (corners.length === 4 && corners.every((c) => c !== null)) {
+          const skies = corners.map((c) => pixToSky(wcs, c!.x, c!.y));
+          const ras = skies.map((s) => s.ra);
+          const decs = skies.map((s) => s.dec);
+          const bbox: SkyBbox = {
+            raMin: Math.min(...ras), raMax: Math.max(...ras),
+            decMin: Math.min(...decs), decMax: Math.max(...decs),
+          };
+          const finite = [bbox.raMin, bbox.raMax, bbox.decMin, bbox.decMax].every(Number.isFinite);
+          report(finite && bbox.raMax - bbox.raMin <= 180 ? bbox : WHOLE_FIELD_BBOX);
+        } else {
+          // Viewer can't map the corners yet: leave the previous box alone
+          // (null would keep the shutter query disabled).
+        }
+      }
     }, 300);
   }, []);
 
@@ -732,7 +763,9 @@ export function FitsGLMapSurface({
               markerCount={markerCount}
               graticule={graticule}
               onToggleGraticule={setGraticule}
-              shuttersAvailable={shutters.length > 0}
+              // Field has NIRSpec objects ⇒ it has shutters; the shutter query
+              // itself only runs while the overlay is on (#502).
+              shuttersAvailable={markers.length > 0}
               showShutters={showShutters}
               onToggleShutters={onToggleShutters}
               shutterCount={shutters.length}

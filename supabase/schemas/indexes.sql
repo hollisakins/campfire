@@ -51,6 +51,10 @@ CREATE INDEX IF NOT EXISTS idx_objects_coords
 CREATE INDEX IF NOT EXISTS idx_objects_field
     ON public.objects USING btree (field);
 
+-- Keyset walk of a field's objects by object_id (get_field_object_markers, #502).
+CREATE INDEX IF NOT EXISTS idx_objects_field_object_id
+    ON public.objects USING btree (field, object_id);
+
 CREATE INDEX IF NOT EXISTS idx_objects_programs
     ON public.objects USING gin (programs);
 
@@ -277,6 +281,10 @@ CREATE INDEX IF NOT EXISTS idx_shutters_field_object_id
 
 CREATE INDEX IF NOT EXISTS idx_shutters_ra_dec
     ON public.shutters USING btree (center_ra, center_dec);
+
+-- Keyset walk of a field's shutters by id (get_field_shutters, perf T1-6 / #502).
+CREATE INDEX IF NOT EXISTS idx_shutters_field_id
+    ON public.shutters USING btree (field, id);
 
 
 -- =============================================================================

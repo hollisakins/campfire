@@ -144,7 +144,10 @@ export function LayerControl({
                 type="checkbox"
                 checked={showSlits}
                 onChange={(e) => onToggleSlits(e.target.checked)}
-                disabled={isLoadingSlits || slitCount === 0}
+                // Enabled whenever the field has NIRSpec objects: the shutter
+                // query runs only while the overlay is on (#502), so its row
+                // count can't be the availability signal any more.
+                disabled={isLoadingSlits || markerCount === 0}
                 className="rounded border-border-strong disabled:opacity-50"
               />
               <Grid3X3 className="w-3.5 h-3.5 text-text-secondary" />

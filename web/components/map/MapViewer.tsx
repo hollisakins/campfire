@@ -13,7 +13,7 @@ import Link from 'next/link';
 import type { MapLayer, MapObjectMarker, FitsglDataset } from '@/lib/actions/map';
 import { FitsGLMapSurface } from './FitsGLMapSurface';
 import { useFieldObjectMarkers } from '@/lib/hooks/useFieldObjectMarkers';
-import { useFieldSlits } from '@/lib/hooks/useFieldSlits';
+import { useFieldSlits, WHOLE_FIELD_BBOX } from '@/lib/hooks/useFieldSlits';
 import type { WCSParams } from '@/lib/utils/wcs';
 import { leafletToSky, skyToLeaflet } from '@/lib/utils/wcs';
 import { QUALITY_LABELS } from '@/lib/types';
@@ -22,7 +22,7 @@ import { CoordinateOverlay } from './CoordinateOverlay';
 import { MapContextMenu } from './MapContextMenu';
 import { CanvasMarkerLayer } from './CanvasMarkerLayer';
 import { CanvasSlitLayer } from './CanvasSlitLayer';
-import type { SlitRegion, Shutter } from '@/lib/actions/map';
+import type { SlitRegion, Shutter, SkyBbox } from '@/lib/actions/map';
 
 import 'leaflet/dist/leaflet.css';
 
@@ -106,18 +106,47 @@ interface MapEventsProps {
   onMouseMove: (coords: { ra: number; dec: number } | null) => void;
   onContextMenu: (data: { coords: { ra: number; dec: number }; position: { x: number; y: number } }) => void;
   onMoveStart: () => void;
+  /** Sky box of the current view (debounced with the URL sync). */
+  onViewBounds: (bbox: SkyBbox | null) => void;
 }
 
-function MapEvents({ wcs, onMouseMove, onContextMenu, onMoveStart }: MapEventsProps) {
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+/** RA/Dec box spanned by a Leaflet view, via the layer WCS (whole field if degenerate). */
+function leafletViewBbox(wcs: WCSParams, map: L.Map): SkyBbox {
+  const b = map.getBounds();
+  const corners = [
+    leafletToSky(wcs, b.getSouth(), b.getWest()),
+    leafletToSky(wcs, b.getSouth(), b.getEast()),
+    leafletToSky(wcs, b.getNorth(), b.getWest()),
+    leafletToSky(wcs, b.getNorth(), b.getEast()),
+  ];
+  const ras = corners.map(c => c.ra);
+  const decs = corners.map(c => c.dec);
+  const bbox = {
+    raMin: Math.min(...ras), raMax: Math.max(...ras),
+    decMin: Math.min(...decs), decMax: Math.max(...decs),
+  };
+  if (![bbox.raMin, bbox.raMax, bbox.decMin, bbox.decMax].every(Number.isFinite)) return WHOLE_FIELD_BBOX;
+  if (bbox.raMax - bbox.raMin > 180) return WHOLE_FIELD_BBOX; // wrapped RA: don't try to box it
+  return bbox;
+}
 
-  useMapEvents({
+function MapEvents({ wcs, onMouseMove, onContextMenu, onMoveStart, onViewBounds }: MapEventsProps) {
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // The debounced body reads map.getBounds(); a field switch remounts the
+  // MapContainer (keyed on field/layer) and Leaflet tears the instance down,
+  // so a timer left over from a pan just before the switch must not fire.
+  useEffect(() => () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+  }, []);
+
+  const map = useMapEvents({
     moveend: (e) => {
       if (!wcs) return;
-      const center = e.target.getCenter();
+      const map = e.target as L.Map;
+      const center = map.getCenter();
       const sky = leafletToSky(wcs, center.lat, center.lng);
-      const zoom = e.target.getZoom();
-      // Debounce URL updates
+      const zoom = map.getZoom();
+      // Debounce URL updates (+ the view box the shutter query is scoped to)
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
         updateMapUrl({
@@ -125,6 +154,7 @@ function MapEvents({ wcs, onMouseMove, onContextMenu, onMoveStart }: MapEventsPr
           dec: sky.dec.toFixed(4),
           z: String(zoom),
         });
+        onViewBounds(leafletViewBbox(wcs, map));
       }, 300);
     },
     mousemove: (e) => {
@@ -148,6 +178,13 @@ function MapEvents({ wcs, onMouseMove, onContextMenu, onMoveStart }: MapEventsPr
       onMoveStart();
     },
   });
+
+  // The initial view is established before this child mounts and fires no
+  // moveend, so report it once here — otherwise enabling the overlay right
+  // after load queries with no box (the whole field).
+  useEffect(() => {
+    if (wcs) onViewBounds(leafletViewBbox(wcs, map));
+  }, [map, wcs, onViewBounds]);
 
   return null;
 }
@@ -251,10 +288,20 @@ export function MapViewer({
   const [showMarkers, setShowMarkers] = useState(true);
   const [showSlits, setShowSlits] = useState(false);
   const [cursorCoords, setCursorCoords] = useState<{ ra: number; dec: number } | null>(null);
+  // Sky box of the current view, reported by whichever engine is mounted
+  // (debounced); null (= no shutter query yet) until the engine reports one,
+  // and again on a field switch so the new field is never fetched unscoped.
+  const [viewBbox, setViewBbox] = useState<SkyBbox | null>(null);
+  useEffect(() => { setViewBbox(null); }, [selectedField]);
 
-  // Fetch markers and slits via React Query (cached per field)
+  // Fetch markers and slits via React Query (cached per field). Shutters only
+  // while the overlay is on, and only for the (padded) view box — see
+  // useFieldSlits (perf T1-6 / #502).
   const { data: markers = [], isLoading: isLoadingMarkers } = useFieldObjectMarkers(selectedField);
-  const { data: slits = [], isLoading: isLoadingSlits } = useFieldSlits(selectedField);
+  const { data: slits = [], isLoading: isLoadingSlits } = useFieldSlits(selectedField, {
+    enabled: showSlits,
+    bbox: viewBbox,
+  });
   const [popupState, setPopupState] = useState<{
     marker: MapObjectMarker; latLng: L.LatLng;
   } | null>(null);
@@ -436,6 +483,7 @@ export function MapViewer({
           showShutters={showSlits}
           onToggleShutters={setShowSlits}
           shutterFilter={slitFilter}
+          onViewBounds={setViewBbox}
           onCursorCoords={setCursorCoords}
           onContextMenu={handleContextMenu}
           onOpenFilters={onOpenFilters}
@@ -506,6 +554,7 @@ export function MapViewer({
           onMouseMove={setCursorCoords}
           onContextMenu={handleContextMenu}
           onMoveStart={closeContextMenu}
+          onViewBounds={setViewBbox}
         />
 
         {/* Canvas-rendered slit overlay (below markers) */}

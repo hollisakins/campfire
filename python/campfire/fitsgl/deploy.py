@@ -89,6 +89,57 @@ def fitsgl_json_url(public_url):
     return f"{public_url.rstrip('/')}/fitsgl.json"
 
 
+# Perf T1-6 (#502). FitsGL uploads its descriptors (``fitsgl.json`` and every
+# band's ``manifest.json``) as ``no-cache`` "pointers" so a re-deploy is visible
+# at once; on the CDN that is ``cf-cache-status: DYNAMIC`` — an origin round
+# trip (0.2–0.3 s each) on every map load, while the tiles beside them are
+# immutable and edge-hot. Five minutes at the edge/browser is the trade:
+# a re-deploy is picked up within that window (the web server already
+# revalidates descriptors hourly), and every map load in between is served
+# from the edge. The clean fix — descriptors under a content-hashed path with
+# ``immutable`` — belongs in the FitsGL producer (it owns the layout the
+# viewer resolves), so this stays an override applied after ``deploy_dataset``.
+DESCRIPTOR_CACHE_CONTROL = 'public, max-age=300, stale-while-revalidate=86400'
+
+
+def descriptor_keys(dataset_dir, prefix):
+    """Object keys of a built dataset's descriptors under ``prefix`` (pure)."""
+    dataset_dir = Path(dataset_dir)
+    keys = []
+    for p in sorted(dataset_dir.rglob('*.json')):
+        if p.name in ('fitsgl.json', 'manifest.json'):
+            keys.append(f"{prefix.rstrip('/')}/{p.relative_to(dataset_dir).as_posix()}")
+    return keys
+
+
+def set_descriptor_cache_control(creds, keys, *, cache_control=DESCRIPTOR_CACHE_CONTROL):
+    """Re-stamp ``Cache-Control`` on already-uploaded descriptor objects.
+
+    An in-place ``CopyObject`` with ``MetadataDirective=REPLACE`` (S3/R2 have
+    no metadata-only update). Returns the number of objects touched.
+    """
+    import boto3
+    from botocore.config import Config
+
+    cfg = {'signature_version': 's3v4'}
+    if creds.get('force_path_style'):
+        cfg['s3'] = {'addressing_style': 'path'}
+    client = boto3.client(
+        's3', endpoint_url=creds['endpoint'],
+        aws_access_key_id=creds['access_key_id'],
+        aws_secret_access_key=creds['secret_access_key'],
+        region_name=creds.get('region') or 'auto', config=Config(**cfg),
+    )
+    bucket = creds['bucket']
+    for key in keys:
+        client.copy_object(
+            Bucket=bucket, Key=key, CopySource={'Bucket': bucket, 'Key': key},
+            MetadataDirective='REPLACE', ContentType='application/json',
+            CacheControl=cache_control,
+        )
+    return len(keys)
+
+
 def compute_source_hashes(mosaics, hash_by_key):
     """Nested ``{tile: {filter: 'sha256:..'}}`` of the mosaics a dataset was built from.
 
@@ -371,6 +422,15 @@ def run_deploy(field, *, config, client, tile=None, pixel_scale='30mas',
         source_hashes=source_hashes, is_default=(tile is None),
     )
     client.table('fitsgl_datasets').upsert(row, on_conflict='prefix').execute()
+
+    # Descriptors edge-cacheable (see DESCRIPTOR_CACHE_CONTROL). Best effort:
+    # a failure leaves FitsGL's no-cache headers in place, which is merely slow.
+    try:
+        n = set_descriptor_cache_control(creds, descriptor_keys(dataset_dir, prefix))
+        click.echo(f"  Cache-Control set on {n} descriptor(s): {DESCRIPTOR_CACHE_CONTROL}")
+    except Exception as e:  # noqa: BLE001 — never fail a deploy over a header
+        click.echo(f"  Warning: could not set descriptor Cache-Control: {e}")
+
     click.echo(f"\n✓ Deployed {name}: {len(result.uploaded)} uploaded, "
                f"{len(result.deleted)} removed")
     click.echo(f"  Viewer manifest: {json_url}")
