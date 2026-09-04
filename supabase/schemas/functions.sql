@@ -431,6 +431,59 @@ GRANT EXECUTE ON FUNCTION public.get_nircam_field_summary(text) TO authenticated
 -- inside this function: it is SECURITY INVOKER, but when called from a
 -- SECURITY DEFINER context it would run as the owner with RLS bypassed — the
 -- explicit p_program_slugs filter is the access gate.
+--
+-- ---- Shape is load-bearing (perf audit 2026-09, #498) --------------------
+-- Every catalog reader calls this once per output row via
+-- `LEFT JOIN LATERAL object_scoped_aggregates(...)`. It MUST stay
+-- **LANGUAGE sql, STABLE, a single SELECT, no SET clause, not SECURITY
+-- DEFINER** so the planner inlines it into the calling statement. Inlined, the
+-- spectra RLS subplan (`target_id IN (SELECT … FROM targets …)`, ~35 k rows)
+-- is built once per statement; as plpgsql (June–Sept 2026, when the
+-- deploy_status fast path landed as IF/RETURN QUERY) every row was a separate
+-- SPI statement that rebuilt it, and `get_filtered_objects_paginated` went
+-- from 46 ms to 2.0–2.7 s per page — the 8 s statement timeout for some
+-- shapes. The old `SET plan_cache_mode = 'auto'` (#490) existed only to stop
+-- plpgsql's nested statements re-planning per row; a SET clause blocks
+-- inlining, and an inlined body has no nested statements, so it is gone.
+-- `ROWS 1` is kept as the estimate for any call site the planner declines to
+-- inline. Verify with EXPLAIN on a LATERAL call: a `Function Scan on
+-- object_scoped_aggregates` node means the inlining broke.
+--
+-- ---- Fast path -------------------------------------------------------------
+-- `stored`: when the caller can access every program this object belongs to
+-- AND unpublished members are excluded AND every member spectrum is
+-- published, the viewer-scoped recompute is provably identical to the
+-- aggregate columns already stored on the object (perf, issue #103).
+-- The stored columns come from the deploy-time builder
+-- (python/campfire/deploy/objects.py + reconcile), which aggregates ALL
+-- member spectra blind to publication status — so the all-published guard is
+-- load-bearing: without it, an object carrying a draft/revoked sibling
+-- spectrum would display the unpublished grating (and count it in
+-- n_spectra/max_snr) while the viewer-scoped grating FILTER (issue #488,
+-- objects_matching_grating_filter) correctly excludes it — a filter/display
+-- contradiction.
+--
+-- The guard is TWO probes because this SECURITY INVOKER function runs under
+-- whatever row visibility the caller has, and neither probe alone covers
+-- both caller classes:
+--   * NOT EXISTS unpublished — decisive for owner/service-role/admin
+--     callers, who see every row; blind for normal authenticated viewers,
+--     whose spectra RLS policy hides draft/revoked rows outright
+--     (policies.sql "select_spectra_by_access").
+--   * visible-member-spectra COUNT = stored n_spectra — detects rows RLS
+--     hides without needing to see them (stored counts everything, so any
+--     hidden row makes the visible count fall short); trivially true, and
+--     so decisive-by-vacuity, for callers who see every row.
+-- Either probe failing yields an empty `stored`, and the UNION ALL's second
+-- branch (gated by `NOT EXISTS (SELECT 1 FROM stored)`, a one-time filter)
+-- recomputes exactly what this caller may see, published-gated. Restricting
+-- the recompute to a superset of the object's programs drops nothing, so
+-- `o.programs <@ p_program_slugs` plus the two probes is the
+-- "recompute == stored" condition. Partial-access, draft-inclusive, or
+-- unpublished-carrying objects fall through to the recompute, preserving
+-- the anti-leak scoping (see the header comment and
+-- supabase/tests/check_object_aggregate_scoping.sql /
+-- check_grating_filter_scoping.sql).
 DROP FUNCTION IF EXISTS public.object_scoped_aggregates(INTEGER, TEXT[]);
 
 CREATE OR REPLACE FUNCTION public.object_scoped_aggregates(
@@ -447,64 +500,15 @@ RETURNS TABLE(
   max_snr           DOUBLE PRECISION,
   max_exposure_time DOUBLE PRECISION
 )
-LANGUAGE plpgsql STABLE
--- Exactly one row per call, always. Without ROWS 1 the planner assumes the
--- SRF default of 1000 rows per call, which multiplies through every
--- `LEFT JOIN LATERAL object_scoped_aggregates(...)` call site and inflates
--- those plans' cost estimates ~1000x (issue #490: enough to trip per-call JIT
--- compilation on the CSV export).
+LANGUAGE sql STABLE
 ROWS 1
--- Pin the default plan-cache behavior for this function's own statements.
--- Several callers run under SET plan_cache_mode = 'force_custom_plan' (their
--- big NULL-guarded filter queries need it), and a calling function's SET
--- propagates to nested statements for the whole call stack — without this pin
--- the fast-path probes above are re-planned on every per-row lateral call
--- (issue #490: ~0.4ms planning x 5000 rows ≈ 1.9s per CSV-export page).
-SET plan_cache_mode = 'auto'
 AS $$
-BEGIN
-  -- Fast path (perf, issue #103): when the caller can access every program this
-  -- object belongs to AND unpublished members are excluded AND every member
-  -- spectrum is published, the viewer-scoped recompute below is provably
-  -- identical to the aggregate columns already stored on the object.
-  -- The stored columns come from the deploy-time builder
-  -- (python/campfire/deploy/objects.py + reconcile), which aggregates ALL
-  -- member spectra blind to publication status — so the all-published guard is
-  -- load-bearing: without it, an object carrying a draft/revoked sibling
-  -- spectrum would display the unpublished grating (and count it in
-  -- n_spectra/max_snr) while the viewer-scoped grating FILTER (issue #488,
-  -- objects_matching_grating_filter) correctly excludes it — a filter/display
-  -- contradiction.
-  --
-  -- The guard is TWO probes because this SECURITY INVOKER function runs under
-  -- whatever row visibility the caller has, and neither probe alone covers
-  -- both caller classes:
-  --   * NOT EXISTS unpublished — decisive for owner/service-role/admin
-  --     callers, who see every row; blind for normal authenticated viewers,
-  --     whose spectra RLS policy hides draft/revoked rows outright
-  --     (policies.sql "select_spectra_by_access").
-  --   * visible-member-spectra COUNT = stored n_spectra — detects rows RLS
-  --     hides without needing to see them (stored counts everything, so any
-  --     hidden row makes the visible count fall short); trivially true, and
-  --     so decisive-by-vacuity, for callers who see every row.
-  -- Either probe failing falls through to the recompute, which aggregates
-  -- exactly what this caller may see, published-gated. Restricting the
-  -- recompute to a superset of the object's programs drops nothing, so
-  -- `o.programs <@ p_program_slugs` plus the two probes is the
-  -- "recompute == stored" condition. Returning the stored columns via a
-  -- single PK lookup (plus a few indexed member probes) still skips the
-  -- per-row aggregate scans that dominated get_objects_for_sync (and the
-  -- catalog list RPCs) at scale. Partial-access, draft-inclusive, or
-  -- unpublished-carrying objects fall through to the recompute, preserving
-  -- the anti-leak scoping (see the header comment and
-  -- supabase/tests/check_object_aggregate_scoping.sql /
-  -- check_grating_filter_scoping.sql).
-  IF NOT p_include_unpublished THEN
-    RETURN QUERY
+  WITH stored AS MATERIALIZED (
     SELECT o.programs, o.gratings, o.observations,
            o.n_targets, o.n_spectra, o.max_snr, o.max_exposure_time
     FROM objects o
     WHERE o.id = p_object_id
+      AND NOT p_include_unpublished
       AND o.programs <@ p_program_slugs
       AND NOT EXISTS (
         SELECT 1
@@ -518,14 +522,9 @@ BEGIN
         FROM targets t
         JOIN spectra s ON s.target_id = t.target_id
         WHERE t.object_id = p_object_id
-      );
-    IF FOUND THEN
-      RETURN;
-    END IF;
-  END IF;
-
-  RETURN QUERY
-  WITH m AS (
+      )
+  ),
+  m AS (
     SELECT t.target_id, t.program_slug, t.observation
     FROM targets t
     WHERE t.object_id = p_object_id
@@ -540,6 +539,10 @@ BEGIN
     WHERE s.target_id IN (SELECT target_id FROM m)
       AND (p_include_unpublished OR s.deploy_status = 'published')
   )
+  SELECT st.programs, st.gratings, st.observations,
+         st.n_targets, st.n_spectra, st.max_snr, st.max_exposure_time
+  FROM stored st
+  UNION ALL
   SELECT
     COALESCE((SELECT array_agg(DISTINCT m.program_slug ORDER BY m.program_slug) FROM m), '{}')::text[],
     COALESCE((SELECT array_agg(DISTINCT sp.grating ORDER BY sp.grating) FROM sp WHERE sp.grating IS NOT NULL), '{}')::text[],
@@ -547,8 +550,8 @@ BEGIN
     (SELECT COUNT(*) FROM m)::integer,
     (SELECT COUNT(*) FROM sp)::integer,
     (SELECT MAX(sp.signal_to_noise) FROM sp),
-    (SELECT MAX(sp.exposure_time) FROM sp);
-END;
+    (SELECT MAX(sp.exposure_time) FROM sp)
+  WHERE NOT EXISTS (SELECT 1 FROM stored);
 $$;
 
 GRANT EXECUTE ON FUNCTION public.object_scoped_aggregates(INTEGER, TEXT[], BOOLEAN) TO authenticated;
