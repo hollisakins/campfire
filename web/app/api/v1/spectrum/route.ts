@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
-import { generateDownloadUrl } from '@/lib/r2';
+import { streamSidecar } from '@/lib/server/sidecar-stream';
 import { deriveSibling } from '@/lib/layout';
 
 export interface SpectrumData {
@@ -113,27 +113,16 @@ export async function GET(request: NextRequest) {
     // Derive the spectrum-JSON sibling key via the shared layout contract
     const jsonPath = deriveSibling(fitsPath, 'spectrum_json');
 
-    // Generate signed URL for the JSON file
-    const signedUrl = await generateDownloadUrl(jsonPath, 3600);
-
-    // Fetch the JSON data from R2
-    const response = await fetch(signedUrl);
-
-    if (!response.ok) {
-      console.error('Failed to fetch spectrum JSON:', response.status);
-      return NextResponse.json(
-        { error: 'Failed to fetch spectrum data' },
-        { status: 502 }
-      );
-    }
-
-    const data: SpectrumData = await response.json();
-
-    const resp = NextResponse.json(data);
-    // Bearer requests bypass Vercel's shared cache; `private` states the
+    // Stream the sidecar through untouched (perf T2-D2, #508). Bearer
+    // requests bypass Vercel's shared cache; `private` states the
     // (program-scoped) truth for the client's own cache (#497).
-    resp.headers.set('Cache-Control', 'private, max-age=86400, stale-while-revalidate=3600');
-    return resp;
+    const sidecar = await streamSidecar(jsonPath, 'private, max-age=86400, stale-while-revalidate=3600');
+    if (sidecar.status === 'ok') return sidecar.response;
+    console.error('Failed to fetch spectrum JSON:', sidecar.upstreamStatus);
+    return NextResponse.json(
+      { error: 'Failed to fetch spectrum data' },
+      { status: sidecar.status === 'missing' ? 404 : 502 }
+    );
   } catch (error) {
     console.error('Error in API /v1/spectrum:', error);
     return NextResponse.json(

@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { useQueries, type UseQueryResult } from '@tanstack/react-query';
+import { useQueries, type UseQueryResult, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import type { SpectrumData } from '@/app/api/spectrum/route';
-import { spectrumJsonQueryOptions, useSpectrumCacheTrim } from '@/lib/hooks/useSpectrumJson';
+import type { SpectrumData1D } from '@/app/api/spectrum/route';
+import { spectrum1dQueryOptions, useSpectrumCacheTrim } from '@/lib/hooks/useSpectrumJson';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import {
@@ -51,8 +51,8 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
   // y-range, so toggling visibility never rescales the plot. Traces appear
   // progressively as each query resolves.
   const combineSpectrumQueries = useCallback(
-    (results: UseQueryResult<SpectrumData>[]) => {
-      const map = new Map<string, SpectrumData>();
+    (results: UseQueryResult<SpectrumData1D>[]) => {
+      const map = new Map<string, SpectrumData1D>();
       let total = 0;
       let pending = 0;
       sources.forEach((s, i) => {
@@ -73,8 +73,11 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
     },
     [sources],
   );
+  // The 1-D sidecar only (perf T2-D2, #508): this viewer never draws the 2-D
+  // S/N array, so it does not wait for it.
+  const queryClient = useQueryClient();
   const { loadedData, loading, loadingProgress } = useQueries({
-    queries: sources.map(s => ({ ...spectrumJsonQueryOptions(s.fitsPath), enabled: s.visible })),
+    queries: sources.map(s => ({ ...spectrum1dQueryOptions(queryClient, s.fitsPath), enabled: s.visible })),
     combine: combineSpectrumQueries,
   });
   // Bound the shared cache as spectra land (idle entries beyond the cap go).

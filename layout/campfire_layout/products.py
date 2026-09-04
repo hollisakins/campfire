@@ -111,6 +111,14 @@ _register(ProductSpec(
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
     suffix="_spec.json", legacy_prefix=lambda s: f"spectra/{s.obs}",
 ))
+# 1-D-only sibling of spectrum_json (perf T2-D2, #508): wave/fnu/fnu_err and the
+# cross-dispersion profile without the 2-D S/N array (80-95 % of the bytes), so
+# the web paints the primary trace before the heatmap payload lands.
+_register(ProductSpec(
+    name="spectrum_1d_json", instrument=NS, tree="products", bucket="data",
+    lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
+    suffix="_spec_1d.json", legacy_prefix=lambda s: f"spectra/{s.obs}",
+))
 _register(ProductSpec(
     name="zfit", instrument=NS, tree="products", bucket="data",
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,

@@ -75,6 +75,8 @@ function reg(p: ProductSpec) {
 // --- NIRSpec products (spectrum family shares products/nirspec/<obs>/) ---
 reg(spec({ name: 'nirspec_spec', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_spec.fits', legacyPrefix: (s) => `spectra/${s.obs}` }));
 reg(spec({ name: 'spectrum_json', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_spec.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
+// 1-D-only sibling of spectrum_json (perf T2-D2, #508): no 2-D S/N array.
+reg(spec({ name: 'spectrum_1d_json', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_spec_1d.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
 reg(spec({ name: 'zfit', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_zfit.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
 reg(spec({ name: 'nirspec_spectrum_exposure', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '.fits' }));
 reg(spec({ name: 'nirspec_rate', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_rate.fits' }));
@@ -193,6 +195,7 @@ export interface ParsedKey {
 const NIRSPEC_OBS_SUFFIXES: [string, string][] = [
   ['_spec.fits', 'nirspec_spec'],
   ['_rate.fits', 'nirspec_rate'], // must precede the bare-'.fits' fallback below
+  ['_spec_1d.json', 'spectrum_1d_json'],
   ['_spec.json', 'spectrum_json'],
   ['_zfit.json', 'zfit'],
   ['_rgb.png', 'rgb'],

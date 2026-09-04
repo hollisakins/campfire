@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
-import { generateDownloadUrl } from '@/lib/r2';
+import { streamSidecar } from '@/lib/server/sidecar-stream';
 import { deriveSibling } from '@/lib/layout';
 
 // Non-finite values in the deploy-side FITS arrays are serialized as JSON
@@ -152,29 +152,20 @@ export async function GET(request: NextRequest) {
     // Derive the zfit-JSON sibling key via the shared layout contract
     const zfitJsonPath = deriveSibling(fitsPath, 'zfit');
 
-    // Generate signed URL for the zfit JSON file
-    const signedUrl = await generateDownloadUrl(zfitJsonPath, 3600);
-
-    // Fetch the zfit JSON data from R2
-    const response = await fetch(signedUrl);
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        return NextResponse.json(
-          { error: 'Redshift fit data not available for this spectrum' },
-          { status: 404 }
-        );
-      }
-      console.error('Failed to fetch zfit JSON:', response.status);
+    // Stream the sidecar through untouched (perf T2-D2, #508).
+    const sidecar = await streamSidecar(zfitJsonPath, 'private, max-age=86400, stale-while-revalidate=3600');
+    if (sidecar.status === 'ok') return sidecar.response;
+    if (sidecar.status === 'missing') {
       return NextResponse.json(
-        { error: 'Failed to fetch redshift fit data' },
-        { status: 502 }
+        { error: 'Redshift fit data not available for this spectrum' },
+        { status: 404 }
       );
     }
-
-    const data: RedshiftFitData = await response.json();
-
-    return NextResponse.json(data);
+    console.error('Failed to fetch zfit JSON:', sidecar.upstreamStatus);
+    return NextResponse.json(
+      { error: 'Failed to fetch redshift fit data' },
+      { status: 502 }
+    );
   } catch (error) {
     console.error('Error in API /v1/redshift-fit:', error);
     return NextResponse.json(

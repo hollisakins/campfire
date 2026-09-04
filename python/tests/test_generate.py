@@ -14,10 +14,13 @@ import pytest
 from astropy.io import fits
 
 from campfire.deploy.generate import (
+    SPECTRUM_1D_KEYS,
     generate_spectrum_json,
+    generate_spectrum_jsons,
     generate_spectrum_products,
     generate_zfit_json,
     read_spectrum_data,
+    spectrum_1d_payload,
 )
 
 
@@ -100,7 +103,7 @@ def test_inf_flux_becomes_null(tmp_path):
 
     # generate_spectrum_products is the single-read path deploy actually uses
     # (the one that raised in the field).
-    json_path, thumbs = generate_spectrum_products(fits_path, tmp_path)
+    json_path, json_1d_path, thumbs = generate_spectrum_products(fits_path, tmp_path)
     data = json.loads(json_path.read_text(), parse_constant=_strict_constant)
     assert data["fnu"][1] is None
     assert data["fnu"][2] is None
@@ -177,3 +180,43 @@ def test_zfit_all_nonfinite_chi2_yields_null_best_fit(tmp_path):
     data = json.loads(json_path.read_text(), parse_constant=_strict_constant)
     assert data["redshift"] is None
     assert data["chi2_min"] is None
+
+
+# ---------------------------------------------------------------------------
+# 1-D sidecar (perf T2-D2, #508)
+# ---------------------------------------------------------------------------
+
+def test_spectrum_1d_payload_drops_only_the_2d_array():
+    data = {k: [1] for k in SPECTRUM_1D_KEYS}
+    data['snr_2d'] = [[1, 2], [3, 4]]
+    out = spectrum_1d_payload(data)
+    assert 'snr_2d' not in out
+    assert set(out) == set(SPECTRUM_1D_KEYS)
+
+
+def test_generate_spectrum_jsons_writes_full_and_1d_siblings(tmp_path):
+    fits_path = tmp_path / "obs_prism_clear_1_spec.fits"
+    _write_spec_fits(fits_path, opt=[0.2, 1.0, 0.2])
+
+    json_path, json_1d_path = generate_spectrum_jsons(fits_path, tmp_path)
+
+    # Layout siblings of the FITS: <stem>.json and <stem>_1d.json
+    assert json_path.name == "obs_prism_clear_1_spec.json"
+    assert json_1d_path.name == "obs_prism_clear_1_spec_1d.json"
+
+    full = json.loads(json_path.read_text(), parse_constant=_strict_constant)
+    oned = json.loads(json_1d_path.read_text(), parse_constant=_strict_constant)
+    assert 'snr_2d' in full
+    assert 'snr_2d' not in oned
+    for k in SPECTRUM_1D_KEYS:
+        assert oned[k] == full[k]
+    assert json_1d_path.stat().st_size < json_path.stat().st_size
+
+
+def test_generate_spectrum_products_returns_the_1d_sidecar_too(tmp_path):
+    fits_path = tmp_path / "obs_prism_clear_2_spec.fits"
+    _write_spec_fits(fits_path, opt=[0.2, 1.0, 0.2])
+    json_path, json_1d_path, thumbs = generate_spectrum_products(fits_path, tmp_path)
+    assert json_path.exists() and json_1d_path.exists()
+    assert json_1d_path.name.endswith("_spec_1d.json")
+    assert set(thumbs) == {'thumbnail_svg_fnu', 'thumbnail_svg_flambda'}

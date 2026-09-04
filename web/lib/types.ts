@@ -218,6 +218,10 @@ export interface Spectrum {
   exposure_time: number | null;
   created_at: string;
   redshift_auto?: number | null;
+  /** zfit scalars persisted at deploy (perf T2-D2, #508); null = no fit, or a
+   *  row that predates the columns (the fit summary then fetches the sidecar). */
+  chi2_min?: number | null;
+  confidence?: number | null;
   dq_flags?: number;
   // Pre-generated SVG thumbnails (included when p_include_thumbnails=true in RPC)
   thumbnail_svg_fnu?: string | null;

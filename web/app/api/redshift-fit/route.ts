@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
-import { generateDownloadUrl } from '@/lib/r2';
 import { deriveSibling } from '@/lib/layout';
+import { streamSidecar } from '@/lib/server/sidecar-stream';
 
 // Non-finite values in the deploy-side FITS arrays are serialized as JSON
 // null (see python/campfire/deploy/generate.py); scalars are null when the
@@ -19,8 +19,9 @@ export interface RedshiftFitData {
 /**
  * GET /api/redshift-fit?path=<fits_path>
  *
- * Fetches the redshift fitting results for a spectrum FITS file.
- * Converts the FITS path to a zfit JSON path and returns the fitting data.
+ * Streams the redshift fitting results (zfit JSON sidecar) for a spectrum
+ * FITS file. The fallback byte path when the delivery front is not
+ * configured; the client asks /api/spectrum/sidecars first.
  */
 export async function GET(request: NextRequest) {
   const { user, supabase } = await getRequestIdentity();
@@ -58,38 +59,27 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Derive the zfit-JSON sibling key via the shared layout contract
+    // Derive the zfit-JSON sibling key via the shared layout contract and
+    // stream it through untouched (perf T2-D2, #508) — the fallback path when
+    // the delivery front is not configured; see /api/spectrum/sidecars.
     const zfitJsonPath = deriveSibling(fitsPath, 'zfit');
-
-    // Generate signed URL for the zfit JSON file
-    const signedUrl = await generateDownloadUrl(zfitJsonPath, 3600);
-
-    // Fetch the zfit JSON data from R2
-    const response = await fetch(signedUrl);
-
-    if (!response.ok) {
-      // Zfit file might not exist (fitting not run for this spectrum)
-      if (response.status === 404) {
-        return NextResponse.json(
-          { error: 'Redshift fit data not available for this spectrum' },
-          { status: 404 }
-        );
-      }
-      console.error('Failed to fetch zfit JSON:', response.status);
-      return NextResponse.json(
-        { error: 'Failed to fetch redshift fit data' },
-        { status: 502 }
-      );
-    }
-
-    const data: RedshiftFitData = await response.json();
-
     // Program-scoped, cookie-authenticated: browser-cacheable for a day, never
     // shared-cacheable — Vercel's edge serves `public` responses to any caller
     // of the same URL, cookie or not (#497).
-    const resp = NextResponse.json(data);
-    resp.headers.set('Cache-Control', 'private, max-age=86400, stale-while-revalidate=3600');
-    return resp;
+    const sidecar = await streamSidecar(zfitJsonPath, 'private, max-age=86400, stale-while-revalidate=3600');
+    if (sidecar.status === 'ok') return sidecar.response;
+    if (sidecar.status === 'missing') {
+      // Zfit file might not exist (fitting not run for this spectrum)
+      return NextResponse.json(
+        { error: 'Redshift fit data not available for this spectrum' },
+        { status: 404 }
+      );
+    }
+    console.error('Failed to fetch zfit JSON:', sidecar.upstreamStatus);
+    return NextResponse.json(
+      { error: 'Failed to fetch redshift fit data' },
+      { status: 502 }
+    );
   } catch (error) {
     console.error('Error fetching redshift fit data:', error);
     return NextResponse.json(

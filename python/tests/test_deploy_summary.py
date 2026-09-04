@@ -112,3 +112,18 @@ def test_get_spectra_records_carries_rls_scope_columns():
     t.meta['program_slug'] = 'capers'
     r1, r2 = get_spectra_records(t, 'obs1')
     assert r1['program_slug'] == 'capers' and r2['program_slug'] == 'capers'
+
+
+def test_get_spectra_records_carries_zfit_scalars_when_present():
+    t = _spectra_table()
+    t['chi2_min'] = [math.nan, 41.25]
+    t['redshift_confidence'] = [math.inf, 87.5]
+    r1, r2 = get_spectra_records(t, 'obs1')
+    # Present columns are always sent (null clears a stale value on re-fit).
+    assert r1['chi2_min'] is None and r1['confidence'] is None
+    assert r2['chi2_min'] == 41.25 and r2['confidence'] == 87.5
+
+
+def test_get_spectra_records_omits_zfit_scalars_for_old_ecsv():
+    r1, _ = get_spectra_records(_spectra_table(), 'obs1')
+    assert 'chi2_min' not in r1 and 'confidence' not in r1

@@ -168,6 +168,10 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
     has_reduced_at = 'reduced_at' in summary.colnames
     # Phase B: per-grating redshift_auto from zfit. Older ECSVs may not have it.
     has_redshift_auto = 'redshift_auto' in summary.colnames
+    # Perf T2-D2 (#508): the zfit scalars the object page shows, persisted on
+    # the row so RedshiftFitSummary fetches no zfit sidecar for them.
+    has_chi2_min = 'chi2_min' in summary.colnames
+    has_confidence = 'redshift_confidence' in summary.colnames
 
     # Fallback to metadata for old ECSVs that lack per-row columns
     meta_jwst_version = _clean_str(summary.meta.get('jwst_version'))
@@ -218,6 +222,11 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
             raw = row['redshift_auto']
             # zfit may emit NaN for failed fits (or inf); store either as NULL.
             rec['redshift_auto'] = _finite_or_none(raw)
+        # Same authority rule for the zfit scalars: present => always sent.
+        if has_chi2_min:
+            rec['chi2_min'] = _finite_or_none(row['chi2_min'])
+        if has_confidence:
+            rec['confidence'] = _finite_or_none(row['redshift_confidence'])
 
         records.append(rec)
     return records

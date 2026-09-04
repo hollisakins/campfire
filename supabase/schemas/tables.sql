@@ -330,6 +330,13 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "reduced_at" timestamp with time zone,
     -- Phase A: per-spectrum auto-fit and DQ (populated in Phase B by deploy pipeline; backfilled in Phase D)
     "redshift_auto" double precision,
+    -- Perf T2-D2 (#508): the zfit scalars the object page's fit summary shows
+    -- (min chi-squared and the 0-100 ZCONF confidence), written by deploy from
+    -- the summary ECSV so the page fetches no zfit sidecar for them. NULL when
+    -- no fit exists or the row predates the column (backfilled from the zfit
+    -- JSON by scripts/backfill_zfit_scalars.py).
+    "chi2_min" double precision,
+    "confidence" double precision,
     "dq_flags" integer NOT NULL DEFAULT 0,
     -- B1 (#217): deploy lifecycle. 'published' is the only status visible to
     -- non-admins; 'draft' (admin-only draft, written by B2) and 'revoked'
