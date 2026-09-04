@@ -119,6 +119,9 @@ WITH stats AS (
     FROM public.targets t
     -- Published-only: unpublished spectra don't contribute to counts/size/gratings.
     LEFT JOIN public.spectra s ON s.target_id = t.target_id AND s.deploy_status = 'published'
+    -- ...and draft-only targets don't count at all (what targets RLS enforced
+    -- for the old invoker query; this view is built by the owner).
+    WHERE t.has_published_spectrum
     GROUP BY t.observation, t.program_slug
 )
 SELECT
@@ -147,7 +150,9 @@ SELECT
 FROM public.observations o
 JOIN public.programs p ON p.slug = o.program_slug
 LEFT JOIN stats s ON s.observation = o.name AND s.program_slug = o.program_slug
--- Provenance from the most recent FULL deployment (source_ids_filter IS NULL).
+-- Provenance from the most recent PUBLISHED full deployment (source_ids_filter
+-- IS NULL). Published-only like the rest of the snapshot: a draft re-reduction
+-- must not surface its version stamps here before it is published.
 LEFT JOIN LATERAL (
     SELECT d.crds_context, d.cfpipe_version, d.jwst_version,
            d.reduced_at, d.deployed_at,
@@ -156,15 +161,17 @@ LEFT JOIN LATERAL (
     FROM public.deployments d
     LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
     WHERE d.observation = o.name AND d.source_ids_filter IS NULL
+      AND d.status = 'published'
     ORDER BY d.deployed_at DESC
     LIMIT 1
 ) full_dep ON true
--- Patch deployments since that full one.
+-- Published patch deployments since that full one.
 LEFT JOIN LATERAL (
     SELECT COUNT(*)::integer AS n_patches, MAX(d.deployed_at) AS last_patch_at
     FROM public.deployments d
     WHERE d.observation = o.name
       AND d.source_ids_filter IS NOT NULL
+      AND d.status = 'published'
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
 ) patches ON true
 WITH DATA;

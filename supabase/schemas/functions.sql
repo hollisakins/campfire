@@ -3324,6 +3324,9 @@ BEGIN
       mv.n_patches_since_full, mv.last_patch_at
     FROM public.mv_observations_overview mv
     WHERE mv.program_slug = ANY(v_slugs)
+      -- Share links see only the observation they were minted for (mirrors
+      -- accessible_observations_select; the matview has no RLS to do it).
+      AND ((SELECT NOT public.is_link_account()) OR mv.observation = (SELECT public.link_observation()))
       -- The live aggregate only yields observations that have targets.
       AND mv.target_count > 0
     ORDER BY mv.observation;
@@ -3425,6 +3428,9 @@ BEGIN
       mv.n_patches_since_full, mv.last_patch_at
     FROM public.mv_observations_overview mv
     WHERE mv.program_slug = ANY(v_slugs)
+      -- Share links see only the observation they were minted for (mirrors
+      -- accessible_observations_select; the matview has no RLS to do it).
+      AND ((SELECT NOT public.is_link_account()) OR mv.observation = (SELECT public.link_observation()))
     ORDER BY mv.program_slug, mv.observation;
     RETURN;
   END IF;
@@ -5244,6 +5250,12 @@ BEGIN
   ELSE
     v_result := json_build_object('updated', 0, 'action', v_action);
   END IF;
+
+  -- The published-only snapshots (mv_observations_overview, and the two
+  -- older matviews, which also filter on deploy_status) must follow a
+  -- publish / revoke immediately, not at the nightly refresh (perf T1-5 /
+  -- #501). Same transaction, so the refresh sees the flipped rows.
+  PERFORM public.refresh_all_matviews();
 
   RETURN json_build_object(
     'deployment_id', p_deployment_id, 'observation', v_obs,

@@ -43,10 +43,14 @@ export function useSpectraQuery(params: UseSpectraQueryParams) {
       const result = await getSpectra(filters, p, pageSize, sortColumn, sortDirection, viewMode, {
         includeCount: known === undefined,
       });
-      if (result.total >= 0) {
+      // Only a successful, authenticated response is an authoritative count:
+      // the action resolves with total 0 (not a throw) on RPC errors and on
+      // a lapsed session, and caching that would pin a "0 results" pager.
+      if (result.total >= 0 && !result.error && result.isAuthenticated) {
         queryClient.setQueryData(countKey, result.total);
         return result;
       }
+      if (result.error || !result.isAuthenticated) return result;
       if (known !== undefined) {
         return {
           ...result,

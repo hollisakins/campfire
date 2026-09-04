@@ -867,7 +867,6 @@ def deploy_observation(
             print()
             refresh_filter_options(sb)
             refresh_programs_overview(sb)
-            refresh_observations_overview(sb)
 
             # Photometry: cross-match the field's catalog and upsert rows
             # for objects touched by reconcile. Skipped silently if no
@@ -944,6 +943,12 @@ def deploy_observation(
                     succeeded=success, failed=failed, items=len(spectra),
                     draft=draft, n_objects=len(objects)),
             )
+
+        # Observation overview snapshot (perf T1-5 / #501): after the
+        # observation row (pointings), targets/spectra and the deployment
+        # record are all final. Batch deploys refresh once at the end instead.
+        if not defer_rebuild:
+            refresh_observations_overview(sb)
 
         # Re-point unchanged dedup-skipped objects at this deployment — only on
         # a PUBLISHED deploy, so deployment-gated intermediates ride the current
