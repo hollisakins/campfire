@@ -32,6 +32,10 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
   // spectrum per page instead of once per consumer (#500).
   const fitsPaths = useMemo(() => spectra.map(s => s.fits_path), [spectra]);
   const fitQueries = useRedshiftFits(fitsPaths);
+  // One fixed-length dependency for the memo: the query array's length
+  // follows the object's grating count, and this component is not remounted
+  // on object navigation, so spreading it would change the deps' size.
+  const fitSignature = fitQueries.map(q => `${q.status}:${q.dataUpdatedAt}`).join('|');
 
   const gratingFits: GratingFit[] = useMemo(
     () => spectra.map((s, i) => {
@@ -62,7 +66,7 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
       };
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [spectra, redshift_auto, ...fitQueries.map(q => q.data), ...fitQueries.map(q => q.status)],
+    [spectra, redshift_auto, fitSignature],
   );
 
   const hasAnyFits = gratingFits.some(f => f.redshift !== undefined);
