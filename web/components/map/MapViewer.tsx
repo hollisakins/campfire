@@ -133,7 +133,7 @@ function leafletViewBbox(wcs: WCSParams, map: L.Map): SkyBbox | null {
 function MapEvents({ wcs, onMouseMove, onContextMenu, onMoveStart, onViewBounds }: MapEventsProps) {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  useMapEvents({
+  const map = useMapEvents({
     moveend: (e) => {
       if (!wcs) return;
       const map = e.target as L.Map;
@@ -172,6 +172,13 @@ function MapEvents({ wcs, onMouseMove, onContextMenu, onMoveStart, onViewBounds 
       onMoveStart();
     },
   });
+
+  // The initial view is established before this child mounts and fires no
+  // moveend, so report it once here — otherwise enabling the overlay right
+  // after load queries with no box (the whole field).
+  useEffect(() => {
+    if (wcs) onViewBounds(leafletViewBbox(wcs, map));
+  }, [map, wcs, onViewBounds]);
 
   return null;
 }

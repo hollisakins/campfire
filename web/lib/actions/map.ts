@@ -323,16 +323,26 @@ export async function getFilteredObjectIds(
  * Fetch all slit regions for a field, paginating to get past Supabase row limits.
  */
 export async function getFieldSlits(
-  field: string
+  field: string,
+  bbox?: SkyBbox | null,
 ): Promise<SlitRegionsResult> {
   const supabase = await createClient();
 
+  // Same optional RA/Dec box as getFieldShutters, so the legacy fallback
+  // stays viewport-scoped too (#502).
   const { data, error } = await paginateQuery<SlitRegion>(
-    () => supabase
-      .from('slit_regions')
-      .select('center_ra, center_dec, position_angle, object_id, observation, shutter_idx')
-      .eq('field', field)
-      .order('object_id'),
+    () => {
+      let q = supabase
+        .from('slit_regions')
+        .select('center_ra, center_dec, position_angle, object_id, observation, shutter_idx')
+        .eq('field', field);
+      if (bbox) {
+        q = q
+          .gte('center_ra', bbox.raMin).lte('center_ra', bbox.raMax)
+          .gte('center_dec', bbox.decMin).lte('center_dec', bbox.decMax);
+      }
+      return q.order('object_id');
+    },
     1000,
   );
 

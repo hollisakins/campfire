@@ -59,17 +59,21 @@ export function useFieldSlits(
   return useQuery<(SlitRegion | Shutter)[]>({
     queryKey: ['fieldSlits', field, fetchBbox],
     queryFn: async () => {
-      // Try shutters table first, fall back to legacy slit_regions
+      // Try shutters table first, fall back to legacy slit_regions — with the
+      // same box, so an empty viewport on a shutter-bearing field costs one
+      // small indexed query rather than the whole field's legacy slits.
       const shuttersResult = await getFieldShutters(field!, fetchBbox);
       if (shuttersResult.error) throw new Error(shuttersResult.error);
       if (shuttersResult.shutters.length > 0) return shuttersResult.shutters;
 
-      const slitsResult = await getFieldSlits(field!);
+      const slitsResult = await getFieldSlits(field!, fetchBbox);
       if (slitsResult.error) throw new Error(slitsResult.error);
       return slitsResult.slits;
     },
     enabled: !!field && enabled,
     staleTime: 10 * 60 * 1000, // 10 minutes — shutter data rarely changes
-    placeholderData: (prev) => prev, // keep the last box's shutters while the next loads
+    // Keep the last box's shutters on screen while the next box loads — but
+    // only within the same field; another field's shutters must not linger.
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === field ? prev : undefined),
   });
 }
