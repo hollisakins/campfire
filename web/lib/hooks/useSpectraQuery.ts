@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { getSpectra } from '@/lib/actions/spectra';
 import type { FilterOptions, PaginatedSpectraResult } from '@/lib/actions/spectra';
@@ -32,9 +32,37 @@ export function useSpectraQuery(params: UseSpectraQueryParams) {
   const { filters, page, pageSize, sortColumn, sortDirection, viewMode = 'objects', enabled = true } = params;
   const queryClient = useQueryClient();
 
+  // The exact total is a second full pass over the filter inside the RPC
+  // (#501), and it only depends on the filters + view, not on page or sort.
+  // Ask for it once per filter set, remember it in the query cache, and fill
+  // it back into later pages / re-sorts (which then run without the count).
+  const fetchPage = useCallback(
+    async (p: number): Promise<PaginatedSpectraResult> => {
+      const countKey = ['spectra-count', { filters, viewMode }] as const;
+      const known = queryClient.getQueryData<number>(countKey);
+      const result = await getSpectra(filters, p, pageSize, sortColumn, sortDirection, viewMode, {
+        includeCount: known === undefined,
+      });
+      if (result.total >= 0) {
+        queryClient.setQueryData(countKey, result.total);
+        return result;
+      }
+      if (known !== undefined) {
+        return {
+          ...result,
+          total: known,
+          totalPages: Math.ceil(known / pageSize),
+          isComplete: known <= pageSize,
+        };
+      }
+      return result;
+    },
+    [filters, pageSize, sortColumn, sortDirection, viewMode, queryClient],
+  );
+
   const query = useQuery<PaginatedSpectraResult>({
     queryKey: ['spectra', { filters, page, pageSize, sortColumn, sortDirection, viewMode }],
-    queryFn: () => getSpectra(filters, page, pageSize, sortColumn, sortDirection, viewMode),
+    queryFn: () => fetchPage(page),
     enabled,
     placeholderData: keepPreviousData,
   });
@@ -55,7 +83,7 @@ export function useSpectraQuery(params: UseSpectraQueryParams) {
       if (page < totalPages) {
         queryClient.prefetchQuery({
           queryKey: ['spectra', { filters, page: page + 1, pageSize, sortColumn, sortDirection, viewMode }],
-          queryFn: () => getSpectra(filters, page + 1, pageSize, sortColumn, sortDirection, viewMode),
+          queryFn: () => fetchPage(page + 1),
           staleTime: 30 * 1000, // Consider fresh for 30 seconds
         });
       }
@@ -64,14 +92,14 @@ export function useSpectraQuery(params: UseSpectraQueryParams) {
       if (page > 1) {
         queryClient.prefetchQuery({
           queryKey: ['spectra', { filters, page: page - 1, pageSize, sortColumn, sortDirection, viewMode }],
-          queryFn: () => getSpectra(filters, page - 1, pageSize, sortColumn, sortDirection, viewMode),
+          queryFn: () => fetchPage(page - 1),
           staleTime: 30 * 1000,
         });
       }
     });
 
     return cancelIdle;
-  }, [query.data, query.isFetching, page, pageSize, filters, sortColumn, sortDirection, viewMode, enabled, queryClient]);
+  }, [query.data, query.isFetching, page, pageSize, filters, sortColumn, sortDirection, viewMode, enabled, queryClient, fetchPage]);
 
   return query;
 }

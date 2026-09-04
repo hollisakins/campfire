@@ -53,6 +53,7 @@ from campfire.deploy.supabase import (
     recompute_target_aggregates,
     refresh_filter_options,
     refresh_programs_overview,
+    refresh_observations_overview,
     update_latest_deployment,
     update_observation_pointings,
     upsert_observation,
@@ -866,6 +867,7 @@ def deploy_observation(
             print()
             refresh_filter_options(sb)
             refresh_programs_overview(sb)
+            refresh_observations_overview(sb)
 
             # Photometry: cross-match the field's catalog and upsert rows
             # for objects touched by reconcile. Skipped silently if no
@@ -1162,6 +1164,7 @@ def deploy_zfit(
 
     refresh_filter_options(sb)
     refresh_programs_overview(sb)
+    refresh_observations_overview(sb)
     print(f"Deployed {len(zfit_paths)} zfit files, updated {n} objects")
 
 
