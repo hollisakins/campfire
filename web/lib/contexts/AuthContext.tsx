@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/client';
 import { UserProfile } from '@/lib/types';
@@ -45,7 +45,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [needsAccessCode, setNeedsAccessCode] = useState(false);
   const [programAccess, setProgramAccess] = useState<ProgramAccessInfo | null>(null);
 
+  // Module singleton (lib/supabase/client.ts) — stable across renders.
   const supabase = createClient();
+  // The user id whose profile was last fetched (or is in flight). The boot
+  // chain used to run twice per page load — `getSession().then` AND the
+  // `INITIAL_SESSION` event `onAuthStateChange` emits synchronously on
+  // subscribe — each doing user_profiles + program-access, and every hook
+  // gated on `!loading && user` waited for both (#499). Now `INITIAL_SESSION`
+  // is ignored and any event for the same user id is a no-op; TOKEN_REFRESHED
+  // therefore no longer re-reads the profile hourly either.
+  const profileUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     // Get initial session
@@ -62,12 +71,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Listen for auth changes
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'INITIAL_SESSION') return; // handled by getSession() above
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchUserProfile(session.user.id);
+        if (event === 'USER_UPDATED' || session.user.id !== profileUserIdRef.current) {
+          fetchUserProfile(session.user.id);
+        }
       } else {
+        profileUserIdRef.current = null;
         setUserProfile(null);
         setLoading(false);
       }
@@ -77,6 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const fetchUserProfile = async (userId: string) => {
+    profileUserIdRef.current = userId;
     try {
       const { data, error } = await supabase
         .from('user_profiles')
@@ -106,8 +120,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // Check program access after fetching profile
-      await fetchProgramAccess();
+      // Program access only drives the access-code prompt (needsAccessCode /
+      // programAccess); no science query waits on it. Resolve it in the
+      // background so `loading` clears — and the list/object queries start —
+      // as soon as the session and profile are known (#499).
+      void fetchProgramAccess();
     } catch (error) {
       console.error('Error fetching user profile:', error);
       setUserProfile(null);
@@ -214,6 +231,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     await supabase.auth.signOut();
+    profileUserIdRef.current = null;
     setNeedsProfileSetup(false);
     setNeedsAccessCode(false);
     setProgramAccess(null);
