@@ -20,7 +20,9 @@
 --   2. get_objects_near — new: k nearest visible objects to a point (box on
 --      the (ra, dec) index + Haversine), for the object page's Nearby card
 --      and the inspection overlay, replacing a 33-parameter list-RPC cone
---      search. SECURITY INVOKER; RLS on objects gates rows.
+--      search. SECURITY INVOKER; RLS on objects gates rows; gratings and
+--      n_spectra come from object_scoped_aggregates() so a partial-access or
+--      share-link viewer never sees hidden members' gratings.
 
 -- =============================================================================
 -- get_adjacent_objects
@@ -335,6 +337,12 @@ GRANT EXECUTE ON FUNCTION public.get_adjacent_objects TO service_role;
 -- rows; p_program_slugs is the caller's accessible set (accessible_program_slugs)
 -- passed as a parameter so the planner sees an array, not a per-row function
 -- call. No RA-wrap handling, as in the rest of the coordinate RPCs.
+--
+-- gratings / n_spectra come from object_scoped_aggregates() for the k rows
+-- returned, not from the objects columns: those are deploy-time aggregates
+-- over EVERY member, unpublished and inaccessible programs included, and the
+-- inspection preview renders the gratings (#488 invariants; the list RPC
+-- scopes them the same way).
 CREATE OR REPLACE FUNCTION public.get_objects_near(
   p_ra DOUBLE PRECISION,
   p_dec DOUBLE PRECISION,
@@ -357,28 +365,37 @@ RETURNS TABLE(
   distance DOUBLE PRECISION
 )
 LANGUAGE sql STABLE AS $$
-  SELECT o.id, o.object_id, o.field, o.ra, o.dec,
-         o.redshift::DOUBLE PRECISION, o.redshift_quality, o.gratings, o.n_spectra,
-         2 * DEGREES(ASIN(SQRT(
-           POWER(SIN(RADIANS(o.dec - p_dec) / 2), 2) +
-           COS(RADIANS(p_dec)) * COS(RADIANS(o.dec)) *
-           POWER(SIN(RADIANS(o.ra - p_ra) / 2), 2)
-         ))) AS distance
-  FROM objects o
-  WHERE o.programs && p_program_slugs
-    AND o.is_active = true
-    AND (p_include_unpublished OR o.has_published_spectrum)
-    AND o.dec BETWEEN p_dec - p_radius_degrees AND p_dec + p_radius_degrees
-    AND o.ra BETWEEN p_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_dec)), 1e-6)
-                 AND p_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_dec)), 1e-6)
-    AND 2 * DEGREES(ASIN(SQRT(
-          POWER(SIN(RADIANS(o.dec - p_dec) / 2), 2) +
-          COS(RADIANS(p_dec)) * COS(RADIANS(o.dec)) *
-          POWER(SIN(RADIANS(o.ra - p_ra) / 2), 2)
-        ))) <= p_radius_degrees
-    AND (p_exclude_object_id IS NULL OR o.object_id <> p_exclude_object_id)
-  ORDER BY distance ASC, o.object_id ASC
-  LIMIT LEAST(GREATEST(COALESCE(p_limit, 10), 1), 100);
+  WITH near AS (
+    SELECT o.id, o.object_id, o.field, o.ra, o.dec,
+           o.redshift::DOUBLE PRECISION AS redshift, o.redshift_quality,
+           2 * DEGREES(ASIN(SQRT(
+             POWER(SIN(RADIANS(o.dec - p_dec) / 2), 2) +
+             COS(RADIANS(p_dec)) * COS(RADIANS(o.dec)) *
+             POWER(SIN(RADIANS(o.ra - p_ra) / 2), 2)
+           ))) AS distance
+    FROM objects o
+    WHERE o.programs && p_program_slugs
+      AND o.is_active = true
+      AND (p_include_unpublished OR o.has_published_spectrum)
+      AND o.dec BETWEEN p_dec - p_radius_degrees AND p_dec + p_radius_degrees
+      AND o.ra BETWEEN p_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_dec)), 1e-6)
+                   AND p_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_dec)), 1e-6)
+      AND 2 * DEGREES(ASIN(SQRT(
+            POWER(SIN(RADIANS(o.dec - p_dec) / 2), 2) +
+            COS(RADIANS(p_dec)) * COS(RADIANS(o.dec)) *
+            POWER(SIN(RADIANS(o.ra - p_ra) / 2), 2)
+          ))) <= p_radius_degrees
+      AND (p_exclude_object_id IS NULL OR o.object_id <> p_exclude_object_id)
+    ORDER BY distance ASC, o.object_id ASC
+    LIMIT LEAST(GREATEST(COALESCE(p_limit, 10), 1), 100)
+  )
+  SELECT n.id, n.object_id, n.field, n.ra, n.dec, n.redshift, n.redshift_quality,
+         COALESCE(sa.gratings, '{}'::TEXT[]) AS gratings,
+         COALESCE(sa.n_spectra, 0) AS n_spectra,
+         n.distance
+  FROM near n
+  LEFT JOIN LATERAL public.object_scoped_aggregates(n.id, p_program_slugs, p_include_unpublished) sa ON true
+  ORDER BY n.distance ASC, n.object_id ASC;
 $$;
 GRANT EXECUTE ON FUNCTION public.get_objects_near TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_objects_near TO service_role;
