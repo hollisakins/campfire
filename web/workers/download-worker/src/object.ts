@@ -24,6 +24,14 @@
  * upstream url churns (SigV4 date + expiry); the app signs it on a fixed time
  * window so the whole `/o/` url is stable long enough for the browser cache.
  *
+ * Known window: the upstream path is mutable, and a url minted before an
+ * in-place overwrite stays valid for up to two presign windows (12 h). A
+ * cache MISS on such a url in that window stores the NEW bytes under the OLD
+ * hash — never older bytes than the product's current ones, but a mixed pair
+ * (e.g. a 1-D sidecar and full JSON from different deploys) is possible for
+ * those 12 h. The Worker cannot check a sha256 within its CPU budget; the
+ * app's registry memo (60 s) bounds how long old hashes are still minted.
+ *
  * CORS is `*`: the token IS the authorization (no cookies ride along), and a
  * fetch that reached here via a cross-origin redirect carries `Origin: null`,
  * which only `*` satisfies.

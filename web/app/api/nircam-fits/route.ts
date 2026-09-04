@@ -62,8 +62,10 @@ export async function GET(request: NextRequest) {
 
   const rangeHeader = request.headers.get('range'); // e.g. "bytes=40320-16817535"
   const resolve = request.nextUrl.searchParams.get('resolve') === '1';
+  // Browser-cached beyond a session, so Vary: Cookie — sign-out does not
+  // clear the HTTP cache and this answer names admin-only content (D-C).
   const resolveJson = (url: string | null) =>
-    NextResponse.json({ url }, { headers: { 'Cache-Control': 'private, max-age=3600' } });
+    NextResponse.json({ url }, { headers: { 'Cache-Control': 'private, max-age=3600', Vary: 'Cookie' } });
 
   // ---- local-filesystem fast path (dev/PoC) --------------------------------
   const localRoot = process.env.CAMPFIRE_LOCAL_DATA_ROOT;

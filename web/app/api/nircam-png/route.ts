@@ -60,11 +60,13 @@ export async function GET(request: NextRequest) {
 
   if (request.nextUrl.searchParams.get('resolve') === '1') {
     // A front url is stable for at least one presign window (6 h), so the
-    // browser may keep this answer for an hour.
+    // browser may keep this answer for an hour — with Vary: Cookie, since
+    // sign-out does not clear the HTTP cache and this names admin-only
+    // content (D-C).
     const url = await frontUrlFor(key);
     return NextResponse.json(
       { url, kind },
-      { headers: { 'Cache-Control': 'private, max-age=3600' } },
+      { headers: { 'Cache-Control': 'private, max-age=3600', Vary: 'Cookie' } },
     );
   }
 

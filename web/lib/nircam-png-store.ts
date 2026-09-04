@@ -398,7 +398,12 @@ export async function startPngWarm(ids: number[]): Promise<PngWarmResult | null>
         }
         const resolved = (await res.json()) as { url: string | null; kind: 'full' | 'preview' };
         const kind = resolved.kind === 'preview' ? 'preview' : 'full';
-        const bytesRes = await fetch(resolved.url ?? `/api/nircam-png?id=${id}`, { signal: controller.signal });
+        let bytesRes = await fetch(resolved.url ?? `/api/nircam-png?id=${id}`, { signal: controller.signal });
+        if (!bytesRes.ok && resolved.url) {
+          // The front answered but not with bytes (misconfigured or mid-
+          // cutover): the same-origin proxy still streams them.
+          bytesRes = await fetch(`/api/nircam-png?id=${id}`, { signal: controller.signal });
+        }
         if (!bytesRes.ok) {
           if (bytesRes.status !== 404) progress.failed++;
           progress.done++;

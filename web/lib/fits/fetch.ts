@@ -77,9 +77,24 @@ export async function resolveFitsSource(key: string, signal?: AbortSignal): Prom
   }
 }
 
+/** Drop the memoized source that resolved to `url`, so the next resolve
+ * re-asks the app instead of replaying a front url that stopped answering. */
+function forgetResolvedSource(url: string): void {
+  for (const [key, entry] of resolvedSources) {
+    if (entry.url === url) resolvedSources.delete(key);
+  }
+}
+
 async function fetchRange(url: string, start: number, end: number, signal?: AbortSignal): Promise<ArrayBuffer> {
-  const resp = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal });
+  let resp: Response;
+  try {
+    resp = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal });
+  } catch (err) {
+    if (!signal?.aborted) forgetResolvedSource(url);
+    throw err;
+  }
   if (!(resp.status === 206 || resp.status === 200)) {
+    forgetResolvedSource(url);
     throw new Error(`FITS range fetch failed: HTTP ${resp.status} for bytes ${start}-${end}`);
   }
   return resp.arrayBuffer();
