@@ -115,6 +115,17 @@ Published campfire-download (X.XX sec)
 Current Deployment ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
+## Step 7b: Enable the Delivery Front in Vercel
+
+Once the deployed Worker carries `/o/` (perf T2-D1, #507), set
+`CDN_FRONT_URL=https://campfire-download.hollisakins.com` in the Vercel
+project (all environments). Until it is set, the app streams product bytes
+through its own routes; the same `WORKER_JWT_SECRET` signs both endpoints.
+
+Smoke test after setting it: on an admin NIRCam exposure page, the Network
+tab shows `campfire-download.hollisakins.com/o/...` requests answering with
+`X-Cache: MISS` then `HIT` on reload.
+
 ## Step 8: Smoke-Test the Proxy
 
 The Worker has no R2 binding — it proxies presigned URLs. Confirm it's up and

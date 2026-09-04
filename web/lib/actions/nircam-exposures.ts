@@ -5,6 +5,7 @@ import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getS3ClientForBackend, getBucketNameForBackend, type DataBackend } from '@/lib/storage';
 import { filenameSearchPattern } from '@/lib/admin/exposure-search';
+import { frontUrlsFor } from '@/lib/server/cdn-front';
 import type { NircamExposure, MaskRegionsPayload } from '@/lib/types';
 
 export interface ExposurePngUrls {
@@ -321,12 +322,16 @@ export interface PresignExposurePngsResult {
  *
  * Keys are re-derived server-side from `nircam_exposures` under the admin's RLS
  * session, never trusted from the client, so this can't presign arbitrary
- * objects. Each object's home backend is read from the registry (defaulting
- * OSN, where canonical PNGs live — like the FITS route; deliberately NOT the
- * `OSN_READ_ENABLED`-gated dual-read helper, which would divert to R2 when the
- * flag is off, and legacy R2 rows still resolve via their `r2` registry entry).
+ * objects. Urls come from the delivery front when it is configured (perf
+ * T2-D1, #507 — content-addressed, edge-cached, stable across sessions); the
+ * front resolves registry rows through the `OSN_READ_ENABLED`-gated dual-read
+ * helper, and any key it cannot mint for (flag off, unregistered) is presigned
+ * directly here instead — home backend read from the registry, defaulting OSN
+ * where canonical PNGs live, like the FITS route — so the flag being off never
+ * diverts a PNG to R2.
  *
- * URLs live ~1h (covers a viewing session + the sibling prefetch window).
+ * Front urls live at least one 6 h presign window; direct presigns ~1h
+ * (both cover a viewing session + the sibling prefetch window).
  */
 export async function presignExposurePngs(
   ids: number[],
@@ -353,21 +358,32 @@ export async function presignExposurePngs(
     )];
     if (keys.length === 0) return { urls: out };
 
-    // Resolve each object's home backend from the registry (admin RLS sees all
-    // rows); default OSN for anything unregistered — canonical PNGs are OSN.
-    const { data: soRows } = await supabase
-      .from('storage_objects')
-      .select('storage_key, backend')
-      .eq('status', 'active')
-      .in('storage_key', keys);
-    const backendByKey = new Map(
-      (soRows ?? []).map((r) => [r.storage_key as string, r.backend as DataBackend]),
-    );
+    // Delivery front first (perf T2-D1, #507): a content-addressed url that is
+    // stable across sessions (window-signed) and edge-cached per content hash,
+    // so the ~13 re-downloads per distinct PNG the audit measured hit the
+    // cache. Keys the front cannot mint (front off, unregistered key) fall
+    // back to a direct presign below.
+    const fronted = await frontUrlsFor(keys);
+    const urlByKey = new Map<string, string>();
+    for (const [k, u] of fronted) if (u) urlByKey.set(k, u);
+    const toPresign = keys.filter((k) => !urlByKey.has(k));
+
+    // Resolve each fallback object's home backend from the registry (admin
+    // RLS sees all rows); default OSN for anything unregistered — canonical
+    // PNGs are OSN.
+    const backendByKey = new Map<string, DataBackend>();
+    if (toPresign.length > 0) {
+      const { data: soRows } = await supabase
+        .from('storage_objects')
+        .select('storage_key, backend')
+        .eq('status', 'active')
+        .in('storage_key', toPresign);
+      for (const r of soRows ?? []) backendByKey.set(r.storage_key as string, r.backend as DataBackend);
+    }
 
     // Presign per key, resilient: one unsignable key doesn't sink the batch.
-    const urlByKey = new Map<string, string>();
     const failedKeys = new Set<string>();
-    await Promise.all(keys.map(async (k) => {
+    await Promise.all(toPresign.map(async (k) => {
       try {
         const backend: DataBackend = backendByKey.get(k) === 'r2' ? 'r2' : 'osn';
         const url = await getSignedUrl(

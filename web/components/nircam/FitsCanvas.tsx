@@ -3,7 +3,7 @@
 import React, { useEffect, useRef } from 'react';
 import {
   FitsImageViewer,
-  fetchSciImage,
+  fetchSciImage, resolveFitsSource,
   type StretchMode,
   type ColormapName,
 } from '@/lib/fits';
@@ -71,10 +71,8 @@ export default function FitsCanvas({
     const controller = new AbortController();
     (async () => {
       try {
-        const image = await fetchSciImage(
-          `/api/nircam-fits?key=${encodeURIComponent(fitsKey)}`,
-          controller.signal,
-        );
+        const source = await resolveFitsSource(fitsKey, controller.signal);
+        const image = await fetchSciImage(source, controller.signal);
         if (controller.signal.aborted) return;
         viewer.setImage(image);          // auto-ZScales
         viewer.setStretchMode(stretch);

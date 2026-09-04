@@ -3,7 +3,8 @@
  * decode it to a native-endian Float32Array — without downloading the whole
  * ~122 MB file (epic #261, N4, decision D7).
  *
- * Two HTTP range requests through the admin `/api/nircam-fits` proxy:
+ * Two HTTP range requests against the file's source url (`resolveFitsSource`:
+ * the delivery front when configured, else the admin `/api/nircam-fits` proxy):
  *   1. the first ~64 KB → walk the HDU header chain (PRIMARY → SCI) to learn
  *      SCI's dimensions and its data-block byte offset;
  *   2. the SCI data block itself (2048² × 4 B ≈ 16 MB).
@@ -46,6 +47,35 @@ const MAX_S2D_HEADER_BYTES = 16 * 1024 * 1024;
 /** Initial header-window size; grown on IncompleteHeaderError (large PRIMARY headers). */
 const INITIAL_HEADER_BYTES = 64 * 1024;
 const MAX_HEADER_BYTES = 1024 * 1024;
+
+/** Resolved source urls per storage key. A front url is stable for at least
+ * one presign window (6 h); an hour here keeps a triage session on one url
+ * without re-asking the app for every nod cell that shares an exposure. */
+const resolvedSources = new Map<string, { url: string; at: number }>();
+const RESOLVED_SOURCE_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * The url to range-fetch a canonical FITS product from. Asks
+ * `/api/nircam-fits?key=…&resolve=1` for a delivery-front url (perf T2-D1,
+ * #507); when the front is off, the file is local, or the resolve fails, the
+ * same-origin proxy url is returned and the proxy streams the ranges.
+ */
+export async function resolveFitsSource(key: string, signal?: AbortSignal): Promise<string> {
+  const proxyUrl = `/api/nircam-fits?key=${encodeURIComponent(key)}`;
+  const hit = resolvedSources.get(key);
+  if (hit && Date.now() - hit.at < RESOLVED_SOURCE_TTL_MS) return hit.url;
+  try {
+    const res = await fetch(`${proxyUrl}&resolve=1`, { signal });
+    if (!res.ok) return proxyUrl;
+    const body = (await res.json()) as { url?: string | null };
+    const url = typeof body.url === 'string' && body.url ? body.url : proxyUrl;
+    resolvedSources.set(key, { url, at: Date.now() });
+    return url;
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    return proxyUrl;
+  }
+}
 
 async function fetchRange(url: string, start: number, end: number, signal?: AbortSignal): Promise<ArrayBuffer> {
   const resp = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal });

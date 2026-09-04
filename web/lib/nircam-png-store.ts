@@ -5,9 +5,11 @@
  *
  * IndexedDB holds one Blob per exposure — the *display byte*: the full-res
  * mask surface when the exposure has one, else the preview thumbnail. Bytes
- * come through the same-origin /api/nircam-png proxy, because OSN serves no
- * CORS headers: the presigned URLs the viewer streams into <img> cannot be
- * READ by page JavaScript (the same constraint that shaped /api/nircam-fits).
+ * come from the delivery front (a CORS-readable, content-addressed url that
+ * /api/nircam-png?resolve=1 mints) or, when the front is not configured,
+ * through the same-origin /api/nircam-png proxy — OSN itself serves no CORS
+ * headers, so a bare presigned URL cannot be READ by page JavaScript (the
+ * same constraint that shaped /api/nircam-fits).
  * At render time the detail page prefers a stored blob URL over a presigned
  * URL, so a warmed exposure paints with zero network wait — and keeps
  * painting long after its presigned URL would have expired.
@@ -383,15 +385,27 @@ export async function startPngWarm(ids: number[]): Promise<PngWarmResult | null>
       if (idx >= todo.length) return;
       const id = todo[idx];
       try {
-        const res = await fetch(`/api/nircam-png?id=${id}`, { signal: controller.signal });
+        // Resolve first: the route names the byte (full | preview) and, when
+        // the delivery front is configured, a content-addressed url the
+        // browser can read directly (perf T2-D1, #507). Otherwise the bytes
+        // stream through the same route.
+        const res = await fetch(`/api/nircam-png?id=${id}&resolve=1`, { signal: controller.signal });
         if (!res.ok) {
           if (res.status !== 404) progress.failed++;
           progress.done++;
           progressed();
           continue;
         }
-        const kind = res.headers.get('x-png-kind') === 'preview' ? 'preview' : 'full';
-        const blob = await res.blob();
+        const resolved = (await res.json()) as { url: string | null; kind: 'full' | 'preview' };
+        const kind = resolved.kind === 'preview' ? 'preview' : 'full';
+        const bytesRes = await fetch(resolved.url ?? `/api/nircam-png?id=${id}`, { signal: controller.signal });
+        if (!bytesRes.ok) {
+          if (bytesRes.status !== 404) progress.failed++;
+          progress.done++;
+          progressed();
+          continue;
+        }
+        const blob = await bytesRes.blob();
         const storedAt = Date.now();
         await putRecord({ id, kind, bytes: blob.size, storedAt, blob });
         dropMemEntry(id); // replace a stale/expired leftover, if any
