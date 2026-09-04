@@ -51,7 +51,7 @@ async function computeAssetVersions(): Promise<AssetVersions> {
     supabase.from('map_layers').select('field, filter, tile_version'),
     supabase
       .from('fitsgl_datasets')
-      .select('field, prefix, deployed_at, is_default')
+      .select('field, prefix, deployed_at, source_hashes, is_default')
       .eq('kind', 'field'),
   ]);
 
@@ -72,7 +72,11 @@ async function computeAssetVersions(): Promise<AssetVersions> {
   }
   for (const [field, rows] of byField) {
     const ds = rows!.find((r) => r.is_default) ?? rows![0];
-    push(field, `fitsgl:${ds.prefix}:${ds.deployed_at}`);
+    // prefix is the upsert's conflict target and deployed_at is never
+    // rewritten, so neither changes on a re-deploy; source_hashes (the
+    // backing mosaics' content hashes) is rewritten on every deploy and is
+    // what actually tracks the pyramid's contents.
+    push(field, `fitsgl:${ds.prefix}:${ds.deployed_at}:${JSON.stringify(ds.source_hashes ?? null)}`);
   }
 
   const versions: Record<string, string> = {};
