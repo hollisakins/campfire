@@ -132,6 +132,12 @@ function leafletViewBbox(wcs: WCSParams, map: L.Map): SkyBbox {
 
 function MapEvents({ wcs, onMouseMove, onContextMenu, onMoveStart, onViewBounds }: MapEventsProps) {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // The debounced body reads map.getBounds(); a field switch remounts the
+  // MapContainer (keyed on field/layer) and Leaflet tears the instance down,
+  // so a timer left over from a pan just before the switch must not fire.
+  useEffect(() => () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+  }, []);
 
   const map = useMapEvents({
     moveend: (e) => {
