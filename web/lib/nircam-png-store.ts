@@ -398,7 +398,10 @@ export async function startPngWarm(ids: number[]): Promise<PngWarmResult | null>
         }
         const resolved = (await res.json()) as { url: string | null; kind: 'full' | 'preview' };
         const kind = resolved.kind === 'preview' ? 'preview' : 'full';
-        let bytesRes = await fetch(resolved.url ?? `/api/nircam-png?id=${id}`, { signal: controller.signal });
+        // `no-store`: the front answers with a day-long Cache-Control, and the
+        // bytes go into IndexedDB below — a second multi-GB copy in the HTTP
+        // cache helps nobody (the same reason the proxy route is no-store).
+        let bytesRes = await fetch(resolved.url ?? `/api/nircam-png?id=${id}`, { signal: controller.signal, cache: 'no-store' });
         if (!bytesRes.ok && resolved.url) {
           // The front answered but not with bytes (misconfigured or mid-
           // cutover): the same-origin proxy still streams them.

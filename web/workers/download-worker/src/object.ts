@@ -16,7 +16,11 @@
  *   - otherwise fetches the presigned upstream (host-allowlisted, redirects
  *     refused, path must name the token's key), streams it back with the
  *     upstream status, and — for full-object 200s — stores a copy under the
- *     (key, hash) cache key in the background.
+ *     (key, hash) cache key in the background. A Range or HEAD miss streams
+ *     the partial answer through untouched and fills the slot with a
+ *     separate full-object GET in the background (deduplicated per isolate),
+ *     so consumers that only ever range-fetch (the in-browser FITS reader:
+ *     header block, then the SCI block) still hit from the second request on.
  *
  * Products are immutable per `storage_objects.content_hash`, NOT per path:
  * re-deploys overwrite in place and register a new hash, so the hash in the
@@ -177,6 +181,34 @@ function serve(src: Response, key: string, xcache: 'HIT' | 'MISS', method: strin
   return new Response(src.body, { status: src.status, headers });
 }
 
+/** Full-object fills in flight on this isolate, keyed by cache key, so the
+ * two Range requests a FITS view issues against a cold slot cost one
+ * upstream GET, not two. */
+const fills = new Map<string, Promise<void>>();
+
+/** Fetch the whole object and store it under the (key, hash) slot. Never
+ * throws; a failed fill just leaves the slot cold for the next miss. */
+function fillInBackground(cache: Cache, cacheKey: string, key: string, upstream: string): Promise<void> {
+  const inflight = fills.get(cacheKey);
+  if (inflight) return inflight;
+  const fill = (async () => {
+    try {
+      const full = await fetch(upstream, { redirect: 'manual' });
+      if (full.status !== 200 || !full.body) {
+        full.body?.cancel().catch(() => {});
+        return;
+      }
+      await cache.put(new Request(cacheKey), new Response(full.body, { status: 200, headers: storedHeaders(full.headers, key) }));
+    } catch (err) {
+      console.error('background fill failed for', key, err);
+    } finally {
+      fills.delete(cacheKey);
+    }
+  })();
+  fills.set(cacheKey, fill);
+  return fill;
+}
+
 /** Headers for the stored copy: only what a later serve re-derives from. */
 function storedHeaders(src: Headers, key: string): Headers {
   const headers = new Headers();
@@ -260,8 +292,10 @@ export async function handleObject(
   }
 
   // Partial answers are streamed through, never stored: only a complete 200
-  // may fill the (key, hash) slot.
+  // may fill the (key, hash) slot — so a Range or HEAD miss fills it with
+  // its own full-object GET in the background.
   if (range || up.status !== 200 || !cache || request.method === 'HEAD') {
+    if (cache && ctx) ctx.waitUntil(fillInBackground(cache, cacheKey, key, upstream));
     return serve(up, key, 'MISS', request.method);
   }
 

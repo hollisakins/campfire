@@ -32,7 +32,9 @@ const FITS_ALLOWED_PRODUCTS = new Set([
  *
  *   - `resolve=1` answers JSON `{ url }`: a content-addressed url on the
  *     delivery front (perf T2-D1, #507) that the browser range-fetches
- *     directly — CORS-readable, 206-capable, edge-cached per content hash.
+ *     directly — CORS-readable, 206-capable, edge-cached per content hash
+ *     (a Range miss streams through and the Worker fills the slot with its
+ *     own full GET in the background, so the second view of a file hits).
  *     `url` is null when the front is not configured or the file is served
  *     from the local filesystem (below); the client then range-fetches this
  *     route without `resolve`.

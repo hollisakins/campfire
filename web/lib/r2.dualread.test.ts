@@ -44,12 +44,27 @@ vi.mock('@aws-sdk/client-s3', () => ({
     }
   },
 }));
+let signCalls: Array<{ expiresIn?: number; signingDate?: Date }> = [];
 vi.mock('@aws-sdk/s3-request-presigner', () => ({
-  getSignedUrl: (_client: unknown, command: { input: { Bucket: string; Key: string } }) =>
-    Promise.resolve(`signed://${command.input.Bucket}/${command.input.Key}`),
+  getSignedUrl: (
+    _client: unknown,
+    command: { input: { Bucket: string; Key: string } },
+    options?: { expiresIn?: number; signingDate?: Date },
+  ) => {
+    signCalls.push({ expiresIn: options?.expiresIn, signingDate: options?.signingDate });
+    const date = options?.signingDate ? `?X-Amz-Date=${options.signingDate.toISOString()}` : '';
+    return Promise.resolve(`signed://${command.input.Bucket}/${command.input.Key}${date}`);
+  },
 }));
 
-import { resolveObjectBackends, generateDownloadUrls, _resetRegistryMemo, stablePresignWindow, STABLE_PRESIGN_WINDOW_SECONDS } from './r2';
+import {
+  resolveObjectBackends,
+  generateDownloadUrls,
+  presignResolvedStable,
+  _resetRegistryMemo,
+  stablePresignWindow,
+  STABLE_PRESIGN_WINDOW_SECONDS,
+} from './r2';
 
 const LEGACY = 'spectra/ember_egs_p1/ember_egs_p1_101_spec.fits';
 const CANON = 'data/products/nirspec/ember_egs_p1/ember_egs_p1_101_spec.fits';
@@ -58,6 +73,7 @@ beforeEach(() => {
   dbRows = [];
   dbError = null;
   dbCalls = 0;
+  signCalls = [];
   _resetRegistryMemo();
   vi.unstubAllEnvs();
 });
@@ -207,5 +223,34 @@ describe('stablePresignWindow', () => {
     const base = Math.floor(1_757_000_123_000 / w) * w;
     expect(stablePresignWindow(base + 1000).start).toBe(stablePresignWindow(base + w - 1000).start);
     expect(stablePresignWindow(base + w).start).not.toBe(stablePresignWindow(base).start);
+  });
+});
+
+describe('presignResolvedStable', () => {
+  it('signs on the window start with a two-window validity, so mints within a window are byte-identical', async () => {
+    const w = STABLE_PRESIGN_WINDOW_SECONDS * 1000;
+    const base = Math.floor(1_757_000_123_000 / w) * w;
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(base + 1000);
+      const a = await presignResolvedStable({ backend: 'osn', key: CANON, contentHash: 'sha256:aa' });
+      vi.setSystemTime(base + w - 1000);
+      const b = await presignResolvedStable({ backend: 'osn', key: CANON, contentHash: 'sha256:aa' });
+      expect(a.url).toBe(b.url);
+      expect(a.exp).toBe(b.exp);
+      expect(a.exp).toBe(base / 1000 + 2 * STABLE_PRESIGN_WINDOW_SECONDS);
+      expect(signCalls).toHaveLength(2);
+      for (const call of signCalls) {
+        expect(call.signingDate?.getTime()).toBe(base);
+        expect(call.expiresIn).toBe(2 * STABLE_PRESIGN_WINDOW_SECONDS);
+      }
+
+      // The next window is a different url: the signing date moved.
+      vi.setSystemTime(base + w + 1000);
+      const c = await presignResolvedStable({ backend: 'osn', key: CANON, contentHash: 'sha256:aa' });
+      expect(c.url).not.toBe(a.url);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

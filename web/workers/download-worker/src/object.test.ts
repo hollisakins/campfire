@@ -155,7 +155,7 @@ describe('/o/ handler', () => {
     expect(fetched).toHaveLength(0);
   });
 
-  it('forwards Range upstream on a miss and returns the 206 untouched (not cached)', async () => {
+  it('forwards Range upstream on a miss and returns the 206 untouched (the partial is never stored)', async () => {
     const { cache, store } = fakeCache();
     vi.stubGlobal('caches', { default: cache });
     const res = await worker.fetch(new Request(await objectUrl(), { headers: { Range: 'bytes=2-4' } }), ENV);
@@ -164,6 +164,44 @@ describe('/o/ handler', () => {
     expect(res.headers.get('Content-Range')).toBe('bytes 2-4/10');
     expect(res.headers.get('Accept-Ranges')).toBe('bytes');
     expect(store.size).toBe(0);
+  });
+
+  it('a Range miss fills the slot with one background full GET, so the next Range hits', async () => {
+    const { cache, store } = fakeCache();
+    vi.stubGlobal('caches', { default: cache });
+    const pending: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (p: Promise<unknown>) => { pending.push(p); } };
+    // Hold the full-object upstream answer until released, the way a 16 MB
+    // fill outlives the Range answers that triggered it.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const upstream = globalThis.fetch;
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      if (!(init?.headers as Record<string, string> | undefined)?.Range) await gate;
+      return upstream(input, init);
+    });
+
+    // The FITS reader's shape: two Range requests against a cold slot.
+    const head = await worker.fetch(new Request(await objectUrl(), { headers: { Range: 'bytes=0-1' } }), ENV, ctx as never);
+    const data = await worker.fetch(new Request(await objectUrl(), { headers: { Range: 'bytes=2-9' } }), ENV, ctx as never);
+    expect(head.headers.get('X-Cache')).toBe('MISS');
+    expect(data.headers.get('X-Cache')).toBe('MISS');
+    expect(await head.text()).toBe('AB');
+    expect(await data.text()).toBe('CDEFGHIJ');
+    expect(store.size).toBe(0);
+    release();
+    await Promise.all(pending);
+
+    // Two ranged upstream GETs plus exactly one full fill (deduplicated).
+    const full = fetched.filter((f) => !(f.init?.headers as Record<string, string> | undefined)?.Range);
+    expect(full).toHaveLength(1);
+    expect(store.size).toBe(1);
+
+    const again = await worker.fetch(new Request(await objectUrl(), { headers: { Range: 'bytes=2-4' } }), ENV, ctx as never);
+    expect(again.status).toBe(206);
+    expect(again.headers.get('X-Cache')).toBe('HIT');
+    expect(await again.text()).toBe('CDE');
+    expect(fetched).toHaveLength(3);
   });
 
   it('stores a full 200 under (key, hash) and answers later GETs and Ranges from the cache', async () => {

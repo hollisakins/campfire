@@ -123,8 +123,11 @@ project (all environments). Until it is set, the app streams product bytes
 through its own routes; the same `WORKER_JWT_SECRET` signs both endpoints.
 
 Smoke test after setting it: on an admin NIRCam exposure page, the Network
-tab shows `campfire-download.hollisakins.com/o/...` requests answering with
-`X-Cache: MISS` then `HIT` on reload.
+tab shows `campfire-download.hollisakins.com/o/...` Range requests answering
+`X-Cache: MISS` (both the header and the SCI block, since the partial answers
+are streamed through while the Worker fills the slot with its own full GET in
+the background), then `HIT` on reload once that fill has landed — a few
+seconds for a 16 MB exposure.
 
 ## Step 8: Smoke-Test the Proxy
 
