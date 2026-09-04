@@ -5,6 +5,9 @@ import { resolveFieldScienceSource, UnknownBandError } from '@/lib/cutout/source
 import { buildFitsCutout, CutoutTooLargeError } from '@/lib/cutout/science';
 import { resolveRequestUser, parseScienceParams, safeToken } from '../science-params';
 
+// Multi-band tile decode on a cold instance can exceed a short function budget (#497).
+export const maxDuration = 60;
+
 /**
  * GET /api/v1/cutout/fits?field=<f>&ra=<deg>&dec=<deg>&fov=<arcsec>
  *                        [&bands=f115w,f277w,f444w][&scale=<arcsec/px>]

@@ -17,6 +17,13 @@ export interface SpectrumData {
   profile_pix: number[];
 }
 
+/** PostgREST embeds a to-one join as an object, or an array depending on
+ *  cardinality; read the program slug from either shape. */
+function embeddedProgramSlug(row: { targets?: { program_slug: string } | { program_slug: string }[] | null }): string | undefined {
+  const joined = row.targets;
+  return Array.isArray(joined) ? joined[0]?.program_slug : joined?.program_slug ?? undefined;
+}
+
 /**
  * GET /api/v1/spectrum?spectrum_id=X
  * GET /api/v1/spectrum?path=<fits_path>
@@ -46,8 +53,26 @@ export async function GET(request: NextRequest) {
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Get accessible programs for this user
-    const accessibleProgramSlugs = await getAccessiblePrograms(userId);
+    // Parse query parameters
+    const searchParams = request.nextUrl.searchParams;
+    const spectrumId = searchParams.get('spectrum_id');
+    const pathParam = searchParams.get('path');
+
+    if (!spectrumId && !pathParam) {
+      return NextResponse.json(
+        { error: 'Missing required parameters: either spectrum_id or path' },
+        { status: 400 }
+      );
+    }
+
+    // Get accessible programs for this user. Service-role reads bypass RLS,
+    // so unpublished spectra are gated here: a non-admin must never receive
+    // flux/wave/2D JSON for a draft/revoked spectrum, whether resolved by
+    // spectrum_id or by fits_path. No-op in B1.
+    const [accessibleProgramSlugs, isAdmin] = await Promise.all([
+      getAccessiblePrograms(userId),
+      isAdminUser(userId),
+    ]);
 
     if (accessibleProgramSlugs.length === 0) {
       return NextResponse.json(
@@ -56,86 +81,36 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Service-role read bypasses RLS, so gate unpublished spectra here: a
-    // non-admin must never receive flux/wave/2D JSON for an draft/revoked
-    // spectrum, whether resolved by spectrum_id or by fits_path. No-op in B1.
-    const isAdmin = await isAdminUser(userId);
-
-    // Parse query parameters
-    const searchParams = request.nextUrl.searchParams;
-    const spectrumId = searchParams.get('spectrum_id');
-    let fitsPath = searchParams.get('path');
-
-    // If spectrum_id provided, look up the fits_path
-    if (spectrumId && !fitsPath) {
-      let spectrumRowQuery = supabase
-        .from('spectra')
-        .select('fits_path, target_id, targets!inner(program_slug)')
-        .eq('spectrum_id', spectrumId);
-      if (!isAdmin) {
-        spectrumRowQuery = spectrumRowQuery.eq('deploy_status', 'published');
-      }
-      const { data: spectrumRow, error: spectrumRowError } = await spectrumRowQuery.single();
-
-      if (spectrumRowError || !spectrumRow) {
-        return NextResponse.json(
-          { error: `No spectrum found for ${spectrumId}` },
-          { status: 404 }
-        );
-      }
-
-      // PostgREST embeds the joined row as an object (or array depending on
-      // cardinality); handle both shapes defensively.
-      const joined = (spectrumRow as { targets?: { program_slug: string } | { program_slug: string }[] }).targets;
-      const programSlug = Array.isArray(joined) ? joined[0]?.program_slug : joined?.program_slug;
-
-      if (!programSlug || !accessibleProgramSlugs.includes(programSlug)) {
-        return NextResponse.json(
-          { error: 'Access denied to this spectrum' },
-          { status: 403 }
-        );
-      }
-
-      fitsPath = spectrumRow.fits_path;
-    }
-
-    if (!fitsPath) {
-      return NextResponse.json(
-        { error: 'Missing required parameters: either spectrum_id or path' },
-        { status: 400 }
-      );
-    }
-
-    // Verify user has access to this file via the spectra table
-    let spectrumQuery = supabase
+    // One lookup resolves the row, its fits_path and its program in either
+    // branch — the embedded join replaces the two follow-up queries that
+    // used to re-fetch what this row already carried (#497).
+    let rowQuery = supabase
       .from('spectra')
-      .select('id, target_id')
-      .eq('fits_path', fitsPath);
+      .select('fits_path, targets!inner(program_slug)');
+    rowQuery = pathParam
+      ? rowQuery.eq('fits_path', pathParam)
+      : rowQuery.eq('spectrum_id', spectrumId!);
     if (!isAdmin) {
-      spectrumQuery = spectrumQuery.eq('deploy_status', 'published');
+      rowQuery = rowQuery.eq('deploy_status', 'published');
     }
-    const { data: spectrum, error: spectrumError } = await spectrumQuery.single();
+    const { data: spectrumRow, error: spectrumRowError } = await rowQuery.single();
 
-    if (spectrumError || !spectrum) {
+    if (spectrumRowError || !spectrumRow) {
       return NextResponse.json(
-        { error: 'Spectrum not found' },
+        { error: pathParam ? 'Spectrum not found' : `No spectrum found for ${spectrumId}` },
         { status: 404 }
       );
     }
 
-    // Verify access to the target's program
-    const { data: targetData } = await supabase
-      .from('targets')
-      .select('program_slug')
-      .eq('target_id', spectrum.target_id)
-      .single();
-
-    if (!targetData || !accessibleProgramSlugs.includes(targetData.program_slug)) {
+    const programSlug = embeddedProgramSlug(spectrumRow);
+    if (!programSlug || !accessibleProgramSlugs.includes(programSlug)) {
       return NextResponse.json(
-        { error: 'Access denied' },
+        { error: 'Access denied to this spectrum' },
         { status: 403 }
       );
     }
+
+    const fitsPath = spectrumRow.fits_path;
 
     // Derive the spectrum-JSON sibling key via the shared layout contract
     const jsonPath = deriveSibling(fitsPath, 'spectrum_json');
@@ -157,7 +132,9 @@ export async function GET(request: NextRequest) {
     const data: SpectrumData = await response.json();
 
     const resp = NextResponse.json(data);
-    resp.headers.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
+    // Bearer requests bypass Vercel's shared cache; `private` states the
+    // (program-scoped) truth for the client's own cache (#497).
+    resp.headers.set('Cache-Control', 'private, max-age=86400, stale-while-revalidate=3600');
     return resp;
   } catch (error) {
     console.error('Error in API /v1/spectrum:', error);

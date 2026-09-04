@@ -240,6 +240,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
             <div className="mb-3">
               <TileThumbnailWithToggle
                 targetId={object.object_id}
+                kind="object"
                 size={600}
                 displaySize={240}
                 fov={3.2}
@@ -266,6 +267,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
           <div className="lg:hidden mb-4">
             <TileThumbnailWithToggle
               targetId={object.object_id}
+              kind="object"
               size={600}
               displaySize={200}
               fov={3.2}

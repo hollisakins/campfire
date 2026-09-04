@@ -4,9 +4,15 @@ import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { getNearbyShutters } from '@/lib/actions/map';
 import { computeShutterRects, type ShutterGeometry } from '@/lib/utils/shutter-overlay';
+import { useAssetVersion } from '@/lib/contexts/AssetVersionContext';
+
+/** Which catalog `targetId` names. Target and object ids are looked up in
+ *  different tables and are not guaranteed disjoint, so the caller must say. */
+export type TileThumbnailKind = 'object' | 'target';
 
 interface TileThumbnailProps {
   targetId: string;
+  kind: TileThumbnailKind;
   size?: number;
   /** CSS display size in px. Defaults to `size`. Use a smaller value than `size` for higher-resolution rendering. */
   displaySize?: number;
@@ -33,6 +39,7 @@ interface TileThumbnailProps {
  */
 export const TileThumbnail: React.FC<TileThumbnailProps> = ({
   targetId,
+  kind,
   size = 48,
   displaySize,
   shutters = false,
@@ -49,8 +56,12 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
   const [hasError, setHasError] = useState(false);
   const [rawShutters, setRawShutters] = useState<ShutterGeometry[]>([]);
 
-  // Cutout image URL (never includes shutters — always a clean RGB crop)
-  const src = `/api/tile-thumbnail?target_id=${encodeURIComponent(targetId)}&size=${size}&fov=${fov}`;
+  // Cutout image URL (never includes shutters — always a clean RGB crop).
+  // `v` is the field's imaging asset version: the response is browser-cached
+  // for a week, so a re-deployed field must change the URL (#497).
+  const assetVersion = useAssetVersion(field);
+  const src = `/api/tile-thumbnail?target_id=${encodeURIComponent(targetId)}&kind=${kind}&size=${size}&fov=${fov}`
+    + (assetVersion ? `&v=${assetVersion}` : '');
 
   // Fetch shutter geometry when coordinates change (not on color/visibility changes)
   const hasCoordinates = ra !== undefined && dec !== undefined && field !== undefined;

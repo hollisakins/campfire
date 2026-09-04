@@ -8,13 +8,31 @@ import {
 import { resolveFieldCutoutSource } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 
+// Tile decode + reprojection + PNG encode can exceed a short function budget
+// for a 600 px render on a cold instance (#497).
+export const maxDuration = 60;
+
+// Program-scoped, cookie-authenticated bytes: the browser may keep them for a
+// week (the URL carries the field's asset version, so a re-deploy changes it),
+// but they must never enter Vercel's shared edge cache, which serves `public`
+// responses to anyone asking for the same URL — cookie or not (#497).
+const PRIVATE_LONG = 'private, max-age=604800, stale-while-revalidate=86400';
+
+type Kind = 'object' | 'target';
+
 /**
- * GET /api/tile-thumbnail?target_id=<id>&size=<px>&fov=<arcsec>
+ * GET /api/tile-thumbnail?target_id=<id>&kind=object|target&size=<px>&fov=<arcsec>[&v=<asset version>]
  *
  * Thumbnail PNG centered on the object — a clean RGB (or single-band) cutout
  * without shutter overlays. Fields with a deployed FitsGL pyramid render
  * North-up from the FITS tiles (epic #337, Phase 5); others keep the legacy
  * PNG-tile compositing until it is retired per-field.
+ *
+ * `kind` says which catalog `target_id` names. Object and target ids live in
+ * different tables and are not guaranteed disjoint, so probing one then the
+ * other can silently render the wrong patch of sky; callers state it. A
+ * request without `kind` keeps the historical targets-then-objects probe.
+ * `v` is an opaque cache-key token (lib/asset-version.ts) and is not read.
  */
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
@@ -38,27 +56,36 @@ export async function GET(request: NextRequest) {
     });
   }
 
+  const kindParam = params.get('kind');
+  if (kindParam !== null && kindParam !== 'object' && kindParam !== 'target') {
+    return new Response(TRANSPARENT_GIF, {
+      status: 400,
+      headers: { 'Content-Type': 'image/gif' },
+    });
+  }
+  const kind = kindParam as Kind | null;
+
   const size = Math.min(600, Math.max(16, parseInt(params.get('size') || '96', 10)));
   const fov = Math.min(30, Math.max(1, parseFloat(params.get('fov') || '5')));
 
   try {
-    // Look up coordinates — try targets first, fall back to objects
+    // Look up coordinates in the table the caller named (legacy: targets, then objects)
     let obj: { ra: number; dec: number; field: string } | null = null;
 
-    const { data: target } = await supabase
-      .from('targets')
-      .select('ra, dec, field')
-      .eq('target_id', targetId)
-      .single();
-
-    if (target) {
+    if (kind !== 'object') {
+      const { data: target } = await supabase
+        .from('targets')
+        .select('ra, dec, field')
+        .eq('target_id', targetId)
+        .maybeSingle();
       obj = target;
-    } else {
+    }
+    if (!obj && kind !== 'target') {
       const { data: object } = await supabase
         .from('objects')
         .select('ra, dec, field')
         .eq('object_id', targetId)
-        .single();
+        .maybeSingle();
       obj = object;
     }
 
@@ -85,11 +112,9 @@ export async function GET(request: NextRequest) {
           status: 200,
           headers: {
             'Content-Type': 'image/png',
-            // A draft-backed render only an admin's RLS could see must never
-            // enter a shared cache keyed on the URL alone.
-            'Cache-Control': fitsglSrc.isPublic
-              ? 'public, max-age=604800, stale-while-revalidate=86400'
-              : 'private, no-store',
+            // A draft-backed render only an admin's RLS could see must not
+            // even sit in that admin's browser cache under this URL.
+            'Cache-Control': fitsglSrc.isPublic ? PRIVATE_LONG : 'private, no-store',
           },
         });
       } catch (err) {
@@ -130,7 +155,7 @@ export async function GET(request: NextRequest) {
       status: 200,
       headers: {
         'Content-Type': 'image/png',
-        'Cache-Control': 'public, max-age=604800, stale-while-revalidate=86400',
+        'Cache-Control': PRIVATE_LONG,
       },
     });
   } catch (error) {

@@ -72,5 +72,5 @@ export async function PATCH(
     );
   }
 
-  return NextResponse.json({ spectrum: updated });
+  return NextResponse.json({ spectrum: updated }, { headers: { 'Cache-Control': 'no-store' } });
 }
