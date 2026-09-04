@@ -7,7 +7,8 @@
 // TanStack queries are keyed on the FITS path, which survives the later
 // GET-route / content-addressed changes to how the bytes are served.
 
-import { useQuery, useQueries, type QueryClient } from '@tanstack/react-query';
+import { useEffect } from 'react';
+import { useQuery, useQueries, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { SpectrumData } from '@/app/api/spectrum/route';
 import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 
@@ -58,8 +59,18 @@ export function redshiftFitQueryOptions(fitsPath: string) {
   };
 }
 
+/** Trim the cache whenever `trigger` changes (a fetch landed). */
+export function useSpectrumCacheTrim(trigger: unknown): void {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    trimSpectrumCache(queryClient);
+  }, [queryClient, trigger]);
+}
+
 export function useSpectrumJson(fitsPath: string, enabled = true) {
-  return useQuery({ ...spectrumJsonQueryOptions(fitsPath), enabled });
+  const query = useQuery({ ...spectrumJsonQueryOptions(fitsPath), enabled });
+  useSpectrumCacheTrim(query.data);
+  return query;
 }
 
 export function useRedshiftFit(fitsPath: string, enabled = true) {
@@ -72,21 +83,24 @@ export function useRedshiftFits(fitsPaths: string[]) {
 }
 
 /** Cap on cached spectrum payloads (the 2-D S/N array dominates; ~0.5 MB
- *  each). An inspection session prefetches every grating of the current,
- *  next and previous object, so a sustained run would otherwise hold every
- *  spectrum visited for gcTime. Same bound the module LRU this replaced had. */
+ *  each). Browsing objects and the inspection prefetch (every grating of
+ *  the current, next and previous object) would otherwise hold every
+ *  spectrum visited for gcTime. Same bound the module LRU this replaced had;
+ *  enforced from every path that fills the cache (the hooks below and the
+ *  inspection prefetch). */
 const MAX_CACHED_SPECTRA = 24;
 
 /**
- * Drop the oldest unobserved spectrum entries beyond MAX_CACHED_SPECTRA
- * (their fit siblings go with them). Entries a mounted component is reading
- * are never evicted.
+ * Drop the oldest unobserved, settled spectrum entries beyond
+ * MAX_CACHED_SPECTRA (their fit siblings go with them). Entries a mounted
+ * component is reading, and fetches still in flight (a prefetch has no
+ * observer and dataUpdatedAt 0 until it lands), are never evicted.
  */
 export function trimSpectrumCache(queryClient: QueryClient): void {
   const cache = queryClient.getQueryCache();
   const idle = cache
     .findAll({ queryKey: ['spectrum-json'] })
-    .filter((q) => q.getObserversCount() === 0)
+    .filter((q) => q.getObserversCount() === 0 && q.state.fetchStatus === 'idle')
     .sort((a, b) => b.state.dataUpdatedAt - a.state.dataUpdatedAt);
   for (const q of idle.slice(MAX_CACHED_SPECTRA)) {
     const fitsPath = q.queryKey[1] as string;

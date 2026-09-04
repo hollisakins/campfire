@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useQueries, type UseQueryResult } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import type { SpectrumData } from '@/app/api/spectrum/route';
-import { spectrumJsonQueryOptions } from '@/lib/hooks/useSpectrumJson';
+import { spectrumJsonQueryOptions, useSpectrumCacheTrim } from '@/lib/hooks/useSpectrumJson';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import {
@@ -77,6 +77,8 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
     queries: sources.map(s => ({ ...spectrumJsonQueryOptions(s.fitsPath), enabled: s.visible })),
     combine: combineSpectrumQueries,
   });
+  // Bound the shared cache as spectra land (idle entries beyond the cap go).
+  useSpectrumCacheTrim(loadedData);
 
   const [fluxUnit, setFluxUnit] = useState<FluxUnit>(spectrumPreferences.fluxUnit);
   const [showEmissionLines, setShowEmissionLines] = useState(true);
