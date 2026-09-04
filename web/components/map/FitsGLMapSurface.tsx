@@ -48,6 +48,7 @@ import {
   type ViewerFrameInfo,
 } from '@fitsgl/core';
 import type { FitsglDataset, MapObjectMarker, SlitRegion, Shutter, SkyBbox } from '@/lib/actions/map';
+import { WHOLE_FIELD_BBOX } from '@/lib/hooks/useFieldSlits';
 import { MARKER_QUALITY_COLORS, QUALITY_LABELS } from '@/lib/types';
 import { makeFitsglWorker } from '@/lib/fits/fitsglWorker';
 import { getObservationColor } from './observation-colors';
@@ -489,9 +490,10 @@ export function FitsGLMapSurface({
             decMin: Math.min(...decs), decMax: Math.max(...decs),
           };
           const finite = [bbox.raMin, bbox.raMax, bbox.decMin, bbox.decMax].every(Number.isFinite);
-          report(finite && bbox.raMax - bbox.raMin <= 180 ? bbox : null);
+          report(finite && bbox.raMax - bbox.raMin <= 180 ? bbox : WHOLE_FIELD_BBOX);
         } else {
-          report(null);
+          // Viewer can't map the corners yet: leave the previous box alone
+          // (null would keep the shutter query disabled).
         }
       }
     }, 300);
@@ -761,7 +763,9 @@ export function FitsGLMapSurface({
               markerCount={markerCount}
               graticule={graticule}
               onToggleGraticule={setGraticule}
-              shuttersAvailable={shutters.length > 0}
+              // Field has NIRSpec objects ⇒ it has shutters; the shutter query
+              // itself only runs while the overlay is on (#502).
+              shuttersAvailable={markers.length > 0}
               showShutters={showShutters}
               onToggleShutters={onToggleShutters}
               shutterCount={shutters.length}

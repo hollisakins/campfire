@@ -5,6 +5,11 @@ import { useQuery } from '@tanstack/react-query';
 import { getFieldShutters, getFieldSlits } from '@/lib/actions/map';
 import type { SlitRegion, Shutter, SkyBbox } from '@/lib/actions/map';
 
+/** "Everything": what an engine reports when its view can't be boxed (RA
+ *  wrap, viewer not ready). Lets the query run unscoped without treating
+ *  `null` — which means "no view yet, don't fetch" — as the whole field. */
+export const WHOLE_FIELD_BBOX: SkyBbox = { raMin: 0, raMax: 360, decMin: -90, decMax: 90 };
+
 /** Pad a view box by `frac` of its size on every side, rounded so keys are stable. */
 function expand(b: SkyBbox, frac: number): SkyBbox {
   const dra = (b.raMax - b.raMin) * frac;
@@ -27,7 +32,8 @@ function contains(outer: SkyBbox, inner: SkyBbox): boolean {
  * The box to FETCH for a given VIEW box: the view padded by 50 % on each side,
  * kept while the view stays inside it, so panning within the padding and
  * zooming in never refetch; only leaving the padded box does. `null` view ⇒
- * whole field.
+ * no box yet (the query stays disabled until the engine reports one — a
+ * field switch must not fall back to fetching the whole field).
  */
 function useStickyBbox(view: SkyBbox | null): SkyBbox | null {
   const [fetchBbox, setFetchBbox] = useState<SkyBbox | null>(null);
@@ -59,18 +65,20 @@ export function useFieldSlits(
   return useQuery<(SlitRegion | Shutter)[]>({
     queryKey: ['fieldSlits', field, fetchBbox],
     queryFn: async () => {
+      // Unscoped when the engine could only report "everything".
+      const box = fetchBbox && fetchBbox.raMax - fetchBbox.raMin >= 360 ? null : fetchBbox;
       // Try shutters table first, fall back to legacy slit_regions — with the
       // same box, so an empty viewport on a shutter-bearing field costs one
       // small indexed query rather than the whole field's legacy slits.
-      const shuttersResult = await getFieldShutters(field!, fetchBbox);
+      const shuttersResult = await getFieldShutters(field!, box);
       if (shuttersResult.error) throw new Error(shuttersResult.error);
       if (shuttersResult.shutters.length > 0) return shuttersResult.shutters;
 
-      const slitsResult = await getFieldSlits(field!, fetchBbox);
+      const slitsResult = await getFieldSlits(field!, box);
       if (slitsResult.error) throw new Error(slitsResult.error);
       return slitsResult.slits;
     },
-    enabled: !!field && enabled,
+    enabled: !!field && enabled && fetchBbox !== null,
     staleTime: 10 * 60 * 1000, // 10 minutes — shutter data rarely changes
     // Keep the last box's shutters on screen while the next box loads — but
     // only within the same field; another field's shutters must not linger.

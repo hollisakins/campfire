@@ -13,7 +13,7 @@ import Link from 'next/link';
 import type { MapLayer, MapObjectMarker, FitsglDataset } from '@/lib/actions/map';
 import { FitsGLMapSurface } from './FitsGLMapSurface';
 import { useFieldObjectMarkers } from '@/lib/hooks/useFieldObjectMarkers';
-import { useFieldSlits } from '@/lib/hooks/useFieldSlits';
+import { useFieldSlits, WHOLE_FIELD_BBOX } from '@/lib/hooks/useFieldSlits';
 import type { WCSParams } from '@/lib/utils/wcs';
 import { leafletToSky, skyToLeaflet } from '@/lib/utils/wcs';
 import { QUALITY_LABELS } from '@/lib/types';
@@ -110,8 +110,8 @@ interface MapEventsProps {
   onViewBounds: (bbox: SkyBbox | null) => void;
 }
 
-/** RA/Dec box spanned by a Leaflet view, via the layer WCS (null if degenerate). */
-function leafletViewBbox(wcs: WCSParams, map: L.Map): SkyBbox | null {
+/** RA/Dec box spanned by a Leaflet view, via the layer WCS (whole field if degenerate). */
+function leafletViewBbox(wcs: WCSParams, map: L.Map): SkyBbox {
   const b = map.getBounds();
   const corners = [
     leafletToSky(wcs, b.getSouth(), b.getWest()),
@@ -125,8 +125,8 @@ function leafletViewBbox(wcs: WCSParams, map: L.Map): SkyBbox | null {
     raMin: Math.min(...ras), raMax: Math.max(...ras),
     decMin: Math.min(...decs), decMax: Math.max(...decs),
   };
-  if (![bbox.raMin, bbox.raMax, bbox.decMin, bbox.decMax].every(Number.isFinite)) return null;
-  if (bbox.raMax - bbox.raMin > 180) return null; // wrapped RA: fall back to the whole field
+  if (![bbox.raMin, bbox.raMax, bbox.decMin, bbox.decMax].every(Number.isFinite)) return WHOLE_FIELD_BBOX;
+  if (bbox.raMax - bbox.raMin > 180) return WHOLE_FIELD_BBOX; // wrapped RA: don't try to box it
   return bbox;
 }
 
@@ -283,7 +283,8 @@ export function MapViewer({
   const [showSlits, setShowSlits] = useState(false);
   const [cursorCoords, setCursorCoords] = useState<{ ra: number; dec: number } | null>(null);
   // Sky box of the current view, reported by whichever engine is mounted
-  // (debounced); null until the first move, and on a field switch.
+  // (debounced); null (= no shutter query yet) until the engine reports one,
+  // and again on a field switch so the new field is never fetched unscoped.
   const [viewBbox, setViewBbox] = useState<SkyBbox | null>(null);
   useEffect(() => { setViewBbox(null); }, [selectedField]);
 
