@@ -208,6 +208,10 @@ export async function DELETE(
       return NextResponse.json({ error: 'Failed to delete user' }, { status: 500 });
     }
 
+    // The principal may still authenticate (see the doc comment), so its
+    // memoized grants / admin flag must not outlive the rows (#505).
+    invalidateAccessContext(userId);
+
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Error:', error);

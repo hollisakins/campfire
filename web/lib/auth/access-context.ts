@@ -25,7 +25,9 @@
 // newly granted data for the window. The bearer /api/v1 routes authorize with
 // the service role and rely on this set, so the window is real there.
 // Mutation paths call invalidateAccessContext() so the instance that handled
-// the change answers freshly at once.
+// the change answers freshly at once. Link accounts are exempt from the memo
+// altogether: their scope is enforced by service-role routes with no RLS
+// backstop, and link traffic is negligible.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createServiceClient } from '@/lib/supabase/service';
@@ -178,6 +180,7 @@ function sweep(now: number): void {
  * Concurrent callers for the same user share one in-flight computation. A
  * failed computation is never cached and resolves to the fail-closed dead
  * context, so a transient error costs one request, not a minute of lockout.
+ * Link accounts are not memoized either (see below).
  *
  * `db` is injectable for tests; production callers omit it.
  */
@@ -187,13 +190,25 @@ export function getAccessContext(userId: string, db?: SupabaseClient): Promise<A
   if (hit && hit.expiresAt > now) return hit.promise;
 
   sweep(now);
-  const promise = computeAccessContext(userId, db ?? createServiceClient()).catch(err => {
-    console.error('Failed to resolve access context; failing closed:', err);
-    cache.delete(userId);
-    return deadContext(userId);
-  });
-  cache.set(userId, { promise, expiresAt: now + ACCESS_CONTEXT_TTL_MS });
-  return promise;
+  // Built in two steps so the settle handlers can compare against the entry.
+  const entry = { expiresAt: now + ACCESS_CONTEXT_TTL_MS } as Entry;
+  entry.promise = computeAccessContext(userId, db ?? createServiceClient())
+    .then(ctx => {
+      // Link accounts are never memoized beyond the in-flight dedup: the
+      // cookie-capable cutout routes authorize them with the service role
+      // (no RLS backstop), so a revocation on another instance or a passed
+      // expires_at must bite on the very next request, as it did before
+      // #505. Link traffic is a rounding error, so this costs nothing.
+      if (ctx.isLinkAccount && cache.get(userId) === entry) cache.delete(userId);
+      return ctx;
+    })
+    .catch(err => {
+      console.error('Failed to resolve access context; failing closed:', err);
+      if (cache.get(userId) === entry) cache.delete(userId);
+      return deadContext(userId);
+    });
+  cache.set(userId, entry);
+  return entry.promise;
 }
 
 /**

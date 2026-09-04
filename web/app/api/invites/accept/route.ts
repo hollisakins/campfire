@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { invalidateAccessContext } from '@/lib/auth/access-context';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { createServiceClient } from '@/lib/supabase/server';
 import { USERNAME_REGEX } from '@/lib/utils/username';
@@ -138,6 +139,10 @@ export async function POST(request: NextRequest) {
         // Don't fail the whole request for this - user can be granted access later
       }
     }
+
+    // The user may already have a memoized "no profile, no grants" context
+    // from pages loaded before accepting; drop it (#505).
+    invalidateAccessContext(user.id);
 
     // Mark invite as accepted
     const { error: updateError } = await serviceClient

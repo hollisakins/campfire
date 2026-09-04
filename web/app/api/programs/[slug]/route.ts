@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { invalidateAccessContext } from '@/lib/auth/access-context';
 import { isAdminUser } from '@/lib/api-helpers';
 import { getRequestIdentity } from '@/lib/auth/identity';
 
@@ -52,6 +53,10 @@ export async function PATCH(
       console.error('Error updating program:', error);
       return NextResponse.json({ error: 'Failed to update program' }, { status: 500 });
     }
+
+    // A public/private flip changes every non-admin's accessible set, so drop
+    // the whole memo on this instance (#505); others converge within the TTL.
+    if ('is_public' in updates) invalidateAccessContext();
 
     return NextResponse.json({ program: updatedProgram });
   } catch (error) {

@@ -201,6 +201,31 @@ describe('getAccessContext — memo', () => {
     expect(calls.length).toBe(3 * n);
   });
 
+  it('does not memoize link accounts beyond the in-flight computation', async () => {
+    const calls: string[] = [];
+    const db = fakeDb(
+      {
+        user_profiles: [{ user_id: U, is_admin: false, is_link_account: true, can_comment: false, can_inspect: false }],
+        share_links: [{ link_user_id: U, observation: null, field: 'cosmos', allow_download: true, include_drafts: false, revoked_at: null, expires_at: null }],
+        programs,
+      },
+      calls
+    );
+    const [a, b] = await Promise.all([getAccessContext(U, db), getAccessContext(U, db)]);
+    expect(a).toBe(b);
+    expect(a.isLinkAccount).toBe(true);
+    const after = calls.length;
+    // A revocation stamped elsewhere is visible on the very next call.
+    const revokedDb = fakeDb({
+      user_profiles: [{ user_id: U, is_admin: false, is_link_account: true, can_comment: false, can_inspect: false }],
+      share_links: [{ link_user_id: U, observation: null, field: 'cosmos', allow_download: true, include_drafts: false, revoked_at: '2026-01-01T00:00:00Z', expires_at: null }],
+      programs,
+    });
+    const c = await getAccessContext(U, revokedDb);
+    expect(calls.length).toBe(after);
+    expect(c.linkScope).toEqual(DEAD_LINK_SCOPE);
+  });
+
   it('keys by user', async () => {
     const calls: string[] = [];
     const db = fakeDb(fx, calls);

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { invalidateAccessContext } from '@/lib/auth/access-context';
 import { isAdminUser } from '@/lib/api-helpers';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { createServiceClient } from '@/lib/supabase/server';
@@ -60,6 +61,7 @@ export async function PATCH(
       console.error('Error granting can_inspect:', grantError);
       return NextResponse.json({ error: 'Failed to grant access' }, { status: 500 });
     }
+    invalidateAccessContext(req.user_id);
   }
 
   const { error: updateError } = await serviceClient
