@@ -843,3 +843,19 @@ def refresh_programs_overview(client: Client) -> None:
     except Exception as e:
         print(f"  Warning: Failed to refresh programs overview: {e}")
         print("  Run manually: SELECT refresh_programs_overview();")
+
+
+def refresh_observations_overview(client: Client) -> None:
+    """Refresh the observations overview materialized view (perf T1-5, #501).
+
+    Backs get_observations_overview / get_observation_stats for published
+    data; a nightly pg_cron job (refresh_all_matviews) is the backstop if a
+    deploy is interrupted before this runs.
+    """
+    print("  Refreshing observations overview cache...")
+    try:
+        client.rpc('refresh_observations_overview').execute()
+        print("  Done")
+    except Exception as e:
+        print(f"  Warning: Failed to refresh observations overview: {e}")
+        print("  Run manually: SELECT refresh_observations_overview();")

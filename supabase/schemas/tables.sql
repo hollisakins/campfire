@@ -567,6 +567,11 @@ CREATE TABLE IF NOT EXISTS "public"."object_photometry" (
 
 ALTER TABLE "public"."object_photometry" OWNER TO "postgres";
 
+-- Perf T1-5 (#501): this table churns (deploy overwrites rows in place) and
+-- the default 20 % dead-tuple threshold let it reach 14 % dead with the last
+-- autovacuum weeks old. 2 % keeps the heap and its indexes compact.
+ALTER TABLE "public"."object_photometry" SET (autovacuum_vacuum_scale_factor = 0.02);
+
 
 COMMENT ON TABLE "public"."object_photometry" IS 'Photometric catalog cross-matches for objects. One row per object per catalog. Coordinates (ra, dec) are the durable positional key; object_id FK is refreshed after each objects rebuild via coordinate cross-matching.';
 
@@ -1128,6 +1133,11 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
 
 
 ALTER TABLE "public"."storage_objects" OWNER TO "postgres";
+
+-- Perf T1-5 (#501): this table churns (deploy overwrites rows in place) and
+-- the default 20 % dead-tuple threshold let it reach 14 % dead with the last
+-- autovacuum weeks old. 2 % keeps the heap and its indexes compact.
+ALTER TABLE "public"."storage_objects" SET (autovacuum_vacuum_scale_factor = 0.02);
 
 
 CREATE SEQUENCE IF NOT EXISTS "public"."storage_objects_id_seq"

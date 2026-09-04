@@ -1357,7 +1357,11 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_page INTEGER DEFAULT 1,
   p_page_size INTEGER DEFAULT 50,
   p_include_thumbnails BOOLEAN DEFAULT false,
-  p_include_unpublished BOOLEAN DEFAULT false
+  p_include_unpublished BOOLEAN DEFAULT false,
+  -- Perf T1-5 (#501): the exact COUNT(*) over the whole filtered set is only
+  -- needed once per filter combination; the client caches it and passes
+  -- false on later pages / sorts. total_count is -1 when skipped.
+  p_include_count BOOLEAN DEFAULT true
 )
 RETURNS TABLE(targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER)
 LANGUAGE plpgsql STABLE
@@ -1427,7 +1431,11 @@ BEGIN
   END IF;
 
   -- Single-pass CTE: filtered_spectra is referenced by both distance_filtered
-  -- and the count subquery, so PostgreSQL materializes it once.
+  -- and the count subquery, so PostgreSQL materializes it once. It carries NO
+  -- thumbnail columns: the two SVGs are ~1.5 kB per row and were materialized
+  -- for every one of ~80 k spectra before paging (103 MB temp spill per
+  -- render, perf T1-5 / #501). They are joined onto the <= p_page_size page
+  -- rows at the end, only when p_include_thumbnails.
   RETURN QUERY
   WITH filtered_spectra AS (
     SELECT
@@ -1463,8 +1471,6 @@ BEGIN
       COALESCE(s.dq_flags, 0) AS dq_flags,
       s.file_hash,
       s.file_size,
-      s.thumbnail_svg_fnu,
-      s.thumbnail_svg_flambda,
       CASE
         WHEN v_coord_search_active THEN
           2 * DEGREES(ASIN(SQRT(
@@ -1630,15 +1636,18 @@ BEGIN
         'dq_flags', r.dq_flags,
         'file_hash', r.file_hash,
         'file_size', r.file_size,
-        'thumbnail_svg_fnu', CASE WHEN p_include_thumbnails THEN r.thumbnail_svg_fnu ELSE NULL END,
-        'thumbnail_svg_flambda', CASE WHEN p_include_thumbnails THEN r.thumbnail_svg_flambda ELSE NULL END
+        'thumbnail_svg_fnu', sth.thumbnail_svg_fnu,
+        'thumbnail_svg_flambda', sth.thumbnail_svg_flambda
       ))
     ) ORDER BY r.row_num), '[]'::jsonb),
-    (SELECT COUNT(*) FROM distance_filtered),
+    CASE WHEN p_include_count THEN (SELECT COUNT(*) FROM distance_filtered) ELSE -1::BIGINT END,
     p_page,
     p_page_size
   FROM page_rows r
-  LEFT JOIN programs pr ON pr.slug = r.program_slug;
+  LEFT JOIN programs pr ON pr.slug = r.program_slug
+  -- Thumbnails only for the page, only when asked (constant-false join
+  -- condition otherwise, which the planner drops).
+  LEFT JOIN spectra sth ON p_include_thumbnails AND sth.id = r.spectrum_pk;
 END;
 $$;
 
@@ -1685,7 +1694,9 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_sort_direction TEXT DEFAULT 'asc',
   p_page INTEGER DEFAULT 1,
   p_page_size INTEGER DEFAULT 50,
-  p_include_unpublished BOOLEAN DEFAULT false
+  p_include_unpublished BOOLEAN DEFAULT false,
+  -- Perf T1-5 (#501): see get_filtered_spectra_paginated. -1 when skipped.
+  p_include_count BOOLEAN DEFAULT true
 )
 RETURNS TABLE(targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER)
 LANGUAGE plpgsql STABLE
@@ -1776,123 +1787,129 @@ BEGIN
     v_observation_object_ids := ARRAY(SELECT public.objects_matching_observation_filter(p_observations, p_program_slugs, p_include_unpublished));
   END IF;
 
-  -- Step 1: count
-  SELECT COUNT(*) INTO v_total_count
-  FROM objects o
-  WHERE
-    -- Access control: object must have at least one accessible program
-    o.programs && v_filtered_program_slugs
-    AND o.is_active = true
-    -- B1: hide objects with no published spectrum (fail-closed).
-    AND (p_include_unpublished OR o.has_published_spectrum)
-    AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
-    AND (
-      NOT v_grating_filter_active
-      -- Issue #488: the o.gratings array tests are index-backed pre-filters
-      -- only (deploy-time aggregate over ALL member spectra, unpublished and
-      -- inaccessible programs included); the viewer-visible decision is the
-      -- hashed = ANY over the once-per-call v_grating_object_ids — see
-      -- objects_matching_grating_filter() for the invariants.
-      OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
-          AND o.id = ANY(v_grating_object_ids))
-      OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
-          AND o.id = ANY(v_grating_object_ids))
-      OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
-          OR NOT (o.id = ANY(v_grating_object_ids))))
-    )
-    AND (
-      NOT v_observation_filter_active
-      -- Issue #491: the o.observations && test is an index-backed pre-filter
-      -- only (deploy-time aggregate over ALL member targets, unpublished and
-      -- inaccessible programs included); the viewer-visible decision is the
-      -- hashed = ANY over the once-per-call v_observation_object_ids — see
-      -- objects_matching_observation_filter() for the invariants.
-      OR (o.observations && p_observations
-          AND o.id = ANY(v_observation_object_ids))
-    )
-    AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
-    AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
-    AND (p_redshift_max IS NULL OR o.redshift <= p_redshift_max)
-    AND (p_max_snr_min IS NULL OR o.max_snr >= p_max_snr_min)
-    AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
-    AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
-    AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-    AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
-    AND (
-      p_inspected_only IS NULL
-      OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
-      OR (p_inspected_only = FALSE AND o.redshift_quality = 0)
-    )
-    AND (
-      p_needs_review IS NULL
-      OR (p_needs_review = TRUE
-          AND o.staleness_reason IS NOT NULL
-          AND o.last_inspected_at IS NOT NULL
-          AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
-      OR (p_needs_review = FALSE
-          AND (o.staleness_reason IS NULL
-               OR o.last_inspected_at IS NULL
-               OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at)))
-    )
-    AND (
-      NOT v_coord_search_active
-      OR (
-        o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
-        AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
-        AND 2 * DEGREES(ASIN(SQRT(
-          POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
-          COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
-          POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
-        ))) <= p_radius_degrees
+  -- Step 1: count — a second full pass over the filter, so only when the
+  -- caller doesn't already know the total for this filter set (#501).
+  IF p_include_count THEN
+    SELECT COUNT(*) INTO v_total_count
+    FROM objects o
+    WHERE
+      -- Access control: object must have at least one accessible program
+      o.programs && v_filtered_program_slugs
+      AND o.is_active = true
+      -- B1: hide objects with no published spectrum (fail-closed).
+      AND (p_include_unpublished OR o.has_published_spectrum)
+      AND (p_fields IS NULL OR array_length(p_fields, 1) IS NULL OR o.field = ANY(p_fields))
+      AND (
+        NOT v_grating_filter_active
+        -- Issue #488: the o.gratings array tests are index-backed pre-filters
+        -- only (deploy-time aggregate over ALL member spectra, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed = ANY over the once-per-call v_grating_object_ids — see
+        -- objects_matching_grating_filter() for the invariants.
+        OR (v_gratings_mode = 'any' AND o.gratings && p_gratings
+            AND o.id = ANY(v_grating_object_ids))
+        OR (v_gratings_mode = 'all' AND o.gratings @> p_gratings
+            AND o.id = ANY(v_grating_object_ids))
+        OR (v_gratings_mode = 'none' AND (NOT o.gratings && p_gratings
+            OR NOT (o.id = ANY(v_grating_object_ids))))
       )
-    )
-    AND (
-      NOT v_list_filter_active
-      OR (v_list_ids_mode = 'any' AND o.id IN (
-          SELECT olm.object_id FROM object_list_members olm
-          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-      ))
-      OR (v_list_ids_mode = 'all' AND (
-          SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
-          WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
-      ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
-      OR (v_list_ids_mode = 'none' AND o.id NOT IN (
-          SELECT olm.object_id FROM object_list_members olm
-          WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
-      ))
-    )
-    AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
-    AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
-    AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
-    AND (
-      NOT v_comment_search_active
-      -- Uncorrelated semijoin: collect the object_ids that have a matching
-      -- comment ONCE (object-level comments directly + target-level comments
-      -- mapped through their parent object), then probe o.id IN (...). The old
-      -- correlated EXISTS-inside-OR re-ran a per-object targets subquery for
-      -- every (object x matching-comment) pair -> 271k subplan executions /
-      -- ~870ms here, multi-second on broad terms or cold cache.
-      OR o.id IN (
-        SELECT c.object_id FROM comments c
-        WHERE c.object_id IS NOT NULL
-          AND c.is_deleted = false
-          AND c.content ILIKE '%' || p_comment_search || '%'
-          AND (
-            p_comment_search_scope = 'everyone'
-            OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
-          )
-        UNION
-        SELECT t.object_id FROM comments c
-        JOIN targets t ON t.id = c.target_id
-        WHERE c.target_id IS NOT NULL
-          AND c.is_deleted = false
-          AND c.content ILIKE '%' || p_comment_search || '%'
-          AND (
-            p_comment_search_scope = 'everyone'
-            OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
-          )
+      AND (
+        NOT v_observation_filter_active
+        -- Issue #491: the o.observations && test is an index-backed pre-filter
+        -- only (deploy-time aggregate over ALL member targets, unpublished and
+        -- inaccessible programs included); the viewer-visible decision is the
+        -- hashed = ANY over the once-per-call v_observation_object_ids — see
+        -- objects_matching_observation_filter() for the invariants.
+        OR (o.observations && p_observations
+            AND o.id = ANY(v_observation_object_ids))
       )
-    );
+      AND (p_redshift_quality IS NULL OR array_length(p_redshift_quality, 1) IS NULL OR o.redshift_quality = ANY(p_redshift_quality))
+      AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min)
+      AND (p_redshift_max IS NULL OR o.redshift <= p_redshift_max)
+      AND (p_max_snr_min IS NULL OR o.max_snr >= p_max_snr_min)
+      AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
+      AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
+      AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
+      AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
+      AND (
+        p_inspected_only IS NULL
+        OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
+        OR (p_inspected_only = FALSE AND o.redshift_quality = 0)
+      )
+      AND (
+        p_needs_review IS NULL
+        OR (p_needs_review = TRUE
+            AND o.staleness_reason IS NOT NULL
+            AND o.last_inspected_at IS NOT NULL
+            AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
+        OR (p_needs_review = FALSE
+            AND (o.staleness_reason IS NULL
+                 OR o.last_inspected_at IS NULL
+                 OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at)))
+      )
+      AND (
+        NOT v_coord_search_active
+        OR (
+          o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
+          AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
+          AND 2 * DEGREES(ASIN(SQRT(
+            POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+            COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+            POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+          ))) <= p_radius_degrees
+        )
+      )
+      AND (
+        NOT v_list_filter_active
+        OR (v_list_ids_mode = 'any' AND o.id IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+        OR (v_list_ids_mode = 'all' AND (
+            SELECT COUNT(DISTINCT olm.list_id) FROM object_list_members olm
+            WHERE olm.object_id = o.id AND olm.list_id = ANY(p_list_ids)
+        ) = (SELECT COUNT(DISTINCT __list_id) FROM unnest(p_list_ids) __list_id))
+        OR (v_list_ids_mode = 'none' AND o.id NOT IN (
+            SELECT olm.object_id FROM object_list_members olm
+            WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
+        ))
+      )
+      AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
+      AND (p_photo_z_min IS NULL OR o.photo_z >= p_photo_z_min)
+      AND (p_photo_z_max IS NULL OR o.photo_z <= p_photo_z_max)
+      AND (
+        NOT v_comment_search_active
+        -- Uncorrelated semijoin: collect the object_ids that have a matching
+        -- comment ONCE (object-level comments directly + target-level comments
+        -- mapped through their parent object), then probe o.id IN (...). The old
+        -- correlated EXISTS-inside-OR re-ran a per-object targets subquery for
+        -- every (object x matching-comment) pair -> 271k subplan executions /
+        -- ~870ms here, multi-second on broad terms or cold cache.
+        OR o.id IN (
+          SELECT c.object_id FROM comments c
+          WHERE c.object_id IS NOT NULL
+            AND c.is_deleted = false
+            AND c.content ILIKE '%' || p_comment_search || '%'
+            AND (
+              p_comment_search_scope = 'everyone'
+              OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
+            )
+          UNION
+          SELECT t.object_id FROM comments c
+          JOIN targets t ON t.id = c.target_id
+          WHERE c.target_id IS NOT NULL
+            AND c.is_deleted = false
+            AND c.content ILIKE '%' || p_comment_search || '%'
+            AND (
+              p_comment_search_scope = 'everyone'
+              OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id)
+            )
+        )
+      );
+
+  ELSE
+    v_total_count := -1;
+  END IF;
 
   -- Step 2: fetch page
   RETURN QUERY
@@ -3233,6 +3250,50 @@ GRANT EXECUTE ON FUNCTION public.refresh_programs_overview TO authenticated;
 -- the most recent FULL deployment (source_ids_filter IS NULL); patch deployments
 -- contribute only to n_patches_since_full so per-source re-reductions don't
 -- masquerade as observation-level reductions.
+-- =============================================================================
+-- scoped_program_slugs
+-- =============================================================================
+-- The program-slug gate for RPCs that read a materialized view instead of an
+-- RLS-protected table (perf T1-5 / #501). A caller passes the slug array it
+-- believes it may see; RLS can't second-guess that on a matview, so this
+-- intersects it with the SQL authority (accessible_program_slugs) for
+-- ordinary sessions. Trusted with what they pass: service-role requests, and
+-- direct database sessions (no request.jwt.claims at all — PostgREST always
+-- sets them, even for anon), i.e. the superuser SQL editor, pg_cron and the
+-- deploy CLI in service-role mode. That is exactly the trust the
+-- table-backed RPCs already extend them, since those bypass RLS too.
+CREATE OR REPLACE FUNCTION public.scoped_program_slugs(p_program_slugs text[])
+RETURNS text[]
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT CASE
+    WHEN auth.role() = 'service_role'
+      OR COALESCE(current_setting('request.jwt.claims', true), '') = ''
+      THEN COALESCE(p_program_slugs, '{}'::text[])
+    ELSE COALESCE(ARRAY(
+      SELECT unnest(COALESCE(p_program_slugs, '{}'::text[]))
+      INTERSECT
+      SELECT unnest(public.accessible_program_slugs())
+    ), '{}'::text[])
+  END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.scoped_program_slugs(text[]) TO authenticated, service_role;
+
+
+-- =============================================================================
+-- get_observation_stats
+-- =============================================================================
+-- Published-only calls read mv_observations_overview (refreshed at deploy
+-- and nightly, see refresh_all_matviews); the pre-#501 live aggregate over
+-- targets x spectra ran in ~0.7 s on every /nirspec/metadata visit. The
+-- unpublished-inclusive path (admins only; fail-closed for anyone else) still
+-- aggregates live because the matview is published-only.
+--
+-- SECURITY DEFINER (the matview has no RLS and no grant to authenticated):
+-- program scope comes from scoped_program_slugs(), which intersects the
+-- caller's array with accessible_program_slugs() for ordinary sessions.
 DROP FUNCTION IF EXISTS public.get_observation_stats(text[]);
 
 CREATE OR REPLACE FUNCTION public.get_observation_stats(p_program_slugs text[], p_include_unpublished boolean DEFAULT false)
@@ -3244,7 +3305,41 @@ RETURNS TABLE(
   reduced_at timestamptz, deployed_at timestamptz,
   deployed_by_username text, deployed_by_full_name text,
   n_patches_since_full integer, last_patch_at timestamptz
-) LANGUAGE sql STABLE AS $$
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_slugs text[] := public.scoped_program_slugs(p_program_slugs);
+  v_unpublished boolean := p_include_unpublished
+    AND (auth.role() = 'service_role'
+         OR COALESCE(current_setting('request.jwt.claims', true), '') = ''
+         OR public.is_admin());
+BEGIN
+  IF NOT v_unpublished THEN
+    RETURN QUERY
+    SELECT mv.observation, mv.program_slug, mv.program_name, mv.field,
+      mv.target_count, mv.spectrum_count, mv.total_size_bytes,
+      mv.pointings,
+      mv.crds_context, mv.cfpipe_version, mv.jwst_version,
+      mv.reduced_at, mv.deployed_at,
+      mv.deployed_by_username, mv.deployed_by_full_name,
+      mv.n_patches_since_full, mv.last_patch_at
+    FROM public.mv_observations_overview mv
+    WHERE mv.program_slug = ANY(v_slugs)
+      -- Share links see only the observation they were minted for (mirrors
+      -- accessible_observations_select; the matview has no RLS to do it).
+      AND ((SELECT NOT public.is_link_account()) OR mv.observation = (SELECT public.link_observation()))
+      -- The live aggregate only yields observations that have targets.
+      AND mv.target_count > 0
+    ORDER BY mv.observation;
+    RETURN;
+  END IF;
+
+  -- Live aggregate (unpublished-inclusive). Aggregate stats first, then LEFT
+  -- JOIN observations once for the JSONB payload; provenance from the most
+  -- recent FULL deployment, patches counted since it.
+  RETURN QUERY
   WITH stats AS (
     SELECT t.observation, t.program_slug, p.program_name, t.field,
       COUNT(DISTINCT t.target_id) AS target_count,
@@ -3255,7 +3350,7 @@ RETURNS TABLE(
     LEFT JOIN spectra s ON s.target_id = t.target_id
       -- B1: unpublished spectra don't contribute to counts/size (targets still appear).
       AND (p_include_unpublished OR s.deploy_status = 'published')
-    WHERE t.program_slug = ANY(p_program_slugs)
+    WHERE t.program_slug = ANY(v_slugs)
     GROUP BY t.observation, t.program_slug, p.program_name, t.field
   )
   SELECT s.observation, s.program_slug, s.program_name, s.field,
@@ -3288,6 +3383,7 @@ RETURNS TABLE(
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
   ) patches ON true
   ORDER BY s.observation;
+END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
@@ -3298,18 +3394,9 @@ GRANT EXECUTE ON FUNCTION public.get_observation_stats TO authenticated;
 -- =============================================================================
 -- Flat list of observations (scoped to the caller's accessible programs) with
 -- provenance + patch counts. Powers the /nirspec/metadata page Observations
--- tab. Caller passes the accessible program slug list (public + explicit
--- access), matching the get_observation_stats pattern; filtering happens in
--- SQL so the targets/spectra aggregate doesn't scan inaccessible rows.
---
--- Gratings are derived from the spectra table (the actual deployed data),
--- with observations.gratings as a fallback when no spectra exist yet — the
--- observations.gratings column is populated from observations.toml at deploy
--- time and is empty for observations that haven't gone through that path.
---
--- deployed_by_username / deployed_by_full_name come from user_profiles via
--- the latest full deployment so the metadata page can show who reduced each
--- observation without an extra client-side join.
+-- tab. Published-only calls read mv_observations_overview (see the matview's
+-- header in views.sql for the column semantics); the unpublished-inclusive
+-- path aggregates live. Access gating as in get_observation_stats.
 DROP FUNCTION IF EXISTS public.get_observations_overview();
 DROP FUNCTION IF EXISTS public.get_observations_overview(text[]);
 
@@ -3322,7 +3409,36 @@ RETURNS TABLE(
   reduced_at timestamptz, deployed_at timestamptz,
   deployed_by_username text, deployed_by_full_name text,
   n_patches_since_full integer, last_patch_at timestamptz
-) LANGUAGE sql STABLE AS $$
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_slugs text[] := public.scoped_program_slugs(p_program_slugs);
+  v_unpublished boolean := p_include_unpublished
+    AND (auth.role() = 'service_role'
+         OR COALESCE(current_setting('request.jwt.claims', true), '') = ''
+         OR public.is_admin());
+BEGIN
+  IF NOT v_unpublished THEN
+    RETURN QUERY
+    SELECT mv.observation, mv.program_slug, mv.program_name, mv.field,
+      mv.cycle, mv.gratings, mv.pointing_count, mv.pointings,
+      mv.target_count, mv.spectrum_count, mv.total_size_bytes,
+      mv.crds_context, mv.cfpipe_version, mv.jwst_version,
+      mv.reduced_at, mv.deployed_at,
+      mv.deployed_by_username, mv.deployed_by_full_name,
+      mv.n_patches_since_full, mv.last_patch_at
+    FROM public.mv_observations_overview mv
+    WHERE mv.program_slug = ANY(v_slugs)
+      -- Share links see only the observation they were minted for (mirrors
+      -- accessible_observations_select; the matview has no RLS to do it).
+      AND ((SELECT NOT public.is_link_account()) OR mv.observation = (SELECT public.link_observation()))
+    ORDER BY mv.program_slug, mv.observation;
+    RETURN;
+  END IF;
+
+  RETURN QUERY
   WITH stats AS (
     SELECT t.observation, t.program_slug,
       COUNT(DISTINCT t.target_id) AS target_count,
@@ -3334,7 +3450,7 @@ RETURNS TABLE(
     LEFT JOIN public.spectra s ON s.target_id = t.target_id
       -- B1: unpublished spectra don't contribute to counts/size/gratings.
       AND (p_include_unpublished OR s.deploy_status = 'published')
-    WHERE t.program_slug = ANY(p_program_slugs)
+    WHERE t.program_slug = ANY(v_slugs)
     GROUP BY t.observation, t.program_slug
   )
   SELECT
@@ -3379,11 +3495,57 @@ RETURNS TABLE(
       AND d.source_ids_filter IS NOT NULL
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
   ) patches ON true
-  WHERE o.program_slug = ANY(p_program_slugs)
+  WHERE o.program_slug = ANY(v_slugs)
   ORDER BY o.program_slug, o.name;
+END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_observations_overview TO authenticated;
+
+
+-- =============================================================================
+-- refresh_observations_overview / refresh_all_matviews
+-- =============================================================================
+-- Deploy calls refresh_observations_overview() alongside the two existing
+-- refreshes; refresh_all_matviews() is the nightly pg_cron backstop
+-- (scheduled below) so a refresh missed by an interrupted deploy is bounded
+-- to a day. CONCURRENTLY: readers never block, and each matview carries the
+-- unique index that requires (supabase/tests/check_mv_unique_indexes.sql).
+CREATE OR REPLACE FUNCTION public.refresh_observations_overview()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  REFRESH MATERIALIZED VIEW CONCURRENTLY public.mv_observations_overview;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.refresh_observations_overview TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.refresh_all_matviews()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  REFRESH MATERIALIZED VIEW CONCURRENTLY public.mv_filter_options;
+  REFRESH MATERIALIZED VIEW CONCURRENTLY public.mv_programs_overview;
+  REFRESH MATERIALIZED VIEW CONCURRENTLY public.mv_observations_overview;
+END;
+$$;
+
+-- Nightly backstop. pg_cron is present on prod (one existing job) but not on
+-- every environment the schema loads into (preview branches, throwaway PGs),
+-- so schedule only where the extension exists; cron.schedule(name, ...) is
+-- idempotent by job name.
+DO $cron$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+    PERFORM cron.schedule('nightly-refresh-matviews', '30 4 * * *', 'SELECT public.refresh_all_matviews()');
+  END IF;
+END
+$cron$;
 
 
 -- =============================================================================
@@ -3937,7 +4099,9 @@ GRANT EXECUTE ON FUNCTION public.get_user_profile_stats TO authenticated;
 
 CREATE OR REPLACE FUNCTION public.get_download_stats(p_days integer DEFAULT 30)
 RETURNS json
-LANGUAGE plpgsql SECURITY DEFINER
+-- STABLE (perf T1-5 / #501): read-only, so the planner may cache and
+-- fold the call; it was declared VOLATILE by default.
+LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
@@ -4664,7 +4828,9 @@ GRANT EXECUTE ON FUNCTION public.get_admin_storage_facets() TO authenticated;
 
 CREATE OR REPLACE FUNCTION public.get_storage_budget()
 RETURNS json
-LANGUAGE plpgsql SECURITY DEFINER
+-- STABLE (perf T1-5 / #501): read-only, so the planner may cache and
+-- fold the call; it was declared VOLATILE by default.
+LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
@@ -4761,7 +4927,9 @@ GRANT EXECUTE ON FUNCTION public.get_storage_budget TO authenticated, service_ro
 -- this function is missing, the client catches the RPC-not-found and aborts too.
 CREATE OR REPLACE FUNCTION public.get_lifecycle_status()
 RETURNS json
-LANGUAGE plpgsql SECURITY DEFINER
+-- STABLE (perf T1-5 / #501): read-only, so the planner may cache and
+-- fold the call; it was declared VOLATILE by default.
+LANGUAGE plpgsql STABLE SECURITY DEFINER
 AS $$
 DECLARE
   v_is_admin boolean;
@@ -5085,6 +5253,12 @@ BEGIN
   ELSE
     v_result := json_build_object('updated', 0, 'action', v_action);
   END IF;
+
+  -- The published-only snapshots (mv_observations_overview, and the two
+  -- older matviews, which also filter on deploy_status) must follow a
+  -- publish / revoke immediately, not at the nightly refresh (perf T1-5 /
+  -- #501). Same transaction, so the refresh sees the flipped rows.
+  PERFORM public.refresh_all_matviews();
 
   RETURN json_build_object(
     'deployment_id', p_deployment_id, 'observation', v_obs,
