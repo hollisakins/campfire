@@ -54,7 +54,7 @@ export function spectrumSidecarsQueryOptions(fitsPath: string) {
   };
 }
 
-const NO_FRONT: SpectrumSidecarUrls = { front: false, spectrum: null, spectrum_1d: null, zfit: null };
+const NO_FRONT: SpectrumSidecarUrls = { front: false, spectrum: null, spectrum_1d: null, zfit: null, has_1d: null };
 
 /** The resolved sidecar urls for a path, from the cache or one resolve call
  * shared by every sidecar query of the same path. A failed resolve is not a
@@ -180,10 +180,14 @@ export function useSpectrumJson(fitsPath: string, enabled = true) {
   return query;
 }
 
-/** The 1-D sidecar — what paints first. */
+/** The 1-D sidecar — what paints first. Trims too: for a spectrum whose
+ * 1-D answer is the full payload the full query never runs, so this is the
+ * only landing that would bound the cache. */
 export function useSpectrum1d(fitsPath: string, enabled = true) {
   const client = useQueryClient();
-  return useQuery({ ...spectrum1dQueryOptions(client, fitsPath), enabled });
+  const query = useQuery({ ...spectrum1dQueryOptions(client, fitsPath), enabled });
+  useSpectrumCacheTrim(query.data);
+  return query;
 }
 
 export function useRedshiftFit(fitsPath: string, enabled = true) {
@@ -273,14 +277,13 @@ export function prefetchSpectrumSidecars(
 /**
  * Whether fetching the full spectrum JSON would download anything the 1-D
  * query does not already deliver. A spectrum deployed before the 1-D sidecar
- * existed (front on, `spectrum_1d` null) answers the 1-D query with its full
- * payload, so a second download of the same bytes is pure waste; with the
- * front off the route decides server-side and the client cannot tell, so
- * the full query runs (pre-backfill dev only).
+ * existed (`has_1d` false) answers the 1-D query with its full payload, so a
+ * second download of the same bytes is pure waste — front on or off. When
+ * the resolve failed or the registry did not answer (`has_1d` null) the
+ * client cannot tell, and the full query runs.
  */
 export function fullPayloadIsSeparate(urls: SpectrumSidecarUrls | null | undefined): boolean {
-  if (!urls) return true;
-  return !(urls.front && urls.spectrum_1d === null && urls.spectrum !== null);
+  return urls?.has_1d !== false;
 }
 
 /** The resolved sidecar urls as a query (shared with every sidecar fetch). */

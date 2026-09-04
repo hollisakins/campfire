@@ -9,6 +9,10 @@ sidecar for them, and fills a NULL redshift_auto from the same sidecar (rows
 from before per-grating redshift_auto existed; never overwrites a value).
 Rows whose zfit sidecar does not exist keep NULL (no fit).
 
+Every written row's ``updated_at`` moves (bump_spectra_updated_at), so
+incremental-sync clients (``p_updated_since``) see each backfilled spectrum
+as changed once; run it in one pass rather than dribbling it over days.
+
 Runs in service-role mode against OSN (read-only GETs; only the DB is written).
 
 Usage:

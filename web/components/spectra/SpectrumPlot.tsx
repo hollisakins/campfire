@@ -120,14 +120,17 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // anyway, so this costs no latency) and is skipped when the 1-D query
   // already delivers the full payload (pre-backfill spectra).
   // A failed resolve settles too: the payload fetchers then stream from the
-  // app routes, and the full query must still run for the heatmap.
+  // app routes, and the full query must still run for the heatmap. Should
+  // the resolve have been wrong (a 1-D answer without the 2-D array), the
+  // landed 1-D payload re-enables it.
   const sidecarUrls = useSpectrumSidecarUrls(fitsPath);
+  const data = oneDQuery.data ?? null;
   const fullQuery = useSpectrumJson(
     fitsPath,
-    !sidecarUrls.isPending && fullPayloadIsSeparate(sidecarUrls.data),
+    !sidecarUrls.isPending &&
+      (fullPayloadIsSeparate(sidecarUrls.data) || (data !== null && !('snr_2d' in data))),
   );
   const fitQuery = useRedshiftFit(fitsPath);
-  const data = oneDQuery.data ?? null;
   const heat: SpectrumData | null =
     fullQuery.data ?? (data && 'snr_2d' in data ? (data as SpectrumData) : null);
   const fitData = fitQuery.data ?? null;
