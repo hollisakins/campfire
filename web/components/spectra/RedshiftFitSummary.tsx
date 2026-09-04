@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useMemo } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Loader2, AlertCircle, Info } from 'lucide-react';
-import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 import type { Spectrum } from '@/lib/types';
+import { useRedshiftFits } from '@/lib/hooks/useSpectrumJson';
 
 interface RedshiftFitSummaryProps {
   spectra: (Spectrum & { observation?: string })[];
@@ -27,77 +27,43 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
   spectra,
   redshift_auto,
 }) => {
-  const [gratingFits, setGratingFits] = useState<GratingFit[]>([]);
+  // Shared with SpectrumPlot / the inspection prefetch via the TanStack cache
+  // (lib/hooks/useSpectrumJson.ts), so the zfit JSON is fetched once per
+  // spectrum per page instead of once per consumer (#500).
+  const fitsPaths = useMemo(() => spectra.map(s => s.fits_path), [spectra]);
+  const fitQueries = useRedshiftFits(fitsPaths);
 
-  useEffect(() => {
-    // Initialize loading state for all gratings
-    const initialFits: GratingFit[] = spectra.map(s => ({
-      grating: s.grating,
-      observation: s.observation,
-      fitsPath: s.fits_path,
-      isUsedForAuto: false, // Will be determined after loading
-      loading: true,
-      error: null,
-    }));
-    setGratingFits(initialFits);
-
-    // Fetch zfit data for each spectrum
-    const fetchAllFits = async () => {
-      const promises = spectra.map(async (spectrum, index) => {
-        try {
-          const response = await fetch(
-            `/api/redshift-fit?path=${encodeURIComponent(spectrum.fits_path)}`
-          );
-
-          if (!response.ok) {
-            if (response.status === 404) {
-              return {
-                index,
-                error: 'No fit available',
-              };
-            }
-            throw new Error('Failed to load fit data');
-          }
-
-          const fitData: RedshiftFitData = await response.json();
-
-          return {
-            index,
-            // Null scalars (degenerate fit with no finite chi2 minimum) map
-            // to undefined so the table's existing guards render an em dash.
-            redshift: fitData.redshift ?? undefined,
-            chi2Min: fitData.chi2_min ?? undefined,
-            confidence: fitData.confidence ?? undefined,
-          };
-        } catch (err) {
-          return {
-            index,
-            error: err instanceof Error ? err.message : 'Failed to load',
-          };
-        }
-      });
-
-      const results = await Promise.all(promises);
-
-      setGratingFits(prev =>
-        prev.map((fit, i) => {
-          const result = results[i];
-          return {
-            ...fit,
-            ...result,
-            loading: false,
-            // Mark which redshift was used for auto (if it matches)
-            isUsedForAuto:
-              redshift_auto !== null &&
-              result.redshift !== undefined &&
-              Math.abs(result.redshift - redshift_auto) < 0.0001,
-          };
-        })
-      );
-    };
-
-    fetchAllFits();
-  }, [spectra, redshift_auto]);
+  const gratingFits: GratingFit[] = useMemo(
+    () => spectra.map((s, i) => {
+      const q = fitQueries[i];
+      const fitData = q?.data ?? null;
+      const noFit = q?.isSuccess && fitData === null;
+      // Null scalars (degenerate fit with no finite chi2 minimum) map to
+      // undefined so the table's existing guards render an em dash.
+      const redshift = fitData?.redshift ?? undefined;
+      return {
+        grating: s.grating,
+        observation: s.observation,
+        fitsPath: s.fits_path,
+        redshift,
+        chi2Min: fitData?.chi2_min ?? undefined,
+        confidence: fitData?.confidence ?? undefined,
+        loading: q?.isPending ?? true,
+        error: noFit
+          ? 'No fit available'
+          : q?.isError
+            ? (q.error instanceof Error ? q.error.message : 'Failed to load')
+            : null,
+        // Mark which redshift was used for auto (if it matches)
+        isUsedForAuto:
+          redshift_auto !== null &&
+          redshift !== undefined &&
+          Math.abs(redshift - redshift_auto) < 0.0001,
+      };
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [spectra, redshift_auto, ...fitQueries.map(q => q.data), ...fitQueries.map(q => q.status)],
+  );
 
   const hasAnyFits = gratingFits.some(f => f.redshift !== undefined);
   const isLoading = gratingFits.some(f => f.loading);

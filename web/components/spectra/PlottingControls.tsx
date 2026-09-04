@@ -110,6 +110,25 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
     setInputValue(redshift.toFixed(4));
   }, [redshift]);
 
+  // The range input fires `input` events far faster than a Plotly relayout
+  // can complete, and each onChange re-laid-out the whole figure (#500).
+  // Coalesce to one onChange per animation frame; the text box still tracks
+  // every event so the number never lags the thumb.
+  const pendingRef = React.useRef<number | null>(null);
+  const rafRef = React.useRef<number | null>(null);
+  React.useEffect(() => () => {
+    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+  }, []);
+  const scheduleChange = (value: number) => {
+    pendingRef.current = value;
+    if (rafRef.current !== null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      if (pendingRef.current !== null) onChange(pendingRef.current);
+      pendingRef.current = null;
+    });
+  };
+
   const handleInputBlur = () => {
     const parsed = parseFloat(inputValue);
     if (!isNaN(parsed) && parsed >= min && parsed <= max) {
@@ -129,8 +148,8 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
 
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = parseFloat(e.target.value);
-    onChange(newValue);
     setInputValue(newValue.toFixed(4));
+    scheduleChange(newValue);
   };
 
   const nudge = (delta: number) => {

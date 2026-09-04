@@ -298,7 +298,7 @@ export async function getSpectrumById(targetId: string): Promise<{
       .select(`
         *,
         programs:program_slug (program_name, pi_name, description, cycle),
-        spectra (*),
+        spectra (id, spectrum_id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, dq_flags, deploy_status),
         parent_object:object_id (object_id)
       `)
       .eq('target_id', targetId)
@@ -458,20 +458,23 @@ export async function getObjectById(objectId: string): Promise<{
       };
     }
 
-    // Fetch member targets and photometry in parallel
+    // Fetch member targets and photometry in parallel. Columns are enumerated:
+    // `spectra (*)` dragged the two pre-rendered thumbnail SVGs (~1.5 kB each,
+    // 84 % of the row's bytes) through detoast → wire → RSC payload for every
+    // spectrum, and nothing on this page renders them (#500).
     const [{ data: members, error: membersError }, { data: photData }] = await Promise.all([
       supabase
         .from('targets')
         .select(`
           *,
           programs:program_slug (program_name),
-          spectra (*)
+          spectra (id, spectrum_id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, dq_flags, deploy_status)
         `)
         .eq('object_id', obj.id)
         .in('program_slug', accessibleProgramSlugs),
       supabase
         .from('object_photometry')
-        .select('*')
+        .select('catalog_name, catalog_id, match_distance_arcsec, photometry, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz')
         .eq('object_id', obj.id)
         .limit(1)
         .maybeSingle(),
