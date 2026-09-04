@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -198,6 +199,11 @@ def dataset_row(*, field, tile, prefix, pixel_scale, fitsgl_json, bands, tiles,
         'source_hashes': source_hashes,
         'is_default': is_default,
         'schema_version': _SCHEMA_VERSION,
+        # Stamped on every deploy (not only the insert): the web's imaging
+        # asset version hashes it, so a rebuild with unchanged mosaics but a
+        # changed fitsgl.json (bands, stretch, trilogy knobs) still moves every
+        # cutout / thumbnail url of the field (perf T2-D3, #509).
+        'deployed_at': datetime.now(timezone.utc).isoformat(),
     }
 
 

@@ -128,13 +128,21 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(store.url, { status: 302, headers: { 'Cache-Control': STORE_REDIRECT_CACHE } });
     }
 
+    // Only round the render up to the store's ladder when the store is in
+    // play; otherwise the request renders at exactly the size it asked for.
+    const outputSize = store ? storeSize : size;
+    // A legacy composite rendered because the FitsGL render *failed* must not
+    // be stored under the key a FitsGL render will later want (a transient
+    // failure would pin the lower-quality image until the field re-deploys).
+    let fitsglFailed = false;
+
     if (fitsglSrc) {
       try {
         const png = await renderDisplayCutoutPng(fitsglSrc, {
           ra: obj.ra,
           dec: obj.dec,
           fovArcsec: fov,
-          outputSize: storeSize,
+          outputSize,
         });
         if (store) storeCutoutInBackground(store.key, png);
         return new Response(new Uint8Array(png), {
@@ -148,6 +156,7 @@ export async function GET(request: NextRequest) {
         });
       } catch (err) {
         console.error('FitsGL thumbnail render failed; falling back to PNG tiles:', err);
+        fitsglFailed = true;
       }
     }
 
@@ -176,10 +185,10 @@ export async function GET(request: NextRequest) {
       ra: obj.ra,
       dec: obj.dec,
       layer,
-      outputSize: storeSize,
+      outputSize,
       fovArcsec: fov,
     });
-    if (store) storeCutoutInBackground(store.key, png);
+    if (store && !fitsglFailed) storeCutoutInBackground(store.key, png);
 
     return new Response(new Uint8Array(png), {
       status: 200,

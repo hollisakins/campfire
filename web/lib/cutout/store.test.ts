@@ -30,8 +30,8 @@ describe('cutoutStoreKey', () => {
   const base = { field: 'egs', version: 'ab12cd34ef', size: 64, fov: 5, ra: 214.8250001, dec: 52.825 };
 
   it('is deterministic and carries every render input', () => {
-    expect(cutoutStoreKey(base)).toBe('cutouts/egs/vab12cd34ef/64/5/214.825000_+52.825000.png');
-    expect(cutoutStoreKey({ ...base, fov: 3.2, dec: -2.3 })).toBe('cutouts/egs/vab12cd34ef/64/3.2/214.825000_-2.300000.png');
+    expect(cutoutStoreKey(base)).toBe('cutouts/egs/vab12cd34ef/64/5/214.8250001_+52.8250000.png');
+    expect(cutoutStoreKey({ ...base, fov: 3.2, dec: -2.3 })).toBe('cutouts/egs/vab12cd34ef/64/3.2/214.8250001_-2.3000000.png');
   });
 
   it('a new imaging version is a new prefix (re-deploy changes every url)', () => {
@@ -41,13 +41,13 @@ describe('cutoutStoreKey', () => {
 
   it('sanitizes the field and version segments', () => {
     expect(cutoutStoreKey({ ...base, field: 'A 2744/x', version: 'v/..1' })).toBe(
-      'cutouts/a_2744_x/vv1/64/5/214.825000_+52.825000.png');
+      'cutouts/a_2744_x/vv1/64/5/214.8250001_+52.8250000.png');
   });
 });
 
 describe('cutoutStoreFor', () => {
   it('joins the public tiles base and the key', () => {
     const e = cutoutStoreFor({ field: 'egs', version: 'v1', size: 64, fov: 5, ra: 1, dec: 1 });
-    expect(e?.url).toBe('https://campfire-tiles.example/cutouts/egs/vv1/64/5/1.000000_+1.000000.png');
+    expect(e?.url).toBe('https://campfire-tiles.example/cutouts/egs/vv1/64/5/1.0000000_+1.0000000.png');
   });
 });

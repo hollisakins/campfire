@@ -83,10 +83,10 @@ async function computeAssetVersions(): Promise<AssetVersions> {
   }
   for (const [field, rows] of byField) {
     const ds = rows!.find((r) => r.is_default) ?? rows![0];
-    // prefix is the upsert's conflict target and deployed_at is never
-    // rewritten, so neither changes on a re-deploy; source_hashes (the
-    // backing mosaics' content hashes) is rewritten on every deploy and is
-    // what actually tracks the pyramid's contents.
+    // source_hashes (the backing mosaics' content hashes) tracks the
+    // pyramid's pixels; deployed_at is stamped by every FitsGL deploy (#509)
+    // so a rebuild with the same mosaics but a changed fitsgl.json (band
+    // selection, stretch, trilogy knobs) still moves the version.
     push(field, `fitsgl:${ds.prefix}:${ds.deployed_at}:${JSON.stringify(ds.source_hashes ?? null)}`);
   }
 

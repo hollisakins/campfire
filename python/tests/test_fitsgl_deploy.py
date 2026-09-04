@@ -126,6 +126,8 @@ def test_dataset_row_composite_is_default_field_kind():
     assert row["bands"] == ["f150w", "f444w"]
     assert row["schema_version"] == 1
     assert row["prefix"] == "fitsgl/cosmos/composite"
+    # Stamped on every deploy so the web's imaging asset version moves (#509).
+    assert row["deployed_at"].endswith("+00:00")
 
 
 def test_dataset_row_single_tile_is_tile_kind_not_default():

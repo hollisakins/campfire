@@ -14,6 +14,10 @@
 // the old one is orphaned for the bucket's lifecycle rule to expire (30 days
 // on `cutouts/`, set on the bucket — see the PR / DEPLOYMENT notes).
 //
+// A route stores only what it would serve again under the same key: a FitsGL
+// field whose FitsGL render failed and fell back to the legacy composite does
+// not store that fallback (it would pin the lower-quality image).
+//
 // Program-scoped access is the route's job BEFORE it consults the store; the
 // stored object is keyed by its inputs, not by a viewer. Only renders from
 // public imagery are stored (a draft-backed dataset an admin's RLS can see
@@ -56,8 +60,11 @@ function fovSegment(fov: number): string {
 export function cutoutStoreKey(i: CutoutStoreInput): string {
   const field = i.field.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
   const version = i.version.replace(/[^A-Za-z0-9_-]/g, '');
-  const ra = i.ra.toFixed(6);
-  const dec = `${i.dec >= 0 ? '+' : ''}${i.dec.toFixed(6)}`;
+  // 1e-7 deg = 0.36 mas: below the finest pixel any route renders (a
+  // 2048 px, 1" cutout is ~0.5 mas/px), so two catalog rows only share a key
+  // when they are the same patch of sky to sub-pixel precision.
+  const ra = i.ra.toFixed(7);
+  const dec = `${i.dec >= 0 ? '+' : ''}${i.dec.toFixed(7)}`;
   return `cutouts/${field}/v${version}/${i.size}/${fovSegment(i.fov)}/${ra}_${dec}.png`;
 }
 

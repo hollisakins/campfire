@@ -119,6 +119,10 @@ export async function GET(
       }
     }
 
+    // A legacy composite rendered because the FitsGL render failed is not
+    // stored under the FitsGL key (see /api/tile-thumbnail).
+    let fitsglFailed = false;
+
     if (fitsglSrc) {
       try {
         const png = await renderDisplayCutoutPng(fitsglSrc, {
@@ -137,6 +141,7 @@ export async function GET(
         });
       } catch (err) {
         console.error('FitsGL OG-image render failed; falling back to PNG tiles:', err);
+        fitsglFailed = true;
       }
     }
 
@@ -165,7 +170,7 @@ export async function GET(
       outputSize: OG_SIZE,
       fovArcsec: OG_FOV,
     });
-    if (store) storeCutoutInBackground(store.key, png);
+    if (store && !fitsglFailed) storeCutoutInBackground(store.key, png);
 
     return new Response(new Uint8Array(png), {
       status: 200,

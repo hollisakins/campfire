@@ -148,6 +148,10 @@ export async function GET(request: NextRequest) {
         ? cutoutStoreFor({ field: obj.field, version: fieldVersion, size: outputSize, fov, ra: obj.ra, dec: obj.dec })
         : null;
 
+    // A legacy composite rendered because the FitsGL render failed is not
+    // stored under the FitsGL key (see /api/tile-thumbnail).
+    let fitsglFailed = false;
+
     if (fitsglSrc) {
       try {
         const outputSize = clampSize(
@@ -175,6 +179,7 @@ export async function GET(request: NextRequest) {
         });
       } catch (err) {
         console.error('FitsGL cutout render failed; falling back to PNG tiles:', err);
+        fitsglFailed = true;
       }
     }
 
@@ -215,7 +220,7 @@ export async function GET(request: NextRequest) {
       outputSize,
       fovArcsec: fov,
     });
-    if (store) storeCutoutInBackground(store.key, png);
+    if (store && !fitsglFailed) storeCutoutInBackground(store.key, png);
 
     return new Response(new Uint8Array(png), {
       status: 200,
