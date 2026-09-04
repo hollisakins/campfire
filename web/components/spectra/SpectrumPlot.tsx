@@ -2,9 +2,8 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Loader2, AlertCircle } from 'lucide-react';
-import type { SpectrumData } from '@/app/api/spectrum/route';
-import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
+import { useSpectrumJson, useRedshiftFit } from '@/lib/hooks/useSpectrumJson';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
 import { COLORSCALE_2D_OPTIONS } from '@/lib/types';
@@ -84,17 +83,11 @@ const getPlotlyColorscale = (name: Colorscale2D): PlotlyColorscale => {
   return CUSTOM_COLORSCALES[name] || 'Viridis';
 };
 
-interface CachedSpectrumData {
-  spectrum: SpectrumData;
-  fitData: RedshiftFitData | null;
-}
-
 interface SpectrumPlotProps {
   fitsPath: string;
   grating: string;
   initialRedshift?: number | null;
   inspectionMode?: boolean;
-  getCachedData?: (fitsPath: string) => CachedSpectrumData | undefined;
   onRedshiftChange?: (value: number) => void;
   /** When true, drop the outer rounded-card wrapper so the plot can be embedded
    *  directly inside another container (e.g. SpectrumDetailCard). */
@@ -106,17 +99,21 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   grating,
   initialRedshift,
   inspectionMode = false,
-  getCachedData,
   onRedshiftChange,
   bare = false,
 }) => {
   const { spectrumPreferences, accentColorHex } = usePreferences();
   const { resolvedTheme } = useTheme();
 
-  const [data, setData] = useState<SpectrumData | null>(null);
-  const [fitData, setFitData] = useState<RedshiftFitData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Sidecars come from the shared TanStack cache (lib/hooks/useSpectrumJson):
+  // the inspection prefetch, RedshiftFitSummary and this plot all read the
+  // same entries, so a path is fetched once per page (#500).
+  const spectrumQuery = useSpectrumJson(fitsPath);
+  const fitQuery = useRedshiftFit(fitsPath);
+  const data = spectrumQuery.data ?? null;
+  const fitData = fitQuery.data ?? null;
+  const loading = spectrumQuery.isPending;
+  const error = spectrumQuery.error ? spectrumQuery.error.message : null;
   const [fluxUnit, setFluxUnit] = useState<FluxUnit>(spectrumPreferences.fluxUnit);
   const [colorscale, setColorscale] = useState<Colorscale2D>(spectrumPreferences.colorscale2D);
   const [showEmissionLines, setShowEmissionLines] = useState(inspectionMode);
@@ -181,52 +178,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const plotColors = useMemo(() => getPlotColors(), [resolvedTheme]);
 
-  useEffect(() => {
-    async function fetchData() {
-      setLoading(true);
-      setError(null);
-      setFitData(null);
-
-      try {
-        if (inspectionMode && getCachedData) {
-          const cached = getCachedData(fitsPath);
-          if (cached) {
-            setData(cached.spectrum);
-            setFitData(cached.fitData);
-            setLoading(false);
-            return;
-          }
-        }
-
-        const [spectrumResponse, fitResponse] = await Promise.all([
-          fetch(`/api/spectrum?path=${encodeURIComponent(fitsPath)}`),
-          fetch(`/api/redshift-fit?path=${encodeURIComponent(fitsPath)}`),
-        ]);
-
-        if (!spectrumResponse.ok) {
-          const errorData = await spectrumResponse.json();
-          throw new Error(errorData.error || 'Failed to load spectrum');
-        }
-
-        const spectrumData: SpectrumData = await spectrumResponse.json();
-        setData(spectrumData);
-
-        if (fitResponse.ok) {
-          const fit: RedshiftFitData = await fitResponse.json();
-          setFitData(fit);
-        } else if (fitResponse.status !== 404) {
-          console.warn('Failed to fetch redshift fit data:', fitResponse.status);
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load spectrum');
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    fetchData();
-  }, [fitsPath, inspectionMode, getCachedData]);
-
   // Memoize processed spectrum data - must be before early returns
   const processedData = useMemo(() => {
     if (!data) return null;
@@ -265,8 +216,12 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     return { wave, fnu: fnuValues, fnuErr, flambda, flambdaErr, modelWave, modelFnu, modelFlambda };
   }, [data, fitData]);
 
-  // Memoize all plot data - must be before early returns
-  const plotData = useMemo(() => {
+  // Memoize the redshift-INDEPENDENT figure — every trace but the emission
+  // lines, and every axis but the rest-frame overlay. Dragging the redshift
+  // slider must not rebuild the heatmap / spectrum / profile / model traces:
+  // they keep their identity across frames so Plotly.react can skip them and
+  // only the emission-line traces + xaxis3 change (#500).
+  const basePlotData = useMemo(() => {
     if (!data || !processedData) return null;
 
     const { wave, fnu, fnuErr, flambda, flambdaErr, modelWave, modelFnu, modelFlambda } = processedData;
@@ -444,21 +399,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       dataWave: wave,
     });
 
-    // Add emission line markers if enabled (drawn on the hidden overlay
-    // yaxis4 so they never affect autoscaling or double-click reset)
-    if (showEmissionLines) {
-      traces.push(...buildEmissionLineTraces(redshift, waveMin, waveMax, {
-        yaxis: 'y4',
-        grating,
-        showlegend: true,
-      }));
-    }
-
-    // Current observed view for rest-frame axis ticks (zoomed or full range)
-    const effectiveMin = obsRange ? obsRange[0] : waveMin;
-    const effectiveMax = obsRange ? obsRange[1] : waveMax;
-
-    // Layout configuration with profile panel
+    // Layout configuration with profile panel (xaxis3, the rest-frame
+    // overlay, is added by the redshift-dependent memo below)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout: any = {
       // Per-axis uirevision instead of top-level: each axis's revision key
@@ -478,16 +420,6 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         range: [waveMin, waveMax],
         uirevision: 'constant', // Preserve user zoom across re-renders
       },
-      // X-axis: Rest-frame wavelength (Å), overlays primary axis (shared
-      // builder — see buildRestFrameAxis for the uirevision contract)
-      xaxis3: buildRestFrameAxis({
-        redshift,
-        obsMin: effectiveMin,
-        obsMax: effectiveMax,
-        colors: plotColors,
-        domain: [0, 0.90],
-        anchor: 'y',
-      }),
       // X-axis for profile panel (top-right, narrow)
       xaxis2: {
         gridcolor: plotColors.grid,
@@ -558,8 +490,43 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       },
     };
 
-    return { traces, layout };
-  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, showEmissionLines, redshift, grating, showModel, obsRange, autoStretch]);
+    return { traces, layout, waveMin, waveMax };
+  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, grating, showModel, autoStretch]);
+
+  // Emission line markers (drawn on the hidden overlay yaxis4 so they never
+  // affect autoscaling or double-click reset) — the only traces that move
+  // with the redshift slider.
+  const emissionTraces = useMemo(() => {
+    if (!basePlotData || !showEmissionLines) return [];
+    return buildEmissionLineTraces(redshift, basePlotData.waveMin, basePlotData.waveMax, {
+      yaxis: 'y4',
+      grating,
+      showlegend: true,
+    });
+  }, [basePlotData, showEmissionLines, redshift, grating]);
+
+  // X-axis: Rest-frame wavelength (Å), overlays primary axis (shared builder —
+  // see buildRestFrameAxis for the uirevision contract). Tracks the redshift
+  // and the current observed view (user zoom, else the full range).
+  const restFrameAxis = useMemo(() => {
+    if (!basePlotData) return null;
+    return buildRestFrameAxis({
+      redshift,
+      obsMin: obsRange ? obsRange[0] : basePlotData.waveMin,
+      obsMax: obsRange ? obsRange[1] : basePlotData.waveMax,
+      colors: plotColors,
+      domain: [0, 0.90],
+      anchor: 'y',
+    });
+  }, [basePlotData, redshift, obsRange, plotColors]);
+
+  const plotData = useMemo(() => {
+    if (!basePlotData) return null;
+    return {
+      traces: emissionTraces.length > 0 ? [...basePlotData.traces, ...emissionTraces] : basePlotData.traces,
+      layout: { ...basePlotData.layout, xaxis3: restFrameAxis },
+    };
+  }, [basePlotData, emissionTraces, restFrameAxis]);
 
   // χ²(z) panel data — only built when the user toggles the Model overlay on.
   const chi2PlotData = useMemo(() => {

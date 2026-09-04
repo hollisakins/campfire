@@ -14,7 +14,8 @@ import { useAuth } from '@/lib/contexts/AuthContext';
 import type { FilterOptions } from '@/lib/actions/spectra';
 import type { SortColumn, SortDirection } from '@/lib/actions/spectra-types';
 import { GRATINGS, type ObjectDetail, type Spectrum } from '@/lib/types';
-import { useSpectrumDataCache } from '@/lib/hooks/useSpectrumDataCache';
+import { useQueryClient } from '@tanstack/react-query';
+import { prefetchSpectrumSidecars } from '@/lib/hooks/useSpectrumJson';
 import { useMultiObjectCache } from '@/lib/hooks/useMultiObjectCache';
 import { useObjectNavigation } from '@/lib/hooks/useObjectNavigation';
 import { useInspectionQueue } from '@/lib/hooks/useInspectionQueue';
@@ -110,7 +111,13 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const initialData = useMemo(() => inspectionInitialFromObject(currentObject), [currentObject]);
   const inspectionState = useInspectionState(currentObject.id, initialData);
 
-  const { prefetchGratings, getCached: getCachedGrating, clearCache: clearGratingCache } = useSpectrumDataCache();
+  // Spectrum + zfit sidecars for every grating go through the shared
+  // TanStack cache (#500), so the SpectrumPlot below finds them warm.
+  const queryClient = useQueryClient();
+  const prefetchGratings = useCallback(
+    (spectra: Spectrum[]) => prefetchSpectrumSidecars(queryClient, spectra.map(s => s.fits_path)),
+    [queryClient],
+  );
   const { getCached: getCachedObject, setCached: setCachedObject, deleteCached: deleteCachedObject, clearCache: clearObjectCache } = useMultiObjectCache();
 
   const queue = useInspectionQueue({
@@ -282,11 +289,10 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
   const handleClose = useCallback(async () => {
     redshiftSectionRef.current?.flushPendingChanges();
     await inspectionState.saveIfDirty();
-    clearGratingCache();
     clearObjectCache();
     const qs = filterStr;
     router.push(`/nirspec/objects/${encodeURIComponent(currentObject.object_id)}${qs ? `?${qs}` : ''}`);
-  }, [router, currentObject.object_id, filterStr, clearGratingCache, clearObjectCache, inspectionState]);
+  }, [router, currentObject.object_id, filterStr, clearObjectCache, inspectionState]);
 
   const handleCycleGrating = useCallback(() => {
     if (tabs.length <= 1) return;
@@ -491,7 +497,6 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
                   grating={activeTab.spectrum.grating}
                   initialRedshift={currentRedshift}
                   inspectionMode
-                  getCachedData={getCachedGrating}
                   onRedshiftChange={canEdit ? handleRedshiftSliderChange : undefined}
                 />
               </div>
