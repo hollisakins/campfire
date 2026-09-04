@@ -54,7 +54,7 @@ export function spectrumSidecarsQueryOptions(fitsPath: string) {
   };
 }
 
-const NO_FRONT: SpectrumSidecarUrls = { front: false, spectrum: null, spectrum_1d: null, zfit: null, has_1d: null };
+const NO_FRONT: SpectrumSidecarUrls = { front: false, spectrum: null, spectrum_1d: null, zfit: null, has_1d: null, has_zfit: null };
 
 /** The resolved sidecar urls for a path, from the cache or one resolve call
  * shared by every sidecar query of the same path. A failed resolve is not a
@@ -118,10 +118,12 @@ export async function fetchSpectrum1d(client: QueryClient, fitsPath: string): Pr
   return res.json();
 }
 
-/** `null` when no fit exists for the spectrum (the route's 404 is the only
- * thing that says so); throws on other failures. */
+/** `null` when no fit exists for the spectrum — the resolve's definitive
+ * `has_zfit: false` (no round trip), else the route's 404; throws on other
+ * failures. A null front url alone is never read as absence. */
 export async function fetchRedshiftFit(client: QueryClient, fitsPath: string): Promise<RedshiftFitData | null> {
   const urls = await sidecarUrls(client, fitsPath);
+  if (urls.has_zfit === false) return null;
   if (urls.front && urls.zfit) {
     try {
       const res = await fetch(urls.zfit);

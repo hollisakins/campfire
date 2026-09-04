@@ -11,11 +11,13 @@ import { resolveObjectBackends } from '@/lib/r2';
  * configured and the client fetches /api/spectrum and /api/redshift-fit
  * instead, which stream the bytes.
  *
- * `has_1d` says whether the `_spec_1d.json` sidecar is a registered object
- * of its own, independent of the front: true = it is (the full JSON is a
- * separate download), false = the spectrum predates the sidecar (the 1-D
- * fetch answers with the full payload, and a second download of it is
- * waste), null = the registry did not answer (fetch both to be safe).
+ * `has_1d` / `has_zfit` say whether the `_spec_1d.json` sidecar / the zfit
+ * JSON is a registered object of its own, independent of the front: true =
+ * it is; false = definitively absent (a spectrum that predates the 1-D
+ * sidecar answers the 1-D query with its full payload, so a second download
+ * is waste; a spectrum with no redshift fit needs no /api/redshift-fit round
+ * trip to learn that); null = the registry did not answer (the client fetches
+ * / falls back to be safe).
  */
 export interface SpectrumSidecarUrls {
   front: boolean;
@@ -23,6 +25,7 @@ export interface SpectrumSidecarUrls {
   spectrum_1d: string | null;
   zfit: string | null;
   has_1d: boolean | null;
+  has_zfit: boolean | null;
 }
 
 /**
@@ -68,13 +71,15 @@ export async function GET(request: NextRequest) {
     const json1dKey = deriveSibling(fitsPath, 'spectrum_1d_json');
     const zfitKey = deriveSibling(fitsPath, 'zfit');
     const keys = [jsonKey, json1dKey, zfitKey];
-    // One registry resolution (memoized) serves both the front urls and
-    // `has_1d`. The resolver fails open with no content identity for ANY
-    // key, so "no 1-D row" is only believed when the full JSON — which every
+    // One registry resolution (memoized) serves both the front urls and the
+    // presence flags. The resolver fails open with no content identity for
+    // ANY key, so "no row" is only believed when the full JSON — which every
     // deployed spectrum registers — did resolve.
     const resolved = await resolveObjectBackends(keys);
-    const [json, json1d] = resolved;
-    const has1d = json1d.contentHash ? true : json.contentHash ? false : null;
+    const [json, json1d, zfit] = resolved;
+    const presence = (o: { contentHash: string | null }) => (o.contentHash ? true : json.contentHash ? false : null);
+    const has1d = presence(json1d);
+    const hasZfit = presence(zfit);
     const urls = await frontUrlsForResolved(keys, resolved);
     const body: SpectrumSidecarUrls = {
       front: cdnFrontBase() !== null,
@@ -82,6 +87,7 @@ export async function GET(request: NextRequest) {
       spectrum_1d: urls.get(json1dKey) ?? null,
       zfit: urls.get(zfitKey) ?? null,
       has_1d: has1d,
+      has_zfit: hasZfit,
     };
     return NextResponse.json(body, { headers });
   } catch (err) {
