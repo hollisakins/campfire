@@ -22,7 +22,7 @@ import { CoordinateOverlay } from './CoordinateOverlay';
 import { MapContextMenu } from './MapContextMenu';
 import { CanvasMarkerLayer } from './CanvasMarkerLayer';
 import { CanvasSlitLayer } from './CanvasSlitLayer';
-import type { SlitRegion, Shutter } from '@/lib/actions/map';
+import type { SlitRegion, Shutter, SkyBbox } from '@/lib/actions/map';
 
 import 'leaflet/dist/leaflet.css';
 
@@ -106,18 +106,41 @@ interface MapEventsProps {
   onMouseMove: (coords: { ra: number; dec: number } | null) => void;
   onContextMenu: (data: { coords: { ra: number; dec: number }; position: { x: number; y: number } }) => void;
   onMoveStart: () => void;
+  /** Sky box of the current view (debounced with the URL sync). */
+  onViewBounds: (bbox: SkyBbox | null) => void;
 }
 
-function MapEvents({ wcs, onMouseMove, onContextMenu, onMoveStart }: MapEventsProps) {
+/** RA/Dec box spanned by a Leaflet view, via the layer WCS (null if degenerate). */
+function leafletViewBbox(wcs: WCSParams, map: L.Map): SkyBbox | null {
+  const b = map.getBounds();
+  const corners = [
+    leafletToSky(wcs, b.getSouth(), b.getWest()),
+    leafletToSky(wcs, b.getSouth(), b.getEast()),
+    leafletToSky(wcs, b.getNorth(), b.getWest()),
+    leafletToSky(wcs, b.getNorth(), b.getEast()),
+  ];
+  const ras = corners.map(c => c.ra);
+  const decs = corners.map(c => c.dec);
+  const bbox = {
+    raMin: Math.min(...ras), raMax: Math.max(...ras),
+    decMin: Math.min(...decs), decMax: Math.max(...decs),
+  };
+  if (![bbox.raMin, bbox.raMax, bbox.decMin, bbox.decMax].every(Number.isFinite)) return null;
+  if (bbox.raMax - bbox.raMin > 180) return null; // wrapped RA: fall back to the whole field
+  return bbox;
+}
+
+function MapEvents({ wcs, onMouseMove, onContextMenu, onMoveStart, onViewBounds }: MapEventsProps) {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useMapEvents({
     moveend: (e) => {
       if (!wcs) return;
-      const center = e.target.getCenter();
+      const map = e.target as L.Map;
+      const center = map.getCenter();
       const sky = leafletToSky(wcs, center.lat, center.lng);
-      const zoom = e.target.getZoom();
-      // Debounce URL updates
+      const zoom = map.getZoom();
+      // Debounce URL updates (+ the view box the shutter query is scoped to)
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
         updateMapUrl({
@@ -125,6 +148,7 @@ function MapEvents({ wcs, onMouseMove, onContextMenu, onMoveStart }: MapEventsPr
           dec: sky.dec.toFixed(4),
           z: String(zoom),
         });
+        onViewBounds(leafletViewBbox(wcs, map));
       }, 300);
     },
     mousemove: (e) => {
@@ -251,10 +275,19 @@ export function MapViewer({
   const [showMarkers, setShowMarkers] = useState(true);
   const [showSlits, setShowSlits] = useState(false);
   const [cursorCoords, setCursorCoords] = useState<{ ra: number; dec: number } | null>(null);
+  // Sky box of the current view, reported by whichever engine is mounted
+  // (debounced); null until the first move, and on a field switch.
+  const [viewBbox, setViewBbox] = useState<SkyBbox | null>(null);
+  useEffect(() => { setViewBbox(null); }, [selectedField]);
 
-  // Fetch markers and slits via React Query (cached per field)
+  // Fetch markers and slits via React Query (cached per field). Shutters only
+  // while the overlay is on, and only for the (padded) view box — see
+  // useFieldSlits (perf T1-6 / #502).
   const { data: markers = [], isLoading: isLoadingMarkers } = useFieldObjectMarkers(selectedField);
-  const { data: slits = [], isLoading: isLoadingSlits } = useFieldSlits(selectedField);
+  const { data: slits = [], isLoading: isLoadingSlits } = useFieldSlits(selectedField, {
+    enabled: showSlits,
+    bbox: viewBbox,
+  });
   const [popupState, setPopupState] = useState<{
     marker: MapObjectMarker; latLng: L.LatLng;
   } | null>(null);
@@ -436,6 +469,7 @@ export function MapViewer({
           showShutters={showSlits}
           onToggleShutters={setShowSlits}
           shutterFilter={slitFilter}
+          onViewBounds={setViewBbox}
           onCursorCoords={setCursorCoords}
           onContextMenu={handleContextMenu}
           onOpenFilters={onOpenFilters}
@@ -506,6 +540,7 @@ export function MapViewer({
           onMouseMove={setCursorCoords}
           onContextMenu={handleContextMenu}
           onMoveStart={closeContextMenu}
+          onViewBounds={setViewBbox}
         />
 
         {/* Canvas-rendered slit overlay (below markers) */}

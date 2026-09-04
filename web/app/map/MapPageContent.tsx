@@ -10,6 +10,7 @@ import { parseFiltersFromURL, filtersToURLParams } from '@/lib/utils/url-params'
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
 import { useFilteredObjectIds } from '@/lib/hooks/useFilteredObjectIds';
+import { useFieldObjectMarkers } from '@/lib/hooks/useFieldObjectMarkers';
 
 interface MapPageContentProps {
   layers: MapLayer[];
@@ -64,6 +65,19 @@ export function MapPageContent({
       filters.search.length > 0
     );
   }, [filters]);
+
+  // Start the marker query with the page, not with the lazily loaded map
+  // chunk (perf T1-6 / #502): same TanStack key as MapViewer's own call, so
+  // the two dedupe and the map finds the markers warm. The field guess
+  // mirrors MapViewer's default (URL field, else the first field by name).
+  const guessedField = useMemo(() => {
+    if (currentField) return currentField;
+    const set = new Set<string>();
+    for (const l of layers) set.add(l.field);
+    for (const d of fitsglDatasets) if (d.kind === 'field') set.add(d.field);
+    return [...set].sort()[0];
+  }, [currentField, layers, fitsglDatasets]);
+  useFieldObjectMarkers(guessedField);
 
   // Fetch filter options (programs, fields)
   const { data: filterOptionsResult } = useFilterOptionsQuery(true);

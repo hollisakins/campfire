@@ -2,7 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server';
 import { getAccessibleProgramSlugs } from '@/lib/accessible-programs';
-import { paginateRpc, paginateQuery } from '@/lib/supabase/paginate';
+import { paginateRpc, paginateRpcKeyset, paginateQuery } from '@/lib/supabase/paginate';
 import type { WCSParams } from '@/lib/utils/wcs';
 import type { FilterOptions } from './filter-params';
 import { buildFilterParams } from './filter-params';
@@ -87,6 +87,15 @@ export interface MapObjectMarkersResult {
   error?: string;
 }
 
+/** An RA/Dec box in degrees (no wrap handling — CAMPFIRE fields sit well
+ *  away from RA = 0). */
+export interface SkyBbox {
+  raMin: number;
+  raMax: number;
+  decMin: number;
+  decMax: number;
+}
+
 export interface SlitRegion {
   center_ra: number;
   center_dec: number;
@@ -102,6 +111,8 @@ export interface SlitRegionsResult {
 }
 
 export interface Shutter {
+  /** Keyset cursor for get_field_shutters. */
+  id: number;
   object_id: string;
   source_id: number;
   center_ra: number;
@@ -223,8 +234,11 @@ export async function getFieldObjectMarkers(
 ): Promise<MapObjectMarkersResult> {
   const supabase = await createClient();
 
-  const { data, error } = await paginateRpc<MapObjectMarker>(
+  // Keyset (perf T1-6 / #502): the RPC pages inside the query on object_id,
+  // so each page is one bounded scan instead of a re-run of the whole field.
+  const { data, error } = await paginateRpcKeyset<MapObjectMarker>(
     supabase, 'get_field_object_markers', { p_field: field },
+    { cursorParam: 'p_cursor', getCursor: (row) => row.object_id },
   );
 
   if (error) {
@@ -356,16 +370,25 @@ export async function getNearbyShutters(
 }
 
 /**
- * Fetch all shutters for a field via RPC, paged at PostgREST's max_rows
- * cap (5000; see supabase/config.toml). Used by the full map viewer.
+ * Fetch a field's shutters via RPC — keyset-paged inside the query on the
+ * shutter id (perf T1-6 / #502), optionally restricted to an RA/Dec box so
+ * the map only pulls what its viewport shows. Used by the full map viewer.
  */
 export async function getFieldShutters(
-  field: string
+  field: string,
+  bbox?: SkyBbox | null,
 ): Promise<ShuttersResult> {
   const supabase = await createClient();
 
-  const { data, error } = await paginateRpc<Shutter>(
-    supabase, 'get_field_shutters', { p_field: field },
+  const { data, error } = await paginateRpcKeyset<Shutter>(
+    supabase, 'get_field_shutters', {
+      p_field: field,
+      p_ra_min: bbox?.raMin ?? null,
+      p_ra_max: bbox?.raMax ?? null,
+      p_dec_min: bbox?.decMin ?? null,
+      p_dec_max: bbox?.decMax ?? null,
+    },
+    { cursorParam: 'p_cursor', getCursor: (row) => row.id },
   );
 
   if (error) {

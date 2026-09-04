@@ -3709,7 +3709,21 @@ $$;
 -- targets(target_id) for the slit-filter bridge — both very expensive on
 -- COSMOS-sized fields. RLS on objects still applies (SECURITY INVOKER).
 
-CREATE OR REPLACE FUNCTION public.get_field_object_markers(p_field TEXT, p_include_unpublished BOOLEAN DEFAULT false)
+-- Perf T1-6 (#502): keyset-paged, page-first. The old form aggregated every
+-- target and spectrum of the field before returning, and the client paged it
+-- with PostgREST .range() — LIMIT/OFFSET outside the function, so each page
+-- re-ran the whole aggregate (1.3 s prod mean, 8 s max = the statement
+-- timeout). Now a page of objects is picked first (keyset on object_id, the
+-- LIMIT inside) and only that page's members are aggregated. Callers loop
+-- with p_cursor = last row's object_id until a short page.
+DROP FUNCTION IF EXISTS public.get_field_object_markers(text, boolean);
+
+CREATE OR REPLACE FUNCTION public.get_field_object_markers(
+  p_field TEXT,
+  p_include_unpublished BOOLEAN DEFAULT false,
+  p_cursor TEXT DEFAULT NULL,
+  p_page_size INTEGER DEFAULT 5000
+)
 RETURNS TABLE (
   object_id           TEXT,
   ra                  DOUBLE PRECISION,
@@ -3730,10 +3744,29 @@ AS $$
   -- science, per the access policy). Object row visibility is enforced by RLS
   -- (programs && accessible); this function is SECURITY INVOKER and additionally
   -- gates the member CTEs by an explicit accessible_program_slugs() filter.
-  -- Set-based (not the per-row object_scoped_aggregates helper) because a field
-  -- can return up to ~5000 objects; the logic mirrors that helper.
+  -- The logic mirrors object_scoped_aggregates(), set-based over the page.
   WITH acc AS (
     SELECT public.accessible_program_slugs() AS slugs
+  ),
+  page AS (
+    SELECT o.id, o.object_id, o.ra, o.dec, o.redshift, o.redshift_quality, o.field
+    FROM public.objects o
+    CROSS JOIN acc
+    WHERE o.field = p_field
+      AND o.is_active
+      AND (p_cursor IS NULL OR o.object_id > p_cursor)
+      -- Same membership rule as the old inner JOIN: an object appears only if
+      -- it has >= 1 visible member (accessible program; B1: contributing a
+      -- published spectrum unless the admin opts in). Applied BEFORE the
+      -- LIMIT so a page is never short for a reason other than exhaustion.
+      AND EXISTS (
+        SELECT 1 FROM public.targets t
+        WHERE t.object_id = o.id
+          AND t.program_slug = ANY(acc.slugs)
+          AND (p_include_unpublished OR t.has_published_spectrum)
+      )
+    ORDER BY o.object_id
+    LIMIT GREATEST(1, LEAST(COALESCE(p_page_size, 5000), 50000))
   ),
   mt AS (
     SELECT t.object_id,
@@ -3742,11 +3775,8 @@ AS $$
            COUNT(*)::int                                            AS n_targets
     FROM public.targets t
     CROSS JOIN acc
-    WHERE t.field = p_field
+    WHERE t.object_id IN (SELECT p.id FROM page p)
       AND t.program_slug = ANY(acc.slugs)
-      -- B1: mirror object_scoped_aggregates -- only count targets that
-      -- contribute a published spectrum so draft-only members vanish (the
-      -- final JOIN mt is inner, so objects with zero published members drop out).
       AND (p_include_unpublished OR t.has_published_spectrum)
     GROUP BY t.object_id
   ),
@@ -3755,28 +3785,26 @@ AS $$
     FROM public.spectra s
     JOIN public.targets t ON t.target_id = s.target_id
     CROSS JOIN acc
-    WHERE t.field = p_field
+    WHERE t.object_id IN (SELECT p.id FROM page p)
       AND t.program_slug = ANY(acc.slugs)
       AND (p_include_unpublished OR s.deploy_status = 'published')
     GROUP BY t.object_id
   )
   SELECT
-    o.object_id,
-    o.ra,
-    o.dec,
-    o.redshift::double precision,
-    o.redshift_quality,
-    o.field,
-    COALESCE(mt.n_targets, 0)                      AS n_targets,
-    COALESCE(sp.n_spectra, 0)                      AS n_spectra,
-    COALESCE(mt.programs, ARRAY[]::TEXT[])         AS programs,
+    p.object_id,
+    p.ra,
+    p.dec,
+    p.redshift::double precision,
+    p.redshift_quality,
+    p.field,
+    COALESCE(mt.n_targets, 0)                       AS n_targets,
+    COALESCE(sp.n_spectra, 0)                       AS n_spectra,
+    COALESCE(mt.programs, ARRAY[]::TEXT[])          AS programs,
     COALESCE(mt.member_target_ids, ARRAY[]::TEXT[]) AS member_target_ids
-  FROM public.objects o
-  JOIN mt ON mt.object_id = o.id
-  LEFT JOIN sp ON sp.object_id = o.id
-  WHERE o.field = p_field
-    AND o.is_active
-  ORDER BY o.object_id;
+  FROM page p
+  LEFT JOIN mt ON mt.object_id = p.id
+  LEFT JOIN sp ON sp.object_id = p.id
+  ORDER BY p.object_id;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_field_object_markers TO authenticated;
@@ -3788,8 +3816,26 @@ GRANT EXECUTE ON FUNCTION public.get_field_object_markers TO authenticated;
 -- Single-shot fetch of every shutter in a field for the map viewer. Shutters
 -- are public to authenticated users, so SECURITY INVOKER is fine.
 
-CREATE OR REPLACE FUNCTION public.get_field_shutters(p_field TEXT)
+-- Perf T1-6 (#502): keyset-paged and viewport-scoped. The old form returned
+-- the whole field ordered by object_id and the client paged it with
+-- PostgREST .range(): LIMIT/OFFSET outside the function, so every 5 000-row
+-- page re-ran the full 65 k-row scan + external-merge sort (COSMOS: 14 passes,
+-- 20 MB). Now the LIMIT is inside, pages walk (field, id), and an optional
+-- RA/Dec box restricts the result to what the map is showing. Callers loop
+-- with p_cursor = last row's id until a short page (paginateRpcKeyset).
+DROP FUNCTION IF EXISTS public.get_field_shutters(text);
+
+CREATE OR REPLACE FUNCTION public.get_field_shutters(
+  p_field TEXT,
+  p_cursor INTEGER DEFAULT NULL,
+  p_page_size INTEGER DEFAULT 5000,
+  p_ra_min DOUBLE PRECISION DEFAULT NULL,
+  p_ra_max DOUBLE PRECISION DEFAULT NULL,
+  p_dec_min DOUBLE PRECISION DEFAULT NULL,
+  p_dec_max DOUBLE PRECISION DEFAULT NULL
+)
 RETURNS TABLE (
+  id               INTEGER,
   object_id        TEXT,
   source_id        INTEGER,
   center_ra        DOUBLE PRECISION,
@@ -3805,12 +3851,16 @@ RETURNS TABLE (
 )
 LANGUAGE sql STABLE
 AS $$
-  SELECT s.object_id, s.source_id, s.center_ra, s.center_dec,
+  SELECT s.id, s.object_id, s.source_id, s.center_ra, s.center_dec,
          s.position_angle, s.shutter_idx, s.dither_id, s.shutter_state, s.observation,
          s.aperture_name, s.aperture_width_arcsec, s.aperture_height_arcsec
   FROM public.shutters s
   WHERE s.field = p_field
-  ORDER BY s.object_id;
+    AND (p_cursor IS NULL OR s.id > p_cursor)
+    AND (p_ra_min IS NULL OR p_ra_max IS NULL OR s.center_ra BETWEEN p_ra_min AND p_ra_max)
+    AND (p_dec_min IS NULL OR p_dec_max IS NULL OR s.center_dec BETWEEN p_dec_min AND p_dec_max)
+  ORDER BY s.id
+  LIMIT GREATEST(1, LEAST(COALESCE(p_page_size, 5000), 50000));
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_field_shutters TO authenticated;
