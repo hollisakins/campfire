@@ -26,7 +26,7 @@ interface ObjectCommentsProps {
 }
 
 export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memberTargets }) => {
-  const { user, userProfile } = useAuth();
+  const { user, userProfile, loading: authLoading } = useAuth();
   const supabase = createClient();
   const queryClient = useQueryClient();
   const canEdit = user && userProfile?.can_comment;
@@ -100,9 +100,11 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
   });
 
   const comments = commentsQuery.data ?? [];
-  // "Loading" only while a fetch is genuinely pending for a signed-in viewer;
-  // before the card scrolls into view it shows the (accurate) empty state.
-  const loading = !!user && inView && commentsQuery.isPending;
+  // "Loading" while auth is still booting (user is null until getSession
+  // resolves — not a real "no comments") and while a fetch is pending for a
+  // signed-in viewer; before the card scrolls into view it shows the
+  // (accurate) empty state.
+  const loading = authLoading || (!!user && inView && commentsQuery.isPending);
   const loadError = commentsQuery.isError ? 'Failed to load comments' : null;
 
   const handleSubmit = async (e: React.FormEvent) => {
