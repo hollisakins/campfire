@@ -21,7 +21,9 @@
 --    (a drafts link: published + draft, never revoked; an admin: published
 --    unless opted in), derived from the caller, not from the raw
 --    p_include_unpublished argument; its deployment laterals filter the same
---    set, so draft provenance never sits next to published-only counts.
+--    set, so draft provenance never sits next to published-only counts;
+--    target_count is gated the same way (a target counts only with a
+--    spectrum in the authorized statuses, unless opted into unpublished).
 -- 6. refresh_programs_overview() / refresh_filter_options() carried the same
 --    anon grant (baseline migration) and are revoked alongside.
 
@@ -118,10 +120,17 @@ BEGIN
     FROM targets t
     JOIN programs p ON p.slug = t.program_slug
     LEFT JOIN spectra s ON s.target_id = t.target_id
-      -- Only the statuses this caller is authorized for (targets still appear).
+      -- Only the statuses this caller is authorized for.
       AND s.deploy_status = ANY(v_statuses)
     WHERE t.program_slug = ANY(v_slugs)
       AND (NOT v_link OR t.observation = (SELECT public.link_observation()))
+      -- Targets count on the same terms as their spectra (the snapshot's
+      -- has_published_spectrum gate, generalised): a target with no spectrum
+      -- in the authorized statuses is not counted unless the caller opted
+      -- into unpublished data, where every target appears as before.
+      AND (v_unpublished OR EXISTS (
+        SELECT 1 FROM spectra sx
+        WHERE sx.target_id = t.target_id AND sx.deploy_status = ANY(v_statuses)))
     GROUP BY t.observation, t.program_slug, p.program_name, t.field
   )
   SELECT s.observation, s.program_slug, s.program_name, s.field,
@@ -235,6 +244,11 @@ BEGIN
       AND s.deploy_status = ANY(v_statuses)
     WHERE t.program_slug = ANY(v_slugs)
       AND (NOT v_link OR t.observation = (SELECT public.link_observation()))
+      -- Targets count on the same terms as their spectra (see
+      -- get_observation_stats).
+      AND (v_unpublished OR EXISTS (
+        SELECT 1 FROM public.spectra sx
+        WHERE sx.target_id = t.target_id AND sx.deploy_status = ANY(v_statuses)))
     GROUP BY t.observation, t.program_slug
   )
   SELECT
