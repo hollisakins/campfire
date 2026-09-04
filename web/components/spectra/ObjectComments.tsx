@@ -1,10 +1,12 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import { useInView } from '@/lib/hooks/useInView';
 import type { CommentWithUser } from '@/lib/types';
 import { MessageSquare, Send } from 'lucide-react';
 
@@ -24,16 +26,15 @@ interface ObjectCommentsProps {
 }
 
 export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memberTargets }) => {
-  const { user, userProfile } = useAuth();
-  const supabase = useMemo(() => createClient(), []);
+  const { user, userProfile, loading: authLoading } = useAuth();
+  const supabase = createClient();
+  const queryClient = useQueryClient();
   const canEdit = user && userProfile?.can_comment;
 
-  const [comments, setComments] = useState<AggregatedComment[]>([]);
   const [newComment, setNewComment] = useState('');
   const [selectedTargetId, setSelectedTargetId] = useState<string>(
     memberTargets.length === 1 ? String(memberTargets[0].id) : ''
   );
-  const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,44 +51,37 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
 
   const memberDbIds = useMemo(() => memberTargets.map(m => m.id), [memberTargets]);
 
-  const fetchComments = useCallback(async () => {
-    if (!user) {
-      setComments([]);
-      setLoading(false);
-      return;
-    }
+  // The comment read was prod's single most expensive query shape: 346
+  // comments exist across 42 k objects, yet every object view ran the
+  // target-scoped read (230 ms under RLS) ~3× — an unconditional mount
+  // effect re-firing as `user` churned during auth boot. Now (#499):
+  //   * one query (object-level OR member-target-level) instead of two;
+  //   * fetched only once the Discussion card is about to scroll into view;
+  //   * held in the TanStack cache keyed on the object id, so boot-time
+  //     identity changes and back-navigation don't re-issue it.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inView = useInView(containerRef);
 
-    try {
-      setLoading(true);
-
-      // Fetch object-level and target-level comments in parallel
-      const [objectResult, targetResult] = await Promise.all([
-        supabase
-          .from('comments')
-          .select('*')
-          .eq('object_id', objectDbId)
-          .is('target_id', null)
-          .eq('is_deleted', false)
-          .order('created_at', { ascending: true }),
-        memberDbIds.length > 0
-          ? supabase
-              .from('comments')
-              .select('*')
-              .in('target_id', memberDbIds)
-              .eq('is_deleted', false)
-              .order('created_at', { ascending: true })
-          : Promise.resolve({ data: [], error: null }),
-      ]);
-
-      if (objectResult.error) throw objectResult.error;
-      if (targetResult.error) throw targetResult.error;
-
-      const allRaw = [...(objectResult.data || []), ...(targetResult.data || [])];
-
-      if (allRaw.length === 0) {
-        setComments([]);
-        return;
-      }
+  // The viewer's id is part of the key: comments are RLS-scoped per user
+  // (select_comments_by_access), and the QueryClient outlives a sign-out /
+  // sign-in on the same tab, so a key without it would replay one user's
+  // comments to the next.
+  const commentsQuery = useQuery<AggregatedComment[]>({
+    queryKey: ['object-comments', user?.id ?? null, objectDbId, memberDbIds],
+    enabled: !!user && inView,
+    queryFn: async () => {
+      const scope = memberDbIds.length > 0
+        ? `and(object_id.eq.${objectDbId},target_id.is.null),target_id.in.(${memberDbIds.join(',')})`
+        : `and(object_id.eq.${objectDbId},target_id.is.null)`;
+      const { data: rows, error: readError } = await supabase
+        .from('comments')
+        .select('*')
+        .or(scope)
+        .eq('is_deleted', false)
+        .order('created_at', { ascending: true });
+      if (readError) throw readError;
+      const allRaw = rows ?? [];
+      if (allRaw.length === 0) return [];
 
       // Fetch user profiles
       const userIds = [...new Set(allRaw.map(c => c.user_id))];
@@ -96,27 +90,22 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
         .select('*')
         .in('user_id', userIds);
 
-      // Annotate with source target display ID and sort chronologically
-      const aggregated: AggregatedComment[] = allRaw
-        .map(c => ({
-          ...c,
-          user_profile: profiles?.find(p => p.user_id === c.user_id) || null,
-          source_target_display_id: c.target_id ? (targetDisplayMap[c.target_id] || null) : null,
-        }))
-        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      // Annotate with source target display ID (rows are already chronological)
+      return allRaw.map(c => ({
+        ...c,
+        user_profile: profiles?.find(p => p.user_id === c.user_id) || null,
+        source_target_display_id: c.target_id ? (targetDisplayMap[c.target_id] || null) : null,
+      }));
+    },
+  });
 
-      setComments(aggregated);
-    } catch (err) {
-      console.error('Error fetching comments:', err);
-      setError('Failed to load comments');
-    } finally {
-      setLoading(false);
-    }
-  }, [objectDbId, memberDbIds, targetDisplayMap, user, supabase]);
-
-  useEffect(() => {
-    fetchComments();
-  }, [fetchComments]);
+  const comments = commentsQuery.data ?? [];
+  // "Loading" while auth is still booting (user is null until getSession
+  // resolves — not a real "no comments") and while a fetch is pending for a
+  // signed-in viewer; before the card scrolls into view it shows the
+  // (accurate) empty state.
+  const loading = authLoading || (!!user && inView && commentsQuery.isPending);
+  const loadError = commentsQuery.isError ? 'Failed to load comments' : null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -140,7 +129,7 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
       if (insertError) throw insertError;
 
       setNewComment('');
-      await fetchComments();
+      await queryClient.invalidateQueries({ queryKey: ['object-comments', user.id, objectDbId] });
     } catch (err) {
       console.error('Error posting comment:', err);
       setError('Failed to post comment');
@@ -160,16 +149,16 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
 
   return (
     <Card className="p-6">
-      <div className="flex items-center gap-2 mb-4">
+      <div ref={containerRef} className="flex items-center gap-2 mb-4">
         <MessageSquare className="w-5 h-5 text-primary" />
         <h4 className="font-medium text-text-primary">
           Discussion ({comments.length})
         </h4>
       </div>
 
-      {error && (
+      {(error || loadError) && (
         <div className="mb-4 p-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-900 rounded-lg">
-          <p className="text-sm text-red-800 dark:text-red-400">{error}</p>
+          <p className="text-sm text-red-800 dark:text-red-400">{error || loadError}</p>
         </div>
       )}
 

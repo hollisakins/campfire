@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { getSpectra } from '@/lib/actions/spectra';
+import { useInView } from '@/lib/hooks/useInView';
 import { SpectrumTarget, QUALITY_LABELS } from '@/lib/types';
 import { formatDistance } from '@/lib/utils/coordinate-parser';
 import { Card } from '@/components/ui/Card';
@@ -25,7 +26,17 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [nearbyObjects, setNearbyObjects] = useState<SpectrumTarget[]>([]);
 
+  // This card renders last on the page, and its 1-arcmin cone search runs
+  // the full catalog RPC (~0.5 s / 135 k buffers for ≤10 rows). Server
+  // actions serialize per client, so firing it on mount queued ahead of the
+  // spectrum, shutter and comment reads above the fold. Fetch only once the
+  // card is about to scroll into view (#499).
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inView = useInView(containerRef);
+
   useEffect(() => {
+    if (!inView) return;
+
     const fetchNearbyObjects = async () => {
       setLoading(true);
       setError(null);
@@ -66,7 +77,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
     };
 
     fetchNearbyObjects();
-  }, [ra, dec, currentTargetId]);
+  }, [ra, dec, currentTargetId, inView]);
 
   // Helper to get quality info
   const getQualityInfo = (quality: number) => {
@@ -80,7 +91,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
   if (loading) {
     return (
       <Card>
-        <div className="p-8 text-center">
+        <div ref={containerRef} className="p-8 text-center">
           <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
           <p className="text-text-secondary mt-4">Finding nearby objects...</p>
         </div>
@@ -91,7 +102,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
   if (error) {
     return (
       <Card>
-        <div className="p-8 text-center">
+        <div ref={containerRef} className="p-8 text-center">
           <p className="text-red-500 dark:text-red-400">{error}</p>
         </div>
       </Card>
@@ -101,7 +112,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
   if (nearbyObjects.length === 0) {
     return (
       <Card>
-        <div className="p-8 text-center">
+        <div ref={containerRef} className="p-8 text-center">
           <p className="text-text-secondary">
             No other objects found within 1 arcminute
           </p>
@@ -112,7 +123,7 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
 
   return (
     <Card>
-      <div className="p-6">
+      <div ref={containerRef} className="p-6">
         <h3 className="text-lg font-semibold text-text-primary mb-4">
           Nearby Objects
           <span className="text-sm font-normal text-text-secondary ml-2">

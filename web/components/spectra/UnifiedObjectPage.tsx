@@ -233,24 +233,29 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
 
   return (
     <div>
-      <div className="flex gap-6 pb-24">
-        {/* Desktop sidebar: cutout + members control panel */}
-        <div className="hidden lg:block">
-          <div className="w-[260px] flex-shrink-0 sticky top-4 max-h-[calc(100vh-6rem)] overflow-y-auto border-r border-border pr-3">
-            <div className="mb-3">
-              <TileThumbnailWithToggle
-                targetId={object.object_id}
-                kind="object"
-                size={600}
-                displaySize={240}
-                fov={3.2}
-                ra={object.ra}
-                dec={object.dec}
-                field={object.field}
-                linkToMap={{ field: object.field, ra: object.ra, dec: object.dec }}
-                memberColors={cutoutMemberColors}
-              />
-            </div>
+      <div className="flex flex-col lg:flex-row gap-6 pb-24">
+        {/* Cutout (+ members control panel on desktop). ONE mount: the cutout
+            used to be rendered twice — a `hidden lg:block` desktop copy and a
+            `lg:hidden` mobile copy — and React runs both trees' effects, so
+            every object view fired getNearbyShutters and the tile render
+            twice (#499). The container reflows instead: stacked above the
+            content on small screens, a sticky sidebar from lg up. */}
+        <div className="lg:w-[260px] lg:flex-shrink-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto lg:border-r lg:border-border lg:pr-3">
+          <div className="mb-3">
+            <TileThumbnailWithToggle
+              targetId={object.object_id}
+              kind="object"
+              size={600}
+              displaySize={240}
+              fov={3.2}
+              ra={object.ra}
+              dec={object.dec}
+              field={object.field}
+              linkToMap={{ field: object.field, ra: object.ra, dec: object.dec }}
+              memberColors={cutoutMemberColors}
+            />
+          </div>
+          <div className="hidden lg:block">
             <ObjectSidebar
               members={object.member_targets}
               colors={colors}
@@ -263,22 +268,6 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
         </div>
 
         <div className="flex-1 min-w-0">
-          {/* Mobile: cutout above content */}
-          <div className="lg:hidden mb-4">
-            <TileThumbnailWithToggle
-              targetId={object.object_id}
-              kind="object"
-              size={600}
-              displaySize={200}
-              fov={3.2}
-              ra={object.ra}
-              dec={object.dec}
-              field={object.field}
-              linkToMap={{ field: object.field, ra: object.ra, dec: object.dec }}
-              memberColors={cutoutMemberColors}
-            />
-          </div>
-
           {/* === Header === */}
           <div className="mb-6">
             <div className="flex items-center gap-3 mb-2 flex-wrap">
