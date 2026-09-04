@@ -99,7 +99,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         .single();
 
       if (error && error.code === 'PGRST116') {
-        // Profile doesn't exist - user needs to complete setup via /welcome
+        // Profile doesn't exist - user needs to complete setup via /welcome.
+        // Not a fetched profile: unpin the ref so the next auth event after
+        // /welcome creates the row refetches instead of being deduped.
+        if (profileUserIdRef.current === userId) profileUserIdRef.current = null;
         setUserProfile(null);
         setNeedsProfileSetup(true);
         return;
