@@ -1,4 +1,4 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import {
   compositeTileThumbnail,
@@ -7,6 +7,8 @@ import {
 } from '@/lib/utils/tile-compositing';
 import { resolveFieldCutoutSource } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
+import { getAssetVersions } from '@/lib/asset-version';
+import { cutoutStoreFor, cutoutStoreHas, storeCutoutInBackground, storeSizeFor } from '@/lib/cutout/store';
 
 // Tile decode + reprojection + PNG encode can exceed a short function budget
 // for a 600 px render on a cold instance (#497).
@@ -17,6 +19,11 @@ export const maxDuration = 60;
 // but they must never enter Vercel's shared edge cache, which serves `public`
 // responses to anyone asking for the same URL — cookie or not (#497).
 const PRIVATE_LONG = 'private, max-age=604800, stale-while-revalidate=86400';
+// A store hit is a 302 the browser may keep for a day (not a week): the
+// bucket's lifecycle rule can expire a stored cutout, and a cached redirect
+// must not point at a gone object for longer than that. The next miss simply
+// re-renders and re-stores (#509).
+const STORE_REDIRECT_CACHE = 'private, max-age=86400';
 
 type Kind = 'object' | 'target';
 
@@ -33,6 +40,13 @@ type Kind = 'object' | 'target';
  * other can silently render the wrong patch of sky; callers state it. A
  * request without `kind` keeps the historical targets-then-objects probe.
  * `v` is an opaque cache-key token (lib/asset-version.ts) and is not read.
+ *
+ * Content-addressed store (perf T2-D3, #509): after the access check, a
+ * cutout already rendered for the same (field, imaging version, size, fov,
+ * ra, dec) answers with a 302 to its CDN url; otherwise it is rendered, sent,
+ * and written to the store after the response. `size` is rounded up to the
+ * store's ladder (64 / 300 / 600) so the list, bucket and object page share
+ * renders; the `<img>` scales down.
  */
 export async function GET(request: NextRequest) {
   const { user, supabase } = await getRequestIdentity();
@@ -96,15 +110,33 @@ export async function GET(request: NextRequest) {
     // FitsGL path: render from the field's FITS pyramid when one is deployed
     // (RLS scopes draft-backed datasets to admins). Falls through to the
     // legacy PNG tiles on any render failure while both stacks coexist.
-    const fitsglSrc = await resolveFieldCutoutSource(supabase, obj.field);
+    const [fitsglSrc, versions] = await Promise.all([
+      resolveFieldCutoutSource(supabase, obj.field),
+      getAssetVersions(),
+    ]);
+
+    // Store lookup: only renders from public imagery are stored or served
+    // from the store (a draft-backed dataset stays a private, uncached
+    // render for the admin who can see it).
+    const storeSize = storeSizeFor(size);
+    const publicImagery = fitsglSrc ? fitsglSrc.isPublic : true;
+    const fieldVersion = versions.byField[obj.field];
+    const store = publicImagery && fieldVersion
+      ? cutoutStoreFor({ field: obj.field, version: fieldVersion, size: storeSize, fov, ra: obj.ra, dec: obj.dec })
+      : null;
+    if (store && (await cutoutStoreHas(store.key))) {
+      return NextResponse.redirect(store.url, { status: 302, headers: { 'Cache-Control': STORE_REDIRECT_CACHE } });
+    }
+
     if (fitsglSrc) {
       try {
         const png = await renderDisplayCutoutPng(fitsglSrc, {
           ra: obj.ra,
           dec: obj.dec,
           fovArcsec: fov,
-          outputSize: size,
+          outputSize: storeSize,
         });
+        if (store) storeCutoutInBackground(store.key, png);
         return new Response(new Uint8Array(png), {
           status: 200,
           headers: {
@@ -144,9 +176,10 @@ export async function GET(request: NextRequest) {
       ra: obj.ra,
       dec: obj.dec,
       layer,
-      outputSize: size,
+      outputSize: storeSize,
       fovArcsec: fov,
     });
+    if (store) storeCutoutInBackground(store.key, png);
 
     return new Response(new Uint8Array(png), {
       status: 200,

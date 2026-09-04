@@ -9,6 +9,8 @@ import {
 import type { WCSParams } from '@/lib/utils/wcs';
 import { resolveFieldCutoutSource } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
+import { getAssetVersions } from '@/lib/asset-version';
+import { cutoutStoreFor, cutoutStoreHas, storeCutoutInBackground } from '@/lib/cutout/store';
 
 // Tile decode + reprojection + PNG encode for up to 2048 px on a cold instance (#497).
 export const maxDuration = 60;
@@ -17,6 +19,11 @@ export const maxDuration = 60;
 // shared cache anyway, so `private` states the truth for the client's own
 // cache instead of an inert `public` (#497).
 const PRIVATE_LONG = 'private, max-age=604800, stale-while-revalidate=86400';
+// A store hit is a 302 the browser may keep for a day (not a week): the
+// bucket's lifecycle rule can expire a stored cutout, and a cached redirect
+// must not point at a gone object for longer than that. The next miss simply
+// re-renders and re-stores (#509).
+const STORE_REDIRECT_CACHE = 'private, max-age=86400';
 
 /**
  * GET /api/v1/cutout?object_id=<id>&size=<px>&fov=<arcsec>
@@ -32,6 +39,12 @@ const PRIVATE_LONG = 'private, max-age=604800, stale-while-revalidate=86400';
  * - size (optional): Output size in pixels. Defaults to native resolution
  *   for the requested FOV. Clamped to 16–2048.
  * - fov (optional, default 5): Field of view in arcseconds, clamped to 1–30.
+ *
+ * Content-addressed store (perf T2-D3, #509): bearer requests bypass the
+ * edge cache, so every CLI call used to render. A cutout already rendered for
+ * the same inputs answers with a 302 to its CDN url (HTTP clients follow it;
+ * the bearer token is not forwarded cross-host); a fresh render is written to
+ * the store after the response. The requested size is kept exactly.
  */
 export async function GET(request: NextRequest) {
   const userId = await validateAuth(request);
@@ -124,20 +137,33 @@ export async function GET(request: NextRequest) {
     // FitsGL path (epic #337, Phase 5). Service-role client bypasses RLS, so
     // non-admins mirror the fitsgl_datasets policy via requirePublic; admins
     // may render from draft-backed pyramids (matching the map).
-    const fitsglSrc = await resolveFieldCutoutSource(supabase, obj.field, {
-      requirePublic: !isAdmin,
-    });
+    const [fitsglSrc, versions] = await Promise.all([
+      resolveFieldCutoutSource(supabase, obj.field, { requirePublic: !isAdmin }),
+      getAssetVersions(),
+    ]);
+    const fieldVersion = versions.byField[obj.field];
+    const publicImagery = fitsglSrc ? fitsglSrc.isPublic : true;
+    const storeFor = (outputSize: number) =>
+      publicImagery && fieldVersion
+        ? cutoutStoreFor({ field: obj.field, version: fieldVersion, size: outputSize, fov, ra: obj.ra, dec: obj.dec })
+        : null;
+
     if (fitsglSrc) {
       try {
         const outputSize = clampSize(
           requestedSize ?? Math.round(fov / fitsglSrc.nativeScaleArcsec),
         );
+        const store = storeFor(outputSize);
+        if (store && (await cutoutStoreHas(store.key))) {
+          return NextResponse.redirect(store.url, { status: 302, headers: { 'Cache-Control': STORE_REDIRECT_CACHE } });
+        }
         const png = await renderDisplayCutoutPng(fitsglSrc, {
           ra: obj.ra,
           dec: obj.dec,
           fovArcsec: fov,
           outputSize,
         });
+        if (store) storeCutoutInBackground(store.key, png);
         return new Response(new Uint8Array(png), {
           status: 200,
           headers: {
@@ -176,6 +202,10 @@ export async function GET(request: NextRequest) {
     const wcs = layer.wcs_params as WCSParams;
     const pixPerArcsec = 1 / (Math.abs(wcs.cd2_2) * 3600);
     const outputSize = clampSize(requestedSize ?? Math.round(fov * pixPerArcsec));
+    const store = storeFor(outputSize);
+    if (store && (await cutoutStoreHas(store.key))) {
+      return NextResponse.redirect(store.url, { status: 302, headers: { 'Cache-Control': STORE_REDIRECT_CACHE } });
+    }
 
     // Composite the thumbnail
     const png = await compositeTileThumbnail({
@@ -185,6 +215,7 @@ export async function GET(request: NextRequest) {
       outputSize,
       fovArcsec: fov,
     });
+    if (store) storeCutoutInBackground(store.key, png);
 
     return new Response(new Uint8Array(png), {
       status: 200,

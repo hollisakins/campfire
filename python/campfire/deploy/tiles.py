@@ -53,6 +53,33 @@ def _get_supabase_client(config: dict):
 # R2 Operations
 # ============================================
 
+def purge_cutout_store(config: dict, field: str) -> int | None:
+    """Drop every stored cutout of *field* (perf T2-D3, #509).
+
+    The web's content-addressed cutout store lives on the tiles bucket under
+    ``cutouts/<field>/v<imaging version>/…``; the version changes whenever the
+    field's tiles or FitsGL pyramid are re-deployed, so everything under the
+    field prefix is orphaned the moment this deploy lands. Best-effort: needs
+    direct tiles credentials (``[r2_tiles]`` / ``CAMPFIRE_S3_TILES_*``); without
+    them the bucket's lifecycle rule expires the prefix instead. Returns the
+    number of objects deleted, or None when skipped.
+    """
+    if 'r2_tiles' not in config:
+        print(f"  (cutout store for {field} not purged: no direct tiles credentials; "
+              "the bucket lifecycle rule will expire it)")
+        return None
+    try:
+        from campfire.deploy.backend import resolve_backend
+        client = get_r2_tiles_client(config)
+        bucket = resolve_backend(config, 'tiles').bucket
+        n = delete_r2_prefix(client, bucket, f"cutouts/{field}/")
+        print(f"  Purged {n} stored cutouts for {field}")
+        return n
+    except Exception as e:  # noqa: BLE001 — never fail a deploy over cache cleanup
+        print(f"  Warning: failed to purge the cutout store for {field}: {e}")
+        return None
+
+
 def delete_r2_prefix(r2_client, bucket: str, prefix: str) -> int:
     """Delete all objects under a prefix in R2. Returns number deleted."""
     deleted = 0
@@ -148,6 +175,10 @@ def upload_tiles(
             print(f"  Bumped tile_version for {field}/{fname}")
         except Exception as e:
             print(f"  Warning: Failed to bump tile_version: {e}")
+
+    # Every stored cutout of the field is keyed on the old imaging version now.
+    if not dry_run:
+        purge_cutout_store(config, field)
 
 
 # ============================================
