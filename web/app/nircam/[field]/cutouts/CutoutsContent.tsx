@@ -8,7 +8,7 @@ import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { FieldSelectorDropdown } from '@/components/nircam/FieldSelectorDropdown';
 import type { FitsglDataset } from '@/lib/actions/map';
 import type { NircamFieldCard } from '@/lib/types';
-import { MAX_PIXELS_PER_BAND, MAX_PIXELS_TOTAL } from '@/lib/cutout/science';
+import { MAX_PIXELS_PER_BAND, MAX_PIXELS_TOTAL } from '@/lib/cutout/limits';
 import { parseCoordinates } from '@/lib/utils/coordinate-parser';
 
 const STRETCHES = ['linear', 'log', 'sqrt', 'asinh'] as const;
