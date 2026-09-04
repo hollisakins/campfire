@@ -3,7 +3,9 @@
 import React, { useState, useEffect, useCallback, useTransition, useRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import { Plus, X, Loader2, Check, AlertCircle, Search, Tag } from 'lucide-react';
-import { getListsWithMembership, addObjectToList, removeObjectFromList } from '@/lib/actions/lists';
+import { addObjectToList, removeObjectFromList } from '@/lib/actions/lists';
+import { fetchJson } from '@/lib/fetch-json';
+import type { ListsMembershipResponse } from '@/app/api/lists/membership/route';
 import { ListForm } from '@/components/lists/ListForm';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { getContrastColor } from '@/lib/flags';
@@ -92,11 +94,24 @@ export function ObjectListsSection({ objectId, ra, dec, dropdownPlacement = 'bot
     openDropdown: () => setShowDropdown(true),
   }), []);
 
+  // Membership is read through a GET route (#506) so it runs alongside the
+  // page's other reads instead of queueing behind them as a server action,
+  // and is abandoned if the user moves on. Adds/removes stay actions.
   useEffect(() => {
-    getListsWithMembership(objectId).then(({ lists: data }) => {
-      setLists(data);
-      setLoading(false);
-    });
+    const controller = new AbortController();
+    setLoading(true);
+    fetchJson<ListsMembershipResponse>(`/api/lists/membership?object=${objectId}`, { signal: controller.signal })
+      .then(({ lists: data }) => {
+        setLists(data);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        console.error('Failed to load lists:', err);
+        setLists([]);
+        setLoading(false);
+      });
+    return () => controller.abort();
   }, [objectId]);
 
   // Close dropdown on outside click

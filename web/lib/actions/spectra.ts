@@ -4,7 +4,7 @@ import { createServiceClient } from '@/lib/supabase/server';
 import { getAccessContext } from '@/lib/auth/access-context';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { paginateRpc } from '@/lib/supabase/paginate';
-import type { SpectrumTarget, Program, Spectrum, ObjectDetail, ObjectMemberTarget, PinnedObjectMetadata } from '@/lib/types';
+import type { SpectrumTarget, Spectrum, ObjectDetail, ObjectMemberTarget, PinnedObjectMetadata } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
 import type { FilterOptions } from './filter-params';
 export type { FilterOptions, FilterMode } from './filter-params';
@@ -31,12 +31,6 @@ export interface PaginatedSpectraResult {
 export type { SortDirection, SortColumn, ViewMode } from './spectra-types';
 import type { SortColumn, SortDirection, ViewMode } from './spectra-types';
 
-export interface FilterOptionsResult {
-  programs: Program[];
-  fields: string[];
-  observations: string[];
-  error?: string;
-}
 
 /**
  * Fetch spectra with optional filters, sorting, and server-side pagination.
@@ -683,108 +677,6 @@ export async function getPinnedObjectsMetadata(
 }
 
 /**
- * Fetch available filter options (programs and fields the user has access to).
- * Includes public programs + programs the user has explicit access to.
- */
-export async function getFilterOptions(): Promise<FilterOptionsResult> {
-  const { user, supabase } = await getRequestIdentity();
-
-  if (!user) {
-    return {
-      programs: [],
-      fields: [],
-      observations: [],
-    };
-  }
-
-  try {
-    // Fetch the accessible-slug list (SQL authority — see
-    // web/lib/auth/access-context.ts) and all RLS-visible programs in parallel.
-    const [accessibleSlugList, { data: allPrograms, error: programsError }] = await Promise.all([
-      getAccessContext(user.id).then(a => a.accessibleSlugs),
-      supabase.from('programs').select('*'),
-    ]);
-
-    if (programsError) {
-      console.error('Error fetching programs:', programsError);
-      return {
-        programs: [],
-        fields: [],
-        observations: [],
-        error: programsError.message,
-      };
-    }
-
-    // Filter to the accessible set. The old form (is_public OR explicit
-    // grant) was wrong for link accounts, whose scoped program is neither.
-    const accessiblePrograms = (allPrograms || []).filter(
-      p => accessibleSlugList.includes(p.slug)
-    );
-
-    if (accessiblePrograms.length === 0) {
-      return {
-        programs: [],
-        fields: [],
-        observations: [],
-      };
-    }
-
-    // Fetch JWST PIDs from observations table for program sorting
-    const { data: obsData } = await supabase
-      .from('observations')
-      .select('program_slug, jwst_program_id');
-
-    const pidsBySlug: Record<string, number[]> = {};
-    for (const obs of (obsData || [])) {
-      if (!obs.jwst_program_id) continue;
-      if (!pidsBySlug[obs.program_slug]) pidsBySlug[obs.program_slug] = [];
-      if (!pidsBySlug[obs.program_slug].includes(obs.jwst_program_id)) {
-        pidsBySlug[obs.program_slug].push(obs.jwst_program_id);
-      }
-    }
-
-    const programsWithPids = accessiblePrograms.map(p => ({
-      ...p,
-      jwst_pids: pidsBySlug[p.slug]?.sort((a, b) => a - b) || [],
-    }));
-
-    // Fetch fields and observations from materialized view (cached, refreshed after deployments)
-    const { data: filterData, error: filterError } = await supabase
-      .from('mv_filter_options')
-      .select('fields, observations')
-      .single();
-
-    if (filterError) {
-      console.error('Error fetching filter options:', filterError);
-      return {
-        programs: programsWithPids,
-        fields: [],
-        observations: [],
-        error: filterError.message,
-      };
-    }
-
-    // Extract fields and observations from materialized view
-    const uniqueFields = filterData?.fields || [];
-    const uniqueObservations = filterData?.observations || [];
-
-    return {
-      programs: programsWithPids,
-      fields: uniqueFields,
-      observations: uniqueObservations,
-    };
-  } catch (err) {
-    console.error('Unexpected error fetching filter options:', err);
-    return {
-      programs: [],
-      fields: [],
-      observations: [],
-      error: 'An unexpected error occurred',
-    };
-  }
-}
-
-/**
  * Fetch all matching object IDs (IAU names) for the inspection queue.
  * Returns a stable snapshot ordered by the requested sort column (defaulting
  * to object_id ascending) so inspection mode steps through targets in the
@@ -857,75 +749,5 @@ export async function getInspectionQueueIds(
   } catch (err) {
     console.error('Unexpected error fetching inspection queue:', err);
     return { ids: [], error: 'An unexpected error occurred' };
-  }
-}
-
-/**
- * Get adjacent object IDs for navigation on object detail page.
- */
-export async function getAdjacentObjectIds(
-  currentObjectId: string,
-  filters?: Partial<FilterOptions>,
-  sortColumn: SortColumn = 'object_id',
-  sortDirection: SortDirection = 'asc'
-): Promise<{
-  prev: string | null;
-  next: string | null;
-  currentIndex: number;
-  total: number;
-}> {
-  const { user, supabase } = await getRequestIdentity();
-
-  if (!user) {
-    return { prev: null, next: null, currentIndex: 0, total: 0 };
-  }
-
-  try {
-    // Which programs can this user access? One RPC to the SQL authority
-    // (accessible_program_slugs) rather than a hand-rolled grants + public
-    // union: the union is wrong for link accounts (scoped program only, no
-    // is_public) and admins (every program). See web/lib/auth/access-context.ts.
-    const accessibleProgramSlugs = (await getAccessContext(user.id)).accessibleSlugs;
-
-    if (accessibleProgramSlugs.length === 0) {
-      return { prev: null, next: null, currentIndex: 0, total: 0 };
-    }
-
-    const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
-
-    // Strip target-only params that the objects RPC doesn't accept
-    /* eslint-disable @typescript-eslint/no-unused-vars */
-    const {
-      p_dq_flags_include_any: _dq1, p_dq_flags_include_all: _dq2, p_dq_flags_exclude: _dq3,
-      ...objectsParams
-    } = rpcParams;
-    /* eslint-enable @typescript-eslint/no-unused-vars */
-
-    const { data, error } = await supabase.rpc('get_adjacent_objects', {
-      p_current_object_id: currentObjectId,
-      ...objectsParams,
-      p_sort_column: sortColumn,
-      p_sort_direction: sortDirection,
-    });
-
-    if (error) {
-      console.error('Error fetching adjacent objects:', error);
-      return { prev: null, next: null, currentIndex: 0, total: 0 };
-    }
-
-    const result = data?.[0];
-    if (!result) {
-      return { prev: null, next: null, currentIndex: 0, total: 0 };
-    }
-
-    return {
-      prev: result.prev_object_id || null,
-      next: result.next_object_id || null,
-      currentIndex: Number(result.current_index) || 0,
-      total: Number(result.total_count) || 0,
-    };
-  } catch (err) {
-    console.error('Error in getAdjacentObjectIds:', err);
-    return { prev: null, next: null, currentIndex: 0, total: 0 };
   }
 }

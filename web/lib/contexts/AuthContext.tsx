@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { User, Session } from '@supabase/supabase-js';
+import { useQueryClient } from '@tanstack/react-query';
 import { createClient } from '@/lib/supabase/client';
 import { UserProfile } from '@/lib/types';
 import { generateUniqueUsername } from '@/lib/utils/username';
@@ -47,6 +48,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Module singleton (lib/supabase/client.ts) — stable across renders.
   const supabase = createClient();
+  const queryClient = useQueryClient();
+
+  // The TanStack cache outlives a sign-out / sign-in on the same tab, and the
+  // read queries are keyed on what they fetch, never on the viewer (#506) —
+  // so the cache is cleared whenever the signed-in user changes, including to
+  // nobody. Not on the initial null → user transition at boot: nothing
+  // viewer-specific has been fetched yet, and clearing would cancel the
+  // queries the page just started.
+  const cacheUserIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const id = user?.id ?? null;
+    if (cacheUserIdRef.current !== null && cacheUserIdRef.current !== id) {
+      queryClient.clear();
+    }
+    cacheUserIdRef.current = id;
+  }, [user?.id, queryClient]);
   // The user id whose profile was last fetched (or is in flight). The boot
   // chain used to run twice per page load — `getSession().then` AND the
   // `INITIAL_SESSION` event `onAuthStateChange` emits synchronously on
@@ -237,6 +254,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     await supabase.auth.signOut();
+    // Drop every cached read now, before the SIGNED_OUT event lands (the
+    // effect above also fires on the user change, harmlessly twice).
+    queryClient.clear();
     profileUserIdRef.current = null;
     setNeedsProfileSetup(false);
     setNeedsAccessCode(false);

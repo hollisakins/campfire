@@ -9,6 +9,7 @@ import type { FilterOptions } from '@/lib/actions/filter-params';
 import { parseFiltersFromURL, filtersToURLParams } from '@/lib/utils/url-params';
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
+import { useAuth } from '@/lib/contexts/AuthContext';
 import { useFilteredObjectIds } from '@/lib/hooks/useFilteredObjectIds';
 import { useFieldObjectMarkers } from '@/lib/hooks/useFieldObjectMarkers';
 
@@ -79,8 +80,10 @@ export function MapPageContent({
   }, [currentField, layers, fitsglDatasets]);
   useFieldObjectMarkers(guessedField);
 
-  // Fetch filter options (programs, fields)
-  const { data: filterOptionsResult } = useFilterOptionsQuery(true);
+  // Fetch filter options (programs, fields) — once auth has resolved to a
+  // user; the route answers 401 to anonymous callers.
+  const { user, loading: authLoading } = useAuth();
+  const { data: filterOptionsResult } = useFilterOptionsQuery(!authLoading && !!user);
   const availablePrograms = filterOptionsResult?.programs ?? [];
 
   // Scope filter query to the current map field so the RPC only returns

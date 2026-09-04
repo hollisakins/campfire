@@ -85,6 +85,7 @@ Requires `.env.local` with Supabase + R2 credentials (see `web/README.md`).
 ### Key Patterns
 
 - **Server actions**: `web/lib/actions/` with `"use server"` directive
+- **Reads vs mutations (decision D-C, #506)**: server actions are for *mutations* only. Read-only data that a client component fetches (mount effects, TanStack queries) goes through a `GET` route handler under `web/app/api/` — Next serializes server-action POSTs per client, so a read implemented as an action queues behind every other action on the page and cannot be aborted or cached. Pattern: the route resolves identity with `getRequestIdentity()` / `getRequestPrincipal()`, queries under RLS, exports its response type, and sets `Cache-Control: private, …` (never `public`); the client fetches it with `fetchJson()` from `web/lib/fetch-json.ts` inside a `useQuery` whose key names *what* is fetched, never the viewer (the QueryClient is cleared on sign-out in `AuthContext`). Shared read logic that both a route and an action need lives in `web/lib/server/` (`import 'server-only'`). Examples: `/api/shutters`, `/api/objects/adjacent`, `/api/objects/near`, `/api/filter-options`, `/api/metadata/*`, `/api/lists/membership`.
 - **Types**: `web/lib/types.ts` (DB types), `web/lib/actions/spectra-types.ts` (sort columns)
 - **Flags**: `web/lib/flags.ts` — bitmask flags (spectral features, object flags, DQ) + quality enum
 - **Auth (client)**: `useAuth()` from `web/lib/contexts/AuthContext.tsx`

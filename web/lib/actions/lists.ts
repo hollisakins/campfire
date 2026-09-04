@@ -3,10 +3,10 @@
 import { createClient } from '@/lib/supabase/server';
 import { getAccessContext } from '@/lib/auth/access-context';
 import { getRequestIdentity } from '@/lib/auth/identity';
+import { fetchMyShareRoles } from '@/lib/server/lists';
 import type {
   ObjectList,
   ObjectListMember,
-  ObjectListWithMembership,
   ObjectListOverview,
   ObjectListMemberWithObject,
   ObjectListShareWithUser,
@@ -14,22 +14,6 @@ import type {
 } from '@/lib/types';
 
 type ServerSupabase = Awaited<ReturnType<typeof createClient>>;
-
-/**
- * Fetch the current user's share roles (issue #450), keyed by list id.
- * Used to attach `shared_role` to lists returned by the read actions.
- */
-async function fetchMyShareRoles(
-  supabase: ServerSupabase,
-  userId: string | undefined,
-): Promise<Map<number, ListShareRole>> {
-  if (!userId) return new Map();
-  const { data } = await supabase
-    .from('object_list_shares')
-    .select('list_id, role')
-    .eq('user_id', userId);
-  return new Map((data ?? []).map(s => [s.list_id, s.role as ListShareRole]));
-}
 
 /**
  * Whether the user may add/remove members of a list: owner, public_edit,
@@ -107,42 +91,6 @@ export async function getAvailableLists(): Promise<{
 
   const lists: ObjectList[] = (data ?? []).map(list => ({
     ...list,
-    shared_role: shareRoles.get(list.id) ?? null,
-  }));
-
-  return { lists };
-}
-
-/**
- * Get lists with membership status for a given object.
- */
-export async function getListsWithMembership(objectId: number): Promise<{
-  lists: ObjectListWithMembership[];
-  error?: string;
-}> {
-  const { user, supabase } = await getRequestIdentity();
-
-  const [listsResult, membersResult, shareRoles] = await Promise.all([
-    supabase
-      .from('object_lists')
-      .select('*')
-      .order('is_system', { ascending: false })
-      .order('name'),
-    supabase
-      .from('object_list_members')
-      .select('list_id')
-      .eq('object_id', objectId),
-    fetchMyShareRoles(supabase, user?.id),
-  ]);
-
-  if (listsResult.error) return { lists: [], error: listsResult.error.message };
-  if (membersResult.error) return { lists: [], error: membersResult.error.message };
-
-  const memberListIds = new Set((membersResult.data ?? []).map(m => m.list_id));
-
-  const lists: ObjectListWithMembership[] = (listsResult.data ?? []).map(list => ({
-    ...list,
-    is_member: memberListIds.has(list.id),
     shared_role: shareRoles.get(list.id) ?? null,
   }));
 

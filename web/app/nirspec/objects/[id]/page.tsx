@@ -9,7 +9,7 @@ import { ObjectNavigation } from '@/components/spectra/ObjectNavigation';
 import { UnifiedObjectPage } from '@/components/spectra/UnifiedObjectPage';
 import { getObjectById, getObjectMetadata } from '@/lib/actions/spectra';
 import { getAssetVersions, assetVersionFor } from '@/lib/asset-version';
-import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
+import { parseSortingFromURL } from '@/lib/utils/url-params';
 
 interface ObjectDetailPageProps {
   params: Promise<{ id: string }>;
@@ -67,8 +67,8 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
   });
   const backHref = `/nirspec?${urlParams.toString()}`;
 
-  // Parse filters and sorting from URL for navigation
-  const filters = parseFiltersFromURL(urlParams);
+  // Sorting (for the navigation cache key) and the raw parameter string, which
+  // the navigation links carry and GET /api/objects/adjacent parses itself.
   const { sortColumn, sortDirection } = parseSortingFromURL(urlParams, 'objects');
   const filterStr = urlParams.toString();
 
@@ -133,7 +133,6 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
         </div>
         <ObjectNavigation
           targetId={objectId}
-          filters={filters}
           sortColumn={sortColumn}
           sortDirection={sortDirection}
           filterStr={filterStr}

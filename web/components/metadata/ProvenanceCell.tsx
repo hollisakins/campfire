@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { Info, Layers } from 'lucide-react';
-import type { ObservationProvenance } from '@/lib/actions/programs';
+import type { ObservationProvenance } from '@/lib/server/programs';
 
 function formatRelative(ts: string | null): string | null {
   if (!ts) return null;

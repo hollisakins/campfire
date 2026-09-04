@@ -352,32 +352,6 @@ export async function getFieldSlits(
 }
 
 /**
- * Fetch nearby shutters using the get_nearby_shutters RPC.
- * Used by the tile-thumbnail API route for shutter overlays.
- */
-export async function getNearbyShutters(
-  ra: number,
-  dec: number,
-  field: string,
-  radiusArcsec: number = 5.0,
-): Promise<ShuttersResult> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase.rpc('get_nearby_shutters', {
-    p_ra: ra,
-    p_dec: dec,
-    p_radius_arcsec: radiusArcsec,
-    p_field: field,
-  });
-
-  if (error) {
-    return { shutters: [], error: error.message };
-  }
-
-  return { shutters: (data || []) as Shutter[] };
-}
-
-/**
  * Fetch a field's shutters via RPC — keyset-paged inside the query on the
  * shutter id (perf T1-6 / #502), optionally restricted to an RA/Dec box so
  * the map only pulls what its viewport shows. Used by the full map viewer.

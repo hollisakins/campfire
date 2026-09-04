@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import Link from 'next/link';
-import { getNearbyShutters } from '@/lib/actions/map';
+import { useNearbyShuttersQuery } from '@/lib/hooks/useNearbyShuttersQuery';
 import { computeShutterRects, type ShutterGeometry } from '@/lib/utils/shutter-overlay';
 import { useAssetVersion } from '@/lib/contexts/AssetVersionContext';
 
@@ -32,6 +32,8 @@ interface TileThumbnailProps {
   className?: string;
 }
 
+const NO_SHUTTERS: ShutterGeometry[] = [];
+
 /**
  * Displays a tile-composited thumbnail for a NIRSpec object.
  * When shutters=true and coordinates are provided, renders a client-side
@@ -54,7 +56,6 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
   const cssSize = displaySize ?? size;
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
-  const [rawShutters, setRawShutters] = useState<ShutterGeometry[]>([]);
 
   // Cutout image URL (never includes shutters — always a clean RGB crop).
   // `v` is the field's imaging asset version: the response is browser-cached
@@ -63,22 +64,15 @@ export const TileThumbnail: React.FC<TileThumbnailProps> = ({
   const src = `/api/tile-thumbnail?target_id=${encodeURIComponent(targetId)}&kind=${kind}&size=${size}&fov=${fov}`
     + (assetVersion ? `&v=${assetVersion}` : '');
 
-  // Fetch shutter geometry when coordinates change (not on color/visibility changes)
+  // Shutter geometry, keyed on the coordinates (not on color/visibility
+  // changes). A cached GET route rather than a server action (#506): the
+  // action queued behind the page's other actions on every object view, for
+  // geometry that only changes on a deployment.
   const hasCoordinates = ra !== undefined && dec !== undefined && field !== undefined;
-  useEffect(() => {
-    if (!hasCoordinates) {
-      setRawShutters([]);
-      return;
-    }
-
-    let cancelled = false;
-    getNearbyShutters(ra, dec, field, fov).then(({ shutters: shutterData }) => {
-      if (cancelled) return;
-      setRawShutters(shutterData as ShutterGeometry[]);
-    });
-
-    return () => { cancelled = true; };
-  }, [ra, dec, field, fov, hasCoordinates]);
+  const shuttersQuery = useNearbyShuttersQuery({
+    field, ra, dec, fov, version: assetVersion, enabled: hasCoordinates,
+  });
+  const rawShutters = (hasCoordinates && (shuttersQuery.data?.shutters as ShutterGeometry[] | undefined)) || NO_SHUTTERS;
 
   // Recompute colored rects when geometry OR colors change (no refetch)
   const shutterRects = useMemo(

@@ -2457,6 +2457,32 @@ GRANT EXECUTE ON FUNCTION public.get_filtered_object_ids TO service_role;
 -- =============================================================================
 -- get_adjacent_objects
 -- =============================================================================
+-- Prev/next ids and the 1-based position of one object within the filtered,
+-- sorted catalog, for the object page's navigation arrows. Same filter
+-- contract as get_filtered_objects_paginated (the web layer builds both
+-- parameter sets from one function, web/lib/actions/filter-params.ts), and
+-- the total order MUST match the list RPC's — sort key NULLS LAST, then
+-- object_id ASC — or the arrows walk a different sequence than the table.
+--
+-- Perf T2-C (#506, audit DB-08): one pass instead of a materialized catalog.
+-- The old body MATERIALIZED every filtered row with a dozen columns, then ran
+-- three ordered LIMIT 1 subqueries and a count over that copy: 138 ms and a
+-- temp spill (1 430 temp blocks, ~11 MB) on prod for two ids, on every object
+-- page that missed the client's session cache. This is a single window pass
+-- over a three-column projection (object_id + the two sort keys): LAG/LEAD
+-- give the neighbours, ROW_NUMBER the position, COUNT(*) the total — one
+-- scan, one in-memory sort, one WindowAgg, no temp. Measured on prod as a
+-- standalone statement (non-admin, 27 400 visible objects): 125 ms for the
+-- object_id sort, 107 ms for redshift, zero temp blocks. The remaining cost
+-- is the filtered scan (~35 ms) plus the sort — text sorts pay ICU
+-- collation on object_ids whose long shared prefixes defeat abbreviated
+-- keys. Keyset probes on the object_id index were measured too (2–15 ms per
+-- neighbour) but the position and total need the same filtered scan
+-- regardless, and the one caller that could skip them (a client that already
+-- knows its position) is served by the sessionStorage navigation cache
+-- (web/lib/navigation-cache.ts) without any server call.
+--
+-- Returns (NULL, NULL, 0, 0) when the object is not in the filtered set.
 
 DROP FUNCTION IF EXISTS public.get_adjacent_objects;
 
@@ -2523,9 +2549,10 @@ BEGIN
   v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
   IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN v_list_ids_mode := 'any'; END IF;
   IF p_sort_direction NOT IN ('asc', 'desc') THEN p_sort_direction := 'asc'; END IF;
+  -- Same sortable set as get_filtered_objects_paginated (photo_z included).
   IF NOT (p_sort_column IN (
     'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
-    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time'
+    'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
   ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
     p_sort_column := 'object_id';
   END IF;
@@ -2567,18 +2594,29 @@ BEGIN
   END IF;
 
   RETURN QUERY
-  WITH filtered_objects AS MATERIALIZED (
+  WITH filtered AS (
+    -- Narrow projection on purpose: this is what gets sorted.
     SELECT
       o.object_id,
-      CASE WHEN v_coord_search_active THEN
-        2 * DEGREES(ASIN(SQRT(
-          POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
-          COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
-          POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
-        )))
-      ELSE NULL END AS distance,
-      o.field, o.ra, o.dec, o.redshift, o.redshift_quality,
-      o.n_targets, o.n_spectra, o.max_snr, o.max_exposure_time
+      CASE p_sort_column
+        WHEN 'object_id' THEN o.object_id WHEN 'field' THEN o.field ELSE NULL
+      END AS sort_text,
+      CASE p_sort_column
+        WHEN 'ra' THEN o.ra WHEN 'dec' THEN o.dec
+        WHEN 'redshift' THEN o.redshift::DOUBLE PRECISION
+        WHEN 'redshift_quality' THEN o.redshift_quality::DOUBLE PRECISION
+        WHEN 'n_targets' THEN o.n_targets::DOUBLE PRECISION
+        WHEN 'n_spectra' THEN o.n_spectra::DOUBLE PRECISION
+        WHEN 'max_snr' THEN o.max_snr WHEN 'max_exposure_time' THEN o.max_exposure_time
+        WHEN 'photo_z' THEN o.photo_z
+        WHEN 'distance' THEN
+          2 * DEGREES(ASIN(SQRT(
+            POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+            COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+            POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+          )))
+        ELSE NULL
+      END AS sort_num
     FROM objects o
     WHERE
       o.programs && v_filtered_program_slugs
@@ -2629,10 +2667,18 @@ BEGIN
             AND (o.staleness_reason IS NULL
                  OR o.last_inspected_at IS NULL
                  OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at))))
-      AND (NOT v_coord_search_active OR (
-        o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
-        AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
-      ))
+      AND (
+        NOT v_coord_search_active
+        OR (
+          o.ra BETWEEN (p_coord_ra - p_radius_degrees) AND (p_coord_ra + p_radius_degrees)
+          AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
+          AND 2 * DEGREES(ASIN(SQRT(
+            POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
+            COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
+            POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
+          ))) <= p_radius_degrees
+        )
+      )
       AND (
         NOT v_list_filter_active
         OR (v_list_ids_mode = 'any' AND o.id IN (
@@ -2676,81 +2722,35 @@ BEGIN
         )
       )
   ),
-  distance_filtered AS MATERIALIZED (
+  ranked AS (
     SELECT
-      fo.*,
-      CASE p_sort_column
-        WHEN 'object_id' THEN fo.object_id WHEN 'field' THEN fo.field ELSE NULL
-      END AS sort_text,
-      CASE p_sort_column
-        WHEN 'ra' THEN fo.ra WHEN 'dec' THEN fo.dec
-        WHEN 'redshift' THEN fo.redshift
-        WHEN 'redshift_quality' THEN fo.redshift_quality::DOUBLE PRECISION
-        WHEN 'n_targets' THEN fo.n_targets::DOUBLE PRECISION
-        WHEN 'n_spectra' THEN fo.n_spectra::DOUBLE PRECISION
-        WHEN 'max_snr' THEN fo.max_snr WHEN 'max_exposure_time' THEN fo.max_exposure_time
-        WHEN 'distance' THEN fo.distance ELSE NULL
-      END AS sort_num
-    FROM filtered_objects fo
-    WHERE NOT v_coord_search_active OR fo.distance <= p_radius_degrees
-  ),
-  current_obj AS (
-    SELECT df.sort_text, df.sort_num, df.object_id FROM distance_filtered df WHERE df.object_id = p_current_object_id
+      f.object_id,
+      LAG(f.object_id) OVER w AS prev_id,
+      LEAD(f.object_id) OVER w AS next_id,
+      ROW_NUMBER() OVER w AS rn,
+      -- Same window as the others (LAG/LEAD/ROW_NUMBER ignore the frame), so
+      -- all four run in ONE WindowAgg; a separate COUNT(*) OVER () added a
+      -- second pass with its own tuplestore, which spilled at prod's 3.5 MB
+      -- work_mem.
+      COUNT(*) OVER w AS total
+    FROM filtered f
+    WINDOW w AS (ORDER BY
+      CASE WHEN v_sort_is_text AND p_sort_direction = 'asc' THEN f.sort_text END ASC NULLS LAST,
+      CASE WHEN v_sort_is_text AND p_sort_direction = 'desc' THEN f.sort_text END DESC NULLS LAST,
+      CASE WHEN NOT v_sort_is_text AND p_sort_direction = 'asc' THEN f.sort_num END ASC NULLS LAST,
+      CASE WHEN NOT v_sort_is_text AND p_sort_direction = 'desc' THEN f.sort_num END DESC NULLS LAST,
+      f.object_id ASC
+      ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
   )
-  SELECT
-    (SELECT df.object_id FROM distance_filtered df, current_obj c
-     WHERE CASE WHEN v_sort_is_text THEN
-       (CASE WHEN p_sort_direction = 'asc' THEN df.sort_text < c.sort_text ELSE df.sort_text > c.sort_text END)
-       OR (df.sort_text IS NOT DISTINCT FROM c.sort_text AND df.object_id < c.object_id)
-       OR (df.sort_text IS NOT NULL AND c.sort_text IS NULL)
-     ELSE
-       (CASE WHEN p_sort_direction = 'asc' THEN df.sort_num < c.sort_num ELSE df.sort_num > c.sort_num END)
-       OR (df.sort_num IS NOT DISTINCT FROM c.sort_num AND df.object_id < c.object_id)
-       OR (df.sort_num IS NOT NULL AND c.sort_num IS NULL)
-     END
-     ORDER BY
-       CASE WHEN v_sort_is_text AND p_sort_direction = 'asc' THEN df.sort_text END DESC NULLS FIRST,
-       CASE WHEN v_sort_is_text AND p_sort_direction = 'desc' THEN df.sort_text END ASC NULLS FIRST,
-       CASE WHEN NOT v_sort_is_text AND p_sort_direction = 'asc' THEN df.sort_num END DESC NULLS FIRST,
-       CASE WHEN NOT v_sort_is_text AND p_sort_direction = 'desc' THEN df.sort_num END ASC NULLS FIRST,
-       df.object_id DESC
-     LIMIT 1
-    ) AS prev_object_id,
-    (SELECT df.object_id FROM distance_filtered df, current_obj c
-     WHERE CASE WHEN v_sort_is_text THEN
-       (CASE WHEN p_sort_direction = 'asc' THEN df.sort_text > c.sort_text ELSE df.sort_text < c.sort_text END)
-       OR (df.sort_text IS NOT DISTINCT FROM c.sort_text AND df.object_id > c.object_id)
-       OR (c.sort_text IS NOT NULL AND df.sort_text IS NULL)
-     ELSE
-       (CASE WHEN p_sort_direction = 'asc' THEN df.sort_num > c.sort_num ELSE df.sort_num < c.sort_num END)
-       OR (df.sort_num IS NOT DISTINCT FROM c.sort_num AND df.object_id > c.object_id)
-       OR (c.sort_num IS NOT NULL AND df.sort_num IS NULL)
-     END
-     ORDER BY
-       CASE WHEN v_sort_is_text AND p_sort_direction = 'asc' THEN df.sort_text END ASC NULLS LAST,
-       CASE WHEN v_sort_is_text AND p_sort_direction = 'desc' THEN df.sort_text END DESC NULLS LAST,
-       CASE WHEN NOT v_sort_is_text AND p_sort_direction = 'asc' THEN df.sort_num END ASC NULLS LAST,
-       CASE WHEN NOT v_sort_is_text AND p_sort_direction = 'desc' THEN df.sort_num END DESC NULLS LAST,
-       df.object_id ASC
-     LIMIT 1
-    ) AS next_object_id,
-    CASE WHEN EXISTS (SELECT 1 FROM current_obj) THEN (
-      SELECT COUNT(*) + 1
-      FROM distance_filtered df, current_obj c
-      WHERE CASE WHEN v_sort_is_text THEN
-        (CASE WHEN p_sort_direction = 'asc' THEN df.sort_text < c.sort_text ELSE df.sort_text > c.sort_text END)
-        OR (df.sort_text IS NOT DISTINCT FROM c.sort_text AND df.object_id < c.object_id)
-        OR (df.sort_text IS NOT NULL AND c.sort_text IS NULL)
-      ELSE
-        (CASE WHEN p_sort_direction = 'asc' THEN df.sort_num < c.sort_num ELSE df.sort_num > c.sort_num END)
-        OR (df.sort_num IS NOT DISTINCT FROM c.sort_num AND df.object_id < c.object_id)
-        OR (df.sort_num IS NOT NULL AND c.sort_num IS NULL)
-      END
-    )::BIGINT ELSE 0::BIGINT END AS current_index,
-    (SELECT COUNT(*) FROM distance_filtered)::BIGINT AS total_count;
+  SELECT r.prev_id, r.next_id, r.rn::BIGINT, r.total::BIGINT
+  FROM ranked r
+  WHERE r.object_id = p_current_object_id;
+
+  IF NOT FOUND THEN
+    RETURN QUERY SELECT NULL::TEXT, NULL::TEXT, 0::BIGINT, 0::BIGINT;
+  END IF;
 END;
 $$;
-
 GRANT EXECUTE ON FUNCTION public.get_adjacent_objects TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_adjacent_objects TO service_role;
 
@@ -3941,6 +3941,69 @@ LANGUAGE sql STABLE AS $$
     AND s.center_dec BETWEEN p_dec - p_radius_arcsec / 3600.0
                          AND p_dec + p_radius_arcsec / 3600.0;
 $$;
+
+
+-- =============================================================================
+-- get_objects_near
+-- =============================================================================
+-- The k nearest visible objects to a point, for the object page's "Nearby
+-- objects" card and the inspection overlay's nearby list (perf T2-C, #506,
+-- audit PP-05). Those cards used to run the 33-parameter list RPC with a
+-- coordinate filter — 32 ms on prod for ≤10 rows, most of it the member and
+-- list aggregates the cards never render. This is get_nearby_shutters' shape:
+-- a box on the (ra, dec) index, the Haversine cut, and only the columns the
+-- cards show. The RA half-width is widened by 1/cos(dec) so the box holds the
+-- whole cone at any declination. SECURITY INVOKER — RLS on objects gates the
+-- rows; p_program_slugs is the caller's accessible set (accessible_program_slugs)
+-- passed as a parameter so the planner sees an array, not a per-row function
+-- call. No RA-wrap handling, as in the rest of the coordinate RPCs.
+CREATE OR REPLACE FUNCTION public.get_objects_near(
+  p_ra DOUBLE PRECISION,
+  p_dec DOUBLE PRECISION,
+  p_radius_degrees DOUBLE PRECISION,
+  p_program_slugs TEXT[],
+  p_limit INTEGER DEFAULT 10,
+  p_exclude_object_id TEXT DEFAULT NULL,
+  p_include_unpublished BOOLEAN DEFAULT false
+)
+RETURNS TABLE(
+  id INTEGER,
+  object_id TEXT,
+  field TEXT,
+  ra DOUBLE PRECISION,
+  "dec" DOUBLE PRECISION,
+  redshift DOUBLE PRECISION,
+  redshift_quality INTEGER,
+  gratings TEXT[],
+  n_spectra INTEGER,
+  distance DOUBLE PRECISION
+)
+LANGUAGE sql STABLE AS $$
+  SELECT o.id, o.object_id, o.field, o.ra, o.dec,
+         o.redshift::DOUBLE PRECISION, o.redshift_quality, o.gratings, o.n_spectra,
+         2 * DEGREES(ASIN(SQRT(
+           POWER(SIN(RADIANS(o.dec - p_dec) / 2), 2) +
+           COS(RADIANS(p_dec)) * COS(RADIANS(o.dec)) *
+           POWER(SIN(RADIANS(o.ra - p_ra) / 2), 2)
+         ))) AS distance
+  FROM objects o
+  WHERE o.programs && p_program_slugs
+    AND o.is_active = true
+    AND (p_include_unpublished OR o.has_published_spectrum)
+    AND o.dec BETWEEN p_dec - p_radius_degrees AND p_dec + p_radius_degrees
+    AND o.ra BETWEEN p_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_dec)), 1e-6)
+                 AND p_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_dec)), 1e-6)
+    AND 2 * DEGREES(ASIN(SQRT(
+          POWER(SIN(RADIANS(o.dec - p_dec) / 2), 2) +
+          COS(RADIANS(p_dec)) * COS(RADIANS(o.dec)) *
+          POWER(SIN(RADIANS(o.ra - p_ra) / 2), 2)
+        ))) <= p_radius_degrees
+    AND (p_exclude_object_id IS NULL OR o.object_id <> p_exclude_object_id)
+  ORDER BY distance ASC, o.object_id ASC
+  LIMIT LEAST(GREATEST(COALESCE(p_limit, 10), 1), 100);
+$$;
+GRANT EXECUTE ON FUNCTION public.get_objects_near TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_objects_near TO service_role;
 
 
 -- =============================================================================

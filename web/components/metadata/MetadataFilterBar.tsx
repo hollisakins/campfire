@@ -6,7 +6,7 @@ import type {
   MetadataFilters,
   MetadataTab,
 } from '@/lib/actions/metadata-filters';
-import type { ProgramOverview, ObservationOverview } from '@/lib/actions/programs';
+import type { ProgramOverview, ObservationOverview } from '@/lib/server/programs';
 
 interface MetadataFilterBarProps {
   tab: MetadataTab;

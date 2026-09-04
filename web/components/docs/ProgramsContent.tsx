@@ -4,7 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { SignInLink } from '@/components/auth/SignInLink';
 import { Card } from '@/components/ui/Card';
-import type { ProgramOverview } from '@/lib/actions/programs';
+import type { ProgramOverview } from '@/lib/server/programs';
 import { useProgramsOverviewQuery } from '@/lib/hooks/useProgramsQuery';
 import { LogIn, Loader2, Telescope, ExternalLink, Users, Hash } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
