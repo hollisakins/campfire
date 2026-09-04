@@ -1,30 +1,33 @@
 'use client';
 
-// Client half of lib/asset-version.ts: hands the per-field imaging asset
-// version to client components that build cutout URLs (`TileThumbnail`), so a
+// Client half of lib/asset-version.ts: hands the global imaging asset version
+// to client components that build cutout URLs (`TileThumbnail`), so a
 // re-deployed field's thumbnails change URL and stop hitting a week-old
-// browser-cache entry. Provided by app/nirspec/layout.tsx; outside a provider
-// the hook returns undefined and callers simply omit `v=`.
+// browser-cache entry. Only the global token crosses to the client — the
+// per-field roster names every field in the DB, draft-backed ones included,
+// and stays on the server. Provided by app/nirspec/layout.tsx; outside a
+// provider the hook returns undefined and callers simply omit `v=`.
 
 import React, { createContext, useContext } from 'react';
-import type { AssetVersions } from '@/lib/asset-version';
+import type { ClientAssetVersion } from '@/lib/asset-version';
 
-const AssetVersionContext = createContext<AssetVersions | null>(null);
+const AssetVersionContext = createContext<ClientAssetVersion | null>(null);
 
 export const AssetVersionProvider: React.FC<{
-  versions: AssetVersions;
+  version: ClientAssetVersion;
   children: React.ReactNode;
-}> = ({ versions, children }) => (
-  <AssetVersionContext.Provider value={versions}>{children}</AssetVersionContext.Provider>
+}> = ({ version, children }) => (
+  <AssetVersionContext.Provider value={version}>{children}</AssetVersionContext.Provider>
 );
 
 /**
- * The asset version token for `field` (or the global token when the field is
- * unknown / not versioned). `undefined` outside a provider or when versions
- * could not be resolved server-side.
+ * The global asset version token. The `field` argument is accepted so call
+ * sites read naturally and can regain per-field precision later without
+ * changing; today every field shares the one token. `undefined` outside a
+ * provider or when versions could not be resolved server-side.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function useAssetVersion(field?: string | null): string | undefined {
-  const versions = useContext(AssetVersionContext);
-  if (!versions) return undefined;
-  return (field && versions.byField[field]) || versions.global || undefined;
+  const version = useContext(AssetVersionContext);
+  return version?.global || undefined;
 }
