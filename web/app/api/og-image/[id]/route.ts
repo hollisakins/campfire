@@ -4,7 +4,7 @@ import {
   compositeTileThumbnail,
   type MapLayerInfo,
 } from '@/lib/utils/tile-compositing';
-import { resolveFieldCutoutSource } from '@/lib/cutout/source';
+import { resolveFieldCutoutSourceResult } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 import { getAssetVersions } from '@/lib/asset-version';
 import { cutoutStoreFor, cutoutStoreRead, storeCutoutInBackground } from '@/lib/cutout/store';
@@ -100,8 +100,8 @@ export async function GET(
     // FitsGL path (epic #337, Phase 5). Service-role client bypasses RLS, so
     // requirePublic mirrors the fitsgl_datasets policy — an unpublished-backed
     // pyramid never serves this public route.
-    const [fitsglSrc, versions] = await Promise.all([
-      resolveFieldCutoutSource(supabase, obj.field, { requirePublic: true }),
+    const [{ source: fitsglSrc, failed: fitsglUnresolved }, versions] = await Promise.all([
+      resolveFieldCutoutSourceResult(supabase, obj.field, { requirePublic: true }),
       getAssetVersions(),
     ]);
 
@@ -119,9 +119,10 @@ export async function GET(
       }
     }
 
-    // A legacy composite rendered because the FitsGL render failed is not
-    // stored under the FitsGL key (see /api/tile-thumbnail).
-    let fitsglFailed = false;
+    // A legacy composite rendered because the FitsGL source could not be
+    // resolved or its render failed is not stored under the FitsGL key (see
+    // /api/tile-thumbnail).
+    let fitsglFailed = fitsglUnresolved;
 
     if (fitsglSrc) {
       try {

@@ -5,7 +5,7 @@ import {
   TRANSPARENT_GIF,
   type MapLayerInfo,
 } from '@/lib/utils/tile-compositing';
-import { resolveFieldCutoutSource } from '@/lib/cutout/source';
+import { resolveFieldCutoutSourceResult } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 import { getAssetVersions } from '@/lib/asset-version';
 import { cutoutStoreFor, cutoutStoreHas, storeCutoutInBackground, storeSizeFor } from '@/lib/cutout/store';
@@ -110,8 +110,8 @@ export async function GET(request: NextRequest) {
     // FitsGL path: render from the field's FITS pyramid when one is deployed
     // (RLS scopes draft-backed datasets to admins). Falls through to the
     // legacy PNG tiles on any render failure while both stacks coexist.
-    const [fitsglSrc, versions] = await Promise.all([
-      resolveFieldCutoutSource(supabase, obj.field),
+    const [{ source: fitsglSrc, failed: fitsglUnresolved }, versions] = await Promise.all([
+      resolveFieldCutoutSourceResult(supabase, obj.field),
       getAssetVersions(),
     ]);
 
@@ -131,10 +131,11 @@ export async function GET(request: NextRequest) {
     // Only round the render up to the store's ladder when the store is in
     // play; otherwise the request renders at exactly the size it asked for.
     const outputSize = store ? storeSize : size;
-    // A legacy composite rendered because the FitsGL render *failed* must not
-    // be stored under the key a FitsGL render will later want (a transient
-    // failure would pin the lower-quality image until the field re-deploys).
-    let fitsglFailed = false;
+    // A legacy composite rendered because the FitsGL source could not be
+    // resolved or its render *failed* must not be stored under the key a
+    // FitsGL render will later want (a transient failure would pin the
+    // lower-quality image until the field re-deploys).
+    let fitsglFailed = fitsglUnresolved;
 
     if (fitsglSrc) {
       try {

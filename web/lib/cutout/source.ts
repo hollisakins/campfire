@@ -137,7 +137,8 @@ async function fetchFieldDataset(
     .select('prefix, field, kind, tiles, bands, pixel_scale, fitsgl_json_url, is_default')
     .eq('field', field)
     .eq('kind', 'field');
-  if (error || !rows || rows.length === 0) return null;
+  if (error) throw new Error(`fitsgl_datasets query failed for field ${field}: ${error.message}`);
+  if (!rows || rows.length === 0) return null;
   const ds = rows.find((r) => r.is_default) ?? rows[0];
 
   // Publicity is always evaluated (not only under requirePublic): callers that
@@ -150,8 +151,7 @@ async function fetchFieldDataset(
     p_pixel_scale: ds.pixel_scale,
   });
   if (pubErr) {
-    console.error(`fitsgl_dataset_is_public failed for field ${field}:`, pubErr);
-    return null;
+    throw new Error(`fitsgl_dataset_is_public failed for field ${field}: ${pubErr.message}`);
   }
   if (opts.requirePublic && !isPublic) return null;
 
@@ -178,21 +178,43 @@ export async function resolveFieldCutoutSource(
   field: string,
   opts: { requirePublic?: boolean } = {},
 ): Promise<FieldCutoutSource | null> {
+  return (await resolveFieldCutoutSourceResult(supabase, field, opts)).source;
+}
+
+export interface FieldCutoutSourceResult {
+  source: FieldCutoutSource | null;
+  /** True when `source` is null because resolution FAILED (query, RPC,
+   *  manifest fetch/parse), not because the field has no visible pyramid.
+   *  The legacy fallback render is still right to serve, but not to store
+   *  under the key a FitsGL render will later want (#509). */
+  failed: boolean;
+}
+
+/** `resolveFieldCutoutSource`, keeping "no pyramid" and "could not tell"
+ *  apart for callers that persist what they render. */
+export async function resolveFieldCutoutSourceResult(
+  supabase: SupabaseClient,
+  field: string,
+  opts: { requirePublic?: boolean } = {},
+): Promise<FieldCutoutSourceResult> {
   try {
     const ds = await fetchFieldDataset(supabase, field, opts);
-    if (!ds) return null;
+    if (!ds) return { source: null, failed: false };
     const chosen = chooseBands(ds.config);
     const bands = await Promise.all(chosen.map(toBandSource));
     return {
-      bands,
-      bandNames: chosen.map((b) => b.name),
-      nativeScaleArcsec: bands[0].manifest.levels[0].pixelScaleArcsec,
-      display: displayDefaults(ds.config, chosen),
-      isPublic: ds.isPublic,
+      source: {
+        bands,
+        bandNames: chosen.map((b) => b.name),
+        nativeScaleArcsec: bands[0].manifest.levels[0].pixelScaleArcsec,
+        display: displayDefaults(ds.config, chosen),
+        isPublic: ds.isPublic,
+      },
+      failed: false,
     };
   } catch (err) {
     console.error(`FitsGL cutout source unavailable for field ${field}:`, err);
-    return null;
+    return { source: null, failed: true };
   }
 }
 

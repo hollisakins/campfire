@@ -7,7 +7,7 @@ import {
   type MapLayerInfo,
 } from '@/lib/utils/tile-compositing';
 import type { WCSParams } from '@/lib/utils/wcs';
-import { resolveFieldCutoutSource } from '@/lib/cutout/source';
+import { resolveFieldCutoutSourceResult } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 import { getAssetVersions } from '@/lib/asset-version';
 import { cutoutStoreFor, cutoutStoreHas, storeCutoutInBackground } from '@/lib/cutout/store';
@@ -137,8 +137,8 @@ export async function GET(request: NextRequest) {
     // FitsGL path (epic #337, Phase 5). Service-role client bypasses RLS, so
     // non-admins mirror the fitsgl_datasets policy via requirePublic; admins
     // may render from draft-backed pyramids (matching the map).
-    const [fitsglSrc, versions] = await Promise.all([
-      resolveFieldCutoutSource(supabase, obj.field, { requirePublic: !isAdmin }),
+    const [{ source: fitsglSrc, failed: fitsglUnresolved }, versions] = await Promise.all([
+      resolveFieldCutoutSourceResult(supabase, obj.field, { requirePublic: !isAdmin }),
       getAssetVersions(),
     ]);
     const fieldVersion = versions.byField[obj.field];
@@ -148,9 +148,10 @@ export async function GET(request: NextRequest) {
         ? cutoutStoreFor({ field: obj.field, version: fieldVersion, size: outputSize, fov, ra: obj.ra, dec: obj.dec })
         : null;
 
-    // A legacy composite rendered because the FitsGL render failed is not
-    // stored under the FitsGL key (see /api/tile-thumbnail).
-    let fitsglFailed = false;
+    // A legacy composite rendered because the FitsGL source could not be
+    // resolved or its render failed is not stored under the FitsGL key (see
+    // /api/tile-thumbnail).
+    let fitsglFailed = fitsglUnresolved;
 
     if (fitsglSrc) {
       try {

@@ -108,20 +108,33 @@ export function cutoutStoreFor(i: CutoutStoreInput): CutoutStoreEntry | null {
 }
 
 /** Keys known to exist (rendered or HEAD-verified by this instance), so a hot
- * object costs no storage round trip. Bounded; insertion-order eviction. */
-const known = new Set<string>();
+ * object costs no storage round trip. Bounded (insertion-order eviction) and
+ * short-lived: a re-deploy purges the field's prefix, and until the imaging
+ * version rolls (the asset-version memo, 5 min) a warm instance may still
+ * build the old key — it must re-HEAD rather than 302 to a deleted object. */
+const known = new Map<string, number>();
 const KNOWN_MAX = 20_000;
+const KNOWN_TTL_MS = 5 * 60 * 1000;
 function remember(key: string): void {
   if (known.size >= KNOWN_MAX) {
-    const oldest = known.values().next().value;
+    const oldest = known.keys().next().value;
     if (oldest !== undefined) known.delete(oldest);
   }
-  known.add(key);
+  known.set(key, Date.now());
+}
+function isKnown(key: string): boolean {
+  const at = known.get(key);
+  if (at === undefined) return false;
+  if (Date.now() - at > KNOWN_TTL_MS) {
+    known.delete(key);
+    return false;
+  }
+  return true;
 }
 
 /** Whether the object is in the store (memo, else one HEAD). Never throws. */
 export async function cutoutStoreHas(key: string): Promise<boolean> {
-  if (known.has(key)) return true;
+  if (isKnown(key)) return true;
   try {
     await getS3Client('tiles').send(new HeadObjectCommand({ Bucket: getBucketName('tiles'), Key: key }));
     remember(key);
