@@ -78,7 +78,7 @@ from campfire.deploy.deploy import (
 )
 from campfire.deploy.supabase import (
     get_supabase_client, upsert_programs, refresh_filter_options,
-    refresh_programs_overview, get_latest_deployment_id,
+    refresh_programs_overview, refresh_observations_overview, get_latest_deployment_id,
     get_field_deployment_ids, set_deployment_status, get_user_id_from_token,
 )
 
@@ -358,6 +358,7 @@ def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run
             print()
             refresh_filter_options(sb)
             refresh_programs_overview(sb)
+            refresh_observations_overview(sb)
 
 
 # ---------------------------------------------------------------------------

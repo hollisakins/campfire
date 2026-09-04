@@ -1,0 +1,36 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">CAMPFIRE mark</title>
+  <desc id="desc">A simplified ember flame in front of a hexagonal JWST mirror motif.</desc>
+  <defs>
+    <linearGradient id="mirrorStroke" x1="54" y1="32" x2="203" y2="208" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7F8EA3"/>
+      <stop offset="0.52" stop-color="#D7CBB9"/>
+      <stop offset="1" stop-color="#423A52"/>
+    </linearGradient>
+    <linearGradient id="emberFill" x1="90" y1="76" x2="170" y2="225" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FDBA74"/>
+      <stop offset="0.42" stop-color="#FB923C"/>
+      <stop offset="1" stop-color="#C63F0C"/>
+    </linearGradient>
+    <linearGradient id="emberCore" x1="119" y1="125" x2="143" y2="214" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF7ED"/>
+      <stop offset="0.45" stop-color="#FED7AA"/>
+      <stop offset="1" stop-color="#FB923C"/>
+    </linearGradient>
+    <filter id="softShadow" x="42" y="34" width="172" height="205" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#1B1722" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <g opacity="0.78">
+    <path d="M128 24L203.34 67.5V154.5L128 198L52.66 154.5V67.5L128 24Z" stroke="url(#mirrorStroke)" stroke-width="10" stroke-linejoin="round"/>
+    <path d="M128 63L169.57 87V135L128 159L86.43 135V87L128 63Z" stroke="#D7CBB9" stroke-width="5" stroke-linejoin="round" opacity="0.72"/>
+    <path d="M128 24V63M203.34 67.5L169.57 87M203.34 154.5L169.57 135M128 198V159M52.66 154.5L86.43 135M52.66 67.5L86.43 87" stroke="#B8AEC6" stroke-width="4" stroke-linecap="round" opacity="0.64"/>
+    <path d="M86.43 87L52.66 67.5M169.57 87L203.34 67.5M86.43 135L52.66 154.5M169.57 135L203.34 154.5" stroke="#423A52" stroke-width="2" stroke-linecap="round" opacity="0.28"/>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <path d="M129.96 224C93.54 224 65.5 197.6 65.5 162.86C65.5 141.69 75.57 123.96 93.76 109.66C94.31 128.91 103.39 141.83 103.39 141.83C103.39 115.15 116.91 91.76 147.47 66.5C147.47 98.29 168.85 112.91 179.06 134.62C185.89 149.14 190.5 160.3 190.5 175.3C190.5 203.09 166.57 224 129.96 224Z" fill="url(#emberFill)"/>
+    <path d="M130.28 224C106.67 224 89.42 207.83 89.42 186.68C89.42 172.61 96.9 159.79 111.08 149.04C111.08 163.39 119.58 173.16 119.58 173.16C119.58 155.81 128.38 141.61 146.23 127.14C147.02 146.72 164.68 157.6 169.34 174.25C170.44 178.17 171.01 181.89 171.01 185.42C171.01 207.12 154.12 224 130.28 224Z" fill="url(#emberCore)"/>
+  </g>
+</svg>

@@ -104,11 +104,35 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
   step = 0.01,
 }) => {
   const [inputValue, setInputValue] = React.useState(redshift.toFixed(4));
+  // The range input is bound to this local value, not the (throttled) prop:
+  // React would otherwise snap the thumb back to the stale prop between
+  // frames while dragging.
+  const [sliderValue, setSliderValue] = React.useState(redshift);
 
-  // Update input when redshift prop changes
+  // Update input + slider when redshift prop changes
   React.useEffect(() => {
     setInputValue(redshift.toFixed(4));
+    setSliderValue(redshift);
   }, [redshift]);
+
+  // The range input fires `input` events far faster than a Plotly relayout
+  // can complete, and each onChange re-laid-out the whole figure (#500).
+  // Coalesce to one onChange per animation frame; the text box still tracks
+  // every event so the number never lags the thumb.
+  const pendingRef = React.useRef<number | null>(null);
+  const rafRef = React.useRef<number | null>(null);
+  React.useEffect(() => () => {
+    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+  }, []);
+  const scheduleChange = (value: number) => {
+    pendingRef.current = value;
+    if (rafRef.current !== null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      if (pendingRef.current !== null) onChange(pendingRef.current);
+      pendingRef.current = null;
+    });
+  };
 
   const handleInputBlur = () => {
     const parsed = parseFloat(inputValue);
@@ -129,8 +153,9 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
 
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = parseFloat(e.target.value);
-    onChange(newValue);
+    setSliderValue(newValue);
     setInputValue(newValue.toFixed(4));
+    scheduleChange(newValue);
   };
 
   const nudge = (delta: number) => {
@@ -173,7 +198,7 @@ export const RedshiftSliderControl: React.FC<RedshiftSliderControlProps> = ({
       </div>
       <input
         type="range"
-        value={redshift}
+        value={sliderValue}
         onChange={handleSliderChange}
         min={min}
         max={max}

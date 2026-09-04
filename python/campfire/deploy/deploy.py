@@ -53,6 +53,7 @@ from campfire.deploy.supabase import (
     recompute_target_aggregates,
     refresh_filter_options,
     refresh_programs_overview,
+    refresh_observations_overview,
     update_latest_deployment,
     update_observation_pointings,
     upsert_observation,
@@ -943,6 +944,12 @@ def deploy_observation(
                     draft=draft, n_objects=len(objects)),
             )
 
+        # Observation overview snapshot (perf T1-5 / #501): after the
+        # observation row (pointings), targets/spectra and the deployment
+        # record are all final. Batch deploys refresh once at the end instead.
+        if not defer_rebuild:
+            refresh_observations_overview(sb)
+
         # Re-point unchanged dedup-skipped objects at this deployment — only on
         # a PUBLISHED deploy, so deployment-gated intermediates ride the current
         # deployment's visibility. Uploaded objects were already registered with
@@ -1162,6 +1169,7 @@ def deploy_zfit(
 
     refresh_filter_options(sb)
     refresh_programs_overview(sb)
+    refresh_observations_overview(sb)
     print(f"Deployed {len(zfit_paths)} zfit files, updated {n} objects")
 
 

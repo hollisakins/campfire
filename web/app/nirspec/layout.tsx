@@ -1,4 +1,4 @@
-import { getAssetVersions } from '@/lib/asset-version';
+import { getAssetVersions, clientAssetVersion } from '@/lib/asset-version';
 import { AssetVersionProvider } from '@/lib/contexts/AssetVersionContext';
 
 /**
@@ -6,9 +6,11 @@ import { AssetVersionProvider } from '@/lib/contexts/AssetVersionContext';
  * per request (memoized five minutes in the data cache) and hands them to the
  * cutout thumbnails below, which append `v=` to their `/api/tile-thumbnail`
  * URLs so a re-deployed field's imagery is not served from a week-old
- * browser-cache entry (#497).
+ * browser-cache entry (#497). Only the global token is serialized to the
+ * client; the per-field roster (which names admin-only draft datasets) is
+ * server-only.
  */
 export default async function NirspecLayout({ children }: { children: React.ReactNode }) {
   const versions = await getAssetVersions();
-  return <AssetVersionProvider versions={versions}>{children}</AssetVersionProvider>;
+  return <AssetVersionProvider version={clientAssetVersion(versions)}>{children}</AssetVersionProvider>;
 }

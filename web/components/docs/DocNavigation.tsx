@@ -5,9 +5,14 @@ import Link from 'next/link';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { DocPage } from '@/lib/docs/config';
 
+// Only the link fields: DocPage carries a Lucide `icon` component, which a
+// server page cannot hand to this client component (functions don't cross
+// the RSC boundary), so callers pass { slug, title }.
+type DocLink = Pick<DocPage, 'slug' | 'title'>;
+
 interface DocNavigationProps {
-  prev?: DocPage;
-  next?: DocPage;
+  prev?: DocLink;
+  next?: DocLink;
 }
 
 export default function DocNavigation({ prev, next }: DocNavigationProps) {

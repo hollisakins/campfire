@@ -94,6 +94,99 @@ CREATE UNIQUE INDEX mv_programs_overview_slug ON public.mv_programs_overview (sl
 GRANT SELECT ON public.mv_programs_overview TO authenticated;
 
 
+-- 3. mv_observations_overview  (perf T1-5 / #501)
+--    Per-observation stats + provenance for EVERY observation, published-only:
+--    exactly the row shape get_observations_overview() returns, minus the
+--    caller's program scope. That scope is applied at read time by the two
+--    reader RPCs (get_observations_overview, get_observation_stats), which are
+--    SECURITY DEFINER and intersect the requested slugs with
+--    accessible_program_slugs() (scoped_program_slugs). Hence NO grant to
+--    authenticated: observations are program-gated by RLS and a matview has
+--    none, so it must not be readable through PostgREST directly.
+--    Refresh: refresh_observations_overview() at deploy, refresh_all_matviews()
+--    nightly via pg_cron.
+-- BEGIN mv_observations_overview
+DROP MATERIALIZED VIEW IF EXISTS public.mv_observations_overview;
+
+CREATE MATERIALIZED VIEW public.mv_observations_overview AS
+WITH stats AS (
+    SELECT t.observation, t.program_slug,
+        COUNT(DISTINCT t.target_id) AS target_count,
+        COUNT(s.id) AS spectrum_count,
+        COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes,
+        ARRAY_AGG(DISTINCT s.grating ORDER BY s.grating)
+            FILTER (WHERE s.grating IS NOT NULL) AS gratings
+    FROM public.targets t
+    -- Published-only: unpublished spectra don't contribute to counts/size/gratings.
+    LEFT JOIN public.spectra s ON s.target_id = t.target_id AND s.deploy_status = 'published'
+    -- ...and draft-only targets don't count at all (what targets RLS enforced
+    -- for the old invoker query; this view is built by the owner).
+    WHERE t.has_published_spectrum
+    GROUP BY t.observation, t.program_slug
+)
+SELECT
+    o.name AS observation,
+    o.program_slug,
+    p.program_name,
+    o.field,
+    p.cycle,
+    -- Gratings from the deployed spectra, falling back to observations.toml's
+    -- declared list for observations with no spectra yet.
+    CASE
+        WHEN COALESCE(array_length(s.gratings, 1), 0) > 0 THEN s.gratings
+        ELSE COALESCE(o.gratings, ARRAY[]::text[])
+    END AS gratings,
+    COALESCE(jsonb_array_length(o.pointings), 0) AS pointing_count,
+    o.pointings,
+    COALESCE(s.target_count, 0)::bigint AS target_count,
+    COALESCE(s.spectrum_count, 0)::bigint AS spectrum_count,
+    COALESCE(s.total_size_bytes, 0)::bigint AS total_size_bytes,
+    full_dep.crds_context,
+    full_dep.cfpipe_version, full_dep.jwst_version,
+    full_dep.reduced_at, full_dep.deployed_at,
+    full_dep.deployed_by_username, full_dep.deployed_by_full_name,
+    COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
+    patches.last_patch_at
+FROM public.observations o
+JOIN public.programs p ON p.slug = o.program_slug
+LEFT JOIN stats s ON s.observation = o.name AND s.program_slug = o.program_slug
+-- Provenance from the most recent PUBLISHED full deployment (source_ids_filter
+-- IS NULL). Published-only like the rest of the snapshot: a draft re-reduction
+-- must not surface its version stamps here before it is published.
+LEFT JOIN LATERAL (
+    SELECT d.crds_context, d.cfpipe_version, d.jwst_version,
+           d.reduced_at, d.deployed_at,
+           up.username AS deployed_by_username,
+           up.full_name AS deployed_by_full_name
+    FROM public.deployments d
+    LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
+    WHERE d.observation = o.name AND d.source_ids_filter IS NULL
+      AND d.status = 'published'
+    ORDER BY d.deployed_at DESC
+    LIMIT 1
+) full_dep ON true
+-- Published patch deployments since that full one.
+LEFT JOIN LATERAL (
+    SELECT COUNT(*)::integer AS n_patches, MAX(d.deployed_at) AS last_patch_at
+    FROM public.deployments d
+    WHERE d.observation = o.name
+      AND d.source_ids_filter IS NOT NULL
+      AND d.status = 'published'
+      AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
+) patches ON true
+WITH DATA;
+
+CREATE UNIQUE INDEX mv_observations_overview_observation
+    ON public.mv_observations_overview (observation);
+
+-- Default privileges in this schema hand every new relation to anon /
+-- authenticated; take that back — the reader RPCs (SECURITY DEFINER) are the
+-- only way in.
+REVOKE ALL ON public.mv_observations_overview FROM anon, authenticated;
+GRANT SELECT ON public.mv_observations_overview TO service_role;
+-- END mv_observations_overview
+
+
 -- ============================================================
 -- VIEWS
 -- ============================================================

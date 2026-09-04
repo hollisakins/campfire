@@ -57,8 +57,9 @@ CREATE INDEX IF NOT EXISTS idx_objects_programs
 CREATE INDEX IF NOT EXISTS idx_objects_gratings
     ON public.objects USING gin (gratings);
 
-CREATE INDEX IF NOT EXISTS idx_objects_object_id_trgm
-    ON public.objects USING gin (object_id public.gin_trgm_ops);
+-- Observation filter pre-filter (objects_matching_observation_filter, #491).
+CREATE INDEX IF NOT EXISTS idx_objects_observations
+    ON public.objects USING gin (observations);
 
 -- Unified p_search blob (object_id + member target_ids + programs + observations).
 -- Replaces the cross-table object_id-ILIKE-OR-EXISTS(targets) predicate, which the
@@ -92,9 +93,6 @@ CREATE INDEX IF NOT EXISTS idx_object_photometry_field
 
 CREATE INDEX IF NOT EXISTS idx_object_photometry_object_id
     ON public.object_photometry USING btree (object_id) WHERE (object_id IS NOT NULL);
-
-CREATE INDEX IF NOT EXISTS idx_object_photometry_coords
-    ON public.object_photometry USING btree (ra, dec);
 
 
 -- =============================================================================
@@ -167,10 +165,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_fits_path
 CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_spectrum_id
     ON public.spectra USING btree (spectrum_id);
 
--- Trigram index for substring (ILIKE) search on the search bar.
-CREATE INDEX IF NOT EXISTS idx_spectra_spectrum_id_trgm
-    ON public.spectra USING gin (spectrum_id public.gin_trgm_ops);
-
 -- Unified p_search blob (target_id + spectrum_id). Replaces the cross-table
 -- target_id-ILIKE-OR-spectrum_id-ILIKE predicate with a single indexable column.
 CREATE INDEX IF NOT EXISTS idx_spectra_search_text_trgm
@@ -178,6 +172,14 @@ CREATE INDEX IF NOT EXISTS idx_spectra_search_text_trgm
 
 CREATE INDEX IF NOT EXISTS idx_spectra_grating
     ON public.spectra USING btree (grating);
+
+-- Spectra-view sort columns (perf T1-5 / #501). DESC NULLS LAST matches the
+-- list RPC's ORDER BY so the planner can walk the index for a top-N page.
+CREATE INDEX IF NOT EXISTS idx_spectra_signal_to_noise
+    ON public.spectra USING btree (signal_to_noise DESC NULLS LAST);
+
+CREATE INDEX IF NOT EXISTS idx_spectra_exposure_time
+    ON public.spectra USING btree (exposure_time DESC NULLS LAST);
 
 -- Phase A: filter spectra by DQ flag presence (rare, partial keeps it small).
 CREATE INDEX IF NOT EXISTS idx_spectra_dq_flags
@@ -265,6 +267,14 @@ CREATE INDEX IF NOT EXISTS idx_shutters_field
 CREATE INDEX IF NOT EXISTS idx_shutters_object_id
     ON public.shutters USING btree (object_id);
 
+-- FK + per-observation deletes/lookups (advisor: unindexed foreign key).
+CREATE INDEX IF NOT EXISTS idx_shutters_observation
+    ON public.shutters USING btree (observation);
+
+-- Map / thumbnail shutter lookups are by field then object (perf T1-5, #502).
+CREATE INDEX IF NOT EXISTS idx_shutters_field_object_id
+    ON public.shutters USING btree (field, object_id);
+
 CREATE INDEX IF NOT EXISTS idx_shutters_ra_dec
     ON public.shutters USING btree (center_ra, center_dec);
 
@@ -275,6 +285,10 @@ CREATE INDEX IF NOT EXISTS idx_shutters_ra_dec
 
 CREATE INDEX IF NOT EXISTS idx_slit_regions_field
     ON public.slit_regions USING btree (field);
+
+-- FK + per-observation deletes/lookups (advisor: unindexed foreign key).
+CREATE INDEX IF NOT EXISTS idx_slit_regions_observation
+    ON public.slit_regions USING btree (observation);
 
 
 -- =============================================================================
@@ -299,9 +313,6 @@ CREATE INDEX IF NOT EXISTS idx_observations_jwst_pid
 -- =============================================================================
 -- comments (additional)
 -- =============================================================================
-
-CREATE INDEX IF NOT EXISTS idx_comments_content_trgm
-    ON public.comments USING gin (content public.gin_trgm_ops);
 
 CREATE INDEX IF NOT EXISTS idx_comments_created
     ON public.comments USING btree (created_at DESC);
@@ -416,10 +427,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_storage_objects_product_exposure_active
 -- Copy/verify + budget walks scope by backend and status.
 CREATE INDEX IF NOT EXISTS idx_storage_objects_backend_status
     ON public.storage_objects USING btree (backend, status);
-
--- Copy-verify and dedup are by content hash.
-CREATE INDEX IF NOT EXISTS idx_storage_objects_content_hash
-    ON public.storage_objects USING btree (content_hash);
 
 -- Cascade a deployment to its objects (revoke/recover).
 CREATE INDEX IF NOT EXISTS idx_storage_objects_deployment_id

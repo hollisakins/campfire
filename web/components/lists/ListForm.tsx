@@ -1,14 +1,21 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import { Loader2, Check, X as XIcon } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { createList, updateList, checkSlugAvailability } from '@/lib/actions/lists';
-import { ListEmojiPicker } from './ListEmojiPicker';
 import { ListColorPicker } from './ListColorPicker';
 import { ListShareManager } from './ListShareManager';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import type { ObjectList } from '@/lib/types';
+
+// frimousse (~9 kB br) is only needed once someone opens this modal; keep it
+// out of the object page's first-load JS (#500).
+const ListEmojiPicker = dynamic(
+  () => import('./ListEmojiPicker').then((m) => m.ListEmojiPicker),
+  { ssr: false, loading: () => <div className="w-10 h-10 rounded-md border border-border-strong bg-background" /> },
+);
 
 interface ListFormProps {
   mode: 'create' | 'edit';

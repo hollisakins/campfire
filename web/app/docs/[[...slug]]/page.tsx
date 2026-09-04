@@ -1,11 +1,17 @@
-'use client';
-
-import React, { useState } from 'react';
-import { useParams } from 'next/navigation';
+import React from 'react';
 import Link from 'next/link';
-import { ChevronRight, AlertCircle } from 'lucide-react';
-import { MarkdownRenderer, TableOfContents, DocNavigation, type TOCItem } from '@/components/docs';
+import { notFound } from 'next/navigation';
+import { ChevronRight } from 'lucide-react';
+// Direct imports, not the '@/components/docs' barrel: the barrel also
+// re-exports the CLIENT markdown renderer, and a client module reached
+// through the server graph still gets a client chunk — that put the whole
+// parser (react-markdown + remark + rehype-highlight, 89 kB gz) back into
+// this static route's first-load JS.
+import MarkdownServer from '@/components/docs/MarkdownServer';
+import TableOfContents from '@/components/docs/TableOfContents';
+import DocNavigation from '@/components/docs/DocNavigation';
 import { findDocBySlug, getBreadcrumbs, getAdjacentPages } from '@/lib/docs/config';
+import { extractHeadings } from '@/lib/docs/toc';
 
 // Import all markdown content
 import overviewContent from '@/lib/docs/content/overview.md';
@@ -49,40 +55,37 @@ const contentMap: Record<string, string> = {
   'api/rest': restApiContent,
 };
 
-export default function DocsPage() {
-  const params = useParams();
-  const slugArray = params.slug as string[] | undefined;
-  const slug = slugArray?.join('/') || 'overview';
 
-  const [tocItems, setTocItems] = useState<TOCItem[]>([]);
+// Static prose: every page is prerendered at build time from the registry
+// above (perf T1-7 / #503). Before, this route was a client component that
+// shipped all 18 documents plus the markdown parser to the browser and was a
+// lambda MISS on every request. Unknown slugs 404 at the edge.
+export const dynamicParams = false;
+
+export function generateStaticParams(): { slug: string[] }[] {
+  return Object.keys(contentMap).flatMap((slug) =>
+    // The overview is both the index route (/docs, empty catch-all segment)
+    // and /docs/overview, which the sidebar and prev/next links still use.
+    slug === 'overview' ? [{ slug: [] }, { slug: ['overview'] }] : [{ slug: slug.split('/') }],
+  );
+}
+
+export default async function DocsPage({ params }: { params: Promise<{ slug?: string[] }> }) {
+  const { slug: slugArray } = await params;
+  const slug = slugArray?.join('/') || 'overview';
 
   const content = contentMap[slug];
   const docPage = findDocBySlug(slug);
-  const breadcrumbs = getBreadcrumbs(slug);
-  const { prev, next } = getAdjacentPages(slug);
+  if (!content || !docPage) notFound();
 
-  // 404 handling
-  if (!content || !docPage) {
-    return (
-      <div className="text-center py-16">
-        <div className="w-16 h-16 bg-red-100 dark:bg-red-950 rounded-full flex items-center justify-center mx-auto mb-4">
-          <AlertCircle className="w-8 h-8 text-red-600 dark:text-red-400" />
-        </div>
-        <h1 className="text-2xl font-semibold text-text-primary mb-2">
-          Page Not Found
-        </h1>
-        <p className="text-text-secondary mb-6">
-          The documentation page you&apos;re looking for doesn&apos;t exist.
-        </p>
-        <Link
-          href="/docs"
-          className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-on-primary rounded-lg hover:bg-primary-hover transition-colors"
-        >
-          Back to Docs
-        </Link>
-      </div>
-    );
-  }
+  const breadcrumbs = getBreadcrumbs(slug);
+  const adjacent = getAdjacentPages(slug);
+  // Link fields only — DocPage.icon is a component and can't cross into the
+  // client-rendered DocNavigation.
+  const link = (d?: { slug: string; title: string }) => (d ? { slug: d.slug, title: d.title } : undefined);
+  const prev = link(adjacent.prev);
+  const next = link(adjacent.next);
+  const tocItems = extractHeadings(content);
 
   return (
     <div className="flex gap-8">
@@ -111,8 +114,8 @@ export default function DocsPage() {
           </nav>
         )}
 
-        {/* Content */}
-        <MarkdownRenderer content={content} onTOCChange={setTocItems} />
+        {/* Content (rendered at build time) */}
+        <MarkdownServer content={content} />
 
         {/* Navigation */}
         <DocNavigation prev={prev} next={next} />

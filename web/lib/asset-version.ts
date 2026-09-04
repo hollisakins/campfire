@@ -9,21 +9,36 @@
 //
 // The version is an opaque short hash over everything that can change what a
 // cutout of that field renders: every `map_layers.tile_version` for the field
-// and the default FitsGL field dataset's prefix + deploy time. Hashing (rather
-// than exposing the prefix) means a draft-backed dataset visible only to
-// admins leaks nothing but "something changed". Server-only: reads via the
-// service client and memoizes in the Next data cache for five minutes, so a
-// redeployed field's thumbnails change URL within that window.
+// and the default FitsGL field dataset's prefix + deploy time. Server-only:
+// reads via the service client and memoizes in the Next data cache for five
+// minutes, so a redeployed field's thumbnails change URL within that window.
+//
+// Exposure: the per-field map (`byField`) is keyed by field name and covers
+// every field in the DB, draft-backed datasets included — it must stay on the
+// server (og-image metadata uses it). Client components only ever receive the
+// `global` token (`clientAssetVersion`), which says "something changed" and
+// nothing else; any redeploy therefore refreshes every thumbnail URL, which
+// is the right trade for a browser-private cache.
 
 import { createHash } from 'node:crypto';
 import { unstable_cache } from 'next/cache';
 import { createServiceClient } from '@/lib/supabase/server';
 
 export interface AssetVersions {
-  /** Short version token per field (lower-case field key as stored in the DB). */
+  /** Short version token per field (lower-case field key as stored in the DB).
+   *  SERVER-ONLY: names every field, including admin-only draft datasets. */
   byField: Record<string, string>;
-  /** Combined token over every field — for callers that don't know the field. */
+  /** Combined token over every field — the only part safe to send to clients. */
   global: string;
+}
+
+/** The client-safe projection: just the global token. */
+export interface ClientAssetVersion {
+  global: string;
+}
+
+export function clientAssetVersion(versions: AssetVersions): ClientAssetVersion {
+  return { global: versions.global };
 }
 
 function shortHash(input: string): string {
@@ -36,7 +51,7 @@ async function computeAssetVersions(): Promise<AssetVersions> {
     supabase.from('map_layers').select('field, filter, tile_version'),
     supabase
       .from('fitsgl_datasets')
-      .select('field, prefix, deployed_at, is_default')
+      .select('field, prefix, deployed_at, source_hashes, is_default')
       .eq('kind', 'field'),
   ]);
 
@@ -57,7 +72,11 @@ async function computeAssetVersions(): Promise<AssetVersions> {
   }
   for (const [field, rows] of byField) {
     const ds = rows!.find((r) => r.is_default) ?? rows![0];
-    push(field, `fitsgl:${ds.prefix}:${ds.deployed_at}`);
+    // prefix is the upsert's conflict target and deployed_at is never
+    // rewritten, so neither changes on a re-deploy; source_hashes (the
+    // backing mosaics' content hashes) is rewritten on every deploy and is
+    // what actually tracks the pyramid's contents.
+    push(field, `fitsgl:${ds.prefix}:${ds.deployed_at}:${JSON.stringify(ds.source_hashes ?? null)}`);
   }
 
   const versions: Record<string, string> = {};
