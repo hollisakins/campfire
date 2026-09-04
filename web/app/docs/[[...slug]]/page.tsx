@@ -63,10 +63,11 @@ const contentMap: Record<string, string> = {
 export const dynamicParams = false;
 
 export function generateStaticParams(): { slug: string[] }[] {
-  return Object.keys(contentMap).map((slug) => ({
-    // The index route (/docs) is the overview: an empty catch-all segment.
-    slug: slug === 'overview' ? [] : slug.split('/'),
-  }));
+  return Object.keys(contentMap).flatMap((slug) =>
+    // The overview is both the index route (/docs, empty catch-all segment)
+    // and /docs/overview, which the sidebar and prev/next links still use.
+    slug === 'overview' ? [{ slug: [] }, { slug: ['overview'] }] : [{ slug: slug.split('/') }],
+  );
 }
 
 export default async function DocsPage({ params }: { params: Promise<{ slug?: string[] }> }) {
