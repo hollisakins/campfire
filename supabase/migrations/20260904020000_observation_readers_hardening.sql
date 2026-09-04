@@ -20,7 +20,10 @@
 -- 5. The live path counts only the statuses the caller is authorized for
 --    (a drafts link: published + draft, never revoked; an admin: published
 --    unless opted in), derived from the caller, not from the raw
---    p_include_unpublished argument; its deployment laterals filter the same.
+--    p_include_unpublished argument; its deployment laterals filter the same
+--    set, so draft provenance never sits next to published-only counts.
+-- 6. refresh_programs_overview() / refresh_filter_options() carried the same
+--    anon grant (baseline migration) and are revoked alongside.
 
 CREATE OR REPLACE FUNCTION public.scoped_program_slugs(p_program_slugs text[])
 RETURNS text[]
@@ -71,14 +74,12 @@ DECLARE
   -- What the live path may count, derived from the caller's authorization,
   -- never from the raw p_include_unpublished argument: a drafts link sees
   -- published + draft (policies: select_spectra_by_access /
-  -- authenticated_select_deployments), an admin sees published spectra
-  -- unless opted in, and every deployment (as RLS lets admins).
-  v_spectra_statuses text[] := CASE
+  -- authenticated_select_deployments); an admin sees published only unless
+  -- opted in. Counts and deployment provenance use the same set, so a draft
+  -- re-reduction's version stamps never sit next to published-only counts
+  -- (the matview's invariant, views.sql).
+  v_statuses text[] := CASE
     WHEN v_unpublished THEN ARRAY['draft', 'published', 'revoked']
-    WHEN public.link_sees_drafts() THEN ARRAY['published', 'draft']
-    ELSE ARRAY['published'] END;
-  v_dep_statuses text[] := CASE
-    WHEN v_unpublished OR public.is_admin() THEN ARRAY['draft', 'published', 'revoked']
     WHEN public.link_sees_drafts() THEN ARRAY['published', 'draft']
     ELSE ARRAY['published'] END;
 BEGIN
@@ -118,7 +119,7 @@ BEGIN
     JOIN programs p ON p.slug = t.program_slug
     LEFT JOIN spectra s ON s.target_id = t.target_id
       -- Only the statuses this caller is authorized for (targets still appear).
-      AND s.deploy_status = ANY(v_spectra_statuses)
+      AND s.deploy_status = ANY(v_statuses)
     WHERE t.program_slug = ANY(v_slugs)
       AND (NOT v_link OR t.observation = (SELECT public.link_observation()))
     GROUP BY t.observation, t.program_slug, p.program_name, t.field
@@ -143,7 +144,7 @@ BEGIN
     FROM public.deployments d
     LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
     WHERE d.observation = s.observation AND d.source_ids_filter IS NULL
-      AND d.status = ANY(v_dep_statuses)
+      AND d.status = ANY(v_statuses)
     ORDER BY d.deployed_at DESC
     LIMIT 1
   ) full_dep ON true
@@ -152,7 +153,7 @@ BEGIN
     FROM public.deployments d
     WHERE d.observation = s.observation
       AND d.source_ids_filter IS NOT NULL
-      AND d.status = ANY(v_dep_statuses)
+      AND d.status = ANY(v_statuses)
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
   ) patches ON true
   ORDER BY s.observation;
@@ -190,14 +191,12 @@ DECLARE
   -- What the live path may count, derived from the caller's authorization,
   -- never from the raw p_include_unpublished argument: a drafts link sees
   -- published + draft (policies: select_spectra_by_access /
-  -- authenticated_select_deployments), an admin sees published spectra
-  -- unless opted in, and every deployment (as RLS lets admins).
-  v_spectra_statuses text[] := CASE
+  -- authenticated_select_deployments); an admin sees published only unless
+  -- opted in. Counts and deployment provenance use the same set, so a draft
+  -- re-reduction's version stamps never sit next to published-only counts
+  -- (the matview's invariant, views.sql).
+  v_statuses text[] := CASE
     WHEN v_unpublished THEN ARRAY['draft', 'published', 'revoked']
-    WHEN public.link_sees_drafts() THEN ARRAY['published', 'draft']
-    ELSE ARRAY['published'] END;
-  v_dep_statuses text[] := CASE
-    WHEN v_unpublished OR public.is_admin() THEN ARRAY['draft', 'published', 'revoked']
     WHEN public.link_sees_drafts() THEN ARRAY['published', 'draft']
     ELSE ARRAY['published'] END;
 BEGIN
@@ -233,7 +232,7 @@ BEGIN
     FROM public.targets t
     LEFT JOIN public.spectra s ON s.target_id = t.target_id
       -- Only the statuses this caller is authorized for.
-      AND s.deploy_status = ANY(v_spectra_statuses)
+      AND s.deploy_status = ANY(v_statuses)
     WHERE t.program_slug = ANY(v_slugs)
       AND (NOT v_link OR t.observation = (SELECT public.link_observation()))
     GROUP BY t.observation, t.program_slug
@@ -271,7 +270,7 @@ BEGIN
     FROM public.deployments d
     LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
     WHERE d.observation = o.name AND d.source_ids_filter IS NULL
-      AND d.status = ANY(v_dep_statuses)
+      AND d.status = ANY(v_statuses)
     ORDER BY d.deployed_at DESC
     LIMIT 1
   ) full_dep ON true
@@ -280,7 +279,7 @@ BEGIN
     FROM public.deployments d
     WHERE d.observation = o.name
       AND d.source_ids_filter IS NOT NULL
-      AND d.status = ANY(v_dep_statuses)
+      AND d.status = ANY(v_statuses)
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
   ) patches ON true
   WHERE o.program_slug = ANY(v_slugs)
@@ -296,3 +295,9 @@ REVOKE ALL ON FUNCTION public.refresh_observations_overview() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.refresh_observations_overview TO authenticated;
 
 REVOKE ALL ON FUNCTION public.refresh_all_matviews() FROM PUBLIC, anon, authenticated;
+
+REVOKE ALL ON FUNCTION public.refresh_programs_overview() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.refresh_programs_overview TO authenticated, service_role;
+
+REVOKE ALL ON FUNCTION public.refresh_filter_options() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.refresh_filter_options TO authenticated, service_role;
