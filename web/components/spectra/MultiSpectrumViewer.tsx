@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { useQueries, type UseQueryResult } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import type { SpectrumData } from '@/app/api/spectrum/route';
+import { spectrumJsonQueryOptions, useSpectrumCacheTrim } from '@/lib/hooks/useSpectrumJson';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import {
@@ -35,8 +37,6 @@ interface MultiSpectrumViewerProps {
   redshift: number | null;
 }
 
-const FETCH_BATCH_SIZE = 4;
-
 export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
   sources,
   grating,
@@ -45,11 +45,40 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
   const { spectrumPreferences } = usePreferences();
   const { resolvedTheme } = useTheme();
 
-  // Internal cache of fetched spectrum data
-  const dataCache = useRef<Map<string, SpectrumData>>(new Map());
-  const [loadedData, setLoadedData] = useState<Map<string, SpectrumData>>(new Map());
-  const [loading, setLoading] = useState(false);
-  const [loadingProgress, setLoadingProgress] = useState<{ loaded: number; total: number } | null>(null);
+  // Spectrum JSON via the shared TanStack cache (lib/hooks/useSpectrumJson,
+  // #500): one query per source, enabled while the source is visible. Data
+  // for a hidden source stays in the cache and keeps contributing to the
+  // y-range, so toggling visibility never rescales the plot. Traces appear
+  // progressively as each query resolves.
+  const combineSpectrumQueries = useCallback(
+    (results: UseQueryResult<SpectrumData>[]) => {
+      const map = new Map<string, SpectrumData>();
+      let total = 0;
+      let pending = 0;
+      sources.forEach((s, i) => {
+        const r = results[i];
+        if (r?.data) map.set(s.fitsPath, r.data);
+        if (s.visible) {
+          total++;
+          // A failed fetch is dropped from the plot, not waited on (it used
+          // to be skipped silently; TanStack retries once first).
+          if (!r?.data && r?.status === 'pending') pending++;
+        }
+      });
+      return {
+        loadedData: map,
+        loading: pending > 0,
+        loadingProgress: pending > 0 ? { loaded: total - pending, total } : null,
+      };
+    },
+    [sources],
+  );
+  const { loadedData, loading, loadingProgress } = useQueries({
+    queries: sources.map(s => ({ ...spectrumJsonQueryOptions(s.fitsPath), enabled: s.visible })),
+    combine: combineSpectrumQueries,
+  });
+  // Bound the shared cache as spectra land (idle entries beyond the cap go).
+  useSpectrumCacheTrim(loadedData);
 
   const [fluxUnit, setFluxUnit] = useState<FluxUnit>(spectrumPreferences.fluxUnit);
   const [showEmissionLines, setShowEmissionLines] = useState(true);
@@ -61,78 +90,13 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
     if (initialRedshift != null) setRedshift(initialRedshift);
   }, [initialRedshift]);
 
-  // Fetch spectrum data for visible sources (batched, progressive)
-  useEffect(() => {
-    const visibleSources = sources.filter(s => s.visible);
-    const toFetch = visibleSources.filter(s => !dataCache.current.has(s.fitsPath));
 
-    if (toFetch.length === 0) {
-      // All visible data is cached. Include cached hidden sources too, so
-      // they keep contributing to the y-range (stable across toggles).
-      const map = new Map<string, SpectrumData>();
-      for (const s of sources) {
-        const d = dataCache.current.get(s.fitsPath);
-        if (d) map.set(s.fitsPath, d);
-      }
-      setLoadedData(map);
-      setLoading(false); // a cancelled in-flight run may have left this true
-      setLoadingProgress(null);
-      return;
-    }
-
-    let cancelled = false;
-    setLoading(true);
-    setLoadingProgress({ loaded: 0, total: toFetch.length });
-
-    const fetchOne = async (s: SpectrumSource) => {
-      try {
-        const res = await fetch(`/api/spectrum?path=${encodeURIComponent(s.fitsPath)}`);
-        if (!res.ok) return null;
-        const data: SpectrumData = await res.json();
-        return { path: s.fitsPath, data };
-      } catch {
-        return null;
-      }
-    };
-
-    (async () => {
-      let loaded = 0;
-      for (let i = 0; i < toFetch.length; i += FETCH_BATCH_SIZE) {
-        if (cancelled) return;
-        const batch = toFetch.slice(i, i + FETCH_BATCH_SIZE);
-        const results = await Promise.all(batch.map(fetchOne));
-
-        for (const r of results) {
-          if (r) {
-            dataCache.current.set(r.path, r.data);
-            loaded++;
-          }
-        }
-
-        if (cancelled) return;
-
-        // Update state after each batch → traces appear progressively.
-        // Rebuild from ALL sources so cached hidden spectra stay loaded.
-        const map = new Map<string, SpectrumData>();
-        for (const s of sources) {
-          const d = dataCache.current.get(s.fitsPath);
-          if (d) map.set(s.fitsPath, d);
-        }
-        setLoadedData(new Map(map));
-        setLoadingProgress({ loaded, total: toFetch.length });
-      }
-      if (!cancelled) {
-        setLoading(false);
-        setLoadingProgress(null);
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [sources]);
-
-  // Build Plotly traces
-  const { traces, layout } = useMemo(() => {
-    const plotColors = getPlotColors();
+  // Redshift-INDEPENDENT traces — the error bands and flux lines of every
+  // visible source, plus the merged x/y ranges. Dragging the redshift slider
+  // (or zooming, or switching theme) must not rebuild these: they keep their
+  // identity so Plotly.react can skip them and only the emission-line traces
+  // and the rest-frame axis change (#500).
+  const base = useMemo(() => {
     const visibleSources = sources.filter(s => s.visible && loadedData.has(s.fitsPath));
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -239,11 +203,22 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
     const xRange: [number, number] | undefined =
       xWaveMin < xWaveMax ? [xWaveMin, xWaveMax] : undefined;
 
+    return { traces: allTraces, xRange, yRange };
+  }, [sources, loadedData, fluxUnit]);
+
+  // Everything that moves with the slider, the zoom or the theme: emission
+  // lines, the rest-frame overlay axis, and the layout.
+  const { traces, layout } = useMemo(() => {
+    const plotColors = getPlotColors();
+    const { xRange, yRange } = base;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const overlayTraces: any[] = [];
+
     // Emission lines — z = 0 is a valid rest frame; no redshift gate, or the
     // toggle silently does nothing for objects without a catalog redshift.
     // Drawn on the hidden overlay yaxis2 so they never affect autoscaling.
     if (showEmissionLines && xRange) {
-      allTraces.push(...buildEmissionLineTraces(redshift, xRange[0], xRange[1], {
+      overlayTraces.push(...buildEmissionLineTraces(redshift, xRange[0], xRange[1], {
         yaxis: 'y2',
         grating: grating ?? undefined,
       }));
@@ -297,14 +272,17 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
         obsMax: effRange[1],
         colors: plotColors,
       });
-      allTraces.push(buildRestFrameAxisActivationTrace(effRange[0], 'x2', 'y2'));
+      overlayTraces.push(buildRestFrameAxisActivationTrace(effRange[0], 'x2', 'y2'));
     }
 
-    return { traces: allTraces, layout: plotLayout };
+    return {
+      traces: overlayTraces.length > 0 ? [...base.traces, ...overlayTraces] : base.traces,
+      layout: plotLayout,
+    };
     // resolvedTheme is a real dependency: getPlotColors() reads CSS variables
     // that change with the theme class on <html>.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sources, loadedData, fluxUnit, showEmissionLines, redshift, grating, observedRange, resolvedTheme]);
+  }, [base, fluxUnit, showEmissionLines, redshift, grating, observedRange, resolvedTheme]);
 
   // Track zoom range for rest-frame axis (null = full data range)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
