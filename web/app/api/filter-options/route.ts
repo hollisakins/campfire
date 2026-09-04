@@ -22,6 +22,11 @@ const EMPTY: FilterOptionsResult = { programs: [], fields: [], observations: [] 
  *
  * A GET route rather than a server action (perf T2-C, #506): the list page
  * fires this on mount next to its table fetch, and actions serialize.
+ *
+ * Failures after authentication ride in the body with a 200, as the action
+ * did: a matview failure still returns the computed `programs` so the
+ * program filter degrades instead of disappearing, and fetchJson() would
+ * throw on a non-2xx and drop that partial payload. Only anonymous is 401.
  */
 export async function GET() {
   const principal = await getRequestPrincipal();
@@ -32,7 +37,7 @@ export async function GET() {
     const { data: allPrograms, error: programsError } = await supabase.from('programs').select('*');
     if (programsError) {
       console.error('Error fetching programs:', programsError);
-      return Response.json({ ...EMPTY, error: programsError.message }, { status: 500 });
+      return Response.json({ ...EMPTY, error: programsError.message } satisfies FilterOptionsResult, { headers: NO_STORE });
     }
 
     // Filter to the accessible set. The old form (is_public OR explicit
@@ -67,7 +72,7 @@ export async function GET() {
       console.error('Error fetching filter options:', filterError);
       return Response.json(
         { programs, fields: [], observations: [], error: filterError.message } satisfies FilterOptionsResult,
-        { status: 500 },
+        { headers: NO_STORE },
       );
     }
 
@@ -79,6 +84,6 @@ export async function GET() {
     return Response.json(body, { headers: NO_STORE });
   } catch (err) {
     console.error('Unexpected error fetching filter options:', err);
-    return Response.json({ ...EMPTY, error: 'An unexpected error occurred' }, { status: 500 });
+    return Response.json({ ...EMPTY, error: 'An unexpected error occurred' } satisfies FilterOptionsResult, { headers: NO_STORE });
   }
 }
