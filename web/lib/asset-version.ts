@@ -50,20 +50,20 @@ function shortHash(input: string): string {
   return createHash('sha1').update(input).digest('hex').slice(0, 10);
 }
 
-/** Last publish state seen per dataset prefix. A transient
- * fitsgl_dataset_is_public failure reuses it rather than hashing a
- * placeholder — which would roll the field's version (every cutout url, a
- * never-purged store prefix) for the memo window and back again. */
+/** Last publish state seen per dataset prefix, and last version computed
+ * per field. A transient fitsgl_dataset_is_public failure reuses the former
+ * (else the latter) rather than hashing a placeholder — which would roll the
+ * field's version (every cutout url, a never-purged store prefix) for the
+ * memo window and back again. With neither (a cold instance whose very first
+ * lookup fails) that ONE field gets no version for the window: its cutouts
+ * render uncached and its urls fall back to the global token, while every
+ * other field is unaffected. */
 const lastPublicity = new Map<string, string>();
-
-/** Thrown when a dataset's publish state cannot be determined and no earlier
- * answer exists: getAssetVersions then yields no versions for this request
- * (nothing is stored under a guessed key) and the next request retries. */
-class PublicityUnavailable extends Error {}
+const lastFieldVersion = new Map<string, string>();
 
 async function computeAssetVersions(): Promise<AssetVersions> {
   const supabase = createServiceClient();
-  const [{ data: layers }, { data: datasets }, { data: latestDeploy }] = await Promise.all([
+  const [layersRes, datasetsRes, deployRes] = await Promise.all([
     supabase.from('map_layers').select('field, filter, tile_version'),
     supabase
       .from('fitsgl_datasets')
@@ -77,6 +77,16 @@ async function computeAssetVersions(): Promise<AssetVersions> {
       .limit(1)
       .maybeSingle(),
   ]);
+  // A failed input query is not "no inputs": hashing a truncated input list
+  // would mint a version that collides with a genuinely different state (and
+  // the cutout store would persist renders under it). Throw instead — the
+  // caller answers with no versions and the next request retries.
+  for (const [what, res] of [['map_layers', layersRes], ['fitsgl_datasets', datasetsRes], ['deployments', deployRes]] as const) {
+    if (res.error) throw new Error(`asset versions: ${what} query failed: ${res.error.message}`);
+  }
+  const { data: layers } = layersRes;
+  const { data: datasets } = datasetsRes;
+  const { data: latestDeploy } = deployRes;
 
   // field → sorted list of version inputs
   const inputs = new Map<string, string[]>();
@@ -93,6 +103,8 @@ async function computeAssetVersions(): Promise<AssetVersions> {
     list.push(d);
     byField.set(d.field, list);
   }
+  // Fields whose version cannot be computed this time (see lastPublicity).
+  const unavailable = new Set<string>();
   for (const [field, rows] of byField) {
     const ds = rows!.find((r) => r.is_default) ?? rows![0];
     // source_hashes (the backing mosaics' content hashes) tracks the
@@ -112,7 +124,10 @@ async function computeAssetVersions(): Promise<AssetVersions> {
     if (pubErr) {
       console.error(`fitsgl_dataset_is_public failed for field ${field}:`, pubErr);
       const last = lastPublicity.get(ds.prefix);
-      if (last === undefined) throw new PublicityUnavailable(`publish state unknown for ${ds.prefix}`);
+      if (last === undefined) {
+        unavailable.add(field);
+        continue;
+      }
       publicity = last;
     } else {
       publicity = String(Boolean(isPublic));
@@ -122,10 +137,16 @@ async function computeAssetVersions(): Promise<AssetVersions> {
   }
 
   const versions: Record<string, string> = {};
-  const fields = [...inputs.keys()].sort();
-  for (const field of fields) {
+  for (const field of [...inputs.keys()].sort()) {
+    if (unavailable.has(field)) {
+      const last = lastFieldVersion.get(field);
+      if (last !== undefined) versions[field] = last;
+      continue;
+    }
     versions[field] = shortHash(inputs.get(field)!.sort().join('|'));
+    lastFieldVersion.set(field, versions[field]);
   }
+  const fields = Object.keys(versions).sort();
   const global = shortHash(
     fields.map((f) => `${f}=${versions[f]}`).join('|') + `|deploy=${latestDeploy?.deployed_at ?? ''}`,
   );
@@ -135,10 +156,10 @@ async function computeAssetVersions(): Promise<AssetVersions> {
 /**
  * Current imaging asset versions, memoized for five minutes. Never throws: a
  * lookup failure yields empty versions, and callers then omit `v=` (today's
- * behaviour) and leave the cutout store alone (the routes only store under a
- * field that has a version) rather than failing a page render over a
- * cache-key nicety. A thrown compute is not memoized, so the next request
- * retries.
+ * behaviour) rather than failing a page render over a cache-key nicety. A
+ * field whose publish state could not be determined (and was never seen)
+ * is simply absent from `byField` for the window — the routes then leave
+ * the cutout store alone for that field — while the others are unaffected.
  */
 export async function getAssetVersions(): Promise<AssetVersions> {
   try {

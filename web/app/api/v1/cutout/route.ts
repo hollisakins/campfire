@@ -11,6 +11,7 @@ import { resolveFieldCutoutSourceResult } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 import { getAssetVersions } from '@/lib/asset-version';
 import { CUTOUT_STORE_SIZES, cutoutStoreFor, cutoutStoreHas, onFovGrid, storeCutoutInBackground } from '@/lib/cutout/store';
+import { catalogIsPublic, publicProgramSlugs } from '@/lib/server/public-programs';
 
 // Tile decode + reprojection + PNG encode for up to 2048 px on a cold instance (#497).
 export const maxDuration = 60;
@@ -138,17 +139,22 @@ export async function GET(request: NextRequest) {
     // FitsGL path (epic #337, Phase 5). Service-role client bypasses RLS, so
     // non-admins mirror the fitsgl_datasets policy via requirePublic; admins
     // may render from draft-backed pyramids (matching the map).
-    const [{ source: fitsglSrc, failed: fitsglUnresolved }, versions] = await Promise.all([
+    const [{ source: fitsglSrc, failed: fitsglUnresolved }, versions, publicSlugs] = await Promise.all([
       resolveFieldCutoutSourceResult(supabase, obj.field, { requirePublic: !isAdmin }),
       getAssetVersions(),
+      publicProgramSlugs(),
     ]);
     const fieldVersion = versions.byField[obj.field];
     const publicImagery = fitsglSrc ? fitsglSrc.isPublic : true;
+    // Only a public target's cutout may live at the store's unsigned public
+    // url (see /api/tile-thumbnail): a private program's coordinates must
+    // not outlive this caller's authorization.
+    const publicTarget = catalogIsPublic(objectPrograms, publicSlugs);
     // The requested size is honored exactly; the store is used only for
     // sizes it keys on (the ladder, or the fov's native size) and for a fov
     // on the store grid, so sweeping size or fov cannot inflate the bucket.
     const storeFor = (outputSize: number) =>
-      publicImagery && fieldVersion && onFovGrid(fov)
+      publicImagery && publicTarget && fieldVersion && onFovGrid(fov)
         && (requestedSize === null || CUTOUT_STORE_SIZES.includes(outputSize))
         ? cutoutStoreFor({ field: obj.field, version: fieldVersion, size: outputSize, fov, ra: obj.ra, dec: obj.dec })
         : null;

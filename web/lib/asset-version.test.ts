@@ -6,6 +6,7 @@ vi.mock('next/cache', () => ({ unstable_cache: (fn: () => unknown) => fn }));
 
 const db = vi.hoisted(() => ({
   publicity: { data: true as boolean | null, error: null as null | { message: string } },
+  layersError: null as null | { message: string },
 }));
 
 /** A thenable that also answers every builder method with itself. */
@@ -19,7 +20,15 @@ function chain<T>(result: T) {
 vi.mock('@/lib/supabase/server', () => ({
   createServiceClient: () => ({
     from: (table: string) => {
-      if (table === 'map_layers') return chain({ data: [{ field: 'egs', filter: 'f444w', tile_version: 3 }] });
+      if (table === 'map_layers') {
+        return chain({
+          data: db.layersError ? null : [
+            { field: 'egs', filter: 'f444w', tile_version: 3 },
+            { field: 'cosmos', filter: 'f444w', tile_version: 7 },
+          ],
+          error: db.layersError,
+        });
+      }
       if (table === 'fitsgl_datasets') {
         return chain({
           data: [{
@@ -38,15 +47,27 @@ vi.mock('@/lib/supabase/server', () => ({
 import { getAssetVersions } from './asset-version';
 
 beforeEach(() => {
+  db.layersError = null;
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
-describe('getAssetVersions — publish state', () => {
-  it('yields no versions when the publish state is unknown and nothing earlier was seen', async () => {
-    db.publicity = { data: null, error: { message: 'rpc down' } };
+describe('getAssetVersions — input queries', () => {
+  it('yields no versions at all when an input query fails (a truncated input list is not a version)', async () => {
+    db.publicity = { data: true, error: null };
+    db.layersError = { message: 'db down' };
     const v = await getAssetVersions();
     expect(v.byField).toEqual({});
     expect(v.global).toBe('');
+  });
+});
+
+describe('getAssetVersions — publish state', () => {
+  it('a cold lookup failure leaves only that field without a version; the others are unaffected', async () => {
+    db.publicity = { data: null, error: { message: 'rpc down' } };
+    const v = await getAssetVersions();
+    expect(v.byField.egs).toBeUndefined();
+    expect(v.byField.cosmos).toMatch(/^[0-9a-f]{10}$/);
+    expect(v.global).toMatch(/^[0-9a-f]{10}$/);
   });
 
   it('a later lookup failure reuses the last known publish state, so the version does not move', async () => {
@@ -57,6 +78,7 @@ describe('getAssetVersions — publish state', () => {
     db.publicity = { data: null, error: { message: 'rpc down' } };
     const during = await getAssetVersions();
     expect(during.byField.egs).toBe(ok.byField.egs);
+    expect(during.byField.cosmos).toBe(ok.byField.cosmos);
     expect(during.global).toBe(ok.global);
   });
 

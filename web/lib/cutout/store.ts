@@ -6,7 +6,7 @@
 // key) under a deterministic key, and a route that finds one there answers
 // with a 302 to the CDN url (or streams it) instead of rendering:
 //
-//   cutouts/<field>/v<version>/<size>/<fov>/<ra>_<dec>.png
+//   cutouts/<field>/v<version>/r<render version>/<size>/<fov>/<ra>_<dec>.png
 //
 // `version` is the field's imaging asset version (lib/asset-version.ts): a
 // hash over every map_layers.tile_version and the FitsGL dataset's backing
@@ -14,6 +14,10 @@
 // publish / unpublish) moves every cutout to a new prefix and
 // the old one is orphaned for the bucket's lifecycle rule to expire (30 days
 // on `cutouts/`, set on the bucket — see the PR / DEPLOYMENT notes).
+// `r<render version>` is CUTOUT_RENDER_VERSION: bump it when the renderer
+// itself changes what the same inputs produce (a display-stretch fix, an
+// @fitsgl/core upgrade, a different encoder), since no field deploy would
+// otherwise move the keys and the old renders would serve for 30 days.
 //
 // A route stores only what it would serve again under the same key: a FitsGL
 // field whose FitsGL render failed and fell back to the legacy composite does
@@ -21,10 +25,11 @@
 //
 // Program-scoped access is the route's job BEFORE it consults the store; the
 // stored object is keyed by its inputs, not by a viewer. Only renders from
-// public imagery are stored (a draft-backed dataset an admin's RLS can see
-// stays a private, uncached render). The tiles bucket itself is public, so a
-// stored cutout exposes nothing beyond the tiles it was rendered from — plus
-// the coordinates already in its url.
+// public imagery of a PUBLIC target are stored (a draft-backed dataset an
+// admin's RLS can see stays a private, uncached render; so does a private
+// program's target — lib/server/public-programs.ts). The tiles bucket itself
+// is public, so a stored cutout exposes nothing beyond the tiles it was
+// rendered from, plus coordinates that are already public.
 import 'server-only';
 
 import { GetObjectCommand, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
@@ -63,6 +68,11 @@ export function onFovGrid(fov: number): boolean {
   return Math.abs(snapFov(fov) - fov) < 1e-6;
 }
 
+/** Bump when the rendering implementation changes its output for the same
+ * inputs (see the header). Part of every key, so the bump orphans every
+ * stored cutout at once. */
+export const CUTOUT_RENDER_VERSION = 1;
+
 export interface CutoutStoreInput {
   field: string;
   /** Per-field imaging asset version token (assetVersionFor). */
@@ -86,7 +96,7 @@ export function cutoutStoreKey(i: CutoutStoreInput): string {
   // when they are the same patch of sky to sub-pixel precision.
   const ra = i.ra.toFixed(7);
   const dec = `${i.dec >= 0 ? '+' : ''}${i.dec.toFixed(7)}`;
-  return `cutouts/${field}/v${version}/${i.size}/${fovSegment(i.fov)}/${ra}_${dec}.png`;
+  return `cutouts/${field}/v${version}/r${CUTOUT_RENDER_VERSION}/${i.size}/${fovSegment(i.fov)}/${ra}_${dec}.png`;
 }
 
 export interface CutoutStoreEntry {

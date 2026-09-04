@@ -9,6 +9,7 @@ import { resolveFieldCutoutSourceResult } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 import { getAssetVersions } from '@/lib/asset-version';
 import { cutoutStoreFor, cutoutStoreHas, snapFov, storeCutoutInBackground, storeSizeFor } from '@/lib/cutout/store';
+import { catalogIsPublic, publicProgramSlugs } from '@/lib/server/public-programs';
 
 // Tile decode + reprojection + PNG encode can exceed a short function budget
 // for a 600 px render on a cold instance (#497).
@@ -83,23 +84,23 @@ export async function GET(request: NextRequest) {
 
   try {
     // Look up coordinates in the table the caller named (legacy: targets, then objects)
-    let obj: { ra: number; dec: number; field: string } | null = null;
+    let obj: { ra: number; dec: number; field: string; programs: string[] } | null = null;
 
     if (kind !== 'object') {
       const { data: target } = await supabase
         .from('targets')
-        .select('ra, dec, field')
+        .select('ra, dec, field, program_slug')
         .eq('target_id', targetId)
         .maybeSingle();
-      obj = target;
+      if (target) obj = { ra: target.ra, dec: target.dec, field: target.field, programs: [target.program_slug] };
     }
     if (!obj && kind !== 'target') {
       const { data: object } = await supabase
         .from('objects')
-        .select('ra, dec, field')
+        .select('ra, dec, field, programs')
         .eq('object_id', targetId)
         .maybeSingle();
-      obj = object;
+      if (object) obj = { ra: object.ra, dec: object.dec, field: object.field, programs: object.programs ?? [] };
     }
 
     if (!obj) {
@@ -112,18 +113,23 @@ export async function GET(request: NextRequest) {
     // FitsGL path: render from the field's FITS pyramid when one is deployed
     // (RLS scopes draft-backed datasets to admins). Falls through to the
     // legacy PNG tiles on any render failure while both stacks coexist.
-    const [{ source: fitsglSrc, failed: fitsglUnresolved }, versions] = await Promise.all([
+    const [{ source: fitsglSrc, failed: fitsglUnresolved }, versions, publicSlugs] = await Promise.all([
       resolveFieldCutoutSourceResult(supabase, obj.field),
       getAssetVersions(),
+      publicProgramSlugs(),
     ]);
 
-    // Store lookup: only renders from public imagery are stored or served
-    // from the store (a draft-backed dataset stays a private, uncached
-    // render for the admin who can see it).
+    // Store lookup: only renders from public imagery OF A PUBLIC TARGET are
+    // stored or served from the store. A draft-backed dataset stays a
+    // private, uncached render for the admin who can see it; so does any
+    // target of a private program — the stored object sits at an unsigned
+    // public url keyed by its coordinates, which must not outlive the
+    // caller's authorization (#509).
     const storeSize = storeSizeFor(size);
     const publicImagery = fitsglSrc ? fitsglSrc.isPublic : true;
+    const publicTarget = catalogIsPublic(obj.programs, publicSlugs);
     const fieldVersion = versions.byField[obj.field];
-    const store = publicImagery && fieldVersion
+    const store = publicImagery && publicTarget && fieldVersion
       ? cutoutStoreFor({ field: obj.field, version: fieldVersion, size: storeSize, fov, ra: obj.ra, dec: obj.dec })
       : null;
     if (store && (await cutoutStoreHas(store.key))) {
