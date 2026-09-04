@@ -11,10 +11,8 @@ import { assembleRegion } from './assemble';
 import { encodeFitsCutout, type FitsBandCutout } from './fits';
 import type { FieldScienceSource } from './source';
 
-/** Per-band pixel budget (4096² ≈ 64 MB of float32). */
-export const MAX_PIXELS_PER_BAND = 4096 * 4096;
-/** Whole-request budget across bands (≈ 256 MB of float32). */
-export const MAX_PIXELS_TOTAL = 4 * MAX_PIXELS_PER_BAND;
+import { MAX_PIXELS_PER_BAND, MAX_PIXELS_TOTAL } from './limits';
+export { MAX_PIXELS_PER_BAND, MAX_PIXELS_TOTAL } from './limits';
 
 /** Request exceeds the pixel budget — the route turns this into a 400 with advice. */
 export class CutoutTooLargeError extends Error {
