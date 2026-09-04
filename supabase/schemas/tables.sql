@@ -1135,7 +1135,7 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- product_type tracks the campfire_layout PRODUCTS registry (every entry with a
     -- non-null bucket). A new cloud-backed product type requires a migration here.
     CONSTRAINT "storage_objects_product_type_check" CHECK (("product_type" = ANY (ARRAY[
-        'nirspec_spec'::"text", 'spectrum_json'::"text", 'zfit'::"text",
+        'nirspec_spec'::"text", 'spectrum_json'::"text", 'spectrum_1d_json'::"text", 'zfit'::"text",
         'nirspec_spectrum_exposure'::"text", 'nirspec_rate'::"text",
         'rgb'::"text", 'sed'::"text",
         'nircam_exposure'::"text", 'nircam_exposure_preview'::"text",
