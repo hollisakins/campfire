@@ -44,19 +44,39 @@ export interface RpcCursorRow {
 const PAGE_PARAMS = new Set(['cursor', 'limit', 'offset', 'count', 'include_count']);
 
 /**
- * Fingerprint of everything that defines the ordered result set: every query
- * parameter except the paging ones, canonicalized (sorted by key, then value).
- * `sort` / `sort_dir` are included by construction, so a cursor minted under
- * one sort is rejected under another.
+ * Which list endpoint a cursor belongs to. The two endpoints accept the same
+ * filter vocabulary, so without this a cursor minted by one would pass the
+ * fingerprint check on the other and the RPC would fall back to an
+ * unpaginated first page instead of erroring.
  */
-export function cursorFingerprint(searchParams: URLSearchParams): string {
+export interface CursorScope {
+  /** Endpoint tag mixed into the fingerprint (e.g. 'objects', 'spectra'). */
+  endpoint: string;
+  /** Length of the ORDER BY tiebreak tail the endpoint's RPC expects. */
+  tiebreakLength: number;
+}
+
+export const OBJECTS_CURSOR_SCOPE: CursorScope = { endpoint: 'objects', tiebreakLength: 1 };
+export const SPECTRA_CURSOR_SCOPE: CursorScope = { endpoint: 'spectra', tiebreakLength: 3 };
+
+/**
+ * Fingerprint of everything that defines the ordered result set: the endpoint
+ * plus every query parameter except the paging ones, canonicalized (sorted by
+ * key, then value). `sort` / `sort_dir` are included by construction, so a
+ * cursor minted under one sort is rejected under another, and the endpoint
+ * tag rejects a cursor minted by the other list endpoint.
+ */
+export function cursorFingerprint(searchParams: URLSearchParams, scope: CursorScope): string {
   const pairs: string[] = [];
   for (const [key, value] of searchParams.entries()) {
     if (PAGE_PARAMS.has(key)) continue;
     pairs.push(`${key}=${value}`);
   }
   pairs.sort();
-  return createHash('sha1').update(pairs.join('&')).digest('hex').slice(0, 12);
+  return createHash('sha1')
+    .update(`${scope.endpoint}\n${pairs.join('&')}`)
+    .digest('hex')
+    .slice(0, 12);
 }
 
 function toBase64Url(s: string): string {
@@ -104,10 +124,13 @@ export type DecodedCursor =
 
 /**
  * Decode and validate a client-supplied cursor against the current request's
- * fingerprint. Every failure is a client error (400): the cursor is malformed,
- * from another schema version, or minted under a different filter/sort.
+ * fingerprint and endpoint scope. Every failure is a client error (400): the
+ * cursor is malformed, from another schema version, minted under a different
+ * filter/sort or endpoint, or carries a tiebreak of the wrong arity for this
+ * endpoint's RPC (which would otherwise treat the cursor as absent and serve
+ * an unpaginated first page rather than an error).
  */
-export function decodeCursor(raw: string, fingerprint: string): DecodedCursor {
+export function decodeCursor(raw: string, fingerprint: string, scope: CursorScope): DecodedCursor {
   const json = fromBase64Url(raw);
   if (json === null) return { ok: false, error: 'Invalid cursor' };
   let parsed: unknown;
@@ -128,8 +151,11 @@ export function decodeCursor(raw: string, fingerprint: string): DecodedCursor {
   if (c.f !== fingerprint) {
     return {
       ok: false,
-      error: 'Cursor does not match the request filters or sort; restart the walk without a cursor',
+      error: 'Cursor does not match the request endpoint, filters or sort; restart the walk without a cursor',
     };
+  }
+  if (c.k.length !== scope.tiebreakLength) {
+    return { ok: false, error: 'Invalid cursor' };
   }
   return {
     ok: true,

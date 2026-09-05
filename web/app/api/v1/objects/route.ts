@@ -10,6 +10,7 @@ import {
   deprecationHeaders,
   encodeNextCursor,
   parseIncludeCount,
+  OBJECTS_CURSOR_SCOPE,
   type CursorPayload,
   type ListPagination,
 } from '@/lib/api-cursor';
@@ -112,10 +113,10 @@ export async function GET(request: NextRequest) {
         { status: 400 }
       );
     }
-    const fingerprint = cursorFingerprint(searchParams);
+    const fingerprint = cursorFingerprint(searchParams, OBJECTS_CURSOR_SCOPE);
     let cursor: CursorPayload | null = null;
     if (rawCursor) {
-      const decoded = decodeCursor(rawCursor, fingerprint);
+      const decoded = decodeCursor(rawCursor, fingerprint, OBJECTS_CURSOR_SCOPE);
       if (!decoded.ok) {
         return NextResponse.json({ error: decoded.error }, { status: 400 });
       }
