@@ -78,3 +78,6 @@ reports/
 
 # install.py state (per-machine answers; its log is covered by *.log above)
 .campfire-install.json
+
+# pytest
+.pytest_cache/

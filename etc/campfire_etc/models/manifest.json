@@ -1,0 +1,11 @@
+{
+  "latest": "2026.09",
+  "versions": [
+    {
+      "version": "2026.09",
+      "file": "nirspec-2026.09.json",
+      "built": "2026-09-02",
+      "notes": "First model: all 8 disperser/filter combinations (77k spectra)."
+    }
+  ]
+}

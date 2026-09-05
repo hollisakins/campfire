@@ -1,0 +1,45 @@
+# Fly.io configuration for the hosted campfire-etc MCP server.
+#
+# One shared-CPU machine that stops when idle and starts on the first request
+# (a cold start costs a few seconds; the calculator itself is milliseconds).
+# Deployed by .github/workflows/etc-server.yml on merges to main that touch
+# etc/**, using the FLY_API_TOKEN repository secret.
+#
+# First-time setup (once, from etc/ with flyctl installed and logged in):
+#   fly apps create campfire-etc
+#   fly deploy --config fly.toml
+#   fly certs add campfire-etc.hollisakins.com     # then add the CNAME/AAAA it prints in Cloudflare
+# Keep the hostname single-label under hollisakins.com so the Universal SSL
+# wildcard covers it when the record is proxied.
+
+app = "campfire-etc"
+primary_region = "ewr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  CAMPFIRE_ETC_PUBLIC_URL = "https://campfire-etc.hollisakins.com"
+  # Host headers the server accepts (DNS-rebinding protection). Add the
+  # fly.dev hostname so the app also answers before the custom domain exists.
+  CAMPFIRE_ETC_ALLOWED_HOSTS = "campfire-etc.hollisakins.com,campfire-etc.fly.dev"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

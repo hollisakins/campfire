@@ -9,6 +9,7 @@ Monorepo with several main components — see each directory's README for detail
 - **`pipeline/`** — JWST data reduction (NIRSpec + NIRCam). Local-only, no cloud dependencies.
 - **`web/`** — Next.js web portal. Deployed on Vercel.
 - **`python/`** — Unified Python package: API client, CLI, and deployment tools (including the `campfire deploy` CLI). Install with `pip install -e .` for full functionality — the base install carries the science stack (matplotlib, scipy, photutils, reproject, Pillow); interactive Plotly figures (`[plotting]`) and `specutils` are optional extras.
+- **`etc/`** — `campfire-etc`: the empirical NIRSpec/MSA exposure-time calculator and spectrum simulator fitted to the archive, with its MCP server. Deliberately **numpy-only** and independent of `campfire-layout` so `uvx` can install it straight from GitHub; the model builder is behind the `[build]` extra. See `etc/README.md`.
 
 Supporting: `supabase/` (migrations), `scripts/` (one-off utilities)
 
@@ -71,6 +72,14 @@ CHANGELOG categories map directly: **Calibration → MINOR**, **Algorithm → MI
 ### Override
 
 For ad-hoc tagged runs that aren't going through the release flow, set `[pipeline].version = "..."` in your config. The string passes through verbatim into `CMPFRVER` and deploys through the same warn-and-confirm path as `.dev` builds.
+
+## Empirical NIRSpec ETC (`etc/`)
+
+`campfire-etc` turns the archive into an exposure-time calculator: per disperser, σ²_pix(λ) = A(λ)/T + B(λ)/(T·t_exp²) fitted to faint standard-configuration spectra, plus the measured 1-D/2-D noise ratios, pixel correlation, shutter-placement penalty, source-Poisson term and flux-recovery fractions. `campfire_etc/model.py` (arithmetic), `sed.py`, `simulate.py` (mock spectra on the native pixel grid with correlated noise) depend on numpy only; `server.py` is the MCP server (`mcp>=2`, `MCPServer`), serving stdio locally and streamable HTTP when hosted (Fly.io via `etc/Dockerfile` + `etc/fly.toml`, deployed by `.github/workflows/etc-server.yml` on merge; hosted URL `https://campfire-etc.hollisakins.com/mcp`). The Claude Code plugin (skill + `.mcp.json`) lives in the separate `claude-astro-tools` marketplace as `nirspec-etc`; this repo owns the code, the models and the deployment.
+
+- **Models are versioned data**: `etc/campfire_etc/models/nirspec-<version>.json` (schema 1) + `manifest.json` (`latest`). Never edit a published model file; add a new version with `campfire-etc build assemble --version <YYYY.MM>` after re-running the harvest/fit steps on a fresh archive snapshot (`etc/README.md` has the run order and the pitfalls). Every tool result carries `model_version`. The regression numbers in `etc/tests/test_model.py` pin the 2026.09 model; if a rebuild changes the default, keep those tests pointing at 2026.09 explicitly (`load_model("2026.09")`) rather than loosening them.
+- Test with `pytest etc` (numpy + mcp only, ~5 s). The HTTP transport is smoke-tested in CI by starting the server and curling `/health`.
+- Keep the core numpy-only: anything needing astropy/scipy goes behind the `[fits]` or `[build]` extras with a lazy import.
 
 ## Web Portal
 
