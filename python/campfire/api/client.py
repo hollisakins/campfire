@@ -89,14 +89,31 @@ def _build_query_params(
     offset: int = 0,
     sort: str = "object_id",
     sort_dir: str = "asc",
+    cursor: Optional[str] = None,
+    count: Optional[bool] = None,
 ) -> dict:
-    """Build query parameters dict from filter arguments."""
+    """Build query parameters dict from filter arguments.
+
+    Pagination (T2-F, #511): ``cursor`` is the opaque ``next_cursor`` returned
+    in the previous page's ``pagination`` block and is the preferred way to
+    page — each page costs the same regardless of depth. ``offset`` is the
+    deprecated positional form (the server still honours it for one release
+    and answers with a ``Deprecation`` header); it is only sent when non-zero
+    and never alongside a cursor. ``count`` forces the total row count on or
+    off; left ``None`` the server counts on the first (cursor-less) page and
+    skips the second full pass on cursor pages.
+    """
     params: Dict[str, Union[str, int, float]] = {
         "limit": limit,
-        "offset": offset,
         "sort": sort,
         "sort_dir": sort_dir,
     }
+    if cursor:
+        params["cursor"] = cursor
+    elif offset:
+        params["offset"] = offset
+    if count is not None:
+        params["count"] = "true" if count else "false"
 
     if programs:
         params["programs"] = ",".join(str(p) for p in programs)
@@ -184,18 +201,35 @@ class APIClient:
         return data.get("data", []), data.get("pagination", {})
 
     def iter_objects(self, **filters) -> Iterator[dict]:
-        """Auto-paginating iterator over all matching objects."""
+        """Auto-paginating iterator over all matching objects.
+
+        Follows the server's ``next_cursor`` (keyset pagination, T2-F/#511):
+        the first request has no cursor and carries the total count, every
+        later request passes the previous page's cursor and skips the count,
+        so a full catalog walk is O(N) rather than O(N²/page).
+        """
+        yield from self._iter_cursor_pages(self.query_objects, filters)
+
+    def _iter_cursor_pages(
+        self, query: Callable[..., Tuple[List[dict], dict]], filters: dict
+    ) -> Iterator[dict]:
+        """Shared cursor walk for iter_objects / iter_spectra.
+
+        A server that does not return ``next_cursor`` (an empty ``pagination``
+        block, or ``next_cursor: null``) ends the walk after the page it gave,
+        so the loop can never spin on a stale endpoint.
+        """
         filters.pop("offset", None)
-        limit = filters.get("limit", 1000)
-        offset = 0
+        filters.pop("cursor", None)
+        filters.pop("count", None)
+        filters["limit"] = filters.get("limit", 1000)
+        cursor: Optional[str] = None
         while True:
-            filters["offset"] = offset
-            filters["limit"] = limit
-            objects, pagination = self.query_objects(**filters)
-            yield from objects
-            total = pagination.get("total", 0)
-            offset += len(objects)
-            if offset >= total or not objects:
+            filters["cursor"] = cursor
+            rows, pagination = query(**filters)
+            yield from rows
+            cursor = pagination.get("next_cursor")
+            if not cursor or not rows:
                 break
 
     def fetch_all_objects(
@@ -227,19 +261,11 @@ class APIClient:
         return data.get("data", []), data.get("pagination", {})
 
     def iter_spectra(self, **filters) -> Iterator[dict]:
-        """Auto-paginating iterator over all matching spectra."""
-        filters.pop("offset", None)
-        limit = filters.get("limit", 1000)
-        offset = 0
-        while True:
-            filters["offset"] = offset
-            filters["limit"] = limit
-            spectra, pagination = self.query_spectra(**filters)
-            yield from spectra
-            total = pagination.get("total", 0)
-            offset += len(spectra)
-            if offset >= total or not spectra:
-                break
+        """Auto-paginating iterator over all matching spectra.
+
+        Cursor walk — see :meth:`iter_objects`.
+        """
+        yield from self._iter_cursor_pages(self.query_spectra, filters)
 
     def fetch_all_spectra(
         self,

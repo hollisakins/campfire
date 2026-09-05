@@ -13,7 +13,10 @@ import requests
 from ..auth.tokens import TokenManager
 from ..exceptions import AuthenticationError
 
-__version__ = "0.2.0"
+# The User-Agent version. Sourced from the package so the server sees the
+# real client release (this used to be a stale hard-coded "0.2.0", which made
+# the header useless for telling keyset clients from offset clients — T2-F).
+from .._version import __version__
 
 # Default API URL
 DEFAULT_BASE_URL = "https://campfire.hollisakins.com/api/v1"

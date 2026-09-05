@@ -155,9 +155,13 @@ cf.download(observations=['ember_uds_p4'], gratings=['PRISM'])
 spec = cf.open_spectrum('ember_uds_p4_prism_clear_123456')
 print(spec.wavelength.shape, spec.fnu.shape)
 
-# Iterate over all matching objects (auto-pagination)
+# Iterate over all matching objects (cursor pagination — flat cost per page)
 for obj in cf.iter_objects(tags=['lrd']):
     print(obj['object_id'], obj['redshift'])
+
+# Or page by hand: the table's meta carries the next cursor
+page = cf.query_objects(fields=['cosmos'], limit=500, remote=True)
+nxt = page.meta['pagination']['next_cursor']       # None on the last page
 ```
 
 ### Working with objects
@@ -331,8 +335,8 @@ Campfire.sync()          → same as campfire sync
 Campfire.download()      → same as campfire download
 Campfire.query_objects() → one row per sky position (inspection state, tags)
 Campfire.query_spectra() → one row per spectrum (fits_path, dq_flags)
-Campfire.iter_objects()  → auto-paginating stream of matching objects
-Campfire.iter_spectra()  → auto-paginating stream of matching spectra
+Campfire.iter_objects()  → cursor-paginated stream of matching objects
+Campfire.iter_spectra()  → cursor-paginated stream of matching spectra
 Campfire.get_object()    → Object dataclass with .spectra + .photometry
 Campfire.open_spectrum() → opens local FITS by spectrum_id (or downloads on demand)
 Campfire.plot_cutout()   → NIRCam RGB cutout with vector shutter overlay

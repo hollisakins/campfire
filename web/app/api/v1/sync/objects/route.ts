@@ -15,11 +15,13 @@ import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
  * - updated_since: ISO 8601 timestamp (only return objects updated after this)
  * - limit: page size (default 1000)
  * - after: keyset cursor — object_id of the previous page's last row (#103).
- *          Preferred over offset; O(log N + limit) per page. When set, offset
- *          is ignored by the RPC's cursor predicate.
- * - offset: legacy pagination offset (default 0); kept for old clients.
+ *          O(log N + limit) per page. The only pagination since T2-F (#511):
+ *          a non-zero `offset` is refused with 400 and an upgrade message
+ *          (client floor 0.5.0, see /api/v1/version).
  * - include_counts: 'false' to skip total_count / total_accessible_count (default true)
  */
+import { rejectLegacyOffset } from '@/lib/api-sync-pagination';
+
 export async function GET(request: NextRequest) {
   const userId = await validateAuth(request);
 
@@ -41,8 +43,9 @@ export async function GET(request: NextRequest) {
     }
 
     const searchParams = request.nextUrl.searchParams;
+    const legacy = rejectLegacyOffset(searchParams);
+    if (legacy) return legacy;
     const limit = parseInt(searchParams.get('limit') || '1000', 10);
-    const offset = parseInt(searchParams.get('offset') || '0', 10);
     const afterObjectId = searchParams.get('after') || null;
     const updatedSince = searchParams.get('updated_since') || null;
     const includeCounts = searchParams.get('include_counts') !== 'false';
@@ -59,7 +62,6 @@ export async function GET(request: NextRequest) {
       p_user_id: userId,
       p_updated_since: updatedSince,
       p_limit: limit,
-      p_offset: offset,
       p_include_counts: includeCounts,
       p_include_unpublished: includeUnpublished,
       p_after_object_id: afterObjectId,
@@ -80,7 +82,7 @@ export async function GET(request: NextRequest) {
       pagination: {
         total: result.total_count || 0,
         limit,
-        offset,
+        after: afterObjectId,
       },
       total_accessible_count: result.total_accessible_count || 0,
     });

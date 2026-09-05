@@ -8,11 +8,16 @@ import { NextResponse } from 'next/server';
  *
  * Bump `latest` when a new client release is tagged.
  * Bump `minimum` when older clients will break (e.g., API changes).
+ *
+ * 0.5.0 (perf T2-F, #511): the /api/v1/sync/* endpoints refuse offset
+ * pagination, so every client that predates the keyset sync walk (#103) is
+ * below the floor. Kept in step with SYNC_CLIENT_FLOOR in
+ * lib/api-sync-pagination.ts.
  */
 export async function GET() {
   const response = NextResponse.json({
-    latest: '0.4.0',
-    minimum: '0.4.0',
+    latest: '0.5.0',
+    minimum: '0.5.0',
   });
 
   // Cache for 1 hour — version changes are infrequent

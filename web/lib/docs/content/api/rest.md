@@ -44,9 +44,11 @@ Query objects (cross-program grouped sky positions) with filters.
 | `ra` | float | RA for cone search (degrees) |
 | `dec` | float | Dec for cone search (degrees) |
 | `radius` | float | Search radius (arcsec) |
-| `limit` | int | Max results (default: 1000) |
-| `offset` | int | Pagination offset |
-| `sort` | string | Sort column (object_id, ra, dec, redshift, redshift_quality, field, n_targets, n_spectra, max_snr, max_exposure_time, distance) |
+| `limit` | int | Page size, 1–10000 (default: 1000) |
+| `cursor` | string | Opaque cursor from the previous page's `pagination.next_cursor` (see [Pagination](#pagination)) |
+| `count` | boolean | Force the total count on (`true`) or off (`false`). Default: counted on the first page, skipped on cursor pages |
+| `offset` | int | **Deprecated** positional offset; answered with a `Deprecation` header |
+| `sort` | string | Sort column (object_id, ra, dec, redshift, redshift_quality, field, n_targets, n_spectra, max_snr, max_exposure_time, photo_z, distance) |
 | `sort_dir` | string | 'asc' or 'desc' |
 
 **Response:**
@@ -66,7 +68,7 @@ Query objects (cross-program grouped sky positions) with filters.
       ]
     }
   ],
-  "pagination": {"total": 1500, "limit": 1000, "offset": 0}
+  "pagination": {"total": 1500, "limit": 1000, "offset": 0, "has_more": true, "next_cursor": "eyJ2IjoxLC..."}
 }
 ```
 
@@ -77,7 +79,45 @@ Flat list of spectra (one row per spectrum) with filters.
 Same vocabulary as `/objects` plus per-spectrum filters (`dq_flags_include_any`,
 `dq_flags_include_all`, `dq_flags_exclude`). Each row carries
 `spectrum_id`, `target_id`, `object_id`, `grating`, `fits_path`,
-`signal_to_noise`, `exposure_time`, `redshift_auto`, `dq_flags`.
+`signal_to_noise`, `exposure_time`, `redshift_auto`, `dq_flags`. Sort columns:
+target_id, spectrum_id, field, observation, program_slug, ra, dec, redshift,
+redshift_quality, redshift_auto, signal_to_noise, exposure_time, grating,
+distance. Pagination is identical to `/objects`.
+
+### Pagination
+
+`/objects` and `/spectra/list` page with an **opaque cursor**. Every response
+carries `pagination.next_cursor`; pass it back as `cursor=` with the *same
+filters and sort* to get the next page. `next_cursor` is `null` on the last
+page, so a walk needs no total and no trailing empty request:
+
+```bash
+URL="https://campfire.hollisakins.com/api/v1/objects?fields=cosmos&limit=1000"
+CURSOR=""
+while :; do
+  PAGE=$(curl -s -H "Authorization: Bearer $TOKEN" "$URL${CURSOR:+&cursor=$CURSOR}")
+  echo "$PAGE" | jq -c '.data[]'
+  CURSOR=$(echo "$PAGE" | jq -r '.pagination.next_cursor // empty')
+  [ -z "$CURSOR" ] && break
+done
+```
+
+Each page costs the same regardless of how deep into the result set it is: the
+server seeks to the cursor position instead of re-reading and discarding every
+earlier row. The cursor encodes the position under one specific filter set and
+sort; sending it with different filters or a different `sort`/`sort_dir` is a
+`400`, not a wrong page. Cursors are not long-lived tokens — mint them from the
+previous response, do not store them.
+
+`pagination.total` is the exact count of matching rows. Because it is a second
+full pass over the filter, it is computed on the first (cursor-less) page and
+skipped on cursor pages, where it is `-1`; `count=true` forces it, `count=false`
+skips it on a first page you don't need it for.
+
+`offset=` is still accepted for one client release. Offset pages are served
+with `Deprecation: true` and a `Link: <…>; rel="deprecation"` header, cost more
+the deeper they go, and cannot be combined with `cursor`. The Python client's
+`iter_objects()` / `iter_spectra()` walk with cursors since v0.5.0.
 
 ### GET /spectra
 

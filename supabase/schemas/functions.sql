@@ -877,25 +877,26 @@ CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_user_id UUID DEFAULT NULL,
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
+  -- T2-F (#511): OFFSET pagination is retired at the route (/api/v1/sync/*
+  -- answers offset>0 with 400; client floor 0.5.0). The parameter itself is
+  -- RETAINED, still honoured, until the release after #536: the migration and
+  -- the Vercel deploy land independently on merge, and the previous route
+  -- build passes p_offset on every call — dropping the signature here would
+  -- 500 every sync during that window (or on a web rollback). Nothing new
+  -- sends it, so it disappears from pg_stat_statements once the routes ship.
   p_offset INTEGER DEFAULT 0,
   p_include_counts BOOLEAN DEFAULT TRUE,
   p_include_unpublished BOOLEAN DEFAULT false,
   -- Keyset cursor (#103): the object_id of the last row of the previous page.
   -- When non-NULL the scan seeks straight to the next id via the
-  -- objects_object_id_key UNIQUE btree, so each page costs O(log N + limit)
-  -- instead of OFFSET's O(offset + limit). p_offset is kept for old clients.
+  -- objects_object_id_key UNIQUE btree, so each page costs O(log N + limit).
+  -- The 120 s statement_timeout exemption that existed for deep OFFSET pages
+  -- is gone (T2-F): every page runs under the role's default timeout.
   p_after_object_id TEXT DEFAULT NULL
 )
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
--- Keyset clients (p_after_object_id) never touch this timeout: each page is a
--- shallow index range scan. It is retained only for legacy OFFSET clients,
--- whose deep pages must materialize the ordered scan up to `offset` plus run
--- three aggregate CTEs and were tipping past the default service_role timeout
--- around page ~29 of a 30k-object --full sync. Drop this SET once offset
--- clients are gone (see #103 follow-up).
-SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -1061,21 +1062,19 @@ CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
   p_user_id UUID DEFAULT NULL,
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
+  -- Retained through the web rollout, refused at the route (T2-F, #511) —
+  -- see get_objects_for_sync. Drop in the release after #536.
   p_offset INTEGER DEFAULT 0,
   p_include_counts BOOLEAN DEFAULT TRUE,
   p_include_unpublished BOOLEAN DEFAULT false,
   -- Keyset cursor (#103): the spectrum_id of the last row of the previous page,
   -- seeked via the idx_spectra_spectrum_id UNIQUE btree. See
-  -- get_objects_for_sync for the design. p_offset is kept for old clients.
+  -- get_objects_for_sync for the design. No OFFSET timeout exemption (T2-F).
   p_after_spectrum_id TEXT DEFAULT NULL
 )
 RETURNS TABLE(spectra JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
--- Mirrors get_objects_for_sync: retained only for legacy OFFSET clients, whose
--- deep --full-sync pages can tip past the default timeout. Keyset clients
--- (p_after_spectrum_id) never reach it. Drop once offset clients are gone (#103).
-SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -1176,22 +1175,20 @@ CREATE OR REPLACE FUNCTION public.get_photometry_for_sync(
   p_program_slugs TEXT[],
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
+  -- Retained through the web rollout, refused at the route (T2-F, #511) —
+  -- see get_objects_for_sync. Drop in the release after #536.
   p_offset INTEGER DEFAULT 0,
   p_include_unpublished BOOLEAN DEFAULT false,
   -- Count gating (#103): only the keyset first page needs the count; skip the
   -- COUNT(*) scan on every subsequent page, matching the other /sync/* RPCs.
   p_include_counts BOOLEAN DEFAULT TRUE,
   -- Keyset cursor (#103): the id of the last row of the previous page, seeked
-  -- via the object_photometry PK btree. p_offset is kept for old clients.
+  -- via the object_photometry PK btree. No OFFSET timeout exemption (T2-F).
   p_after_id INTEGER DEFAULT NULL
 )
 RETURNS TABLE(photometry_records JSONB, total_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
--- Mirrors get_objects_for_sync: retained only for legacy OFFSET clients whose
--- deep --full-sync pages can tip past the default timeout. Keyset clients
--- (p_after_id) never reach it. Drop once offset clients are gone (#103).
-SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -1361,9 +1358,29 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   -- Perf T1-5 (#501): the exact COUNT(*) over the whole filtered set is only
   -- needed once per filter combination; the client caches it and passes
   -- false on later pages / sorts. total_count is -1 when skipped.
-  p_include_count BOOLEAN DEFAULT true
+  p_include_count BOOLEAN DEFAULT true,
+  -- Perf T2-F (#511): keyset cursor for /api/v1/spectra/list. The cursor is the
+  -- (sort value, tiebreak) of the last row of the previous page: exactly one of
+  -- p_after_sort_text / p_after_sort_num carries the sort value (which one is
+  -- decided here from the resolved p_sort_column, so callers round-trip both
+  -- opaquely), and p_after_tiebreak is [target_id, grating, spectrum_id] — the
+  -- full ORDER BY tail, which is a total order because spectrum_id is UNIQUE.
+  -- When set, p_page is ignored (offset 0) and the page is the next
+  -- p_page_size rows strictly after the cursor under the same sort. The
+  -- function hands the next cursor back in next_sort_text / next_sort_num /
+  -- next_tiebreak (NULL when has_more is false), computed from the same
+  -- columns the ORDER BY sorts on, so the caller never re-derives it from the
+  -- JSON payload (whose aggregate columns can be viewer-scoped).
+  p_after_sort_text TEXT DEFAULT NULL,
+  p_after_sort_num DOUBLE PRECISION DEFAULT NULL,
+  p_after_tiebreak TEXT[] DEFAULT NULL
 )
-RETURNS TABLE(targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER)
+RETURNS TABLE(
+  targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER,
+  -- T2-F: has_more is exact (one row past the page is fetched and dropped), so
+  -- cursor walks end without a trailing empty request.
+  has_more BOOLEAN, next_sort_text TEXT, next_sort_num DOUBLE PRECISION, next_tiebreak TEXT[]
+)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
 AS $$
@@ -1376,7 +1393,11 @@ DECLARE
   v_list_filter_active BOOLEAN;
   v_list_ids_mode TEXT;
   v_offset INTEGER;
+  v_sort_is_text BOOLEAN;
+  v_keyset_active BOOLEAN;
 BEGIN
+  p_page := COALESCE(p_page, 1);
+  p_page_size := COALESCE(p_page_size, 50);
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
 
   v_comment_search_active := (
@@ -1413,7 +1434,13 @@ BEGIN
     p_sort_column := 'distance';
   END IF;
 
-  v_offset := (COALESCE(p_page, 1) - 1) * COALESCE(p_page_size, 50);
+  -- T2-F: which cursor slot the resolved sort column lives in. Every other
+  -- whitelisted column is numeric (double precision, or integer cast to it).
+  v_sort_is_text := p_sort_column IN ('target_id', 'spectrum_id', 'field', 'observation', 'program_slug', 'grating');
+  v_keyset_active := (p_after_tiebreak IS NOT NULL AND array_length(p_after_tiebreak, 1) = 3);
+
+  -- A cursor page always starts at the cursor, never at an offset.
+  v_offset := CASE WHEN v_keyset_active THEN 0 ELSE (p_page - 1) * p_page_size END;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(
@@ -1426,7 +1453,7 @@ BEGIN
   END IF;
 
   IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN
-    RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size;
+    RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size, false, NULL::TEXT, NULL::DOUBLE PRECISION, NULL::TEXT[];
     RETURN;
   END IF;
 
@@ -1564,42 +1591,85 @@ BEGIN
     FROM filtered_spectra fs
     WHERE NOT v_coord_search_active OR fs.distance <= p_radius_degrees
   ),
+  -- T2-F: one row = one candidate plus its sort key, materialized in exactly
+  -- one of two typed slots. The ORDER BY, the keyset predicate and the
+  -- returned next-cursor all read these two columns, so they cannot drift
+  -- apart. p_sort_column is a constant under force_custom_plan, so each CASE
+  -- folds to the single referenced column at plan time.
+  keyed AS (
+    SELECT df.*,
+      CASE p_sort_column
+        WHEN 'target_id' THEN df.target_id
+        WHEN 'spectrum_id' THEN df.spectrum_id
+        WHEN 'field' THEN df.field
+        WHEN 'observation' THEN df.observation
+        WHEN 'program_slug' THEN df.program_slug
+        WHEN 'grating' THEN df.grating
+      END AS sort_text,
+      CASE p_sort_column
+        WHEN 'distance' THEN df.distance::double precision
+        WHEN 'ra' THEN df.ra::double precision
+        WHEN 'dec' THEN df."dec"::double precision
+        WHEN 'redshift' THEN df.redshift::double precision
+        WHEN 'redshift_quality' THEN df.redshift_quality::double precision
+        WHEN 'redshift_auto' THEN df.redshift_auto::double precision
+        WHEN 'signal_to_noise' THEN df.signal_to_noise::double precision
+        WHEN 'exposure_time' THEN df.exposure_time::double precision
+      END AS sort_num
+    FROM distance_filtered df
+  ),
+  -- One row past the page (p_page_size + 1) so has_more is exact; the final
+  -- SELECT drops it and the cursor is taken from row p_page_size.
   page_rows AS (
     SELECT *, ROW_NUMBER() OVER () as row_num
     FROM (
-      SELECT * FROM distance_filtered
+      SELECT * FROM keyed k
+      WHERE
+        NOT v_keyset_active
+        -- Keyset: rows strictly after the cursor in (sort key <dir> NULLS
+        -- LAST, target_id, grating, spectrum_id) order. With a non-NULL cursor
+        -- value that is every row whose key sorts after it plus the whole NULL
+        -- tail; with a NULL cursor value (the walk is inside the tail) only
+        -- NULL-keyed rows past the tiebreak. Equal keys fall through to the
+        -- row-value tiebreak comparison.
+        OR (
+          CASE WHEN v_sort_is_text THEN
+            (p_after_sort_text IS NOT NULL AND (
+                 (p_sort_direction = 'asc'  AND k.sort_text > p_after_sort_text)
+              OR (p_sort_direction = 'desc' AND k.sort_text < p_after_sort_text)
+              OR k.sort_text IS NULL))
+            OR (k.sort_text IS NOT DISTINCT FROM p_after_sort_text
+                AND (k.target_id, k.grating, k.spectrum_id) > (p_after_tiebreak[1], p_after_tiebreak[2], p_after_tiebreak[3]))
+          ELSE
+            (p_after_sort_num IS NOT NULL AND (
+                 (p_sort_direction = 'asc'  AND k.sort_num > p_after_sort_num)
+              OR (p_sort_direction = 'desc' AND k.sort_num < p_after_sort_num)
+              OR k.sort_num IS NULL))
+            OR (k.sort_num IS NOT DISTINCT FROM p_after_sort_num
+                AND (k.target_id, k.grating, k.spectrum_id) > (p_after_tiebreak[1], p_after_tiebreak[2], p_after_tiebreak[3]))
+          END
+        )
+      -- Exactly one of the four key terms is live for a given call (the other
+      -- three are constant NULL); the tail makes the order total. spectrum_id
+      -- was added to the tail in T2-F — (target_id, grating) alone is not
+      -- unique (one grating can pair with several filters), which a keyset
+      -- cursor cannot tolerate.
       ORDER BY
-        CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'asc' THEN distance END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'desc' THEN distance END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'target_id' AND p_sort_direction = 'asc' THEN target_id END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'target_id' AND p_sort_direction = 'desc' THEN target_id END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'spectrum_id' AND p_sort_direction = 'asc' THEN spectrum_id END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'spectrum_id' AND p_sort_direction = 'desc' THEN spectrum_id END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'asc' THEN field END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'desc' THEN field END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'observation' AND p_sort_direction = 'asc' THEN observation END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'observation' AND p_sort_direction = 'desc' THEN observation END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'program_slug' AND p_sort_direction = 'asc' THEN program_slug END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'program_slug' AND p_sort_direction = 'desc' THEN program_slug END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'ra' AND p_sort_direction = 'asc' THEN ra END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'ra' AND p_sort_direction = 'desc' THEN ra END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'dec' AND p_sort_direction = 'asc' THEN "dec" END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'dec' AND p_sort_direction = 'desc' THEN "dec" END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'redshift' AND p_sort_direction = 'asc' THEN redshift END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'redshift' AND p_sort_direction = 'desc' THEN redshift END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'redshift_quality' AND p_sort_direction = 'asc' THEN redshift_quality END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'redshift_quality' AND p_sort_direction = 'desc' THEN redshift_quality END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'redshift_auto' AND p_sort_direction = 'asc' THEN redshift_auto END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'redshift_auto' AND p_sort_direction = 'desc' THEN redshift_auto END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'signal_to_noise' AND p_sort_direction = 'asc' THEN signal_to_noise END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'signal_to_noise' AND p_sort_direction = 'desc' THEN signal_to_noise END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'exposure_time' AND p_sort_direction = 'asc' THEN exposure_time END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'exposure_time' AND p_sort_direction = 'desc' THEN exposure_time END DESC NULLS LAST,
-        CASE WHEN p_sort_column = 'grating' AND p_sort_direction = 'asc' THEN grating END ASC NULLS LAST,
-        CASE WHEN p_sort_column = 'grating' AND p_sort_direction = 'desc' THEN grating END DESC NULLS LAST,
-        target_id ASC, grating ASC
-      LIMIT p_page_size OFFSET v_offset
+        CASE WHEN p_sort_direction = 'asc'  THEN k.sort_text END ASC  NULLS LAST,
+        CASE WHEN p_sort_direction = 'desc' THEN k.sort_text END DESC NULLS LAST,
+        CASE WHEN p_sort_direction = 'asc'  THEN k.sort_num  END ASC  NULLS LAST,
+        CASE WHEN p_sort_direction = 'desc' THEN k.sort_num  END DESC NULLS LAST,
+        k.target_id ASC, k.grating ASC, k.spectrum_id ASC
+      LIMIT p_page_size + 1 OFFSET v_offset
     ) sorted_page
+  ),
+  -- The row the next cursor is built from: the page's last row, and only when
+  -- an overflow row proved there is a next page.
+  cursor_row AS (
+    SELECT pr.sort_text, pr.sort_num, pr.target_id, pr.grating, pr.spectrum_id
+    FROM page_rows pr
+    WHERE pr.row_num = p_page_size
+      AND EXISTS (SELECT 1 FROM page_rows x WHERE x.row_num > p_page_size)
   )
   SELECT
     COALESCE(jsonb_agg(jsonb_build_object(
@@ -1642,12 +1712,18 @@ BEGIN
     ) ORDER BY r.row_num), '[]'::jsonb),
     CASE WHEN p_include_count THEN (SELECT COUNT(*) FROM distance_filtered) ELSE -1::BIGINT END,
     p_page,
-    p_page_size
+    p_page_size,
+    EXISTS (SELECT 1 FROM page_rows x WHERE x.row_num > p_page_size),
+    (SELECT cr.sort_text FROM cursor_row cr),
+    (SELECT cr.sort_num FROM cursor_row cr),
+    (SELECT ARRAY[cr.target_id, cr.grating, cr.spectrum_id] FROM cursor_row cr)
   FROM page_rows r
   LEFT JOIN programs pr ON pr.slug = r.program_slug
   -- Thumbnails only for the page, only when asked (constant-false join
   -- condition otherwise, which the planner drops).
-  LEFT JOIN spectra sth ON p_include_thumbnails AND sth.id = r.spectrum_pk;
+  LEFT JOIN spectra sth ON p_include_thumbnails AND sth.id = r.spectrum_pk
+  -- Drop the has_more overflow row.
+  WHERE r.row_num <= p_page_size;
 END;
 $$;
 
@@ -1696,9 +1772,18 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_page_size INTEGER DEFAULT 50,
   p_include_unpublished BOOLEAN DEFAULT false,
   -- Perf T1-5 (#501): see get_filtered_spectra_paginated. -1 when skipped.
-  p_include_count BOOLEAN DEFAULT true
+  p_include_count BOOLEAN DEFAULT true,
+  -- Perf T2-F (#511): keyset cursor for /api/v1/objects — see
+  -- get_filtered_spectra_paginated for the contract. Tiebreak is [object_id]
+  -- (UNIQUE, so the ORDER BY tail is a total order).
+  p_after_sort_text TEXT DEFAULT NULL,
+  p_after_sort_num DOUBLE PRECISION DEFAULT NULL,
+  p_after_tiebreak TEXT[] DEFAULT NULL
 )
-RETURNS TABLE(targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER)
+RETURNS TABLE(
+  targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER,
+  has_more BOOLEAN, next_sort_text TEXT, next_sort_num DOUBLE PRECISION, next_tiebreak TEXT[]
+)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
 AS $$
@@ -1715,7 +1800,11 @@ DECLARE
   v_list_ids_mode TEXT;
   v_offset INTEGER;
   v_total_count BIGINT;
+  v_sort_is_text BOOLEAN;
+  v_keyset_active BOOLEAN;
 BEGIN
+  p_page := COALESCE(p_page, 1);
+  p_page_size := COALESCE(p_page_size, 50);
   v_coord_search_active := (p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL AND p_radius_degrees IS NOT NULL);
   v_comment_search_active := (
     p_comment_search IS NOT NULL
@@ -1748,7 +1837,12 @@ BEGIN
     p_sort_column := 'distance';
   END IF;
 
-  v_offset := (COALESCE(p_page, 1) - 1) * COALESCE(p_page_size, 50);
+  -- T2-F: cursor slot of the resolved sort column (see the spectra RPC).
+  v_sort_is_text := p_sort_column IN ('object_id', 'field');
+  v_keyset_active := (p_after_tiebreak IS NOT NULL AND array_length(p_after_tiebreak, 1) = 1);
+
+  -- A cursor page always starts at the cursor, never at an offset.
+  v_offset := CASE WHEN v_keyset_active THEN 0 ELSE (p_page - 1) * p_page_size END;
 
   -- Intersect user-accessible programs with filter selection
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -1762,7 +1856,7 @@ BEGIN
   END IF;
 
   IF v_filtered_program_slugs IS NULL OR array_length(v_filtered_program_slugs, 1) IS NULL THEN
-    RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size;
+    RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size, false, NULL::TEXT, NULL::DOUBLE PRECISION, NULL::TEXT[];
     RETURN;
   END IF;
 
@@ -1913,7 +2007,7 @@ BEGIN
 
   -- Step 2: fetch page
   RETURN QUERY
-  WITH filtered_objects AS (
+  WITH candidates AS (
     SELECT
       o.id,
       o.object_id,
@@ -2057,46 +2151,72 @@ BEGIN
             )
         )
       )
-    ORDER BY
-      CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'asc' THEN
-        2 * DEGREES(ASIN(SQRT(
-          POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
-          COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
-          POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
-        ))) END ASC NULLS LAST,
-      CASE WHEN p_sort_column = 'distance' AND p_sort_direction = 'desc' THEN
-        2 * DEGREES(ASIN(SQRT(
-          POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
-          COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) *
-          POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2)
-        ))) END DESC NULLS LAST,
-      CASE WHEN p_sort_column = 'object_id' AND p_sort_direction = 'asc' THEN o.object_id END ASC NULLS LAST,
-      CASE WHEN p_sort_column = 'object_id' AND p_sort_direction = 'desc' THEN o.object_id END DESC NULLS LAST,
-      CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'asc' THEN o.field END ASC NULLS LAST,
-      CASE WHEN p_sort_column = 'field' AND p_sort_direction = 'desc' THEN o.field END DESC NULLS LAST,
-      CASE WHEN p_sort_column = 'ra' AND p_sort_direction = 'asc' THEN o.ra END ASC NULLS LAST,
-      CASE WHEN p_sort_column = 'ra' AND p_sort_direction = 'desc' THEN o.ra END DESC NULLS LAST,
-      CASE WHEN p_sort_column = 'dec' AND p_sort_direction = 'asc' THEN o.dec END ASC NULLS LAST,
-      CASE WHEN p_sort_column = 'dec' AND p_sort_direction = 'desc' THEN o.dec END DESC NULLS LAST,
-      CASE WHEN p_sort_column = 'redshift' AND p_sort_direction = 'asc' THEN o.redshift END ASC NULLS LAST,
-      CASE WHEN p_sort_column = 'redshift' AND p_sort_direction = 'desc' THEN o.redshift END DESC NULLS LAST,
-      CASE WHEN p_sort_column = 'redshift_quality' AND p_sort_direction = 'asc' THEN o.redshift_quality END ASC NULLS LAST,
-      CASE WHEN p_sort_column = 'redshift_quality' AND p_sort_direction = 'desc' THEN o.redshift_quality END DESC NULLS LAST,
-      CASE WHEN p_sort_column = 'n_targets' AND p_sort_direction = 'asc' THEN o.n_targets END ASC NULLS LAST,
-      CASE WHEN p_sort_column = 'n_targets' AND p_sort_direction = 'desc' THEN o.n_targets END DESC NULLS LAST,
-      CASE WHEN p_sort_column = 'n_spectra' AND p_sort_direction = 'asc' THEN o.n_spectra END ASC NULLS LAST,
-      CASE WHEN p_sort_column = 'n_spectra' AND p_sort_direction = 'desc' THEN o.n_spectra END DESC NULLS LAST,
-      CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'asc' THEN o.max_snr END ASC NULLS LAST,
-      CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN o.max_snr END DESC NULLS LAST,
-      CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'asc' THEN o.max_exposure_time END ASC NULLS LAST,
-      CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'desc' THEN o.max_exposure_time END DESC NULLS LAST,
-      CASE WHEN p_sort_column = 'photo_z' AND p_sort_direction = 'asc' THEN o.photo_z END ASC NULLS LAST,
-      CASE WHEN p_sort_column = 'photo_z' AND p_sort_direction = 'desc' THEN o.photo_z END DESC NULLS LAST,
-      o.object_id ASC
-    LIMIT p_page_size OFFSET v_offset
+  ),
+  -- T2-F: sort key in one of two typed slots; the ORDER BY, the keyset
+  -- predicate and the returned next-cursor all read these (see the spectra
+  -- RPC). The CASEs fold to one column at plan time (force_custom_plan).
+  keyed AS (
+    SELECT c.*,
+      CASE p_sort_column
+        WHEN 'object_id' THEN c.object_id
+        WHEN 'field' THEN c.field
+      END AS sort_text,
+      CASE p_sort_column
+        WHEN 'distance' THEN c.distance::double precision
+        WHEN 'ra' THEN c.ra::double precision
+        WHEN 'dec' THEN c."dec"::double precision
+        WHEN 'redshift' THEN c.redshift::double precision
+        WHEN 'redshift_quality' THEN c.redshift_quality::double precision
+        WHEN 'n_targets' THEN c.n_targets::double precision
+        WHEN 'n_spectra' THEN c.n_spectra::double precision
+        WHEN 'max_snr' THEN c.max_snr::double precision
+        WHEN 'max_exposure_time' THEN c.max_exposure_time::double precision
+        WHEN 'photo_z' THEN c.photo_z::double precision
+      END AS sort_num
+    FROM candidates c
+  ),
+  -- One row past the page so has_more is exact; with_members drops it and the
+  -- cursor is taken from row p_page_size.
+  filtered_objects AS (
+    SELECT *, ROW_NUMBER() OVER () AS rn
+    FROM (
+      SELECT * FROM keyed k
+      WHERE
+        NOT v_keyset_active
+        -- Keyset predicate — same shape as the spectra RPC, tiebreak object_id.
+        OR (
+          CASE WHEN v_sort_is_text THEN
+            (p_after_sort_text IS NOT NULL AND (
+                 (p_sort_direction = 'asc'  AND k.sort_text > p_after_sort_text)
+              OR (p_sort_direction = 'desc' AND k.sort_text < p_after_sort_text)
+              OR k.sort_text IS NULL))
+            OR (k.sort_text IS NOT DISTINCT FROM p_after_sort_text AND k.object_id > p_after_tiebreak[1])
+          ELSE
+            (p_after_sort_num IS NOT NULL AND (
+                 (p_sort_direction = 'asc'  AND k.sort_num > p_after_sort_num)
+              OR (p_sort_direction = 'desc' AND k.sort_num < p_after_sort_num)
+              OR k.sort_num IS NULL))
+            OR (k.sort_num IS NOT DISTINCT FROM p_after_sort_num AND k.object_id > p_after_tiebreak[1])
+          END
+        )
+      ORDER BY
+        CASE WHEN p_sort_direction = 'asc'  THEN k.sort_text END ASC  NULLS LAST,
+        CASE WHEN p_sort_direction = 'desc' THEN k.sort_text END DESC NULLS LAST,
+        CASE WHEN p_sort_direction = 'asc'  THEN k.sort_num  END ASC  NULLS LAST,
+        CASE WHEN p_sort_direction = 'desc' THEN k.sort_num  END DESC NULLS LAST,
+        k.object_id ASC
+      LIMIT p_page_size + 1 OFFSET v_offset
+    ) sorted_page
+  ),
+  cursor_row AS (
+    SELECT fo.sort_text, fo.sort_num, fo.object_id
+    FROM filtered_objects fo
+    WHERE fo.rn = p_page_size
+      AND EXISTS (SELECT 1 FROM filtered_objects x WHERE x.rn > p_page_size)
   ),
   with_members AS (
     SELECT
+      fo.rn,
       jsonb_build_object(
         'id', fo.id,
         'object_id', fo.object_id,
@@ -2171,12 +2291,18 @@ BEGIN
       ) AS obj_json
     FROM filtered_objects fo
     LEFT JOIN LATERAL public.object_scoped_aggregates(fo.id, p_program_slugs, p_include_unpublished) sa ON true
+    -- Drop the has_more overflow row before the per-row aggregates run.
+    WHERE fo.rn <= p_page_size
   )
   SELECT
-    COALESCE(jsonb_agg(wm.obj_json), '[]'::jsonb),
+    COALESCE(jsonb_agg(wm.obj_json ORDER BY wm.rn), '[]'::jsonb),
     v_total_count,
     p_page,
-    p_page_size
+    p_page_size,
+    EXISTS (SELECT 1 FROM filtered_objects x WHERE x.rn > p_page_size),
+    (SELECT cr.sort_text FROM cursor_row cr),
+    (SELECT cr.sort_num FROM cursor_row cr),
+    (SELECT ARRAY[cr.object_id] FROM cursor_row cr)
   FROM with_members wm;
 END;
 $$;
@@ -3712,6 +3838,8 @@ CREATE OR REPLACE FUNCTION public.get_storage_objects_for_sync(
   p_program_slugs TEXT[],
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
+  -- Retained through the web rollout, refused at the route (T2-F, #511) —
+  -- see get_objects_for_sync. Drop in the release after #536.
   p_offset INTEGER DEFAULT 0,
   p_include_counts BOOLEAN DEFAULT TRUE,
   p_include_unpublished BOOLEAN DEFAULT FALSE,
@@ -3719,18 +3847,13 @@ CREATE OR REPLACE FUNCTION public.get_storage_objects_for_sync(
   -- via the storage_objects_pkey btree. storage_key is NOT usable as a cursor
   -- (only UNIQUE as (backend, bucket, storage_key)), and sync order is
   -- irrelevant to the client (it upserts by key), so this orders by the PK.
-  -- p_offset is kept for old clients.
+  -- Keyset pages evaluate the scope predicate (published EXISTS checks) on
+  -- only ~p_limit rows past the seek; no OFFSET timeout exemption (T2-F).
   p_after_id BIGINT DEFAULT NULL
 )
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
--- Retained only for legacy OFFSET clients; keyset clients (p_after_id) seek the
--- PK index and never reach it. Unlike the other /sync RPCs, the scope predicate
--- (published EXISTS checks) is itself an O(N) floor for OFFSET clients — keyset
--- lets a page seek straight to id > cursor and evaluate scope on only ~p_limit
--- rows. Drop this SET once offset clients are gone (#103).
-SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY

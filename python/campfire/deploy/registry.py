@@ -527,8 +527,8 @@ def compute_reconcile(
 # ---------------------------------------------------------------------------
 
 def _iter_rows(client, table: str, columns: str, *, order_by: str = 'id',
-               page: int = 1000) -> Iterator[dict]:
-    """Page through a Supabase table in a STABLE order, yielding row dicts.
+               page: int = 1000, filters: Optional[dict] = None) -> Iterator[dict]:
+    """Keyset-page through a Supabase table, yielding row dicts.
 
     Range/offset pagination WITHOUT an ``ORDER BY`` is non-deterministic in
     Postgres: across pages rows silently repeat and others are skipped, so a full
@@ -537,20 +537,35 @@ def _iter_rows(client, table: str, columns: str, *, order_by: str = 'id',
     subset. Ordering by a unique key (the PK ``id`` on every table this is used on:
     spectra / nircam_images / nircam_exposures / storage_objects) makes the scan
     complete and repeatable.
+
+    Since perf T2-F (#511) the walk is a *keyset* on ``order_by`` — each page
+    asks for ``order_by > <last value>`` — instead of ``.range()`` offsets:
+    a deep OFFSET page over the 665k-row ``storage_objects`` table cost ~2.6 s
+    (the server re-reads and discards every earlier row) against ~8 ms for a
+    PK seek, so a full walk went O(N²/page). ``order_by`` must be a unique
+    column; ``filters`` are ``{column: value}`` equality predicates pushed into
+    the query so the server, not the client, does the narrowing. The cursor
+    column is always fetched (it is added to ``columns`` if absent) and left
+    on the yielded rows.
     """
-    start = 0
+    cols = [c.strip() for c in columns.split(',') if c.strip()]
+    if order_by not in cols:
+        cols.append(order_by)
+    select = ', '.join(cols)
+    last = None
     while True:
-        resp = (
-            client.table(table).select(columns)
-            .order(order_by)
-            .range(start, start + page - 1).execute()
-        )
+        q = client.table(table).select(select)
+        for col, val in (filters or {}).items():
+            q = q.eq(col, val)
+        if last is not None:
+            q = q.gt(order_by, last)
+        resp = q.order(order_by).limit(page).execute()
         data = resp.data or []
         for row in data:
             yield row
         if len(data) < page:
             break
-        start += page
+        last = data[-1][order_by]
 
 
 def live_pointers(client) -> dict[str, list[str]]:
@@ -576,12 +591,18 @@ def registry_keys(client, bucket: str = 'data', backend: str | None = None) -> l
     ``backend`` optionally restricts to one storage backend ('r2' | 'osn') — used by
     reconcile to compute dangling only over rows whose home is the LISTed backend
     (an OSN-native object can't be confirmed against an R2-only bucket LIST).
+
+    The ``bucket`` / ``backend`` predicates are pushed into the query (T2-F,
+    #511) — previously every row of the registry was fetched and filtered in
+    Python — and the walk is a keyset on ``id``.
     """
+    filters: dict = {'bucket': bucket}
+    if backend is not None:
+        filters['backend'] = backend
     return [
         r['storage_key']
-        for r in _iter_rows(client, 'storage_objects', 'storage_key, bucket, backend')
-        if r.get('bucket') == bucket and r.get('storage_key')
-        and (backend is None or r.get('backend') == backend)
+        for r in _iter_rows(client, 'storage_objects', 'storage_key', filters=filters)
+        if r.get('storage_key')
     ]
 
 
