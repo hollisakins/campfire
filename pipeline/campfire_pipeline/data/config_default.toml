@@ -974,6 +974,13 @@
     # when a tile would otherwise be unschedulable. With this false the drizzle
     # runs with `disable_ctx=True` (the path the variance drizzle already uses)
     # and the i2d carries a 1x1x1 CON placeholder, preserving the HDU layout.
+    # That placeholder is marked `CFNOCTX = T` in the primary header so a
+    # consumer can tell it from a genuinely empty context.
+    #
+    # This key does NOT enter the manifest config hash (which covers only
+    # pixel-affecting settings), so turning it off and back on will not by
+    # itself rebuild the tiles built while it was off — they keep the
+    # placeholder, and CFNOCTX is how you find them.
     write_context = true
     parallel_tiles = true
     # Fraction of MemAvailable (at tile-loop start) the pool may reserve.

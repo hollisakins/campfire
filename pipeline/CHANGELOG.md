@@ -60,9 +60,22 @@ Release procedure: edit the `## Unreleased` section below, then run
   With `write_context = false` the science drizzle runs with `disable_ctx=True`
   (the path the variance drizzle already used), the cube is never allocated,
   and the i2d carries a 1x1x1 `CON` placeholder so the SCI/ERR/CON/WHT HDU
-  layout is unchanged. The memory estimator drops the context term to match,
-  so the pool is not narrowed by a cost that is no longer paid. Default stays
-  `true`: existing behaviour and existing products are unchanged.
+  layout is unchanged. That placeholder is self-describing: the primary header
+  gets `CFNOCTX = T`, so an external consumer can tell "context disabled" from
+  "nothing contributed" without inspecting the cube's shape (note the
+  placeholder is also a plain `ImageHDU`, where a full run writes a tile-
+  compressed `CompImageHDU`). The card is stamped only when the cube was
+  skipped, so normal products keep byte-identical headers. The memory
+  estimator drops the context term to match, so the pool is not narrowed by a
+  cost that is no longer paid. Default stays `true`: existing behaviour and
+  existing products are unchanged.
+
+  Note that `write_context` does **not** enter the manifest config hash (that
+  hash covers pixel-affecting keys, and `CON` is not science data, matching how
+  `compress_context` is already treated). Flipping it off and back on therefore
+  does not mark tiles stale — mosaics built while it was off keep their
+  placeholder until rebuilt for some other reason. `CFNOCTX` is what makes that
+  state visible on the affected files.
 - **Memory-aware tile parallelism for NIRCam `resample` + mosaic `bkgsub`.**
   The combine tile loop (previously strictly serial: one busy core through a
   ~12-hour tile phase on a 21-tile COSMOS filter) now dispatches tiles across

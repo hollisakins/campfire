@@ -89,6 +89,52 @@ def test_write_i2d_fits_tolerates_ctx_none():
     assert idx_guard < idx_ndim
 
 
+def test_placeholder_context_is_stamped_and_only_then():
+    """A skipped cube must announce itself.
+
+    CON is retained purely for external consumers, so a 1x1x1 cube of zeros
+    that looks exactly like a real-but-empty context is a trap: the reader
+    has no way to tell "context disabled" from "nothing contributed" except
+    by inspecting the shape. CFNOCTX makes it explicit. Equally important,
+    it must be stamped ONLY on the disabled path — an unconditional card
+    would change the header of every normal product.
+
+    Checked on the AST rather than by string search so "the card exists
+    somewhere in the function" cannot pass for "the card is guarded".
+    """
+    import ast
+    import inspect
+    from campfire_pipeline.nircam import drizzle as drz
+
+    # module-level function, so getsource is already unindented
+    tree = ast.parse(inspect.getsource(drz._write_i2d_fits))
+
+    def mentions_card(node):
+        return any(isinstance(n, ast.Constant) and n.value == 'CFNOCTX'
+                   for n in ast.walk(node))
+
+    def is_ctx_is_none(test):
+        return (isinstance(test, ast.Compare)
+                and isinstance(test.left, ast.Name) and test.left.id == 'ctx'
+                and len(test.ops) == 1 and isinstance(test.ops[0], ast.Is)
+                and isinstance(test.comparators[0], ast.Constant)
+                and test.comparators[0].value is None)
+
+    assert mentions_card(tree), 'CFNOCTX is never stamped'
+
+    guards = [n for n in ast.walk(tree)
+              if isinstance(n, ast.If) and is_ctx_is_none(n.test)
+              and any(mentions_card(b) for b in n.body)]
+    assert guards, 'CFNOCTX is not guarded by `if ctx is None`'
+
+    # ... and nowhere outside such a guard.
+    guarded = {id(n) for g in guards for b in g.body for n in ast.walk(b)}
+    stray = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Constant) and n.value == 'CFNOCTX'
+             and id(n) not in guarded]
+    assert not stray, 'CFNOCTX is also stamped outside the disabled path'
+
+
 @pytest.mark.parametrize('n_inputs,expected_planes', [
     (1, 1), (32, 1), (33, 2), (1152, 36), (3471, 109),
 ])

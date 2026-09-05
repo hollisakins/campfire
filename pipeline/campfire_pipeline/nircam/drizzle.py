@@ -342,6 +342,17 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
             cmpfrver,
             'CAMPFIRE git commit (or pinned version)',
         )
+        # CON is retained purely for external consumers, so a placeholder
+        # must announce itself: without this card a 1x1x1 cube of zeros is
+        # indistinguishable from a genuinely empty context except by shape,
+        # and the placeholder is a plain ImageHDU where a full run writes a
+        # CompImageHDU. Stamped only when the cube was skipped (like
+        # CFEPOCH), so normal products keep byte-identical headers.
+        if ctx is None:
+            hdul[0].header['CFNOCTX'] = (
+                True,
+                'CAMPFIRE: CON is a placeholder (write_context=false)',
+            )
 
 
 def compress_context_extension(output_path, ctx=None):
