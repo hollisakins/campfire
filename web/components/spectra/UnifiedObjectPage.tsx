@@ -486,14 +486,30 @@ const PhotometrySection: React.FC<{
   );
 };
 
-/** Same header row and plot footprint as PhotometrySED, so the streamed
- *  section does not shift the discussion and nearby-objects cards below it. */
+/**
+ * Placeholder with PhotometrySED's shape — header row, photo-z summary line,
+ * the 400 px plot row and a band table — so the discussion and nearby-object
+ * cards below it sit close to their final position while the promise
+ * settles. The table's true height follows the band count (NIRCam-only
+ * catalogs run ~10 rows, HST+JWST ones ~20), so a residual shift of a few
+ * rows is possible; those sections are below the fold and viewport-gated,
+ * and the promise usually settles within the server render anyway.
+ */
 const PhotometrySectionFallback: React.FC = () => (
-  <section className="mb-8 animate-pulse" aria-busy="true" aria-label="Loading photometry">
-    <div className="flex items-center gap-2 mb-3">
+  <section className="mb-8 animate-pulse space-y-3" aria-busy="true" aria-label="Loading photometry">
+    <div className="flex items-center gap-2">
       <div className="h-5 w-5 bg-surface-2 dark:bg-card-hover rounded" />
       <div className="h-5 bg-surface-2 dark:bg-card-hover rounded w-44" />
     </div>
+    <div className="h-4 bg-surface-2 dark:bg-card-hover rounded w-72 mx-1" />
     <div className="h-[400px] bg-card border border-border rounded-lg" />
+    <div className="space-y-2">
+      <div className="h-4 bg-surface-2 dark:bg-card-hover rounded w-32" />
+      <div className="bg-card border border-border rounded-lg p-3 space-y-2">
+        {Array.from({ length: 12 }, (_, i) => (
+          <div key={i} className="h-3.5 bg-surface-2 dark:bg-card-hover rounded" />
+        ))}
+      </div>
+    </div>
   </section>
 );
