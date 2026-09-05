@@ -24,6 +24,12 @@ describe('streamSidecar', () => {
     expect(await res.text()).toBe('{"wave":[1,2]}');
   });
 
+  it('keys bearer-authorized responses on Authorization instead of Cookie', async () => {
+    vi.stubGlobal('fetch', async () => new Response('{}', { status: 200 }));
+    const out = await streamSidecar('k', 'private, max-age=1', 'Authorization');
+    expect(out.response?.headers.get('Vary')).toBe('Authorization');
+  });
+
   it('drops the length when the upstream body is encoded', async () => {
     vi.stubGlobal('fetch', async () =>
       new Response('x', { status: 200, headers: { 'Content-Length': '1', 'Content-Encoding': 'gzip' } }));

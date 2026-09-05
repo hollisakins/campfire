@@ -13,10 +13,16 @@ export type UpstreamStatus = 'ok' | 'missing' | 'error';
  * Presign `key`, GET it, and pass the body through as `application/json`
  * with `cacheControl`. Returns `missing` on an upstream 404 so the caller can
  * answer its own 404 (a sidecar may legitimately not exist).
+ *
+ * `vary` names the request header the authorization was keyed on: `Cookie`
+ * (default) for the session routes, `Authorization` for the bearer `/api/v1`
+ * routes. Every caller caches beyond a session, and sign-out does not clear
+ * the HTTP cache (D-C), so the credential header has to be part of the key.
  */
 export async function streamSidecar(
   key: string,
   cacheControl: string,
+  vary: 'Cookie' | 'Authorization' = 'Cookie',
 ): Promise<{ status: UpstreamStatus; response?: Response; upstreamStatus?: number }> {
   const signedUrl = await generateDownloadUrl(key, 3600);
   const upstream = await fetch(signedUrl);
@@ -31,9 +37,7 @@ export async function streamSidecar(
   const headers = new Headers({
     'Content-Type': 'application/json',
     'Cache-Control': cacheControl,
-    // Every caller caches beyond a session under a cookie (or bearer)
-    // identity, and sign-out does not clear the HTTP cache (D-C).
-    Vary: 'Cookie',
+    Vary: vary,
   });
   // Only meaningful when the upstream body is stored verbatim; the platform
   // may still re-encode the function's response and drop it.

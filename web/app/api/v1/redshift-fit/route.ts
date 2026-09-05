@@ -153,7 +153,7 @@ export async function GET(request: NextRequest) {
     const zfitJsonPath = deriveSibling(fitsPath, 'zfit');
 
     // Stream the sidecar through untouched (perf T2-D2, #508).
-    const sidecar = await streamSidecar(zfitJsonPath, 'private, max-age=86400, stale-while-revalidate=3600');
+    const sidecar = await streamSidecar(zfitJsonPath, 'private, max-age=86400, stale-while-revalidate=3600', 'Authorization');
     if (sidecar.status === 'ok') return sidecar.response;
     if (sidecar.status === 'missing') {
       return NextResponse.json(

@@ -1119,6 +1119,19 @@ def deploy_zfit(
         print(f"Would update redshift_auto for {len(objects)} objects")
         return
 
+    # Confirm the destructive part before anything lands: once the sidecars
+    # are uploaded and the spectra scalars rewritten, "Aborted" would be a
+    # lie (the fit is already live; only the object reset would be skipped).
+    sb = get_supabase_client(config)
+    if force_overwrite:
+        existing = check_existing_objects(sb, [o['object_id'] for o in objects])
+        if existing and not auto_approve:
+            print(f"  {len(existing)} objects exist. FORCE OVERWRITE will reset inspection data!")
+            resp = input("  Are you sure? [y/N]: ")
+            if resp.lower() != 'y':
+                print("Aborted.")
+                return
+
     # Upload zfit JSONs
     temp_dir = obs_dir / '.deploy_temp'
     temp_dir.mkdir(exist_ok=True)
@@ -1154,15 +1167,13 @@ def deploy_zfit(
         if uploaded_keys:
             from campfire.deploy.registry import build_registry_rows, upsert_storage_objects
             reg_rows = build_registry_rows(tasks, backend='osn', succeeded_keys=uploaded_keys)
-            n_reg = upsert_storage_objects(get_supabase_client(config), reg_rows)
+            n_reg = upsert_storage_objects(sb, reg_rows)
             print(f"Registered {n_reg} storage objects")
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
 
-    # Update redshift_auto in Supabase
-    sb = get_supabase_client(config)
-
+    # Update redshift_auto in Supabase.
     # Keep the row-backed fit values in lockstep with the exact JSON artifacts
     # that landed. RedshiftFitSummary trusts these columns when present, so a
     # standalone re-fit must replace them too. Failed uploads are deliberately
@@ -1175,15 +1186,6 @@ def deploy_zfit(
     scalar_updates = get_zfit_scalar_updates(summary, uploaded_results)
     n_scalars = update_spectra_zfit_scalars(sb, scalar_updates)
     print(f"  Updated zfit scalars for {n_scalars} spectra")
-
-    if force_overwrite:
-        existing = check_existing_objects(sb, [o['object_id'] for o in objects])
-        if existing and not auto_approve:
-            print(f"  {len(existing)} objects exist. FORCE OVERWRITE will reset inspection data!")
-            resp = input("  Are you sure? [y/N]: ")
-            if resp.lower() != 'y':
-                print("Aborted.")
-                return
 
     print("Updating objects...")
     n, _, _ = batch_upsert_objects(sb, objects, field, force_overwrite)

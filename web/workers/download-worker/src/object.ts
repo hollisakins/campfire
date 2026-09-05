@@ -336,16 +336,23 @@ export async function handleObject(
     up.body?.cancel().catch(() => {});
     return objectError('Not found', 404);
   }
-  if (up.status === 416) return serve(up, key, 'MISS', request);
+  if (up.status === 416) {
+    // Not an object answer: keep it uncached and unlabelled, like the 404.
+    up.body?.cancel().catch(() => {});
+    return objectError('Range not satisfiable', 416);
+  }
   if (!(up.status === 200 || up.status === 206) || !up.body) {
     up.body?.cancel().catch(() => {});
     return objectError(`Upstream fetch failed (${up.status})`, 502);
   }
 
   // Partial answers are streamed through, never stored: only a complete 200
-  // may fill the (key, hash) slot — so a Range or HEAD miss fills it with
-  // its own full-object GET in the background.
-  if (range || up.status !== 200 || !cache || request.method === 'HEAD') {
+  // may fill the (key, hash) slot — so a Range miss fills it with its own
+  // full-object GET in the background. A HEAD miss already holds a full 200
+  // (SigV4 forces the GET) and falls through to the tee below, where serve()
+  // cancels the client leg and the store leg fills the slot: one upstream
+  // fetch, not two.
+  if (range || up.status !== 200 || !cache) {
     if (cache && ctx) ctx.waitUntil(fillInBackground(cache, cacheKey, key, upstream, registeredAt));
     return serve(up, key, 'MISS', request);
   }

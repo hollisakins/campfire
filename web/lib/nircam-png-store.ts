@@ -401,11 +401,20 @@ export async function startPngWarm(ids: number[]): Promise<PngWarmResult | null>
         // `no-store`: the front answers with a day-long Cache-Control, and the
         // bytes go into IndexedDB below — a second multi-GB copy in the HTTP
         // cache helps nobody (the same reason the proxy route is no-store).
-        let bytesRes = await fetch(resolved.url ?? `/api/nircam-png?id=${id}`, { signal: controller.signal, cache: 'no-store' });
-        if (!bytesRes.ok && resolved.url) {
-          // The front answered but not with bytes (misconfigured or mid-
-          // cutover): the same-origin proxy still streams them.
-          bytesRes = await fetch(`/api/nircam-png?id=${id}`, { signal: controller.signal });
+        let bytesRes: Response | null = null;
+        if (resolved.url) {
+          // A front that answers without bytes (misconfigured or mid-cutover)
+          // or does not answer at all (unreachable, CORS refused): the
+          // same-origin proxy still streams them. Only an abort propagates.
+          try {
+            bytesRes = await fetch(resolved.url, { signal: controller.signal, cache: 'no-store' });
+          } catch (err) {
+            if (controller.signal.aborted) throw err;
+            bytesRes = null;
+          }
+        }
+        if (!bytesRes?.ok) {
+          bytesRes = await fetch(`/api/nircam-png?id=${id}`, { signal: controller.signal, cache: 'no-store' });
         }
         if (!bytesRes.ok) {
           if (bytesRes.status !== 404) progress.failed++;

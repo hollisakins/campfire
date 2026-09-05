@@ -706,37 +706,59 @@ def batch_upsert_spectra(
     return len(spectra), changed
 
 
-def update_spectra_zfit_scalars(client: Client, spectra: list[dict]) -> int:
+def update_spectra_zfit_scalars(
+    client: Client,
+    spectra: list[dict],
+    batch_size: int = 500,
+) -> int:
     """Update row-backed zfit scalars without touching spectrum metadata.
 
     ``deploy zfit`` replaces only the fit artifact, so a full spectra upsert
-    would risk copying unrelated, stale ECSV metadata. Filtered updates keep
-    that command narrow while ensuring the web UI cannot keep trusting the
+    would risk copying unrelated, stale ECSV metadata. A partial upsert on
+    the (target_id, grating) UNIQUE key patches just the three scalar
+    columns in one round-trip per batch (merge-duplicates leaves every other
+    column alone), while ensuring the web UI cannot keep trusting the
     previous fit's row-backed values.
+
+    Every (target_id, grating) pair must already exist: a standalone re-fit
+    never creates spectra rows, so a missing one means the ECSV and the
+    catalog disagree, and nothing is written.
     """
-    updated = 0
-    for spectrum in spectra:
-        patch = {
-            'redshift_auto': spectrum['redshift_auto'],
-            'chi2_min': spectrum['chi2_min'],
-            'confidence': spectrum['confidence'],
-        }
-        response = (
+    if not spectra:
+        return 0
+
+    wanted = {(s['target_id'], s['grating']) for s in spectra}
+    existing: set[tuple[str, str]] = set()
+    target_ids = sorted({tid for (tid, _) in wanted})
+    fetch_batch = 200
+    for i in range(0, len(target_ids), fetch_batch):
+        resp = (
             client.table('spectra')
-            .update(patch)
-            .eq('target_id', spectrum['target_id'])
-            .eq('grating', spectrum['grating'])
-            .select('id')
+            .select('target_id, grating')
+            .in_('target_id', target_ids[i:i + fetch_batch])
             .execute()
         )
-        count = len(response.data or [])
-        if count != 1:
-            raise RuntimeError(
-                'zfit scalar update matched '
-                f"{count} spectra rows for {spectrum['target_id']}/{spectrum['grating']}"
-            )
-        updated += count
-    return updated
+        existing.update((row['target_id'], row['grating']) for row in resp.data or [])
+    missing = sorted(wanted - existing)
+    if missing:
+        shown = ', '.join(f'{tid}/{grating}' for tid, grating in missing[:5])
+        more = f' (+{len(missing) - 5} more)' if len(missing) > 5 else ''
+        raise RuntimeError(
+            f'zfit scalar update matched 0 spectra rows for {shown}{more}'
+        )
+
+    patches = [{
+        'target_id': s['target_id'],
+        'grating': s['grating'],
+        'redshift_auto': s['redshift_auto'],
+        'chi2_min': s['chi2_min'],
+        'confidence': s['confidence'],
+    } for s in spectra]
+    for i in range(0, len(patches), batch_size):
+        client.table('spectra').upsert(
+            patches[i:i + batch_size], on_conflict='target_id,grating'
+        ).execute()
+    return len(patches)
 
 
 def recompute_target_aggregates(

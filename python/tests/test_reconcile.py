@@ -218,40 +218,42 @@ def test_batch_upsert_spectra_flags_hash_change():
     assert changed == {('t1', 'prism')}
 
 
-def test_update_spectra_zfit_scalars_filters_and_verifies_each_row():
-    client = MagicMock()
-    execute = (
-        client.table.return_value.update.return_value.eq.return_value.eq.return_value
-        .select.return_value.execute
-    )
-    execute.return_value = MagicMock(data=[{'id': 42}])
+def test_update_spectra_zfit_scalars_patches_only_the_scalars_in_one_upsert():
+    client = _mock_supabase_client([{'target_id': 't1', 'grating': 'prism'}])
     n = update_spectra_zfit_scalars(client, [{
         'target_id': 't1', 'grating': 'prism',
         'redshift_auto': 2.75, 'chi2_min': 41.25, 'confidence': 87.5,
     }])
     assert n == 1
-    client.table.assert_called_once_with('spectra')
-    client.table.return_value.update.assert_called_once_with({
-        'redshift_auto': 2.75, 'chi2_min': 41.25, 'confidence': 87.5,
-    })
-    client.table.return_value.update.return_value.eq.assert_called_once_with('target_id', 't1')
-    (
-        client.table.return_value.update.return_value.eq.return_value.eq
-        .assert_called_once_with('grating', 'prism')
-    )
-
-
-def test_update_spectra_zfit_scalars_fails_if_spectrum_row_is_missing():
-    client = MagicMock()
-    (
-        client.table.return_value.update.return_value.eq.return_value.eq.return_value
-        .select.return_value.execute
-    ).return_value = MagicMock(data=[])
-    with pytest.raises(RuntimeError, match='matched 0 spectra rows for t1/prism'):
-        update_spectra_zfit_scalars(client, [{
+    client.table.return_value.select.return_value.in_.assert_called_once_with('target_id', ['t1'])
+    client.table.return_value.upsert.assert_called_once_with(
+        [{
             'target_id': 't1', 'grating': 'prism',
-            'redshift_auto': None, 'chi2_min': None, 'confidence': None,
-        }])
+            'redshift_auto': 2.75, 'chi2_min': 41.25, 'confidence': 87.5,
+        }],
+        on_conflict='target_id,grating',
+    )
+    client.table.return_value.update.assert_not_called()
+
+
+def test_update_spectra_zfit_scalars_writes_nothing_if_a_spectrum_row_is_missing():
+    # The existence check is per (target_id, grating): a target with only a
+    # prism row must not accept a g395m patch, which would insert a stub.
+    client = _mock_supabase_client([{'target_id': 't1', 'grating': 'prism'}])
+    with pytest.raises(RuntimeError, match='matched 0 spectra rows for t1/g395m'):
+        update_spectra_zfit_scalars(client, [
+            {'target_id': 't1', 'grating': 'prism',
+             'redshift_auto': 1.0, 'chi2_min': 1.0, 'confidence': 1.0},
+            {'target_id': 't1', 'grating': 'g395m',
+             'redshift_auto': None, 'chi2_min': None, 'confidence': None},
+        ])
+    client.table.return_value.upsert.assert_not_called()
+
+
+def test_update_spectra_zfit_scalars_empty_is_a_noop():
+    client = _mock_supabase_client([])
+    assert update_spectra_zfit_scalars(client, []) == 0
+    client.table.assert_not_called()
 
 
 def test_unchanged_1to1_match_is_skipped_not_updated():

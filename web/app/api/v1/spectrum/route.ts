@@ -116,7 +116,7 @@ export async function GET(request: NextRequest) {
     // Stream the sidecar through untouched (perf T2-D2, #508). Bearer
     // requests bypass Vercel's shared cache; `private` states the
     // (program-scoped) truth for the client's own cache (#497).
-    const sidecar = await streamSidecar(jsonPath, 'private, max-age=86400, stale-while-revalidate=3600');
+    const sidecar = await streamSidecar(jsonPath, 'private, max-age=86400, stale-while-revalidate=3600', 'Authorization');
     if (sidecar.status === 'ok') return sidecar.response;
     console.error('Failed to fetch spectrum JSON:', sidecar.upstreamStatus);
     return NextResponse.json(
