@@ -1,0 +1,190 @@
+// Content-addressed cutout store (perf T2-D3, #509; decision D-D).
+//
+// A cutout is a pure function of (field, imaging version, size, fov, ra, dec),
+// yet the three render routes re-rendered ~1,078 times a day at 0.8–2 s each.
+// Rendered PNGs now land on the tiles bucket (R2, CDN-fronted, immutable per
+// key) under a deterministic key, and a route that finds one there answers
+// with a 302 to the CDN url (or streams it) instead of rendering:
+//
+//   cutouts/<field>/v<version>/r<render version>/<size>/<fov>/<ra>_<dec>.png
+//
+// `version` is the field's imaging asset version (lib/asset-version.ts): a
+// hash over every map_layers.tile_version and the FitsGL dataset's backing
+// mosaic hashes, deploy time and publish state, so a field re-deploy (or a
+// publish / unpublish) moves every cutout to a new prefix and
+// the old one is orphaned for the bucket's lifecycle rule to expire (30 days
+// on `cutouts/`, set on the bucket — see the PR / DEPLOYMENT notes).
+// `r<render version>` is CUTOUT_RENDER_VERSION: bump it when the renderer
+// itself changes what the same inputs produce (a display-stretch fix, an
+// @fitsgl/core upgrade, a different encoder), since no field deploy would
+// otherwise move the keys and the old renders would serve for 30 days.
+//
+// A route stores only what it would serve again under the same key: a FitsGL
+// field whose FitsGL render failed and fell back to the legacy composite does
+// not store that fallback (it would pin the lower-quality image).
+//
+// Program-scoped access is the route's job BEFORE it consults the store; the
+// stored object is keyed by its inputs, not by a viewer. Only renders from
+// public imagery of a PUBLIC target are stored (a draft-backed dataset an
+// admin's RLS can see stays a private, uncached render; so does a private
+// program's target — lib/server/public-programs.ts). The tiles bucket itself
+// is public, so a stored cutout exposes nothing beyond the tiles it was
+// rendered from, plus coordinates that are already public.
+import 'server-only';
+
+import { GetObjectCommand, HeadObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { after } from 'next/server';
+import { getS3Client, getBucketName, getPublicUrlBase } from '@/lib/storage';
+
+/** Sizes the browser routes render at. A request is rounded UP to the next
+ * rung (the `<img>` scales down), so the list's 48 px, the pinned bucket's
+ * 40 / 20 px and the object page's 600 px collapse onto two stored renders
+ * per object instead of four. Above the ladder (the v1 API allows 2048) the
+ * requested size is kept exactly. */
+export const CUTOUT_SIZE_LADDER = [64, 300, 600] as const;
+
+export function storeSizeFor(requested: number): number {
+  for (const s of CUTOUT_SIZE_LADDER) if (requested <= s) return s;
+  return Math.round(requested);
+}
+
+/** Sizes the API route may store at (the browser ladder plus two larger
+ * rungs). Anything else — and any off-grid fov — renders exactly as asked
+ * and is not stored, so a caller cannot mint an unbounded number of
+ * objects into the bucket by sweeping size or fov. */
+export const CUTOUT_STORE_SIZES: readonly number[] = [64, 300, 600, 1024, 2048];
+
+/** Field-of-view grid the store keys on, in arcsec. 0.1" is well below what a
+ * thumbnail viewer can tell apart and keeps the key space bounded. */
+export const CUTOUT_FOV_STEP = 0.1;
+
+/** `fov` snapped to the store grid (what the browser routes render at). */
+export function snapFov(fov: number): number {
+  return Number((Math.round(fov / CUTOUT_FOV_STEP) * CUTOUT_FOV_STEP).toFixed(3));
+}
+
+/** Whether `fov` already sits on the store grid (the API route stores only then). */
+export function onFovGrid(fov: number): boolean {
+  return Math.abs(snapFov(fov) - fov) < 1e-6;
+}
+
+/** Bump when the rendering implementation changes its output for the same
+ * inputs (see the header). Part of every key, so the bump orphans every
+ * stored cutout at once. */
+export const CUTOUT_RENDER_VERSION = 1;
+
+export interface CutoutStoreInput {
+  field: string;
+  /** Per-field imaging asset version token (assetVersionFor). */
+  version: string;
+  size: number;
+  fov: number;
+  ra: number;
+  dec: number;
+}
+
+function fovSegment(fov: number): string {
+  // "5", "3.2", "12.5": a short canonical decimal (no float noise).
+  return String(Number(fov.toFixed(3)));
+}
+
+export function cutoutStoreKey(i: CutoutStoreInput): string {
+  const field = i.field.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+  const version = i.version.replace(/[^A-Za-z0-9_-]/g, '');
+  // 1e-7 deg = 0.36 mas: below the finest pixel any route renders (a
+  // 2048 px, 1" cutout is ~0.5 mas/px), so two catalog rows only share a key
+  // when they are the same patch of sky to sub-pixel precision.
+  const ra = i.ra.toFixed(7);
+  const dec = `${i.dec >= 0 ? '+' : ''}${i.dec.toFixed(7)}`;
+  return `cutouts/${field}/v${version}/r${CUTOUT_RENDER_VERSION}/${i.size}/${fovSegment(i.fov)}/${ra}_${dec}.png`;
+}
+
+export interface CutoutStoreEntry {
+  key: string;
+  /** Public CDN url of the stored object. */
+  url: string;
+}
+
+let availability: { ok: boolean; base?: string } | null = null;
+
+/** The store is usable when the tiles backend and its public url base are
+ * configured; otherwise every route renders as before. Resolved once. */
+function storeBase(): string | null {
+  if (availability === null) {
+    try {
+      getBucketName('tiles');
+      const base = getPublicUrlBase('tiles');
+      availability = base ? { ok: true, base: base.replace(/\/+$/, '') } : { ok: false };
+      if (!base) console.warn('cutout store off: S3_TILES_PUBLIC_URL_BASE is not set');
+    } catch (err) {
+      console.warn('cutout store off:', err instanceof Error ? err.message : err);
+      availability = { ok: false };
+    }
+  }
+  return availability.ok ? (availability.base as string) : null;
+}
+
+/** Test hook. */
+export function _resetCutoutStore(): void {
+  availability = null;
+}
+
+/** The store entry for an input, or null when the store is not configured. */
+export function cutoutStoreFor(i: CutoutStoreInput): CutoutStoreEntry | null {
+  const base = storeBase();
+  if (!base) return null;
+  const key = cutoutStoreKey(i);
+  return { key, url: `${base}/${key}` };
+}
+
+/** Whether the object is in the store: one HEAD, every time. Never throws.
+ *
+ * Deliberately no positive memo: a re-deploy purges the field's prefix, and
+ * until the imaging version rolls (the asset-version memo, 5 min) a warm
+ * instance still builds the old key — a remembered "present" would 302 to a
+ * deleted object for that whole window, whereas a HEAD miss just re-renders
+ * (and re-stores under the soon-orphaned key, which the lifecycle rule
+ * expires). A HEAD against R2 is a few tens of ms; a render is seconds. */
+export async function cutoutStoreHas(key: string): Promise<boolean> {
+  try {
+    await getS3Client('tiles').send(new HeadObjectCommand({ Bucket: getBucketName('tiles'), Key: key }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The stored bytes as a web stream (for routes that must answer with the
+ * body itself, e.g. og-image for crawlers), or null when absent. */
+export async function cutoutStoreRead(key: string): Promise<ReadableStream | null> {
+  try {
+    const obj = await getS3Client('tiles').send(new GetObjectCommand({ Bucket: getBucketName('tiles'), Key: key }));
+    if (!obj.Body) return null;
+    return obj.Body.transformToWebStream();
+  } catch {
+    return null;
+  }
+}
+
+const STORED_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+
+/** Write a freshly rendered cutout after the response is sent (Next `after`);
+ * outside a request scope (tests) the put simply runs detached. Failures are
+ * logged, never surfaced — the caller already has its bytes. */
+export function storeCutoutInBackground(key: string, png: Buffer): void {
+  const put = () =>
+    getS3Client('tiles')
+      .send(new PutObjectCommand({
+        Bucket: getBucketName('tiles'),
+        Key: key,
+        Body: png,
+        ContentType: 'image/png',
+        CacheControl: STORED_CACHE_CONTROL,
+      }))
+      .catch((err) => console.error(`cutout store: put failed for ${key}:`, err));
+  try {
+    after(put);
+  } catch {
+    void put();
+  }
+}

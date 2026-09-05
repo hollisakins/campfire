@@ -47,13 +47,43 @@ export interface FieldCutoutSource {
    *  shared-cacheable (`private, no-store`), or a CDN keyed only on the URL
    *  would replay draft imagery to non-admins. */
   isPublic: boolean;
+  /** Dataset deployment stamp used to cache-bust descriptors and to prevent
+   *  a render from being stored under a different asset-version snapshot. */
+  datasetVersion: string;
 }
 
-/** `fetch` with Next data-cache revalidation, so a re-deployed dataset's
- *  `fitsgl.json`/`manifest.json` refresh within an hour (mirrors the legacy
- *  PNG tile fetcher's `revalidate: 3600`). */
-const cachingFetch: typeof fetch = (input, init) =>
-  fetch(input, { ...init, next: { revalidate: 3600 } });
+/** Whether a resolved source belongs to the FitsGL snapshot folded into the
+ * store key. A null source takes the legacy path, whose failure guard decides
+ * whether that render is safe to persist. */
+export function sourceMatchesDatasetVersion(
+  source: Pick<FieldCutoutSource, 'datasetVersion'> | null,
+  expected: string | undefined,
+): boolean {
+  return source === null || source.datasetVersion === expected;
+}
+
+/** Add the dataset deployment stamp to a descriptor URL. The public FitsGL
+ * paths are overwritten in place, so URL-only Next caching would otherwise
+ * serve the previous fitsgl.json/manifest.json for up to an hour after the
+ * asset version already changed. */
+export function versionedSourceUrl(raw: string, version: string): string {
+  const url = new URL(raw);
+  url.searchParams.set('__campfire_version', version);
+  return url.toString();
+}
+
+function cachingFetchAtVersion(version: string): typeof fetch {
+  return (input, init) => {
+    const raw = typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+    const url = versionedSourceUrl(raw, version);
+    const versionedInput = input instanceof Request ? new Request(url, input) : url;
+    return fetch(versionedInput, { ...init, next: { revalidate: 3600 } });
+  };
+}
 
 /**
  * Pick the display bands from a dataset inventory.
@@ -131,13 +161,19 @@ async function fetchFieldDataset(
   supabase: SupabaseClient,
   field: string,
   opts: { requirePublic?: boolean },
-): Promise<{ prefix: string; config: FitsglConfig; isPublic: boolean } | null> {
+): Promise<{
+  prefix: string;
+  config: FitsglConfig;
+  isPublic: boolean;
+  sourceVersion: string;
+} | null> {
   const { data: rows, error } = await supabase
     .from('fitsgl_datasets')
-    .select('prefix, field, kind, tiles, bands, pixel_scale, fitsgl_json_url, is_default')
+    .select('prefix, field, kind, tiles, bands, pixel_scale, fitsgl_json_url, is_default, deployed_at')
     .eq('field', field)
     .eq('kind', 'field');
-  if (error || !rows || rows.length === 0) return null;
+  if (error) throw new Error(`fitsgl_datasets query failed for field ${field}: ${error.message}`);
+  if (!rows || rows.length === 0) return null;
   const ds = rows.find((r) => r.is_default) ?? rows[0];
 
   // Publicity is always evaluated (not only under requirePublic): callers that
@@ -150,20 +186,20 @@ async function fetchFieldDataset(
     p_pixel_scale: ds.pixel_scale,
   });
   if (pubErr) {
-    console.error(`fitsgl_dataset_is_public failed for field ${field}:`, pubErr);
-    return null;
+    throw new Error(`fitsgl_dataset_is_public failed for field ${field}: ${pubErr.message}`);
   }
   if (opts.requirePublic && !isPublic) return null;
 
-  const config = await loadFitsglConfig(ds.fitsgl_json_url, cachingFetch);
-  return { prefix: ds.prefix, config, isPublic: Boolean(isPublic) };
+  const sourceVersion = String(ds.deployed_at);
+  const config = await loadFitsglConfig(ds.fitsgl_json_url, cachingFetchAtVersion(sourceVersion));
+  return { prefix: ds.prefix, config, isPublic: Boolean(isPublic), sourceVersion };
 }
 
 /** Load a chosen band's manifest into an engine `BandSource`. */
-async function toBandSource(band: FitsglBand): Promise<BandSource> {
+async function toBandSource(band: FitsglBand, sourceVersion: string): Promise<BandSource> {
   const manifestUrl = band.tiles[0]; // absolute after loadFitsglConfig
   return {
-    manifest: await loadManifest(manifestUrl, undefined, cachingFetch),
+    manifest: await loadManifest(manifestUrl, undefined, cachingFetchAtVersion(sourceVersion)),
     baseUrl: new URL('.', manifestUrl).toString(),
   };
 }
@@ -178,21 +214,44 @@ export async function resolveFieldCutoutSource(
   field: string,
   opts: { requirePublic?: boolean } = {},
 ): Promise<FieldCutoutSource | null> {
+  return (await resolveFieldCutoutSourceResult(supabase, field, opts)).source;
+}
+
+export interface FieldCutoutSourceResult {
+  source: FieldCutoutSource | null;
+  /** True when `source` is null because resolution FAILED (query, RPC,
+   *  manifest fetch/parse), not because the field has no visible pyramid.
+   *  The legacy fallback render is still right to serve, but not to store
+   *  under the key a FitsGL render will later want (#509). */
+  failed: boolean;
+}
+
+/** `resolveFieldCutoutSource`, keeping "no pyramid" and "could not tell"
+ *  apart for callers that persist what they render. */
+export async function resolveFieldCutoutSourceResult(
+  supabase: SupabaseClient,
+  field: string,
+  opts: { requirePublic?: boolean } = {},
+): Promise<FieldCutoutSourceResult> {
   try {
     const ds = await fetchFieldDataset(supabase, field, opts);
-    if (!ds) return null;
+    if (!ds) return { source: null, failed: false };
     const chosen = chooseBands(ds.config);
-    const bands = await Promise.all(chosen.map(toBandSource));
+    const bands = await Promise.all(chosen.map((band) => toBandSource(band, ds.sourceVersion)));
     return {
-      bands,
-      bandNames: chosen.map((b) => b.name),
-      nativeScaleArcsec: bands[0].manifest.levels[0].pixelScaleArcsec,
-      display: displayDefaults(ds.config, chosen),
-      isPublic: ds.isPublic,
+      source: {
+        bands,
+        bandNames: chosen.map((b) => b.name),
+        nativeScaleArcsec: bands[0].manifest.levels[0].pixelScaleArcsec,
+        display: displayDefaults(ds.config, chosen),
+        isPublic: ds.isPublic,
+        datasetVersion: ds.sourceVersion,
+      },
+      failed: false,
     };
   } catch (err) {
     console.error(`FitsGL cutout source unavailable for field ${field}:`, err);
-    return null;
+    return { source: null, failed: true };
   }
 }
 
@@ -212,6 +271,8 @@ export interface FieldScienceSource {
   bands: Array<BandSource & { name: string; label?: string; pivotUm?: number }>;
   /** Dataset prefix, for provenance headers. */
   datasetPrefix: string;
+  /** Dataset deployment stamp used to cache-bust its descriptors. */
+  datasetVersion: string;
 }
 
 /**
@@ -242,11 +303,11 @@ export async function resolveFieldScienceSource(
 
   const bands = await Promise.all(
     chosen.map(async (b) => ({
-      ...(await toBandSource(b)),
+      ...(await toBandSource(b, ds.sourceVersion)),
       name: b.name,
       label: b.label,
       pivotUm: b.pivotUm,
     })),
   );
-  return { bands, datasetPrefix: ds.prefix };
+  return { bands, datasetPrefix: ds.prefix, datasetVersion: ds.sourceVersion };
 }

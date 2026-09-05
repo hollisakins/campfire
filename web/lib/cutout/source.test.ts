@@ -5,7 +5,22 @@
 
 import { describe, it, expect } from 'vitest';
 import { DEFAULT_TRILOGY_PARAMS, trilogyLevels, type FitsglConfig } from '@fitsgl/core';
-import { displayDefaults } from './source';
+import { displayDefaults, sourceMatchesDatasetVersion, versionedSourceUrl } from './source';
+
+describe('versionedSourceUrl', () => {
+  it('cache-busts overwritten descriptors while preserving existing query parameters', () => {
+    expect(versionedSourceUrl('https://cdn.example/fitsgl.json?download=1', '2026-09-04T12:00:00+00:00'))
+      .toBe('https://cdn.example/fitsgl.json?download=1&__campfire_version=2026-09-04T12%3A00%3A00%2B00%3A00');
+  });
+});
+
+describe('sourceMatchesDatasetVersion', () => {
+  it('rejects a render source from a different asset-version snapshot', () => {
+    expect(sourceMatchesDatasetVersion({ datasetVersion: 'new' }, 'new')).toBe(true);
+    expect(sourceMatchesDatasetVersion({ datasetVersion: 'old' }, 'new')).toBe(false);
+    expect(sourceMatchesDatasetVersion(null, 'new')).toBe(true);
+  });
+});
 
 const TRI_STATS = {
   mean: 0.001,

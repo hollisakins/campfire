@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -112,6 +113,34 @@ def descriptor_keys(dataset_dir, prefix):
     return keys
 
 
+def _tiles_client(creds):
+    """boto3 client for the tiles bucket from the deploy-credentials payload."""
+    import boto3
+    from botocore.config import Config
+
+    cfg = {'signature_version': 's3v4'}
+    if creds.get('force_path_style'):
+        cfg['s3'] = {'addressing_style': 'path'}
+    return boto3.client(
+        's3', endpoint_url=creds['endpoint'],
+        aws_access_key_id=creds['access_key_id'],
+        aws_secret_access_key=creds['secret_access_key'],
+        region_name=creds.get('region') or 'auto', config=Config(**cfg),
+    )
+
+
+def purge_cutout_store(creds, field: str) -> int:
+    """Drop the web's stored cutouts for *field* (perf T2-D3, #509).
+
+    The content-addressed cutout store (``cutouts/<field>/v<imaging version>/…``
+    on the tiles bucket) keys on the FitsGL dataset's source hashes, so a
+    re-deployed pyramid orphans every stored cutout of the field. Returns the
+    number of objects deleted.
+    """
+    from campfire.deploy.tiles import delete_r2_prefix
+    return delete_r2_prefix(_tiles_client(creds), creds['bucket'], f"cutouts/{field}/")
+
+
 def set_descriptor_cache_control(creds, keys, *, cache_control=DESCRIPTOR_CACHE_CONTROL):
     """Re-stamp ``Cache-Control`` on already-uploaded descriptor objects.
 
@@ -170,6 +199,11 @@ def dataset_row(*, field, tile, prefix, pixel_scale, fitsgl_json, bands, tiles,
         'source_hashes': source_hashes,
         'is_default': is_default,
         'schema_version': _SCHEMA_VERSION,
+        # Stamped on every deploy (not only the insert): the web's imaging
+        # asset version hashes it, so a rebuild with unchanged mosaics but a
+        # changed fitsgl.json (bands, stretch, trilogy knobs) still moves every
+        # cutout / thumbnail url of the field (perf T2-D3, #509).
+        'deployed_at': datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -430,6 +464,21 @@ def run_deploy(field, *, config, client, tile=None, pixel_scale='30mas',
         click.echo(f"  Cache-Control set on {n} descriptor(s): {DESCRIPTOR_CACHE_CONTROL}")
     except Exception as e:  # noqa: BLE001 — never fail a deploy over a header
         click.echo(f"  Warning: could not set descriptor Cache-Control: {e}")
+
+    # The stored cutouts of this field are keyed on the previous imaging
+    # version now (perf T2-D3, #509). Only the field-kind (composite) dataset
+    # feeds that version (lib/asset-version.ts hashes `kind = 'field'` rows;
+    # lib/cutout/source.ts renders from it), so a single-tile deploy leaves
+    # every key as it was and must not empty the store under live keys.
+    # Best effort; the bucket's lifecycle rule is the backstop.
+    if tile is None:
+        try:
+            n = purge_cutout_store(creds, field)
+            click.echo(f"  Purged {n} stored cutout(s) for {field}")
+        except Exception as e:  # noqa: BLE001 — never fail a deploy over cache cleanup
+            click.echo(f"  Warning: could not purge the cutout store for {field}: {e}")
+    else:
+        click.echo(f"  (cutout store for {field} kept: a tile dataset does not move the imaging version)")
 
     click.echo(f"\n✓ Deployed {name}: {len(result.uploaded)} uploaded, "
                f"{len(result.deleted)} removed")

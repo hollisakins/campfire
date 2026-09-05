@@ -4,8 +4,10 @@ import {
   compositeTileThumbnail,
   type MapLayerInfo,
 } from '@/lib/utils/tile-compositing';
-import { resolveFieldCutoutSource } from '@/lib/cutout/source';
+import { resolveFieldCutoutSourceResult, sourceMatchesDatasetVersion } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
+import { getAssetVersions } from '@/lib/asset-version';
+import { cutoutStoreFor, cutoutStoreRead, storeCutoutInBackground } from '@/lib/cutout/store';
 
 // Tile decode + reprojection + PNG encode on a cold instance (#497).
 export const maxDuration = 60;
@@ -27,7 +29,16 @@ type Kind = 'object' | 'target';
  * program is public (`programs.is_public`), else 404 (#497). `kind` selects
  * the catalog (see /api/tile-thumbnail); absent, the legacy targets-then-
  * objects probe applies.
+ *
+ * Content-addressed store (perf T2-D3, #509): a cutout already rendered for
+ * this (field, imaging version, 300 px, 5") is streamed from the store —
+ * streamed rather than redirected, since not every social crawler follows a
+ * 302 for an image — and a fresh render is written to it after the response.
  */
+const OG_SIZE = 300;
+const OG_FOV = 5;
+const PUBLIC_WEEK = 'public, max-age=604800';
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -89,24 +100,52 @@ export async function GET(
     // FitsGL path (epic #337, Phase 5). Service-role client bypasses RLS, so
     // requirePublic mirrors the fitsgl_datasets policy — an unpublished-backed
     // pyramid never serves this public route.
-    const fitsglSrc = await resolveFieldCutoutSource(supabase, obj.field, { requirePublic: true });
+    const [{ source: fitsglSrc, failed: fitsglUnresolved }, versions] = await Promise.all([
+      resolveFieldCutoutSourceResult(supabase, obj.field, { requirePublic: true }),
+      getAssetVersions(),
+    ]);
+
+    const fieldVersion = versions.byField[obj.field];
+    const sourceMatchesVersion = sourceMatchesDatasetVersion(
+      fitsglSrc, versions.fitsglDatasetVersions[obj.field],
+    );
+    const store = fieldVersion
+      ? cutoutStoreFor({ field: obj.field, version: fieldVersion, size: OG_SIZE, fov: OG_FOV, ra: obj.ra, dec: obj.dec })
+      : null;
+    if (store) {
+      const stored = await cutoutStoreRead(store.key);
+      if (stored) {
+        return new Response(stored, {
+          status: 200,
+          headers: { 'Content-Type': 'image/png', 'Cache-Control': PUBLIC_WEEK },
+        });
+      }
+    }
+
+    // A legacy composite rendered because the FitsGL source could not be
+    // resolved or its render failed is not stored under the FitsGL key (see
+    // /api/tile-thumbnail).
+    let fitsglFailed = fitsglUnresolved;
+
     if (fitsglSrc) {
       try {
         const png = await renderDisplayCutoutPng(fitsglSrc, {
           ra: obj.ra,
           dec: obj.dec,
-          fovArcsec: 5,
-          outputSize: 300,
+          fovArcsec: OG_FOV,
+          outputSize: OG_SIZE,
         });
+        if (store && sourceMatchesVersion) storeCutoutInBackground(store.key, png);
         return new Response(new Uint8Array(png), {
           status: 200,
           headers: {
             'Content-Type': 'image/png',
-            'Cache-Control': 'public, max-age=604800', // 1 week
+            'Cache-Control': PUBLIC_WEEK, // 1 week
           },
         });
       } catch (err) {
         console.error('FitsGL OG-image render failed; falling back to PNG tiles:', err);
+        fitsglFailed = true;
       }
     }
 
@@ -132,15 +171,16 @@ export async function GET(
       ra: obj.ra,
       dec: obj.dec,
       layer,
-      outputSize: 300,
-      fovArcsec: 5,
+      outputSize: OG_SIZE,
+      fovArcsec: OG_FOV,
     });
+    if (store && !fitsglFailed) storeCutoutInBackground(store.key, png);
 
     return new Response(new Uint8Array(png), {
       status: 200,
       headers: {
         'Content-Type': 'image/png',
-        'Cache-Control': 'public, max-age=604800', // 1 week
+        'Cache-Control': PUBLIC_WEEK, // 1 week
       },
     });
   } catch (error) {
