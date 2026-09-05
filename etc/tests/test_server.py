@@ -75,6 +75,19 @@ def test_errors_are_reported():
     anyio.run(go)
 
 
+def test_public_base_ignores_unlisted_forwarded_host(monkeypatch):
+    class Ctx:
+        def __init__(self, headers): self.headers = headers
+    monkeypatch.setattr(srv, "PUBLIC_URL", "https://etc.example.org")
+    monkeypatch.setattr(srv, "ALLOWED_HOSTS", ["etc.example.org", "etc.fly.dev"])
+    assert srv._public_base(Ctx({"host": "etc.fly.dev", "x-forwarded-proto": "https"})) == "https://etc.fly.dev"
+    assert srv._public_base(Ctx({"x-forwarded-host": "evil.example", "host": "etc.example.org"})) == "https://etc.example.org"
+    assert srv._public_base(Ctx({"x-forwarded-host": "evil.example", "host": "also.evil"})) == "https://etc.example.org"
+    monkeypatch.setattr(srv, "ALLOWED_HOSTS", [])
+    assert srv._public_base(Ctx({"x-forwarded-host": "evil.example", "host": "127.0.0.1:8000", "x-forwarded-proto": "http"})) == "http://127.0.0.1:8000"
+    assert srv._public_base(None) == "https://etc.example.org"
+
+
 def test_file_store_is_bounded(monkeypatch):
     srv._FILES.clear()
     monkeypatch.setattr(srv, "FILE_STORE_MAX_BYTES", 5000)

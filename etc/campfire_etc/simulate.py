@@ -48,8 +48,10 @@ def _lsf_convolve(values: np.ndarray, sigma_px: np.ndarray, chunk: int = 256) ->
         half = int(math.ceil(4 * s))
         lo, hi = max(0, s0 - half), min(n, s1 + half)
         k = np.exp(-0.5 * (np.arange(-half, half + 1) / s) ** 2)
-        num = np.convolve(v[lo:hi], k, mode="same")
-        den = np.convolve(wgt[lo:hi], k, mode="same")
+        # "full" then slice: unlike mode="same", the result is aligned with the
+        # segment even when the segment is shorter than the kernel.
+        num = np.convolve(v[lo:hi], k, mode="full")[half:half + (hi - lo)]
+        den = np.convolve(wgt[lo:hi], k, mode="full")[half:half + (hi - lo)]
         with np.errstate(invalid="ignore", divide="ignore"):
             sm = np.where(den > 0, num / den, np.nan)
         out[s0:s1] = sm[s0 - lo:s1 - lo]

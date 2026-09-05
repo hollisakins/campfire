@@ -225,15 +225,27 @@ def _store_file(data: bytes, content_type: str, filename: str) -> str:
     return fid
 
 
+ALLOWED_HOSTS = [h.strip().lower() for h in os.environ.get("CAMPFIRE_ETC_ALLOWED_HOSTS", "").split(",") if h.strip()]
+
+
 def _public_base(ctx: Context | None) -> str:
     """Base URL for download links: the hostname the client actually reached us
-    on (so both the custom domain and the fly.dev name work), falling back to
-    CAMPFIRE_ETC_PUBLIC_URL."""
+    on (so both the custom domain and the fly.dev name work), but only if it is
+    one of the configured allowed hosts — X-Forwarded-Host is client-settable,
+    so an unlisted value must not end up in a link. Falls back to
+    CAMPFIRE_ETC_PUBLIC_URL; with no allow-list only the Host header counts."""
     try:
         h = ctx.headers if ctx is not None else {}
-        host = h.get("x-forwarded-host") or h.get("host")
-        proto = h.get("x-forwarded-proto") or "https"
-        if host:
+        proto = (h.get("x-forwarded-proto") or "https").split(",")[0].strip().lower()
+        if proto not in ("http", "https"):
+            proto = "https"
+        candidates = [h.get("x-forwarded-host"), h.get("host")] if ALLOWED_HOSTS else [h.get("host")]
+        for host in candidates:
+            host = (host or "").split(",")[0].strip().lower()
+            if not host:
+                continue
+            if ALLOWED_HOSTS and host not in ALLOWED_HOSTS and host.split(":")[0] not in ALLOWED_HOSTS:
+                continue
             return f"{proto}://{host}"
     except Exception:  # pragma: no cover
         pass

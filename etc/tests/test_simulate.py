@@ -92,6 +92,22 @@ def test_lsf_smooths_sed_features():
     assert r["model_ujy"][np.abs(r["wave_um"] - 4.0) > 0.02].max() < 1.5
 
 
+def test_lsf_short_segments():
+    from campfire_etc.simulate import _lsf_convolve
+    # segment shorter than the kernel: a flat input must come back flat and aligned
+    for n in (3, 10, 40, 300):
+        out = _lsf_convolve(np.full(n, 2.0), np.full(n, 4.7))
+        assert np.allclose(out, 2.0)
+    # a step stays a step at the right place
+    x = np.r_[np.zeros(20), np.ones(20)]
+    out = _lsf_convolve(x, np.full(40, 2.0))
+    assert out[0] < 0.01 and out[-1] > 0.99 and abs(out[19] - 0.5) < 0.15
+    # a tiny wave_range through simulate() still works
+    d = M.get("g395m")
+    r = ce.simulate(d, E, flat_sed(magnitude_ab=24), morphology="point", wave_range=[4.0, 4.004], seed=0)
+    assert 2 <= r["n_pixels"] <= 4 and np.allclose(r["model_ujy"], 10 ** (-0.4 * (24 - 23.9)), rtol=1e-6)
+
+
 def test_power_law_and_write(tmp_path):
     d = M.get("prism")
     r = ce.simulate(d, E, power_law_sed(26.0, 2.0, -1.0), seed=0, n_realizations=2)
