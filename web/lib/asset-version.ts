@@ -33,6 +33,10 @@ export interface AssetVersions {
   /** Short version token per field (lower-case field key as stored in the DB).
    *  SERVER-ONLY: names every field, including admin-only draft datasets. */
   byField: Record<string, string>;
+  /** Deployment stamp of the FitsGL dataset folded into each field version.
+   *  Server render routes compare this with the descriptors they loaded and
+   *  skip persistent writes when a deploy races the two reads. */
+  fitsglDatasetVersions: Record<string, string>;
   /** Combined token over every field — the only part safe to send to clients. */
   global: string;
 }
@@ -105,8 +109,10 @@ async function computeAssetVersions(): Promise<AssetVersions> {
   }
   // Fields whose version cannot be computed this time (see lastPublicity).
   const unavailable = new Set<string>();
+  const fitsglDatasetVersions: Record<string, string> = {};
   for (const [field, rows] of byField) {
     const ds = rows!.find((r) => r.is_default) ?? rows![0];
+    fitsglDatasetVersions[field] = String(ds.deployed_at);
     // source_hashes (the backing mosaics' content hashes) tracks the
     // pyramid's pixels; deployed_at is stamped by every FitsGL deploy (#509)
     // so a rebuild with the same mosaics but a changed fitsgl.json (band
@@ -150,7 +156,7 @@ async function computeAssetVersions(): Promise<AssetVersions> {
   const global = shortHash(
     fields.map((f) => `${f}=${versions[f]}`).join('|') + `|deploy=${latestDeploy?.deployed_at ?? ''}`,
   );
-  return { byField: versions, global };
+  return { byField: versions, fitsglDatasetVersions, global };
 }
 
 /**
@@ -166,7 +172,7 @@ export async function getAssetVersions(): Promise<AssetVersions> {
     return await cachedAssetVersions();
   } catch (err) {
     console.error('asset versions unavailable:', err);
-    return { byField: {}, global: '' };
+    return { byField: {}, fitsglDatasetVersions: {}, global: '' };
   }
 }
 

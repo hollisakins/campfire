@@ -57,6 +57,7 @@ describe('getAssetVersions — input queries', () => {
     db.layersError = { message: 'db down' };
     const v = await getAssetVersions();
     expect(v.byField).toEqual({});
+    expect(v.fitsglDatasetVersions).toEqual({});
     expect(v.global).toBe('');
   });
 });
@@ -66,6 +67,7 @@ describe('getAssetVersions — publish state', () => {
     db.publicity = { data: null, error: { message: 'rpc down' } };
     const v = await getAssetVersions();
     expect(v.byField.egs).toBeUndefined();
+    expect(v.fitsglDatasetVersions.egs).toBe('2026-09-04T00:00:00+00:00');
     expect(v.byField.cosmos).toMatch(/^[0-9a-f]{10}$/);
     expect(v.global).toMatch(/^[0-9a-f]{10}$/);
   });
@@ -88,5 +90,13 @@ describe('getAssetVersions — publish state', () => {
     db.publicity = { data: false, error: null };
     const unpublished = await getAssetVersions();
     expect(unpublished.byField.egs).not.toBe(published.byField.egs);
+  });
+
+  it('exposes the dataset stamp used in the field version for render/write coherence', async () => {
+    db.publicity = { data: true, error: null };
+    const versions = await getAssetVersions();
+    expect(versions.fitsglDatasetVersions).toEqual({
+      egs: '2026-09-04T00:00:00+00:00',
+    });
   });
 });

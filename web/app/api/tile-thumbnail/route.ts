@@ -5,7 +5,7 @@ import {
   TRANSPARENT_GIF,
   type MapLayerInfo,
 } from '@/lib/utils/tile-compositing';
-import { resolveFieldCutoutSourceResult } from '@/lib/cutout/source';
+import { resolveFieldCutoutSourceResult, sourceMatchesDatasetVersion } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 import { getAssetVersions } from '@/lib/asset-version';
 import { cutoutStoreFor, cutoutStoreHas, snapFov, storeCutoutInBackground, storeSizeFor } from '@/lib/cutout/store';
@@ -129,6 +129,9 @@ export async function GET(request: NextRequest) {
     const publicImagery = fitsglSrc ? fitsglSrc.isPublic : true;
     const publicTarget = catalogIsPublic(obj.programs, publicSlugs);
     const fieldVersion = versions.byField[obj.field];
+    const sourceMatchesVersion = sourceMatchesDatasetVersion(
+      fitsglSrc, versions.fitsglDatasetVersions[obj.field],
+    );
     const store = publicImagery && publicTarget && fieldVersion
       ? cutoutStoreFor({ field: obj.field, version: fieldVersion, size: storeSize, fov, ra: obj.ra, dec: obj.dec })
       : null;
@@ -153,7 +156,7 @@ export async function GET(request: NextRequest) {
           fovArcsec: fov,
           outputSize,
         });
-        if (store) storeCutoutInBackground(store.key, png);
+        if (store && sourceMatchesVersion) storeCutoutInBackground(store.key, png);
         return new Response(new Uint8Array(png), {
           status: 200,
           headers: {

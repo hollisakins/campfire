@@ -4,7 +4,7 @@ import {
   compositeTileThumbnail,
   type MapLayerInfo,
 } from '@/lib/utils/tile-compositing';
-import { resolveFieldCutoutSourceResult } from '@/lib/cutout/source';
+import { resolveFieldCutoutSourceResult, sourceMatchesDatasetVersion } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 import { getAssetVersions } from '@/lib/asset-version';
 import { cutoutStoreFor, cutoutStoreRead, storeCutoutInBackground } from '@/lib/cutout/store';
@@ -106,6 +106,9 @@ export async function GET(
     ]);
 
     const fieldVersion = versions.byField[obj.field];
+    const sourceMatchesVersion = sourceMatchesDatasetVersion(
+      fitsglSrc, versions.fitsglDatasetVersions[obj.field],
+    );
     const store = fieldVersion
       ? cutoutStoreFor({ field: obj.field, version: fieldVersion, size: OG_SIZE, fov: OG_FOV, ra: obj.ra, dec: obj.dec })
       : null;
@@ -132,7 +135,7 @@ export async function GET(
           fovArcsec: OG_FOV,
           outputSize: OG_SIZE,
         });
-        if (store) storeCutoutInBackground(store.key, png);
+        if (store && sourceMatchesVersion) storeCutoutInBackground(store.key, png);
         return new Response(new Uint8Array(png), {
           status: 200,
           headers: {

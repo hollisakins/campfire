@@ -7,7 +7,7 @@ import {
   type MapLayerInfo,
 } from '@/lib/utils/tile-compositing';
 import type { WCSParams } from '@/lib/utils/wcs';
-import { resolveFieldCutoutSourceResult } from '@/lib/cutout/source';
+import { resolveFieldCutoutSourceResult, sourceMatchesDatasetVersion } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 import { getAssetVersions } from '@/lib/asset-version';
 import { CUTOUT_STORE_SIZES, cutoutStoreFor, cutoutStoreHas, onFovGrid, storeCutoutInBackground } from '@/lib/cutout/store';
@@ -145,6 +145,9 @@ export async function GET(request: NextRequest) {
       publicProgramSlugs(),
     ]);
     const fieldVersion = versions.byField[obj.field];
+    const sourceMatchesVersion = sourceMatchesDatasetVersion(
+      fitsglSrc, versions.fitsglDatasetVersions[obj.field],
+    );
     const publicImagery = fitsglSrc ? fitsglSrc.isPublic : true;
     // Only a public target's cutout may live at the store's unsigned public
     // url (see /api/tile-thumbnail): a private program's coordinates must
@@ -179,7 +182,7 @@ export async function GET(request: NextRequest) {
           fovArcsec: fov,
           outputSize,
         });
-        if (store) storeCutoutInBackground(store.key, png);
+        if (store && sourceMatchesVersion) storeCutoutInBackground(store.key, png);
         return new Response(new Uint8Array(png), {
           status: 200,
           headers: {
