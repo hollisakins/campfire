@@ -3,6 +3,16 @@ import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms, isAdminUser, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
 import { createServiceClient } from '@/lib/supabase/server';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
+import {
+  cursorFingerprint,
+  cursorRpcParams,
+  decodeCursor,
+  deprecationHeaders,
+  encodeNextCursor,
+  parseIncludeCount,
+  type CursorPayload,
+  type ListPagination,
+} from '@/lib/api-cursor';
 
 /**
  * GET /api/v1/objects
@@ -13,6 +23,13 @@ import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
  * Query parameters mirror /api/v1/targets's vocabulary where it still makes
  * sense. `spectral_features` is gone (Phase E); `dq_flags` resolves to
  * per-spectrum filtering via the underlying RPC.
+ *
+ * Pagination (perf T2-F, #511, decision D-F): keyset. Each response carries
+ * `pagination.next_cursor` (null on the last page); pass it back as
+ * `cursor=` with the same filters and sort to get the next page at a cost
+ * that does not grow with depth. `count=false` skips the total (it is skipped
+ * by default on cursor pages; `total` is then -1). `offset=` is still
+ * honoured for one client release and answered with a `Deprecation` header.
  */
 export async function GET(request: NextRequest) {
   const userId = await validateAuth(request);
@@ -27,7 +44,7 @@ export async function GET(request: NextRequest) {
     if (accessibleProgramSlugs.length === 0) {
       return NextResponse.json({
         data: [],
-        pagination: { total: 0, limit: 0, offset: 0 },
+        pagination: { total: 0, limit: 0, offset: 0, has_more: false, next_cursor: null },
       });
     }
 
@@ -77,15 +94,34 @@ export async function GET(request: NextRequest) {
       : null;
 
     // Pagination (limit 1..10000 so limit=0 can't produce NaN pages and a
-    // single request can't ask for an unbounded page)
+    // single request can't ask for an unbounded page). `cursor` and a
+    // non-zero `offset` are mutually exclusive.
     const limit = parseInt(searchParams.get('limit') || '1000', 10);
-    const offset = parseInt(searchParams.get('offset') || '0', 10);
+    const rawOffset = searchParams.get('offset');
+    const offset = rawOffset === null ? 0 : parseInt(rawOffset, 10);
     if (!Number.isFinite(limit) || limit < 1 || limit > 10000 || !Number.isFinite(offset) || offset < 0) {
       return NextResponse.json(
         { error: 'Invalid pagination: limit must be 1-10000 and offset must be >= 0' },
         { status: 400 }
       );
     }
+    const rawCursor = searchParams.get('cursor');
+    if (rawCursor && offset > 0) {
+      return NextResponse.json(
+        { error: 'Invalid pagination: pass either cursor or offset, not both' },
+        { status: 400 }
+      );
+    }
+    const fingerprint = cursorFingerprint(searchParams);
+    let cursor: CursorPayload | null = null;
+    if (rawCursor) {
+      const decoded = decodeCursor(rawCursor, fingerprint);
+      if (!decoded.ok) {
+        return NextResponse.json({ error: decoded.error }, { status: 400 });
+      }
+      cursor = decoded.cursor;
+    }
+    const includeCount = parseIncludeCount(searchParams, cursor !== null);
     const page = Math.floor(offset / limit) + 1;
 
     // Sort
@@ -127,6 +163,8 @@ export async function GET(request: NextRequest) {
       p_page: page,
       p_page_size: limit,
       p_include_unpublished: includeUnpublished,
+      p_include_count: includeCount,
+      ...cursorRpcParams(cursor),
     };
 
     const { data, error } = await supabase.rpc('get_filtered_objects_paginated', rpcParams);
@@ -139,16 +177,28 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const result = data?.[0] || { targets: [], total_count: 0 };
+    const result = data?.[0] || { targets: [], total_count: 0, has_more: false };
 
-    return NextResponse.json({
-      data: result.targets || [],
-      pagination: {
-        total: result.total_count || 0,
-        limit,
-        offset,
-      },
-    });
+    // total is -1 when the count was skipped (cursor pages by default).
+    const rawTotal = Number(result.total_count);
+    const pagination: ListPagination = {
+      total: includeCount && Number.isFinite(rawTotal) ? rawTotal : -1,
+      limit,
+      has_more: Boolean(result.has_more),
+      next_cursor: encodeNextCursor(result, fingerprint),
+    };
+    const headers: Record<string, string> = {};
+    if (!cursor) {
+      // Legacy response shape for offset callers (offset: 0 on a plain first
+      // page). The deprecation notice goes only to callers that actually
+      // sent offset=.
+      pagination.offset = offset;
+      if (rawOffset !== null) {
+        Object.assign(headers, deprecationHeaders(new URL('/docs/api/rest#pagination', request.nextUrl.origin).toString()));
+      }
+    }
+
+    return NextResponse.json({ data: result.targets || [], pagination }, { headers });
   } catch (error) {
     console.error('Error in API /v1/objects:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

@@ -21,7 +21,7 @@ from .flags import (
 )
 from .models import Object, SpectrumData
 
-__version__ = "0.4.0"
+from ._version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -316,8 +316,17 @@ class Campfire:
         sort: str = "object_id",
         sort_dir: str = "asc",
         remote: bool = False,
+        cursor: Optional[str] = None,
     ) -> Table:
-        """Query objects (cross-program grouped sky positions)."""
+        """Query objects (cross-program grouped sky positions).
+
+        Remote results are one page of at most ``limit`` rows. The returned
+        table's ``meta["pagination"]`` carries ``total`` and ``next_cursor``;
+        pass ``cursor=next_cursor`` (same filters and sort) for the following
+        page, or use :meth:`iter_objects` to stream everything. ``offset`` is
+        the deprecated positional form. Local (synced) queries ignore both and
+        return every matching row.
+        """
         if fields:
             fields = [f.lower() for f in fields]
         if gratings:
@@ -370,25 +379,26 @@ class Campfire:
                 cone_search=cone_search,
                 limit=remote_limit,
                 offset=offset,
+                cursor=cursor,
                 sort=sort,
                 sort_dir=sort_dir,
             )
 
         if not use_local and pagination:
             total = pagination.get("total", 0)
-            if total > len(objects):
-                import warnings
+            if total > len(objects) and pagination.get("next_cursor"):
                 warnings.warn(
                     f"Query returned {len(objects)} of {total} matching objects. "
-                    f"Use limit/offset to paginate, iter_objects() to stream all, "
+                    f"Use iter_objects() to stream all, pass "
+                    f"cursor=table.meta['pagination']['next_cursor'] for the next page, "
                     f"or sync the catalog locally with cf.sync() for unlimited queries.",
                     stacklevel=2,
                 )
 
-        if len(objects) == 0:
-            return Table()
-
-        return Table(rows=objects)
+        table = Table() if len(objects) == 0 else Table(rows=objects)
+        if pagination:
+            table.meta["pagination"] = pagination
+        return table
 
     def iter_objects(self, **filters) -> Iterator[dict]:
         """Iterate over all matching objects with automatic pagination."""
@@ -464,11 +474,16 @@ class Campfire:
         sort: str = "spectrum_id",
         sort_dir: str = "asc",
         remote: bool = False,
+        cursor: Optional[str] = None,
     ) -> Table:
         """Query spectra (flat, one row per spectrum) with object-level filters.
 
         Inspection state (``redshift_range``, ``redshift_quality``,
         ``inspected_only``) is resolved through the parent object.
+
+        Remote results are one page; ``meta["pagination"]["next_cursor"]`` on
+        the returned table feeds ``cursor=`` for the next page (see
+        :meth:`query_objects`), or use :meth:`iter_spectra`.
 
         Provenance filters carve a calibration-homogeneous subsample without
         opening any FITS: ``crds_context`` and ``cfpipe_version`` accept a
@@ -536,6 +551,7 @@ class Campfire:
                 cone_search=cone_search,
                 limit=remote_limit,
                 offset=offset,
+                cursor=cursor,
                 sort=sort,
                 sort_dir=sort_dir,
             )
@@ -551,19 +567,19 @@ class Campfire:
 
         if not use_local and pagination:
             total = pagination.get("total", 0)
-            if total > len(spectra):
-                import warnings
+            if total > len(spectra) and pagination.get("next_cursor"):
                 warnings.warn(
                     f"Query returned {len(spectra)} of {total} matching spectra. "
-                    f"Use limit/offset to paginate, iter_spectra() to stream all, "
+                    f"Use iter_spectra() to stream all, pass "
+                    f"cursor=table.meta['pagination']['next_cursor'] for the next page, "
                     f"or sync the catalog locally with cf.sync() for unlimited queries.",
                     stacklevel=2,
                 )
 
-        if len(spectra) == 0:
-            return Table()
-
-        return Table(rows=spectra)
+        table = Table() if len(spectra) == 0 else Table(rows=spectra)
+        if pagination:
+            table.meta["pagination"] = pagination
+        return table
 
     def iter_spectra(self, **filters) -> Iterator[dict]:
         """Iterate over all matching spectra with automatic pagination."""

@@ -24,6 +24,7 @@ from .auth.credentials import CredentialManager
 from .auth.device_flow import run_device_flow
 from .auth.tokens import TokenManager
 from .exceptions import AuthenticationError
+from ._version import __version__
 
 
 class _VariadicOption(click.Option):
@@ -144,7 +145,6 @@ def _maybe_migrate_layout(store, migrate_layout: Optional[bool]) -> None:
 
 def _check_client_version(base_url: str) -> None:
     """Check if a newer client version is available. Never raises."""
-    from . import __version__
     from packaging.version import Version
 
     try:
@@ -178,7 +178,7 @@ def _check_client_version(base_url: str) -> None:
 
 
 @click.group()
-@click.version_option(version="0.4.0", prog_name="campfire")
+@click.version_option(version=__version__, prog_name="campfire")
 def cli():
     """CAMPFIRE — Python client and deployment tools for NIRSpec spectroscopic data."""
     pass

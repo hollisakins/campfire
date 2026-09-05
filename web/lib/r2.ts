@@ -156,14 +156,24 @@ export async function resolveObjectBackends(keys: string[]): Promise<ResolvedObj
     }
     if (toLookup.length > 0) {
       const supabase = createServiceClient();
-      // Chunked so the `.in()` list never overflows the request URL.
+      // Chunked so the `.in()` list never overflows the request URL; the
+      // chunks are independent point lookups, so they run concurrently (perf
+      // T2-F, #511 — a 500-key manifest used to pay ten sequential round
+      // trips here).
+      const chunks: string[][] = [];
       for (let i = 0; i < toLookup.length; i += LOOKUP_CHUNK) {
-        const chunk = toLookup.slice(i, i + LOOKUP_CHUNK);
-        const { data, error } = await supabase
-          .from('storage_objects')
-          .select('storage_key, backend, content_hash, updated_at')
-          .in('storage_key', chunk)
-          .eq('status', 'active');
+        chunks.push(toLookup.slice(i, i + LOOKUP_CHUNK));
+      }
+      const results = await Promise.all(
+        chunks.map((chunk) =>
+          supabase
+            .from('storage_objects')
+            .select('storage_key, backend, content_hash, updated_at')
+            .in('storage_key', chunk)
+            .eq('status', 'active'),
+        ),
+      );
+      for (const { data, error } of results) {
         if (error) throw error;
         for (const row of data ?? []) {
           const registeredMs = row.updated_at ? Date.parse(String(row.updated_at)) : NaN;

@@ -48,7 +48,7 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__version__ = "0.4.0"
+from ._version import __version__
 __all__ = [
     "Campfire",
     "SpectrumData",

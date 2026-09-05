@@ -127,11 +127,24 @@ cf.query_objects(
     search=None,             # str: Text search on object_id
     cone_search=None,        # tuple[float, float, float]: (ra, dec, radius_arcsec)
     limit=None,              # int: Max results (unlimited locally; 1000 default remote)
-    offset=0,                # int: Pagination offset
+    cursor=None,             # str: Next page — the previous table's meta['pagination']['next_cursor']
+    offset=0,                # int: Deprecated positional offset (remote only)
     sort='object_id',        # str: Sort column
     sort_dir='asc',          # 'asc' or 'desc'
     remote=False,            # bool: Force remote API
 )
+```
+
+A remote query returns one page of at most `limit` rows. The table's
+`meta['pagination']` carries `total` (on the first page) and `next_cursor`
+(`None` on the last page); feed it back as `cursor=` with the same filters and
+sort for the next page, or let `iter_objects()` do it:
+
+```python
+page = cf.query_objects(fields=['cosmos'], limit=500, remote=True)
+while page.meta['pagination'].get('next_cursor'):
+    page = cf.query_objects(fields=['cosmos'], limit=500, remote=True,
+                            cursor=page.meta['pagination']['next_cursor'])
 ```
 
 Examples:
@@ -191,7 +204,7 @@ for row in cf.iter_objects(redshift_range=(2.0, 4.0)):
 all_lrds = list(cf.iter_objects(tags=['lrd']))
 ```
 
-Locally, these query SQLite directly. Remotely, they auto-paginate through the API.
+Locally, these query SQLite directly. Remotely, they follow the API's cursor (`pagination.next_cursor`) page by page: the total is requested once, every later page costs the same as the first, and the walk ends without an extra empty request. Walking the full catalog this way is a few seconds, not tens of seconds.
 
 ### `get_object()` and `get_spectrum()`
 
