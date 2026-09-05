@@ -204,7 +204,7 @@ for row in cf.iter_objects(redshift_range=(2.0, 4.0)):
 all_lrds = list(cf.iter_objects(tags=['lrd']))
 ```
 
-Locally, these query SQLite directly. Remotely, they follow the API's cursor (`pagination.next_cursor`) page by page: the total is requested once, every later page costs the same as the first, and the walk ends without an extra empty request. Walking the full catalog this way is a few seconds, not tens of seconds.
+Locally, these query SQLite directly. Remotely, they follow the API's cursor (`pagination.next_cursor`) page by page: the total is requested once, every later page costs the same as the first, and the walk ends without an extra empty request. Pages are 5000 rows unless you pass `limit=` (the route accepts up to 10000); fewer, larger pages walk the catalog faster because most of a round trip is transfer, not the database.
 
 ### `get_object()` and `get_spectrum()`
 

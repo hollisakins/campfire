@@ -118,7 +118,7 @@ BEGIN
   -- get_storage_objects_for_sync: absent from a member sync, present for admin.
   SELECT count(*) INTO leaked FROM (
     SELECT jsonb_array_elements(objects)->>'storage_key' AS k
-    FROM public.get_storage_objects_for_sync(pubs, NULL, 100000, 0, false, false)
+    FROM public.get_storage_objects_for_sync(p_program_slugs => pubs, p_limit => 100000, p_include_counts => false, p_include_unpublished => false)
   ) q WHERE k IN (SELECT storage_key FROM _nc_keys);
   IF leaked <> 0 THEN
     RAISE EXCEPTION 'SYNC LEAK: % NIRCam exposure row(s) in a member sync (expected 0)', leaked;
@@ -126,7 +126,7 @@ BEGIN
 
   SELECT count(*) INTO shown FROM (
     SELECT jsonb_array_elements(objects)->>'storage_key' AS k
-    FROM public.get_storage_objects_for_sync(pubs, NULL, 100000, 0, false, true)
+    FROM public.get_storage_objects_for_sync(p_program_slugs => pubs, p_limit => 100000, p_include_counts => false, p_include_unpublished => true)
   ) q WHERE k IN (SELECT storage_key FROM _nc_keys);
   IF shown <> 2 THEN
     RAISE EXCEPTION 'SYNC ADMIN: admin sync returns %/2 NIRCam exposure rows', shown;

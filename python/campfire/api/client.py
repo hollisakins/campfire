@@ -35,6 +35,13 @@ DEFAULT_STORAGE_SYNC_PAGE_SIZE = 5000
 
 _MAX_SYNC_PAGE_SIZE = 50000
 
+#: Page size for iter_objects / iter_spectra when the caller passes no ``limit``.
+#: Measured on prod (T2-F, #511): the per-page DB cost is ~0.1 s for objects and
+#: the rest of each round trip is route overhead + transfer, so fewer, larger
+#: pages walk the catalog faster (42k objects: 15.5 s at 1000, 10.3 s at 5000,
+#: 7.5 s at the 10000 route maximum). 5000 keeps a page under ~5 MB.
+DEFAULT_ITER_PAGE_SIZE = 5000
+
 
 def _resolve_page_size(env_var: str, default: int) -> int:
     """Resolve a sync page size from ``env_var`` (or ``default``), clamped to range."""
@@ -222,7 +229,7 @@ class APIClient:
         filters.pop("offset", None)
         filters.pop("cursor", None)
         filters.pop("count", None)
-        filters["limit"] = filters.get("limit", 1000)
+        filters["limit"] = filters.get("limit", DEFAULT_ITER_PAGE_SIZE)
         cursor: Optional[str] = None
         while True:
             filters["cursor"] = cursor

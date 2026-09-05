@@ -77,7 +77,7 @@ BEGIN
   IF n <> 0 THEN RAISE EXCEPTION 'PRESIGN LEAK: draft field object authorized for member (got %)', n; END IF;
   SELECT count(*) INTO n FROM (
     SELECT jsonb_array_elements(objects)->>'storage_key' AS s
-    FROM public.get_storage_objects_for_sync(pubs, NULL, 100000, 0, false, false)) q
+    FROM public.get_storage_objects_for_sync(p_program_slugs => pubs, p_limit => 100000, p_include_counts => false, p_include_unpublished => false)) q
     WHERE s = pg_temp.gate_key();
   IF n <> 0 THEN RAISE EXCEPTION 'SYNC LEAK: draft field object in member sync (got %)', n; END IF;
 END $$;
@@ -116,7 +116,7 @@ BEGIN
   IF n <> 1 THEN RAISE EXCEPTION 'PRESIGN: published field object NOT public (got %/1)', n; END IF;
   SELECT count(*) INTO n FROM (
     SELECT jsonb_array_elements(objects)->>'storage_key' AS s
-    FROM public.get_storage_objects_for_sync(pubs, NULL, 100000, 0, false, false)) q
+    FROM public.get_storage_objects_for_sync(p_program_slugs => pubs, p_limit => 100000, p_include_counts => false, p_include_unpublished => false)) q
     WHERE s = pg_temp.gate_key();
   IF n <> 1 THEN RAISE EXCEPTION 'SYNC: published field object NOT in member sync (got %/1)', n; END IF;
 END $$;
