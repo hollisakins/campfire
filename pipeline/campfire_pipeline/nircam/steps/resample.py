@@ -411,6 +411,7 @@ def resample_step(filtname, exposure_files, field, step_config,
         overwrite=overwrite, epoch=epoch,
     )
 
+    tasks = None
     use_pool = (n_processes > 1 and len(tiles) > 1
                 and step_config.get('parallel_tiles', True))
     if use_pool:
@@ -440,8 +441,16 @@ def resample_step(filtname, exposure_files, field, step_config,
         use_pool = n_workers > 1
 
     if not use_pool:
-        for tile in tiles:
-            _process_tile(tile, **worker_kwargs)
+        if tasks is None:
+            for tile in tiles:
+                _process_tile(tile, **worker_kwargs)
+        else:
+            # The budget collapsed the pool to one worker, but the parent
+            # already did the selection: reuse it rather than making every
+            # tile re-read every exposure header, and don't re-log the empty
+            # tiles it already reported.
+            for tile, selected in tasks:
+                _process_tile(tile, selected, **worker_kwargs)
         return
 
     gate = MemoryGate(budget) if budget is not None else None

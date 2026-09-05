@@ -332,6 +332,36 @@ def test_parallel_pool_sized_on_tiles_with_work(monkeypatch):
     assert calls['n_processes'] == 2
 
 
+def test_budget_collapsed_pool_runs_serially_on_parent_selection(monkeypatch):
+    # Parallelism was asked for, but the budget affords only one worker. The
+    # run falls back to the in-process loop — and must reuse the selection the
+    # parent already computed rather than making each tile re-read every
+    # exposure header, and must not re-visit the empty tile it already
+    # reported skipping.
+    field = _field(n_tiles=3)
+    arm = _patch_parent_selection(
+        monkeypatch, {'A1': ['x.fits'], 'A3': ['y.fits']})
+    arm(list(field.tiles))
+    seen = []
+
+    monkeypatch.setattr(
+        resample_mod, '_resample_tile',
+        lambda tile, **kw: seen.append((tile, kw['selected'])))
+
+    def no_dispatch(*a, **k):
+        raise AssertionError('a one-worker plan must not open a pool')
+
+    monkeypatch.setattr(resample_mod, 'dispatch', no_dispatch)
+    # 100x100 tile at the default estimator constants needs ~572 kB; a 100 kB
+    # MemAvailable leaves a budget under one reservation, so the plan is 1.
+    monkeypatch.setattr(resample_mod, 'mem_available_bytes', lambda: 100_000)
+    resample_mod.resample_step(
+        'f444w', ['x.fits', 'y.fits'], field, {'pixel_scale': '30mas'}, 'v1',
+        n_processes=4,
+    )
+    assert seen == [('A1', ['x.fits']), ('A3', ['y.fits'])]
+
+
 def test_parallel_all_tiles_empty_skips_pool(monkeypatch):
     field = _field()
     arm = _patch_parent_selection(monkeypatch, {})
