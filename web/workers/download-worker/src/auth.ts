@@ -17,6 +17,19 @@ export async function verifyUrlSignature(
   signature: string,
   secret: string
 ): Promise<boolean> {
+  return verifySignature(url, signature, secret);
+}
+
+/**
+ * Verify that `signature` is HMAC-SHA256(secret, message), base64url-encoded —
+ * the generic form behind both the `/proxy` URL signature and the `/o/`
+ * object token (perf T2-D1, #507). Constant-time via crypto.subtle.verify.
+ */
+export async function verifySignature(
+  message: string,
+  signature: string,
+  secret: string
+): Promise<boolean> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     'raw',
@@ -31,7 +44,7 @@ export async function verifyUrlSignature(
   } catch {
     return false;
   }
-  return crypto.subtle.verify('HMAC', key, sigBytes, encoder.encode(url));
+  return crypto.subtle.verify('HMAC', key, sigBytes, encoder.encode(message));
 }
 
 /**

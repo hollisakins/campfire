@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import { fetchS2dCell, HduNotFoundError, paintToImageData, type S2dCell } from '@/lib/fits';
+import { fetchS2dCell, resolveFitsSource, HduNotFoundError, paintToImageData, type S2dCell } from '@/lib/fits';
 import type { StretchMode } from '@/lib/fits';
 import type { ColormapName } from '@/lib/fits';
 import type { SpectrumExposure } from '@/lib/types';
@@ -130,8 +130,8 @@ export default function NodCell({ exposure, range, stretch, colormap, bkgsub, on
     let cancelled = false;
     setState('loading');
     const controller = new AbortController();
-    const url = `/api/nircam-fits?key=${encodeURIComponent(key)}`;
-    fetchS2dCell(url, { extname: bkgsub ? 'S2D_BKGSUB_SCI' : 'S2D_SCI', signal: controller.signal })
+    resolveFitsSource(key, controller.signal)
+      .then((url) => fetchS2dCell(url, { extname: bkgsub ? 'S2D_BKGSUB_SCI' : 'S2D_SCI', signal: controller.signal }))
       .then((c) => {
         if (cancelled) return;
         setCell(c);

@@ -1,6 +1,7 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { isAdminUser } from '@/lib/api-helpers';
 import { getRequestIdentity } from '@/lib/auth/identity';
+import { frontUrlFor } from '@/lib/server/cdn-front';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
@@ -22,14 +23,26 @@ const FITS_ALLOWED_PRODUCTS = new Set([
 ]);
 
 /**
- * GET /api/nircam-fits?key=<canonical OSN key>   (HTTP Range required)
+ * GET /api/nircam-fits?key=<canonical OSN key>[&resolve=1]   (HTTP Range required)
  *
- * Admin-only Range-forwarding proxy for canonical NIRCam exposure FITS (epic
- * #261, N4). The in-browser viewer range-fetches the header block, then the
- * ~16 MB uncompressed SCI block, from OSN — which has no CORS, so the browser
- * cannot range-GET it directly; this same-origin route forwards `Range` and
- * returns 206. Restricted to `nircam_exposure` keys so it can't be abused as an
- * arbitrary object read.
+ * Admin-only access to canonical NIRCam exposure FITS (epic #261, N4). The
+ * in-browser viewer range-fetches the header block, then the ~16 MB
+ * uncompressed SCI block. OSN has no CORS, so the browser cannot range-GET it
+ * directly; two ways around that:
+ *
+ *   - `resolve=1` answers JSON `{ url }`: a content-addressed url on the
+ *     delivery front (perf T2-D1, #507) that the browser range-fetches
+ *     directly — CORS-readable, 206-capable, edge-cached per content hash
+ *     (a Range miss streams through and the Worker fills the slot with its
+ *     own full GET in the background, so the second view of a file hits).
+ *     `url` is null when the front is not configured or the file is served
+ *     from the local filesystem (below); the client then range-fetches this
+ *     route without `resolve`.
+ *   - without `resolve`, this same-origin route forwards `Range` upstream and
+ *     returns 206 — the fallback, streaming through the function.
+ *
+ * Restricted to `nircam_exposure` keys so it can't be abused as an arbitrary
+ * object read.
  *
  * When `CAMPFIRE_LOCAL_DATA_ROOT` is set and the file exists on disk (a reducer
  * running `npm run dev` on the same machine as `campfire-data`), it is served
@@ -50,6 +63,11 @@ export async function GET(request: NextRequest) {
   }
 
   const rangeHeader = request.headers.get('range'); // e.g. "bytes=40320-16817535"
+  const resolve = request.nextUrl.searchParams.get('resolve') === '1';
+  // Browser-cached beyond a session, so Vary: Cookie — sign-out does not
+  // clear the HTTP cache and this answer names admin-only content (D-C).
+  const resolveJson = (url: string | null) =>
+    NextResponse.json({ url }, { headers: { 'Cache-Control': 'private, max-age=3600', Vary: 'Cookie' } });
 
   // ---- local-filesystem fast path (dev/PoC) --------------------------------
   const localRoot = process.env.CAMPFIRE_LOCAL_DATA_ROOT;
@@ -61,6 +79,7 @@ export async function GET(request: NextRequest) {
     if (path.resolve(localPath).startsWith(resolvedRoot)) {
       try {
         const stat = await fs.stat(localPath);
+        if (resolve) return resolveJson(null);
         return serveLocalRange(localPath, stat.size, rangeHeader);
       } catch {
         // Not present locally — fall through to cloud storage.
@@ -69,6 +88,8 @@ export async function GET(request: NextRequest) {
   }
 
   // ---- cloud storage path (production) -------------------------------------
+  if (resolve) return resolveJson(await frontUrlFor(key));
+
   try {
     // Each object records its home backend in the registry; default OSN (where
     // canonical exposures live). Admin RLS lets the admin see draft rows.

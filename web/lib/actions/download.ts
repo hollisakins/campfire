@@ -13,6 +13,7 @@ import { buildFilterParams } from './filter-params';
 import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
 import { generateDownloadUrls } from '@/lib/r2';
+import { hmacBase64Url } from '@/lib/server/worker-token';
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_DOWNLOAD_URL || 'http://localhost:8787';
 const JWT_SECRET = process.env.WORKER_JWT_SECRET;
@@ -614,7 +615,7 @@ export async function generateFitsDownloadUrl(
     const urls = await generateDownloadUrls(keys, PRESIGN_TTL_SECONDS);
     const files: DownloadFile[] = await Promise.all(
       urls.map(async (signedUrl, i) => {
-        const sig = await signUrlSignature(signedUrl, JWT_SECRET);
+        const sig = await hmacBase64Url(signedUrl, JWT_SECRET);
         const proxyUrl = `${WORKER_URL}/proxy?url=${encodeURIComponent(signedUrl)}&sig=${sig}`;
         return { proxyUrl, filename: filenames[i] };
       })
@@ -715,7 +716,7 @@ export async function generateObjectFitsDownloadUrls(
     const urls = await generateDownloadUrls(keys, PRESIGN_TTL_SECONDS);
     const files: DownloadFile[] = await Promise.all(
       urls.map(async (signedUrl, i) => {
-        const sig = await signUrlSignature(signedUrl, JWT_SECRET);
+        const sig = await hmacBase64Url(signedUrl, JWT_SECRET);
         const proxyUrl = `${WORKER_URL}/proxy?url=${encodeURIComponent(signedUrl)}&sig=${sig}`;
         return { proxyUrl, filename: filenames[i] };
       })
@@ -795,7 +796,7 @@ export async function generateNircamMosaicDownloadUrls(
     const urls: Record<string, string> = {};
     await Promise.all(
       authorizedKeys.map(async (key, i) => {
-        const sig = await signUrlSignature(signed[i], JWT_SECRET);
+        const sig = await hmacBase64Url(signed[i], JWT_SECRET);
         urls[key] = `${WORKER_URL}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
       })
     );
@@ -855,7 +856,7 @@ export async function generateNircamExpmapDownloadUrls(
     const urls: Record<string, string> = {};
     await Promise.all(
       authorizedKeys.map(async (key, i) => {
-        const sig = await signUrlSignature(signed[i], JWT_SECRET);
+        const sig = await hmacBase64Url(signed[i], JWT_SECRET);
         urls[key] = `${WORKER_URL}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
       })
     );
@@ -867,26 +868,3 @@ export async function generateNircamExpmapDownloadUrls(
   }
 }
 
-/**
- * HMAC-SHA256(secret, url), base64url-encoded — the per-URL signature the proxy
- * Worker verifies. Web Crypto API (same primitive both ends).
- */
-async function signUrlSignature(url: string, secret: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(url));
-  return base64UrlEncode(signature);
-}
-
-/**
- * Base64URL-encode the HMAC signature (ArrayBuffer).
- */
-function base64UrlEncode(data: ArrayBuffer): string {
-  return Buffer.from(data).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}

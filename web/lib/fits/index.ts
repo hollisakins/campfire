@@ -5,7 +5,7 @@
  */
 
 export { FitsImageViewer, type PixelReadout } from './viewer';
-export { fetchSciImage, fetchS2dCell, HduNotFoundError, type SciImage, type S2dCell } from './fetch';
+export { fetchSciImage, resolveFitsSource, fetchS2dCell, HduNotFoundError, type SciImage, type S2dCell } from './fetch';
 export { STRETCH_MODES, type StretchMode, isStretchMode } from './stretch';
 export { COLORMAP_NAMES, type ColormapName, isColormapName, resolveColormap } from './colormaps';
 export { zscaleLimits, DEFAULT_ZSCALE } from './zscale';
