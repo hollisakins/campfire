@@ -106,6 +106,21 @@ def main() -> int:
             return row['id'], None, 'no-scalars'
         return row['id'], patch, 'ok'
 
+    def write(rid: int, patch: dict) -> None:
+        """One row UPDATE, surviving a dropped connection: PostgREST (behind
+        HTTP/2) closes a connection after ~20k streams and httpx raises
+        RemoteProtocolError rather than reconnecting, so rebuild the client
+        and retry instead of losing the run 12 % in."""
+        nonlocal sb
+        for attempt in range(3):
+            try:
+                sb.table('spectra').update(patch).eq('id', rid).execute()
+                return
+            except Exception:  # noqa: BLE001
+                if attempt == 2:
+                    raise
+                sb = get_supabase_client(config)
+
     counts: dict[str, int] = {}
     errors: list[str] = []
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -118,7 +133,7 @@ def main() -> int:
                 errors.append(f"{rid}: {status}")
                 continue
             if patch and not args.dry_run:
-                sb.table('spectra').update(patch).eq('id', rid).execute()
+                write(rid, patch)
 
     print("Done:", ', '.join(f"{k}={v}" for k, v in sorted(counts.items())))
     if args.dry_run:
