@@ -301,7 +301,7 @@ export async function getSpectrumById(targetId: string): Promise<{
       .select(`
         *,
         programs:program_slug (program_name, pi_name, description, cycle),
-        spectra (id, spectrum_id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, dq_flags, deploy_status),
+        spectra (id, spectrum_id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status),
         parent_object:object_id (object_id)
       `)
       .eq('target_id', targetId)
@@ -469,7 +469,7 @@ export async function getObjectById(objectId: string): Promise<{
         .select(`
           *,
           programs:program_slug (program_name),
-          spectra (id, spectrum_id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, dq_flags, deploy_status)
+          spectra (id, spectrum_id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status)
         `)
         .eq('object_id', obj.id)
         .in('program_slug', accessibleProgramSlugs),

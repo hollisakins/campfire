@@ -45,10 +45,64 @@ export function getDataClient() {
   return getS3Client('data');
 }
 
-/** Where a requested key should be read from: a backend label + the key to sign. */
-interface ResolvedObject {
+/** Where a requested key should be read from: a backend label + the key to
+ * sign, plus the registry's content identity (null when unregistered or when
+ * resolution failed open) — what the delivery front keys its cache on. */
+export interface ResolvedObject {
   backend: DataBackend;
   key: string;
+  contentHash: string | null;
+  /** When the registry row was last (re)registered — storage_objects.updated_at
+   * as unix seconds; bumps on every re-deploy, after the bytes landed. The
+   * delivery front binds it into the object token so the Worker can tell an
+   * in-place overwrite (upstream Last-Modified newer than this) from the
+   * bytes the hash names. null when the key has no active row. */
+  registeredAt: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Registry memo (perf T2-D1, #507 / audit CA-16). Every presign used to cost a
+// storage_objects round trip; the routes that mint delivery-front urls do it
+// per request. A canonical key's backend + content_hash change only on a
+// re-deploy, and the deploy invariant is "bytes land before the new hash is
+// registered", so a 60 s-stale row can at worst serve the previous, still
+// valid product once more. Negative results are NOT memoized: a key that has
+// no row yet (deploy in flight) must resolve live on the next request.
+// ---------------------------------------------------------------------------
+
+const REGISTRY_MEMO_TTL_MS = 60_000;
+const REGISTRY_MEMO_MAX = 4096;
+
+interface RegistryEntry {
+  backend: DataBackend;
+  contentHash: string;
+  registeredAt: number | null;
+  at: number;
+}
+
+const registryMemo = new Map<string, RegistryEntry>();
+
+function memoGet(canonical: string): RegistryEntry | undefined {
+  const e = registryMemo.get(canonical);
+  if (!e) return undefined;
+  if (Date.now() - e.at > REGISTRY_MEMO_TTL_MS) {
+    registryMemo.delete(canonical);
+    return undefined;
+  }
+  return e;
+}
+
+function memoSet(canonical: string, entry: RegistryEntry): void {
+  if (registryMemo.size >= REGISTRY_MEMO_MAX) {
+    const oldest = registryMemo.keys().next().value;
+    if (oldest !== undefined) registryMemo.delete(oldest);
+  }
+  registryMemo.set(canonical, entry);
+}
+
+/** Test hook: forget every memoized registry row. */
+export function _resetRegistryMemo(): void {
+  registryMemo.clear();
 }
 
 /** Dual-read master switch. Off (default) => behave exactly like pre-migration. */
@@ -72,7 +126,7 @@ export async function resolveObjectBackends(keys: string[]): Promise<ResolvedObj
   // caller passed a canonical key (the client mirror holds canonical keys after
   // migration). This is the rollback / fail-open answer for every key.
   const r2Only = (): ResolvedObject[] =>
-    keys.map((key) => ({ backend: 'r2' as const, key: toLegacyKeySafe(key) }));
+    keys.map((key) => ({ backend: 'r2' as const, key: toLegacyKeySafe(key), contentHash: null, registeredAt: null }));
 
   if (!osnReadEnabled()) return r2Only();
 
@@ -93,32 +147,53 @@ export async function resolveObjectBackends(keys: string[]): Promise<ResolvedObj
       )
     );
 
-    const backendByCanonical = new Map<string, DataBackend>();
-    if (canonicalForms.length > 0) {
+    const rowByCanonical = new Map<string, RegistryEntry>();
+    const toLookup: string[] = [];
+    for (const c of canonicalForms) {
+      const memo = memoGet(c);
+      if (memo) rowByCanonical.set(c, memo);
+      else toLookup.push(c);
+    }
+    if (toLookup.length > 0) {
       const supabase = createServiceClient();
       // Chunked so the `.in()` list never overflows the request URL.
-      for (let i = 0; i < canonicalForms.length; i += LOOKUP_CHUNK) {
-        const chunk = canonicalForms.slice(i, i + LOOKUP_CHUNK);
+      for (let i = 0; i < toLookup.length; i += LOOKUP_CHUNK) {
+        const chunk = toLookup.slice(i, i + LOOKUP_CHUNK);
         const { data, error } = await supabase
           .from('storage_objects')
-          .select('storage_key, backend')
+          .select('storage_key, backend, content_hash, updated_at')
           .in('storage_key', chunk)
           .eq('status', 'active');
         if (error) throw error;
         for (const row of data ?? []) {
-          backendByCanonical.set(row.storage_key as string, row.backend as DataBackend);
+          const registeredMs = row.updated_at ? Date.parse(String(row.updated_at)) : NaN;
+          const entry: RegistryEntry = {
+            backend: row.backend as DataBackend,
+            contentHash: String(row.content_hash),
+            registeredAt: Number.isFinite(registeredMs) ? Math.floor(registeredMs / 1000) : null,
+            at: Date.now(),
+          };
+          rowByCanonical.set(row.storage_key as string, entry);
+          memoSet(row.storage_key as string, entry);
         }
       }
     }
 
     return keys.map((key) => {
       const canonical = canonicalByInput.get(key);
+      const row = canonical ? rowByCanonical.get(canonical) : undefined;
       // Only divert to OSN when the registry explicitly homes the canonical key
-      // there; every other case reads R2 under the legacy key.
-      if (canonical && backendByCanonical.get(canonical) === 'osn') {
-        return { backend: 'osn' as const, key: canonical };
+      // there; every other case reads R2 under the legacy key. The content
+      // identity rides along either way (an r2 row is still the same bytes).
+      if (canonical && row?.backend === 'osn') {
+        return { backend: 'osn' as const, key: canonical, contentHash: row.contentHash, registeredAt: row.registeredAt };
       }
-      return { backend: 'r2' as const, key: toLegacyKeySafe(key) };
+      return {
+        backend: 'r2' as const,
+        key: toLegacyKeySafe(key),
+        contentHash: row?.contentHash ?? null,
+        registeredAt: row?.registeredAt ?? null,
+      };
     });
   } catch (err) {
     console.error('[dual-read] backend resolution failed; falling back to R2:', err);
@@ -144,6 +219,7 @@ async function presignResolved(
   o: ResolvedObject,
   expiresIn: number,
   attachmentName?: string,
+  signingDate?: Date,
 ): Promise<string> {
   const command = new GetObjectCommand({
     Bucket: getBucketNameForBackend(o.backend),
@@ -153,11 +229,43 @@ async function presignResolved(
       : {}),
   });
   try {
-    return await getSignedUrl(getS3ClientForBackend(o.backend), command, { expiresIn });
+    return await getSignedUrl(getS3ClientForBackend(o.backend), command, {
+      expiresIn,
+      ...(signingDate ? { signingDate } : {}),
+    });
   } catch (error) {
     console.error(`Failed to sign download URL for "${o.key}" (${o.backend}):`, error);
     throw new Error(`Failed to generate download URL for ${o.key}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Stable presigns (perf T2-D1, #507). A SigV4 presigned url embeds its signing
+// time, so two mints seconds apart are different urls and no browser or CDN
+// cache ever hits across page loads. Signing on a fixed time window instead
+// (signingDate = the window start, validity = two windows) makes every mint
+// within a window byte-identical, and a url minted at the very end of a
+// window still lives a full window more. OSN (Ceph RGW) accepts a signing
+// date that far in the past — verified 2026-09-04 with a 5 h 55 min-old
+// signature against the 6 h window.
+// ---------------------------------------------------------------------------
+
+export const STABLE_PRESIGN_WINDOW_SECONDS = 6 * 3600;
+
+/** The current stable window: its start (unix s) and the expiry a url signed
+ * on it gets (two windows out). */
+export function stablePresignWindow(nowMs: number = Date.now()): { start: number; exp: number } {
+  const w = STABLE_PRESIGN_WINDOW_SECONDS;
+  const start = Math.floor(nowMs / 1000 / w) * w;
+  return { start, exp: start + 2 * w };
+}
+
+/** Presign a resolved object on the current stable window. Same inputs within
+ * a window => the same url; `exp` is when it stops being valid. */
+export async function presignResolvedStable(o: ResolvedObject): Promise<{ url: string; exp: number }> {
+  const { start, exp } = stablePresignWindow();
+  const url = await presignResolved(o, 2 * STABLE_PRESIGN_WINDOW_SECONDS, undefined, new Date(start * 1000));
+  return { url, exp };
 }
 
 /**

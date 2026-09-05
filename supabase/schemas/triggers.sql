@@ -252,6 +252,9 @@ BEGIN
        OR OLD.cfpipe_version IS DISTINCT FROM NEW.cfpipe_version
        OR OLD.date_obs IS DISTINCT FROM NEW.date_obs
        OR OLD.redshift_auto IS DISTINCT FROM NEW.redshift_auto
+       -- zfit scalars on the row (perf T2-D2, #508): deploy / backfill only.
+       OR OLD.chi2_min IS DISTINCT FROM NEW.chi2_min
+       OR OLD.confidence IS DISTINCT FROM NEW.confidence
        OR OLD.created_at IS DISTINCT FROM NEW.created_at
        OR OLD.program_slug IS DISTINCT FROM NEW.program_slug
        OR OLD.observation IS DISTINCT FROM NEW.observation
@@ -531,7 +534,11 @@ CREATE TRIGGER bump_spectra_updated_at_trigger
     thumbnail_svg_fnu,
     thumbnail_svg_flambda,
     fits_path,
-    file_hash
+    file_hash,
+    -- zfit scalars on the row (perf T2-D2, #508): written by deploy and the
+    -- backfill; a sync client showing the fit summary must see them change.
+    chi2_min,
+    confidence
   ON public.spectra
   FOR EACH ROW EXECUTE FUNCTION public.bump_spectra_updated_at();
 

@@ -27,11 +27,19 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
   spectra,
   redshift_auto,
 }) => {
-  // Shared with SpectrumPlot / the inspection prefetch via the TanStack cache
-  // (lib/hooks/useSpectrumJson.ts), so the zfit JSON is fetched once per
-  // spectrum per page instead of once per consumer (#500).
+  // The scalars this table shows live on the spectra rows since deploy
+  // persists them (perf T2-D2, #508), so nothing is fetched for a row that
+  // carries them. A row with neither (no fit, or deployed before the columns
+  // existed and not yet backfilled) falls back to the zfit sidecar — shared
+  // with SpectrumPlot / the inspection prefetch via the TanStack cache
+  // (lib/hooks/useSpectrumJson.ts), fetched once per spectrum per page (#500).
   const fitsPaths = useMemo(() => spectra.map(s => s.fits_path), [spectra]);
-  const fitQueries = useRedshiftFits(fitsPaths);
+  const rowHasScalars = useMemo(
+    () => spectra.map(s => s.chi2_min != null || s.confidence != null),
+    [spectra],
+  );
+  const needFetch = useMemo(() => rowHasScalars.map(has => !has), [rowHasScalars]);
+  const fitQueries = useRedshiftFits(fitsPaths, needFetch);
   // One fixed-length dependency for the memo: the query array's length
   // follows the object's grating count, and this component is not remounted
   // on object navigation, so spreading it would change the deps' size.
@@ -39,11 +47,28 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
 
   const gratingFits: GratingFit[] = useMemo(
     () => spectra.map((s, i) => {
+      if (rowHasScalars[i]) {
+        // Null scalars (degenerate fit with no finite chi2 minimum) map to
+        // undefined so the table's existing guards render an em dash.
+        const redshift = s.redshift_auto ?? undefined;
+        return {
+          grating: s.grating,
+          observation: s.observation,
+          fitsPath: s.fits_path,
+          redshift,
+          chi2Min: s.chi2_min ?? undefined,
+          confidence: s.confidence ?? undefined,
+          loading: false,
+          error: null,
+          isUsedForAuto:
+            redshift_auto !== null &&
+            redshift !== undefined &&
+            Math.abs(redshift - redshift_auto) < 0.0001,
+        };
+      }
       const q = fitQueries[i];
       const fitData = q?.data ?? null;
       const noFit = q?.isSuccess && fitData === null;
-      // Null scalars (degenerate fit with no finite chi2 minimum) map to
-      // undefined so the table's existing guards render an em dash.
       const redshift = fitData?.redshift ?? undefined;
       return {
         grating: s.grating,
@@ -66,7 +91,7 @@ export const RedshiftFitSummary: React.FC<RedshiftFitSummaryProps> = ({
       };
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [spectra, redshift_auto, fitSignature],
+    [spectra, rowHasScalars, redshift_auto, fitSignature],
   );
 
   const hasAnyFits = gratingFits.some(f => f.redshift !== undefined);

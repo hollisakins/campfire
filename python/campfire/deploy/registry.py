@@ -124,9 +124,10 @@ def _spectrum_id_for(filename: str) -> str | None:
     Mirrors the ``spectra.spectrum_id`` GENERATED column (strip the trailing
     ``_spec.fits``); spectrum JSON (``_spec.json``) belongs to the same spectrum.
     Returns None for products that aren't tied to a single spectrum (zfit, rgb,
-    sed, photometry, nircam previews).
+    sed, photometry, nircam previews). The 1-D sidecar (``_spec_1d.json``,
+    #508) belongs to its spectrum like the full JSON does.
     """
-    for suffix in ('_spec.fits', '_spec.json'):
+    for suffix in ('_spec.fits', '_spec_1d.json', '_spec.json'):
         if filename.endswith(suffix):
             return filename[: -len(suffix)]
     return None

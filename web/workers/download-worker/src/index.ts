@@ -1,7 +1,13 @@
 /**
- * Cloudflare Worker for CAMPFIRE FITS file downloads.
+ * Cloudflare Worker for CAMPFIRE product delivery.
  *
- * A credential-free, per-file CORS proxy. Vercel authorizes a download (RLS),
+ * Two endpoints, both credential-free:
+ *   - `/o/<key>` — the content-addressed delivery front for immutable products
+ *     (spectrum sidecars, NIRCam PNG/FITS, …): token-gated, Cache API-backed,
+ *     Range-aware. See object.ts (perf T2-D1, #507).
+ *   - `/proxy` — the per-file CORS proxy for the bulk FITS-ZIP download, below.
+ *
+ * `/proxy` is a credential-free, per-file CORS proxy. Vercel authorizes a download (RLS),
  * presigns each file against whichever backend homes it (dual-read: R2 or OSN),
  * signs the presigned URL with the shared secret, and hands the browser ready
  * `/proxy?url=…&sig=…` links. This Worker verifies the signature, checks the
@@ -14,6 +20,10 @@
  */
 
 import { verifyUrlSignature } from './auth';
+import { handleObject } from './object';
+import { isAllowedFetchUrl } from './guards';
+
+export { isAllowedFetchUrl };
 
 export interface Env {
   JWT_SECRET: string; // shared HMAC secret with the Next.js server action
@@ -22,8 +32,13 @@ export interface Env {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    // Content-addressed product delivery (perf T2-D1, #507) — see object.ts.
+    if (url.pathname.startsWith('/o/')) {
+      return handleObject(request, url, env, ctx);
+    }
 
     if (request.method === 'OPTIONS') {
       return handleCORS(request, env);
@@ -65,7 +80,7 @@ export default {
       // does not implement redirect: 'error' (it throws a TypeError), so request
       // 'manual' and reject any redirect ourselves — same guarantee, edge-safe.
       const upstream = await fetch(target, { redirect: 'manual' });
-      if (upstream.type === 'opaqueredirect' || (upstream.status >= 300 && upstream.status < 400)) {
+      if ((upstream.type as string) === 'opaqueredirect' || (upstream.status >= 300 && upstream.status < 400)) {
         return corsError(`Upstream redirect refused (${upstream.status})`, 502, request, env);
       }
       if (!upstream.ok || !upstream.body) {
@@ -95,39 +110,6 @@ export default {
     }
   },
 };
-
-/**
- * Validate that a signed target URL is safe to fetch: https, no embedded
- * credentials, and a hostname that exactly matches (or is a subdomain of) one
- * of the allowlisted object-store hosts. Exported for unit testing.
- */
-export function isAllowedFetchUrl(
-  rawUrl: string,
-  allowedHostsCsv: string
-): { ok: true } | { ok: false; reason: string } {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return { ok: false, reason: 'unparseable url' };
-  }
-  if (parsed.protocol !== 'https:') {
-    return { ok: false, reason: 'non-https scheme' };
-  }
-  if (parsed.username || parsed.password) {
-    return { ok: false, reason: 'embedded credentials' };
-  }
-  const allowed = allowedHostsCsv
-    .split(',')
-    .map((h) => h.trim().toLowerCase())
-    .filter(Boolean);
-  const host = parsed.hostname.toLowerCase();
-  const hostOk = allowed.some((h) => host === h || host.endsWith('.' + h));
-  if (!hostOk) {
-    return { ok: false, reason: 'host not in allowlist' };
-  }
-  return { ok: true };
-}
 
 function handleCORS(request: Request, env: Env): Response {
   return new Response(null, {

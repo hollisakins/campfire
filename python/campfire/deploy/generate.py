@@ -211,10 +211,30 @@ def _spectrum_data_from_hdul(hdul) -> dict:
     }
 
 
-def generate_spectrum_json(fits_path: Path, output_dir: Path) -> Path:
-    """Generate JSON file with spectrum data for Plotly."""
-    data = read_spectrum_data(fits_path)
-    json_path = output_dir / (fits_path.stem + '.json')
+# Keys of the spectrum payload that make up the 1-D sidecar (perf T2-D2,
+# #508): everything but the 2-D S/N array, which is 80-95 % of the bytes. The
+# web fetches `<stem>_1d.json` first and paints the primary trace, then the
+# full `<stem>.json` for the heatmap.
+SPECTRUM_1D_KEYS = (
+    'wave', 'fnu', 'fnu_err', 'n_spatial', 'n_wave',
+    'profile', 'profile_fit', 'profile_pix',
+)
+
+
+def spectrum_1d_payload(data: dict) -> dict:
+    """The 1-D-only subset of a spectrum JSON payload (no ``snr_2d``)."""
+    return {k: data[k] for k in SPECTRUM_1D_KEYS if k in data}
+
+
+def write_spectrum_jsons(data: dict, stem: str, output_dir: Path) -> tuple[Path, Path]:
+    """Write the full spectrum JSON and its 1-D sidecar; returns both paths.
+
+    ``stem`` is the FITS stem (``<...>_spec``), so the files land as
+    ``<stem>.json`` and ``<stem>_1d.json`` — the ``spectrum_json`` /
+    ``spectrum_1d_json`` layout siblings of the FITS.
+    """
+    json_path = output_dir / f'{stem}.json'
+    json_1d_path = output_dir / f'{stem}_1d.json'
     with open(json_path, 'w') as f:
         # allow_nan=False: a non-finite value would otherwise be written as the
         # bare token `NaN`/`Infinity`, which is invalid JSON. The web render path
@@ -223,20 +243,36 @@ def generate_spectrum_json(fits_path: Path, output_dir: Path) -> Path:
         # deploy time instead; arrays that can legitimately be non-finite are
         # sanitized in read_spectrum_data().
         json.dump(data, f, allow_nan=False)
-    return json_path
+    with open(json_1d_path, 'w') as f:
+        json.dump(spectrum_1d_payload(data), f, allow_nan=False)
+    return json_path, json_1d_path
+
+
+def generate_spectrum_json(fits_path: Path, output_dir: Path) -> Path:
+    """Generate the full spectrum JSON (and its 1-D sidecar) for Plotly.
+
+    Returns the full JSON path; see :func:`generate_spectrum_jsons` for both.
+    """
+    return generate_spectrum_jsons(fits_path, output_dir)[0]
+
+
+def generate_spectrum_jsons(fits_path: Path, output_dir: Path) -> tuple[Path, Path]:
+    """Generate the full spectrum JSON and its 1-D sidecar from one FITS read."""
+    data = read_spectrum_data(fits_path)
+    return write_spectrum_jsons(data, fits_path.stem, output_dir)
 
 
 def generate_spectrum_products(
     fits_path: Path, output_dir: Path,
-) -> tuple[Path, dict[str, str]]:
-    """Generate BOTH per-final derivatives in a single FITS read.
+) -> tuple[Path, Path, dict[str, str]]:
+    """Generate ALL per-final derivatives in a single FITS read.
 
-    One open yields the spectrum JSON (uploaded to storage) and the
-    fnu/flambda SVG thumbnails (embedded in the spectra rows). Deploy
+    One open yields the spectrum JSON + its 1-D sidecar (uploaded to storage)
+    and the fnu/flambda SVG thumbnails (embedded in the spectra rows). Deploy
     previously ran two separate passes — 'Generating content' then
     'Generating thumbnails' — each re-opening every final off NFS.
 
-    Returns ``(json_path, thumbnails_dict)``.
+    Returns ``(json_path, json_1d_path, thumbnails_dict)``.
     """
     with fits.open(fits_path) as hdul:
         spec1d = hdul['SPEC1D'].data
@@ -244,10 +280,7 @@ def generate_spectrum_products(
         fnu_raw = spec1d['fnu'].tolist()
         data = _spectrum_data_from_hdul(hdul)
 
-    json_path = output_dir / (fits_path.stem + '.json')
-    with open(json_path, 'w') as f:
-        # allow_nan=False — see generate_spectrum_json.
-        json.dump(data, f, allow_nan=False)
+    json_path, json_1d_path = write_spectrum_jsons(data, fits_path.stem, output_dir)
 
     thumbs = {
         'thumbnail_svg_fnu': generate_spectrum_thumbnail_svg(
@@ -255,7 +288,7 @@ def generate_spectrum_products(
         'thumbnail_svg_flambda': generate_spectrum_thumbnail_svg(
             wave_raw, fnu_raw, flux_unit='flambda'),
     }
-    return json_path, thumbs
+    return json_path, json_1d_path, thumbs
 
 
 # ---------------------------------------------------------------------------

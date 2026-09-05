@@ -9,6 +9,7 @@ Each public function follows the same pattern:
   5. Upsert to Supabase
 """
 
+import json
 import re
 import shutil
 import sys
@@ -28,7 +29,7 @@ from campfire.deploy.discover import (
     load_slits_json,
 )
 from campfire.deploy.generate import (
-    generate_spectrum_json,
+    generate_spectrum_jsons,
     generate_spectrum_products,
     generate_thumbnails_from_fits,
     generate_zfit_json,
@@ -56,6 +57,7 @@ from campfire.deploy.supabase import (
     refresh_observations_overview,
     update_latest_deployment,
     update_observation_pointings,
+    update_spectra_zfit_scalars,
     upsert_observation,
     upsert_programs,
 )
@@ -66,6 +68,7 @@ from campfire.deploy.summary import (
     get_spec_paths,
     get_spectra_records,
     get_unique_objects,
+    get_zfit_scalar_updates,
     get_zfit_paths,
     load_summary,
 )
@@ -712,9 +715,10 @@ def deploy_observation(
                 continue
             # FITS file + JSON derivative + thumbnails (single read)
             upload_tasks.append(UploadTask(spec_path, storage_key('nirspec_spec', scope, spec_path.name, scheme=KeyScheme.CANONICAL), 'application/fits'))
-            json_path, thumbs = generate_spectrum_products(spec_path, temp_dir)
+            json_path, json_1d_path, thumbs = generate_spectrum_products(spec_path, temp_dir)
             thumb_map[spec_path.name] = thumbs
             upload_tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
+            upload_tasks.append(UploadTask(json_1d_path, storage_key('spectrum_1d_json', scope, json_1d_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
         # Enrich spectra records with thumbnails before the catalog upsert.
         for rec in spectra:
@@ -1037,7 +1041,7 @@ def deploy_json(
     if dry_run:
         print("=== DRY RUN ===")
         for path in spec_paths[:5]:
-            print(f"  {path.name} -> {storage_key('spectrum_json', Scope(obs=obs_name), f'{path.stem}.json', scheme=KeyScheme.CANONICAL)}")
+            print(f"  {path.name} -> {storage_key('spectrum_json', Scope(obs=obs_name), f'{path.stem}.json', scheme=KeyScheme.CANONICAL)} (+ _1d sidecar)")
         if len(spec_paths) > 5:
             print(f"  ... and {len(spec_paths) - 5} more")
         return
@@ -1050,8 +1054,9 @@ def deploy_json(
         scope = Scope(obs=obs_name)
         tasks = []
         for path in tqdm(spec_paths, desc="Generating", unit="file"):
-            json_path = generate_spectrum_json(path, temp_dir)
+            json_path, json_1d_path = generate_spectrum_jsons(path, temp_dir)
             tasks.append(UploadTask(json_path, storage_key('spectrum_json', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
+            tasks.append(UploadTask(json_1d_path, storage_key('spectrum_1d_json', scope, json_1d_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
         print("Uploading to OSN...")
         uploaded_keys: set[str] = set()
@@ -1063,7 +1068,7 @@ def deploy_json(
             for msg in failed_msgs[:5]:
                 print(f"    - {msg}")
 
-        print(f"Uploaded {success}/{len(spec_paths)} JSON files")
+        print(f"Uploaded {success}/{len(tasks)} JSON files ({len(spec_paths)} spectra, full + 1-D sidecar)")
 
         # Refresh registry rows for the re-uploaded canonical objects so the served
         # OSN bytes and the recorded sha256 stay consistent (epic #210 / #216).
@@ -1114,6 +1119,19 @@ def deploy_zfit(
         print(f"Would update redshift_auto for {len(objects)} objects")
         return
 
+    # Confirm the destructive part before anything lands: once the sidecars
+    # are uploaded and the spectra scalars rewritten, "Aborted" would be a
+    # lie (the fit is already live; only the object reset would be skipped).
+    sb = get_supabase_client(config)
+    if force_overwrite:
+        existing = check_existing_objects(sb, [o['object_id'] for o in objects])
+        if existing and not auto_approve:
+            print(f"  {len(existing)} objects exist. FORCE OVERWRITE will reset inspection data!")
+            resp = input("  Are you sure? [y/N]: ")
+            if resp.lower() != 'y':
+                print("Aborted.")
+                return
+
     # Upload zfit JSONs
     temp_dir = obs_dir / '.deploy_temp'
     temp_dir.mkdir(exist_ok=True)
@@ -1122,9 +1140,13 @@ def deploy_zfit(
         print("Generating zfit JSON files...")
         scope = Scope(obs=obs_name)
         tasks = []
+        zfit_results_by_key: dict[str, tuple[str, dict]] = {}
         for path in zfit_paths:
             json_path = generate_zfit_json(path, temp_dir)
-            tasks.append(UploadTask(json_path, storage_key('zfit', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
+            key = storage_key('zfit', scope, json_path.name, scheme=KeyScheme.CANONICAL)
+            tasks.append(UploadTask(json_path, key, 'application/json'))
+            with open(json_path) as f:
+                zfit_results_by_key[key] = (path.name, json.load(f))
 
         print("Uploading to OSN...")
         uploaded_keys: set[str] = set()
@@ -1145,23 +1167,25 @@ def deploy_zfit(
         if uploaded_keys:
             from campfire.deploy.registry import build_registry_rows, upsert_storage_objects
             reg_rows = build_registry_rows(tasks, backend='osn', succeeded_keys=uploaded_keys)
-            n_reg = upsert_storage_objects(get_supabase_client(config), reg_rows)
+            n_reg = upsert_storage_objects(sb, reg_rows)
             print(f"Registered {n_reg} storage objects")
     finally:
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
 
-    # Update redshift_auto in Supabase
-    sb = get_supabase_client(config)
-
-    if force_overwrite:
-        existing = check_existing_objects(sb, [o['object_id'] for o in objects])
-        if existing and not auto_approve:
-            print(f"  {len(existing)} objects exist. FORCE OVERWRITE will reset inspection data!")
-            resp = input("  Are you sure? [y/N]: ")
-            if resp.lower() != 'y':
-                print("Aborted.")
-                return
+    # Update redshift_auto in Supabase.
+    # Keep the row-backed fit values in lockstep with the exact JSON artifacts
+    # that landed. RedshiftFitSummary trusts these columns when present, so a
+    # standalone re-fit must replace them too. Failed uploads are deliberately
+    # excluded: their old artifact and old scalar row remain a coherent pair.
+    uploaded_results = {
+        filename: result
+        for key, (filename, result) in zfit_results_by_key.items()
+        if key in uploaded_keys
+    }
+    scalar_updates = get_zfit_scalar_updates(summary, uploaded_results)
+    n_scalars = update_spectra_zfit_scalars(sb, scalar_updates)
+    print(f"  Updated zfit scalars for {n_scalars} spectra")
 
     print("Updating objects...")
     n, _, _ = batch_upsert_objects(sb, objects, field, force_overwrite)
