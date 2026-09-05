@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import secrets
 import time
 from typing import Any, Sequence
@@ -137,9 +138,18 @@ def _wavelengths(disp, wavelengths) -> np.ndarray:
     return w
 
 
+MAX_SED_SAMPLES = 20000
+MAX_LINES = 100
+
+
 def _source(disp, wave, *, magnitude_ab, flux_njy, sed, beta, beta_wave_um, morphology, fwhm_px, recovery, extraction):
     sed_obj = None
     if sed is not None:
+        if isinstance(sed, dict):
+            for key in ("wave", "flux"):
+                v = sed.get(key)
+                if isinstance(v, (list, tuple)) and len(v) > MAX_SED_SAMPLES:
+                    raise ValueError(f"sed.{key} has {len(v)} samples; the limit is {MAX_SED_SAMPLES} (resample the SED first)")
         try:
             sed_obj = parse_sed(sed, allow_files=LOCAL_FILES)
         except ModelError as e:
@@ -205,6 +215,10 @@ FILE_MAX_BYTES = 8 * 1024 * 1024
 # carries the instance that made it so another instance can ask the proxy to
 # replay the request there.
 INSTANCE_ID = os.environ.get("FLY_MACHINE_ID", "")
+# Exactly the ids _store_file() mints: an optional machine id (hex) prefix and
+# a 16-character urlsafe token. Anything else is rejected before it can reach
+# the fly-replay header.
+_FID_RE = re.compile(r"^(?:(?P<owner>[0-9a-f]{8,20})\.)?(?P<token>[A-Za-z0-9_-]{16})$")
 
 
 def _store_file(data: bytes, content_type: str, filename: str) -> str:
@@ -226,27 +240,40 @@ def _store_file(data: bytes, content_type: str, filename: str) -> str:
 
 
 ALLOWED_HOSTS = [h.strip().lower() for h in os.environ.get("CAMPFIRE_ETC_ALLOWED_HOSTS", "").split(",") if h.strip()]
+# A bare hostname (or IPv4 literal) with an optional numeric port: nothing that
+# could smuggle userinfo, a path or a second authority into a URL.
+_HOST_RE = re.compile(r"^(?P<name>[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)*)(?::(?P<port>\d{1,5}))?$")
+
+
+def _clean_host(value: str | None) -> tuple[str, str] | None:
+    """Validate a Host-style header value; returns (name, name[:port]) or None."""
+    v = (value or "").split(",")[0].strip().lower()
+    m = _HOST_RE.match(v)
+    if not m or len(v) > 253:
+        return None
+    return m.group("name"), v
 
 
 def _public_base(ctx: Context | None) -> str:
     """Base URL for download links: the hostname the client actually reached us
-    on (so both the custom domain and the fly.dev name work), but only if it is
-    one of the configured allowed hosts — X-Forwarded-Host is client-settable,
-    so an unlisted value must not end up in a link. Falls back to
-    CAMPFIRE_ETC_PUBLIC_URL; with no allow-list only the Host header counts."""
+    on (so both the custom domain and the fly.dev name work), but only when it
+    is a well-formed host that is on the configured allow-list — X-Forwarded-Host
+    is client-settable, so anything else must not end up in a link. Falls back
+    to CAMPFIRE_ETC_PUBLIC_URL; with no allow-list only the Host header counts."""
     try:
         h = ctx.headers if ctx is not None else {}
         proto = (h.get("x-forwarded-proto") or "https").split(",")[0].strip().lower()
         if proto not in ("http", "https"):
             proto = "https"
         candidates = [h.get("x-forwarded-host"), h.get("host")] if ALLOWED_HOSTS else [h.get("host")]
-        for host in candidates:
-            host = (host or "").split(",")[0].strip().lower()
-            if not host:
+        for raw in candidates:
+            parsed = _clean_host(raw)
+            if parsed is None:
                 continue
-            if ALLOWED_HOSTS and host not in ALLOWED_HOSTS and host.split(":")[0] not in ALLOWED_HOSTS:
+            name, hostport = parsed
+            if ALLOWED_HOSTS and name not in ALLOWED_HOSTS and hostport not in ALLOWED_HOSTS:
                 continue
-            return f"{proto}://{host}"
+            return f"{proto}://{hostport}"
     except Exception:  # pragma: no cover
         pass
     return PUBLIC_URL
@@ -256,11 +283,15 @@ def _public_base(ctx: Context | None) -> str:
 async def _serve_file(request):
     from starlette.responses import PlainTextResponse, Response
     fid = request.path_params["fid"]
+    m = _FID_RE.match(fid)
+    if m is None:
+        return PlainTextResponse("not found", status_code=404)
     item = _FILES.get(fid)
     if item is None or item[3] < time.time():
-        owner = fid.split(".", 1)[0] if "." in fid else ""
+        owner = m.group("owner") or ""
         if owner and INSTANCE_ID and owner != INSTANCE_ID and "fly-replay-src" not in request.headers:
-            # Made by a sibling instance: have Fly's proxy replay the request there.
+            # Made by a sibling instance: have Fly's proxy replay the request
+            # there. `owner` matched _FID_RE, so it is a bare machine id.
             return PlainTextResponse("", status_code=307, headers={"fly-replay": f"instance={owner}"})
         return PlainTextResponse("not found or expired (downloads live for one hour; re-run the simulation)", status_code=404)
     data, ctype, fname, _ = item
@@ -558,6 +589,8 @@ def simulate_spectrum(
     d = _disp(disperser); e = _exposure(readout, ngroups, nint, nexp, total_s, per_exposure_s)
     if not (1 <= n_realizations <= 50):
         raise ValueError("n_realizations must be between 1 and 50")
+    if lines is not None and len(lines) > MAX_LINES:
+        raise ValueError(f"{len(lines)} lines given; the limit is {MAX_LINES}")
     probe = np.array([float(np.mean(d.coverage))])
     F, rec, mlabel, sed_obj = _source(d, probe, magnitude_ab=magnitude_ab, flux_njy=flux_njy, sed=sed, beta=beta,
                                       beta_wave_um=beta_wave_um, morphology=morphology, fwhm_px=fwhm_px,

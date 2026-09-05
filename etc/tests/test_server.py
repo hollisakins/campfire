@@ -83,9 +83,36 @@ def test_public_base_ignores_unlisted_forwarded_host(monkeypatch):
     assert srv._public_base(Ctx({"host": "etc.fly.dev", "x-forwarded-proto": "https"})) == "https://etc.fly.dev"
     assert srv._public_base(Ctx({"x-forwarded-host": "evil.example", "host": "etc.example.org"})) == "https://etc.example.org"
     assert srv._public_base(Ctx({"x-forwarded-host": "evil.example", "host": "also.evil"})) == "https://etc.example.org"
+    # userinfo / path smuggling through an otherwise allow-listed prefix
+    assert srv._public_base(Ctx({"x-forwarded-host": "etc.example.org:80@evil.example", "host": "also.evil"})) == "https://etc.example.org"
+    assert srv._public_base(Ctx({"x-forwarded-host": "etc.example.org/x", "host": "etc.example.org:8443"})) == "https://etc.example.org:8443"
+    assert srv._public_base(Ctx({"host": "etc.example.org", "x-forwarded-proto": "javascript"})) == "https://etc.example.org"
     monkeypatch.setattr(srv, "ALLOWED_HOSTS", [])
     assert srv._public_base(Ctx({"x-forwarded-host": "evil.example", "host": "127.0.0.1:8000", "x-forwarded-proto": "http"})) == "http://127.0.0.1:8000"
+    assert srv._public_base(Ctx({"host": "127.0.0.1:8000@evil.example"})) == "https://etc.example.org"
     assert srv._public_base(None) == "https://etc.example.org"
+
+
+def test_file_ids_are_validated_before_replay():
+    assert srv._FID_RE.match("48ee65ec055ee8.JiiYIUsNB9M0GlBv")
+    assert srv._FID_RE.match("JiiYIUsNB9M0GlBv")
+    for bad in ("x;app=other.JiiYIUsNB9M0GlBv", "48ee65ec055ee8.short", "48ee65ec055ee8.JiiYIUsNB9M0GlB%0A", "../etc/passwd", ""):
+        assert srv._FID_RE.match(bad) is None, bad
+    fid = srv._store_file(b"x", "text/plain", "a.txt")
+    assert srv._FID_RE.match(fid)
+    srv._FILES.clear()
+
+
+def test_input_size_caps():
+    async def go():
+        with pytest.raises(ToolError, match="limit is 100"):
+            await srv.server.call_tool("simulate_spectrum", {"disperser": "prism", "magnitude_ab": 26, "total_s": 1000, "per_exposure_s": 1000,
+                                                             "lines": [{"wave_um": 2.0, "flux_cgs": 1e-18}] * 101})
+        with pytest.raises(ToolError, match="limit is 20000"):
+            n = 20001
+            await srv.server.call_tool("continuum_snr", {"disperser": "prism", "total_s": 1000, "per_exposure_s": 1000,
+                                                         "sed": {"wave": [1.0] * n, "flux": [1.0] * n}})
+    anyio.run(go)
 
 
 def test_file_store_is_bounded(monkeypatch):
