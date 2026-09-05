@@ -871,23 +871,27 @@ GRANT EXECUTE ON FUNCTION public.redeem_access_code(text) TO service_role;
 
 DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN);
 DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN);
--- T2-F (#511): the p_offset signature is retired; clients below the 0.5.0
--- floor are refused by the route before they reach here.
-DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT);
 
 CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_program_slugs TEXT[],
   p_user_id UUID DEFAULT NULL,
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
+  -- T2-F (#511): OFFSET pagination is retired at the route (/api/v1/sync/*
+  -- answers offset>0 with 400; client floor 0.5.0). The parameter itself is
+  -- RETAINED, still honoured, until the release after #536: the migration and
+  -- the Vercel deploy land independently on merge, and the previous route
+  -- build passes p_offset on every call — dropping the signature here would
+  -- 500 every sync during that window (or on a web rollback). Nothing new
+  -- sends it, so it disappears from pg_stat_statements once the routes ship.
+  p_offset INTEGER DEFAULT 0,
   p_include_counts BOOLEAN DEFAULT TRUE,
   p_include_unpublished BOOLEAN DEFAULT false,
   -- Keyset cursor (#103): the object_id of the last row of the previous page.
   -- When non-NULL the scan seeks straight to the next id via the
   -- objects_object_id_key UNIQUE btree, so each page costs O(log N + limit).
-  -- Keyset is the only pagination since T2-F (#511): the legacy p_offset
-  -- parameter and its 120 s statement_timeout exemption are gone, so every
-  -- page runs under the role's default timeout.
+  -- The 120 s statement_timeout exemption that existed for deep OFFSET pages
+  -- is gone (T2-F): every page runs under the role's default timeout.
   p_after_object_id TEXT DEFAULT NULL
 )
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
@@ -924,7 +928,7 @@ BEGIN
       -- to a row-value cursor) or keyset will skip/duplicate rows.
       AND (p_after_object_id IS NULL OR o.object_id > p_after_object_id)
     ORDER BY o.object_id
-    LIMIT p_limit
+    LIMIT p_limit OFFSET p_offset
   ),
   member_targets_agg AS (
     SELECT t.object_id,
@@ -1039,8 +1043,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO service_role;
 
 
 -- =============================================================================
@@ -1052,19 +1056,20 @@ GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ,
 
 DROP FUNCTION IF EXISTS public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN);
 DROP FUNCTION IF EXISTS public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN);
--- T2-F (#511): p_offset signature retired.
-DROP FUNCTION IF EXISTS public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT);
 
 CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
   p_program_slugs TEXT[],
   p_user_id UUID DEFAULT NULL,
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
+  -- Retained through the web rollout, refused at the route (T2-F, #511) —
+  -- see get_objects_for_sync. Drop in the release after #536.
+  p_offset INTEGER DEFAULT 0,
   p_include_counts BOOLEAN DEFAULT TRUE,
   p_include_unpublished BOOLEAN DEFAULT false,
   -- Keyset cursor (#103): the spectrum_id of the last row of the previous page,
   -- seeked via the idx_spectra_spectrum_id UNIQUE btree. See
-  -- get_objects_for_sync for the design; keyset-only since T2-F (#511).
+  -- get_objects_for_sync for the design. No OFFSET timeout exemption (T2-F).
   p_after_spectrum_id TEXT DEFAULT NULL
 )
 RETURNS TABLE(spectra JSONB, total_count BIGINT, total_accessible_count BIGINT)
@@ -1093,7 +1098,7 @@ BEGIN
       -- strict > needs no tiebreaker; keep the ordering column UNIQUE.
       AND (p_after_spectrum_id IS NULL OR s.spectrum_id > p_after_spectrum_id)
     ORDER BY s.spectrum_id
-    LIMIT p_limit
+    LIMIT p_limit OFFSET p_offset
   ),
   -- Count CTEs are gated on p_include_counts; when FALSE the planner
   -- collapses them to One-Time Filter: false and skips the scan/join.
@@ -1154,8 +1159,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO service_role;
 
 
 -- =============================================================================
@@ -1165,19 +1170,20 @@ GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ,
 
 DROP FUNCTION IF EXISTS public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER);
 DROP FUNCTION IF EXISTS public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN);
--- T2-F (#511): p_offset signature retired.
-DROP FUNCTION IF EXISTS public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, INTEGER);
 
 CREATE OR REPLACE FUNCTION public.get_photometry_for_sync(
   p_program_slugs TEXT[],
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
+  -- Retained through the web rollout, refused at the route (T2-F, #511) —
+  -- see get_objects_for_sync. Drop in the release after #536.
+  p_offset INTEGER DEFAULT 0,
   p_include_unpublished BOOLEAN DEFAULT false,
   -- Count gating (#103): only the keyset first page needs the count; skip the
   -- COUNT(*) scan on every subsequent page, matching the other /sync/* RPCs.
   p_include_counts BOOLEAN DEFAULT TRUE,
   -- Keyset cursor (#103): the id of the last row of the previous page, seeked
-  -- via the object_photometry PK btree. Keyset-only since T2-F (#511).
+  -- via the object_photometry PK btree. No OFFSET timeout exemption (T2-F).
   p_after_id INTEGER DEFAULT NULL
 )
 RETURNS TABLE(photometry_records JSONB, total_count BIGINT)
@@ -1200,7 +1206,7 @@ BEGIN
       -- Keyset (#103): op.id is the PK, so a strict > needs no tiebreaker.
       AND (p_after_id IS NULL OR op.id > p_after_id)
     ORDER BY op.id
-    LIMIT p_limit
+    LIMIT p_limit OFFSET p_offset
   ),
   -- Count CTE gated on p_include_counts; when FALSE the planner collapses it to
   -- One-Time Filter: false and skips the scan/join.
@@ -1239,8 +1245,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, INTEGER) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, INTEGER) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, INTEGER) TO service_role;
 
 
 -- =============================================================================
@@ -3827,21 +3833,22 @@ GRANT EXECUTE ON FUNCTION public.get_observation_manifest TO authenticated;
 --     and out-of-program rows are excluded. Field-only products (NULL observation,
 --     e.g. NIRCam) are admin-only here until NIRCam client download lands.
 DROP FUNCTION IF EXISTS public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN);
--- T2-F (#511): p_offset signature retired.
-DROP FUNCTION IF EXISTS public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, BIGINT);
 
 CREATE OR REPLACE FUNCTION public.get_storage_objects_for_sync(
   p_program_slugs TEXT[],
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
   p_limit INTEGER DEFAULT 1000,
+  -- Retained through the web rollout, refused at the route (T2-F, #511) —
+  -- see get_objects_for_sync. Drop in the release after #536.
+  p_offset INTEGER DEFAULT 0,
   p_include_counts BOOLEAN DEFAULT TRUE,
   p_include_unpublished BOOLEAN DEFAULT FALSE,
   -- Keyset cursor (#103): the id of the last row of the previous page, seeked
   -- via the storage_objects_pkey btree. storage_key is NOT usable as a cursor
   -- (only UNIQUE as (backend, bucket, storage_key)), and sync order is
   -- irrelevant to the client (it upserts by key), so this orders by the PK.
-  -- Keyset-only since T2-F (#511): the scope predicate (published EXISTS
-  -- checks) is evaluated on only ~p_limit rows past the seek.
+  -- Keyset pages evaluate the scope predicate (published EXISTS checks) on
+  -- only ~p_limit rows past the seek; no OFFSET timeout exemption (T2-F).
   p_after_id BIGINT DEFAULT NULL
 )
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
@@ -3901,7 +3908,7 @@ BEGIN
       -- Keyset (#103): id is the PK, so a strict > needs no tiebreaker.
       AND (p_after_id IS NULL OR so.id > p_after_id)
     ORDER BY so.id
-    LIMIT p_limit
+    LIMIT p_limit OFFSET p_offset
   ),
   total AS (
     SELECT COUNT(*) AS cnt FROM scoped
@@ -3946,8 +3953,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, BIGINT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, BIGINT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, BIGINT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, BIGINT) TO service_role;
 
 
 -- =============================================================================

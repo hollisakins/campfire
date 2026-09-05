@@ -5,10 +5,13 @@
  * The four sync RPCs have been keyset-only (`after=`) on the client side since
  * #103 (July 2026), but the server kept honouring `offset=` for clients that
  * predate it — behind a 120 s statement_timeout exemption, because a deep
- * OFFSET page re-reads everything before it. That path is gone: the RPCs no
- * longer take `p_offset`, and a request that still asks for a positional page
- * is answered with 400 and an upgrade pointer instead of a silently wrong
- * first page. `offset=0` (what an old client sends for page one) is harmless
+ * OFFSET page re-reads everything before it. That path is closed here: a
+ * request that still asks for a positional page is answered with 400 and an
+ * upgrade pointer instead of a silently wrong first page, and the RPCs lose
+ * the timeout exemption. The RPCs keep accepting `p_offset` for one release
+ * (the previous route build sends it on every call, and the migration and the
+ * Vercel deploy land independently on merge); the parameter is dropped once
+ * no deployed route can send it. `offset=0` (what an old client sends for page one) is harmless
  * and ignored, so the failure lands on page two with a clear message rather
  * than on the very first call.
  */
