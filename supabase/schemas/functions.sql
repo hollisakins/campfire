@@ -4063,8 +4063,8 @@ AS $$
   -- member metadata on the map. redshift / redshift_quality stay visible (object
   -- science, per the access policy). Object row visibility is enforced by RLS
   -- (programs && accessible); this function is SECURITY INVOKER and additionally
-  -- gates the member CTEs by an explicit accessible_program_slugs() filter.
-  -- The logic mirrors object_scoped_aggregates(), set-based over the page.
+  -- gates the member aggregates by an explicit accessible_program_slugs()
+  -- filter. The logic mirrors object_scoped_aggregates(), per page row.
   WITH acc AS (
     SELECT public.accessible_program_slugs() AS slugs
   ),
@@ -4087,29 +4087,18 @@ AS $$
       )
     ORDER BY o.object_id
     LIMIT GREATEST(1, LEAST(COALESCE(p_page_size, 5000), 50000))
-  ),
-  mt AS (
-    SELECT t.object_id,
-           array_agg(t.target_id ORDER BY t.target_id)              AS member_target_ids,
-           array_agg(DISTINCT t.program_slug ORDER BY t.program_slug) AS programs,
-           COUNT(*)::int                                            AS n_targets
-    FROM public.targets t
-    CROSS JOIN acc
-    WHERE t.object_id IN (SELECT p.id FROM page p)
-      AND t.program_slug = ANY(acc.slugs)
-      AND (p_include_unpublished OR t.has_published_spectrum)
-    GROUP BY t.object_id
-  ),
-  sp AS (
-    SELECT t.object_id, COUNT(*)::int AS n_spectra
-    FROM public.spectra s
-    JOIN public.targets t ON t.target_id = s.target_id
-    CROSS JOIN acc
-    WHERE t.object_id IN (SELECT p.id FROM page p)
-      AND t.program_slug = ANY(acc.slugs)
-      AND (p_include_unpublished OR s.deploy_status = 'published')
-    GROUP BY t.object_id
   )
+  -- Per-row LATERAL aggregation rather than set-based CTEs joined back to the
+  -- page (perf, #515 follow-up to T1-6). The RLS predicate `programs &&
+  -- accessible_program_slugs()` reaches the planner as an InitPlan, so it is
+  -- estimated at the default ~1 % selectivity while it really matches nearly
+  -- every row; the page CTE was estimated at 9 rows (actual 5000) and the
+  -- planner joined the aggregates with nested loops over materialized
+  -- subqueries, discarding 12.5 M rows per join — 5.9 s per page under RLS,
+  -- over the 8 s statement timeout on later pages. A LATERAL aggregate per
+  -- page row is the plan an accurate estimate would produce anyway (one index
+  -- probe per object) and does not depend on the estimate: 0.24 s for the
+  -- same page. Same filters, same output; only the join shape changed.
   SELECT
     p.object_id,
     p.ra,
@@ -4122,8 +4111,24 @@ AS $$
     COALESCE(mt.programs, ARRAY[]::TEXT[])          AS programs,
     COALESCE(mt.member_target_ids, ARRAY[]::TEXT[]) AS member_target_ids
   FROM page p
-  LEFT JOIN mt ON mt.object_id = p.id
-  LEFT JOIN sp ON sp.object_id = p.id
+  CROSS JOIN acc
+  LEFT JOIN LATERAL (
+    SELECT array_agg(t.target_id ORDER BY t.target_id)                AS member_target_ids,
+           array_agg(DISTINCT t.program_slug ORDER BY t.program_slug) AS programs,
+           COUNT(*)::int                                              AS n_targets
+    FROM public.targets t
+    WHERE t.object_id = p.id
+      AND t.program_slug = ANY(acc.slugs)
+      AND (p_include_unpublished OR t.has_published_spectrum)
+  ) mt ON true
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*)::int AS n_spectra
+    FROM public.spectra s
+    JOIN public.targets t ON t.target_id = s.target_id
+    WHERE t.object_id = p.id
+      AND t.program_slug = ANY(acc.slugs)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
+  ) sp ON true
   ORDER BY p.object_id;
 $$;
 
