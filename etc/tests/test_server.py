@@ -144,3 +144,15 @@ def test_simulate_inline_and_download(monkeypatch):
         p = os.path.join(td, "mock.txt")
         loc = call("simulate_spectrum", disperser="prism", magnitude_ab=26, total_s=5000, per_exposure_s=1000, seed=1, output_path=p)
         assert loc["output_path"] == p and os.path.exists(p) and "download_url" not in loc
+
+
+def test_cli_allowed_host_flag_sets_link_allow_list(monkeypatch):
+    import types
+    from campfire_etc import cli
+    captured = {}
+    monkeypatch.setattr(srv, "build_http_app", lambda **kw: captured.setdefault("kw", kw) or object())
+    monkeypatch.setitem(__import__("sys").modules, "uvicorn", types.SimpleNamespace(run=lambda *a, **k: captured.setdefault("ran", True)))
+    monkeypatch.setattr(srv, "ALLOWED_HOSTS", [])
+    args = types.SimpleNamespace(http=True, allowed_host="A.example,b.example", public_url=None, host="127.0.0.1", port=8000)
+    cli.cmd_serve(args)
+    assert srv.ALLOWED_HOSTS == ["a.example", "b.example"] and captured["kw"]["allowed_hosts"] == ["A.example", "b.example"]

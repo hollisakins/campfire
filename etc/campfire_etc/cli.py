@@ -85,6 +85,7 @@ def cmd_serve(a) -> None:
         hosts = [h.strip() for h in (a.allowed_host or os.environ.get("CAMPFIRE_ETC_ALLOWED_HOSTS", "")).split(",") if h.strip()]
         if a.public_url:
             srv.PUBLIC_URL = a.public_url.rstrip("/")
+        srv.ALLOWED_HOSTS = [h.lower() for h in hosts]     # the download-link allow-list, same source as the transport's
         app = srv.build_http_app(allowed_hosts=hosts or None, host=a.host)
         print(f"campfire-etc {srv.__version__} (model {srv.MODEL.version}) serving MCP over HTTP at http://{a.host}:{a.port}/mcp", file=sys.stderr)
         uvicorn.run(app, host=a.host, port=a.port, log_level="info")

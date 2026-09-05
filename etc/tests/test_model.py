@@ -165,3 +165,21 @@ def test_pixel_grid_matches_dispersion():
         assert np.allclose(np.diff(w), 0.5 * (dl[1:] + dl[:-1]), rtol=0.05)
         lo, hi = d.coverage
         assert w[0] >= lo and w[-1] <= hi + dl[-1]
+
+
+def test_extraction_aliases_are_consistent():
+    e = ce.make_exposure(total_s=10000, per_exposure_s=1000)
+    w = np.array([2.5])
+    for alias in ("opt", "OPTIMAL", "optimal"):
+        F, rec, _ = ce.source_flux(PRISM, w, magnitude_ab=27, morphology="typical", extraction=alias)
+        c = ce.continuum(PRISM, e, w, F, extraction=alias)
+        F0, rec0, _ = ce.source_flux(PRISM, w, magnitude_ab=27, morphology="typical", extraction="optimal")
+        c0 = ce.continuum(PRISM, e, w, F0, extraction="optimal")
+        assert rec == rec0 and c["snr_pix"][0] == pytest.approx(c0["snr_pix"][0])
+    _, rec3, _ = ce.source_flux(PRISM, w, magnitude_ab=27, morphology="typical", extraction="boxcar")
+    _, rec3b, _ = ce.source_flux(PRISM, w, magnitude_ab=27, morphology="typical", extraction="3px")
+    assert rec3 == rec3b != rec0
+    with pytest.raises(ModelError, match="extraction"):
+        ce.continuum(PRISM, e, w, extraction="5px")
+    with pytest.raises(ModelError, match="extraction"):
+        ce.line(PRISM, e, 2.5, 1e-18, extraction="5px")

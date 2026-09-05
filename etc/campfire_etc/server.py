@@ -19,7 +19,7 @@ import numpy as np
 
 from . import __version__
 from .model import (
-    EXTRAPOLATED_READOUTS, Exposure, ModelError, continuum, fmt_sci, fmt_time, line as line_calc,
+    EXTRAPOLATED_READOUTS, normalize_extraction, Exposure, ModelError, continuum, fmt_sci, fmt_time, line as line_calc,
     load_model, make_exposure, pandeia_comparison, resolve_placement, source_flux, time_for_snr,
 )
 from .sed import flat_sed, parse_sed, power_law_sed
@@ -415,6 +415,7 @@ def depth(
     total_s+per_exposure_s. placement: typical | centred | mean | [x, y] shutter
     offsets. margin multiplies the noise (1.1 = the recommended +10%)."""
     d = _disp(disperser); e = _exposure(readout, ngroups, nint, nexp, total_s, per_exposure_s)
+    extraction = normalize_extraction(extraction)
     mult, plabel = resolve_placement(d, placement)
     w = _wavelengths(d, wavelengths)
     c = continuum(d, e, w, None, extraction=extraction, placement_mult=mult, margin=margin)
@@ -457,6 +458,7 @@ def continuum_snr(
     bin_mode: resolution | pixel | R (bin_value = resolving power) | dlambda
     (bin_value in um). wave_of_interest_um picks the headline wavelength."""
     d = _disp(disperser); e = _exposure(readout, ngroups, nint, nexp, total_s, per_exposure_s)
+    extraction = normalize_extraction(extraction)
     mult, plabel = resolve_placement(d, placement)
     w = _wavelengths(d, wavelengths)
     if wave_of_interest_um is not None and wavelengths is None:
@@ -528,6 +530,7 @@ def line_snr(
     its photon noise. The morphology's flux-recovery fraction applies to the
     line too unless line_recovery is given."""
     d = _disp(disperser); e = _exposure(readout, ngroups, nint, nexp, total_s, per_exposure_s)
+    extraction = normalize_extraction(extraction)
     mult, plabel = resolve_placement(d, placement)
     F, rec, mlabel, _ = _source(d, np.array([wave_um]), magnitude_ab=continuum_magnitude_ab, flux_njy=continuum_flux_njy,
                                 sed=None, beta=None, beta_wave_um=None, morphology=morphology, fwhm_px=fwhm_px,
@@ -587,6 +590,7 @@ def simulate_spectrum(
     a local install you can pass output_path to write the file directly. Use
     wave_range [lo, hi] to simulate only part of the coverage."""
     d = _disp(disperser); e = _exposure(readout, ngroups, nint, nexp, total_s, per_exposure_s)
+    extraction = normalize_extraction(extraction)
     if not (1 <= n_realizations <= 50):
         raise ValueError("n_realizations must be between 1 and 50")
     if lines is not None and len(lines) > MAX_LINES:

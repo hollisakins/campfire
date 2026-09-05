@@ -49,6 +49,16 @@ MORPHOLOGY_FWHM_PX: dict[str, float | None] = {
     "extended": 2.8,
 }
 EXTRACTIONS = ("optimal", "3px")
+_EXTRACTION_ALIASES = {"optimal": "optimal", "opt": "optimal", "3px": "3px", "3-px": "3px", "boxcar": "3px", "box": "3px"}
+
+
+def normalize_extraction(extraction: str) -> str:
+    """Canonical extraction name ('optimal' or '3px'); aliases resolved once so
+    every consumer (noise ratio, recovery table, labels) agrees."""
+    key = str(extraction).strip().lower()
+    if key not in _EXTRACTION_ALIASES:
+        raise ModelError(f"extraction must be 'optimal' or '3px', not {extraction!r}")
+    return _EXTRACTION_ALIASES[key]
 PLACEMENTS = ("typical", "centred", "mean")
 # Fraction of an emission line's flux inside a +-1 FWHM window.
 LINE_WINDOW_FRACTION = 0.98
@@ -258,7 +268,7 @@ class Disperser:
         if not rows:
             return 0.42
         xs = np.array([0.5 * (r["fwhm_lo"] + r["fwhm_hi"]) for r in rows])
-        key = "ro" if extraction == "optimal" else "r3"
+        key = "ro" if normalize_extraction(extraction) == "optimal" else "r3"
         ys = np.array([r.get(key) if r.get(key) is not None else r["r3"] for r in rows], float)
         return float(np.interp(fwhm_px, xs, ys))
 
@@ -426,6 +436,7 @@ def resolve_placement(disp: Disperser, placement: str | Sequence[float] | Mappin
 def resolve_morphology(disp: Disperser, morphology: str | None, fwhm_px: float | None,
                        extraction: str, recovery_override: float | None) -> tuple[float, str]:
     """Flux-recovery fraction and a label from the morphology inputs."""
+    extraction = normalize_extraction(extraction)
     if recovery_override is not None:
         r = float(np.clip(recovery_override, 0.05, 1.0))
         return r, f"flux recovery set to {r:.2f}"
@@ -505,14 +516,13 @@ def continuum(
     ab5_pix/ab5_res/ab5_bin (5-sigma AB limits), line5 (5-sigma unresolved-line
     limit, erg/s/cm2), snr_pix/snr_res/snr_bin.
     """
-    if extraction not in ("optimal", "opt", "3px"):
-        raise ModelError("extraction must be 'optimal' or '3px'")
+    extraction = normalize_extraction(extraction)
     w = np.atleast_1d(np.asarray(disp.default_wavelengths() if wave is None else wave, float))
     c = disp.curves_at(w)
     T, te = exp.total_s, exp.per_exposure_s
     mult = float(placement_mult) * float(margin)
     sig_pix = np.sqrt(c["A"] / T + c["B"] / (T * te ** 2)) * mult
-    f = c["fo"] if extraction in ("optimal", "opt") else c["f3"]
+    f = c["fo"] if extraction == "optimal" else c["f3"]
     sig_bg = sig_pix * f
     if flux_spec_ujy is None:
         F = None
@@ -574,6 +584,7 @@ def line(
     continuum under the line (flux in the spectrum, uJy) adds its photon noise.
     """
     w = float(wave_um)
+    extraction = normalize_extraction(extraction)
     if not disp.in_coverage(w)[0]:
         lo, hi = disp.coverage
         raise ModelError(f"{w:.3f} um is outside {disp.name} coverage ({lo:.2f}-{hi:.2f} um)")
