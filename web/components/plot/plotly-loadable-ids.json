@@ -1,0 +1,4 @@
+[
+  "components/plot/LazyPlot.tsx -> react-plotly.js/factory",
+  "components/plot/LazyPlot.tsx -> @/components/plot/plotly-custom"
+]

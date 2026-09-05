@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import React, { Suspense, use, useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import type { ObjectDetail, ObjectMemberTarget, Spectrum } from '@/lib/types';
+import type { ObjectHeader, ObjectMemberTarget, ObjectPhotometry, Spectrum } from '@/lib/types';
 import { MEMBER_COLORS, GRATINGS } from '@/lib/types';
 import { useInspectionState, type InspectionInitialData } from '@/lib/hooks/useInspectionState';
 import { MetricCards } from '@/components/spectra/MetricCards';
@@ -25,7 +25,11 @@ import { StalenessBadge } from './StalenessBadge';
 import { useAuth } from '@/lib/contexts/AuthContext';
 
 interface UnifiedObjectPageProps {
-  object: ObjectDetail;
+  object: ObjectHeader;
+  /** Streamed behind a Suspense boundary (perf T2-E, #510): the server
+   *  renders the header without waiting for it. Settles to null when the
+   *  object has no photometry row; never rejects. */
+  photometry: Promise<ObjectPhotometry | null>;
 }
 
 function buildInitialVisibility(members: ObjectMemberTarget[]): Record<number, boolean> {
@@ -34,7 +38,7 @@ function buildInitialVisibility(members: ObjectMemberTarget[]): Record<number, b
   return v;
 }
 
-export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) => {
+export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, photometry }) => {
   const { userProfile } = useAuth();
   // Local override for last_inspected_at so the "Mark as reviewed" action in
   // the StalenessBadge can hide the badge without a full refetch. Reset on
@@ -426,14 +430,14 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
           </section>
 
           {/* === Section 4: Photometry & SED === */}
-          {object.has_photometry && object.photometry && (
-            <section className="mb-8">
-              <PhotometrySED
-                photometry={object.photometry}
+          {object.has_photometry && (
+            <Suspense fallback={<PhotometrySectionFallback />}>
+              <PhotometrySection
+                photometry={photometry}
                 objectId={object.object_id}
                 bestRedshift={object.redshift}
               />
-            </section>
+            </Suspense>
           )}
 
           {/* === Section 5: Discussion === */}
@@ -462,3 +466,34 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object }) 
     </div>
   );
 };
+
+/**
+ * Section 4, once the streamed photometry settles. The `<section>` lives in
+ * here (not around the Suspense boundary) so an object whose row flag says
+ * has_photometry but whose photometry row is gone leaves no empty gap.
+ */
+const PhotometrySection: React.FC<{
+  photometry: Promise<ObjectPhotometry | null>;
+  objectId: string;
+  bestRedshift: number | null;
+}> = ({ photometry, objectId, bestRedshift }) => {
+  const data = use(photometry);
+  if (!data) return null;
+  return (
+    <section className="mb-8">
+      <PhotometrySED photometry={data} objectId={objectId} bestRedshift={bestRedshift} />
+    </section>
+  );
+};
+
+/** Same header row and plot footprint as PhotometrySED, so the streamed
+ *  section does not shift the discussion and nearby-objects cards below it. */
+const PhotometrySectionFallback: React.FC = () => (
+  <section className="mb-8 animate-pulse" aria-busy="true" aria-label="Loading photometry">
+    <div className="flex items-center gap-2 mb-3">
+      <div className="h-5 w-5 bg-surface-2 dark:bg-card-hover rounded" />
+      <div className="h-5 bg-surface-2 dark:bg-card-hover rounded w-44" />
+    </div>
+    <div className="h-[400px] bg-card border border-border rounded-lg" />
+  </section>
+);
