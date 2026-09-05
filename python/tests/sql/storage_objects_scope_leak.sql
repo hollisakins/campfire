@@ -146,7 +146,7 @@ BEGIN
   -- get_storage_objects_for_sync: victim keys absent for a member, present for admin.
   SELECT count(*) INTO leaked FROM (
     SELECT jsonb_array_elements(objects)->>'storage_key' AS k
-    FROM public.get_storage_objects_for_sync(pubs, NULL, 100000, 0, false, false)
+    FROM public.get_storage_objects_for_sync(p_program_slugs => pubs, p_limit => 100000, p_include_counts => false, p_include_unpublished => false)
   ) q WHERE k IN (SELECT storage_key FROM _vic_draft
                   UNION ALL SELECT storage_key FROM _vic_revoked
                   UNION ALL SELECT storage_key FROM _vic_xprog);
@@ -154,7 +154,7 @@ BEGIN
 
   SELECT count(*) INTO shown FROM (
     SELECT jsonb_array_elements(objects)->>'storage_key' AS k
-    FROM public.get_storage_objects_for_sync(pubs, NULL, 100000, 0, false, true)
+    FROM public.get_storage_objects_for_sync(p_program_slugs => pubs, p_limit => 100000, p_include_counts => false, p_include_unpublished => true)
   ) q WHERE k IN (SELECT storage_key FROM _vic_draft
                   UNION ALL SELECT storage_key FROM _vic_revoked
                   UNION ALL SELECT storage_key FROM _vic_xprog);
