@@ -37,6 +37,28 @@ from campfire_layout import derive_sibling
 PAGE = 1000
 REGISTER_BATCH = 200
 
+# Spectrum JSONs deployed before generate.py sanitized non-finite values carry
+# bare `Infinity` / `NaN` tokens (invalid JSON; Python's parser accepts them,
+# the browser's does not). Apply the same rules read_spectrum_data() applies at
+# deploy time so the sidecar is valid: flux / error to null, profile arrays to 0.
+_NULL_KEYS = ('wave', 'fnu', 'fnu_err')
+_ZERO_KEYS = ('profile', 'profile_fit', 'profile_pix')
+
+
+def _finite(v):
+    return isinstance(v, float) and (v != v or v in (float('inf'), float('-inf')))
+
+
+def sanitize_1d(data: dict) -> dict:
+    out = dict(data)
+    for k in _NULL_KEYS:
+        if isinstance(out.get(k), list):
+            out[k] = [None if _finite(x) else x for x in out[k]]
+    for k in _ZERO_KEYS:
+        if isinstance(out.get(k), list):
+            out[k] = [0.0 if _finite(x) else x for x in out[k]]
+    return out
+
 
 def fetch_registry(sb, product_type: str, obs: str | None) -> list[dict]:
     rows: list[dict] = []
@@ -86,7 +108,7 @@ def main() -> int:
         key_1d = derive_sibling(key, 'spectrum_1d_json')
         try:
             body = s3.get_object(Bucket=bcfg.bucket, Key=key)['Body'].read()
-            payload = json.dumps(spectrum_1d_payload(json.loads(body)), allow_nan=False).encode()
+            payload = json.dumps(sanitize_1d(spectrum_1d_payload(json.loads(body))), allow_nan=False).encode()
             s3.put_object(Bucket=bcfg.bucket, Key=key_1d, Body=payload, ContentType='application/json')
         except Exception as e:  # noqa: BLE001
             return None, f"{key}: {e}"
