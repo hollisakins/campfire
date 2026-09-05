@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
-import { generateDownloadUrl } from '@/lib/r2';
 import { storageKey } from '@/lib/layout';
+import { frontUrlFor } from '@/lib/server/cdn-front';
+import { streamSidecar } from '@/lib/server/sidecar-stream';
 
 /**
  * GET /api/photometry-pz?object_id=<object_id>
  *
- * Generates a signed URL for downloading a P(z) JSON sidecar from R2.
- * Requires authentication and checks user access to the object.
+ * Serves an object's P(z) JSON sidecar: a 302 to its delivery-front url when
+ * the front is configured, else the bytes streamed through. Requires
+ * authentication and checks user access to the object.
  *
  * P(z) sidecars are stored at: photometry/{field}/{object_id}_pz.json
  * The field is derived from the DB record, not from user input.
@@ -50,25 +52,29 @@ export async function GET(request: NextRequest) {
     // Construct P(z) sidecar key via the shared layout contract (DB-derived field)
     const pzPath = storageKey('photometry_pz', { field: obj.field, object_id: objectId });
 
-    // Generate signed URL and fetch server-side (avoids CORS issues)
-    const signedUrl = await generateDownloadUrl(pzPath, 3600);
-
-    const r2Response = await fetch(signedUrl);
-    if (!r2Response.ok) {
-      return NextResponse.json(
-        { error: 'P(z) sidecar not found in storage' },
-        { status: 404 }
-      );
+    // Delivery front first (perf T2-D2, #508): a content-addressed url the
+    // browser follows straight to the Worker (CORS `*`, edge-cached per
+    // content hash). The 302 itself may sit in the browser cache for an
+    // hour — front urls are stable for at least one 6 h presign window.
+    const frontUrl = await frontUrlFor(pzPath);
+    if (frontUrl) {
+      return NextResponse.redirect(frontUrl, {
+        status: 302,
+        headers: { 'Cache-Control': 'private, max-age=3600', Vary: 'Cookie' },
+      });
     }
 
-    const pzData = await r2Response.json();
-    const resp = NextResponse.json(pzData);
-    // ~0.5 MB sidecar re-sent on every object-page view before this (#497).
-    // Program-scoped → private. One day, not a week: the URL is keyed by
-    // object_id with no version token, and a photometry re-deploy overwrites
-    // the sidecar in place, so a longer lifetime would pin stale P(z).
-    resp.headers.set('Cache-Control', 'private, max-age=86400');
-    return resp;
+    // Fallback: stream the sidecar through untouched. ~0.5 MB re-sent on
+    // every object-page view before this (#497). Program-scoped → private.
+    // One day, not a week: the URL is keyed by object_id with no version
+    // token, and a photometry re-deploy overwrites the sidecar in place, so
+    // a longer lifetime would pin stale P(z).
+    const sidecar = await streamSidecar(pzPath, 'private, max-age=86400');
+    if (sidecar.status === 'ok') return sidecar.response;
+    return NextResponse.json(
+      { error: 'P(z) sidecar not found in storage' },
+      { status: sidecar.status === 'missing' ? 404 : 502 }
+    );
   } catch (error) {
     console.error('Error generating P(z) sidecar URL:', error);
     return NextResponse.json(

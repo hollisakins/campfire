@@ -330,6 +330,13 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "reduced_at" timestamp with time zone,
     -- Phase A: per-spectrum auto-fit and DQ (populated in Phase B by deploy pipeline; backfilled in Phase D)
     "redshift_auto" double precision,
+    -- Perf T2-D2 (#508): the zfit scalars the object page's fit summary shows
+    -- (min chi-squared and the 0-100 ZCONF confidence), written by deploy from
+    -- the summary ECSV so the page fetches no zfit sidecar for them. NULL when
+    -- no fit exists or the row predates the column (backfilled from the zfit
+    -- JSON by scripts/backfill_zfit_scalars.py).
+    "chi2_min" double precision,
+    "confidence" double precision,
     "dq_flags" integer NOT NULL DEFAULT 0,
     -- B1 (#217): deploy lifecycle. 'published' is the only status visible to
     -- non-admins; 'draft' (admin-only draft, written by B2) and 'revoked'
@@ -1128,7 +1135,7 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- product_type tracks the campfire_layout PRODUCTS registry (every entry with a
     -- non-null bucket). A new cloud-backed product type requires a migration here.
     CONSTRAINT "storage_objects_product_type_check" CHECK (("product_type" = ANY (ARRAY[
-        'nirspec_spec'::"text", 'spectrum_json'::"text", 'zfit'::"text",
+        'nirspec_spec'::"text", 'spectrum_json'::"text", 'spectrum_1d_json'::"text", 'zfit'::"text",
         'nirspec_spectrum_exposure'::"text", 'nirspec_rate'::"text",
         'rgb'::"text", 'sed'::"text",
         'nircam_exposure'::"text", 'nircam_exposure_preview'::"text",

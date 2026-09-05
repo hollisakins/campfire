@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
-import { useSpectrumJson, useRedshiftFit } from '@/lib/hooks/useSpectrumJson';
+import { useSpectrumJson, useSpectrum1d, useRedshiftFit, useSpectrumSidecarUrls, fullPayloadIsSeparate } from '@/lib/hooks/useSpectrumJson';
+import type { SpectrumData } from '@/app/api/spectrum/route';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
 import { COLORSCALE_2D_OPTIONS } from '@/lib/types';
@@ -108,17 +109,45 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // Sidecars come from the shared TanStack cache (lib/hooks/useSpectrumJson):
   // the inspection prefetch, RedshiftFitSummary and this plot all read the
   // same entries, so a path is fetched once per page (#500).
-  const spectrumQuery = useSpectrumJson(fitsPath);
-  const fitQuery = useRedshiftFit(fitsPath);
-  const data = spectrumQuery.data ?? null;
-  const fitData = fitQuery.data ?? null;
-  const loading = spectrumQuery.isPending;
-  const error = spectrumQuery.error ? spectrumQuery.error.message : null;
+  //
+  // 1-D before 2-D (perf T2-D2, #508): the 1-D sidecar paints the spectrum
+  // and profile as soon as it lands; the heatmap joins when the full JSON
+  // (the 2-D S/N array, 80–95 % of the bytes) arrives. A spectrum deployed
+  // before the sidecar existed answers the 1-D query with its full payload,
+  // which then serves the heatmap too.
+  const oneDQuery = useSpectrum1d(fitsPath);
+  // The full query waits for the url resolve (which the 1-D fetch awaits
+  // anyway, so this costs no latency) and is skipped when the 1-D query
+  // already delivers the full payload (pre-backfill spectra).
+  // A failed resolve settles too: the payload fetchers then stream from the
+  // app routes, and the full query must still run for the heatmap. Should
+  // the resolve have been wrong (a 1-D answer without the 2-D array), the
+  // landed 1-D payload re-enables it.
+  const sidecarUrls = useSpectrumSidecarUrls(fitsPath);
+  const data = oneDQuery.data ?? null;
+  const fullQuery = useSpectrumJson(
+    fitsPath,
+    !sidecarUrls.isPending &&
+      (fullPayloadIsSeparate(sidecarUrls.data) || (data !== null && !('snr_2d' in data))),
+  );
+  const heat: SpectrumData | null =
+    fullQuery.data ?? (data && 'snr_2d' in data ? (data as SpectrumData) : null);
+  const loading = oneDQuery.isPending;
+  const error = oneDQuery.error ? oneDQuery.error.message : null;
+  const heatError = fullQuery.error
+    ? (fullQuery.error instanceof Error ? fullQuery.error.message : 'Failed to load 2-D spectrum')
+    : null;
   const [fluxUnit, setFluxUnit] = useState<FluxUnit>(spectrumPreferences.fluxUnit);
   const [colorscale, setColorscale] = useState<Colorscale2D>(spectrumPreferences.colorscale2D);
   const [showEmissionLines, setShowEmissionLines] = useState(inspectionMode);
   // Show best-fit model overlay + χ²(z) panel. Defaults on in inspection mode.
   const [showModel, setShowModel] = useState(inspectionMode);
+  // The zfit sidecar feeds only the model overlay and the χ²(z) panel, so it
+  // is fetched once they are shown (the fit summary reads its scalars from
+  // the spectra row, #508). An entry the inspection prefetch or the summary
+  // already put in the shared cache serves immediately either way.
+  const fitQuery = useRedshiftFit(fitsPath, showModel);
+  const fitData = fitQuery.data ?? null;
   const [redshift, setRedshift] = useState(initialRedshift ?? 0);
   const [colorMin, setColorMin] = useState(spectrumPreferences.snrMin);
   const [colorMax, setColorMax] = useState(spectrumPreferences.snrMax);
@@ -274,10 +303,11 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     // Combined traces for stacked subplots
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const traces: any[] = [
-      // 2D S/N heatmap (top-left subplot, shares xaxis with 1D spectrum)
-      {
-        z: data.snr_2d,
-        x: data.wave,
+      // 2D S/N heatmap (top-left subplot, shares xaxis with 1D spectrum) —
+      // only once the full payload is in; the panel stays empty until then.
+      ...(heat ? [{
+        z: heat.snr_2d,
+        x: heat.wave,
         y: hasProfile ? data.profile_pix : undefined,
         type: 'heatmap' as const,
         colorscale: getPlotlyColorscale(colorscale),
@@ -287,7 +317,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         hovertemplate: 'λ: %{x:.3f} μm<br>y: %{y:.1f} pix<br>S/N: %{z:.1f}<extra></extra>',
         xaxis: 'x',
         yaxis: 'y2',
-      },
+      }] : []),
       // Error band (bottom subplot)
       {
         x: [...wave, ...wave.slice().reverse()],
@@ -491,7 +521,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     };
 
     return { traces, layout, waveMin, waveMax };
-  }, [data, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, grating, showModel, autoStretch]);
+  }, [data, heat, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, grating, showModel, autoStretch]);
 
   // Emission line markers (drawn on the hidden overlay yaxis4 so they never
   // affect autoscaling or double-click reset) — the only traces that move
@@ -641,6 +671,22 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
 
   return (
     <div className={bare ? '' : 'bg-card border border-border rounded-lg overflow-hidden'}>
+      {heatError && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+        >
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>2-D spectrum unavailable: {heatError}</span>
+          <button
+            type="button"
+            onClick={() => { void fullQuery.refetch(); }}
+            className="ml-auto font-medium underline underline-offset-2"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-surface-2">
         <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />

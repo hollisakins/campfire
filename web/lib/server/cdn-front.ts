@@ -19,7 +19,7 @@
 // otherwise store under the old hash.
 import 'server-only';
 
-import { resolveObjectBackends, presignResolvedStable } from '@/lib/r2';
+import { resolveObjectBackends, presignResolvedStable, type ResolvedObject } from '@/lib/r2';
 import { hmacBase64Url } from './worker-token';
 
 const TOKEN_VERSION = 'campfire-o-v2';
@@ -70,12 +70,24 @@ export function buildFrontUrl(
  * this mints for whatever it is given.
  */
 export async function frontUrlsFor(keys: string[]): Promise<Map<string, string | null>> {
+  if (!cdnFrontBase() || keys.length === 0) {
+    return new Map<string, string | null>(keys.map((k) => [k, null]));
+  }
+  return frontUrlsForResolved(keys, await resolveObjectBackends(keys));
+}
+
+/** Same as frontUrlsFor, for a caller that has already resolved the keys
+ * (`resolved[i]` is `keys[i]`'s registry answer) and needs the resolution
+ * for something else too. */
+export async function frontUrlsForResolved(
+  keys: string[],
+  resolved: ResolvedObject[],
+): Promise<Map<string, string | null>> {
   const out = new Map<string, string | null>(keys.map((k) => [k, null]));
   const base = cdnFrontBase();
   if (!base || keys.length === 0) return out;
   const secret = process.env.WORKER_JWT_SECRET as string;
 
-  const resolved = await resolveObjectBackends(keys);
   await Promise.all(
     resolved.map(async (o, i) => {
       if (!o.contentHash) return;

@@ -299,6 +299,41 @@ describe('/o/ handler', () => {
     expect(fetched).toHaveLength(3);
   });
 
+  it('a HEAD miss fills the slot from its own single upstream GET', async () => {
+    const { cache, store } = fakeCache();
+    vi.stubGlobal('caches', { default: cache });
+    const pending: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (p: Promise<unknown>) => { pending.push(p); } };
+
+    const head = await worker.fetch(new Request(await objectUrl(), { method: 'HEAD' }), ENV, ctx as never);
+    expect(head.status).toBe(200);
+    expect(head.headers.get('X-Cache')).toBe('MISS');
+    expect(head.headers.get('Content-Length')).toBe('10');
+    expect(await head.text()).toBe('');
+    await Promise.all(pending);
+
+    // One upstream GET served the headers and filled the store — no second
+    // full-object fetch behind it.
+    expect(fetched).toHaveLength(1);
+    expect(store.size).toBe(1);
+    const again = await worker.fetch(new Request(await objectUrl()), ENV, ctx as never);
+    expect(again.headers.get('X-Cache')).toBe('HIT');
+    expect(await again.text()).toBe('ABCDEFGHIJ');
+    expect(fetched).toHaveLength(1);
+  });
+
+  it('an unsatisfiable Range is an uncached error, not a served object', async () => {
+    vi.stubGlobal('fetch', async () => new Response('<Error>InvalidRange</Error>', {
+      status: 416,
+      headers: { 'Content-Type': 'application/xml', 'Content-Range': 'bytes */10' },
+    }));
+    const res = await worker.fetch(new Request(await objectUrl(), { headers: { Range: 'bytes=50-60' } }), ENV);
+    expect(res.status).toBe(416);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(res.headers.get('Content-Type')).not.toBe('application/json');
+    expect(res.headers.get('X-Cache')).toBeNull();
+  });
+
   it('stores a full 200 under (key, hash) and answers later GETs and Ranges from the cache', async () => {
     const { cache, store } = fakeCache();
     vi.stubGlobal('caches', { default: cache });

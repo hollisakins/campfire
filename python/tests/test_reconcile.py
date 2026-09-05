@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from campfire.deploy import reconcile
 from campfire.deploy.reconcile import (
     ClusterAggregates,
@@ -18,7 +20,7 @@ from campfire.deploy.reconcile import (
     apply_proposals,
     classify,
 )
-from campfire.deploy.supabase import batch_upsert_spectra
+from campfire.deploy.supabase import batch_upsert_spectra, update_spectra_zfit_scalars
 
 
 def _mock_supabase_client(existing_rows: list[dict]) -> MagicMock:
@@ -214,6 +216,47 @@ def test_batch_upsert_spectra_flags_hash_change():
         [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:B'}],
     )
     assert changed == {('t1', 'prism')}
+
+
+def test_update_spectra_zfit_scalars_updates_only_the_scalars_per_row():
+    # A plain UPDATE per (target_id, grating), never an upsert: a partial
+    # upsert trips the NOT NULL columns (fits_path, ...) before ON CONFLICT.
+    client = _mock_supabase_client([{'target_id': 't1', 'grating': 'prism'}])
+    n = update_spectra_zfit_scalars(client, [{
+        'target_id': 't1', 'grating': 'prism',
+        'redshift_auto': 2.75, 'chi2_min': 41.25, 'confidence': 87.5,
+    }])
+    assert n == 1
+    client.table.return_value.select.return_value.in_.assert_called_once_with('target_id', ['t1'])
+    table = client.table.return_value
+    table.update.assert_called_once_with(
+        {'redshift_auto': 2.75, 'chi2_min': 41.25, 'confidence': 87.5},
+    )
+    eq1 = table.update.return_value.eq
+    eq1.assert_called_once_with('target_id', 't1')
+    eq1.return_value.eq.assert_called_once_with('grating', 'prism')
+    eq1.return_value.eq.return_value.execute.assert_called_once_with()
+    table.upsert.assert_not_called()
+
+
+def test_update_spectra_zfit_scalars_writes_nothing_if_a_spectrum_row_is_missing():
+    # The existence check is per (target_id, grating): a target with only a
+    # prism row must not accept a g395m patch, which would insert a stub.
+    client = _mock_supabase_client([{'target_id': 't1', 'grating': 'prism'}])
+    with pytest.raises(RuntimeError, match='matched 0 spectra rows for t1/g395m'):
+        update_spectra_zfit_scalars(client, [
+            {'target_id': 't1', 'grating': 'prism',
+             'redshift_auto': 1.0, 'chi2_min': 1.0, 'confidence': 1.0},
+            {'target_id': 't1', 'grating': 'g395m',
+             'redshift_auto': None, 'chi2_min': None, 'confidence': None},
+        ])
+    client.table.return_value.update.assert_not_called()
+
+
+def test_update_spectra_zfit_scalars_empty_is_a_noop():
+    client = _mock_supabase_client([])
+    assert update_spectra_zfit_scalars(client, []) == 0
+    client.table.assert_not_called()
 
 
 def test_unchanged_1to1_match_is_skipped_not_updated():
