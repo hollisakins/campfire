@@ -709,16 +709,18 @@ def batch_upsert_spectra(
 def update_spectra_zfit_scalars(
     client: Client,
     spectra: list[dict],
-    batch_size: int = 500,
 ) -> int:
     """Update row-backed zfit scalars without touching spectrum metadata.
 
     ``deploy zfit`` replaces only the fit artifact, so a full spectra upsert
-    would risk copying unrelated, stale ECSV metadata. A partial upsert on
-    the (target_id, grating) UNIQUE key patches just the three scalar
-    columns in one round-trip per batch (merge-duplicates leaves every other
-    column alone), while ensuring the web UI cannot keep trusting the
-    previous fit's row-backed values.
+    would risk copying unrelated, stale ECSV metadata. Each (target_id,
+    grating) row gets a plain UPDATE of just the three scalar columns, which
+    also fires ``bump_spectra_updated_at`` so incremental sync sees the row.
+
+    Not an upsert: PostgREST would send ``INSERT ... ON CONFLICT DO UPDATE``
+    with only these columns, and Postgres checks NOT NULL (fits_path,
+    program_slug, observation) on the proposed row *before* the conflict is
+    resolved, so a partial upsert fails even when the row exists.
 
     Every (target_id, grating) pair must already exist: a standalone re-fit
     never creates spectra rows, so a missing one means the ECSV and the
@@ -747,18 +749,19 @@ def update_spectra_zfit_scalars(
             f'zfit scalar update matched 0 spectra rows for {shown}{more}'
         )
 
-    patches = [{
-        'target_id': s['target_id'],
-        'grating': s['grating'],
-        'redshift_auto': s['redshift_auto'],
-        'chi2_min': s['chi2_min'],
-        'confidence': s['confidence'],
-    } for s in spectra]
-    for i in range(0, len(patches), batch_size):
-        client.table('spectra').upsert(
-            patches[i:i + batch_size], on_conflict='target_id,grating'
-        ).execute()
-    return len(patches)
+    for s in spectra:
+        (
+            client.table('spectra')
+            .update({
+                'redshift_auto': s['redshift_auto'],
+                'chi2_min': s['chi2_min'],
+                'confidence': s['confidence'],
+            })
+            .eq('target_id', s['target_id'])
+            .eq('grating', s['grating'])
+            .execute()
+        )
+    return len(spectra)
 
 
 def recompute_target_aggregates(

@@ -51,6 +51,10 @@ export function spectrumSidecarsQueryOptions(fitsPath: string) {
     queryFn: () => fetchSidecarUrls(fitsPath),
     staleTime: URLS_STALE_MS,
     gcTime: URLS_STALE_MS,
+    // A failed resolve degrades to the streaming routes (sidecarUrls), which
+    // run their own access check; the default three retries would hold every
+    // sidecar of the spectrum for ~7 s before that fallback starts.
+    retry: 1,
   };
 }
 

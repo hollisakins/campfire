@@ -130,10 +130,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     !sidecarUrls.isPending &&
       (fullPayloadIsSeparate(sidecarUrls.data) || (data !== null && !('snr_2d' in data))),
   );
-  const fitQuery = useRedshiftFit(fitsPath);
   const heat: SpectrumData | null =
     fullQuery.data ?? (data && 'snr_2d' in data ? (data as SpectrumData) : null);
-  const fitData = fitQuery.data ?? null;
   const loading = oneDQuery.isPending;
   const error = oneDQuery.error ? oneDQuery.error.message : null;
   const heatError = fullQuery.error
@@ -144,6 +142,12 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   const [showEmissionLines, setShowEmissionLines] = useState(inspectionMode);
   // Show best-fit model overlay + χ²(z) panel. Defaults on in inspection mode.
   const [showModel, setShowModel] = useState(inspectionMode);
+  // The zfit sidecar feeds only the model overlay and the χ²(z) panel, so it
+  // is fetched once they are shown (the fit summary reads its scalars from
+  // the spectra row, #508). An entry the inspection prefetch or the summary
+  // already put in the shared cache serves immediately either way.
+  const fitQuery = useRedshiftFit(fitsPath, showModel);
+  const fitData = fitQuery.data ?? null;
   const [redshift, setRedshift] = useState(initialRedshift ?? 0);
   const [colorMin, setColorMin] = useState(spectrumPreferences.snrMin);
   const [colorMax, setColorMax] = useState(spectrumPreferences.snrMax);

@@ -218,7 +218,9 @@ def test_batch_upsert_spectra_flags_hash_change():
     assert changed == {('t1', 'prism')}
 
 
-def test_update_spectra_zfit_scalars_patches_only_the_scalars_in_one_upsert():
+def test_update_spectra_zfit_scalars_updates_only_the_scalars_per_row():
+    # A plain UPDATE per (target_id, grating), never an upsert: a partial
+    # upsert trips the NOT NULL columns (fits_path, ...) before ON CONFLICT.
     client = _mock_supabase_client([{'target_id': 't1', 'grating': 'prism'}])
     n = update_spectra_zfit_scalars(client, [{
         'target_id': 't1', 'grating': 'prism',
@@ -226,14 +228,15 @@ def test_update_spectra_zfit_scalars_patches_only_the_scalars_in_one_upsert():
     }])
     assert n == 1
     client.table.return_value.select.return_value.in_.assert_called_once_with('target_id', ['t1'])
-    client.table.return_value.upsert.assert_called_once_with(
-        [{
-            'target_id': 't1', 'grating': 'prism',
-            'redshift_auto': 2.75, 'chi2_min': 41.25, 'confidence': 87.5,
-        }],
-        on_conflict='target_id,grating',
+    table = client.table.return_value
+    table.update.assert_called_once_with(
+        {'redshift_auto': 2.75, 'chi2_min': 41.25, 'confidence': 87.5},
     )
-    client.table.return_value.update.assert_not_called()
+    eq1 = table.update.return_value.eq
+    eq1.assert_called_once_with('target_id', 't1')
+    eq1.return_value.eq.assert_called_once_with('grating', 'prism')
+    eq1.return_value.eq.return_value.execute.assert_called_once_with()
+    table.upsert.assert_not_called()
 
 
 def test_update_spectra_zfit_scalars_writes_nothing_if_a_spectrum_row_is_missing():
@@ -247,7 +250,7 @@ def test_update_spectra_zfit_scalars_writes_nothing_if_a_spectrum_row_is_missing
             {'target_id': 't1', 'grating': 'g395m',
              'redshift_auto': None, 'chi2_min': None, 'confidence': None},
         ])
-    client.table.return_value.upsert.assert_not_called()
+    client.table.return_value.update.assert_not_called()
 
 
 def test_update_spectra_zfit_scalars_empty_is_a_noop():
