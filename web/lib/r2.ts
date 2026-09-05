@@ -261,10 +261,24 @@ export function stablePresignWindow(nowMs: number = Date.now()): { start: number
 }
 
 /** Presign a resolved object on the current stable window. Same inputs within
- * a window => the same url; `exp` is when it stops being valid. */
+ * a window => the same url; `exp` is when it stops being valid.
+ *
+ * OSN only: a signing date hours in the past was verified against OSN (Ceph
+ * RGW), not against R2, and the objects still homed there (the legacy
+ * exposure PNGs) are the ones the exposure `<img>` sources front with no
+ * per-image fallback. An R2 object is therefore signed on the current time
+ * with the same lifetime — no worse than the per-mint presign it had before,
+ * and the Worker still caches it per content hash; only the browser's own
+ * cache stops hitting across page loads. Drop the branch once R2 is verified
+ * to accept a window-dated signature. */
 export async function presignResolvedStable(o: ResolvedObject): Promise<{ url: string; exp: number }> {
+  const lifetime = 2 * STABLE_PRESIGN_WINDOW_SECONDS;
+  if (o.backend === 'r2') {
+    const url = await presignResolved(o, lifetime);
+    return { url, exp: Math.floor(Date.now() / 1000) + lifetime };
+  }
   const { start, exp } = stablePresignWindow();
-  const url = await presignResolved(o, 2 * STABLE_PRESIGN_WINDOW_SECONDS, undefined, new Date(start * 1000));
+  const url = await presignResolved(o, lifetime, undefined, new Date(start * 1000));
   return { url, exp };
 }
 

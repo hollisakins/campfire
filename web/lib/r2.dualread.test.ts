@@ -263,4 +263,21 @@ describe('presignResolvedStable', () => {
       vi.useRealTimers();
     }
   });
+
+  it('signs an R2-homed object on the current time (window-dated signatures are only verified on OSN)', async () => {
+    const w = STABLE_PRESIGN_WINDOW_SECONDS * 1000;
+    const base = Math.floor(1_757_000_123_000 / w) * w;
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(base + 5000);
+      const r = await presignResolvedStable({ backend: 'r2', key: LEGACY, contentHash: 'sha256:aa', registeredAt: null });
+      expect(signCalls).toHaveLength(1);
+      expect(signCalls[0].signingDate).toBeUndefined();
+      expect(signCalls[0].expiresIn).toBe(2 * STABLE_PRESIGN_WINDOW_SECONDS);
+      expect(r.exp).toBe((base + 5000) / 1000 + 2 * STABLE_PRESIGN_WINDOW_SECONDS);
+      expect(r.url).toBe(`signed://campfire/${LEGACY}`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
