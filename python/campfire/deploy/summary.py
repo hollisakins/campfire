@@ -256,6 +256,35 @@ def get_zfit_paths(summary: Table, obs_dir: Path) -> list[Path]:
     return paths
 
 
+def get_zfit_scalar_updates(
+    summary: Table,
+    results_by_filename: dict[str, dict],
+) -> list[dict]:
+    """Build per-spectrum scalar updates from generated zfit JSON payloads.
+
+    The JSON payload is the exact artifact uploaded by ``deploy zfit`` and is
+    therefore authoritative over the summary ECSV, which may predate a
+    standalone re-fit. Only filenames present in ``results_by_filename`` are
+    returned, allowing the caller to exclude failed uploads.
+    """
+    updates = []
+    for row in summary:
+        zfit_file = row['zfit_file']
+        if not zfit_file:
+            continue
+        result = results_by_filename.get(Path(str(zfit_file)).name)
+        if result is None:
+            continue
+        updates.append({
+            'target_id': str(row['object_id']),
+            'grating': str(row['grating']),
+            'redshift_auto': _finite_or_none(result.get('redshift')),
+            'chi2_min': _finite_or_none(result.get('chi2_min')),
+            'confidence': _finite_or_none(result.get('confidence')),
+        })
+    return updates
+
+
 def get_program_slug(summary: Table) -> str:
     """Return the CAMPFIRE program slug from table metadata.
 

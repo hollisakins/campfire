@@ -136,6 +136,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   const fitData = fitQuery.data ?? null;
   const loading = oneDQuery.isPending;
   const error = oneDQuery.error ? oneDQuery.error.message : null;
+  const heatError = fullQuery.error
+    ? (fullQuery.error instanceof Error ? fullQuery.error.message : 'Failed to load 2-D spectrum')
+    : null;
   const [fluxUnit, setFluxUnit] = useState<FluxUnit>(spectrumPreferences.fluxUnit);
   const [colorscale, setColorscale] = useState<Colorscale2D>(spectrumPreferences.colorscale2D);
   const [showEmissionLines, setShowEmissionLines] = useState(inspectionMode);
@@ -664,6 +667,22 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
 
   return (
     <div className={bare ? '' : 'bg-card border border-border rounded-lg overflow-hidden'}>
+      {heatError && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+        >
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>2-D spectrum unavailable: {heatError}</span>
+          <button
+            type="button"
+            onClick={() => { void fullQuery.refetch(); }}
+            className="ml-auto font-medium underline underline-offset-2"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-surface-2">
         <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />

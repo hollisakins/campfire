@@ -9,6 +9,7 @@ Each public function follows the same pattern:
   5. Upsert to Supabase
 """
 
+import json
 import re
 import shutil
 import sys
@@ -56,6 +57,7 @@ from campfire.deploy.supabase import (
     refresh_observations_overview,
     update_latest_deployment,
     update_observation_pointings,
+    update_spectra_zfit_scalars,
     upsert_observation,
     upsert_programs,
 )
@@ -66,6 +68,7 @@ from campfire.deploy.summary import (
     get_spec_paths,
     get_spectra_records,
     get_unique_objects,
+    get_zfit_scalar_updates,
     get_zfit_paths,
     load_summary,
 )
@@ -1124,9 +1127,13 @@ def deploy_zfit(
         print("Generating zfit JSON files...")
         scope = Scope(obs=obs_name)
         tasks = []
+        zfit_results_by_key: dict[str, tuple[str, dict]] = {}
         for path in zfit_paths:
             json_path = generate_zfit_json(path, temp_dir)
-            tasks.append(UploadTask(json_path, storage_key('zfit', scope, json_path.name, scheme=KeyScheme.CANONICAL), 'application/json'))
+            key = storage_key('zfit', scope, json_path.name, scheme=KeyScheme.CANONICAL)
+            tasks.append(UploadTask(json_path, key, 'application/json'))
+            with open(json_path) as f:
+                zfit_results_by_key[key] = (path.name, json.load(f))
 
         print("Uploading to OSN...")
         uploaded_keys: set[str] = set()
@@ -1155,6 +1162,19 @@ def deploy_zfit(
 
     # Update redshift_auto in Supabase
     sb = get_supabase_client(config)
+
+    # Keep the row-backed fit values in lockstep with the exact JSON artifacts
+    # that landed. RedshiftFitSummary trusts these columns when present, so a
+    # standalone re-fit must replace them too. Failed uploads are deliberately
+    # excluded: their old artifact and old scalar row remain a coherent pair.
+    uploaded_results = {
+        filename: result
+        for key, (filename, result) in zfit_results_by_key.items()
+        if key in uploaded_keys
+    }
+    scalar_updates = get_zfit_scalar_updates(summary, uploaded_results)
+    n_scalars = update_spectra_zfit_scalars(sb, scalar_updates)
+    print(f"  Updated zfit scalars for {n_scalars} spectra")
 
     if force_overwrite:
         existing = check_existing_objects(sb, [o['object_id'] for o in objects])

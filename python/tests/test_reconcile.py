@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from campfire.deploy import reconcile
 from campfire.deploy.reconcile import (
     ClusterAggregates,
@@ -18,7 +20,7 @@ from campfire.deploy.reconcile import (
     apply_proposals,
     classify,
 )
-from campfire.deploy.supabase import batch_upsert_spectra
+from campfire.deploy.supabase import batch_upsert_spectra, update_spectra_zfit_scalars
 
 
 def _mock_supabase_client(existing_rows: list[dict]) -> MagicMock:
@@ -214,6 +216,42 @@ def test_batch_upsert_spectra_flags_hash_change():
         [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:B'}],
     )
     assert changed == {('t1', 'prism')}
+
+
+def test_update_spectra_zfit_scalars_filters_and_verifies_each_row():
+    client = MagicMock()
+    execute = (
+        client.table.return_value.update.return_value.eq.return_value.eq.return_value
+        .select.return_value.execute
+    )
+    execute.return_value = MagicMock(data=[{'id': 42}])
+    n = update_spectra_zfit_scalars(client, [{
+        'target_id': 't1', 'grating': 'prism',
+        'redshift_auto': 2.75, 'chi2_min': 41.25, 'confidence': 87.5,
+    }])
+    assert n == 1
+    client.table.assert_called_once_with('spectra')
+    client.table.return_value.update.assert_called_once_with({
+        'redshift_auto': 2.75, 'chi2_min': 41.25, 'confidence': 87.5,
+    })
+    client.table.return_value.update.return_value.eq.assert_called_once_with('target_id', 't1')
+    (
+        client.table.return_value.update.return_value.eq.return_value.eq
+        .assert_called_once_with('grating', 'prism')
+    )
+
+
+def test_update_spectra_zfit_scalars_fails_if_spectrum_row_is_missing():
+    client = MagicMock()
+    (
+        client.table.return_value.update.return_value.eq.return_value.eq.return_value
+        .select.return_value.execute
+    ).return_value = MagicMock(data=[])
+    with pytest.raises(RuntimeError, match='matched 0 spectra rows for t1/prism'):
+        update_spectra_zfit_scalars(client, [{
+            'target_id': 't1', 'grating': 'prism',
+            'redshift_auto': None, 'chi2_min': None, 'confidence': None,
+        }])
 
 
 def test_unchanged_1to1_match_is_skipped_not_updated():

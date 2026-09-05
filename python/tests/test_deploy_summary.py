@@ -11,6 +11,7 @@ from astropy.table import Table
 from campfire.deploy.summary import (
     _finite_or_none,
     get_spectra_records,
+    get_zfit_scalar_updates,
     get_unique_objects,
 )
 
@@ -127,3 +128,31 @@ def test_get_spectra_records_carries_zfit_scalars_when_present():
 def test_get_spectra_records_omits_zfit_scalars_for_old_ecsv():
     r1, _ = get_spectra_records(_spectra_table(), 'obs1')
     assert 'chi2_min' not in r1 and 'confidence' not in r1
+
+
+def test_get_zfit_scalar_updates_uses_uploaded_json_not_stale_summary():
+    t = _spectra_table()
+    t['zfit_file'] = ['a_zfit.fits', 'b_zfit.fits']
+    t['chi2_min'] = [999.0, 888.0]
+    t['redshift_confidence'] = [1.0, 2.0]
+    updates = get_zfit_scalar_updates(t, {
+        'a_zfit.fits': {'redshift': 2.75, 'chi2_min': 41.25, 'confidence': 87.5},
+    })
+    assert updates == [{
+        'target_id': 't1',
+        'grating': 'prism',
+        'redshift_auto': 2.75,
+        'chi2_min': 41.25,
+        'confidence': 87.5,
+    }]
+
+
+def test_get_zfit_scalar_updates_clears_degenerate_fit_values():
+    t = _spectra_table()[:1]
+    t['zfit_file'] = ['a_zfit.fits']
+    updates = get_zfit_scalar_updates(t, {
+        'a_zfit.fits': {'redshift': None, 'chi2_min': None, 'confidence': None},
+    })
+    assert updates[0]['redshift_auto'] is None
+    assert updates[0]['chi2_min'] is None
+    assert updates[0]['confidence'] is None

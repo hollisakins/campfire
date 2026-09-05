@@ -706,6 +706,39 @@ def batch_upsert_spectra(
     return len(spectra), changed
 
 
+def update_spectra_zfit_scalars(client: Client, spectra: list[dict]) -> int:
+    """Update row-backed zfit scalars without touching spectrum metadata.
+
+    ``deploy zfit`` replaces only the fit artifact, so a full spectra upsert
+    would risk copying unrelated, stale ECSV metadata. Filtered updates keep
+    that command narrow while ensuring the web UI cannot keep trusting the
+    previous fit's row-backed values.
+    """
+    updated = 0
+    for spectrum in spectra:
+        patch = {
+            'redshift_auto': spectrum['redshift_auto'],
+            'chi2_min': spectrum['chi2_min'],
+            'confidence': spectrum['confidence'],
+        }
+        response = (
+            client.table('spectra')
+            .update(patch)
+            .eq('target_id', spectrum['target_id'])
+            .eq('grating', spectrum['grating'])
+            .select('id')
+            .execute()
+        )
+        count = len(response.data or [])
+        if count != 1:
+            raise RuntimeError(
+                'zfit scalar update matched '
+                f"{count} spectra rows for {spectrum['target_id']}/{spectrum['grating']}"
+            )
+        updated += count
+    return updated
+
+
 def recompute_target_aggregates(
     client: Client,
     target_ids: list[str],
