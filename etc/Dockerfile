@@ -7,7 +7,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY campfire_etc ./campfire_etc
-RUN pip install --no-cache-dir ".[mcp]"
+RUN pip install --no-cache-dir ".[mcp,fits]"
 
 # The public URL and accepted Host headers are set per deployment (fly.toml [env]).
 ENV PORT=8080

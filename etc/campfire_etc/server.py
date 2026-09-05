@@ -196,17 +196,30 @@ def _nearest(c: dict[str, np.ndarray], wave_um: float | None) -> int:
 # --------------------------------------------------------------------------- downloads (HTTP mode)
 
 _FILES: dict[str, tuple[bytes, str, str, float]] = {}
-# Downloads live in this process's memory. Behind a load balancer that runs
-# several instances (Fly), the file id carries the instance that made it so
-# another instance can ask the proxy to replay the request there.
+# Downloads live in this process's memory, bounded in total size: once the
+# budget is exceeded the oldest entries go first, TTL or not (the server is
+# anonymous, so a burst of requests must not be able to exhaust memory).
+FILE_STORE_MAX_BYTES = int(os.environ.get("CAMPFIRE_ETC_FILE_STORE_MB", "48")) * 1024 * 1024
+FILE_MAX_BYTES = 8 * 1024 * 1024
+# Behind a load balancer that runs several instances (Fly), the file id
+# carries the instance that made it so another instance can ask the proxy to
+# replay the request there.
 INSTANCE_ID = os.environ.get("FLY_MACHINE_ID", "")
 
 
 def _store_file(data: bytes, content_type: str, filename: str) -> str:
+    if len(data) > FILE_MAX_BYTES:
+        raise ValueError(f"result is {len(data) / 1e6:.1f} MB, above the {FILE_MAX_BYTES / 1e6:.0f} MB download limit; "
+                         "narrow wave_range or reduce n_realizations")
     now = time.time()
     for k, (_, _, _, exp) in list(_FILES.items()):
         if exp < now:
             _FILES.pop(k, None)
+    total = sum(len(v[0]) for v in _FILES.values()) + len(data)
+    for k in list(_FILES):                      # insertion order = age
+        if total <= FILE_STORE_MAX_BYTES:
+            break
+        total -= len(_FILES.pop(k)[0])
     fid = (INSTANCE_ID + "." if INSTANCE_ID else "") + secrets.token_urlsafe(12)
     _FILES[fid] = (data, content_type, filename, now + DOWNLOAD_TTL_S)
     return fid
@@ -340,7 +353,7 @@ def exposure_time(readout: str, ngroups: int, nint: int = 1, nexp: int = 1) -> d
     (readout: nrsirs2 | nrsirs2rapid | nrs | nrsrapid; nexp counts all nods and
     visits). Pure timing, no overheads."""
     e = _exposure(readout, ngroups, nint, nexp, None, None)
-    return e.to_dict() | {"extrapolated_readout": e.readout in EXTRAPOLATED_READOUTS}
+    return {"model_version": MODEL.version} | e.to_dict() | {"extrapolated_readout": e.readout in EXTRAPOLATED_READOUTS}
 
 
 @server.tool()
@@ -370,7 +383,7 @@ def depth(
         "proposal_sentence": (
             f"NIRSpec/MSA {d.name}, {e.describe()}: 5-sigma continuum limit {c['ab5_res'][i]:.1f} AB per resolution element "
             f"({c['ab5_pix'][i]:.1f} per pixel) and 5-sigma unresolved-line limit {fmt_sci(c['line5'][i])} erg/s/cm2 at "
-            f"{c['wave'][i]:.2f} um ({extraction} extraction, {plabel}; empirical estimate from the CAMPFIRE archive)."
+            f"{c['wave'][i]:.2f} um for a point source ({extraction} extraction, {plabel}; empirical estimate from the CAMPFIRE archive)."
         ),
         "notes": _notes(d, e),
     }
@@ -411,7 +424,8 @@ def continuum_snr(
     if F is None:
         raise ValueError("give a source: magnitude_ab, flux_njy, sed, or magnitude_ab + beta")
     try:
-        c = continuum(d, e, w, F, extraction=extraction, placement_mult=mult, margin=margin, bin_mode=bin_mode, bin_value=bin_value)
+        c = continuum(d, e, w, F, extraction=extraction, placement_mult=mult, margin=margin, bin_mode=bin_mode, bin_value=bin_value,
+                      line_recovery=rec)
     except ModelError as err:
         raise ValueError(str(err)) from err
     i = _nearest(c, wave_of_interest_um)
@@ -559,6 +573,11 @@ def simulate_spectrum(
     fmt = output_format.lower().lstrip(".")
     if fmt not in ("ecsv", "txt", "dat", "npz", "json", "fits"):
         raise ValueError("output_format must be ecsv | txt | npz | json | fits")
+    if fmt == "fits":
+        try:
+            import astropy  # noqa: F401
+        except ImportError:
+            raise ValueError("FITS output is not available on this server (astropy missing); use ecsv, npz, json or txt")
     if output_path:
         if not LOCAL_FILES:
             raise ValueError("output_path only works with a local (stdio) install; on the hosted server use the download_url instead")

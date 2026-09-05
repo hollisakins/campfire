@@ -7,7 +7,7 @@ import pytest
 import campfire_etc as ce
 from campfire_etc.model import ModelError, READOUT_GROUP_S
 
-M = ce.load_model()
+M = ce.load_model("2026.09")   # pinned: the numbers below are this model's
 PRISM = M.get("prism")
 
 # From analysis/dispersers/prism_clear/payload.json (model 2026.09): T = 10 ks,
@@ -148,6 +148,14 @@ def test_line_limit_consistency():
     # the S/N of a 5-sigma limit found from continuum() agrees with line()
     c = ce.continuum(PRISM, e, np.array([3.0]))
     assert c["line5"][0] == pytest.approx(r["limit_5sigma_cgs"], rel=1e-9)
+    # the limit is a total flux: with half the line lost to slit losses a line
+    # at the reported limit still reaches ~5 sigma, and the limit doubles
+    half = ce.line(PRISM, e, 3.0, 1e-18, 0.0, line_recovery=0.5)
+    assert half["limit_5sigma_cgs"] == pytest.approx(2 * r["limit_5sigma_cgs"], rel=1e-9)
+    at_limit = ce.line(PRISM, e, 3.0, half["limit_5sigma_cgs"], 0.0, line_recovery=0.5)
+    assert 4.5 < at_limit["snr"] <= 5.0
+    c_half = ce.continuum(PRISM, e, np.array([3.0]), line_recovery=0.5)
+    assert c_half["line5"][0] == pytest.approx(half["limit_5sigma_cgs"], rel=1e-9)
 
 
 def test_pixel_grid_matches_dispersion():

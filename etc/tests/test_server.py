@@ -50,6 +50,10 @@ def test_depth_and_snr_tools():
     assert "43%" in r["proposal_sentence"] or "46%" in r["proposal_sentence"]
     r = call("line_snr", disperser="g395m", readout="nrsirs2", ngroups=19, nexp=36, wave_um=3.5, flux_cgs=2e-18, fwhm_kms=150, continuum_magnitude_ab=27.5)
     assert r["line"]["snr"] > 10 and r["line"]["limit_5sigma_cgs"] < 2e-18
+    # limits are total fluxes: a point source has a fainter limit than a typical galaxy
+    pt = call("line_snr", disperser="g395m", readout="nrsirs2", ngroups=19, nexp=36, wave_um=3.5, flux_cgs=2e-18, morphology="point")
+    assert pt["line"]["limit_5sigma_cgs"] < r["line"]["limit_5sigma_cgs"]
+    assert "model_version" in call("exposure_time", readout="nrsirs2", ngroups=13)
 
 
 def test_sed_and_power_law_inputs():
@@ -69,6 +73,17 @@ def test_errors_are_reported():
         with pytest.raises(ToolError, match="only works with a local"):
             await srv.server.call_tool("simulate_spectrum", {"disperser": "prism", "magnitude_ab": 26, "total_s": 1000, "per_exposure_s": 1000, "output_path": "/tmp/x.txt"})
     anyio.run(go)
+
+
+def test_file_store_is_bounded(monkeypatch):
+    srv._FILES.clear()
+    monkeypatch.setattr(srv, "FILE_STORE_MAX_BYTES", 5000)
+    ids = [srv._store_file(b"x" * 1500, "text/plain", "a.txt") for _ in range(6)]
+    assert sum(len(v[0]) for v in srv._FILES.values()) <= 5000
+    assert ids[-1] in srv._FILES and ids[0] not in srv._FILES
+    with pytest.raises(ValueError, match="download limit"):
+        srv._store_file(b"x" * (srv.FILE_MAX_BYTES + 1), "text/plain", "big.txt")
+    srv._FILES.clear()
 
 
 def test_simulate_inline_and_download(monkeypatch):

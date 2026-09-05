@@ -491,11 +491,15 @@ def continuum(
     margin: float = 1.0,
     bin_mode: str = "resolution",
     bin_value: float | None = None,
+    line_recovery: float = 1.0,
 ) -> dict[str, np.ndarray]:
     """Continuum noise, depth and S/N at each wavelength.
 
     ``flux_spec_ujy`` is the flux *in the extracted spectrum* (total flux times
     the recovery fraction), scalar or per wavelength; None gives depths only.
+    ``line_recovery`` is the fraction of an emission line's total flux that
+    reaches the extraction; the reported line limit is a *total* flux, so it
+    is divided by it (1.0 = point source).
     Returns arrays on ``wave`` (NaN outside coverage): sig_pix (per 2-D pixel),
     sig_1d (per 1-D pixel, source Poisson included), sig_res/sig_bin, n_res/n_bin,
     ab5_pix/ab5_res/ab5_bin (5-sigma AB limits), line5 (5-sigma unresolved-line
@@ -537,7 +541,7 @@ def continuum(
     ab5 = lambda s: -2.5 * np.log10(5 * s * 1e-6) + 8.9
     flam = sig_1d / w ** 2 * FNU_UJY_TO_FLAM
     nl = np.maximum(2 * n_res, 2)
-    line5 = 5 * flam * (dlds * 1e4) * np.sqrt(_neff(nl, rho)) / LINE_WINDOW_FRACTION
+    line5 = 5 * flam * (dlds * 1e4) * np.sqrt(_neff(nl, rho)) / LINE_WINDOW_FRACTION / float(line_recovery)
     with np.errstate(invalid="ignore", divide="ignore"):
         out = dict(
             wave=w, sig_pix=sig_pix, sig_bg=sig_bg, sig_1d=sig_1d, sig_res=sig_res, sig_bin=sig_bin,
@@ -588,7 +592,9 @@ def line(
     S = LINE_WINDOW_FRACTION * float(line_recovery) * (float(flux_cgs) / (dlds * 1e4)) * w * w / FNU_UJY_TO_FLAM
     sigS = math.sqrt(neff * sig1 ** 2 + g * S / exp.total_s)
     snr = S / sigS if sigS > 0 else float("nan")
-    lim5 = 5 * sig1 * math.sqrt(neff) * (dlds * 1e4) * FNU_UJY_TO_FLAM / (w * w) / LINE_WINDOW_FRACTION
+    # 5-sigma limit on the line's *total* flux: the window sees only
+    # LINE_WINDOW_FRACTION * line_recovery of it.
+    lim5 = 5 * sig1 * math.sqrt(neff) * (dlds * 1e4) * FNU_UJY_TO_FLAM / (w * w) / LINE_WINDOW_FRACTION / float(line_recovery)
     return dict(wave_um=w, flux_cgs=float(flux_cgs), fwhm_kms=float(fwhm_kms), fwhm_um=fw,
                 fwhm_A=fw * 1e4, window_px=n, n_eff=neff, resolving_power=R, snr=snr,
                 limit_5sigma_cgs=lim5, sig_1d_ujy=sig1)
