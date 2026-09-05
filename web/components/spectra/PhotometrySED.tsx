@@ -1,10 +1,13 @@
 'use client';
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useMemo, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Loader2, BarChart3 } from 'lucide-react';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import { getPlotColors } from './plotting-utils';
 import { PhotometryTable } from './PhotometryTable';
+import { useInView } from '@/lib/hooks/useInView';
+import { fetchJson } from '@/lib/fetch-json';
 import type { ObjectPhotometry } from '@/lib/types';
 import { LazyPlot as Plot } from '@/components/plot/LazyPlot';
 
@@ -49,31 +52,25 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
 }) => {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
-  const [pzData, setPzData] = useState<PzSidecarData | null>(null);
-  const [pzLoading, setPzLoading] = useState(false);
-
-  // Load P(z) sidecar if available
-  useEffect(() => {
-    if (!photometry.has_pz) return;
-
-    const fetchPz = async () => {
-      setPzLoading(true);
-      try {
-        const resp = await fetch(
-          `/api/photometry-pz?object_id=${encodeURIComponent(objectId)}`
-        );
-        if (resp.ok) {
-          setPzData(await resp.json());
-        }
-      } catch {
-        // Silently fail — P(z) is optional
-      } finally {
-        setPzLoading(false);
-      }
-    };
-
-    fetchPz();
-  }, [photometry.has_pz, objectId]);
+  // The P(z) sidecar (~0.5 MB) is fetched once this section is near the
+  // viewport (perf T2-E, #510) — it sits below the spectra and used to start
+  // with the page, ahead of the primary spectrum request. A GET route
+  // (302 to the delivery front, or streamed), so the query aborts on unmount
+  // and the answer is shared across object views (#506). Failure is silent:
+  // P(z) is optional, and the panel simply does not appear.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inView = useInView(containerRef);
+  const pzQuery = useQuery({
+    queryKey: ['photometry-pz', objectId],
+    queryFn: ({ signal }) =>
+      fetchJson<PzSidecarData>(`/api/photometry-pz?object_id=${encodeURIComponent(objectId)}`, { signal }),
+    enabled: photometry.has_pz && inView,
+    staleTime: 24 * 60 * 60 * 1000,
+  });
+  const pzData = pzQuery.data ?? null;
+  // The panel (and the two-column layout) is reserved from the first render
+  // for an object with a P(z), so it does not reflow when the fetch lands.
+  const pzLoading = photometry.has_pz && !pzQuery.isError && pzData === null;
 
   const { bands } = photometry.photometry;
 
@@ -337,7 +334,7 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" ref={containerRef}>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">

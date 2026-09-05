@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { preload } from 'react-dom';
+import { HydrationBoundary } from '@tanstack/react-query';
 import { SignInLink } from '@/components/auth/SignInLink';
 import { notFound } from 'next/navigation';
 import { Metadata } from 'next';
@@ -7,7 +9,10 @@ import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { ReturnToMapButton } from '@/components/map/ReturnToMapButton';
 import { ObjectNavigation } from '@/components/spectra/ObjectNavigation';
 import { UnifiedObjectPage } from '@/components/spectra/UnifiedObjectPage';
-import { getObjectById, getObjectMetadata } from '@/lib/actions/spectra';
+import { PlotlyPreload } from '@/components/plot/PlotlyPreload';
+import { loadObjectHeader, loadObjectMetadata, loadObjectPhotometry } from '@/lib/server/objects';
+import { dehydrateSidecarUrls, resolveSpectrumSidecars } from '@/lib/server/spectrum-sidecars';
+import { spectrum1dSources } from '@/lib/spectrum-sidecars';
 import { getAssetVersions, assetVersionFor } from '@/lib/asset-version';
 import { parseSortingFromURL } from '@/lib/utils/url-params';
 
@@ -16,11 +21,21 @@ interface ObjectDetailPageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
+/**
+ * How many member spectra get a 1-D preload hint from the HTML. The
+ * comparison plot fetches every visible spectrum regardless; the cap keeps a
+ * many-spectra object from queueing its whole set ahead of the page's own
+ * scripts.
+ */
+const PRELOAD_1D_MAX = 8;
+
 export async function generateMetadata({ params }: ObjectDetailPageProps): Promise<Metadata> {
   const { id } = await params;
   const objectId = decodeURIComponent(id);
 
-  const metadata = await getObjectMetadata(objectId);
+  // Shares the page body's row lookup (request-memoized) for a signed-in
+  // viewer; a service-role read for everyone else.
+  const metadata = await loadObjectMetadata(objectId);
 
   if (!metadata) {
     return { title: 'Object Not Found - CAMPFIRE' };
@@ -52,6 +67,16 @@ export async function generateMetadata({ params }: ObjectDetailPageProps): Promi
   };
 }
 
+/**
+ * The object page (perf T2-E, #510). The HTML is rendered from the header
+ * alone — the object row and its member targets/spectra — and carries what
+ * the first plotted trace needs: preload hints for the Plotly chunks and for
+ * each member spectrum's 1-D payload, plus the resolved sidecar urls seeded
+ * into the client query cache. Photometry streams in behind a Suspense
+ * boundary; comments, nearby objects and the SED's P(z) fetch when they
+ * scroll into view; the 2-D S/N arrays load only for expanded spectrum
+ * cards, after their 1-D trace.
+ */
 export default async function ObjectDetailPage({ params, searchParams }: ObjectDetailPageProps) {
   const { id } = await params;
   const objectId = decodeURIComponent(id);
@@ -72,7 +97,7 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
   const { sortColumn, sortDirection } = parseSortingFromURL(urlParams, 'objects');
   const filterStr = urlParams.toString();
 
-  const { object, isAuthenticated } = await getObjectById(objectId);
+  const { object, isAuthenticated } = await loadObjectHeader(objectId);
 
   if (!isAuthenticated) {
     return (
@@ -111,8 +136,30 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
     notFound();
   }
 
+  // Photometry is not awaited: the promise crosses to the client tree and
+  // settles behind a Suspense boundary in UnifiedObjectPage. It never
+  // rejects (loadObjectPhotometry answers null on any failure).
+  const photometry = object.has_photometry ? loadObjectPhotometry(object.id) : Promise.resolve(null);
+
+  // Sidecar urls for every member spectrum: one registry resolution here,
+  // seeded into the client cache below, so no /api/spectrum/sidecars round
+  // trip stands between hydration and the first 1-D fetch — and the 1-D
+  // payloads themselves are preloaded from the HTML, so the browser has
+  // them in flight before any script runs. `crossOrigin` matches fetch()'s
+  // default mode and credentials (cors, same-origin) so the browser pairs
+  // the preload with the client's fetch of the same url; an as=fetch preload
+  // without it is a no-cors request nothing matches.
+  const fitsPaths = object.member_targets.flatMap(m => m.spectra.map(s => s.fits_path));
+  const sidecars = await resolveSpectrumSidecars(fitsPaths);
+  for (const fitsPath of fitsPaths.slice(0, PRELOAD_1D_MAX)) {
+    const { front, route } = spectrum1dSources(sidecars.get(fitsPath), fitsPath);
+    preload(front ?? route, { as: 'fetch', crossOrigin: 'anonymous' });
+  }
+
   return (
     <div className="container mx-auto px-4 py-8">
+      <PlotlyPreload />
+
       {/* Breadcrumbs + Navigation */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
@@ -139,8 +186,12 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
         />
       </div>
 
-      {/* Header + cutout + sidebar + panel (all client-managed) */}
-      <UnifiedObjectPage object={object} />
+      {/* Header + cutout + sidebar + panel (all client-managed). The
+          hydration boundary hands the resolved sidecar urls to every
+          spectrum query in the tree. */}
+      <HydrationBoundary state={dehydrateSidecarUrls(sidecars)}>
+        <UnifiedObjectPage object={object} photometry={photometry} />
+      </HydrationBoundary>
     </div>
   );
 }

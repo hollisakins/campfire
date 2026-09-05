@@ -681,6 +681,15 @@ export interface ObjectDetail {
   photometry: ObjectPhotometry | null;
 }
 
+/**
+ * What the object page renders first (perf T2-E, #510): the object row plus
+ * its access-scoped member targets and spectra — everything the header, the
+ * sidebar and the comparison plot need. Photometry streams behind it as a
+ * promise (see loadObjectPhotometry in lib/server/objects.ts); ObjectDetail
+ * is the two joined, for the inspection-mode callers that want one payload.
+ */
+export type ObjectHeader = Omit<ObjectDetail, 'photometry'>;
+
 // Comment with user profile info
 export interface CommentWithUser extends Comment {
   user_profile?: UserProfile;

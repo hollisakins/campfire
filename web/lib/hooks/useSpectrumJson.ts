@@ -18,7 +18,15 @@ import { useEffect } from 'react';
 import { useQuery, useQueries, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { SpectrumData, SpectrumData1D } from '@/app/api/spectrum/route';
 import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
-import type { SpectrumSidecarUrls } from '@/app/api/spectrum/sidecars/route';
+import {
+  NO_FRONT,
+  spectrum1dSources,
+  spectrumSidecarsKey,
+  spectrumJsonKey,
+  spectrum1dKey,
+  redshiftFitKey,
+  type SpectrumSidecarUrls,
+} from '@/lib/spectrum-sidecars';
 import { fetchJson } from '@/lib/fetch-json';
 
 // Sidecars only change on a re-deploy, and the routes already let the browser
@@ -28,10 +36,11 @@ const SIDECAR_GC_MS = 30 * 60 * 1000;
 // A front url is valid for at least one 6 h presign window.
 const URLS_STALE_MS = 60 * 60 * 1000;
 
-export const spectrumSidecarsKey = (fitsPath: string) => ['spectrum-sidecars', fitsPath] as const;
-export const spectrumJsonKey = (fitsPath: string) => ['spectrum-json', fitsPath] as const;
-export const spectrum1dKey = (fitsPath: string) => ['spectrum-1d', fitsPath] as const;
-export const redshiftFitKey = (fitsPath: string) => ['redshift-fit', fitsPath] as const;
+// Keys and the url shape live in lib/spectrum-sidecars (no directive) so the
+// object page's server render can seed `['spectrum-sidecars', path]` through
+// a <HydrationBoundary> before this tree mounts (perf T2-E, #510): the
+// browser's first spectrum request is then the 1-D payload itself.
+export { spectrumSidecarsKey, spectrumJsonKey, spectrum1dKey, redshiftFitKey };
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   try {
@@ -57,8 +66,6 @@ export function spectrumSidecarsQueryOptions(fitsPath: string) {
     retry: 1,
   };
 }
-
-const NO_FRONT: SpectrumSidecarUrls = { front: false, spectrum: null, spectrum_1d: null, zfit: null, has_1d: null, has_zfit: null };
 
 /** The resolved sidecar urls for a path, from the cache or one resolve call
  * shared by every sidecar query of the same path. A failed resolve is not a
@@ -114,11 +121,10 @@ export async function fetchSpectrumJson(client: QueryClient, fitsPath: string): 
  * would succeed. */
 export async function fetchSpectrum1d(client: QueryClient, fitsPath: string): Promise<SpectrumData1D> {
   const urls = await sidecarUrls(client, fitsPath);
-  const res = await fetchSidecar(
-    urls.front ? (urls.spectrum_1d ?? urls.spectrum) : null,
-    `/api/spectrum?path=${encodeURIComponent(fitsPath)}&include=1d`,
-    'Failed to load spectrum',
-  );
+  // The same url the object page preloads from its HTML head, so the
+  // browser serves this fetch from the preload instead of a second request.
+  const { front, route } = spectrum1dSources(urls, fitsPath);
+  const res = await fetchSidecar(front, route, 'Failed to load spectrum');
   return res.json();
 }
 

@@ -2,9 +2,10 @@
 
 import { createServiceClient } from '@/lib/supabase/server';
 import { getAccessContext } from '@/lib/auth/access-context';
+import { loadObjectHeader, loadObjectPhotometryOf } from '@/lib/server/objects';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { paginateRpc } from '@/lib/supabase/paginate';
-import type { SpectrumTarget, Spectrum, ObjectDetail, ObjectMemberTarget, PinnedObjectMetadata } from '@/lib/types';
+import type { SpectrumTarget, Spectrum, ObjectDetail, PinnedObjectMetadata } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
 import type { FilterOptions } from './filter-params';
 export type { FilterOptions, FilterMode } from './filter-params';
@@ -418,202 +419,25 @@ export async function getTargetMetadata(targetId: string): Promise<{
 }
 
 /**
- * Fetch a single object by object_id with full member targets and their spectra.
- * Checks that user has access (at least one member program is accessible).
+ * Fetch a single object by object_id with full member targets, their spectra
+ * and the object's photometry, as one payload. The object page no longer
+ * calls this: it renders from loadObjectHeader and streams photometry behind
+ * a Suspense boundary (perf T2-E, #510; both in lib/server/objects.ts).
+ * Inspection mode (useObjectNavigation, /inspect) still wants the joined
+ * shape from a client-side call, which is what this action provides.
  */
 export async function getObjectById(objectId: string): Promise<{
   object: ObjectDetail | null;
   error?: string;
   isAuthenticated: boolean;
 }> {
-  const { user, supabase } = await getRequestIdentity();
-
-  if (!user) {
-    return { object: null, isAuthenticated: false };
-  }
-
-  try {
-    // Fetch the accessible-slug list (SQL authority — see
-    // web/lib/auth/access-context.ts) and the object row in parallel.
-    const [accessibleProgramSlugs, { data: obj, error: objError }] = await Promise.all([
-      getAccessContext(user.id).then(a => a.accessibleSlugs),
-      supabase.from('objects').select('*').eq('object_id', objectId).single(),
-    ]);
-
-    if (objError || !obj) {
-      return {
-        object: null,
-        error: objError?.code === 'PGRST116' ? 'Object not found' : objError?.message,
-        isAuthenticated: true,
-      };
-    }
-
-    // Check access: object programs must overlap with accessible programs
-    const objPrograms: string[] = obj.programs || [];
-    const hasAccess = objPrograms.some(p => accessibleProgramSlugs.includes(p));
-    if (!hasAccess) {
-      return {
-        object: null,
-        error: 'Object not found or access denied',
-        isAuthenticated: true,
-      };
-    }
-
-    // Fetch member targets and photometry in parallel. Columns are enumerated:
-    // `spectra (*)` dragged the two pre-rendered thumbnail SVGs (~1.5 kB each,
-    // 84 % of the row's bytes) through detoast → wire → RSC payload for every
-    // spectrum, and nothing on this page renders them (#500).
-    const [{ data: members, error: membersError }, { data: photData }] = await Promise.all([
-      supabase
-        .from('targets')
-        .select(`
-          *,
-          programs:program_slug (program_name),
-          spectra (id, spectrum_id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status)
-        `)
-        .eq('object_id', obj.id)
-        .in('program_slug', accessibleProgramSlugs),
-      supabase
-        .from('object_photometry')
-        .select('catalog_name, catalog_id, match_distance_arcsec, photometry, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz')
-        .eq('object_id', obj.id)
-        .limit(1)
-        .maybeSingle(),
-    ]);
-
-    if (membersError) {
-      return {
-        object: null,
-        error: membersError.message,
-        isAuthenticated: true,
-      };
-    }
-
-    // Member targets are stateless provenance — inspection lives on the parent object.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const memberTargets: ObjectMemberTarget[] = (members || []).map((m: any) => ({
-      id: m.id,
-      target_id: m.target_id,
-      program_slug: m.program_slug,
-      program_name: m.programs?.program_name || m.program_slug,
-      observation: m.observation,
-      ra: m.ra,
-      dec: m.dec,
-      redshift_auto: m.redshift_auto,
-      max_snr: m.max_snr,
-      max_exposure_time: m.max_exposure_time,
-      spectra: m.spectra || [],
-    })).sort((a: ObjectMemberTarget, b: ObjectMemberTarget) =>
-      (b.max_snr || 0) - (a.max_snr || 0)
-    );
-
-    // Display-only access scoping. The objects row stores aggregate columns
-    // (programs, gratings, counts, max_snr/exposure) computed across ALL member
-    // programs at deploy time. This object is visible because the viewer can
-    // access at least one member program (checked above), but the stored
-    // aggregates would leak metadata about proprietary members they cannot
-    // access. Recompute them from the already access-filtered member targets
-    // (members are fetched with .in('program_slug', accessibleProgramSlugs)).
-    // Mirrors the SQL helper object_scoped_aggregates() and the deploy-time
-    // builder in python/campfire/deploy/objects.py. Object-level science
-    // (redshift, photometry) intentionally stays visible.
-    const scopedSpectra = memberTargets.flatMap(m => m.spectra || []);
-    const scopedSnr = scopedSpectra.map(s => s.signal_to_noise).filter((v): v is number => v != null);
-    const scopedExp = scopedSpectra.map(s => s.exposure_time).filter((v): v is number => v != null);
-    const scoped = {
-      n_targets: memberTargets.length,
-      n_spectra: scopedSpectra.length,
-      programs: [...new Set(memberTargets.map(m => m.program_slug))].sort(),
-      gratings: [...new Set(scopedSpectra.map(s => s.grating).filter(Boolean))].sort(),
-      max_snr: scopedSnr.length ? Math.max(...scopedSnr) : null,
-      max_exposure_time: scopedExp.length ? Math.max(...scopedExp) : null,
-    };
-
-    const objectDetail: ObjectDetail = {
-      id: obj.id,
-      object_id: obj.object_id,
-      field: obj.field,
-      ra: obj.ra,
-      dec: obj.dec,
-      n_targets: scoped.n_targets,
-      n_spectra: scoped.n_spectra,
-      programs: scoped.programs,
-      gratings: scoped.gratings,
-      max_snr: scoped.max_snr,
-      max_exposure_time: scoped.max_exposure_time,
-      redshift: obj.redshift ?? null,
-      redshift_quality: obj.redshift_quality ?? 0,
-      redshift_inspected: obj.redshift_inspected ?? null,
-      redshift_auto: obj.redshift_auto ?? null,
-      inspected_used_auto: obj.inspected_used_auto ?? false,
-      last_inspected_at: obj.last_inspected_at ?? null,
-      last_inspected_by: obj.last_inspected_by ?? null,
-      last_data_change_at: obj.last_data_change_at ?? null,
-      staleness_reason: obj.staleness_reason ?? null,
-      version: obj.version ?? 1,
-      is_active: obj.is_active ?? true,
-      photo_z: obj.photo_z ?? null,
-      photo_z_err_lo: obj.photo_z_err_lo ?? null,
-      photo_z_err_hi: obj.photo_z_err_hi ?? null,
-      has_photometry: obj.has_photometry ?? false,
-      created_at: obj.created_at,
-      member_targets: memberTargets,
-      photometry: photData ? {
-        catalog_name: photData.catalog_name,
-        catalog_id: photData.catalog_id,
-        match_distance_arcsec: photData.match_distance_arcsec,
-        photometry: photData.photometry,
-        photo_z: photData.photo_z,
-        photo_z_err_lo: photData.photo_z_err_lo,
-        photo_z_err_hi: photData.photo_z_err_hi,
-        has_pz: photData.has_pz ?? false,
-      } : null,
-    };
-
-    return { object: objectDetail, isAuthenticated: true };
-  } catch (err) {
-    console.error('Unexpected error fetching object:', err);
-    return {
-      object: null,
-      error: 'An unexpected error occurred',
-      isAuthenticated: true,
-    };
-  }
-}
-
-/**
- * Fetch minimal object metadata for Open Graph tags (no auth required).
- * Uses service role to bypass RLS.
- */
-export async function getObjectMetadata(objectId: string): Promise<{
-  object_id: string;
-  redshift: number | null;
-  field: string;
-} | null> {
-  try {
-    const supabase = createServiceClient();
-
-    // Service-role read with no auth (serves OG/social metadata). Gate on
-    // has_published_spectrum so draft objects return null. No-op in B1.
-    const { data, error } = await supabase
-      .from('objects')
-      .select('object_id, redshift, field')
-      .eq('object_id', objectId)
-      .eq('has_published_spectrum', true)
-      .single();
-
-    if (error || !data) {
-      return null;
-    }
-
-    return {
-      object_id: data.object_id,
-      redshift: data.redshift,
-      field: data.field,
-    };
-  } catch {
-    return null;
-  }
+  // Members and photometry in parallel behind one (memoized) row lookup.
+  const [{ object, error, isAuthenticated }, photometry] = await Promise.all([
+    loadObjectHeader(objectId),
+    loadObjectPhotometryOf(objectId),
+  ]);
+  if (!object) return { object: null, error, isAuthenticated };
+  return { object: { ...object, photometry }, isAuthenticated };
 }
 
 /**
