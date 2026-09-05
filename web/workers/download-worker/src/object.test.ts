@@ -96,7 +96,9 @@ describe('object helpers', () => {
     const h = (lm?: string) => new Headers(lm ? { 'Last-Modified': lm } : {});
     const t0 = Date.parse('2026-09-04T12:00:00Z') / 1000;
     expect(isRegisteredBytes(h('Thu, 04 Sep 2026 11:59:00 GMT'), t0)).toBe(true);
-    expect(isRegisteredBytes(h('Thu, 04 Sep 2026 12:05:00 GMT'), t0)).toBe(true); // clock skew
+    expect(isRegisteredBytes(h('Thu, 04 Sep 2026 12:00:00 GMT'), t0)).toBe(true); // second-precision equality
+    expect(isRegisteredBytes(h('Thu, 04 Sep 2026 12:00:01 GMT'), t0)).toBe(false); // rapid overwrite
+    expect(isRegisteredBytes(h('Thu, 04 Sep 2026 12:05:00 GMT'), t0)).toBe(false); // redeploy
     expect(isRegisteredBytes(h('Thu, 04 Sep 2026 13:00:00 GMT'), t0)).toBe(false); // overwrite
     expect(isRegisteredBytes(h(), t0)).toBe(false);
     expect(isRegisteredBytes(h('garbage'), t0)).toBe(false);

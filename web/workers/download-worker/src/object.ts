@@ -34,7 +34,7 @@
  * windows (12 h). The Worker cannot afford a sha256 of the body, so the
  * token carries `r`, the registry row's registration time (bumped on every
  * re-deploy, after the bytes landed), and a full object is only stored when
- * the upstream's Last-Modified is not newer than `r` (plus clock skew). An
+ * the upstream's Last-Modified is not newer than `r`. An
  * overwritten object is still served — those are the product's current
  * bytes, the same the app's own proxy would stream — but never cached under
  * the old hash; a url minted after the re-deploy carries the new `r` and
@@ -61,12 +61,6 @@ export interface ObjectContext {
 
 const TOKEN_VERSION = 'campfire-o-v2';
 
-/** How much newer than its registration an upstream's Last-Modified may be
- * and still be the registered bytes: the upload completes before the row is
- * written, so a genuine object is older than `r`; this only absorbs clock
- * skew between the object store and the database. */
-const REGISTRATION_SKEW_SECONDS = 10 * 60;
-
 /** Browser-side lifetime of a served object. The url carries the hash and a
  * token that expires, so a cached copy can never outlive its authorization by
  * more than this; `immutable` stops revalidation churn on reload. `private`
@@ -87,14 +81,16 @@ export function objectTokenMessage(key: string, hash: string, exp: string, upstr
 
 /** Whether a full upstream answer is the registered bytes and may fill the
  * (key, hash) slot: its Last-Modified must exist and not postdate the
- * registration (plus skew). No Last-Modified => not provably the registered
- * object => never cached. */
+ * registration. Upload completes before registry upsert, and both timestamps
+ * have second precision, so equality is valid. Any positive tolerance would
+ * let a rapid in-place redeploy populate the old hash's immutable cache slot.
+ * No Last-Modified => not provably the registered object => never cached. */
 export function isRegisteredBytes(upstreamHeaders: Headers, registeredAt: number): boolean {
   const lm = upstreamHeaders.get('Last-Modified');
   if (!lm) return false;
   const lmSeconds = Date.parse(lm) / 1000;
   if (!Number.isFinite(lmSeconds)) return false;
-  return lmSeconds <= registeredAt + REGISTRATION_SKEW_SECONDS;
+  return lmSeconds <= registeredAt;
 }
 
 /** A conditional request whose validators match the answer gets a 304. ETag
