@@ -46,6 +46,62 @@ Release procedure: edit the `## Unreleased` section below, then run
   Infrastructure because it changes scientific output: exposures that were
   silently quarantined now contribute to their mosaics.
 
+### Infrastructure
+- **`[nircam.resample].write_context` — opt out of the drizzle context cube.**
+  `CON` is one int32 plane per 32 inputs at FULL tile size, so it costs
+  `tile_area * 4 * ceil(n_inputs/32)`. On a deep tile it dominates everything
+  else: COSMOS f200w's `primer` has 3,471 contributing exposures on a 1.15 Gpix
+  grid — 109 planes, ~660 GiB of drizzle working set, against ~104 GiB for
+  SCI+ERR+WHT+variance combined. That single tile exceeds the memory budget of
+  every node on candide, so it cannot be scheduled alongside anything and is at
+  risk of OOM on a 512 GB node. Nothing in the pipeline reads `CON` —
+  `split_extensions` emits only sci/err/wht/srcmask and `bkgsub` does not touch
+  it — so it is retained purely as an output product for external consumers.
+  With `write_context = false` the science drizzle runs with `disable_ctx=True`
+  (the path the variance drizzle already used), the cube is never allocated,
+  and the i2d carries a 1x1x1 `CON` placeholder so the SCI/ERR/CON/WHT HDU
+  layout is unchanged. That placeholder is self-describing: the primary header
+  gets `CFNOCTX = T`, so an external consumer can tell "context disabled" from
+  "nothing contributed" without inspecting the cube's shape (note the
+  placeholder is also a plain `ImageHDU`, where a full run writes a tile-
+  compressed `CompImageHDU`). The card is stamped only when the cube was
+  skipped, so normal products keep byte-identical headers. The memory
+  estimator drops the context term to match, so the pool is not narrowed by a
+  cost that is no longer paid. Default stays `true`: existing behaviour and
+  existing products are unchanged.
+
+  Note that `write_context` does **not** enter the manifest config hash (that
+  hash covers pixel-affecting keys, and `CON` is not science data, matching how
+  `compress_context` is already treated). Flipping it off and back on therefore
+  does not mark tiles stale — mosaics built while it was off keep their
+  placeholder until rebuilt for some other reason. `CFNOCTX` is what makes that
+  state visible on the affected files.
+- **Memory-aware tile parallelism for NIRCam `resample` + mosaic `bkgsub`.**
+  The combine tile loop (previously strictly serial: one busy core through a
+  ~12-hour tile phase on a 21-tile COSMOS filter) now dispatches tiles across
+  a forkserver pool. `-p/--processes` is a **ceiling, not a target**: the
+  scheduler sizes the pool from a budget of `MemAvailable` and a weighted
+  memory gate admits each worker's drizzle and bkgsub/split/plot stages
+  separately against per-tile footprint estimates computed from the tile's
+  own geometry (output shape, context-plane count) — bkgsub is the ~2.5–3x
+  heavier stage (measured 51–66 GB vs ~20–37 GB per COSMOS LW tile), so it
+  throttles harder while drizzles run wide, and live `MemAvailable` is
+  re-checked at every admission for shared-node safety. Failing tiles no
+  longer kill their siblings in parallel mode (failures are collected and
+  raised together); log lines from parallel workers are prefixed with their
+  tile name and emitted as single atomic write+flush calls so concurrent
+  workers never interleave mid-line. In parallel mode the exposure
+  footprints are read once in the parent (instead of once per tile) and the
+  pool is sized on the tiles that actually have overlapping exposures.
+  `--processes 1` (the default) keeps the exact serial,
+  ordering-stable, fail-fast loop. Tuning knobs live under
+  `[nircam.resample]` (`parallel_tiles`, `mem_fraction`, `mem_margin`,
+  `mem_bkgsub_bytes_per_pixel`, `mem_drizzle_base_bytes_per_pixel`) and are
+  deliberately excluded from the manifest config hash, so enabling or tuning
+  the scheduler never marks existing tiles stale. Tile outputs are unchanged
+  — tiles are independent and the per-tile pipeline only reads the frozen
+  working copies — hence Infrastructure/PATCH.
+
 ## v0.6.0 — 2026-08-18
 
 ### Calibration

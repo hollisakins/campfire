@@ -16,18 +16,39 @@ optional 2D background subtraction via ``SubtractBackground``, and optional
 extension splitting into ``_sci/_err/_wht/_srcmask`` files. The mosaic
 basename is version-free (epic #261, N2 / D3) — one canonical name per
 ``(field, filter, tile, pixel_scale)`` — so there is no ``_latest_`` alias.
+
+Parallelism
+-----------
+Tiles are independent: the per-tile pipeline reads only the (combine-frozen)
+working-copy exposures and writes only tile-named outputs, so tiles are
+dispatched across a forkserver pool bounded by ``-p``/``--processes``. ``-p``
+is a **ceiling, not a target**: a memory scheduler picks the actual pool
+width from a budget of ``MemAvailable`` (see :func:`_plan_tile_pool`), and a
+weighted :class:`~campfire_pipeline.common.parallel.MemoryGate` admits the
+drizzle and the ~2.5-3x-heavier bkgsub/split/plot stages separately, re-checking
+live ``MemAvailable`` at every admission — these are shared nodes, and an OOM
+kills a multi-hour combine. ``--processes 1`` (the default) runs the exact
+serial tile loop, ordering-stable, with no gate and fail-fast errors.
 """
 
+import math
 import os
 import shutil
+import traceback
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 import numpy as np
 from astropy.io import fits
 from shapely.geometry import Polygon
 
-from campfire_pipeline.common.io import log
-from campfire_pipeline.nircam.geometry import select_overlapping_files
+from campfire_pipeline.common.io import log, set_log_prefix
+from campfire_pipeline.common.parallel import (
+    MemoryGate, _RetryOnIOError, dispatch, mem_available_bytes,
+)
+from campfire_pipeline.nircam.geometry import (
+    exposure_footprints, select_overlapping_files,
+)
 
 
 def _resolve_pixel_scale(value):
@@ -76,6 +97,7 @@ def _drizzle_tile_via_campfire(
         blendheaders=resample_cfg.get('blendheaders', True),
         reduction_version=reduction_version,
         compress_context=resample_cfg.get('compress_context', True),
+        write_context=resample_cfg.get('write_context', True),
     )
 
 
@@ -183,8 +205,150 @@ def _drizzle_tile_via_jwst(
         )
 
 
+# ---------------------------------------------------------------------------
+# Memory-aware tile scheduler
+# ---------------------------------------------------------------------------
+#
+# Per-stage worst-case footprints are estimated from each tile's own geometry
+# (output shape × bytes/pixel) rather than hardcoded totals, so the scheduler
+# adapts to any field — COSMOS's 21 tiles and A2744's single 1.26 Gpx `full`
+# mosaic alike. The calibrated constants live in config
+# (`[nircam.resample].mem_*`) and are deliberately absent from the manifest
+# config hash: they cannot change pixels, so tuning them never marks tiles
+# stale.
+
+# Gate for parallel tile workers. Populated in each pool worker by
+# _init_tile_worker (multiprocessing sync primitives must ride the Pool
+# initializer, never task arguments); stays None in the parent and on serial
+# runs, where _gate_hold degrades to a no-op.
+_TILE_GATE = None
+
+
+def _init_tile_worker(gate):
+    global _TILE_GATE
+    _TILE_GATE = gate
+
+
+def _gate_hold(nbytes, label):
+    if _TILE_GATE is None:
+        return nullcontext()
+    return _TILE_GATE.hold(nbytes, label=label)
+
+
+def _estimate_drizzle_bytes(npix, n_inputs, step_config):
+    """Estimated peak bytes for drizzling one ``npix``-pixel tile.
+
+    Both backends hold four float32 full-tile output planes (SCI/WHT and two
+    variance accumulators) plus an int32 context cube of ``ceil(n_inputs/32)``
+    full-tile planes — for a deep tile the context cube dominates, and it is
+    computable exactly, so only the residual scratch (per-input detector
+    arrays, pixmaps, header blending) is the calibrated
+    ``mem_drizzle_base_bytes_per_pixel`` constant.
+    """
+    base = float(step_config.get('mem_drizzle_base_bytes_per_pixel', 40.0))
+    margin = float(step_config.get('mem_margin', 1.3))
+    # With write_context = false no context cube is allocated at all (see
+    # drizzle_tile), so charging for it would strand budget and needlessly
+    # narrow the pool on exactly the deep tiles this option exists to rescue.
+    # Only the campfire backend honors the option, though: jwst's
+    # Image3Pipeline always materialises CON, so its estimate must keep the
+    # term — dropping it there would under-budget the very tiles that OOM.
+    if (not step_config.get('write_context', True)
+            and step_config.get('implementation', 'jwst') == 'campfire'):
+        return int(npix * base * margin)
+    ctx_planes = max(1, math.ceil(max(int(n_inputs), 1) / 32))
+    return int(npix * (base + 4 * ctx_planes) * margin)
+
+
+def _estimate_bkgsub_bytes(npix, step_config):
+    """Estimated peak bytes for one tile's bkgsub/split/plot tail.
+
+    ``SubtractBackground`` stacks float64 intermediates (ring-median fill,
+    per-tier gaussian convolutions, EDT dilations, Background2D meshes, the
+    guard's equalized maps) on top of the float32 SCI/ERR/WHT inputs; the
+    extension split then holds full SCI/ERR/WHT/SRCMASK copies. Measured
+    51-66 GB per COSMOS LW tile — ~2.5-3x the drizzle — which is what the
+    default ``mem_bkgsub_bytes_per_pixel`` is calibrated against.
+    """
+    bpp = float(step_config.get('mem_bkgsub_bytes_per_pixel', 130.0))
+    margin = float(step_config.get('mem_margin', 1.3))
+    return int(npix * bpp * margin)
+
+
+def _plan_tile_pool(tiles, field, pixel_scale_str, step_config, n_processes):
+    """Pick the tile-pool width from the memory budget; ``-p`` is a ceiling.
+
+    The pool is sized so the *lightest* possible stage reservation (the
+    smallest tile's single-context-plane drizzle) could fill the budget — the
+    widest pool that could ever be useful. The per-stage gate reservations do
+    the real throttling at runtime, so oversizing here only idles workers,
+    while undersizing would strand budget.
+
+    Returns ``(n_workers, budget_bytes)``. ``budget_bytes`` is ``None`` when
+    ``MemAvailable`` is unreadable (non-Linux dev boxes without psutil): the
+    pool is then capped only by ``-p``/tile count and runs ungated.
+    """
+    avail = mem_available_bytes()
+    if avail is None:
+        n_workers = max(1, min(n_processes, len(tiles)))
+        log(f"resample: tile pool: {n_workers} workers, UNGATED "
+            f"(MemAvailable unreadable on this platform; "
+            f"ceiling -p {n_processes})")
+        return n_workers, None
+    budget = int(avail * float(step_config.get('mem_fraction', 0.65)))
+    min_npix = min(
+        int(shape[0]) * int(shape[1])
+        for shape in (field.get_tile_wcs(t, pixel_scale=pixel_scale_str)[2]
+                      for t in tiles))
+    floor_est = _estimate_drizzle_bytes(min_npix, 1, step_config)
+    n_workers = max(1, min(n_processes, len(tiles),
+                           budget // max(floor_est, 1)))
+    log(f"resample: tile pool: {n_workers} workers "
+        f"(ceiling -p {n_processes}, budget {budget / 2**30:.1f} GiB of "
+        f"{avail / 2**30:.1f} GiB available, lightest stage estimate "
+        f"{floor_est / 2**30:.1f} GiB)")
+    return n_workers, budget
+
+
+def _heavy_work_expected(mosaic_file, needs_rebuild, step_config):
+    """Cheap, conservative predicate: will this tile run bkgsub, extension
+    splitting, or plotting (the heavy tail)?
+
+    Errs on True — holding the gate for a few header reads is cheap, running
+    a bkgsub outside it is not. Mirrors the decision logic in
+    :func:`_resample_tile` *without* its order-sensitive side effects (the
+    stamp backfill, and the SRCMASK re-check that must run after bkgsub),
+    which stay inside the gated region.
+    """
+    if needs_rebuild:
+        return True   # bkgsub + split + plot all follow a fresh drizzle
+    if not os.path.exists(mosaic_file):
+        return True
+    from campfire_pipeline.nircam.manifest import MOSAIC_BKGSUB_KEY
+
+    if step_config.get('background_subtract', True):
+        with fits.open(mosaic_file) as hdul:
+            if MOSAIC_BKGSUB_KEY not in hdul[0].header:
+                return True
+    if step_config.get('split_extensions', True):
+        outdir = os.path.dirname(mosaic_file)
+        base = os.path.basename(mosaic_file)
+        for suffix in ('_sci.fits', '_err.fits', '_wht.fits'):
+            if not os.path.exists(
+                    os.path.join(outdir, base.replace('_i2d.fits', suffix))):
+                return True
+        srcmask_path = os.path.join(
+            outdir, base.replace('_i2d.fits', '_srcmask.fits'))
+        if not os.path.exists(srcmask_path):
+            with fits.open(mosaic_file) as hdul:
+                if 'SRCMASK' in hdul:
+                    return True
+    return False
+
+
 def resample_step(filtname, exposure_files, field, step_config,
-                  reduction_version, overwrite=False, tiles=None, epoch=None):
+                  reduction_version, overwrite=False, tiles=None, epoch=None,
+                  n_processes=1):
     """Drizzle-combine canonical exposure files into mosaic tiles.
 
     Parameters
@@ -212,13 +376,16 @@ def resample_step(filtname, exposure_files, field, step_config,
         mosaic. Appended as a trailing filename segment and recorded in the
         manifest. ``None`` (the default) builds the full-field mosaics with no
         epoch segment.
+    n_processes : int
+        **Ceiling** on concurrent tile workers (the CLI ``-p``), not a
+        target: :func:`_plan_tile_pool` picks the actual pool width from the
+        memory budget, and the per-stage memory gate throttles admissions
+        below even that when live ``MemAvailable`` is tight. ``1`` (the
+        default) runs the tile loop strictly serially and ordering-stable,
+        with exceptions propagating fail-fast; in parallel mode a failing
+        tile does not stop its siblings — failures are collected and raised
+        together at the end.
     """
-    from campfire_pipeline.nircam.manifest import (
-        BKGSUB_PIXEL_DEFAULTS, MOSAIC_BKGSUB_KEY, bkgsub_stamp_value,
-        build_mosaic_name, check_config_changed, check_inputs_changed,
-        create_manifest, write_manifest,
-    )
-
     pixel_scale, pixel_scale_str = _resolve_pixel_scale(
         step_config.get('pixel_scale', '60mas'),
     )
@@ -231,67 +398,198 @@ def resample_step(filtname, exposure_files, field, step_config,
     elif isinstance(tiles, str):
         tiles = [tiles]
 
-    for tile in tiles:
-        log(f"resample: tile {tile}, {filtname}, {pixel_scale_str}")
+    if (not step_config.get('write_context', True)
+            and step_config.get('implementation', 'jwst') != 'campfire'):
+        log("resample: write_context = false is only honored by "
+            "implementation = 'campfire'; the jwst backend still "
+            "materialises the CON cube (and stays budgeted for it)")
 
-        mosaic_name = build_mosaic_name(
-            filtname, field.name, pixel_scale_str, tile, epoch=epoch,
-            template=step_config.get('mosaic_name'),
+    worker_kwargs = dict(
+        filtname=filtname, exposure_files=exposure_files, field=field,
+        step_config=step_config, reduction_version=reduction_version,
+        pixel_scale=pixel_scale, pixel_scale_str=pixel_scale_str,
+        overwrite=overwrite, epoch=epoch,
+    )
+
+    tasks = None
+    use_pool = (n_processes > 1 and len(tiles) > 1
+                and step_config.get('parallel_tiles', True))
+    if use_pool:
+        # One pass over the exposures reads every footprint; per-tile
+        # selection is then pure polygon math. That both spares each worker
+        # a full re-read of the exposure headers (selection previously ran
+        # once per tile, each opening every file) and lets the pool be
+        # sized on the tiles that actually have work instead of the raw
+        # tile list.
+        footprints = exposure_footprints(exposure_files)
+        tasks = []
+        for tile in tiles:
+            selected = select_overlapping_files(
+                exposure_files, Polygon(field.get_tile_corners(tile)),
+                footprints=footprints,
+            )
+            if selected:
+                tasks.append((tile, selected))
+            else:
+                log(f"resample: no exposures overlap {tile}; skipping")
+        if not tasks:
+            return
+        n_workers, budget = _plan_tile_pool(
+            [tile for tile, _ in tasks], field, pixel_scale_str,
+            step_config, n_processes,
         )
-        mosaic_outdir = field.filter_dir(filtname)
-        mosaic_file = os.path.join(mosaic_outdir, f'{mosaic_name}_i2d.fits')
-        manifest_path = os.path.join(
-            mosaic_outdir, f'{mosaic_name}_manifest.json',
+        use_pool = n_workers > 1
+
+    if not use_pool:
+        if tasks is None:
+            for tile in tiles:
+                _process_tile(tile, **worker_kwargs)
+        else:
+            # The budget collapsed the pool to one worker, but the parent
+            # already did the selection: reuse it rather than making every
+            # tile re-read every exposure header, and don't re-log the empty
+            # tiles it already reported.
+            for tile, selected in tasks:
+                _process_tile(tile, selected, **worker_kwargs)
+        return
+
+    gate = MemoryGate(budget) if budget is not None else None
+    results = dispatch(
+        _process_tile, tasks, n_processes=n_workers, use_starmap=True,
+        initializer=_init_tile_worker, initargs=(gate,),
+        capture_errors=True, tag_logs=True, retry_crds=True,
+        **worker_kwargs,
+    )
+
+    failures = [r for r in results if r.get('error')]
+    for f in failures:
+        log(f"resample: tile {f['tile']} FAILED:\n{f['error']}")
+    if failures:
+        raise RuntimeError(
+            f"resample: {len(failures)}/{len(results)} tile(s) failed for "
+            f"{filtname}: {', '.join(sorted(f['tile'] for f in failures))}"
         )
 
-        log(f"  mosaic → {mosaic_file}")
 
+def _process_tile(tile, selected=None, *, capture_errors=False,
+                  tag_logs=False, **kwargs):
+    """Pool-worker wrapper around :func:`_resample_tile`.
+
+    Runs identically in-process (serial: exceptions propagate, untagged logs)
+    and as a forkserver pool worker (``capture_errors=True`` returns
+    exceptions as ``{'tile', 'error'}`` so one bad tile doesn't kill its
+    siblings; ``tag_logs=True`` prefixes every log line — including those
+    from the drizzle/bkgsub modules this calls into — with the tile name).
+    ``selected`` carries the tile's input list when the parent already did
+    the selection (parallel mode); ``None`` makes the worker select for
+    itself (serial mode).
+    """
+    if tag_logs:
+        set_log_prefix(f'[{tile}]')
+    try:
+        _resample_tile(tile, selected=selected, **kwargs)
+        return {'tile': tile, 'error': None}
+    except Exception:
+        if not capture_errors:
+            raise
+        return {'tile': tile, 'error': traceback.format_exc()}
+    finally:
+        if tag_logs:
+            set_log_prefix('')
+
+
+def _resample_tile(tile, *, filtname, exposure_files, field, step_config,
+                   reduction_version, pixel_scale, pixel_scale_str,
+                   overwrite, epoch, selected=None, retry_crds=False):
+    """Drizzle + background-subtract + split + plot one mosaic tile.
+
+    The whole per-tile pipeline: staleness check, drizzle, optional
+    background subtraction, extension splitting, plots. Reads only the
+    combine-frozen working-copy exposures and writes only tile-named outputs
+    (i2d, manifest, ASN, bkgsub snapshot, split extensions, PNGs), so
+    concurrent tiles never collide.
+
+    When the memory gate is armed (parallel mode), the drizzle and the
+    bkgsub/split/plot tail each reserve their own estimated footprint —
+    the tail is the ~2.5-3x heavier stage, so per-stage reservations let
+    drizzles run wide while bkgsubs throttle, and stagger the bkgsub peaks
+    instead of aligning them.
+    """
+    from campfire_pipeline.nircam.manifest import (
+        BKGSUB_PIXEL_DEFAULTS, MOSAIC_BKGSUB_KEY, bkgsub_stamp_value,
+        build_mosaic_name, check_config_changed, check_inputs_changed,
+        create_manifest, write_manifest,
+    )
+
+    log(f"resample: tile {tile}, {filtname}, {pixel_scale_str}")
+
+    mosaic_name = build_mosaic_name(
+        filtname, field.name, pixel_scale_str, tile, epoch=epoch,
+        template=step_config.get('mosaic_name'),
+    )
+    mosaic_outdir = field.filter_dir(filtname)
+    mosaic_file = os.path.join(mosaic_outdir, f'{mosaic_name}_i2d.fits')
+    manifest_path = os.path.join(
+        mosaic_outdir, f'{mosaic_name}_manifest.json',
+    )
+
+    log(f"  mosaic → {mosaic_file}")
+
+    if selected is None:
         tile_polygon = Polygon(field.get_tile_corners(tile))
         selected = select_overlapping_files(exposure_files, tile_polygon)
-        if not selected:
-            log(f"  no exposures overlap {tile}; skipping")
-            continue
+    if not selected:
+        log(f"  no exposures overlap {tile}; skipping")
+        return
 
-        # Decide if we need to rebuild
-        needs_rebuild = overwrite
-        if not needs_rebuild and not os.path.exists(mosaic_file):
+    # Decide if we need to rebuild
+    needs_rebuild = overwrite
+    if not needs_rebuild and not os.path.exists(mosaic_file):
+        needs_rebuild = True
+        log(f"  mosaic does not exist; building")
+    if not needs_rebuild:
+        inputs_changed, reasons = check_inputs_changed(
+            manifest_path, selected,
+        )
+        cfg_changed = check_config_changed(
+            manifest_path, {'resample': step_config}, pixel_scale_str,
+        )
+        if inputs_changed or cfg_changed:
             needs_rebuild = True
-            log(f"  mosaic does not exist; building")
-        if not needs_rebuild:
-            inputs_changed, reasons = check_inputs_changed(
-                manifest_path, selected,
+            all_reasons = list(reasons) if inputs_changed else []
+            if cfg_changed:
+                all_reasons.append('processing config changed')
+            log(f"  tile {tile} stale: {'; '.join(all_reasons)}")
+        else:
+            log(f"  tile {tile} up-to-date "
+                f"({len(selected)} inputs unchanged); skipping")
+
+    if needs_rebuild:
+        log(f"  drizzling {len(selected)} exposures")
+
+        crpix, crval, shape, rotation = field.get_tile_wcs(
+            tile, pixel_scale=pixel_scale_str,
+        )
+        npix = int(shape[0]) * int(shape[1])
+
+        implementation = step_config.get('implementation', 'jwst')
+        if implementation == 'campfire':
+            drizzle_fn = _drizzle_tile_via_campfire
+        elif implementation == 'jwst':
+            drizzle_fn = _drizzle_tile_via_jwst
+        else:
+            raise ValueError(
+                f"Unknown resample.implementation {implementation!r}; "
+                f"expected 'jwst' or 'campfire'"
             )
-            cfg_changed = check_config_changed(
-                manifest_path, {'resample': step_config}, pixel_scale_str,
-            )
-            if inputs_changed or cfg_changed:
-                needs_rebuild = True
-                all_reasons = list(reasons) if inputs_changed else []
-                if cfg_changed:
-                    all_reasons.append('processing config changed')
-                log(f"  tile {tile} stale: {'; '.join(all_reasons)}")
-            else:
-                log(f"  tile {tile} up-to-date "
-                    f"({len(selected)} inputs unchanged); skipping")
+        if retry_crds:
+            # Parallel workers race each other on the shared CRDS cache
+            # (jwst backend); same retry the other parallel stages use.
+            drizzle_fn = _RetryOnIOError(drizzle_fn)
 
-        if needs_rebuild:
-            log(f"  drizzling {len(selected)} exposures")
-
-            crpix, crval, shape, rotation = field.get_tile_wcs(
-                tile, pixel_scale=pixel_scale_str,
-            )
-
-            implementation = step_config.get('implementation', 'jwst')
-            if implementation == 'campfire':
-                drizzle_fn = _drizzle_tile_via_campfire
-            elif implementation == 'jwst':
-                drizzle_fn = _drizzle_tile_via_jwst
-            else:
-                raise ValueError(
-                    f"Unknown resample.implementation {implementation!r}; "
-                    f"expected 'jwst' or 'campfire'"
-                )
-
+        with _gate_hold(
+                _estimate_drizzle_bytes(npix, len(selected), step_config),
+                f'{tile} drizzle'):
             drizzle_fn(
                 selected,
                 mosaic_file,
@@ -304,21 +602,40 @@ def resample_step(filtname, exposure_files, field, step_config,
                 reduction_version=reduction_version,
             )
 
-            # Stamp epoch provenance onto the drizzled i2d (both drizzle
-            # implementations already stamp CMPFRVER/CMPFRTIM). Empty for a
-            # full-field mosaic so normal outputs are unaffected.
-            if epoch:
-                with fits.open(mosaic_file, mode='update') as hdul:
-                    hdul[0].header['CFEPOCH'] = (
-                        epoch, 'CAMPFIRE epoch (exposure subset) name',
-                    )
+        # Stamp epoch provenance onto the drizzled i2d (both drizzle
+        # implementations already stamp CMPFRVER/CMPFRTIM). Empty for a
+        # full-field mosaic so normal outputs are unaffected.
+        if epoch:
+            with fits.open(mosaic_file, mode='update') as hdul:
+                hdul[0].header['CFEPOCH'] = (
+                    epoch, 'CAMPFIRE epoch (exposure subset) name',
+                )
 
-            manifest = create_manifest(
-                mosaic_name, field, filtname, tile, pixel_scale_str,
-                selected, {'resample': step_config}, epoch=epoch,
-            )
-            write_manifest(manifest, manifest_path)
+        manifest = create_manifest(
+            mosaic_name, field, filtname, tile, pixel_scale_str,
+            selected, {'resample': step_config}, epoch=epoch,
+        )
+        write_manifest(manifest, manifest_path)
 
+    # The bkgsub/split/plot tail dominates memory, so it takes its own,
+    # larger gate reservation. The precheck is conservative and only
+    # consulted when a gate is armed: holding the gate for a few header
+    # reads is cheap, running a bkgsub outside it is not. On serial
+    # (ungated) runs nothing here is evaluated — including get_tile_wcs,
+    # which up-to-date tiles have historically never needed.
+    heavy = (_TILE_GATE is not None
+             and _heavy_work_expected(mosaic_file, needs_rebuild,
+                                      step_config))
+    if heavy:
+        _, _, shape, _ = field.get_tile_wcs(
+            tile, pixel_scale=pixel_scale_str,
+        )
+        npix = int(shape[0]) * int(shape[1])
+        gate_ctx = _gate_hold(_estimate_bkgsub_bytes(npix, step_config),
+                              f'{tile} bkgsub')
+    else:
+        gate_ctx = nullcontext()
+    with gate_ctx:
         if step_config.get('background_subtract', True):
             from campfire_pipeline.nircam.bkgsub import SubtractBackground
 

@@ -950,6 +950,50 @@
     # skippable up front by setting this false (its only cost is losing the
     # rollback and the _bkgsub.png before/after plot).
     keep_pre_bkgsub = true
+    # -- Memory-aware tile parallelism ------------------------------------
+    # The tile loop parallelizes across `-p/--processes` workers, but -p is a
+    # CEILING, not a target: the scheduler picks the actual pool width from a
+    # memory budget, and each worker reserves a per-stage footprint estimate
+    # from a shared gate before drizzling (lighter) and before the mosaic
+    # bkgsub/split/plot tail (~2.5-3x heavier, measured 51-66 GB on COSMOS LW
+    # tiles), re-checking live MemAvailable at every admission. Set -p to the
+    # node's core count and tune node pressure here. None of these keys enter
+    # the manifest config hash — they cannot change pixels, so tuning them
+    # never marks tiles stale.
+    # Write the drizzle context cube (CON) into the i2d.
+    #
+    # CON is one int32 plane per 32 inputs at FULL tile size, so it costs
+    # tile_area * 4 * ceil(n_inputs/32). On a deep tile that dwarfs everything
+    # else: a 1.15 Gpix tile with 3,471 inputs needs 109 planes = ~660 GiB of
+    # drizzle working set, against ~104 GiB for SCI+ERR+WHT+variance. That one
+    # tile can exceed a whole node and cannot be scheduled alongside anything.
+    #
+    # NOTHING IN THIS PIPELINE READS CON: `split_extensions` writes out only
+    # sci/err/wht/srcmask, and bkgsub does not touch it. It is retained purely
+    # as an output product for external consumers, so it is safe to turn off
+    # when a tile would otherwise be unschedulable. With this false the drizzle
+    # runs with `disable_ctx=True` (the path the variance drizzle already uses)
+    # and the i2d carries a 1x1x1 CON placeholder, preserving the HDU layout.
+    # That placeholder is marked `CFNOCTX = T` in the primary header so a
+    # consumer can tell it from a genuinely empty context.
+    #
+    # This key does NOT enter the manifest config hash (which covers only
+    # pixel-affecting settings), so turning it off and back on will not by
+    # itself rebuild the tiles built while it was off — they keep the
+    # placeholder, and CFNOCTX is how you find them.
+    write_context = true
+    parallel_tiles = true
+    # Fraction of MemAvailable (at tile-loop start) the pool may reserve.
+    mem_fraction = 0.65
+    # Safety multiplier applied to both per-stage estimates.
+    mem_margin = 1.3
+    # Estimated peak bytes per output pixel for the bkgsub/split/plot stage
+    # (float64 intermediates: ring-median fill, per-tier convolutions, EDT
+    # dilation, Background2D + guard maps, then full split copies).
+    mem_bkgsub_bytes_per_pixel = 130.0
+    # Drizzle-stage bytes per output pixel EXCLUDING the int32 context cube,
+    # which the estimator computes exactly as 4*ceil(n_inputs/32) bytes/px.
+    mem_drizzle_base_bytes_per_pixel = 40.0
     ring_radius_in = 80
     ring_width = 4
     ring_downsample = 4

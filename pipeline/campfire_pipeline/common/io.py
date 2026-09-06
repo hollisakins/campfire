@@ -3,12 +3,44 @@ Shared I/O utilities: logging and filename helpers.
 """
 
 import os
+import sys
 from datetime import datetime
 
 
-def log(*args, **kwargs):
+# Process-local prefix stamped on every log() line. Parallel tile workers set
+# it to their tile name so interleaved output from the modules they call into
+# (drizzle, bkgsub, ...) stays attributable to a tile.
+_log_prefix = ''
+
+
+def set_log_prefix(prefix):
+    """Set a process-local prefix for subsequent :func:`log` lines.
+
+    Pass ``''`` to clear. Only affects the calling process — pool workers
+    each set their own.
+    """
+    global _log_prefix
+    _log_prefix = prefix
+
+
+def log(*args, sep=' ', end='\n', file=None, flush=True):
+    """Timestamped log line, emitted as ONE write + flush.
+
+    ``print()`` issues several stream writes per call, and when the stream is
+    a shared, block-buffered log file (parallel tile workers redirected to
+    the same file) those partial writes from different processes interleave
+    mid-line. Assembling the full line first and pushing it through a single
+    write/flush keeps each line intact — one short O_APPEND write per line —
+    and makes lines visible immediately instead of sitting in a worker's
+    buffer past a crash.
+    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}]", *args, **kwargs)
+    head = f"[{timestamp}] {_log_prefix}" if _log_prefix else f"[{timestamp}]"
+    line = sep.join([head, *(str(a) for a in args)]) + end
+    stream = sys.stdout if file is None else file
+    stream.write(line)
+    if flush:
+        stream.flush()
 
 
 def atomic_save(model_or_hdul, path, header_updates=None, extra_hdus=None):
