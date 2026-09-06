@@ -14,6 +14,7 @@ import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
 import { generateDownloadUrls } from '@/lib/r2';
 import { hmacBase64Url } from '@/lib/server/worker-token';
+import { authorizeKeysInChunks } from '@/lib/server/authorized-keys';
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_DOWNLOAD_URL || 'http://localhost:8787';
 const JWT_SECRET = process.env.WORKER_JWT_SECRET;
@@ -22,6 +23,12 @@ const JWT_SECRET = process.env.WORKER_JWT_SECRET;
 // fetches every file through the proxy, then zips), so keep it generous — 6h, the
 // same value the observation manifest / storage-presign routes use.
 const PRESIGN_TTL_SECONDS = 21600;
+
+// Upper bound on one NIRCam bulk-download request. These actions are POST
+// endpoints any authenticated client can call directly, so bound the work
+// (chunked authorization queries + presigns) before doing it. Comfortably
+// above the largest real selection — every product of the widest field.
+const NIRCAM_DOWNLOAD_FILE_LIMIT = 5000;
 
 interface DownloadFile {
   proxyUrl: string; // ready-to-fetch Worker proxy URL (?url=<presigned>&sig=<hmac>)
@@ -694,17 +701,27 @@ export async function generateObjectFitsDownloadUrls(
     // presign a client-supplied path the DB won't return for this user. Pull
     // target_id too so download tracking records the real member targets (a
     // merged object spans several) rather than the display object id.
-    const { data: rows, error: queryError } = await supabase
-      .from('spectra')
-      .select('fits_path, target_id')
-      .in('fits_path', fitsPaths);
+    // Chunked so the `.in()` list never overflows the PostgREST request URL
+    // (500 paths in one query is ~32 KB of URL).
+    const rows: { fits_path: string; target_id: string }[] = [];
+    const { keys, error: queryError } = await authorizeKeysInChunks(
+      fitsPaths,
+      'fits_path',
+      async (chunk) => {
+        const res = await supabase
+          .from('spectra')
+          .select('fits_path, target_id')
+          .in('fits_path', chunk);
+        if (res.data) rows.push(...res.data);
+        return res;
+      },
+    );
 
     if (queryError) {
       console.error('Error authorizing object FITS download:', queryError);
       return { files: null, zipFilename: null, error: 'Failed to authorize download' };
     }
 
-    const keys = [...new Set((rows || []).map((r) => r.fits_path as string))];
     if (keys.length === 0) {
       return { files: null, zipFilename: null, error: 'No FITS files found or access denied' };
     }
@@ -726,7 +743,7 @@ export async function generateObjectFitsDownloadUrls(
 
     // Track object-detail bulk download (fire-and-forget). Log the actual member
     // target ids of the downloaded spectra — a merged object fans out to several.
-    const targetIds = [...new Set((rows || []).map((r) => r.target_id as string).filter(Boolean))];
+    const targetIds = [...new Set(rows.map((r) => r.target_id).filter(Boolean))];
     trackDownload({
       userId: user.id,
       downloadType: 'fits_object',
@@ -767,21 +784,30 @@ export async function generateNircamMosaicDownloadUrls(
     if (filePaths.length === 0) {
       return { urls: {}, error: null };
     }
+    if (filePaths.length > NIRCAM_DOWNLOAD_FILE_LIMIT) {
+      return {
+        urls: {},
+        error: `Too many files requested (${filePaths.length.toLocaleString()}); the limit is ${NIRCAM_DOWNLOAD_FILE_LIMIT.toLocaleString()} per download.`,
+      };
+    }
 
     // Re-derive the authorized key set server-side under the caller's RLS
     // session. Never presign a client-supplied path we can't see in the DB.
+    // Chunked: PostgREST carries the `.in()` list in the request URL, and a
+    // whole-field mosaic selection overflows the gateway's URL limit in one
+    // query (see authorizeKeysInChunks).
     const supabase = await createClient();
-    const { data: rows, error: queryError } = await supabase
-      .from('nircam_images')
-      .select('file_path')
-      .in('file_path', filePaths);
+    const { keys: authorizedKeys, error: queryError } = await authorizeKeysInChunks(
+      filePaths,
+      'file_path',
+      (chunk) => supabase.from('nircam_images').select('file_path').in('file_path', chunk),
+    );
 
     if (queryError) {
       console.error('Error authorizing NIRCam mosaic download:', queryError);
       return { urls: {}, error: 'Failed to authorize download' };
     }
 
-    const authorizedKeys = [...new Set((rows || []).map((r) => r.file_path as string))];
     if (authorizedKeys.length === 0) {
       return { urls: {}, error: null };
     }
@@ -830,21 +856,31 @@ export async function generateNircamExpmapDownloadUrls(
     if (storageKeys.length === 0) {
       return { urls: {}, error: null };
     }
+    if (storageKeys.length > NIRCAM_DOWNLOAD_FILE_LIMIT) {
+      return {
+        urls: {},
+        error: `Too many files requested (${storageKeys.length.toLocaleString()}); the limit is ${NIRCAM_DOWNLOAD_FILE_LIMIT.toLocaleString()} per download.`,
+      };
+    }
 
+    // Chunked for the same reason as the mosaic path above.
     const supabase = await createClient();
-    const { data: rows, error: queryError } = await supabase
-      .from('storage_objects')
-      .select('storage_key')
-      .eq('product_type', 'nircam_expmap')
-      .eq('status', 'active')
-      .in('storage_key', storageKeys);
+    const { keys: authorizedKeys, error: queryError } = await authorizeKeysInChunks(
+      storageKeys,
+      'storage_key',
+      (chunk) => supabase
+        .from('storage_objects')
+        .select('storage_key')
+        .eq('product_type', 'nircam_expmap')
+        .eq('status', 'active')
+        .in('storage_key', chunk),
+    );
 
     if (queryError) {
       console.error('Error authorizing NIRCam expmap download:', queryError);
       return { urls: {}, error: 'Failed to authorize download' };
     }
 
-    const authorizedKeys = [...new Set((rows || []).map((r) => r.storage_key as string))];
     if (authorizedKeys.length === 0) {
       return { urls: {}, error: null };
     }
