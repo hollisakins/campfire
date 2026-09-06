@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "campfire-etc"
+version = "0.1.0"
+description = "Empirical NIRSpec/MSA exposure-time calculator and spectrum simulator built from the CAMPFIRE archive, with an MCP server"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Hollis Akins" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+# The calculator and simulator are numpy-only on purpose: the MCP server is
+# installed by proposal writers who may have nothing else, and `uvx` has to be
+# able to resolve it straight from GitHub without campfire-layout or the
+# science stack. Everything heavier is an extra.
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.scripts]
+campfire-etc = "campfire_etc.cli:main"
+
+[project.optional-dependencies]
+# The MCP server (stdio for local use, streamable HTTP for the hosted one).
+mcp = [
+    "mcp>=2.1",
+    "uvicorn>=0.30",
+]
+# FITS input/output for SEDs and mock spectra.
+fits = [
+    "astropy>=6.0",
+]
+# Rebuilding the noise model from a local CAMPFIRE archive
+# (`campfire-etc build ...`). Needs the archive on disk, not just the package.
+build = [
+    "astropy>=6.0",
+    "scipy>=1.11",
+    "pandas>=2.0",
+    "matplotlib>=3.8",
+]
+dev = [
+    "pytest>=7.0",
+    "mcp>=2.1",
+    "uvicorn>=0.30",
+]
+
+[project.urls]
+Homepage = "https://github.com/hollisakins/campfire"
+Repository = "https://github.com/hollisakins/campfire"
+Calculator = "https://claude.ai/code/artifact/15c73c7d-1281-43a6-bbc1-2b20825648c8"
+
+[tool.hatch.build.targets.wheel]
+packages = ["campfire_etc"]
+
+[tool.hatch.build.targets.sdist]
+include = ["campfire_etc", "tests", "README.md", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

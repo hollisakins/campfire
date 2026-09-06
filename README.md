@@ -20,6 +20,7 @@ This is a monorepo with several components:
 | [`pipeline/`](pipeline/) | JWST reduction pipeline | Python, `jwst`, `astropy` |
 | [`web/`](web/) | Interactive web portal | Next.js, Supabase, Tailwind |
 | [`python/`](python/) | Unified Python package: API client, CLI, and deploy tools | Python, `httpx`, Supabase, Cloudflare R2 |
+| [`etc/`](etc/) | Empirical NIRSpec exposure-time calculator, spectrum simulator and MCP server | Python (numpy), MCP, Fly.io |
 
 Supporting directories:
 
