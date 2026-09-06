@@ -2,262 +2,211 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { LayoutDashboard, RotateCw } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
-import {
-  Camera, Database, GitBranch, HardDrive, LayoutDashboard, Telescope, History,
-} from 'lucide-react';
 import { getDeployments, getDeployEvents } from '@/lib/actions/deployments';
-import { getReductionProgress } from '@/lib/actions/nircam-exposures';
-import { getStorageBudget, type StorageBudget } from '@/lib/actions/storage-registry';
+import {
+  getArchiveOverview,
+  getDashboardSummary,
+  getRecentAdminActivity,
+  getReviewQueues,
+} from '@/lib/actions/admin-dashboard';
+import { fmtBytes, fmtCount, fmtWhen } from '@/lib/admin/format';
+import { DecisionPanel } from '@/components/admin/dashboard/DecisionPanel';
+import { ReductionWorkPanel } from '@/components/admin/dashboard/ReductionWorkPanel';
+import {
+  RecentDeploymentsPanel,
+  RecentDeployEventsPanel,
+} from '@/components/admin/dashboard/DeploymentsPanel';
+import { OperationalContextPanel } from '@/components/admin/dashboard/OperationalContextPanel';
+import { ActivityPanel } from '@/components/admin/dashboard/ActivityPanel';
 
-// ---------------------------------------------------------------------------
-// The admin landing page (admin audit 2026-07-03, §3.A): stat tiles and
-// "needs attention" queues over already-computable aggregates, each
-// deep-linking into the relevant section with pre-applied URL filters (the
-// framework-migrated pages parse them). Replaces the old /admin → /admin/codes
-// redirect.
-// ---------------------------------------------------------------------------
-
-function fmtBytes(n: number): string {
-  let v = Number(n);
-  for (const u of ['B', 'KB', 'MB', 'GB', 'TB', 'PB']) {
-    if (Math.abs(v) < 1024 || u === 'PB') return u === 'B' ? `${v} B` : `${v.toFixed(1)} ${u}`;
-    v /= 1024;
-  }
-  return `${v} B`;
-}
-
-function fmtWhen(ts: string): string {
-  let iso = ts;
-  if (iso.includes(' ') && !iso.includes('T')) iso = iso.replace(' ', 'T');
-  if (iso.endsWith('+00')) iso = iso + ':00';
-  else if (!iso.endsWith('Z') && !iso.includes('+')) iso = iso + 'Z';
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? ts : d.toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
-}
-
-function StatTile({
-  href, icon: Icon, label, value, accent, sub,
-}: {
-  href: string;
-  icon: React.ElementType;
-  label: string;
-  value: React.ReactNode;
-  accent?: boolean;
-  sub?: string;
-}) {
-  return (
-    <Link href={href} className="block group">
-      <Card className="p-4 h-full transition-colors group-hover:bg-card-hover">
-        <div className="flex items-center gap-2 text-text-secondary text-sm mb-1.5">
-          <Icon className="w-4 h-4" />
-          {label}
-        </div>
-        <div className={`text-2xl font-semibold tabular-nums ${accent ? 'text-yellow-600 dark:text-yellow-400' : 'text-text-primary'}`}>
-          {value}
-        </div>
-        {sub && <div className="text-xs text-text-secondary mt-1">{sub}</div>}
-      </Card>
-    </Link>
-  );
-}
+// The admin landing page is an operator overview, not an inventory of every
+// available aggregate. Its hierarchy is deliberately stable:
+//   1. what was deployed recently,
+//   2. inspection and review state by workflow,
+//   3. administrative decisions and operational context,
+//   4. audit history and quiet archive scale.
 
 export default function AdminDashboardPage() {
-  const { data: progressResult } = useQuery({
-    queryKey: ['admin-nircam-progress'],
-    queryFn: getReductionProgress,
+  const queryClient = useQueryClient();
+
+  const summaryQ = useQuery({
+    queryKey: ['admin-dash', 'summary'],
+    queryFn: getDashboardSummary,
     staleTime: 30_000,
+    refetchOnWindowFocus: true,
   });
-  const { data: drafts } = useQuery({
-    queryKey: ['admin-dashboard-drafts'],
-    queryFn: () => getDeployments({ status: 'draft', pageSize: 1 }),
+  const queuesQ = useQuery({
+    queryKey: ['admin-dash', 'queues'],
+    queryFn: getReviewQueues,
     staleTime: 30_000,
+    refetchOnWindowFocus: true,
   });
-  const { data: budget } = useQuery({
-    queryKey: ['admin-storage-budget'],
-    queryFn: getStorageBudget,
+  const deploymentsQ = useQuery({
+    queryKey: ['admin-dash', 'deployments'],
+    queryFn: () => getDeployments({
+      pageSize: 6, sortColumn: 'deployed_at', sortDirection: 'desc',
+    }),
     staleTime: 60_000,
   });
-  const { data: recentEvents } = useQuery({
-    queryKey: ['admin-dashboard-events'],
+  const eventsQ = useQuery({
+    queryKey: ['admin-dash', 'events'],
     queryFn: () => getDeployEvents({ pageSize: 5 }),
-    staleTime: 30_000,
+    staleTime: 60_000,
   });
-  const { data: pendingRequests } = useQuery({
-    queryKey: ['admin-dashboard-inspection-requests'],
-    queryFn: async () => {
-      const res = await fetch('/api/admin/inspection-requests?status=pending');
-      if (!res.ok) return { requests: [] as unknown[] };
-      return (await res.json()) as { requests: unknown[] };
-    },
-    staleTime: 30_000,
+  const activityQ = useQuery({
+    queryKey: ['admin-dash', 'activity'],
+    queryFn: () => getRecentAdminActivity(5),
+    staleTime: 60_000,
+  });
+  const overviewQ = useQuery({
+    queryKey: ['admin-dash', 'overview'],
+    queryFn: getArchiveOverview,
+    staleTime: 10 * 60_000,
   });
 
-  const progress = progressResult?.progress ?? [];
-  const pendingReview = progress.reduce((s, r) => s + (r.pending_review ?? 0), 0);
-  const needsCorrection = progress.reduce((s, r) => s + (r.needs_correction ?? 0), 0);
-  // The view is detector-grain; roll up to field/filter for the queue table.
-  // Accumulate every row (so Total covers fully-reviewed detectors too), then
-  // keep only groups that still have pending work.
-  const attentionMap = new Map<string, { field: string; filter: string; pending: number; total: number }>();
-  for (const r of progress) {
-    const key = `${r.field}|${r.filter}`;
-    const acc = attentionMap.get(key) ?? { field: r.field, filter: r.filter, pending: 0, total: 0 };
-    acc.pending += r.pending_review ?? 0;
-    acc.total += r.total ?? 0;
-    attentionMap.set(key, acc);
+  const summary = summaryQ.data?.summary ?? null;
+  const summaryError = summaryQ.data?.error ?? (summaryQ.error ? String(summaryQ.error) : undefined);
+  const overview = overviewQ.data?.overview ?? null;
+
+  const anyFetching =
+    summaryQ.isFetching || queuesQ.isFetching || deploymentsQ.isFetching ||
+    eventsQ.isFetching || activityQ.isFetching || overviewQ.isFetching;
+
+  const refreshAll = () => {
+    queryClient.invalidateQueries({ queryKey: ['admin-dash'] });
+  };
+
+  let statusLine: React.ReactNode;
+  if (summaryQ.isPending) {
+    statusLine = <span className="text-text-tertiary">Loading current state…</span>;
+  } else if (summaryError || !summary) {
+    statusLine = <span className="text-warning">Portal status unavailable</span>;
+  } else {
+    const updated = new Date(summaryQ.dataUpdatedAt).toLocaleTimeString(undefined, {
+      hour: '2-digit', minute: '2-digit',
+    });
+    statusLine = (
+      <span className="text-text-secondary">
+        {`${fmtCount(summary.deployments.deploys_7d)} deployment${summary.deployments.deploys_7d === 1 ? '' : 's'} in the past 7 days`}
+        {` · updated ${updated}`}
+      </span>
+    );
   }
-  const attention = Array.from(attentionMap.values()).filter((r) => r.pending > 0);
-
-  const budgetOk = budget && 'total_bytes' in budget;
-  const b = budgetOk ? (budget as StorageBudget) : null;
 
   return (
-    <div>
-      <div className="flex items-center gap-2 mb-2">
-        <LayoutDashboard className="w-6 h-6 text-primary" />
-        <h1 className="text-2xl font-semibold text-text-primary">Dashboard</h1>
-      </div>
-      <p className="text-text-secondary text-sm mb-6">
-        Reduction-loop status at a glance. Every tile links into the relevant section with
-        the matching filter applied.
-      </p>
-
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-        <StatTile
-          href="/admin/nircam?review=pending"
-          icon={Camera}
-          label="Exposures pending review"
-          value={pendingReview}
-          accent={pendingReview > 0}
-        />
-        <StatTile
-          href="/admin/nircam?correction=needed"
-          icon={Camera}
-          label="Needs correction"
-          value={needsCorrection}
-          accent={needsCorrection > 0}
-        />
-        <StatTile
-          href="/admin/deployments?status=draft"
-          icon={GitBranch}
-          label="Draft deployments"
-          value={drafts?.total ?? '—'}
-          accent={(drafts?.total ?? 0) > 0}
-        />
-        <StatTile
-          href="/admin/inspection-requests"
-          icon={Telescope}
-          label="Pending access requests"
-          value={pendingRequests?.requests?.length ?? '—'}
-          accent={(pendingRequests?.requests?.length ?? 0) > 0}
-        />
-        <StatTile
-          href="/admin/intermediate-products"
-          icon={HardDrive}
-          label="Storage used"
-          value={b ? fmtBytes(b.total_bytes) : '—'}
-          sub={b ? `of ${fmtBytes(b.cap_bytes)} (${b.pct_used}%)` : undefined}
-        />
-      </div>
-
-      {attention.length > 0 && (
-        <Card className="mb-8 overflow-hidden">
-          <div className="px-4 py-3 border-b border-border bg-surface-2 flex items-center gap-2">
-            <Camera className="w-4 h-4 text-text-secondary" />
-            <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
-              Needs attention — pending review by field / filter
-            </h2>
+    <div className="space-y-5">
+      <div className="flex items-start gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <LayoutDashboard className="w-5 h-5 text-primary" />
+            <h1 className="text-xl font-semibold text-text-primary">Admin overview</h1>
           </div>
-          <table className="w-full text-sm">
-            <thead className="text-text-secondary text-left border-b border-border">
-              <tr>
-                <th className="px-4 py-2 font-medium">Field</th>
-                <th className="px-4 py-2 font-medium">Filter</th>
-                <th className="px-4 py-2 font-medium text-right">Pending</th>
-                <th className="px-4 py-2 font-medium text-right">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {attention.map((r) => (
-                <tr key={`${r.field}-${r.filter}`} className="border-t border-border hover:bg-card-hover/50">
-                  <td className="px-4 py-2 font-medium text-text-primary">{r.field}</td>
-                  <td className="px-4 py-2 text-text-primary">{r.filter}</td>
-                  <td className="px-4 py-2 text-right">
-                    <Link
-                      href={`/admin/nircam?field=${encodeURIComponent(r.field)}&filter=${encodeURIComponent(r.filter)}&review=pending`}
-                      className="text-yellow-600 dark:text-yellow-400 font-medium hover:underline"
-                    >
-                      {r.pending}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-2 text-right text-text-secondary tabular-nums">{r.total}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
-      )}
+          <p className="text-xs mt-0.5">{statusLine}</p>
+        </div>
+        <button
+          onClick={refreshAll}
+          title="Refresh dashboard data"
+          className="ml-auto inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-text-secondary hover:bg-card-hover hover:text-text-primary transition-colors"
+        >
+          <RotateCw className={`w-3.5 h-3.5 ${anyFetching ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+
+      <RecentDeploymentsPanel
+        deployments={deploymentsQ.data}
+        loading={deploymentsQ.isPending}
+        onRetry={() => deploymentsQ.refetch()}
+      />
+
+      <ReductionWorkPanel
+        queues={queuesQ.data?.queues ?? null}
+        loading={queuesQ.isPending}
+        error={queuesQ.data?.error}
+        onRetry={() => queuesQ.refetch()}
+      />
+
+      <div className="grid grid-cols-12 gap-4 items-start">
+        <div className="col-span-12 xl:col-span-5">
+          <DecisionPanel
+            summary={summary}
+            loading={summaryQ.isPending}
+            error={summaryError}
+            onRetry={() => summaryQ.refetch()}
+          />
+        </div>
+        <div className="col-span-12 xl:col-span-7">
+          <OperationalContextPanel
+            summary={summary}
+            overview={overview}
+            loading={summaryQ.isPending || overviewQ.isPending}
+            error={summaryError}
+            onRetry={() => {
+              summaryQ.refetch();
+              overviewQ.refetch();
+            }}
+          />
+        </div>
+
+        <div className="col-span-12 xl:col-span-7">
+          <RecentDeployEventsPanel
+            events={eventsQ.data}
+            loading={eventsQ.isPending}
+            onRetry={() => eventsQ.refetch()}
+          />
+        </div>
+        <div className="col-span-12 xl:col-span-5">
+          <ActivityPanel
+            rows={activityQ.data?.rows ?? null}
+            summary={summary}
+            loading={activityQ.isPending}
+            error={activityQ.data?.error}
+            onRetry={() => activityQ.refetch()}
+          />
+        </div>
+      </div>
 
       <Card className="overflow-hidden">
-        <div className="px-4 py-3 border-b border-border bg-surface-2 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <History className="w-4 h-4 text-text-secondary" />
-            <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
-              Recent deploy activity
-            </h2>
-          </div>
-          <Link href="/admin/deployments" className="text-xs text-primary hover:underline">
-            View all
-          </Link>
-        </div>
-        {(recentEvents?.events?.length ?? 0) === 0 ? (
-          <p className="p-4 text-sm text-text-secondary">No deploy events yet.</p>
+        {overviewQ.isPending ? (
+          <div className="p-3"><div className="h-4 bg-surface-2 rounded animate-pulse" /></div>
+        ) : !overview ? (
+          <p className="p-3 text-xs text-text-tertiary">
+            Archive overview unavailable{overviewQ.data?.error ? ` — ${overviewQ.data.error}` : ''}
+          </p>
         ) : (
-          <table className="w-full text-sm">
-            <tbody>
-              {recentEvents!.events.map((e) => (
-                <tr key={e.id} className="border-t border-border first:border-t-0">
-                  <td className="px-4 py-2 text-text-secondary whitespace-nowrap w-36">
-                    {fmtWhen(e.occurred_at)}
-                  </td>
-                  <td className="px-4 py-2 font-medium text-text-primary w-24">{e.action}</td>
-                  <td className="px-4 py-2 font-mono text-xs">
-                    {e.observation ?? e.field ?? '—'}
-                  </td>
-                  <td className="px-4 py-2 text-text-secondary text-right">
-                    {e.actor_name ?? '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="px-3 py-2 flex flex-wrap items-center gap-x-6 gap-y-1">
+            {([
+              ['Programs', overview.n_programs, '/admin/programs'],
+              ['Observations', overview.n_observations, null],
+              ['Pointings', overview.n_pointings, null],
+              ['Targets', overview.n_targets, null],
+              ['Spectra', overview.n_spectra, null],
+            ] as const).map(([label, value, href]) => {
+              const cell = (
+                <span key={label} className="text-xs whitespace-nowrap">
+                  <span className="tabular-nums font-medium text-text-primary">{fmtCount(value)}</span>
+                  <span className="text-text-tertiary ml-1.5 uppercase text-[10px] tracking-wider">{label}</span>
+                </span>
+              );
+              return href ? (
+                <Link key={label} href={href} className="hover:opacity-80">{cell}</Link>
+              ) : cell;
+            })}
+            <span className="text-xs whitespace-nowrap">
+              <span className="tabular-nums font-medium text-text-primary">{fmtBytes(overview.total_size_bytes)}</span>
+              <span className="text-text-tertiary ml-1.5 uppercase text-[10px] tracking-wider">Spectra size</span>
+            </span>
+            <span className="ml-auto text-[11px] text-text-tertiary whitespace-nowrap">
+              Latest deploy {fmtWhen(overview.latest_deployed_at)}
+              {overview.latest_cfpipe_version && (
+                <span className="font-mono ml-1.5">cfpipe {overview.latest_cfpipe_version}</span>
+              )}
+            </span>
+          </div>
         )}
       </Card>
-
-      <div className="mt-8 grid grid-cols-2 gap-4">
-        <Link href="/admin/intermediate-products" className="block group">
-          <Card className="p-4 transition-colors group-hover:bg-card-hover flex items-center gap-3">
-            <Database className="w-5 h-5 text-text-secondary" />
-            <div>
-              <div className="text-sm font-medium text-text-primary">Storage registry</div>
-              <div className="text-xs text-text-secondary">Browse every registered object in the bucket</div>
-            </div>
-          </Card>
-        </Link>
-        <Link href="/admin/nircam" className="block group">
-          <Card className="p-4 transition-colors group-hover:bg-card-hover flex items-center gap-3">
-            <Camera className="w-5 h-5 text-text-secondary" />
-            <div>
-              <div className="text-sm font-medium text-text-primary">NIRCam reductions</div>
-              <div className="text-xs text-text-secondary">Per-field/filter progress + exposure review</div>
-            </div>
-          </Card>
-        </Link>
-      </div>
     </div>
   );
 }
