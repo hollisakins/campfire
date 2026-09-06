@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo } from 'react';
 import Link from 'next/link';
-import { ChevronDown, ChevronUp, Download, Copy, Check, Info } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronUp, Download, Copy, Check, Info } from 'lucide-react';
 import type { NircamProductRow } from '@/lib/types';
 import {
   generateNircamMosaicDownloadUrls,
@@ -14,6 +14,11 @@ interface CurlScriptGeneratorProps {
   className?: string;
 }
 
+// Transfer bytes for a set of products: stored (gzipped) size when the registry
+// recorded one, logical size otherwise.
+const bytesOf = (rows: NircamProductRow[]): number =>
+  rows.reduce((sum, r) => sum + (r.file_size_stored ?? r.file_size ?? 0), 0);
+
 // Helper to format file size
 const formatFileSize = (bytes: number): string => {
   if (bytes === 0) return '0 B';
@@ -23,29 +28,42 @@ const formatFileSize = (bytes: number): string => {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 };
 
+// What a build produced: the script text plus the accounting the UI needs to
+// state, honestly, what it covers.
+interface BuiltScript {
+  script: string;
+  /** Products actually in the script. */
+  included: number;
+  /** Selected products the server would not authorize (never silently dropped). */
+  missing: number;
+  /** Server-reported failure from either authorization call, if any. */
+  error: string | null;
+}
+
+const EMPTY_BUILD: BuiltScript = { script: '', included: 0, missing: 0, error: null };
+
 export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
   selectedImages,
   className = '',
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [script, setScript] = useState('');
+  const [build, setBuild] = useState<BuiltScript>(EMPTY_BUILD);
   const [generating, setGenerating] = useState(false);
+  const script = build.script;
 
-  // Transfer estimate: stored (gzipped) bytes when recorded, logical otherwise
-  // — this is what the curl downloads actually move.
-  const totalSize = useMemo(() => {
-    return selectedImages.reduce(
-      (sum, img) => sum + (img.file_size_stored ?? img.file_size ?? 0), 0);
-  }, [selectedImages]);
+  // Transfer estimate for the SELECTION (the collapsed header): stored
+  // (gzipped) bytes when recorded, logical otherwise — what the curl downloads
+  // actually move.
+  const totalSize = useMemo(() => bytesOf(selectedImages), [selectedImages]);
 
   // Build the curl script. Presigned + HMAC-authorized proxy URLs come from
   // the server actions (authorized per-viewer under RLS — mosaics against
   // nircam_images, expmaps against storage_objects), so the script carries no
   // credentials — just `curl` against the proxy URL. Async because it awaits
   // the presign round-trip.
-  const buildScript = React.useCallback(async (): Promise<string> => {
-    if (selectedImages.length === 0) return '';
+  const buildScript = React.useCallback(async (): Promise<BuiltScript> => {
+    if (selectedImages.length === 0) return EMPTY_BUILD;
 
     const mosaicPaths = selectedImages
       .filter((p) => p.kind !== 'expmap')
@@ -63,20 +81,34 @@ export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
         : Promise.resolve({ urls: {} as Record<string, string>, error: null }),
     ]);
     const urls = { ...mosaicRes.urls, ...expmapRes.urls };
+    // One authorization call failing must not read as "those products don't
+    // exist" — that is how a mosaic-side failure once produced an
+    // expmaps-only script under a whole-selection size.
+    const error = mosaicRes.error ?? expmapRes.error ?? null;
 
     // Only include products we were authorized to presign.
     const images = selectedImages.filter((img) => urls[img.file_path]);
-    if (images.length === 0) return '';
+    const missing = selectedImages.length - images.length;
+    if (images.length === 0) return { ...EMPTY_BUILD, missing, error };
+
+    // Size/count in the script describe the SCRIPT, not the selection: the two
+    // differ exactly when something could not be authorized, and the script
+    // must never advertise bytes it does not fetch.
+    const scriptBytes = bytesOf(images);
 
     // Group by field for organization
     const fields = [...new Set(images.map((img) => img.field))];
+
+    const omitted = missing > 0
+      ? `#\n# NOTE: ${missing} of ${selectedImages.length} selected product(s) are NOT in this\n#       script — the server did not authorize them for your account.\n`
+      : '';
 
     let scriptContent = `#!/bin/bash
 # CAMPFIRE NIRCam Data Download Script
 # Generated: ${new Date().toISOString()}
 # Files: ${images.length}
-# Total size: ${formatFileSize(totalSize)}
-#
+# Total size: ${formatFileSize(scriptBytes)}
+${omitted}#
 # Download URLs below are pre-signed and expire after ~6 hours. Re-generate
 # this script if the links have expired.
 
@@ -84,7 +116,7 @@ echo "============================="
 echo "CAMPFIRE NIRCam Data Download"
 echo "============================="
 echo ""
-echo "This script will download ${images.length} files (${formatFileSize(totalSize)} total)"
+echo "This script will download ${images.length} files (${formatFileSize(scriptBytes)} total)"
 echo ""
 
 # Create output directory
@@ -121,25 +153,31 @@ echo "Download complete!"
 echo "Files saved in: $(pwd)"
 `;
 
-    return scriptContent;
-  }, [selectedImages, totalSize]);
+    return { script: scriptContent, included: images.length, missing, error };
+  }, [selectedImages]);
 
   // (Re)generate the script whenever the panel is open and the selection
   // changes. Presigned URLs are per-request, so we rebuild rather than memoize.
   React.useEffect(() => {
     if (!isExpanded || selectedImages.length === 0) {
-      setScript('');
+      setBuild(EMPTY_BUILD);
       return;
     }
     let cancelled = false;
     setGenerating(true);
     buildScript()
-      .then((content) => {
-        if (!cancelled) setScript(content);
+      .then((result) => {
+        if (!cancelled) setBuild(result);
       })
       .catch((err) => {
         console.error('Failed to generate NIRCam download script:', err);
-        if (!cancelled) setScript('');
+        if (!cancelled) {
+          setBuild({
+            ...EMPTY_BUILD,
+            missing: selectedImages.length,
+            error: 'Failed to generate download links.',
+          });
+        }
       })
       .finally(() => {
         if (!cancelled) setGenerating(false);
@@ -200,6 +238,25 @@ echo "Files saved in: $(pwd)"
       {/* Expanded content */}
       {isExpanded && (
         <div className="border-t border-border">
+          {/* Coverage warning: the script must never quietly cover less than
+              the selection (a failed authorization call used to do exactly
+              that — an expmaps-only script under a whole-selection size). */}
+          {!generating && build.missing > 0 && (
+            <div className="px-4 pt-4">
+              <div className="flex items-start gap-2 rounded-lg p-3 bg-amber-100 dark:bg-amber-900/40 border border-amber-200 dark:border-amber-800/50">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-800 dark:text-amber-300" />
+                <p className="text-sm text-amber-900 dark:text-amber-200">
+                  {build.included === 0
+                    ? `None of the ${selectedImages.length} selected product${selectedImages.length === 1 ? '' : 's'} could be prepared for download.`
+                    : `${build.included} of ${selectedImages.length} selected products are in this script; ${build.missing} could not be prepared.`}
+                  {build.error
+                    ? ` ${build.error}`
+                    : ' They were not authorized for your account — contact an admin if you expect access to them.'}
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Script preview */}
           <div className="p-4">
             <div className="bg-gray-900 rounded-lg overflow-hidden">
