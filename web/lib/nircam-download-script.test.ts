@@ -87,6 +87,10 @@ describe('buildNircamDownloadScript (text)', () => {
     expect(script).toContain('"$BASE_URL/api/v1/storage/download?key=$key"');
     // The credential check hits the same route with no key.
     expect(script).toContain('"$BASE_URL/api/v1/storage/download")');
+    // The bearer never rides in curl's argv (readable by other users on a
+    // shared host via the process list): it goes in via config on stdin.
+    expect(script).not.toContain('-H "Authorization');
+    expect(script).toContain(`printf 'header = "Authorization: Bearer %s"\\n' "$API_KEY" | curl -K - "$@"`);
     expect(script).not.toMatch(/X-Amz-|sig=|\/proxy\?/);
     // Resumable by construction: partial downloads land in .part and resume.
     expect(script).toContain('-C -');
@@ -426,6 +430,21 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
     expect(storeRanges.get(objD)?.slice(-2)).toEqual(['bytes=2048-2048', null]);
     expect(r.stdout).toContain('exists with 2048 bytes but the object is 1024; downloading again');
     expect(r.stdout).toContain('Done: 1 downloaded, 3 already present, 1 failed');
+  });
+
+  it('keeps the progress in a .part when the final file is stale, so a slow link converges across runs', async () => {
+    // A stale final file (wrong size) plus a .part holding a previous run's
+    // partial download of the current object: the .part must be resumed,
+    // not deleted, or a link that cannot finish the file within one run's
+    // attempts never makes net progress.
+    writeFileSync(outPath(objA), Buffer.alloc(100, 'x'));
+    writeFileSync(`${outPath(objA)}.part`, bytesA.subarray(0, 30000));
+    const r = await run();
+    expect(readFileSync(outPath(objA)).equals(bytesA)).toBe(true);
+    expect(existsSync(`${outPath(objA)}.part`)).toBe(false);
+    // The probe at the stale file's end, then a resume from the .part's end.
+    expect(storeRanges.get(objA)?.slice(-2)).toEqual(['bytes=100-100', 'bytes=30000-']);
+    expect(r.stdout).toContain('exists with 100 bytes but the object is 65536; downloading again');
   });
 
   it('restarts a .part that is larger than the object instead of retrying an impossible resume forever', async () => {

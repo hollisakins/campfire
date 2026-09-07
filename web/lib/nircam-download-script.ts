@@ -155,11 +155,18 @@ TOTAL=${rows.length}
 
 ${credential}
 
+# Every API call goes through here: the bearer rides in curl's config read
+# from stdin (-K -), never on the command line, where any other user on the
+# host could read it out of the process list (ps, /proc/<pid>/cmdline) for as
+# long as a transfer runs — and this script is written for shared clusters.
+auth_curl() {
+  printf 'header = "Authorization: Bearer %s"\\n' "$API_KEY" | curl -K - "$@"
+}
+
 # Check the credential once, up front, rather than failing once per file: the
 # download route without a key answers 400 to an accepted credential and 401
 # to a rejected one, and never touches a file either way.
-check_code=$(curl -sS -o /dev/null -w '%{http_code}' \\
-  -H "Authorization: Bearer $API_KEY" "$BASE_URL/api/v1/storage/download")
+check_code=$(auth_curl -sS -o /dev/null -w '%{http_code}' "$BASE_URL/api/v1/storage/download")
 if [ "$check_code" = "401" ]; then
   echo "error: the API rejected this credential (HTTP 401). ${rejectedHint}" >&2
   exit 1
@@ -177,13 +184,13 @@ failed_files=""
 stale=0
 stale_files=""
 
+
 # probe_total <key> <offset>: the object's size according to the store, read
 # from the Content-Range of a one-byte range request at <offset> (a 206 and a
 # 416 both carry it). Empty when the store could not be asked.
 probe_total() {
   local hdr="$OUT_DIR/.probe.$$" total
-  curl -sSL -o /dev/null -D "$hdr" -r "$2-$2" \\
-    -H "Authorization: Bearer $API_KEY" \\
+  auth_curl -sSL -o /dev/null -D "$hdr" -r "$2-$2" \\
     "$BASE_URL/api/v1/storage/download?key=$1" >/dev/null 2>&1
   total=$(grep -i '^content-range:' "$hdr" 2>/dev/null | tail -1 | sed 's|.*/||' | tr -dc '0-9')
   rm -f "$hdr"
@@ -220,9 +227,11 @@ fetch() {
     fi
     # Never resume a mismatched final file: if it is an older version of the
     # product, appending the new one's tail would corrupt it. Fetch it again;
-    # the old file stays until the new one is complete.
+    # the old file stays until the new one is complete. Any .part on disk is
+    # this script's own in-progress download of the current object (it is
+    # never seeded from the final file), so the loop below resumes it rather
+    # than starting over — a slow link makes net progress across runs.
     echo "  exists with $size bytes but the object is \${total:-of unknown size}; downloading again"
-    rm -f "$part"
   fi
 
   mkdir -p "$(dirname "$file")"
@@ -233,8 +242,7 @@ fetch() {
     # it follows the redirect to the storage host, as the store requires.
     # -D keeps the response headers: on a 416 the store's Content-Range
     # carries the object's true size.
-    code=$(curl -fL --progress-bar -C - -o "$part" -D "$headers" -w '%{http_code}' \\
-      -H "Authorization: Bearer $API_KEY" \\
+    code=$(auth_curl -fL --progress-bar -C - -o "$part" -D "$headers" -w '%{http_code}' \\
       "$BASE_URL/api/v1/storage/download?key=$key")
     rc=$?
     total=$(grep -i '^content-range:' "$headers" 2>/dev/null | tail -1 | sed 's|.*/||' | tr -dc '0-9')
