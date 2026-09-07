@@ -9,9 +9,11 @@
 -- dec +52.9, where cos(dec) = 0.60; zero on UDS / COSMOS).
 --
 -- Fix: widen the RA bound to p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6)
--- in all six functions. GREATEST(.., 1e-6) keeps the expression finite at
--- the poles; the box is only the index pre-filter and remains a superset of
--- the cone, so the Haversine cut still decides membership and the fix can
+-- in all six functions, and drop the RA bound altogether when the cone
+-- reaches a pole (ABS(p_coord_dec) + p_radius_degrees >= 90), where it spans
+-- every RA and no finite interval is a superset (GREATEST(.., 1e-6) keeps the
+-- division finite there). The box is only the index pre-filter and remains a
+-- superset of the cone, so the Haversine cut still decides membership and the fix can
 -- only add correct rows. get_adjacent_objects changes in the same migration
 -- as the list RPC so the navigation arrows keep walking the same sequence as
 -- the table. get_nearby_shutters and get_objects_near already widened
@@ -298,8 +300,12 @@ BEGIN
       AND (
         NOT v_coord_search_active
         OR (
-          t.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
-                  AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+          -- #527: RA box widened by 1/cos(dec); a cone that reaches a pole spans
+          -- every RA, so the RA bound is dropped there (the box is only the index
+          -- pre-filter; the Haversine cut below decides membership either way).
+          (ABS(p_coord_dec) + p_radius_degrees >= 90
+           OR t.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+                      AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6)))
           AND t.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
         )
       )
@@ -658,8 +664,12 @@ BEGIN
       AND (
         NOT v_coord_search_active
         OR (
-          o.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
-                  AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+          -- #527: RA box widened by 1/cos(dec); a cone that reaches a pole spans
+          -- every RA, so the RA bound is dropped there (the box is only the index
+          -- pre-filter; the Haversine cut below decides membership either way).
+          (ABS(p_coord_dec) + p_radius_degrees >= 90
+           OR o.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+                      AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6)))
           AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
           AND 2 * DEGREES(ASIN(SQRT(
             POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
@@ -815,8 +825,12 @@ BEGIN
       AND (
         NOT v_coord_search_active
         OR (
-          o.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
-                  AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+          -- #527: RA box widened by 1/cos(dec); a cone that reaches a pole spans
+          -- every RA, so the RA bound is dropped there (the box is only the index
+          -- pre-filter; the Haversine cut below decides membership either way).
+          (ABS(p_coord_dec) + p_radius_degrees >= 90
+           OR o.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+                      AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6)))
           AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
           AND 2 * DEGREES(ASIN(SQRT(
             POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
@@ -1200,8 +1214,12 @@ BEGIN
     AND (
       NOT v_coord_search_active
       OR (
-        o.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
-                AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+        -- #527: RA box widened by 1/cos(dec); a cone that reaches a pole spans
+        -- every RA, so the RA bound is dropped there (the box is only the index
+        -- pre-filter; the Haversine cut below decides membership either way).
+        (ABS(p_coord_dec) + p_radius_degrees >= 90
+         OR o.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+                    AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6)))
         AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
         AND 2 * DEGREES(ASIN(SQRT(
           POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
@@ -1479,8 +1497,12 @@ BEGIN
       AND (
         NOT v_coord_search_active
         OR (
-          o.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
-                  AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+          -- #527: RA box widened by 1/cos(dec); a cone that reaches a pole spans
+          -- every RA, so the RA bound is dropped there (the box is only the index
+          -- pre-filter; the Haversine cut below decides membership either way).
+          (ABS(p_coord_dec) + p_radius_degrees >= 90
+           OR o.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+                      AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6)))
           AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
           AND 2 * DEGREES(ASIN(SQRT(
             POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
@@ -1695,8 +1717,12 @@ BEGIN
           AND c.content ILIKE '%' || p_comment_search || '%'
           AND (p_comment_search_scope = 'everyone' OR (p_comment_search_scope = 'just_me' AND c.user_id = p_comment_user_id))))
       AND (NOT v_coord_search_active OR (
-        t.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
-                AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+        -- #527: RA box widened by 1/cos(dec); a cone that reaches a pole spans
+        -- every RA, so the RA bound is dropped there (the box is only the index
+        -- pre-filter; the Haversine cut below decides membership either way).
+        (ABS(p_coord_dec) + p_radius_degrees >= 90
+         OR t.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+                    AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6)))
         AND t.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)))
   ),
   distance_filtered AS (SELECT fs.* FROM filtered_spectra fs WHERE NOT v_coord_search_active OR fs.distance <= p_radius_degrees)
@@ -1869,8 +1895,12 @@ BEGIN
                  OR o.last_inspected_at IS NULL
                  OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at))))
       AND (NOT v_coord_search_active OR (
-        o.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
-                AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+        -- #527: RA box widened by 1/cos(dec); a cone that reaches a pole spans
+        -- every RA, so the RA bound is dropped there (the box is only the index
+        -- pre-filter; the Haversine cut below decides membership either way).
+        (ABS(p_coord_dec) + p_radius_degrees >= 90
+         OR o.ra BETWEEN (p_coord_ra - p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6))
+                    AND (p_coord_ra + p_radius_degrees / GREATEST(COS(RADIANS(p_coord_dec)), 1e-6)))
         AND o.dec BETWEEN (p_coord_dec - p_radius_degrees) AND (p_coord_dec + p_radius_degrees)
         -- Exact haversine cut lives inside the page selection (it used to be a
         -- post-CTE distance_filtered pass) so the LIMIT counts only surviving
