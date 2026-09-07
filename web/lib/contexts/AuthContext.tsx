@@ -5,6 +5,7 @@ import { User, Session } from '@supabase/supabase-js';
 import { useQueryClient } from '@tanstack/react-query';
 import { createClient } from '@/lib/supabase/client';
 import { createOncePerUser, type OncePerUser } from '@/lib/auth/once-per-user';
+import { installAuthChannelBfcacheGuard } from '@/lib/supabase/bfcache-auth-channel';
 import { UserProfile } from '@/lib/types';
 import { generateUniqueUsername } from '@/lib/utils/username';
 
@@ -106,7 +107,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    return () => subscription.unsubscribe();
+    // Keep this page restorable from bfcache (#540): the auth client's
+    // cross-tab channel is closed while the page is parked and reopened on
+    // return, with the stored session re-checked against the user this page
+    // was showing (`cacheUserIdRef` mirrors `user?.id`). Installed after the
+    // subscription above so its restore-time events land on it.
+    const uninstallBfcacheGuard = installAuthChannelBfcacheGuard(supabase, {
+      getUserId: () => cacheUserIdRef.current,
+    });
+
+    return () => {
+      subscription.unsubscribe();
+      uninstallBfcacheGuard();
+    };
   }, []);
 
   // Only ever called through `profileGate()`.

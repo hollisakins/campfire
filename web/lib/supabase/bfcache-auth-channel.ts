@@ -4,23 +4,42 @@ import type { SupabaseClient } from '@supabase/supabase-js';
  * Keep signed-in pages restorable from the back/forward cache (#540).
  *
  * auth-js opens a `BroadcastChannel` per client to mirror auth events across
- * tabs, and posts on it for every event — including the `INITIAL_SESSION` /
- * `SIGNED_IN` pair each new document emits while booting. Chromium keeps a
- * document with an open channel in bfcache but evicts it the moment a message
- * arrives (`notRestoredReasons: broadcastchannel-message`), so navigating from
- * any signed-in page to any other signed-in page evicted the first one, and
- * the back button always reloaded (measured in the M0 trace, #496).
+ * tabs and posts on it from `_notifyAllSubscribers(event, session)` with
+ * `broadcast = true`. The senders that matter: `_recoverAndRefresh()` emits
+ * `SIGNED_IN` every time a document boots *and* every time any tab goes
+ * hidden → visible, and the auto-refresh ticker emits `TOKEN_REFRESHED`.
+ * (`INITIAL_SESSION` is delivered to the subscriber directly and never posted.)
+ * Chromium keeps a document with an open channel in bfcache but evicts it the
+ * moment a message arrives (`notRestoredReasons: broadcastchannel-message`),
+ * so the next page's boot — or a refocus of any other tab — evicted every
+ * parked signed-in page and the back button always reloaded (M0 trace, #496).
+ * Filtering on the sender side would not help: any other tab's refocus still
+ * posts. The receiver has to stop listening while parked.
  *
- * Fix: close the channel on `pagehide` (the document is either parked, where
- * no message may reach it, or gone) and reopen it on a `persisted` `pageshow`,
- * wired the way the auth-js constructor wires it. Messages sent while the
- * page was parked are lost, so after reopening the session in cookie storage
- * is compared with the last one this document saw; if the user changed
- * (signed out or switched in another tab) the page reloads rather than run
- * on a stale identity.
+ * So: on `pagehide` the channel is closed (the document is either parked,
+ * where no message may reach it, or gone) and the current user id is
+ * snapshotted; on a `persisted` `pageshow` the channel is reopened, wired as
+ * the auth-js constructor wires it, and the session in cookie storage is
+ * compared with the snapshot:
+ * - session gone → `SIGNED_OUT` is delivered to this tab's subscribers (so
+ *   the app clears its auth state even if the reload below is vetoed by a
+ *   `beforeunload` guard) and the page reloads;
+ * - a different user → the page reloads (the server-rendered, access-scoped
+ *   content on screen belongs to the previous user);
+ * - the same user → `USER_UPDATED` is delivered so the app re-reads the
+ *   profile and program access, since any change that happened while parked
+ *   was never received. auth-js's own `visibilitychange` recovery re-emits
+ *   the stored session on restore, but only ever as `SIGNED_IN`, which the
+ *   app dedups for a known user.
+ * The snapshot is taken at park time on purpose: auth-js's recovery runs
+ * before `pageshow` and would otherwise have already moved a live "current
+ * user" to the new identity.
  *
  * Relies on two `protected` members of GoTrueClient (`broadcastChannel`,
- * `_notifyAllSubscribers`); if either is missing the guard installs nothing.
+ * `_notifyAllSubscribers`) and `storageKey`; if any is missing the guard
+ * installs nothing. The reopen wiring copies the auth-js 2.81.1 constructor;
+ * `bfcache-auth-channel.test.ts` pins that version so a bump fails loudly
+ * and the copy gets re-checked.
  */
 
 type AuthInternals = {
@@ -32,18 +51,20 @@ type AuthInternals = {
 type ChannelLike = Pick<BroadcastChannel, 'close' | 'addEventListener' | 'postMessage'>;
 
 export interface BfcacheGuardOptions {
+  /** The user id the app currently holds; snapshotted when the page parks. */
+  getUserId: () => string | null;
   /** Where `pagehide` / `pageshow` are listened for. Default: `window`. */
   target?: EventTarget;
   /** Creates the replacement channel. Default: `new BroadcastChannel(name)`. */
   createChannel?: (name: string) => ChannelLike;
-  /** Called when the session changed while the page was parked. Default: reload. */
+  /** Called when the identity changed while the page was parked. Default: reload. */
   onSessionChanged?: () => void;
 }
 
 /** Returns an uninstall function, or a no-op if the guard could not install. */
 export function installAuthChannelBfcacheGuard(
   client: SupabaseClient,
-  options: BfcacheGuardOptions = {}
+  options: BfcacheGuardOptions
 ): () => void {
   const auth = client.auth as unknown as AuthInternals;
   const target = options.target ?? (typeof window !== 'undefined' ? window : undefined);
@@ -63,17 +84,13 @@ export function installAuthChannelBfcacheGuard(
   const storageKey = auth.storageKey;
   const notify = auth._notifyAllSubscribers.bind(auth);
 
-  // The user this document last saw, for the resync after a restore.
-  let lastUserId: string | null = null;
-  const {
-    data: { subscription },
-  } = client.auth.onAuthStateChange((_event, session) => {
-    lastUserId = session?.user?.id ?? null;
-  });
-
-  let paused = false;
+  let parked = false;
+  let parkedUserId: string | null = null;
+  let channelClosedByUs = false;
 
   const onPageHide = () => {
+    parked = true;
+    parkedUserId = options.getUserId();
     const channel = auth.broadcastChannel;
     if (!channel) return;
     try {
@@ -82,12 +99,11 @@ export function installAuthChannelBfcacheGuard(
       /* already closed */
     }
     auth.broadcastChannel = null;
-    paused = true;
+    channelClosedByUs = true;
   };
 
-  const onPageShow = (event: Event) => {
-    if (!(event as PageTransitionEvent).persisted || !paused) return;
-    paused = false;
+  const reopenChannel = () => {
+    channelClosedByUs = false;
     try {
       const channel = createChannel(storageKey);
       channel.addEventListener('message', (e) => {
@@ -100,17 +116,22 @@ export function installAuthChannelBfcacheGuard(
     } catch (e) {
       console.error('Failed to reopen the auth BroadcastChannel after a bfcache restore', e);
     }
-    // Only the identity is compared here. A restore also flips the document
-    // hidden → visible, and auth-js's own `visibilitychange` handler then runs
-    // `_recoverAndRefresh()`, which re-reads the session from cookie storage
-    // and emits it (`SIGNED_IN` / `TOKEN_REFRESHED`) to this tab's
-    // subscribers — so a same-user token refresh or `USER_UPDATED` that
-    // happened while parked reaches `AuthContext` without our help. What that
-    // handler does not do is emit anything when the session is gone or belongs
-    // to someone else; that is the case handled by the reload.
+  };
+
+  const onPageShow = (event: Event) => {
+    if (!(event as PageTransitionEvent).persisted || !parked) return;
+    parked = false;
+    if (channelClosedByUs) reopenChannel();
+    const before = parkedUserId;
     void client.auth.getSession().then(({ data }) => {
-      const nowUserId = data.session?.user?.id ?? null;
-      if (nowUserId !== lastUserId) onSessionChanged();
+      const session = data.session;
+      const now = session?.user?.id ?? null;
+      if (now === before) {
+        if (session) void notify('USER_UPDATED', session, false);
+        return;
+      }
+      if (!session) void notify('SIGNED_OUT', null, false);
+      onSessionChanged();
     });
   };
 
@@ -119,6 +140,5 @@ export function installAuthChannelBfcacheGuard(
   return () => {
     target.removeEventListener('pagehide', onPageHide);
     target.removeEventListener('pageshow', onPageShow);
-    subscription.unsubscribe();
   };
 }
