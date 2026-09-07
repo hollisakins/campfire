@@ -176,22 +176,26 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
   const objB = 'data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_tile1_wht.fits.gz';
   const objC = 'data/products/nircam/cosmos/f444w/expmap_f444w.fits'; // never authorized
   const objD = 'data/products/nircam/egs/f277w/expmap_f277w.fits'; // size unknown to the script
+  const objE = 'data/products/nircam/egs/f277w/expmap_f277w_stale.fits'; // listing says 999, store has 700
 
   const bytesA = Buffer.alloc(64 * 1024, 'A');
   const bytesB = Buffer.alloc(96 * 1024, 'B');
   const bytesD = Buffer.alloc(1024, 'D');
+  const bytesE = Buffer.alloc(700, 'E');
 
   const rows: NircamProductRow[] = [
     mosaic('cosmos', 'f444w', 'mosaic_nircam_f444w_cosmos_30mas_tile1_sci.fits.gz', bytesA.length),
     mosaic('cosmos', 'f444w', 'mosaic_nircam_f444w_cosmos_30mas_tile1_wht.fits.gz', bytesB.length),
     expmap('cosmos', 'f444w', 'expmap_f444w.fits', 555),
     expmap('egs', 'f277w', 'expmap_f277w.fits'),
+    expmap('egs', 'f277w', 'expmap_f277w_stale.fits', 999),
   ];
 
   beforeAll(async () => {
     objects.set(objA, { bytes: bytesA });
     objects.set(objB, { bytes: bytesB, cutFirstAt: 40 * 1024 });
     objects.set(objD, { bytes: bytesD });
+    objects.set(objE, { bytes: bytesE });
 
     server = createServer((req, res) => {
       const url = new URL(req.url || '/', 'http://localhost');
@@ -241,19 +245,23 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
         storeRanges.set(key, ranges);
 
         let start = 0;
-        const m = range ? /^bytes=(\d+)-$/.exec(range) : null;
-        if (m) start = Number(m[1]);
+        let end = obj.bytes.length - 1;
+        const m = range ? /^bytes=(\d+)-(\d*)$/.exec(range) : null;
+        if (m) {
+          start = Number(m[1]);
+          if (m[2]) end = Math.min(Number(m[2]), obj.bytes.length - 1);
+        }
         if (start >= obj.bytes.length) {
           res.writeHead(416, { 'Content-Range': `bytes */${obj.bytes.length}` });
           res.end();
           return;
         }
-        const body = obj.bytes.subarray(start);
-        res.writeHead(start > 0 ? 206 : 200, {
+        const body = obj.bytes.subarray(start, end + 1);
+        res.writeHead(m ? 206 : 200, {
           'Content-Type': 'application/octet-stream',
           'Content-Length': String(body.length),
           'Accept-Ranges': 'bytes',
-          ...(start > 0 ? { 'Content-Range': `bytes ${start}-${obj.bytes.length - 1}/${obj.bytes.length}` } : {}),
+          ...(m ? { 'Content-Range': `bytes ${start}-${end}/${obj.bytes.length}` } : {}),
         });
         if (obj.cutFirstAt !== undefined && ranges.length === 1) {
           // Mid-transfer failure: send part of the body, then close the
@@ -366,8 +374,13 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
     expect(routeHits.get(objA)).toBe(1);
     expect(routeHits.get(objC)).toBe(1);
 
+    // E: the store's object is not the size the listing said. curl verified
+    // the body against Content-Length, so it is kept, with a note.
+    expect(readFileSync(outPath(objE)).equals(bytesE)).toBe(true);
+    expect(r.stdout).toContain('note: the listing said 999 bytes, the store served 700');
+    expect(r.stdout).toContain('1 file(s) differ in size from this script');
     expect(r.stdout).toContain('transfer interrupted');
-    expect(r.stdout).toContain('Done: 3 downloaded, 0 already present, 1 failed');
+    expect(r.stdout).toContain('Done: 4 downloaded, 0 already present, 1 failed');
     expect(r.stderr).toContain('not available for your account (HTTP 404)');
     expect(r.stderr).toContain('cosmos/expmap_f444w.fits');
   });
@@ -381,33 +394,38 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
     expect(routeHits.get(objA)).toBe(before.get(objA));
     expect(routeHits.get(objB)).toBe(before.get(objB));
     expect(routeHits.get(objC)).toBe((before.get(objC) ?? 0) + 1);
-    // D's size is unknown to the script, so a file on disk is verified by a
-    // resume from its end: the store answers 416, nothing is re-downloaded.
+    // D's size is unknown to the script and E's listing is wrong, so each
+    // file on disk is checked against the store with a one-byte probe at its
+    // end (416 → Content-Range total), nothing re-downloaded.
     expect(routeHits.get(objD)).toBe((before.get(objD) ?? 0) + 1);
-    expect(storeRanges.get(objD)?.at(-1)).toBe(`bytes=${bytesD.length}-`);
+    expect(storeRanges.get(objD)?.at(-1)).toBe(`bytes=${bytesD.length}-${bytesD.length}`);
+    expect(storeRanges.get(objE)?.at(-1)).toBe(`bytes=${bytesE.length}-${bytesE.length}`);
     expect(readFileSync(outPath(objD)).equals(bytesD)).toBe(true);
-    expect(r.stdout).toContain('archive size unknown); verifying');
-    expect(r.stdout).toContain('Done: 0 downloaded, 3 already present, 1 failed');
+    expect(r.stdout).toContain('size verified against the store');
+    expect(r.stdout).toContain('Done: 0 downloaded, 4 already present, 1 failed');
   });
 
-  it('completes a truncated unsized file left by the old script, and restarts an oversized one', async () => {
+  it('re-downloads a truncated or oversized unsized file left by the old script', async () => {
     // The old generator wrote curl output straight to the final name, so an
     // interrupted run left a truncated file there. With no archive size to
-    // compare against, the script must not take it as complete.
+    // compare against, the script must not take it as complete — and must
+    // not resume it either (it could be an older version of the product):
+    // probe the store for the size, then fetch again from byte zero.
     writeFileSync(outPath(objD), bytesD.subarray(0, 512));
     let r = await run();
     expect(readFileSync(outPath(objD)).equals(bytesD)).toBe(true);
-    expect(storeRanges.get(objD)?.at(-1)).toBe('bytes=512-');
-    expect(r.stdout).toContain('Done: 1 downloaded, 2 already present, 1 failed');
+    expect(storeRanges.get(objD)?.slice(-2)).toEqual(['bytes=512-512', null]);
+    expect(r.stdout).toContain('exists with 512 bytes but the object is 1024; downloading again');
+    expect(r.stdout).toContain('Done: 1 downloaded, 3 already present, 1 failed');
 
-    // Larger than the object (an older, larger deploy): the resume gets 416,
-    // the store's Content-Range says 1024, so start over from byte zero.
+    // Larger than the object (an older, larger deploy): the probe gets 416
+    // with the true size, so fetch again from byte zero.
     writeFileSync(outPath(objD), Buffer.alloc(2048, 'x'));
     r = await run();
     expect(readFileSync(outPath(objD)).equals(bytesD)).toBe(true);
-    expect(storeRanges.get(objD)?.slice(-2)).toEqual(['bytes=2048-', null]);
-    expect(r.stdout).toContain('partial file has 2048 bytes but the object is 1024; starting over');
-    expect(r.stdout).toContain('Done: 1 downloaded, 2 already present, 1 failed');
+    expect(storeRanges.get(objD)?.slice(-2)).toEqual(['bytes=2048-2048', null]);
+    expect(r.stdout).toContain('exists with 2048 bytes but the object is 1024; downloading again');
+    expect(r.stdout).toContain('Done: 1 downloaded, 3 already present, 1 failed');
   });
 
   it('restarts a .part that is larger than the object instead of retrying an impossible resume forever', async () => {
@@ -438,12 +456,13 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
     expect(statSync(outPath(objC)).size).toBe(555);
     expect(existsSync(`${outPath(objB)}.part`)).toBe(false);
 
-    expect(routeHits.get(objA)).toBe((before.get(objA) ?? 0) + 1);
-    expect(storeRanges.get(objA)?.at(-1)).toBeNull();
+    // A: one probe (route hit + one-byte range), then a fresh download.
+    expect(routeHits.get(objA)).toBe((before.get(objA) ?? 0) + 2);
+    expect(storeRanges.get(objA)?.slice(-2)).toEqual(['bytes=100-100', null]);
     // B's complete .part: the store answered 416 to the resume and the script
     // kept the bytes it had (counted as already present, not downloaded).
     expect(storeRanges.get(objB)?.at(-1)).toBe(`bytes=${bytesB.length}-`);
-    expect(r.stdout).toContain('exists with 100 bytes, expected 65536');
-    expect(r.stdout).toContain('Done: 2 downloaded, 2 already present, 0 failed');
+    expect(r.stdout).toContain('exists with 100 bytes but the object is 65536; downloading again');
+    expect(r.stdout).toContain('Done: 2 downloaded, 3 already present, 0 failed');
   });
 });

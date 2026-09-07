@@ -174,12 +174,27 @@ downloaded=0
 skipped=0
 failed=0
 failed_files=""
+stale=0
+stale_files=""
+
+# probe_total <key> <offset>: the object's size according to the store, read
+# from the Content-Range of a one-byte range request at <offset> (a 206 and a
+# 416 both carry it). Empty when the store could not be asked.
+probe_total() {
+  local hdr="$OUT_DIR/.probe.$$" total
+  curl -sSL -o /dev/null -D "$hdr" -r "$2-$2" \\
+    -H "Authorization: Bearer $API_KEY" \\
+    "$BASE_URL/api/v1/storage/download?key=$1" >/dev/null 2>&1
+  total=$(grep -i '^content-range:' "$hdr" 2>/dev/null | tail -1 | sed 's|.*/||' | tr -dc '0-9')
+  rm -f "$hdr"
+  printf '%s' "$total"
+}
 
 # fetch <storage key (url-encoded)> <local path under OUT_DIR> <expected bytes, 0 if unknown>
 fetch() {
   local key="$1" rel="$2" expected="$3"
   local file="$OUT_DIR/$rel" part="$OUT_DIR/$rel.part" headers="$OUT_DIR/$rel.headers"
-  local attempt code rc size have want total
+  local attempt code rc size have total
   n=$((n + 1))
   echo "[$n/$TOTAL] $rel"
 
@@ -190,21 +205,24 @@ fetch() {
       skipped=$((skipped + 1))
       return 0
     fi
-    if [ "$expected" -eq 0 ]; then
-      # The archive did not tell us this file's size, so a file on disk cannot
-      # be told apart from a truncated one (an older script wrote straight to
-      # this name). Ask the store: resume from where the file ends, and a
-      # complete file answers 416 with the true size, nothing re-downloaded.
-      echo "  exists ($size bytes, archive size unknown); verifying against the store"
-      rm -f "$part"
-      mv -f "$file" "$part"
-    else
-      # A complete download always lands via mv below, so a wrong-sized file is
-      # either a partial from an older script or a product re-deployed since.
-      # Fetch it again; the old file stays until the new one is complete.
-      echo "  exists with $size bytes, expected $expected; downloading again"
-      rm -f "$part"
+    # The listing gave no size, or a different one (an older script wrote
+    # straight to this name and may have been cut short; or the product was
+    # re-deployed since this script was generated). The store is the truth:
+    # ask it how big the object is, without downloading anything.
+    total=$(probe_total "$key" "$size")
+    if [ -n "$total" ] && [ "$size" -eq "$total" ]; then
+      echo "  already downloaded (size verified against the store), skipping"
+      if [ "$expected" -ne 0 ]; then
+        stale=$((stale + 1)); stale_files="$stale_files\\n  $rel (listing: $expected bytes, store: $total)"
+      fi
+      skipped=$((skipped + 1))
+      return 0
     fi
+    # Never resume a mismatched final file: if it is an older version of the
+    # product, appending the new one's tail would corrupt it. Fetch it again;
+    # the old file stays until the new one is complete.
+    echo "  exists with $size bytes but the object is \${total:-of unknown size}; downloading again"
+    rm -f "$part"
   fi
 
   mkdir -p "$(dirname "$file")"
@@ -219,42 +237,41 @@ fetch() {
       -H "Authorization: Bearer $API_KEY" \\
       "$BASE_URL/api/v1/storage/download?key=$key")
     rc=$?
-    total=$(grep -i '^content-range:' "$headers" 2>/dev/null | tail -1 | sed 's|.*[*]/||' | tr -dc '0-9')
+    total=$(grep -i '^content-range:' "$headers" 2>/dev/null | tail -1 | sed 's|.*/||' | tr -dc '0-9')
     rm -f "$headers"
-    if [ "$rc" -eq 0 ] || [ "$code" = "416" ]; then
+    if [ "$code" = "416" ]; then
+      # The .part already reaches the end of the object: a previous run died
+      # between the download finishing and the rename — or it is a leftover
+      # from an older, larger deploy, which can never resume (every offset is
+      # past the end). The Content-Range total tells the two apart.
       have=$(( $(wc -c < "$part") ))
-      want=$expected
-      # 416: the .part already covers the whole object (a complete file being
-      # verified, or a previous run that died before the rename). The size
-      # the store reported is the one to check against when the archive's
-      # is unknown.
-      if [ "$code" = "416" ] && [ "$want" -eq 0 ]; then
-        want=\${total:-0}
-      fi
-      if [ "$want" -ne 0 ] && [ "$have" -ne "$want" ]; then
-        if [ "$code" = "416" ]; then
-          # Larger than the object: a leftover from an older, larger deploy.
-          # It can never resume (every offset is past the end), so start over.
-          echo "  partial file has $have bytes but the object is $want; starting over"
-          rm -f "$part"
-          if [ "$attempt" -ge "$ATTEMPTS" ]; then
-            echo "  error: giving up after $ATTEMPTS attempts; re-run to retry" >&2
-            failed=$((failed + 1)); failed_files="$failed_files\\n  $rel"
-            return 1
-          fi
-          attempt=$((attempt + 1))
-          continue
+      if [ -n "$total" ] && [ "$have" -ne "$total" ]; then
+        echo "  partial file has $have bytes but the object is $total; starting over"
+        rm -f "$part"
+        if [ "$attempt" -ge "$ATTEMPTS" ]; then
+          echo "  error: giving up after $ATTEMPTS attempts; re-run to retry" >&2
+          failed=$((failed + 1)); failed_files="$failed_files\\n  $rel"
+          return 1
         fi
-        echo "  error: downloaded $have bytes but the archive lists $want; kept as $part" >&2
-        failed=$((failed + 1)); failed_files="$failed_files\\n  $rel"
-        return 1
+        attempt=$((attempt + 1))
+        continue
       fi
       mv -f "$part" "$file"
-      if [ "$code" = "416" ]; then
-        echo "  already complete"
-        skipped=$((skipped + 1))
-      else
-        downloaded=$((downloaded + 1))
+      echo "  already complete"
+      skipped=$((skipped + 1))
+      return 0
+    fi
+    if [ "$rc" -eq 0 ]; then
+      # curl checked the body against Content-Length, so these are the whole
+      # object as the store has it. A listing that says otherwise is stale
+      # (re-deployed since this script was generated): worth a note, not a
+      # failure.
+      have=$(( $(wc -c < "$part") ))
+      mv -f "$part" "$file"
+      downloaded=$((downloaded + 1))
+      if [ "$expected" -ne 0 ] && [ "$have" -ne "$expected" ]; then
+        echo "  note: the listing said $expected bytes, the store served $have"
+        stale=$((stale + 1)); stale_files="$stale_files\\n  $rel (listing: $expected bytes, store: $have)"
       fi
       return 0
     fi
@@ -301,6 +318,9 @@ echo ""
   out += `echo ""
 echo "Done: $downloaded downloaded, $skipped already present, $failed failed"
 echo "Files saved in: $OUT_DIR/"
+if [ "$stale" -gt 0 ]; then
+  printf "\\nNote: %s file(s) differ in size from this script's listing — the product\\nmay have been re-deployed since the script was generated. The files on disk\\nare what the archive serves now; regenerate the script to refresh the listing.%b\\n" "$stale" "$stale_files"
+fi
 if [ "$failed" -gt 0 ]; then
   printf "\\nFailed:%b\\n\\nRe-run this script to retry them.\\n" "$failed_files" >&2
   exit 1
