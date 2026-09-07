@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useRef, useState } from 'r
 import { User, Session } from '@supabase/supabase-js';
 import { useQueryClient } from '@tanstack/react-query';
 import { createClient } from '@/lib/supabase/client';
+import { createOncePerUser, type OncePerUser } from '@/lib/auth/once-per-user';
 import { UserProfile } from '@/lib/types';
 import { generateUniqueUsername } from '@/lib/utils/username';
 
@@ -64,14 +65,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     cacheUserIdRef.current = id;
   }, [user?.id, queryClient]);
-  // The user id whose profile was last fetched (or is in flight). The boot
-  // chain used to run twice per page load — `getSession().then` AND the
-  // `INITIAL_SESSION` event `onAuthStateChange` emits synchronously on
-  // subscribe — each doing user_profiles + program-access, and every hook
-  // gated on `!loading && user` waited for both (#499). Now `INITIAL_SESSION`
-  // is ignored and any event for the same user id is a no-op; TOKEN_REFRESHED
-  // therefore no longer re-reads the profile hourly either.
-  const profileUserIdRef = useRef<string | null>(null);
+  // The profile chain (user_profiles, then program-access in the background)
+  // has two triggers at boot: `getSession().then`, and the `SIGNED_IN` event
+  // auth-js emits from its session-recovery step *before* `getSession()`
+  // resolves (`INITIAL_SESSION` is a third, ignored below). #499 deduped the
+  // subscriber by user id but left the `getSession()` path unguarded, so
+  // every signed-in page load still ran the chain twice, 1 ms apart (#539).
+  // Both triggers now go through one per-user gate: the second call for the
+  // same id shares the first's promise, and TOKEN_REFRESHED stays a no-op.
+  const profileGateRef = useRef<OncePerUser<void> | null>(null);
+  const profileGate = () => (profileGateRef.current ??= createOncePerUser(loadUserProfile));
 
   useEffect(() => {
     // Get initial session
@@ -79,7 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchUserProfile(session.user.id);
+        void profileGate().run(session.user.id);
       } else {
         setLoading(false);
       }
@@ -93,11 +96,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        if (event === 'USER_UPDATED' || session.user.id !== profileUserIdRef.current) {
-          fetchUserProfile(session.user.id);
-        }
+        // USER_UPDATED re-reads even for the same user; anything else for the
+        // user already loaded (SIGNED_IN at boot, TOKEN_REFRESHED) is a no-op.
+        void profileGate().run(session.user.id, { force: event === 'USER_UPDATED' });
       } else {
-        profileUserIdRef.current = null;
+        profileGate().reset();
         setUserProfile(null);
         setLoading(false);
       }
@@ -106,8 +109,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe();
   }, []);
 
-  const fetchUserProfile = async (userId: string) => {
-    profileUserIdRef.current = userId;
+  // Only ever called through `profileGate()`.
+  const loadUserProfile = async (userId: string) => {
     try {
       const { data, error } = await supabase
         .from('user_profiles')
@@ -117,9 +120,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (error && error.code === 'PGRST116') {
         // Profile doesn't exist - user needs to complete setup via /welcome.
-        // Not a fetched profile: unpin the ref so the next auth event after
+        // Not a fetched profile: forget the id so the next auth event after
         // /welcome creates the row refetches instead of being deduped.
-        if (profileUserIdRef.current === userId) profileUserIdRef.current = null;
+        profileGate().reset(userId);
         setUserProfile(null);
         setNeedsProfileSetup(true);
         return;
@@ -150,7 +153,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUserProfile(null);
       // Not fetched after all: let the next auth event for this user (e.g.
       // TOKEN_REFRESHED on tab refocus) retry instead of being deduped away.
-      if (profileUserIdRef.current === userId) profileUserIdRef.current = null;
+      profileGate().reset(userId);
     } finally {
       setLoading(false);
     }
@@ -186,7 +189,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refreshProfile = async () => {
     if (user) {
       setLoading(true);
-      await fetchUserProfile(user.id);
+      await profileGate().run(user.id, { force: true });
     }
   };
 
@@ -257,7 +260,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Drop every cached read now, before the SIGNED_OUT event lands (the
     // effect above also fires on the user change, harmlessly twice).
     queryClient.clear();
-    profileUserIdRef.current = null;
+    profileGate().reset();
     setNeedsProfileSetup(false);
     setNeedsAccessCode(false);
     setProgramAccess(null);
