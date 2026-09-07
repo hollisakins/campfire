@@ -372,7 +372,7 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
     expect(r.stderr).toContain('cosmos/expmap_f444w.fits');
   });
 
-  it('second run: skips every complete file without asking the API, retries only the failure; an env key overrides the token', async () => {
+  it('second run: skips every complete sized file without asking the API, verifies the unsized one against the store, retries only the failure; an env key overrides the token', async () => {
     const before = new Map(routeHits);
     const r = await run({ CAMPFIRE_API_KEY: API_KEY });
     expect(r.status).toBe(1);
@@ -380,9 +380,44 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
     bearers.length = 0;
     expect(routeHits.get(objA)).toBe(before.get(objA));
     expect(routeHits.get(objB)).toBe(before.get(objB));
-    expect(routeHits.get(objD)).toBe(before.get(objD));
     expect(routeHits.get(objC)).toBe((before.get(objC) ?? 0) + 1);
+    // D's size is unknown to the script, so a file on disk is verified by a
+    // resume from its end: the store answers 416, nothing is re-downloaded.
+    expect(routeHits.get(objD)).toBe((before.get(objD) ?? 0) + 1);
+    expect(storeRanges.get(objD)?.at(-1)).toBe(`bytes=${bytesD.length}-`);
+    expect(readFileSync(outPath(objD)).equals(bytesD)).toBe(true);
+    expect(r.stdout).toContain('archive size unknown); verifying');
     expect(r.stdout).toContain('Done: 0 downloaded, 3 already present, 1 failed');
+  });
+
+  it('completes a truncated unsized file left by the old script, and restarts an oversized one', async () => {
+    // The old generator wrote curl output straight to the final name, so an
+    // interrupted run left a truncated file there. With no archive size to
+    // compare against, the script must not take it as complete.
+    writeFileSync(outPath(objD), bytesD.subarray(0, 512));
+    let r = await run();
+    expect(readFileSync(outPath(objD)).equals(bytesD)).toBe(true);
+    expect(storeRanges.get(objD)?.at(-1)).toBe('bytes=512-');
+    expect(r.stdout).toContain('Done: 1 downloaded, 2 already present, 1 failed');
+
+    // Larger than the object (an older, larger deploy): the resume gets 416,
+    // the store's Content-Range says 1024, so start over from byte zero.
+    writeFileSync(outPath(objD), Buffer.alloc(2048, 'x'));
+    r = await run();
+    expect(readFileSync(outPath(objD)).equals(bytesD)).toBe(true);
+    expect(storeRanges.get(objD)?.slice(-2)).toEqual(['bytes=2048-', null]);
+    expect(r.stdout).toContain('partial file has 2048 bytes but the object is 1024; starting over');
+    expect(r.stdout).toContain('Done: 1 downloaded, 2 already present, 1 failed');
+  });
+
+  it('restarts a .part that is larger than the object instead of retrying an impossible resume forever', async () => {
+    rmSync(outPath(objB));
+    writeFileSync(`${outPath(objB)}.part`, Buffer.concat([bytesB, Buffer.alloc(1000, 'x')]));
+    const r = await run();
+    expect(readFileSync(outPath(objB)).equals(bytesB)).toBe(true);
+    expect(existsSync(`${outPath(objB)}.part`)).toBe(false);
+    expect(storeRanges.get(objB)?.slice(-2)).toEqual([`bytes=${bytesB.length + 1000}-`, null]);
+    expect(r.stdout).toContain(`partial file has ${bytesB.length + 1000} bytes but the object is ${bytesB.length}; starting over`);
   });
 
   it('re-fetches a file whose size no longer matches, and finishes a complete .part without re-downloading', async () => {
@@ -406,9 +441,9 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
     expect(routeHits.get(objA)).toBe((before.get(objA) ?? 0) + 1);
     expect(storeRanges.get(objA)?.at(-1)).toBeNull();
     // B's complete .part: the store answered 416 to the resume and the script
-    // kept the bytes it had.
+    // kept the bytes it had (counted as already present, not downloaded).
     expect(storeRanges.get(objB)?.at(-1)).toBe(`bytes=${bytesB.length}-`);
     expect(r.stdout).toContain('exists with 100 bytes, expected 65536');
-    expect(r.stdout).toContain('Done: 3 downloaded, 1 already present, 0 failed');
+    expect(r.stdout).toContain('Done: 2 downloaded, 2 already present, 0 failed');
   });
 });

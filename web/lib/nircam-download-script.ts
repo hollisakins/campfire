@@ -178,23 +178,33 @@ failed_files=""
 # fetch <storage key (url-encoded)> <local path under OUT_DIR> <expected bytes, 0 if unknown>
 fetch() {
   local key="$1" rel="$2" expected="$3"
-  local file="$OUT_DIR/$rel" part="$OUT_DIR/$rel.part"
-  local attempt code rc size
+  local file="$OUT_DIR/$rel" part="$OUT_DIR/$rel.part" headers="$OUT_DIR/$rel.headers"
+  local attempt code rc size have want total
   n=$((n + 1))
   echo "[$n/$TOTAL] $rel"
 
   if [ -s "$file" ]; then
     size=$(( $(wc -c < "$file") ))
-    if [ "$expected" -eq 0 ] || [ "$size" -eq "$expected" ]; then
+    if [ "$expected" -ne 0 ] && [ "$size" -eq "$expected" ]; then
       echo "  already downloaded, skipping"
       skipped=$((skipped + 1))
       return 0
     fi
-    # A complete download always lands via mv below, so a wrong-sized file is
-    # either a partial from an older script or a product re-deployed since.
-    # Fetch it again; the old file stays until the new one is complete.
-    echo "  exists with $size bytes, expected $expected; downloading again"
-    rm -f "$part"
+    if [ "$expected" -eq 0 ]; then
+      # The archive did not tell us this file's size, so a file on disk cannot
+      # be told apart from a truncated one (an older script wrote straight to
+      # this name). Ask the store: resume from where the file ends, and a
+      # complete file answers 416 with the true size, nothing re-downloaded.
+      echo "  exists ($size bytes, archive size unknown); verifying against the store"
+      rm -f "$part"
+      mv -f "$file" "$part"
+    else
+      # A complete download always lands via mv below, so a wrong-sized file is
+      # either a partial from an older script or a product re-deployed since.
+      # Fetch it again; the old file stays until the new one is complete.
+      echo "  exists with $size bytes, expected $expected; downloading again"
+      rm -f "$part"
+    fi
   fi
 
   mkdir -p "$(dirname "$file")"
@@ -203,20 +213,49 @@ fetch() {
     # -C - resumes the .part file. Each attempt asks the API for a fresh
     # presigned link (the 302), and curl drops the Authorization header when
     # it follows the redirect to the storage host, as the store requires.
-    code=$(curl -fL --progress-bar -C - -o "$part" -w '%{http_code}' \\
+    # -D keeps the response headers: on a 416 the store's Content-Range
+    # carries the object's true size.
+    code=$(curl -fL --progress-bar -C - -o "$part" -D "$headers" -w '%{http_code}' \\
       -H "Authorization: Bearer $API_KEY" \\
       "$BASE_URL/api/v1/storage/download?key=$key")
     rc=$?
+    total=$(grep -i '^content-range:' "$headers" 2>/dev/null | tail -1 | sed 's|.*[*]/||' | tr -dc '0-9')
+    rm -f "$headers"
     if [ "$rc" -eq 0 ] || [ "$code" = "416" ]; then
-      # 416: the .part was already complete (a previous run died between the
-      # download finishing and the rename).
-      if [ "$expected" -ne 0 ] && [ "$(wc -c < "$part")" -ne "$expected" ]; then
-        echo "  error: downloaded $(wc -c < "$part") bytes but the archive lists $expected; kept as $part" >&2
+      have=$(( $(wc -c < "$part") ))
+      want=$expected
+      # 416: the .part already covers the whole object (a complete file being
+      # verified, or a previous run that died before the rename). The size
+      # the store reported is the one to check against when the archive's
+      # is unknown.
+      if [ "$code" = "416" ] && [ "$want" -eq 0 ]; then
+        want=\${total:-0}
+      fi
+      if [ "$want" -ne 0 ] && [ "$have" -ne "$want" ]; then
+        if [ "$code" = "416" ]; then
+          # Larger than the object: a leftover from an older, larger deploy.
+          # It can never resume (every offset is past the end), so start over.
+          echo "  partial file has $have bytes but the object is $want; starting over"
+          rm -f "$part"
+          if [ "$attempt" -ge "$ATTEMPTS" ]; then
+            echo "  error: giving up after $ATTEMPTS attempts; re-run to retry" >&2
+            failed=$((failed + 1)); failed_files="$failed_files\\n  $rel"
+            return 1
+          fi
+          attempt=$((attempt + 1))
+          continue
+        fi
+        echo "  error: downloaded $have bytes but the archive lists $want; kept as $part" >&2
         failed=$((failed + 1)); failed_files="$failed_files\\n  $rel"
         return 1
       fi
       mv -f "$part" "$file"
-      downloaded=$((downloaded + 1))
+      if [ "$code" = "416" ]; then
+        echo "  already complete"
+        skipped=$((skipped + 1))
+      else
+        downloaded=$((downloaded + 1))
+      fi
       return 0
     fi
     case "$code" in
