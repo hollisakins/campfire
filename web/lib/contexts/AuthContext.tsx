@@ -5,6 +5,7 @@ import { User, Session } from '@supabase/supabase-js';
 import { useQueryClient } from '@tanstack/react-query';
 import { createClient } from '@/lib/supabase/client';
 import { createOncePerUser, type OncePerUser } from '@/lib/auth/once-per-user';
+import { installAuthChannelBfcacheGuard } from '@/lib/supabase/bfcache-auth-channel';
 import { UserProfile } from '@/lib/types';
 import { generateUniqueUsername } from '@/lib/utils/username';
 
@@ -58,6 +59,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // viewer-specific has been fetched yet, and clearing would cancel the
   // queries the page just started.
   const cacheUserIdRef = useRef<string | null>(null);
+  // Synchronous mirror of the user id for the bfcache guard (#540), written
+  // before the React state update lands: `undefined` until the initial
+  // session load completes, then the id or `null` for signed out.
+  const userIdRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     const id = user?.id ?? null;
     if (cacheUserIdRef.current !== null && cacheUserIdRef.current !== id) {
@@ -79,6 +84,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
+      userIdRef.current = session?.user?.id ?? null;
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
@@ -93,6 +99,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'INITIAL_SESSION') return; // handled by getSession() above
+      userIdRef.current = session?.user?.id ?? null;
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
@@ -106,7 +113,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    return () => subscription.unsubscribe();
+    // Keep this page restorable from bfcache (#540): the auth client's
+    // cross-tab channel is closed while the page is parked and reopened on
+    // return, and the stored session is re-checked against the user this
+    // page was showing when it parked. `undefined` before the boot above has
+    // settled tells the guard to leave that pending load to finish instead.
+    const uninstallBfcacheGuard = installAuthChannelBfcacheGuard(supabase, {
+      getUserId: () => userIdRef.current,
+      onIdentityChanged: (current) => {
+        // The server-rendered, access-scoped content on screen belongs to the
+        // user this page parked with, so the page reloads. Cached reads and
+        // the profile gate are dropped first, and a sign-out clears the auth
+        // state too, so the tab is not left claiming a session it no longer
+        // has if the reload is refused (a dirty-editor `beforeunload` prompt).
+        // A switch to another user leaves the state auth-js already moved.
+        queryClient.clear();
+        profileGate().reset();
+        if (!current) {
+          userIdRef.current = null;
+          setSession(null);
+          setUser(null);
+          setUserProfile(null);
+          setProgramAccess(null);
+          setNeedsProfileSetup(false);
+          setNeedsAccessCode(false);
+          setLoading(false);
+        }
+        window.location.reload();
+      },
+    });
+
+    return () => {
+      subscription.unsubscribe();
+      uninstallBfcacheGuard();
+    };
   }, []);
 
   // Only ever called through `profileGate()`.
