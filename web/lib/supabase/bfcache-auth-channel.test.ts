@@ -1,40 +1,39 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { installAuthChannelBfcacheGuard } from './bfcache-auth-channel';
 
-type Listener = (e: Event) => void;
-
-function fakeChannel() {
-  const listeners: Listener[] = [];
-  return {
+/** A BroadcastChannel stand-in: a real EventTarget (so `dispatchEvent` reaches listeners) plus `close()`. */
+function fakeChannel(name = 'sb-test-auth-token') {
+  const target = new EventTarget();
+  const channel = {
+    name,
     closed: false,
     close() {
-      this.closed = true;
+      channel.closed = true;
     },
-    addEventListener(_type: string, cb: Listener) {
-      listeners.push(cb);
-    },
-    postMessage: vi.fn(),
-    /** Simulate a message from another tab. */
+    addEventListener: target.addEventListener.bind(target),
+    dispatchEvent: target.dispatchEvent.bind(target),
+    /** Simulate a post from another tab arriving on this channel. */
     receive(data: unknown) {
-      for (const cb of listeners) cb({ data } as unknown as Event);
+      target.dispatchEvent(new MessageEvent('message', { data }));
     },
   };
+  return channel;
 }
 
 const sessionFor = (id: string | null) => (id ? { user: { id } } : null);
 
 /** `storedUserId` is what cookie storage holds at restore time. */
 function fakeClient(storedUserId: string | null, { channel = true } = {}) {
+  const original = channel ? fakeChannel() : null;
+  // What the auth-js constructor attached: turns a post into auth events.
+  const delivered = vi.fn();
+  original?.addEventListener('message', (e) => delivered((e as MessageEvent).data));
   const auth = {
-    broadcastChannel: channel ? fakeChannel() : null,
-    storageKey: 'sb-test-auth-token',
-    _notifyAllSubscribers: vi.fn(async () => {}),
-    getSession: vi.fn(async () => ({ data: { session: sessionFor(storedUserId) } })),
+    broadcastChannel: original,
+    getSession: vi.fn(async () => ({ data: { session: sessionFor(storedUserId) }, error: null })),
   };
-  return { auth };
+  return { auth, original, delivered };
 }
 
 const asClient = (c: unknown) => c as SupabaseClient;
@@ -48,46 +47,56 @@ async function flush() {
 }
 
 /** Install with a page whose app currently holds `appUserId`. */
-function install(client: ReturnType<typeof fakeClient>, appUserId: string | null, extra: Partial<Parameters<typeof installAuthChannelBfcacheGuard>[1]> = {}) {
+function install(
+  client: ReturnType<typeof fakeClient>,
+  appUserId: string | null | undefined,
+  extra: Partial<Parameters<typeof installAuthChannelBfcacheGuard>[1]> = {}
+) {
   const target = new EventTarget();
   const created: ReturnType<typeof fakeChannel>[] = [];
-  const names: string[] = [];
-  const onSessionChanged = vi.fn();
+  const onIdentityChanged = vi.fn();
   const uninstall = installAuthChannelBfcacheGuard(asClient(client), {
     getUserId: () => appUserId,
+    onIdentityChanged,
     target,
     createChannel: (name) => {
-      names.push(name);
-      const c = fakeChannel();
+      const c = fakeChannel(name);
       created.push(c);
       return c;
     },
-    onSessionChanged,
     ...extra,
   });
-  return { target, created, names, onSessionChanged, uninstall };
+  return { target, created, onIdentityChanged, uninstall };
 }
 
 describe('installAuthChannelBfcacheGuard', () => {
-  it('closes the channel on pagehide and reopens it on a persisted pageshow', async () => {
+  it('closes the channel on pagehide and reopens one with the same name on a persisted pageshow', async () => {
     const client = fakeClient('u1');
-    const original = client.auth.broadcastChannel!;
-    const { target, created, names, onSessionChanged } = install(client, 'u1');
+    const { target, created, onIdentityChanged } = install(client, 'u1');
 
     target.dispatchEvent(new Event('pagehide'));
-    expect(original.closed).toBe(true);
+    expect(client.original!.closed).toBe(true);
     expect(client.auth.broadcastChannel).toBeNull();
 
     target.dispatchEvent(pageshow(true));
-    expect(names).toEqual(['sb-test-auth-token']);
+    expect(created).toHaveLength(1);
+    expect(created[0].name).toBe('sb-test-auth-token');
     expect(client.auth.broadcastChannel).toBe(created[0]);
 
-    // the reopened channel forwards other tabs' messages without echoing them
-    created[0].receive({ event: 'TOKEN_REFRESHED', session: sessionFor('u1') });
-    expect(client.auth._notifyAllSubscribers).toHaveBeenCalledWith('TOKEN_REFRESHED', sessionFor('u1'), false);
-
     await flush();
-    expect(onSessionChanged).not.toHaveBeenCalled();
+    expect(onIdentityChanged).not.toHaveBeenCalled();
+  });
+
+  it("forwards posts on the reopened channel to the original's listener (auth-js's wiring), without copying it", () => {
+    const client = fakeClient('u1');
+    const { target, created } = install(client, 'u1');
+    target.dispatchEvent(new Event('pagehide'));
+    target.dispatchEvent(pageshow(true));
+
+    const msg = { event: 'SIGNED_OUT', session: null };
+    created[0].receive(msg);
+    expect(client.delivered).toHaveBeenCalledTimes(1);
+    expect(client.delivered).toHaveBeenCalledWith(msg);
   });
 
   it('does nothing on a non-persisted pageshow, or on one without a preceding pagehide', () => {
@@ -99,74 +108,120 @@ describe('installAuthChannelBfcacheGuard', () => {
     expect(client.auth.getSession).not.toHaveBeenCalled();
   });
 
-  it('same user on restore: delivers USER_UPDATED so the app re-reads the profile, no reload', async () => {
+  it('same user on restore: no callback, no synthetic events', async () => {
     const client = fakeClient('u1');
-    const { target, onSessionChanged } = install(client, 'u1');
+    const { target, onIdentityChanged } = install(client, 'u1');
     target.dispatchEvent(new Event('pagehide'));
     target.dispatchEvent(pageshow(true));
     await flush();
-    expect(client.auth._notifyAllSubscribers).toHaveBeenCalledWith('USER_UPDATED', sessionFor('u1'), false);
-    expect(onSessionChanged).not.toHaveBeenCalled();
+    expect(client.auth.getSession).toHaveBeenCalledTimes(1);
+    expect(onIdentityChanged).not.toHaveBeenCalled();
   });
 
-  it('signed out while parked: delivers SIGNED_OUT to the app and reloads', async () => {
+  it('signed out while parked: reports a null session', async () => {
     const client = fakeClient(null);
-    const { target, onSessionChanged } = install(client, 'u1');
+    const { target, onIdentityChanged } = install(client, 'u1');
     target.dispatchEvent(new Event('pagehide'));
     target.dispatchEvent(pageshow(true));
     await flush();
-    expect(client.auth._notifyAllSubscribers).toHaveBeenCalledWith('SIGNED_OUT', null, false);
-    expect(onSessionChanged).toHaveBeenCalledTimes(1);
+    expect(onIdentityChanged).toHaveBeenCalledWith(null);
   });
 
-  it('different user while parked: reloads even though the app has already moved to the new user', async () => {
+  it('different user while parked: reports the new session, compared against the park-time snapshot', async () => {
     // auth-js's visibilitychange recovery emits SIGNED_IN(u2) before pageshow,
-    // so a live "current user" would already read u2; the park-time snapshot
-    // (u1) is what the comparison must use.
+    // so a live "current user" already reads u2; the snapshot must win.
     const client = fakeClient('u2');
     let appUserId: string | null = 'u1';
-    const { target, onSessionChanged } = install(client, 'u1', { getUserId: () => appUserId });
+    const { target, onIdentityChanged } = install(client, 'u1', { getUserId: () => appUserId });
     target.dispatchEvent(new Event('pagehide'));
-    appUserId = 'u2'; // the app switched during recovery, before pageshow
+    appUserId = 'u2';
     target.dispatchEvent(pageshow(true));
     await flush();
-    expect(onSessionChanged).toHaveBeenCalledTimes(1);
-    expect(client.auth._notifyAllSubscribers).not.toHaveBeenCalledWith('SIGNED_OUT', null, false);
+    expect(onIdentityChanged).toHaveBeenCalledWith(sessionFor('u2'));
+  });
+
+  it('parked before the app finished its own boot: skips the comparison', async () => {
+    const client = fakeClient('u1');
+    const { target, onIdentityChanged } = install(client, undefined);
+    target.dispatchEvent(new Event('pagehide'));
+    target.dispatchEvent(pageshow(true));
+    await flush();
+    expect(client.auth.getSession).not.toHaveBeenCalled();
+    expect(onIdentityChanged).not.toHaveBeenCalled();
+  });
+
+  it('a retryable refresh failure on restore is not a sign-out', async () => {
+    const client = fakeClient('u1');
+    client.auth.getSession.mockResolvedValueOnce({ data: { session: null }, error: { name: 'AuthRetryableFetchError' } } as never);
+    const { target, onIdentityChanged } = install(client, 'u1');
+    target.dispatchEvent(new Event('pagehide'));
+    target.dispatchEvent(pageshow(true));
+    await flush();
+    expect(onIdentityChanged).not.toHaveBeenCalled();
+  });
+
+  it('a rejected session read is logged, not treated as a change', async () => {
+    const client = fakeClient('u1');
+    client.auth.getSession.mockRejectedValueOnce(new Error('corrupt cookie chunk'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { target, onIdentityChanged } = install(client, 'u1');
+    target.dispatchEvent(new Event('pagehide'));
+    target.dispatchEvent(pageshow(true));
+    await flush();
+    expect(onIdentityChanged).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('a superseded session read (fast back → forward → back) does not act', async () => {
+    let resolveFirst!: (v: unknown) => void;
+    const client = fakeClient(null);
+    client.auth.getSession.mockImplementationOnce(() => new Promise((r) => (resolveFirst = r)) as never);
+    const { target, onIdentityChanged } = install(client, 'u1');
+
+    target.dispatchEvent(new Event('pagehide'));
+    target.dispatchEvent(pageshow(true)); // first restore, read still pending
+    target.dispatchEvent(new Event('pagehide'));
+    target.dispatchEvent(pageshow(true)); // second restore
+    resolveFirst({ data: { session: null }, error: null });
+    await flush();
+    // only the second restore's read may act
+    expect(onIdentityChanged).toHaveBeenCalledTimes(1);
   });
 
   it('still runs the identity check when there was no channel to close', async () => {
     const client = fakeClient(null, { channel: false });
-    const { target, created, onSessionChanged } = install(client, 'u1');
+    const { target, created, onIdentityChanged } = install(client, 'u1');
     target.dispatchEvent(new Event('pagehide'));
     target.dispatchEvent(pageshow(true));
     await flush();
-    expect(created).toHaveLength(0); // never ours to reopen
-    expect(onSessionChanged).toHaveBeenCalledTimes(1);
+    expect(created).toHaveLength(0);
+    expect(onIdentityChanged).toHaveBeenCalledWith(null);
   });
 
-  it('a failed reopen does not disable later restores', async () => {
+  it('a failed reopen is retried on the next restore and never disables the identity check', async () => {
     const client = fakeClient(null);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     let attempts = 0;
-    const { target, onSessionChanged } = install(client, 'u1', {
-      createChannel: () => {
+    const { target, onIdentityChanged } = install(client, 'u1', {
+      createChannel: (name) => {
         attempts += 1;
-        throw new Error('no BroadcastChannel');
+        if (attempts === 1) throw new Error('no BroadcastChannel');
+        return fakeChannel(name);
       },
     });
     target.dispatchEvent(new Event('pagehide'));
     target.dispatchEvent(pageshow(true));
     await flush();
-    expect(attempts).toBe(1);
     expect(client.auth.broadcastChannel).toBeNull();
-    expect(onSessionChanged).toHaveBeenCalledTimes(1);
+    expect(onIdentityChanged).toHaveBeenCalledTimes(1);
 
-    // second park/restore: nothing to close, identity check still runs
     target.dispatchEvent(new Event('pagehide'));
     target.dispatchEvent(pageshow(true));
     await flush();
-    expect(attempts).toBe(1);
-    expect(onSessionChanged).toHaveBeenCalledTimes(2);
+    expect(attempts).toBe(2);
+    expect(client.auth.broadcastChannel).not.toBeNull();
+    expect(onIdentityChanged).toHaveBeenCalledTimes(2);
     errorSpy.mockRestore();
   });
 
@@ -174,7 +229,11 @@ describe('installAuthChannelBfcacheGuard', () => {
     const client = { auth: {} };
     const target = new EventTarget();
     const spy = vi.spyOn(target, 'addEventListener');
-    const uninstall = installAuthChannelBfcacheGuard(asClient(client), { getUserId: () => null, target });
+    const uninstall = installAuthChannelBfcacheGuard(asClient(client), {
+      getUserId: () => null,
+      onIdentityChanged: () => {},
+      target,
+    });
     expect(spy).not.toHaveBeenCalled();
     uninstall();
   });
@@ -184,15 +243,6 @@ describe('installAuthChannelBfcacheGuard', () => {
     const { target, uninstall } = install(client, 'u1');
     uninstall();
     target.dispatchEvent(new Event('pagehide'));
-    expect(client.auth.broadcastChannel!.closed).toBe(false);
-  });
-
-  it('pins the auth-js version whose constructor wiring the reopen path copies', () => {
-    // The reopened channel's message listener replicates GoTrueClient's
-    // constructor (2.81.1). On a bump, re-read that constructor, update the
-    // copy if it changed, then update this pin.
-    const require = createRequire(import.meta.url);
-    const pkg = JSON.parse(readFileSync(require.resolve('@supabase/auth-js/package.json'), 'utf8'));
-    expect(pkg.version).toBe('2.81.1');
+    expect(client.original!.closed).toBe(false);
   });
 });

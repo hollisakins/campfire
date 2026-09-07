@@ -59,6 +59,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // viewer-specific has been fetched yet, and clearing would cancel the
   // queries the page just started.
   const cacheUserIdRef = useRef<string | null>(null);
+  // Synchronous mirrors for the bfcache guard (#540): the user id as of the
+  // latest auth event, written before the React state update lands, and
+  // whether the initial session load has completed.
+  const userIdRef = useRef<string | null>(null);
+  const bootedRef = useRef(false);
   useEffect(() => {
     const id = user?.id ?? null;
     if (cacheUserIdRef.current !== null && cacheUserIdRef.current !== id) {
@@ -80,6 +85,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
+      userIdRef.current = session?.user?.id ?? null;
+      bootedRef.current = true;
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
@@ -94,6 +101,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'INITIAL_SESSION') return; // handled by getSession() above
+      userIdRef.current = session?.user?.id ?? null;
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
@@ -109,11 +117,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Keep this page restorable from bfcache (#540): the auth client's
     // cross-tab channel is closed while the page is parked and reopened on
-    // return, with the stored session re-checked against the user this page
-    // was showing (`cacheUserIdRef` mirrors `user?.id`). Installed after the
-    // subscription above so its restore-time events land on it.
+    // return, and the stored session is re-checked against the user this
+    // page was showing when it parked. `undefined` before the boot above has
+    // settled tells the guard to leave that pending load to finish instead.
     const uninstallBfcacheGuard = installAuthChannelBfcacheGuard(supabase, {
-      getUserId: () => cacheUserIdRef.current,
+      getUserId: () => (bootedRef.current ? userIdRef.current : undefined),
+      onIdentityChanged: (current) => {
+        // The server-rendered, access-scoped content on screen belongs to the
+        // user this page parked with. Drop what this tab holds, then reload;
+        // clearing first keeps the tab honest even if the reload is refused.
+        queryClient.clear();
+        profileGate().reset();
+        if (!current) {
+          userIdRef.current = null;
+          setSession(null);
+          setUser(null);
+          setUserProfile(null);
+          setProgramAccess(null);
+          setNeedsAccessCode(false);
+          setLoading(false);
+        }
+        window.location.reload();
+      },
     });
 
     return () => {
