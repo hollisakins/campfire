@@ -128,6 +128,74 @@ export async function validateAccessToken(token: string): Promise<string | null>
   }
 }
 
+// ---------------------------------------------------------------------------
+// Download tokens: the credential embedded in a generated bulk-download
+// script (components/nircam/CurlScriptGenerator). A script travels — cluster
+// scratch space, a student's laptop — so it must not carry the account's API
+// key. A download token is a JWT that names the user and NOTHING else it can
+// do: GET /api/v1/storage/download is the only route that accepts it, and it
+// authorizes each key under that user's ordinary scope. Leaked, it grants
+// "download what this user may download" until it expires — the blast radius
+// the old presigned urls had, over a longer window — and no more.
+//
+// Distinct type AND audience: validateAccessToken() checks both, so a
+// download token can never pass as an access token (nor the reverse).
+
+const DOWNLOAD_TOKEN_EXPIRY_DAYS = 30;
+const DOWNLOAD_TOKEN_AUDIENCE = 'campfire-storage-download';
+
+interface DownloadTokenPayload extends JWTPayload {
+  sub: string; // user_id
+  type: 'download';
+  scope: 'storage:download';
+}
+
+/**
+ * Mint a download token for `userId`. Whether the user may hold one at all
+ * (link accounts may not) is the caller's check, made under the cookie
+ * session that requested it.
+ */
+export async function generateDownloadToken(
+  userId: string,
+): Promise<{ token: string; expiresAt: Date }> {
+  const secret = getJwtSecret();
+  const expiresAt = new Date(Date.now() + DOWNLOAD_TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+
+  const token = await new SignJWT({
+    sub: userId,
+    type: 'download',
+    scope: 'storage:download',
+  } as DownloadTokenPayload)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime(expiresAt)
+    .setIssuer('campfire')
+    .setAudience(DOWNLOAD_TOKEN_AUDIENCE)
+    .sign(secret);
+
+  return { token, expiresAt };
+}
+
+/**
+ * Validate a download token; returns the user_id or null. Accepts only a
+ * token minted by generateDownloadToken (issuer, audience, type and scope
+ * all checked) — an access token, an API key or a Supabase JWT is null here.
+ */
+export async function validateDownloadToken(token: string): Promise<string | null> {
+  try {
+    const secret = getJwtSecret();
+    const { payload } = await jwtVerify(token, secret, {
+      issuer: 'campfire',
+      audience: DOWNLOAD_TOKEN_AUDIENCE,
+    });
+    const p = payload as DownloadTokenPayload;
+    if (p.type !== 'download' || p.scope !== 'storage:download') return null;
+    return p.sub || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Create and store a new refresh token
  */

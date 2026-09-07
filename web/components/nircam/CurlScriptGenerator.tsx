@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import Link from 'next/link';
-import { ChevronDown, ChevronUp, Download, Copy, Check, Info, KeyRound } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronUp, Download, Copy, Check, Info, KeyRound } from 'lucide-react';
 import type { NircamProductRow } from '@/lib/types';
 import {
   API_KEYS_PATH,
@@ -10,7 +10,9 @@ import {
   buildNircamDownloadScript,
   formatFileSize,
   transferBytes,
+  type EmbeddedDownloadToken,
 } from '@/lib/nircam-download-script';
+import { mintNircamDownloadToken } from '@/lib/actions/download-token';
 
 interface CurlScriptGeneratorProps {
   selectedImages: NircamProductRow[];
@@ -25,20 +27,28 @@ function siteOrigin(): string {
   return process.env.NEXT_PUBLIC_APP_URL || 'https://campfire.hollisakins.com';
 }
 
+// The credential the open panel minted, or why it could not.
+interface TokenState {
+  token: EmbeddedDownloadToken | null;
+  error: string | null;
+}
+
 /**
  * Bulk-download panel for a NIRCam product selection: a shell script the user
  * runs locally.
  *
- * The script carries no urls and no credentials. Each file is fetched through
- * GET /api/v1/storage/download with the user's API key (read from
- * CAMPFIRE_API_KEY, or prompted for), which answers with a fresh presigned url
- * at download time — so the script never expires, however long a whole-field
+ * The script carries no urls. Each file is fetched through
+ * GET /api/v1/storage/download, which answers with a fresh presigned url at
+ * download time — so the links never go stale, however long a whole-field
  * download takes. Files already on disk are skipped and partial downloads
  * resume, so a failed run is simply re-run. See lib/nircam-download-script.ts.
  *
- * Building it needs no server call: the selection comes from the field page's
- * RLS-scoped listing, and the route re-authorizes every key when the script
- * runs, under the API key's own program scope.
+ * Opening the panel mints a download token for the viewer (one server call;
+ * lib/auth/tokens.ts) and the script embeds it, so "download and run" needs no
+ * setup. The token can only download what the viewer may download, for 30
+ * days, so the file is a credential and the panel says so. If minting fails
+ * (a shared-link session, say) the script still builds, in the form that
+ * reads CAMPFIRE_API_KEY or prompts for it.
  */
 export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
   selectedImages,
@@ -46,6 +56,7 @@ export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [tokenState, setTokenState] = useState<TokenState | null>(null);
 
   // Transfer estimate: stored (gzipped) bytes when recorded, logical
   // otherwise — what the downloads actually move.
@@ -54,12 +65,43 @@ export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
     [selectedImages],
   );
 
-  // Only build once the panel is open: a whole-field selection is thousands
-  // of lines, and the generation timestamp should be when the user looked.
+  // Mint the token when the panel opens (once per opening; the selection can
+  // change underneath without re-minting).
+  useEffect(() => {
+    if (!isExpanded) {
+      setTokenState(null);
+      return;
+    }
+    let cancelled = false;
+    mintNircamDownloadToken()
+      .then((res) => {
+        if (cancelled) return;
+        setTokenState(
+          res.token
+            ? { token: { token: res.token, expiresAt: new Date(res.expiresAt) }, error: null }
+            : { token: null, error: res.error },
+        );
+      })
+      .catch((err) => {
+        console.error('Failed to mint NIRCam download token:', err);
+        if (!cancelled) setTokenState({ token: null, error: 'Failed to prepare the download script.' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isExpanded]);
+
+  // Only build once the panel is open and the token answer is in: a
+  // whole-field selection is thousands of lines, and the generation timestamp
+  // should be when the user looked.
   const script = useMemo(
-    () => (isExpanded ? buildNircamDownloadScript(selectedImages, siteOrigin()) : ''),
-    [isExpanded, selectedImages],
+    () =>
+      isExpanded && tokenState
+        ? buildNircamDownloadScript(selectedImages, siteOrigin(), { token: tokenState.token ?? undefined })
+        : '',
+    [isExpanded, tokenState, selectedImages],
   );
+  const preparing = isExpanded && tokenState === null;
 
   const handleCopy = async () => {
     try {
@@ -112,24 +154,44 @@ export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
       {/* Expanded content */}
       {isExpanded && (
         <div className="border-t border-border">
-          {/* How to run it: the script authenticates with an API key at
-              download time, so it needs one and never expires. */}
-          <div className="px-4 pt-4">
-            <div className="flex items-start gap-2 bg-background border border-border rounded-lg p-3">
-              <KeyRound className="w-4 h-4 text-text-secondary mt-0.5 shrink-0" />
-              <p className="text-sm text-text-secondary">
-                The script fetches each file&apos;s download link as it goes, so it
-                never expires and can be re-run to resume after a failure. It needs
-                an API key: create one at{' '}
-                <Link href={API_KEYS_PATH} className="text-primary hover:underline">
-                  API keys
-                </Link>{' '}
-                and run{' '}
-                <code className="font-mono text-xs">CAMPFIRE_API_KEY=sk_… bash {NIRCAM_DOWNLOAD_SCRIPT_FILENAME}</code>
-                {' '}(it prompts for the key otherwise).
-              </p>
+          {/* What the file is: with a token, a credential for the viewer's
+              downloads (say so, and how long it lasts); without one, a script
+              that needs an API key, and why the token could not be minted. */}
+          {!preparing && tokenState?.token && (
+            <div className="px-4 pt-4">
+              <div className="flex items-start gap-2 bg-background border border-border rounded-lg p-3">
+                <KeyRound className="w-4 h-4 text-text-secondary mt-0.5 shrink-0" />
+                <p className="text-sm text-text-secondary">
+                  Run with <code className="font-mono text-xs">bash {NIRCAM_DOWNLOAD_SCRIPT_FILENAME}</code>.
+                  It fetches each file&apos;s link as it goes and can be re-run to resume after a
+                  failure. The script contains a download credential for your account, valid
+                  until {tokenState.token.expiresAt.toLocaleDateString()} and good for nothing but
+                  downloading what you can already download — treat the file like a password and
+                  don&apos;t share it. An{' '}
+                  <Link href={API_KEYS_PATH} className="text-primary hover:underline">
+                    API key
+                  </Link>{' '}
+                  in <code className="font-mono text-xs">CAMPFIRE_API_KEY</code> overrides it.
+                </p>
+              </div>
             </div>
-          </div>
+          )}
+          {!preparing && !tokenState?.token && (
+            <div className="px-4 pt-4">
+              <div className="flex items-start gap-2 rounded-lg p-3 bg-amber-100 dark:bg-amber-900/40 border border-amber-200 dark:border-amber-800/50">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-800 dark:text-amber-300" />
+                <p className="text-sm text-amber-900 dark:text-amber-200">
+                  {tokenState?.error ?? 'Could not prepare a download credential.'} The script
+                  below needs an{' '}
+                  <Link href={API_KEYS_PATH} className="text-primary hover:underline">
+                    API key
+                  </Link>{' '}
+                  in <code className="font-mono text-xs">CAMPFIRE_API_KEY</code> (it prompts for
+                  one otherwise).
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Script preview */}
           <div className="p-4">
@@ -141,7 +203,7 @@ export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
                       theme-aware Button ghost variant is unreadable here. */}
                   <button
                     onClick={handleCopy}
-                    disabled={!script}
+                    disabled={preparing || !script}
                     className="inline-flex items-center rounded-md px-2.5 py-1.5 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:pointer-events-none"
                   >
                     {copied ? (
@@ -158,7 +220,7 @@ export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
                   </button>
                   <button
                     onClick={handleDownload}
-                    disabled={!script}
+                    disabled={preparing || !script}
                     className="inline-flex items-center rounded-md px-2.5 py-1.5 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:pointer-events-none"
                   >
                     <Download className="w-4 h-4 mr-1.5" />
@@ -167,7 +229,7 @@ export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
                 </div>
               </div>
               <pre className="p-4 text-sm text-gray-300 font-mono overflow-x-auto max-h-96 overflow-y-auto">
-                <code>{script}</code>
+                <code>{preparing ? 'Preparing download script…' : script}</code>
               </pre>
             </div>
           </div>

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
-import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
+import { authenticateStorageDownloadRequest } from '@/lib/api-auth';
 import { generateDownloadUrl } from '@/lib/r2';
 import { isKnownKey } from '@/lib/layout';
 
@@ -21,6 +20,13 @@ const URL_TTL_SECONDS = 21600; // 6 hours
  * carrying presigned urls that expire ~6 h after the script was generated —
  * a whole-field download can run longer than that.
  *
+ * Credentials: an API key or access token like every /api/v1 route, and —
+ * only here — the download token a generated script carries
+ * (authenticateStorageDownloadRequest; lib/auth/tokens.ts explains why the
+ * script does not embed the account's API key). A request with a credential
+ * but no key answers 400, which the script uses as its up-front credential
+ * check (401 = rejected, anything else = accepted) without touching a file.
+ *
  * Authorizes exactly like POST /api/v1/storage/presign (layout allowlist via
  * isKnownKey, then filter_accessible_storage_keys under the caller's program
  * scope; admins see unpublished rows too), then answers with a 302 to a fresh
@@ -37,8 +43,8 @@ const URL_TTL_SECONDS = 21600; // 6 hours
  * oracle for which keys exist outside the caller's scope).
  */
 export async function GET(request: NextRequest) {
-  const userId = await validateAuth(request);
-  if (!userId) {
+  const principal = await authenticateStorageDownloadRequest(request);
+  if (!principal) {
     return NextResponse.json({ error: 'Invalid or missing authentication' }, { status: 401 });
   }
 
@@ -51,16 +57,11 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const [accessibleProgramSlugs, admin] = await Promise.all([
-      getAccessiblePrograms(userId),
-      isAdminUser(userId),
-    ]);
-
     const supabase = createServiceClient();
     const { data: allowedRows, error } = await supabase.rpc('filter_accessible_storage_keys', {
       p_keys: [key],
-      p_program_slugs: accessibleProgramSlugs,
-      p_include_unpublished: admin,
+      p_program_slugs: principal.access.accessibleSlugs,
+      p_include_unpublished: principal.access.isAdmin,
     });
     if (error) {
       console.error('Error authorizing storage download key:', error);

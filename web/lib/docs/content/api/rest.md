@@ -144,7 +144,7 @@ curl -L -C - -o mosaic_sci.fits.gz \
   "https://campfire.hollisakins.com/api/v1/storage/download?key=data%2Fproducts%2Fnircam%2Fcosmos%2Ff444w%2Fmosaic_..._sci.fits.gz"
 ```
 
-Keys you may not read, and keys that do not exist, both answer `404`. For bulk transfers prefer `campfire pull` (the CLI) — it plans against the local mirror and skips what you already have.
+Keys you may not read, and keys that do not exist, both answer `404`. This is also the only endpoint that accepts the *download token* embedded in a generated NIRCam bulk-download script: a 30-day credential that can download what your account can download and nothing else (the script's `CAMPFIRE_API_KEY` override uses an ordinary API key instead). For bulk transfers prefer `campfire pull` (the CLI) — it plans against the local mirror and skips what you already have.
 
 ### GET /spectrum
 

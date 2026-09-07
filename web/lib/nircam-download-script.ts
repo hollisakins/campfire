@@ -6,9 +6,13 @@
 // download time, so the script never expires), complete files skipped and
 // partial ones resumed, so a failed run is simply re-run.
 //
-// No server round-trip is needed to build it: the products come from the
-// field page's RLS-scoped listing, and the route re-authorizes every key
-// against the caller's API key when the script actually runs.
+// The script carries a download token (lib/auth/tokens.ts): a credential that
+// names the user and can only download what they may download, for 30 days.
+// It is what lets "download the script and run it" work without an API key,
+// and why the file must not be shared. CAMPFIRE_API_KEY in the environment
+// overrides it (an API key works after the token expires). The products come
+// from the field page's RLS-scoped listing, and the route re-authorizes every
+// key under the credential's own scope when the script actually runs.
 
 import type { NircamProductRow } from '@/lib/types';
 import { isCompressedKey } from '@/lib/layout';
@@ -61,6 +65,18 @@ export function downloadRouteUrl(origin: string, key: string): string {
   return `${origin}/api/v1/storage/download?key=${encodeURIComponent(key)}`;
 }
 
+/** The credential a script embeds (lib/actions/download-token.ts mints it). */
+export interface EmbeddedDownloadToken {
+  token: string;
+  expiresAt: Date;
+}
+
+export interface BuildScriptOptions {
+  /** Omit to build a script that relies on CAMPFIRE_API_KEY / a prompt. */
+  token?: EmbeddedDownloadToken;
+  now?: Date;
+}
+
 /**
  * Build the script for `rows` (the user's selection), downloading from the
  * CAMPFIRE deployment at `origin` (e.g. `https://campfire.hollisakins.com`).
@@ -69,13 +85,51 @@ export function downloadRouteUrl(origin: string, key: string): string {
 export function buildNircamDownloadScript(
   rows: NircamProductRow[],
   origin: string,
-  now: Date = new Date(),
+  opts: BuildScriptOptions = {},
 ): string {
   if (rows.length === 0) return '';
 
+  const now = opts.now ?? new Date();
   const base = origin.replace(/\/+$/, '');
   const totalBytes = rows.reduce((sum, r) => sum + transferBytes(r), 0);
   const fields = [...new Set(rows.map((r) => r.field))];
+  const token = opts.token;
+
+  const authNote = token
+    ? `# Authentication: the script asks the CAMPFIRE API for each file's download
+# link at the moment it fetches that file, so the links never go stale.
+#
+# THIS FILE CONTAINS A CREDENTIAL — do not share it. DOWNLOAD_TOKEN below
+# lets whoever holds it download the CAMPFIRE products your account can,
+# and nothing else, until ${token.expiresAt.toISOString().slice(0, 10)}.
+# After that, regenerate the script from the field page — or set
+# CAMPFIRE_API_KEY to an API key from ${base}${API_KEYS_PATH}, which
+# takes precedence over the embedded token whenever it is set.`
+    : `# Authentication: the script asks the CAMPFIRE API for each file's download
+# link at the moment it fetches that file, so nothing in this script expires.
+# The API needs a key: create one at ${base}${API_KEYS_PATH}
+# and export it before running (the script prompts for it otherwise):
+#
+#   export CAMPFIRE_API_KEY=sk_...
+#   bash ${NIRCAM_DOWNLOAD_SCRIPT_FILENAME}`;
+
+  const credential = token
+    ? `DOWNLOAD_TOKEN=${shellQuote(token.token)}
+API_KEY="\${CAMPFIRE_API_KEY:-$DOWNLOAD_TOKEN}"`
+    : `API_KEY="\${CAMPFIRE_API_KEY:-}"
+if [ -z "$API_KEY" ] && [ -t 0 ]; then
+  read -rsp "CAMPFIRE API key (sk_...): " API_KEY
+  echo
+fi
+if [ -z "$API_KEY" ]; then
+  echo "error: no API key. Create one at $BASE_URL${API_KEYS_PATH} and run:" >&2
+  echo "  CAMPFIRE_API_KEY=sk_... bash $0" >&2
+  exit 1
+fi`;
+
+  const rejectedHint = token
+    ? `The embedded token expires ${token.expiresAt.toISOString().slice(0, 10)}: regenerate the script from the field page, or set CAMPFIRE_API_KEY.`
+    : `Check it at $BASE_URL${API_KEYS_PATH}`;
 
   let out = `#!/bin/bash
 # CAMPFIRE NIRCam Data Download Script
@@ -87,13 +141,7 @@ export function buildNircamDownloadScript(
 # Files that already exist with the right size are skipped and partial
 # downloads (*.part) resume where they stopped.
 #
-# Authentication: the script asks the CAMPFIRE API for each file's download
-# link at the moment it fetches that file, so nothing in this script expires.
-# The API needs a key: create one at ${base}${API_KEYS_PATH}
-# and export it before running (the script prompts for it otherwise):
-#
-#   export CAMPFIRE_API_KEY=sk_...
-#   bash ${NIRCAM_DOWNLOAD_SCRIPT_FILENAME}
+${authNote}
 #
 # Prefer a Python tool? The campfire CLI's \`campfire pull --field <field>\`
 # downloads the same products — see ${base}/docs/api/cli
@@ -105,22 +153,19 @@ OUT_DIR="\${CAMPFIRE_DOWNLOAD_DIR:-nircam_data}"
 ATTEMPTS=5
 TOTAL=${rows.length}
 
-API_KEY="\${CAMPFIRE_API_KEY:-}"
-if [ -z "$API_KEY" ] && [ -t 0 ]; then
-  read -rsp "CAMPFIRE API key (sk_...): " API_KEY
-  echo
-fi
-if [ -z "$API_KEY" ]; then
-  echo "error: no API key. Create one at $BASE_URL${API_KEYS_PATH} and run:" >&2
-  echo "  CAMPFIRE_API_KEY=sk_... bash $0" >&2
+${credential}
+
+# Check the credential once, up front, rather than failing once per file: the
+# download route without a key answers 400 to an accepted credential and 401
+# to a rejected one, and never touches a file either way.
+check_code=$(curl -sS -o /dev/null -w '%{http_code}' \\
+  -H "Authorization: Bearer $API_KEY" "$BASE_URL/api/v1/storage/download")
+if [ "$check_code" = "401" ]; then
+  echo "error: the API rejected this credential (HTTP 401). ${rejectedHint}" >&2
   exit 1
 fi
-
-# Fail fast on a rejected key rather than once per file.
-whoami_code=$(curl -sS -o /dev/null -w '%{http_code}' \\
-  -H "Authorization: Bearer $API_KEY" "$BASE_URL/api/v1/auth/whoami")
-if [ "$whoami_code" != "200" ]; then
-  echo "error: the API rejected this key (HTTP $whoami_code). Check it at $BASE_URL${API_KEYS_PATH}" >&2
+if [ "$check_code" = "000" ]; then
+  echo "error: could not reach $BASE_URL" >&2
   exit 1
 fi
 
@@ -176,7 +221,7 @@ fetch() {
     fi
     case "$code" in
       401)
-        echo "error: the API rejected the key mid-run (HTTP 401); stopping" >&2
+        echo "error: the API rejected the credential mid-run (HTTP 401); stopping. ${rejectedHint}" >&2
         exit 1 ;;
       403|404)
         echo "  error: not available for your account (HTTP $code), skipping" >&2

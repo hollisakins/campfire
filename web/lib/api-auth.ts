@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import crypto from 'crypto';
-import { validateAccessToken } from '@/lib/auth/tokens';
+import { validateAccessToken, validateDownloadToken } from '@/lib/auth/tokens';
 import { getAccessContext, type AccessContext } from '@/lib/auth/access-context';
 import { createServiceClient } from '@/lib/supabase/service';
 
@@ -15,7 +15,7 @@ export function hashApiKey(apiKey: string): string {
 /** A bearer-authenticated /api/v1 caller. */
 export interface ApiPrincipal {
   userId: string;
-  method: 'api_key' | 'access_token';
+  method: 'api_key' | 'access_token' | 'download_token';
   /** Memoized (lib/auth/access-context.ts): admin flag, program set, link scope. */
   access: AccessContext;
 }
@@ -59,6 +59,38 @@ export async function authenticateApiRequest(request: NextRequest): Promise<ApiP
   if (access.isLinkAccount) return null;
 
   return { userId, method, access };
+}
+
+/**
+ * Authenticate a request to GET /api/v1/storage/download — the ONE route
+ * that also accepts a download token (lib/auth/tokens.ts), the credential
+ * a generated bulk-download script carries. An API key or access token is
+ * accepted exactly as authenticateApiRequest() accepts it; failing that, the
+ * bearer is tried as a download token. Either way the principal resolves to
+ * the same access context, and link accounts are refused for the same
+ * reason as everywhere in /api/v1 (see authenticateApiRequest).
+ *
+ * Nothing else should call this: a download token must not open any other
+ * route, and keeping the acceptance in one place is how that stays true.
+ */
+export async function authenticateStorageDownloadRequest(
+  request: NextRequest,
+): Promise<ApiPrincipal | null> {
+  const principal = await authenticateApiRequest(request);
+  if (principal) return principal;
+
+  const authHeader = request.headers.get('authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  const token = authHeader.slice('Bearer '.length).trim();
+  if (!token || token.startsWith('sk_')) return null;
+
+  const userId = await validateDownloadToken(token);
+  if (!userId) return null;
+
+  const access = await getAccessContext(userId);
+  if (access.isLinkAccount) return null;
+
+  return { userId, method: 'download_token', access };
 }
 
 /**

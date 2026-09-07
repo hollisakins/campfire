@@ -7,13 +7,22 @@ import { NextRequest } from 'next/server';
 
 vi.mock('server-only', () => ({}));
 
-const validateAuth = vi.fn<(req: NextRequest) => Promise<string | null>>();
-vi.mock('@/lib/api-auth', () => ({ validateAuth: (req: NextRequest) => validateAuth(req) }));
-
+// The route's one authenticator (api-auth.ts): API key, access token, or —
+// only for this route — a download token. Its own acceptance rules are tested
+// in lib/auth/download-token.test.ts; here it is a bearer lookup.
 let admin = false;
-vi.mock('@/lib/api-helpers', () => ({
-  getAccessiblePrograms: async () => ['public-program'],
-  isAdminUser: async () => admin,
+const authenticate = vi.fn(async (req: NextRequest) => {
+  const bearer = (req.headers.get('authorization') ?? '').replace(/^Bearer /, '');
+  const method = bearer === 'sk_test' ? 'api_key' : bearer === 'dl_test' ? 'download_token' : null;
+  if (!method) return null;
+  return {
+    userId: 'user-1',
+    method,
+    access: { isAdmin: admin, isLinkAccount: false, linkScope: null, accessibleSlugs: ['public-program'] },
+  };
+});
+vi.mock('@/lib/api-auth', () => ({
+  authenticateStorageDownloadRequest: (req: NextRequest) => authenticate(req),
 }));
 
 const rpc = vi.fn<(name: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }>>();
@@ -38,10 +47,7 @@ function request(query: Record<string, string>, token: string | null = 'sk_test'
 }
 
 beforeEach(() => {
-  validateAuth.mockReset();
-  validateAuth.mockImplementation(async (req) =>
-    req.headers.get('authorization') === 'Bearer sk_test' ? 'user-1' : null,
-  );
+  authenticate.mockClear();
   rpc.mockReset();
   rpc.mockResolvedValue({ data: [{ storage_key: KEY }], error: null });
   generateDownloadUrl.mockReset();
@@ -58,7 +64,11 @@ describe('GET /api/v1/storage/download', () => {
   });
 
   it('400 for a missing or non-layout key (never presigns arbitrary paths)', async () => {
+    // No key with an accepted credential is 400 — the script's up-front
+    // credential check relies on 401-vs-400 here.
     expect((await GET(request({}))).status).toBe(400);
+    expect((await GET(request({}, 'dl_test'))).status).toBe(400);
+    expect((await GET(request({}, 'nope'))).status).toBe(401);
     expect((await GET(request({ key: '../../etc/passwd' }))).status).toBe(400);
     expect((await GET(request({ key: 'not/a/product' }))).status).toBe(400);
     expect(rpc).not.toHaveBeenCalled();
@@ -78,6 +88,13 @@ describe('GET /api/v1/storage/download', () => {
     // Long enough for one multi-GB file on a slow link; the script asks again
     // for the next file, so the bulk download never depends on this window.
     expect(generateDownloadUrl).toHaveBeenCalledWith(KEY, 21600);
+  });
+
+  it('a download token authorizes exactly like an API key', async () => {
+    const res = await GET(request({ key: KEY }, 'dl_test'));
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(PRESIGNED);
+    expect(rpc.mock.calls[0][1]).toMatchObject({ p_program_slugs: ['public-program'], p_include_unpublished: false });
   });
 
   it('admins authorize with unpublished rows included', async () => {

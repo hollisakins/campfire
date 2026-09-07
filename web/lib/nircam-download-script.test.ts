@@ -85,13 +85,33 @@ describe('buildNircamDownloadScript (text)', () => {
     const script = buildNircamDownloadScript(rows, `${ORIGIN}/`);
     expect(script).toContain(`BASE_URL='${ORIGIN}'`);
     expect(script).toContain('"$BASE_URL/api/v1/storage/download?key=$key"');
-    expect(script).toContain('"$BASE_URL/api/v1/auth/whoami"');
+    // The credential check hits the same route with no key.
+    expect(script).toContain('"$BASE_URL/api/v1/storage/download")');
     expect(script).not.toMatch(/X-Amz-|sig=|\/proxy\?/);
     // Resumable by construction: partial downloads land in .part and resume.
     expect(script).toContain('-C -');
     expect(script).toContain('mv -f "$part" "$file"');
     // And the user is told where the key comes from.
     expect(script).toContain(`${ORIGIN}/profile/api-keys`);
+  });
+
+  it('embeds a download token as the default credential, with the env key overriding it', () => {
+    const expiresAt = new Date('2026-10-07T12:00:00Z');
+    const script = buildNircamDownloadScript(rows, ORIGIN, { token: { token: 'eyJ.download.token', expiresAt } });
+    expect(script).toContain(`DOWNLOAD_TOKEN='eyJ.download.token'`);
+    expect(script).toContain('API_KEY="${CAMPFIRE_API_KEY:-$DOWNLOAD_TOKEN}"');
+    // The file is a credential and says so, with its expiry.
+    expect(script).toContain('THIS FILE CONTAINS A CREDENTIAL');
+    expect(script).toContain('until 2026-10-07');
+    // No prompt: the token is the no-setup path.
+    expect(script).not.toContain('read -rsp');
+  });
+
+  it('without a token, reads CAMPFIRE_API_KEY or prompts, and carries no credential', () => {
+    const script = buildNircamDownloadScript(rows, ORIGIN);
+    expect(script).not.toContain('DOWNLOAD_TOKEN');
+    expect(script).toContain('API_KEY="${CAMPFIRE_API_KEY:-}"');
+    expect(script).toContain('read -rsp');
   });
 
   it('has an unknown size (0) for a product the registry did not size', () => {
@@ -134,6 +154,7 @@ const haveTools =
   spawnSync('bash', ['--version']).status === 0 && spawnSync('curl', ['--version']).status === 0;
 
 const API_KEY = 'sk_test_key';
+const DOWNLOAD_TOKEN = 'eyJ.embedded.download.token';
 
 interface FakeObject {
   bytes: Buffer;
@@ -148,6 +169,8 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
   const objects = new Map<string, FakeObject>();
   const routeHits = new Map<string, number>();
   const storeRanges = new Map<string, (string | null)[]>();
+  // Bearer presented on each download-route call, in order.
+  const bearers: string[] = [];
 
   const objA = 'data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_tile1_sci.fits.gz';
   const objB = 'data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_tile1_wht.fits.gz';
@@ -172,21 +195,23 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
 
     server = createServer((req, res) => {
       const url = new URL(req.url || '/', 'http://localhost');
-      const authed = req.headers.authorization === `Bearer ${API_KEY}`;
-
-      if (url.pathname === '/api/v1/auth/whoami') {
-        res.writeHead(authed ? 200 : 401, { 'Content-Type': 'application/json' });
-        res.end('{}');
-        return;
-      }
+      const bearer = (req.headers.authorization ?? '').replace(/^Bearer /, '');
+      const authed = bearer === API_KEY || bearer === DOWNLOAD_TOKEN;
 
       if (url.pathname === '/api/v1/storage/download') {
+        bearers.push(bearer);
         if (!authed) {
           res.writeHead(401, { 'Content-Type': 'application/json' });
           res.end('{"error":"Invalid or missing authentication"}');
           return;
         }
         const key = url.searchParams.get('key') || '';
+        if (!key) {
+          // The credential check: accepted credential, no key.
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end('{"error":"key required"}');
+          return;
+        }
         routeHits.set(key, (routeHits.get(key) ?? 0) + 1);
         if (!objects.has(key)) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -249,7 +274,13 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
     origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
     tmp = mkdtempSync(join(tmpdir(), 'nircam-dl-'));
-    writeFileSync(join(tmp, 'download.sh'), buildNircamDownloadScript(rows, origin));
+    writeFileSync(
+      join(tmp, 'download.sh'),
+      buildNircamDownloadScript(rows, origin, {
+        token: { token: DOWNLOAD_TOKEN, expiresAt: new Date(Date.now() + 30 * 86400e3) },
+      }),
+    );
+    writeFileSync(join(tmp, 'download-nokey.sh'), buildNircamDownloadScript(rows, origin));
     // The script backs off between attempts; a no-op `sleep` on PATH keeps the
     // test fast without a test-only knob in the product.
     mkdirSync(join(tmp, 'bin'));
@@ -264,13 +295,13 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
 
   // Async, not spawnSync: the fake API/store runs in this process, so a
   // blocking spawn would deadlock (the server could never answer curl).
-  function run(env: Record<string, string | undefined> = {}) {
+  function run(env: Record<string, string | undefined> = {}, script = 'download.sh') {
     return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
       const childEnv: NodeJS.ProcessEnv = { ...process.env };
       const overrides: Record<string, string | undefined> = {
         PATH: `${join(tmp, 'bin')}:${process.env.PATH}`,
         HOME: tmp,
-        CAMPFIRE_API_KEY: API_KEY,
+        CAMPFIRE_API_KEY: undefined, // the embedded token is the default path
         CAMPFIRE_DOWNLOAD_DIR: join(tmp, 'out'),
         ...env,
       };
@@ -280,7 +311,7 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
         if (v === undefined) delete childEnv[k];
         else childEnv[k] = v;
       }
-      const child = spawn('bash', [join(tmp, 'download.sh')], {
+      const child = spawn('bash', [join(tmp, script)], {
         cwd: tmp,
         env: childEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -296,22 +327,32 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
 
   const outPath = (key: string) => join(tmp, 'out', key.split('/')[3], key.split('/').pop() as string);
 
-  it('refuses to run without a key, and with a rejected key, touching no files', async () => {
-    const noKey = await run({ CAMPFIRE_API_KEY: undefined });
+  it('refuses a rejected credential up front, touching no files', async () => {
+    // The env key overrides the embedded token even when it is wrong: the
+    // user asked for it, and a silent fallback would hide a bad key.
+    const badKey = await run({ CAMPFIRE_API_KEY: 'sk_wrong' });
+    expect(badKey.status).toBe(1);
+    expect(badKey.stderr).toContain('rejected this credential (HTTP 401)');
+    expect(badKey.stderr).toContain('regenerate the script');
+    expect(bearers).toEqual(['sk_wrong']);
+
+    // The token-less script has no default credential: no env, no tty → stop.
+    const noKey = await run({}, 'download-nokey.sh');
     expect(noKey.status).toBe(1);
     expect(noKey.stderr).toContain('no API key');
 
-    const badKey = await run({ CAMPFIRE_API_KEY: 'sk_wrong' });
-    expect(badKey.status).toBe(1);
-    expect(badKey.stderr).toContain('rejected this key (HTTP 401)');
-
     expect(existsSync(join(tmp, 'out'))).toBe(false);
     expect(routeHits.size).toBe(0);
+    bearers.length = 0;
   });
 
-  it('first run: downloads, resumes the cut transfer, reports the unauthorized file', async () => {
+  it('first run: downloads with the embedded token, resumes the cut transfer, reports the unauthorized file', async () => {
     const r = await run();
     expect(r.status).toBe(1); // objC failed
+    // Every call — the up-front check and each file — used the embedded token.
+    expect(bearers.length).toBeGreaterThan(0);
+    expect(new Set(bearers)).toEqual(new Set([DOWNLOAD_TOKEN]));
+    bearers.length = 0;
     expect(readFileSync(outPath(objA)).equals(bytesA)).toBe(true);
     expect(readFileSync(outPath(objB)).equals(bytesB)).toBe(true);
     expect(readFileSync(outPath(objD)).equals(bytesD)).toBe(true);
@@ -331,10 +372,12 @@ describe.skipIf(!haveTools)('generated script, end to end', () => {
     expect(r.stderr).toContain('cosmos/expmap_f444w.fits');
   });
 
-  it('second run: skips every complete file without asking the API, retries only the failure', async () => {
+  it('second run: skips every complete file without asking the API, retries only the failure; an env key overrides the token', async () => {
     const before = new Map(routeHits);
-    const r = await run();
+    const r = await run({ CAMPFIRE_API_KEY: API_KEY });
     expect(r.status).toBe(1);
+    expect(new Set(bearers)).toEqual(new Set([API_KEY]));
+    bearers.length = 0;
     expect(routeHits.get(objA)).toBe(before.get(objA));
     expect(routeHits.get(objB)).toBe(before.get(objB));
     expect(routeHits.get(objD)).toBe(before.get(objD));
