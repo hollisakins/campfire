@@ -1,0 +1,487 @@
+// The NIRCam bulk-download script (lib/nircam-download-script.ts).
+//
+// Two layers. The text tests pin the contract the field page relies on: one
+// `fetch` line per product, every download through GET /api/v1/storage/download
+// with a url-encoded key, and no presigned url baked in (the old script carried
+// ~6 h presigned urls, and a whole-field download ran longer than that).
+//
+// The end-to-end tests run the generated script with bash + curl against an
+// in-process HTTP server that plays the API (bearer check, 302 to the "store")
+// and the store (byte ranges, one transfer cut mid-way), and check what the
+// user actually cares about: a failed run is re-run and finishes — complete
+// files skipped, partial ones resumed, the rest reported.
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { createServer, type Server } from 'node:http';
+import { spawn, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { AddressInfo } from 'node:net';
+import type { NircamProductRow } from '@/lib/types';
+import {
+  buildNircamDownloadScript,
+  downloadRouteUrl,
+  expectedBytes,
+  localFilename,
+  shellQuote,
+  transferBytes,
+} from './nircam-download-script';
+
+const ORIGIN = 'https://campfire.example.org';
+
+function mosaic(field: string, filt: string, name: string, size?: number): NircamProductRow {
+  return {
+    kind: 'mosaic',
+    field,
+    filter: filt,
+    tile: 'tile1',
+    pixel_scale: '30mas',
+    extension: 'sci',
+    epoch: '',
+    file_path: `data/products/nircam/${field}/${filt}/${name}`,
+    file_size: size === undefined ? undefined : size * 3,
+    file_size_stored: size,
+  };
+}
+
+function expmap(field: string, filt: string, name: string, size?: number): NircamProductRow {
+  return {
+    kind: 'expmap',
+    field,
+    filter: filt,
+    tile: null,
+    pixel_scale: null,
+    extension: 'exp',
+    file_path: `data/products/nircam/${field}/${filt}/${name}`,
+    file_size: size,
+  };
+}
+
+describe('buildNircamDownloadScript (text)', () => {
+  const rows = [
+    mosaic('cosmos', 'f444w', 'mosaic_nircam_f444w_cosmos_30mas_tile1_sci.fits.gz', 1000),
+    expmap('cosmos', 'f444w', 'expmap_f444w.fits', 200),
+    mosaic('egs', 'f277w', 'mosaic_nircam_f277w_egs_30mas_tile1_sci.fits.gz', 3000),
+  ];
+
+  it('is empty for an empty selection', () => {
+    expect(buildNircamDownloadScript([], ORIGIN)).toBe('');
+  });
+
+  it('emits one fetch line per product, filed under its field, with the url-encoded key and transfer size', () => {
+    const script = buildNircamDownloadScript(rows, ORIGIN);
+    const fetches = script.split('\n').filter((l) => l.startsWith('fetch '));
+    expect(fetches).toEqual([
+      `fetch 'data%2Fproducts%2Fnircam%2Fcosmos%2Ff444w%2Fmosaic_nircam_f444w_cosmos_30mas_tile1_sci.fits.gz' 'cosmos/mosaic_nircam_f444w_cosmos_30mas_tile1_sci.fits.gz' 1000`,
+      `fetch 'data%2Fproducts%2Fnircam%2Fcosmos%2Ff444w%2Fexpmap_f444w.fits' 'cosmos/expmap_f444w.fits' 200`,
+      `fetch 'data%2Fproducts%2Fnircam%2Fegs%2Ff277w%2Fmosaic_nircam_f277w_egs_30mas_tile1_sci.fits.gz' 'egs/mosaic_nircam_f277w_egs_30mas_tile1_sci.fits.gz' 3000`,
+    ]);
+    // The header accounts for the transfer (stored/gzipped) bytes, not logical.
+    expect(script).toContain('# Files: 3');
+    expect(script).toContain('# Total size: 4.1 KB');
+  });
+
+  it('downloads through the API route at the given origin and carries no presigned url', () => {
+    const script = buildNircamDownloadScript(rows, `${ORIGIN}/`);
+    expect(script).toContain(`BASE_URL='${ORIGIN}'`);
+    expect(script).toContain('"$BASE_URL/api/v1/storage/download?key=$key"');
+    // The credential check hits the same route with no key.
+    expect(script).toContain('"$BASE_URL/api/v1/storage/download")');
+    // The bearer never rides in curl's argv (readable by other users on a
+    // shared host via the process list): it goes in via config on stdin.
+    expect(script).not.toContain('-H "Authorization');
+    expect(script).toContain(`printf 'header = "Authorization: Bearer %s"\\n' "$API_KEY" | curl -K - "$@"`);
+    expect(script).not.toMatch(/X-Amz-|sig=|\/proxy\?/);
+    // Resumable by construction: partial downloads land in .part and resume.
+    expect(script).toContain('-C -');
+    expect(script).toContain('mv -f "$part" "$file"');
+    // And the user is told where the key comes from.
+    expect(script).toContain(`${ORIGIN}/profile/api-keys`);
+  });
+
+  it('embeds a download token as the default credential, with the env key overriding it', () => {
+    const expiresAt = new Date('2026-10-07T12:00:00Z');
+    const script = buildNircamDownloadScript(rows, ORIGIN, { token: { token: 'eyJ.download.token', expiresAt } });
+    expect(script).toContain(`DOWNLOAD_TOKEN='eyJ.download.token'`);
+    expect(script).toContain('API_KEY="${CAMPFIRE_API_KEY:-$DOWNLOAD_TOKEN}"');
+    // The file is a credential and says so, with its expiry.
+    expect(script).toContain('THIS FILE CONTAINS A CREDENTIAL');
+    expect(script).toContain('until 2026-10-07');
+    // No prompt: the token is the no-setup path.
+    expect(script).not.toContain('read -rsp');
+  });
+
+  it('without a token, reads CAMPFIRE_API_KEY or prompts, and carries no credential', () => {
+    const script = buildNircamDownloadScript(rows, ORIGIN);
+    expect(script).not.toContain('DOWNLOAD_TOKEN');
+    expect(script).toContain('API_KEY="${CAMPFIRE_API_KEY:-}"');
+    expect(script).toContain('read -rsp');
+  });
+
+  it('has an unknown size (0) for a product the registry did not size', () => {
+    const script = buildNircamDownloadScript([expmap('egs', 'f277w', 'expmap_f277w.fits')], ORIGIN);
+    expect(script).toContain(`'egs/expmap_f277w.fits' 0`);
+  });
+
+  it('never checks a gzipped mosaic against its logical size', () => {
+    // The page attaches stored sizes fail-open, so a compressed mosaic can
+    // arrive with only file_size (uncompressed). Checking the .fits.gz on disk
+    // against that would fail every run; the script must treat it as unknown.
+    const row = mosaic('cosmos', 'f444w', 'mosaic_nircam_f444w_cosmos_30mas_tile1_sci.fits.gz');
+    row.file_size = 123456;
+    expect(expectedBytes(row)).toBe(0);
+    expect(buildNircamDownloadScript([row], ORIGIN)).toContain(
+      `'cosmos/mosaic_nircam_f444w_cosmos_30mas_tile1_sci.fits.gz' 0`,
+    );
+    // The header still estimates the transfer from what it has.
+    expect(buildNircamDownloadScript([row], ORIGIN)).toContain('# Total size: 120.6 KB');
+    // Uncompressed products are checked against their logical size.
+    expect(expectedBytes(expmap('a', 'f', 'e.fits', 7))).toBe(7);
+  });
+
+  it('helpers', () => {
+    expect(transferBytes(mosaic('a', 'f', 'm.fits.gz', 10))).toBe(10);
+    expect(transferBytes(expmap('a', 'f', 'e.fits', 7))).toBe(7);
+    expect(transferBytes(expmap('a', 'f', 'e.fits'))).toBe(0);
+    expect(localFilename(mosaic('a', 'f', 'm.fits.gz'))).toBe('m.fits.gz');
+    expect(shellQuote(`it's`)).toBe(`'it'\\''s'`);
+    expect(downloadRouteUrl(ORIGIN, 'data/products/nircam/a b')).toBe(
+      `${ORIGIN}/api/v1/storage/download?key=data%2Fproducts%2Fnircam%2Fa%20b`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End to end: bash + curl against a fake API/store.
+
+const haveTools =
+  spawnSync('bash', ['--version']).status === 0 && spawnSync('curl', ['--version']).status === 0;
+
+const API_KEY = 'sk_test_key';
+const DOWNLOAD_TOKEN = 'eyJ.embedded.download.token';
+
+interface FakeObject {
+  bytes: Buffer;
+  /** Close the connection after this many bytes on the first store request. */
+  cutFirstAt?: number;
+}
+
+describe.skipIf(!haveTools)('generated script, end to end', () => {
+  let server: Server;
+  let origin = '';
+  let tmp = '';
+  const objects = new Map<string, FakeObject>();
+  const routeHits = new Map<string, number>();
+  const storeRanges = new Map<string, (string | null)[]>();
+  // Bearer presented on each download-route call, in order.
+  const bearers: string[] = [];
+
+  const objA = 'data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_tile1_sci.fits.gz';
+  const objB = 'data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_tile1_wht.fits.gz';
+  const objC = 'data/products/nircam/cosmos/f444w/expmap_f444w.fits'; // never authorized
+  const objD = 'data/products/nircam/egs/f277w/expmap_f277w.fits'; // size unknown to the script
+  const objE = 'data/products/nircam/egs/f277w/expmap_f277w_stale.fits'; // listing says 999, store has 700
+
+  const bytesA = Buffer.alloc(64 * 1024, 'A');
+  const bytesB = Buffer.alloc(96 * 1024, 'B');
+  const bytesD = Buffer.alloc(1024, 'D');
+  const bytesE = Buffer.alloc(700, 'E');
+
+  const rows: NircamProductRow[] = [
+    mosaic('cosmos', 'f444w', 'mosaic_nircam_f444w_cosmos_30mas_tile1_sci.fits.gz', bytesA.length),
+    mosaic('cosmos', 'f444w', 'mosaic_nircam_f444w_cosmos_30mas_tile1_wht.fits.gz', bytesB.length),
+    expmap('cosmos', 'f444w', 'expmap_f444w.fits', 555),
+    expmap('egs', 'f277w', 'expmap_f277w.fits'),
+    expmap('egs', 'f277w', 'expmap_f277w_stale.fits', 999),
+  ];
+
+  beforeAll(async () => {
+    objects.set(objA, { bytes: bytesA });
+    objects.set(objB, { bytes: bytesB, cutFirstAt: 40 * 1024 });
+    objects.set(objD, { bytes: bytesD });
+    objects.set(objE, { bytes: bytesE });
+
+    server = createServer((req, res) => {
+      const url = new URL(req.url || '/', 'http://localhost');
+      const bearer = (req.headers.authorization ?? '').replace(/^Bearer /, '');
+      const authed = bearer === API_KEY || bearer === DOWNLOAD_TOKEN;
+
+      if (url.pathname === '/api/v1/storage/download') {
+        bearers.push(bearer);
+        if (!authed) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end('{"error":"Invalid or missing authentication"}');
+          return;
+        }
+        const key = url.searchParams.get('key') || '';
+        if (!key) {
+          // The credential check: accepted credential, no key.
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end('{"error":"key required"}');
+          return;
+        }
+        routeHits.set(key, (routeHits.get(key) ?? 0) + 1);
+        if (!objects.has(key)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end('{"error":"Not found or not accessible"}');
+          return;
+        }
+        // The "presigned url": the store on this same server.
+        res.writeHead(302, {
+          Location: `${origin}/store/${key.split('/').map(encodeURIComponent).join('/')}?X-Amz-Signature=fake`,
+          'Cache-Control': 'no-store',
+        });
+        res.end();
+        return;
+      }
+
+      if (url.pathname.startsWith('/store/')) {
+        const key = decodeURIComponent(url.pathname.slice('/store/'.length));
+        const obj = objects.get(key);
+        if (!obj) {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
+        const ranges = storeRanges.get(key) ?? [];
+        const range = req.headers.range ?? null;
+        ranges.push(range);
+        storeRanges.set(key, ranges);
+
+        let start = 0;
+        let end = obj.bytes.length - 1;
+        const m = range ? /^bytes=(\d+)-(\d*)$/.exec(range) : null;
+        if (m) {
+          start = Number(m[1]);
+          if (m[2]) end = Math.min(Number(m[2]), obj.bytes.length - 1);
+        }
+        if (start >= obj.bytes.length) {
+          res.writeHead(416, { 'Content-Range': `bytes */${obj.bytes.length}` });
+          res.end();
+          return;
+        }
+        const body = obj.bytes.subarray(start, end + 1);
+        res.writeHead(m ? 206 : 200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(body.length),
+          'Accept-Ranges': 'bytes',
+          ...(m ? { 'Content-Range': `bytes ${start}-${end}/${obj.bytes.length}` } : {}),
+        });
+        if (obj.cutFirstAt !== undefined && ranges.length === 1) {
+          // Mid-transfer failure: send part of the body, then close the
+          // connection (FIN, so the bytes sent are delivered — a reset could
+          // discard them client-side and the resume offset would be moot).
+          res.write(body.subarray(0, obj.cutFirstAt), () => req.socket.end());
+          return;
+        }
+        res.end(body);
+        return;
+      }
+
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    tmp = mkdtempSync(join(tmpdir(), 'nircam-dl-'));
+    writeFileSync(
+      join(tmp, 'download.sh'),
+      buildNircamDownloadScript(rows, origin, {
+        token: { token: DOWNLOAD_TOKEN, expiresAt: new Date(Date.now() + 30 * 86400e3) },
+      }),
+    );
+    writeFileSync(join(tmp, 'download-nokey.sh'), buildNircamDownloadScript(rows, origin));
+    // The script backs off between attempts; a no-op `sleep` on PATH keeps the
+    // test fast without a test-only knob in the product.
+    mkdirSync(join(tmp, 'bin'));
+    writeFileSync(join(tmp, 'bin', 'sleep'), '#!/bin/sh\nexit 0\n');
+    chmodSync(join(tmp, 'bin', 'sleep'), 0o755);
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+  });
+
+  // Async, not spawnSync: the fake API/store runs in this process, so a
+  // blocking spawn would deadlock (the server could never answer curl).
+  function run(env: Record<string, string | undefined> = {}, script = 'download.sh') {
+    return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const childEnv: NodeJS.ProcessEnv = { ...process.env };
+      const overrides: Record<string, string | undefined> = {
+        PATH: `${join(tmp, 'bin')}:${process.env.PATH}`,
+        HOME: tmp,
+        CAMPFIRE_API_KEY: undefined, // the embedded token is the default path
+        CAMPFIRE_DOWNLOAD_DIR: join(tmp, 'out'),
+        ...env,
+      };
+      // An `undefined` override unsets the variable (Node would otherwise
+      // pass the string "undefined").
+      for (const [k, v] of Object.entries(overrides)) {
+        if (v === undefined) delete childEnv[k];
+        else childEnv[k] = v;
+      }
+      const child = spawn('bash', [join(tmp, script)], {
+        cwd: tmp,
+        env: childEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8').on('data', (d: string) => { stdout += d; });
+      child.stderr.setEncoding('utf8').on('data', (d: string) => { stderr += d; });
+      child.on('error', reject);
+      child.on('close', (status: number | null) => resolve({ status, stdout, stderr }));
+    });
+  }
+
+  const outPath = (key: string) => join(tmp, 'out', key.split('/')[3], key.split('/').pop() as string);
+
+  it('refuses a rejected credential up front, touching no files', async () => {
+    // The env key overrides the embedded token even when it is wrong: the
+    // user asked for it, and a silent fallback would hide a bad key.
+    const badKey = await run({ CAMPFIRE_API_KEY: 'sk_wrong' });
+    expect(badKey.status).toBe(1);
+    expect(badKey.stderr).toContain('rejected this credential (HTTP 401)');
+    expect(badKey.stderr).toContain('regenerate the script');
+    expect(bearers).toEqual(['sk_wrong']);
+
+    // The token-less script has no default credential: no env, no tty → stop.
+    const noKey = await run({}, 'download-nokey.sh');
+    expect(noKey.status).toBe(1);
+    expect(noKey.stderr).toContain('no API key');
+
+    expect(existsSync(join(tmp, 'out'))).toBe(false);
+    expect(routeHits.size).toBe(0);
+    bearers.length = 0;
+  });
+
+  it('first run: downloads with the embedded token, resumes the cut transfer, reports the unauthorized file', async () => {
+    const r = await run();
+    expect(r.status).toBe(1); // objC failed
+    // Every call — the up-front check and each file — used the embedded token.
+    expect(bearers.length).toBeGreaterThan(0);
+    expect(new Set(bearers)).toEqual(new Set([DOWNLOAD_TOKEN]));
+    bearers.length = 0;
+    expect(readFileSync(outPath(objA)).equals(bytesA)).toBe(true);
+    expect(readFileSync(outPath(objB)).equals(bytesB)).toBe(true);
+    expect(readFileSync(outPath(objD)).equals(bytesD)).toBe(true);
+    expect(existsSync(outPath(objC))).toBe(false);
+    expect(existsSync(`${outPath(objB)}.part`)).toBe(false);
+
+    // B was cut at 40 KB; the second attempt asked for a fresh url and resumed
+    // from where the .part stopped instead of starting over.
+    expect(routeHits.get(objB)).toBe(2);
+    expect(storeRanges.get(objB)).toEqual([null, `bytes=${40 * 1024}-`]);
+    expect(routeHits.get(objA)).toBe(1);
+    expect(routeHits.get(objC)).toBe(1);
+
+    // E: the store's object is not the size the listing said. curl verified
+    // the body against Content-Length, so it is kept, with a note.
+    expect(readFileSync(outPath(objE)).equals(bytesE)).toBe(true);
+    expect(r.stdout).toContain('note: the listing said 999 bytes, the store served 700');
+    expect(r.stdout).toContain('1 file(s) differ in size from this script');
+    expect(r.stdout).toContain('transfer interrupted');
+    expect(r.stdout).toContain('Done: 4 downloaded, 0 already present, 1 failed');
+    expect(r.stderr).toContain('not available for your account (HTTP 404)');
+    expect(r.stderr).toContain('cosmos/expmap_f444w.fits');
+  });
+
+  it('second run: skips every complete sized file without asking the API, verifies the unsized one against the store, retries only the failure; an env key overrides the token', async () => {
+    const before = new Map(routeHits);
+    const r = await run({ CAMPFIRE_API_KEY: API_KEY });
+    expect(r.status).toBe(1);
+    expect(new Set(bearers)).toEqual(new Set([API_KEY]));
+    bearers.length = 0;
+    expect(routeHits.get(objA)).toBe(before.get(objA));
+    expect(routeHits.get(objB)).toBe(before.get(objB));
+    expect(routeHits.get(objC)).toBe((before.get(objC) ?? 0) + 1);
+    // D's size is unknown to the script and E's listing is wrong, so each
+    // file on disk is checked against the store with a one-byte probe at its
+    // end (416 → Content-Range total), nothing re-downloaded.
+    expect(routeHits.get(objD)).toBe((before.get(objD) ?? 0) + 1);
+    expect(storeRanges.get(objD)?.at(-1)).toBe(`bytes=${bytesD.length}-${bytesD.length}`);
+    expect(storeRanges.get(objE)?.at(-1)).toBe(`bytes=${bytesE.length}-${bytesE.length}`);
+    expect(readFileSync(outPath(objD)).equals(bytesD)).toBe(true);
+    expect(r.stdout).toContain('size verified against the store');
+    expect(r.stdout).toContain('Done: 0 downloaded, 4 already present, 1 failed');
+  });
+
+  it('re-downloads a truncated or oversized unsized file left by the old script', async () => {
+    // The old generator wrote curl output straight to the final name, so an
+    // interrupted run left a truncated file there. With no archive size to
+    // compare against, the script must not take it as complete — and must
+    // not resume it either (it could be an older version of the product):
+    // probe the store for the size, then fetch again from byte zero.
+    writeFileSync(outPath(objD), bytesD.subarray(0, 512));
+    let r = await run();
+    expect(readFileSync(outPath(objD)).equals(bytesD)).toBe(true);
+    expect(storeRanges.get(objD)?.slice(-2)).toEqual(['bytes=512-512', null]);
+    expect(r.stdout).toContain('exists with 512 bytes but the object is 1024; downloading again');
+    expect(r.stdout).toContain('Done: 1 downloaded, 3 already present, 1 failed');
+
+    // Larger than the object (an older, larger deploy): the probe gets 416
+    // with the true size, so fetch again from byte zero.
+    writeFileSync(outPath(objD), Buffer.alloc(2048, 'x'));
+    r = await run();
+    expect(readFileSync(outPath(objD)).equals(bytesD)).toBe(true);
+    expect(storeRanges.get(objD)?.slice(-2)).toEqual(['bytes=2048-2048', null]);
+    expect(r.stdout).toContain('exists with 2048 bytes but the object is 1024; downloading again');
+    expect(r.stdout).toContain('Done: 1 downloaded, 3 already present, 1 failed');
+  });
+
+  it('keeps the progress in a .part when the final file is stale, so a slow link converges across runs', async () => {
+    // A stale final file (wrong size) plus a .part holding a previous run's
+    // partial download of the current object: the .part must be resumed,
+    // not deleted, or a link that cannot finish the file within one run's
+    // attempts never makes net progress.
+    writeFileSync(outPath(objA), Buffer.alloc(100, 'x'));
+    writeFileSync(`${outPath(objA)}.part`, bytesA.subarray(0, 30000));
+    const r = await run();
+    expect(readFileSync(outPath(objA)).equals(bytesA)).toBe(true);
+    expect(existsSync(`${outPath(objA)}.part`)).toBe(false);
+    // The probe at the stale file's end, then a resume from the .part's end.
+    expect(storeRanges.get(objA)?.slice(-2)).toEqual(['bytes=100-100', 'bytes=30000-']);
+    expect(r.stdout).toContain('exists with 100 bytes but the object is 65536; downloading again');
+  });
+
+  it('restarts a .part that is larger than the object instead of retrying an impossible resume forever', async () => {
+    rmSync(outPath(objB));
+    writeFileSync(`${outPath(objB)}.part`, Buffer.concat([bytesB, Buffer.alloc(1000, 'x')]));
+    const r = await run();
+    expect(readFileSync(outPath(objB)).equals(bytesB)).toBe(true);
+    expect(existsSync(`${outPath(objB)}.part`)).toBe(false);
+    expect(storeRanges.get(objB)?.slice(-2)).toEqual([`bytes=${bytesB.length + 1000}-`, null]);
+    expect(r.stdout).toContain(`partial file has ${bytesB.length + 1000} bytes but the object is ${bytesB.length}; starting over`);
+  });
+
+  it('re-fetches a file whose size no longer matches, and finishes a complete .part without re-downloading', async () => {
+    // A: on disk with the wrong size (a partial from an older script, or a
+    // product re-deployed since) — must be replaced by a fresh download.
+    writeFileSync(outPath(objA), Buffer.alloc(100, 'x'));
+    // B: a previous run died between the download completing and the rename.
+    rmSync(outPath(objB));
+    writeFileSync(`${outPath(objB)}.part`, bytesB);
+    // C: now authorized.
+    objects.set(objC, { bytes: Buffer.alloc(555, 'C') });
+
+    const before = new Map(routeHits);
+    const r = await run();
+    expect(r.status).toBe(0);
+    expect(readFileSync(outPath(objA)).equals(bytesA)).toBe(true);
+    expect(readFileSync(outPath(objB)).equals(bytesB)).toBe(true);
+    expect(statSync(outPath(objC)).size).toBe(555);
+    expect(existsSync(`${outPath(objB)}.part`)).toBe(false);
+
+    // A: one probe (route hit + one-byte range), then a fresh download.
+    expect(routeHits.get(objA)).toBe((before.get(objA) ?? 0) + 2);
+    expect(storeRanges.get(objA)?.slice(-2)).toEqual(['bytes=100-100', null]);
+    // B's complete .part: the store answered 416 to the resume and the script
+    // kept the bytes it had (counted as already present, not downloaded).
+    expect(storeRanges.get(objB)?.at(-1)).toBe(`bytes=${bytesB.length}-`);
+    expect(r.stdout).toContain('exists with 100 bytes but the object is 65536; downloading again');
+    expect(r.stdout).toContain('Done: 2 downloaded, 3 already present, 0 failed');
+  });
+});
