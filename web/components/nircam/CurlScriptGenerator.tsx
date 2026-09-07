@@ -2,190 +2,64 @@
 
 import React, { useState, useMemo } from 'react';
 import Link from 'next/link';
-import { AlertTriangle, ChevronDown, ChevronUp, Download, Copy, Check, Info } from 'lucide-react';
+import { ChevronDown, ChevronUp, Download, Copy, Check, Info, KeyRound } from 'lucide-react';
 import type { NircamProductRow } from '@/lib/types';
 import {
-  generateNircamMosaicDownloadUrls,
-  generateNircamExpmapDownloadUrls,
-} from '@/lib/actions/download';
+  API_KEYS_PATH,
+  NIRCAM_DOWNLOAD_SCRIPT_FILENAME,
+  buildNircamDownloadScript,
+  formatFileSize,
+  transferBytes,
+} from '@/lib/nircam-download-script';
 
 interface CurlScriptGeneratorProps {
   selectedImages: NircamProductRow[];
   className?: string;
 }
 
-// Transfer bytes for a set of products: stored (gzipped) size when the registry
-// recorded one, logical size otherwise.
-const bytesOf = (rows: NircamProductRow[]): number =>
-  rows.reduce((sum, r) => sum + (r.file_size_stored ?? r.file_size ?? 0), 0);
-
-// Helper to format file size
-const formatFileSize = (bytes: number): string => {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
-};
-
-// What a build produced: the script text plus the accounting the UI needs to
-// state, honestly, what it covers.
-interface BuiltScript {
-  script: string;
-  /** Products actually in the script. */
-  included: number;
-  /** Selected products the server would not authorize (never silently dropped). */
-  missing: number;
-  /** Server-reported failure from either authorization call, if any. */
-  error: string | null;
+// Where the script will send its API calls: this deployment. The component is
+// client-only and the script is built after a click, so `window` exists by
+// then; the env fallback only covers the (never-shown) server render.
+function siteOrigin(): string {
+  if (typeof window !== 'undefined') return window.location.origin;
+  return process.env.NEXT_PUBLIC_APP_URL || 'https://campfire.hollisakins.com';
 }
 
-const EMPTY_BUILD: BuiltScript = { script: '', included: 0, missing: 0, error: null };
-
+/**
+ * Bulk-download panel for a NIRCam product selection: a shell script the user
+ * runs locally.
+ *
+ * The script carries no urls and no credentials. Each file is fetched through
+ * GET /api/v1/storage/download with the user's API key (read from
+ * CAMPFIRE_API_KEY, or prompted for), which answers with a fresh presigned url
+ * at download time — so the script never expires, however long a whole-field
+ * download takes. Files already on disk are skipped and partial downloads
+ * resume, so a failed run is simply re-run. See lib/nircam-download-script.ts.
+ *
+ * Building it needs no server call: the selection comes from the field page's
+ * RLS-scoped listing, and the route re-authorizes every key when the script
+ * runs, under the API key's own program scope.
+ */
 export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
   selectedImages,
   className = '',
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [build, setBuild] = useState<BuiltScript>(EMPTY_BUILD);
-  const [generating, setGenerating] = useState(false);
-  const script = build.script;
 
-  // Transfer estimate for the SELECTION (the collapsed header): stored
-  // (gzipped) bytes when recorded, logical otherwise — what the curl downloads
-  // actually move.
-  const totalSize = useMemo(() => bytesOf(selectedImages), [selectedImages]);
+  // Transfer estimate: stored (gzipped) bytes when recorded, logical
+  // otherwise — what the downloads actually move.
+  const totalSize = useMemo(
+    () => selectedImages.reduce((sum, r) => sum + transferBytes(r), 0),
+    [selectedImages],
+  );
 
-  // Build the curl script. Presigned + HMAC-authorized proxy URLs come from
-  // the server actions (authorized per-viewer under RLS — mosaics against
-  // nircam_images, expmaps against storage_objects), so the script carries no
-  // credentials — just `curl` against the proxy URL. Async because it awaits
-  // the presign round-trip.
-  const buildScript = React.useCallback(async (): Promise<BuiltScript> => {
-    if (selectedImages.length === 0) return EMPTY_BUILD;
-
-    const mosaicPaths = selectedImages
-      .filter((p) => p.kind !== 'expmap')
-      .map((p) => p.file_path);
-    const expmapKeys = selectedImages
-      .filter((p) => p.kind === 'expmap')
-      .map((p) => p.file_path);
-
-    const [mosaicRes, expmapRes] = await Promise.all([
-      mosaicPaths.length > 0
-        ? generateNircamMosaicDownloadUrls(mosaicPaths)
-        : Promise.resolve({ urls: {} as Record<string, string>, error: null }),
-      expmapKeys.length > 0
-        ? generateNircamExpmapDownloadUrls(expmapKeys)
-        : Promise.resolve({ urls: {} as Record<string, string>, error: null }),
-    ]);
-    const urls = { ...mosaicRes.urls, ...expmapRes.urls };
-    // One authorization call failing must not read as "those products don't
-    // exist" — that is how a mosaic-side failure once produced an
-    // expmaps-only script under a whole-selection size.
-    const error = mosaicRes.error ?? expmapRes.error ?? null;
-
-    // Only include products we were authorized to presign.
-    const images = selectedImages.filter((img) => urls[img.file_path]);
-    const missing = selectedImages.length - images.length;
-    if (images.length === 0) return { ...EMPTY_BUILD, missing, error };
-
-    // Size/count in the script describe the SCRIPT, not the selection: the two
-    // differ exactly when something could not be authorized, and the script
-    // must never advertise bytes it does not fetch.
-    const scriptBytes = bytesOf(images);
-
-    // Group by field for organization
-    const fields = [...new Set(images.map((img) => img.field))];
-
-    const omitted = missing > 0
-      ? `#\n# NOTE: ${missing} of ${selectedImages.length} selected product(s) are NOT in this\n#       script — the server did not authorize them for your account.\n`
-      : '';
-
-    let scriptContent = `#!/bin/bash
-# CAMPFIRE NIRCam Data Download Script
-# Generated: ${new Date().toISOString()}
-# Files: ${images.length}
-# Total size: ${formatFileSize(scriptBytes)}
-${omitted}#
-# Download URLs below are pre-signed and expire after ~6 hours. Re-generate
-# this script if the links have expired.
-
-echo "============================="
-echo "CAMPFIRE NIRCam Data Download"
-echo "============================="
-echo ""
-echo "This script will download ${images.length} files (${formatFileSize(scriptBytes)} total)"
-echo ""
-
-# Create output directory
-mkdir -p nircam_data
-cd nircam_data
-
-echo "Starting download..."
-echo ""
-
-`;
-
-    // Add download commands grouped by field
-    fields.forEach((field) => {
-      const fieldImages = images.filter((img) => img.field === field);
-      scriptContent += `# Field: ${field.toUpperCase()} (${fieldImages.length} files)\n`;
-      scriptContent += `mkdir -p ${field}\n`;
-      scriptContent += `cd ${field}\n\n`;
-
-      fieldImages.forEach((img, index) => {
-        const filename = img.file_path.split('/').pop() || img.file_path;
-        scriptContent += `# File ${index + 1}/${fieldImages.length}: ${filename}\n`;
-        scriptContent += `echo "Downloading ${filename}..."\n`;
-        scriptContent += `curl -L --progress-bar -o "${filename}" "${urls[img.file_path]}"\n`;
-        if (index < fieldImages.length - 1) {
-          scriptContent += `\n`;
-        }
-      });
-
-      scriptContent += `\ncd ..\n\n`;
-    });
-
-    scriptContent += `echo ""
-echo "Download complete!"
-echo "Files saved in: $(pwd)"
-`;
-
-    return { script: scriptContent, included: images.length, missing, error };
-  }, [selectedImages]);
-
-  // (Re)generate the script whenever the panel is open and the selection
-  // changes. Presigned URLs are per-request, so we rebuild rather than memoize.
-  React.useEffect(() => {
-    if (!isExpanded || selectedImages.length === 0) {
-      setBuild(EMPTY_BUILD);
-      return;
-    }
-    let cancelled = false;
-    setGenerating(true);
-    buildScript()
-      .then((result) => {
-        if (!cancelled) setBuild(result);
-      })
-      .catch((err) => {
-        console.error('Failed to generate NIRCam download script:', err);
-        if (!cancelled) {
-          setBuild({
-            ...EMPTY_BUILD,
-            missing: selectedImages.length,
-            error: 'Failed to generate download links.',
-          });
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setGenerating(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [isExpanded, buildScript, selectedImages.length]);
+  // Only build once the panel is open: a whole-field selection is thousands
+  // of lines, and the generation timestamp should be when the user looked.
+  const script = useMemo(
+    () => (isExpanded ? buildNircamDownloadScript(selectedImages, siteOrigin()) : ''),
+    [isExpanded, selectedImages],
+  );
 
   const handleCopy = async () => {
     try {
@@ -202,7 +76,7 @@ echo "Files saved in: $(pwd)"
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'download_nircam_data.sh';
+    link.download = NIRCAM_DOWNLOAD_SCRIPT_FILENAME;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -238,36 +112,36 @@ echo "Files saved in: $(pwd)"
       {/* Expanded content */}
       {isExpanded && (
         <div className="border-t border-border">
-          {/* Coverage warning: the script must never quietly cover less than
-              the selection (a failed authorization call used to do exactly
-              that — an expmaps-only script under a whole-selection size). */}
-          {!generating && build.missing > 0 && (
-            <div className="px-4 pt-4">
-              <div className="flex items-start gap-2 rounded-lg p-3 bg-amber-100 dark:bg-amber-900/40 border border-amber-200 dark:border-amber-800/50">
-                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-800 dark:text-amber-300" />
-                <p className="text-sm text-amber-900 dark:text-amber-200">
-                  {build.included === 0
-                    ? `None of the ${selectedImages.length} selected product${selectedImages.length === 1 ? '' : 's'} could be prepared for download.`
-                    : `${build.included} of ${selectedImages.length} selected products are in this script; ${build.missing} could not be prepared.`}
-                  {build.error
-                    ? ` ${build.error}`
-                    : ' They were not authorized for your account — contact an admin if you expect access to them.'}
-                </p>
-              </div>
+          {/* How to run it: the script authenticates with an API key at
+              download time, so it needs one and never expires. */}
+          <div className="px-4 pt-4">
+            <div className="flex items-start gap-2 bg-background border border-border rounded-lg p-3">
+              <KeyRound className="w-4 h-4 text-text-secondary mt-0.5 shrink-0" />
+              <p className="text-sm text-text-secondary">
+                The script fetches each file&apos;s download link as it goes, so it
+                never expires and can be re-run to resume after a failure. It needs
+                an API key: create one at{' '}
+                <Link href={API_KEYS_PATH} className="text-primary hover:underline">
+                  API keys
+                </Link>{' '}
+                and run{' '}
+                <code className="font-mono text-xs">CAMPFIRE_API_KEY=sk_… bash {NIRCAM_DOWNLOAD_SCRIPT_FILENAME}</code>
+                {' '}(it prompts for the key otherwise).
+              </p>
             </div>
-          )}
+          </div>
 
           {/* Script preview */}
           <div className="p-4">
             <div className="bg-gray-900 rounded-lg overflow-hidden">
               <div className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700">
-                <span className="text-sm text-gray-400 font-mono">download_nircam_data.sh</span>
+                <span className="text-sm text-gray-400 font-mono">{NIRCAM_DOWNLOAD_SCRIPT_FILENAME}</span>
                 <div className="flex items-center gap-2">
                   {/* Plain buttons: the code panel is always dark, so the
                       theme-aware Button ghost variant is unreadable here. */}
                   <button
                     onClick={handleCopy}
-                    disabled={generating || !script}
+                    disabled={!script}
                     className="inline-flex items-center rounded-md px-2.5 py-1.5 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:pointer-events-none"
                   >
                     {copied ? (
@@ -284,7 +158,7 @@ echo "Files saved in: $(pwd)"
                   </button>
                   <button
                     onClick={handleDownload}
-                    disabled={generating || !script}
+                    disabled={!script}
                     className="inline-flex items-center rounded-md px-2.5 py-1.5 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-700 transition-colors disabled:opacity-50 disabled:pointer-events-none"
                   >
                     <Download className="w-4 h-4 mr-1.5" />
@@ -293,7 +167,7 @@ echo "Files saved in: $(pwd)"
                 </div>
               </div>
               <pre className="p-4 text-sm text-gray-300 font-mono overflow-x-auto max-h-96 overflow-y-auto">
-                <code>{generating ? 'Generating pre-signed download links…' : script}</code>
+                <code>{script}</code>
               </pre>
             </div>
           </div>
@@ -307,7 +181,7 @@ echo "Files saved in: $(pwd)"
                 <Link href="/docs/api" className="text-primary hover:underline">
                   programmatic access
                 </Link>{' '}
-                for the CLI and Python client.
+                for the CLI (<code className="font-mono text-xs">campfire pull --field</code>) and Python client.
               </p>
             </div>
           </div>

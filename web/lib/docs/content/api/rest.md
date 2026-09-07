@@ -129,6 +129,23 @@ Get a signed URL for downloading a FITS file.
 
 **Response:** `{"url": "https://..."}`
 
+### GET /storage/download
+
+Download any product by its storage key — the primitive behind the NIRCam bulk-download script generated on each field page. Authorizes the key under your program access, then answers with a `302` to a fresh presigned URL on the object store, so a plain `curl -L` fetches the bytes directly. Ask for each file as you go: the link is minted at request time, so a long download never outlives it. Byte-range requests pass through to the store, so `curl -C -` resumes a partial file.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `key` | string | Storage key, e.g. `data/products/nircam/cosmos/f444w/mosaic_..._sci.fits.gz` (required) |
+| `redirect` | string | `false` to get `{"url": "https://...", "expires_in": 21600}` instead of the redirect |
+
+```bash
+curl -L -C - -o mosaic_sci.fits.gz \
+  -H "Authorization: Bearer sk_your_api_key" \
+  "https://campfire.hollisakins.com/api/v1/storage/download?key=data%2Fproducts%2Fnircam%2Fcosmos%2Ff444w%2Fmosaic_..._sci.fits.gz"
+```
+
+Keys you may not read, and keys that do not exist, both answer `404`. For bulk transfers prefer `campfire pull` (the CLI) — it plans against the local mirror and skips what you already have.
+
 ### GET /spectrum
 
 Get spectrum JSON data for plotting.
