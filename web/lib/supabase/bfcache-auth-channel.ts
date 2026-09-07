@@ -1,4 +1,4 @@
-import type { Session, SupabaseClient } from '@supabase/supabase-js';
+import { isAuthRetryableFetchError, type Session, type SupabaseClient } from '@supabase/supabase-js';
 
 /**
  * Keep signed-in pages restorable from the back/forward cache (#540).
@@ -14,15 +14,18 @@ import type { Session, SupabaseClient } from '@supabase/supabase-js';
  * so the next page's boot — or a refocus of any other tab — evicted every
  * parked signed-in page and the back button always reloaded (M0 trace, #496).
  * Filtering on the sender side would not help: any other tab's refocus still
- * posts. The receiver has to stop listening while parked. Closing the channel
- * for good would also work for bfcache, but it would drop the live delivery
- * of a sign-out to the other open tabs, which works today and is kept.
+ * posts. The receiver has to stop listening while parked. Two alternatives
+ * were weighed and not taken: closing the channel for good (or hiding the
+ * `BroadcastChannel` global while the client is constructed) would drop the
+ * live delivery of a sign-out to the other open tabs, which works today.
  *
  * So: on `pagehide` the channel is closed and the app's current user id is
- * snapshotted; on a `persisted` `pageshow` a fresh channel is opened whose
- * messages are re-dispatched on the closed original — a closed
+ * snapshotted; on a `persisted` `pageshow` a fresh channel of the same name
+ * is opened whose posts are re-dispatched on the closed original — a closed
  * `BroadcastChannel` is still an `EventTarget` carrying the listener the
  * auth-js constructor attached, so nothing of the library's wiring is copied.
+ * The original is captured once; each replacement is closed and dropped at
+ * the next park, so the forwarding is always one hop.
  * Then the session in cookie storage is compared with the snapshot and the
  * caller is told when the identity changed while parked (sign-out, or a
  * different user in another tab). Same user: nothing to do — auth-js's own
@@ -33,10 +36,15 @@ import type { Session, SupabaseClient } from '@supabase/supabase-js';
  * `pageshow` and would already have moved a live "current user" to the new
  * identity. A snapshot of `undefined` means the app had not finished its own
  * boot when the page parked; the comparison is skipped, since the pending
- * boot resumes on restore and lands on the right user by itself.
+ * boot resumes on restore and lands on the right user by itself. (In Chromium
+ * and Firefox a document is not restorable while that boot holds its Web
+ * Lock, so this window is narrow.)
  *
  * The only library internal touched is the `protected` `broadcastChannel`
- * member of GoTrueClient; if it is absent the guard installs nothing.
+ * member of GoTrueClient; if it is absent the guard installs nothing and
+ * warns outside production. `bfcache-auth-channel.real.test.ts` exercises a
+ * real `GoTrueClient` so a rename fails a test rather than silently bringing
+ * the eviction back.
  */
 
 type AuthInternals = { broadcastChannel?: BroadcastChannel | null };
@@ -70,13 +78,21 @@ export function installAuthChannelBfcacheGuard(
   const createChannel =
     options.createChannel ?? ((name: string) => new BroadcastChannel(name) as unknown as ChannelLike);
 
-  if (!target || !('broadcastChannel' in auth)) return () => {};
+  if (!target) return () => {};
+  if (!('broadcastChannel' in auth)) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn(
+        'bfcache guard not installed: GoTrueClient has no `broadcastChannel` member (auth-js changed?). Signed-in pages will be evicted from bfcache again (#540).'
+      );
+    }
+    return () => {};
+  }
 
   let parked = false;
   let parkedUserId: string | null | undefined;
   // The channel the auth-js constructor created, kept after we close it: its
   // 'message' listener is what turns a cross-tab post into auth events.
-  let original: ChannelLike | null = null;
+  let wired: ChannelLike | null = null;
   let generation = 0;
 
   const onPageHide = () => {
@@ -84,28 +100,25 @@ export function installAuthChannelBfcacheGuard(
     parkedUserId = options.getUserId();
     const channel = auth.broadcastChannel as ChannelLike | null | undefined;
     if (!channel) return;
-    try {
-      channel.close();
-    } catch {
-      /* already closed */
-    }
+    channel.close(); // idempotent per spec
     auth.broadcastChannel = null;
-    original = channel;
+    // First park: this is the constructor's channel. Later parks close one of
+    // our replacements, which is simply dropped.
+    if (!wired) wired = channel;
   };
 
   const reopenChannel = () => {
-    const wired = original;
-    if (!wired) return;
+    if (!wired || auth.broadcastChannel) return;
+    const original = wired;
     try {
-      const channel = createChannel(wired.name);
+      const channel = createChannel(original.name);
       channel.addEventListener('message', (e) => {
         // Hand the post to the listener auth-js attached to the original.
-        wired.dispatchEvent(new MessageEvent('message', { data: (e as MessageEvent).data }));
+        original.dispatchEvent(new MessageEvent('message', { data: (e as MessageEvent).data }));
       });
       auth.broadcastChannel = channel as unknown as BroadcastChannel;
-      original = null;
     } catch (e) {
-      // Keep `original` so the next restore retries.
+      // `wired` is kept, so the next restore retries.
       console.error('Failed to reopen the auth BroadcastChannel after a bfcache restore', e);
     }
   };
@@ -121,8 +134,9 @@ export function installAuthChannelBfcacheGuard(
       ({ data, error }) => {
         if (gen !== generation) return; // superseded by a later restore
         // A retryable refresh failure (offline, 5xx) answers `session: null`
-        // with an error and keeps the cookie session: not a sign-out.
-        if (error) return;
+        // with an error and keeps the cookie session: not a sign-out. Any
+        // other error has already removed the session, which is one.
+        if (error && isAuthRetryableFetchError(error)) return;
         const now = data.session?.user?.id ?? null;
         if (now !== before) options.onIdentityChanged(data.session);
       },

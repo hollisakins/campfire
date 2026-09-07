@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { AuthApiError, AuthRetryableFetchError, type SupabaseClient } from '@supabase/supabase-js';
 import { installAuthChannelBfcacheGuard } from './bfcache-auth-channel';
 
 /** A BroadcastChannel stand-in: a real EventTarget (so `dispatchEvent` reaches listeners) plus `close()`. */
@@ -152,12 +152,55 @@ describe('installAuthChannelBfcacheGuard', () => {
 
   it('a retryable refresh failure on restore is not a sign-out', async () => {
     const client = fakeClient('u1');
-    client.auth.getSession.mockResolvedValueOnce({ data: { session: null }, error: { name: 'AuthRetryableFetchError' } } as never);
+    client.auth.getSession.mockResolvedValueOnce({
+      data: { session: null },
+      error: new AuthRetryableFetchError('fetch failed', 0),
+    } as never);
     const { target, onIdentityChanged } = install(client, 'u1');
     target.dispatchEvent(new Event('pagehide'));
     target.dispatchEvent(pageshow(true));
     await flush();
     expect(onIdentityChanged).not.toHaveBeenCalled();
+  });
+
+  it('a non-retryable refresh failure (session removed by the library) is a sign-out', async () => {
+    const client = fakeClient('u1');
+    client.auth.getSession.mockResolvedValueOnce({
+      data: { session: null },
+      error: new AuthApiError('refresh token revoked', 400, 'refresh_token_not_found'),
+    } as never);
+    const { target, onIdentityChanged } = install(client, 'u1');
+    target.dispatchEvent(new Event('pagehide'));
+    target.dispatchEvent(pageshow(true));
+    await flush();
+    expect(onIdentityChanged).toHaveBeenCalledWith(null);
+  });
+
+  it('forwarding stays one hop across park/restore cycles (each replacement is dropped, not chained)', () => {
+    const client = fakeClient('u1');
+    const { target, created } = install(client, 'u1');
+    for (let i = 0; i < 3; i++) {
+      target.dispatchEvent(new Event('pagehide'));
+      target.dispatchEvent(pageshow(true));
+    }
+    expect(created).toHaveLength(3);
+    expect(created[0].closed).toBe(true);
+    expect(created[1].closed).toBe(true);
+    expect(created[2].closed).toBe(false);
+    const spyOnFirstProxy = vi.fn();
+    created[0].addEventListener('message', spyOnFirstProxy);
+    created[2].receive({ event: 'SIGNED_OUT', session: null });
+    expect(client.delivered).toHaveBeenCalledTimes(1);
+    expect(spyOnFirstProxy).not.toHaveBeenCalled();
+  });
+
+  it("a real closed BroadcastChannel still dispatches to its listeners (the property the reopen relies on)", () => {
+    const real = new BroadcastChannel('sb-closed-dispatch-check');
+    const seen = vi.fn();
+    real.addEventListener('message', (e) => seen((e as MessageEvent).data));
+    real.close();
+    real.dispatchEvent(new MessageEvent('message', { data: { event: 'x' } }));
+    expect(seen).toHaveBeenCalledWith({ event: 'x' });
   });
 
   it('a rejected session read is logged, not treated as a change', async () => {
@@ -225,16 +268,19 @@ describe('installAuthChannelBfcacheGuard', () => {
     errorSpy.mockRestore();
   });
 
-  it('installs nothing when the auth internals are not there', () => {
+  it('installs nothing, with a warning, when the auth internals are not there', () => {
     const client = { auth: {} };
     const target = new EventTarget();
     const spy = vi.spyOn(target, 'addEventListener');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const uninstall = installAuthChannelBfcacheGuard(asClient(client), {
       getUserId: () => null,
       onIdentityChanged: () => {},
       target,
     });
     expect(spy).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
     uninstall();
   });
 
