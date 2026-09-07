@@ -100,6 +100,14 @@ export function installAuthChannelBfcacheGuard(
     } catch (e) {
       console.error('Failed to reopen the auth BroadcastChannel after a bfcache restore', e);
     }
+    // Only the identity is compared here. A restore also flips the document
+    // hidden → visible, and auth-js's own `visibilitychange` handler then runs
+    // `_recoverAndRefresh()`, which re-reads the session from cookie storage
+    // and emits it (`SIGNED_IN` / `TOKEN_REFRESHED`) to this tab's
+    // subscribers — so a same-user token refresh or `USER_UPDATED` that
+    // happened while parked reaches `AuthContext` without our help. What that
+    // handler does not do is emit anything when the session is gone or belongs
+    // to someone else; that is the case handled by the reload.
     void client.auth.getSession().then(({ data }) => {
       const nowUserId = data.session?.user?.id ?? null;
       if (nowUserId !== lastUserId) onSessionChanged();
