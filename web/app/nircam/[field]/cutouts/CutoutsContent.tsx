@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Download,
@@ -10,6 +11,7 @@ import {
   Loader2,
   Map as MapIcon,
   Scissors,
+  X,
 } from 'lucide-react';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { FieldSelectorDropdown } from '@/components/nircam/FieldSelectorDropdown';
@@ -19,24 +21,17 @@ import { MAX_PIXELS_PER_BAND, MAX_PIXELS_TOTAL } from '@/lib/cutout/limits';
 import { SHUTTER_OVERLAY_MAX_FOV_ARCSEC } from '@/lib/cutout/shutters';
 import { parseCoordinates } from '@/lib/utils/coordinate-parser';
 
-/** Single-band panel transfer curves the figure route accepts. */
 const STRETCHES = ['linear', 'asinh', 'log', 'sqrt'] as const;
-/** Single-band panel limits: SNR (σ about the cutout's own sky) or percentile cuts. */
 type Scaling = 'snr' | 'percentile';
 const DEFAULT_SNR_LO = '-5';
 const DEFAULT_SNR_HI = '8';
-/** Composite construction: the dataset default (the producer's weighted
- *  trilogy mix), the map's rainbow over chosen bands, or a custom R/G/B triple. */
 const COMPOSITE_MODES = ['auto', 'rainbow', 'custom'] as const;
 const COMPOSITE_LABEL: Record<(typeof COMPOSITE_MODES)[number], string> = {
   auto: 'Map default',
-  rainbow: 'Rainbow (N bands)',
-  custom: 'Custom R / G / B',
+  rainbow: 'Rainbow',
+  custom: 'Custom RGB',
 };
-/** `@fitsgl/core` COLORMAP_NAMES, inlined so the page does not ship the core. */
 const COLORMAPS = ['gray', 'viridis', 'magma', 'inferno', 'plasma', 'cividis'] as const;
-/** Composite transfer: `auto` lets the server pick trilogy when the dataset
- *  carries the precomputed stats (the map's default), else asinh. */
 const RGB_STRETCHES = ['auto', 'trilogy', 'asinh', 'log', 'sqrt', 'linear'] as const;
 
 type Stretch = (typeof STRETCHES)[number];
@@ -49,7 +44,6 @@ const RGB_ROLES: readonly RgbRole[] = ['r', 'g', 'b'];
 const ROLE_LABEL: Record<RgbRole, string> = { r: 'R', g: 'G', b: 'B' };
 const ROLE_DOT: Record<RgbRole, string> = { r: '#ef4444', g: '#22c55e', b: '#3b82f6' };
 
-/** Parse a dataset `pixel_scale` tag ('30mas', '0.03as') to arcsec/px, or null. */
 function pixelScaleArcsec(tag: string): number | null {
   const mas = tag.match(/^([\d.]+)\s*mas$/i);
   if (mas) return parseFloat(mas[1]) / 1000;
@@ -60,54 +54,102 @@ function pixelScaleArcsec(tag: string): number | null {
 
 const cutoutsRoute = (field: string) => `/nircam/${encodeURIComponent(field)}/cutouts`;
 
-function isOneOf<T extends string>(list: readonly T[], v: string | undefined): v is T {
-  return v !== undefined && (list as readonly string[]).includes(v);
+function isOneOf<T extends string>(list: readonly T[], value: string | undefined): value is T {
+  return value !== undefined && (list as readonly string[]).includes(value);
+}
+
+function boundedInitial(
+  value: string | undefined,
+  fallback: string,
+  min: number,
+  max: number,
+  integer = false,
+) {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= min && parsed <= max && (!integer || Number.isInteger(parsed))
+    ? value
+    : fallback;
+}
+
+function optionalBoundedInitial(
+  value: string | undefined,
+  min: number,
+  max: number,
+  integer = false,
+) {
+  if (value === undefined || value.trim() === '') return '';
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= min && parsed <= max && (!integer || Number.isInteger(parsed))
+    ? value
+    : '';
+}
+
+function representativeBands(bands: string[]) {
+  if (bands.length <= 3) return bands;
+  return Array.from(new Set([bands[0], bands[Math.floor((bands.length - 1) / 2)], bands[bands.length - 1]]));
+}
+
+interface InitialCutoutRequest {
+  ra?: string;
+  dec?: string;
+  fov?: string;
+  bands?: string;
+  rgb?: string;
+  rgb_stretch?: string;
+  shutters?: string;
+  size?: string;
+  cols?: string;
+  stretch?: string;
+  scaling?: string;
+  snr_lo?: string;
+  snr_hi?: string;
+  colormap?: string;
+  noiselum?: string;
+  satpercent?: string;
+}
+
+interface RenderedArtifact {
+  url: string;
+  query: string;
+  filename: string;
+  rgbLabel: string | null;
+  bandCount: number;
+  shutterRequested: boolean;
+  shutterCount: number;
 }
 
 interface CutoutsContentProps {
   field: string;
-  /** The field's cutout source; null = cutouts not available for this field. */
   dataset: FitsglDataset | null;
   allFields: NircamFieldCard[];
-  /** The shareable request mirrored into the page URL by a previous visit. */
-  initial: {
-    ra?: string;
-    dec?: string;
-    fov?: string;
-    bands?: string;
-    rgb?: string;
-    rgb_stretch?: string;
-    shutters?: string;
-  };
+  canOverlayShutters: boolean;
+  initial: InitialCutoutRequest;
 }
 
 export const CutoutsContent: React.FC<CutoutsContentProps> = ({
   field,
   dataset,
   allFields,
+  canOverlayShutters,
   initial,
 }) => {
   const displayName =
-    allFields.find((f) => f.field === field)?.display_name ?? field.toUpperCase();
+    allFields.find((candidate) => candidate.field === field)?.display_name ?? field.toUpperCase();
   const bandList = useMemo(() => dataset?.bands ?? [], [dataset]);
   const canRgb = bandList.length >= 3;
 
-  // ---- Request form -------------------------------------------------------
   const [coordText, setCoordText] = useState(
     initial.ra && initial.dec ? `${initial.ra} ${initial.dec}` : '',
   );
-  const [fov, setFov] = useState(initial.fov ?? '10');
+  const [fov, setFov] = useState(() => boundedInitial(initial.fov, '10', 0.5, 600));
 
-  // Panels: the single bands to show + whether to append the RGB composite.
-  // A fresh visit opens on the composite alone (or the first band when the
-  // field cannot composite) — never on every band, which is slow to render
-  // and rarely what a quick look wants.
   const initialBands = useMemo(() => {
     if (initial.bands === undefined) return null;
-    const wanted = new Set(initial.bands.split(',').map((b) => b.trim().toLowerCase()).filter(Boolean));
-    // A list naming no band of THIS field (a link carried over from another
-    // field) is treated as a fresh visit rather than an empty selection.
-    const matched = bandList.filter((b) => wanted.has(b.toLowerCase()));
+    const wanted = new Set(
+      initial.bands.split(',').map((band) => band.trim().toLowerCase()).filter(Boolean),
+    );
+    const matched = bandList.filter((band) => wanted.has(band.toLowerCase()));
     return matched.length > 0 ? matched : null;
   }, [initial.bands, bandList]);
   const initialRgb = useMemo<{
@@ -115,14 +157,14 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
     channels: Record<RgbRole, string> | null;
     rainbow: string[] | null;
   } | null>(() => {
-    if (initial.rgb === undefined) return null;
+    if (initial.rgb === undefined || !canRgb) return null;
     const raw = initial.rgb.trim().toLowerCase();
-    const byLower = new Map(bandList.map((b) => [b.toLowerCase(), b]));
+    const byLower = new Map(bandList.map((band) => [band.toLowerCase(), band]));
     const resolve = (csv: string) =>
-      csv.split(',').map((b) => b.trim()).filter(Boolean).map((n) => byLower.get(n));
+      csv.split(',').map((band) => band.trim()).filter(Boolean).map((name) => byLower.get(name));
     if (raw === 'rainbow') return { mode: 'rainbow', channels: null, rainbow: null };
     if (raw.startsWith('rainbow:')) {
-      const members = resolve(raw.slice('rainbow:'.length)).filter((b): b is string => !!b);
+      const members = resolve(raw.slice('rainbow:'.length)).filter((band): band is string => !!band);
       return { mode: 'rainbow', channels: null, rainbow: members.length > 0 ? members : null };
     }
     const resolved = resolve(raw);
@@ -134,17 +176,14 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
       };
     }
     return { mode: 'auto', channels: null, rainbow: null };
-  }, [initial.rgb, bandList]);
+  }, [initial.rgb, bandList, canRgb]);
   const freshVisit = initialBands === null && initialRgb === null;
+  const initialPanelBands = initialBands ?? representativeBands(bandList);
 
-  const [selectedBands, setSelectedBands] = useState<string[]>(() => {
-    if (initialBands) return initialBands;
-    if (freshVisit && !canRgb && bandList.length > 0) return [bandList[0]];
-    return [];
-  });
-  const [rgbOn, setRgbOn] = useState<boolean>(() => (initialRgb ? canRgb : freshVisit && canRgb));
+  const [bandPanelsOn, setBandPanelsOn] = useState(() => initialBands !== null || !canRgb);
+  const [selectedBands, setSelectedBands] = useState<string[]>(() => initialPanelBands);
+  const [rgbOn, setRgbOn] = useState(() => (initialRgb ? canRgb : freshVisit && canRgb));
   const [compositeMode, setCompositeMode] = useState<CompositeMode>(initialRgb?.mode ?? 'auto');
-  /** Custom channel assignment (seeded reddest / middle / bluest by inventory order). */
   const [rgbChannels, setRgbChannels] = useState<Record<RgbRole, string>>(
     () =>
       initialRgb?.channels ?? {
@@ -153,75 +192,119 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
         b: bandList[0] ?? '',
       },
   );
-  /** Rainbow members (inventory order); default every band. */
   const [rainbowBands, setRainbowBands] = useState<string[]>(() => initialRgb?.rainbow ?? bandList);
-  const [rgbStretch, setRgbStretch] = useState<RgbStretch>(
-    isOneOf(RGB_STRETCHES, initial.rgb_stretch) ? initial.rgb_stretch : 'auto',
+  const [rgbStretch, setRgbStretch] = useState<RgbStretch>(() =>
+    initialRgb?.mode === 'rainbow'
+      ? 'trilogy'
+      : isOneOf(RGB_STRETCHES, initial.rgb_stretch)
+        ? initial.rgb_stretch
+        : 'auto',
   );
-  // Trilogy knobs; blank = the producer's tuning.
-  const [noiselum, setNoiselum] = useState('');
-  const [satpercent, setSatpercent] = useState('');
-  const [shutters, setShutters] = useState(initial.shutters === '1');
+  const [noiselum, setNoiselum] = useState(() => optionalBoundedInitial(initial.noiselum, 0.000001, 0.999999));
+  const [satpercent, setSatpercent] = useState(() => optionalBoundedInitial(initial.satpercent, 0.001, 1));
 
-  // Display settings live behind a disclosure: the defaults are right for a
-  // quick look, and the form stays short enough to see with the preview.
+  const initialFov = Number(boundedInitial(initial.fov, '10', 0.5, 600));
+  const [shutters, setShutters] = useState(
+    initial.shutters === '1' && canOverlayShutters && initialFov <= SHUTTER_OVERLAY_MAX_FOV_ARCSEC,
+  );
+
   const [showDisplay, setShowDisplay] = useState(false);
-  const [stretch, setStretch] = useState<Stretch>('linear');
-  const [scaling, setScaling] = useState<Scaling>('snr');
-  const [snrLo, setSnrLo] = useState(DEFAULT_SNR_LO);
-  const [snrHi, setSnrHi] = useState(DEFAULT_SNR_HI);
-  const [colormap, setColormap] = useState<Colormap>('gray');
-  const [panelSize, setPanelSize] = useState('300');
-  const [cols, setCols] = useState('');
+  const [showValidationSummary, setShowValidationSummary] = useState(false);
+  const [stretch, setStretch] = useState<Stretch>(
+    isOneOf(STRETCHES, initial.stretch) ? initial.stretch : 'linear',
+  );
+  const [scaling, setScaling] = useState<Scaling>(
+    initial.scaling === 'percentile' ? 'percentile' : 'snr',
+  );
+  const [snrLo, setSnrLo] = useState(() => {
+    const value = Number(initial.snr_lo);
+    return initial.snr_lo !== undefined && Number.isFinite(value) ? initial.snr_lo : DEFAULT_SNR_LO;
+  });
+  const [snrHi, setSnrHi] = useState(() => {
+    const value = Number(initial.snr_hi);
+    return initial.snr_hi !== undefined && Number.isFinite(value) ? initial.snr_hi : DEFAULT_SNR_HI;
+  });
+  const [colormap, setColormap] = useState<Colormap>(
+    isOneOf(COLORMAPS, initial.colormap) ? initial.colormap : 'gray',
+  );
+  const [panelSize, setPanelSize] = useState(() => boundedInitial(initial.size, '300', 64, 1024, true));
+  const [cols, setCols] = useState(() => optionalBoundedInitial(initial.cols, 1, 1000, true));
 
-  // ---- Preview -------------------------------------------------------------
-  // Fetched as a blob so API error JSON can be surfaced.
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  /** Query string of the render on screen, to flag a stale preview. */
-  const [renderedQuery, setRenderedQuery] = useState<string | null>(null);
-  const previewUrlRef = useRef<string | null>(null);
+  const [artifact, setArtifact] = useState<RenderedArtifact | null>(null);
+  const [loadingQuery, setLoadingQuery] = useState<string | null>(null);
+  const [previewFailure, setPreviewFailure] = useState<{ query: string; message: string } | null>(null);
+  const artifactUrlRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Release the last object URL and cancel an in-flight render on unmount.
   useEffect(
     () => () => {
       abortRef.current?.abort();
-      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+      if (artifactUrlRef.current) URL.revokeObjectURL(artifactUrlRef.current);
     },
     [],
   );
 
-  const toggleIn = (setter: React.Dispatch<React.SetStateAction<string[]>>) => (b: string) =>
-    setter((prev) => {
-      const next = prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b];
-      return bandList.filter((x) => next.includes(x)); // keep inventory order
+  const toggleIn = (setter: React.Dispatch<React.SetStateAction<string[]>>) => (band: string) =>
+    setter((previous) => {
+      const next = previous.includes(band)
+        ? previous.filter((candidate) => candidate !== band)
+        : [...previous, band];
+      return bandList.filter((candidate) => next.includes(candidate));
     });
   const toggleBand = toggleIn(setSelectedBands);
   const toggleRainbowBand = toggleIn(setRainbowBands);
 
-  const snrLoNum = parseFloat(snrLo);
-  const snrHiNum = parseFloat(snrHi);
-  const snrValid = scaling !== 'snr' || (Number.isFinite(snrLoNum) && Number.isFinite(snrHiNum) && snrHiNum > snrLoNum);
-  const rainbowValid = compositeMode !== 'rainbow' || rainbowBands.length > 0;
-  /** The `rgb` query value for the current composite settings. */
+  const parsed = useMemo(() => parseCoordinates(coordText.trim()), [coordText]);
+  const fovNum = Number(fov);
+  const fovValid = Number.isFinite(fovNum) && fovNum >= 0.5 && fovNum <= 600;
+  const shutterEligible =
+    canOverlayShutters && fovValid && fovNum <= SHUTTER_OVERLAY_MAX_FOV_ARCSEC;
+
+  useEffect(() => {
+    if (!shutterEligible) setShutters(false);
+  }, [shutterEligible]);
+
+  const activeBands = useMemo(
+    () => (bandPanelsOn ? selectedBands : []),
+    [bandPanelsOn, selectedBands],
+  );
+  const allBands = bandList.length > 0 && activeBands.length === bandList.length;
+  const snrLoNum = Number(snrLo);
+  const snrHiNum = Number(snrHi);
+  const snrValid =
+    !bandPanelsOn || scaling !== 'snr' ||
+    (Number.isFinite(snrLoNum) && Number.isFinite(snrHiNum) && snrHiNum > snrLoNum);
+  const rainbowValid = !rgbOn || compositeMode !== 'rainbow' || rainbowBands.length > 0;
+  const panelSizeNum = Number(panelSize);
+  const panelSizeValid =
+    Number.isInteger(panelSizeNum) && panelSizeNum >= 64 && panelSizeNum <= 1024;
+  const colsNum = cols.trim() === '' ? null : Number(cols);
+  const colsValid = colsNum === null || (Number.isInteger(colsNum) && colsNum >= 1);
+  const effectiveRgbStretch: RgbStretch = compositeMode === 'rainbow' ? 'trilogy' : rgbStretch;
+  const trilogyControlsActive =
+    rgbOn && (effectiveRgbStretch === 'auto' || effectiveRgbStretch === 'trilogy');
+  const noiselumNum = Number(noiselum);
+  const noiselumValid =
+    !trilogyControlsActive || noiselum.trim() === '' ||
+    (Number.isFinite(noiselumNum) && noiselumNum > 0 && noiselumNum < 1);
+  const satpercentNum = Number(satpercent);
+  const satpercentValid =
+    !trilogyControlsActive || satpercent.trim() === '' ||
+    (Number.isFinite(satpercentNum) && satpercentNum >= 0.001 && satpercentNum <= 1);
+  const hasPanels = activeBands.length > 0 || rgbOn;
+  const ready =
+    dataset !== null && parsed !== null && fovValid && hasPanels && snrValid && rainbowValid &&
+    panelSizeValid && colsValid && noiselumValid && satpercentValid;
+
   const rgbValue =
     compositeMode === 'auto'
       ? 'auto'
       : compositeMode === 'rainbow'
-        ? rainbowBands.length === bandList.length ? 'rainbow' : `rainbow:${rainbowBands.join(',')}`
-        : RGB_ROLES.map((r) => rgbChannels[r]).join(',');
+        ? rainbowBands.length === bandList.length
+          ? 'rainbow'
+          : `rainbow:${rainbowBands.join(',')}`
+        : RGB_ROLES.map((role) => rgbChannels[role]).join(',');
 
-  const parsed = useMemo(() => parseCoordinates(coordText.trim()), [coordText]);
-  const fovNum = parseFloat(fov);
-  const fovValid = Number.isFinite(fovNum) && fovNum >= 0.5 && fovNum <= 600;
-  const allBands = bandList.length > 0 && selectedBands.length === bandList.length;
-  const hasPanels = selectedBands.length > 0 || rgbOn;
-  const ready =
-    dataset !== null && parsed !== null && fovValid && hasPanels && snrValid && (!rgbOn || rainbowValid);
-
-  /** The band list the figure/FITS endpoints share for the current form. */
   const baseParams = useMemo(() => {
     if (!parsed || !fovValid) return null;
     return new URLSearchParams({
@@ -232,92 +315,125 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
     });
   }, [parsed, fovValid, field, fovNum]);
 
-  /** Figure request: single-band panels + composite + overlays + display. */
   const figureParams = useMemo(() => {
-    if (!baseParams || !hasPanels || !snrValid || (rgbOn && !rainbowValid)) return null;
-    const p = new URLSearchParams(baseParams);
-    // `rgb` alone yields just the composite, so the band list is explicit
-    // whenever both are in play (see the route's default rule).
+    if (!baseParams || !ready) return null;
+    const params = new URLSearchParams(baseParams);
     if (rgbOn) {
-      p.set('rgb', rgbValue);
-      if (selectedBands.length > 0) p.set('bands', selectedBands.join(','));
-      if (rgbStretch !== 'auto') p.set('rgb_stretch', rgbStretch);
-      if (rgbStretch === 'auto' || rgbStretch === 'trilogy') {
-        if (noiselum.trim() !== '') p.set('noiselum', noiselum.trim());
-        if (satpercent.trim() !== '') p.set('satpercent', satpercent.trim());
+      params.set('rgb', rgbValue);
+      if (activeBands.length > 0) params.set('bands', activeBands.join(','));
+      if (effectiveRgbStretch !== 'auto') params.set('rgb_stretch', effectiveRgbStretch);
+      if (trilogyControlsActive) {
+        if (noiselum.trim() !== '') params.set('noiselum', String(noiselumNum));
+        if (satpercent.trim() !== '') params.set('satpercent', String(satpercentNum));
       }
     } else if (!allBands) {
-      p.set('bands', selectedBands.join(','));
+      params.set('bands', activeBands.join(','));
     }
-    if (shutters) p.set('shutters', '1');
-    p.set('size', panelSize || '300');
-    if (stretch !== 'linear') p.set('stretch', stretch);
-    if (scaling !== 'snr') p.set('scaling', scaling);
-    if (scaling === 'snr') {
-      if (snrLo.trim() !== DEFAULT_SNR_LO) p.set('snr_lo', String(snrLoNum));
-      if (snrHi.trim() !== DEFAULT_SNR_HI) p.set('snr_hi', String(snrHiNum));
+    if (shutters && shutterEligible) params.set('shutters', '1');
+    params.set('size', String(panelSizeNum));
+    if (bandPanelsOn && stretch !== 'linear') params.set('stretch', stretch);
+    if (bandPanelsOn && scaling !== 'snr') params.set('scaling', scaling);
+    if (bandPanelsOn && scaling === 'snr') {
+      if (snrLo.trim() !== DEFAULT_SNR_LO) params.set('snr_lo', String(snrLoNum));
+      if (snrHi.trim() !== DEFAULT_SNR_HI) params.set('snr_hi', String(snrHiNum));
     }
-    if (colormap !== 'gray') p.set('colormap', colormap);
-    if (cols) p.set('cols', cols);
-    return p;
+    if (bandPanelsOn && colormap !== 'gray') params.set('colormap', colormap);
+    if (colsNum !== null) params.set('cols', String(colsNum));
+    return params;
   }, [
-    baseParams, hasPanels, snrValid, rgbOn, rainbowValid, rgbValue, selectedBands, rgbStretch,
-    noiselum, satpercent, shutters, allBands, panelSize, stretch, scaling, snrLo, snrHi, snrLoNum,
-    snrHiNum, colormap, cols,
+    baseParams, ready, rgbOn, rgbValue, activeBands, effectiveRgbStretch, trilogyControlsActive,
+    noiselum, noiselumNum, satpercent, satpercentNum, allBands, shutters, shutterEligible,
+    panelSizeNum, bandPanelsOn, stretch, scaling, snrLo, snrHi, snrLoNum, snrHiNum, colormap,
+    colsNum,
   ]);
 
-  /** FITS request: the selected single bands (the composite is display-only). */
   const fitsParams = useMemo(() => {
-    if (!baseParams || selectedBands.length === 0) return null;
-    const p = new URLSearchParams(baseParams);
-    if (!allBands) p.set('bands', selectedBands.join(','));
-    return p;
-  }, [baseParams, selectedBands, allBands]);
+    if (!baseParams || activeBands.length === 0) return null;
+    const params = new URLSearchParams(baseParams);
+    if (!allBands) params.set('bands', activeBands.join(','));
+    return params;
+  }, [baseParams, activeBands, allBands]);
 
   const figureQuery = figureParams?.toString() ?? null;
-  const previewStale = renderedQuery !== null && figureQuery !== renderedQuery;
+  const previewLoading = loadingQuery !== null;
+  const previewStale = artifact !== null && artifact.query !== figureQuery;
+  const currentFailure = previewFailure?.query === figureQuery ? previewFailure.message : null;
+  const pngEnabled = artifact !== null && artifact.query === figureQuery && currentFailure === null;
+
+  const rgbLabel = useMemo(() => {
+    if (!rgbOn) return null;
+    if (compositeMode === 'auto') return 'RGB · Map default';
+    if (compositeMode === 'rainbow') {
+      return `RGB · Rainbow (${rainbowBands.length} band${rainbowBands.length === 1 ? '' : 's'})`;
+    }
+    return `RGB · ${RGB_ROLES.map((role) => rgbChannels[role].toUpperCase()).join(' / ')}`;
+  }, [rgbOn, compositeMode, rainbowBands.length, rgbChannels]);
 
   const generatePreview = useCallback(async () => {
-    if (!figureQuery) return;
+    if (!figureQuery || !parsed) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
-    setPreviewLoading(true);
-    setPreviewError(null);
-    // Make the request shareable: mirror it into the page URL without a
-    // server round-trip (the field is the route segment, not a query key).
-    // The band list is always explicit here: the figure request may omit
-    // `bands` to mean "every band", but on this page an absent `bands` AND
-    // `rgb` is a fresh visit (composite alone), so an all-bands strip would
-    // otherwise reload as the composite.
+    setLoadingQuery(figureQuery);
+    setPreviewFailure((failure) => (failure?.query === figureQuery ? null : failure));
+
     const pageParams = new URLSearchParams(figureQuery);
-    for (const k of ['field', 'size', 'cols', 'stretch', 'scaling', 'snr_lo', 'snr_hi', 'colormap', 'noiselum', 'satpercent']) {
-      pageParams.delete(k);
-    }
-    if (selectedBands.length > 0) pageParams.set('bands', selectedBands.join(','));
+    pageParams.delete('field');
+    if (activeBands.length > 0) pageParams.set('bands', activeBands.join(','));
     window.history.replaceState(null, '', `${cutoutsRoute(field)}?${pageParams.toString()}`);
+
+    const filename =
+      `campfire_${field}_${parsed.ra.toFixed(5)}_${parsed.dec.toFixed(5)}_${fovNum}as.png`;
+    const renderedRgbLabel = rgbLabel;
+    const renderedBandCount = activeBands.length;
+    const shutterRequested = shutters && shutterEligible;
+
     try {
-      const res = await fetch(`/api/v1/cutout/figure?${figureQuery}`, { signal: controller.signal });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error ?? `Request failed (${res.status})`);
+      const response = await fetch(`/api/v1/cutout/figure?${figureQuery}`, {
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error ?? `Request failed (${response.status})`);
       }
-      const blob = await res.blob();
+      const blob = await response.blob();
       if (controller.signal.aborted) return;
       const url = URL.createObjectURL(blob);
-      if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
-      previewUrlRef.current = url;
-      setPreviewUrl(url);
-      setRenderedQuery(figureQuery);
-    } catch (err) {
+      if (artifactUrlRef.current) URL.revokeObjectURL(artifactUrlRef.current);
+      artifactUrlRef.current = url;
+      const parsedCount = Number(response.headers.get('X-Campfire-Shutter-Count'));
+      setArtifact({
+        url,
+        query: figureQuery,
+        filename,
+        rgbLabel: renderedRgbLabel,
+        bandCount: renderedBandCount,
+        shutterRequested,
+        shutterCount: Number.isFinite(parsedCount) ? parsedCount : 0,
+      });
+      setPreviewFailure(null);
+    } catch (error) {
       if (controller.signal.aborted) return;
-      setPreviewError(err instanceof Error ? err.message : 'Preview failed');
+      setPreviewFailure({
+        query: figureQuery,
+        message: error instanceof Error ? error.message : 'Preview failed',
+      });
     } finally {
-      if (abortRef.current === controller) setPreviewLoading(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setLoadingQuery(null);
+      }
     }
-  }, [figureQuery, field, selectedBands]);
+  }, [
+    figureQuery, parsed, activeBands, field, fovNum, rgbLabel, shutters, shutterEligible,
+  ]);
 
-  // Auto-generate when the page arrives with a shareable request in the URL.
+  const cancelPreview = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoadingQuery(null);
+  }, []);
+
   const autoRan = useRef(false);
   useEffect(() => {
     if (!autoRan.current && initial.ra && initial.dec && ready) {
@@ -326,28 +442,56 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
     }
   }, [initial.ra, initial.dec, ready, generatePreview]);
 
-  // Estimated native FITS extent for the current request, mirroring BOTH server
-  // budgets (per-band and total across bands) so the FITS button never links to
-  // a request the API would 400.
   const scaleAs = dataset ? pixelScaleArcsec(dataset.pixel_scale) : null;
   const nativePx = scaleAs && fovValid ? Math.round(fovNum / scaleAs) : null;
-  const nBands = selectedBands.length;
+  const nBands = activeBands.length;
   const estMb = nativePx !== null ? (nativePx * nativePx * 4 * nBands) / 1024 ** 2 : null;
   const overBandBudget = nativePx !== null && nativePx * nativePx > MAX_PIXELS_PER_BAND;
   const overTotalBudget = nativePx !== null && nativePx * nativePx * nBands > MAX_PIXELS_TOTAL;
   const overBudget = overBandBudget || overTotalBudget;
   const fitsEnabled = fitsParams !== null && !overBudget;
 
-  const pngName = parsed
-    ? `campfire_${field}_${parsed.ra.toFixed(5)}_${parsed.dec.toFixed(5)}_${fovNum}as.png`
-    : `campfire_${field}_cutout.png`;
+  const formIssue =
+    parsed === null
+      ? 'Enter valid ICRS coordinates.'
+      : !fovValid
+        ? 'Field of view must be between 0.5 and 600 arcsec.'
+        : !hasPanels
+          ? 'Turn on an RGB composite or select at least one band panel.'
+          : !rainbowValid
+            ? 'Choose at least one band for the rainbow composite.'
+            : !snrValid
+              ? 'The SNR high point must be greater than the low point.'
+              : !panelSizeValid
+                ? 'Panel size must be a whole number from 64 to 1024 px.'
+                : !colsValid
+                  ? 'Columns must be blank or a positive whole number.'
+                  : !noiselumValid
+                    ? 'Noise luminance must be greater than 0 and less than 1.'
+                    : !satpercentValid
+                      ? 'Saturation percent must be between 0.001 and 1.'
+                      : null;
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (previewLoading && (loadingQuery === figureQuery || !ready)) {
+      cancelPreview();
+      return;
+    }
+    if (!ready) {
+      setShowValidationSummary(true);
+      setShowDisplay(true);
+      return;
+    }
+    void generatePreview();
+  };
 
   const inputCls =
     'w-full px-3 py-2 bg-surface-2 border border-border rounded-lg text-sm text-text-primary ' +
     'placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary/50';
   const labelCls = 'block text-xs font-medium uppercase tracking-wide text-text-tertiary mb-1.5';
   const chipCls = (on: boolean) =>
-    `px-2.5 py-1 rounded-md text-xs font-medium border transition-colors ${
+    `px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors focus:outline-none focus:ring-2 focus:ring-primary/50 ${
       on
         ? 'bg-primary text-on-primary border-primary'
         : 'bg-surface-2 text-text-secondary border-border hover:border-primary'
@@ -355,10 +499,22 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
   const secondaryBtnCls = (enabled: boolean) =>
     `inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
       enabled
-        ? 'bg-surface-2 text-text-primary border-border hover:border-primary'
+        ? 'bg-surface-2 text-text-primary border-border hover:border-primary focus:outline-none focus:ring-2 focus:ring-primary/50'
         : 'bg-surface-2 text-text-tertiary border-border pointer-events-none opacity-50'
     }`;
   const linkBtnCls = 'text-xs text-primary hover:underline disabled:text-text-tertiary disabled:no-underline';
+
+  const previewStatus = previewLoading
+    ? loadingQuery === figureQuery
+      ? 'Generating'
+      : 'Generating earlier settings'
+    : currentFailure
+      ? 'Generation failed'
+      : artifact === null
+        ? 'Not generated'
+        : previewStale
+          ? 'Changes not applied'
+          : 'Up to date';
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -372,416 +528,451 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
         className="mb-6"
       />
 
-      {/* Field selector — switches fields without leaving the cutout tool */}
-      <div className="mb-4">
-        <FieldSelectorDropdown fields={allFields} current={field} linkTo={cutoutsRoute} />
-      </div>
-
-      <div className="flex items-center gap-3 mb-6">
-        <Scissors className="w-6 h-6 text-primary" />
-        <div>
-          <h1 className="text-2xl font-semibold text-text-primary">{displayName} Cutouts</h1>
-          <p className="text-sm text-text-secondary">
-            Multi-band cutouts at any position in the field — preview a figure or download
-            science-ready FITS.
-          </p>
+      <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded-lg bg-primary/10 p-2">
+            <Scissors className="h-5 w-5 text-primary" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold text-text-primary">Make a NIRCam cutout</h1>
+            <p className="mt-1 max-w-2xl text-sm text-text-secondary">
+              Compose a publication-ready preview, then download the figure or its science bands.
+            </p>
+          </div>
+        </div>
+        <div className="sm:min-w-48">
+          <p className={labelCls}>Imaging field</p>
+          <FieldSelectorDropdown fields={allFields} current={field} linkTo={cutoutsRoute} />
         </div>
       </div>
 
       {dataset === null ? (
-        <div className="text-center py-16 bg-card border border-border rounded-xl">
-          <Scissors className="w-12 h-12 text-text-secondary mx-auto mb-4" />
-          <p className="text-text-secondary">
-            Cutouts aren&apos;t available for {displayName} yet.
-          </p>
-          <p className="text-text-secondary text-sm mt-2">
-            This field&apos;s imaging hasn&apos;t been prepared for the cutout service —
-            check back after the next imaging release.
+        <div className="rounded-xl border border-border bg-card py-16 text-center">
+          <Scissors className="mx-auto mb-4 h-12 w-12 text-text-secondary" />
+          <p className="text-text-secondary">Cutouts aren&apos;t available for {displayName} yet.</p>
+          <p className="mt-2 text-sm text-text-secondary">
+            This field&apos;s imaging hasn&apos;t been prepared for the cutout service.
           </p>
           <Link
             href={`/nircam/${encodeURIComponent(field)}`}
-            className="inline-block mt-4 text-sm text-primary hover:text-primary-hover hover:underline"
+            className="mt-4 inline-block text-sm text-primary hover:underline"
           >
             ← Back to {displayName} data
           </Link>
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-6 items-start">
-          {/* ---- Controls ---- */}
-          <div className="bg-card border border-border rounded-xl p-5 space-y-4">
-            <div>
-              <label className={labelCls} htmlFor="cutout-coords">Coordinates (ICRS)</label>
-              <input
-                id="cutout-coords"
-                type="text"
-                value={coordText}
-                onChange={(e) => setCoordText(e.target.value)}
-                placeholder="150.11916 2.20583  or  10h00m28.6s +02d12m21.0s"
-                className={inputCls}
-              />
-              {coordText.trim() !== '' && parsed === null && (
-                <p className="mt-1 text-xs text-red-500">
-                  Could not parse — use decimal degrees or sexagesimal.
-                </p>
-              )}
-              {parsed && (
-                <p className="mt-1 text-xs text-text-tertiary">
-                  α = {parsed.ra.toFixed(6)}°, δ = {parsed.dec.toFixed(6)}°
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label className={labelCls} htmlFor="cutout-fov">Field of view (arcsec)</label>
-              <input
-                id="cutout-fov"
-                type="number"
-                min={0.5}
-                max={600}
-                step="any"
-                value={fov}
-                onChange={(e) => setFov(e.target.value)}
-                className={inputCls}
-              />
-              {!fovValid && fov.trim() !== '' && (
-                <p className="mt-1 text-xs text-red-500">FOV must be 0.5–600 arcsec.</p>
-              )}
-            </div>
-
-            {/* Panels: which single bands, plus the composite */}
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <span className={`${labelCls} mb-0`}>Bands</span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className={linkBtnCls}
-                    onClick={() => setSelectedBands(bandList)}
-                    disabled={allBands}
-                  >
-                    All
-                  </button>
-                  <span className="text-xs text-text-tertiary">·</span>
-                  <button
-                    type="button"
-                    className={linkBtnCls}
-                    onClick={() => setSelectedBands([])}
-                    disabled={selectedBands.length === 0}
-                  >
-                    None
-                  </button>
-                </div>
+        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
+          <form onSubmit={handleSubmit} className="overflow-hidden rounded-xl border border-border bg-card">
+            <section className="space-y-4 p-5" aria-labelledby="cutout-position-heading">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Step 1</p>
+                <h2 id="cutout-position-heading" className="mt-1 text-base font-semibold text-text-primary">
+                  Position
+                </h2>
               </div>
-              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Bands">
-                {bandList.map((b) => {
-                  const on = selectedBands.includes(b);
-                  return (
-                    <button
-                      key={b}
-                      type="button"
-                      onClick={() => toggleBand(b)}
-                      aria-pressed={on}
-                      className={chipCls(on)}
-                    >
-                      {b.toUpperCase()}
-                    </button>
-                  );
-                })}
+              <div>
+                <label className={labelCls} htmlFor="cutout-coords">Coordinates (ICRS)</label>
+                <input
+                  id="cutout-coords"
+                  type="text"
+                  value={coordText}
+                  onChange={(event) => setCoordText(event.target.value)}
+                  placeholder="150.11916 2.20583"
+                  aria-invalid={coordText.trim() !== '' && parsed === null}
+                  aria-describedby={coordText.trim() !== '' && parsed === null ? 'cutout-coords-error' : undefined}
+                  className={inputCls}
+                />
+                {coordText.trim() !== '' && parsed === null && (
+                  <p id="cutout-coords-error" className="mt-1 text-xs text-red-500">
+                    Use decimal degrees or sexagesimal coordinates.
+                  </p>
+                )}
+                {parsed && (
+                  <p className="mt-1 text-xs text-text-tertiary">
+                    α {parsed.ra.toFixed(6)}° · δ {parsed.dec.toFixed(6)}°
+                  </p>
+                )}
               </div>
-              <p className="mt-1.5 text-xs text-text-tertiary">
-                {selectedBands.length === 0
-                  ? 'No single-band panels'
-                  : `${selectedBands.length} of ${bandList.length} band${bandList.length === 1 ? '' : 's'}`}
-                {' · '}one panel per band
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <label className={`flex items-center gap-2 text-sm ${canRgb ? 'text-text-primary' : 'text-text-tertiary'}`}>
+              <div>
+                <label className={labelCls} htmlFor="cutout-fov">Field of view (arcsec)</label>
                 <input
-                  type="checkbox"
-                  checked={rgbOn}
-                  disabled={!canRgb}
-                  onChange={(e) => setRgbOn(e.target.checked)}
-                  className="accent-[var(--primary)]"
+                  id="cutout-fov"
+                  type="number"
+                  min={0.5}
+                  max={600}
+                  step="any"
+                  value={fov}
+                  onChange={(event) => setFov(event.target.value)}
+                  aria-invalid={!fovValid}
+                  aria-describedby={!fovValid ? 'cutout-fov-error' : undefined}
+                  className={inputCls}
                 />
-                <span>RGB composite panel</span>
-                {canRgb && rgbOn && (
-                  <span className="text-xs text-text-tertiary">
-                    {compositeMode === 'custom'
-                      ? RGB_ROLES.map((r) => rgbChannels[r].toUpperCase()).join(' / ')
-                      : compositeMode === 'rainbow'
-                        ? `rainbow · ${rainbowBands.length} band${rainbowBands.length === 1 ? '' : 's'}`
-                        : 'map default'}
-                  </span>
+                {!fovValid && (
+                  <p id="cutout-fov-error" className="mt-1 text-xs text-red-500">
+                    Enter a value from 0.5 to 600.
+                  </p>
                 )}
-                {!canRgb && <span className="text-xs">(needs ≥ 3 bands)</span>}
-              </label>
-              <label className="flex items-center gap-2 text-sm text-text-primary">
-                <input
-                  type="checkbox"
-                  checked={shutters}
-                  onChange={(e) => setShutters(e.target.checked)}
-                  className="accent-[var(--primary)]"
-                />
-                <span>Overlay NIRSpec shutters</span>
-                {shutters && fovValid && fovNum > SHUTTER_OVERLAY_MAX_FOV_ARCSEC && (
-                  <span className="text-xs text-text-tertiary">
-                    (drawn for fields up to {SHUTTER_OVERLAY_MAX_FOV_ARCSEC}″)
-                  </span>
-                )}
-              </label>
-              {!hasPanels && (
-                <p className="text-xs text-red-500">Select at least one band or the RGB composite.</p>
-              )}
-            </div>
+              </div>
+            </section>
 
-            {/* Display settings — collapsed; the defaults suit a quick look */}
-            <div className="border-t border-border pt-3">
+            <section className="space-y-4 border-t border-border p-5" aria-labelledby="cutout-contents-heading">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Step 2</p>
+                <h2 id="cutout-contents-heading" className="mt-1 text-base font-semibold text-text-primary">
+                  Figure contents
+                </h2>
+              </div>
+
+              <div className="rounded-lg border border-border bg-surface-2/50 p-3">
+                <label className={`flex items-start gap-3 ${canRgb ? 'text-text-primary' : 'text-text-tertiary'}`}>
+                  <input
+                    type="checkbox"
+                    checked={rgbOn}
+                    disabled={!canRgb}
+                    onChange={(event) => setRgbOn(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-[var(--primary)]"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium">RGB composite</span>
+                    <span className="mt-0.5 block text-xs text-text-tertiary">
+                      {canRgb ? 'A color overview of the selected position.' : 'Requires at least three bands.'}
+                    </span>
+                  </span>
+                </label>
+
+                {rgbOn && canRgb && (
+                  <div className="mt-3 border-t border-border pt-3">
+                    <p className={labelCls}>Color recipe</p>
+                    <div className="grid grid-cols-3 gap-1" role="radiogroup" aria-label="Color recipe">
+                      {COMPOSITE_MODES.map((mode) => {
+                        const on = compositeMode === mode;
+                        return (
+                          <button
+                            key={mode}
+                            type="button"
+                            role="radio"
+                            aria-checked={on}
+                            onClick={() => {
+                              setCompositeMode(mode);
+                              if (mode === 'rainbow') setRgbStretch('trilogy');
+                            }}
+                            className={chipCls(on)}
+                          >
+                            {COMPOSITE_LABEL[mode]}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {compositeMode === 'rainbow' && (
+                      <div className="mt-3">
+                        <div className="mb-1.5 flex items-center justify-between">
+                          <span className={`${labelCls} mb-0`}>Rainbow bands</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              className={linkBtnCls}
+                              onClick={() => setRainbowBands(bandList)}
+                              disabled={rainbowBands.length === bandList.length}
+                            >All</button>
+                            <button
+                              type="button"
+                              className={linkBtnCls}
+                              onClick={() => setRainbowBands([])}
+                              disabled={rainbowBands.length === 0}
+                            >None</button>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Rainbow bands">
+                          {bandList.map((band) => (
+                            <button
+                              key={band}
+                              type="button"
+                              onClick={() => toggleRainbowBand(band)}
+                              aria-pressed={rainbowBands.includes(band)}
+                              className={chipCls(rainbowBands.includes(band))}
+                            >
+                              {band.toUpperCase()}
+                            </button>
+                          ))}
+                        </div>
+                        <p className={`mt-2 text-xs ${rainbowValid ? 'text-text-tertiary' : 'text-red-500'}`}>
+                          {rainbowValid
+                            ? 'All chosen bands are combined blue → red using their calibrated Trilogy levels.'
+                            : 'Choose at least one rainbow band.'}
+                        </p>
+                      </div>
+                    )}
+
+                    {compositeMode === 'custom' && (
+                      <div className="mt-3 grid grid-cols-3 gap-2">
+                        {RGB_ROLES.map((role) => (
+                          <div key={role}>
+                            <label className={labelCls} htmlFor={`cutout-rgb-${role}`}>
+                              <span
+                                className="mr-1.5 inline-block h-2 w-2 rounded-full align-middle"
+                                style={{ background: ROLE_DOT[role] }}
+                              />
+                              {ROLE_LABEL[role]}
+                            </label>
+                            <select
+                              id={`cutout-rgb-${role}`}
+                              value={rgbChannels[role]}
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                setRgbChannels((previous) => ({ ...previous, [role]: value }));
+                              }}
+                              className={inputCls}
+                            >
+                              {bandList.map((band) => (
+                                <option key={band} value={band}>{band.toUpperCase()}</option>
+                              ))}
+                            </select>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-border bg-surface-2/50 p-3">
+                <label className="flex items-start gap-3 text-text-primary">
+                  <input
+                    type="checkbox"
+                    checked={bandPanelsOn}
+                    disabled={!canRgb}
+                    onChange={(event) => setBandPanelsOn(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-[var(--primary)]"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium">Individual band panels</span>
+                    <span className="mt-0.5 block text-xs text-text-tertiary">
+                      Add labeled monochrome panels and enable FITS export.
+                    </span>
+                  </span>
+                </label>
+                {bandPanelsOn && (
+                  <div className="mt-3 border-t border-border pt-3">
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <span className={`${labelCls} mb-0`}>Bands</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className={linkBtnCls}
+                          onClick={() => setSelectedBands(bandList)}
+                          disabled={selectedBands.length === bandList.length}
+                        >All</button>
+                        <button
+                          type="button"
+                          className={linkBtnCls}
+                          onClick={() => setSelectedBands([])}
+                          disabled={selectedBands.length === 0}
+                        >None</button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5" role="group" aria-label="Individual band panels">
+                      {bandList.map((band) => (
+                        <button
+                          key={band}
+                          type="button"
+                          onClick={() => toggleBand(band)}
+                          aria-pressed={selectedBands.includes(band)}
+                          className={chipCls(selectedBands.includes(band))}
+                        >
+                          {band.toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-xs text-text-tertiary">
+                      {selectedBands.length} of {bandList.length} selected
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-border bg-surface-2/50 p-3">
+                <label className={`flex items-start gap-3 ${shutterEligible ? 'text-text-primary' : 'text-text-tertiary'}`}>
+                  <input
+                    type="checkbox"
+                    checked={shutters}
+                    disabled={!shutterEligible}
+                    onChange={(event) => setShutters(event.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-[var(--primary)]"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium">NIRSpec shutter footprints</span>
+                    <span className="mt-0.5 block text-xs text-text-tertiary">
+                      {!canOverlayShutters
+                        ? 'Unavailable for share-link accounts.'
+                        : fovValid && fovNum > SHUTTER_OVERLAY_MAX_FOV_ARCSEC
+                          ? `Available up to ${SHUTTER_OVERLAY_MAX_FOV_ARCSEC}″ FOV.`
+                          : 'Overlay shutters in this area, colored by observation.'}
+                    </span>
+                  </span>
+                </label>
+              </div>
+            </section>
+
+            <section className="border-t border-border p-5">
               <button
                 type="button"
-                onClick={() => setShowDisplay((v) => !v)}
+                onClick={() => setShowDisplay((value) => !value)}
                 aria-expanded={showDisplay}
                 aria-controls="cutout-display-settings"
-                className="w-full flex items-center justify-between text-xs font-medium uppercase
-                           tracking-wide text-text-tertiary hover:text-text-primary transition-colors"
+                className="flex w-full items-center justify-between text-left focus:outline-none focus:ring-2 focus:ring-primary/50"
               >
-                <span>Display settings</span>
-                <span className="flex items-center gap-2 normal-case tracking-normal font-normal">
+                <span>
+                  <span className="block text-sm font-medium text-text-primary">Advanced appearance</span>
                   {!showDisplay && (
-                    <span className="text-text-tertiary">
-                      {stretch} · {scaling === 'snr' ? `${snrLo}σ to +${snrHi}σ` : 'percentile'} · {colormap}
-                      {rgbOn && ` · rgb ${rgbStretch}`}
-                      {' · '}{panelSize || '300'} px
+                    <span className="mt-0.5 block text-xs text-text-tertiary">
+                      {bandPanelsOn && `${scaling === 'snr' ? 'SNR' : 'Percentile'} · ${stretch} · ${colormap} · `}
+                      {rgbOn && `${compositeMode === 'rainbow' ? 'Trilogy' : `RGB ${rgbStretch}`} · `}
+                      {panelSize} px
                     </span>
                   )}
-                  {showDisplay
-                    ? <ChevronDown className="w-4 h-4" />
-                    : <ChevronRight className="w-4 h-4" />}
                 </span>
+                {showDisplay ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
               </button>
 
               {showDisplay && (
-                <div id="cutout-display-settings" className="mt-3 space-y-4">
-                  <div>
-                    <p className="text-xs text-text-secondary mb-2">Single-band panels</p>
-                    <div className="grid grid-cols-2 gap-3 mb-3">
-                      <div>
-                        <label className={labelCls} htmlFor="cutout-scaling">Scaling</label>
-                        <select
-                          id="cutout-scaling"
-                          value={scaling}
-                          onChange={(e) => setScaling(e.target.value as Scaling)}
-                          className={inputCls}
-                        >
-                          <option value="snr">SNR (σ of the cutout)</option>
-                          <option value="percentile">percentile (0.5–99.5%)</option>
-                        </select>
+                <div id="cutout-display-settings" className="mt-4 space-y-5">
+                  {bandPanelsOn && (
+                    <div>
+                      <p className="mb-2 text-xs font-medium text-text-secondary">Individual band panels</p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className={labelCls} htmlFor="cutout-scaling">Scaling</label>
+                          <select
+                            id="cutout-scaling"
+                            value={scaling}
+                            onChange={(event) => setScaling(event.target.value as Scaling)}
+                            className={inputCls}
+                          >
+                            <option value="snr">SNR (cutout σ)</option>
+                            <option value="percentile">Percentile</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className={labelCls} htmlFor="cutout-stretch">Stretch</label>
+                          <select
+                            id="cutout-stretch"
+                            value={stretch}
+                            onChange={(event) => setStretch(event.target.value as Stretch)}
+                            className={inputCls}
+                          >
+                            {STRETCHES.map((value) => <option key={value} value={value}>{value}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className={labelCls} htmlFor="cutout-colormap">Colormap</label>
+                          <select
+                            id="cutout-colormap"
+                            value={colormap}
+                            onChange={(event) => setColormap(event.target.value as Colormap)}
+                            className={inputCls}
+                          >
+                            {COLORMAPS.map((value) => <option key={value} value={value}>{value}</option>)}
+                          </select>
+                        </div>
                       </div>
                       {scaling === 'snr' && (
-                        <div>
-                          <span className={labelCls}>Range (σ)</span>
-                          <div className="flex items-center gap-1.5">
+                        <div className="mt-3">
+                          <span className={labelCls}>SNR range (σ)</span>
+                          <div className="flex items-center gap-2">
                             <input
-                              aria-label="Black point (σ)"
+                              aria-label="Black point in sigma"
                               type="number"
                               step="any"
                               value={snrLo}
-                              onChange={(e) => setSnrLo(e.target.value)}
+                              onChange={(event) => setSnrLo(event.target.value)}
+                              aria-invalid={!snrValid}
                               className={inputCls}
                             />
                             <span className="text-xs text-text-tertiary">to</span>
                             <input
-                              aria-label="White point (σ)"
+                              aria-label="White point in sigma"
                               type="number"
                               step="any"
                               value={snrHi}
-                              onChange={(e) => setSnrHi(e.target.value)}
+                              onChange={(event) => setSnrHi(event.target.value)}
+                              aria-invalid={!snrValid}
                               className={inputCls}
                             />
                           </div>
-                          {!snrValid && (
-                            <p className="mt-1 text-xs text-red-500">Range needs finite σ with high above low.</p>
-                          )}
+                          {!snrValid && <p className="mt-1 text-xs text-red-500">High must be above low.</p>}
                         </div>
                       )}
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className={labelCls} htmlFor="cutout-stretch">Stretch</label>
-                        <select
-                          id="cutout-stretch"
-                          value={stretch}
-                          onChange={(e) => setStretch(e.target.value as Stretch)}
-                          className={inputCls}
-                        >
-                          {STRETCHES.map((s) => <option key={s} value={s}>{s}</option>)}
-                        </select>
-                      </div>
-                      <div>
-                        <label className={labelCls} htmlFor="cutout-colormap">Colormap</label>
-                        <select
-                          id="cutout-colormap"
-                          value={colormap}
-                          onChange={(e) => setColormap(e.target.value as Colormap)}
-                          className={inputCls}
-                        >
-                          {COLORMAPS.map((c) => <option key={c} value={c}>{c}</option>)}
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-
-                  {canRgb && (
-                    <div className={rgbOn ? '' : 'opacity-50'}>
-                      <p className="text-xs text-text-secondary mb-2">RGB composite</p>
-                      <div className="mb-3">
-                        <label className={labelCls} htmlFor="cutout-composite">Bands</label>
-                        <select
-                          id="cutout-composite"
-                          disabled={!rgbOn}
-                          value={compositeMode}
-                          onChange={(e) => setCompositeMode(e.target.value as CompositeMode)}
-                          className={inputCls}
-                        >
-                          {COMPOSITE_MODES.map((m) => (
-                            <option key={m} value={m}>{COMPOSITE_LABEL[m]}</option>
-                          ))}
-                        </select>
-                      </div>
-                      {compositeMode === 'rainbow' && (
-                        <div className="mb-3">
-                          <div className="flex items-center justify-between mb-1.5">
-                            <span className={`${labelCls} mb-0`}>Rainbow members</span>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                className={linkBtnCls}
-                                onClick={() => setRainbowBands(bandList)}
-                                disabled={!rgbOn || rainbowBands.length === bandList.length}
-                              >
-                                All
-                              </button>
-                              <span className="text-xs text-text-tertiary">·</span>
-                              <button
-                                type="button"
-                                className={linkBtnCls}
-                                onClick={() => setRainbowBands([])}
-                                disabled={!rgbOn || rainbowBands.length === 0}
-                              >
-                                None
-                              </button>
-                            </div>
-                          </div>
-                          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Rainbow members">
-                            {bandList.map((b) => {
-                              const on = rainbowBands.includes(b);
-                              return (
-                                <button
-                                  key={b}
-                                  type="button"
-                                  disabled={!rgbOn}
-                                  onClick={() => toggleRainbowBand(b)}
-                                  aria-pressed={on}
-                                  className={chipCls(on)}
-                                >
-                                  {b.toUpperCase()}
-                                </button>
-                              );
-                            })}
-                          </div>
-                          <p className="mt-1.5 text-xs text-text-tertiary">
-                            {rainbowValid
-                              ? 'Hues run blue → red in wavelength order; each band on its own trilogy levels.'
-                              : 'Pick at least one band for the rainbow.'}
-                          </p>
-                        </div>
-                      )}
-                      {compositeMode === 'custom' && (
-                        <div className="grid grid-cols-3 gap-2 mb-3">
-                          {RGB_ROLES.map((role) => (
-                            <div key={role}>
-                              <label className={labelCls} htmlFor={`cutout-rgb-${role}`}>
-                                <span
-                                  className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle"
-                                  style={{ background: ROLE_DOT[role] }}
-                                />
-                                {ROLE_LABEL[role]}
-                              </label>
-                              <select
-                                id={`cutout-rgb-${role}`}
-                                disabled={!rgbOn}
-                                value={rgbChannels[role]}
-                                onChange={(e) => {
-                                  const v = e.target.value;
-                                  setRgbChannels((prev) => ({ ...prev, [role]: v }));
-                                }}
-                                className={inputCls}
-                              >
-                                {bandList.map((b) => <option key={b} value={b}>{b.toUpperCase()}</option>)}
-                              </select>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className={labelCls} htmlFor="cutout-rgb-stretch">Stretch</label>
-                          <select
-                            id="cutout-rgb-stretch"
-                            disabled={!rgbOn}
-                            value={rgbStretch}
-                            onChange={(e) => setRgbStretch(e.target.value as RgbStretch)}
-                            className={inputCls}
-                          >
-                            {RGB_STRETCHES.map((s) => <option key={s} value={s}>{s}</option>)}
-                          </select>
-                        </div>
-                        {(rgbStretch === 'auto' || rgbStretch === 'trilogy') && (
-                          <>
-                            <div>
-                              <label className={labelCls} htmlFor="cutout-noiselum">Noise lum.</label>
-                              <input
-                                id="cutout-noiselum"
-                                type="number"
-                                min={0.01}
-                                max={0.99}
-                                step={0.01}
-                                placeholder="default"
-                                disabled={!rgbOn}
-                                value={noiselum}
-                                onChange={(e) => setNoiselum(e.target.value)}
-                                className={inputCls}
-                              />
-                            </div>
-                            <div>
-                              <label className={labelCls} htmlFor="cutout-satpercent">Saturate %</label>
-                              <input
-                                id="cutout-satpercent"
-                                type="number"
-                                min={0.001}
-                                max={1}
-                                step="any"
-                                placeholder="default"
-                                disabled={!rgbOn}
-                                value={satpercent}
-                                onChange={(e) => setSatpercent(e.target.value)}
-                                className={inputCls}
-                              />
-                            </div>
-                          </>
-                        )}
-                      </div>
-                      <p className="mt-1.5 text-xs text-text-tertiary">
-                        Trilogy stretches each band on its own precomputed levels, as the map does
-                        (the map default is the producer&apos;s full weighted band mix); the other
-                        curves are a plain three-channel composite over one shared range.
-                      </p>
                     </div>
                   )}
 
-                  <div>
-                    <p className="text-xs text-text-secondary mb-2">Layout</p>
+                  {rgbOn && (
+                    <div className={bandPanelsOn ? 'border-t border-border pt-4' : ''}>
+                      <p className="mb-2 text-xs font-medium text-text-secondary">RGB composite</p>
+                      {compositeMode !== 'rainbow' && (
+                        <div>
+                          <label className={labelCls} htmlFor="cutout-rgb-stretch">Rendering</label>
+                          <select
+                            id="cutout-rgb-stretch"
+                            value={rgbStretch}
+                            onChange={(event) => setRgbStretch(event.target.value as RgbStretch)}
+                            className={inputCls}
+                          >
+                            <option value="auto">Dataset default</option>
+                            <option value="trilogy">Trilogy</option>
+                            <option value="asinh">Asinh</option>
+                            <option value="log">Log</option>
+                            <option value="sqrt">Square root</option>
+                            <option value="linear">Linear</option>
+                          </select>
+                        </div>
+                      )}
+                      {compositeMode === 'rainbow' && (
+                        <p className="text-xs text-text-tertiary">
+                          Rainbow always uses calibrated Trilogy levels for every chosen band.
+                        </p>
+                      )}
+                      {trilogyControlsActive && (
+                        <div className="mt-3 grid grid-cols-2 gap-3">
+                          <div>
+                            <label className={labelCls} htmlFor="cutout-noiselum">Noise luminance</label>
+                            <input
+                              id="cutout-noiselum"
+                              type="number"
+                              min={0.000001}
+                              max={0.999999}
+                              step="any"
+                              placeholder="dataset default"
+                              value={noiselum}
+                              onChange={(event) => setNoiselum(event.target.value)}
+                              aria-invalid={!noiselumValid}
+                              className={inputCls}
+                            />
+                            {!noiselumValid && <p className="mt-1 text-xs text-red-500">Use a value between 0 and 1.</p>}
+                          </div>
+                          <div>
+                            <label className={labelCls} htmlFor="cutout-satpercent">Saturate %</label>
+                            <input
+                              id="cutout-satpercent"
+                              type="number"
+                              min={0.001}
+                              max={1}
+                              step="any"
+                              placeholder="dataset default"
+                              value={satpercent}
+                              onChange={(event) => setSatpercent(event.target.value)}
+                              aria-invalid={!satpercentValid}
+                              className={inputCls}
+                            />
+                            {!satpercentValid && <p className="mt-1 text-xs text-red-500">Use 0.001–1.</p>}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className={(bandPanelsOn || rgbOn) ? 'border-t border-border pt-4' : ''}>
+                    <p className="mb-2 text-xs font-medium text-text-secondary">Layout</p>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className={labelCls} htmlFor="cutout-size">Panel size (px)</label>
@@ -790,10 +981,13 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
                           type="number"
                           min={64}
                           max={1024}
+                          step={1}
                           value={panelSize}
-                          onChange={(e) => setPanelSize(e.target.value)}
+                          onChange={(event) => setPanelSize(event.target.value)}
+                          aria-invalid={!panelSizeValid}
                           className={inputCls}
                         />
+                        {!panelSizeValid && <p className="mt-1 text-xs text-red-500">Use 64–1024.</p>}
                       </div>
                       <div>
                         <label className={labelCls} htmlFor="cutout-cols">Columns</label>
@@ -801,134 +995,199 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
                           id="cutout-cols"
                           type="number"
                           min={1}
+                          step={1}
                           placeholder="one row"
                           value={cols}
-                          onChange={(e) => setCols(e.target.value)}
+                          onChange={(event) => setCols(event.target.value)}
+                          aria-invalid={!colsValid}
                           className={inputCls}
                         />
+                        {!colsValid && <p className="mt-1 text-xs text-red-500">Use a positive whole number.</p>}
                       </div>
                     </div>
                   </div>
                 </div>
               )}
-            </div>
+            </section>
 
-            <div className="pt-1 space-y-2">
+            <div className="space-y-2 border-t border-border p-5">
+              {formIssue && (showValidationSummary || coordText.trim() !== '') && (
+                <p className="text-xs text-red-500" role="alert">{formIssue}</p>
+              )}
               <button
-                type="button"
-                onClick={() => void generatePreview()}
-                disabled={!ready || previewLoading}
-                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-primary
-                           text-on-primary rounded-lg text-sm font-medium hover:bg-primary-hover
-                           disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                type="submit"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-on-primary transition-colors hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-primary/50"
               >
+                {previewLoading ? (
+                  loadingQuery === figureQuery ? <X className="h-4 w-4" /> : <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ImageIcon className="h-4 w-4" />
+                )}
                 {previewLoading
-                  ? <Loader2 className="w-4 h-4 animate-spin" />
-                  : <ImageIcon className="w-4 h-4" />}
-                {previewStale ? 'Regenerate figure' : 'Generate figure'}
+                  ? loadingQuery === figureQuery
+                    ? 'Cancel generation'
+                    : ready
+                      ? 'Generate updated preview'
+                      : 'Cancel generation'
+                  : artifact && artifact.query !== figureQuery
+                    ? 'Generate updated preview'
+                    : ready
+                      ? 'Generate preview'
+                      : coordText.trim() === ''
+                        ? 'Enter a position to generate'
+                        : 'Fix settings to generate'}
               </button>
-
-              <div className="grid grid-cols-2 gap-2">
-                <a
-                  href={fitsEnabled ? `/api/v1/cutout/fits?${fitsParams.toString()}` : undefined}
-                  aria-disabled={!fitsEnabled}
-                  title={
-                    selectedBands.length === 0
-                      ? 'Select bands to download FITS (the composite is display-only)'
-                      : undefined
-                  }
-                  className={secondaryBtnCls(fitsEnabled)}
-                >
-                  <Download className="w-4 h-4" />
-                  FITS
-                </a>
-                <a
-                  href={previewUrl ?? undefined}
-                  download={previewUrl ? pngName : undefined}
-                  aria-disabled={!previewUrl}
-                  className={secondaryBtnCls(previewUrl !== null)}
-                >
-                  <Download className="w-4 h-4" />
-                  PNG
-                </a>
-              </div>
-
-              {nativePx !== null && selectedBands.length > 0 && (
-                <p className={`text-xs ${overBudget ? 'text-red-500' : 'text-text-tertiary'}`}>
-                  FITS at native scale: ~{nativePx}×{nativePx} px × {nBands} band
-                  {nBands > 1 ? 's' : ''}
-                  {estMb !== null && ` ≈ ${estMb < 1 ? estMb.toFixed(2) : estMb.toFixed(1)} MB`}
-                  {overBandBudget && ' — over the 4096² per-band budget; reduce the FOV'}
-                  {!overBandBudget && overTotalBudget &&
-                    ' — over the total pixel budget; reduce the FOV or deselect bands'}
-                </p>
-              )}
-              {selectedBands.length === 0 && (
-                <p className="text-xs text-text-tertiary">
-                  FITS downloads cover the selected bands; the RGB composite is display-only.
-                </p>
-              )}
-              <p className="text-xs text-text-tertiary">
-                FITS cutouts are cropped from the RICE-compressed display imagery
-                (photometry faithful to ~0.03%) and carry each band&apos;s native WCS.
+              <p className="text-center text-xs text-text-tertiary">
+                Press Enter from a field to generate.
               </p>
             </div>
-          </div>
+          </form>
 
-          {/* ---- Preview ---- */}
-          <div className="bg-card border border-border rounded-xl p-5 min-h-[420px] flex flex-col">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-medium text-text-primary">
-                Preview
-                {previewStale && !previewLoading && (
-                  <span className="ml-2 text-xs font-normal text-text-tertiary">
-                    settings changed — regenerate to update
-                  </span>
-                )}
-              </h2>
-              {parsed && (
-                <Link
-                  href={`/map?field=${encodeURIComponent(field)}&ra=${parsed.ra}&dec=${parsed.dec}`}
-                  className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
-                >
-                  <MapIcon className="w-3.5 h-3.5" />
-                  View on map
-                </Link>
-              )}
-            </div>
-            <div className="flex-1 flex items-center justify-center">
-              {previewError ? (
-                <p className="text-sm text-red-500 max-w-md text-center">{previewError}</p>
-              ) : previewUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={previewUrl}
-                  alt="Cutout figure preview"
-                  className={`max-w-full h-auto rounded transition-opacity ${
-                    previewLoading ? 'opacity-50' : ''
+          <section className="min-h-[520px] overflow-hidden rounded-xl border border-border bg-card lg:sticky lg:top-4" aria-labelledby="cutout-preview-heading">
+            <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 id="cutout-preview-heading" className="text-base font-semibold text-text-primary">Preview</h2>
+                <p
+                  className={`mt-0.5 flex items-center gap-1.5 text-xs ${
+                    !previewLoading && !currentFailure && artifact && !previewStale
+                      ? 'text-emerald-500'
+                      : currentFailure
+                        ? 'text-red-500'
+                        : 'text-text-tertiary'
                   }`}
-                />
-              ) : (
-                <div className="text-center text-text-tertiary">
-                  {previewLoading ? (
-                    <Loader2 className="w-8 h-8 animate-spin mx-auto" />
-                  ) : (
-                    <>
-                      <ImageIcon className="w-10 h-10 mx-auto mb-3 opacity-50" />
-                      <p className="text-sm">
-                        Enter coordinates and generate a figure to preview the cutout.
-                      </p>
-                    </>
+                  role="status"
+                  aria-live="polite"
+                >
+                  {!previewLoading && !currentFailure && artifact && !previewStale && <CheckCircle2 className="h-3.5 w-3.5" />}
+                  {previewLoading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  {previewStatus}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {parsed && (
+                  <Link
+                    href={`/map?field=${encodeURIComponent(field)}&ra=${parsed.ra}&dec=${parsed.dec}`}
+                    className={secondaryBtnCls(true)}
+                  >
+                    <MapIcon className="h-4 w-4" />
+                    View on map
+                  </Link>
+                )}
+                <a
+                  href={pngEnabled ? artifact.url : undefined}
+                  download={pngEnabled ? artifact.filename : undefined}
+                  aria-disabled={!pngEnabled}
+                  title={previewStale ? 'Regenerate to download the current settings' : undefined}
+                  className={secondaryBtnCls(pngEnabled)}
+                >
+                  <Download className="h-4 w-4" />
+                  Download PNG
+                </a>
+              </div>
+            </div>
+
+            {currentFailure && (
+              <div className="mx-4 mt-4 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-500" role="alert">
+                {currentFailure}
+              </div>
+            )}
+
+            <div className="p-4 sm:p-6">
+              <div className="relative flex min-h-[360px] items-center justify-center overflow-hidden rounded-lg border border-border bg-black/90">
+                {artifact ? (
+                  <>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={artifact.url}
+                      alt="Generated NIRCam cutout figure"
+                      className="h-auto w-full object-contain"
+                    />
+                    {(previewStale || previewLoading) && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/55 p-6 text-center text-white backdrop-blur-[1px]">
+                        <div>
+                          {previewLoading && <Loader2 className="mx-auto mb-3 h-7 w-7 animate-spin" />}
+                          <p className="text-sm font-medium">
+                            {previewLoading ? 'Generating updated preview…' : 'Preview out of date'}
+                          </p>
+                          {!previewLoading && (
+                            <p className="mt-1 text-xs text-white/70">Generate again to apply your changes.</p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : previewLoading ? (
+                  <div className="text-center text-white/70">
+                    <Loader2 className="mx-auto mb-3 h-8 w-8 animate-spin" />
+                    <p className="text-sm">Rendering your cutout…</p>
+                  </div>
+                ) : (
+                  <div className="max-w-sm px-6 text-center text-white/55">
+                    <ImageIcon className="mx-auto mb-3 h-10 w-10 opacity-60" />
+                    <p className="text-sm font-medium text-white/75">Your figure will appear here</p>
+                    <p className="mt-1 text-xs">Choose a position and contents, then generate the preview.</p>
+                  </div>
+                )}
+              </div>
+
+              {artifact && (
+                <div className="mt-4 flex flex-wrap gap-2" aria-label="Rendered figure contents">
+                  {artifact.rgbLabel && (
+                    <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs text-primary">{artifact.rgbLabel}</span>
+                  )}
+                  {artifact.bandCount > 0 && (
+                    <span className="rounded-full bg-surface-2 px-2.5 py-1 text-xs text-text-secondary">
+                      {artifact.bandCount} band panel{artifact.bandCount === 1 ? '' : 's'}
+                    </span>
+                  )}
+                  {artifact.shutterCount > 0 && (
+                    <span className="rounded-full bg-surface-2 px-2.5 py-1 text-xs text-text-secondary">
+                      {artifact.shutterCount} shutter footprint{artifact.shutterCount === 1 ? '' : 's'}
+                    </span>
                   )}
                 </div>
               )}
+
+              {artifact?.shutterRequested && (
+                <p className="mt-3 text-xs text-text-tertiary">
+                  {artifact.shutterCount > 0
+                    ? 'Shutters are colored by observation; stuck-closed shutters are red dashed.'
+                    : 'No NIRSpec shutter footprints were found in this cutout.'}
+                </p>
+              )}
             </div>
-            {previewUrl && shutters && !previewError && (
+
+            <div className="border-t border-border bg-surface-2/30 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-medium text-text-primary">Science bands</p>
+                  {activeBands.length > 0 ? (
+                    <p className={`mt-0.5 text-xs ${overBudget ? 'text-red-500' : 'text-text-tertiary'}`}>
+                      Native FITS · {nativePx ?? '—'}×{nativePx ?? '—'} px · {nBands} band{nBands === 1 ? '' : 's'}
+                      {estMb !== null && ` · ~${estMb < 1 ? estMb.toFixed(2) : estMb.toFixed(1)} MB`}
+                      {overBandBudget && ' · Reduce FOV to fit the per-band limit'}
+                      {!overBandBudget && overTotalBudget && ' · Reduce FOV or band count'}
+                    </p>
+                  ) : (
+                    <p className="mt-0.5 text-xs text-text-tertiary">
+                      Turn on individual band panels to select FITS bands.
+                    </p>
+                  )}
+                </div>
+                <a
+                  href={fitsEnabled ? `/api/v1/cutout/fits?${fitsParams.toString()}` : undefined}
+                  aria-disabled={!fitsEnabled}
+                  className={secondaryBtnCls(fitsEnabled)}
+                >
+                  <Download className="h-4 w-4" />
+                  Download {nBands || ''} FITS band{nBands === 1 ? '' : 's'}
+                </a>
+              </div>
               <p className="mt-3 text-xs text-text-tertiary">
-                Shutter footprints are coloured per observation; stuck-closed shutters are red dashed.
+                FITS cutouts retain each band&apos;s native WCS and are photometrically faithful to ~0.03%.
               </p>
-            )}
-          </div>
+            </div>
+          </section>
         </div>
       )}
     </div>

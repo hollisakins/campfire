@@ -47,7 +47,8 @@ const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
  * - `rgb_stretch` the composite's transfer: `trilogy` (each band on its own
  *   precomputed levels — the map's faithful composite) or a plain curve over
  *   one shared range of the triple (the map's simple RGB); `auto` picks
- *   trilogy when the dataset carries the stats
+ *   trilogy when the dataset carries the stats. Rainbow composites require
+ *   trilogy because they use the full weighted N-band mix rather than a triple
  * - `noiselum` / `satpercent` trilogy knobs over the producer's tuning
  * - `shutters=1` overlays the NIRSpec MSA shutter footprints in view (fields
  *   of view up to 120″; wider requests render without the overlay — a
@@ -103,6 +104,7 @@ export async function GET(request: NextRequest) {
 
   // RGB composite panel.
   let rgb: CompositeRequest | undefined;
+  let rgbIsRainbow = false;
   const rgbParam = params.get('rgb');
   if (rgbParam !== null) {
     const v = rgbParam.trim().toLowerCase();
@@ -111,10 +113,12 @@ export async function GET(request: NextRequest) {
       rgb = 'auto';
     } else if (v === 'rainbow') {
       rgb = { rainbow: null };
+      rgbIsRainbow = true;
     } else if (v.startsWith('rainbow:')) {
       const names = list(v.slice('rainbow:'.length));
       if (names.length === 0) return bad('Invalid parameter: rainbow:<bands> needs at least one band');
       rgb = { rainbow: names };
+      rgbIsRainbow = true;
     } else {
       const names = list(v);
       if (names.length !== 3) {
@@ -206,6 +210,9 @@ export async function GET(request: NextRequest) {
     if (src.rgb && rgb !== undefined) {
       const hasStats = rgbHasTrilogyStats(src.rgb);
       rgbStretch = rgbStretchParam === 'auto' ? (hasStats ? 'trilogy' : 'asinh') : rgbStretchParam;
+      if (rgbIsRainbow && rgbStretch !== 'trilogy') {
+        return bad('A rainbow composite requires rgb_stretch=trilogy');
+      }
       if (rgbStretch === 'trilogy' && !hasStats) {
         return bad('rgb_stretch=trilogy needs precomputed trilogy stats on every RGB band; this dataset has none');
       }
@@ -237,6 +244,7 @@ export async function GET(request: NextRequest) {
       headers: {
         'Content-Type': 'image/png',
         'Cache-Control': isAdmin ? 'private, no-store' : 'private, max-age=3600',
+        'X-Campfire-Shutter-Count': String(shutters.length),
         Vary: 'Cookie',
       },
     });
