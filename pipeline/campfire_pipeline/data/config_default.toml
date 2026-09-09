@@ -103,8 +103,10 @@
     # Emission-line fluxes at the INSPECTED redshift (cfpipe nirspec linefit).
     # Redshifts come from reference/nirspec/<obs>/redshifts.toml, written by
     # `campfire pull --obs <obs>` from the portal's inspection state; spectra
-    # whose object is below min_quality (0 uninspected, 1 impossible,
-    # 2 tentative, 3 probable, 4 secure) are skipped, never fit at a guess.
+    # whose object is below min_quality (2 tentative, 3 probable, 4 secure) are
+    # skipped, never fit at a guess. Values below 2 are clamped to 2: a
+    # quality-0 object's portal redshift is the pipeline's own auto fit, which
+    # only `linefit --allow-auto` may use (stamped ZSRC=auto).
     min_quality = 3
     plot = true
     # The LSF is the grating R-curve scaled by [nirspec.redshift_fitting].f_LSF_<grating>.

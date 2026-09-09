@@ -1297,6 +1297,10 @@ BEGIN
     LEFT JOIN targets t ON t.target_id = f.target_id
     LEFT JOIN objects o ON o.id = t.object_id
     WHERE f.program_slug = ANY(p_program_slugs)
+      -- Hide fits whose parent object was soft-deleted (same guard as
+      -- get_spectra_for_sync), so the line catalog never carries a row the
+      -- spectra / objects streams hide.
+      AND (o.id IS NULL OR o.is_active = true)
       AND (p_include_unpublished OR s.deploy_status = 'published')
       -- Incremental: stale_redshift / stale_spectrum are derived from the
       -- parent rows, so a re-inspected object or a redeployed spectrum must
@@ -1317,6 +1321,7 @@ BEGIN
     LEFT JOIN objects o ON o.id = t.object_id
     WHERE p_include_counts
       AND f.program_slug = ANY(p_program_slugs)
+      AND (o.id IS NULL OR o.is_active = true)
       AND (p_include_unpublished OR s.deploy_status = 'published')
       AND (p_updated_since IS NULL
            OR f.updated_at > p_updated_since

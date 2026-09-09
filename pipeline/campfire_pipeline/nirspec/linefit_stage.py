@@ -53,6 +53,10 @@ log = logging.getLogger('nirspec_linefit')
 
 LINES_SUFFIX = '_lines.fits'
 
+#: Lowest inspection quality that counts as an inspected redshift (2 =
+#: tentative). ``min_quality`` below this is clamped up, never down.
+MIN_INSPECTED_QUALITY = 2
+
 # Column order of the LINES table (and of every per-line JSON record).
 LINE_COLUMNS = [
     'name', 'component', 'wave_rest', 'wave_obs',
@@ -75,7 +79,11 @@ def resolve_redshift(target_id, redshifts, min_quality, allow_auto, zfit_path=No
     or ``(None, reason, entry)`` when the spectrum must be skipped.
     """
     entry = redshifts.get(target_id)
-    if entry is not None and entry.redshift is not None and entry.quality >= min_quality:
+    # Floor at quality 2: objects.redshift is COALESCE(inspected, auto), so a
+    # quality-0 entry's "redshift" is the pipeline's own auto fit and must never
+    # be labelled 'inspected' (only the explicit allow_auto path may use it).
+    if (entry is not None and entry.redshift is not None
+            and entry.quality >= max(int(min_quality), MIN_INSPECTED_QUALITY)):
         return float(entry.redshift), 'inspected', entry
     if allow_auto:
         z_auto = _read_zfit_zbest(zfit_path) if zfit_path else None

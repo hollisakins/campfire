@@ -285,6 +285,12 @@ def test_resolve_redshift_gating(tmp_path):
     assert resolve_redshift('t_tentative', reds, 2, False)[:2] == (4.0, 'inspected')
     assert resolve_redshift('t_impossible', reds, 2, False)[0] is None
     assert resolve_redshift('t_unknown', reds, 3, False)[0] is None
+    # min_quality below 2 is clamped: a quality-0 "redshift" is the auto fit
+    # (objects.redshift = COALESCE(inspected, auto)) and is never 'inspected'
+    reds['t_uninspected'] = RedshiftEntry('t_uninspected', 3.0, 0)
+    assert resolve_redshift('t_uninspected', reds, 0, False)[0] is None
+    assert resolve_redshift('t_uninspected', reds, 0, False)[1] == 'quality 0 below min_quality 0'
+    assert resolve_redshift('t_tentative', reds, 0, False)[:2] == (4.0, 'inspected')
     # auto fallback reads the zfit header
     zfit = tmp_path / 'x_zfit.fits'
     fits.PrimaryHDU(header=fits.Header({'ZBEST': 3.25})).writeto(zfit)

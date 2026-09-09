@@ -295,7 +295,9 @@ SELECT f.spectrum_id,
 FROM public.spectrum_line_fits f
 JOIN public.spectra s ON s.id = f.spectrum_id
 LEFT JOIN public.targets t ON t.target_id = f.target_id
-LEFT JOIN public.objects o ON o.id = t.object_id;
+LEFT JOIN public.objects o ON o.id = t.object_id
+-- soft-deleted objects are hidden everywhere else; keep the ledger consistent
+WHERE (o.id IS NULL OR o.is_active = true);
 
 GRANT ALL ON TABLE public.spectrum_line_fits_status TO anon;
 GRANT ALL ON TABLE public.spectrum_line_fits_status TO authenticated;
