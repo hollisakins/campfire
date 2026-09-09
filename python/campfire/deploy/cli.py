@@ -1162,7 +1162,7 @@ def nirspec():
     pass
 
 
-@nirspec.command('pull-redshifts')
+@nirspec.command('pull-redshifts', hidden=True)
 @click.option('--config', 'config_path', default=None,
               help='Path to deploy config TOML.')
 @click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
