@@ -188,3 +188,23 @@ def test_fetch_all_line_fits_tolerates_missing_endpoint(monkeypatch):
     monkeypatch.setattr(client, "_paginate_sync_endpoint", _raise)
     with pytest.warns(UserWarning, match="sync/lines"):
         assert client.fetch_all_line_fits() == ([], 0)
+
+
+def test_non_release_line_fit_versions(tmp_path):
+    """Line-fit products carrying a .dev / dirty CMPFRVER trip the deploy gate."""
+    from astropy.io import fits
+
+    from campfire.deploy.lines import (
+        confirm_non_release_line_fits, line_fit_versions, non_release_line_fit_versions,
+    )
+
+    for name, ver in (("a_lines.fits", "1.2.3"), ("b_lines.fits", "1.2.4.dev3+gabc1234"),
+                      ("c_lines.fits", "1.2.3")):
+        fits.PrimaryHDU(header=fits.Header({"CMPFRVER": ver})).writeto(tmp_path / name)
+    paths = sorted(tmp_path.glob("*_lines.fits"))
+    assert line_fit_versions(paths) == ["1.2.3", "1.2.4.dev3+gabc1234"]
+    assert non_release_line_fit_versions(paths) == ["1.2.4.dev3+gabc1234"]
+    # release-only products pass silently; dev products need approval
+    assert confirm_non_release_line_fits(paths[:1], dry_run=False, auto_approve=False) is True
+    assert confirm_non_release_line_fits(paths, dry_run=False, auto_approve=True) is True
+    assert confirm_non_release_line_fits(paths, dry_run=True, auto_approve=False) is True

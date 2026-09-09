@@ -399,3 +399,36 @@ def test_stage_writes_reads_and_skips(workspace):
     assert counts['fit'] == 1
     counts = run_linefit(obs, cfg, gratings=['prism'], overwrite=True, allow_auto=True)
     assert counts['fit'] == 0
+
+
+def test_observation_carries_line_fitting_overrides(tmp_path):
+    """[<obs>.line_fitting] in observations.toml reaches obs.stage_overrides
+    (the whitelist in Observation.load must include it)."""
+    from campfire_pipeline.nirspec.observation import Observation
+    toml_path = tmp_path / 'observations.toml'
+    toml_path.write_text(
+        '[obs1]\n'
+        'field = "uds"\n'
+        'program = "ember-uds"\n'
+        'data_subdir = "6585"\n'
+        'program_id = 6585\n'
+        'files = ["jw06585001001_03101"]\n'
+        '[obs1.line_fitting]\n'
+        'min_quality = 2\n'
+        'fit_broad = false\n'
+    )
+    obs = Observation.load('obs1', observations_file=str(toml_path))
+    assert obs.stage_overrides['line_fitting'] == {'min_quality': 2, 'fit_broad': False}
+
+
+def test_stage_honours_per_observation_overrides(workspace):
+    """A [<obs>.line_fitting] min_quality override changes what gets fit."""
+    from campfire_pipeline.nirspec.linefit_stage import run_linefit
+    obs, ref, z = workspace
+    write_redshifts([RedshiftEntry('obs1_10', z, 4), RedshiftEntry('obs1_20', z, 2)],
+                    str(ref / 'redshifts.toml'), 'obs1')
+    cfg = {'nirspec': {'line_fitting': {'min_quality': 3, 'plot': False},
+                       'redshift_fitting': {'f_LSF': 1.3}}, 'pipeline': {'version': '9.9.9'}}
+    obs.stage_overrides = {'line_fitting': {'min_quality': 2}}
+    counts = run_linefit(obs, cfg)
+    assert counts['fit'] == 2 and counts['skipped_no_z'] == 0

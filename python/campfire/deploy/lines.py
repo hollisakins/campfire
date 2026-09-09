@@ -52,6 +52,49 @@ def get_lines_paths(summary, obs_dir: Path) -> list[Path]:
     return paths
 
 
+def line_fit_versions(lines_paths) -> list[str]:
+    """Distinct ``CMPFRVER`` strings stamped on the given ``_lines.fits`` products."""
+    from astropy.io import fits
+    versions: set[str] = set()
+    for path in lines_paths:
+        try:
+            v = fits.getheader(path, 0).get('CMPFRVER')
+        except Exception:
+            v = None
+        if v:
+            versions.add(str(v))
+    return sorted(versions)
+
+
+def non_release_line_fit_versions(lines_paths) -> list[str]:
+    """The non-release (``.dev``, dirty, override) pipeline versions among the
+    products — the same test ``campfire deploy --obs`` applies to spectra, so a
+    line fit made with an untagged pipeline is never published silently."""
+    from campfire.deploy.deploy import _is_release_version
+    return [v for v in line_fit_versions(lines_paths) if not _is_release_version(v)]
+
+
+def confirm_non_release_line_fits(lines_paths, *, dry_run: bool, auto_approve: bool) -> bool:
+    """Warn-and-confirm gate for line-fit products carrying a non-release
+    ``CMPFRVER``. Returns False when the operator declines."""
+    versions = non_release_line_fit_versions(lines_paths)
+    if not versions:
+        return True
+    print()
+    print("WARNING: non-release pipeline version detected in line-fit products")
+    print("  cfpipe_version strings present:")
+    for v in versions:
+        print(f"    - {v}")
+    print("  These will be preserved verbatim in spectrum_line_fits.cfpipe_version.")
+    print("  Prefer fitting with a tagged release (see /pipeline-release).")
+    if not dry_run and not auto_approve:
+        resp = input("  Continue? [y/N]: ")
+        if resp.lower() != 'y':
+            print("Aborted.")
+            return False
+    return True
+
+
 def _hdr_get(hdr, key, cast=None):
     v = hdr.get(key)
     if v is None:
@@ -151,9 +194,12 @@ def lines_upload_tasks(obs_name: str, lines_paths) -> list[UploadTask]:
 
 def deploy_lines(obs_name: str, config: dict, *, dry_run: bool = False,
                  source_ids: list[int] | None = None, allow_auto_z: bool = False,
-                 upload: bool = True) -> None:
+                 upload: bool = True, auto_approve: bool = False) -> None:
     """Standalone ``campfire deploy lines --obs``: publish the line fits of an
-    already-deployed observation (upload the products, upsert the rows)."""
+    already-deployed observation (upload the products, upsert the rows).
+
+    Products fit with a non-release pipeline version trigger the same
+    warn-and-confirm prompt as a spectra deploy (``auto_approve`` skips it)."""
     obs_dir = resolve_obs_dir(obs_name)
     summary = load_summary(obs_dir, obs_name)
     if source_ids:
@@ -164,6 +210,8 @@ def deploy_lines(obs_name: str, config: dict, *, dry_run: bool = False,
     if not lines_paths:
         print("Nothing to deploy — run `cfpipe nirspec linefit --obs "
               f"{obs_name}` (after `campfire pull --obs {obs_name}`) first.")
+        return
+    if not confirm_non_release_line_fits(lines_paths, dry_run=dry_run, auto_approve=auto_approve):
         return
     if dry_run:
         print("=== DRY RUN ===")

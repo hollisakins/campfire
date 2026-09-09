@@ -477,8 +477,10 @@ def zfit(ctx, config_path, obs, dry_run, local, source_ids, force_overwrite, aut
                    'the catalog carries inspected-redshift fits only.')
 @click.option('--upload/--no-upload', default=True, show_default=True,
               help='Upload the _lines.fits products to OSN; --no-upload upserts the catalog rows only.')
+@click.option('--auto-approve', is_flag=True,
+              help='Skip the confirmation prompt for products fit with a non-release pipeline version.')
 @click.pass_context
-def lines(ctx, config_path, obs, dry_run, local, source_ids, allow_auto_z, upload):
+def lines(ctx, config_path, obs, dry_run, local, source_ids, allow_auto_z, upload, auto_approve):
     """Publish emission-line fits (spectrum_line_fits) for a deployed observation.
 
     Reads the <base>_lines.fits products written by `cfpipe nirspec linefit`,
@@ -495,6 +497,7 @@ def lines(ctx, config_path, obs, dry_run, local, source_ids, allow_auto_z, uploa
             source_ids=list(source_ids) if source_ids else None,
             allow_auto_z=allow_auto_z,
             upload=upload,
+            auto_approve=auto_approve,
         )
 
 

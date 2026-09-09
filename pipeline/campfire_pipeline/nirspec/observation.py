@@ -237,9 +237,11 @@ class Observation:
             assert files[0].startswith('jw')
             program_id = int(files[0][2:7])
 
-        # Capture per-observation stage config overrides
+        # Capture per-observation stage config overrides. 'line_fitting' is the
+        # post-inspection emission-line stage ([<obs>.line_fitting], read by
+        # cfpipe nirspec linefit via obs.stage_overrides).
         stage_overrides = {}
-        for key in ['stage1', 'stage2', 'stage3']:
+        for key in ['stage1', 'stage2', 'stage3', 'line_fitting']:
             if key in obs and isinstance(obs[key], dict):
                 stage_overrides[key] = obs[key]
 
