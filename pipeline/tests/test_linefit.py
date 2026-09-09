@@ -438,3 +438,38 @@ def test_stage_honours_per_observation_overrides(workspace):
     obs.stage_overrides = {'line_fitting': {'min_quality': 2}}
     counts = run_linefit(obs, cfg)
     assert counts['fit'] == 2 and counts['skipped_no_z'] == 0
+
+
+def test_resolve_observation_without_observations_toml(tmp_path, monkeypatch):
+    """linefit must work from the observation name alone: with no
+    observations.toml the directories come from the layout contract."""
+    from campfire_pipeline.nirspec.linefit_stage import (
+        LinefitObservation, resolve_linefit_observation, run_linefit,
+    )
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path))
+    monkeypatch.chdir(tmp_path)          # no ./observations.toml fallback either
+    obs = resolve_linefit_observation('obs9', {})
+    assert isinstance(obs, LinefitObservation)
+    assert obs.name == 'obs9' and obs.stage_overrides == {}
+    assert obs.workspace_dir == str(tmp_path / 'products' / 'nirspec' / 'obs9')
+    assert obs.reference_dir == str(tmp_path / 'reference' / 'nirspec' / 'obs9')
+    # nothing pulled yet: a clean no-op, not a crash
+    counts = run_linefit(obs, {'nirspec': {}})
+    assert counts == dict(fit=0, skipped_uptodate=0, skipped_no_z=0, failed=0)
+
+
+def test_resolve_observation_prefers_observations_toml(tmp_path, monkeypatch):
+    from campfire_pipeline.nirspec.linefit_stage import resolve_linefit_observation
+    from campfire_pipeline.nirspec.observation import Observation
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path))
+    cfg_dir = tmp_path / 'config'
+    cfg_dir.mkdir()
+    (cfg_dir / 'observations.toml').write_text(
+        '[obs1]\nfield = "uds"\nprogram = "ember-uds"\ndata_subdir = "6585"\n'
+        'program_id = 6585\nfiles = ["jw06585001001_03101"]\n'
+        '[obs1.line_fitting]\nmin_quality = 2\n'
+    )
+    obs = resolve_linefit_observation('obs1', {})
+    assert isinstance(obs, Observation)
+    assert obs.stage_overrides['line_fitting'] == {'min_quality': 2}
+    assert obs.workspace_dir == str(tmp_path / 'products' / 'nirspec' / 'obs1')
