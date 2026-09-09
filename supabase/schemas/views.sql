@@ -290,7 +290,8 @@ SELECT f.spectrum_id,
           OR o.redshift_quality IS DISTINCT FROM f.z_quality
           OR o.redshift IS NULL
           OR abs((o.redshift)::double precision - f.z_used) > 1e-5)) AS stale_redshift,
-       (s.file_hash IS DISTINCT FROM f.spectrum_hash) AS stale_spectrum
+       (regexp_replace(s.file_hash, '^sha256:', '')
+          IS DISTINCT FROM regexp_replace(f.spectrum_hash, '^sha256:', '')) AS stale_spectrum
 FROM public.spectrum_line_fits f
 JOIN public.spectra s ON s.id = f.spectrum_id
 LEFT JOIN public.targets t ON t.target_id = f.target_id

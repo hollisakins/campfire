@@ -464,8 +464,12 @@ def _grid_init(wm: _WindowModel, dv_max, cfg: LineFitConfig):
     return best
 
 
-def _refine(wm: _WindowModel, p0, lower, upper):
-    """Bounded least-squares refinement from ``p0``; returns (p, cov, chi2, ok)."""
+def _refine(wm: _WindowModel, p0, lower, upper, resid=None):
+    """Bounded least-squares refinement from ``p0``; returns (p, cov, chi2, ok).
+
+    ``resid`` overrides the residual function (default ``wm.residuals``) for
+    fits over a subset of the parameter vector."""
+    resid = resid or wm.residuals
     # Start strictly inside the bounds (trf requires it); infinite bounds
     # need no clipping.
     p0 = np.array(p0, dtype=float)
@@ -475,13 +479,13 @@ def _refine(wm: _WindowModel, p0, lower, upper):
     p0[fin_lo] = np.maximum(p0[fin_lo], lower[fin_lo] + 1e-6 * span[fin_lo])
     p0[fin_hi] = np.minimum(p0[fin_hi], upper[fin_hi] - 1e-6 * span[fin_hi])
     try:
-        res = least_squares(wm.residuals, p0, bounds=(lower, upper), x_scale='jac',
+        res = least_squares(resid, p0, bounds=(lower, upper), x_scale='jac',
                             method='trf', max_nfev=200 * len(p0))
     except Exception as e:  # pragma: no cover - scipy internals
         log.debug(f"least_squares raised: {e}")
-        return p0, None, float(np.sum(wm.residuals(p0) ** 2)), False
+        return p0, None, float(np.sum(resid(p0) ** 2)), False
     if not res.success and res.status <= 0:
-        return p0, None, float(np.sum(wm.residuals(p0) ** 2)), False
+        return p0, None, float(np.sum(resid(p0) ** 2)), False
     J = res.jac
     jtj = J.T @ J
     try:
@@ -523,6 +527,39 @@ def _fit_complex(wm: _WindowModel, dv_max, cfg: LineFitConfig, fixed_kin=None):
         ok = False
     return dict(p=p, cov=cov, chi2=chi2, dof=len(wm.y) - (nl + 2), ok=ok,
                 kin_free=True, broad=False)
+
+
+def _fit_broad_pinned(wm: _WindowModel, prior, dv_fix, sv_fix, cfg: LineFitConfig):
+    """Pass-2 refit of a complex whose broad component was accepted in pass 1:
+    the narrow ``(dv, sigma_v)`` are pinned to the global values while the
+    fluxes, continuum and the broad ``(dv_b, sigma_b)`` stay free, so an
+    accepted broad line is never silently dropped because its narrow
+    counterpart is too faint to anchor. Returns a fit dict in the full
+    parameter layout, or None when the refinement fails."""
+    nl = wm.n_flux + wm.n_cont
+    nb = wm.n_broad
+    p_prev = prior['p']
+
+    def expand(q):
+        return np.concatenate([q[:nl], [dv_fix, sv_fix], q[nl:nl + 2], q[nl + 2:]])
+
+    def resid(q):
+        return wm.residuals(expand(q))
+
+    q0 = np.concatenate([p_prev[:nl], p_prev[nl + 2:nl + 4], p_prev[nl + 4:]])
+    lower = np.concatenate([np.full(nl, -np.inf), [-cfg.broad_dv_max, cfg.broad_sigma_min],
+                            np.full(nb, -np.inf)])
+    upper = np.concatenate([np.full(nl, np.inf), [cfg.broad_dv_max, cfg.broad_sigma_max],
+                            np.full(nb, np.inf)])
+    q, cov_q, chi2, ok = _refine(wm, q0, lower, upper, resid=resid)
+    if not ok or cov_q is None:
+        return None
+    # Map the reduced covariance back onto the full layout (pinned entries zero).
+    idx = list(range(nl)) + [nl + 2, nl + 3] + [nl + 4 + j for j in range(nb)]
+    cov = np.zeros((nl + 4 + nb, nl + 4 + nb))
+    cov[np.ix_(idx, idx)] = cov_q
+    return dict(p=expand(q), cov=cov, chi2=chi2, dof=len(wm.y) - len(q), ok=True,
+                kin_free=False, broad=True, delta_chi2=prior.get('delta_chi2'))
 
 
 def _try_broad(wm_narrow: _WindowModel, narrow_fit, cx, wave, flam, err, use, lo, hi,
@@ -818,12 +855,18 @@ def fit_lines(wave_um, fnu_ujy, fnu_err_ujy, z, r_of, cfg: Optional[LineFitConfi
         if cx.index in anchor_idx:
             kin_flag = 0
         else:
+            pinned = None
             if fit.get('broad'):
-                # keep the broad model but pin the narrow kinematics
-                wm = _WindowModel(cx, wave, flam, err,
-                                  valid & ~(foreign & ~per_cx_support[cx.index]),
-                                  lo, hi, cfg, r_of)
-            fit = _fit_complex(wm, dv_max, cfg, fixed_kin=(dv_g, sv_g))
+                # keep the accepted broad component; pin only the narrow kinematics
+                pinned = _fit_broad_pinned(wm, fit, dv_g, sv_g, cfg)
+            if pinned is None:
+                if fit.get('broad'):
+                    wm = _WindowModel(cx, wave, flam, err,
+                                      valid & ~(foreign & ~per_cx_support[cx.index]),
+                                      lo, hi, cfg, r_of)
+                fit = _fit_complex(wm, dv_max, cfg, fixed_kin=(dv_g, sv_g))
+            else:
+                fit = pinned
             fit['kin_err'] = (dv_g_err, sv_g_err)
             kin_flag = pass2_flag
         if cfg.scale_errors_by_chi2 and fit['dof'] > 0 and fit['chi2'] > fit['dof']:

@@ -156,20 +156,34 @@ BEGIN
            f.n_lines, f.n_detected, f.n_broad, f.chi2, f.dof, f.lines,
            f.fit_version, f.cfpipe_version, f.f_lsf, f.spectrum_hash, f.fitted_at,
            f.created_at, f.updated_at,
+           -- The record's sync timestamp: the latest of the fit row and the two
+           -- parent rows its staleness flags derive from, so the client's
+           -- incremental cursor (max local updated_at) advances past a
+           -- re-inspection or redeploy instead of re-sending the row forever.
+           GREATEST(f.updated_at, s.updated_at, o.updated_at) AS effective_updated_at,
            -- staleness vs the live inspection state (see spectrum_line_fits_status)
            (o.id IS NOT NULL AND (
               o.version IS DISTINCT FROM f.object_version
               OR o.redshift_quality IS DISTINCT FROM f.z_quality
               OR o.redshift IS NULL
               OR abs((o.redshift)::double precision - f.z_used) > 1e-5)) AS stale_redshift,
-           (s.file_hash IS DISTINCT FROM f.spectrum_hash) AS stale_spectrum
+           -- both sides are 'sha256:<hex>'; strip the scheme defensively so a
+           -- bare digest from an older product still compares.
+           (regexp_replace(s.file_hash, '^sha256:', '')
+              IS DISTINCT FROM regexp_replace(f.spectrum_hash, '^sha256:', '')) AS stale_spectrum
     FROM spectrum_line_fits f
     JOIN spectra s ON s.id = f.spectrum_id
     LEFT JOIN targets t ON t.target_id = f.target_id
     LEFT JOIN objects o ON o.id = t.object_id
     WHERE f.program_slug = ANY(p_program_slugs)
       AND (p_include_unpublished OR s.deploy_status = 'published')
-      AND (p_updated_since IS NULL OR f.updated_at > p_updated_since)
+      -- Incremental: stale_redshift / stale_spectrum are derived from the
+      -- parent rows, so a re-inspected object or a redeployed spectrum must
+      -- re-send the fit even though the fit row itself did not change.
+      AND (p_updated_since IS NULL
+           OR f.updated_at > p_updated_since
+           OR s.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
       AND (p_after_id IS NULL OR f.spectrum_id > p_after_id)
     ORDER BY f.spectrum_id
     LIMIT p_limit
@@ -178,10 +192,15 @@ BEGIN
     SELECT COUNT(*) AS cnt
     FROM spectrum_line_fits f
     JOIN spectra s ON s.id = f.spectrum_id
+    LEFT JOIN targets t ON t.target_id = f.target_id
+    LEFT JOIN objects o ON o.id = t.object_id
     WHERE p_include_counts
       AND f.program_slug = ANY(p_program_slugs)
       AND (p_include_unpublished OR s.deploy_status = 'published')
-      AND (p_updated_since IS NULL OR f.updated_at > p_updated_since)
+      AND (p_updated_since IS NULL
+           OR f.updated_at > p_updated_since
+           OR s.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
   )
   SELECT
     COALESCE(jsonb_agg(
@@ -220,7 +239,8 @@ BEGIN
         'stale_redshift', m.stale_redshift,
         'stale_spectrum', m.stale_spectrum,
         'created_at', m.created_at,
-        'updated_at', m.updated_at
+        'fit_updated_at', m.updated_at,
+        'updated_at', m.effective_updated_at
       ) ORDER BY m.spectrum_id
     ), '[]'::jsonb) AS line_fit_records,
     (SELECT cnt FROM total) AS total_count
@@ -260,7 +280,8 @@ SELECT f.spectrum_id,
           OR o.redshift_quality IS DISTINCT FROM f.z_quality
           OR o.redshift IS NULL
           OR abs((o.redshift)::double precision - f.z_used) > 1e-5)) AS stale_redshift,
-       (s.file_hash IS DISTINCT FROM f.spectrum_hash) AS stale_spectrum
+       (regexp_replace(s.file_hash, '^sha256:', '')
+          IS DISTINCT FROM regexp_replace(f.spectrum_hash, '^sha256:', '')) AS stale_spectrum
 FROM public.spectrum_line_fits f
 JOIN public.spectra s ON s.id = f.spectrum_id
 LEFT JOIN public.targets t ON t.target_id = f.target_id

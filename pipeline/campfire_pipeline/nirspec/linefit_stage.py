@@ -104,6 +104,9 @@ def _read_zfit_zbest(zfit_path):
 # ---------------------------------------------------------------------------
 
 def _sha256(path, chunk=1 << 20):
+    """``sha256:<hex>`` — the same scheme-prefixed form the summary reader stores
+    in ``spectra.file_hash`` (``metadata/reader.py``), so the catalog can compare
+    ``SPECHASH`` with it directly for staleness."""
     h = hashlib.sha256()
     with open(path, 'rb') as f:
         while True:
@@ -111,7 +114,7 @@ def _sha256(path, chunk=1 << 20):
             if not b:
                 break
             h.update(b)
-    return h.hexdigest()
+    return f"sha256:{h.hexdigest()}"
 
 
 def _fits_safe(v):
@@ -165,7 +168,7 @@ def write_lines_file(path, result, *, z_source, entry: RedshiftEntry | None, spe
     hdr['SRCID'] = (str(source_id), 'Source id')
     hdr['TARGETID'] = (str(target_id), 'Catalog target_id')
     hdr['SPECFILE'] = (os.path.basename(spec_path), 'Input spectrum')
-    hdr['SPECHASH'] = (spec_hash, 'sha256 of the input spectrum file')
+    hdr['SPECHASH'] = (spec_hash, 'sha256:<hex> of the input spectrum file')
     hdr['CMPFRVER'] = (cfpipe_version, 'campfire-pipeline version (PEP 440)')
     hdr['CMPFRTIM'] = (datetime.now(timezone.utc).isoformat(),
                        'UTC date/time of the line fit (ISO 8601)')

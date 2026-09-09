@@ -190,6 +190,23 @@ def test_broad_component_detected_on_grating_only():
     assert not any(r['component'] == 'broad' for r in res['lines'].values())
 
 
+def test_broad_component_survives_pass_two_on_faint_narrow_line():
+    """A broad Hα accepted in pass 1 must not vanish when its narrow line is too
+    faint to anchor the kinematics (the complex is refit with pinned narrow
+    kinematics but a free broad component)."""
+    z = 5.5
+    narrow = {'Hbeta': 1.8e-18, 'OIII5007': 6e-18, 'OIII4959': 6e-18 / 2.98, 'Halpha': 6e-20}
+    wave, fnu, err, r_of = synth(z, 'g395m', narrow, broad={'Halpha': (8e-18, 1800.0)}, seed=5)
+    res = fit_lines(wave, fnu, err, z, r_of, LineFitConfig(), grating='g395m')
+    ha = res['lines']['Halpha']
+    assert ha['flags'] & FLAG_KIN_GLOBAL and ha['flags'] & FLAG_BROAD
+    assert 'Halpha_broad' in res['lines']
+    b = res['lines']['Halpha_broad']
+    assert abs(b['flux'] - 8e-18) / b['flux_err'] < 4 and 1200 < b['sigma_v'] < 2500
+    cx = next(c for c in res['complexes'] if 'Halpha' in c['lines'])
+    assert cx['broad'] and not cx['anchor']
+
+
 def test_prism_blends_and_coverage():
     z = 5.5
     wave, fnu, err, r_of = synth(z, 'prism', TRUTH, noise=5e-21)
@@ -348,7 +365,9 @@ def test_stage_writes_reads_and_skips(workspace):
     h = prod['header']
     assert h['ZSRC'] == 'inspected' and h['ZQUAL'] == 4 and h['OBJID'] == 'CAMPFIRE-J1'
     assert h['OBJVER'] == 3 and h['CMPFRVER'] == '9.9.9' and h['FLSF'] == 1.5
-    assert h['GRATING'] == 'G395M' and h['TARGETID'] == 'obs1_10' and len(h['SPECHASH']) == 64
+    assert h['GRATING'] == 'G395M' and h['TARGETID'] == 'obs1_10'
+    # same scheme-prefixed form as spectra.file_hash (metadata/reader.py)
+    assert h['SPECHASH'].startswith('sha256:') and len(h['SPECHASH']) == 7 + 64
     assert abs(prod['lines']['Halpha']['flux'] - 5e-18) / prod['lines']['Halpha']['flux_err'] < 4
     assert prod['lines']['OIII4959']['tied_to'] == 'OIII5007'
     assert len(prod['model']['wave']) == len(prod['model']['model'])
