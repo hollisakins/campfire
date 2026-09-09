@@ -14,6 +14,7 @@ import {
   type FitsglConfig,
   type StretchMode,
   type TrilogyParams,
+  type TrilogyStats,
 } from '@fitsgl/core';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { loadManifest } from './manifest';
@@ -95,13 +96,28 @@ function cachingFetchAtVersion(version: string): typeof fetch {
  * independently onto the same North-up output grid.
  */
 function chooseBands(config: FitsglConfig): FitsglBand[] {
+  const rgb = defaultRgbBands(config);
+  if (rgb) return rgb;
+  const { bands } = config.dataset;
+  const dv = config.defaultView;
+  const single = (dv.band && bands.find((b) => b.name === dv.band)) || bands[0];
+  return [single];
+}
+
+/**
+ * The dataset's default `[R, G, B]` triple: the producer's default view when it
+ * names one, else reddest→R / middle→G / bluest→B by pivot wavelength (declaration
+ * order when a producer omits pivots). `null` for a field with fewer than 3 bands.
+ * Exported for the figure route's `rgb=auto`.
+ */
+export function defaultRgbBands(config: FitsglConfig): [FitsglBand, FitsglBand, FitsglBand] | null {
   const { bands } = config.dataset;
   const dv = config.defaultView;
 
   if (dv.mode === 'rgb' && dv.r && dv.g && dv.b) {
     const byName = new Map(bands.map((b) => [b.name, b]));
     const rgb = [dv.r, dv.g, dv.b].map((n) => byName.get(n));
-    if (rgb.every(Boolean)) return rgb as FitsglBand[];
+    if (rgb.every(Boolean)) return rgb as [FitsglBand, FitsglBand, FitsglBand];
   }
 
   if (bands.length >= 3) {
@@ -112,9 +128,13 @@ function chooseBands(config: FitsglConfig): FitsglBand[] {
     const mid = Math.floor((ordered.length - 1) / 2);
     return [ordered[ordered.length - 1], ordered[mid], ordered[0]];
   }
+  return null;
+}
 
-  const single = (dv.band && bands.find((b) => b.name === dv.band)) || bands[0];
-  return [single];
+/** The producer's trilogy knobs over the library defaults (see `displayDefaults`). */
+export function producerTrilogyParams(config: FitsglConfig): TrilogyParams {
+  const knobs = (config.defaultView as { trilogy?: Partial<TrilogyParams> }).trilogy;
+  return { ...DEFAULT_TRILOGY_PARAMS, ...knobs };
 }
 
 /**
@@ -137,8 +157,7 @@ export function displayDefaults(
   if (mode !== 'trilogy') return { stretch: mode };
   const stats = chosen.map((b) => b.stats?.trilogy);
   if (stats.some((s) => s === undefined)) return null;
-  const knobs = (dv as { trilogy?: Partial<TrilogyParams> }).trilogy;
-  const params: TrilogyParams = { ...DEFAULT_TRILOGY_PARAMS, ...knobs };
+  const params = producerTrilogyParams(config);
   const levels = stats.map((s) => trilogyLevels(s!, params));
   return {
     stretch: 'trilogy',
@@ -266,9 +285,24 @@ export class UnknownBandError extends Error {
   }
 }
 
+/** One band of a science source: engine input + inventory metadata. */
+export interface ScienceBand extends BandSource {
+  name: string;
+  label?: string;
+  pivotUm?: number;
+  /** Precomputed trilogy stats (absent on older datasets ⇒ no trilogy composite). */
+  trilogy?: TrilogyStats;
+}
+
 export interface FieldScienceSource {
   /** One entry per requested band, in request (or inventory) order. */
-  bands: Array<BandSource & { name: string; label?: string; pivotUm?: number }>;
+  bands: ScienceBand[];
+  /** The `[R, G, B]` composite bands when one was requested and the field can
+   *  serve it (an explicit triple, or the dataset default for `'auto'`). */
+  rgb?: [ScienceBand, ScienceBand, ScienceBand];
+  /** Producer trilogy knobs over the library defaults — the composite's
+   *  baseline, which a request may override knob by knob. */
+  trilogyParams: TrilogyParams;
   /** Dataset prefix, for provenance headers. */
   datasetPrefix: string;
   /** Dataset deployment stamp used to cache-bust its descriptors. */
@@ -277,14 +311,17 @@ export interface FieldScienceSource {
 
 /**
  * Resolve a field's *science* cutout source: every dataset band, or the
- * requested subset (case-insensitive names), each with its manifest loaded.
- * `null` ⇒ no (visible) pyramid for the field; throws {@link UnknownBandError}
- * for names not in the inventory (a client error, not a fallback case).
+ * requested subset (case-insensitive names; `[]` ⇒ no single-band panels),
+ * each with its manifest loaded. `rgb` asks for a composite triple as well —
+ * three names, or `'auto'` for the dataset default (`rgb` stays undefined on
+ * the result when the field has fewer than 3 bands). `null` ⇒ no (visible)
+ * pyramid for the field; throws {@link UnknownBandError} for names not in the
+ * inventory (a client error, not a fallback case).
  */
 export async function resolveFieldScienceSource(
   supabase: SupabaseClient,
   field: string,
-  opts: { requirePublic?: boolean; bands?: string[] } = {},
+  opts: { requirePublic?: boolean; bands?: string[]; rgb?: 'auto' | string[] } = {},
 ): Promise<FieldScienceSource | null> {
   const ds = await fetchFieldDataset(supabase, field, opts).catch((err) => {
     console.error(`FitsGL science source unavailable for field ${field}:`, err);
@@ -293,21 +330,47 @@ export async function resolveFieldScienceSource(
   if (!ds) return null;
 
   const inventory = ds.config.dataset.bands;
-  let chosen = inventory;
-  if (opts.bands && opts.bands.length > 0) {
-    const byName = new Map(inventory.map((b) => [b.name.toLowerCase(), b]));
-    const unknown = opts.bands.filter((n) => !byName.has(n.toLowerCase()));
+  const byName = new Map(inventory.map((b) => [b.name.toLowerCase(), b]));
+  const lookup = (names: string[]): FitsglBand[] => {
+    const unknown = names.filter((n) => !byName.has(n.toLowerCase()));
     if (unknown.length > 0) throw new UnknownBandError(unknown, inventory.map((b) => b.name));
-    chosen = opts.bands.map((n) => byName.get(n.toLowerCase())!);
-  }
+    return names.map((n) => byName.get(n.toLowerCase())!);
+  };
 
-  const bands = await Promise.all(
-    chosen.map(async (b) => ({
-      ...(await toBandSource(b, ds.sourceVersion)),
-      name: b.name,
-      label: b.label,
-      pivotUm: b.pivotUm,
-    })),
-  );
-  return { bands, datasetPrefix: ds.prefix, datasetVersion: ds.sourceVersion };
+  const chosen = opts.bands === undefined ? inventory : lookup(opts.bands);
+  const rgbChosen =
+    opts.rgb === undefined
+      ? null
+      : opts.rgb === 'auto'
+        ? defaultRgbBands(ds.config)
+        : (lookup(opts.rgb) as [FitsglBand, FitsglBand, FitsglBand]);
+
+  // Each band's manifest loads once even when it serves both a panel and a channel.
+  const loaded = new Map<string, Promise<ScienceBand>>();
+  const load = (b: FitsglBand): Promise<ScienceBand> => {
+    let p = loaded.get(b.name);
+    if (!p) {
+      p = toBandSource(b, ds.sourceVersion).then((src) => ({
+        ...src,
+        name: b.name,
+        label: b.label,
+        pivotUm: b.pivotUm,
+        trilogy: b.stats?.trilogy,
+      }));
+      loaded.set(b.name, p);
+    }
+    return p;
+  };
+
+  const [bands, rgb] = await Promise.all([
+    Promise.all(chosen.map(load)),
+    rgbChosen ? Promise.all(rgbChosen.map(load)) : Promise.resolve(undefined),
+  ]);
+  return {
+    bands,
+    rgb: rgb as FieldScienceSource['rgb'],
+    trilogyParams: producerTrilogyParams(ds.config),
+    datasetPrefix: ds.prefix,
+    datasetVersion: ds.sourceVersion,
+  };
 }

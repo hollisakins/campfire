@@ -67,6 +67,9 @@ export default async function NircamFieldCutoutsPage({ params, searchParams }: C
         dec: str(sp.dec),
         fov: str(sp.fov),
         bands: str(sp.bands),
+        rgb: str(sp.rgb),
+        rgb_stretch: str(sp.rgb_stretch),
+        shutters: str(sp.shutters),
       }}
     />
   );

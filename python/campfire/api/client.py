@@ -5,7 +5,7 @@ Centralizes all URL construction and response parsing. Used by both the
 """
 
 import os
-from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 from ..exceptions import (
     APIError,
@@ -542,6 +542,9 @@ class APIClient:
         cols: Optional[int] = None,
         stretch: str = "asinh",
         colormap: str = "gray",
+        rgb: Optional[Union[bool, Sequence[str]]] = None,
+        rgb_stretch: Optional[str] = None,
+        shutters: bool = False,
     ) -> bytes:
         """Fetch a multi-band cutout figure PNG (one labeled panel per band).
 
@@ -563,6 +566,18 @@ class APIClient:
             One of ``linear``, ``log``, ``sqrt``, ``asinh`` (default).
         colormap : str, optional
             e.g. ``gray`` (default), ``viridis``, ``magma``, ``inferno``.
+        rgb : bool or list of str, optional
+            Append an RGB composite panel: ``True`` for the dataset's default
+            channel assignment, or three band names ``[r, g, b]``. When
+            ``rgb`` is given and ``bands`` is not, the figure is the
+            composite alone.
+        rgb_stretch : str, optional
+            Composite transfer: ``trilogy`` (each band on its own precomputed
+            levels, as the map) or ``linear``/``log``/``sqrt``/``asinh`` over
+            one shared range. Default: trilogy when the dataset carries the
+            stats, else asinh.
+        shutters : bool, optional
+            Overlay the NIRSpec MSA shutter footprints in view.
         """
         params: Dict[str, Union[str, int, float]] = {
             "field": field, "ra": ra, "dec": dec, "fov": fov,
@@ -572,6 +587,14 @@ class APIClient:
             params["bands"] = ",".join(bands)
         if cols is not None:
             params["cols"] = cols
+        if rgb is True:
+            params["rgb"] = "auto"
+        elif rgb:
+            params["rgb"] = ",".join(rgb)
+        if rgb_stretch is not None:
+            params["rgb_stretch"] = rgb_stretch
+        if shutters:
+            params["shutters"] = "1"
         response = self._session.get("/cutout/figure", params=params, timeout=120)
         _handle_response_error(response, f"Cutout figure at ({ra}, {dec}) in {field}")
         return response.content
