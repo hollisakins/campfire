@@ -9,11 +9,15 @@
 
 import {
   DEFAULT_TRILOGY_PARAMS,
+  MAX_BANDS,
   loadFitsglConfig,
+  rainbowWeights,
   trilogyLevels,
+  type BandWeight,
   type FitsglConfig,
   type StretchMode,
   type TrilogyParams,
+  type TrilogyStats,
 } from '@fitsgl/core';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { loadManifest } from './manifest';
@@ -95,26 +99,111 @@ function cachingFetchAtVersion(version: string): typeof fetch {
  * independently onto the same North-up output grid.
  */
 function chooseBands(config: FitsglConfig): FitsglBand[] {
+  const rgb = defaultRgbBands(config);
+  if (rgb) return rgb;
+  const { bands } = config.dataset;
+  const dv = config.defaultView;
+  const single = (dv.band && bands.find((b) => b.name === dv.band)) || bands[0];
+  return [single];
+}
+
+/**
+ * The dataset's default `[R, G, B]` triple: the producer's default view when it
+ * names one, else reddest→R / middle→G / bluest→B by pivot wavelength (declaration
+ * order when a producer omits pivots). `null` for a field with fewer than 3 bands.
+ * Exported for the figure route's `rgb=auto`.
+ */
+export function defaultRgbBands(config: FitsglConfig): [FitsglBand, FitsglBand, FitsglBand] | null {
   const { bands } = config.dataset;
   const dv = config.defaultView;
 
   if (dv.mode === 'rgb' && dv.r && dv.g && dv.b) {
     const byName = new Map(bands.map((b) => [b.name, b]));
     const rgb = [dv.r, dv.g, dv.b].map((n) => byName.get(n));
-    if (rgb.every(Boolean)) return rgb as FitsglBand[];
+    if (rgb.every(Boolean)) return rgb as [FitsglBand, FitsglBand, FitsglBand];
   }
 
   if (bands.length >= 3) {
-    // Blue→red by pivot wavelength; producers omit pivotUm ⇒ declaration order.
-    const ordered = bands.every((b) => b.pivotUm != null)
-      ? [...bands].sort((a, b) => a.pivotUm! - b.pivotUm!)
-      : bands;
+    const ordered = wavelengthOrdered(bands);
     const mid = Math.floor((ordered.length - 1) / 2);
     return [ordered[ordered.length - 1], ordered[mid], ordered[0]];
   }
+  return null;
+}
 
-  const single = (dv.band && bands.find((b) => b.name === dv.band)) || bands[0];
-  return [single];
+/**
+ * The producer's weighted composite — `defaultView.weights`, the full per-band
+ * (R,G,B) contribution table the CAMPFIRE producer emits so the map opens on the
+ * faithful multi-band trilogy rather than three representatives. Merged exactly
+ * as the map's `trilogyComposite` (duplicates summed, declaration order kept),
+ * names outside the inventory dropped, capped at the renderer's `MAX_BANDS`.
+ * `null` when the producer declared none.
+ */
+export function defaultWeightedBands(
+  config: FitsglConfig,
+): Array<{ band: FitsglBand; weight: BandWeight }> | null {
+  const weights = config.defaultView.weights;
+  if (!weights || weights.length === 0) return null;
+  const byName = new Map(config.dataset.bands.map((b) => [b.name, b]));
+  const merged = new Map<string, [number, number, number]>();
+  for (const { band, weight } of weights) {
+    if (!byName.has(band)) continue;
+    const cur = merged.get(band);
+    if (cur === undefined) merged.set(band, [weight[0], weight[1], weight[2]]);
+    else {
+      cur[0] += weight[0];
+      cur[1] += weight[1];
+      cur[2] += weight[2];
+    }
+  }
+  const entries = [...merged.entries()]
+    .slice(0, MAX_BANDS)
+    .map(([name, weight]) => ({ band: byName.get(name)!, weight: weight as BandWeight }));
+  return entries.length > 0 ? entries : null;
+}
+
+/** Blue→red by pivot wavelength; declaration order when any pivot is missing
+ *  (the same rule the map's rainbow and `defaultRgbBands` follow). */
+function wavelengthOrdered(bands: readonly FitsglBand[]): FitsglBand[] {
+  return bands.every((b) => b.pivotUm != null)
+    ? [...bands].sort((a, b) => a.pivotUm! - b.pivotUm!)
+    : [...bands];
+}
+
+/** Evenly subsample `items` down to `cap`, always keeping the first and last
+ *  (so a wavelength-ordered rainbow keeps its blue and red endpoints). */
+function subsample<T>(items: T[], cap: number): T[] {
+  if (items.length <= cap) return items;
+  if (cap <= 1) return [items[0]];
+  const out: T[] = [];
+  for (let i = 0; i < cap; i++) {
+    out.push(items[Math.round((i * (items.length - 1)) / (cap - 1))]);
+  }
+  return out;
+}
+
+/**
+ * The map's rainbow composite over `bands` (every inventory band when null):
+ * wavelength-ordered, hue spread blue→red (`rainbowWeights`), capped at
+ * `MAX_BANDS` by even subsampling. The simple-RGB triple for the same set is
+ * its reddest / middle / bluest member.
+ */
+export function rainbowBands(
+  bands: readonly FitsglBand[],
+): { weighted: Array<{ band: FitsglBand; weight: BandWeight }>; triple: [FitsglBand, FitsglBand, FitsglBand] } {
+  const ordered = subsample(wavelengthOrdered(bands), MAX_BANDS);
+  const weights = rainbowWeights(ordered.length);
+  const mid = Math.floor((ordered.length - 1) / 2);
+  return {
+    weighted: ordered.map((band, i) => ({ band, weight: weights[i] })),
+    triple: [ordered[ordered.length - 1], ordered[mid], ordered[0]],
+  };
+}
+
+/** The producer's trilogy knobs over the library defaults (see `displayDefaults`). */
+export function producerTrilogyParams(config: FitsglConfig): TrilogyParams {
+  const knobs = (config.defaultView as { trilogy?: Partial<TrilogyParams> }).trilogy;
+  return { ...DEFAULT_TRILOGY_PARAMS, ...knobs };
 }
 
 /**
@@ -137,8 +226,7 @@ export function displayDefaults(
   if (mode !== 'trilogy') return { stretch: mode };
   const stats = chosen.map((b) => b.stats?.trilogy);
   if (stats.some((s) => s === undefined)) return null;
-  const knobs = (dv as { trilogy?: Partial<TrilogyParams> }).trilogy;
-  const params: TrilogyParams = { ...DEFAULT_TRILOGY_PARAMS, ...knobs };
+  const params = producerTrilogyParams(config);
   const levels = stats.map((s) => trilogyLevels(s!, params));
   return {
     stretch: 'trilogy',
@@ -266,9 +354,42 @@ export class UnknownBandError extends Error {
   }
 }
 
+/** One band of a science source: engine input + inventory metadata. */
+export interface ScienceBand extends BandSource {
+  name: string;
+  label?: string;
+  pivotUm?: number;
+  /** Precomputed trilogy stats (absent on older datasets ⇒ no trilogy composite). */
+  trilogy?: TrilogyStats;
+}
+
+/** The composite a figure was asked for, resolved against the inventory. */
+export interface CompositeSource {
+  /** The `[R, G, B]` channel bands: an explicit triple, or the dataset's
+   *  default (producer view / wavelength-ordered). Drives the simple
+   *  shared-range composite, and the trilogy one when `weighted` is absent. */
+  triple: [ScienceBand, ScienceBand, ScienceBand];
+  /** A weighted band table — the producer's (`rgb=auto`) or a rainbow over
+   *  a band list: the faithful multi-band trilogy the map renders. Each band
+   *  stretched on its own levels, channels as weighted averages
+   *  (`weightedTrilogyPixel`). Absent for an explicit triple. */
+  weighted?: { bands: ScienceBand[]; weights: BandWeight[] };
+}
+
+/**
+ * A composite request: the dataset default (`'auto'`), an explicit
+ * `[r, g, b]` triple, or a rainbow over some bands (`null` ⇒ every band).
+ */
+export type CompositeRequest = 'auto' | string[] | { rainbow: string[] | null };
+
 export interface FieldScienceSource {
   /** One entry per requested band, in request (or inventory) order. */
-  bands: Array<BandSource & { name: string; label?: string; pivotUm?: number }>;
+  bands: ScienceBand[];
+  /** The composite when one was requested and the field can serve it. */
+  rgb?: CompositeSource;
+  /** Producer trilogy knobs over the library defaults — the composite's
+   *  baseline, which a request may override knob by knob. */
+  trilogyParams: TrilogyParams;
   /** Dataset prefix, for provenance headers. */
   datasetPrefix: string;
   /** Dataset deployment stamp used to cache-bust its descriptors. */
@@ -277,14 +398,17 @@ export interface FieldScienceSource {
 
 /**
  * Resolve a field's *science* cutout source: every dataset band, or the
- * requested subset (case-insensitive names), each with its manifest loaded.
- * `null` ⇒ no (visible) pyramid for the field; throws {@link UnknownBandError}
- * for names not in the inventory (a client error, not a fallback case).
+ * requested subset (case-insensitive names; `[]` ⇒ no single-band panels),
+ * each with its manifest loaded. `rgb` asks for a composite triple as well —
+ * three names, or `'auto'` for the dataset default (`rgb` stays undefined on
+ * the result when the field has fewer than 3 bands). `null` ⇒ no (visible)
+ * pyramid for the field; throws {@link UnknownBandError} for names not in the
+ * inventory (a client error, not a fallback case).
  */
 export async function resolveFieldScienceSource(
   supabase: SupabaseClient,
   field: string,
-  opts: { requirePublic?: boolean; bands?: string[] } = {},
+  opts: { requirePublic?: boolean; bands?: string[]; rgb?: CompositeRequest } = {},
 ): Promise<FieldScienceSource | null> {
   const ds = await fetchFieldDataset(supabase, field, opts).catch((err) => {
     console.error(`FitsGL science source unavailable for field ${field}:`, err);
@@ -293,21 +417,64 @@ export async function resolveFieldScienceSource(
   if (!ds) return null;
 
   const inventory = ds.config.dataset.bands;
-  let chosen = inventory;
-  if (opts.bands && opts.bands.length > 0) {
-    const byName = new Map(inventory.map((b) => [b.name.toLowerCase(), b]));
-    const unknown = opts.bands.filter((n) => !byName.has(n.toLowerCase()));
+  const byName = new Map(inventory.map((b) => [b.name.toLowerCase(), b]));
+  const lookup = (names: string[]): FitsglBand[] => {
+    const unknown = names.filter((n) => !byName.has(n.toLowerCase()));
     if (unknown.length > 0) throw new UnknownBandError(unknown, inventory.map((b) => b.name));
-    chosen = opts.bands.map((n) => byName.get(n.toLowerCase())!);
+    return names.map((n) => byName.get(n.toLowerCase())!);
+  };
+
+  const chosen = opts.bands === undefined ? inventory : lookup(opts.bands);
+  let rgbChosen: [FitsglBand, FitsglBand, FitsglBand] | null = null;
+  let weightedChosen: Array<{ band: FitsglBand; weight: BandWeight }> | null = null;
+  if (opts.rgb === 'auto') {
+    rgbChosen = defaultRgbBands(ds.config);
+    weightedChosen = rgbChosen ? defaultWeightedBands(ds.config) : null;
+  } else if (Array.isArray(opts.rgb)) {
+    rgbChosen = lookup(opts.rgb) as [FitsglBand, FitsglBand, FitsglBand];
+  } else if (opts.rgb !== undefined) {
+    const members = opts.rgb.rainbow === null ? inventory : lookup(opts.rgb.rainbow);
+    if (members.length > 0) {
+      const rainbow = rainbowBands(members);
+      rgbChosen = rainbow.triple;
+      weightedChosen = rainbow.weighted;
+    }
   }
 
-  const bands = await Promise.all(
-    chosen.map(async (b) => ({
-      ...(await toBandSource(b, ds.sourceVersion)),
-      name: b.name,
-      label: b.label,
-      pivotUm: b.pivotUm,
-    })),
-  );
-  return { bands, datasetPrefix: ds.prefix, datasetVersion: ds.sourceVersion };
+  // Each band's manifest loads once even when it serves both a panel and a channel.
+  const loaded = new Map<string, Promise<ScienceBand>>();
+  const load = (b: FitsglBand): Promise<ScienceBand> => {
+    let p = loaded.get(b.name);
+    if (!p) {
+      p = toBandSource(b, ds.sourceVersion).then((src) => ({
+        ...src,
+        name: b.name,
+        label: b.label,
+        pivotUm: b.pivotUm,
+        trilogy: b.stats?.trilogy,
+      }));
+      loaded.set(b.name, p);
+    }
+    return p;
+  };
+
+  const [bands, triple, weightedBands] = await Promise.all([
+    Promise.all(chosen.map(load)),
+    rgbChosen ? Promise.all(rgbChosen.map(load)) : Promise.resolve(undefined),
+    weightedChosen ? Promise.all(weightedChosen.map((e) => load(e.band))) : Promise.resolve(undefined),
+  ]);
+  let rgb: CompositeSource | undefined;
+  if (triple) {
+    rgb = { triple: triple as CompositeSource['triple'] };
+    if (weightedBands && weightedChosen) {
+      rgb.weighted = { bands: weightedBands, weights: weightedChosen.map((e) => e.weight) };
+    }
+  }
+  return {
+    bands,
+    rgb,
+    trilogyParams: producerTrilogyParams(ds.config),
+    datasetPrefix: ds.prefix,
+    datasetVersion: ds.sourceVersion,
+  };
 }

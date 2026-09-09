@@ -27,6 +27,40 @@ export interface ShutterGeometry {
   aperture_height_arcsec?: number;
 }
 
+/**
+ * The four sky corners (ICRS deg) of a shutter, from its centre + position angle +
+ * full angular extents. Worked in a local tangent plane of (East, North) arcsec
+ * offsets: the along-slit (height) axis points `paDeg` East of North, the across-slit
+ * (width) axis is perpendicular; East offsets divide by cos(dec) to become ΔRA.
+ * Returned CCW, non-self-intersecting. Shared by the FitsGL map surface (sky-polygon
+ * regions) and the server cutout figure (SVG polygons projected through the panel WCS).
+ */
+export function shutterCorners(
+  ra: number,
+  dec: number,
+  paDeg: number,
+  widthArcsec: number,
+  heightArcsec: number,
+): Array<{ ra: number; dec: number }> {
+  const pa = (paDeg * Math.PI) / 180;
+  const sinPa = Math.sin(pa);
+  const cosPa = Math.cos(pa);
+  const hw = widthArcsec / 2;
+  const hh = heightArcsec / 2;
+  const cosDec = Math.cos((dec * Math.PI) / 180) || 1e-8;
+  // width axis û_w = (cosPa, -sinPa); height axis û_h = (sinPa, cosPa) in (East, North).
+  return [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+  ].map(([i, j]) => {
+    const dEast = i * hw * cosPa + j * hh * sinPa;
+    const dNorth = -i * hw * sinPa + j * hh * cosPa;
+    return { ra: ra + dEast / 3600 / cosDec, dec: dec + dNorth / 3600 };
+  });
+}
+
 export interface ShutterRect {
   /** Center X in output pixels */
   x: number;

@@ -5,7 +5,7 @@ Centralizes all URL construction and response parsing. Used by both the
 """
 
 import os
-from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 from ..exceptions import (
     APIError,
@@ -540,8 +540,13 @@ class APIClient:
         bands: Optional[List[str]] = None,
         size: int = 300,
         cols: Optional[int] = None,
-        stretch: str = "asinh",
+        stretch: str = "linear",
         colormap: str = "gray",
+        scaling: str = "snr",
+        snr_range: Optional[Tuple[float, float]] = None,
+        rgb: Optional[Union[bool, str, Sequence[str]]] = None,
+        rgb_stretch: Optional[str] = None,
+        shutters: bool = False,
     ) -> bytes:
         """Fetch a multi-band cutout figure PNG (one labeled panel per band).
 
@@ -560,9 +565,30 @@ class APIClient:
         cols : int, optional
             Panels per row (default: all in one row).
         stretch : str, optional
-            One of ``linear``, ``log``, ``sqrt``, ``asinh`` (default).
+            One of ``linear`` (default), ``log``, ``sqrt``, ``asinh``.
         colormap : str, optional
             e.g. ``gray`` (default), ``viridis``, ``magma``, ``inferno``.
+        scaling : str, optional
+            Single-band panel limits: ``snr`` (default) sets black/white at
+            ``snr_range`` σ about each cutout's own sky level (σ from the
+            MAD of the panel, so every band reads alike), or ``percentile``
+            for robust 0.5–99.5% cuts.
+        snr_range : (float, float), optional
+            The SNR window in σ; default ``(-5, 8)``.
+        rgb : bool, str or list of str, optional
+            Append an RGB composite panel: ``True`` for the dataset's default
+            view (the map's weighted trilogy mix when the producer declared
+            one), ``"rainbow"`` for every band wavelength-ordered blue→red
+            (or ``"rainbow:f115w,f200w,f444w"`` over a band list), or three
+            band names ``[r, g, b]``. When ``rgb`` is given and ``bands`` is
+            not, the figure is the composite alone.
+        rgb_stretch : str, optional
+            Composite transfer: ``trilogy`` (each band on its own precomputed
+            levels, as the map) or ``linear``/``log``/``sqrt``/``asinh`` over
+            one shared range. Default: trilogy when the dataset carries the
+            stats, else asinh.
+        shutters : bool, optional
+            Overlay the NIRSpec MSA shutter footprints in view.
         """
         params: Dict[str, Union[str, int, float]] = {
             "field": field, "ra": ra, "dec": dec, "fov": fov,
@@ -572,6 +598,20 @@ class APIClient:
             params["bands"] = ",".join(bands)
         if cols is not None:
             params["cols"] = cols
+        if scaling != "snr":
+            params["scaling"] = scaling
+        if snr_range is not None:
+            params["snr_lo"], params["snr_hi"] = snr_range
+        if rgb is True:
+            params["rgb"] = "auto"
+        elif isinstance(rgb, str):
+            params["rgb"] = rgb
+        elif rgb:
+            params["rgb"] = ",".join(rgb)
+        if rgb_stretch is not None:
+            params["rgb_stretch"] = rgb_stretch
+        if shutters:
+            params["shutters"] = "1"
         response = self._session.get("/cutout/figure", params=params, timeout=120)
         _handle_response_error(response, f"Cutout figure at ({ra}, {dec}) in {field}")
         return response.content

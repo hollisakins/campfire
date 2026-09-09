@@ -52,6 +52,7 @@ import { WHOLE_FIELD_BBOX } from '@/lib/hooks/useFieldSlits';
 import { MARKER_QUALITY_COLORS, QUALITY_LABELS } from '@/lib/types';
 import { makeFitsglWorker } from '@/lib/fits/fitsglWorker';
 import { getObservationColor } from './observation-colors';
+import { SHUTTER_HEIGHT_ARCSEC, SHUTTER_WIDTH_ARCSEC, shutterCorners } from '@/lib/utils/shutter-overlay';
 import { BandRail, RGB_OPTION } from './fitsgl/BandRail';
 import { DisplayPanel } from './fitsgl/DisplayPanel';
 import { LayersPanel } from './fitsgl/LayersPanel';
@@ -68,10 +69,6 @@ const RULER_ACCENT = '#fb923c';
 const GRID_LINE = 'rgba(148,163,184,0.35)';
 const GRID_LABEL = 'rgba(203,213,225,0.8)';
 
-/** Default MSA shutter extents (arcsec); fixed slits carry their own aperture dims.
- *  Mirrors CanvasSlitLayer's constants so the two map surfaces render identically. */
-const SHUTTER_WIDTH_ARCSEC = 0.22;
-const SHUTTER_HEIGHT_ARCSEC = 0.46;
 /** Stuck-closed shutters read red-dashed on both surfaces. */
 const SHUTTER_STUCK_COLOR = '#ef4444';
 
@@ -129,39 +126,6 @@ function updateMapUrl(params: Record<string, string | undefined>) {
   window.history.replaceState(null, '', url.toString());
 }
 
-
-/**
- * The four sky corners (ICRS deg) of a shutter, from its centre + position angle +
- * full angular extents. Worked in a local tangent plane of (East, North) arcsec
- * offsets: the along-slit (height) axis points `paDeg` East of North, the across-slit
- * (width) axis is perpendicular; East offsets divide by cos(dec) to become ΔRA.
- * Returned CCW, non-self-intersecting.
- */
-function shutterCorners(
-  ra: number,
-  dec: number,
-  paDeg: number,
-  widthArcsec: number,
-  heightArcsec: number,
-): Array<{ ra: number; dec: number }> {
-  const pa = (paDeg * Math.PI) / 180;
-  const sinPa = Math.sin(pa);
-  const cosPa = Math.cos(pa);
-  const hw = widthArcsec / 2;
-  const hh = heightArcsec / 2;
-  const cosDec = Math.cos((dec * Math.PI) / 180) || 1e-8;
-  // width axis û_w = (cosPa, -sinPa); height axis û_h = (sinPa, cosPa) in (East, North).
-  return [
-    [-1, -1],
-    [1, -1],
-    [1, 1],
-    [-1, 1],
-  ].map(([i, j]) => {
-    const dEast = i * hw * cosPa + j * hh * sinPa;
-    const dNorth = -i * hw * sinPa + j * hh * cosPa;
-    return { ra: ra + dEast / 3600 / cosDec, dec: dec + dNorth / 3600 };
-  });
-}
 
 /**
  * Map NIRSpec shutters to FitsGL sky-polygon regions (epic #337, Phase 4b). Each

@@ -3,6 +3,7 @@ import { getRequestIdentity } from '@/lib/auth/identity';
 import { LogIn } from 'lucide-react';
 import { getFitsglDatasets } from '@/lib/actions/map';
 import { getNircamFields } from '@/lib/actions/nircam';
+import { getLinkScope } from '@/lib/api-helpers';
 import { CutoutsContent } from './CutoutsContent';
 
 export const dynamic = 'force-dynamic';
@@ -51,9 +52,10 @@ export default async function NircamFieldCutoutsPage({ params, searchParams }: C
   }
 
   // The field's cutout source + the field list for the switcher dropdown.
-  const [datasets, fieldsResult] = await Promise.all([
+  const [datasets, fieldsResult, linkScope] = await Promise.all([
     getFitsglDatasets(field),
     getNircamFields(),
+    getLinkScope(user.id),
   ]);
   const dataset = datasets.find((d) => d.kind === 'field') ?? null;
 
@@ -62,11 +64,24 @@ export default async function NircamFieldCutoutsPage({ params, searchParams }: C
       field={field}
       dataset={dataset}
       allFields={fieldsResult.fields}
+      canOverlayShutters={linkScope === null}
       initial={{
         ra: str(sp.ra),
         dec: str(sp.dec),
         fov: str(sp.fov),
         bands: str(sp.bands),
+        rgb: str(sp.rgb),
+        rgb_stretch: str(sp.rgb_stretch),
+        shutters: str(sp.shutters),
+        size: str(sp.size),
+        cols: str(sp.cols),
+        stretch: str(sp.stretch),
+        scaling: str(sp.scaling),
+        snr_lo: str(sp.snr_lo),
+        snr_hi: str(sp.snr_hi),
+        colormap: str(sp.colormap),
+        noiselum: str(sp.noiselum),
+        satpercent: str(sp.satpercent),
       }}
     />
   );
