@@ -9,23 +9,15 @@ import { installAuthChannelBfcacheGuard } from '@/lib/supabase/bfcache-auth-chan
 import { UserProfile } from '@/lib/types';
 import { generateUniqueUsername } from '@/lib/utils/username';
 
-interface ProgramAccessInfo {
-  hasProprietaryAccess: boolean;
-  grantedPrograms: number[];
-  publicPrograms: number[];
-}
-
 interface AuthContextType {
   user: User | null;
   userProfile: UserProfile | null;
   session: Session | null;
   loading: boolean;
   needsProfileSetup: boolean; // True if user is authenticated but has no profile
-  needsAccessCode: boolean; // True if user has no proprietary program access
   // True when this session came from a share link. Drives the stripped nav and
   // suppresses account-oriented UI the visitor has no account for.
   isLinkAccount: boolean;
-  programAccess: ProgramAccessInfo | null;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signUp: (
     email: string,
@@ -34,7 +26,6 @@ interface AuthContextType {
   ) => Promise<{ error: Error | null; existingAccount?: boolean }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>; // Manually refresh profile after setup
-  checkProgramAccess: () => Promise<void>; // Refresh program access state
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -45,8 +36,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [needsProfileSetup, setNeedsProfileSetup] = useState(false);
-  const [needsAccessCode, setNeedsAccessCode] = useState(false);
-  const [programAccess, setProgramAccess] = useState<ProgramAccessInfo | null>(null);
 
   // Module singleton (lib/supabase/client.ts) — stable across renders.
   const supabase = createClient();
@@ -70,10 +59,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     cacheUserIdRef.current = id;
   }, [user?.id, queryClient]);
-  // The profile chain (user_profiles, then program-access in the background)
-  // has two triggers at boot: `getSession().then`, and the `SIGNED_IN` event
-  // auth-js emits from its session-recovery step *before* `getSession()`
-  // resolves (`INITIAL_SESSION` is a third, ignored below). #499 deduped the
+  // The profile load (user_profiles) has two triggers at boot:
+  // `getSession().then`, and the `SIGNED_IN` event auth-js emits from its
+  // session-recovery step *before* `getSession()` resolves (`INITIAL_SESSION`
+  // is a third, ignored below). #499 deduped the
   // subscriber by user id but left the `getSession()` path unguarded, so
   // every signed-in page load still ran the chain twice, 1 ms apart (#539).
   // Both triggers now go through one per-user gate: the second call for the
@@ -134,9 +123,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setSession(null);
           setUser(null);
           setUserProfile(null);
-          setProgramAccess(null);
           setNeedsProfileSetup(false);
-          setNeedsAccessCode(false);
           setLoading(false);
         }
         window.location.reload();
@@ -171,23 +158,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (error) throw error;
       setUserProfile(data);
       setNeedsProfileSetup(false);
-
-      // Share links (docs/design-public-mirror.md §7): a link account has no
-      // program grants by design -- its scope comes from share_links, not
-      // user_program_access -- so the access-code prompt would fire on every
-      // shared view and send the visitor to a /profile page they cannot use.
-      // Skip the whole check for them.
-      if (data?.is_link_account) {
-        setProgramAccess(null);
-        setNeedsAccessCode(false);
-        return;
-      }
-
-      // Program access only drives the access-code prompt (needsAccessCode /
-      // programAccess); no science query waits on it. Resolve it in the
-      // background so `loading` clears — and the list/object queries start —
-      // as soon as the session and profile are known (#499).
-      void fetchProgramAccess();
     } catch (error) {
       console.error('Error fetching user profile:', error);
       setUserProfile(null);
@@ -196,33 +166,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       profileGate().reset(userId);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const fetchProgramAccess = async () => {
-    try {
-      const response = await fetch('/api/profile/program-access', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to fetch program access');
-      }
-
-      const data = await response.json();
-      setProgramAccess(data);
-      setNeedsAccessCode(!data.hasProprietaryAccess);
-    } catch (error) {
-      console.error('Error fetching program access:', error);
-      setProgramAccess(null);
-      setNeedsAccessCode(false);
-    }
-  };
-
-  const checkProgramAccess = async () => {
-    if (user) {
-      await fetchProgramAccess();
     }
   };
 
@@ -302,8 +245,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     queryClient.clear();
     profileGate().reset();
     setNeedsProfileSetup(false);
-    setNeedsAccessCode(false);
-    setProgramAccess(null);
   };
 
   const value = {
@@ -312,14 +253,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     session,
     loading,
     needsProfileSetup,
-    needsAccessCode,
     isLinkAccount: userProfile?.is_link_account === true,
-    programAccess,
     signIn,
     signUp,
     signOut,
     refreshProfile,
-    checkProgramAccess,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

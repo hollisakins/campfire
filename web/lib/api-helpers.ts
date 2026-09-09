@@ -1,5 +1,4 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { createServiceClient } from '@/lib/supabase/service';
 import { getAccessContext, type LinkScope } from '@/lib/auth/access-context';
 
 /** Parse a comma-separated query-string value into a non-empty string list, or null. */
@@ -72,33 +71,4 @@ export async function getLinkScope(userId: string): Promise<LinkScope | null> {
  */
 export async function getAccessiblePrograms(userId: string): Promise<string[]> {
   return (await getAccessContext(userId)).accessibleSlugs;
-}
-
-/**
- * Check if user has any proprietary program access (granted programs, not public)
- * Used to determine if user needs to be prompted for an access code
- */
-export async function checkUserProgramAccess(userId: string): Promise<{
-  hasProprietaryAccess: boolean;
-  grantedPrograms: string[];
-  publicPrograms: string[];
-}> {
-  // Deliberately NOT memoized: the client calls this right after redeeming
-  // an access code to decide whether to keep prompting, and that answer must
-  // be fresh on whichever instance answers. Two reads, one hop.
-  const supabase = createServiceClient();
-  const [{ data: accessData }, { data: publicPrograms }] = await Promise.all([
-    supabase.from('user_program_access').select('program_slug').eq('user_id', userId),
-    supabase.from('programs').select('slug').eq('is_public', true),
-  ]);
-
-  const grantedPrograms = (accessData || []).map((a: { program_slug: string }) => a.program_slug);
-
-  const publicProgramSlugs = (publicPrograms || []).map((p: { slug: string }) => p.slug);
-
-  return {
-    hasProprietaryAccess: grantedPrograms.length > 0,
-    grantedPrograms,
-    publicPrograms: publicProgramSlugs,
-  };
 }

@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, Suspense, useTransition } from 'react';
-import Link from 'next/link';
 import { SignInLink } from '@/components/auth/SignInLink';
 import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
@@ -10,7 +9,7 @@ import { SpectraFilterBar, AdvancedFilterOptions } from '@/components/spectra/Sp
 import { PinnedObjectsBucket } from '@/components/spectra/PinnedObjectsBucket';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
 import { isValidSortColumn, defaultSortColumn } from '@/lib/actions/spectra-types';
-import { LogIn, Loader2, Info, KeyRound } from 'lucide-react';
+import { LogIn, Loader2 } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import {
   parseFiltersFromURL,
@@ -25,7 +24,7 @@ import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
 
 // Inner component that uses useSearchParams (must be wrapped in Suspense)
 function SpectraPageContent() {
-  const { user, loading: authLoading, needsAccessCode, isLinkAccount } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -209,27 +208,6 @@ function SpectraPageContent() {
         </div>
         <PinnedObjectsBucket />
       </div>
-
-      {/* Access Code Banner for users without proprietary access. Never for
-          share-link visitors: they have no account to redeem a code against,
-          and /profile renders empty for them (design-public-mirror.md §7). */}
-      {!authLoading && user && needsAccessCode && !isLinkAccount && (
-        <div className="mb-6 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-900 rounded-lg flex items-start gap-3">
-          <Info className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <p className="text-sm text-blue-900 dark:text-blue-200">
-              <strong>You&apos;re viewing public programs only.</strong> To access proprietary programs, redeem an access code.
-            </p>
-          </div>
-          <Link
-            href="/profile#access-code"
-            className="flex items-center gap-2 px-4 py-2 bg-primary text-on-primary text-sm rounded-md hover:bg-primary-hover transition-colors whitespace-nowrap"
-          >
-            <KeyRound className="w-4 h-4" />
-            Enter Code
-          </Link>
-        </div>
-      )}
 
       {/* Filter Bar */}
       <div className="mb-6">
