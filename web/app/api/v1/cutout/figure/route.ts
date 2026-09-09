@@ -28,11 +28,13 @@ const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
  * - `bands` single-band panels (default: every band — unless `rgb` is given,
  *   when the default is none, so `rgb` alone yields just the composite)
  * - `rgb` appends an RGB composite panel: `auto` (the dataset's default
- *   view, or reddest/middle/bluest by wavelength) or three band names `r,g,b`
+ *   view — the producer's full weighted band table under trilogy, else its
+ *   r/g/b triple, else reddest/middle/bluest by wavelength) or three band
+ *   names `r,g,b`
  * - `rgb_stretch` the composite's transfer: `trilogy` (each band on its own
  *   precomputed levels — the map's faithful composite) or a plain curve over
- *   one shared range (the map's simple RGB); `auto` picks trilogy when the
- *   dataset carries the stats
+ *   one shared range of the triple (the map's simple RGB); `auto` picks
+ *   trilogy when the dataset carries the stats
  * - `noiselum` / `satpercent` trilogy knobs over the producer's tuning
  * - `shutters=1` overlays the NIRSpec MSA shutter footprints in view
  * - `size` panel edge in px, clamped 64–1024 (default 300)
@@ -100,7 +102,9 @@ export async function GET(request: NextRequest) {
   const satpercentParam = params.get('satpercent');
   if (satpercentParam !== null) {
     const v = parseFloat(satpercentParam);
-    if (!(v > 0 && v <= 50)) return bad('Invalid parameter: satpercent must be in (0, 50]');
+    // The precomputed tail percentiles span p99..p99.999, so the core's
+    // saturationValue clamps satpercent to [0.001, 1] — the map's slider range.
+    if (!(v >= 0.001 && v <= 1)) return bad('Invalid parameter: satpercent must be in [0.001, 1]');
     trilogy.satpercent = v;
   }
   const wantShutters = TRUTHY.has((params.get('shutters') ?? '').trim().toLowerCase());
@@ -175,11 +179,17 @@ export async function GET(request: NextRequest) {
       shutters,
     });
 
+    // An admin's render can carry draft-backed imagery and unpublished
+    // shutters, so it is user-dependent: never cached, even in that admin's
+    // own browser (a later account on the same browser must not replay it).
+    // Everyone else's is the same bytes for the same URL within a session;
+    // `Vary: Cookie` partitions the browser cache by session (AGENTS.md).
     return new Response(new Uint8Array(png), {
       status: 200,
       headers: {
         'Content-Type': 'image/png',
-        'Cache-Control': 'private, max-age=3600',
+        'Cache-Control': isAdmin ? 'private, no-store' : 'private, max-age=3600',
+        Vary: 'Cookie',
       },
     });
   } catch (error) {

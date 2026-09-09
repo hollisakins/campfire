@@ -14,6 +14,7 @@ import {
   parseWcs,
   skyToPix,
   trilogyLevelsForBands,
+  type BandWeight,
   type StretchMode,
   type ColormapName,
   type TrilogyParams,
@@ -23,10 +24,10 @@ import { getObservationColor } from '@/components/map/observation-colors';
 import { shutterCorners } from '@/lib/utils/shutter-overlay';
 import { bandToOutput } from './index';
 import { labelAscent, labelSvg, labelWidth } from './label-text';
-import { percentileLimits, renderRGB, renderSingleBand, type Limits } from './render';
+import { percentileLimits, renderRGB, renderSingleBand, renderWeightedTrilogy, type Limits } from './render';
 import { northUpWcsHeader } from './reproject';
 import type { FigureShutter } from './shutters';
-import type { FieldScienceSource, ScienceBand } from './source';
+import type { CompositeSource, FieldScienceSource, ScienceBand } from './source';
 
 /** Gap between panels, px. */
 export const FIGURE_GAP = 4;
@@ -63,9 +64,17 @@ export interface FigureRequest {
   shutters?: FigureShutter[];
 }
 
-/** Trilogy composite possible: every channel band carries precomputed stats. */
-export function rgbHasTrilogyStats(rgb: readonly ScienceBand[]): boolean {
-  return rgb.every((b) => b.trilogy !== undefined);
+/** The bands a trilogy composite stretches: the producer's weighted table when
+ *  the request is the dataset default, else the `[R, G, B]` triple on pure
+ *  per-channel weights — `trilogyComposite`'s two cases, as on the map. */
+export function trilogyBands(rgb: CompositeSource): { bands: ScienceBand[]; weights: BandWeight[] } {
+  if (rgb.weighted) return rgb.weighted;
+  return { bands: [...rgb.triple], weights: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] };
+}
+
+/** Trilogy composite possible: every participating band carries precomputed stats. */
+export function rgbHasTrilogyStats(rgb: CompositeSource): boolean {
+  return trilogyBands(rgb).bands.every((b) => b.trilogy !== undefined);
 }
 
 interface Panel {
@@ -109,34 +118,33 @@ export async function renderFigurePng(src: FieldScienceSource, req: FigureReques
     return { rgba, label: bandLabel(band) };
   });
 
-  // The composite reprojects its three channels independently onto that grid too.
+  // The composite reprojects each participating band independently onto that grid too.
   const composite = async (): Promise<Panel | null> => {
     if (!req.rgb || !src.rgb) return null;
     const rgb = src.rgb;
-    const outs = await Promise.all(rgb.map(outputFor));
-    const channels = [outs[0].data, outs[1].data, outs[2].data] as const;
     let rgba: Uint8ClampedArray;
+    let members: ScienceBand[];
     if (req.rgb.stretch === 'trilogy') {
+      // Each band stretched by its OWN levels, channels as weighted averages —
+      // the map's faithful trilogy, on the producer's full weight table for the
+      // dataset default and on pure per-channel weights for an explicit triple.
       if (!rgbHasTrilogyStats(rgb)) {
-        throw new Error('trilogy composite needs precomputed stats on every RGB band');
+        throw new Error('trilogy composite needs precomputed stats on every participating band');
       }
-      // Each band stretched by its OWN levels — the map's faithful 3-band
-      // trilogy (trilogyComposite's per-channel special case).
+      const { bands, weights } = trilogyBands(rgb);
+      members = bands;
+      const outs = await Promise.all(bands.map(outputFor));
       const params: TrilogyParams = { ...src.trilogyParams, ...req.rgb.trilogy };
-      const levels = trilogyLevelsForBands(rgb.map((b) => b.trilogy as TrilogyStats), params);
-      rgba = renderRGB(channels, size, size, {
-        limits: [
-          { lo: levels[0].x0, hi: levels[0].x2 },
-          { lo: levels[1].x0, hi: levels[1].x2 },
-          { lo: levels[2].x0, hi: levels[2].x2 },
-        ],
-        stretch: 'trilogy',
-        trilogyK: levels.map((l) => l.k),
-      });
+      const levels = trilogyLevelsForBands(bands.map((b) => b.trilogy as TrilogyStats), params);
+      rgba = renderWeightedTrilogy(outs.map((o) => o.data), size, size, { levels, weights });
     } else {
-      // Simple RGB: one SHARED range (the envelope of the per-channel
-      // percentile cuts) so the composite stays interpretable — the bands
-      // share flux units, exactly as the map's simple-RGB shared handle.
+      // Simple RGB is strictly the triple (as on the map): one SHARED range
+      // (the envelope of the per-channel percentile cuts) so the composite
+      // stays interpretable — the bands share flux units, exactly as the
+      // map's simple-RGB shared handle.
+      members = [...rgb.triple];
+      const outs = await Promise.all(rgb.triple.map(outputFor));
+      const channels = [outs[0].data, outs[1].data, outs[2].data] as const;
       const per = channels.map((c) => percentileLimits(c));
       const shared: Limits = {
         lo: Math.min(...per.map((l) => l.lo)),
@@ -150,7 +158,7 @@ export async function renderFigurePng(src: FieldScienceSource, req: FigureReques
     return {
       rgba,
       label: 'RGB',
-      sublabel: rgb.map(bandLabel).join(' / '),
+      sublabel: members.map(bandLabel).join(' / '),
     };
   };
 

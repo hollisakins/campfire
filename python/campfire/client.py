@@ -910,7 +910,8 @@ class Campfire:
             e.g. ``gray`` (default), ``viridis``, ``magma``, ``inferno``.
         rgb : bool or list of str, optional
             Append an RGB composite panel: ``True`` for the dataset's default
-            channel assignment, or three band names ``[r, g, b]``. When
+            view (the map's weighted trilogy mix when the producer declared
+            one), or three band names ``[r, g, b]``. When
             ``rgb`` is given and ``bands`` is not, the figure is the
             composite alone.
         rgb_stretch : str, optional

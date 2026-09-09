@@ -441,7 +441,7 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
                   <span className="text-xs text-text-tertiary">
                     {rgbChannels
                       ? RGB_ROLES.map((r) => rgbChannels[r].toUpperCase()).join(' / ')
-                      : 'default channels'}
+                      : 'map default'}
                   </span>
                 )}
                 {!canRgb && <span className="text-xs">(needs ≥ 3 bands)</span>}
@@ -589,8 +589,8 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
                               <input
                                 id="cutout-satpercent"
                                 type="number"
-                                min={0.0001}
-                                max={50}
+                                min={0.001}
+                                max={1}
                                 step="any"
                                 placeholder="default"
                                 disabled={!rgbOn}
@@ -603,8 +603,9 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
                         )}
                       </div>
                       <p className="mt-1.5 text-xs text-text-tertiary">
-                        Trilogy stretches each band on its own precomputed levels, as the map does;
-                        the other curves share one range across the three channels.
+                        Trilogy stretches each band on its own precomputed levels, as the map does
+                        (with auto channels, the producer&apos;s full weighted band mix); the other
+                        curves share one range across the three channels.
                       </p>
                     </div>
                   )}

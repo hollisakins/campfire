@@ -9,7 +9,16 @@
 // encoded image is actually North-up — the same convention boundary the legacy
 // stack handles in `tile-compositing.ts`'s `fitsToWorldPixel`.
 
-import { applyStretch, colormapRGB, COLORMAP_SIZE, type StretchMode, type ColormapName } from '@fitsgl/core';
+import {
+  applyStretch,
+  colormapRGB,
+  COLORMAP_SIZE,
+  weightedTrilogyPixel,
+  type BandWeight,
+  type ColormapName,
+  type StretchMode,
+  type TrilogyLevels,
+} from '@fitsgl/core';
 
 export interface Limits {
   lo: number;
@@ -101,6 +110,50 @@ export function renderRGB(
         rgba[o + c] = Math.round(scaleValue(v, limits[c].lo, limits[c].hi, stretch, kFor(c)) * 255);
       }
       if (any) rgba[o + 3] = 255; // opaque where at least one band has data
+    }
+  }
+  return rgba;
+}
+
+/**
+ * Weighted multi-band trilogy composite — the map's faithful composite (Dan
+ * Coe's trilogy): each band normalized over its own `[x0, x2]` and stretched
+ * with its own `k`, channels as weight-averaged sums. Per-pixel arithmetic is
+ * the core's `weightedTrilogyPixel`, the CPU reference the shader transcribes,
+ * so a cutout and the map agree by construction. `bands`, `levels` and
+ * `weights` are parallel. Opaque where at least one band has data.
+ * Input rows are FITS bottom-up; output RGBA rows are raster top-down.
+ */
+export function renderWeightedTrilogy(
+  bands: readonly Float32Array[],
+  width: number,
+  height: number,
+  opts: { levels: readonly TrilogyLevels[]; weights: readonly BandWeight[] },
+): Uint8ClampedArray {
+  const { levels, weights } = opts;
+  if (bands.length !== levels.length || bands.length !== weights.length) {
+    throw new Error('renderWeightedTrilogy: bands, levels and weights must be parallel');
+  }
+  const n = bands.length;
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  const values = new Array<number>(n);
+  for (let y = 0; y < height; y++) {
+    const src = y * width;
+    const dst = (height - 1 - y) * width; // FITS bottom-up → raster top-down
+    for (let x = 0; x < width; x++) {
+      let any = false;
+      for (let i = 0; i < n; i++) {
+        const v = bands[i][src + x];
+        values[i] = v;
+        if (!Number.isNaN(v)) any = true;
+      }
+      if (!any) continue; // leave transparent
+      const [r, g, b] = weightedTrilogyPixel(values, levels, weights);
+      const o = (dst + x) * 4;
+      rgba[o] = Math.round(r * 255);
+      rgba[o + 1] = Math.round(g * 255);
+      rgba[o + 2] = Math.round(b * 255);
+      rgba[o + 3] = 255;
     }
   }
   return rgba;

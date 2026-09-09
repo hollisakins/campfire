@@ -9,8 +9,10 @@
 
 import {
   DEFAULT_TRILOGY_PARAMS,
+  MAX_BANDS,
   loadFitsglConfig,
   trilogyLevels,
+  type BandWeight,
   type FitsglConfig,
   type StretchMode,
   type TrilogyParams,
@@ -129,6 +131,37 @@ export function defaultRgbBands(config: FitsglConfig): [FitsglBand, FitsglBand, 
     return [ordered[ordered.length - 1], ordered[mid], ordered[0]];
   }
   return null;
+}
+
+/**
+ * The producer's weighted composite — `defaultView.weights`, the full per-band
+ * (R,G,B) contribution table the CAMPFIRE producer emits so the map opens on the
+ * faithful multi-band trilogy rather than three representatives. Merged exactly
+ * as the map's `trilogyComposite` (duplicates summed, declaration order kept),
+ * names outside the inventory dropped, capped at the renderer's `MAX_BANDS`.
+ * `null` when the producer declared none.
+ */
+export function defaultWeightedBands(
+  config: FitsglConfig,
+): Array<{ band: FitsglBand; weight: BandWeight }> | null {
+  const weights = config.defaultView.weights;
+  if (!weights || weights.length === 0) return null;
+  const byName = new Map(config.dataset.bands.map((b) => [b.name, b]));
+  const merged = new Map<string, [number, number, number]>();
+  for (const { band, weight } of weights) {
+    if (!byName.has(band)) continue;
+    const cur = merged.get(band);
+    if (cur === undefined) merged.set(band, [weight[0], weight[1], weight[2]]);
+    else {
+      cur[0] += weight[0];
+      cur[1] += weight[1];
+      cur[2] += weight[2];
+    }
+  }
+  const entries = [...merged.entries()]
+    .slice(0, MAX_BANDS)
+    .map(([name, weight]) => ({ band: byName.get(name)!, weight: weight as BandWeight }));
+  return entries.length > 0 ? entries : null;
 }
 
 /** The producer's trilogy knobs over the library defaults (see `displayDefaults`). */
@@ -294,12 +327,23 @@ export interface ScienceBand extends BandSource {
   trilogy?: TrilogyStats;
 }
 
+/** The composite a figure was asked for, resolved against the inventory. */
+export interface CompositeSource {
+  /** The `[R, G, B]` channel bands: an explicit triple, or the dataset's
+   *  default (producer view / wavelength-ordered). Drives the simple
+   *  shared-range composite, and the trilogy one when `weighted` is absent. */
+  triple: [ScienceBand, ScienceBand, ScienceBand];
+  /** The producer's full weighted band table (`rgb=auto` only): the faithful
+   *  multi-band trilogy the map opens on. Each band stretched on its own
+   *  levels, channels as weighted averages (`weightedTrilogyPixel`). */
+  weighted?: { bands: ScienceBand[]; weights: BandWeight[] };
+}
+
 export interface FieldScienceSource {
   /** One entry per requested band, in request (or inventory) order. */
   bands: ScienceBand[];
-  /** The `[R, G, B]` composite bands when one was requested and the field can
-   *  serve it (an explicit triple, or the dataset default for `'auto'`). */
-  rgb?: [ScienceBand, ScienceBand, ScienceBand];
+  /** The composite when one was requested and the field can serve it. */
+  rgb?: CompositeSource;
   /** Producer trilogy knobs over the library defaults — the composite's
    *  baseline, which a request may override knob by knob. */
   trilogyParams: TrilogyParams;
@@ -362,13 +406,23 @@ export async function resolveFieldScienceSource(
     return p;
   };
 
-  const [bands, rgb] = await Promise.all([
+  const weightedChosen = opts.rgb === 'auto' && rgbChosen ? defaultWeightedBands(ds.config) : null;
+
+  const [bands, triple, weightedBands] = await Promise.all([
     Promise.all(chosen.map(load)),
     rgbChosen ? Promise.all(rgbChosen.map(load)) : Promise.resolve(undefined),
+    weightedChosen ? Promise.all(weightedChosen.map((e) => load(e.band))) : Promise.resolve(undefined),
   ]);
+  let rgb: CompositeSource | undefined;
+  if (triple) {
+    rgb = { triple: triple as CompositeSource['triple'] };
+    if (weightedBands && weightedChosen) {
+      rgb.weighted = { bands: weightedBands, weights: weightedChosen.map((e) => e.weight) };
+    }
+  }
   return {
     bands,
-    rgb: rgb as FieldScienceSource['rgb'],
+    rgb,
     trilogyParams: producerTrilogyParams(ds.config),
     datasetPrefix: ds.prefix,
     datasetVersion: ds.sourceVersion,
