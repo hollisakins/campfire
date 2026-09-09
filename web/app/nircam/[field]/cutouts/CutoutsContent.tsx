@@ -222,10 +222,15 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
     setPreviewError(null);
     // Make the request shareable: mirror it into the page URL without a
     // server round-trip (the field is the route segment, not a query key).
+    // The band list is always explicit here: the figure request may omit
+    // `bands` to mean "every band", but on this page an absent `bands` AND
+    // `rgb` is a fresh visit (composite alone), so an all-bands strip would
+    // otherwise reload as the composite.
     const pageParams = new URLSearchParams(figureQuery);
     for (const k of ['field', 'size', 'cols', 'stretch', 'colormap', 'noiselum', 'satpercent']) {
       pageParams.delete(k);
     }
+    if (selectedBands.length > 0) pageParams.set('bands', selectedBands.join(','));
     window.history.replaceState(null, '', `${cutoutsRoute(field)}?${pageParams.toString()}`);
     try {
       const res = await fetch(`/api/v1/cutout/figure?${figureQuery}`, { signal: controller.signal });
@@ -246,7 +251,7 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
     } finally {
       if (abortRef.current === controller) setPreviewLoading(false);
     }
-  }, [figureQuery, field]);
+  }, [figureQuery, field, selectedBands]);
 
   // Auto-generate when the page arrives with a shareable request in the URL.
   const autoRan = useRef(false);
