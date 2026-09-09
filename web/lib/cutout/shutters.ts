@@ -62,3 +62,20 @@ export async function fetchShuttersInBox(
   if (error) throw new Error(`shutters query failed for field ${field}: ${error.message}`);
   return (data ?? []) as unknown as FigureShutter[];
 }
+
+/**
+ * The field's observation names (active `observations` rows, sorted) — the
+ * palette index space for the overlay, so an observation keeps its colour
+ * whatever else happens to share the field of view. Falls back to the
+ * in-view set when the registry has no rows for the field.
+ */
+export async function fetchFieldObservations(supabase: SupabaseClient, field: string): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('observations')
+    .select('name')
+    .eq('field', field)
+    .is('retired_at', null)
+    .order('name');
+  if (error) throw new Error(`observations query failed for field ${field}: ${error.message}`);
+  return (data ?? []).map((r) => (r as { name: string }).name);
+}

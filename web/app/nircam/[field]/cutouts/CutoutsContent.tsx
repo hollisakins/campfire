@@ -105,7 +105,10 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
   const initialBands = useMemo(() => {
     if (initial.bands === undefined) return null;
     const wanted = new Set(initial.bands.split(',').map((b) => b.trim().toLowerCase()).filter(Boolean));
-    return bandList.filter((b) => wanted.has(b.toLowerCase()));
+    // A list naming no band of THIS field (a link carried over from another
+    // field) is treated as a fresh visit rather than an empty selection.
+    const matched = bandList.filter((b) => wanted.has(b.toLowerCase()));
+    return matched.length > 0 ? matched : null;
   }, [initial.bands, bandList]);
   const initialRgb = useMemo<{
     mode: CompositeMode;

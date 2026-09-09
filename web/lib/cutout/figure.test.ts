@@ -68,10 +68,15 @@ describe('shuttersSvg', () => {
     expect(polys[1]).toContain('#ef4444');
     expect(polys[1]).toContain('stroke-dasharray');
     expect(polys[0]).not.toContain('stroke-dasharray');
-    // The colour of obs-a does not depend on which other observations are in view.
-    const alone = shuttersSvg([a], CENTER.ra, CENTER.dec, scale, size);
+    // Given the field's full observation list, a colour never depends on
+    // which other observations are in view.
+    const field = ['obs-0', 'obs-a', 'obs-b', 'obs-c'];
     const colorOf = (s: string) => s.match(/stroke="(#[0-9a-f]{6})"/)![1];
-    expect(colorOf(alone)).toBe(colorOf(svg.split('<polygon')[1]));
+    const withB = shuttersSvg([a, shutter({ observation: 'obs-c' })], CENTER.ra, CENTER.dec, scale, size, field);
+    const alone = shuttersSvg([a], CENTER.ra, CENTER.dec, scale, size, field);
+    expect(colorOf(alone)).toBe(colorOf(withB.split('<polygon')[1]));
+    // Without the list the index space is the in-view set (documented fallback).
+    expect(colorOf(shuttersSvg([a], CENTER.ra, CENTER.dec, scale, size))).toBe(colorOf(svg.split('<polygon')[1]));
   });
 });
 

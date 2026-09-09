@@ -76,6 +76,10 @@ export interface FigureRequest {
   labels?: boolean;
   /** NIRSpec shutter footprints to draw on every panel. */
   shutters?: FigureShutter[];
+  /** The field's full observation list — the palette index space, so an
+   *  observation's colour never depends on what else is in view. Defaults
+   *  to the observations present in `shutters`. */
+  shutterObservations?: string[];
 }
 
 /** The bands a trilogy composite stretches: the producer's weighted table when
@@ -195,7 +199,7 @@ export async function renderFigurePng(src: FieldScienceSource, req: FigureReques
   // Every panel shares the grid, so the geometry is emitted ONCE in <defs>
   // and each panel <use>s it — a dense field is not duplicated per panel.
   const shutterSvg = req.shutters && req.shutters.length > 0
-    ? shuttersSvg(req.shutters, ra, dec, req.fovArcsec / size, size)
+    ? shuttersSvg(req.shutters, ra, dec, req.fovArcsec / size, size, req.shutterObservations)
     : '';
   const SHUTTERS_ID = 'shutters';
 
@@ -248,9 +252,10 @@ export async function renderFigurePng(src: FieldScienceSource, req: FigureReques
 
 /**
  * SVG polygons for the shutters on one panel, in that panel's raster frame
- * (exported for tests). Colours follow the map: a stable per-observation hue
- * (from the full set, so the palette does not reshuffle with the FOV),
- * stuck-closed red dashed.
+ * (exported for tests). Colours follow the map: a per-observation hue indexed
+ * into `observations` — the field's FULL list when the caller supplies it, so
+ * the palette does not reshuffle with the FOV — and stuck-closed red dashed.
+ * An observation missing from the list is appended, never dropped.
  */
 export function shuttersSvg(
   shutters: readonly FigureShutter[],
@@ -258,10 +263,14 @@ export function shuttersSvg(
   dec: number,
   scaleArcsec: number,
   size: number,
+  fieldObservations?: readonly string[],
 ): string {
   const wcs = parseWcs(northUpWcsHeader(ra, dec, scaleArcsec, size, size));
   if (!wcs) return '';
-  const observations = [...new Set(shutters.map((s) => s.observation))].sort();
+  const inView = [...new Set(shutters.map((s) => s.observation))].sort();
+  const observations = fieldObservations && fieldObservations.length > 0
+    ? [...fieldObservations, ...inView.filter((o) => !fieldObservations.includes(o))]
+    : inView;
   const strokeWidth = Math.max(1, size / 300);
   const polys = shutters.map((s) => {
     const corners = shutterCorners(

@@ -5,7 +5,12 @@ import { isAdminUser, getLinkScope } from '@/lib/api-helpers';
 import { resolveFieldScienceSource, UnknownBandError, type CompositeRequest } from '@/lib/cutout/source';
 import { DEFAULT_SNR_RANGE, type Scaling } from '@/lib/cutout/render';
 import { renderFigurePng, rgbHasTrilogyStats } from '@/lib/cutout/figure';
-import { fetchShuttersInBox, SHUTTER_OVERLAY_MAX_FOV_ARCSEC, type FigureShutter } from '@/lib/cutout/shutters';
+import {
+  fetchFieldObservations,
+  fetchShuttersInBox,
+  SHUTTER_OVERLAY_MAX_FOV_ARCSEC,
+  type FigureShutter,
+} from '@/lib/cutout/shutters';
 import { resolveRequestUser, parseScienceParams } from '../science-params';
 
 // Multi-band tile decode on a cold instance can exceed a short function budget (#497).
@@ -163,12 +168,17 @@ export async function GET(request: NextRequest) {
     // Shutters partly inside the box still matter, so search a little wider
     // than the half-FOV; the panel's nested <svg> clips the rest. The overlay
     // is bounded to small fields (see SHUTTER_OVERLAY_MAX_FOV_ARCSEC).
-    const shuttersPromise: Promise<FigureShutter[]> =
-      wantShutters && !linkScope && fovArcsec <= SHUTTER_OVERLAY_MAX_FOV_ARCSEC
-        ? fetchShuttersInBox(supabase, {
+    const drawShutters = wantShutters && !linkScope && fovArcsec <= SHUTTER_OVERLAY_MAX_FOV_ARCSEC;
+    const shuttersPromise: Promise<{ rows: FigureShutter[]; observations: string[] }> = drawShutters
+      ? Promise.all([
+          fetchShuttersInBox(supabase, {
             field, ra, dec, halfArcsec: fovArcsec * 0.75, includeUnpublished: isAdmin,
-          })
-        : Promise.resolve([]);
+          }),
+          // The field's full observation list keys the palette, so a
+          // footprint's colour is stable across positions and matches the map.
+          fetchFieldObservations(supabase, field),
+        ]).then(([rows, observations]) => ({ rows, observations }))
+      : Promise.resolve({ rows: [], observations: [] });
     // An early 4xx below must not leave this rejection unobserved; the real
     // `await` further down still surfaces the failure.
     shuttersPromise.catch(() => undefined);
@@ -202,7 +212,7 @@ export async function GET(request: NextRequest) {
     }
     if (src.bands.length === 0 && !rgbStretch) return bad('No panels requested');
 
-    const shutters = await shuttersPromise;
+    const { rows: shutters, observations: shutterObservations } = await shuttersPromise;
     const png = await renderFigurePng(src, {
       center: [ra, dec],
       fovArcsec,
@@ -214,6 +224,7 @@ export async function GET(request: NextRequest) {
       snrRange: [snrLo, snrHi],
       ...(rgbStretch && { rgb: { stretch: rgbStretch, trilogy } }),
       shutters,
+      shutterObservations,
     });
 
     // An admin's render can carry draft-backed imagery and unpublished
