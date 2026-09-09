@@ -49,6 +49,35 @@ export function percentileLimits(data: Float32Array, loPct = 0.5, hiPct = 99.5):
   return { lo, hi };
 }
 
+/** Panel scaling: display limits in units of the cutout's own noise
+ *  (`snr`: `median + [lo, hi]·σ`, σ from the MAD) or robust percentiles. */
+export type Scaling = 'snr' | 'percentile';
+/** Default SNR window, in σ: black at -5σ, white at +8σ. */
+export const DEFAULT_SNR_RANGE: readonly [number, number] = [-5, 8];
+
+/**
+ * Display limits in units of the local noise: the median of the finite
+ * pixels as the sky level and 1.4826·MAD as a robust σ (bright sources do
+ * not inflate it the way a plain RMS would), so every band's panel reads
+ * the same way — black at `loSigma` below sky, white at `hiSigma` above —
+ * whatever its depth. Falls back to percentile limits when the cutout has
+ * no measurable noise (constant or empty data).
+ */
+export function snrLimits(data: Float32Array, loSigma = DEFAULT_SNR_RANGE[0], hiSigma = DEFAULT_SNR_RANGE[1]): Limits {
+  const finite: number[] = [];
+  for (let i = 0; i < data.length; i++) {
+    const v = data[i];
+    if (Number.isFinite(v)) finite.push(v);
+  }
+  if (finite.length === 0) return { lo: 0, hi: 1 };
+  finite.sort((a, b) => a - b);
+  const median = finite[finite.length >> 1];
+  const dev = finite.map((v) => Math.abs(v - median)).sort((a, b) => a - b);
+  const sigma = 1.4826 * dev[dev.length >> 1];
+  if (!(sigma > 0) || !(hiSigma > loSigma)) return percentileLimits(data);
+  return { lo: median + loSigma * sigma, hi: median + hiSigma * sigma };
+}
+
 /** Single-band → RGBA via a stretch + colormap LUT. NaN → transparent.
  *  Input rows are FITS bottom-up; output RGBA rows are raster top-down. */
 export function renderSingleBand(

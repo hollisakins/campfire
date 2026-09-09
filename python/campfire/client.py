@@ -877,9 +877,11 @@ class Campfire:
         bands: Optional[List[str]] = None,
         size: int = 300,
         cols: Optional[int] = None,
-        stretch: str = "asinh",
+        stretch: str = "linear",
         colormap: str = "gray",
-        rgb: Optional[Union[bool, Sequence[str]]] = None,
+        scaling: str = "snr",
+        snr_range: Optional[Tuple[float, float]] = None,
+        rgb: Optional[Union[bool, str, Sequence[str]]] = None,
         rgb_stretch: Optional[str] = None,
         shutters: bool = False,
         cache: bool = True,
@@ -905,15 +907,23 @@ class Campfire:
         cols : int, optional
             Panels per row (default: all in one row).
         stretch : str, optional
-            One of ``linear``, ``log``, ``sqrt``, ``asinh`` (default).
+            One of ``linear`` (default), ``log``, ``sqrt``, ``asinh``.
         colormap : str, optional
             e.g. ``gray`` (default), ``viridis``, ``magma``, ``inferno``.
-        rgb : bool or list of str, optional
+        scaling : str, optional
+            Single-band panel limits: ``snr`` (default) sets black/white at
+            ``snr_range`` σ about each cutout's own sky level (σ from the
+            MAD of the panel, so every band reads alike), or ``percentile``
+            for robust 0.5–99.5% cuts.
+        snr_range : (float, float), optional
+            The SNR window in σ; default ``(-5, 8)``.
+        rgb : bool, str or list of str, optional
             Append an RGB composite panel: ``True`` for the dataset's default
             view (the map's weighted trilogy mix when the producer declared
-            one), or three band names ``[r, g, b]``. When
-            ``rgb`` is given and ``bands`` is not, the figure is the
-            composite alone.
+            one), ``"rainbow"`` for every band wavelength-ordered blue→red
+            (or ``"rainbow:f115w,f200w,f444w"`` over a band list), or three
+            band names ``[r, g, b]``. When ``rgb`` is given and ``bands`` is
+            not, the figure is the composite alone.
         rgb_stretch : str, optional
             Composite transfer: ``trilogy`` (each band on its own precomputed
             levels, as the map) or ``linear``/``log``/``sqrt``/``asinh`` over
@@ -928,17 +938,22 @@ class Campfire:
         cols_tag = f"_c{cols}" if cols is not None else ""
         if rgb is True:
             rgb_tag = "_rgb"
+        elif isinstance(rgb, str):
+            rgb_tag = f"_rgb-{rgb.replace(':', '-').replace(',', '-')}"
         elif rgb:
             rgb_tag = f"_rgb-{'-'.join(rgb)}"
         else:
             rgb_tag = ""
+        scale_tag = f"_{scaling}"
+        if scaling == "snr" and snr_range is not None:
+            scale_tag += f"{format(snr_range[0], 'g')}_{format(snr_range[1], 'g')}"
         if rgb_tag and rgb_stretch:
             rgb_tag += f"-{rgb_stretch}"
         shutter_tag = "_shutters" if shutters else ""
         # repr() keys: lossless coordinates, no near-centre cache aliasing.
         filename = (
             f"{field}_{ra!r}_{dec!r}_fov{format(fov, 'g')}{band_tag}{rgb_tag}"
-            f"_p{size}{cols_tag}_{stretch}_{colormap}{shutter_tag}.png"
+            f"_p{size}{cols_tag}_{stretch}{scale_tag}_{colormap}{shutter_tag}.png"
         )
 
         from .config import resolve_data_dir
@@ -950,8 +965,8 @@ class Campfire:
 
         png_data = self._api.get_cutout_figure(
             field, ra, dec, fov=fov, bands=bands, size=size, cols=cols,
-            stretch=stretch, colormap=colormap, rgb=rgb, rgb_stretch=rgb_stretch,
-            shutters=shutters,
+            stretch=stretch, colormap=colormap, scaling=scaling, snr_range=snr_range,
+            rgb=rgb, rgb_stretch=rgb_stretch, shutters=shutters,
         )
 
         cutouts.mkdir(parents=True, exist_ok=True)

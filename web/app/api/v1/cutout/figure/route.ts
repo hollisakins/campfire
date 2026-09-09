@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isColormapName, isStretchMode, type StretchMode, type ColormapName, type TrilogyParams } from '@fitsgl/core';
 import { createServiceClient } from '@/lib/supabase/server';
 import { isAdminUser, getLinkScope } from '@/lib/api-helpers';
-import { resolveFieldScienceSource, UnknownBandError } from '@/lib/cutout/source';
+import { resolveFieldScienceSource, UnknownBandError, type CompositeRequest } from '@/lib/cutout/source';
+import { DEFAULT_SNR_RANGE, type Scaling } from '@/lib/cutout/render';
 import { renderFigurePng, rgbHasTrilogyStats } from '@/lib/cutout/figure';
 import { fetchShuttersInBox, type FigureShutter } from '@/lib/cutout/shutters';
 import { resolveRequestUser, parseScienceParams } from '../science-params';
@@ -16,21 +17,28 @@ const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 
 /**
  * GET /api/v1/cutout/figure?field=<f>&ra=<deg>&dec=<deg>&fov=<arcsec>
- *        [&bands=...][&rgb=auto|r,g,b][&rgb_stretch=auto|trilogy|asinh|…]
+ *        [&bands=...][&scaling=snr|percentile][&snr_lo=-5][&snr_hi=8]
+ *        [&rgb=auto|rainbow|rainbow:b1,b2,…|r,g,b][&rgb_stretch=auto|trilogy|asinh|…]
  *        [&noiselum=0.15][&satpercent=0.001][&shutters=1]
- *        [&size=<px>][&cols=<n>][&stretch=asinh][&colormap=gray]
+ *        [&size=<px>][&cols=<n>][&stretch=linear][&colormap=gray]
  *
  * Multi-band cutout figure (epic #337, Phase 5): one labeled North-up panel
  * per band — the classic postage-stamp strip — rendered from the field's
  * FitsGL pyramid and returned as a single PNG. Same engine and transfer
- * functions as the interactive map; per-panel percentile stretch.
+ * functions as the interactive map.
  *
  * - `bands` single-band panels (default: every band — unless `rgb` is given,
  *   when the default is none, so `rgb` alone yields just the composite)
+ * - `scaling` single-band panel limits: `snr` (default) sets black/white at
+ *   `snr_lo`/`snr_hi` σ (default -5/+8) about the cutout's own sky level,
+ *   with σ from the MAD of the panel — so every band reads alike whatever
+ *   its depth; `percentile` uses robust 0.5–99.5% cuts
+ * - `stretch` the single-band transfer curve (default linear)
  * - `rgb` appends an RGB composite panel: `auto` (the dataset's default
  *   view — the producer's full weighted band table under trilogy, else its
- *   r/g/b triple, else reddest/middle/bluest by wavelength) or three band
- *   names `r,g,b`
+ *   r/g/b triple, else reddest/middle/bluest by wavelength), `rainbow`
+ *   (every band, wavelength-ordered, hues blue→red — the map's rainbow) or
+ *   `rainbow:b1,b2,…` over a band list, or three band names `r,g,b`
  * - `rgb_stretch` the composite's transfer: `trilogy` (each band on its own
  *   precomputed levels — the map's faithful composite) or a plain curve over
  *   one shared range of the triple (the map's simple RGB); `auto` picks
@@ -68,23 +76,43 @@ export async function GET(request: NextRequest) {
     if (!Number.isFinite(cols) || cols < 1) return bad('Invalid parameter: cols must be a positive integer');
   }
 
-  const stretch = (params.get('stretch') ?? 'asinh') as StretchMode;
+  const stretch = (params.get('stretch') ?? 'linear') as StretchMode;
   if (!FIGURE_STRETCHES.includes(stretch)) {
     return bad(`Invalid stretch; one of: ${FIGURE_STRETCHES.join(', ')}`);
   }
   const colormap = params.get('colormap') ?? 'gray';
   if (!isColormapName(colormap)) return bad('Invalid colormap');
 
+  const scalingParam = (params.get('scaling') ?? 'snr').trim().toLowerCase();
+  if (scalingParam !== 'snr' && scalingParam !== 'percentile') {
+    return bad('Invalid scaling; one of: snr, percentile');
+  }
+  const scaling: Scaling = scalingParam;
+  const snrLo = parseFloat(params.get('snr_lo') ?? String(DEFAULT_SNR_RANGE[0]));
+  const snrHi = parseFloat(params.get('snr_hi') ?? String(DEFAULT_SNR_RANGE[1]));
+  if (!Number.isFinite(snrLo) || !Number.isFinite(snrHi) || !(snrHi > snrLo)) {
+    return bad('Invalid parameters: snr_lo and snr_hi must be finite σ with snr_hi > snr_lo');
+  }
+
   // RGB composite panel.
-  let rgb: 'auto' | string[] | undefined;
+  let rgb: CompositeRequest | undefined;
   const rgbParam = params.get('rgb');
   if (rgbParam !== null) {
     const v = rgbParam.trim().toLowerCase();
+    const list = (csv: string) => csv.split(',').map((b) => b.trim()).filter(Boolean);
     if (v === '' || v === 'auto' || TRUTHY.has(v)) {
       rgb = 'auto';
+    } else if (v === 'rainbow') {
+      rgb = { rainbow: null };
+    } else if (v.startsWith('rainbow:')) {
+      const names = list(v.slice('rainbow:'.length));
+      if (names.length === 0) return bad('Invalid parameter: rainbow:<bands> needs at least one band');
+      rgb = { rainbow: names };
     } else {
-      const names = v.split(',').map((b) => b.trim()).filter(Boolean);
-      if (names.length !== 3) return bad('Invalid parameter: rgb must be "auto" or three band names r,g,b');
+      const names = list(v);
+      if (names.length !== 3) {
+        return bad('Invalid parameter: rgb must be "auto", "rainbow", "rainbow:b1,b2,…" or three band names r,g,b');
+      }
       rgb = names;
     }
   }
@@ -155,7 +183,11 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'No FitsGL dataset for this field' }, { status: 404 });
     }
     if (rgb !== undefined && !src.rgb) {
-      return bad('An RGB composite needs a dataset with at least 3 bands');
+      return bad(
+        rgb === 'auto' || Array.isArray(rgb)
+          ? 'An RGB composite needs a dataset with at least 3 bands'
+          : 'A rainbow composite needs at least one band',
+      );
     }
     let rgbStretch: StretchMode | undefined;
     if (src.rgb && rgb !== undefined) {
@@ -175,6 +207,8 @@ export async function GET(request: NextRequest) {
       cols,
       stretch,
       colormap: colormap as ColormapName,
+      scaling,
+      snrRange: [snrLo, snrHi],
       ...(rgbStretch && { rgb: { stretch: rgbStretch, trilogy } }),
       shutters,
     });

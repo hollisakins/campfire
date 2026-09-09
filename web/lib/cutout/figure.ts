@@ -24,7 +24,16 @@ import { getObservationColor } from '@/components/map/observation-colors';
 import { shutterCorners } from '@/lib/utils/shutter-overlay';
 import { bandToOutput } from './index';
 import { labelAscent, labelSvg, labelWidth } from './label-text';
-import { percentileLimits, renderRGB, renderSingleBand, renderWeightedTrilogy, type Limits } from './render';
+import {
+  DEFAULT_SNR_RANGE,
+  percentileLimits,
+  renderRGB,
+  renderSingleBand,
+  renderWeightedTrilogy,
+  snrLimits,
+  type Limits,
+  type Scaling,
+} from './render';
 import { northUpWcsHeader } from './reproject';
 import type { FigureShutter } from './shutters';
 import type { CompositeSource, FieldScienceSource, ScienceBand } from './source';
@@ -53,9 +62,14 @@ export interface FigureRequest {
   panelSize: number;
   /** Panels per row; defaults to all panels in one row. */
   cols?: number;
-  /** Single-band panel transfer curve + colormap. */
+  /** Single-band panel transfer curve (default linear) + colormap. */
   stretch?: StretchMode;
   colormap?: ColormapName;
+  /** Single-band panel limits: `snr` (default; `median + [lo, hi]·σ` of the
+   *  cutout's own noise, so every band reads alike) or `percentile`. */
+  scaling?: Scaling;
+  /** The SNR window in σ (default `[-5, 8]`). */
+  snrRange?: readonly [number, number];
   /** Append an RGB composite panel from `src.rgb` (ignored when the source has none). */
   rgb?: FigureRgbRequest;
   /** Draw the band label on each panel (default true). */
@@ -91,8 +105,12 @@ function bandLabel(b: ScienceBand): string {
 /** Render the per-band panels and compose them into one PNG. */
 export async function renderFigurePng(src: FieldScienceSource, req: FigureRequest): Promise<Buffer> {
   const size = req.panelSize;
-  const stretch = req.stretch ?? 'asinh';
+  const stretch = req.stretch ?? 'linear';
   const colormap = req.colormap ?? 'gray';
+  const scaling = req.scaling ?? 'snr';
+  const [snrLo, snrHi] = req.snrRange ?? DEFAULT_SNR_RANGE;
+  const limitsFor = (data: Float32Array): Limits =>
+    scaling === 'snr' ? snrLimits(data, snrLo, snrHi) : percentileLimits(data);
   const [ra, dec] = req.center;
 
   // A band serving both a single panel and an RGB channel is fetched and
@@ -111,7 +129,7 @@ export async function renderFigurePng(src: FieldScienceSource, req: FigureReques
   const singles = src.bands.map(async (band): Promise<Panel> => {
     const out = await outputFor(band);
     const rgba = renderSingleBand(out.data, out.width, out.height, {
-      limits: percentileLimits(out.data),
+      limits: limitsFor(out.data),
       stretch,
       colormap,
     });

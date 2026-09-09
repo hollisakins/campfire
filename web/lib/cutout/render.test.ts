@@ -93,3 +93,23 @@ describe('renderRGB', () => {
     expect(px(rgba, 0, 1, 1)).toEqual([0, 0, 0, 255]); // bottom = south = dark
   });
 });
+
+describe('snrLimits', () => {
+  it('sets the window in units of the robust noise about the sky level', async () => {
+    const { snrLimits } = await import('./render');
+    // Symmetric noise about 10 with a few bright outliers a plain RMS would inflate.
+    const data = Float32Array.from({ length: 1001 }, (_, i) => 10 + ((i % 11) - 5) * 0.2);
+    data[3] = 500; data[400] = 900; data[777] = NaN;
+    const { lo, hi } = snrLimits(data, -5, 8);
+    // MAD of the 0.2-step comb about its median 10: |dev| ∈ {0,0.2,…,1}, median 0.6 → σ ≈ 0.89
+    const sigma = 1.4826 * 0.6;
+    expect(lo).toBeCloseTo(10 - 5 * sigma, 5);
+    expect(hi).toBeCloseTo(10 + 8 * sigma, 5);
+  });
+
+  it('falls back to percentile limits for constant data', async () => {
+    const { snrLimits, percentileLimits } = await import('./render');
+    const flat = new Float32Array(50).fill(3);
+    expect(snrLimits(flat)).toEqual(percentileLimits(flat));
+  });
+});

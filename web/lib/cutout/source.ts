@@ -11,6 +11,7 @@ import {
   DEFAULT_TRILOGY_PARAMS,
   MAX_BANDS,
   loadFitsglConfig,
+  rainbowWeights,
   trilogyLevels,
   type BandWeight,
   type FitsglConfig,
@@ -123,10 +124,7 @@ export function defaultRgbBands(config: FitsglConfig): [FitsglBand, FitsglBand, 
   }
 
   if (bands.length >= 3) {
-    // Blue→red by pivot wavelength; producers omit pivotUm ⇒ declaration order.
-    const ordered = bands.every((b) => b.pivotUm != null)
-      ? [...bands].sort((a, b) => a.pivotUm! - b.pivotUm!)
-      : bands;
+    const ordered = wavelengthOrdered(bands);
     const mid = Math.floor((ordered.length - 1) / 2);
     return [ordered[ordered.length - 1], ordered[mid], ordered[0]];
   }
@@ -162,6 +160,44 @@ export function defaultWeightedBands(
     .slice(0, MAX_BANDS)
     .map(([name, weight]) => ({ band: byName.get(name)!, weight: weight as BandWeight }));
   return entries.length > 0 ? entries : null;
+}
+
+/** Blue→red by pivot wavelength; declaration order when any pivot is missing
+ *  (the same rule the map's rainbow and `defaultRgbBands` follow). */
+function wavelengthOrdered(bands: readonly FitsglBand[]): FitsglBand[] {
+  return bands.every((b) => b.pivotUm != null)
+    ? [...bands].sort((a, b) => a.pivotUm! - b.pivotUm!)
+    : [...bands];
+}
+
+/** Evenly subsample `items` down to `cap`, always keeping the first and last
+ *  (so a wavelength-ordered rainbow keeps its blue and red endpoints). */
+function subsample<T>(items: T[], cap: number): T[] {
+  if (items.length <= cap) return items;
+  if (cap <= 1) return [items[0]];
+  const out: T[] = [];
+  for (let i = 0; i < cap; i++) {
+    out.push(items[Math.round((i * (items.length - 1)) / (cap - 1))]);
+  }
+  return out;
+}
+
+/**
+ * The map's rainbow composite over `bands` (every inventory band when null):
+ * wavelength-ordered, hue spread blue→red (`rainbowWeights`), capped at
+ * `MAX_BANDS` by even subsampling. The simple-RGB triple for the same set is
+ * its reddest / middle / bluest member.
+ */
+export function rainbowBands(
+  bands: readonly FitsglBand[],
+): { weighted: Array<{ band: FitsglBand; weight: BandWeight }>; triple: [FitsglBand, FitsglBand, FitsglBand] } {
+  const ordered = subsample(wavelengthOrdered(bands), MAX_BANDS);
+  const weights = rainbowWeights(ordered.length);
+  const mid = Math.floor((ordered.length - 1) / 2);
+  return {
+    weighted: ordered.map((band, i) => ({ band, weight: weights[i] })),
+    triple: [ordered[ordered.length - 1], ordered[mid], ordered[0]],
+  };
 }
 
 /** The producer's trilogy knobs over the library defaults (see `displayDefaults`). */
@@ -333,11 +369,18 @@ export interface CompositeSource {
    *  default (producer view / wavelength-ordered). Drives the simple
    *  shared-range composite, and the trilogy one when `weighted` is absent. */
   triple: [ScienceBand, ScienceBand, ScienceBand];
-  /** The producer's full weighted band table (`rgb=auto` only): the faithful
-   *  multi-band trilogy the map opens on. Each band stretched on its own
-   *  levels, channels as weighted averages (`weightedTrilogyPixel`). */
+  /** A weighted band table — the producer's (`rgb=auto`) or a rainbow over
+   *  a band list: the faithful multi-band trilogy the map renders. Each band
+   *  stretched on its own levels, channels as weighted averages
+   *  (`weightedTrilogyPixel`). Absent for an explicit triple. */
   weighted?: { bands: ScienceBand[]; weights: BandWeight[] };
 }
+
+/**
+ * A composite request: the dataset default (`'auto'`), an explicit
+ * `[r, g, b]` triple, or a rainbow over some bands (`null` ⇒ every band).
+ */
+export type CompositeRequest = 'auto' | string[] | { rainbow: string[] | null };
 
 export interface FieldScienceSource {
   /** One entry per requested band, in request (or inventory) order. */
@@ -365,7 +408,7 @@ export interface FieldScienceSource {
 export async function resolveFieldScienceSource(
   supabase: SupabaseClient,
   field: string,
-  opts: { requirePublic?: boolean; bands?: string[]; rgb?: 'auto' | string[] } = {},
+  opts: { requirePublic?: boolean; bands?: string[]; rgb?: CompositeRequest } = {},
 ): Promise<FieldScienceSource | null> {
   const ds = await fetchFieldDataset(supabase, field, opts).catch((err) => {
     console.error(`FitsGL science source unavailable for field ${field}:`, err);
@@ -382,12 +425,21 @@ export async function resolveFieldScienceSource(
   };
 
   const chosen = opts.bands === undefined ? inventory : lookup(opts.bands);
-  const rgbChosen =
-    opts.rgb === undefined
-      ? null
-      : opts.rgb === 'auto'
-        ? defaultRgbBands(ds.config)
-        : (lookup(opts.rgb) as [FitsglBand, FitsglBand, FitsglBand]);
+  let rgbChosen: [FitsglBand, FitsglBand, FitsglBand] | null = null;
+  let weightedChosen: Array<{ band: FitsglBand; weight: BandWeight }> | null = null;
+  if (opts.rgb === 'auto') {
+    rgbChosen = defaultRgbBands(ds.config);
+    weightedChosen = rgbChosen ? defaultWeightedBands(ds.config) : null;
+  } else if (Array.isArray(opts.rgb)) {
+    rgbChosen = lookup(opts.rgb) as [FitsglBand, FitsglBand, FitsglBand];
+  } else if (opts.rgb !== undefined) {
+    const members = opts.rgb.rainbow === null ? inventory : lookup(opts.rgb.rainbow);
+    if (members.length > 0) {
+      const rainbow = rainbowBands(members);
+      rgbChosen = rainbow.triple;
+      weightedChosen = rainbow.weighted;
+    }
+  }
 
   // Each band's manifest loads once even when it serves both a panel and a channel.
   const loaded = new Map<string, Promise<ScienceBand>>();
@@ -405,8 +457,6 @@ export async function resolveFieldScienceSource(
     }
     return p;
   };
-
-  const weightedChosen = opts.rgb === 'auto' && rgbChosen ? defaultWeightedBands(ds.config) : null;
 
   const [bands, triple, weightedBands] = await Promise.all([
     Promise.all(chosen.map(load)),

@@ -19,7 +19,19 @@ import { MAX_PIXELS_PER_BAND, MAX_PIXELS_TOTAL } from '@/lib/cutout/limits';
 import { parseCoordinates } from '@/lib/utils/coordinate-parser';
 
 /** Single-band panel transfer curves the figure route accepts. */
-const STRETCHES = ['asinh', 'log', 'sqrt', 'linear'] as const;
+const STRETCHES = ['linear', 'asinh', 'log', 'sqrt'] as const;
+/** Single-band panel limits: SNR (σ about the cutout's own sky) or percentile cuts. */
+type Scaling = 'snr' | 'percentile';
+const DEFAULT_SNR_LO = '-5';
+const DEFAULT_SNR_HI = '8';
+/** Composite construction: the dataset default (the producer's weighted
+ *  trilogy mix), the map's rainbow over chosen bands, or a custom R/G/B triple. */
+const COMPOSITE_MODES = ['auto', 'rainbow', 'custom'] as const;
+const COMPOSITE_LABEL: Record<(typeof COMPOSITE_MODES)[number], string> = {
+  auto: 'Map default',
+  rainbow: 'Rainbow (N bands)',
+  custom: 'Custom R / G / B',
+};
 /** `@fitsgl/core` COLORMAP_NAMES, inlined so the page does not ship the core. */
 const COLORMAPS = ['gray', 'viridis', 'magma', 'inferno', 'plasma', 'cividis'] as const;
 /** Composite transfer: `auto` lets the server pick trilogy when the dataset
@@ -29,6 +41,7 @@ const RGB_STRETCHES = ['auto', 'trilogy', 'asinh', 'log', 'sqrt', 'linear'] as c
 type Stretch = (typeof STRETCHES)[number];
 type Colormap = (typeof COLORMAPS)[number];
 type RgbStretch = (typeof RGB_STRETCHES)[number];
+type CompositeMode = (typeof COMPOSITE_MODES)[number];
 type RgbRole = 'r' | 'g' | 'b';
 
 const RGB_ROLES: readonly RgbRole[] = ['r', 'g', 'b'];
@@ -93,15 +106,30 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
     const wanted = new Set(initial.bands.split(',').map((b) => b.trim().toLowerCase()).filter(Boolean));
     return bandList.filter((b) => wanted.has(b.toLowerCase()));
   }, [initial.bands, bandList]);
-  const initialRgb = useMemo(() => {
+  const initialRgb = useMemo<{
+    mode: CompositeMode;
+    channels: Record<RgbRole, string> | null;
+    rainbow: string[] | null;
+  } | null>(() => {
     if (initial.rgb === undefined) return null;
-    const names = initial.rgb.split(',').map((b) => b.trim().toLowerCase()).filter(Boolean);
-    if (names.length !== 3) return { on: true, channels: null };
+    const raw = initial.rgb.trim().toLowerCase();
     const byLower = new Map(bandList.map((b) => [b.toLowerCase(), b]));
-    const resolved = names.map((n) => byLower.get(n));
-    return resolved.every(Boolean)
-      ? { on: true, channels: { r: resolved[0]!, g: resolved[1]!, b: resolved[2]! } }
-      : { on: true, channels: null };
+    const resolve = (csv: string) =>
+      csv.split(',').map((b) => b.trim()).filter(Boolean).map((n) => byLower.get(n));
+    if (raw === 'rainbow') return { mode: 'rainbow', channels: null, rainbow: null };
+    if (raw.startsWith('rainbow:')) {
+      const members = resolve(raw.slice('rainbow:'.length)).filter((b): b is string => !!b);
+      return { mode: 'rainbow', channels: null, rainbow: members.length > 0 ? members : null };
+    }
+    const resolved = resolve(raw);
+    if (resolved.length === 3 && resolved.every(Boolean)) {
+      return {
+        mode: 'custom',
+        channels: { r: resolved[0]!, g: resolved[1]!, b: resolved[2]! },
+        rainbow: null,
+      };
+    }
+    return { mode: 'auto', channels: null, rainbow: null };
   }, [initial.rgb, bandList]);
   const freshVisit = initialBands === null && initialRgb === null;
 
@@ -111,10 +139,18 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
     return [];
   });
   const [rgbOn, setRgbOn] = useState<boolean>(() => (initialRgb ? canRgb : freshVisit && canRgb));
-  /** Explicit channel assignment; null = the dataset default (`rgb=auto`). */
-  const [rgbChannels, setRgbChannels] = useState<Record<RgbRole, string> | null>(
-    initialRgb?.channels ?? null,
+  const [compositeMode, setCompositeMode] = useState<CompositeMode>(initialRgb?.mode ?? 'auto');
+  /** Custom channel assignment (seeded reddest / middle / bluest by inventory order). */
+  const [rgbChannels, setRgbChannels] = useState<Record<RgbRole, string>>(
+    () =>
+      initialRgb?.channels ?? {
+        r: bandList[bandList.length - 1] ?? '',
+        g: bandList[Math.floor((bandList.length - 1) / 2)] ?? '',
+        b: bandList[0] ?? '',
+      },
   );
+  /** Rainbow members (inventory order); default every band. */
+  const [rainbowBands, setRainbowBands] = useState<string[]>(() => initialRgb?.rainbow ?? bandList);
   const [rgbStretch, setRgbStretch] = useState<RgbStretch>(
     isOneOf(RGB_STRETCHES, initial.rgb_stretch) ? initial.rgb_stretch : 'auto',
   );
@@ -126,7 +162,10 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
   // Display settings live behind a disclosure: the defaults are right for a
   // quick look, and the form stays short enough to see with the preview.
   const [showDisplay, setShowDisplay] = useState(false);
-  const [stretch, setStretch] = useState<Stretch>('asinh');
+  const [stretch, setStretch] = useState<Stretch>('linear');
+  const [scaling, setScaling] = useState<Scaling>('snr');
+  const [snrLo, setSnrLo] = useState(DEFAULT_SNR_LO);
+  const [snrHi, setSnrHi] = useState(DEFAULT_SNR_HI);
   const [colormap, setColormap] = useState<Colormap>('gray');
   const [panelSize, setPanelSize] = useState('300');
   const [cols, setCols] = useState('');
@@ -150,18 +189,33 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
     [],
   );
 
-  const toggleBand = (b: string) =>
-    setSelectedBands((prev) => {
+  const toggleIn = (setter: React.Dispatch<React.SetStateAction<string[]>>) => (b: string) =>
+    setter((prev) => {
       const next = prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b];
       return bandList.filter((x) => next.includes(x)); // keep inventory order
     });
+  const toggleBand = toggleIn(setSelectedBands);
+  const toggleRainbowBand = toggleIn(setRainbowBands);
+
+  const snrLoNum = parseFloat(snrLo);
+  const snrHiNum = parseFloat(snrHi);
+  const snrValid = scaling !== 'snr' || (Number.isFinite(snrLoNum) && Number.isFinite(snrHiNum) && snrHiNum > snrLoNum);
+  const rainbowValid = compositeMode !== 'rainbow' || rainbowBands.length > 0;
+  /** The `rgb` query value for the current composite settings. */
+  const rgbValue =
+    compositeMode === 'auto'
+      ? 'auto'
+      : compositeMode === 'rainbow'
+        ? rainbowBands.length === bandList.length ? 'rainbow' : `rainbow:${rainbowBands.join(',')}`
+        : RGB_ROLES.map((r) => rgbChannels[r]).join(',');
 
   const parsed = useMemo(() => parseCoordinates(coordText.trim()), [coordText]);
   const fovNum = parseFloat(fov);
   const fovValid = Number.isFinite(fovNum) && fovNum >= 0.5 && fovNum <= 600;
   const allBands = bandList.length > 0 && selectedBands.length === bandList.length;
   const hasPanels = selectedBands.length > 0 || rgbOn;
-  const ready = dataset !== null && parsed !== null && fovValid && hasPanels;
+  const ready =
+    dataset !== null && parsed !== null && fovValid && hasPanels && snrValid && (!rgbOn || rainbowValid);
 
   /** The band list the figure/FITS endpoints share for the current form. */
   const baseParams = useMemo(() => {
@@ -176,12 +230,12 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
 
   /** Figure request: single-band panels + composite + overlays + display. */
   const figureParams = useMemo(() => {
-    if (!baseParams || !hasPanels) return null;
+    if (!baseParams || !hasPanels || !snrValid || (rgbOn && !rainbowValid)) return null;
     const p = new URLSearchParams(baseParams);
     // `rgb` alone yields just the composite, so the band list is explicit
     // whenever both are in play (see the route's default rule).
     if (rgbOn) {
-      p.set('rgb', rgbChannels ? RGB_ROLES.map((r) => rgbChannels[r]).join(',') : 'auto');
+      p.set('rgb', rgbValue);
       if (selectedBands.length > 0) p.set('bands', selectedBands.join(','));
       if (rgbStretch !== 'auto') p.set('rgb_stretch', rgbStretch);
       if (rgbStretch === 'auto' || rgbStretch === 'trilogy') {
@@ -193,13 +247,19 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
     }
     if (shutters) p.set('shutters', '1');
     p.set('size', panelSize || '300');
-    if (stretch !== 'asinh') p.set('stretch', stretch);
+    if (stretch !== 'linear') p.set('stretch', stretch);
+    if (scaling !== 'snr') p.set('scaling', scaling);
+    if (scaling === 'snr') {
+      if (snrLo.trim() !== DEFAULT_SNR_LO) p.set('snr_lo', String(snrLoNum));
+      if (snrHi.trim() !== DEFAULT_SNR_HI) p.set('snr_hi', String(snrHiNum));
+    }
     if (colormap !== 'gray') p.set('colormap', colormap);
     if (cols) p.set('cols', cols);
     return p;
   }, [
-    baseParams, hasPanels, rgbOn, rgbChannels, selectedBands, rgbStretch, noiselum, satpercent,
-    shutters, allBands, panelSize, stretch, colormap, cols,
+    baseParams, hasPanels, snrValid, rgbOn, rainbowValid, rgbValue, selectedBands, rgbStretch,
+    noiselum, satpercent, shutters, allBands, panelSize, stretch, scaling, snrLo, snrHi, snrLoNum,
+    snrHiNum, colormap, cols,
   ]);
 
   /** FITS request: the selected single bands (the composite is display-only). */
@@ -227,7 +287,7 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
     // `rgb` is a fresh visit (composite alone), so an all-bands strip would
     // otherwise reload as the composite.
     const pageParams = new URLSearchParams(figureQuery);
-    for (const k of ['field', 'size', 'cols', 'stretch', 'colormap', 'noiselum', 'satpercent']) {
+    for (const k of ['field', 'size', 'cols', 'stretch', 'scaling', 'snr_lo', 'snr_hi', 'colormap', 'noiselum', 'satpercent']) {
       pageParams.delete(k);
     }
     if (selectedBands.length > 0) pageParams.set('bands', selectedBands.join(','));
@@ -444,9 +504,11 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
                 <span>RGB composite panel</span>
                 {canRgb && rgbOn && (
                   <span className="text-xs text-text-tertiary">
-                    {rgbChannels
+                    {compositeMode === 'custom'
                       ? RGB_ROLES.map((r) => rgbChannels[r].toUpperCase()).join(' / ')
-                      : 'map default'}
+                      : compositeMode === 'rainbow'
+                        ? `rainbow · ${rainbowBands.length} band${rainbowBands.length === 1 ? '' : 's'}`
+                        : 'map default'}
                   </span>
                 )}
                 {!canRgb && <span className="text-xs">(needs ≥ 3 bands)</span>}
@@ -479,7 +541,7 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
                 <span className="flex items-center gap-2 normal-case tracking-normal font-normal">
                   {!showDisplay && (
                     <span className="text-text-tertiary">
-                      {stretch} · {colormap}
+                      {stretch} · {scaling === 'snr' ? `${snrLo}σ to +${snrHi}σ` : 'percentile'} · {colormap}
                       {rgbOn && ` · rgb ${rgbStretch}`}
                       {' · '}{panelSize || '300'} px
                     </span>
@@ -494,6 +556,47 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
                 <div id="cutout-display-settings" className="mt-3 space-y-4">
                   <div>
                     <p className="text-xs text-text-secondary mb-2">Single-band panels</p>
+                    <div className="grid grid-cols-2 gap-3 mb-3">
+                      <div>
+                        <label className={labelCls} htmlFor="cutout-scaling">Scaling</label>
+                        <select
+                          id="cutout-scaling"
+                          value={scaling}
+                          onChange={(e) => setScaling(e.target.value as Scaling)}
+                          className={inputCls}
+                        >
+                          <option value="snr">SNR (σ of the cutout)</option>
+                          <option value="percentile">percentile (0.5–99.5%)</option>
+                        </select>
+                      </div>
+                      {scaling === 'snr' && (
+                        <div>
+                          <span className={labelCls}>Range (σ)</span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              aria-label="Black point (σ)"
+                              type="number"
+                              step="any"
+                              value={snrLo}
+                              onChange={(e) => setSnrLo(e.target.value)}
+                              className={inputCls}
+                            />
+                            <span className="text-xs text-text-tertiary">to</span>
+                            <input
+                              aria-label="White point (σ)"
+                              type="number"
+                              step="any"
+                              value={snrHi}
+                              onChange={(e) => setSnrHi(e.target.value)}
+                              className={inputCls}
+                            />
+                          </div>
+                          {!snrValid && (
+                            <p className="mt-1 text-xs text-red-500">Range needs finite σ with high above low.</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className={labelCls} htmlFor="cutout-stretch">Stretch</label>
@@ -523,42 +626,95 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
                   {canRgb && (
                     <div className={rgbOn ? '' : 'opacity-50'}>
                       <p className="text-xs text-text-secondary mb-2">RGB composite</p>
-                      <div className="grid grid-cols-3 gap-2 mb-3">
-                        {RGB_ROLES.map((role) => (
-                          <div key={role}>
-                            <label className={labelCls} htmlFor={`cutout-rgb-${role}`}>
-                              <span
-                                className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle"
-                                style={{ background: ROLE_DOT[role] }}
-                              />
-                              {ROLE_LABEL[role]}
-                            </label>
-                            <select
-                              id={`cutout-rgb-${role}`}
-                              disabled={!rgbOn}
-                              value={rgbChannels?.[role] ?? ''}
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                setRgbChannels((prev) => {
-                                  if (v === '') return null; // back to the dataset default
-                                  // Seed the other two channels from the wavelength-ordered
-                                  // fallback so an explicit triple is always complete.
-                                  const base = prev ?? {
-                                    r: bandList[bandList.length - 1],
-                                    g: bandList[Math.floor((bandList.length - 1) / 2)],
-                                    b: bandList[0],
-                                  };
-                                  return { ...base, [role]: v };
-                                });
-                              }}
-                              className={inputCls}
-                            >
-                              <option value="">auto</option>
-                              {bandList.map((b) => <option key={b} value={b}>{b.toUpperCase()}</option>)}
-                            </select>
-                          </div>
-                        ))}
+                      <div className="mb-3">
+                        <label className={labelCls} htmlFor="cutout-composite">Bands</label>
+                        <select
+                          id="cutout-composite"
+                          disabled={!rgbOn}
+                          value={compositeMode}
+                          onChange={(e) => setCompositeMode(e.target.value as CompositeMode)}
+                          className={inputCls}
+                        >
+                          {COMPOSITE_MODES.map((m) => (
+                            <option key={m} value={m}>{COMPOSITE_LABEL[m]}</option>
+                          ))}
+                        </select>
                       </div>
+                      {compositeMode === 'rainbow' && (
+                        <div className="mb-3">
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className={`${labelCls} mb-0`}>Rainbow members</span>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                className={linkBtnCls}
+                                onClick={() => setRainbowBands(bandList)}
+                                disabled={!rgbOn || rainbowBands.length === bandList.length}
+                              >
+                                All
+                              </button>
+                              <span className="text-xs text-text-tertiary">·</span>
+                              <button
+                                type="button"
+                                className={linkBtnCls}
+                                onClick={() => setRainbowBands([])}
+                                disabled={!rgbOn || rainbowBands.length === 0}
+                              >
+                                None
+                              </button>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Rainbow members">
+                            {bandList.map((b) => {
+                              const on = rainbowBands.includes(b);
+                              return (
+                                <button
+                                  key={b}
+                                  type="button"
+                                  disabled={!rgbOn}
+                                  onClick={() => toggleRainbowBand(b)}
+                                  aria-pressed={on}
+                                  className={chipCls(on)}
+                                >
+                                  {b.toUpperCase()}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <p className="mt-1.5 text-xs text-text-tertiary">
+                            {rainbowValid
+                              ? 'Hues run blue → red in wavelength order; each band on its own trilogy levels.'
+                              : 'Pick at least one band for the rainbow.'}
+                          </p>
+                        </div>
+                      )}
+                      {compositeMode === 'custom' && (
+                        <div className="grid grid-cols-3 gap-2 mb-3">
+                          {RGB_ROLES.map((role) => (
+                            <div key={role}>
+                              <label className={labelCls} htmlFor={`cutout-rgb-${role}`}>
+                                <span
+                                  className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle"
+                                  style={{ background: ROLE_DOT[role] }}
+                                />
+                                {ROLE_LABEL[role]}
+                              </label>
+                              <select
+                                id={`cutout-rgb-${role}`}
+                                disabled={!rgbOn}
+                                value={rgbChannels[role]}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setRgbChannels((prev) => ({ ...prev, [role]: v }));
+                                }}
+                                className={inputCls}
+                              >
+                                {bandList.map((b) => <option key={b} value={b}>{b.toUpperCase()}</option>)}
+                              </select>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <div className="grid grid-cols-2 gap-3">
                         <div>
                           <label className={labelCls} htmlFor="cutout-rgb-stretch">Stretch</label>
@@ -609,8 +765,8 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
                       </div>
                       <p className="mt-1.5 text-xs text-text-tertiary">
                         Trilogy stretches each band on its own precomputed levels, as the map does
-                        (with auto channels, the producer&apos;s full weighted band mix); the other
-                        curves share one range across the three channels.
+                        (the map default is the producer&apos;s full weighted band mix); the other
+                        curves are a plain three-channel composite over one shared range.
                       </p>
                     </div>
                   )}

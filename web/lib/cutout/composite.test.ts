@@ -92,3 +92,29 @@ describe('defaultWeightedBands', () => {
     expect(defaultRgbBands(config({}))!.map((b) => b.name)).toEqual(['f444w', 'f277w', 'f115w']);
   });
 });
+
+describe('rainbowBands', () => {
+  it('orders by wavelength, spreads hues blue→red and picks the simple triple', async () => {
+    const { rainbowBands } = await import('./source');
+    const cfg = config({}, ['f444w', 'f115w', 'f277w']); // pivots follow declaration order here
+    // Re-pivot so declaration order differs from wavelength order.
+    cfg.dataset.bands[0].pivotUm = 4.4;
+    cfg.dataset.bands[1].pivotUm = 1.15;
+    cfg.dataset.bands[2].pivotUm = 2.77;
+    const out = rainbowBands(cfg.dataset.bands);
+    expect(out.weighted.map((e) => e.band.name)).toEqual(['f115w', 'f277w', 'f444w']);
+    expect(out.weighted[0].weight).toEqual([0, 0, 1]); // bluest → blue
+    expect(out.weighted[2].weight).toEqual([1, 0, 0]); // reddest → red
+    expect(out.triple.map((b) => b.name)).toEqual(['f444w', 'f277w', 'f115w']);
+  });
+
+  it('caps a long band list at MAX_BANDS keeping both ends', async () => {
+    const { rainbowBands } = await import('./source');
+    const { MAX_BANDS } = await import('@fitsgl/core');
+    const names = Array.from({ length: MAX_BANDS + 5 }, (_, i) => `b${String(i).padStart(2, '0')}`);
+    const out = rainbowBands(config({}, names).dataset.bands);
+    expect(out.weighted).toHaveLength(MAX_BANDS);
+    expect(out.weighted[0].band.name).toBe(names[0]);
+    expect(out.weighted[MAX_BANDS - 1].band.name).toBe(names[names.length - 1]);
+  });
+});
