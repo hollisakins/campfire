@@ -5,7 +5,7 @@ import { isAdminUser, getLinkScope } from '@/lib/api-helpers';
 import { resolveFieldScienceSource, UnknownBandError, type CompositeRequest } from '@/lib/cutout/source';
 import { DEFAULT_SNR_RANGE, type Scaling } from '@/lib/cutout/render';
 import { renderFigurePng, rgbHasTrilogyStats } from '@/lib/cutout/figure';
-import { fetchShuttersInBox, type FigureShutter } from '@/lib/cutout/shutters';
+import { fetchShuttersInBox, SHUTTER_OVERLAY_MAX_FOV_ARCSEC, type FigureShutter } from '@/lib/cutout/shutters';
 import { resolveRequestUser, parseScienceParams } from '../science-params';
 
 // Multi-band tile decode on a cold instance can exceed a short function budget (#497).
@@ -44,7 +44,9 @@ const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
  *   one shared range of the triple (the map's simple RGB); `auto` picks
  *   trilogy when the dataset carries the stats
  * - `noiselum` / `satpercent` trilogy knobs over the producer's tuning
- * - `shutters=1` overlays the NIRSpec MSA shutter footprints in view
+ * - `shutters=1` overlays the NIRSpec MSA shutter footprints in view (fields
+ *   of view up to 120″; wider requests render without the overlay — a
+ *   shutter is sub-pixel there, and the box would approach a field scan)
  * - `size` panel edge in px, clamped 64–1024 (default 300)
  * - `cols` panels per row (default: all in one row)
  *
@@ -159,9 +161,10 @@ export async function GET(request: NextRequest) {
     // which the field-scoped figure never has — so a link gets no overlay.
     // Otherwise mirror the policy's publication gate (lib/cutout/shutters.ts).
     // Shutters partly inside the box still matter, so search a little wider
-    // than the half-FOV; the panel's nested <svg> clips the rest.
+    // than the half-FOV; the panel's nested <svg> clips the rest. The overlay
+    // is bounded to small fields (see SHUTTER_OVERLAY_MAX_FOV_ARCSEC).
     const shuttersPromise: Promise<FigureShutter[]> =
-      wantShutters && !linkScope
+      wantShutters && !linkScope && fovArcsec <= SHUTTER_OVERLAY_MAX_FOV_ARCSEC
         ? fetchShuttersInBox(supabase, {
             field, ra, dec, halfArcsec: fovArcsec * 0.75, includeUnpublished: isAdmin,
           })

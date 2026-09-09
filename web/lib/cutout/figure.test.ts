@@ -104,3 +104,37 @@ describe('figure overlay rasterization', () => {
     expect(below).toBe(0);
   });
 });
+
+describe('shared shutter overlay', () => {
+  it('rasterizes one <defs> geometry into every panel through <use>', async () => {
+    const size = 60;
+    const gap = 4;
+    const inner = shuttersSvg(
+      [shutter({ aperture_width_arcsec: 1.5, aperture_height_arcsec: 1.5 })],
+      CENTER.ra, CENTER.dec, 3 / size, size,
+    );
+    // Same structure renderFigurePng emits: defs at the root, a <use> per nested panel svg.
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${2 * size + gap}" height="${size}">` +
+      `<defs><g id="shutters">${inner}</g></defs>` +
+      `<svg x="0" y="0" width="${size}" height="${size}"><use href="#shutters" xlink:href="#shutters"/></svg>` +
+      `<svg x="${size + gap}" y="0" width="${size}" height="${size}"><use href="#shutters" xlink:href="#shutters"/></svg>` +
+      '</svg>';
+    const { data, info } = await sharp({
+      create: { width: 2 * size + gap, height: size, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 255 } },
+    })
+      .composite([{ input: Buffer.from(svg), left: 0, top: 0 }])
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const lit = (x: number, y: number) => {
+      const o = (y * info.width + x) * 4;
+      return data[o] + data[o + 1] + data[o + 2] > 20; // the footprint fill is 15% opaque
+    };
+    // The shutter's centre and its left edge (stroke) are lit in BOTH panels; the gap is not.
+    expect(lit(size / 2, size / 2)).toBe(true);
+    expect(lit(size / 4, size / 2)).toBe(true);
+    expect(lit(size + gap + size / 2, size / 2)).toBe(true);
+    expect(lit(size + gap + size / 4, size / 2)).toBe(true);
+    expect(lit(size + 1, size / 2)).toBe(false);
+  });
+});

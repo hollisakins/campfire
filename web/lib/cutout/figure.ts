@@ -192,9 +192,12 @@ export async function renderFigurePng(src: FieldScienceSource, req: FigureReques
 
   // Shutter footprints projected through the panel's own N-up TAN WCS (the
   // one `reprojectToNorthUp` built), so they land exactly on the pixels.
+  // Every panel shares the grid, so the geometry is emitted ONCE in <defs>
+  // and each panel <use>s it — a dense field is not duplicated per panel.
   const shutterSvg = req.shutters && req.shutters.length > 0
     ? shuttersSvg(req.shutters, ra, dec, req.fovArcsec / size, size)
     : '';
+  const SHUTTERS_ID = 'shutters';
 
   const composites: sharp.OverlayOptions[] = [];
   const overlays: string[] = [];
@@ -213,7 +216,7 @@ export async function renderFigurePng(src: FieldScienceSource, req: FigureReques
     // A nested <svg> clips its content to the panel, so a footprint straddling
     // the edge never bleeds into the neighbour.
     const parts: string[] = [];
-    if (shutterSvg) parts.push(shutterSvg);
+    if (shutterSvg) parts.push(`<use href="#${SHUTTERS_ID}" xlink:href="#${SHUTTERS_ID}"/>`);
     if (req.labels !== false) {
       const baseline = LABEL_PAD + labelAscent(fontSize);
       parts.push(labelSvg(panel.label, LABEL_PAD, baseline, { fontSize }));
@@ -228,9 +231,10 @@ export async function renderFigurePng(src: FieldScienceSource, req: FigureReques
     }
   });
   if (overlays.length > 0) {
+    const defs = shutterSvg ? `<defs><g id="${SHUTTERS_ID}">${shutterSvg}</g></defs>` : '';
     const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">` +
-      `${overlays.join('')}</svg>`;
+      `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ` +
+      `width="${width}" height="${height}">${defs}${overlays.join('')}</svg>`;
     composites.push({ input: Buffer.from(svg), left: 0, top: 0 });
   }
 

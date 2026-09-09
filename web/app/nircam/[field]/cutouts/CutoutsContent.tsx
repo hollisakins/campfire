@@ -16,6 +16,7 @@ import { FieldSelectorDropdown } from '@/components/nircam/FieldSelectorDropdown
 import type { FitsglDataset } from '@/lib/actions/map';
 import type { NircamFieldCard } from '@/lib/types';
 import { MAX_PIXELS_PER_BAND, MAX_PIXELS_TOTAL } from '@/lib/cutout/limits';
+import { SHUTTER_OVERLAY_MAX_FOV_ARCSEC } from '@/lib/cutout/shutters';
 import { parseCoordinates } from '@/lib/utils/coordinate-parser';
 
 /** Single-band panel transfer curves the figure route accepts. */
@@ -521,6 +522,11 @@ export const CutoutsContent: React.FC<CutoutsContentProps> = ({
                   className="accent-[var(--primary)]"
                 />
                 <span>Overlay NIRSpec shutters</span>
+                {shutters && fovValid && fovNum > SHUTTER_OVERLAY_MAX_FOV_ARCSEC && (
+                  <span className="text-xs text-text-tertiary">
+                    (drawn for fields up to {SHUTTER_OVERLAY_MAX_FOV_ARCSEC}″)
+                  </span>
+                )}
               </label>
               {!hasPanels && (
                 <p className="text-xs text-red-500">Select at least one band or the RGB composite.</p>
