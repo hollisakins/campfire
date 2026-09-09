@@ -99,6 +99,36 @@
     refine_dv_g235h = 5
     refine_dv_g395h = 5
 
+[nirspec.line_fitting]
+    # Emission-line fluxes at the INSPECTED redshift (cfpipe nirspec linefit).
+    # Redshifts come from reference/nirspec/<obs>/redshifts.toml, written by
+    # `campfire pull --obs <obs>` from the portal's inspection state; spectra
+    # whose object is below min_quality (2 tentative, 3 probable, 4 secure) are
+    # skipped, never fit at a guess. Values below 2 are clamped to 2: a
+    # quality-0 object's portal redshift is the pipeline's own auto fit, which
+    # only `linefit --allow-auto` may use (stamped ZSRC=auto).
+    min_quality = 3
+    plot = true
+    # The LSF is the grating R-curve scaled by [nirspec.redshift_fitting].f_LSF_<grating>.
+    dv_max = 1000            # km/s, |velocity offset| allowed vs the inspected z (gratings)
+    dv_max_prism = 2500      # km/s, same for the prism (coarser inspected redshifts)
+    sigma_v_min = 10         # km/s, intrinsic (deconvolved) width bounds
+    sigma_v_max = 600
+    sigma_v_default = 100    # km/s, fixed width when no line anchors the kinematics
+    kinematics_snr_min = 5   # a complex needs a line at this S/N to anchor dv / sigma_v
+    support_sigma = 4.0      # line support half-width in units of the total sigma
+    cont_pixels = 8          # continuum pixels beyond the support on each side
+    cont_degree = 1          # local continuum polynomial degree
+    blend_sigma = 2.0        # lines closer than this x sigma are reported as one blend
+    detect_snr = 3.0         # S/N counted as a detection in the summary
+    fit_broad = true         # try a broad component on permitted lines (gratings only)
+    broad_sigma_min = 800    # km/s
+    broad_sigma_max = 5000
+    broad_dv_max = 1000
+    broad_delta_chi2 = 25    # keep the broad component only above this chi2 improvement
+    broad_snr_min = 3.0
+    scale_errors_by_chi2 = false
+
 [nirspec.redshift_consensus]
     delta_chi2_peak = 30.0      # max delta-chi2 above global min for candidate peaks
     dv_tolerance = 1000.0       # km/s, max velocity offset for nearest grid-point lookup

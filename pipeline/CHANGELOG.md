@@ -29,6 +29,24 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- **New product: emission-line fluxes at the inspected redshift** (`cfpipe nirspec
+  linefit`, docs/design-emission-line-fitting.md). Reads the portal's inspected
+  redshifts from `reference/nirspec/<obs>/redshifts.toml` (materialized by
+  `campfire pull`; writer + reader in `nirspec/redshift_reference.py`) and fits
+  every `*_spec.fits` whose object meets `[nirspec.line_fitting].min_quality`
+  (default 3 = probable) — never at the auto redshift unless `--allow-auto`,
+  which stamps `ZSRC=auto`. Model (`nirspec/linefit.py`): pixel-integrated
+  Gaussians per line complex on a local polynomial continuum, LSF from the
+  grating R-curve × the same `f_LSF_<grating>` as `zfit`, tied doublet ratios
+  ([OIII], [NII], [OI]), unresolvable pairs reported as one blend, two-pass
+  kinematics (free per anchor complex, then fixed global `dv`/`σ_v` for faint
+  lines), optional broad component on permitted lines by Δχ², Jacobian errors.
+  Line catalog in `nirspec/linelist.py` (43 vacuum rest wavelengths). Output
+  `<base>_lines.fits` (LINES / MODEL / COMPLEXES + provenance header incl.
+  `LFITVER`, `SPECHASH`, `OBJVER`) and a per-spectrum QA PDF; products are
+  refit only when their inputs change. New config section
+  `[nirspec.line_fitting]`, `cfpipe nirspec run --linefit` (deliberately not
+  part of `--all`), layout kinds `nirspec_lines` / `nirspec_redshifts`.
 - **Fixed a SEP `theta` round-trip that could abort source detection for an
   entire align pool.** `sep.extract` emits `theta` as float32 while
   `sep.sum_ellipse` validates `|theta| <= pi/2` in float64 — and

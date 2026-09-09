@@ -62,6 +62,18 @@
       "tree_class": "cloud-backed-product"
     },
     {
+      "product_type": "nirspec_lines",
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
+      "filename": "ember_egs_p1_prism_clear_15182_lines.fits",
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_lines.fits",
+      "key_legacy": null,
+      "key_canonical": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_lines.fits",
+      "bucket": "data",
+      "tree_class": "cloud-backed-product"
+    },
+    {
       "product_type": "rgb",
       "scope": {
         "obs": "ember_egs_p1"
@@ -275,6 +287,18 @@
       "relpath": "reference/nirspec/ember_egs_p1/nodded_background_overrides.toml",
       "key_legacy": null,
       "key_canonical": "data/reference/nirspec/ember_egs_p1/nodded_background_overrides.toml",
+      "bucket": "data",
+      "tree_class": "user-state"
+    },
+    {
+      "product_type": "nirspec_redshifts",
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
+      "filename": null,
+      "relpath": "reference/nirspec/ember_egs_p1/redshifts.toml",
+      "key_legacy": null,
+      "key_canonical": "data/reference/nirspec/ember_egs_p1/redshifts.toml",
       "bucket": "data",
       "tree_class": "user-state"
     },

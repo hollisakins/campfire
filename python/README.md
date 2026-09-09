@@ -106,6 +106,14 @@ campfire download --stale                          # Re-download reprocessed fil
 campfire download --all                            # Everything accessible
 ```
 
+### 2b. Publish emission-line fits (deploy machines)
+
+```bash
+campfire pull --obs ember_uds_p4            # also writes reference/nirspec/<obs>/redshifts.toml
+cfpipe nirspec linefit --obs ember_uds_p4   # pipeline: fits at the inspected redshifts
+campfire deploy lines --obs ember_uds_p4    # spectrum_line_fits rows (+ _lines.fits on OSN)
+```
+
 ### 3. Check status
 
 ```bash
@@ -237,6 +245,23 @@ spec.plot(flux_unit='flam')     # or in f_λ
 # Or open any FITS file directly
 spec = SpectrumData.from_fits('/path/to/file.fits')
 ```
+
+### Emission-line catalog
+
+`campfire sync` also pulls the emission-line fits (`meta/lines.csv`, one row per
+spectrum with `f_<line>` / `e_<line>` / `ew_<line>` / `ewe_<line>` / `flag_<line>`
+columns per line; fluxes in erg/s/cm², rest-frame EW in Å, flags per
+`campfire.flags.LineFlags`). They are measured by the pipeline **at the inspected
+redshift only** (see `docs/design-emission-line-fitting.md`):
+
+```python
+t = cf.query_lines(observations=["ember_uds_p4"], min_quality=4, exclude_stale=True)
+t["spectrum_name", "z_used", "f_Halpha", "e_Halpha", "ew_OIII5007", "flag_Halpha"]
+cf.query_lines(wide=False)   # nested per-line dicts in a `lines` column
+```
+
+`z_used` / `z_quality` say which redshift the fluxes were fit at; `stale_redshift` /
+`stale_spectrum` flag fits whose inspected redshift or spectrum changed since.
 
 ### Staleness Detection
 

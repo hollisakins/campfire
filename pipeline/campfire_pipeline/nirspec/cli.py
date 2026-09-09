@@ -9,6 +9,7 @@ Usage (via unified CLI):
     cfpipe nirspec detect-stuck --obs ember_uds_p4 [-p 4]
     cfpipe nirspec stage3   --obs ember_uds_p4 [--source-ids ...]
     cfpipe nirspec zfit     --obs ember_uds_p4 [--source-ids ...] [--overwrite]
+    cfpipe nirspec linefit  --obs ember_uds_p4 [--allow-auto]   # needs `campfire pull` first
     cfpipe nirspec summary  --obs ember_uds_p4
     cfpipe nirspec run      --obs ember_uds_p4 --all
     cfpipe nirspec make-templates [--config config.toml]
@@ -182,6 +183,42 @@ def zfit(config, obs, source_ids, processes, overwrite):
             workspace_dir=obs_obj.workspace_dir,
             n_processes=processes,
         )
+
+
+@main.command()
+@common_options
+@processing_options
+@click.option('--allow-auto', is_flag=True,
+              help='Fall back to the zfit redshift for spectra without a usable '
+                   'inspected redshift (QA only; the product is stamped ZSRC=auto '
+                   'and `campfire deploy lines` refuses it without --allow-auto-z).')
+@click.option('--grating', 'gratings', multiple=True, cls=_VariadicOption,
+              help='Restrict to these gratings (default: all).')
+def linefit(config, obs, source_ids, processes, overwrite, allow_auto, gratings):
+    """Fit emission-line fluxes at the inspected redshift.
+
+    Reads reference/nirspec/<obs>/redshifts.toml (materialized by
+    `campfire pull --obs <obs>` from the portal's inspection state) and fits
+    every *_spec.fits whose object meets [nirspec.line_fitting].min_quality,
+    writing <base>_lines.fits (+ a QA PDF). Products whose inputs (redshift,
+    quality, spectrum bytes) are unchanged are skipped unless --overwrite.
+    """
+    from campfire_pipeline.nirspec.linefit_stage import run_linefit
+
+    for obs_name in obs:
+        cfg, obs_obj, paths = _setup(config, obs_name)
+        sids = _resolve_source_ids(source_ids)
+        sids_list = sids if sids != 'all' else None
+        counts = run_linefit(
+            obs_obj, cfg,
+            source_ids=sids_list,
+            overwrite=overwrite,
+            n_processes=processes,
+            allow_auto=allow_auto,
+            gratings=list(gratings) if gratings else None,
+        )
+        log(f"linefit {obs_name}: {counts['fit']} fit, {counts['skipped_uptodate']} up to date, "
+            f"{counts['skipped_no_z']} without a usable redshift, {counts['failed']} failed")
 
 
 @main.command('detect-stuck')
@@ -502,9 +539,12 @@ def summary(config, obs):
 @click.option('--stage3', 'do_stage3', is_flag=True, help='Run stage 3.')
 @click.option('--zfit', 'do_zfit', is_flag=True, help='Run redshift fitting.')
 @click.option('--summary', 'do_summary', is_flag=True, help='Generate summary.')
-@click.option('--all', 'do_all', is_flag=True, help='Run all stages.')
+@click.option('--linefit', 'do_linefit', is_flag=True,
+              help='Fit emission lines at the inspected redshift (not part of --all: '
+                   'needs `campfire pull` after inspection).')
+@click.option('--all', 'do_all', is_flag=True, help='Run all reduction stages (not linefit).')
 def run(config, obs, source_ids, processes, overwrite,
-        do_stage1, do_stage2a, do_stage2b, do_stage3, do_zfit, do_summary, do_all):
+        do_stage1, do_stage2a, do_stage2b, do_stage3, do_zfit, do_summary, do_linefit, do_all):
     """Run multiple pipeline stages in sequence."""
     from campfire_pipeline.nirspec.stage1 import run_stage1 as _run_stage1
     from campfire_pipeline.nirspec.stage2 import run_stage2a, run_stage2b
@@ -514,7 +554,7 @@ def run(config, obs, source_ids, processes, overwrite,
     if do_all:
         do_stage1 = do_stage2a = do_stage2b = do_stage3 = do_zfit = do_summary = True
 
-    if not any([do_stage1, do_stage2a, do_stage2b, do_stage3, do_zfit, do_summary]):
+    if not any([do_stage1, do_stage2a, do_stage2b, do_stage3, do_zfit, do_summary, do_linefit]):
         raise click.UsageError("Specify at least one stage flag, or use --all.")
 
     for obs_name in obs:
@@ -553,6 +593,12 @@ def run(config, obs, source_ids, processes, overwrite,
             # Re-generate summary with redshift results
             if do_summary:
                 _run_summary(cfg, obs_obj)
+
+        if do_linefit:
+            from campfire_pipeline.nirspec.linefit_stage import run_linefit
+            sids_list = sids if sids != 'all' else None
+            run_linefit(obs_obj, cfg, source_ids=sids_list, overwrite=overwrite,
+                        n_processes=processes)
 
 
 # ---------------------------------------------------------------------------

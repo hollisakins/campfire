@@ -103,6 +103,22 @@ def _apply_photometry(store, fetched, updated_since, sync_ts):
     return rec_count, purged
 
 
+def _apply_line_fits(store, fetched, updated_since, sync_ts):
+    """Apply fetched emission-line fits to the local store.
+
+    Returns (record_count, purged_count).
+    """
+    all_records, _total_count = fetched
+
+    rec_count = store.upsert_line_fits(all_records)
+
+    purged = 0
+    if updated_since is None:
+        purged = store.purge_stale_line_fits(sync_ts)
+
+    return rec_count, purged
+
+
 def _sync_tags(api, store, show_progress):
     """Sync tag metadata from the server."""
     try:
@@ -132,7 +148,7 @@ def _apply_storage(store, fetched, updated_since, sync_ts):
     return n, purged, orphaned
 
 
-# The four independent /sync/* catalogs, each pinned to a fixed progress row
+# The five independent /sync/* catalogs, each pinned to a fixed progress row
 # (option A): a stable stacked group so every count stays anchored to a real
 # per-entity total instead of a meaningless catalog-wide sum. Fields:
 # (result key, APIClient method name, tqdm unit, padded bar label).
@@ -141,11 +157,12 @@ _FETCH_STREAMS = (
     ("spectra", "fetch_all_spectra", "spec", "Spectra   "),
     ("storage", "fetch_all_storage", "obj", "Storage   "),
     ("photometry", "fetch_all_photometry", "rec", "Photometry"),
+    ("line_fits", "fetch_all_line_fits", "fit", "Line fits "),
 )
 
 
 def _fetch_all_concurrent(api, cursors, use_bars, show_progress):
-    """Fetch the four independent /sync/* catalogs concurrently.
+    """Fetch the independent /sync/* catalogs concurrently.
 
     Each stream is network-bound and independent, so wall time collapses from the
     sum of the four fetches toward the slowest single one. The SQLite store is
@@ -203,7 +220,7 @@ def sync_metadata(
     -------
     dict
         Summary with keys: observations, objects, spectra, photometry,
-        tags, stale_count, stale_files, incremental.
+        line_fits, tags, stale_count, stale_files, incremental.
     """
     from .db.export import export_catalogs
 
@@ -222,6 +239,7 @@ def sync_metadata(
         "spectra": None if full else store.get_max_spectra_updated_at(),
         "storage": None if full else store.get_max_storage_updated_at(),
         "photometry": None if full else store.get_max_photometry_updated_at(),
+        "line_fits": None if full else store.get_max_line_fits_updated_at(),
     }
 
     # 1. Fetch all four catalogs concurrently (network only).
@@ -239,6 +257,9 @@ def sync_metadata(
     )
     phot_count, phot_purged = _apply_photometry(
         store, fetched["photometry"], cursors["photometry"], sync_ts
+    )
+    lines_count, lines_purged = _apply_line_fits(
+        store, fetched["line_fits"], cursors["line_fits"], sync_ts
     )
 
     # 3. Sync tag metadata (single request), then export CSVs.
@@ -260,6 +281,8 @@ def sync_metadata(
         "storage_purged": storage_purged,
         "photometry": phot_count,
         "photometry_purged": phot_purged,
+        "line_fits": lines_count,
+        "line_fits_purged": lines_purged,
         "tags": tags_count,
         "stale_count": len(stale),
         "stale_files": stale,

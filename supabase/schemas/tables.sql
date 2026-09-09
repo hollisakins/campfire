@@ -1072,6 +1072,66 @@ COMMENT ON TABLE "public"."nirspec_source_review" IS 'Editable flag channel for 
 -- from the campfire_layout contract; a backfill/reconcile pass covers historical
 -- pointers and adopts bucket orphans. Additive + inert: nothing reads it as
 -- authoritative until a coverage gate proves 100% of live pointers have rows.
+-- spectrum_line_fits: emission-line fluxes measured at the INSPECTED redshift
+-- (docs/design-emission-line-fitting.md). Produced by `cfpipe nirspec linefit`
+-- from reference/nirspec/<obs>/redshifts.toml (itself materialized from
+-- objects.redshift / redshift_quality by `campfire pull`) and published by
+-- `campfire deploy lines` / `campfire deploy --obs`. One row per spectrum,
+-- replaced wholesale on every re-fit; the per-line measurements live in the
+-- `lines` jsonb keyed by the pipeline line name (Halpha, OIII5007, ...,
+-- Halpha_broad), mirroring object_photometry.photometry so the sync client
+-- pivots it into a wide catalog without a schema change per line. The z_*
+-- and object_* columns are the provenance ledger: z_used is the redshift the
+-- fluxes were measured at, object_version the objects.version it came from, so
+-- spectrum_line_fits_status can flag a fit whose inspected redshift has since
+-- moved. program_slug / observation are denormalized for row-local RLS like
+-- spectra; the SELECT policy defers to the parent spectrum's visibility.
+CREATE TABLE IF NOT EXISTS "public"."spectrum_line_fits" (
+    "spectrum_id" integer NOT NULL,
+    "target_id" "text" NOT NULL,
+    "grating" "text" NOT NULL,
+    "program_slug" "text" NOT NULL,
+    "observation" "text" NOT NULL,
+    "z_used" double precision NOT NULL,
+    "z_source" "text" DEFAULT 'inspected'::"text" NOT NULL,
+    "z_quality" integer DEFAULT 0 NOT NULL,
+    "object_id" "text",
+    "object_version" integer,
+    "z_fit" double precision,
+    "z_fit_err" double precision,
+    "dv" double precision,
+    "dv_err" double precision,
+    "sigma_v" double precision,
+    "sigma_v_err" double precision,
+    "kin_source" "text",
+    "n_lines" integer DEFAULT 0 NOT NULL,
+    "n_detected" integer DEFAULT 0 NOT NULL,
+    "n_broad" integer DEFAULT 0 NOT NULL,
+    "chi2" double precision,
+    "dof" integer,
+    "lines" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "fit_version" "text" NOT NULL,
+    "cfpipe_version" "text",
+    "f_lsf" double precision,
+    "spectrum_hash" "text",
+    "fitted_at" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "spectrum_line_fits_z_source_check" CHECK (("z_source" = ANY (ARRAY['inspected'::"text", 'auto'::"text"]))),
+    CONSTRAINT "spectrum_line_fits_z_quality_check" CHECK ((("z_quality" >= 0) AND ("z_quality" <= 4)))
+);
+
+
+ALTER TABLE "public"."spectrum_line_fits" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."spectrum_line_fits" IS 'Emission-line fluxes per spectrum, measured at the inspected redshift (cfpipe nirspec linefit -> campfire deploy lines). One row per spectrum, replaced on re-fit; per-line values in `lines` jsonb keyed by pipeline line name. z_used / z_quality / object_version record the inspection state the fit used (see spectrum_line_fits_status for staleness).';
+
+COMMENT ON COLUMN "public"."spectrum_line_fits"."lines" IS 'Per-line records keyed by line name: {label, component (narrow|broad), wave_rest [vacuum A], wave_obs [um], flux, flux_err [erg/s/cm2], snr, ew_rest, ew_rest_err [A], cont, cont_err [erg/s/cm2/A], dv, dv_err, sigma_v, sigma_v_err, sigma_lsf_kms [km/s], complex, chi2, dof, npix, flags (bitmask: 1 tied, 2 blended, 4 blend, 8 edge, 16 kin_global, 32 kin_default, 64 broad, 128 no_continuum, 256 fit_failed, 512 masked, 1024 sigma_unresolved), blend_into, tied_to}. NaN is null; a `blended` line carries no flux of its own (its blend primary reports the total).';
+
+COMMENT ON COLUMN "public"."spectrum_line_fits"."z_source" IS 'inspected = the portal redshift (objects.redshift at quality >= the pipeline min_quality); auto = the pipeline zfit redshift (QA fits, deployed only with --allow-auto-z).';
+
+
 CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     "id" bigint NOT NULL,
     "backend" "text" NOT NULL,
@@ -1961,6 +2021,13 @@ ALTER TABLE ONLY "public"."deployments"
 ALTER TABLE ONLY "public"."spectra"
     ADD CONSTRAINT "spectra_pkey" PRIMARY KEY ("id");
 
+ALTER TABLE ONLY "public"."spectrum_line_fits"
+    ADD CONSTRAINT "spectrum_line_fits_pkey" PRIMARY KEY ("spectrum_id");
+
+-- Line fits follow their spectrum: a removed / re-keyed spectrum drops its fit.
+ALTER TABLE ONLY "public"."spectrum_line_fits"
+    ADD CONSTRAINT "spectrum_line_fits_spectrum_id_fkey" FOREIGN KEY ("spectrum_id") REFERENCES "public"."spectra"("id") ON DELETE CASCADE;
+
 -- B2 (#218) cross-table FKs, placed after the referenced PKs (spectra_pkey above,
 -- deployments_pkey earlier) so the declarative build order resolves them.
 -- (spectrum_exposures no longer FKs to spectra — the review loop P4 revive re-keyed
@@ -2419,6 +2486,11 @@ GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "service_role";
 GRANT ALL ON TABLE "public"."spectra" TO "anon";
 GRANT ALL ON TABLE "public"."spectra" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectra" TO "service_role";
+
+-- spectrum_line_fits: visibility follows spectra (RLS); same grants.
+GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "anon";
+GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "authenticated";
+GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "service_role";
 
 
 

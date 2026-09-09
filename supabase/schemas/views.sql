@@ -256,3 +256,49 @@ FROM public.nircam_exposures
 GROUP BY field, filter, detector;
 
 GRANT SELECT ON public.nircam_reduction_progress TO authenticated;
+
+
+-- N. spectrum_line_fits_status
+--    Staleness ledger for the emission-line catalog: each fit joined to the
+--    live inspection state of its object and the current spectrum hash.
+--    stale_redshift: the object's redshift / quality / version moved since the
+--    fit (re-pull + `cfpipe nirspec linefit` refits exactly those);
+--    stale_spectrum: the spectrum bytes were re-deployed since the fit.
+--    security_invoker: rows follow the caller's RLS on spectrum_line_fits.
+DROP VIEW IF EXISTS public.spectrum_line_fits_status;
+
+CREATE VIEW public.spectrum_line_fits_status
+WITH (security_invoker = true) AS
+SELECT f.spectrum_id,
+       f.target_id,
+       f.grating,
+       f.program_slug,
+       f.observation,
+       f.z_used,
+       f.z_source,
+       f.z_quality,
+       f.object_id,
+       f.object_version,
+       f.fit_version,
+       f.fitted_at,
+       o.object_id AS current_object_id,
+       o.redshift AS current_redshift,
+       o.redshift_quality AS current_quality,
+       o.version AS current_object_version,
+       (o.id IS NOT NULL AND (
+          o.version IS DISTINCT FROM f.object_version
+          OR o.redshift_quality IS DISTINCT FROM f.z_quality
+          OR o.redshift IS NULL
+          OR abs((o.redshift)::double precision - f.z_used) > 1e-5)) AS stale_redshift,
+       (regexp_replace(s.file_hash, '^sha256:', '')
+          IS DISTINCT FROM regexp_replace(f.spectrum_hash, '^sha256:', '')) AS stale_spectrum
+FROM public.spectrum_line_fits f
+JOIN public.spectra s ON s.id = f.spectrum_id
+LEFT JOIN public.targets t ON t.target_id = f.target_id
+LEFT JOIN public.objects o ON o.id = t.object_id
+-- soft-deleted objects are hidden everywhere else; keep the ledger consistent
+WHERE (o.id IS NULL OR o.is_active = true);
+
+GRANT ALL ON TABLE public.spectrum_line_fits_status TO anon;
+GRANT ALL ON TABLE public.spectrum_line_fits_status TO authenticated;
+GRANT ALL ON TABLE public.spectrum_line_fits_status TO service_role;

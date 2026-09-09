@@ -23,7 +23,7 @@ from campfire.sync import sync_metadata
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
-def _make_fake_api(objects, spectra, storage, photometry, tags):
+def _make_fake_api(objects, spectra, storage, photometry, tags, line_fits=()):
     """A stand-in APIClient whose fetch_all_* return canned data.
 
     Each fetch invokes its on_page_complete callback once (as the real
@@ -43,6 +43,7 @@ def _make_fake_api(objects, spectra, storage, photometry, tags):
     api.fetch_all_spectra.side_effect = _fetcher(spectra)
     api.fetch_all_storage.side_effect = _fetcher(storage)
     api.fetch_all_photometry.side_effect = _fetcher(photometry)
+    api.fetch_all_line_fits.side_effect = _fetcher(list(line_fits))
     api.fetch_tags.return_value = tags
     return api
 
@@ -54,15 +55,18 @@ def _make_fake_store():
     store.get_max_spectra_updated_at.return_value = None
     store.get_max_storage_updated_at.return_value = None
     store.get_max_photometry_updated_at.return_value = None
+    store.get_max_line_fits_updated_at.return_value = None
     store.upsert_objects.side_effect = lambda rows: len(rows)
     store.upsert_spectra.side_effect = lambda rows: len(rows)
     store.upsert_storage_objects.side_effect = lambda rows: len(rows)
     store.upsert_photometry.side_effect = lambda rows: len(rows)
+    store.upsert_line_fits.side_effect = lambda rows: len(rows)
     store.upsert_tags.side_effect = lambda data: len(data)
     store.purge_stale_objects.return_value = 0
     store.purge_stale_spectra.return_value = {"purged_spectra": 0}
     store.purge_stale_storage_objects.return_value = {"purged": 0, "orphaned_files": []}
     store.purge_stale_photometry.return_value = 0
+    store.purge_stale_line_fits.return_value = 0
     store.get_stale_objects.return_value = []
     store.get_synced_observations.return_value = []
     return store
@@ -84,9 +88,10 @@ def test_sync_metadata_fetches_all_streams_and_routes_results():
     spectra = [{"spectrum_id": f"S{i}"} for i in range(3)]
     storage = [{"storage_key": f"k{i}"} for i in range(7)]
     photometry = [{"id": i} for i in range(2)]
+    line_fits = [{"spectrum_id": i} for i in range(4)]
     tags = [{"slug": "t1"}]
 
-    api = _make_fake_api(objects, spectra, storage, photometry, tags)
+    api = _make_fake_api(objects, spectra, storage, photometry, tags, line_fits)
     store = _make_fake_store()
 
     result = sync_metadata(api, store, Path("/tmp/meta"), show_progress=False, full=True)
@@ -96,17 +101,20 @@ def test_sync_metadata_fetches_all_streams_and_routes_results():
     api.fetch_all_spectra.assert_called_once()
     api.fetch_all_storage.assert_called_once()
     api.fetch_all_photometry.assert_called_once()
+    api.fetch_all_line_fits.assert_called_once()
 
     # Each stream's rows routed to the matching upsert (no cross-wiring).
     store.upsert_objects.assert_called_once_with(objects)
     store.upsert_spectra.assert_called_once_with(spectra)
     store.upsert_storage_objects.assert_called_once_with(storage)
     store.upsert_photometry.assert_called_once_with(photometry)
+    store.upsert_line_fits.assert_called_once_with(line_fits)
 
     assert result["objects"] == 5
     assert result["spectra"] == 3
     assert result["storage_objects"] == 7
     assert result["photometry"] == 2
+    assert result["line_fits"] == 4
     assert result["tags"] == 1
     assert result["incremental"] is False
     assert result["needs_full_sync"] is False
@@ -123,6 +131,7 @@ def test_sync_metadata_full_passes_no_cursor_to_fetchers():
     assert api.fetch_all_spectra.call_args.kwargs["updated_since"] is None
     assert api.fetch_all_storage.call_args.kwargs["updated_since"] is None
     assert api.fetch_all_photometry.call_args.kwargs["updated_since"] is None
+    assert api.fetch_all_line_fits.call_args.kwargs["updated_since"] is None
 
 
 def test_sync_metadata_incremental_threads_cursor_and_skips_purge():
@@ -132,6 +141,7 @@ def test_sync_metadata_incremental_threads_cursor_and_skips_purge():
     store.get_max_spectra_updated_at.return_value = "2026-01-02T00:00:00Z"
     store.get_max_storage_updated_at.return_value = "2026-01-03T00:00:00Z"
     store.get_max_photometry_updated_at.return_value = "2026-01-04T00:00:00Z"
+    store.get_max_line_fits_updated_at.return_value = "2026-01-05T00:00:00Z"
     # server_total != local -> needs_full_sync path exercised
     store._conn.execute.return_value.fetchone.return_value = [0]
 
@@ -144,6 +154,7 @@ def test_sync_metadata_incremental_threads_cursor_and_skips_purge():
     store.purge_stale_spectra.assert_not_called()
     store.purge_stale_storage_objects.assert_not_called()
     store.purge_stale_photometry.assert_not_called()
+    store.purge_stale_line_fits.assert_not_called()
 
 
 def test_sync_metadata_propagates_stream_failure():

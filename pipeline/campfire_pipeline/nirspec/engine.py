@@ -98,6 +98,16 @@ class ReductionEngine:
             n_processes=n_processes,
         )
 
+    def run_linefit(self, obs, source_ids=None, n_processes=1, overwrite=False, allow_auto=False):
+        from campfire_pipeline.nirspec.linefit_stage import run_linefit
+        return run_linefit(
+            obs, self.config,
+            source_ids=source_ids,
+            overwrite=overwrite,
+            n_processes=n_processes,
+            allow_auto=allow_auto,
+        )
+
     def run_summarize(self, obs):
         from campfire_pipeline.metadata.summary import (
             generate_observation_summary,

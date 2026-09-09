@@ -44,6 +44,7 @@ cfpipe nirspec stage2b       --obs <obs>                   # Nodded background s
 cfpipe nirspec stage3        --obs <obs> --processes 4     # Extraction + combination
 cfpipe nirspec zfit          --obs <obs>                   # Redshift fitting
 cfpipe nirspec summary       --obs <obs>                   # Generate metadata summary
+cfpipe nirspec linefit       --obs <obs> --processes 4     # Emission-line fluxes at the INSPECTED redshift
 cfpipe nirspec detect-stuck  --obs <obs> --processes 4     # Auto-detect stuck shutters
 
 # Manual masks for shorts/artifacts on rate files (DS9 polygons → DQ DO_NOT_USE)
@@ -54,6 +55,25 @@ cfpipe nirspec mask clear    --obs <obs> --exposure <basename>  # Remove a mask 
 
 # Template grid generation (one-time)
 cfpipe nirspec make-templates
+```
+
+#### Emission-line fluxes (post-inspection)
+
+`linefit` is not part of `run --all`: it needs the redshifts that inspectors set on
+the portal *after* a deploy. `campfire pull --obs <obs>` materializes them to
+`reference/nirspec/<obs>/redshifts.toml`; `linefit` then fits every spectrum whose
+object is at or above `[nirspec.line_fitting].min_quality` (default 3, probable),
+skips the rest, and writes `<base>_lines.fits` (+ a QA PDF) next to the spectrum.
+Re-running refits only spectra whose redshift, quality or bytes changed.
+`campfire deploy lines --obs <obs>` (or a full deploy) publishes the rows to the
+`spectrum_line_fits` catalog. `--allow-auto` falls back to the `zfit` redshift for
+QA runs; those products are stamped `ZSRC=auto` and are refused by deploy unless
+`--allow-auto-z`. See `docs/design-emission-line-fitting.md`.
+
+```bash
+campfire pull --obs ember_uds_p4
+cfpipe nirspec linefit --obs ember_uds_p4 -p 8
+campfire deploy lines --obs ember_uds_p4
 ```
 
 #### Manual masks

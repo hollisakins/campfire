@@ -1,0 +1,242 @@
+"""Emission-line catalog publication: ``_lines.fits`` products → ``spectrum_line_fits``.
+
+The local→cloud half of the emission-line loop
+(docs/design-emission-line-fitting.md §4). ``cfpipe nirspec linefit`` writes
+one ``<base>_lines.fits`` next to each spectrum it fit; this module turns
+those into ``spectrum_line_fits`` rows (one per spectrum, per-line values in
+the ``lines`` jsonb) and upserts them keyed on the spectrum's catalog id,
+plus uploads the FITS products themselves to OSN under the
+``nirspec_lines`` layout key so the full fit (model, complexes) is
+retrievable with ``campfire pull``.
+
+Provenance gate: a product fit at the pipeline's *auto* redshift
+(``ZSRC='auto'``, the ``--allow-auto`` QA path) is refused unless the deploy
+is run with ``allow_auto_z`` — the catalog is inspected-redshift-only by
+default, which is the whole point of the design.
+
+Entry points: :func:`deploy_lines` (standalone ``campfire deploy lines``)
+and :func:`publish_line_fits` (called by the full ``campfire deploy --obs``
+after the spectra upsert, so the catalog rows always exist first).
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from campfire_layout import KeyScheme, Scope, storage_key
+
+from campfire.deploy.config import resolve_obs_dir
+from campfire.deploy.r2 import UploadTask, upload_files_parallel
+from campfire.deploy.summary import filter_by_source_ids, get_program_slug, load_summary
+from campfire.deploy.supabase import batch_upsert_line_fits, fetch_spectrum_ids, get_supabase_client
+
+_LINES_SUFFIX = '_lines.fits'
+
+
+def _pipeline_io():
+    from campfire.deploy import require_pipeline
+    require_pipeline("Deploying line fits (pipeline _lines.fits reader)")
+    from campfire_pipeline.nirspec.linefit_stage import lines_payload, read_lines_file
+    return read_lines_file, lines_payload
+
+
+def get_lines_paths(summary, obs_dir: Path) -> list[Path]:
+    """The ``_lines.fits`` sibling of every summary spectrum that has one."""
+    paths = []
+    for row in summary:
+        spec_file = row['spec_file']
+        if not spec_file:
+            continue
+        p = obs_dir / str(spec_file).replace('_spec.fits', _LINES_SUFFIX)
+        if p.exists():
+            paths.append(p)
+    return paths
+
+
+def line_fit_versions(lines_paths) -> list[str]:
+    """Distinct ``CMPFRVER`` strings stamped on the given ``_lines.fits`` products."""
+    from astropy.io import fits
+    versions: set[str] = set()
+    for path in lines_paths:
+        try:
+            v = fits.getheader(path, 0).get('CMPFRVER')
+        except Exception:
+            v = None
+        if v:
+            versions.add(str(v))
+    return sorted(versions)
+
+
+def non_release_line_fit_versions(lines_paths) -> list[str]:
+    """The non-release (``.dev``, dirty, override) pipeline versions among the
+    products — the same test ``campfire deploy --obs`` applies to spectra, so a
+    line fit made with an untagged pipeline is never published silently."""
+    from campfire.deploy.deploy import _is_release_version
+    return [v for v in line_fit_versions(lines_paths) if not _is_release_version(v)]
+
+
+def confirm_non_release_line_fits(lines_paths, *, dry_run: bool, auto_approve: bool) -> bool:
+    """Warn-and-confirm gate for line-fit products carrying a non-release
+    ``CMPFRVER``. Returns False when the operator declines."""
+    versions = non_release_line_fit_versions(lines_paths)
+    if not versions:
+        return True
+    print()
+    print("WARNING: non-release pipeline version detected in line-fit products")
+    print("  cfpipe_version strings present:")
+    for v in versions:
+        print(f"    - {v}")
+    print("  These will be preserved verbatim in spectrum_line_fits.cfpipe_version.")
+    print("  Prefer fitting with a tagged release (see /pipeline-release).")
+    if not dry_run and not auto_approve:
+        resp = input("  Continue? [y/N]: ")
+        if resp.lower() != 'y':
+            print("Aborted.")
+            return False
+    return True
+
+
+def _hdr_get(hdr, key, cast=None):
+    v = hdr.get(key)
+    if v is None:
+        return None
+    try:
+        return cast(v) if cast else v
+    except (TypeError, ValueError):
+        return None
+
+
+def build_line_fit_row(product: dict, *, program_slug: str, observation: str) -> dict:
+    """One ``spectrum_line_fits`` row (minus ``spectrum_id``) from a read product."""
+    _read, lines_payload = _pipeline_io()
+    h = product['header']
+    return {
+        'target_id': str(h['TARGETID']),
+        'grating': str(h['GRATING']).upper(),
+        'program_slug': program_slug,
+        'observation': observation,
+        'z_used': float(h['ZUSED']),
+        'z_source': str(h.get('ZSRC', 'inspected')),
+        'z_quality': int(h.get('ZQUAL', 0)),
+        'object_id': _hdr_get(h, 'OBJID', str),
+        'object_version': _hdr_get(h, 'OBJVER', int),
+        'z_fit': _hdr_get(h, 'ZFIT', float),
+        'z_fit_err': _hdr_get(h, 'ZFITERR', float),
+        'dv': _hdr_get(h, 'DVGLOB', float),
+        'dv_err': _hdr_get(h, 'DVGLOBE', float),
+        'sigma_v': _hdr_get(h, 'SIGGLOB', float),
+        'sigma_v_err': _hdr_get(h, 'SIGGLOBE', float),
+        'kin_source': _hdr_get(h, 'KINSRC', str),
+        'n_lines': int(h.get('NLINES', 0)),
+        'n_detected': int(h.get('NDETECT', 0)),
+        'n_broad': int(h.get('NBROAD', 0)),
+        'chi2': _hdr_get(h, 'CHI2', float),
+        'dof': _hdr_get(h, 'DOF', int),
+        'lines': lines_payload(product['lines']),
+        'fit_version': str(h['LFITVER']),
+        'cfpipe_version': _hdr_get(h, 'CMPFRVER', str),
+        'f_lsf': _hdr_get(h, 'FLSF', float),
+        'spectrum_hash': _hdr_get(h, 'SPECHASH', str),
+        'fitted_at': _hdr_get(h, 'CMPFRTIM', str),
+    }
+
+
+def build_line_fit_rows(lines_paths, *, program_slug: str, observation: str,
+                        allow_auto_z: bool = False) -> tuple[list[dict], list[str]]:
+    """Read every product and build rows. Returns ``(rows, refused_auto)``."""
+    read_lines_file, _payload = _pipeline_io()
+    rows, refused = [], []
+    for path in lines_paths:
+        product = read_lines_file(path)
+        row = build_line_fit_row(product, program_slug=program_slug, observation=observation)
+        if row['z_source'] != 'inspected' and not allow_auto_z:
+            refused.append(path.name)
+            continue
+        rows.append(row)
+    return rows, refused
+
+
+def publish_line_fits(sb, obs_name: str, lines_paths, *, program_slug: str,
+                      allow_auto_z: bool = False, dry_run: bool = False) -> dict:
+    """Upsert rows for the given products (spectra rows must already exist).
+
+    Returns counts: ``rows``, ``refused_auto``, ``missing_spectra``.
+    """
+    rows, refused = build_line_fit_rows(lines_paths, program_slug=program_slug,
+                                        observation=obs_name, allow_auto_z=allow_auto_z)
+    if refused:
+        print(f"  {len(refused)} line fit(s) at an auto (uninspected) redshift refused "
+              f"— pass --allow-auto-z to publish them: {', '.join(refused[:3])}"
+              f"{' …' if len(refused) > 3 else ''}")
+    if dry_run:
+        print(f"  Would upsert {len(rows)} spectrum_line_fits rows")
+        return dict(rows=len(rows), refused_auto=len(refused), missing_spectra=0)
+    ids = fetch_spectrum_ids(sb, [(r['target_id'], r['grating']) for r in rows])
+    keyed, missing = [], []
+    for r in rows:
+        sid = ids.get((r['target_id'], r['grating']))
+        if sid is None:
+            missing.append(f"{r['target_id']}/{r['grating']}")
+            continue
+        keyed.append({'spectrum_id': sid, **r})
+    if missing:
+        print(f"  {len(missing)} line fit(s) skipped: no catalog spectrum row for "
+              f"{', '.join(missing[:3])}{' …' if len(missing) > 3 else ''} (deploy the spectra first)")
+    n = batch_upsert_line_fits(sb, keyed)
+    print(f"  {n} spectrum_line_fits rows")
+    return dict(rows=n, refused_auto=len(refused), missing_spectra=len(missing))
+
+
+def lines_upload_tasks(obs_name: str, lines_paths) -> list[UploadTask]:
+    scope = Scope(obs=obs_name)
+    return [UploadTask(p, storage_key('nirspec_lines', scope, p.name, scheme=KeyScheme.CANONICAL),
+                       'application/fits') for p in lines_paths]
+
+
+def deploy_lines(obs_name: str, config: dict, *, dry_run: bool = False,
+                 source_ids: list[int] | None = None, allow_auto_z: bool = False,
+                 upload: bool = True, auto_approve: bool = False) -> None:
+    """Standalone ``campfire deploy lines --obs``: publish the line fits of an
+    already-deployed observation (upload the products, upsert the rows).
+
+    Products fit with a non-release pipeline version trigger the same
+    warn-and-confirm prompt as a spectra deploy (``auto_approve`` skips it)."""
+    obs_dir = resolve_obs_dir(obs_name)
+    summary = load_summary(obs_dir, obs_name)
+    if source_ids:
+        summary = filter_by_source_ids(summary, source_ids)
+    program_slug = get_program_slug(summary)
+    lines_paths = get_lines_paths(summary, obs_dir)
+    print(f"Found {len(lines_paths)} line-fit products for {obs_name}")
+    if not lines_paths:
+        print("Nothing to deploy — run `cfpipe nirspec linefit --obs "
+              f"{obs_name}` (after `campfire pull --obs {obs_name}`) first.")
+        return
+    if not confirm_non_release_line_fits(lines_paths, dry_run=dry_run, auto_approve=auto_approve):
+        return
+    if dry_run:
+        print("=== DRY RUN ===")
+        publish_line_fits(None, obs_name, lines_paths, program_slug=program_slug,
+                          allow_auto_z=allow_auto_z, dry_run=True)
+        if upload:
+            print(f"Would upload {len(lines_paths)} _lines.fits products to OSN")
+        return
+
+    sb = get_supabase_client(config)
+    if upload:
+        tasks = lines_upload_tasks(obs_name, lines_paths)
+        uploaded: set[str] = set()
+        success, failed, failed_msgs = upload_files_parallel(
+            config, tasks, desc="Line fits", succeeded_out=uploaded, backend='osn')
+        for msg in failed_msgs[:5]:
+            print(f"    - {msg}")
+        print(f"Uploaded {success}/{len(tasks)} line-fit products")
+        if uploaded:
+            from campfire.deploy.registry import build_registry_rows, upsert_storage_objects
+            reg_rows = build_registry_rows(tasks, backend='osn', succeeded_keys=uploaded)
+            n_reg = upsert_storage_objects(sb, reg_rows)
+            print(f"Registered {n_reg} storage objects")
+
+    print("Upserting line fits...")
+    counts = publish_line_fits(sb, obs_name, lines_paths, program_slug=program_slug,
+                               allow_auto_z=allow_auto_z)
+    print(f"Deployed {counts['rows']} line fits for {obs_name}")

@@ -35,6 +35,7 @@ from campfire.deploy.generate import (
     generate_zfit_json,
 )
 from campfire_layout import KeyScheme, Scope, storage_key
+from campfire.deploy.lines import get_lines_paths, line_fit_versions, lines_upload_tasks, publish_line_fits
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
     batch_upsert_objects,
@@ -119,12 +120,14 @@ def _is_release_version(version: str | None) -> bool:
     return bool(version) and bool(_RELEASE_VERSION_RE.match(version))
 
 
-def _collect_non_release_versions(summary, spectra) -> list[str]:
+def _collect_non_release_versions(summary, spectra, extra_versions=()) -> list[str]:
     """Return the unique non-release version strings present in *summary* or
     *spectra*. Inspects both ``summary.meta['cfpipe_version']`` and each
     spectrum's ``cfpipe_version`` (sourced verbatim from the FITS ``CMPFRVER``
     header), since heterogeneous reductions may carry different strings
-    per row.
+    per row. *extra_versions* are further strings to gate on the same way
+    (the ``CMPFRVER`` of the line-fit products, which may come from a later,
+    untagged pipeline than the spectra).
     """
     versions: set[str] = set()
     meta_v = summary.meta.get('cfpipe_version')
@@ -134,6 +137,7 @@ def _collect_non_release_versions(summary, spectra) -> list[str]:
         v = s.get('cfpipe_version')
         if v:
             versions.add(v)
+    versions.update(v for v in extra_versions if v)
     return sorted(v for v in versions if not _is_release_version(v))
 
 
@@ -469,6 +473,7 @@ def deploy_observation(
     spectra = get_spectra_records(summary, obs_name)
     spec_paths = get_spec_paths(summary, obs_dir)
     zfit_paths = get_zfit_paths(summary, obs_dir)
+    lines_paths = get_lines_paths(summary, obs_dir)
 
     # Get JWST PID from first row (all rows share the same PID per observation)
     jwst_program_id = int(summary['program_id'][0]) if len(summary) > 0 else 0
@@ -479,19 +484,22 @@ def deploy_observation(
     print(f"  Objects: {len(objects)}")
     print(f"  Spectra: {len(spectra)}")
     print(f"  Zfit files: {len(zfit_paths)}")
+    print(f"  Line-fit files: {len(lines_paths)}")
 
     # Warn if any spectrum was reduced with a non-release pipeline version.
     # The dev/override string is preserved verbatim in spectra.cfpipe_version
     # for downstream traceability — this prompt exists so deployers consciously
     # choose to ship unreleased data, not to block it.
-    non_release_versions = _collect_non_release_versions(summary, spectra)
+    non_release_versions = _collect_non_release_versions(
+        summary, spectra, extra_versions=line_fit_versions(lines_paths))
     if non_release_versions:
         print()
         print("WARNING: non-release pipeline version detected")
-        print("  cfpipe_version strings present in this deployment:")
+        print("  cfpipe_version strings present in this deployment (spectra and line fits):")
         for v in non_release_versions:
             print(f"    - {v}")
-        print("  These will be preserved verbatim in spectra.cfpipe_version.")
+        print("  These will be preserved verbatim in spectra.cfpipe_version /")
+        print("  spectrum_line_fits.cfpipe_version.")
         print("  Prefer deploying from a tagged release (see /pipeline-release).")
         if not dry_run and not auto_approve:
             resp = input("  Continue? [y/N]: ")
@@ -734,6 +742,12 @@ def deploy_observation(
                 zfit_json = generate_zfit_json(zfit_path, temp_dir)
                 upload_tasks.append(UploadTask(zfit_json, storage_key('zfit', scope, zfit_json.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
+            # Emission-line fit products (cfpipe nirspec linefit); the catalog
+            # rows are upserted after the spectra below.
+            upload_tasks.extend(lines_upload_tasks(obs_name, lines_paths))
+            if lines_paths:
+                print(f"  + {len(lines_paths)} emission-line fit products")
+
             # Canonical spectrum-exposure intermediates (epic #210, B5): uploaded on
             # EVERY deploy (cloud-as-source-of-truth + delete-local→restore), filtered
             # to the deployed source_ids when --source-ids is set. Registered as
@@ -820,6 +834,14 @@ def deploy_observation(
         print("Upserting spectra...")
         n_spec, changed_hashes = batch_upsert_spectra(sb, spectra)
         print(f"  {n_spec} spectra ({len(changed_hashes)} with hash changes)")
+
+        # Emission-line catalog rows (spectrum_line_fits) for whichever spectra
+        # carry a _lines.fits product. Inspected-redshift fits only; fits made
+        # at the auto redshift are refused here (campfire deploy lines
+        # --allow-auto-z is the explicit path).
+        if lines_paths:
+            print("Upserting line fits...")
+            publish_line_fits(sb, obs_name, lines_paths, program_slug=program_slug)
 
         # Recompute aggregate columns (max_snr, max_exposure_time) in bulk
         target_ids = [o['object_id'] for o in objects]

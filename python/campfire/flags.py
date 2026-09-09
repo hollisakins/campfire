@@ -211,6 +211,48 @@ class RedshiftQuality(IntEnum):
         return None
 
 
+class LineFlags(IntFlag):
+    """
+    Per-line flags in the emission-line catalog (``lines.csv`` ``flag_<line>``
+    columns / ``spectrum_line_fits.lines[<line>].flags``).
+
+    Set by ``cfpipe nirspec linefit``; see docs/design-emission-line-fitting.md.
+    """
+
+    TIED = 1
+    """Flux ratio-tied to its doublet primary ([OIII], [NII], [OI])."""
+
+    BLENDED = 2
+    """Unresolved at this resolution: folded into a blend primary, no flux of its own."""
+
+    BLEND = 4
+    """This line's flux includes blended companions (see ``blend_into`` on them)."""
+
+    EDGE = 8
+    """Fit window truncated by the valid wavelength range."""
+
+    KIN_GLOBAL = 16
+    """Velocity offset and width fixed to the spectrum's global (anchor) kinematics."""
+
+    KIN_DEFAULT = 32
+    """Velocity offset and width fixed to defaults (no line anchored the kinematics)."""
+
+    BROAD = 64
+    """A broad component was accepted on this line (``<line>_broad`` carries it)."""
+
+    NO_CONTINUUM = 128
+    """Continuum undetected at the line: no equivalent width."""
+
+    FIT_FAILED = 256
+    """Nonlinear refinement failed; the grid / linear solution was kept."""
+
+    MASKED = 512
+    """More than 30% of the window pixels were masked."""
+
+    SIGMA_UNRESOLVED = 1024
+    """Intrinsic width not constrained by the LSF."""
+
+
 @queryable
 class DQFlags(QueryableFlag):
     """
