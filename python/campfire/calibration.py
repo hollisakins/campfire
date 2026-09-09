@@ -38,10 +38,12 @@ from .models import Photometry, Spectrum, SpectrumCollection, SpectrumData
 
 SVO_FILTER_MAP = {
     # JWST NIRCam
+    "f070w": "JWST/NIRCam.F070W",
     "f090w": "JWST/NIRCam.F090W",
     "f115w": "JWST/NIRCam.F115W",
     "f140m": "JWST/NIRCam.F140M",
     "f150w": "JWST/NIRCam.F150W",
+    "f162m": "JWST/NIRCam.F162M",
     "f182m": "JWST/NIRCam.F182M",
     "f200w": "JWST/NIRCam.F200W",
     "f210m": "JWST/NIRCam.F210M",
@@ -60,9 +62,15 @@ SVO_FILTER_MAP = {
     # HST ACS/WFC
     "f435w": "HST/ACS_WFC.F435W",
     "f606w": "HST/ACS_WFC.F606W",
+    "f775w": "HST/ACS_WFC.F775W",
     "f814w": "HST/ACS_WFC.F814W",
+    "f850lp": "HST/ACS_WFC.F850LP",
     # HST WFC3/IR
     "f098m": "HST/WFC3_IR.F098M",
+    "f105w": "HST/WFC3_IR.F105W",
+    "f125w": "HST/WFC3_IR.F125W",
+    "f140w": "HST/WFC3_IR.F140W",
+    "f160w": "HST/WFC3_IR.F160W",
     # Euclid
     "vis": "Euclid/VIS.vis",
     # Ground-based (COSMOS defaults)
@@ -82,10 +90,12 @@ SVO_BASE_URL = "http://svo2.cab.inta-csic.es/theory/fps/getdata.php"
 
 # Fallback band edges (microns) — used when SVO is unreachable.
 _FILTER_EDGES = {
+    "f070w": (0.624000, 0.781000),
     "f090w": (0.788550, 1.023550),
     "f115w": (0.998200, 1.305200),
     "f140m": (1.304350, 1.505350),
     "f150w": (1.303790, 1.693790),
+    "f162m": (1.542000, 1.713000),
     "f182m": (1.695500, 2.000500),
     "f200w": (1.723400, 2.258400),
     "f210m": (1.961600, 2.232600),
@@ -103,8 +113,14 @@ _FILTER_EDGES = {
     "f770w": (6.475000, 8.830000),
     "f435w": (0.359500, 0.488300),
     "f606w": (0.462700, 0.717900),
+    "f775w": (0.687200, 0.862500),
     "f814w": (0.686800, 0.962600),
+    "f850lp": (0.818600, 1.043300),
     "f098m": (0.889000, 1.084297),
+    "f105w": (0.900000, 1.207000),
+    "f125w": (1.100000, 1.400000),
+    "f140w": (1.190000, 1.600000),
+    "f160w": (1.390000, 1.700000),
     "vis": (0.495885, 0.930629),
     "u": (0.3100, 0.4000),
     "g": (0.3950, 0.5600),

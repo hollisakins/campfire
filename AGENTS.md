@@ -260,8 +260,17 @@ campfire deploy --obs <obs_name>                         # full deploy
 campfire deploy --obs <obs_name> --dry-run               # validate only
 campfire deploy pointings --obs <obs_name>               # pointings JSONB backfill
 campfire deploy tiles --field cosmos --filter f444w      # map tiles
+campfire deploy photometry --field goods-n --supersede  # catalog cross-match + P(z) sidecars; retire the previous catalog_name
 campfire config push --programs                          # programs.toml → cloud (config plane)
 ```
+
+Photometry is configured per field in `$CAMPFIRE_ROOT/config/photometry.toml`
+(schema and a UNICORN example: `python/campfire/deploy/photometry.example.toml`).
+Rows key on `(field, catalog_name, catalog_id)`, so a new catalog release lands
+beside the old one until `--supersede` deletes the other `catalog_name`s in the
+field; `[field.photoz].format` selects the `lazy` (native Lazy.jl) or `unicorn`
+(release `*_photz_v*.fits` + template cube) reader. UNICORN releases are pulled
+from the open Corral host `https://web.corral.tacc.utexas.edu/unicorn/Catalogs/`.
 
 Migration-era one-time tools (the `deploy registry` subgroup —
 backfill/reconcile/copy/prune — and `deploy nircam import-*`) are deleted (A1/A2

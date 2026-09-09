@@ -6,9 +6,12 @@ the object_photometry table. Also generates P(z) + template SED
 JSON sidecars for upload to R2.
 
 Config-driven via $CAMPFIRE_ROOT/config/photometry.toml with per-field
-sections specifying catalog paths, column mappings, and flux units.
-Photo-z comes from a single Lazy.jl FITS file configured under
-[field.photoz].
+sections specifying catalog paths, column mappings, and flux units
+(see ``photometry.example.toml`` next to this module). Photo-z comes from
+a single FITS file configured under [field.photoz], in one of two layouts
+selected by ``format``: ``lazy`` (native Lazy.jl output, :class:`PhotozData`)
+or ``unicorn`` (a UNICORN release ``*_photz_v*.fits`` plus its template cube,
+:class:`UnicornPhotozData`).
 """
 
 import json
@@ -41,12 +44,22 @@ FILTER_WAVELENGTHS = {
     'vis': (0.718086, 0.495885, 0.930629),
     'f435w': (0.433444, 0.359500, 0.488300),
     'f606w': (0.596043, 0.462700, 0.717900),
+    'f775w': (0.769349, 0.687200, 0.862500),
     'f814w': (0.807304, 0.686800, 0.962600),
+    'f850lp': (0.903327, 0.818600, 1.043300),
+    # HST WFC3/IR
     'f098m': (0.987520, 0.889000, 1.084297),
+    'f105w': (1.055225, 0.900000, 1.207000),
+    'f125w': (1.248599, 1.100000, 1.400000),
+    'f140w': (1.392306, 1.190000, 1.600000),
+    'f160w': (1.536918, 1.390000, 1.700000),
+    # JWST NIRCam
+    'f070w': (0.703860, 0.624000, 0.781000),
     'f090w': (0.904228, 0.788550, 1.023550),
     'f115w': (1.157002, 0.998200, 1.305200),
     'f140m': (1.406032, 1.304350, 1.505350),
     'f150w': (1.503988, 1.303790, 1.693790),
+    'f162m': (1.626389, 1.542000, 1.713000),
     'f182m': (1.846590, 1.695500, 2.000500),
     'f200w': (1.993392, 1.723400, 2.258400),
     'f210m': (2.096375, 1.961600, 2.232600),
@@ -89,6 +102,106 @@ def load_field_config(
         config = tomllib.load(f)
 
     return config.get(field)
+
+
+def catalog_columns_needed(field_config: dict) -> list[str]:
+    """The catalog columns a field config actually reads: position, id,
+    every configured band's flux/err, and the photo-z scale column."""
+    cols = [
+        field_config.get('ra_column', 'ra'),
+        field_config.get('dec_column', 'dec'),
+        field_config.get('id_column', 'id'),
+    ]
+    for columns in field_config.get('bands', {}).values():
+        cols.append(columns.get('flux') or columns.get('f'))
+        cols.append(columns.get('err') or columns.get('e'))
+    scale_col = (field_config.get('photoz') or {}).get('scale_column')
+    if scale_col:
+        cols.append(scale_col)
+    seen: set[str] = set()
+    return [c for c in cols if c and not (c in seen or seen.add(c))]
+
+
+READ_CATALOG_CHUNK_BYTES = 64 * 1024 * 1024
+
+
+def read_catalog(path: str, fmt: str, columns: list[str], hdu: int = 1) -> Table:
+    """Read *columns* of a catalog into a Table.
+
+    A FITS binary table is streamed through in fixed-size row chunks and
+    only the requested columns are kept: a UNICORN release is 300+ columns
+    and 4–12 GB, far more than the ~40 columns a deploy needs, and
+    ``Table.read`` (or a memory-map touched column by column) would pull the
+    whole file into RAM / the page cache — enough to get the process killed
+    on a laptop. The file is read with plain sequential reads and, where the
+    platform supports it, with caching disabled (``F_NOCACHE`` on macOS), so
+    the resident footprint is the kept columns plus one chunk.
+
+    Columns absent from the file are skipped (the payload builder already
+    tolerates a missing band); the caller checks the position columns.
+    Other formats go through ``Table.read`` unchanged.
+    """
+    if fmt != 'fits':
+        return Table.read(path, format=fmt)
+
+    with fits.open(path, memmap=True, lazy_load_hdus=True) as hdul:
+        table_hdu = hdul[hdu]
+        info = table_hdu.fileinfo()
+        offset, span = info['datLoc'], info['datSpan']
+        # ColDefs.dtype describes the record in native byte order; the bytes
+        # on disk are FITS big-endian.
+        row_dtype = table_hdu.columns.dtype.newbyteorder('>')
+        n_rows = int(table_hdu.header['NAXIS2'])
+        naxis1 = int(table_hdu.header['NAXIS1'])
+    row_size = row_dtype.itemsize
+    if row_size != naxis1:
+        raise ValueError(f"{path}: record dtype is {row_size} bytes but NAXIS1={naxis1}")
+    if row_size * n_rows > span:
+        raise ValueError(f"{path}: table data shorter than NAXIS1×NAXIS2")
+
+    present = set(row_dtype.names)
+    keep = [c for c in columns if c in present]
+    parts: dict[str, list[np.ndarray]] = {c: [] for c in keep}
+    rows_per_chunk = max(1, READ_CATALOG_CHUNK_BYTES // row_size)
+
+    with open(path, 'rb', buffering=0) as f:
+        _disable_read_cache(f.fileno())
+        f.seek(offset)
+        remaining = n_rows
+        while remaining > 0:
+            n = min(rows_per_chunk, remaining)
+            buf = f.read(n * row_size)
+            if len(buf) != n * row_size:
+                raise ValueError(f"{path}: short read inside the table data")
+            rec = np.frombuffer(buf, dtype=row_dtype)
+            for c in keep:
+                # Copy out of the chunk in native byte order so the buffer
+                # can be released.
+                col = rec[c]
+                parts[c].append(col.astype(col.dtype.newbyteorder('='), copy=True))
+            remaining -= n
+
+    out = Table()
+    for c in keep:
+        out[c] = np.concatenate(parts[c]) if parts[c] else np.empty(0, dtype=row_dtype[c])
+    return out
+
+
+def _disable_read_cache(fd: int) -> None:
+    """Ask the OS not to keep this file's pages in the cache (macOS
+    F_NOCACHE; POSIX_FADV_DONTNEED elsewhere when available). Best effort."""
+    try:
+        import fcntl
+        if hasattr(fcntl, 'F_NOCACHE'):
+            fcntl.fcntl(fd, fcntl.F_NOCACHE, 1)
+    except Exception:
+        pass
+    try:
+        import os
+        if hasattr(os, 'posix_fadvise'):
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_SEQUENTIAL)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -173,10 +286,15 @@ def build_photometry_payload(
     catalog_row: dict,
     band_config: dict,
     flux_unit: str,
+    max_flux_err: float | None = None,
 ) -> dict:
     """Build JSONB payload for one object's photometry.
 
     band_config: mapping of band_name → {flux: col, err: col}
+    max_flux_err: optional ceiling on the *catalog-unit* error; a band whose
+        error exceeds it is dropped. Catalogs mark "no coverage" with a huge
+        error rather than NaN (UNICORN writes ~1e12 nJy), and such a band
+        must not reach the SED as a real measurement.
     """
     bands = {}
     for band_name, columns in band_config.items():
@@ -189,9 +307,14 @@ def build_photometry_payload(
         raw_flux = float(catalog_row[flux_col])
         raw_err = float(catalog_row[err_col])
 
+        if max_flux_err is not None and (
+            not np.isfinite(raw_err) or abs(raw_err) > max_flux_err
+        ):
+            continue
+
         flux_ujy, err_ujy = convert_flux_to_ujy(raw_flux, raw_err, flux_unit)
 
-        if not np.isfinite(flux_ujy):
+        if not np.isfinite(flux_ujy) or not np.isfinite(err_ujy):
             continue
 
         # Look up wavelength info
@@ -341,6 +464,331 @@ class PhotozData:
                 result['template_flux_ujy'] = fnu[valid].tolist()  # already µJy
 
         return result
+
+
+# ---------------------------------------------------------------------------
+# Photo-z: UNICORN release reader
+# ---------------------------------------------------------------------------
+
+def _squeeze_leading(arr: np.ndarray, ndim: int) -> np.ndarray:
+    """Drop leading singleton axes until *arr* has *ndim* dimensions.
+
+    A one-row FITS table column with TDIM comes back as ``(1, ...)``; the
+    template cube and its grids are stored that way.
+    """
+    while arr.ndim > ndim and arr.shape[0] == 1:
+        arr = arr[0]
+    return arr
+
+
+def _thin_to(n_max: int, *arrays: np.ndarray) -> tuple[np.ndarray, ...]:
+    """Subsample parallel arrays to at most *n_max* points (uniform stride)."""
+    n = len(arrays[0])
+    if n <= n_max:
+        return arrays
+    step = int(math.ceil(n / n_max))
+    return tuple(a[::step] for a in arrays)
+
+
+class UnicornPhotozData:
+    """Pre-loaded UNICORN release photo-z data (a Lazy.jl run packaged by
+    Finkelstein et al.), with the same ``lookup`` / ``generate_sidecar``
+    surface as :class:`PhotozData`.
+
+    ``<prefix>_photz_v<ver>.fits`` layout:
+      - ext 1: per-source scalars — ``ID``, ``ZA`` (chi²-minimum redshift),
+        ``ZM``, ``CHIA``, ``ZL68`` / ``ZU68`` (68 % bounds), ``COEFFS[n_templ]``,
+        ``Z_LOWZ``, ``COEFFS_LOWZ``, …
+      - ext 2: best-fit model flux per filter (nJy) — unused here
+      - ext 3: one row per redshift-grid point: ``ZGRID`` scalar plus
+        ``PZ[n_obj]`` and ``CHI2[n_obj]`` arrays, so P(z) for source *i* is
+        the column ``PZ[:, i]``
+      - ext 4: the z < 7 restricted run — unused here
+
+    The template library is a separate cube (``unicorn_templates_fiducial.fits``):
+    ext 1 ``WAVE`` (rest-frame Å), ext 2 ``ZGRID``, ext 3 ``TNAME``, ext 4
+    ``FLUX`` in nJy over (template, z, wavelength) in whichever axis order the
+    writer chose — the axes are identified by length at load time. The model
+    SED at ``ZA`` is ``coeffs @ FLUX[:, iz, :]``.
+
+    Memory: a release is 4–8 GB, most of it the P(z) block (``n_z`` rows of
+    ``n_obj`` floats) and the 1.3 GB cube, and a memory map touched for a
+    few thousand sources drags gigabytes through the page cache — enough to
+    get a deploy killed on a laptop. So the scalars are copied out once and
+    the file closed; P(z) for the sources of interest is gathered by one
+    streaming pass over the block (:meth:`prefetch`, called by the deploy
+    with every matched id) with caching disabled; and template planes are
+    fetched with positioned reads and a small LRU. Nothing large stays
+    mapped.
+
+    Config keys (``[field.photoz]``): ``format = "unicorn"``, ``file``,
+    ``templates``; optional ``label``, ``color``, ``id_column`` (ID),
+    ``z_best_column`` (ZA), ``chi2_column`` (CHIA), ``z_lo_column`` (ZL68),
+    ``z_hi_column`` (ZU68), ``coeffs_column`` (COEFFS), ``pz_ext`` (3),
+    ``template_wav_min_um`` / ``template_wav_max_um`` (0.2 / 6.0, observed
+    frame), ``max_template_points`` (2500).
+    """
+
+    _PLANE_CACHE = 128
+
+    def __init__(self, photoz_config: dict):
+        self.label = photoz_config.get('label', 'UNICORN photo-z')
+        self.color = photoz_config.get('color', '#8e6bb8')
+
+        self._pz_file = photoz_config['file']
+        templates_file = photoz_config.get('templates')
+        id_col = photoz_config.get('id_column', 'ID')
+        z_col = photoz_config.get('z_best_column', 'ZA')
+        chi2_col = photoz_config.get('chi2_column', 'CHIA')
+        zlo_col = photoz_config.get('z_lo_column', 'ZL68')
+        zhi_col = photoz_config.get('z_hi_column', 'ZU68')
+        coeffs_col = photoz_config.get('coeffs_column', 'COEFFS')
+        pz_ext = photoz_config.get('pz_ext', 3)
+        self._wav_min = float(photoz_config.get('template_wav_min_um', 0.2))
+        self._wav_max = float(photoz_config.get('template_wav_max_um', 6.0))
+        self._max_points = int(photoz_config.get('max_template_points', 2500))
+
+        print(f"  Loading UNICORN photo-z data: {self._pz_file}")
+        with fits.open(self._pz_file, memmap=True, lazy_load_hdus=True) as hdul:
+            main = hdul[1].data
+            names = set(main.dtype.names)
+            for col in (id_col, z_col, chi2_col, coeffs_col):
+                if col not in names:
+                    raise ValueError(
+                        f"UNICORN photo-z file lacks column '{col}' (ext 1 has "
+                        f"{sorted(names)[:12]}…)")
+            self._ids = np.asarray(main[id_col]).astype(np.int64)
+            self._z = np.asarray(main[z_col], dtype=float)
+            self._chi2 = np.asarray(main[chi2_col], dtype=float)
+            self._zlo = np.asarray(main[zlo_col], dtype=float) if zlo_col in names else None
+            self._zhi = np.asarray(main[zhi_col], dtype=float) if zhi_col in names else None
+            self._coeffs = np.asarray(main[coeffs_col], dtype=float)  # (n_obj, n_templ)
+
+            # P(z) block: remember its on-disk layout for the streaming pass.
+            pz_hdu = hdul[pz_ext]
+            pz_dtype = pz_hdu.columns.dtype.newbyteorder('>')
+            if 'ZGRID' not in pz_dtype.names or 'PZ' not in pz_dtype.names:
+                raise ValueError("UNICORN P(z) extension needs ZGRID and PZ columns")
+            n_z = int(pz_hdu.header['NAXIS2'])
+            if pz_dtype['PZ'].shape != (len(self._ids),):
+                raise ValueError(
+                    f"UNICORN P(z) rows carry {pz_dtype['PZ'].shape} values; "
+                    f"expected ({len(self._ids)},)")
+            self._pz_layout = (pz_hdu.fileinfo()['datLoc'], pz_dtype, n_z)
+            # ZGRID is one scalar per row: a strided read of n_z pages, cheap.
+            self.z_grid = np.asarray(pz_hdu.data['ZGRID'], dtype=float).ravel()
+
+        self._id_to_idx: dict[int, int] = {
+            int(v): i for i, v in enumerate(self._ids)
+        }
+        self._pz_cache: dict[int, np.ndarray] = {}
+
+        # Template cube (optional: without it sidecars carry P(z) only).
+        self._templates_file = None
+        self._plane_cache: dict[int, np.ndarray] = {}
+        if templates_file:
+            print(f"  Loading UNICORN template cube: {templates_file}")
+            with fits.open(templates_file, memmap=True, lazy_load_hdus=True) as thdul:
+                wave = _squeeze_leading(np.asarray(thdul[1].data['WAVE']), 1)
+                zgrid_t = _squeeze_leading(np.asarray(thdul[2].data['ZGRID']), 1)
+                cube_hdu = thdul[4]
+                cube_dtype = cube_hdu.columns.dtype.newbyteorder('>')
+                n_rows = int(cube_hdu.header['NAXIS2'])
+                col_name = cube_dtype.names[0]
+                cube_shape = (n_rows,) + tuple(cube_dtype[col_name].shape)
+                self._cube_layout = (
+                    cube_hdu.fileinfo()['datLoc'], cube_dtype, col_name, n_rows,
+                )
+            cube_shape = tuple(s for s in cube_shape if s != 1) if len(cube_shape) > 3 else cube_shape
+            n_t = int(self._coeffs.shape[1])
+            n_z, n_w = len(zgrid_t), len(wave)
+            if len({n_t, n_z, n_w}) != 3:
+                raise ValueError(
+                    f"Cannot identify template cube axes: n_templ={n_t}, "
+                    f"n_z={n_z}, n_wave={n_w} are not distinct")
+            axes = {n: i for i, n in enumerate(cube_shape)}
+            if len(cube_shape) != 3 or set(axes) != {n_t, n_z, n_w}:
+                raise ValueError(
+                    f"Template cube shape {cube_shape} does not match "
+                    f"(n_templ={n_t}, n_z={n_z}, n_wave={n_w})")
+            self._templates_file = templates_file
+            self._cube_shape = cube_shape
+            self._ax_t, self._ax_z, self._ax_w = axes[n_t], axes[n_z], axes[n_w]
+            self._lam_rest = np.asarray(wave, dtype=float)   # Å
+            self._zgrid_t = np.asarray(zgrid_t, dtype=float)
+
+        print(f"    {len(self._id_to_idx)} sources loaded")
+
+    # -- P(z) -------------------------------------------------------------
+
+    def prefetch(self, catalog_ids) -> int:
+        """Gather P(z) for *catalog_ids* in one streaming pass over the block.
+
+        Rows are read sequentially in ~64 MB chunks with caching disabled,
+        and only the wanted columns are kept (n_z × n_wanted floats). Ids
+        not in the release are ignored. Returns the number gathered.
+        """
+        wanted = sorted({
+            idx for cid in catalog_ids
+            if (idx := self._id_to_idx.get(int(cid))) is not None
+            and idx not in self._pz_cache
+        })
+        if not wanted:
+            return 0
+        offset, row_dtype, n_z = self._pz_layout
+        row_size = row_dtype.itemsize
+        rows_per_chunk = max(1, READ_CATALOG_CHUNK_BYTES // row_size)
+        sel = np.asarray(wanted)
+        out = np.empty((n_z, len(sel)), dtype=np.float32)
+        with open(self._pz_file, 'rb', buffering=0) as f:
+            _disable_read_cache(f.fileno())
+            f.seek(offset)
+            done = 0
+            while done < n_z:
+                n = min(rows_per_chunk, n_z - done)
+                buf = f.read(n * row_size)
+                if len(buf) != n * row_size:
+                    raise ValueError(f"{self._pz_file}: short read inside the P(z) block")
+                rec = np.frombuffer(buf, dtype=row_dtype)
+                out[done:done + n] = rec['PZ'][:, sel]
+                done += n
+        for j, idx in enumerate(wanted):
+            self._pz_cache[idx] = out[:, j].copy()
+        return len(wanted)
+
+    def _pz_for(self, idx: int) -> np.ndarray:
+        if idx not in self._pz_cache:
+            self.prefetch([int(self._ids[idx])])
+        return self._pz_cache[idx]
+
+    # -- Templates --------------------------------------------------------
+
+    def _templates_at(self, z: float) -> np.ndarray:
+        """Template basis at the grid redshift nearest *z*, shape (n_templ, n_wave), nJy."""
+        iz = int(np.argmin(np.abs(self._zgrid_t - z)))
+        plane = self._plane_cache.get(iz)
+        if plane is None:
+            plane = self._read_plane(iz)
+            if len(self._plane_cache) >= self._PLANE_CACHE:
+                self._plane_cache.pop(next(iter(self._plane_cache)))
+            self._plane_cache[iz] = plane
+        return plane
+
+    def _read_plane(self, iz: int) -> np.ndarray:
+        offset, cube_dtype, col_name, n_rows = self._cube_layout
+        n_t, n_w = self._cube_shape[self._ax_t], self._cube_shape[self._ax_w]
+        item = cube_dtype[col_name].base.itemsize
+        row_size = cube_dtype.itemsize
+        with open(self._templates_file, 'rb', buffering=0) as f:
+            _disable_read_cache(f.fileno())
+            if (self._ax_t, self._ax_z, self._ax_w) == (0, 1, 2) and n_rows == n_t:
+                # One row per template holding a contiguous (n_z, n_w) block:
+                # the plane is n_t reads of n_w values.
+                plane = np.empty((n_t, n_w), dtype=np.float32)
+                for t in range(n_t):
+                    f.seek(offset + t * row_size + iz * n_w * item)
+                    buf = f.read(n_w * item)
+                    plane[t] = np.frombuffer(buf, dtype=cube_dtype[col_name].base)
+                return plane.astype(float)
+            # General layout: read the whole cube once per plane. Only small
+            # (test-sized) cubes take this path.
+            f.seek(offset)
+            buf = f.read(n_rows * row_size)
+        rec = np.frombuffer(buf, dtype=cube_dtype)
+        cube = np.asarray(rec[col_name]).reshape(self._cube_shape)
+        index: list = [slice(None)] * 3
+        index[self._ax_z] = iz
+        plane = np.asarray(cube[tuple(index)], dtype=float)
+        if self._ax_t > self._ax_w:
+            plane = plane.T
+        return plane
+
+    # -- Public surface ---------------------------------------------------
+
+    def lookup(self, catalog_id: int | str) -> dict | None:
+        """Photo-z scalars for a catalog ID, or None if absent / non-finite.
+
+        ``z_err_lo`` / ``z_err_hi`` are the absolute 68 % bounds (the web
+        panel prints them as a range), matching :class:`PhotozData`.
+        """
+        idx = self._id_to_idx.get(int(catalog_id))
+        if idx is None:
+            return None
+        z_best = float(self._z[idx])
+        if not np.isfinite(z_best):
+            return None
+        result: dict = {'z_best': z_best, 'chi2': float(self._chi2[idx])}
+        if self._zlo is not None and np.isfinite(self._zlo[idx]):
+            result['z_err_lo'] = float(self._zlo[idx])
+        if self._zhi is not None and np.isfinite(self._zhi[idx]):
+            result['z_err_hi'] = float(self._zhi[idx])
+        return result
+
+    def generate_sidecar(
+        self, catalog_id: int | str, scale: float | None = None,
+    ) -> dict | None:
+        """P(z) + template-SED sidecar (same keys as :class:`PhotozData`).
+
+        *scale* multiplies the model SED (UNICORN's ``SCALE_MODEL`` maps the
+        fitted model onto the corrected fluxes of sources whose Kron aperture
+        was replaced; 1 for everything else).
+        """
+        idx = self._id_to_idx.get(int(catalog_id))
+        if idx is None:
+            return None
+        z_best = float(self._z[idx])
+        if not np.isfinite(z_best):
+            return None
+
+        result: dict = {
+            'label': self.label,
+            'color': self.color,
+            'z_best': z_best,
+            'chi2': float(self._chi2[idx]),
+        }
+
+        pz = np.asarray(self._pz_for(idx), dtype=float)
+        pz = np.where(np.isfinite(pz), pz, 0.0)
+        pz_max = pz.max() if pz.size else 0.0
+        if pz_max > 0:
+            pz = pz / pz_max
+        result['z_grid'] = np.round(self.z_grid, 4).tolist()
+        result['pz'] = np.round(pz, 5).tolist()
+
+        if self._templates_file is not None:
+            coeffs = self._coeffs[idx]
+            fnu_njy = coeffs @ self._templates_at(z_best)
+            if scale is not None and np.isfinite(scale) and scale > 0:
+                fnu_njy = fnu_njy * scale
+            lam_obs = self._lam_rest * (1.0 + z_best) / 1e4  # µm, observed
+            valid = (
+                np.isfinite(fnu_njy) & (fnu_njy > 0)
+                & (lam_obs >= self._wav_min) & (lam_obs <= self._wav_max)
+            )
+            if np.any(valid):
+                lam, fnu = _thin_to(self._max_points, lam_obs[valid], fnu_njy[valid] / 1e3)
+                result['template_wav'] = np.round(lam, 5).tolist()
+                result['template_flux_ujy'] = [float(f'{v:.5g}') for v in fnu]
+
+        return result
+
+
+def load_photoz(photoz_config: dict):
+    """Instantiate the photo-z reader named by ``[field.photoz].format``."""
+    fmt = str(photoz_config.get('format', 'lazy')).lower()
+    if fmt == 'unicorn':
+        return UnicornPhotozData(photoz_config)
+    if fmt in ('lazy', 'lazy.jl'):
+        return PhotozData(photoz_config)
+    raise ValueError(f"Unknown photoz format '{fmt}' (expected 'lazy' or 'unicorn')")
+
+
+def photoz_input_files(photoz_config: dict) -> list[str]:
+    """Paths a photo-z config needs on disk (for the pre-flight existence check)."""
+    files = [photoz_config.get('file')]
+    if str(photoz_config.get('format', 'lazy')).lower() == 'unicorn':
+        files.append(photoz_config.get('templates'))
+    return [f for f in files if f]
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +954,53 @@ def _prune_photometry(
     return total
 
 
+def _supersede_other_catalogs(
+    client: Client,
+    field: str,
+    keep_catalog_name: str,
+) -> dict[str, int]:
+    """Delete every photometry row in *field* whose catalog_name differs from
+    *keep_catalog_name*.
+
+    The upsert key includes ``catalog_name``, so a new release (e.g.
+    ``UNICORN EGS v0.98``) lands beside the rows of the one it replaces
+    (``UNICORN EGS v0.9``), and ``--prune`` only cleans within one catalog.
+    This is the explicit retirement of the old release, run after the new
+    rows are in place so no object loses photometry in between.
+
+    Returns ``{catalog_name: n_deleted}`` for the retired catalogs.
+    """
+    page_size = 1000
+    offset = 0
+    to_delete: dict[str, list[int]] = defaultdict(list)
+    while True:
+        resp = (
+            client.table('object_photometry')
+            .select('id, catalog_name')
+            .eq('field', field)
+            .neq('catalog_name', keep_catalog_name)
+            .order('id')
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        rows = resp.data
+        if not rows:
+            break
+        for r in rows:
+            to_delete[r['catalog_name']].append(r['id'])
+        if len(rows) < page_size:
+            break
+        offset += page_size
+
+    deleted: dict[str, int] = {}
+    for name, ids in to_delete.items():
+        for i in range(0, len(ids), BATCH_SIZE):
+            chunk = ids[i:i + BATCH_SIZE]
+            client.table('object_photometry').delete().in_('id', chunk).execute()
+        deleted[name] = len(ids)
+    return deleted
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -520,6 +1015,7 @@ def deploy_field_photometry(
     dry_run: bool = False,
     restrict_to_object_db_ids: set[int] | None = None,
     prune: bool = False,
+    supersede: bool = False,
 ) -> dict:
     """
     Photometry deploy for a field.
@@ -544,9 +1040,12 @@ def deploy_field_photometry(
             upsert delete rows whose `(catalog_name, catalog_id)` is not in
             the current match set. Used to clean up after upstream catalog
             regenerations.
+        supersede: When True (and `restrict_to_object_db_ids` is None), after
+            upsert delete every row in the field belonging to a *different*
+            catalog_name — the explicit retirement of a previous release.
 
     Returns:
-        Dict with keys: n_objects, n_matched, n_bands, n_pz
+        Dict with keys: n_objects, n_matched, n_bands, n_pz, n_superseded
     """
     # Empty restriction: nothing to do, skip all I/O.
     if restrict_to_object_db_ids is not None and not restrict_to_object_db_ids:
@@ -566,11 +1065,21 @@ def deploy_field_photometry(
     dec_col = field_config.get('dec_column', 'dec')
     id_col = field_config.get('id_column', 'id')
     radius = field_config.get('match_radius_arcsec', 0.3)
+    max_flux_err = field_config.get('max_flux_err')
     band_config = field_config.get('bands', {})
     photoz_config = field_config.get('photoz')
+    scale_col = (photoz_config or {}).get('scale_column')
 
     print(f"  Loading catalog: {catalog_path}")
-    catalog = Table.read(catalog_path, format=fmt if fmt != 'fits' else None)
+    wanted = catalog_columns_needed(field_config)
+    catalog = read_catalog(catalog_path, fmt, wanted)
+    for col in (ra_col, dec_col):
+        if col not in catalog.colnames:
+            raise ValueError(f"Catalog {catalog_path} has no '{col}' column")
+    missing = [c for c in wanted if c not in catalog.colnames]
+    if missing:
+        print(f"    WARNING: {len(missing)} configured columns absent from the "
+              f"catalog: {missing[:8]}{'…' if len(missing) > 8 else ''}")
     print(f"    {len(catalog)} sources, {len(band_config)} bands configured")
 
     # Photo-z is loaded lazily after cross-match (only if any kept match
@@ -642,15 +1151,28 @@ def deploy_field_photometry(
 
     # Lazy photo-z load: only pay the FITS load if we actually have rows to
     # process. Skipped entirely when kept_matches is empty.
-    photoz: PhotozData | None = None
+    photoz: PhotozData | UnicornPhotozData | None = None
     if include_photoz and kept_matches and photoz_config:
-        photoz_file = photoz_config.get('file')
-        if photoz_file and Path(photoz_file).exists():
-            photoz = PhotozData(photoz_config)
+        needed = photoz_input_files(photoz_config)
+        missing = [f for f in needed if not Path(f).exists()]
+        if needed and not missing:
+            photoz = load_photoz(photoz_config)
         else:
-            print(f"  WARNING: Photo-z file not found: {photoz_file}")
+            print(f"  WARNING: Photo-z input not found: {missing or '(no file configured)'}")
     elif include_photoz and kept_matches and not photoz_config:
         print(f"  No [photoz] config for field '{field}'. Skipping photo-z.")
+
+    # UNICORN: gather P(z) for every kept match in one streaming pass so the
+    # per-object loop never touches the multi-GB block.
+    if isinstance(photoz, UnicornPhotozData):
+        ids_needed = []
+        for _obj_idx, cat_idx, _dist in kept_matches:
+            raw = catalog[id_col][cat_idx] if id_col in catalog.colnames else cat_idx
+            if isinstance(raw, (int, float, np.integer, np.floating)):
+                ids_needed.append(int(raw))
+        print(f"  Gathering P(z) for {len(ids_needed)} matched sources...")
+        n_got = photoz.prefetch(ids_needed)
+        print(f"    {n_got} found in the photo-z release")
 
     # Build records + P(z) sidecars (only for kept matches)
     now = datetime.now(timezone.utc).isoformat()
@@ -669,7 +1191,9 @@ def deploy_field_photometry(
         cat_id = str(cat_id_raw)
 
         # Build photometry payload
-        payload = build_photometry_payload(cat_row, band_config, flux_unit)
+        payload = build_photometry_payload(
+            cat_row, band_config, flux_unit, max_flux_err=max_flux_err,
+        )
 
         # Photo-z from Lazy.jl
         photo_z = None
@@ -685,7 +1209,13 @@ def deploy_field_photometry(
                 photo_z_err_hi = pz_meta.get('z_err_hi')
 
                 # Generate P(z) sidecar
-                sidecar = photoz.generate_sidecar(cat_id_int)
+                if isinstance(photoz, UnicornPhotozData):
+                    scale = None
+                    if scale_col and scale_col in cat_row:
+                        scale = float(cat_row[scale_col])
+                    sidecar = photoz.generate_sidecar(cat_id_int, scale=scale)
+                else:
+                    sidecar = photoz.generate_sidecar(cat_id_int)
                 if sidecar is not None:
                     has_pz = True
                     n_pz += 1
@@ -787,6 +1317,17 @@ def deploy_field_photometry(
         if n_pruned:
             print(f"    Pruned {n_pruned} stale rows")
 
+    n_superseded = 0
+    if supersede and restrict_to_object_db_ids is None:
+        print(f"  Retiring other catalogs in field '{field}' "
+              f"(keeping '{catalog_name}')...")
+        retired = _supersede_other_catalogs(client, field, catalog_name)
+        for name, n in retired.items():
+            print(f"    Deleted {n} rows of '{name}'")
+        n_superseded = sum(retired.values())
+        if not retired:
+            print("    Nothing to retire")
+
     # Sync denormalized columns to objects
     print(f"  Syncing photo_z to objects table...")
     resp = client.rpc('sync_photometry_to_objects', {'p_field': field}).execute()
@@ -802,4 +1343,5 @@ def deploy_field_photometry(
         'n_matched': len(kept_matches),
         'n_bands': len(band_config),
         'n_pz': n_pz,
+        'n_superseded': n_superseded,
     }
