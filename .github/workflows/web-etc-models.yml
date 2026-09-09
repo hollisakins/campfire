@@ -1,0 +1,27 @@
+name: Web ETC model copies
+
+# The hidden /nirspec/etc calculator reads verbatim copies of the
+# campfire-etc noise models from web/public/etc/models/ (Vercel builds from
+# web/ alone). Fail when the copies drift from etc/campfire_etc/models/;
+# `cd web && npm run etc-models` refreshes them.
+
+on:
+  pull_request:
+    paths:
+      - "etc/campfire_etc/models/**"
+      - "web/public/etc/models/**"
+      - "web/scripts/sync-etc-models.mjs"
+      - ".github/workflows/web-etc-models.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check model copies are current
+        run: node web/scripts/sync-etc-models.mjs --check
