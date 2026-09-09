@@ -78,6 +78,8 @@ reg(spec({ name: 'spectrum_json', tree: 'products', bucket: 'data', scopeKeys: [
 // 1-D-only sibling of spectrum_json (perf T2-D2, #508): no 2-D S/N array.
 reg(spec({ name: 'spectrum_1d_json', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_spec_1d.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
 reg(spec({ name: 'zfit', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_zfit.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
+// Emission-line fit product (cfpipe nirspec linefit); new product, reserved canonical key.
+reg(spec({ name: 'nirspec_lines', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_lines.fits' }));
 reg(spec({ name: 'nirspec_spectrum_exposure', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '.fits' }));
 reg(spec({ name: 'nirspec_rate', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_rate.fits' }));
 reg(spec({ name: 'rgb', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_rgb.png', legacyPrefix: (s) => `rgb/${s.obs}` }));
@@ -117,6 +119,8 @@ for (const [name, suffix] of [['summary', '_summary.ecsv'], ['pointings', '_poin
 // --- Reducer-decision reference state (user-state) ---
 reg(spec({ name: 'nirspec_manual_mask', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: (s) => `nirspec/${s.obs}/manual_masks`, suffix: '.reg' }));
 reg(spec({ name: 'nirspec_stuck_shutters', tree: 'reference', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: 'stuck_closed_shutters.toml', filename: () => 'stuck_closed_shutters.toml' }));
+// Inspected redshifts pulled from the portal for cfpipe nirspec linefit.
+reg(spec({ name: 'nirspec_redshifts', tree: 'reference', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: 'redshifts.toml', filename: () => 'redshifts.toml' }));
 reg(spec({ name: 'nirspec_bkg_override', tree: 'reference', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: 'nodded_background_overrides.toml', filename: () => 'nodded_background_overrides.toml' }));
 reg(spec({ name: 'nircam_mask', tree: 'reference', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}/masks` }));
 reg(spec({ name: 'nircam_astrom_cat', tree: 'reference', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}/astrom_cats` }));
@@ -195,6 +199,7 @@ export interface ParsedKey {
 const NIRSPEC_OBS_SUFFIXES: [string, string][] = [
   ['_spec.fits', 'nirspec_spec'],
   ['_rate.fits', 'nirspec_rate'], // must precede the bare-'.fits' fallback below
+  ['_lines.fits', 'nirspec_lines'], // ditto
   ['_spec_1d.json', 'spectrum_1d_json'],
   ['_spec.json', 'spectrum_json'],
   ['_zfit.json', 'zfit'],
@@ -272,6 +277,7 @@ export function parseRelpath(relpath: string): ParsedKey {
     const fname = seg[seg.length - 1];
     if (fname === 'stuck_closed_shutters.toml') return { productType: 'nirspec_stuck_shutters', scope: { obs }, filename: fname };
     if (fname === 'nodded_background_overrides.toml') return { productType: 'nirspec_bkg_override', scope: { obs }, filename: fname };
+    if (fname === 'redshifts.toml') return { productType: 'nirspec_redshifts', scope: { obs }, filename: fname };
   }
   if (tree === 'reference' && seg.length >= 4 && seg[1] === 'nircam') {
     const fname = seg[seg.length - 1];

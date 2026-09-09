@@ -706,6 +706,46 @@ def batch_upsert_spectra(
     return len(spectra), changed
 
 
+def fetch_spectrum_ids(client: Client, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
+    """``{(target_id, grating): spectra.id}`` for the given pairs (missing pairs absent).
+
+    PostgREST cannot filter on tuples: fetch by target_id IN (...) and filter
+    Python-side (gratings per target are few).
+    """
+    wanted = set(pairs)
+    target_ids = sorted({tid for (tid, _) in wanted})
+    out: dict[tuple[str, str], int] = {}
+    fetch_batch = 200
+    for i in range(0, len(target_ids), fetch_batch):
+        resp = (
+            client.table('spectra')
+            .select('id, target_id, grating')
+            .in_('target_id', target_ids[i:i + fetch_batch])
+            .execute()
+        )
+        for row in resp.data or []:
+            key = (row['target_id'], row['grating'])
+            if key in wanted:
+                out[key] = int(row['id'])
+    return out
+
+
+def batch_upsert_line_fits(client: Client, rows: list[dict], batch_size: int = 100) -> int:
+    """Upsert ``spectrum_line_fits`` rows keyed on ``spectrum_id`` (one per spectrum).
+
+    A re-fit replaces the whole row — the ``lines`` jsonb included — so a line
+    dropped from the catalog never lingers from an older fit. ``updated_at``
+    is bumped by trigger so the sync client's incremental cursor sees it.
+    """
+    if not rows:
+        return 0
+    for i in range(0, len(rows), batch_size):
+        client.table('spectrum_line_fits').upsert(
+            rows[i:i + batch_size], on_conflict='spectrum_id'
+        ).execute()
+    return len(rows)
+
+
 def update_spectra_zfit_scalars(
     client: Client,
     spectra: list[dict],

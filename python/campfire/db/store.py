@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 #   science-only NIRCam identity, and the pushed_* columns carry the PUSH-side
 #   bookkeeping (`campfire push` / deploy dedup) — the mirror now serves both
 #   transfer directions.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9  # 9: spectrum_line_fits (emission-line catalog)
 
 
 # Product-type classes the client download engine understands. Finals are the
@@ -83,6 +83,27 @@ SPECTRA_EXPORT_COLUMNS = [
     "cfpipe_version", "crds_context", "jwst_version", "date_obs", "reduced_at",
     "redshift_auto", "dq_flags",
     "program_slug", "observation", "field", "local_path",
+]
+
+# Columns of the spectrum_line_fits table (mirrors /sync/lines). The per-line
+# values stay in the `lines` JSON column; export pivots them into f_/e_/ew_/snr_
+# columns per line (see db/export.py).
+LINE_FIT_COLUMNS = [
+    "spectrum_id", "spectrum_name", "target_id", "grating", "program_slug",
+    "observation", "field", "current_object_id",
+    "z_used", "z_source", "z_quality", "object_id", "object_version",
+    "z_fit", "z_fit_err", "dv", "dv_err", "sigma_v", "sigma_v_err", "kin_source",
+    "n_lines", "n_detected", "n_broad", "chi2", "dof", "lines",
+    "fit_version", "cfpipe_version", "f_lsf", "spectrum_hash", "fitted_at",
+    "stale_redshift", "stale_spectrum", "created_at", "updated_at",
+]
+
+LINE_FIT_EXPORT_COLUMNS = [
+    "spectrum_name", "target_id", "object_id", "grating", "observation", "program_slug", "field",
+    "z_used", "z_source", "z_quality", "z_fit", "z_fit_err", "dv", "dv_err",
+    "sigma_v", "sigma_v_err", "kin_source", "n_lines", "n_detected", "n_broad",
+    "chi2", "dof", "fit_version", "cfpipe_version", "stale_redshift", "stale_spectrum",
+    "fitted_at",
 ]
 
 # Columns for the object_photometry table (unchanged from pre-Phase-E).
@@ -248,6 +269,48 @@ CREATE TABLE IF NOT EXISTS object_photometry (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ophot_object_id ON object_photometry(object_id);
+
+CREATE TABLE IF NOT EXISTS spectrum_line_fits (
+    spectrum_id INTEGER PRIMARY KEY,
+    spectrum_name TEXT,
+    target_id TEXT,
+    grating TEXT,
+    program_slug TEXT,
+    observation TEXT,
+    field TEXT,
+    current_object_id TEXT,
+    z_used REAL,
+    z_source TEXT,
+    z_quality INTEGER DEFAULT 0,
+    object_id TEXT,
+    object_version INTEGER,
+    z_fit REAL,
+    z_fit_err REAL,
+    dv REAL,
+    dv_err REAL,
+    sigma_v REAL,
+    sigma_v_err REAL,
+    kin_source TEXT,
+    n_lines INTEGER DEFAULT 0,
+    n_detected INTEGER DEFAULT 0,
+    n_broad INTEGER DEFAULT 0,
+    chi2 REAL,
+    dof INTEGER,
+    lines TEXT,
+    fit_version TEXT,
+    cfpipe_version TEXT,
+    f_lsf REAL,
+    spectrum_hash TEXT,
+    fitted_at TEXT,
+    stale_redshift INTEGER DEFAULT 0,
+    stale_spectrum INTEGER DEFAULT 0,
+    created_at TEXT,
+    updated_at TEXT,
+    _synced_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_slf_target_id ON spectrum_line_fits(target_id);
+CREATE INDEX IF NOT EXISTS idx_slf_observation ON spectrum_line_fits(observation);
 
 CREATE TABLE IF NOT EXISTS object_lists (
     id INTEGER PRIMARY KEY,
@@ -1844,6 +1907,105 @@ class LocalStore:
                     rec["photometry"] = None
             results.append(rec)
 
+        return results
+
+    # -------------------------------------------------------------------------
+    # Emission-line fits (/sync/lines)
+    # -------------------------------------------------------------------------
+    def upsert_line_fits(self, records: List[dict]) -> int:
+        import json as _json
+
+        now = datetime.now(timezone.utc).isoformat()
+        cols = [c for c in LINE_FIT_COLUMNS]
+        placeholders = ", ".join("?" for _ in cols) + ", ?"
+        updates = ", ".join(f"{c}=excluded.{c}" for c in cols if c != "spectrum_id")
+        sql = (
+            f"INSERT INTO spectrum_line_fits ({', '.join(cols)}, _synced_at) "
+            f"VALUES ({placeholders}) "
+            f"ON CONFLICT(spectrum_id) DO UPDATE SET {updates}, _synced_at=excluded._synced_at"
+        )
+        count = 0
+        for rec in records:
+            values = []
+            for c in cols:
+                v = rec.get(c)
+                if c == "lines" and isinstance(v, dict):
+                    v = _json.dumps(v)
+                elif c in ("stale_redshift", "stale_spectrum"):
+                    v = 1 if v else 0
+                values.append(v)
+            values.append(now)
+            self._conn.execute(sql, values)
+            count += 1
+        self._conn.commit()
+        return count
+
+    def get_max_line_fits_updated_at(self) -> Optional[str]:
+        row = self._conn.execute(
+            "SELECT MAX(updated_at) FROM spectrum_line_fits"
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def purge_stale_line_fits(self, sync_timestamp: str) -> int:
+        cursor = self._conn.execute(
+            "DELETE FROM spectrum_line_fits WHERE _synced_at < ?",
+            (sync_timestamp,),
+        )
+        purged = cursor.rowcount
+        self._conn.commit()
+        return purged
+
+    def query_line_fits(
+        self,
+        observations: Optional[List[str]] = None,
+        gratings: Optional[List[str]] = None,
+        programs: Optional[List[str]] = None,
+        target_ids: Optional[List[str]] = None,
+        object_ids: Optional[List[str]] = None,
+        min_quality: Optional[int] = None,
+        exclude_stale: bool = False,
+    ) -> List[dict]:
+        """Line-fit rows (``lines`` deserialised), ordered by spectrum_name."""
+        import json as _json
+
+        where, params = [], []
+        if observations:
+            where.append(f"observation IN ({', '.join('?' for _ in observations)})")
+            params += list(observations)
+        if gratings:
+            where.append(f"grating IN ({', '.join('?' for _ in gratings)})")
+            params += [g.upper() for g in gratings]
+        if programs:
+            where.append(f"program_slug IN ({', '.join('?' for _ in programs)})")
+            params += list(programs)
+        if target_ids:
+            where.append(f"target_id IN ({', '.join('?' for _ in target_ids)})")
+            params += list(target_ids)
+        if object_ids:
+            where.append(f"object_id IN ({', '.join('?' for _ in object_ids)})")
+            params += list(object_ids)
+        if min_quality is not None:
+            where.append("z_quality >= ?")
+            params.append(int(min_quality))
+        if exclude_stale:
+            where.append("stale_redshift = 0 AND stale_spectrum = 0")
+        sql = "SELECT * FROM spectrum_line_fits"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY spectrum_name"
+        rows = self._conn.execute(sql, params).fetchall()
+        results = []
+        for row in rows:
+            rec = dict(row)
+            lines = rec.get("lines")
+            if isinstance(lines, str):
+                try:
+                    rec["lines"] = _json.loads(lines)
+                except (ValueError, TypeError):
+                    rec["lines"] = {}
+            rec["stale_redshift"] = bool(rec.get("stale_redshift"))
+            rec["stale_spectrum"] = bool(rec.get("stale_spectrum"))
+            results.append(rec)
         return results
 
     # -------------------------------------------------------------------------

@@ -471,6 +471,36 @@ def zfit(ctx, config_path, obs, dry_run, local, source_ids, force_overwrite, aut
 @deploy_group.command()
 @shared_options
 @source_ids_option
+@click.option('--allow-auto-z', is_flag=True,
+              help='Also publish fits made at the pipeline auto redshift (ZSRC=auto, '
+                   'the `cfpipe nirspec linefit --allow-auto` QA path). Off by default: '
+                   'the catalog carries inspected-redshift fits only.')
+@click.option('--no-upload', 'upload', is_flag=True, default=True,
+              help='Upsert the catalog rows only; skip uploading the _lines.fits products.')
+@click.pass_context
+def lines(ctx, config_path, obs, dry_run, local, source_ids, allow_auto_z, upload):
+    """Publish emission-line fits (spectrum_line_fits) for a deployed observation.
+
+    Reads the <base>_lines.fits products written by `cfpipe nirspec linefit`,
+    uploads them to OSN and upserts one spectrum_line_fits row per spectrum.
+    The full `campfire deploy --obs` does this automatically when the products
+    exist; use this to (re)publish fits without redeploying the spectra.
+    """
+    from campfire.deploy.lines import deploy_lines
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    for obs_name in obs:
+        deploy_lines(
+            obs_name, config,
+            dry_run=dry_run,
+            source_ids=list(source_ids) if source_ids else None,
+            allow_auto_z=allow_auto_z,
+            upload=upload,
+        )
+
+
+@deploy_group.command()
+@shared_options
+@source_ids_option
 @click.pass_context
 def thumbnails(ctx, config_path, obs, dry_run, local, source_ids):
     """Regenerate spectrum thumbnail SVGs in Supabase."""
@@ -1121,13 +1151,38 @@ def nirspec():
 
     Observation deploy is the top-level `campfire deploy --obs <obs>`. These
     subcommands round-trip the portal's DB-resident review state with the reduction
-    workspace: `pull-rate-masks` materializes the web-drawn rate-file masks
+    workspace: `pull-redshifts` materializes the inspected redshifts
+    (objects.redshift / redshift_quality) to reference/nirspec/<obs>/redshifts.toml for
+    `cfpipe nirspec linefit`; `pull-rate-masks` materializes the web-drawn rate-file masks
     (nirspec_rate_exposures.mask_regions) to reference/nirspec/<obs>/masks/*.reg;
     `pull-stuck-shutters` / `pull-bkg-overrides` materialize the nods-view flags
     (nirspec_source_review) to reference/nirspec/<obs>/stuck_closed_shutters.toml and
     nodded_background_overrides.toml. The pipeline reads all three before stage 2.
     """
     pass
+
+
+@nirspec.command('pull-redshifts')
+@click.option('--config', 'config_path', default=None,
+              help='Path to deploy config TOML.')
+@click.option('--obs', required=True, help='Observation name (e.g. ember_uds_p4).')
+@click.option('--dry-run', is_flag=True,
+              help='Report the inspection counts without writing the file.')
+@click.option('--local', is_flag=True,
+              help='Use local Supabase (127.0.0.1:54321).')
+@click.pass_context
+def nirspec_pull_redshifts(ctx, config_path, obs, dry_run, local):
+    """Materialize the portal's inspected redshifts to reference/nirspec/<obs>/redshifts.toml.
+
+    One table per target (objects.redshift + redshift_quality via the target's
+    object), regenerated in full from the DB; `cfpipe nirspec linefit` fits
+    emission lines at these redshifts. Any user with program access may pull —
+    `campfire pull --obs <obs>` runs this automatically.
+    """
+    from campfire.deploy.nirspec_redshifts import pull_redshifts
+    config = load_config(config_path, local=_resolve_local(ctx, local))
+    pull_redshifts(obs, config, dry_run=dry_run,
+                   generated_by='campfire deploy nirspec pull-redshifts')
 
 
 @nirspec.command('pull-rate-masks', hidden=True)

@@ -1039,14 +1039,33 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
 cli.add_command(cli.commands["pull"], name="download")
 
 
+def _maybe_pull_redshifts(obs_names, config) -> None:
+    """Materialize inspected redshifts to reference/nirspec/<obs>/redshifts.toml.
+
+    Any user with program access can read them (RLS on targets/objects), so
+    this runs for every scoped pull; failures print a note, never fail the pull.
+    """
+    try:
+        from campfire.deploy.nirspec_redshifts import pull_redshifts
+    except ImportError:
+        return
+    for obs in obs_names:
+        try:
+            pull_redshifts(obs, config)
+        except Exception as e:
+            click.echo(f"  (redshifts for {obs} skipped: {e})")
+
+
 def _maybe_pull_annotations(obs_names, nircam_fields, disabled: bool) -> None:
     """Regenerate review annotations for a scoped pull (admins, deploy extra).
 
     The annotation half of `campfire pull`: web-authored review state (masks,
     stuck shutters, bkg overrides, exclusions) regenerated into reference/ for
-    the pipeline. Best-effort and quiet by design — consumers without the
-    deploy extra (or without admin) skip silently; a real failure prints a
-    note but never fails the pull.
+    the pipeline, plus the inspected redshifts (any user with program access;
+    consumed by `cfpipe nirspec linefit`). Best-effort and quiet by design —
+    consumers without the deploy extra (or, for the admin-only annotations,
+    without admin) skip silently; a real failure prints a note but never fails
+    the pull.
     """
     if disabled or (not obs_names and not nircam_fields):
         return
@@ -1063,6 +1082,11 @@ def _maybe_pull_annotations(obs_names, nircam_fields, disabled: bool) -> None:
     try:
         config = load_config(None)
         sb = get_supabase_client(config)
+        # Inspected redshifts (for `cfpipe nirspec linefit`) need only program
+        # access, so they are pulled before — and regardless of — the admin gate
+        # that guards the reducer-side annotations below.
+        if obs_names:
+            _maybe_pull_redshifts(obs_names, config)
         try:
             if not sb.rpc("is_admin").execute().data:
                 return

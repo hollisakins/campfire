@@ -1,8 +1,8 @@
 """CSV catalog export from SQLite database.
 
-Generates objects.csv, spectra.csv, and photometry.csv as human-readable
-export artifacts from the LocalStore. These files are written atomically so
-they're always in a consistent state.
+Generates objects.csv, spectra.csv, photometry.csv and lines.csv as
+human-readable export artifacts from the LocalStore. These files are written
+atomically so they're always in a consistent state.
 """
 
 import csv
@@ -10,10 +10,20 @@ from pathlib import Path
 from typing import Tuple
 
 from .store import (
+    LINE_FIT_EXPORT_COLUMNS,
     LocalStore,
     OBJECT_EXPORT_COLUMNS,
     PHOTOMETRY_EXPORT_COLUMNS,
     SPECTRA_EXPORT_COLUMNS,
+)
+
+# Per-line quantities pivoted into lines.csv as <prefix>_<line> columns.
+LINE_EXPORT_QUANTITIES = (
+    ("f", "flux"),          # erg/s/cm2
+    ("e", "flux_err"),
+    ("ew", "ew_rest"),      # rest-frame Angstrom
+    ("ewe", "ew_rest_err"),
+    ("flag", "flags"),      # bitmask, see campfire.flags.LineFlags
 )
 
 
@@ -63,6 +73,9 @@ def export_catalogs(store: LocalStore, output_dir: Path) -> Tuple[int, int]:
     # Wide-format photometry
     _export_photometry_csv(store, output_dir / "photometry.csv")
 
+    # Wide-format emission-line catalog
+    export_lines_csv(store.query_line_fits(), output_dir / "lines.csv")
+
     return len(object_rows), len(spectra_rows)
 
 
@@ -106,6 +119,43 @@ def _export_photometry_csv(store: LocalStore, path: Path) -> None:
         rows.append(row)
 
     _atomic_csv_write(path, columns, rows)
+
+
+def line_columns_for(records: list) -> list:
+    """Line names present in any record, ordered by rest wavelength then name
+    (broad components sort with their line)."""
+    waves: dict = {}
+    for rec in records:
+        lines = rec.get("lines")
+        if not isinstance(lines, dict):
+            continue
+        for name, data in lines.items():
+            if name not in waves:
+                w = (data or {}).get("wave_rest")
+                waves[name] = float("inf") if w is None else float(w)
+    return sorted(waves, key=lambda n: (waves[n], n))
+
+
+def pivot_line_fit(rec: dict, line_names: list) -> dict:
+    """Wide row: the per-spectrum scalars plus <prefix>_<line> columns."""
+    row = {col: rec.get(col) for col in LINE_FIT_EXPORT_COLUMNS}
+    lines = rec.get("lines") if isinstance(rec.get("lines"), dict) else {}
+    for name in line_names:
+        data = lines.get(name)
+        for prefix, key in LINE_EXPORT_QUANTITIES:
+            row[f"{prefix}_{name}"] = (data or {}).get(key) if data else None
+    return row
+
+
+def export_lines_csv(records: list, path: Path) -> list:
+    """Write ``lines.csv`` (one row per spectrum, columns per line); returns the columns."""
+    line_names = line_columns_for(records)
+    columns = list(LINE_FIT_EXPORT_COLUMNS) + [
+        f"{prefix}_{name}" for name in line_names for prefix, _key in LINE_EXPORT_QUANTITIES
+    ]
+    rows = [pivot_line_fit(rec, line_names) for rec in records]
+    _atomic_csv_write(path, columns, rows)
+    return columns
 
 
 def _atomic_csv_write(path: Path, columns: list, rows: list) -> None:

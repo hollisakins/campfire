@@ -948,6 +948,43 @@ CREATE POLICY "admin_update_nirspec_rate_exposures"
 
 
 -- =============================================================================
+-- spectrum_line_fits (emission-line fluxes; visibility follows the spectrum)
+-- =============================================================================
+-- A fit is readable iff its parent spectrum is: the EXISTS subquery runs under
+-- the caller's own spectra RLS (program access, publish gate, share-link scope),
+-- so there is exactly one place those rules live. Writes are the deploy CLI
+-- (admins) only.
+
+ALTER TABLE spectrum_line_fits ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "select_spectrum_line_fits_by_spectrum" ON spectrum_line_fits;
+CREATE POLICY "select_spectrum_line_fits_by_spectrum"
+  ON spectrum_line_fits FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.spectra s
+      WHERE s.id = spectrum_line_fits.spectrum_id
+    )
+  );
+
+DROP POLICY IF EXISTS "admin_insert_spectrum_line_fits" ON spectrum_line_fits;
+CREATE POLICY "admin_insert_spectrum_line_fits"
+  ON spectrum_line_fits FOR INSERT TO authenticated
+  WITH CHECK ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_update_spectrum_line_fits" ON spectrum_line_fits;
+CREATE POLICY "admin_update_spectrum_line_fits"
+  ON spectrum_line_fits FOR UPDATE TO authenticated
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_delete_spectrum_line_fits" ON spectrum_line_fits;
+CREATE POLICY "admin_delete_spectrum_line_fits"
+  ON spectrum_line_fits FOR DELETE TO authenticated
+  USING ((SELECT public.is_admin()));
+
+
+-- =============================================================================
 -- spectrum_exposures (admin-only — NIRSpec intermediates, epic #210 B2)
 -- =============================================================================
 -- Reduction intermediates, never user-facing science. Admin-only, mirroring

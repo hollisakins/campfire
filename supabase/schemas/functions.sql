@@ -1245,6 +1245,115 @@ GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, IN
 
 
 -- =============================================================================
+-- get_line_fits_for_sync
+-- (bulk fetch for Python client emission-line catalog sync)
+-- =============================================================================
+-- Mirrors get_photometry_for_sync: keyset on spectrum_id (the PK), count gated
+-- on p_include_counts, publish gate fail-closed via the parent spectrum. Runs
+-- as service_role from /api/v1/sync/lines, so program scope is the explicit
+-- p_program_slugs the route resolved for the caller.
+
+DROP FUNCTION IF EXISTS public.get_line_fits_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, INTEGER);
+
+CREATE OR REPLACE FUNCTION public.get_line_fits_for_sync(
+  p_program_slugs TEXT[],
+  p_updated_since TIMESTAMPTZ DEFAULT NULL,
+  p_limit INTEGER DEFAULT 1000,
+  p_include_unpublished BOOLEAN DEFAULT false,
+  p_include_counts BOOLEAN DEFAULT TRUE,
+  p_after_id INTEGER DEFAULT NULL
+)
+RETURNS TABLE(line_fit_records JSONB, total_count BIGINT)
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+AS $$
+BEGIN
+  RETURN QUERY
+  WITH matched AS (
+    SELECT f.spectrum_id, f.target_id, f.grating, f.program_slug, f.observation,
+           s.spectrum_id AS spectrum_name, t.field, o.object_id AS current_object_id,
+           f.z_used, f.z_source, f.z_quality, f.object_id, f.object_version,
+           f.z_fit, f.z_fit_err, f.dv, f.dv_err, f.sigma_v, f.sigma_v_err, f.kin_source,
+           f.n_lines, f.n_detected, f.n_broad, f.chi2, f.dof, f.lines,
+           f.fit_version, f.cfpipe_version, f.f_lsf, f.spectrum_hash, f.fitted_at,
+           f.created_at, f.updated_at,
+           -- staleness vs the live inspection state (see spectrum_line_fits_status)
+           (o.id IS NOT NULL AND (
+              o.version IS DISTINCT FROM f.object_version
+              OR o.redshift_quality IS DISTINCT FROM f.z_quality
+              OR o.redshift IS NULL
+              OR abs((o.redshift)::double precision - f.z_used) > 1e-5)) AS stale_redshift,
+           (s.file_hash IS DISTINCT FROM f.spectrum_hash) AS stale_spectrum
+    FROM spectrum_line_fits f
+    JOIN spectra s ON s.id = f.spectrum_id
+    LEFT JOIN targets t ON t.target_id = f.target_id
+    LEFT JOIN objects o ON o.id = t.object_id
+    WHERE f.program_slug = ANY(p_program_slugs)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
+      AND (p_updated_since IS NULL OR f.updated_at > p_updated_since)
+      AND (p_after_id IS NULL OR f.spectrum_id > p_after_id)
+    ORDER BY f.spectrum_id
+    LIMIT p_limit
+  ),
+  total AS (
+    SELECT COUNT(*) AS cnt
+    FROM spectrum_line_fits f
+    JOIN spectra s ON s.id = f.spectrum_id
+    WHERE p_include_counts
+      AND f.program_slug = ANY(p_program_slugs)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
+      AND (p_updated_since IS NULL OR f.updated_at > p_updated_since)
+  )
+  SELECT
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'spectrum_id', m.spectrum_id,
+        'spectrum_name', m.spectrum_name,
+        'target_id', m.target_id,
+        'grating', m.grating,
+        'program_slug', m.program_slug,
+        'observation', m.observation,
+        'field', m.field,
+        'current_object_id', m.current_object_id,
+        'z_used', m.z_used,
+        'z_source', m.z_source,
+        'z_quality', m.z_quality,
+        'object_id', m.object_id,
+        'object_version', m.object_version,
+        'z_fit', m.z_fit,
+        'z_fit_err', m.z_fit_err,
+        'dv', m.dv,
+        'dv_err', m.dv_err,
+        'sigma_v', m.sigma_v,
+        'sigma_v_err', m.sigma_v_err,
+        'kin_source', m.kin_source,
+        'n_lines', m.n_lines,
+        'n_detected', m.n_detected,
+        'n_broad', m.n_broad,
+        'chi2', m.chi2,
+        'dof', m.dof,
+        'lines', m.lines,
+        'fit_version', m.fit_version,
+        'cfpipe_version', m.cfpipe_version,
+        'f_lsf', m.f_lsf,
+        'spectrum_hash', m.spectrum_hash,
+        'fitted_at', m.fitted_at,
+        'stale_redshift', m.stale_redshift,
+        'stale_spectrum', m.stale_spectrum,
+        'created_at', m.created_at,
+        'updated_at', m.updated_at
+      ) ORDER BY m.spectrum_id
+    ), '[]'::jsonb) AS line_fit_records,
+    (SELECT cnt FROM total) AS total_count
+  FROM matched m;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.get_line_fits_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_line_fits_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, INTEGER) TO service_role;
+
+
+-- =============================================================================
 -- get_lists_for_sync
 -- (returns all list metadata for Python client sync)
 -- =============================================================================

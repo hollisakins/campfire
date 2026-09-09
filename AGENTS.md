@@ -45,6 +45,23 @@ Observations defined in `$CAMPFIRE_ROOT/config/observations.toml`, fields in `fi
 
 The `[environment].CRDS_CONTEXT` value in `config_default.toml` is the canonical CRDS context for the current `cfpipe` release. Bumping it always implies a MINOR release (CRDS changes are scientifically equivalent to a calibration update). PRs that change this line must categorize the changelog entry as **Calibration**.
 
+### Emission-line fluxes (post-inspection loop)
+
+`cfpipe nirspec linefit` measures line fluxes **only at the inspected redshift**
+(docs/design-emission-line-fitting.md). It is not part of `run --all`: `campfire pull
+--obs X` materializes `objects.redshift` / `redshift_quality` to
+`reference/nirspec/<obs>/redshifts.toml` (any user with program access; writer and
+reader in `campfire_pipeline/nirspec/redshift_reference.py`), `linefit` fits spectra
+at `[nirspec.line_fitting].min_quality` (default 3) or better into `<base>_lines.fits`
+(refit only when redshift / quality / spectrum bytes change), and `campfire deploy
+lines --obs X` (or the full deploy) upserts one `spectrum_line_fits` row per spectrum
+(`lines` jsonb keyed by the `nirspec/linelist.py` names; provenance `z_used`,
+`z_quality`, `object_version`, `fit_version`, `spectrum_hash`). `campfire sync` mirrors
+it to `meta/lines.csv` (wide) and `Campfire.query_lines()`; the
+`spectrum_line_fits_status` view and the sync records flag `stale_redshift` /
+`stale_spectrum`. Fits at the auto redshift are opt-in end to end (`--allow-auto`,
+`--allow-auto-z`, `z_source`).
+
 ### Python Environment
 
 Always use the `campfire` conda environment when testing code: `conda run -n campfire python ...`

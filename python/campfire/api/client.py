@@ -4,6 +4,7 @@ Centralizes all URL construction and response parsing. Used by both the
 ``Campfire`` client class and the CLI.
 """
 
+import warnings
 import os
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
@@ -631,6 +632,34 @@ class APIClient:
         return self._paginate_sync_endpoint(
             "/sync/photometry", "id", updated_since, on_page_complete,
         )
+
+    def fetch_all_line_fits(
+        self,
+        updated_since: Optional[str] = None,
+        on_page_complete: Optional[Callable[[int, int], None]] = None,
+    ) -> Tuple[List[dict], int]:
+        """Fetch all emission-line fits via the /sync/lines endpoint.
+
+        One record per spectrum (``spectrum_id`` keyset cursor) with the
+        per-line measurements as a nested ``lines`` dict — see
+        docs/design-emission-line-fitting.md for the record shape.
+
+        A server that predates the endpoint (404) yields an empty catalog
+        rather than failing the whole sync: the other four streams are
+        unaffected and the line catalog simply stays empty until the server
+        is upgraded.
+        """
+        try:
+            return self._paginate_sync_endpoint(
+                "/sync/lines", "spectrum_id", updated_since, on_page_complete,
+            )
+        except NotFoundError:
+            warnings.warn(
+                "This CAMPFIRE server has no /sync/lines endpoint yet; the "
+                "emission-line catalog was skipped.",
+                stacklevel=2,
+            )
+            return [], 0
 
     def fetch_tags(self) -> List[dict]:
         """Fetch all tag metadata via the /sync/lists endpoint."""

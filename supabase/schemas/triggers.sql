@@ -525,6 +525,14 @@ CREATE TRIGGER track_spectrum_dq_changes
 -- need to re-fetch for: flags, redshift, SNR, thumbnails, file identity.
 -- A real re-reduction also changes file_hash, so refreshed provenance rides
 -- along on the next incremental sync without a provenance-only bump.
+-- spectrum_line_fits.updated_at: any UPDATE (a re-fit replaces the whole row)
+-- must advance updated_at so get_line_fits_for_sync's incremental cursor sees it.
+-- Reuses bump_spectra_updated_at (it only sets NEW.updated_at = NOW()).
+DROP TRIGGER IF EXISTS bump_spectrum_line_fits_updated_at_trigger ON public.spectrum_line_fits;
+CREATE TRIGGER bump_spectrum_line_fits_updated_at_trigger
+  BEFORE UPDATE ON public.spectrum_line_fits
+  FOR EACH ROW EXECUTE FUNCTION public.bump_spectra_updated_at();
+
 DROP TRIGGER IF EXISTS bump_spectra_updated_at_trigger ON public.spectra;
 CREATE TRIGGER bump_spectra_updated_at_trigger
   BEFORE UPDATE OF

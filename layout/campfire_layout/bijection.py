@@ -32,6 +32,7 @@ class ParsedKey:
 _NIRSPEC_OBS_SUFFIXES = (
     ("_spec.fits", "nirspec_spec"),
     ("_rate.fits", "nirspec_rate"),  # must precede the bare-'.fits' fallback below
+    ("_lines.fits", "nirspec_lines"),  # ditto
     ("_spec_1d.json", "spectrum_1d_json"),
     ("_spec.json", "spectrum_json"),
     ("_zfit.json", "zfit"),
@@ -144,6 +145,8 @@ def parse_relpath(relpath: str) -> ParsedKey:
             return ParsedKey("nirspec_stuck_shutters", Scope(obs=obs), fname)
         if fname == "nodded_background_overrides.toml":
             return ParsedKey("nirspec_bkg_override", Scope(obs=obs), fname)
+        if fname == "redshifts.toml":
+            return ParsedKey("nirspec_redshifts", Scope(obs=obs), fname)
 
     if tree == "reference" and len(seg) >= 4 and seg[1] == "nircam":
         if seg[2] == "shared" and len(seg) == 5:

@@ -401,6 +401,24 @@ CREATE INDEX IF NOT EXISTS idx_spectrum_exposures_review
 
 
 -- =============================================================================
+-- spectrum_line_fits (emission-line fluxes)
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS idx_spectrum_line_fits_observation
+    ON public.spectrum_line_fits USING btree (observation);
+
+CREATE INDEX IF NOT EXISTS idx_spectrum_line_fits_program_slug
+    ON public.spectrum_line_fits USING btree (program_slug);
+
+CREATE INDEX IF NOT EXISTS idx_spectrum_line_fits_target_id
+    ON public.spectrum_line_fits USING btree (target_id);
+
+-- Incremental sync (get_line_fits_for_sync p_updated_since).
+CREATE INDEX IF NOT EXISTS idx_spectrum_line_fits_updated_at
+    ON public.spectrum_line_fits USING btree (updated_at);
+
+
+-- =============================================================================
 -- deploy_events (epic #210, B2/B3)
 -- =============================================================================
 

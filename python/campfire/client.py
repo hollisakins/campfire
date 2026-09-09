@@ -598,6 +598,74 @@ class Campfire:
 
         yield from self._api.iter_spectra(**filters)
 
+    def query_lines(
+        self,
+        observations: Optional[List[str]] = None,
+        gratings: Optional[List[str]] = None,
+        programs: Optional[List[Union[int, str]]] = None,
+        target_ids: Optional[List[str]] = None,
+        object_ids: Optional[List[str]] = None,
+        min_quality: Optional[int] = None,
+        exclude_stale: bool = False,
+        wide: bool = True,
+    ) -> Table:
+        """Query the emission-line catalog (local catalog only; run ``sync()`` first).
+
+        One row per spectrum, measured at the inspected redshift by the
+        pipeline's line fitter (docs/design-emission-line-fitting.md).
+
+        Parameters
+        ----------
+        observations, gratings, programs, target_ids, object_ids : list, optional
+            Filters. ``object_ids`` are the portal object ids the redshift came from.
+        min_quality : int, optional
+            Keep fits whose inspected quality is at least this (2 tentative,
+            3 probable, 4 secure). The pipeline default already fits only >= 3.
+        exclude_stale : bool
+            Drop fits whose inspected redshift or spectrum has changed since
+            the fit (``stale_redshift`` / ``stale_spectrum``).
+        wide : bool
+            ``True`` (default): one column per line and quantity
+            (``f_Halpha``, ``e_Halpha``, ``ew_Halpha``, ``ewe_Halpha``,
+            ``flag_Halpha``, ...) exactly like ``meta/lines.csv``; fluxes in
+            erg/s/cm2, equivalent widths rest-frame Angstrom, flags per
+            :class:`campfire.flags.LineFlags`. ``False``: the per-line
+            records stay nested in a ``lines`` column of dicts.
+
+        Returns
+        -------
+        astropy.table.Table
+        """
+        from .db.export import line_columns_for, pivot_line_fit
+        from .db.store import LINE_FIT_EXPORT_COLUMNS
+
+        if self._local is None:
+            raise ValidationError(
+                "The emission-line catalog is served from the local catalog. "
+                "Run cf.sync() (or `campfire sync`) first."
+            )
+        if gratings:
+            gratings = [g.upper() for g in gratings]
+        records = self._local.query_line_fits(
+            observations=observations,
+            gratings=gratings,
+            programs=[str(p) for p in programs] if programs else None,
+            target_ids=target_ids,
+            object_ids=object_ids,
+            min_quality=min_quality,
+            exclude_stale=exclude_stale,
+        )
+        if wide:
+            names = line_columns_for(records)
+            rows = [pivot_line_fit(r, names) for r in records]
+            columns = list(rows[0].keys()) if rows else list(LINE_FIT_EXPORT_COLUMNS)
+        else:
+            rows = [{c: r.get(c) for c in list(LINE_FIT_EXPORT_COLUMNS) + ["lines"]} for r in records]
+            columns = list(LINE_FIT_EXPORT_COLUMNS) + ["lines"]
+        table = Table(rows=rows, names=columns) if rows else Table(names=columns)
+        table.meta["n_spectra"] = len(rows)
+        return table
+
     def get_spectrum(self, spectrum_id: str) -> Optional[dict]:
         """Return a single spectrum row by spectrum_id."""
         if self._local is not None:

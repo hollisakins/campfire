@@ -35,6 +35,7 @@ from campfire.deploy.generate import (
     generate_zfit_json,
 )
 from campfire_layout import KeyScheme, Scope, storage_key
+from campfire.deploy.lines import get_lines_paths, lines_upload_tasks, publish_line_fits
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
     batch_upsert_objects,
@@ -469,6 +470,7 @@ def deploy_observation(
     spectra = get_spectra_records(summary, obs_name)
     spec_paths = get_spec_paths(summary, obs_dir)
     zfit_paths = get_zfit_paths(summary, obs_dir)
+    lines_paths = get_lines_paths(summary, obs_dir)
 
     # Get JWST PID from first row (all rows share the same PID per observation)
     jwst_program_id = int(summary['program_id'][0]) if len(summary) > 0 else 0
@@ -479,6 +481,7 @@ def deploy_observation(
     print(f"  Objects: {len(objects)}")
     print(f"  Spectra: {len(spectra)}")
     print(f"  Zfit files: {len(zfit_paths)}")
+    print(f"  Line-fit files: {len(lines_paths)}")
 
     # Warn if any spectrum was reduced with a non-release pipeline version.
     # The dev/override string is preserved verbatim in spectra.cfpipe_version
@@ -734,6 +737,12 @@ def deploy_observation(
                 zfit_json = generate_zfit_json(zfit_path, temp_dir)
                 upload_tasks.append(UploadTask(zfit_json, storage_key('zfit', scope, zfit_json.name, scheme=KeyScheme.CANONICAL), 'application/json'))
 
+            # Emission-line fit products (cfpipe nirspec linefit); the catalog
+            # rows are upserted after the spectra below.
+            upload_tasks.extend(lines_upload_tasks(obs_name, lines_paths))
+            if lines_paths:
+                print(f"  + {len(lines_paths)} emission-line fit products")
+
             # Canonical spectrum-exposure intermediates (epic #210, B5): uploaded on
             # EVERY deploy (cloud-as-source-of-truth + delete-local→restore), filtered
             # to the deployed source_ids when --source-ids is set. Registered as
@@ -820,6 +829,14 @@ def deploy_observation(
         print("Upserting spectra...")
         n_spec, changed_hashes = batch_upsert_spectra(sb, spectra)
         print(f"  {n_spec} spectra ({len(changed_hashes)} with hash changes)")
+
+        # Emission-line catalog rows (spectrum_line_fits) for whichever spectra
+        # carry a _lines.fits product. Inspected-redshift fits only; fits made
+        # at the auto redshift are refused here (campfire deploy lines
+        # --allow-auto-z is the explicit path).
+        if lines_paths:
+            print("Upserting line fits...")
+            publish_line_fits(sb, obs_name, lines_paths, program_slug=program_slug)
 
         # Recompute aggregate columns (max_snr, max_exposure_time) in bulk
         target_ids = [o['object_id'] for o in objects]

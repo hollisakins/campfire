@@ -1064,3 +1064,85 @@ def plot_stuck_shutter_diagnostics(files, source_id, root, workspace_dir,
     plt.savefig(out_path, dpi=_STYLE['dpi'])
     plt.close()
     log(f'Saved stuck shutter diagnostic plot: {out_path}')
+
+
+# ---------------------------------------------------------------------------
+# Emission-line fit QA (cfpipe nirspec linefit)
+# ---------------------------------------------------------------------------
+
+def plot_linefit_results(lines_file, spec_file=None, output_file=None):
+    """QA plot for a ``_lines.fits`` product: one panel per fitted complex.
+
+    Each panel shows the observed f_λ with errors, the fitted model
+    (continuum + lines) and the continuum alone, with the measured lines
+    labelled by name and S/N. The title carries the redshift used, its source
+    and quality, and the global kinematics.
+    """
+    from campfire_pipeline.nirspec.linefit import C_KMS
+    from campfire_pipeline.nirspec.linefit_stage import read_lines_file
+
+    if spec_file is None:
+        spec_file = lines_file.replace('_lines.fits', '_spec.fits')
+    if output_file is None:
+        output_file = lines_file.replace('_lines.fits', '_lines.pdf')
+
+    prod = read_lines_file(lines_file)
+    hdr = prod['header']
+    lines = prod['lines']
+    cxs = prod['complexes']
+
+    from astropy import table
+    tab = table.Table.read(spec_file, hdu=1)
+    wav = np.asarray(tab['wave'], dtype='float64')
+    flam = np.asarray(tab['flam'], dtype='float64')
+    flam_err = np.asarray(tab['flam_err'], dtype='float64')
+    model = prod['model']['model']
+    cont = prod['model']['cont']
+
+    n = max(len(cxs), 1)
+    ncol = min(3, n)
+    nrow = int(np.ceil(n / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(5.2 * ncol, 3.4 * nrow), squeeze=False)
+    axes = axes.ravel()
+
+    z = hdr.get('ZUSED', np.nan)
+    for ax, cx in zip(axes, cxs):
+        lo, hi = cx['lo_idx'], cx['hi_idx']
+        sl = slice(lo, hi)
+        w = wav[sl]
+        ax.errorbar(w, flam[sl], yerr=flam_err[sl], fmt='.', color='0.3', ms=3, lw=0.6, alpha=0.7)
+        ax.step(w, flam[sl], where='mid', color='0.3', lw=0.7, alpha=0.6)
+        ax.plot(w, model[sl], color='C3', lw=1.2, label='model')
+        ax.plot(w, cont[sl], color='C0', lw=0.9, ls='--', label='continuum')
+        ymax = np.nanmax(model[sl]) if np.any(np.isfinite(model[sl])) else np.nanmax(flam[sl])
+        for name in cx['lines']:
+            rec = lines.get(name)
+            if rec is None:
+                continue
+            x = rec['wave_obs']
+            snr = rec.get('snr')
+            txt = name if (snr is None or not np.isfinite(snr)) else f"{name}\n{snr:.1f}σ"
+            color = 'C2' if (snr is not None and np.isfinite(snr) and snr >= 3) else '0.6'
+            ax.axvline(x, color=color, lw=0.6, alpha=0.5)
+            ax.text(x, ymax, txt, rotation=90, fontsize=6, va='top', ha='right', color=color)
+        tag = ' [anchor]' if cx['anchor'] else ''
+        tag += ' [broad]' if cx['broad'] else ''
+        ax.set_title(f"complex {cx['index']}  χ²/dof={cx['chi2']:.0f}/{cx['dof']}{tag}", fontsize=8)
+        ax.set_xlabel('λ [µm]', fontsize=8)
+        ax.set_ylabel('f_λ [erg/s/cm²/Å]', fontsize=8)
+        ax.tick_params(labelsize=7)
+    for ax in axes[len(cxs):]:
+        ax.set_visible(False)
+    if cxs:
+        axes[0].legend(fontsize=7, loc='upper left')
+
+    base = os.path.basename(lines_file).replace('_lines.fits', '')
+    kin = ''
+    if 'DVGLOB' in hdr:
+        kin = f"  dv={hdr['DVGLOB']:.0f} km/s  σ_v={hdr.get('SIGGLOB', np.nan):.0f} km/s ({hdr.get('KINSRC')})"
+    fig.suptitle(f"{base}   z={z:.4f} ({hdr.get('ZSRC')}, q={hdr.get('ZQUAL')})"
+                 f"  {hdr.get('NDETECT')}/{hdr.get('NLINES')} lines ≥3σ{kin}", fontsize=9)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(output_file)
+    plt.close(fig)
+    return output_file
