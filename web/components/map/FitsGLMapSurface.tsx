@@ -33,6 +33,7 @@ import {
   type FitsglConfig,
 } from '@fitsgl/core/react';
 import {
+  parseSkyCoord,
   pixToSky,
   skyToPix,
   type BandWeight,
@@ -57,12 +58,15 @@ import { BandRail, RGB_OPTION } from './fitsgl/BandRail';
 import { DisplayPanel } from './fitsgl/DisplayPanel';
 import { LayersPanel } from './fitsgl/LayersPanel';
 import { ToolRail } from './fitsgl/ToolRail';
+import { GoToBox, type GoToStatus } from './fitsgl/GoToBox';
 import { StatusPill } from './fitsgl/StatusPill';
 import { FitsglOverlays, type FitsglOverlaysHandle } from './fitsgl/FitsglOverlays';
 import { useDisplayStretch, type ChannelKey, type LimitPreset } from './fitsgl/useDisplayStretch';
 import { useColormap } from './fitsgl/useColormap';
 import type { RulerMeasurement } from './fitsgl/ruler';
 import { GLASS } from './fitsgl/glass';
+import { formatTargetParam, parseTargetParam, type MapTarget } from '@/lib/utils/map-target';
+import { formatRA, formatDec } from '@/lib/utils/wcs';
 
 /** Ruler/graticule colours drawn over the always-dark map well (theme-independent). */
 const RULER_ACCENT = '#fb923c';
@@ -83,6 +87,9 @@ interface FitsGLMapSurfaceProps {
   /** Band to open on (e.g. from /map?filter=...); falls back to the dataset
    *  default view when absent or not in the band inventory. */
   initialBand?: string;
+  /** Pinned go-to crosshair from `/map?target=<ra>,<dec>` — independent of
+   *  `initialCenter`, so a shared link can centre and pin separately. */
+  initialTarget?: MapTarget | null;
   /** Field switcher (shared across the Leaflet + FitsGL surfaces). */
   fields: string[];
   selectedField: string;
@@ -184,6 +191,7 @@ export function FitsGLMapSurface({
   initialCenter,
   initialZoom,
   initialBand,
+  initialTarget = null,
   fields,
   selectedField,
   onFieldChange,
@@ -224,6 +232,25 @@ export function FitsGLMapSurface({
   const [cursor, setCursor] = useState<{ ra: number | null; dec: number | null; values: ReadonlyArray<number | null> | null; native: boolean } | null>(null);
   const [zoom, setZoom] = useState<number | null>(null);
   const [rulerMeasure, setRulerMeasure] = useState<RulerMeasurement | null>(null);
+  // Go-to: the pinned crosshair (sky), whether it landed on the mosaic (read back
+  // from the engine, which owns the native bounds), and the box's open state.
+  //
+  // Seeded from the LIVE url, not from `initialTarget` alone. The engine dispatch in
+  // `MapViewer` unmounts this surface when the user switches to a Leaflet-only field,
+  // and `initialTarget` is server-derived at page load — the map syncs its url with
+  // `history.replaceState`, which never re-runs the server component — so on the way
+  // back that prop is stale and would revert (or, once the effect below fires, erase)
+  // a pin made in between. The url is authoritative instead: this surface writes it on
+  // every change, and both engines' url sync only sets/deletes its own keys, so
+  // `target` survives the round trip. On first load the param is exactly what the
+  // server parsed, so hydration matches; a cleared pin reads back as no pin.
+  const [target, setTarget] = useState<MapTarget | null>(() =>
+    typeof window === 'undefined'
+      ? initialTarget
+      : parseTargetParam(new URLSearchParams(window.location.search).get('target') ?? undefined),
+  );
+  const [targetInside, setTargetInside] = useState<boolean | null>(null);
+  const [gotoOpen, setGotoOpen] = useState(false);
 
   const handleRef = useRef<FitsViewerHandle | null>(null);
   const overlaysRef = useRef<FitsglOverlaysHandle | null>(null);
@@ -234,9 +261,11 @@ export function FitsGLMapSurface({
   const initialCenterRef = useRef(initialCenter);
   const initialZoomRef = useRef(initialZoom);
   const initialBandRef = useRef(initialBand);
+  const targetRef = useRef(target);
   useEffect(() => { initialCenterRef.current = initialCenter; }, [initialCenter]);
   useEffect(() => { initialZoomRef.current = initialZoom; }, [initialZoom]);
   useEffect(() => { initialBandRef.current = initialBand; }, [initialBand]);
+  useEffect(() => { targetRef.current = target; }, [target]);
   const lastCursorSky = useRef<{ ra: number; dec: number } | null>(null);
   const initialApplied = useRef(false);
   // Popup: the clicked marker + its world position (repositioned every frame).
@@ -371,8 +400,22 @@ export function FitsGLMapSurface({
     applyOverlaysRef.current = (h) => {
       h.setMarkers(showMarkers ? markerInputs : []);
       h.setRegions(showShutters ? shutterRegions : []);
+      // The go-to crosshair is not reapplied by the engine across a viewer
+      // rebuild (same as markers), so it re-pushes here too.
+      h.setTarget(targetRef.current);
+      setTargetInside(targetRef.current ? h.getTarget()?.insideImage ?? null : null);
     };
   }, [showMarkers, markerInputs, showShutters, shutterRegions]);
+
+  // Push the pinned target when it changes (a jump, a clear, or the initial
+  // `?target=`). Gated on a ready viewer like the other overlay pushes.
+  useEffect(() => {
+    const h = handleRef.current;
+    if (!h || readyTick === 0) return;
+    h.setTarget(target);
+    setTargetInside(target ? h.getTarget()?.insideImage ?? null : null);
+    updateMapUrl({ target: target ? formatTargetParam(target) : undefined });
+  }, [target, readyTick]);
 
   const markerById = useMemo(() => {
     const map = new Map<string, MapObjectMarker>();
@@ -588,6 +631,59 @@ export function FitsGLMapSurface({
     setContrast(1);
   }, [sourceKey]);
 
+  // Go to a sky position: recentre, zoom in to native if currently zoomed out, and
+  // pin the crosshair so the place stays marked while panning around it. Parsing is
+  // FitsGL's `parseSkyCoord` (decimal, colon/space sexagesimal, h-m-s), the same
+  // parser its own viewer uses. An off-image coordinate is still pinned — it is a
+  // valid sky position, and the box says "outside image".
+  const onGoTo = useCallback((text: string): GoToStatus => {
+    const h = handleRef.current;
+    const wcs = h?.getViewer()?.getWcs() ?? null;
+    if (!h || !wcs) return 'no-wcs';
+    const sky = parseSkyCoord(text);
+    if (!sky) return 'bad-input';
+    const p = skyToPix(wcs, sky.ra, sky.dec);
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return 'bad-input';
+    h.setCenter(p.x, p.y);
+    if ((h.getCameraState()?.zoom ?? 1) < 1) h.setZoom(1);
+    setTarget({ ra: sky.ra, dec: sky.dec });
+    return 'ok';
+  }, []);
+  const onClearTarget = useCallback(() => setTarget(null), []);
+
+  // `G` opens the go-to box; Escape closes it and clears the pin — but ONLY while
+  // the box is open, since Escape also dismisses the context menu and the dock
+  // popovers, and losing a pinned crosshair to one of those would be a surprise.
+  // Suppressed while typing in a field or when a modifier is held (the house guard
+  // — see `FloatingInspectionPanel`); a key typed into the box's input never
+  // reaches this listener, so the box handles that Escape itself.
+  const gotoOpenRef = useRef(gotoOpen);
+  useEffect(() => { gotoOpenRef.current = gotoOpen; }, [gotoOpen]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = e.target as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
+      if (e.key === 'g' || e.key === 'G') {
+        e.preventDefault();
+        setGotoOpen(true);
+      } else if (e.key === 'Escape' && gotoOpenRef.current) {
+        setGotoOpen(false);
+        setTarget(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Sexagesimal rendering for the box's resolved-coordinate hint (CAMPFIRE's
+  // formatters, matching the status pill — decision 8).
+  const formatTarget = useCallback(
+    (t: MapTarget) => `${formatRA(t.ra)} ${formatDec(t.dec)}`,
+    [],
+  );
+
   // Tool-rail actions.
   const onFit = useCallback(() => handleRef.current?.fitToImage(), []);
   const onExport = useCallback(() => {
@@ -665,10 +761,24 @@ export function FitsGLMapSurface({
         <ToolRail
           tool={tool}
           onSetTool={setTool}
+          gotoOpen={gotoOpen}
+          onToggleGoto={() => setGotoOpen((o) => !o)}
           onFit={onFit}
           onExport={onExport}
           onOpenFilters={onOpenFilters}
           hasActiveFilters={hasActiveFilters}
+        />
+      )}
+
+      {/* Go-to-coordinate box (the rail's ⌖ launcher, or the G key). */}
+      {viewState && gotoOpen && (
+        <GoToBox
+          target={target}
+          targetInside={targetInside}
+          formatTarget={formatTarget}
+          onGo={onGoTo}
+          onClear={onClearTarget}
+          onClose={() => setGotoOpen(false)}
         />
       )}
 
@@ -761,6 +871,8 @@ export function FitsGLMapSurface({
           bandLabel={viewState.mode === 'rgb' ? 'RGB' : viewState.band}
           stretch={viewState.stretch}
           ruler={tool === 'ruler' ? rulerMeasure : null}
+          target={target}
+          targetInside={targetInside}
           showValue={!(viewState.mode === 'rgb' && viewState.stretch === 'trilogy')}
         />
       )}

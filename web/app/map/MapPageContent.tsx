@@ -12,6 +12,7 @@ import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useFilteredObjectIds } from '@/lib/hooks/useFilteredObjectIds';
 import { useFieldObjectMarkers } from '@/lib/hooks/useFieldObjectMarkers';
+import type { MapTarget } from '@/lib/utils/map-target';
 
 interface MapPageContentProps {
   layers: MapLayer[];
@@ -20,6 +21,7 @@ interface MapPageContentProps {
   initialFilter?: string;
   initialCenter?: { ra: number; dec: number };
   initialZoom?: number;
+  initialTarget?: MapTarget | null;
   highlightObjectId?: string;
 }
 
@@ -30,6 +32,7 @@ export function MapPageContent({
   initialFilter,
   initialCenter,
   initialZoom,
+  initialTarget,
   highlightObjectId,
 }: MapPageContentProps) {
   const pathname = usePathname();
@@ -127,7 +130,7 @@ export function MapPageContent({
     const currentUrl = new URL(window.location.href);
 
     // Extract current filter params from URL (everything that ISN'T a map param)
-    const mapParamKeys = new Set(['field', 'filter', 'ra', 'dec', 'z', 'zoom', 'highlight']);
+    const mapParamKeys = new Set(['field', 'filter', 'ra', 'dec', 'z', 'zoom', 'highlight', 'target']);
     const currentFilterEntries: [string, string][] = [];
     for (const [key, val] of currentUrl.searchParams) {
       if (!mapParamKeys.has(key)) currentFilterEntries.push([key, val]);
@@ -163,6 +166,7 @@ export function MapPageContent({
         initialFilter={initialFilter}
         initialCenter={initialCenter}
         initialZoom={initialZoom}
+        initialTarget={initialTarget}
         highlightObjectId={highlightObjectId}
         markerFilter={markerFilter}
         filteredIdSet={filteredIdSet}

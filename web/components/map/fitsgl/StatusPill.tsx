@@ -5,7 +5,8 @@
  * (`docs/design-fitsgl-map-ux.md` §4): dual RA/Dec (sexagesimal + decimal, keeping
  * the existing CAMPFIRE formatters — decision 8), the cursor's pixel value per
  * active band, zoom, and `band · stretch`. Grows to show separation + position
- * angle while the ruler tool has a measurement.
+ * angle while the ruler tool has a measurement, and the pinned sky position while
+ * the go-to crosshair is set.
  */
 
 import { formatRA, formatDec } from '@/lib/utils/wcs';
@@ -22,6 +23,10 @@ interface StatusPillProps {
   bandLabel: string;
   stretch: string;
   ruler: RulerMeasurement | null;
+  /** The pinned go-to crosshair's sky position, or null when nothing is pinned. */
+  target?: { ra: number; dec: number } | null;
+  /** Whether that target landed on the mosaic (false ⇒ flagged as off-image). */
+  targetInside?: boolean | null;
   /** Hide the per-band pixel value readout (e.g. a many-band trilogy composite). */
   showValue?: boolean;
 }
@@ -42,7 +47,19 @@ function Item({ k, children }: { k: string; children: React.ReactNode }) {
   );
 }
 
-export function StatusPill({ ra, dec, values, native, zoom, bandLabel, stretch, ruler, showValue = true }: StatusPillProps) {
+export function StatusPill({
+  ra,
+  dec,
+  values,
+  native,
+  zoom,
+  bandLabel,
+  stretch,
+  ruler,
+  target = null,
+  targetInside = null,
+  showValue = true,
+}: StatusPillProps) {
   const hasVal = !!values && values.some((v) => v !== null && Number.isFinite(v));
   const valStr = hasVal ? values!.map(fmtVal).join(' ') + (native ? '' : '*') : '—';
   return (
@@ -58,6 +75,20 @@ export function StatusPill({ ra, dec, values, native, zoom, bandLabel, stretch, 
       {showValue && <Item k="val">{valStr}</Item>}
       <Item k="zoom">{zoom !== null ? `${zoom.toFixed(2)}×` : '—'}</Item>
       <span className="text-text-tertiary">{bandLabel} · {stretch}</span>
+      {target && (
+        <>
+          <span className="h-3.5 w-px bg-border" aria-hidden />
+          <span
+            className="flex items-baseline gap-1"
+            title={targetInside === false ? 'the pinned target is outside the image' : undefined}
+          >
+            <span className="text-text-tertiary">target{targetInside === false ? '*' : ''}</span>
+            <b className="font-medium text-text-primary">
+              {formatRA(target.ra)} {formatDec(target.dec)}
+            </b>
+          </span>
+        </>
+      )}
       {ruler && (
         <>
           <span className="h-3.5 w-px bg-border" aria-hidden />
