@@ -305,7 +305,8 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, lineC
     'redshift_auto',
     'signal_to_noise',
     // the filtered emission line's S/N, only while a line filter is active
-    ...(lineColumn ? [`snr_${lineColumn}`] : []),
+    // (escaped like a data cell: the name comes from the URL)
+    ...(lineColumn ? [escapeCsvValue(`snr_${lineColumn}`)] : []),
     'exposure_time',
     'fits_path',
     'program_slug',
@@ -390,7 +391,8 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean, lineC
     'gratings',
     'max_snr',
     // the filtered emission line's best S/N, only while a line filter is active
-    ...(lineColumn ? [`snr_${lineColumn}`] : []),
+    // (escaped like a data cell: the name comes from the URL)
+    ...(lineColumn ? [escapeCsvValue(`snr_${lineColumn}`)] : []),
     'max_exposure_time',
     'member_target_ids',
     'tags',

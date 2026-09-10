@@ -6,6 +6,7 @@
 import type { AdvancedFilterOptions, SearchScope, FilterMode } from '@/components/spectra/SpectraFilterBar';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
 import { VALID_SORT_COLUMNS, isValidSortColumn, defaultSortColumn } from '@/lib/actions/spectra-types';
+import { isFilterableLine } from '@/lib/linelist';
 
 // Valid search scope values
 const VALID_SEARCH_SCOPES: SearchScope[] = ['target_id', 'my_comments', 'all_comments'];
@@ -79,7 +80,9 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     max_snr_max: parseNumber('snr_max'),
     max_exposure_time_min: parseNumber('exp_min'),
     max_exposure_time_max: parseNumber('exp_max'),
-    line: searchParams.get('line') || null,
+    // only a filterable catalog name (a doublet total or a stand-alone line) is
+    // accepted from a URL: the name is echoed into RPC params and CSV headers
+    line: (() => { const v = searchParams.get('line')?.trim() || ''; return v && isFilterableLine(v) ? v : null; })(),
     line_snr_min: parseNumber('line_snr_min'),
     line_snr_max: parseNumber('line_snr_max'),
     line_include_stale: parseBoolean('line_stale') === true,

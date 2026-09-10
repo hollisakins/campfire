@@ -93,6 +93,11 @@ export async function GET(request: NextRequest) {
       console.error('object lines error:', fitsRes.error);
       return Response.json({ error: fitsRes.error.message }, { status: 500 });
     }
+    // A failed staleness query must not silently report every fit as fresh.
+    if (statusRes.error) {
+      console.error('object lines staleness error:', statusRes.error);
+      return Response.json({ error: statusRes.error.message }, { status: 500 });
+    }
     const stale = new Map<number, { stale_redshift: boolean; stale_spectrum: boolean }>();
     for (const row of statusRes.data ?? []) {
       stale.set(row.spectrum_id as number, {

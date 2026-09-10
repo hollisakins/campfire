@@ -673,12 +673,16 @@ GRANT EXECUTE ON FUNCTION public.line_fit_stale_redshift(INTEGER, INTEGER, DOUBL
 GRANT EXECUTE ON FUNCTION public.line_fit_stale_redshift(INTEGER, INTEGER, DOUBLE PRECISION, INTEGER, INTEGER, DOUBLE PRECISION) TO service_role;
 
 
--- objects_matching_line_filter: the viewer-visible objects with a measurement
--- of catalog line p_line whose S/N lies in [p_snr_min, p_snr_max] (NULL bound
--- = open). Materialized ONCE per list call into an INTEGER[] (like the
--- grating / observation sets, #488 / #491) and probed with o.id = ANY(...).
--- Same invariants: only spectra in the viewer's accessible programs count
--- (a proprietary program's detection must not surface an object the viewer
+-- objects_matching_line_filter: the viewer-visible objects whose BEST S/N in
+-- catalog line p_line — the max over their visible member spectra, the same
+-- value object_line_snr() reports and the list sorts on — lies in
+-- [p_snr_min, p_snr_max] (NULL bound = open). Max semantics, like the objects
+-- list's max_snr filter: a bound is tested against one number per object, so
+-- a row can never show a "Line S/N" outside the range that admitted it.
+-- Materialized ONCE per list call into an INTEGER[] (like the grating /
+-- observation sets, #488 / #491) and probed with o.id = ANY(...). Same
+-- invariants: only spectra in the viewer's accessible programs count (a
+-- proprietary program's detection must not surface an object the viewer
 -- sees through another program), and unpublished spectra count only for
 -- admins asking for them. p_include_stale = false (the default) drops fits
 -- whose inspected redshift has moved since the fit — the catalog's answer to
@@ -695,7 +699,7 @@ CREATE OR REPLACE FUNCTION public.objects_matching_line_filter(
 RETURNS SETOF INTEGER
 LANGUAGE sql STABLE
 AS $$
-  SELECT DISTINCT t.object_id
+  SELECT t.object_id
   FROM public.spectrum_lines l
   JOIN public.spectrum_line_fits f ON f.spectrum_id = l.spectrum_id
   JOIN public.spectra s ON s.id = l.spectrum_id
@@ -703,13 +707,14 @@ AS $$
   JOIN public.objects o ON o.id = t.object_id
   WHERE l.line = p_line
     AND l.snr IS NOT NULL
-    AND (p_snr_min IS NULL OR l.snr >= p_snr_min)
-    AND (p_snr_max IS NULL OR l.snr <= p_snr_max)
     AND f.program_slug = ANY(p_program_slugs)
     AND (p_include_unpublished OR s.deploy_status = 'published')
     AND (p_include_stale OR NOT public.line_fit_stale_redshift(
            o.version, o.redshift_quality, (o.redshift)::double precision,
-           f.object_version, f.z_quality, f.z_used));
+           f.object_version, f.z_quality, f.z_used))
+  GROUP BY t.object_id
+  HAVING (p_snr_min IS NULL OR max(l.snr) >= p_snr_min)
+     AND (p_snr_max IS NULL OR max(l.snr) <= p_snr_max);
 $$;
 
 GRANT EXECUTE ON FUNCTION public.objects_matching_line_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, BOOLEAN, TEXT[], BOOLEAN) TO authenticated;
@@ -750,9 +755,10 @@ GRANT EXECUTE ON FUNCTION public.spectra_matching_line_filter(TEXT, DOUBLE PRECI
 
 -- object_line_snr: the object's S/N in catalog line p_line — the best of its
 -- viewer-visible member spectra under the same program / publication /
--- staleness rules as objects_matching_line_filter — for the list's sort key
--- and its "Line S/N" column. Per candidate row (PK probes on spectrum_lines),
--- evaluated only when a line filter is active.
+-- staleness rules as objects_matching_line_filter, i.e. exactly the number
+-- that filter tested — for the list's sort key and its "Line S/N" column.
+-- Per candidate row (PK probes on spectrum_lines), evaluated only when a line
+-- filter is active.
 CREATE OR REPLACE FUNCTION public.object_line_snr(
   p_object_id INTEGER,
   p_line TEXT,

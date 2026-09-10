@@ -19,6 +19,11 @@ describe('emission-line filter', () => {
     const orphan = filtersToURLParams({ ...DEFAULT_FILTERS, line_snr_min: 3 }, 1, 50, 'object_id', 'asc', 'objects');
     expect(orphan.has('line')).toBe(false);
     expect(orphan.has('line_snr_min')).toBe(false);
+    // an unknown or component name from a shared link is dropped, never echoed
+    for (const bad of ['=HYPERLINK("x")', 'x,y', 'CIII1907', 'nope']) {
+      expect(parseFiltersFromURL(new URLSearchParams({ line: bad })).line).toBeNull();
+      expect('p_line' in buildFilterParams({ ...DEFAULT_FILTERS, line: bad }, ['ember-uds'])).toBe(false);
+    }
   });
 
   it('sends the RPC parameters only while a line is set', () => {

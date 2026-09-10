@@ -9,6 +9,7 @@
 
 import type { CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
+import { isFilterableLine } from '@/lib/linelist';
 
 // Canonical filter mode type for any/all/none filtering
 export type FilterMode = 'any' | 'all' | 'none';
@@ -177,7 +178,9 @@ export function buildFilterParams(
     : null;
   const commentUserId = isCommentSearch && userId ? userId : null;
 
-  const line = filters?.line?.trim() || null;
+  // Defense in depth with parseFiltersFromURL: an unknown name never reaches an RPC.
+  const rawLine = filters?.line?.trim() || null;
+  const line = rawLine && isFilterableLine(rawLine) ? rawLine : null;
   const lineParams: Pick<FilterRpcParams, 'p_line' | 'p_line_snr_min' | 'p_line_snr_max' | 'p_line_include_stale'> =
     line
       ? {
@@ -223,5 +226,6 @@ export function buildFilterParams(
 
 /** True when the filter state selects on an emission line. */
 export function hasLineFilter(filters: Partial<FilterOptions> | undefined): boolean {
-  return Boolean(filters?.line?.trim());
+  const line = filters?.line?.trim();
+  return Boolean(line && isFilterableLine(line));
 }
