@@ -65,6 +65,9 @@ the portal *after* a deploy. `campfire pull --obs <obs>` materializes them to
 object is at or above `[nirspec.line_fitting].min_quality` (default 3, probable),
 skips the rest, and writes `<base>_lines.fits` (+ a QA PDF) next to the spectrum.
 Re-running refits only spectra whose redshift, quality or bytes changed.
+`linefit` needs only the observation name (its inputs sit at layout-derived
+paths), so it runs on any machine that has done the pull — `observations.toml`
+is optional and only supplies `[<obs>.line_fitting]` overrides.
 `campfire deploy lines --obs <obs>` (or a full deploy) publishes the rows to the
 `spectrum_line_fits` catalog. `--allow-auto` falls back to the `zfit` redshift for
 QA runs; those products are stamped `ZSRC=auto` and are refused by deploy unless

@@ -35,6 +35,7 @@ import hashlib
 import logging
 import math
 import os
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -66,6 +67,70 @@ LINE_COLUMNS = [
 ]
 _STR_COLS = {'name', 'component', 'blend_into', 'tied_to'}
 _INT_COLS = {'complex', 'dof', 'npix', 'flags'}
+
+
+# ---------------------------------------------------------------------------
+# Observation resolution (no observations.toml required)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LinefitObservation:
+    """The minimal observation view ``linefit`` needs.
+
+    The stage reads products from ``products/nirspec/<obs>/`` and the
+    inspected redshifts from ``reference/nirspec/<obs>/`` — both derived
+    from the observation *name* alone through the layout contract — so it
+    must not depend on ``observations.toml`` being materialized locally
+    (that file is the config plane's, pulled by ``campfire config pull`` and
+    needed by the reduction stages, not by a post-inspection fit on already
+    reduced products). ``stage_overrides`` is empty on this fallback:
+    per-observation ``[<obs>.line_fitting]`` overrides only apply when the
+    TOML is present.
+    """
+    name: str
+    workspace_dir: str
+    reference_dir: str
+    stage_overrides: dict = field(default_factory=dict)
+
+
+def resolve_linefit_observation(obs_name: str, config: dict | None = None):
+    """Return an observation object for *obs_name*, from ``observations.toml``
+    when it is available (full ``Observation``, with per-observation
+    overrides) and otherwise a :class:`LinefitObservation` built from the
+    layout contract. Either way ``workspace_dir`` / ``reference_dir`` are the
+    directories the reduction and ``campfire pull`` use, so the fit reads
+    exactly what they wrote.
+    """
+    import toml
+
+    from campfire_layout import Scope, dir_for, reference_dir
+    from campfire_pipeline.config import resolve_observations_file, resolve_paths
+    from campfire_pipeline.nirspec.observation import Observation
+
+    def _fallback(reason, level=log.info):
+        scope = Scope(obs=obs_name)
+        level(f"{reason}; fitting {obs_name} from layout directories only "
+              f"(no per-observation [{obs_name}.line_fitting] overrides)")
+        return LinefitObservation(
+            name=obs_name,
+            workspace_dir=str(dir_for('nirspec_spec', scope)),
+            reference_dir=str(reference_dir('nirspec', scope)),
+        )
+
+    # Fall back only when there is nothing to lose: no observations.toml at
+    # all, or one without a section for this observation. A section that
+    # exists but fails to load is a real config error and must surface —
+    # silently dropping its overrides would change what gets fit.
+    try:
+        obs_file = resolve_observations_file(None)
+    except FileNotFoundError:
+        return _fallback("observations.toml not found")
+    if obs_name not in toml.load(obs_file):
+        return _fallback(f"no [{obs_name}] section in {obs_file}", level=log.warning)
+    obs = Observation.load(obs_name, observations_file=obs_file)
+    paths = resolve_paths(config)
+    obs.setup_workspace_directory(paths['data_dir'], paths['products_dir'], overwrite=False)
+    return obs
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +472,10 @@ def run_linefit(obs, config, source_ids=None, overwrite=False, n_processes=1,
     cfpipe_version = get_reduction_version(config)
 
     workspace = obs.workspace_dir
+    if not os.path.isdir(workspace):
+        log.warning(f"No products directory for {obs.name} at {workspace} — "
+                    f"run `campfire pull --obs {obs.name}` (or reduce) first")
+        return dict(fit=0, skipped_uptodate=0, skipped_no_z=0, failed=0)
     ref_file = redshifts_path(obs.reference_dir)
     redshifts = load_redshifts(ref_file)
     if not redshifts:

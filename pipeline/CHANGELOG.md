@@ -64,6 +64,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   Infrastructure because it changes scientific output: exposures that were
   silently quarantined now contribute to their mosaics.
 
+### Infrastructure
+- `cfpipe nirspec linefit` no longer requires `observations.toml`: its inputs
+  (products, `redshifts.toml`) sit at layout-derived paths, so the stage now
+  resolves the observation from its name alone and uses the TOML only when
+  present (for `[<obs>.line_fitting]` overrides). A laptop that has run
+  `campfire pull --obs X` can fit without `campfire config pull`.
+
 ## v0.6.0 — 2026-08-18
 
 ### Calibration

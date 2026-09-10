@@ -202,11 +202,21 @@ def linefit(config, obs, source_ids, processes, overwrite, allow_auto, gratings)
     every *_spec.fits whose object meets [nirspec.line_fitting].min_quality,
     writing <base>_lines.fits (+ a QA PDF). Products whose inputs (redshift,
     quality, spectrum bytes) are unchanged are skipped unless --overwrite.
+
+    Needs only the observation name (products and redshifts sit at
+    layout-derived paths); observations.toml is optional and supplies
+    per-observation [<obs>.line_fitting] overrides when present.
     """
-    from campfire_pipeline.nirspec.linefit_stage import run_linefit
+    from campfire_pipeline.nirspec.linefit_stage import resolve_linefit_observation, run_linefit
 
     for obs_name in obs:
-        cfg, obs_obj, paths = _setup(config, obs_name)
+        # Unlike the reduction stages, linefit needs only the observation
+        # name: its inputs live at layout-derived paths. observations.toml
+        # (config plane) is used when present, for per-observation overrides,
+        # and is not required.
+        cfg = load_config(config)
+        setup_environment(cfg)
+        obs_obj = resolve_linefit_observation(obs_name, cfg)
         sids = _resolve_source_ids(source_ids)
         sids_list = sids if sids != 'all' else None
         counts = run_linefit(
