@@ -974,7 +974,8 @@ def photometry(ctx, config_path, field, photometry_config, dry_run, no_photoz,
     if not no_photoz:
         print(f"  P(z) sidecars:      {result['n_pz']}")
     if supersede:
-        print(f"  Retired rows:       {result.get('n_superseded', 0)}")
+        label = "Rows to retire:    " if dry_run else "Retired rows:      "
+        print(f"  {label} {result.get('n_superseded', 0)}")
     print()
 
     if dry_run:

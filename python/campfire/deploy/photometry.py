@@ -1172,9 +1172,10 @@ def deploy_field_photometry(
         supersede: When True (and `restrict_to_object_db_ids` is None), after
             upsert delete every row in the field belonging to a *different*
             catalog_name — the explicit retirement of a previous release.
-            Refused when the new release matched fewer than
-            ``SUPERSEDE_MIN_RATIO`` × the rows it would retire (a wrong column
-            name, path or radius looks exactly like that) unless
+            Refused when the new release stored photometry (a non-empty
+            band set) for fewer than ``SUPERSEDE_MIN_RATIO`` × the rows it
+            would retire — a wrong position column, path, radius or band
+            column mapping all look exactly like that — unless
             `supersede_force` is set.
         supersede_force: Retire the other catalogs even when the new match
             count is far below theirs.
@@ -1255,15 +1256,29 @@ def deploy_field_photometry(
             would = _supersede_other_catalogs(client, field, catalog_name, dry_run=True)
             for name, n in would.items():
                 print(f"    Would retire {n} rows of '{name}'")
-            n_would_retire = sum(would.values())
-            if n_would_retire:
-                print(f"    New matches / rows to retire: {n_reported} / {n_would_retire} "
-                      f"= {n_reported / n_would_retire:.2f}"
-                      + ("" if n_reported >= SUPERSEDE_MIN_RATIO * n_would_retire
-                         else f"  (below {SUPERSEDE_MIN_RATIO}: --supersede would be "
-                              f"refused without --force)"))
+            n_candidates = sum(would.values())
+            # The gate a real run applies: matches that would carry at least
+            # one band (a wrong band-column mapping matches fine but stores
+            # nothing) against the rows it would delete.
+            n_with_bands = sum(
+                1 for _o, cat_idx, _d in matches
+                if build_photometry_payload(
+                    {c: catalog[c][cat_idx] for c in catalog.colnames},
+                    band_config, flux_unit, max_flux_err=max_flux_err)['bands']
+            )
+            if n_with_bands < len(matches):
+                print(f"    WARNING: {len(matches) - n_with_bands} matches would carry no "
+                      f"bands (check the band column names)")
             if not matches:
                 print("    (no matches: --supersede would be skipped, not run)")
+            elif n_candidates:
+                ok = n_with_bands >= SUPERSEDE_MIN_RATIO * n_candidates
+                print(f"    Matches with bands / rows to retire: {n_with_bands} / "
+                      f"{n_candidates} = {n_with_bands / n_candidates:.2f}"
+                      + ("" if ok else f"  (below {SUPERSEDE_MIN_RATIO}: --supersede "
+                                       f"would be refused without --force)"))
+                if ok or supersede_force:
+                    n_would_retire = n_candidates
         return {
             'n_objects': len(objects),
             'n_matched': n_reported,
@@ -1480,14 +1495,20 @@ def deploy_field_photometry(
         else:
             would = _supersede_other_catalogs(client, field, catalog_name, dry_run=True)
             n_would = sum(would.values())
+            # Count rows that actually carry photometry: a wrong band-column
+            # mapping cross-matches perfectly and stores empty payloads.
+            n_with_bands = sum(1 for r in records if r['photometry']['bands'])
+            if n_with_bands < len(records):
+                print(f"    WARNING: {len(records) - n_with_bands} of the new rows carry "
+                      f"no bands (check the band column names)")
             if not would:
                 print(f"  No other catalogs in field '{field}' to retire")
-            elif len(records) < SUPERSEDE_MIN_RATIO * n_would and not supersede_force:
-                print(f"  WARNING: '{catalog_name}' matched {len(records)} objects but "
-                      f"retiring {', '.join(would)} would delete {n_would} rows "
-                      f"(ratio {len(records) / n_would:.2f} < {SUPERSEDE_MIN_RATIO}). "
-                      f"That looks like a misconfigured cross-match; skipping "
-                      f"--supersede. Pass --force to retire anyway.")
+            elif n_with_bands < SUPERSEDE_MIN_RATIO * n_would and not supersede_force:
+                print(f"  WARNING: '{catalog_name}' stored photometry for {n_with_bands} "
+                      f"objects but retiring {', '.join(would)} would delete {n_would} "
+                      f"rows (ratio {n_with_bands / n_would:.2f} < {SUPERSEDE_MIN_RATIO}). "
+                      f"That looks like a misconfigured cross-match or band mapping; "
+                      f"skipping --supersede. Pass --force to retire anyway.")
             else:
                 print(f"  Retiring other catalogs in field '{field}' "
                       f"(keeping '{catalog_name}')...")

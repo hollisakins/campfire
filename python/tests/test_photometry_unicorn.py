@@ -575,9 +575,11 @@ def test_supersede_dry_run_counts_without_deleting():
     assert client.t.deleted == [] and len(client.t.rows) == 11
 
 
-def _supersede_setup(tmp_path, monkeypatch, catalog_ra, n_old):
+def _supersede_setup(tmp_path, monkeypatch, catalog_ra, n_old, flux_col='FLUX_F444W'):
     """A one-source catalog at *catalog_ra* and one object at RA 214.9, with
-    *n_old* rows of a previous catalog in the fake client."""
+    *n_old* rows of a previous catalog in the fake client. *flux_col* is the
+    band column the config maps; pass a name absent from the catalog to
+    simulate a wrong band mapping."""
     import campfire.deploy.photometry as mod
 
     cat = tmp_path / 'cat.fits'
@@ -597,7 +599,7 @@ ra_column = "RA"
 dec_column = "DEC"
 id_column = "ID"
 [egs.bands]
-f444w = {{ flux = "FLUX_F444W", err = "FLUXERR_F444W" }}
+f444w = {{ flux = "{flux_col}", err = "FLUXERR_F444W" }}
 """)
     old_rows = [{'id': i, 'field': 'egs', 'catalog_name': 'UNICORN EGS v0.9'}
                 for i in range(1, n_old + 1)]
@@ -640,10 +642,47 @@ def test_supersede_runs_when_the_new_catalog_covers_the_old(tmp_path, monkeypatc
     assert client.t.rows == []
 
 
-def test_dry_run_reports_supersede_ratio(tmp_path, monkeypatch, capsys):
+def test_supersede_refuses_when_the_new_rows_carry_no_bands(tmp_path, monkeypatch, capsys):
+    """A wrong band-column mapping cross-matches perfectly but stores empty
+    payloads; that must not retire the previous catalog either."""
+    mod, client, cfg = _supersede_setup(tmp_path, monkeypatch, catalog_ra=214.9, n_old=1,
+                                        flux_col='FLUX_F444W_RENAMED')
+    result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
+    out = capsys.readouterr().out
+    assert result['n_matched'] == 1 and result['n_superseded'] == 0
+    assert len(client.t.rows) == 1 and client.t.deleted == []
+    assert 'carry no bands' in out and 'Pass --force' in out
+
+    # Dry run agrees: nothing would be retired.
+    result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
+                                         supersede=True, dry_run=True)
+    out = capsys.readouterr().out
+    assert result['n_superseded'] == 0
+    assert 'would carry no bands' in out and 'refused without --force' in out
+
+
+def test_dry_run_reports_supersede_outcome(tmp_path, monkeypatch, capsys):
+    # Gate would refuse (1 match against 10 rows): preview says so and reports 0.
     mod, client, cfg = _supersede_setup(tmp_path, monkeypatch, catalog_ra=214.9, n_old=10)
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
                                          supersede=True, dry_run=True)
     out = capsys.readouterr().out
-    assert result['n_superseded'] == 10 and client.t.deleted == []
+    assert result['n_superseded'] == 0 and client.t.deleted == []
     assert 'Would retire 10 rows' in out and 'refused without --force' in out
+    # ... unless forced.
+    result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
+                                         supersede=True, supersede_force=True, dry_run=True)
+    assert result['n_superseded'] == 10 and client.t.deleted == []
+    # No matches at all: skipped, reports 0.
+    (tmp_path / 'b').mkdir()
+    mod, client, cfg = _supersede_setup(tmp_path / 'b', monkeypatch, catalog_ra=200.0, n_old=10)
+    result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
+                                         supersede=True, dry_run=True)
+    out = capsys.readouterr().out
+    assert result['n_superseded'] == 0 and 'would be skipped' in out
+    # Gate passes (1 match, 1 old row): the preview reports the count.
+    (tmp_path / 'c').mkdir()
+    mod, client, cfg = _supersede_setup(tmp_path / 'c', monkeypatch, catalog_ra=214.9, n_old=1)
+    result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
+                                         supersede=True, dry_run=True)
+    assert result['n_superseded'] == 1 and client.t.deleted == [] and len(client.t.rows) == 1
