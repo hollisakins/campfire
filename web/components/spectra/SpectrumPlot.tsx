@@ -155,6 +155,11 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // already put in the shared cache serves immediately either way.
   const fitQuery = useRedshiftFit(fitsPath, showModel);
   const fitData = fitQuery.data ?? null;
+  // The toggle is greyed out only once absence is definitive: the resolve said
+  // no zfit sidecar is registered, or the fetch answered 404. It must NOT key
+  // on `fitData`, which is null until the toggle is on — the fetch follows
+  // showModel, so a disabled-until-fetched toggle can never be switched on.
+  const noFit = sidecarUrls.data?.has_zfit === false || (showModel && fitQuery.isSuccess && fitData === null);
   // Emission-line fit overlay (the `_lines.json` sidecar: the linefit model +
   // continuum on the spectrum grid). Off by default and fetched only once
   // toggled on — most spectra have no line fit until they are inspected —
@@ -846,13 +851,20 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
 
         <EmissionLinesControl showEmissionLines={showEmissionLines} onChange={setShowEmissionLines} />
 
-        {/* Model + chi²(z) toggle — disabled if no zfit data is available. */}
+        {/* Model + chi²(z) toggle — greyed out once the spectrum is known to
+            have no redshift fit. */}
         <PlotCheckbox
           label="Model"
-          checked={showModel && !!fitData}
-          disabled={!fitData}
+          checked={showModel && !noFit}
+          disabled={noFit}
           onChange={setShowModel}
-          title={fitData ? 'Show best-fit model + χ²(z)' : 'No redshift fit available for this spectrum'}
+          title={
+            noFit
+              ? 'No redshift fit available for this spectrum'
+              : showModel && fitQuery.isPending
+                ? 'Loading the redshift fit…'
+                : 'Show best-fit model + χ²(z)'
+          }
         />
 
         {/* Emission-line fit overlay (model + continuum from cfpipe nirspec
