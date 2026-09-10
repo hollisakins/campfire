@@ -25,8 +25,18 @@ it at a fixed ratio), ``φ_k`` is a unit-area Gaussian integrated over the pixel
 scaled by the same ``f_LSF`` calibration the redshift fitter uses, and the
 continuum is a low-order polynomial in the scaled window coordinate ``x``.
 Lines closer than ``blend_sigma × σ_total`` are unresolvable and are merged:
-the heavier line (``Line.weight``) reports the blended flux (flag ``BLEND``)
-and the companion is flagged ``BLENDED`` with no flux of its own.
+the heavier line (``Line.weight``) reports the blended flux (flag ``BLEND``),
+modelled as one Gaussian at the weight-averaged wavelength of the pair, and
+the companion is flagged ``BLENDED`` with no flux of its own.
+
+Close doublets with a free ratio (``linelist.DOUBLETS``: CIII], [OII], [SII],
+MgII, CIV, OIII], NV) are additionally reported as a **total** under the
+doublet's own name (``component='doublet'``): the covariance-propagated sum
+of the two components where the grating resolves them (flag ``RESOLVED``),
+the single blended measurement where it does not. The total is the quantity
+that means the same thing in every grating — the components' individual
+fluxes are strongly anti-correlated near the resolution limit while their
+sum stays well constrained — so catalog selections should use it.
 
 Kinematics are fit in two passes. Pass 1 fits every complex with its own
 ``(dv, σ_v)``, bounded. Complexes with a line detected at ≥
@@ -60,7 +70,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.special import erf
 
-from campfire_pipeline.nirspec.linelist import LINES, LINES_BY_NAME, Line
+from campfire_pipeline.nirspec.linelist import DOUBLETS, LINES, LINES_BY_NAME, Line, doublet_wave
 
 log = logging.getLogger('nirspec_linefit')
 
@@ -70,7 +80,7 @@ FWHM_TO_SIGMA = 1.0 / (2.0 * math.sqrt(2.0 * math.log(2.0)))   # 1 / 2.3548
 #: Algorithm version, stamped into every product (``LFITVER``) and into
 #: ``spectrum_line_fits.fit_version``. Bump on any change to the model, the
 #: line list, or the flag semantics so downstream can tell apart re-fits.
-LINEFIT_VERSION = '1'
+LINEFIT_VERSION = '2'
 
 # Per-line flag bits (``flags`` in the LINES table and in the JSON payload).
 FLAG_TIED = 1            # flux is ratio-tied to its doublet primary
@@ -84,6 +94,7 @@ FLAG_NO_CONTINUUM = 128  # continuum undetected at the line: no equivalent width
 FLAG_FIT_FAILED = 256    # nonlinear refinement failed; grid/linear solution kept
 FLAG_MASKED = 512        # > 30 % of the window pixels were masked
 FLAG_SIGMA_UNRESOLVED = 1024  # intrinsic width not constrained by the LSF
+FLAG_RESOLVED = 2048     # doublet total whose members were fit as separate components
 
 FLAG_NAMES = {
     FLAG_TIED: 'tied', FLAG_BLENDED: 'blended', FLAG_BLEND: 'blend',
@@ -91,6 +102,7 @@ FLAG_NAMES = {
     FLAG_KIN_DEFAULT: 'kin_default', FLAG_BROAD: 'broad',
     FLAG_NO_CONTINUUM: 'no_continuum', FLAG_FIT_FAILED: 'fit_failed',
     FLAG_MASKED: 'masked', FLAG_SIGMA_UNRESOLVED: 'sigma_unresolved',
+    FLAG_RESOLVED: 'resolved',
 }
 
 
@@ -200,6 +212,7 @@ class _LineState:
     wave_obs: float                  # µm at the input redshift
     sigma_lsf: float                 # µm
     support: float                   # µm half-width
+    wave_fit: float = 0.0            # µm, model centre (= wave_obs unless a blend primary)
     covered: bool = False
     edge: bool = False
     tie_to: Optional[str] = None     # honored tie primary (same complex)
@@ -241,7 +254,8 @@ def _build_line_states(lines, z, wave, valid, r_of, cfg: LineFitConfig, dv_max):
         sigma_lsf = w_obs / r * FWHM_TO_SIGMA
         sigma_tot = math.hypot(sigma_lsf, cfg.sigma_v_max / C_KMS * w_obs)
         support = cfg.support_sigma * sigma_tot + dv_max / C_KMS * w_obs
-        st = _LineState(line=line, wave_obs=w_obs, sigma_lsf=sigma_lsf, support=support)
+        st = _LineState(line=line, wave_obs=w_obs, sigma_lsf=sigma_lsf, support=support,
+                        wave_fit=w_obs)
         # Covered = enough valid pixels across the support AND the line core
         # (±2σ at the default width) mostly unmasked, so a bad-pixel hole on
         # the line itself does not get "measured" from its wings.
@@ -319,6 +333,16 @@ def _resolve_ties_and_blends(cx: _Complex, cfg: LineFitConfig):
                         m.tie_to = None
                         primary.blend_members.append(m.line.name)
                         absorbed.add(m.line.name)
+    # A blend primary is modelled at the weight-averaged wavelength of
+    # everything it absorbed, not at its own rest wavelength: negligible for
+    # the prism's Hα+[NII], but it keeps the single-Gaussian model honest for
+    # an unresolved doublet whose members are comparably strong ([OII]).
+    z1 = None
+    for primary in heads:
+        if primary.blend_members:
+            if z1 is None:
+                z1 = primary.wave_obs / primary.line.wave
+            primary.wave_fit = doublet_wave([primary.line.name] + primary.blend_members) * z1
 
 
 def _free_components(cx: _Complex):
@@ -381,7 +405,7 @@ class _WindowModel:
         for head, unit in self.components:
             col = np.zeros_like(self.w)
             for st, ratio in unit:
-                mu = st.wave_obs * shift
+                mu = st.wave_fit * shift
                 sig = math.hypot(st.sigma_lsf, sigma_v / C_KMS * mu)
                 col += ratio * gaussian_pixint(self.lo, self.hi, mu, sig)
             cols.append(col)
@@ -390,7 +414,7 @@ class _WindowModel:
         if self.n_broad:
             shift_b = 1.0 + dv_b / C_KMS
             for st in self.broad_heads:
-                mu = st.wave_obs * shift_b
+                mu = st.wave_fit * shift_b
                 sig = math.hypot(st.sigma_lsf, sigma_b / C_KMS * mu)
                 cols.append(gaussian_pixint(self.lo, self.hi, mu, sig))
         return np.column_stack(cols)
@@ -434,14 +458,14 @@ class _WindowModel:
         model = cont.copy()
         for k, (head, unit) in enumerate(self.components):
             for st, ratio in unit:
-                mu = st.wave_obs * shift
+                mu = st.wave_fit * shift
                 sig = math.hypot(st.sigma_lsf, sigma_v / C_KMS * mu)
                 model += p[k] * ratio * gaussian_pixint(lo_full, hi_full, mu, sig)
         if self.n_broad:
             dv_b, sigma_b = p[nl + 2], p[nl + 3]
             shift_b = 1.0 + dv_b / C_KMS
             for j, st in enumerate(self.broad_heads):
-                mu = st.wave_obs * shift_b
+                mu = st.wave_fit * shift_b
                 sig = math.hypot(st.sigma_lsf, sigma_b / C_KMS * mu)
                 model += p[nl + 4 + j] * gaussian_pixint(lo_full, hi_full, mu, sig)
         return model, cont
@@ -636,7 +660,7 @@ def _line_records(cx: _Complex, wm: _WindowModel, fit, z, cfg: LineFitConfig, ki
     for m in cx.members:
         rec = dict(
             label=m.line.label, wave_rest=m.line.wave,
-            wave_obs=m.wave_obs * shift, complex=cx.index, component='narrow',
+            wave_obs=m.wave_fit * shift, complex=cx.index, component='narrow',
             dv=dv, dv_err=dv_err, sigma_v=sv, sigma_v_err=sv_err,
             sigma_lsf_kms=m.sigma_lsf / m.wave_obs * C_KMS,
             chi2=chi2, dof=dof, npix=n_use, flags=0,
@@ -671,7 +695,7 @@ def _line_records(cx: _Complex, wm: _WindowModel, fit, z, cfg: LineFitConfig, ki
                     flags |= FLAG_BLEND
             f = float(p[k]) * ratio
             fe = float(np.sqrt(diag[k])) * ratio if diag[k] > 0 else float('nan')
-            c, ce = cont_at(m.wave_obs * shift)
+            c, ce = cont_at(m.wave_fit * shift)
             snr = f / fe if fe and np.isfinite(fe) and fe > 0 else float('nan')
             if np.isfinite(ce) and ce > 0 and c / ce >= 1.0:
                 ew = f / c / (1.0 + z)
@@ -692,7 +716,7 @@ def _line_records(cx: _Complex, wm: _WindowModel, fit, z, cfg: LineFitConfig, ki
             k = nl + 4 + j
             f = float(p[k])
             fe = float(np.sqrt(diag[k])) if diag[k] > 0 else float('nan')
-            c, ce = cont_at(st.wave_obs * (1.0 + dv_b / C_KMS))
+            c, ce = cont_at(st.wave_fit * (1.0 + dv_b / C_KMS))
             ok_c = np.isfinite(ce) and ce > 0 and c / ce >= 1.0
             ew = f / c / (1.0 + z) if ok_c else float('nan')
             ew_err = (abs(ew) * math.sqrt((fe / f) ** 2 + (ce / c) ** 2)
@@ -700,7 +724,7 @@ def _line_records(cx: _Complex, wm: _WindowModel, fit, z, cfg: LineFitConfig, ki
             records[st.line.name]['flags'] |= FLAG_BROAD
             records[st.line.name + '_broad'] = dict(
                 label=st.line.label + ' (broad)', wave_rest=st.line.wave,
-                wave_obs=st.wave_obs * (1.0 + dv_b / C_KMS), complex=cx.index,
+                wave_obs=st.wave_fit * (1.0 + dv_b / C_KMS), complex=cx.index,
                 component='broad', dv=dv_b, dv_err=dvb_err, sigma_v=sb,
                 sigma_v_err=sb_err, sigma_lsf_kms=st.sigma_lsf / st.wave_obs * C_KMS,
                 chi2=chi2, dof=dof, npix=n_use,
@@ -710,7 +734,86 @@ def _line_records(cx: _Complex, wm: _WindowModel, fit, z, cfg: LineFitConfig, ki
                 blend_members=None, blend_into=None, tied_to=None,
                 broad_delta_chi2=fit.get('delta_chi2'),
             )
+
+    # Doublet totals last, so they inherit the members' final flags (BROAD
+    # included: the total is the *narrow* total, like every narrow record, and
+    # the flag says a `<member>_broad` component exists beside it).
+    records.update(_doublet_records(cx, wm, fit, records, z, dv, dv_err, sv, sv_err,
+                                    chi2, dof, n_use, cont_at))
     return records
+
+
+_INHERITED_FLAGS = (FLAG_EDGE | FLAG_MASKED | FLAG_FIT_FAILED | FLAG_SIGMA_UNRESOLVED
+                    | FLAG_KIN_GLOBAL | FLAG_KIN_DEFAULT | FLAG_BROAD)
+
+
+def _doublet_records(cx, wm, fit, records, z, dv, dv_err, sv, sv_err, chi2, dof, n_use, cont_at):
+    """Doublet totals (``component='doublet'``) for every catalog doublet whose
+    members both sit in this complex.
+
+    The total is the sum of the free components the members' flux lives in,
+    with the full covariance: two components when resolved (``RESOLVED``),
+    one when the pair was merged. A member folded into a line *outside* the
+    doublet leaves the total unmeasurable (``BLENDED``, ``blend_into`` names
+    the carrier); a carrier that also absorbed a foreign line makes the total
+    a superset, reported like any other blend (``BLEND`` + ``blend_members``).
+    The total is the narrow total: an accepted broad component on a member
+    (CIV, MgII) stays in ``<member>_broad`` as for any line, and the total
+    inherits the ``BROAD`` flag so a reader knows it is there.
+    """
+    p, cov = fit['p'], fit['cov']
+    members = {m.line.name: m for m in cx.members}
+    head_index = {head.line.name: k for k, (head, _unit) in enumerate(wm.components)}
+    shift = 1.0 + dv / C_KMS
+    out = {}
+    for d in DOUBLETS:
+        if not all(n in members for n in d.members):
+            continue
+        ms = [members[n] for n in d.members]
+        wave_rest = d.wave
+        w_obs = wave_rest * (1.0 + z) * 1.0e-4
+        inherited = 0
+        for m in ms:
+            inherited |= records[m.line.name]['flags'] & _INHERITED_FLAGS
+        rec = dict(
+            label=d.label, wave_rest=wave_rest, wave_obs=w_obs * shift, complex=cx.index,
+            component='doublet', dv=dv, dv_err=dv_err, sigma_v=sv, sigma_v_err=sv_err,
+            sigma_lsf_kms=float(np.mean([m.sigma_lsf / m.wave_obs * C_KMS for m in ms])),
+            chi2=chi2, dof=dof, npix=n_use, flags=inherited,
+            blend_members=None, blend_into=None, tied_to=None, members=list(d.members),
+        )
+        carriers = [m.blend_into or m.line.name for m in ms]
+        foreign = [c for c in carriers if c not in d.members]
+        if foreign or any(m.tie_to is not None for m in ms):
+            rec.update(flags=inherited | FLAG_BLENDED, blend_into=foreign[0] if foreign else None,
+                       flux=float('nan'), flux_err=float('nan'), snr=float('nan'),
+                       ew_rest=float('nan'), ew_rest_err=float('nan'),
+                       cont=float('nan'), cont_err=float('nan'))
+            out[d.name] = rec
+            continue
+        ks = sorted({head_index[c] for c in carriers})
+        f = float(sum(p[k] for k in ks))
+        var = float(sum(cov[i, j] for i in ks for j in ks))
+        fe = math.sqrt(var) if np.isfinite(var) and var > 0 else float('nan')
+        flags = inherited
+        if len(ks) == 2:
+            flags |= FLAG_RESOLVED
+        extra = [n for k in ks for n in wm.components[k][0].blend_members if n not in d.members]
+        if extra:
+            flags |= FLAG_BLEND
+            rec['blend_members'] = extra
+        c, ce = cont_at(w_obs * shift)
+        snr = f / fe if np.isfinite(fe) and fe > 0 else float('nan')
+        if np.isfinite(ce) and ce > 0 and c / ce >= 1.0:
+            ew = f / c / (1.0 + z)
+            ew_err = abs(ew) * math.sqrt((fe / f) ** 2 + (ce / c) ** 2) if f != 0 else abs(fe / c / (1.0 + z))
+        else:
+            ew, ew_err = float('nan'), float('nan')
+            flags |= FLAG_NO_CONTINUUM
+        rec.update(flux=f, flux_err=fe, snr=snr, ew_rest=ew, ew_rest_err=ew_err,
+                   cont=c, cont_err=ce, flags=int(flags))
+        out[d.name] = rec
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -906,7 +1009,9 @@ def _summary(z, kin, complexes, lines, cfg: LineFitConfig):
     dof = int(sum(c['dof'] for c in complexes))
     s = dict(z_used=float(z), n_lines=len(narrow), n_detected=len(detected),
              n_complexes=len(complexes), chi2=chi2, dof=dof,
-             n_broad=sum(1 for r in lines.values() if r['component'] == 'broad'))
+             n_broad=sum(1 for r in lines.values() if r['component'] == 'broad'),
+             n_doublets=sum(1 for r in lines.values()
+                            if r['component'] == 'doublet' and np.isfinite(r.get('flux', np.nan))))
     if kin is None:
         s.update(z_fit=float('nan'), z_fit_err=float('nan'), dv=float('nan'), dv_err=float('nan'),
                  sigma_v=float('nan'), sigma_v_err=float('nan'), kin_source='none', n_anchors=0)

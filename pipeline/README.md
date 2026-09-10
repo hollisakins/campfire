@@ -68,6 +68,10 @@ Re-running refits only spectra whose redshift, quality or bytes changed.
 `linefit` needs only the observation name (its inputs sit at layout-derived
 paths), so it runs on any machine that has done the pull — `observations.toml`
 is optional and only supplies `[<obs>.line_fitting]` overrides.
+Close free-ratio doublets (CIII], [OII], [SII], MgII, CIV, OIII], NV) are reported
+both per component and as a total under the doublet's own name (`CIII1908`,
+`OII3727`, `SII6725`, ...) that means the same thing whether or not the grating
+resolves the pair — select on the total, not on a component.
 `campfire deploy lines --obs <obs>` (or a full deploy) publishes the rows to the
 `spectrum_line_fits` catalog. `--allow-auto` falls back to the `zfit` redshift for
 QA runs; those products are stamped `ZSRC=auto` and are refused by deploy unless

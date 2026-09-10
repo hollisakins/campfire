@@ -34,6 +34,10 @@ def _record(spectrum_id=1, **over):
                         "wave_obs": 4.28, "flux": None, "flux_err": None, "snr": None,
                         "ew_rest": None, "ew_rest_err": None, "cont": None, "cont_err": None,
                         "flags": int(LineFlags.BLENDED), "blend_into": "Halpha"},
+            "SII6725": {"label": "[SII]λλ6716,6731", "component": "doublet", "wave_rest": 6724.5,
+                        "wave_obs": 4.37, "flux": 7e-19, "flux_err": 1.2e-19, "snr": 5.8,
+                        "ew_rest": 10.8, "ew_rest_err": 1.9, "cont": 1e-20, "cont_err": 1e-22,
+                        "flags": int(LineFlags.RESOLVED)},
         },
         fit_version="1", cfpipe_version="1.2.0", f_lsf=1.5, spectrum_hash="a" * 64,
         fitted_at="2026-09-09T00:00:00+00:00", stale_redshift=False, stale_spectrum=False,
@@ -47,9 +51,11 @@ def test_export_pivot_orders_by_wavelength_and_keeps_nulls():
     recs = [_record(1), _record(2, lines={"Hbeta": {"wave_rest": 4862.69, "flux": 1e-18, "flux_err": 1e-19,
                                                      "ew_rest": 20.0, "ew_rest_err": 1.0, "flags": 16}})]
     names = line_columns_for(recs)
-    assert names == ["Hbeta", "OIII5007", "Halpha", "NII6583"]
+    assert names == ["Hbeta", "OIII5007", "Halpha", "NII6583", "SII6725"]
     row = pivot_line_fit(recs[0], names)
     assert row["f_Halpha"] == 5e-18 and row["e_Halpha"] == 1e-19
+    # a doublet total is a column like any line, with the resolved flag
+    assert row["f_SII6725"] == 7e-19 and LineFlags(row["flag_SII6725"]) & LineFlags.RESOLVED
     assert row["ew_OIII5007"] == 92.0 and row["flag_OIII5007"] == 0
     assert row["f_NII6583"] is None and row["flag_NII6583"] == LineFlags.BLENDED
     assert row["f_Hbeta"] is None                      # not measured in this spectrum
@@ -126,7 +132,9 @@ def test_sync_apply_line_fits(tmp_path):
 
 def test_build_row_from_pipeline_product(tmp_path):
     pytest.importorskip("campfire_pipeline")
-    from campfire_pipeline.nirspec.linefit import LineFitConfig, fit_lines, make_r_function
+    from campfire_pipeline.nirspec.linefit import (
+        LINEFIT_VERSION, LineFitConfig, fit_lines, make_r_function,
+    )
     from campfire_pipeline.nirspec.linefit_stage import write_lines_file
     from campfire_pipeline.nirspec.redshift_reference import RedshiftEntry
     from campfire.deploy.lines import build_line_fit_rows
@@ -161,7 +169,8 @@ def test_build_row_from_pipeline_product(tmp_path):
     assert row["target_id"] == "obs1_10" and row["grating"] == "G395M"
     assert row["z_used"] == pytest.approx(z) and row["z_source"] == "inspected"
     assert row["z_quality"] == 4 and row["object_id"] == "CAMPFIRE-J1" and row["object_version"] == 3
-    assert row["fit_version"] == "1" and row["cfpipe_version"] == "1.2.3" and row["f_lsf"] == 1.5
+    assert row["fit_version"] == LINEFIT_VERSION and row["cfpipe_version"] == "1.2.3"
+    assert row["f_lsf"] == 1.5
     assert row["spectrum_hash"] == "b" * 64 and row["n_lines"] >= 1
     assert row["lines"]["Halpha"]["flux"] > 4e-18 and row["lines"]["Halpha"]["label"] == "Hα"
     json.dumps(row, allow_nan=False)      # the upsert payload is JSON-clean

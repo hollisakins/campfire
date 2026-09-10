@@ -252,6 +252,11 @@ class LineFlags(IntFlag):
     SIGMA_UNRESOLVED = 1024
     """Intrinsic width not constrained by the LSF."""
 
+    RESOLVED = 2048
+    """Doublet total (``component='doublet'``, e.g. ``CIII1908``) whose two members were
+    fit as separate components, so each also carries its own flux; unset when the pair
+    was unresolved and the total is the single blended measurement."""
+
 
 @queryable
 class DQFlags(QueryableFlag):

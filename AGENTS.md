@@ -55,7 +55,9 @@ reader in `campfire_pipeline/nirspec/redshift_reference.py`), `linefit` fits spe
 at `[nirspec.line_fitting].min_quality` (default 3) or better into `<base>_lines.fits`
 (refit only when redshift / quality / spectrum bytes change), and `campfire deploy
 lines --obs X` (or the full deploy) upserts one `spectrum_line_fits` row per spectrum
-(`lines` jsonb keyed by the `nirspec/linelist.py` names; provenance `z_used`,
+(`lines` jsonb keyed by the `nirspec/linelist.py` names — components plus the
+doublet totals `CIII1908` / `OII3727` / `SII6725` / ... that are consistent across
+gratings, `component` narrow | broad | doublet; provenance `z_used`,
 `z_quality`, `object_version`, `fit_version`, `spectrum_hash`). `campfire sync` mirrors
 it to `meta/lines.csv` (wide) and `Campfire.query_lines()`; the
 `spectrum_line_fits_status` view and the sync records flag `stale_redshift` /

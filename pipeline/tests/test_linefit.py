@@ -20,9 +20,12 @@ from astropy.table import Table
 from campfire_pipeline.nirspec import linefit as lf
 from campfire_pipeline.nirspec.linefit import (
     C_KMS, FLAG_BLEND, FLAG_BLENDED, FLAG_BROAD, FLAG_KIN_DEFAULT, FLAG_KIN_GLOBAL,
-    FLAG_TIED, LineFitConfig, fit_lines, gaussian_pixint, make_r_function, pixel_edges,
+    FLAG_RESOLVED, FLAG_TIED, LineFitConfig, fit_lines, gaussian_pixint, make_r_function,
+    pixel_edges,
 )
-from campfire_pipeline.nirspec.linelist import LINES, LINES_BY_NAME
+from campfire_pipeline.nirspec.linelist import (
+    DOUBLET_OF_MEMBER, DOUBLETS, DOUBLETS_BY_NAME, LINES, LINES_BY_NAME, doublet_wave, get_label,
+)
 from campfire_pipeline.nirspec.redshift_reference import (
     RedshiftEntry, load_redshifts, serialize_redshifts, write_redshifts,
 )
@@ -98,6 +101,23 @@ def test_linelist_is_consistent():
     # vacuum wavelengths, not air
     assert abs(LINES_BY_NAME['Halpha'].wave - 6564.61) < 0.05
     assert abs(LINES_BY_NAME['OIII5007'].wave - 5008.24) < 0.05
+    # doublet totals: their own namespace, two existing free (untied) members,
+    # blue member first, close enough to blend at some resolution
+    dnames = [d.name for d in DOUBLETS]
+    assert len(dnames) == len(set(dnames)) and not set(dnames) & set(names)
+    seen = set()
+    for d in DOUBLETS:
+        a, b = (LINES_BY_NAME[n] for n in d.members)
+        assert a.tie is None and b.tie is None
+        assert 0 < b.wave - a.wave < 20
+        assert a.wave < d.wave < b.wave
+        assert not set(d.members) & seen
+        seen |= set(d.members)
+        assert DOUBLET_OF_MEMBER[d.members[0]] is d and DOUBLETS_BY_NAME[d.name] is d
+    assert abs(doublet_wave(['CIII1907', 'CIII1909']) - 1907.5) < 0.1
+    assert get_label('CIII1908') == 'CIII]λλ1907,1909' and get_label('Halpha') == 'Hα'
+    with pytest.raises(KeyError):
+        get_label('nope')
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +248,84 @@ def test_prism_blends_and_coverage():
     # windows never overlap
     spans = sorted((c['lo_idx'], c['hi_idx']) for c in res['complexes'])
     assert all(a[1] <= b[0] + 2 * LineFitConfig().cont_pixels for a, b in zip(spans, spans[1:]))
+
+
+def test_doublet_totals_agree_across_resolutions():
+    """A doublet total (component='doublet') means the same thing whether the
+    grating resolves the pair or not: the covariance-propagated sum where it
+    does (flag RESOLVED), the single blended measurement where it does not."""
+    z = 5.5
+    truth_total = TRUTH['SII6716'] + TRUTH['SII6731']
+    for grating, noise in (('g395h', 2e-21), ('g395m', 2e-21), ('prism', 5e-21)):
+        wave, fnu, err, r_of = synth(z, grating, TRUTH, noise=noise)
+        res = fit_lines(wave, fnu, err, z, r_of, LineFitConfig(), grating=grating)
+        L = res['lines']
+        d = L['SII6725']
+        a, b = L['SII6716'], L['SII6731']
+        assert d['component'] == 'doublet' and d['members'] == ['SII6716', 'SII6731']
+        assert d['label'] == '[SII]λλ6716,6731' and d['tied_to'] is None
+        assert np.isfinite(d['flux']) and d['flux_err'] > 0
+        assert abs(d['flux'] - truth_total) / d['flux_err'] < 4, grating
+        assert a['wave_rest'] < d['wave_rest'] < b['wave_rest']
+        if grating == 'prism':
+            # unresolved: the total *is* the blend primary's measurement
+            assert not d['flags'] & FLAG_RESOLVED and not d['flags'] & FLAG_BLEND
+            assert a['flags'] & FLAG_BLEND and b['flags'] & FLAG_BLENDED
+            assert d['flux'] == a['flux'] and d['flux_err'] == a['flux_err']
+        else:
+            # resolved: sum of the components with their covariance, not just quadrature
+            assert d['flags'] & FLAG_RESOLVED
+            quad = math.hypot(a['flux_err'], b['flux_err'])
+            assert math.isclose(d['flux'], a['flux'] + b['flux'], rel_tol=1e-9)
+            assert not math.isclose(d['flux_err'], quad, rel_tol=1e-6)
+            assert 0.5 * quad < d['flux_err'] < 2 * quad
+        # totals never count as lines; the summary tracks them separately
+        s = res['summary']
+        assert s['n_doublets'] >= 1
+        narrow = [r for r in L.values() if r['component'] == 'narrow' and np.isfinite(r['flux'])]
+        assert s['n_lines'] == len(narrow)
+    # a member folded into a line *outside* the doublet leaves the total
+    # unmeasurable rather than contaminated: NV at prism resolution sits under Lyα
+    wave, fnu, err, r_of = synth(z, 'prism', TRUTH, noise=5e-21)
+    L = fit_lines(wave, fnu, err, z, r_of, LineFitConfig(), grating='prism')['lines']
+    nv = L['NV1240']
+    assert nv['flags'] & FLAG_BLENDED and nv['blend_into'] == 'Lya' and np.isnan(nv['flux'])
+    assert L['NV1239']['blend_into'] == 'Lya'
+
+
+def test_doublet_total_is_narrow_and_inherits_broad_flag():
+    """A doublet total is the narrow total; an accepted broad component on a
+    member stays in <member>_broad and the total carries the BROAD flag."""
+    z = 10.0     # MgII lands in G395M
+    truth = {'MgII2796': 2e-18, 'MgII2803': 1.5e-18, 'OII3726': 3e-18, 'OII3729': 3e-18,
+             'Hgamma': 1.5e-18, 'NeIII3869': 8e-19, 'Hdelta': 8e-19}
+    wave, fnu, err, r_of = synth(z, 'g395m', truth, broad={'MgII2796': (1.2e-17, 2000.0)}, seed=3)
+    L = fit_lines(wave, fnu, err, z, r_of, LineFitConfig(), grating='g395m')['lines']
+    a, b, d = L['MgII2796'], L['MgII2803'], L['MgII2800']
+    assert a['flags'] & FLAG_BROAD and 'MgII2796_broad' in L
+    assert d['flags'] & FLAG_BROAD and d['flags'] & FLAG_RESOLVED
+    assert math.isclose(d['flux'], a['flux'] + b['flux'], rel_tol=1e-9)
+    assert abs(d['flux'] - 3.5e-18) / d['flux_err'] < 4
+    bw = L['MgII2796_broad']
+    assert abs(bw['flux'] - 1.2e-17) / bw['flux_err'] < 4 and bw['flux'] > 2 * d['flux']
+    assert d['flux'] < 1.2e-17 / 2                                # wings are not in the total
+    assert not L['OII3727']['flags'] & FLAG_BROAD                 # only where a member has one
+
+
+def test_blend_primary_sits_at_weighted_centroid():
+    z = 5.5
+    wave, fnu, err, r_of = synth(z, 'prism', TRUTH, noise=5e-21)
+    ha = fit_lines(wave, fnu, err, z, r_of, LineFitConfig(), grating='prism')['lines']['Halpha']
+    assert set(ha['blend_members']) == {'NII6583', 'NII6548'}
+    centroid = doublet_wave(['Halpha', 'NII6583', 'NII6548'])
+    assert 6565.5 < centroid < 6566.5
+    rest = ha['wave_obs'] / (1 + ha['dv'] / C_KMS) / (1 + z) * 1e4
+    assert abs(rest - centroid) < 0.05 and ha['wave_rest'] == LINES_BY_NAME['Halpha'].wave
+    # unblended on a grating: the model centre is the catalog wavelength
+    wave, fnu, err, r_of = synth(z, 'g395m', TRUTH)
+    ha = fit_lines(wave, fnu, err, z, r_of, LineFitConfig(), grating='g395m')['lines']['Halpha']
+    rest = ha['wave_obs'] / (1 + ha['dv'] / C_KMS) / (1 + z) * 1e4
+    assert abs(rest - LINES_BY_NAME['Halpha'].wave) < 0.05
 
 
 def test_masked_and_empty_spectra():
@@ -376,6 +474,12 @@ def test_stage_writes_reads_and_skips(workspace):
     assert h['SPECHASH'].startswith('sha256:') and len(h['SPECHASH']) == 7 + 64
     assert abs(prod['lines']['Halpha']['flux'] - 5e-18) / prod['lines']['Halpha']['flux_err'] < 4
     assert prod['lines']['OIII4959']['tied_to'] == 'OIII5007'
+    # doublet totals round-trip with their catalog label; the product carries the version
+    assert h['LFITVER'] == '2'
+    sii = prod['lines']['SII6725']
+    assert sii['component'] == 'doublet' and sii['label'] == '[SII]λλ6716,6731'
+    assert sii['flags'] & FLAG_RESOLVED and np.isfinite(sii['flux'])
+    assert sii['members'] == ['SII6716', 'SII6731'] and h['NDOUBLET'] >= 1
     assert len(prod['model']['wave']) == len(prod['model']['model'])
     payload = lines_payload(prod['lines'])
     assert payload['Halpha']['flux'] > 0 and payload['Halpha']['tied_to'] is None

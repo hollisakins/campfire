@@ -103,8 +103,27 @@ continuum is a low-order polynomial in the scaled window coordinate. Doublets wh
 atomic physics fixes ([OIII] 4959/5007, [NII] 6548/6583, [OI] 6300/6363) are tied (flag
 `tied`) when both fall in one complex. Lines closer than `blend_sigma × σ` (default 2σ)
 are unresolvable and merged: the heavier line reports the blended flux (`blend`, e.g. the
-prism's Hα+[NII]) and the companion is `blended` with no flux of its own — the catalog says
-"blend" instead of splitting a degenerate pair by luck.
+prism's Hα+[NII]), modelled as one Gaussian at the weight-averaged wavelength of the pair,
+and the companion is `blended` with no flux of its own — the catalog says "blend" instead
+of splitting a degenerate pair by luck.
+
+**Doublet totals.** The blend decision depends on the LSF at that wavelength, so `CIII1907`
+would mean "the 1907 component" in G140M and "the whole doublet" in the prism, and a
+catalog selection on it would mix the two. Close doublets whose ratio is free
+(`linelist.DOUBLETS`: NV, CIV, OIII], CIII], MgII, [OII], [SII]) are therefore *also*
+reported as a total under the doublet's own name (`CIII1908`, `OII3727`, `SII6725`, ...;
+`component = 'doublet'`): the sum of the two components with their full covariance where
+the grating resolves them (flag `resolved`), the single blended measurement where it does
+not. Near the resolution limit the component fluxes are strongly anti-correlated with large
+individual errors while their sum stays well constrained — the covariance term is what
+makes the total's S/N honest — so the total is the quantity that means the same thing in
+every grating and the one catalog selections ("all CIII] detections at S/N > 3") should use.
+Components keep their own rows (or `blended`) for the ratio where it is measured; the
+`resolved` flag on the total says whether it is. A member folded into a line *outside* the
+doublet (NV under Lyα in the prism) leaves the total `blended` with `blend_into` naming the
+carrier. The total is the *narrow* total: an accepted broad component on a member (CIV,
+MgII) stays in `<member>_broad` as for any line, and the total carries the `broad` flag so
+the reader knows it exists. Ratio-tied doublets need no total.
 
 **Kinematics** are fit in two passes so faint lines cannot wander. Pass 1 fits each complex
 with free, bounded `(dv, σ_v)` (`dv_max` 1000 km/s on gratings, 2500 on the prism whose
@@ -126,11 +145,13 @@ non-detections carry honest `flux ± err` from which readers form their own limi
 (`n_detected` counts S/N ≥ `detect_snr` = 3). EW is `flux / continuum / (1+z)` in rest-frame
 Å, `no_continuum` when the local continuum is below 1σ.
 
-Per line: `flux, flux_err, snr, ew_rest, ew_rest_err, cont, cont_err, dv, dv_err, sigma_v,
-sigma_v_err, sigma_lsf_kms, wave_obs, complex, chi2, dof, npix, flags, blend_into, tied_to`.
-Flags (bitmask, `campfire.flags.LineFlags`): 1 tied, 2 blended, 4 blend, 8 edge, 16
-kin_global, 32 kin_default, 64 broad, 128 no_continuum, 256 fit_failed, 512 masked, 1024
-sigma_unresolved.
+Per line: `component` (narrow | broad | doublet), `flux, flux_err, snr, ew_rest,
+ew_rest_err, cont, cont_err, dv, dv_err, sigma_v, sigma_v_err, sigma_lsf_kms, wave_obs,
+complex, chi2, dof, npix, flags, blend_into, tied_to`. Flags (bitmask,
+`campfire.flags.LineFlags`): 1 tied, 2 blended, 4 blend, 8 edge, 16 kin_global, 32
+kin_default, 64 broad, 128 no_continuum, 256 fit_failed, 512 masked, 1024 sigma_unresolved,
+2048 resolved (doublet totals only). `LFITVER` is 2 (1 had no doublet totals and centred
+blends on the primary's rest wavelength).
 
 **Product** `<base>_lines.fits`: PRIMARY (ZUSED/ZSRC/ZQUAL/OBJID/OBJVER, ZFIT, DVGLOB,
 SIGGLOB, KINSRC, NLINES/NDETECT/NBROAD, LFITVER, SPECHASH, FLSF, CMPFRVER, CMPFRTIM),
@@ -232,8 +253,10 @@ publish, `z_source` in every row for readers to filter).
 * Web display: the object page has no "lines" table yet; `spectrum_line_fits` and the
   `_lines.fits` `MODEL` extension are ready for it. A `_lines.json` sidecar (like
   `_zfit.json`) would let the spectrum plot overlay the fitted model.
-* Server-side filtering by line S/N (e.g. "Hα S/N > 5" in the catalog filters) — an
-  expression index on `lines->'Halpha'->>'snr'` when it is needed.
+* Server-side filtering by line S/N (e.g. "CIII] S/N > 3" in the catalog filters): a
+  trigger-maintained long table (one row per spectrum × line, indexed on `(line, snr)`)
+  derived from the `lines` jsonb, plus `p_line` / `p_line_snr_min` on the list RPCs. Select
+  on the doublet totals (`CIII1908`, `OII3727`, ...), never on a component.
 * Public API row endpoint (`/api/v1/lines`) with filters; today the catalog comes through
   the sync stream and the Python client.
 * Unify the `zfit` template line list with `linelist.py`.
