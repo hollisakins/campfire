@@ -48,6 +48,22 @@ def _make_progress(show, unit, desc, position=None):
     return pbar, callback
 
 
+def _tombstones_not_refetched(deleted_ids, rows):
+    """Tombstones minus the rows this walk fetched anyway.
+
+    ``deleted_ids`` is a snapshot taken on the first page; later pages are
+    later snapshots. A row that changed between the two (a spectrum published
+    while a multi-page delta was walking, say) is tombstoned by page one and
+    re-sent as a normal row by a later page. The fetched row is the newer
+    fact, so it wins: deleting it would leave a hole the next incremental
+    cursor (already past its timestamp) never fills.
+    """
+    if not deleted_ids:
+        return []
+    fetched = {r.get("id") for r in rows}
+    return [i for i in deleted_ids if i not in fetched]
+
+
 def _apply_objects(store, fetched, updated_since, sync_ts):
     """Apply fetched objects to the local store (main-thread write phase).
 
@@ -61,6 +77,7 @@ def _apply_objects(store, fetched, updated_since, sync_ts):
     obj_count = store.upsert_objects(all_objects)
 
     purged = 0
+    deleted_ids = _tombstones_not_refetched(deleted_ids, all_objects)
     if deleted_ids:
         purged += store.delete_objects_by_ids(deleted_ids)
 
@@ -93,6 +110,7 @@ def _apply_spectra(store, fetched, updated_since, sync_ts):
     spec_count = store.upsert_spectra(all_spectra)
 
     purge_result = None
+    deleted_ids = _tombstones_not_refetched(deleted_ids, all_spectra)
     if deleted_ids:
         n = store.delete_spectra_by_ids(deleted_ids)
         if n:
@@ -165,6 +183,7 @@ def _apply_storage(store, fetched, updated_since, sync_ts):
 
     purged = store.drop_unmirrored_storage_rows(DOWNLOADABLE_PRODUCT_TYPES)
     orphaned: List[str] = []
+    deleted_ids = _tombstones_not_refetched(deleted_ids, all_rows)
     if deleted_ids:
         res = store.delete_storage_objects_by_ids(deleted_ids)
         purged += res["purged"]

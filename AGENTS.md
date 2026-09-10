@@ -253,8 +253,12 @@ registry rows that left the visible set) which the client deletes locally, so
 objects. Tombstones key on `updated_at`: soft-deletes stamp it in
 `apply_object_reconciliation`, `recompute_has_published_spectrum` stamps objects whose
 publication flag flips, and `bump_spectra_updated_at_trigger` fires on
-`deploy_status`. Hard deletes (`deploy remove`) still need `campfire sync
---full`, which the count-mismatch fallback triggers from `pull`. The sync RPCs
+`deploy_status`. A tombstone taken on the first page yields to a row a later
+page of the same walk re-fetched (the fetched row is the newer fact). Not
+covered: hard deletes (`deploy remove`) and NIRCam field-deploy revokes
+(`deployments` has no `updated_at`, so the storage stream cannot key a
+tombstone on them) still need `campfire sync --full`; the count-mismatch
+fallback that triggers one from `pull` exists for the objects stream only. The sync RPCs
 run under a 120 s `statement_timeout` (service_role otherwise inherits
 authenticator's 8 s): the first page of every stream runs catalog-wide counts.
 

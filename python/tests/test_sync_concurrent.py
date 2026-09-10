@@ -524,3 +524,29 @@ def test_incremental_storage_cursor_is_finals_only():
 
     store.get_max_storage_updated_at.assert_called_once_with(
         product_types=list(MIRRORED_PRODUCT_TYPES))
+
+
+def test_tombstones_yield_to_rows_refetched_by_the_same_walk():
+    """A first-page tombstone must not delete a row a later page of the same
+    walk re-sent (the row changed between the two snapshots): the fetched row
+    is the newer fact."""
+    api = _make_fake_api([], [], [], [], [])
+    api.fetch_all_objects.side_effect = None
+    api.fetch_all_objects.return_value = SyncStream(
+        [{"id": 11, "object_id": "O11"}], 5, [11, 12])
+    api.fetch_all_spectra.side_effect = None
+    api.fetch_all_spectra.return_value = SyncStream(
+        [{"id": 21, "spectrum_id": "S21"}], 9, [21, 22])
+    api.fetch_all_storage.side_effect = None
+    api.fetch_all_storage.return_value = SyncStream(
+        [{"id": 31, "storage_key": "k31"}], 3, [31])
+    store = _make_fake_store()
+    store.get_max_objects_updated_at.return_value = "2026-01-01T00:00:00Z"
+    store._conn.execute.return_value.fetchone.return_value = [5]
+
+    sync_metadata(api, store, Path("/tmp/meta"), show_progress=False, full=False)
+
+    store.delete_objects_by_ids.assert_called_once_with([12])
+    store.delete_spectra_by_ids.assert_called_once_with([22])
+    # every storage tombstone was re-fetched: nothing to delete at all
+    store.delete_storage_objects_by_ids.assert_not_called()
