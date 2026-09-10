@@ -11,6 +11,28 @@ describe('formatTargetParam', () => {
     expect(parseTargetParam(formatTargetParam(t))).toEqual(t);
   });
 
+  it('wraps an RA that rounds up to 360 back to 0, keeping the param parseable', () => {
+    // toFixed(6) rounds 359.9999999 to "360.000000", which parseTargetParam
+    // rejects — so without the wrap a legal pin would serialize to a param that
+    // reads back as no pin and the crosshair would vanish on reload.
+    expect(formatTargetParam({ ra: 359.9999999, dec: 5 })).toBe('0.000000,5.000000');
+    expect(parseTargetParam(formatTargetParam({ ra: 359.9999999, dec: 5 }))).toEqual({
+      ra: 0,
+      dec: 5,
+    });
+    // Just below the rounding boundary is untouched.
+    expect(formatTargetParam({ ra: 359.9999994, dec: 5 })).toBe('359.999999,5.000000');
+    // Declination needs no wrap: ±90 is a legal value, so it round-trips as is.
+    expect(parseTargetParam(formatTargetParam({ ra: 10, dec: 89.9999999 }))).toEqual({
+      ra: 10,
+      dec: 90,
+    });
+    expect(parseTargetParam(formatTargetParam({ ra: 10, dec: -89.9999999 }))).toEqual({
+      ra: 10,
+      dec: -90,
+    });
+  });
+
   it('is byte-stable for the same target, so a pan-triggered rewrite is a no-op', () => {
     const a = formatTargetParam({ ra: 150.1, dec: 2.2 });
     const b = formatTargetParam({ ra: 150.1, dec: 2.2 });

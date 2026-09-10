@@ -26,9 +26,17 @@ const TARGET_DECIMALS = 6;
 /**
  * Serialize a pinned target for the `target=` param. Rounded rather than full
  * precision so the URL stays readable and a pan-triggered rewrite is byte-stable.
+ *
+ * The rounding is wrapped back into `[0, 360)`: an RA in the last half-microdegree
+ * below 360 (say 359.9999999) rounds UP to `360.000000`, which `parseTargetParam`
+ * rejects — so a legal pin would serialize to a param that reads back as no pin,
+ * and the crosshair would vanish on reload. Declination needs no equivalent, since
+ * ±90 is itself a legal value.
  */
 export function formatTargetParam(target: MapTarget): string {
-  return `${target.ra.toFixed(TARGET_DECIMALS)},${target.dec.toFixed(TARGET_DECIMALS)}`;
+  const ra = Number(target.ra.toFixed(TARGET_DECIMALS));
+  const wrapped = ra >= 360 ? 0 : ra;
+  return `${wrapped.toFixed(TARGET_DECIMALS)},${target.dec.toFixed(TARGET_DECIMALS)}`;
 }
 
 /**

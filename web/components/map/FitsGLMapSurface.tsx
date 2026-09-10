@@ -65,7 +65,7 @@ import { useDisplayStretch, type ChannelKey, type LimitPreset } from './fitsgl/u
 import { useColormap } from './fitsgl/useColormap';
 import type { RulerMeasurement } from './fitsgl/ruler';
 import { GLASS } from './fitsgl/glass';
-import { formatTargetParam, type MapTarget } from '@/lib/utils/map-target';
+import { formatTargetParam, parseTargetParam, type MapTarget } from '@/lib/utils/map-target';
 import { formatRA, formatDec } from '@/lib/utils/wcs';
 
 /** Ruler/graticule colours drawn over the always-dark map well (theme-independent). */
@@ -234,7 +234,21 @@ export function FitsGLMapSurface({
   const [rulerMeasure, setRulerMeasure] = useState<RulerMeasurement | null>(null);
   // Go-to: the pinned crosshair (sky), whether it landed on the mosaic (read back
   // from the engine, which owns the native bounds), and the box's open state.
-  const [target, setTarget] = useState<MapTarget | null>(initialTarget);
+  //
+  // Seeded from the LIVE url, not from `initialTarget` alone. The engine dispatch in
+  // `MapViewer` unmounts this surface when the user switches to a Leaflet-only field,
+  // and `initialTarget` is server-derived at page load — the map syncs its url with
+  // `history.replaceState`, which never re-runs the server component — so on the way
+  // back that prop is stale and would revert (or, once the effect below fires, erase)
+  // a pin made in between. The url is authoritative instead: this surface writes it on
+  // every change, and both engines' url sync only sets/deletes its own keys, so
+  // `target` survives the round trip. On first load the param is exactly what the
+  // server parsed, so hydration matches; a cleared pin reads back as no pin.
+  const [target, setTarget] = useState<MapTarget | null>(() =>
+    typeof window === 'undefined'
+      ? initialTarget
+      : parseTargetParam(new URLSearchParams(window.location.search).get('target') ?? undefined),
+  );
   const [targetInside, setTargetInside] = useState<boolean | null>(null);
   const [gotoOpen, setGotoOpen] = useState(false);
 
