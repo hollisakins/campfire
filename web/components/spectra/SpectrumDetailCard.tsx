@@ -213,6 +213,7 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
             bare
             fitsPath={spectrum.fits_path}
             grating={spectrum.grating}
+            spectrumId={spectrum.id}
             initialRedshift={objectRedshift}
           />
         </div>

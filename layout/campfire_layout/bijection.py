@@ -33,6 +33,7 @@ _NIRSPEC_OBS_SUFFIXES = (
     ("_spec.fits", "nirspec_spec"),
     ("_rate.fits", "nirspec_rate"),  # must precede the bare-'.fits' fallback below
     ("_lines.fits", "nirspec_lines"),  # ditto
+    ("_lines.json", "nirspec_lines_json"),
     ("_spec_1d.json", "spectrum_1d_json"),
     ("_spec.json", "spectrum_json"),
     ("_zfit.json", "zfit"),

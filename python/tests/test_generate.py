@@ -220,3 +220,118 @@ def test_generate_spectrum_products_returns_the_1d_sidecar_too(tmp_path):
     assert json_path.exists() and json_1d_path.exists()
     assert json_1d_path.name.endswith("_spec_1d.json")
     assert set(thumbs) == {'thumbnail_svg_fnu', 'thumbnail_svg_flambda'}
+
+
+# ---------------------------------------------------------------------------
+# Line-fit sidecar (_lines.json, the spectrum plot's "Lines" overlay)
+# ---------------------------------------------------------------------------
+
+def _write_lines_fits(path, *, wave, model, cont, header=None):
+    """A minimal _lines.fits: PRIMARY provenance, LINES (one narrow line, one
+    blended one), MODEL on the given grid. Mirrors what linefit_stage writes
+    without importing the pipeline."""
+    hdu0 = fits.PrimaryHDU()
+    hdu0.header["LFITVER"] = "2"
+    hdu0.header["ZUSED"] = 5.5
+    hdu0.header["ZSRC"] = "inspected"
+    hdu0.header["ZQUAL"] = 4
+    hdu0.header["ZFIT"] = 5.5012
+    hdu0.header["DVGLOB"] = 54.0
+    hdu0.header["SIGGLOB"] = 117.0
+    hdu0.header["CHI2"] = 520.0
+    hdu0.header["DOF"] = 512
+    hdu0.header["NLINES"] = 2
+    hdu0.header["NDETECT"] = 1
+    for k, v in (header or {}).items():
+        hdu0.header[k] = v
+    lines = fits.BinTableHDU.from_columns([
+        fits.Column(name="name", format="12A", array=np.array(["Halpha", "NII6583"])),
+        fits.Column(name="component", format="8A", array=np.array(["narrow", "narrow"])),
+        fits.Column(name="wave_obs", format="D", array=np.array([4.267, np.nan])),
+        fits.Column(name="flux", format="D", array=np.array([5e-18, np.nan])),
+        fits.Column(name="flux_err", format="D", array=np.array([1e-19, np.nan])),
+        fits.Column(name="snr", format="D", array=np.array([50.0, np.nan])),
+        fits.Column(name="flags", format="J", array=np.array([0, 2])),
+        fits.Column(name="blend_into", format="12A", array=np.array(["", "Halpha"])),
+    ], name="LINES")
+    model_hdu = fits.BinTableHDU.from_columns([
+        fits.Column(name="wave", format="D", array=np.asarray(wave, dtype=float)),
+        fits.Column(name="model", format="D", array=np.asarray(model, dtype=float)),
+        fits.Column(name="cont", format="D", array=np.asarray(cont, dtype=float)),
+    ], name="MODEL")
+    fits.HDUList([hdu0, lines, model_hdu]).writeto(path)
+
+
+def test_generate_lines_json_converts_model_to_fnu_and_nulls_gaps(tmp_path):
+    from campfire.deploy.generate import convert_fnu_to_flambda, generate_lines_json
+
+    lines_path = tmp_path / "obs_g395m_f290lp_10_lines.fits"
+    wave = [3.0, 4.0, 4.267, 5.0]
+    # NaN outside the fitted windows: a gap, never a false zero.
+    _write_lines_fits(lines_path, wave=wave, model=[np.nan, 1e-20, 6e-18, np.nan],
+                      cont=[np.nan, 1e-20, 1e-20, np.nan],
+                      header={"OBJID": "CAMPFIRE-J1", "OBJVER": 3, "SPECHASH": "sha256:" + "b" * 64,
+                              "CMPFRTIM": "2026-09-09T00:00:00+00:00"})
+
+    json_path = generate_lines_json(lines_path, tmp_path)
+    assert json_path.name == "obs_g395m_f290lp_10_lines.json"
+    text = json_path.read_text()
+    data = json.loads(text, parse_constant=_strict_constant)
+    assert "NaN" not in text
+
+    assert data["fit_version"] == "2" and data["z_used"] == 5.5
+    assert data["z_source"] == "inspected" and data["z_quality"] == 4
+    assert data["object_id"] == "CAMPFIRE-J1" and data["object_version"] == 3
+    assert data["spectrum_hash"] == "sha256:" + "b" * 64 and data["fitted_at"] == "2026-09-09T00:00:00+00:00"
+    assert data["sigma_v"] == 117.0 and data["dof"] == 512 and data["n_detected"] == 1
+    assert data["wave"] == wave
+    assert data["model_fnu"][0] is None and data["model_fnu"][3] is None
+    assert data["cont_fnu"][0] is None
+    # f_nu (uJy) round-trips through the web's fnu -> flambda conversion.
+    assert convert_fnu_to_flambda(data["model_fnu"][2], 4.267) == pytest.approx(6e-18, rel=1e-5)
+    assert convert_fnu_to_flambda(data["cont_fnu"][1], 4.0) == pytest.approx(1e-20, rel=1e-5)
+    # Compact line summary: names + placement + S/N, nulls for the blended member.
+    assert [l["name"] for l in data["lines"]] == ["Halpha", "NII6583"]
+    ha, nii = data["lines"]
+    assert ha["component"] == "narrow" and ha["wave_obs"] == 4.267 and ha["snr"] == 50.0
+    assert ha["blend_into"] is None and ha["flags"] == 0
+    assert nii["flux"] is None and nii["snr"] is None and nii["blend_into"] == "Halpha" and nii["flags"] == 2
+
+
+def test_lines_upload_tasks_pair_each_product_with_its_sidecar(tmp_path):
+    from campfire.deploy.lines import lines_upload_tasks
+
+    lines_path = tmp_path / "obs_prism_clear_7_lines.fits"
+    _write_lines_fits(lines_path, wave=[1.0, 2.0], model=[1e-20, 2e-20], cont=[1e-20, 1e-20])
+    temp = tmp_path / "tmp"
+    temp.mkdir()
+    tasks = lines_upload_tasks("obs", [lines_path], temp)
+    assert [t.r2_key for t in tasks] == [
+        "data/products/nirspec/obs/obs_prism_clear_7_lines.fits",
+        "data/products/nirspec/obs/obs_prism_clear_7_lines.json",
+    ]
+    assert tasks[1].local_path == temp / "obs_prism_clear_7_lines.json"
+    assert tasks[1].local_path.exists()
+
+
+def test_lines_upload_tasks_refuse_auto_redshift_fits_unless_allowed(tmp_path, capsys):
+    """The provenance gate holds for the bytes too: an --allow-auto product is
+    neither uploaded nor given the sidecar the portal plots, unless the deploy
+    opts in with --allow-auto-z (same as the catalog row)."""
+    from campfire.deploy.lines import lines_upload_tasks, split_auto_line_fits
+
+    inspected = tmp_path / "obs_prism_clear_1_lines.fits"
+    auto = tmp_path / "obs_prism_clear_2_lines.fits"
+    _write_lines_fits(inspected, wave=[1.0, 2.0], model=[1e-20, 2e-20], cont=[1e-20, 1e-20])
+    _write_lines_fits(auto, wave=[1.0, 2.0], model=[1e-20, 2e-20], cont=[1e-20, 1e-20], header={"ZSRC": "auto"})
+    assert split_auto_line_fits([inspected, auto]) == ([inspected], [auto])
+
+    temp = tmp_path / "tmp"
+    temp.mkdir()
+    tasks = lines_upload_tasks("obs", [inspected, auto], temp)
+    assert [t.local_path.name for t in tasks] == ["obs_prism_clear_1_lines.fits", "obs_prism_clear_1_lines.json"]
+    assert not (temp / "obs_prism_clear_2_lines.json").exists()
+    assert "auto (uninspected) redshift" in capsys.readouterr().out
+
+    tasks = lines_upload_tasks("obs", [inspected, auto], temp, allow_auto_z=True)
+    assert len(tasks) == 4 and (temp / "obs_prism_clear_2_lines.json").exists()

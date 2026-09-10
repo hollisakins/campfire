@@ -80,6 +80,8 @@ reg(spec({ name: 'spectrum_1d_json', tree: 'products', bucket: 'data', scopeKeys
 reg(spec({ name: 'zfit', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_zfit.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
 // Emission-line fit product (cfpipe nirspec linefit); new product, reserved canonical key.
 reg(spec({ name: 'nirspec_lines', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_lines.fits' }));
+// JSON sidecar of the line fit (model + continuum + line summary): the spectrum plot's "Lines" overlay.
+reg(spec({ name: 'nirspec_lines_json', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_lines.json' }));
 reg(spec({ name: 'nirspec_spectrum_exposure', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '.fits' }));
 reg(spec({ name: 'nirspec_rate', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_rate.fits' }));
 reg(spec({ name: 'rgb', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_rgb.png', legacyPrefix: (s) => `rgb/${s.obs}` }));
@@ -200,6 +202,7 @@ const NIRSPEC_OBS_SUFFIXES: [string, string][] = [
   ['_spec.fits', 'nirspec_spec'],
   ['_rate.fits', 'nirspec_rate'], // must precede the bare-'.fits' fallback below
   ['_lines.fits', 'nirspec_lines'], // ditto
+  ['_lines.json', 'nirspec_lines_json'],
   ['_spec_1d.json', 'spectrum_1d_json'],
   ['_spec.json', 'spectrum_json'],
   ['_zfit.json', 'zfit'],
