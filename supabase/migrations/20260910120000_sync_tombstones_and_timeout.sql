@@ -311,7 +311,14 @@ BEGIN
       -- soft-deleted state and is tombstoned below instead.
       AND (s.deploy_status = 'published'
            OR (p_include_unpublished AND s.deploy_status = 'draft'))
-      AND (p_updated_since IS NULL OR s.updated_at > p_updated_since)
+      -- Incremental: the row itself, or its object, changed since the cursor.
+      -- The object clause is the resurrection path: a spectrum tombstoned as
+      -- a member of a soft-deleted object comes back when the object is
+      -- reactivated (which stamps objects.updated_at) even though the
+      -- spectrum row did not change. Mirrors get_line_fits_for_sync.
+      AND (p_updated_since IS NULL
+           OR s.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
       -- Keyset (#103): spectrum_id is UNIQUE (idx_spectra_spectrum_id), so a
       -- strict > needs no tiebreaker; keep the ordering column UNIQUE.
       AND (p_after_spectrum_id IS NULL OR s.spectrum_id > p_after_spectrum_id)
@@ -327,7 +334,14 @@ BEGIN
   -- joins ran back to back on every first page.
   counts AS (
     SELECT COUNT(*) FILTER (WHERE p_updated_since IS NULL
-                              OR s.updated_at > p_updated_since) AS total_cnt,
+                              OR s.updated_at > p_updated_since
+                              -- same object clause as matched; the recently
+                              -- changed objects are a small hashed set
+                              OR s.target_id IN (
+                                SELECT t.target_id
+                                FROM targets t
+                                JOIN objects o ON o.id = t.object_id
+                                WHERE o.updated_at > p_updated_since)) AS total_cnt,
            COUNT(*) AS accessible_cnt
     FROM spectra s
     WHERE p_include_counts
@@ -444,7 +458,14 @@ BEGIN
     WHERE o.programs && p_program_slugs
       -- B1: fail-closed publish gate (this RPC always bypasses RLS).
       AND (p_include_unpublished OR o.has_published_spectrum)
-      AND (p_updated_since IS NULL OR op.updated_at > p_updated_since)
+      -- Incremental: the row itself, or its object, changed since the cursor.
+      -- The object clause is the resurrection path: photometry deleted along
+      -- with a tombstoned object (un-published, or soft-deleted) comes back
+      -- when the object does -- both flips stamp objects.updated_at -- even
+      -- though the photometry row did not change. Mirrors get_line_fits_for_sync.
+      AND (p_updated_since IS NULL
+           OR op.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
       -- Keyset (#103): op.id is the PK, so a strict > needs no tiebreaker.
       AND (p_after_id IS NULL OR op.id > p_after_id)
     ORDER BY op.id
@@ -459,7 +480,14 @@ BEGIN
     WHERE p_include_counts
       AND o.programs && p_program_slugs
       AND (p_include_unpublished OR o.has_published_spectrum)
-      AND (p_updated_since IS NULL OR op.updated_at > p_updated_since)
+      -- Incremental: the row itself, or its object, changed since the cursor.
+      -- The object clause is the resurrection path: photometry deleted along
+      -- with a tombstoned object (un-published, or soft-deleted) comes back
+      -- when the object does -- both flips stamp objects.updated_at -- even
+      -- though the photometry row did not change. Mirrors get_line_fits_for_sync.
+      AND (p_updated_since IS NULL
+           OR op.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
   )
   SELECT
     COALESCE(jsonb_agg(
@@ -659,7 +687,7 @@ BEGIN
   -- The two copies must stay in sync (same house pattern as get_objects_for_sync's
   -- matched vs. total/accessible).
   WITH scoped AS (
-    SELECT so.updated_at
+    SELECT so.updated_at, so.spectrum_id
     FROM storage_objects so
     WHERE so.status = 'active'
       AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
@@ -707,7 +735,16 @@ BEGIN
                 AND d.status = 'published'
                 AND (d.field IS NOT NULL OR o.program_slug = ANY(p_program_slugs))))
       )
-      AND (p_updated_since IS NULL OR so.updated_at > p_updated_since)
+      -- Incremental: the row itself changed, or its spectrum did. The
+      -- spectrum clause is the resurrection path for non-admins: rows
+      -- tombstoned when their spectrum was un-published come back on
+      -- republish (which stamps spectra.updated_at) even though the registry
+      -- row did not change. A semi-join, not a per-row EXISTS: the recently
+      -- changed spectra are a small hashed set. Mirrors get_line_fits_for_sync.
+      AND (p_updated_since IS NULL
+           OR so.updated_at > p_updated_since
+           OR so.spectrum_id IN (SELECT s2.spectrum_id FROM spectra s2
+                                 WHERE s2.updated_at > p_updated_since))
       -- Keyset (#103): id is the PK, so a strict > needs no tiebreaker.
       AND (p_after_id IS NULL OR so.id > p_after_id)
     ORDER BY so.id
@@ -716,7 +753,10 @@ BEGIN
   total AS (
     SELECT COUNT(*) AS cnt FROM scoped
     WHERE p_include_counts
-      AND (p_updated_since IS NULL OR scoped.updated_at > p_updated_since)
+      AND (p_updated_since IS NULL
+           OR scoped.updated_at > p_updated_since
+           OR scoped.spectrum_id IN (SELECT s2.spectrum_id FROM spectra s2
+                                     WHERE s2.updated_at > p_updated_since))
   ),
   accessible AS (
     SELECT COUNT(*) AS cnt FROM scoped
