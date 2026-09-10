@@ -6,10 +6,12 @@ from astropy.io import fits
 
 from campfire.deploy.photometry import (
     FILTER_WAVELENGTHS,
+    SUPERSEDE_MIN_RATIO,
     UnicornPhotozData,
     _supersede_other_catalogs,
     build_photometry_payload,
     catalog_columns_needed,
+    coerce_catalog_id,
     load_photoz,
     photoz_input_files,
     read_catalog,
@@ -33,12 +35,11 @@ def _cube() -> np.ndarray:
     return t * z * w
 
 
-def _write_release(tmp_path, cube_axes=(0, 1, 2), row_per_template=False):
-    """Write photz + template files; *cube_axes* permutes the FLUX cube axes
-    from (t, z, w) to exercise axis detection. *row_per_template* writes the
-    cube the way the real releases do — one table row per template holding
-    a contiguous (n_z, n_w) block — which the reader serves with positioned
-    reads instead of loading the cube."""
+def _write_release(tmp_path, single_row_cube=False):
+    """Write photz + template files the way the real releases are laid out:
+    one template-cube row per template holding a contiguous (n_z, n_w)
+    block. *single_row_cube* instead packs the whole cube into one row (a
+    layout the reader must refuse rather than read whole)."""
     ids = np.array([101, 205, 333, 404], dtype=np.int32)
     za = np.array([1.5, 6.9, np.nan, 3.2], dtype=np.float32)
     chia = np.array([10.0, 20.0, 30.0, 40.0], dtype=np.float32)
@@ -72,7 +73,7 @@ def _write_release(tmp_path, cube_axes=(0, 1, 2), row_per_template=False):
     photz = tmp_path / 'test_photz_v0.95.fits'
     fits.HDUList([fits.PrimaryHDU(), ext1, ext2, ext3, ext4]).writeto(photz)
 
-    cube = np.transpose(_cube(), cube_axes).astype(np.float32)
+    cube = _cube().astype(np.float32)
     t1 = fits.BinTableHDU.from_columns([
         fits.Column(name='WAVE', format=f'{N_W}D', array=WAVE_REST[None, :]),
     ])
@@ -82,26 +83,24 @@ def _write_release(tmp_path, cube_axes=(0, 1, 2), row_per_template=False):
     t3 = fits.BinTableHDU.from_columns([
         fits.Column(name='TNAME', format='8A', array=np.array([f'tmpl{i}' for i in range(N_T)])),
     ])
-    if row_per_template:
-        assert cube_axes == (0, 1, 2)
+    if single_row_cube:
         t4 = fits.BinTableHDU.from_columns([
-            fits.Column(name='FLUX', format=f'{N_Z * N_W}E',
-                        dim=f'({N_W},{N_Z})', array=cube),
+            fits.Column(name='FLUX', format=f'{cube.size}E',
+                        dim=f'({N_W},{N_Z},{N_T})', array=cube[None]),
         ])
     else:
         t4 = fits.BinTableHDU.from_columns([
-            fits.Column(name='FLUX', format=f'{cube.size}E',
-                        dim=f'({cube.shape[2]},{cube.shape[1]},{cube.shape[0]})',
-                        array=cube[None]),
+            fits.Column(name='FLUX', format=f'{N_Z * N_W}E',
+                        dim=f'({N_W},{N_Z})', array=cube),
         ])
     templates = tmp_path / 'unicorn_templates_fiducial.fits'
     fits.HDUList([fits.PrimaryHDU(), t1, t2, t3, t4]).writeto(templates)
     return photz, templates, coeffs, pz
 
 
-@pytest.fixture(params=[(0, 1, 2), (2, 1, 0), (1, 2, 0)], ids=['tzw', 'wzt', 'zwt'])
-def release(tmp_path, request):
-    return _write_release(tmp_path, cube_axes=request.param)
+@pytest.fixture
+def release(tmp_path):
+    return _write_release(tmp_path)
 
 
 def _reader(photz, templates, **extra):
@@ -125,7 +124,10 @@ def test_lookup_returns_bounds_and_skips_nonfinite(release):
     assert got['z_err_hi'] == pytest.approx(7.1, abs=1e-5)
     assert r.lookup(333) is None      # ZA is NaN
     assert r.lookup(999) is None      # not in the release
-    assert r.lookup('404') is not None  # string ids are accepted
+    assert r.lookup('404') is not None  # integral strings are accepted
+    assert r.lookup('000404') is not None
+    assert r.lookup('GN-404') is None   # non-integral ids: no photo-z, no exception
+    assert r.generate_sidecar('GN-404') is None
 
 
 def test_sidecar_pz_is_the_object_column_normalised_to_peak(release):
@@ -144,23 +146,39 @@ def test_sidecar_model_sed_matches_coeffs_dot_templates(release):
     r = _reader(photz, templates, template_wav_min_um=0.0, template_wav_max_um=100.0)
     sc = r.generate_sidecar(101)          # z=1.5 → nearest grid z=2.0 (index 1)
     iz = int(np.argmin(np.abs(Z_GRID - 1.5)))
-    plane = _cube()[:, iz, :]             # (t, w) regardless of the file's axis order
+    plane = _cube()[:, iz, :]
     expected_ujy = (coeffs[0] @ plane) / 1e3
     assert sc['template_wav'] == pytest.approx((WAVE_REST * 2.5 / 1e4).tolist(), rel=1e-4)
     assert sc['template_flux_ujy'] == pytest.approx(expected_ujy.tolist(), rel=1e-4)
 
 
-def test_row_per_template_cube_uses_positioned_reads(tmp_path):
-    photz, templates, coeffs, pz = _write_release(tmp_path, row_per_template=True)
+def test_plane_reads_are_cached_by_grid_index(release):
+    photz, templates, coeffs, pz = release
     r = _reader(photz, templates, template_wav_min_um=0.0, template_wav_max_um=100.0)
-    assert r._cube_layout[3] == N_T   # one row per template
     sc = r.generate_sidecar(404)      # z=3.2 → nearest grid z=4.0 (index 2)
     iz = int(np.argmin(np.abs(Z_GRID - 3.2)))
     expected_ujy = (coeffs[3] @ _cube()[:, iz, :]) / 1e3
     assert sc['template_flux_ujy'] == pytest.approx(expected_ujy.tolist(), rel=1e-4)
     assert sc['pz'] == pytest.approx((pz[:, 3] / pz[:, 3].max()).tolist(), abs=1e-4)
-    # The plane is cached by grid index.
     assert list(r._plane_cache) == [iz]
+
+
+def test_reader_refuses_a_cube_not_laid_out_one_row_per_template(tmp_path):
+    photz, templates, _, _ = _write_release(tmp_path, single_row_cube=True)
+    with pytest.raises(ValueError, match='one row per template'):
+        _reader(photz, templates)
+
+
+def test_coerce_catalog_id():
+    assert coerce_catalog_id(7) == 7
+    assert coerce_catalog_id(np.int32(7)) == 7
+    assert coerce_catalog_id(7.0) == 7
+    assert coerce_catalog_id(np.float32(7.0)) == 7
+    assert coerce_catalog_id('0042') == 42
+    assert coerce_catalog_id(' 42 ') == 42
+    assert coerce_catalog_id(np.str_('42')) == 42
+    for bad in ('GN-42', 'abc', '', 7.5, float('nan'), None, True):
+        assert coerce_catalog_id(bad) is None
 
 
 def test_prefetch_gathers_pz_in_one_pass(release):
@@ -321,9 +339,68 @@ def test_read_catalog_decodes_like_table_read(tmp_path):
     assert np.allclose(got['RA'], ref['RA'])
     assert np.allclose(got['SCALED'], ref['SCALED'])
     assert np.allclose(got['SCALED'], [100.0, 100.5, 101.0, 99.5])
-    assert np.array_equal(got['UID'].astype(np.int64), np.asarray(ref['UID']).astype(np.int64))
+    assert got['UID'].dtype == ref['UID'].dtype == np.uint32
+    assert list(got['UID']) == list(ref['UID']) == [1, 2**31, 2**32 - 1, 7]
+    assert str(got['UID'][1]) == '2147483648'   # the catalog_id key text is unchanged
     # A string id survives the deploy's str() unchanged (no b'...' wrapper).
     assert str(got['NAME'][0]) == 'abc'
+
+
+def test_read_catalog_uint64_and_signed_byte_conventions(tmp_path):
+    from astropy.table import Table
+    big = np.array([1, 2**63, 2**64 - 1, 2**63 + 5], dtype=np.uint64)
+    cols = [
+        fits.Column(name='K', format='K',
+                    array=(big.astype(np.int64) if False else (big - np.uint64(2**63)).view(np.int64))),
+        fits.Column(name='B', format='B', array=np.array([0, 127, 128, 255], dtype=np.uint8)),
+    ]
+    path = tmp_path / 'wide.fits'
+    hdu = fits.BinTableHDU.from_columns(cols)
+    hdu.header['TZERO1'] = 2**63
+    hdu.header['TZERO2'] = -128
+    hdu.writeto(path)
+    ref = Table.read(path)
+    got = read_catalog(str(path), 'fits', ['K', 'B'])
+    assert got['K'].dtype == ref['K'].dtype == np.uint64
+    assert list(got['K']) == list(ref['K']) == list(big)   # low bits intact
+    # astropy applies TZERO=-128 as a plain scale (float64); so do we.
+    assert got['B'].dtype == ref['B'].dtype == np.float64
+    assert list(got['B']) == list(ref['B']) == [-128.0, -1.0, 0.0, 127.0]
+
+
+def test_read_catalog_falls_back_for_gzip_and_non_binary_tables(tmp_path, capsys):
+    import gzip
+    from astropy.table import Table
+    n = 3
+    tbl = fits.BinTableHDU.from_columns([
+        fits.Column(name='ID', format='J', array=np.arange(n)),
+        fits.Column(name='RA', format='D', array=np.array([1.0, 2.0, 3.0])),
+    ])
+    plain = tmp_path / 'cat.fits'
+    tbl.writeto(plain)
+    gz = tmp_path / 'cat.fits.gz'
+    with open(plain, 'rb') as src, gzip.open(gz, 'wb') as dst:
+        dst.write(src.read())
+    got = read_catalog(str(gz), 'fits', ['ID', 'RA'])
+    assert list(got['RA']) == [1.0, 2.0, 3.0]
+    assert 'gzipped' in capsys.readouterr().out
+
+    # Image in HDU 1, table in HDU 2: the first binary table is used.
+    multi = tmp_path / 'multi.fits'
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(np.zeros((2, 2))), tbl]).writeto(multi)
+    got = read_catalog(str(multi), 'fits', ['ID', 'RA'])
+    assert list(got['ID']) == [0, 1, 2]
+    assert 'using HDU 2' in capsys.readouterr().out
+
+    # ASCII table: no streaming path, Table.read handles it.
+    ascii_path = tmp_path / 'ascii.fits'
+    fits.TableHDU.from_columns([
+        fits.Column(name='ID', format='I5', array=np.arange(n)),
+        fits.Column(name='RA', format='E12.4', array=np.array([1.5, 2.5, 3.5])),
+    ]).writeto(ascii_path)
+    got = read_catalog(str(ascii_path), 'fits', ['ID', 'RA'])
+    assert np.allclose(got['RA'], Table.read(ascii_path)['RA'])
+    assert got['RA'].dtype.kind == 'f'
 
 
 def test_read_catalog_rejects_unsupported_formats(tmp_path):
@@ -425,15 +502,16 @@ def test_supersede_dry_run_counts_without_deleting():
     assert client.t.deleted == [] and len(client.t.rows) == 11
 
 
-def test_supersede_is_skipped_when_nothing_was_upserted(tmp_path, monkeypatch, capsys):
-    """A cross-match that finds nothing must not wipe the field's other catalogs."""
+def _supersede_setup(tmp_path, monkeypatch, catalog_ra, n_old):
+    """A one-source catalog at *catalog_ra* and one object at RA 214.9, with
+    *n_old* rows of a previous catalog in the fake client."""
     import campfire.deploy.photometry as mod
 
     cat = tmp_path / 'cat.fits'
     fits.BinTableHDU.from_columns([
         fits.Column(name='ID', format='J', array=np.array([1])),
-        fits.Column(name='RA', format='D', array=np.array([200.0])),   # far from every object
-        fits.Column(name='DEC', format='D', array=np.array([-50.0])),
+        fits.Column(name='RA', format='D', array=np.array([catalog_ra])),
+        fits.Column(name='DEC', format='D', array=np.array([52.9])),
         fits.Column(name='FLUX_F444W', format='E', array=np.array([1.0])),
         fits.Column(name='FLUXERR_F444W', format='E', array=np.array([0.1])),
     ]).writeto(cat)
@@ -448,15 +526,51 @@ id_column = "ID"
 [egs.bands]
 f444w = {{ flux = "FLUX_F444W", err = "FLUXERR_F444W" }}
 """)
-
-    old_rows = [{'id': i, 'field': 'egs', 'catalog_name': 'UNICORN EGS v0.9'} for i in range(1, 4)]
+    old_rows = [{'id': i, 'field': 'egs', 'catalog_name': 'UNICORN EGS v0.9'}
+                for i in range(1, n_old + 1)]
     client = _FakeClient(old_rows)
     monkeypatch.setattr(mod, '_fetch_field_objects', lambda *_: [
         {'id': 1, 'object_id': 'egs_1', 'ra': 214.9, 'dec': 52.9}])
     monkeypatch.setattr(mod, '_upsert_photometry', lambda *_: 0)
     client.rpc = lambda *_a, **_k: type('R', (), {'execute': lambda self: type('D', (), {'data': 0})()})()
+    return mod, client, cfg
 
+
+def test_supersede_is_skipped_when_nothing_was_upserted(tmp_path, monkeypatch, capsys):
+    """A cross-match that finds nothing must not wipe the field's other catalogs."""
+    mod, client, cfg = _supersede_setup(tmp_path, monkeypatch, catalog_ra=200.0, n_old=3)
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
     assert result['n_matched'] == 0 and result['n_superseded'] == 0
     assert len(client.t.rows) == 3 and client.t.deleted == []
     assert 'skipping --supersede' in capsys.readouterr().out
+
+
+def test_supersede_refuses_a_collapse_unless_forced(tmp_path, monkeypatch, capsys):
+    """One new match against ten old rows is a misconfiguration, not a release."""
+    mod, client, cfg = _supersede_setup(tmp_path, monkeypatch, catalog_ra=214.9, n_old=10)
+    assert SUPERSEDE_MIN_RATIO * 10 > 1
+    result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
+    assert result['n_matched'] == 1 and result['n_superseded'] == 0
+    assert len(client.t.rows) == 10 and client.t.deleted == []
+    assert 'Pass --force' in capsys.readouterr().out
+
+    result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
+                                         supersede=True, supersede_force=True)
+    assert result['n_superseded'] == 10
+    assert client.t.rows == [] and len(client.t.deleted) == 10
+
+
+def test_supersede_runs_when_the_new_catalog_covers_the_old(tmp_path, monkeypatch):
+    mod, client, cfg = _supersede_setup(tmp_path, monkeypatch, catalog_ra=214.9, n_old=1)
+    result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
+    assert result['n_matched'] == 1 and result['n_superseded'] == 1
+    assert client.t.rows == []
+
+
+def test_dry_run_reports_supersede_ratio(tmp_path, monkeypatch, capsys):
+    mod, client, cfg = _supersede_setup(tmp_path, monkeypatch, catalog_ra=214.9, n_old=10)
+    result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
+                                         supersede=True, dry_run=True)
+    out = capsys.readouterr().out
+    assert result['n_superseded'] == 10 and client.t.deleted == []
+    assert 'Would retire 10 rows' in out and 'refused without --force' in out

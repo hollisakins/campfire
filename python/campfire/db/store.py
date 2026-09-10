@@ -678,7 +678,12 @@ class LocalStore:
         import json as _json
 
         row = self._conn.execute(
-            "SELECT * FROM object_photometry WHERE object_id = ? ORDER BY catalog_name LIMIT 1",
+            # Newest deploy wins when an object has rows from two catalog
+            # releases (same choice as the web loader and
+            # sync_photometry_to_objects). Rows deleted server-side are only
+            # purged by `campfire sync --full`.
+            "SELECT * FROM object_photometry WHERE object_id = ? "
+            "ORDER BY updated_at DESC, catalog_name DESC LIMIT 1",
             (object_id,),
         ).fetchone()
         if not row:

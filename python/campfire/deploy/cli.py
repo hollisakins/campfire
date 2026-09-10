@@ -932,12 +932,17 @@ def objects_rebuild(ctx, config_path, field, all_fields, dry_run, radius, force,
 @click.option('--supersede', is_flag=True,
               help='After the upsert, delete every row in the field that '
                    'belongs to a different catalog_name — retires the '
-                   'previous release of a catalog (e.g. v0.9 → v0.98).')
+                   'previous release of a catalog (e.g. v0.9 → v0.98). '
+                   'Refused when the new catalog matched fewer than half the '
+                   'rows it would retire, unless --force is given.')
+@click.option('--force', is_flag=True,
+              help='With --supersede: retire the other catalogs even when the '
+                   'new match count is far below theirs.')
 @click.option('--local', is_flag=True,
               help='Use local Supabase (127.0.0.1:54321).')
 @click.pass_context
 def photometry(ctx, config_path, field, photometry_config, dry_run, no_photoz,
-               prune, supersede, local):
+               prune, supersede, force, local):
     """Deploy photometric catalog data for a field."""
     from campfire.deploy.photometry import deploy_field_photometry
 
@@ -957,6 +962,7 @@ def photometry(ctx, config_path, field, photometry_config, dry_run, no_photoz,
         dry_run=dry_run,
         prune=prune,
         supersede=supersede,
+        supersede_force=force,
     )
 
     print(f"\n{'='*60}")
