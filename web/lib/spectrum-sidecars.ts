@@ -11,26 +11,30 @@
  * configured and the client fetches /api/spectrum and /api/redshift-fit
  * instead, which stream the bytes.
  *
- * `has_1d` / `has_zfit` say whether the `_spec_1d.json` sidecar / the zfit
- * JSON is a registered object of its own, independent of the front: true =
- * it is; false = definitively absent (a spectrum that predates the 1-D
- * sidecar answers the 1-D query with its full payload, so a second download
- * is waste; a spectrum with no redshift fit needs no /api/redshift-fit round
- * trip to learn that); null = the registry did not answer (the client fetches
- * / falls back to be safe).
+ * `has_1d` / `has_zfit` / `has_lines` say whether the `_spec_1d.json`
+ * sidecar / the zfit JSON / the line-fit JSON (`_lines.json`, the emission-line
+ * model behind the plot's "Lines" toggle) is a registered object of its own,
+ * independent of the front: true = it is; false = definitively absent (a
+ * spectrum that predates the 1-D sidecar answers the 1-D query with its full
+ * payload, so a second download is waste; a spectrum with no redshift fit or
+ * no line fit needs no round trip to learn that); null = the registry did not
+ * answer (the client fetches / falls back to be safe).
  */
 export interface SpectrumSidecarUrls {
   front: boolean;
   spectrum: string | null;
   spectrum_1d: string | null;
   zfit: string | null;
+  lines: string | null;
   has_1d: boolean | null;
   has_zfit: boolean | null;
+  has_lines: boolean | null;
 }
 
 /** The "front off / nothing known" answer: every fetch goes to the app routes. */
 export const NO_FRONT: SpectrumSidecarUrls = {
-  front: false, spectrum: null, spectrum_1d: null, zfit: null, has_1d: null, has_zfit: null,
+  front: false, spectrum: null, spectrum_1d: null, zfit: null, lines: null,
+  has_1d: null, has_zfit: null, has_lines: null,
 };
 
 // TanStack keys, keyed on the FITS path — what is fetched, never the viewer
@@ -39,6 +43,7 @@ export const spectrumSidecarsKey = (fitsPath: string) => ['spectrum-sidecars', f
 export const spectrumJsonKey = (fitsPath: string) => ['spectrum-json', fitsPath] as const;
 export const spectrum1dKey = (fitsPath: string) => ['spectrum-1d', fitsPath] as const;
 export const redshiftFitKey = (fitsPath: string) => ['redshift-fit', fitsPath] as const;
+export const lineFitKey = (fitsPath: string) => ['line-fit', fitsPath] as const;
 
 /**
  * Where the 1-D payload comes from. `front`: the front url when the front is

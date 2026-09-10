@@ -298,6 +298,13 @@ export async function getFilteredObjectIds(
       p_radius_degrees: baseParams.p_radius_degrees,
       p_comment_search: baseParams.p_comment_search,
       p_comment_search_scope: baseParams.p_comment_search_scope,
+      // emission-line filter keys are present only while a line is set
+      ...(baseParams.p_line !== undefined ? {
+        p_line: baseParams.p_line,
+        p_line_snr_min: baseParams.p_line_snr_min,
+        p_line_snr_max: baseParams.p_line_snr_max,
+        p_line_include_stale: baseParams.p_line_include_stale,
+      } : {}),
       p_comment_user_id: baseParams.p_comment_user_id,
     };
 

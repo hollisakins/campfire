@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { isFilterableLine } from '@/lib/linelist';
 import { getAccessContext, type LinkScope } from '@/lib/auth/access-context';
 
 /** Parse a comma-separated query-string value into a non-empty string list, or null. */
@@ -71,4 +72,43 @@ export async function getLinkScope(userId: string): Promise<LinkScope | null> {
  */
 export async function getAccessiblePrograms(userId: string): Promise<string[]> {
   return (await getAccessContext(userId)).accessibleSlugs;
+}
+
+
+/**
+ * Emission-line filter query parameters of the v1 list endpoints
+ * (`line`, `line_snr_min`, `line_snr_max`, `line_include_stale`) as RPC
+ * params — present only while `line` names a filterable catalog entry (a
+ * doublet total or a stand-alone line, lib/linelist.ts), so a request without
+ * one sends nothing and keeps working against a database that predates the
+ * parameters. An unknown line name is a 400 from the caller's point of view
+ * (`error` set) rather than an empty result that hides a typo.
+ */
+export function lineFilterRpcParams(searchParams: URLSearchParams): {
+  p_line?: string;
+  p_line_snr_min?: number | null;
+  p_line_snr_max?: number | null;
+  p_line_include_stale?: boolean;
+} {
+  const line = searchParams.get('line')?.trim();
+  if (!line) return {};
+  const num = (key: string): number | null => {
+    const raw = searchParams.get(key);
+    if (raw === null || raw === '') return null;
+    const v = parseFloat(raw);
+    return Number.isFinite(v) ? v : null;
+  };
+  return {
+    p_line: line,
+    p_line_snr_min: num('line_snr_min'),
+    p_line_snr_max: num('line_snr_max'),
+    p_line_include_stale: searchParams.get('line_include_stale') === 'true',
+  };
+}
+
+/** The `line` query parameter, when set, must name a filterable catalog entry. */
+export function invalidLineParam(searchParams: URLSearchParams): string | null {
+  const line = searchParams.get('line')?.trim();
+  if (!line || isFilterableLine(line)) return null;
+  return `Unknown emission line '${line}'. Use a doublet total (e.g. CIII1908, OII3727, SII6725) or a stand-alone line name (e.g. Halpha, OIII5007).`;
 }

@@ -208,6 +208,42 @@ $$;
 --    which column was touched.
 DROP FUNCTION IF EXISTS public.bump_spectra_updated_at CASCADE;
 
+-- ---------------------------------------------------------------------------
+-- sync_spectrum_lines
+--     Unnest NEW.lines (jsonb keyed by catalog line name) into spectrum_lines.
+--     SECURITY DEFINER: the deploy CLI writes spectrum_line_fits as an admin
+--     under RLS, and the derived table's own policies must not decide whether
+--     the mirror is rebuilt. Only object-valued entries are rows; NaN was
+--     already null in the payload, so a missing/null field is a NULL column.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.sync_spectrum_lines() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  DELETE FROM public.spectrum_lines WHERE spectrum_id = NEW.spectrum_id;
+  INSERT INTO public.spectrum_lines (
+    spectrum_id, line, component, wave_rest, flux, flux_err, snr,
+    ew_rest, ew_rest_err, flags, blend_into
+  )
+  SELECT
+    NEW.spectrum_id,
+    e.key,
+    COALESCE(e.value ->> 'component', 'narrow'),
+    (e.value ->> 'wave_rest')::double precision,
+    (e.value ->> 'flux')::double precision,
+    (e.value ->> 'flux_err')::double precision,
+    (e.value ->> 'snr')::double precision,
+    (e.value ->> 'ew_rest')::double precision,
+    (e.value ->> 'ew_rest_err')::double precision,
+    COALESCE((e.value ->> 'flags')::integer, 0),
+    e.value ->> 'blend_into'
+  FROM jsonb_each(NEW.lines) AS e
+  WHERE jsonb_typeof(e.value) = 'object';
+  RETURN NEW;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.bump_spectra_updated_at() RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -532,6 +568,15 @@ DROP TRIGGER IF EXISTS bump_spectrum_line_fits_updated_at_trigger ON public.spec
 CREATE TRIGGER bump_spectrum_line_fits_updated_at_trigger
   BEFORE UPDATE ON public.spectrum_line_fits
   FOR EACH ROW EXECUTE FUNCTION public.bump_spectra_updated_at();
+
+-- spectrum_lines is the unnested mirror of spectrum_line_fits.lines: rebuild a
+-- spectrum's rows whenever its fit row is written (deploy upserts the whole
+-- row; a re-fit that drops a line must drop its row too, hence delete +
+-- insert rather than upsert). Deletes cascade through the FK.
+DROP TRIGGER IF EXISTS sync_spectrum_lines_trigger ON public.spectrum_line_fits;
+CREATE TRIGGER sync_spectrum_lines_trigger
+  AFTER INSERT OR UPDATE OF lines ON public.spectrum_line_fits
+  FOR EACH ROW EXECUTE FUNCTION public.sync_spectrum_lines();
 
 DROP TRIGGER IF EXISTS bump_spectra_updated_at_trigger ON public.spectra;
 CREATE TRIGGER bump_spectra_updated_at_trigger

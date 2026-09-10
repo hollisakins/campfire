@@ -275,3 +275,26 @@ def test_hash_files_parallel_matches_serial(tmp_path):
 
 def test_default_hash_workers_positive():
     assert reg.default_hash_workers() >= 1
+
+
+def test_every_cloud_backed_product_is_allowed_by_the_storage_objects_check():
+    """The storage_objects product-type CHECK (supabase/schemas/tables.sql)
+    tracks the layout registry: a product with a bucket that the CHECK does
+    not list uploads fine and then fails registration with a 23514, taking
+    the whole registry batch with it. Adding a cloud-backed product means a
+    schema edit + migration; this diff catches the omission before a deploy
+    does."""
+    import re
+    from pathlib import Path
+
+    import campfire_layout as L
+
+    sql = (Path(__file__).parents[2] / 'supabase' / 'schemas' / 'tables.sql').read_text()
+    m = re.search(
+        r'CONSTRAINT "storage_objects_product_type_check" CHECK \(\("product_type" = ANY \(ARRAY\[(.*?)\]\)\)\)',
+        sql, re.S)
+    assert m, 'storage_objects_product_type_check not found in tables.sql'
+    allowed = set(re.findall(r"'([a-z_0-9]+)'::\"text\"", m.group(1)))
+    cloud_backed = {name for name, spec in L.PRODUCTS.items() if spec.bucket is not None}
+    assert cloud_backed <= allowed, f'cloud-backed products missing from the CHECK: {sorted(cloud_backed - allowed)}'
+    assert allowed <= cloud_backed, f'CHECK entries with no registry product: {sorted(allowed - cloud_backed)}'

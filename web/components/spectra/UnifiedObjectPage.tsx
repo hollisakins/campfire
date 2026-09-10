@@ -18,6 +18,7 @@ import { MultiSpectrumViewer, type SpectrumSource } from './MultiSpectrumViewer'
 import { getSpectrumShade } from './plotting-utils';
 import { SpectraDetailSection } from './SpectraDetailSection';
 import { RedshiftFitSummary } from './RedshiftFitSummary';
+import { EmissionLinesSection } from './EmissionLinesSection';
 import { PhotometrySED } from './PhotometrySED';
 import { ObjectComments } from './ObjectComments';
 import { NearbyObjects } from './NearbyObjects';
@@ -427,6 +428,11 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
               spectra={allMemberSpectra}
               redshift_auto={object.redshift_auto}
             />
+          </section>
+
+          {/* === Section 3b: Emission lines (fetched in view) === */}
+          <section className="mb-8">
+            <EmissionLinesSection spectra={allMemberSpectra} />
           </section>
 
           {/* === Section 4: Photometry & SED === */}

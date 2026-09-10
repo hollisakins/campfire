@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms, isAdminUser, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
+import { getAccessiblePrograms, invalidLineParam, isAdminUser, lineFilterRpcParams, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
 import { createServiceClient } from '@/lib/supabase/server';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 import {
@@ -129,10 +129,16 @@ export async function GET(request: NextRequest) {
     const validSortColumns = [
       'object_id', 'ra', 'dec', 'redshift', 'redshift_quality', 'field',
       'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z', 'distance',
+      'line_snr',
     ];
     const sortColumn = searchParams.get('sort') || 'object_id';
     const sortDirection = searchParams.get('sort_dir') || 'asc';
     const finalSortColumn = validSortColumns.includes(sortColumn) ? sortColumn : 'object_id';
+
+    const lineError = invalidLineParam(searchParams);
+    if (lineError) {
+      return NextResponse.json({ error: lineError }, { status: 400 });
+    }
 
     const rpcParams = {
       p_program_slugs: accessibleProgramSlugs,
@@ -166,6 +172,7 @@ export async function GET(request: NextRequest) {
       p_include_unpublished: includeUnpublished,
       p_include_count: includeCount,
       ...cursorRpcParams(cursor),
+      ...lineFilterRpcParams(searchParams),
     };
 
     const { data, error } = await supabase.rpc('get_filtered_objects_paginated', rpcParams);

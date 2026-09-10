@@ -29,17 +29,18 @@ export const FITS_DOWNLOAD_FILE_LIMIT = 500;
 export const CSV_EXPORT_ROW_LIMIT = 50000;
 
 // Spectra-mode sort columns (must match get_filtered_spectra_paginated whitelist)
-export const SPECTRA_SORT_COLUMNS = ['spectrum_id', 'target_id', 'field', 'observation', 'program_slug', 'ra', 'dec', 'redshift', 'redshift_quality', 'redshift_auto', 'signal_to_noise', 'exposure_time', 'grating', 'distance'] as const;
+// 'line_snr' is honoured by the RPCs only while a line filter is set (p_line); otherwise they fall back to the default sort.
+export const SPECTRA_SORT_COLUMNS = ['spectrum_id', 'target_id', 'field', 'observation', 'program_slug', 'ra', 'dec', 'redshift', 'redshift_quality', 'redshift_auto', 'signal_to_noise', 'exposure_time', 'grating', 'distance', 'line_snr'] as const;
 
 // Objects-mode sort columns (must match get_filtered_objects_paginated whitelist).
-export const OBJECTS_SORT_COLUMNS = ['object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality', 'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z', 'distance'] as const;
+export const OBJECTS_SORT_COLUMNS = ['object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality', 'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z', 'distance', 'line_snr'] as const;
 
 // Union of all valid sort columns (all modes)
 export const VALID_SORT_COLUMNS = [
   'spectrum_id', 'target_id', 'field', 'observation', 'program_slug', 'ra', 'dec', 'redshift', 'redshift_quality',
   'redshift_auto',
   'max_snr', 'max_exposure_time', 'signal_to_noise', 'exposure_time', 'grating', 'distance',
-  'object_id', 'n_targets', 'n_spectra', 'photo_z'
+  'object_id', 'n_targets', 'n_spectra', 'photo_z', 'line_snr'
 ] as const;
 export type SortColumn = typeof VALID_SORT_COLUMNS[number];
 

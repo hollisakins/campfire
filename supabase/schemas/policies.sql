@@ -985,6 +985,43 @@ CREATE POLICY "admin_delete_spectrum_line_fits"
 
 
 -- =============================================================================
+-- spectrum_lines (derived from spectrum_line_fits.lines; same visibility)
+-- =============================================================================
+-- Readable iff the parent spectrum is (one hop, same rule as the fit row).
+-- Rows are written by the sync_spectrum_lines trigger (SECURITY DEFINER, so an
+-- admin deploy upsert on spectrum_line_fits rebuilds them regardless of these
+-- policies); the admin write policies only exist for manual repair.
+
+ALTER TABLE spectrum_lines ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "select_spectrum_lines_by_spectrum" ON spectrum_lines;
+CREATE POLICY "select_spectrum_lines_by_spectrum"
+  ON spectrum_lines FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.spectra s
+      WHERE s.id = spectrum_lines.spectrum_id
+    )
+  );
+
+DROP POLICY IF EXISTS "admin_insert_spectrum_lines" ON spectrum_lines;
+CREATE POLICY "admin_insert_spectrum_lines"
+  ON spectrum_lines FOR INSERT TO authenticated
+  WITH CHECK ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_update_spectrum_lines" ON spectrum_lines;
+CREATE POLICY "admin_update_spectrum_lines"
+  ON spectrum_lines FOR UPDATE TO authenticated
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_delete_spectrum_lines" ON spectrum_lines;
+CREATE POLICY "admin_delete_spectrum_lines"
+  ON spectrum_lines FOR DELETE TO authenticated
+  USING ((SELECT public.is_admin()));
+
+
+-- =============================================================================
 -- spectrum_exposures (admin-only — NIRSpec intermediates, epic #210 B2)
 -- =============================================================================
 -- Reduction intermediates, never user-facing science. Admin-only, mirroring

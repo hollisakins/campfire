@@ -1132,6 +1132,37 @@ COMMENT ON COLUMN "public"."spectrum_line_fits"."lines" IS 'Per-line records key
 COMMENT ON COLUMN "public"."spectrum_line_fits"."z_source" IS 'inspected = the portal redshift (objects.redshift at quality >= the pipeline min_quality); auto = the pipeline zfit redshift (QA fits, deployed only with --allow-auto-z).';
 
 
+-- spectrum_lines: the `lines` jsonb of spectrum_line_fits unnested to one row
+-- per (spectrum, catalog line) so the catalog can be FILTERED and SORTED on a
+-- line's S/N or flux ("all CIII] detections at S/N > 3") from an index instead
+-- of a jsonb scan. Derived, never written by deploy: the sync_spectrum_lines
+-- trigger rebuilds a spectrum's rows on every insert/update of the parent
+-- row's `lines`, and the FK cascades a dropped fit. Columns are the subset a
+-- selection needs; the full record (kinematics, continuum, label, ...) stays
+-- in the jsonb. `line` is the catalog key exactly as in the jsonb (components
+-- such as CIII1907, broad components as <line>_broad, doublet totals such as
+-- CIII1908 — select on the totals, see the parent column comment).
+CREATE TABLE IF NOT EXISTS "public"."spectrum_lines" (
+    "spectrum_id" integer NOT NULL,
+    "line" "text" NOT NULL,
+    "component" "text" DEFAULT 'narrow'::"text" NOT NULL,
+    "wave_rest" double precision,
+    "flux" double precision,
+    "flux_err" double precision,
+    "snr" double precision,
+    "ew_rest" double precision,
+    "ew_rest_err" double precision,
+    "flags" integer DEFAULT 0 NOT NULL,
+    "blend_into" "text"
+);
+
+
+ALTER TABLE "public"."spectrum_lines" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."spectrum_lines" IS 'spectrum_line_fits.lines unnested: one row per (spectrum, catalog line) for indexed filter/sort on a line''s S/N or flux. Derived by the sync_spectrum_lines trigger; never written directly. Select on doublet totals (CIII1908, OII3727, SII6725, ...) rather than components.';
+
+
 CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     "id" bigint NOT NULL,
     "backend" "text" NOT NULL,
@@ -1196,6 +1227,7 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- non-null bucket). A new cloud-backed product type requires a migration here.
     CONSTRAINT "storage_objects_product_type_check" CHECK (("product_type" = ANY (ARRAY[
         'nirspec_spec'::"text", 'spectrum_json'::"text", 'spectrum_1d_json'::"text", 'zfit'::"text",
+        'nirspec_lines'::"text", 'nirspec_lines_json'::"text", 'nirspec_redshifts'::"text",
         'nirspec_spectrum_exposure'::"text", 'nirspec_rate'::"text",
         'rgb'::"text", 'sed'::"text",
         'nircam_exposure'::"text", 'nircam_exposure_preview'::"text",
@@ -2028,6 +2060,13 @@ ALTER TABLE ONLY "public"."spectrum_line_fits"
 ALTER TABLE ONLY "public"."spectrum_line_fits"
     ADD CONSTRAINT "spectrum_line_fits_spectrum_id_fkey" FOREIGN KEY ("spectrum_id") REFERENCES "public"."spectra"("id") ON DELETE CASCADE;
 
+ALTER TABLE ONLY "public"."spectrum_lines"
+    ADD CONSTRAINT "spectrum_lines_pkey" PRIMARY KEY ("spectrum_id", "line");
+
+-- Derived rows follow their fit row (which itself follows the spectrum).
+ALTER TABLE ONLY "public"."spectrum_lines"
+    ADD CONSTRAINT "spectrum_lines_spectrum_id_fkey" FOREIGN KEY ("spectrum_id") REFERENCES "public"."spectrum_line_fits"("spectrum_id") ON DELETE CASCADE;
+
 -- B2 (#218) cross-table FKs, placed after the referenced PKs (spectra_pkey above,
 -- deployments_pkey earlier) so the declarative build order resolves them.
 -- (spectrum_exposures no longer FKs to spectra — the review loop P4 revive re-keyed
@@ -2491,6 +2530,10 @@ GRANT ALL ON TABLE "public"."spectra" TO "service_role";
 GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "anon";
 GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "service_role";
+
+GRANT ALL ON TABLE "public"."spectrum_lines" TO "anon";
+GRANT ALL ON TABLE "public"."spectrum_lines" TO "authenticated";
+GRANT ALL ON TABLE "public"."spectrum_lines" TO "service_role";
 
 
 

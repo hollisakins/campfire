@@ -9,6 +9,7 @@
 
 import type { CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
+import { isFilterableLine } from '@/lib/linelist';
 
 // Canonical filter mode type for any/all/none filtering
 export type FilterMode = 'any' | 'all' | 'none';
@@ -34,6 +35,14 @@ export interface FilterOptions {
   max_snr_max: number | null;
   max_exposure_time_min: number | null;
   max_exposure_time_max: number | null;
+  /** Emission-line filter: catalog line name (a doublet total such as
+   *  CIII1908, or a stand-alone line — see lib/linelist.ts) or null. The S/N
+   *  bounds and the stale toggle apply only while a line is set. */
+  line: string | null;
+  line_snr_min: number | null;
+  line_snr_max: number | null;
+  /** Count fits whose inspected redshift has moved since the fit (default off). */
+  line_include_stale: boolean;
   list_ids: number[];
   dq_flags: number[];
   inspected_only: boolean | null;
@@ -59,6 +68,10 @@ export const DEFAULT_FILTERS: FilterOptions = {
   max_snr_max: null,
   max_exposure_time_min: null,
   max_exposure_time_max: null,
+  line: null,
+  line_snr_min: null,
+  line_snr_max: null,
+  line_include_stale: false,
   list_ids: [],
   dq_flags: [],
   inspected_only: null,
@@ -108,6 +121,15 @@ export interface FilterRpcParams {
   p_comment_search: string | null;
   p_comment_search_scope: string | null;
   p_comment_user_id: string | null;
+  /** Emission-line filter — present ONLY while a line is set. Every RPC on
+   *  the filter contract accepts these (DEFAULT NULL / false), and omitting
+   *  them when unused keeps the default lists working against a database
+   *  that has not yet applied the migration adding them (the migration and
+   *  the Vercel deploy land independently on merge). */
+  p_line?: string;
+  p_line_snr_min?: number | null;
+  p_line_snr_max?: number | null;
+  p_line_include_stale?: boolean;
 }
 
 /**
@@ -156,6 +178,19 @@ export function buildFilterParams(
     : null;
   const commentUserId = isCommentSearch && userId ? userId : null;
 
+  // Defense in depth with parseFiltersFromURL: an unknown name never reaches an RPC.
+  const rawLine = filters?.line?.trim() || null;
+  const line = rawLine && isFilterableLine(rawLine) ? rawLine : null;
+  const lineParams: Pick<FilterRpcParams, 'p_line' | 'p_line_snr_min' | 'p_line_snr_max' | 'p_line_include_stale'> =
+    line
+      ? {
+          p_line: line,
+          p_line_snr_min: filters?.line_snr_min ?? null,
+          p_line_snr_max: filters?.line_snr_max ?? null,
+          p_line_include_stale: filters?.line_include_stale ?? false,
+        }
+      : {};
+
   return {
     p_program_slugs: accessibleProgramSlugs,
     p_filter_programs: filters?.programs && filters.programs.length > 0 ? filters.programs : null,
@@ -185,5 +220,12 @@ export function buildFilterParams(
     p_comment_search: commentSearch,
     p_comment_search_scope: commentSearchScope,
     p_comment_user_id: commentUserId,
+    ...lineParams,
   };
+}
+
+/** True when the filter state selects on an emission line. */
+export function hasLineFilter(filters: Partial<FilterOptions> | undefined): boolean {
+  const line = filters?.line?.trim();
+  return Boolean(line && isFilterableLine(line));
 }
