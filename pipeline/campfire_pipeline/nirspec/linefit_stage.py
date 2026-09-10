@@ -101,22 +101,33 @@ def resolve_linefit_observation(obs_name: str, config: dict | None = None):
     directories the reduction and ``campfire pull`` use, so the fit reads
     exactly what they wrote.
     """
+    import toml
+
     from campfire_layout import Scope, dir_for, reference_dir
-    from campfire_pipeline.config import resolve_paths
+    from campfire_pipeline.config import resolve_observations_file, resolve_paths
     from campfire_pipeline.nirspec.observation import Observation
 
-    try:
-        obs = Observation.load(obs_name)
-    except (FileNotFoundError, ValueError, KeyError) as e:
+    def _fallback(reason, level=log.info):
         scope = Scope(obs=obs_name)
-        obs = LinefitObservation(
+        level(f"{reason}; fitting {obs_name} from layout directories only "
+              f"(no per-observation [{obs_name}.line_fitting] overrides)")
+        return LinefitObservation(
             name=obs_name,
             workspace_dir=str(dir_for('nirspec_spec', scope)),
             reference_dir=str(reference_dir('nirspec', scope)),
         )
-        log.info(f"observations.toml not available for {obs_name} ({e}); "
-                 f"using layout directories only (no per-observation overrides)")
-        return obs
+
+    # Fall back only when there is nothing to lose: no observations.toml at
+    # all, or one without a section for this observation. A section that
+    # exists but fails to load is a real config error and must surface —
+    # silently dropping its overrides would change what gets fit.
+    try:
+        obs_file = resolve_observations_file(None)
+    except FileNotFoundError:
+        return _fallback("observations.toml not found")
+    if obs_name not in toml.load(obs_file):
+        return _fallback(f"no [{obs_name}] section in {obs_file}", level=log.warning)
+    obs = Observation.load(obs_name, observations_file=obs_file)
     paths = resolve_paths(config)
     obs.setup_workspace_directory(paths['data_dir'], paths['products_dir'], overwrite=False)
     return obs

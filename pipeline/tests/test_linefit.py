@@ -458,6 +458,28 @@ def test_resolve_observation_without_observations_toml(tmp_path, monkeypatch):
     assert counts == dict(fit=0, skipped_uptodate=0, skipped_no_z=0, failed=0)
 
 
+def test_resolve_observation_missing_section_falls_back_but_malformed_raises(tmp_path, monkeypatch):
+    """A TOML without this observation's section is treated like no TOML
+    (nothing to lose); a section that exists but is malformed must raise
+    rather than silently dropping its overrides."""
+    from campfire_pipeline.nirspec.linefit_stage import (
+        LinefitObservation, resolve_linefit_observation,
+    )
+    monkeypatch.setenv('CAMPFIRE_ROOT', str(tmp_path))
+    cfg_dir = tmp_path / 'config'
+    cfg_dir.mkdir()
+    (cfg_dir / 'observations.toml').write_text(
+        '[other]\nfield = "uds"\nprogram = "ember-uds"\ndata_subdir = "6585"\n'
+        'program_id = 6585\nfiles = ["jw06585001001_03101"]\n'
+        '[broken]\nfield = "uds"\n'          # missing program / data_subdir / files
+        '[broken.line_fitting]\nmin_quality = 2\n'
+    )
+    obs = resolve_linefit_observation('obs9', {})
+    assert isinstance(obs, LinefitObservation) and obs.name == 'obs9'
+    with pytest.raises(KeyError):
+        resolve_linefit_observation('broken', {})
+
+
 def test_resolve_observation_prefers_observations_toml(tmp_path, monkeypatch):
     from campfire_pipeline.nirspec.linefit_stage import resolve_linefit_observation
     from campfire_pipeline.nirspec.observation import Observation
