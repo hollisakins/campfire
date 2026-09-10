@@ -52,7 +52,9 @@ export interface ObjectLinesResponse {
 }
 
 const MAX_IDS = 50;
-const CACHE = { 'Cache-Control': 'private, max-age=60' };
+// Vary: Cookie because sign-out does not clear the browser cache and the URL is
+// the same for every viewer while the body is RLS-scoped (AGENTS.md, reads).
+const CACHE = { 'Cache-Control': 'private, max-age=60', Vary: 'Cookie' };
 
 /**
  * GET /api/objects/lines?spectra=<id>,<id>,...
