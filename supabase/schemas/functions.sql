@@ -3336,7 +3336,9 @@ RETURNS TABLE(
   exposure_time DOUBLE PRECISION, fits_path TEXT, program_slug TEXT, program_name TEXT,
   last_inspected_at TIMESTAMPTZ, last_inspected_by TEXT, distance DOUBLE PRECISION,
   dq_flags INTEGER,
-  lists TEXT
+  lists TEXT,
+  -- S/N in the filtered emission line (NULL without a line filter)
+  line_snr DOUBLE PRECISION
 )
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
@@ -3390,7 +3392,10 @@ BEGIN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(t.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(t.dec)) * POWER(SIN(RADIANS(t.ra - p_coord_ra) / 2), 2))))
       ELSE NULL END AS distance,
       COALESCE(s.dq_flags, 0) AS dq_flags,
-      vl.lists
+      vl.lists,
+      CASE WHEN p_line IS NOT NULL THEN
+        (SELECT __l.snr FROM public.spectrum_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
+      END AS line_snr
     FROM targets t
     JOIN spectra s ON s.target_id = t.target_id
     LEFT JOIN objects o ON o.id = t.object_id
@@ -3454,7 +3459,7 @@ BEGIN
     df.ra, df.dec, df.redshift, df.redshift_quality, df.redshift_auto,
     df.signal_to_noise, df.exposure_time, df.fits_path, df.program_slug,
     pr.program_name, df.last_inspected_at, up.full_name AS last_inspected_by,
-    df.distance, df.dq_flags, df.lists
+    df.distance, df.dq_flags, df.lists, df.line_snr
   FROM distance_filtered df
   LEFT JOIN programs pr ON pr.slug = df.program_slug
   LEFT JOIN user_profiles up ON up.user_id = df.last_inspected_by
@@ -3529,7 +3534,9 @@ RETURNS TABLE(
   lists TEXT,
   has_photometry BOOLEAN, photo_z DOUBLE PRECISION,
   photo_z_err_lo DOUBLE PRECISION, photo_z_err_hi DOUBLE PRECISION,
-  photometry JSONB
+  photometry JSONB,
+  -- best S/N in the filtered emission line (NULL without a line filter)
+  line_snr DOUBLE PRECISION
 )
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
@@ -3745,7 +3752,8 @@ BEGIN
     sa.max_snr, sa.max_exposure_time,
     mt.member_target_ids, po.distance, vl.lists,
     po.has_photometry, po.photo_z, po.photo_z_err_lo, po.photo_z_err_hi,
-    phot.photometry
+    phot.photometry,
+    CASE WHEN p_line IS NOT NULL THEN public.object_line_snr(po.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END AS line_snr
   FROM page_objects po
   LEFT JOIN member_targets mt ON mt.object_id = po.id
   LEFT JOIN visible_lists vl ON vl.object_id = po.id

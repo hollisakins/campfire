@@ -907,7 +907,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         enableSorting: false,
       } satisfies ColumnDef<SpectrumTarget>] : []),
     ],
-    [hasCoordinateSearch, currentFilterParams, isSpectraMode, isObjectsMode]
+    [hasCoordinateSearch, currentFilterParams, isSpectraMode, isObjectsMode, activeLine]
   );
 
   // Convert column visibility state to TanStack Table format.
