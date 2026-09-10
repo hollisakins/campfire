@@ -169,6 +169,79 @@ def test_reader_refuses_a_cube_not_laid_out_one_row_per_template(tmp_path):
         _reader(photz, templates)
 
 
+def _write_lazy_release(tmp_path, ids):
+    """Minimal native Lazy.jl output with a *text* id column (the layout
+    PhotozData reads): ext 1 scalars, ext 2 Pz (row 0 = grid), ext 3 templates."""
+    n = len(ids)
+    n_t, n_w, n_zt = 2, 5, 3
+    ext1 = fits.BinTableHDU.from_columns([
+        fits.Column(name='ID', format='8A', array=np.array(ids)),
+        fits.Column(name='z_best', format='D', array=np.linspace(1.0, 2.0, n)),
+        fits.Column(name='chi2', format='D', array=np.full(n, 3.0)),
+        fits.Column(name='coeffs', format=f'{n_t}D', array=np.ones((n, n_t))),
+    ])
+    grid = np.linspace(0, 5, 11)
+    pz = np.vstack([grid] + [np.exp(-0.5 * (grid - z) ** 2) for z in np.linspace(1.0, 2.0, n)])
+    ext2 = fits.BinTableHDU.from_columns([fits.Column(name='Pz', format=f'{len(grid)}D', array=pz)])
+    lam = np.linspace(1000, 9000, n_w)
+    ext3 = fits.BinTableHDU.from_columns(
+        [fits.Column(name='z', format='D', array=np.linspace(0, 4, n_zt))]
+        + [fits.Column(name=f't{i}', format=f'{n_w}D',
+                       array=np.tile(lam if i == 0 else np.full(n_w, 2.0), (n_zt, 1)))
+           for i in range(n_t)])
+    path = tmp_path / 'lazy_output.fits'
+    fits.HDUList([fits.PrimaryHDU(), ext1, ext2, ext3]).writeto(path)
+    return path
+
+
+def test_lazy_reader_text_ids_still_get_photoz_through_the_deploy(tmp_path, monkeypatch):
+    """PhotozData keys a text id column by the raw string; the deploy must
+    hand it the raw string, not a coerced int or None (regression from the
+    UNICORN id coercion)."""
+    import campfire.deploy.photometry as mod
+    ids = ['GN-1', '000123']
+    lazy = _write_lazy_release(tmp_path, ids)
+    cat = tmp_path / 'cat.fits'
+    fits.BinTableHDU.from_columns([
+        fits.Column(name='ID', format='8A', array=np.array(ids)),
+        fits.Column(name='RA', format='D', array=np.array([214.9, 214.8])),
+        fits.Column(name='DEC', format='D', array=np.array([52.9, 52.8])),
+        fits.Column(name='FLUX_F444W', format='E', array=np.array([1.0, 2.0])),
+        fits.Column(name='FLUXERR_F444W', format='E', array=np.array([0.1, 0.1])),
+    ]).writeto(cat)
+    cfg = tmp_path / 'photometry.toml'
+    cfg.write_text(f"""
+[goods-n]
+catalog = "{cat}"
+catalog_name = "text ids"
+ra_column = "RA"
+dec_column = "DEC"
+id_column = "ID"
+[goods-n.bands]
+f444w = {{ flux = "FLUX_F444W", err = "FLUXERR_F444W" }}
+[goods-n.photoz]
+format = "lazy"
+file = "{lazy}"
+""")
+    client = _FakeClient([])
+    client.rpc = lambda *_a, **_k: type('R', (), {'execute': lambda self: type('D', (), {'data': 0})()})()
+    monkeypatch.setattr(mod, '_fetch_field_objects', lambda *_: [
+        {'id': 1, 'object_id': 'gn_1', 'ra': 214.9, 'dec': 52.9},
+        {'id': 2, 'object_id': 'gn_2', 'ra': 214.8, 'dec': 52.8}])
+    upserted = []
+    monkeypatch.setattr(mod, '_upsert_photometry', lambda _c, recs: upserted.extend(recs))
+    monkeypatch.setattr(mod, 'upload_files_parallel',
+                        lambda *_a, **_k: (len(_a[1]), 0, []))
+
+    result = mod.deploy_field_photometry(client, 'goods-n', cfg, {})
+    assert result['n_matched'] == 2 and result['n_pz'] == 2
+    by_id = {r['catalog_id']: r for r in upserted}
+    assert set(by_id) == {'GN-1', '000123'}          # keys keep the raw text
+    assert by_id['GN-1']['photo_z'] == pytest.approx(1.0)
+    assert by_id['000123']['photo_z'] == pytest.approx(2.0)
+    assert all(r['has_pz'] for r in upserted)
+
+
 def test_coerce_catalog_id():
     assert coerce_catalog_id(7) == 7
     assert coerce_catalog_id(np.int32(7)) == 7

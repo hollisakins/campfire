@@ -588,6 +588,21 @@ def coerce_catalog_id(raw) -> int | None:
         return None
 
 
+def _photoz_key(raw):
+    """The value the deploy hands a photo-z reader for a catalog id.
+
+    Numeric ids become ``int`` (``None`` for NaN or a non-integral float);
+    text ids are passed through untouched so each reader applies its own
+    rule — :class:`PhotozData` keys a text id column by the raw string,
+    :class:`UnicornPhotozData` coerces it with :func:`coerce_catalog_id`.
+    """
+    if isinstance(raw, (bool, np.bool_)):
+        return None
+    if isinstance(raw, (int, float, np.integer, np.floating)):
+        return coerce_catalog_id(raw)
+    return raw
+
+
 def _thin_to(n_max: int, *arrays: np.ndarray) -> tuple[np.ndarray, ...]:
     """Subsample parallel arrays to at most *n_max* points (uniform stride)."""
     n = len(arrays[0])
@@ -735,12 +750,20 @@ class UnicornPhotozData:
         and only the wanted columns are kept (n_z × n_wanted floats). Ids
         not in the release are ignored. Returns the number gathered.
         """
-        wanted = sorted({
-            idx for cid in catalog_ids
-            if (cid_int := coerce_catalog_id(cid)) is not None
-            and (idx := self._id_to_idx.get(cid_int)) is not None
-            and idx not in self._pz_cache
-        })
+        wanted: set[int] = set()
+        n_bad = 0
+        for cid in catalog_ids:
+            cid_int = coerce_catalog_id(cid)
+            if cid_int is None:
+                n_bad += 1
+                continue
+            idx = self._id_to_idx.get(cid_int)
+            if idx is not None and idx not in self._pz_cache:
+                wanted.add(idx)
+        if n_bad:
+            print(f"    WARNING: {n_bad} catalog ids are not integers and get no "
+                  f"UNICORN photo-z")
+        wanted = sorted(wanted)
         if not wanted:
             return 0
         offset, row_size, pz_offset, pz_dtype, n_z = self._pz_layout
@@ -1297,12 +1320,9 @@ def deploy_field_photometry(
         ids_needed = []
         for _obj_idx, cat_idx, _dist in kept_matches:
             raw = catalog[id_col][cat_idx] if id_col in catalog.colnames else cat_idx
-            cid = coerce_catalog_id(raw)
-            if cid is not None:
-                ids_needed.append(cid)
-        if len(ids_needed) < len(kept_matches):
-            print(f"    WARNING: {len(kept_matches) - len(ids_needed)} matched sources "
-                  f"have non-integer '{id_col}' values and get no photo-z")
+            key = _photoz_key(raw)
+            if key is not None:
+                ids_needed.append(key)
         print(f"  Gathering P(z) for {len(ids_needed)} matched sources...")
         n_got = photoz.prefetch(ids_needed)
         if n_got:
@@ -1321,7 +1341,7 @@ def deploy_field_photometry(
         # Catalog ID: use the raw value for photo-z lookup (usually int),
         # stringify for the DB record
         cat_id_raw = cat_row.get(id_col, cat_idx)
-        cat_id_int = coerce_catalog_id(cat_id_raw)
+        pz_key = _photoz_key(cat_id_raw)
         cat_id = str(cat_id_raw)
 
         # Build photometry payload
@@ -1335,8 +1355,8 @@ def deploy_field_photometry(
         photo_z_err_hi = None
         has_pz = False
 
-        if photoz is not None and cat_id_int is not None:
-            pz_meta = photoz.lookup(cat_id_int)
+        if photoz is not None and pz_key is not None:
+            pz_meta = photoz.lookup(pz_key)
             if pz_meta is not None:
                 photo_z = pz_meta['z_best']
                 photo_z_err_lo = pz_meta.get('z_err_lo')
@@ -1346,7 +1366,7 @@ def deploy_field_photometry(
                 scale = None
                 if scale_col and scale_col in cat_row:
                     scale = float(cat_row[scale_col])
-                sidecar = photoz.generate_sidecar(cat_id_int, scale=scale)
+                sidecar = photoz.generate_sidecar(pz_key, scale=scale)
                 if sidecar is not None:
                     has_pz = True
                     n_pz += 1
