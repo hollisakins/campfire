@@ -94,7 +94,7 @@ campfire login --api-key    # Paste an API key (for headless systems)
 campfire sync               # Pulls full object/spectra metadata (~seconds)
 ```
 
-This downloads the complete catalog into a local SQLite database and exports `objects.csv` + `spectra.csv`. No FITS files are downloaded. Safe to run often — refreshes inspection results, redshifts, and flags.
+This downloads the complete catalog into a local SQLite database and exports `objects.csv` + `spectra.csv`. No FITS files are downloaded. Safe to run often — refreshes inspection results, redshifts, and flags. After the first run a sync is incremental: only rows changed since the last sync are fetched, and rows removed on the server (regrouped objects, revoked spectra) are deleted locally. The file index covers the final products the client can download; `campfire pull --intermediate` indexes the intermediates of its selection on demand. `campfire sync --full` re-walks everything.
 
 ### 2. Download spectra
 

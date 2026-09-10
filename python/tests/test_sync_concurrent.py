@@ -14,10 +14,12 @@ from campfire.api.client import (
     APIClient,
     DEFAULT_STORAGE_SYNC_PAGE_SIZE,
     DEFAULT_SYNC_PAGE_SIZE,
+    SyncStream,
     _resolve_storage_sync_page_size,
     _resolve_sync_page_size,
 )
-from campfire.sync import sync_metadata
+from campfire.db.store import FINAL_PRODUCT_TYPES
+from campfire.sync import MIRRORED_PRODUCT_TYPES, sync_metadata
 
 
 # ---------------------------------------------------------------------------
@@ -32,11 +34,11 @@ def _make_fake_api(objects, spectra, storage, photometry, tags, line_fits=()):
     """
     api = MagicMock()
 
-    def _fetcher(rows):
-        def fetch(updated_since=None, on_page_complete=None):
+    def _fetcher(rows, deleted_ids=()):
+        def fetch(updated_since=None, on_page_complete=None, **_kwargs):
             if on_page_complete:
                 on_page_complete(len(rows), len(rows))
-            return rows, len(rows)
+            return SyncStream(rows, len(rows), list(deleted_ids))
         return fetch
 
     api.fetch_all_objects.side_effect = _fetcher(objects)
@@ -65,6 +67,12 @@ def _make_fake_store():
     store.purge_stale_objects.return_value = 0
     store.purge_stale_spectra.return_value = {"purged_spectra": 0}
     store.purge_stale_storage_objects.return_value = {"purged": 0, "orphaned_files": []}
+    store.drop_unmirrored_storage_rows.return_value = 0
+    store.delete_objects_by_ids.side_effect = lambda ids: len(ids)
+    store.delete_spectra_by_ids.side_effect = lambda ids: len(ids)
+    store.delete_storage_objects_by_ids.side_effect = (
+        lambda ids: {"purged": len(ids), "orphaned_files": []}
+    )
     store.purge_stale_photometry.return_value = 0
     store.purge_stale_line_fits.return_value = 0
     store.get_stale_objects.return_value = []
@@ -314,7 +322,7 @@ def test_paginate_sync_endpoint_keyset_cursor_propagation(monkeypatch):
     session, calls = _canned_session(pages)
     client = APIClient(session=session)
 
-    items, accessible = client.fetch_all_objects()
+    items, accessible, deleted = client.fetch_all_objects()
 
     # Every row, in page order; accessible count taken from the first page only.
     assert [i["object_id"] for i in items] == ["A", "B", "C", "D", "E", "F", "G"]
@@ -347,7 +355,7 @@ def test_paginate_sync_endpoint_stops_on_empty_after_exact_multiple(monkeypatch)
     session, calls = _canned_session(pages)
     client = APIClient(session=session)
 
-    items, _ = client.fetch_all_objects()
+    items, _, _ = client.fetch_all_objects()
 
     assert [i["object_id"] for i in items] == ["A", "B"]
     assert len(calls) == 2            # exact-full page, then the empty terminator
@@ -365,7 +373,7 @@ def test_fetch_all_photometry_uses_integer_id_cursor(monkeypatch):
     session, calls = _canned_session(pages)
     client = APIClient(session=session)
 
-    items, total = client.fetch_all_photometry()
+    items, total, _ = client.fetch_all_photometry()
 
     assert [i["id"] for i in items] == [10, 20, 30]
     # Photometry carries no total_accessible_count field; the paginator falls
@@ -374,3 +382,171 @@ def test_fetch_all_photometry_uses_integer_id_cursor(monkeypatch):
     assert total == 3
     assert calls[0].get("after") is None
     assert calls[1]["after"] == 20    # last id of the previous page
+
+
+# ---------------------------------------------------------------------------
+# Tombstones (incremental deletions) and the finals-only storage mirror
+# ---------------------------------------------------------------------------
+def test_incremental_sync_applies_tombstones():
+    """deleted_ids from each stream's first page are deleted locally, after
+    the upserts, and reported as purges; no full-sync purge runs."""
+    api = _make_fake_api([{"object_id": "O1"}], [{"spectrum_id": "S1"}], [], [], [])
+    api.fetch_all_objects.side_effect = None
+    api.fetch_all_objects.return_value = SyncStream([{"object_id": "O1"}], 5, [11, 12])
+    api.fetch_all_spectra.side_effect = None
+    api.fetch_all_spectra.return_value = SyncStream([{"spectrum_id": "S1"}], 9, [21])
+    api.fetch_all_storage.side_effect = None
+    api.fetch_all_storage.return_value = SyncStream([], 3, [31, 32, 33])
+    store = _make_fake_store()
+    store.get_max_objects_updated_at.return_value = "2026-01-01T00:00:00Z"
+    store.get_max_spectra_updated_at.return_value = "2026-01-01T00:00:00Z"
+    store.get_max_storage_updated_at.return_value = "2026-01-01T00:00:00Z"
+    # local count equals the server's accessible count after the delta
+    store._conn.execute.return_value.fetchone.return_value = [5]
+
+    result = sync_metadata(api, store, Path("/tmp/meta"), show_progress=False, full=False)
+
+    store.delete_objects_by_ids.assert_called_once_with([11, 12])
+    store.delete_spectra_by_ids.assert_called_once_with([21])
+    store.delete_storage_objects_by_ids.assert_called_once_with([31, 32, 33])
+    store.purge_stale_objects.assert_not_called()
+    store.purge_stale_spectra.assert_not_called()
+    store.purge_stale_storage_objects.assert_not_called()
+    assert result["objects_purged"] == 2
+    assert result["purged_spectra"] == 1
+    assert result["storage_purged"] == 3
+    assert result["needs_full_sync"] is False
+
+
+def test_full_sync_has_no_tombstones_and_purges_finals_only():
+    api = _make_fake_api([], [], [{"storage_key": "k"}], [], [])
+    store = _make_fake_store()
+
+    sync_metadata(api, store, Path("/tmp/meta"), show_progress=False, full=True)
+
+    store.delete_objects_by_ids.assert_not_called()
+    store.delete_spectra_by_ids.assert_not_called()
+    store.delete_storage_objects_by_ids.assert_not_called()
+    # The storage purge is scoped to the kinds the sync walked: intermediates
+    # indexed per selection by `pull --intermediate` must survive a catalog sync.
+    _args, kwargs = store.purge_stale_storage_objects.call_args
+    assert kwargs["product_types"] == list(MIRRORED_PRODUCT_TYPES)
+    # Rows of kinds the client never downloads are dropped on every sync.
+    store.drop_unmirrored_storage_rows.assert_called_once()
+
+
+def test_storage_stream_requests_finals_only():
+    api = _make_fake_api([], [], [], [], [])
+    store = _make_fake_store()
+
+    sync_metadata(api, store, Path("/tmp/meta"), show_progress=False, full=True)
+
+    assert api.fetch_all_storage.call_args.kwargs["product_types"] == list(FINAL_PRODUCT_TYPES)
+    assert MIRRORED_PRODUCT_TYPES == FINAL_PRODUCT_TYPES
+
+
+def test_paginate_sync_endpoint_collects_first_page_tombstones():
+    monkeypatch_pages = [
+        {"data": [{"object_id": "A"}], "pagination": {"total": 1},
+         "total_accessible_count": 1, "deleted_ids": [7, 8]},
+    ]
+    session, calls = _canned_session(monkeypatch_pages)
+    client = APIClient(session=session)
+
+    items, accessible, deleted = client.fetch_all_objects(updated_since="2026-01-01T00:00:00Z")
+
+    assert [i["object_id"] for i in items] == ["A"]
+    assert deleted == [7, 8]
+    assert calls[0]["updated_since"] == "2026-01-01T00:00:00Z"
+
+
+def test_paginate_sync_endpoint_tolerates_missing_deleted_ids():
+    """A server predating tombstones omits the key: an empty list, not a crash."""
+    session, _calls = _canned_session([
+        {"data": [], "pagination": {"total": 0}, "total_accessible_count": 0},
+    ])
+    client = APIClient(session=session)
+    _items, _total, deleted = client.fetch_all_objects()
+    assert deleted == []
+
+
+def test_fetch_all_storage_sends_scope_and_filters_rows(monkeypatch):
+    """Scope goes to the server as query params AND is re-applied locally, so
+    an unscoped answer (old RPC in the deploy window) yields only the rows
+    asked for."""
+    monkeypatch.setenv("CAMPFIRE_SYNC_STORAGE_PAGE_SIZE", "10")
+    session, calls = _canned_session([
+        {"data": [
+            {"id": 1, "product_type": "nirspec_spec", "observation": "obs_a", "field": None},
+            {"id": 2, "product_type": "spectrum_json", "observation": "obs_a", "field": None},
+            {"id": 3, "product_type": "nirspec_spec", "observation": "obs_b", "field": None},
+            {"id": 4, "product_type": "nircam_mosaic", "observation": None, "field": "egs"},
+        ], "pagination": {"total": 4}, "total_accessible_count": 4},
+    ])
+    client = APIClient(session=session)
+
+    rows, _total, _deleted = client.fetch_all_storage(
+        product_types=["nirspec_spec", "nircam_mosaic"],
+        observations=["obs_a"], fields=["egs"],
+    )
+
+    params = calls[0]
+    assert params["product_types"] == "nirspec_spec,nircam_mosaic"
+    assert params["observations"] == "obs_a"
+    assert params["fields"] == "egs"
+    assert [r["id"] for r in rows] == [1, 4]
+
+
+def test_fetch_all_storage_unscoped_sends_no_scope_params():
+    session, calls = _canned_session([
+        {"data": [], "pagination": {"total": 0}, "total_accessible_count": 0},
+    ])
+    client = APIClient(session=session)
+    client.fetch_all_storage()
+    assert "product_types" not in calls[0]
+    assert "observations" not in calls[0]
+
+
+def test_default_page_sizes():
+    # Fewer, larger pages: each keyset page is a dependent round trip whose
+    # fixed cost dominates (T2-F, #511 measurements).
+    assert DEFAULT_SYNC_PAGE_SIZE == 5000
+    assert DEFAULT_STORAGE_SYNC_PAGE_SIZE == 10000
+
+
+def test_incremental_storage_cursor_is_finals_only():
+    api = _make_fake_api([], [], [], [], [])
+    store = _make_fake_store()
+    store.get_max_objects_updated_at.return_value = "2026-01-01T00:00:00Z"
+    store._conn.execute.return_value.fetchone.return_value = [0]
+
+    sync_metadata(api, store, Path("/tmp/meta"), show_progress=False, full=False)
+
+    store.get_max_storage_updated_at.assert_called_once_with(
+        product_types=list(MIRRORED_PRODUCT_TYPES))
+
+
+def test_tombstones_yield_to_rows_refetched_by_the_same_walk():
+    """A first-page tombstone must not delete a row a later page of the same
+    walk re-sent (the row changed between the two snapshots): the fetched row
+    is the newer fact."""
+    api = _make_fake_api([], [], [], [], [])
+    api.fetch_all_objects.side_effect = None
+    api.fetch_all_objects.return_value = SyncStream(
+        [{"id": 11, "object_id": "O11"}], 5, [11, 12])
+    api.fetch_all_spectra.side_effect = None
+    api.fetch_all_spectra.return_value = SyncStream(
+        [{"id": 21, "spectrum_id": "S21"}], 9, [21, 22])
+    api.fetch_all_storage.side_effect = None
+    api.fetch_all_storage.return_value = SyncStream(
+        [{"id": 31, "storage_key": "k31"}], 3, [31])
+    store = _make_fake_store()
+    store.get_max_objects_updated_at.return_value = "2026-01-01T00:00:00Z"
+    store._conn.execute.return_value.fetchone.return_value = [5]
+
+    sync_metadata(api, store, Path("/tmp/meta"), show_progress=False, full=False)
+
+    store.delete_objects_by_ids.assert_called_once_with([12])
+    store.delete_spectra_by_ids.assert_called_once_with([22])
+    # every storage tombstone was re-fetched: nothing to delete at all
+    store.delete_storage_objects_by_ids.assert_not_called()

@@ -7,8 +7,12 @@
  * predate it — behind a 120 s statement_timeout exemption, because a deep
  * OFFSET page re-reads everything before it. That path is closed here: a
  * request that still asks for a positional page is answered with 400 and an
- * upgrade pointer instead of a silently wrong first page, and the RPCs lose
- * the timeout exemption. `p_offset` stayed on the RPC signatures for one
+ * upgrade pointer instead of a silently wrong first page. (The RPCs briefly
+ * lost the 120 s statement_timeout too, but it was never only an OFFSET
+ * relic: every stream's first page runs catalog-wide COUNTs, the client
+ * fires all five first pages at once, and service_role inherits
+ * authenticator's 8 s default — syncs died on /sync/spectra. It is back; see
+ * get_objects_for_sync in supabase/schemas/functions.sql.) `p_offset` stayed on the RPC signatures for one
  * release (the previous route build sent it on every call, and the migration
  * and the Vercel deploy land independently on merge) and was dropped once no
  * deployed route could send it. `offset=0` (what an old client sends for page one) is harmless

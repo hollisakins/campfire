@@ -924,6 +924,24 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
         click.echo("Note: --filters scopes NIRCam field products; this selection "
                    "has no NIRCam field, so it has no effect.")
 
+    # The catalog sync mirrors finals only; the intermediates of this selection
+    # are indexed here, on demand, so nobody pages through them otherwise.
+    if include_intermediate:
+        from .sync import refresh_storage_scope
+        click.echo("Indexing intermediates for this selection...")
+        try:
+            refreshed = refresh_storage_scope(
+                api, store,
+                product_types=list(INTERMEDIATE_PRODUCT_TYPES),
+                observations=list(target_obs) or None,
+                fields=list(target_fields) or None,
+                show_progress=True,
+            )
+            click.echo(f"  {refreshed['rows']} intermediate object(s) indexed.")
+        except Exception as e:
+            click.echo(f"  ⚠ Could not index intermediates: {e}", err=True)
+            click.echo("  Continuing with the intermediates already indexed locally.")
+
     # Reconcile DB with filesystem before planning — scoped to this pull's
     # selection so the pre-flight stays O(selection), not O(tree).
     verify = store.verify_local_objects(

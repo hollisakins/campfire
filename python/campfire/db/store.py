@@ -1288,32 +1288,182 @@ class LocalStore:
         """Flush pending writes (for callers batching mark_object_* calls)."""
         self._conn.commit()
 
-    def get_max_storage_updated_at(self) -> Optional[str]:
-        row = self._conn.execute(
-            "SELECT MAX(updated_at) FROM storage_objects"
-        ).fetchone()
+    def get_max_storage_updated_at(
+        self, product_types: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        """The incremental cursor for a storage walk: the newest ``updated_at``
+        among the mirror rows of ``product_types`` (all rows when None).
+
+        The catalog sync walks finals only, so its cursor must be computed over
+        finals only: the intermediates `pull --intermediate` indexes on demand
+        carry their own (often newer) timestamps, and a cursor taken over the
+        whole mirror would skip a final update that landed between the last
+        catalog sync and that pull.
+        """
+        if product_types:
+            ph = ",".join("?" * len(product_types))
+            row = self._conn.execute(
+                f"SELECT MAX(updated_at) FROM storage_objects WHERE product_type IN ({ph})",
+                list(product_types),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT MAX(updated_at) FROM storage_objects"
+            ).fetchone()
         return row[0] if row and row[0] else None
 
-    def purge_stale_storage_objects(self, sync_timestamp: str) -> dict:
-        """Delete mirror rows not seen in the latest full sync.
+    def purge_stale_storage_objects(
+        self,
+        sync_timestamp: str,
+        product_types: Optional[List[str]] = None,
+        observations: Optional[List[str]] = None,
+        fields: Optional[List[str]] = None,
+    ) -> dict:
+        """Delete mirror rows not seen in the latest full walk of a slice.
+
+        The slice is ``product_types`` x (``observations`` | ``fields``): the
+        kinds and scope the walk actually asked the server for. Rows outside it
+        were not offered for refresh and must not be purged — a catalog sync
+        walks finals only, while the intermediates of an observation are
+        refreshed by ``pull --intermediate`` for that observation alone.
+        Unscoped (all None) purges every row the walk did not touch, the
+        pre-slicing behaviour.
 
         Returns local files that are now orphaned (their registry row went away)
         so the caller can optionally clean them up.
         """
+        where = ["_synced_at < ?"]
+        params: list = [sync_timestamp]
+        if product_types:
+            ph = ",".join("?" * len(product_types))
+            where.append(f"product_type IN ({ph})")
+            params.extend(product_types)
+        scope = []
+        if observations:
+            ph = ",".join("?" * len(observations))
+            scope.append(f"observation IN ({ph})")
+            params.extend(observations)
+        if fields:
+            ph = ",".join("?" * len(fields))
+            scope.append(f"field IN ({ph})")
+            params.extend(fields)
+        if scope:
+            where.append("(" + " OR ".join(scope) + ")")
+        where_sql = " AND ".join(where)
+
         orphaned = self._conn.execute(
-            """SELECT local_path FROM storage_objects
-               WHERE _synced_at < ? AND local_path IS NOT NULL""",
-            (sync_timestamp,),
+            f"""SELECT local_path FROM storage_objects
+                WHERE {where_sql} AND local_path IS NOT NULL""",
+            params,
         ).fetchall()
         orphaned_files = [r["local_path"] for r in orphaned]
 
         cursor = self._conn.execute(
-            "DELETE FROM storage_objects WHERE _synced_at < ?",
-            (sync_timestamp,),
+            f"DELETE FROM storage_objects WHERE {where_sql}", params,
         )
         purged = cursor.rowcount
         self._conn.commit()
         return {"purged": purged, "orphaned_files": orphaned_files}
+
+    def drop_unmirrored_storage_rows(self, keep_types) -> int:
+        """Delete mirror rows of product kinds the client never downloads.
+
+        Older clients mirrored the whole registry — every spectrum's sidecars,
+        previews and rate files. Nothing reads those rows locally, so they are
+        dead weight in the mirror (and in ``verify``'s candidate set); a sync
+        clears them once and keeps them out.
+
+        Rows that carry this machine's own state are kept whatever their kind:
+        ``campfire push`` caches the registry rows for the keys it pushes and
+        records the push fast-path on them (``pushed_*``), and a deploy machine
+        pushes sidecars and rate files too. Deleting those would cost the next
+        push its stat fast-path — every sync, since push re-creates them.
+        """
+        keep = list(keep_types)
+        ph = ",".join("?" * len(keep))
+        cursor = self._conn.execute(
+            f"""DELETE FROM storage_objects
+                WHERE product_type NOT IN ({ph})
+                  AND pushed_identity IS NULL
+                  AND local_path IS NULL""",
+            keep,
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
+    # ------------------------------------------------------------------
+    # Tombstones (incremental sync deletions)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _chunks(ids, size: int = 500):
+        ids = list(ids)
+        for i in range(0, len(ids), size):
+            yield ids[i:i + size]
+
+    def delete_objects_by_ids(self, ids) -> int:
+        """Drop objects the server tombstoned (soft-deleted / un-published).
+
+        Keyed on the server's integer id (the local PK). The object's list
+        memberships and its photometry go with it: the photometry stream
+        carries no tombstones of its own (its rows follow the object), and an
+        incremental sync never purges, so nothing else would remove them.
+        Ids not present locally are ignored.
+        """
+        n = 0
+        for chunk in self._chunks(ids):
+            ph = ",".join("?" * len(chunk))
+            for child in ("object_list_memberships", "object_photometry"):
+                self._conn.execute(
+                    f"""DELETE FROM {child}
+                        WHERE object_id IN (SELECT object_id FROM objects WHERE id IN ({ph}))""",
+                    chunk,
+                )
+            n += self._conn.execute(
+                f"DELETE FROM objects WHERE id IN ({ph})", chunk,
+            ).rowcount
+        self._conn.commit()
+        return n
+
+    def delete_spectra_by_ids(self, ids) -> int:
+        """Drop spectra the server tombstoned (revoked, or under a deleted object).
+
+        Their emission-line fits go with them (the line-fit stream carries no
+        tombstones of its own; its rows follow the spectrum, and an
+        incremental sync never purges).
+        """
+        n = 0
+        for chunk in self._chunks(ids):
+            ph = ",".join("?" * len(chunk))
+            self._conn.execute(
+                f"DELETE FROM spectrum_line_fits WHERE spectrum_id IN ({ph})", chunk,
+            )
+            n += self._conn.execute(
+                f"DELETE FROM spectra WHERE id IN ({ph})", chunk,
+            ).rowcount
+        self._conn.commit()
+        return n
+
+    def delete_storage_objects_by_ids(self, ids) -> dict:
+        """Drop mirror rows the server tombstoned (superseded / revoked / their
+        spectrum un-published). Keyed on the registry id column, so a key that
+        was re-registered under a new row is left alone. Returns the same
+        ``{"purged", "orphaned_files"}`` shape as the full-sync purge.
+        """
+        purged = 0
+        orphaned: List[str] = []
+        for chunk in self._chunks(ids):
+            ph = ",".join("?" * len(chunk))
+            rows = self._conn.execute(
+                f"""SELECT local_path FROM storage_objects
+                    WHERE id IN ({ph}) AND local_path IS NOT NULL""",
+                chunk,
+            ).fetchall()
+            orphaned.extend(r["local_path"] for r in rows)
+            purged += self._conn.execute(
+                f"DELETE FROM storage_objects WHERE id IN ({ph})", chunk,
+            ).rowcount
+        self._conn.commit()
+        return {"purged": purged, "orphaned_files": orphaned}
 
     def get_pending_objects(
         self,

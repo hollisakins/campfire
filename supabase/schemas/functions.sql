@@ -1021,6 +1021,10 @@ DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, I
 -- rollout, is dropped now that no deployed route sends it.
 DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT);
 
+-- Tombstones: RETURNS gained deleted_ids, so the same-signature function is
+-- dropped before CREATE (a return-type change is not a CREATE OR REPLACE).
+DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT);
+
 CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_program_slugs TEXT[],
   p_user_id UUID DEFAULT NULL,
@@ -1032,14 +1036,24 @@ CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   -- When non-NULL the scan seeks straight to the next id via the
   -- objects_object_id_key UNIQUE btree, so each page costs O(log N + limit).
   -- Keyset is the only pagination (T2-F, #511): OFFSET is refused at the
-  -- route (client floor 0.5.0), p_offset is gone from the signature, and so
-  -- is the 120 s statement_timeout exemption that existed for deep OFFSET
-  -- pages — every page runs under the role's default timeout.
+  -- route (client floor 0.5.0) and p_offset is gone from the signature.
   p_after_object_id TEXT DEFAULT NULL
 )
-RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
+RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT,
+              deleted_ids INTEGER[])
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Statement-timeout backstop for the five /sync/* RPCs (this one,
+-- get_spectra_for_sync, get_photometry_for_sync, get_storage_objects_for_sync,
+-- get_line_fits_for_sync). T2-F (#536) dropped it as an OFFSET-era relic, but
+-- it never only covered deep OFFSET pages: the first page of every stream
+-- still runs catalog-wide COUNTs, and `campfire sync` fires all five first
+-- pages concurrently. The routes call these as service_role, which has no
+-- timeout of its own and inherits authenticator's 8 s, so on a busy or small
+-- instance the counts were cancelled mid-sync ("canceling statement due to
+-- statement timeout" on /sync/spectra). Keyset pages themselves stay cheap;
+-- this only stops a slow first page from killing the whole sync.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -1131,6 +1145,24 @@ BEGIN
       AND o.programs && p_program_slugs
       AND o.is_active = true
       AND (p_include_unpublished OR o.has_published_spectrum)
+  ),
+  -- Tombstones: on the first incremental page (p_updated_since set, no
+  -- cursor), the ids of in-scope objects that changed since the cursor and are
+  -- no longer visible to this caller -- soft-deleted (is_active = false;
+  -- apply_object_reconciliation stamps updated_at) or, for non-admins, left without a
+  -- published spectrum (recompute_has_published_spectrum stamps updated_at on
+  -- the flip). The client deletes them locally, so an incremental sync no
+  -- longer leaves ghosts that force the next pull into a full resync. Only the
+  -- integer ids travel: nothing about an unpublished object is disclosed, and
+  -- an id the client never mirrored deletes nothing.
+  deleted AS (
+    SELECT COALESCE(array_agg(o.id ORDER BY o.id), '{}'::INTEGER[]) AS ids
+    FROM objects o
+    WHERE p_updated_since IS NOT NULL
+      AND p_after_object_id IS NULL
+      AND o.programs && p_program_slugs
+      AND o.updated_at > p_updated_since
+      AND NOT (o.is_active AND (p_include_unpublished OR o.has_published_spectrum))
   )
   SELECT
     COALESCE(jsonb_agg(
@@ -1177,7 +1209,8 @@ BEGIN
       ORDER BY m.object_id
     ), '[]'::jsonb),
     COALESCE((SELECT cnt FROM total), 0)::BIGINT,
-    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
+    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT,
+    (SELECT d.ids FROM deleted d)
   FROM matched m
   LEFT JOIN member_targets_agg mt ON mt.object_id = m.id
   LEFT JOIN spectra_agg         sp ON sp.object_id = m.id
@@ -1202,6 +1235,9 @@ DROP FUNCTION IF EXISTS public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, I
 -- T2-F follow-up (#511): p_offset signature dropped (see get_objects_for_sync).
 DROP FUNCTION IF EXISTS public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, TEXT);
 
+-- Tombstones: RETURNS gained deleted_ids (see get_objects_for_sync).
+DROP FUNCTION IF EXISTS public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT);
+
 CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
   p_program_slugs TEXT[],
   p_user_id UUID DEFAULT NULL,
@@ -1214,9 +1250,12 @@ CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
   -- get_objects_for_sync for the design; keyset-only since T2-F (#511).
   p_after_spectrum_id TEXT DEFAULT NULL
 )
-RETURNS TABLE(spectra JSONB, total_count BIGINT, total_accessible_count BIGINT)
+RETURNS TABLE(spectra JSONB, total_count BIGINT, total_accessible_count BIGINT,
+              deleted_ids INTEGER[])
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Timeout backstop for the first-page counts; see get_objects_for_sync.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -1226,44 +1265,104 @@ BEGIN
            s.signal_to_noise, s.exposure_time,
            s.cfpipe_version, s.crds_context, s.jwst_version, s.date_obs, s.reduced_at,
            s.redshift_auto, s.dq_flags,
-           t.program_slug, t.observation, t.field,
-           s.created_at, s.updated_at
+           -- program_slug / observation are the trigger-owned row-local copies
+           -- of the parent target's (perf T2-A, #504), so they read off the
+           -- spectra row; targets is joined only for field and the object link.
+           s.program_slug, s.observation, t.field,
+           s.created_at,
+           -- The row's sync timestamp is the later of its own and its
+           -- object's: a row re-sent because the object changed must advance
+           -- the client's cursor (MAX of mirrored updated_at) past that change,
+           -- or it would be re-sent on every incremental sync. Same pattern
+           -- as get_line_fits_for_sync's effective_updated_at.
+           GREATEST(s.updated_at, o.updated_at) AS updated_at
     FROM spectra s
     JOIN targets t ON t.target_id = s.target_id
     LEFT JOIN objects o ON o.id = t.object_id
-    WHERE t.program_slug = ANY(p_program_slugs)
+    -- Program scope on the row-local column: the keyset walk down
+    -- idx_spectra_spectrum_id rejects out-of-scope rows without fetching the
+    -- target first (a user with a few programs used to pay a targets lookup
+    -- for every spectrum walked past).
+    WHERE s.program_slug = ANY(p_program_slugs)
       AND (o.id IS NULL OR o.is_active = true)
-      -- B1: fail-closed publish gate (this RPC always bypasses RLS).
-      AND (p_include_unpublished OR s.deploy_status = 'published')
-      AND (p_updated_since IS NULL OR s.updated_at > p_updated_since)
+      -- B1: fail-closed publish gate (this RPC always bypasses RLS). Drafts
+      -- sync only for admins opting in; revoked never syncs -- it is the
+      -- soft-deleted state and is tombstoned below instead.
+      AND (s.deploy_status = 'published'
+           OR (p_include_unpublished AND s.deploy_status = 'draft'))
+      -- Incremental: the row itself, or its object, changed since the cursor.
+      -- The object clause is the resurrection path: a spectrum tombstoned as
+      -- a member of a soft-deleted object comes back when the object is
+      -- reactivated (which stamps objects.updated_at) even though the
+      -- spectrum row did not change. Mirrors get_line_fits_for_sync.
+      AND (p_updated_since IS NULL
+           OR s.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
       -- Keyset (#103): spectrum_id is UNIQUE (idx_spectra_spectrum_id), so a
       -- strict > needs no tiebreaker; keep the ordering column UNIQUE.
       AND (p_after_spectrum_id IS NULL OR s.spectrum_id > p_after_spectrum_id)
     ORDER BY s.spectrum_id
     LIMIT p_limit
   ),
-  -- Count CTEs are gated on p_include_counts; when FALSE the planner
-  -- collapses them to One-Time Filter: false and skips the scan/join.
-  total AS (
-    SELECT COUNT(*) AS cnt
+  -- First-page counts, gated on p_include_counts (when FALSE the planner
+  -- collapses the CTE to One-Time Filter: false). One pass over spectra
+  -- yields both numbers: total_count (the incremental window) is a FILTER on
+  -- the scan that produces total_accessible_count, and the soft-deleted-
+  -- object exclusion is an anti-join against the (tiny, partial-indexed) set
+  -- of inactive objects. Previously two spectra x targets x objects hash
+  -- joins ran back to back on every first page.
+  counts AS (
+    SELECT COUNT(*) FILTER (WHERE p_updated_since IS NULL
+                              OR s.updated_at > p_updated_since
+                              -- same object clause as matched; the recently
+                              -- changed objects are a small hashed set
+                              OR s.target_id IN (
+                                SELECT t.target_id
+                                FROM targets t
+                                JOIN objects o ON o.id = t.object_id
+                                WHERE o.updated_at > p_updated_since)) AS total_cnt,
+           COUNT(*) AS accessible_cnt
     FROM spectra s
-    JOIN targets t ON t.target_id = s.target_id
-    LEFT JOIN objects o ON o.id = t.object_id
     WHERE p_include_counts
-      AND t.program_slug = ANY(p_program_slugs)
-      AND (o.id IS NULL OR o.is_active = true)
-      AND (p_include_unpublished OR s.deploy_status = 'published')
-      AND (p_updated_since IS NULL OR s.updated_at > p_updated_since)
+      AND s.program_slug = ANY(p_program_slugs)
+      AND (s.deploy_status = 'published'
+           OR (p_include_unpublished AND s.deploy_status = 'draft'))
+      AND NOT EXISTS (
+        SELECT 1
+        FROM targets t
+        JOIN objects o ON o.id = t.object_id
+        WHERE t.target_id = s.target_id
+          AND o.is_active = false)
   ),
-  accessible AS (
-    SELECT COUNT(*) AS cnt
-    FROM spectra s
-    JOIN targets t ON t.target_id = s.target_id
-    LEFT JOIN objects o ON o.id = t.object_id
-    WHERE p_include_counts
-      AND t.program_slug = ANY(p_program_slugs)
-      AND (o.id IS NULL OR o.is_active = true)
-      AND (p_include_unpublished OR s.deploy_status = 'published')
+  -- Tombstones (see get_objects_for_sync): first incremental page only.
+  deleted AS (
+    SELECT COALESCE(array_agg(x.id ORDER BY x.id), '{}'::INTEGER[]) AS ids
+    FROM (
+      -- Un-published since the cursor: revoked for everyone, plus a draft an
+      -- admin's mirror may carry. set_spectra_deploy_status's write reaches
+      -- here because deploy_status is in bump_spectra_updated_at_trigger's
+      -- column list.
+      SELECT s.id
+      FROM spectra s
+      WHERE p_updated_since IS NOT NULL
+        AND p_after_spectrum_id IS NULL
+        AND s.program_slug = ANY(p_program_slugs)
+        AND s.updated_at > p_updated_since
+        AND NOT (s.deploy_status = 'published'
+                 OR (p_include_unpublished AND s.deploy_status = 'draft'))
+      UNION
+      -- Members of an object soft-deleted since the cursor: the spectrum row
+      -- itself did not change, so its own updated_at says nothing.
+      SELECT s.id
+      FROM spectra s
+      JOIN targets t ON t.target_id = s.target_id
+      JOIN objects o ON o.id = t.object_id
+      WHERE p_updated_since IS NOT NULL
+        AND p_after_spectrum_id IS NULL
+        AND s.program_slug = ANY(p_program_slugs)
+        AND o.is_active = false
+        AND o.updated_at > p_updated_since
+    ) x
   )
   SELECT
     COALESCE(jsonb_agg(
@@ -1295,8 +1394,9 @@ BEGIN
       -- the last element). matched has no post-ORDER joins, but pin it anyway.
       ORDER BY m.spectrum_id
     ), '[]'::jsonb),
-    COALESCE((SELECT cnt FROM total), 0)::BIGINT,
-    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
+    COALESCE((SELECT c.total_cnt FROM counts c), 0)::BIGINT,
+    COALESCE((SELECT c.accessible_cnt FROM counts c), 0)::BIGINT,
+    (SELECT d.ids FROM deleted d)
   FROM matched m;
 END;
 $$;
@@ -1330,6 +1430,8 @@ CREATE OR REPLACE FUNCTION public.get_photometry_for_sync(
 RETURNS TABLE(photometry_records JSONB, total_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Timeout backstop for the first-page counts; see get_objects_for_sync.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -1337,13 +1439,28 @@ BEGIN
     SELECT op.id, o.object_id, op.field, op.catalog_name, op.catalog_id,
            op.match_distance_arcsec, op.photometry, op.photo_z,
            op.photo_z_err_lo, op.photo_z_err_hi, op.has_pz,
-           op.created_at, op.updated_at
+           op.created_at,
+           -- Sync timestamp: the later of the row's own and its object's, so a
+           -- row re-sent because the object changed advances the client's
+           -- cursor (see get_spectra_for_sync).
+           GREATEST(op.updated_at, o.updated_at) AS updated_at
     FROM object_photometry op
     JOIN objects o ON o.id = op.object_id
     WHERE o.programs && p_program_slugs
+      -- Soft-deleted objects are tombstoned by the objects stream (which
+      -- cascades to their photometry locally); their rows must not ride the
+      -- object-changed clause below back in.
+      AND o.is_active = true
       -- B1: fail-closed publish gate (this RPC always bypasses RLS).
       AND (p_include_unpublished OR o.has_published_spectrum)
-      AND (p_updated_since IS NULL OR op.updated_at > p_updated_since)
+      -- Incremental: the row itself, or its object, changed since the cursor.
+      -- The object clause is the resurrection path: photometry deleted along
+      -- with a tombstoned object (un-published, or soft-deleted) comes back
+      -- when the object does -- both flips stamp objects.updated_at -- even
+      -- though the photometry row did not change. Mirrors get_line_fits_for_sync.
+      AND (p_updated_since IS NULL
+           OR op.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
       -- Keyset (#103): op.id is the PK, so a strict > needs no tiebreaker.
       AND (p_after_id IS NULL OR op.id > p_after_id)
     ORDER BY op.id
@@ -1357,8 +1474,16 @@ BEGIN
     JOIN objects o ON o.id = op.object_id
     WHERE p_include_counts
       AND o.programs && p_program_slugs
+      AND o.is_active = true
       AND (p_include_unpublished OR o.has_published_spectrum)
-      AND (p_updated_since IS NULL OR op.updated_at > p_updated_since)
+      -- Incremental: the row itself, or its object, changed since the cursor.
+      -- The object clause is the resurrection path: photometry deleted along
+      -- with a tombstoned object (un-published, or soft-deleted) comes back
+      -- when the object does -- both flips stamp objects.updated_at -- even
+      -- though the photometry row did not change. Mirrors get_line_fits_for_sync.
+      AND (p_updated_since IS NULL
+           OR op.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
   )
   SELECT
     COALESCE(jsonb_agg(
@@ -1412,6 +1537,8 @@ CREATE OR REPLACE FUNCTION public.get_line_fits_for_sync(
 RETURNS TABLE(line_fit_records JSONB, total_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Timeout backstop for the first-page counts; see get_objects_for_sync.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -4286,6 +4413,10 @@ DROP FUNCTION IF EXISTS public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ,
 -- T2-F follow-up (#511): p_offset signature dropped (see get_objects_for_sync).
 DROP FUNCTION IF EXISTS public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, INTEGER, BOOLEAN, BOOLEAN, BIGINT);
 
+-- Tombstones + scope filters: new parameters and RETURNS, so the previous
+-- signature is dropped (its grants go with it; re-granted below).
+DROP FUNCTION IF EXISTS public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, BIGINT);
+
 CREATE OR REPLACE FUNCTION public.get_storage_objects_for_sync(
   p_program_slugs TEXT[],
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
@@ -4298,11 +4429,23 @@ CREATE OR REPLACE FUNCTION public.get_storage_objects_for_sync(
   -- irrelevant to the client (it upserts by key), so this orders by the PK.
   -- Keyset-only since T2-F (#511): the scope predicate (published EXISTS
   -- checks) is evaluated on only ~p_limit rows past the seek.
-  p_after_id BIGINT DEFAULT NULL
+  p_after_id BIGINT DEFAULT NULL,
+  -- Mirror slimming: the client mirrors only the product kinds it can
+  -- download (finals by default) and refreshes intermediates per observation /
+  -- field when `pull --intermediate` asks for them, so it never pages through
+  -- the sidecar and intermediate rows that make up most of the registry.
+  -- NULL = unfiltered (the admin full mirror). observation / field scope is a
+  -- union, mirroring the client's pending-object query.
+  p_product_types TEXT[] DEFAULT NULL,
+  p_observations TEXT[] DEFAULT NULL,
+  p_fields TEXT[] DEFAULT NULL
 )
-RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
+RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT,
+              deleted_ids BIGINT[])
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Timeout backstop for the first-page counts; see get_objects_for_sync.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -4313,9 +4456,13 @@ BEGIN
   -- The two copies must stay in sync (same house pattern as get_objects_for_sync's
   -- matched vs. total/accessible).
   WITH scoped AS (
-    SELECT so.updated_at
+    SELECT so.updated_at, so.spectrum_id
     FROM storage_objects so
     WHERE so.status = 'active'
+      AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
+      AND ((p_observations IS NULL AND p_fields IS NULL)
+           OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
+           OR so.field = ANY(COALESCE(p_fields, '{}'::TEXT[])))
       AND (
         p_include_unpublished
         OR (so.spectrum_id IS NOT NULL AND EXISTS (
@@ -4338,6 +4485,10 @@ BEGIN
     SELECT so.*
     FROM storage_objects so
     WHERE so.status = 'active'
+      AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
+      AND ((p_observations IS NULL AND p_fields IS NULL)
+           OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
+           OR so.field = ANY(COALESCE(p_fields, '{}'::TEXT[])))
       AND (
         p_include_unpublished
         OR (so.spectrum_id IS NOT NULL AND EXISTS (
@@ -4353,7 +4504,16 @@ BEGIN
                 AND d.status = 'published'
                 AND (d.field IS NOT NULL OR o.program_slug = ANY(p_program_slugs))))
       )
-      AND (p_updated_since IS NULL OR so.updated_at > p_updated_since)
+      -- Incremental: the row itself changed, or its spectrum did. The
+      -- spectrum clause is the resurrection path for non-admins: rows
+      -- tombstoned when their spectrum was un-published come back on
+      -- republish (which stamps spectra.updated_at) even though the registry
+      -- row did not change. A semi-join, not a per-row EXISTS: the recently
+      -- changed spectra are a small hashed set. Mirrors get_line_fits_for_sync.
+      AND (p_updated_since IS NULL
+           OR so.updated_at > p_updated_since
+           OR so.spectrum_id IN (SELECT s2.spectrum_id FROM spectra s2
+                                 WHERE s2.updated_at > p_updated_since))
       -- Keyset (#103): id is the PK, so a strict > needs no tiebreaker.
       AND (p_after_id IS NULL OR so.id > p_after_id)
     ORDER BY so.id
@@ -4362,11 +4522,58 @@ BEGIN
   total AS (
     SELECT COUNT(*) AS cnt FROM scoped
     WHERE p_include_counts
-      AND (p_updated_since IS NULL OR scoped.updated_at > p_updated_since)
+      AND (p_updated_since IS NULL
+           OR scoped.updated_at > p_updated_since
+           OR scoped.spectrum_id IN (SELECT s2.spectrum_id FROM spectra s2
+                                     WHERE s2.updated_at > p_updated_since))
   ),
   accessible AS (
     SELECT COUNT(*) AS cnt FROM scoped
     WHERE p_include_counts
+  ),
+  -- Tombstones (see get_objects_for_sync): first incremental page only. Rows
+  -- that left the active state, and active rows whose spectrum was
+  -- un-published (invisible to non-admins from now on; the spectrum's
+  -- updated_at moves on a deploy_status change). Program-scoped like the
+  -- sibling CTEs: a non-admin's tombstones are drawn from rows whose
+  -- observation (or spectrum) is in an accessible program, plus field-only
+  -- products, which the main scope shows to everyone when published. Only
+  -- integer ids travel, and an id the client never mirrored deletes nothing.
+  -- Hard deletes (deploy remove) still need a full sync to clear.
+  deleted AS (
+    SELECT COALESCE(array_agg(x.id ORDER BY x.id), '{}'::BIGINT[]) AS ids
+    FROM (
+      SELECT so.id
+      FROM storage_objects so
+      WHERE p_updated_since IS NOT NULL
+        AND p_after_id IS NULL
+        AND so.status <> 'active'
+        AND so.updated_at > p_updated_since
+        AND (p_include_unpublished
+             OR (so.observation IS NULL AND so.field IS NOT NULL)
+             OR EXISTS (SELECT 1 FROM observations ob
+                        WHERE ob.name = so.observation
+                          AND ob.program_slug = ANY(p_program_slugs)))
+        AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
+        AND ((p_observations IS NULL AND p_fields IS NULL)
+             OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
+             OR so.field = ANY(COALESCE(p_fields, '{}'::TEXT[])))
+      UNION
+      SELECT so.id
+      FROM storage_objects so
+      JOIN spectra s ON s.spectrum_id = so.spectrum_id
+      WHERE p_updated_since IS NOT NULL
+        AND p_after_id IS NULL
+        AND NOT p_include_unpublished
+        AND so.status = 'active'
+        AND s.program_slug = ANY(p_program_slugs)
+        AND s.deploy_status <> 'published'
+        AND s.updated_at > p_updated_since
+        AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
+        AND ((p_observations IS NULL AND p_fields IS NULL)
+             OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
+             OR so.field = ANY(COALESCE(p_fields, '{}'::TEXT[])))
+    ) x
   )
   SELECT
     COALESCE(jsonb_agg(
@@ -4390,20 +4597,25 @@ BEGIN
         'deployment_id', m.deployment_id,
         'cfpipe_version', m.cfpipe_version,
         'created_at', m.created_at,
-        'updated_at', m.updated_at
+        -- Sync timestamp: the later of the row's own and its spectrum's, so a
+        -- row re-sent because the spectrum changed advances the client's
+        -- cursor (see get_spectra_for_sync).
+        'updated_at', GREATEST(m.updated_at, s.updated_at)
       )
       -- Keyset (#103): page array must be id-ordered (client cursors on the
       -- last element).
       ORDER BY m.id
     ), '[]'::jsonb),
     COALESCE((SELECT cnt FROM total), 0)::BIGINT,
-    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
-  FROM matched m;
+    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT,
+    (SELECT d.ids FROM deleted d)
+  FROM matched m
+  LEFT JOIN spectra s ON s.spectrum_id = m.spectrum_id;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, BIGINT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, BIGINT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, BIGINT, TEXT[], TEXT[], TEXT[]) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, BIGINT, TEXT[], TEXT[], TEXT[]) TO service_role;
 
 
 -- =============================================================================
@@ -5803,14 +6015,24 @@ BEGIN
   WHERE t.target_id = ANY(v_targets);
   GET DIAGNOSTICS v_n_targets = ROW_COUNT;
 
+  -- Only rows whose flag actually flips are written, and the write stamps
+  -- updated_at: the flip changes what a non-admin sync client may see, and
+  -- get_objects_for_sync's incremental delta (and its tombstones) keys on
+  -- updated_at. objects_updated therefore counts flips, not members.
   UPDATE objects o
-  SET has_published_spectrum = EXISTS (
-        SELECT 1 FROM targets t WHERE t.object_id = o.id AND t.has_published_spectrum
-      )
-  WHERE o.id IN (
-    SELECT DISTINCT t2.object_id FROM targets t2
-    WHERE t2.target_id = ANY(v_targets) AND t2.object_id IS NOT NULL
-  );
+  SET has_published_spectrum = v.pub,
+      updated_at = now()
+  FROM (
+    SELECT o2.id,
+           EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o2.id AND t.has_published_spectrum) AS pub
+    FROM objects o2
+    WHERE o2.id IN (
+      SELECT DISTINCT t2.object_id FROM targets t2
+      WHERE t2.target_id = ANY(v_targets) AND t2.object_id IS NOT NULL
+    )
+  ) v
+  WHERE o.id = v.id
+    AND o.has_published_spectrum IS DISTINCT FROM v.pub;
   GET DIAGNOSTICS v_n_objects = ROW_COUNT;
 
   RETURN json_build_object('targets_updated', v_n_targets, 'objects_updated', v_n_objects);
