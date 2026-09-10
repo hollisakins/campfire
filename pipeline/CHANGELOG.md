@@ -29,6 +29,19 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- **`linefit`: doublet totals and honest blend centres (`LFITVER` 2).** Close
+  doublets with a free ratio (NV, CIV, OIII], CIII], MgII, [OII], [SII];
+  `linelist.DOUBLETS`) are now also reported as a *total* under the doublet's
+  own catalog name (`CIII1908`, `OII3727`, `SII6725`, ...; `component =
+  'doublet'`): the covariance-propagated sum of the two components where the
+  grating resolves them (new flag `resolved` = 2048), the single blended
+  measurement where it does not — so a catalog selection on the total means
+  the same thing in every grating, while the components keep their own rows.
+  A member absorbed by a line outside the doublet leaves the total `blended`
+  with `blend_into` naming the carrier. Unresolved blends are now modelled at
+  the `Line.weight`-averaged wavelength of the pair instead of the primary's
+  rest wavelength (negligible for Hα+[NII], honest for [OII]). Every existing
+  `_lines.fits` refits on the next run (version change); no other fluxes change.
 - **New product: emission-line fluxes at the inspected redshift** (`cfpipe nirspec
   linefit`, docs/design-emission-line-fitting.md). Reads the portal's inspected
   redshifts from `reference/nirspec/<obs>/redshifts.toml` (materialized by

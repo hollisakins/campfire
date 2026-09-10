@@ -20,7 +20,8 @@ The ``_lines.fits`` product::
 
     PRIMARY   provenance header (ZUSED/ZSRC/ZQUAL/OBJID/OBJVER, ZFIT, global
               kinematics, counts, LFITVER, SPECHASH, CMPFRVER, CMPFRTIM, ...)
-    LINES     one row per measured line (and per accepted broad component)
+    LINES     one row per measured line, per accepted broad component and per
+              doublet total (``component`` = narrow | broad | doublet)
     MODEL     wave / model / cont (flam) on the spectrum grid, NaN outside windows
     COMPLEXES the fitted windows
 
@@ -46,6 +47,7 @@ from astropy.table import Table
 from campfire_pipeline.nirspec.linefit import (
     LINEFIT_VERSION, LineFitConfig, fit_lines, make_r_function,
 )
+from campfire_pipeline.nirspec.linelist import DOUBLETS_BY_NAME
 from campfire_pipeline.nirspec.redshift_reference import (
     RedshiftEntry, load_redshifts, redshifts_path,
 )
@@ -235,6 +237,7 @@ def write_lines_file(path, result, *, z_source, entry: RedshiftEntry | None, spe
     hdr['NDETECT'] = (int(s['n_detected']), 'Lines above detect_snr')
     hdr['NCOMPLEX'] = (int(s['n_complexes']), 'Fitted line complexes')
     hdr['NBROAD'] = (int(s.get('n_broad', 0)), 'Accepted broad components')
+    hdr['NDOUBLET'] = (int(s.get('n_doublets', 0)), 'Doublet totals with a flux')
     hdr['FLSF'] = (float(f_lsf), 'LSF scale applied to the R-curve')
     hdr['GRATING'] = (str(grating).upper(), 'Grating')
     hdr['FILTER'] = (str(filt).upper(), 'Filter')
@@ -340,6 +343,8 @@ def read_lines_file(path) -> dict:
             rec[c] = v
         name = rec.pop('name')
         rec['label'] = _label_for(name)
+        if name in DOUBLETS_BY_NAME:
+            rec['members'] = list(DOUBLETS_BY_NAME[name].members)
         lines[name] = rec
     model = dict(wave=np.asarray(mt['wave']), model=np.asarray(mt['model']), cont=np.asarray(mt['cont']))
     complexes = [dict(index=int(r['index']), lines=str(r['lines']).split(','), lo_idx=int(r['lo_idx']),
@@ -350,11 +355,14 @@ def read_lines_file(path) -> dict:
 
 def _label_for(name: str) -> str:
     """Display label from the catalog (labels are non-ASCII, so they are not
-    stored in the FITS table; ``Halpha_broad`` → ``Hα (broad)``)."""
-    from campfire_pipeline.nirspec.linelist import LINES_BY_NAME
+    stored in the FITS table; ``Halpha_broad`` → ``Hα (broad)``; doublet
+    totals such as ``CIII1908`` resolve through ``linelist.DOUBLETS``)."""
+    from campfire_pipeline.nirspec.linelist import get_label
     base, _, suffix = name.partition('_')
-    line = LINES_BY_NAME.get(base)
-    label = line.label if line else base
+    try:
+        label = get_label(base)
+    except KeyError:
+        label = base
     return f"{label} ({suffix})" if suffix else label
 
 

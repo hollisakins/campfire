@@ -32,6 +32,16 @@ Every entry is a :class:`Line`:
 
 Adding a line = adding a row here (and a rest-wavelength entry in the web
 overlay if it should be drawn).
+
+Close doublets whose ratio is *not* fixed by atomic physics (CIII], [OII],
+[SII], MgII, CIV, OIII], NV) are listed a second time as a :class:`Doublet`:
+the catalog always carries the doublet **total** under the doublet's own name
+(``CIII1908``, ``OII3727``, ...) — the sum of the two components with their
+covariance when the grating resolves them, the single blended measurement
+when it does not — so a selection on the total means the same thing in every
+grating, while the components keep their individual measurements (or the
+``blended`` flag) exactly as before. Ratio-tied doublets ([OIII], [NII], [OI])
+need no total: it is a fixed multiple of the primary.
 """
 
 from __future__ import annotations
@@ -107,6 +117,56 @@ LINES: tuple[Line, ...] = (
 )
 
 LINES_BY_NAME: dict[str, Line] = {line.name: line for line in LINES}
+
+
+@dataclass(frozen=True)
+class Doublet:
+    """A close pair reported as one *total* measurement (see module docs).
+
+    ``name`` is the catalog key of the total (a schema identifier like a
+    line name); ``members`` are the two component line names, blue first.
+    """
+    name: str
+    label: str
+    members: tuple[str, str]
+
+    @property
+    def wave(self) -> float:
+        """Weight-averaged rest vacuum wavelength of the members (Angstrom)."""
+        return doublet_wave(self.members)
+
+
+def doublet_wave(names) -> float:
+    """``Line.weight``-averaged rest wavelength of a set of catalog lines —
+    where an unresolved blend of them is centred."""
+    lines = [LINES_BY_NAME[n] for n in names]
+    w = sum(l.weight for l in lines)
+    return sum(l.wave * l.weight for l in lines) / w
+
+
+DOUBLETS: tuple[Doublet, ...] = (
+    Doublet('NV1240',   'NVλλ1239,1243',    ('NV1239', 'NV1243')),
+    Doublet('CIV1549',  'CIVλλ1548,1551',   ('CIV1548', 'CIV1551')),
+    Doublet('OIII1663', 'OIII]λλ1661,1666', ('OIII1661', 'OIII1666')),
+    Doublet('CIII1908', 'CIII]λλ1907,1909', ('CIII1907', 'CIII1909')),
+    Doublet('MgII2800', 'MgIIλλ2796,2803',  ('MgII2796', 'MgII2803')),
+    Doublet('OII3727',  '[OII]λλ3726,3729', ('OII3726', 'OII3729')),
+    Doublet('SII6725',  '[SII]λλ6716,6731', ('SII6716', 'SII6731')),
+)
+
+DOUBLETS_BY_NAME: dict[str, Doublet] = {d.name: d for d in DOUBLETS}
+
+#: component line name → the doublet it belongs to
+DOUBLET_OF_MEMBER: dict[str, Doublet] = {m: d for d in DOUBLETS for m in d.members}
+
+
+def get_label(name: str) -> str:
+    """Display label for any catalog key (line or doublet total)."""
+    if name in LINES_BY_NAME:
+        return LINES_BY_NAME[name].label
+    if name in DOUBLETS_BY_NAME:
+        return DOUBLETS_BY_NAME[name].label
+    raise KeyError(f"unknown emission line '{name}'")
 
 
 def get_line(name: str) -> Line:
