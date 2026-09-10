@@ -708,9 +708,6 @@ def _line_records(cx: _Complex, wm: _WindowModel, fit, z, cfg: LineFitConfig, ki
         rec['flags'] = int(flags)
         records[m.line.name] = rec
 
-    records.update(_doublet_records(cx, wm, fit, records, z, dv, dv_err, sv, sv_err,
-                                    chi2, dof, n_use, cont_at))
-
     if fit.get('broad'):
         dv_b, sb = float(p[nl + 2]), float(p[nl + 3])
         dvb_err = float(np.sqrt(diag[nl + 2])) if diag[nl + 2] > 0 else float('nan')
@@ -737,11 +734,17 @@ def _line_records(cx: _Complex, wm: _WindowModel, fit, z, cfg: LineFitConfig, ki
                 blend_members=None, blend_into=None, tied_to=None,
                 broad_delta_chi2=fit.get('delta_chi2'),
             )
+
+    # Doublet totals last, so they inherit the members' final flags (BROAD
+    # included: the total is the *narrow* total, like every narrow record, and
+    # the flag says a `<member>_broad` component exists beside it).
+    records.update(_doublet_records(cx, wm, fit, records, z, dv, dv_err, sv, sv_err,
+                                    chi2, dof, n_use, cont_at))
     return records
 
 
 _INHERITED_FLAGS = (FLAG_EDGE | FLAG_MASKED | FLAG_FIT_FAILED | FLAG_SIGMA_UNRESOLVED
-                    | FLAG_KIN_GLOBAL | FLAG_KIN_DEFAULT)
+                    | FLAG_KIN_GLOBAL | FLAG_KIN_DEFAULT | FLAG_BROAD)
 
 
 def _doublet_records(cx, wm, fit, records, z, dv, dv_err, sv, sv_err, chi2, dof, n_use, cont_at):
@@ -754,6 +757,9 @@ def _doublet_records(cx, wm, fit, records, z, dv, dv_err, sv, sv_err, chi2, dof,
     doublet leaves the total unmeasurable (``BLENDED``, ``blend_into`` names
     the carrier); a carrier that also absorbed a foreign line makes the total
     a superset, reported like any other blend (``BLEND`` + ``blend_members``).
+    The total is the narrow total: an accepted broad component on a member
+    (CIV, MgII) stays in ``<member>_broad`` as for any line, and the total
+    inherits the ``BROAD`` flag so a reader knows it is there.
     """
     p, cov = fit['p'], fit['cov']
     members = {m.line.name: m for m in cx.members}

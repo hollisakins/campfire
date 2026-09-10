@@ -293,6 +293,25 @@ def test_doublet_totals_agree_across_resolutions():
     assert L['NV1239']['blend_into'] == 'Lya'
 
 
+def test_doublet_total_is_narrow_and_inherits_broad_flag():
+    """A doublet total is the narrow total; an accepted broad component on a
+    member stays in <member>_broad and the total carries the BROAD flag."""
+    z = 10.0     # MgII lands in G395M
+    truth = {'MgII2796': 2e-18, 'MgII2803': 1.5e-18, 'OII3726': 3e-18, 'OII3729': 3e-18,
+             'Hgamma': 1.5e-18, 'NeIII3869': 8e-19, 'Hdelta': 8e-19}
+    wave, fnu, err, r_of = synth(z, 'g395m', truth, broad={'MgII2796': (1.2e-17, 2000.0)}, seed=3)
+    L = fit_lines(wave, fnu, err, z, r_of, LineFitConfig(), grating='g395m')['lines']
+    a, b, d = L['MgII2796'], L['MgII2803'], L['MgII2800']
+    assert a['flags'] & FLAG_BROAD and 'MgII2796_broad' in L
+    assert d['flags'] & FLAG_BROAD and d['flags'] & FLAG_RESOLVED
+    assert math.isclose(d['flux'], a['flux'] + b['flux'], rel_tol=1e-9)
+    assert abs(d['flux'] - 3.5e-18) / d['flux_err'] < 4
+    bw = L['MgII2796_broad']
+    assert abs(bw['flux'] - 1.2e-17) / bw['flux_err'] < 4 and bw['flux'] > 2 * d['flux']
+    assert d['flux'] < 1.2e-17 / 2                                # wings are not in the total
+    assert not L['OII3727']['flags'] & FLAG_BROAD                 # only where a member has one
+
+
 def test_blend_primary_sits_at_weighted_centroid():
     z = 5.5
     wave, fnu, err, r_of = synth(z, 'prism', TRUTH, noise=5e-21)

@@ -121,7 +121,9 @@ every grating and the one catalog selections ("all CIII] detections at S/N > 3")
 Components keep their own rows (or `blended`) for the ratio where it is measured; the
 `resolved` flag on the total says whether it is. A member folded into a line *outside* the
 doublet (NV under Lyα in the prism) leaves the total `blended` with `blend_into` naming the
-carrier. Ratio-tied doublets need no total.
+carrier. The total is the *narrow* total: an accepted broad component on a member (CIV,
+MgII) stays in `<member>_broad` as for any line, and the total carries the `broad` flag so
+the reader knows it exists. Ratio-tied doublets need no total.
 
 **Kinematics** are fit in two passes so faint lines cannot wander. Pass 1 fits each complex
 with free, bounded `(dv, σ_v)` (`dv_max` 1000 km/s on gratings, 2500 on the prism whose
