@@ -137,6 +137,12 @@ def read_catalog(path: str, fmt: str, columns: list[str], hdu: int = 1) -> Table
     platform supports it, with caching disabled (``F_NOCACHE`` on macOS), so
     the resident footprint is the kept columns plus one chunk.
 
+    The raw records are decoded the way ``Table.read`` would decode them:
+    character columns become stripped ``str``, logical columns ``bool``, and
+    ``TSCAL`` / ``TZERO`` scaling is applied (so an unsigned-int convention
+    or a scaled flux column keeps its physical value). Bit-array and
+    variable-length columns are not supported and raise.
+
     Columns absent from the file are skipped (the payload builder already
     tolerates a missing band); the caller checks the position columns.
     Other formats go through ``Table.read`` unchanged.
@@ -153,6 +159,10 @@ def read_catalog(path: str, fmt: str, columns: list[str], hdu: int = 1) -> Table
         row_dtype = table_hdu.columns.dtype.newbyteorder('>')
         n_rows = int(table_hdu.header['NAXIS2'])
         naxis1 = int(table_hdu.header['NAXIS1'])
+        decoders = {
+            col.name: _fits_column_decoder(col)
+            for col in table_hdu.columns if col.name in columns
+        }
     row_size = row_dtype.itemsize
     if row_size != naxis1:
         raise ValueError(f"{path}: record dtype is {row_size} bytes but NAXIS1={naxis1}")
@@ -175,16 +185,44 @@ def read_catalog(path: str, fmt: str, columns: list[str], hdu: int = 1) -> Table
                 raise ValueError(f"{path}: short read inside the table data")
             rec = np.frombuffer(buf, dtype=row_dtype)
             for c in keep:
-                # Copy out of the chunk in native byte order so the buffer
-                # can be released.
-                col = rec[c]
-                parts[c].append(col.astype(col.dtype.newbyteorder('='), copy=True))
+                # Decode out of the chunk (a copy in native byte order) so
+                # the buffer can be released.
+                parts[c].append(decoders[c](rec[c]))
             remaining -= n
 
     out = Table()
     for c in keep:
-        out[c] = np.concatenate(parts[c]) if parts[c] else np.empty(0, dtype=row_dtype[c])
+        out[c] = (np.concatenate(parts[c]) if parts[c]
+                  else decoders[c](np.empty(0, dtype=row_dtype[c])))
     return out
+
+
+def _fits_column_decoder(col):
+    """A function turning the raw on-disk values of a FITS table column into
+    what ``Table.read`` would hand back: ``str`` for ``A``, ``bool`` for
+    ``L``, scaled floats when ``TSCAL``/``TZERO`` are set, native-order
+    numbers otherwise."""
+    fmt = str(col.format)
+    code = fmt.lstrip('0123456789')[:1]
+    if code in ('X', 'P', 'Q'):
+        raise ValueError(
+            f"Column '{col.name}' has FITS format {fmt}, which read_catalog "
+            f"does not support (bit arrays and variable-length arrays)")
+
+    def decode(raw: np.ndarray) -> np.ndarray:
+        if code == 'A':
+            # Fixed-width ASCII, space padded on disk.
+            return np.char.rstrip(raw.astype(str))
+        if code == 'L':
+            return raw.astype(np.uint8) == ord('T')
+        vals = raw.astype(raw.dtype.newbyteorder('='), copy=True)
+        bscale = col.bscale if col.bscale not in (None, '') else 1
+        bzero = col.bzero if col.bzero not in (None, '') else 0
+        if bscale != 1 or bzero != 0:
+            vals = vals.astype(np.float64) * bscale + bzero
+        return vals
+
+    return decode
 
 
 def _disable_read_cache(fd: int) -> None:
@@ -958,6 +996,8 @@ def _supersede_other_catalogs(
     client: Client,
     field: str,
     keep_catalog_name: str,
+    *,
+    dry_run: bool = False,
 ) -> dict[str, int]:
     """Delete every photometry row in *field* whose catalog_name differs from
     *keep_catalog_name*.
@@ -968,7 +1008,11 @@ def _supersede_other_catalogs(
     This is the explicit retirement of the old release, run after the new
     rows are in place so no object loses photometry in between.
 
-    Returns ``{catalog_name: n_deleted}`` for the retired catalogs.
+    With *dry_run* nothing is deleted; the counts are still gathered so a
+    ``--dry-run --supersede`` previews what would go.
+
+    Returns ``{catalog_name: n_rows}`` for the retired (or to-be-retired)
+    catalogs.
     """
     page_size = 1000
     offset = 0
@@ -994,9 +1038,10 @@ def _supersede_other_catalogs(
 
     deleted: dict[str, int] = {}
     for name, ids in to_delete.items():
-        for i in range(0, len(ids), BATCH_SIZE):
-            chunk = ids[i:i + BATCH_SIZE]
-            client.table('object_photometry').delete().in_('id', chunk).execute()
+        if not dry_run:
+            for i in range(0, len(ids), BATCH_SIZE):
+                chunk = ids[i:i + BATCH_SIZE]
+                client.table('object_photometry').delete().in_('id', chunk).execute()
         deleted[name] = len(ids)
     return deleted
 
@@ -1114,11 +1159,20 @@ def deploy_field_photometry(
             n_reported = n_kept_dry
         else:
             n_reported = len(matches)
+        n_would_retire = 0
+        if supersede and restrict_to_object_db_ids is None:
+            would = _supersede_other_catalogs(client, field, catalog_name, dry_run=True)
+            for name, n in would.items():
+                print(f"    Would retire {n} rows of '{name}'")
+            n_would_retire = sum(would.values())
+            if not matches:
+                print("    (no matches: --supersede would be skipped, not run)")
         return {
             'n_objects': len(objects),
             'n_matched': n_reported,
             'n_bands': len(band_config),
             'n_pz': 0,
+            'n_superseded': n_would_retire,
         }
 
     # De-duplicate: when multiple objects match the same catalog source,
@@ -1319,14 +1373,22 @@ def deploy_field_photometry(
 
     n_superseded = 0
     if supersede and restrict_to_object_db_ids is None:
-        print(f"  Retiring other catalogs in field '{field}' "
-              f"(keeping '{catalog_name}')...")
-        retired = _supersede_other_catalogs(client, field, catalog_name)
-        for name, n in retired.items():
-            print(f"    Deleted {n} rows of '{name}'")
-        n_superseded = sum(retired.values())
-        if not retired:
-            print("    Nothing to retire")
+        if not records:
+            # A cross-match that found nothing is far more likely a wrong
+            # column name, path or radius than an empty field; retiring the
+            # previous catalog on top of it would silently wipe the field's
+            # photometry. Leave the old rows in place.
+            print(f"  WARNING: no rows were upserted for '{catalog_name}'; "
+                  f"skipping --supersede so the existing catalogs stay.")
+        else:
+            print(f"  Retiring other catalogs in field '{field}' "
+                  f"(keeping '{catalog_name}')...")
+            retired = _supersede_other_catalogs(client, field, catalog_name)
+            for name, n in retired.items():
+                print(f"    Deleted {n} rows of '{name}'")
+            n_superseded = sum(retired.values())
+            if not retired:
+                print("    Nothing to retire")
 
     # Sync denormalized columns to objects
     print(f"  Syncing photo_z to objects table...")

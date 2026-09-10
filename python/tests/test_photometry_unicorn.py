@@ -288,6 +288,56 @@ def test_read_catalog_materialises_only_needed_columns(tmp_path):
     assert float(t['SCALE_MODEL'][0]) == pytest.approx(1.5)
 
 
+def test_read_catalog_decodes_like_table_read(tmp_path):
+    """Strings, logicals and TSCAL/TZERO columns come back as Table.read gives them."""
+    from astropy.table import Table
+    n = 4
+    cols = [
+        fits.Column(name='NAME', format='8A', array=np.array(['abc', 'de', 'fghijklm', ''])),
+        fits.Column(name='GOOD', format='L', array=np.array([True, False, True, False])),
+        fits.Column(name='RA', format='D', array=np.array([10.0, 10.5, 11.0, 11.5])),
+        # Scaled 16-bit integer: physical = raw * 0.01 + 100 (raw values here,
+        # TSCAL/TZERO set on the header below).
+        fits.Column(name='SCALED', format='I', array=np.array([0, 50, 100, -50], dtype=np.int16)),
+        # Unsigned 32-bit convention: raw int32 + TZERO 2**31.
+        fits.Column(name='UID', format='J',
+                    array=(np.array([1, 2**31, 2**32 - 1, 7], dtype=np.int64) - 2**31).astype(np.int32)),
+    ]
+    path = tmp_path / 'typed.fits'
+    hdu = fits.BinTableHDU.from_columns(cols)
+    hdu.header['TSCAL4'] = 0.01
+    hdu.header['TZERO4'] = 100.0
+    hdu.header['TZERO5'] = 2**31
+    hdu.writeto(path)
+
+    ref = Table.read(path)
+    got = read_catalog(str(path), 'fits', ['NAME', 'GOOD', 'RA', 'SCALED', 'UID'])
+    # Table.read masks the empty string; read_catalog hands it back as ''.
+    assert list(got['NAME']) == ['abc', 'de', 'fghijklm', '']
+    assert list(ref['NAME'][:3]) == ['abc', 'de', 'fghijklm']
+    assert got['NAME'].dtype.kind == 'U'
+    assert list(got['GOOD']) == list(ref['GOOD'])
+    assert got['GOOD'].dtype == bool
+    assert np.allclose(got['RA'], ref['RA'])
+    assert np.allclose(got['SCALED'], ref['SCALED'])
+    assert np.allclose(got['SCALED'], [100.0, 100.5, 101.0, 99.5])
+    assert np.array_equal(got['UID'].astype(np.int64), np.asarray(ref['UID']).astype(np.int64))
+    # A string id survives the deploy's str() unchanged (no b'...' wrapper).
+    assert str(got['NAME'][0]) == 'abc'
+
+
+def test_read_catalog_rejects_unsupported_formats(tmp_path):
+    cols = [
+        fits.Column(name='ID', format='J', array=np.arange(3)),
+        fits.Column(name='BITS', format='8X', array=np.zeros((3, 8), dtype=bool)),
+    ]
+    path = tmp_path / 'bits.fits'
+    fits.BinTableHDU.from_columns(cols).writeto(path)
+    assert list(read_catalog(str(path), 'fits', ['ID'])['ID']) == [0, 1, 2]
+    with pytest.raises(ValueError, match="'BITS'"):
+        read_catalog(str(path), 'fits', ['ID', 'BITS'])
+
+
 # ---------------------------------------------------------------------------
 # Supersede
 # ---------------------------------------------------------------------------
@@ -362,3 +412,51 @@ def test_supersede_deletes_only_other_catalogs_in_field():
     remaining = {(r['field'], r['catalog_name']) for r in client.t.rows}
     assert remaining == {('egs', 'UNICORN EGS v0.98'), ('goods-s', 'UNICORN GOODS-S v0.91')}
     assert len(client.t.deleted) == 1201
+
+
+def test_supersede_dry_run_counts_without_deleting():
+    rows = (
+        [{'id': i, 'field': 'egs', 'catalog_name': 'UNICORN EGS v0.9'} for i in range(1, 11)]
+        + [{'id': 50, 'field': 'egs', 'catalog_name': 'UNICORN EGS v0.98'}]
+    )
+    client = _FakeClient(rows)
+    assert _supersede_other_catalogs(client, 'egs', 'UNICORN EGS v0.98', dry_run=True) == {
+        'UNICORN EGS v0.9': 10}
+    assert client.t.deleted == [] and len(client.t.rows) == 11
+
+
+def test_supersede_is_skipped_when_nothing_was_upserted(tmp_path, monkeypatch, capsys):
+    """A cross-match that finds nothing must not wipe the field's other catalogs."""
+    import campfire.deploy.photometry as mod
+
+    cat = tmp_path / 'cat.fits'
+    fits.BinTableHDU.from_columns([
+        fits.Column(name='ID', format='J', array=np.array([1])),
+        fits.Column(name='RA', format='D', array=np.array([200.0])),   # far from every object
+        fits.Column(name='DEC', format='D', array=np.array([-50.0])),
+        fits.Column(name='FLUX_F444W', format='E', array=np.array([1.0])),
+        fits.Column(name='FLUXERR_F444W', format='E', array=np.array([0.1])),
+    ]).writeto(cat)
+    cfg = tmp_path / 'photometry.toml'
+    cfg.write_text(f"""
+[egs]
+catalog = "{cat}"
+catalog_name = "UNICORN EGS v0.98"
+ra_column = "RA"
+dec_column = "DEC"
+id_column = "ID"
+[egs.bands]
+f444w = {{ flux = "FLUX_F444W", err = "FLUXERR_F444W" }}
+""")
+
+    old_rows = [{'id': i, 'field': 'egs', 'catalog_name': 'UNICORN EGS v0.9'} for i in range(1, 4)]
+    client = _FakeClient(old_rows)
+    monkeypatch.setattr(mod, '_fetch_field_objects', lambda *_: [
+        {'id': 1, 'object_id': 'egs_1', 'ra': 214.9, 'dec': 52.9}])
+    monkeypatch.setattr(mod, '_upsert_photometry', lambda *_: 0)
+    client.rpc = lambda *_a, **_k: type('R', (), {'execute': lambda self: type('D', (), {'data': 0})()})()
+
+    result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
+    assert result['n_matched'] == 0 and result['n_superseded'] == 0
+    assert len(client.t.rows) == 3 and client.t.deleted == []
+    assert 'skipping --supersede' in capsys.readouterr().out
