@@ -725,7 +725,10 @@ BEGIN
   -- Tombstones (see get_objects_for_sync): first incremental page only. Rows
   -- that left the active state, and active rows whose spectrum was
   -- un-published (invisible to non-admins from now on; the spectrum's
-  -- updated_at moves on a deploy_status change). Not program-scoped: only
+  -- updated_at moves on a deploy_status change). Program-scoped like the
+  -- sibling CTEs: a non-admin's tombstones are drawn from rows whose
+  -- observation (or spectrum) is in an accessible program, plus field-only
+  -- products, which the main scope shows to everyone when published. Only
   -- integer ids travel, and an id the client never mirrored deletes nothing.
   -- Hard deletes (deploy remove) still need a full sync to clear.
   deleted AS (
@@ -737,6 +740,11 @@ BEGIN
         AND p_after_id IS NULL
         AND so.status <> 'active'
         AND so.updated_at > p_updated_since
+        AND (p_include_unpublished
+             OR (so.observation IS NULL AND so.field IS NOT NULL)
+             OR EXISTS (SELECT 1 FROM observations ob
+                        WHERE ob.name = so.observation
+                          AND ob.program_slug = ANY(p_program_slugs)))
         AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
         AND ((p_observations IS NULL AND p_fields IS NULL)
              OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
@@ -749,6 +757,7 @@ BEGIN
         AND p_after_id IS NULL
         AND NOT p_include_unpublished
         AND so.status = 'active'
+        AND s.program_slug = ANY(p_program_slugs)
         AND s.deploy_status <> 'published'
         AND s.updated_at > p_updated_since
         AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
