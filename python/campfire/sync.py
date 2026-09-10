@@ -280,7 +280,10 @@ def sync_metadata(
     cursors = {
         "objects": None if full else store.get_max_objects_updated_at(),
         "spectra": None if full else store.get_max_spectra_updated_at(),
-        "storage": None if full else store.get_max_storage_updated_at(),
+        # Finals only: the on-demand intermediate rows carry their own
+        # timestamps and must not advance the catalog walk's cursor.
+        "storage": None if full else store.get_max_storage_updated_at(
+            product_types=list(MIRRORED_PRODUCT_TYPES)),
         "photometry": None if full else store.get_max_photometry_updated_at(),
         "line_fits": None if full else store.get_max_line_fits_updated_at(),
     }

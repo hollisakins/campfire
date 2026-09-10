@@ -645,3 +645,38 @@ class TestTombstonesAndScopedPurge:
         store.upsert_storage_objects(sample_storage_objects + [sidecar])
         assert store.drop_unmirrored_storage_rows(DOWNLOADABLE_PRODUCT_TYPES) == 1
         assert store._conn.execute("SELECT COUNT(*) FROM storage_objects").fetchone()[0] == 3
+
+    def test_delete_objects_by_ids_drops_photometry(self, store, sample_objects):
+        store.upsert_objects(sample_objects)
+        store.upsert_photometry([
+            {"id": 1, "object_id": "CAMPFIRE-J0001+0001", "field": "uds",
+             "photometry": {"bands": {}}, "updated_at": "2026-01-01T00:00:00Z"},
+            {"id": 2, "object_id": "CAMPFIRE-J0002+0002", "field": "cosmos",
+             "photometry": {"bands": {}}, "updated_at": "2026-01-01T00:00:00Z"},
+        ])
+        assert store.delete_objects_by_ids([1]) == 1
+        left = store._conn.execute("SELECT object_id FROM object_photometry").fetchall()
+        assert [r["object_id"] for r in left] == ["CAMPFIRE-J0002+0002"]
+
+    def test_delete_spectra_by_ids_drops_line_fits(self, store, sample_objects, sample_spectra):
+        store.upsert_objects(sample_objects)
+        store.upsert_spectra(sample_spectra)
+        store.upsert_line_fits([
+            {"spectrum_id": 10, "spectrum_name": "ember_uds_p4_prism_clear_100",
+             "lines": {}, "updated_at": "2026-01-01T00:00:00Z"},
+            {"spectrum_id": 11, "spectrum_name": "other", "lines": {},
+             "updated_at": "2026-01-01T00:00:00Z"},
+        ])
+        assert store.delete_spectra_by_ids([10]) == 1
+        left = store._conn.execute("SELECT spectrum_id FROM spectrum_line_fits").fetchall()
+        assert [r["spectrum_id"] for r in left] == [11]
+
+    def test_storage_cursor_scoped_to_product_types(self, store, sample_storage_objects):
+        finals = sample_storage_objects
+        inter = dict(finals[0], storage_key="products/nirspec/ember_uds_p4/jw01_nrs1_100.fits",
+                     product_type="nirspec_spectrum_exposure", spectrum_id=None,
+                     exposure_ref="jw01_nrs1_100", updated_at="2026-06-01T00:00:00Z")
+        store.upsert_storage_objects(finals + [inter])
+        # An on-demand intermediate row must not advance the finals walk's cursor.
+        assert store.get_max_storage_updated_at() == "2026-06-01T00:00:00Z"
+        assert store.get_max_storage_updated_at(product_types=["nirspec_spec"]) == "2026-01-01T00:00:00Z"

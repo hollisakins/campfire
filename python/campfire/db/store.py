@@ -1288,10 +1288,28 @@ class LocalStore:
         """Flush pending writes (for callers batching mark_object_* calls)."""
         self._conn.commit()
 
-    def get_max_storage_updated_at(self) -> Optional[str]:
-        row = self._conn.execute(
-            "SELECT MAX(updated_at) FROM storage_objects"
-        ).fetchone()
+    def get_max_storage_updated_at(
+        self, product_types: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        """The incremental cursor for a storage walk: the newest ``updated_at``
+        among the mirror rows of ``product_types`` (all rows when None).
+
+        The catalog sync walks finals only, so its cursor must be computed over
+        finals only: the intermediates `pull --intermediate` indexes on demand
+        carry their own (often newer) timestamps, and a cursor taken over the
+        whole mirror would skip a final update that landed between the last
+        catalog sync and that pull.
+        """
+        if product_types:
+            ph = ",".join("?" * len(product_types))
+            row = self._conn.execute(
+                f"SELECT MAX(updated_at) FROM storage_objects WHERE product_type IN ({ph})",
+                list(product_types),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT MAX(updated_at) FROM storage_objects"
+            ).fetchone()
         return row[0] if row and row[0] else None
 
     def purge_stale_storage_objects(
@@ -1375,17 +1393,21 @@ class LocalStore:
     def delete_objects_by_ids(self, ids) -> int:
         """Drop objects the server tombstoned (soft-deleted / un-published).
 
-        Keyed on the server's integer id (the local PK). List memberships go
-        with the row; ids not present locally are ignored.
+        Keyed on the server's integer id (the local PK). The object's list
+        memberships and its photometry go with it: the photometry stream
+        carries no tombstones of its own (its rows follow the object), and an
+        incremental sync never purges, so nothing else would remove them.
+        Ids not present locally are ignored.
         """
         n = 0
         for chunk in self._chunks(ids):
             ph = ",".join("?" * len(chunk))
-            self._conn.execute(
-                f"""DELETE FROM object_list_memberships
-                    WHERE object_id IN (SELECT object_id FROM objects WHERE id IN ({ph}))""",
-                chunk,
-            )
+            for child in ("object_list_memberships", "object_photometry"):
+                self._conn.execute(
+                    f"""DELETE FROM {child}
+                        WHERE object_id IN (SELECT object_id FROM objects WHERE id IN ({ph}))""",
+                    chunk,
+                )
             n += self._conn.execute(
                 f"DELETE FROM objects WHERE id IN ({ph})", chunk,
             ).rowcount
@@ -1393,10 +1415,18 @@ class LocalStore:
         return n
 
     def delete_spectra_by_ids(self, ids) -> int:
-        """Drop spectra the server tombstoned (revoked, or under a deleted object)."""
+        """Drop spectra the server tombstoned (revoked, or under a deleted object).
+
+        Their emission-line fits go with them (the line-fit stream carries no
+        tombstones of its own; its rows follow the spectrum, and an
+        incremental sync never purges).
+        """
         n = 0
         for chunk in self._chunks(ids):
             ph = ",".join("?" * len(chunk))
+            self._conn.execute(
+                f"DELETE FROM spectrum_line_fits WHERE spectrum_id IN ({ph})", chunk,
+            )
             n += self._conn.execute(
                 f"DELETE FROM spectra WHERE id IN ({ph})", chunk,
             ).rowcount

@@ -512,3 +512,15 @@ def test_default_page_sizes():
     # fixed cost dominates (T2-F, #511 measurements).
     assert DEFAULT_SYNC_PAGE_SIZE == 5000
     assert DEFAULT_STORAGE_SYNC_PAGE_SIZE == 10000
+
+
+def test_incremental_storage_cursor_is_finals_only():
+    api = _make_fake_api([], [], [], [], [])
+    store = _make_fake_store()
+    store.get_max_objects_updated_at.return_value = "2026-01-01T00:00:00Z"
+    store._conn.execute.return_value.fetchone.return_value = [0]
+
+    sync_metadata(api, store, Path("/tmp/meta"), show_progress=False, full=False)
+
+    store.get_max_storage_updated_at.assert_called_once_with(
+        product_types=list(MIRRORED_PRODUCT_TYPES))
