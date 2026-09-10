@@ -181,6 +181,29 @@ fit_version, cfpipe_version, f_lsf, spectrum_hash, fitted_at`.
 
 ### 2.4 Catalog exposure
 
+**Portal filter and sort (`spectrum_lines`).** The jsonb is unnested by the
+`sync_spectrum_lines` trigger into `spectrum_lines(spectrum_id, line, component, flux,
+flux_err, snr, ew_rest, ew_rest_err, flags, blend_into)`, primary key `(spectrum_id, line)`,
+with a partial index on `(line, snr DESC)`, so "all CIII] detections at S/N > 3" is one
+index range scan. The table is derived (never written by deploy; the FK cascades a dropped
+fit) and visible under the parent spectrum's RLS. Every RPC on the catalog filter contract
+(`get_filtered_objects_paginated`, `get_filtered_spectra_paginated`,
+`get_filtered_object_ids`, `get_adjacent_objects`, `get_csv_export_*`) takes `p_line`,
+`p_line_snr_min`, `p_line_snr_max`, `p_line_include_stale` and the `line_snr` sort: the
+matching object / spectrum set is materialized once per call by
+`objects_matching_line_filter` / `spectra_matching_line_filter` (viewer-visible programs,
+publication gate, and — unless `p_line_include_stale` — the same staleness rule as the
+ledger, `line_fit_stale_redshift`) and probed with `= ANY(...)` like the grating and
+observation sets; `object_line_snr` gives the object's best S/N for the sort key and the
+"Line S/N" column. The web sends the `p_line*` parameters only while a line is set, so the
+default lists keep working against a database that has not yet applied the migration. The
+picker (`web/lib/linelist.ts`, generated from `linelist.py` by `scripts/sync_linelist.py`
+with a CI drift check) offers the doublet totals and the stand-alone lines only: a
+component means different things on different gratings, a total means one thing. The
+object page's Emission Lines section (`/api/objects/lines`, fetched in view) lists every
+member spectrum's fit, totals and stand-alone lines by default, components and broad
+components behind a disclosure, with the staleness of each fit.
+
 * `GET /api/v1/sync/lines` — keyset bulk fetch (mirrors `/sync/photometry`; RPC
   `get_line_fits_for_sync`, service role with the caller's program scope, publish gate via
   the parent spectrum, `stale_redshift` / `stale_spectrum` computed against the live
@@ -253,10 +276,10 @@ publish, `z_source` in every row for readers to filter).
 * Web display: the object page has no "lines" table yet; `spectrum_line_fits` and the
   `_lines.fits` `MODEL` extension are ready for it. A `_lines.json` sidecar (like
   `_zfit.json`) would let the spectrum plot overlay the fitted model.
-* Server-side filtering by line S/N (e.g. "CIII] S/N > 3" in the catalog filters): a
-  trigger-maintained long table (one row per spectrum × line, indexed on `(line, snr)`)
-  derived from the `lines` jsonb, plus `p_line` / `p_line_snr_min` on the list RPCs. Select
-  on the doublet totals (`CIII1908`, `OII3727`, ...), never on a component.
+* Model overlay on the spectrum plot: the fitted model lives only in the FITS `MODEL`
+  extension on OSN. A `_lines.json` sidecar emitted by deploy (a new layout kind, a fourth
+  entry in the sidecar resolver) would let `SpectrumPlot` draw model + continuum behind a
+  "Lines" toggle, as it draws the zfit model today.
 * Public API row endpoint (`/api/v1/lines`) with filters; today the catalog comes through
   the sync stream and the Python client.
 * Unify the `zfit` template line list with `linelist.py`.

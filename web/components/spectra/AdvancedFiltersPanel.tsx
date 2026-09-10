@@ -13,6 +13,7 @@ import type { AdvancedFilterOptions } from './SpectraFilterBar';
 import { GRATINGS, type Program } from '@/lib/types';
 import type { ViewMode } from '@/lib/actions/spectra-types';
 import { OBSERVATION_COLORS } from '@/components/map/observation-colors';
+import { LINE_FILTER_OPTIONS } from '@/lib/linelist';
 import { getAvailableLists } from '@/lib/actions/lists';
 
 interface FilterOption {
@@ -197,6 +198,7 @@ export function AdvancedFiltersPanel({
     (filters.max_snr_max !== null ? 1 : 0) +
     (filters.max_exposure_time_min !== null ? 1 : 0) +
     (filters.max_exposure_time_max !== null ? 1 : 0) +
+    (filters.line ? 1 : 0) +
     (filters.list_ids?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
 
@@ -244,6 +246,10 @@ export function AdvancedFiltersPanel({
       max_snr_max: null,
       max_exposure_time_min: null,
       max_exposure_time_max: null,
+      line: null,
+      line_snr_min: null,
+      line_snr_max: null,
+      line_include_stale: false,
       list_ids: [],
       list_ids_mode: 'any',
       dq_flags: [],
@@ -533,6 +539,83 @@ export function AdvancedFiltersPanel({
                 precision={0}
               />
             </div>
+          </div>
+
+          {/* Emission line Section */}
+          <div className="p-4 border-b border-border">
+            <div className="flex items-start gap-2 mb-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
+              <Info className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
+              <div className="text-xs text-amber-700 dark:text-amber-300">
+                Emission-line fluxes measured at the inspected redshift. Close doublets
+                (CIII], [OII], [SII], …) are offered as totals so a cut means the same
+                thing on every grating.{' '}
+                {viewMode === 'spectra'
+                  ? 'Filters by each spectrum\u2019s own measurement.'
+                  : 'Filters by the object\u2019s best measurement across its spectra.'}
+              </div>
+            </div>
+
+            <label className="block text-sm font-medium text-text-primary mb-1" htmlFor="line-filter-select">
+              Emission line
+            </label>
+            <p className="text-xs text-text-secondary mb-2">Keep only rows with a measurement of this line</p>
+            <select
+              id="line-filter-select"
+              value={filters.line ?? ''}
+              onChange={(e) => {
+                const line = e.target.value || null;
+                onFiltersChange({
+                  ...filters,
+                  line,
+                  // the bounds and the stale toggle mean nothing without a line
+                  ...(line ? {} : { line_snr_min: null, line_snr_max: null, line_include_stale: false }),
+                });
+              }}
+              className="w-full px-3 py-2 text-sm rounded-lg border border-border bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
+            >
+              <option value="">Any (no line filter)</option>
+              {(['Doublet totals', 'Lines'] as const).map((group) => (
+                <optgroup key={group} label={group}>
+                  {LINE_FILTER_OPTIONS.filter((o) => o.group === group).map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label} ({o.wave < 10000 ? o.wave.toFixed(0) : (o.wave / 1e4).toFixed(2) + ' µm'})
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+
+            {filters.line && (
+              <>
+                <div className="mt-4">
+                  <InlineRange
+                    label="Line S/N"
+                    description="Signal-to-noise of the line flux (3 = the pipeline's detection threshold)"
+                    min={filters.line_snr_min ?? null}
+                    max={filters.line_snr_max ?? null}
+                    onChange={(min, max) => onFiltersChange({ ...filters, line_snr_min: min, line_snr_max: max })}
+                    minBound={-10}
+                    maxBound={10000}
+                    step={0.5}
+                    precision={1}
+                  />
+                </div>
+                <label className="mt-3 flex items-center gap-2 text-sm text-text-primary cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={filters.line_include_stale}
+                    onChange={(e) => onFiltersChange({ ...filters, line_include_stale: e.target.checked })}
+                    className="rounded border-border"
+                  />
+                  <span>
+                    Include stale fits
+                    <span className="block text-xs text-text-secondary">
+                      Fits made at an inspected redshift that has since changed
+                    </span>
+                  </span>
+                </label>
+              </>
+            )}
           </div>
 
           {/* Tags Section */}

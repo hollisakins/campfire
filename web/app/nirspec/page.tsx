@@ -240,6 +240,7 @@ function SpectraPageContent() {
           viewMode={viewMode}
           onViewModeChange={handleViewModeChange}
           hasCoordinateSearch={filters.coordinate_search !== null}
+          activeLine={filters.line}
           currentFilterParams={filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection, viewMode)}
           loading={loading}
           error={error}

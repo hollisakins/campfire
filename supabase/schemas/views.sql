@@ -285,11 +285,12 @@ SELECT f.spectrum_id,
        o.redshift AS current_redshift,
        o.redshift_quality AS current_quality,
        o.version AS current_object_version,
-       (o.id IS NOT NULL AND (
-          o.version IS DISTINCT FROM f.object_version
-          OR o.redshift_quality IS DISTINCT FROM f.z_quality
-          OR o.redshift IS NULL
-          OR abs((o.redshift)::double precision - f.z_used) > 1e-5)) AS stale_redshift,
+       -- one definition of "the inspected redshift moved since the fit"
+       -- (line_fit_stale_redshift, functions.sql), shared with the catalog
+       -- filter helpers so a filtered list and this ledger cannot disagree
+       (o.id IS NOT NULL AND public.line_fit_stale_redshift(
+          o.version, o.redshift_quality, (o.redshift)::double precision,
+          f.object_version, f.z_quality, f.z_used)) AS stale_redshift,
        (regexp_replace(s.file_hash, '^sha256:', '')
           IS DISTINCT FROM regexp_replace(f.spectrum_hash, '^sha256:', '')) AS stale_spectrum
 FROM public.spectrum_line_fits f

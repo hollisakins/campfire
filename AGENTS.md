@@ -62,7 +62,14 @@ gratings, `component` narrow | broad | doublet; provenance `z_used`,
 it to `meta/lines.csv` (wide) and `Campfire.query_lines()`; the
 `spectrum_line_fits_status` view and the sync records flag `stale_redshift` /
 `stale_spectrum`. Fits at the auto redshift are opt-in end to end (`--allow-auto`,
-`--allow-auto-z`, `z_source`).
+`--allow-auto-z`, `z_source`). The portal filters and sorts on a line through
+`spectrum_lines` (the jsonb unnested by the `sync_spectrum_lines` trigger, indexed on
+`(line, snr)`): every RPC on the catalog filter contract takes `p_line` /
+`p_line_snr_min` / `p_line_snr_max` / `p_line_include_stale` and the `line_snr` sort,
+the web sends them only while a line is set (`buildFilterParams`), the picker offers
+doublet totals and stand-alone lines only (`web/lib/linelist.ts`, generated from
+`linelist.py` by `scripts/sync_linelist.py`; CI fails on drift), and the object page's
+Emission Lines section reads `/api/objects/lines`.
 
 ### Python Environment
 

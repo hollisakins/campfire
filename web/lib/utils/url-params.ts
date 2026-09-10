@@ -79,6 +79,10 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     max_snr_max: parseNumber('snr_max'),
     max_exposure_time_min: parseNumber('exp_min'),
     max_exposure_time_max: parseNumber('exp_max'),
+    line: searchParams.get('line') || null,
+    line_snr_min: parseNumber('line_snr_min'),
+    line_snr_max: parseNumber('line_snr_max'),
+    line_include_stale: parseBoolean('line_stale') === true,
     list_ids: parseNumberArray('tags'),
     dq_flags: parseNumberArray('dq_flags'),
     inspected_only: parseBoolean('inspected'),
@@ -181,6 +185,19 @@ export function filtersToURLParams(
   }
   if (filters.max_exposure_time_max !== null) {
     params.set('exp_max', filters.max_exposure_time_max.toString());
+  }
+  // The S/N bounds and the stale toggle only mean something with a line.
+  if (filters.line) {
+    params.set('line', filters.line);
+    if (filters.line_snr_min !== null) {
+      params.set('line_snr_min', filters.line_snr_min.toString());
+    }
+    if (filters.line_snr_max !== null) {
+      params.set('line_snr_max', filters.line_snr_max.toString());
+    }
+    if (filters.line_include_stale) {
+      params.set('line_stale', 'true');
+    }
   }
   if (filters.list_ids.length > 0) {
     params.set('tags', filters.list_ids.join(','));

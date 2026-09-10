@@ -642,6 +642,146 @@ GRANT EXECUTE ON FUNCTION public.objects_matching_grating_filter(TEXT[], TEXT, T
 
 
 -- =============================================================================
+-- Emission-line catalog helpers (spectrum_lines; docs/design-emission-line-fitting.md)
+-- =============================================================================
+
+-- line_fit_stale_redshift: the ONE definition of "the object's inspected
+-- redshift moved since this fit was made" — its version, quality or value
+-- differs from the provenance the fit row recorded. Used by the
+-- spectrum_line_fits_status view and by the filter helpers below, so a
+-- filtered catalog list and the staleness ledger cannot disagree. Callers
+-- guard the "no object" case (o.id IS NULL) themselves. IMMUTABLE SQL so the
+-- planner inlines it.
+CREATE OR REPLACE FUNCTION public.line_fit_stale_redshift(
+  p_object_version INTEGER,
+  p_object_quality INTEGER,
+  p_object_redshift DOUBLE PRECISION,
+  p_fit_object_version INTEGER,
+  p_fit_z_quality INTEGER,
+  p_fit_z_used DOUBLE PRECISION
+)
+RETURNS BOOLEAN
+LANGUAGE sql IMMUTABLE
+AS $$
+  SELECT p_object_version IS DISTINCT FROM p_fit_object_version
+      OR p_object_quality IS DISTINCT FROM p_fit_z_quality
+      OR p_object_redshift IS NULL
+      OR abs(p_object_redshift - p_fit_z_used) > 1e-5;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.line_fit_stale_redshift(INTEGER, INTEGER, DOUBLE PRECISION, INTEGER, INTEGER, DOUBLE PRECISION) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.line_fit_stale_redshift(INTEGER, INTEGER, DOUBLE PRECISION, INTEGER, INTEGER, DOUBLE PRECISION) TO service_role;
+
+
+-- objects_matching_line_filter: the viewer-visible objects with a measurement
+-- of catalog line p_line whose S/N lies in [p_snr_min, p_snr_max] (NULL bound
+-- = open). Materialized ONCE per list call into an INTEGER[] (like the
+-- grating / observation sets, #488 / #491) and probed with o.id = ANY(...).
+-- Same invariants: only spectra in the viewer's accessible programs count
+-- (a proprietary program's detection must not surface an object the viewer
+-- sees through another program), and unpublished spectra count only for
+-- admins asking for them. p_include_stale = false (the default) drops fits
+-- whose inspected redshift has moved since the fit — the catalog's answer to
+-- "CIII] detections" should not quote fluxes measured at a redshift nobody
+-- believes any more.
+CREATE OR REPLACE FUNCTION public.objects_matching_line_filter(
+  p_line TEXT,
+  p_snr_min DOUBLE PRECISION,
+  p_snr_max DOUBLE PRECISION,
+  p_include_stale BOOLEAN,
+  p_program_slugs TEXT[],
+  p_include_unpublished BOOLEAN DEFAULT false
+)
+RETURNS SETOF INTEGER
+LANGUAGE sql STABLE
+AS $$
+  SELECT DISTINCT t.object_id
+  FROM public.spectrum_lines l
+  JOIN public.spectrum_line_fits f ON f.spectrum_id = l.spectrum_id
+  JOIN public.spectra s ON s.id = l.spectrum_id
+  JOIN public.targets t ON t.target_id = s.target_id
+  JOIN public.objects o ON o.id = t.object_id
+  WHERE l.line = p_line
+    AND l.snr IS NOT NULL
+    AND (p_snr_min IS NULL OR l.snr >= p_snr_min)
+    AND (p_snr_max IS NULL OR l.snr <= p_snr_max)
+    AND f.program_slug = ANY(p_program_slugs)
+    AND (p_include_unpublished OR s.deploy_status = 'published')
+    AND (p_include_stale OR NOT public.line_fit_stale_redshift(
+           o.version, o.redshift_quality, (o.redshift)::double precision,
+           f.object_version, f.z_quality, f.z_used));
+$$;
+
+GRANT EXECUTE ON FUNCTION public.objects_matching_line_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, BOOLEAN, TEXT[], BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.objects_matching_line_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, BOOLEAN, TEXT[], BOOLEAN) TO service_role;
+
+
+-- spectra_matching_line_filter: the per-spectrum analogue (spectra.id set).
+-- Program access and publication are the spectra RPC's own predicates; only
+-- the line, the S/N bounds and the staleness rule live here. A spectrum whose
+-- target has no parent object cannot be stale (nothing to be stale against).
+CREATE OR REPLACE FUNCTION public.spectra_matching_line_filter(
+  p_line TEXT,
+  p_snr_min DOUBLE PRECISION,
+  p_snr_max DOUBLE PRECISION,
+  p_include_stale BOOLEAN
+)
+RETURNS SETOF INTEGER
+LANGUAGE sql STABLE
+AS $$
+  SELECT l.spectrum_id
+  FROM public.spectrum_lines l
+  JOIN public.spectrum_line_fits f ON f.spectrum_id = l.spectrum_id
+  JOIN public.spectra s ON s.id = l.spectrum_id
+  LEFT JOIN public.targets t ON t.target_id = s.target_id
+  LEFT JOIN public.objects o ON o.id = t.object_id
+  WHERE l.line = p_line
+    AND l.snr IS NOT NULL
+    AND (p_snr_min IS NULL OR l.snr >= p_snr_min)
+    AND (p_snr_max IS NULL OR l.snr <= p_snr_max)
+    AND (p_include_stale OR o.id IS NULL OR NOT public.line_fit_stale_redshift(
+           o.version, o.redshift_quality, (o.redshift)::double precision,
+           f.object_version, f.z_quality, f.z_used));
+$$;
+
+GRANT EXECUTE ON FUNCTION public.spectra_matching_line_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.spectra_matching_line_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, BOOLEAN) TO service_role;
+
+
+-- object_line_snr: the object's S/N in catalog line p_line — the best of its
+-- viewer-visible member spectra under the same program / publication /
+-- staleness rules as objects_matching_line_filter — for the list's sort key
+-- and its "Line S/N" column. Per candidate row (PK probes on spectrum_lines),
+-- evaluated only when a line filter is active.
+CREATE OR REPLACE FUNCTION public.object_line_snr(
+  p_object_id INTEGER,
+  p_line TEXT,
+  p_include_stale BOOLEAN,
+  p_program_slugs TEXT[],
+  p_include_unpublished BOOLEAN DEFAULT false
+)
+RETURNS DOUBLE PRECISION
+LANGUAGE sql STABLE
+AS $$
+  SELECT max(l.snr)
+  FROM public.targets t
+  JOIN public.spectra s ON s.target_id = t.target_id
+  JOIN public.spectrum_lines l ON l.spectrum_id = s.id AND l.line = p_line
+  JOIN public.spectrum_line_fits f ON f.spectrum_id = s.id
+  JOIN public.objects o ON o.id = t.object_id
+  WHERE t.object_id = p_object_id
+    AND f.program_slug = ANY(p_program_slugs)
+    AND (p_include_unpublished OR s.deploy_status = 'published')
+    AND (p_include_stale OR NOT public.line_fit_stale_redshift(
+           o.version, o.redshift_quality, (o.redshift)::double precision,
+           f.object_version, f.z_quality, f.z_used));
+$$;
+
+GRANT EXECUTE ON FUNCTION public.object_line_snr(INTEGER, TEXT, BOOLEAN, TEXT[], BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.object_line_snr(INTEGER, TEXT, BOOLEAN, TEXT[], BOOLEAN) TO service_role;
+
+
+-- =============================================================================
 -- objects_matching_observation_filter
 -- =============================================================================
 -- Viewer-scoped observation filtering for the object-level catalog RPCs
@@ -1484,6 +1624,14 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_page_size INTEGER DEFAULT 50,
   p_include_thumbnails BOOLEAN DEFAULT false,
   p_include_unpublished BOOLEAN DEFAULT false,
+  -- Emission-line filter (spectrum_lines; docs/design-emission-line-fitting.md):
+  -- catalog line name (a doublet total such as CIII1908, or a single line),
+  -- S/N bounds, and whether fits whose inspected redshift has since moved
+  -- count. Sort column 'line_snr' is accepted only with p_line set.
+  p_line TEXT DEFAULT NULL,
+  p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_line_include_stale BOOLEAN DEFAULT false,
   -- Perf T1-5 (#501): the exact COUNT(*) over the whole filtered set is only
   -- needed once per filter combination; the client caches it and passes
   -- false on later pages / sorts. total_count is -1 when skipped.
@@ -1514,6 +1662,7 @@ LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
 AS $$
 DECLARE
+  v_line_spectrum_ids INTEGER[];
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
@@ -1555,7 +1704,8 @@ BEGIN
   IF NOT (p_sort_column IN (
     'target_id', 'spectrum_id', 'field', 'observation', 'program_slug', 'ra', 'dec', 'redshift',
     'redshift_quality', 'redshift_auto', 'signal_to_noise', 'exposure_time', 'grating'
-  ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
+  ) OR (p_sort_column = 'distance' AND v_coord_search_active)
+    OR (p_sort_column = 'line_snr' AND p_line IS NOT NULL)) THEN
     p_sort_column := 'spectrum_id';
   END IF;
 
@@ -1570,6 +1720,13 @@ BEGIN
 
   -- A cursor page always starts at the cursor, never at an offset.
   v_offset := CASE WHEN v_keyset_active THEN 0 ELSE (p_page - 1) * p_page_size END;
+
+  -- Emission-line filter: the spectra with a measurement of p_line in the S/N
+  -- bounds, materialized once per call (see spectra_matching_line_filter).
+  IF p_line IS NOT NULL THEN
+    v_line_spectrum_ids := ARRAY(SELECT public.spectra_matching_line_filter(
+      p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false)));
+  END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(
@@ -1631,6 +1788,10 @@ BEGIN
       COALESCE(s.dq_flags, 0) AS dq_flags,
       s.file_hash,
       s.file_size,
+      -- the spectrum's S/N in the filtered line (sort key + 'Line S/N' column)
+      CASE WHEN p_line IS NOT NULL THEN
+        (SELECT __l.snr FROM public.spectrum_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
+      END AS line_snr,
       CASE
         WHEN v_coord_search_active THEN
           2 * DEGREES(ASIN(SQRT(
@@ -1659,6 +1820,7 @@ BEGIN
       AND (p_max_snr_max IS NULL OR s.signal_to_noise <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR s.exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR s.exposure_time <= p_max_exposure_time_max)
+      AND (p_line IS NULL OR s.id = ANY(v_line_spectrum_ids))
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_exclude) = 0)
@@ -1753,6 +1915,7 @@ BEGIN
         WHEN 'redshift_auto' THEN df.redshift_auto::double precision
         WHEN 'signal_to_noise' THEN df.signal_to_noise::double precision
         WHEN 'exposure_time' THEN df.exposure_time::double precision
+        WHEN 'line_snr' THEN df.line_snr
       END AS sort_num
     FROM distance_filtered df
   ),
@@ -1828,6 +1991,7 @@ BEGIN
       'last_inspected_by', r.last_inspected_by,
       'max_snr', r.max_snr,
       'max_exposure_time', r.max_exposure_time,
+      'line_snr', r.line_snr,
       'created_at', r.created_at,
       'updated_at', r.updated_at,
       'distance', CASE WHEN v_coord_search_active THEN r.distance ELSE NULL END,
@@ -1909,6 +2073,14 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_page INTEGER DEFAULT 1,
   p_page_size INTEGER DEFAULT 50,
   p_include_unpublished BOOLEAN DEFAULT false,
+  -- Emission-line filter (spectrum_lines; docs/design-emission-line-fitting.md):
+  -- catalog line name (a doublet total such as CIII1908, or a single line),
+  -- S/N bounds, and whether fits whose inspected redshift has since moved
+  -- count. Sort column 'line_snr' is accepted only with p_line set.
+  p_line TEXT DEFAULT NULL,
+  p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_line_include_stale BOOLEAN DEFAULT false,
   -- Perf T1-5 (#501): see get_filtered_spectra_paginated. -1 when skipped.
   p_include_count BOOLEAN DEFAULT true,
   -- Perf T2-F (#511): keyset cursor for /api/v1/objects — see
@@ -1926,6 +2098,7 @@ LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
 AS $$
 DECLARE
+  v_line_object_ids INTEGER[];
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
@@ -1967,7 +2140,8 @@ BEGIN
   IF NOT (p_sort_column IN (
     'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
     'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
-  ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
+  ) OR (p_sort_column = 'distance' AND v_coord_search_active)
+    OR (p_sort_column = 'line_snr' AND p_line IS NOT NULL)) THEN
     p_sort_column := 'object_id';
   END IF;
 
@@ -1983,6 +2157,15 @@ BEGIN
   v_offset := CASE WHEN v_keyset_active THEN 0 ELSE (p_page - 1) * p_page_size END;
 
   -- Intersect user-accessible programs with filter selection
+  -- Emission-line filter: the viewer-visible object set with a measurement of
+  -- p_line in the S/N bounds, materialized once per call (see
+  -- objects_matching_line_filter for the invariants).
+  IF p_line IS NOT NULL THEN
+    v_line_object_ids := ARRAY(SELECT public.objects_matching_line_filter(
+      p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false),
+      p_program_slugs, p_include_unpublished));
+  END IF;
+
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(
       SELECT unnest(p_program_slugs)
@@ -2062,6 +2245,7 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
+      AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
@@ -2177,6 +2361,8 @@ BEGIN
       o.photo_z,
       o.has_photometry,
       o.created_at,
+      -- the object's best S/N in the filtered line (sort key + 'Line S/N' column)
+      CASE WHEN p_line IS NOT NULL THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END AS line_snr,
       CASE
         WHEN v_coord_search_active THEN
           2 * DEGREES(ASIN(SQRT(
@@ -2223,6 +2409,7 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
+      AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
@@ -2320,6 +2507,7 @@ BEGIN
         WHEN 'max_snr' THEN c.max_snr::double precision
         WHEN 'max_exposure_time' THEN c.max_exposure_time::double precision
         WHEN 'photo_z' THEN c.photo_z::double precision
+        WHEN 'line_snr' THEN c.line_snr
       END AS sort_num
     FROM candidates c
   ),
@@ -2384,6 +2572,7 @@ BEGIN
         'gratings', sa.gratings,
         'max_snr', sa.max_snr,
         'max_exposure_time', sa.max_exposure_time,
+        'line_snr', fo.line_snr,
         'redshift', fo.redshift,
         'redshift_quality', fo.redshift_quality,
         'redshift_inspected', fo.redshift_inspected,
@@ -2496,13 +2685,22 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_comment_user_id UUID DEFAULT NULL,
   p_sort_column TEXT DEFAULT 'object_id',
   p_sort_direction TEXT DEFAULT 'asc',
-  p_include_unpublished BOOLEAN DEFAULT false
+  p_include_unpublished BOOLEAN DEFAULT false,
+  -- Emission-line filter (spectrum_lines; docs/design-emission-line-fitting.md):
+  -- catalog line name (a doublet total such as CIII1908, or a single line),
+  -- S/N bounds, and whether fits whose inspected redshift has since moved
+  -- count. Sort column 'line_snr' is accepted only with p_line set.
+  p_line TEXT DEFAULT NULL,
+  p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_line_include_stale BOOLEAN DEFAULT false
 )
 RETURNS TABLE(object_id TEXT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
 AS $$
 DECLARE
+  v_line_object_ids INTEGER[];
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
@@ -2538,11 +2736,21 @@ BEGIN
   IF NOT (p_sort_column IN (
     'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
     'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
-  ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
+  ) OR (p_sort_column = 'distance' AND v_coord_search_active)
+    OR (p_sort_column = 'line_snr' AND p_line IS NOT NULL)) THEN
     p_sort_column := 'object_id';
   END IF;
 
   -- Intersect user-accessible programs with filter selection
+  -- Emission-line filter: the viewer-visible object set with a measurement of
+  -- p_line in the S/N bounds, materialized once per call (see
+  -- objects_matching_line_filter for the invariants).
+  IF p_line IS NOT NULL THEN
+    v_line_object_ids := ARRAY(SELECT public.objects_matching_line_filter(
+      p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false),
+      p_program_slugs, p_include_unpublished));
+  END IF;
+
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(
       SELECT unnest(p_program_slugs)
@@ -2616,6 +2824,7 @@ BEGIN
     AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
     AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
     AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
+    AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
     AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
     AND (
       p_inspected_only IS NULL
@@ -2720,6 +2929,8 @@ BEGIN
     CASE WHEN p_sort_column = 'n_spectra' AND p_sort_direction = 'desc' THEN o.n_spectra END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'asc' THEN o.max_snr END ASC NULLS LAST,
     CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN o.max_snr END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'line_snr' AND p_sort_direction = 'asc' THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'line_snr' AND p_sort_direction = 'desc' THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'asc' THEN o.max_exposure_time END ASC NULLS LAST,
     CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'desc' THEN o.max_exposure_time END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'photo_z' AND p_sort_direction = 'asc' THEN o.photo_z END ASC NULLS LAST,
@@ -2796,13 +3007,22 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_comment_search TEXT DEFAULT NULL,
   p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
-  p_include_unpublished BOOLEAN DEFAULT false
+  p_include_unpublished BOOLEAN DEFAULT false,
+  -- Emission-line filter (spectrum_lines; docs/design-emission-line-fitting.md):
+  -- catalog line name (a doublet total such as CIII1908, or a single line),
+  -- S/N bounds, and whether fits whose inspected redshift has since moved
+  -- count. Sort column 'line_snr' is accepted only with p_line set.
+  p_line TEXT DEFAULT NULL,
+  p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_line_include_stale BOOLEAN DEFAULT false
 )
 RETURNS TABLE(prev_object_id TEXT, next_object_id TEXT, current_index BIGINT, total_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
 AS $$
 DECLARE
+  v_line_object_ids INTEGER[];
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
@@ -2832,7 +3052,8 @@ BEGIN
   IF NOT (p_sort_column IN (
     'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
     'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
-  ) OR (p_sort_column = 'distance' AND v_coord_search_active)) THEN
+  ) OR (p_sort_column = 'distance' AND v_coord_search_active)
+    OR (p_sort_column = 'line_snr' AND p_line IS NOT NULL)) THEN
     p_sort_column := 'object_id';
   END IF;
   IF v_coord_search_active AND p_sort_column = 'object_id' AND p_sort_direction = 'asc' THEN
@@ -2840,6 +3061,15 @@ BEGIN
     p_sort_direction := 'asc';
   END IF;
   v_sort_is_text := p_sort_column IN ('object_id', 'field');
+
+  -- Emission-line filter: the viewer-visible object set with a measurement of
+  -- p_line in the S/N bounds, materialized once per call (see
+  -- objects_matching_line_filter for the invariants).
+  IF p_line IS NOT NULL THEN
+    v_line_object_ids := ARRAY(SELECT public.objects_matching_line_filter(
+      p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false),
+      p_program_slugs, p_include_unpublished));
+  END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs))
@@ -2888,6 +3118,7 @@ BEGIN
         WHEN 'n_spectra' THEN o.n_spectra::DOUBLE PRECISION
         WHEN 'max_snr' THEN o.max_snr WHEN 'max_exposure_time' THEN o.max_exposure_time
         WHEN 'photo_z' THEN o.photo_z
+        WHEN 'line_snr' THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished)
         WHEN 'distance' THEN
           2 * DEGREES(ASIN(SQRT(
             POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
@@ -2933,6 +3164,7 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
+      AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -3086,6 +3318,14 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
   p_include_unpublished BOOLEAN DEFAULT false,
+  -- Emission-line filter (spectrum_lines; docs/design-emission-line-fitting.md):
+  -- catalog line name (a doublet total such as CIII1908, or a single line),
+  -- S/N bounds, and whether fits whose inspected redshift has since moved
+  -- count. Sort column 'line_snr' is accepted only with p_line set.
+  p_line TEXT DEFAULT NULL,
+  p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_line_include_stale BOOLEAN DEFAULT false,
   p_after_id INTEGER DEFAULT NULL, p_page_size INTEGER DEFAULT 5000
 )
 RETURNS TABLE(
@@ -3103,6 +3343,7 @@ SET plan_cache_mode = 'force_custom_plan'
 SET statement_timeout = '120s'
 AS $$
 DECLARE
+  v_line_spectrum_ids INTEGER[];
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
@@ -3118,6 +3359,13 @@ BEGIN
   v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
   IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN v_list_ids_mode := 'any'; END IF;
   v_page_size := LEAST(GREATEST(COALESCE(p_page_size, 5000), 1), 10000);
+  -- Emission-line filter: the spectra with a measurement of p_line in the S/N
+  -- bounds, materialized once per call (see spectra_matching_line_filter).
+  IF p_line IS NOT NULL THEN
+    v_line_spectrum_ids := ARRAY(SELECT public.spectra_matching_line_filter(
+      p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false)));
+  END IF;
+
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs)) INTO v_filtered_program_slugs;
   ELSE v_filtered_program_slugs := p_program_slugs; END IF;
@@ -3159,6 +3407,7 @@ BEGIN
       AND (p_redshift_min IS NULL OR o.redshift >= p_redshift_min) AND (p_redshift_max IS NULL OR o.redshift <= p_redshift_max)
       AND (p_max_snr_min IS NULL OR s.signal_to_noise >= p_max_snr_min) AND (p_max_snr_max IS NULL OR s.signal_to_noise <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR s.exposure_time >= p_max_exposure_time_min) AND (p_max_exposure_time_max IS NULL OR s.exposure_time <= p_max_exposure_time_max)
+      AND (p_line IS NULL OR s.id = ANY(v_line_spectrum_ids))
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_exclude) = 0)
@@ -3257,6 +3506,14 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
   p_include_unpublished BOOLEAN DEFAULT false,
+  -- Emission-line filter (spectrum_lines; docs/design-emission-line-fitting.md):
+  -- catalog line name (a doublet total such as CIII1908, or a single line),
+  -- S/N bounds, and whether fits whose inspected redshift has since moved
+  -- count. Sort column 'line_snr' is accepted only with p_line set.
+  p_line TEXT DEFAULT NULL,
+  p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_line_include_stale BOOLEAN DEFAULT false,
   p_after_object_id TEXT DEFAULT NULL, p_page_size INTEGER DEFAULT 5000
 )
 RETURNS TABLE(
@@ -3283,6 +3540,7 @@ SET jit = 'off'
 SET statement_timeout = '120s'
 AS $$
 DECLARE
+  v_line_object_ids INTEGER[];
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
@@ -3306,6 +3564,15 @@ BEGIN
   v_list_ids_mode := COALESCE(p_list_ids_mode, 'any');
   IF v_list_ids_mode NOT IN ('any', 'all', 'none') THEN v_list_ids_mode := 'any'; END IF;
   v_page_size := LEAST(GREATEST(COALESCE(p_page_size, 5000), 1), 10000);
+
+  -- Emission-line filter: the viewer-visible object set with a measurement of
+  -- p_line in the S/N bounds, materialized once per call (see
+  -- objects_matching_line_filter for the invariants).
+  IF p_line IS NOT NULL THEN
+    v_line_object_ids := ARRAY(SELECT public.objects_matching_line_filter(
+      p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false),
+      p_program_slugs, p_include_unpublished));
+  END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
     SELECT ARRAY(SELECT unnest(p_program_slugs) INTERSECT SELECT unnest(p_filter_programs)) INTO v_filtered_program_slugs;
@@ -3376,6 +3643,7 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
+      AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND o.redshift_quality = 0))
       AND (p_needs_review IS NULL

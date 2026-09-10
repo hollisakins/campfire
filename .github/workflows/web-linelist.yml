@@ -1,0 +1,28 @@
+name: Web line catalog copy
+
+# The portal's emission-line filter and object-page line table read
+# web/lib/linelist.json, a generated mirror of the pipeline's line catalog
+# (pipeline/campfire_pipeline/nirspec/linelist.py — the source of truth; Vercel
+# builds from web/ alone). Fail when the copy drifts;
+# `python scripts/sync_linelist.py` refreshes it.
+
+on:
+  pull_request:
+    paths:
+      - "pipeline/campfire_pipeline/nirspec/linelist.py"
+      - "web/lib/linelist.json"
+      - "scripts/sync_linelist.py"
+      - ".github/workflows/web-linelist.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check the line catalog copy is current
+        run: python scripts/sync_linelist.py --check

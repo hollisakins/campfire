@@ -135,6 +135,13 @@ export async function getSpectra(
         p_page: page,
         p_page_size: pageSize,
         p_include_count: includeCount,
+        // emission-line filter keys are present only while a line is set
+        ...(rpcParams.p_line !== undefined ? {
+          p_line: rpcParams.p_line,
+          p_line_snr_min: rpcParams.p_line_snr_min,
+          p_line_snr_max: rpcParams.p_line_snr_max,
+          p_line_include_stale: rpcParams.p_line_include_stale,
+        } : {}),
       };
     } else {
       callParams = {
@@ -189,6 +196,7 @@ export async function getSpectra(
           distance: obj.distance ?? null,
           max_snr: obj.max_snr ?? undefined,
           max_exposure_time: obj.max_exposure_time ?? undefined,
+          line_snr: obj.line_snr ?? null,
           created_at: obj.created_at,
           spectra: [],
           // Objects-specific fields
@@ -240,6 +248,7 @@ export async function getSpectra(
         spectra: spectra,
         max_snr: obj.max_snr ?? undefined,
         max_exposure_time: obj.max_exposure_time ?? undefined,
+        line_snr: obj.line_snr ?? null,
         num_gratings: spectra.length,
       } as SpectrumTarget;
     });

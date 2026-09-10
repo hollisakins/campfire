@@ -158,6 +158,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     (filters.max_snr_max !== null ? 1 : 0) +
     (filters.max_exposure_time_min !== null ? 1 : 0) +
     (filters.max_exposure_time_max !== null ? 1 : 0) +
+    (filters.line ? 1 : 0) +
     (filters.list_ids?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
 
@@ -189,6 +190,10 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
       max_snr_max: null,
       max_exposure_time_min: null,
       max_exposure_time_max: null,
+      line: null,
+      line_snr_min: null,
+      line_snr_max: null,
+      line_include_stale: false,
       list_ids: [],
       list_ids_mode: 'any',
       dq_flags: [],

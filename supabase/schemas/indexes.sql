@@ -417,6 +417,13 @@ CREATE INDEX IF NOT EXISTS idx_spectrum_line_fits_target_id
 CREATE INDEX IF NOT EXISTS idx_spectrum_line_fits_updated_at
     ON public.spectrum_line_fits USING btree (updated_at);
 
+-- spectrum_lines: "line X at S/N >= y" is one range scan on this index; the
+-- PK (spectrum_id, line) serves the per-spectrum lookups. Partial: rows
+-- without a measurement (blended companions) can never match an S/N cut.
+CREATE INDEX IF NOT EXISTS idx_spectrum_lines_line_snr
+    ON public.spectrum_lines USING btree (line, snr DESC)
+    WHERE snr IS NOT NULL;
+
 
 -- =============================================================================
 -- deploy_events (epic #210, B2/B3)

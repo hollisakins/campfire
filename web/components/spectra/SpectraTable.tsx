@@ -21,6 +21,7 @@ import { SpectraTableRow } from './SpectraTableRow';
 import { StalenessBadge } from './StalenessBadge';
 import { PinButton } from './PinButton';
 import { DQ_FLAGS, decodeBitmask } from '@/lib/flags';
+import { lineLabel } from '@/lib/linelist';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
 import { defaultSortColumn } from '@/lib/actions/spectra-types';
 import { Card } from '@/components/ui/Card';
@@ -71,6 +72,7 @@ const SPECTRA_COLUMN_TO_SERVER: Record<string, SortColumn> = {
   'exposure_time': 'exposure_time',
   'grating': 'grating',
   'distance': 'distance',
+  'line_snr': 'line_snr',
 };
 
 // Column visibility configuration — objects mode (unique sky positions).
@@ -107,7 +109,12 @@ const OBJECTS_COLUMN_TO_SERVER: Record<string, SortColumn> = {
   'max_exposure_time': 'max_exposure_time',
   'photo_z': 'photo_z',
   'distance': 'distance',
+  'line_snr': 'line_snr',
 };
+
+// Shown (in both modes) only while an emission-line filter is active: the
+// row's S/N in that line, which the server also sorts on ('line_snr').
+const LINE_SNR_COLUMN: ColumnDefinition = { id: 'line_snr', label: 'Line S/N', defaultVisible: true };
 
 interface SpectraTableProps {
   spectra: SpectrumTarget[];
@@ -135,6 +142,8 @@ interface SpectraTableProps {
   error?: string | null;
   // Download props
   filters?: AdvancedFilterOptions;
+  /** Catalog line of the active emission-line filter (adds the Line S/N column). */
+  activeLine?: string | null;
 }
 
 // Helper to get quality label and color
@@ -249,6 +258,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   loading = false,
   error = null,
   filters,
+  activeLine = null,
 }) => {
   const { user, userProfile } = useAuth();
   const canInspect = !!(user && userProfile?.can_inspect);
@@ -256,7 +266,10 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   const isObjectsMode = viewMode === 'objects';
 
   // Column config and server-name mapping depend on view mode (Objects | Spectra).
-  const columnConfig = isObjectsMode ? OBJECTS_COLUMNS : SPECTRA_MODE_COLUMNS;
+  const columnConfig = useMemo(
+    () => [...(isObjectsMode ? OBJECTS_COLUMNS : SPECTRA_MODE_COLUMNS), ...(activeLine ? [LINE_SNR_COLUMN] : [])],
+    [isObjectsMode, activeLine],
+  );
   const COLUMN_TO_SERVER_NAME = isObjectsMode ? OBJECTS_COLUMN_TO_SERVER : SPECTRA_COLUMN_TO_SERVER;
 
   // Reverse mapping: server column name → TanStack column ID (needed for effectiveSorting)
@@ -760,6 +773,26 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         ),
         sortingFn: 'basic' as const,
       } satisfies ColumnDef<SpectrumTarget>]),
+      // Both modes: S/N in the filtered emission line, only while a line filter
+      // is active (objects: the best member spectrum). Sorted server-side.
+      ...(activeLine ? [{
+        id: 'line_snr',
+        minSize: 100,
+        accessorFn: (row: SpectrumTarget) => row.line_snr ?? -Infinity,
+        header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
+          <SortableHeader column={column} className="normal-case">{lineLabel(activeLine)} S/N</SortableHeader>
+        ),
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => {
+          const snr = row.original.line_snr;
+          if (snr == null) return <span className="text-xs text-text-secondary dark:text-text-tertiary">—</span>;
+          return (
+            <span className={`text-sm font-mono ${snr >= 3 ? 'text-text-primary' : 'text-text-secondary'}`}>
+              {snr.toFixed(1)}
+            </span>
+          );
+        },
+        sortingFn: 'basic' as const,
+      } satisfies ColumnDef<SpectrumTarget>] : []),
       // Spectra mode: signal_to_noise column (per-spectrum)
       ...(isSpectraMode ? [{
         id: 'signal_to_noise',

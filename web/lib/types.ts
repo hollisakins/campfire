@@ -576,6 +576,9 @@ export interface SpectrumTarget extends DbTarget {
   spectra: Spectrum[];
   max_snr?: number;
   max_exposure_time?: number;
+  /** S/N in the filtered emission line (objects: best member spectrum);
+   *  present only while a line filter is active. */
+  line_snr?: number | null;
   num_gratings?: number;
   comments?: CommentWithUser[];
   parent_object_id?: string;
