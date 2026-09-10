@@ -296,7 +296,13 @@ BEGIN
            -- of the parent target's (perf T2-A, #504), so they read off the
            -- spectra row; targets is joined only for field and the object link.
            s.program_slug, s.observation, t.field,
-           s.created_at, s.updated_at
+           s.created_at,
+           -- The row's sync timestamp is the later of its own and its
+           -- object's: a row re-sent because the object changed must advance
+           -- the client's cursor (MAX of mirrored updated_at) past that change,
+           -- or it would be re-sent on every incremental sync. Same pattern
+           -- as get_line_fits_for_sync's effective_updated_at.
+           GREATEST(s.updated_at, o.updated_at) AS updated_at
     FROM spectra s
     JOIN targets t ON t.target_id = s.target_id
     LEFT JOIN objects o ON o.id = t.object_id
@@ -452,10 +458,18 @@ BEGIN
     SELECT op.id, o.object_id, op.field, op.catalog_name, op.catalog_id,
            op.match_distance_arcsec, op.photometry, op.photo_z,
            op.photo_z_err_lo, op.photo_z_err_hi, op.has_pz,
-           op.created_at, op.updated_at
+           op.created_at,
+           -- Sync timestamp: the later of the row's own and its object's, so a
+           -- row re-sent because the object changed advances the client's
+           -- cursor (see get_spectra_for_sync).
+           GREATEST(op.updated_at, o.updated_at) AS updated_at
     FROM object_photometry op
     JOIN objects o ON o.id = op.object_id
     WHERE o.programs && p_program_slugs
+      -- Soft-deleted objects are tombstoned by the objects stream (which
+      -- cascades to their photometry locally); their rows must not ride the
+      -- object-changed clause below back in.
+      AND o.is_active = true
       -- B1: fail-closed publish gate (this RPC always bypasses RLS).
       AND (p_include_unpublished OR o.has_published_spectrum)
       -- Incremental: the row itself, or its object, changed since the cursor.
@@ -479,6 +493,7 @@ BEGIN
     JOIN objects o ON o.id = op.object_id
     WHERE p_include_counts
       AND o.programs && p_program_slugs
+      AND o.is_active = true
       AND (p_include_unpublished OR o.has_published_spectrum)
       -- Incremental: the row itself, or its object, changed since the cursor.
       -- The object clause is the resurrection path: photometry deleted along
@@ -828,7 +843,10 @@ BEGIN
         'deployment_id', m.deployment_id,
         'cfpipe_version', m.cfpipe_version,
         'created_at', m.created_at,
-        'updated_at', m.updated_at
+        -- Sync timestamp: the later of the row's own and its spectrum's, so a
+        -- row re-sent because the spectrum changed advances the client's
+        -- cursor (see get_spectra_for_sync).
+        'updated_at', GREATEST(m.updated_at, s.updated_at)
       )
       -- Keyset (#103): page array must be id-ordered (client cursors on the
       -- last element).
@@ -837,7 +855,8 @@ BEGIN
     COALESCE((SELECT cnt FROM total), 0)::BIGINT,
     COALESCE((SELECT cnt FROM accessible), 0)::BIGINT,
     (SELECT d.ids FROM deleted d)
-  FROM matched m;
+  FROM matched m
+  LEFT JOIN spectra s ON s.spectrum_id = m.spectrum_id;
 END;
 $$;
 
