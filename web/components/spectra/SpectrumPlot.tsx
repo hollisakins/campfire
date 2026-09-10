@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
-import { useSpectrumJson, useSpectrum1d, useRedshiftFit, useSpectrumSidecarUrls, fullPayloadIsSeparate } from '@/lib/hooks/useSpectrumJson';
+import { useSpectrumJson, useSpectrum1d, useRedshiftFit, useLineFit, useSpectrumSidecarUrls, fullPayloadIsSeparate } from '@/lib/hooks/useSpectrumJson';
 import type { SpectrumData } from '@/app/api/spectrum/route';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
@@ -148,6 +148,16 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // already put in the shared cache serves immediately either way.
   const fitQuery = useRedshiftFit(fitsPath, showModel);
   const fitData = fitQuery.data ?? null;
+  // Emission-line fit overlay (the `_lines.json` sidecar: the linefit model +
+  // continuum on the spectrum grid). Off by default and fetched only once
+  // toggled on — most spectra have no line fit until they are inspected —
+  // so it never costs a request on a page that does not ask for it.
+  const [showLines, setShowLines] = useState(false);
+  const lineFitQuery = useLineFit(fitsPath, showLines);
+  const lineFitData = lineFitQuery.data ?? null;
+  // The toggle is greyed out only once absence is definitive: the resolve
+  // said no sidecar is registered, or the fetch answered 404.
+  const noLineFit = sidecarUrls.data?.has_lines === false || (showLines && lineFitQuery.isSuccess && lineFitData === null);
   const [redshift, setRedshift] = useState(initialRedshift ?? 0);
   const [colorMin, setColorMin] = useState(spectrumPreferences.snrMin);
   const [colorMax, setColorMax] = useState(spectrumPreferences.snrMax);
@@ -242,8 +252,30 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       });
     }
 
-    return { wave, fnu: fnuValues, fnuErr, flambda, flambdaErr, modelWave, modelFnu, modelFlambda };
-  }, [data, fitData]);
+    // Line-fit model + continuum (fν in the sidecar, like the spectrum payload);
+    // null samples outside the fitted windows stay null and render as gaps.
+    let linesWave: (number | null)[] | null = null;
+    let linesModelFnu: (number | null)[] | null = null;
+    let linesModelFlambda: (number | null)[] | null = null;
+    let linesContFnu: (number | null)[] | null = null;
+    let linesContFlambda: (number | null)[] | null = null;
+    if (lineFitData) {
+      linesWave = lineFitData.wave;
+      linesModelFnu = lineFitData.model_fnu;
+      linesContFnu = lineFitData.cont_fnu;
+      const toFlambda = (f: number | null, i: number) => {
+        const w = lineFitData.wave[i];
+        return f !== null && w !== null ? convertToFlambda(f, w) : null;
+      };
+      linesModelFlambda = lineFitData.model_fnu.map(toFlambda);
+      linesContFlambda = lineFitData.cont_fnu.map(toFlambda);
+    }
+
+    return {
+      wave, fnu: fnuValues, fnuErr, flambda, flambdaErr, modelWave, modelFnu, modelFlambda,
+      linesWave, linesModelFnu, linesModelFlambda, linesContFnu, linesContFlambda,
+    };
+  }, [data, fitData, lineFitData]);
 
   // Memoize the redshift-INDEPENDENT figure — every trace but the emission
   // lines, and every axis but the rest-frame overlay. Dragging the redshift
@@ -253,12 +285,17 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   const basePlotData = useMemo(() => {
     if (!data || !processedData) return null;
 
-    const { wave, fnu, fnuErr, flambda, flambdaErr, modelWave, modelFnu, modelFlambda } = processedData;
+    const {
+      wave, fnu, fnuErr, flambda, flambdaErr, modelWave, modelFnu, modelFlambda,
+      linesWave, linesModelFnu, linesModelFlambda, linesContFnu, linesContFlambda,
+    } = processedData;
 
     // Select flux values based on current unit
     const flux = fluxUnit === 'fnu' ? fnu : flambda;
     const fluxErr = fluxUnit === 'fnu' ? fnuErr : flambdaErr;
     const modelFlux = fluxUnit === 'fnu' ? modelFnu : modelFlambda;
+    const linesModelFlux = fluxUnit === 'fnu' ? linesModelFnu : linesModelFlambda;
+    const linesContFlux = fluxUnit === 'fnu' ? linesContFnu : linesContFlambda;
     const fluxLabel = getFluxLabel(fluxUnit);
     const hoverLabel = getHoverLabel(fluxUnit);
 
@@ -419,13 +456,52 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
       });
     }
 
+    // Emission-line fit: continuum (dashed) under the model, both drawn only
+    // while "Lines" is on and the sidecar has landed. The caption carries the
+    // redshift the lines were fit at, which is the inspected one, not the
+    // slider's.
+    if (showLines && linesWave && linesModelFlux && linesContFlux) {
+      const zCaption = lineFitData?.z_used !== null && lineFitData?.z_used !== undefined
+        ? ` (z = ${lineFitData.z_used.toFixed(4)}${lineFitData.z_source === 'auto' ? ', auto' : ''})`
+        : '';
+      traces.push({
+        x: linesWave,
+        y: linesContFlux,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: 'Continuum',
+        line: { color: '#a855f7', width: 1, dash: 'dot' },
+        hovertemplate: `λ: %{x:.3f} μm<br>continuum ${hoverLabel}: %{y:.3e}<extra></extra>`,
+        xaxis: 'x',
+        yaxis: 'y',
+      });
+      traces.push({
+        x: linesWave,
+        y: linesModelFlux,
+        type: 'scatter' as const,
+        mode: 'lines' as const,
+        name: `Line model${zCaption}`,
+        line: { color: '#a855f7', width: 2 },
+        hovertemplate: `λ: %{x:.3f} μm<br>line model ${hoverLabel}: %{y:.3e}<extra></extra>`,
+        xaxis: 'x',
+        yaxis: 'y',
+      });
+    }
+
     // Smart y-axis auto-scaling (works in both normal and inspection mode).
-    // The model informs the range only while it is actually drawn — otherwise
+    // A model informs the range only while it is actually drawn — otherwise
     // Auto-y would scale to an invisible trace, and the same spectrum would
     // stretch differently depending on whether fit data happened to exist.
+    // The zfit model spans the whole spectrum, so it wins when both are on;
+    // the line model alone (null outside its windows) frames the fitted lines.
+    const rangeModel = showModel && modelFlux
+      ? { flux: modelFlux, wave: processedData.modelWave }
+      : showLines && linesModelFlux
+        ? { flux: linesModelFlux, wave: linesWave }
+        : null;
     const yAxisRange = computeYRange(flux, fluxErr, {
-      modelFlux: showModel ? modelFlux : null,
-      modelWave: showModel ? processedData.modelWave : null,
+      modelFlux: rangeModel?.flux ?? null,
+      modelWave: rangeModel?.wave ?? null,
       dataWave: wave,
     });
 
@@ -521,7 +597,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     };
 
     return { traces, layout, waveMin, waveMax };
-  }, [data, heat, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, grating, showModel, autoStretch]);
+  }, [data, heat, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, grating, showModel, showLines, lineFitData, autoStretch]);
 
   // Emission line markers (drawn on the hidden overlay yaxis4 so they never
   // affect autoscaling or double-click reset) — the only traces that move
@@ -745,6 +821,23 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           disabled={!fitData}
           onChange={setShowModel}
           title={fitData ? 'Show best-fit model + χ²(z)' : 'No redshift fit available for this spectrum'}
+        />
+
+        {/* Emission-line fit overlay (model + continuum from cfpipe nirspec
+            linefit at the inspected redshift) — greyed out once the spectrum
+            is known to have no line fit. */}
+        <PlotCheckbox
+          label="Lines"
+          checked={showLines && !noLineFit}
+          disabled={noLineFit}
+          onChange={setShowLines}
+          title={
+            noLineFit
+              ? 'No emission-line fit for this spectrum (fits need an inspected redshift)'
+              : showLines && lineFitQuery.isPending
+                ? 'Loading the emission-line fit…'
+                : 'Show the fitted emission-line model + continuum (fit at the inspected redshift)'
+          }
         />
 
         {/* y-axis auto-stretch toggle (inspection shortcut: y) */}

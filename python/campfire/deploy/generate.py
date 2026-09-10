@@ -346,3 +346,102 @@ def generate_zfit_json(zfit_path: Path, output_dir: Path) -> Path:
         # allow_nan=False — see generate_spectrum_json.
         json.dump(data, f, allow_nan=False)
     return json_path
+
+
+# ---------------------------------------------------------------------------
+# Line-fit JSON (model + continuum + line summary)
+# ---------------------------------------------------------------------------
+
+# Columns of the _lines.fits LINES table that go into the sidecar's `lines`
+# list: what a plot needs to place and label a fitted line. The full record
+# (EWs, kinematics, per-complex chi2) lives on the spectrum_line_fits row.
+LINES_JSON_COLUMNS = ('name', 'component', 'wave_obs', 'flux', 'flux_err', 'snr', 'flags', 'blend_into')
+
+
+def _fnu_from_flambda(flam, wave):
+    """erg/s/cm2/A on a um grid -> uJy, the inverse of convert_fnu_to_flambda
+    (same constant, so the web's fnu -> flambda round trip is exact)."""
+    return flam * (wave * wave) / 2.998e-19
+
+
+def _finite_or_none(x, ndigits=None):
+    x = float(x)
+    if not np.isfinite(x):
+        return None
+    return float(f'{x:.{ndigits}g}') if ndigits else x
+
+
+def generate_lines_json(lines_path: Path, output_dir: Path) -> Path:
+    """Generate the ``_lines.json`` sidecar of a ``_lines.fits`` product.
+
+    What the spectrum plot's "Lines" overlay fetches (layout kind
+    ``nirspec_lines_json``, the fourth entry in the web's sidecar resolver
+    next to the spectrum JSON, its 1-D sidecar and the zfit JSON): the
+    ``MODEL`` extension — wavelength (um) plus the fitted model and the
+    continuum, converted from f_lambda to f_nu (uJy) so the plot treats them
+    exactly like the zfit model — with the provenance scalars the reader
+    needs to caption it, and a compact per-line summary (name, component,
+    observed wavelength, flux, S/N, flags). NaN samples (outside the fitted
+    windows) become JSON null, which Plotly renders as gaps. Reads the FITS
+    directly (astropy only): the pipeline reader is not needed for a plot
+    payload, and ``campfire deploy lines`` already hashes the FITS bytes.
+    """
+    with fits.open(lines_path) as hdul:
+        h = hdul[0].header
+        model = hdul['MODEL'].data
+        wave = np.asarray(model['wave'], dtype=float)
+        model_flam = np.asarray(model['model'], dtype=float)
+        cont_flam = np.asarray(model['cont'], dtype=float)
+        lines_tbl = hdul['LINES'].data
+        lines = []
+        for row in lines_tbl:
+            rec = {}
+            for c in LINES_JSON_COLUMNS:
+                v = row[c]
+                if c in ('name', 'component', 'blend_into'):
+                    v = str(v).strip() or None
+                elif c == 'flags':
+                    v = int(v)
+                else:
+                    v = _finite_or_none(v, 6)
+                rec[c] = v
+            lines.append(rec)
+
+    with np.errstate(invalid='ignore'):
+        model_fnu = _fnu_from_flambda(model_flam, wave)
+        cont_fnu = _fnu_from_flambda(cont_flam, wave)
+
+    def _scalar(key, cast):
+        v = h.get(key)
+        if v is None:
+            return None
+        try:
+            v = cast(v)
+        except (TypeError, ValueError):
+            return None
+        return v if not isinstance(v, float) or np.isfinite(v) else None
+
+    data = {
+        'fit_version': str(h.get('LFITVER', '')),
+        'z_used': _scalar('ZUSED', float),
+        'z_source': str(h.get('ZSRC', 'inspected')),
+        'z_quality': _scalar('ZQUAL', int),
+        'z_fit': _scalar('ZFIT', float),
+        'dv': _scalar('DVGLOB', float),
+        'sigma_v': _scalar('SIGGLOB', float),
+        'chi2': _scalar('CHI2', float),
+        'dof': _scalar('DOF', int),
+        'n_lines': _scalar('NLINES', int),
+        'n_detected': _scalar('NDETECT', int),
+        'wave': [_finite_or_none(x, 7) for x in wave],
+        'model_fnu': [_finite_or_none(x, 6) for x in model_fnu],
+        'cont_fnu': [_finite_or_none(x, 6) for x in cont_fnu],
+        'lines': lines,
+    }
+
+    stem = lines_path.name[:-len('.fits')] if lines_path.name.endswith('.fits') else lines_path.stem
+    json_path = output_dir / f'{stem}.json'
+    with open(json_path, 'w') as f:
+        # allow_nan=False — see generate_spectrum_json.
+        json.dump(data, f, allow_nan=False)
+    return json_path

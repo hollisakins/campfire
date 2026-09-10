@@ -6,7 +6,7 @@ import { cdnFrontBase, frontUrlsForResolved } from '@/lib/server/cdn-front';
 import { resolveObjectBackends, type ResolvedObject } from '@/lib/r2';
 import { spectrumSidecarsKey, type SpectrumSidecarUrls } from '@/lib/spectrum-sidecars';
 
-type SidecarKeys = [json: string, json1d: string, zfit: string];
+type SidecarKeys = [json: string, json1d: string, zfit: string, lines: string];
 
 /**
  * Resolve every sidecar of a batch of spectra to delivery-front urls in ONE
@@ -24,7 +24,9 @@ type SidecarKeys = [json: string, json1d: string, zfit: string];
  */
 export async function resolveSpectrumSidecars(fitsPaths: string[]): Promise<Map<string, SpectrumSidecarUrls>> {
   const front = cdnFrontBase() !== null;
-  const unknown = (): SpectrumSidecarUrls => ({ front, spectrum: null, spectrum_1d: null, zfit: null, has_1d: null, has_zfit: null });
+  const unknown = (): SpectrumSidecarUrls => ({
+    front, spectrum: null, spectrum_1d: null, zfit: null, lines: null, has_1d: null, has_zfit: null, has_lines: null,
+  });
   const out = new Map<string, SpectrumSidecarUrls>();
 
   const keysByPath = new Map<string, SidecarKeys>();
@@ -34,6 +36,7 @@ export async function resolveSpectrumSidecars(fitsPaths: string[]): Promise<Map<
         deriveSibling(p, 'spectrum_json'),
         deriveSibling(p, 'spectrum_1d_json'),
         deriveSibling(p, 'zfit'),
+        deriveSibling(p, 'nirspec_lines_json'),
       ]);
     } catch (err) {
       console.warn(`spectrum sidecars: cannot derive sidecar keys for ${p}:`, err);
@@ -57,9 +60,9 @@ export async function resolveSpectrumSidecars(fitsPaths: string[]): Promise<Map<
   }
 
   let i = 0;
-  for (const [p, [jsonKey, json1dKey, zfitKey]] of keysByPath) {
-    const [json, json1d, zfit] = resolved.slice(i, i + 3);
-    i += 3;
+  for (const [p, [jsonKey, json1dKey, zfitKey, linesKey]] of keysByPath) {
+    const [json, json1d, zfit, lines] = resolved.slice(i, i + 4);
+    i += 4;
     // The resolver fails open with no content identity for ANY key, so "no
     // row" is only believed when the full JSON — which every deployed
     // spectrum registers — did resolve.
@@ -69,8 +72,10 @@ export async function resolveSpectrumSidecars(fitsPaths: string[]): Promise<Map<
       spectrum: urls.get(jsonKey) ?? null,
       spectrum_1d: urls.get(json1dKey) ?? null,
       zfit: urls.get(zfitKey) ?? null,
+      lines: urls.get(linesKey) ?? null,
       has_1d: presence(json1d),
       has_zfit: presence(zfit),
+      has_lines: presence(lines),
     });
   }
   return out;

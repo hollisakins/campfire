@@ -133,6 +133,15 @@ _register(ProductSpec(
     lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
     suffix="_lines.fits", legacy_prefix=None,
 ))
+# JSON sidecar of the line fit (campfire deploy lines): the MODEL extension
+# (wave / model / continuum in fnu) and a compact line summary, what the spectrum
+# plot's "Lines" overlay fetches — the fourth entry in the web's sidecar
+# resolver next to spectrum_json / spectrum_1d_json / zfit. Reserved key.
+_register(ProductSpec(
+    name="nirspec_lines_json", instrument=NS, tree="products", bucket="data",
+    lifecycle=LC.CLOUD_PRODUCT, scope_keys=("obs",), subdir=_nirspec_obs_dir,
+    suffix="_lines.json", legacy_prefix=None,
+))
 # The 4->1 canonical spectrum-exposure (#212). A reduction intermediate, not yet
 # deployed: reserved key, real local home (bare '<root>_<nrsN>_<source>.fits').
 _register(ProductSpec(

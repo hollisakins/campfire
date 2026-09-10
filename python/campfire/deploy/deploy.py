@@ -744,9 +744,9 @@ def deploy_observation(
 
             # Emission-line fit products (cfpipe nirspec linefit); the catalog
             # rows are upserted after the spectra below.
-            upload_tasks.extend(lines_upload_tasks(obs_name, lines_paths))
+            upload_tasks.extend(lines_upload_tasks(obs_name, lines_paths, temp_dir))
             if lines_paths:
-                print(f"  + {len(lines_paths)} emission-line fit products")
+                print(f"  + {len(lines_paths)} emission-line fit products (+ _lines.json sidecars)")
 
             # Canonical spectrum-exposure intermediates (epic #210, B5): uploaded on
             # EVERY deploy (cloud-as-source-of-truth + delete-local→restore), filtered
