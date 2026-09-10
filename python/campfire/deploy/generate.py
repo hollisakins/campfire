@@ -364,6 +364,11 @@ def _fnu_from_flambda(flam, wave):
     return flam * (wave * wave) / 2.998e-19
 
 
+def _str_or_none(v):
+    v = None if v is None else str(v).strip()
+    return v or None
+
+
 def _finite_or_none(x, ndigits=None):
     x = float(x)
     if not np.isfinite(x):
@@ -426,6 +431,13 @@ def generate_lines_json(lines_path: Path, output_dir: Path) -> Path:
         'z_used': _scalar('ZUSED', float),
         'z_source': str(h.get('ZSRC', 'inspected')),
         'z_quality': _scalar('ZQUAL', int),
+        # Provenance the row also carries (object_version, spectrum_hash), so a
+        # reader holding the sidecar alone can tell which inspection and which
+        # spectrum bytes the fit belongs to.
+        'object_id': _str_or_none(h.get('OBJID')),
+        'object_version': _scalar('OBJVER', int),
+        'spectrum_hash': _str_or_none(h.get('SPECHASH')),
+        'fitted_at': _str_or_none(h.get('CMPFRTIM')),
         'z_fit': _scalar('ZFIT', float),
         'dv': _scalar('DVGLOB', float),
         'sigma_v': _scalar('SIGGLOB', float),

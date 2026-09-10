@@ -495,6 +495,7 @@ export const InspectionModeOverlay: React.FC<InspectionModeOverlayProps> = ({
                   key={`${activeTab.targetId}-${activeTab.spectrum.grating}`}
                   fitsPath={activeTab.spectrum.fits_path}
                   grating={activeTab.spectrum.grating}
+                  spectrumId={activeTab.spectrum.id}
                   initialRedshift={currentRedshift}
                   inspectionMode
                   onRedshiftChange={canEdit ? handleRedshiftSliderChange : undefined}

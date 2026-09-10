@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useSpectrumJson, useSpectrum1d, useRedshiftFit, useLineFit, useSpectrumSidecarUrls, fullPayloadIsSeparate } from '@/lib/hooks/useSpectrumJson';
+import { useObjectLinesQuery } from '@/lib/hooks/useObjectLinesQuery';
 import type { SpectrumData } from '@/app/api/spectrum/route';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import type { Colorscale2D, FluxUnit } from '@/lib/types';
@@ -87,6 +88,11 @@ const getPlotlyColorscale = (name: Colorscale2D): PlotlyColorscale => {
 interface SpectrumPlotProps {
   fitsPath: string;
   grating: string;
+  /** The `spectra.id` of the plotted spectrum. Lets the "Lines" overlay ask
+   *  the fit's status (`/api/objects/lines`: stale against the live
+   *  inspection state or not) so an obsolete model is drawn as such. Without
+   *  it the overlay still draws, unlabelled. */
+  spectrumId?: number;
   initialRedshift?: number | null;
   inspectionMode?: boolean;
   onRedshiftChange?: (value: number) => void;
@@ -98,6 +104,7 @@ interface SpectrumPlotProps {
 export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   fitsPath,
   grating,
+  spectrumId,
   initialRedshift,
   inspectionMode = false,
   onRedshiftChange,
@@ -158,6 +165,20 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // The toggle is greyed out only once absence is definitive: the resolve
   // said no sidecar is registered, or the fetch answered 404.
   const noLineFit = sidecarUrls.data?.has_lines === false || (showLines && lineFitQuery.isSuccess && lineFitData === null);
+  // Whether the fit is stale against the live inspection state (the inspected
+  // redshift moved, or the spectrum was re-reduced, since `linefit` ran) is
+  // the status view's single definition, read through /api/objects/lines —
+  // the same answer the object page's Emission Lines table shows. Asked only
+  // while the overlay is on, and only when the caller knows the spectrum id.
+  const lineStatusIds = useMemo(() => (spectrumId !== undefined ? [spectrumId] : []), [spectrumId]);
+  const lineStatus = useObjectLinesQuery(lineStatusIds, showLines && lineFitData !== null);
+  const lineFitStale = useMemo(() => {
+    const fit = lineStatus.data?.fits.find((f) => f.spectrum_id === spectrumId);
+    if (!fit) return null;
+    if (fit.stale_redshift) return 'redshift' as const;
+    if (fit.stale_spectrum) return 'spectrum' as const;
+    return false as const;
+  }, [lineStatus.data, spectrumId]);
   const [redshift, setRedshift] = useState(initialRedshift ?? 0);
   const [colorMin, setColorMin] = useState(spectrumPreferences.snrMin);
   const [colorMax, setColorMax] = useState(spectrumPreferences.snrMax);
@@ -460,17 +481,28 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     // while "Lines" is on and the sidecar has landed. The caption carries the
     // redshift the lines were fit at, which is the inspected one, not the
     // slider's.
+    // A stale fit (the inspected redshift moved, or the spectrum was
+    // re-reduced, since it was made) is still drawn — it is what the catalog
+    // holds until the next `linefit` + `deploy lines` — but greyed, dashed and
+    // labelled, never presented as the current model.
     if (showLines && linesWave && linesModelFlux && linesContFlux) {
       const zCaption = lineFitData?.z_used !== null && lineFitData?.z_used !== undefined
-        ? ` (z = ${lineFitData.z_used.toFixed(4)}${lineFitData.z_source === 'auto' ? ', auto' : ''})`
+        ? `z = ${lineFitData.z_used.toFixed(4)}${lineFitData.z_source === 'auto' ? ', auto' : ''}`
         : '';
+      const staleCaption = lineFitStale === 'redshift'
+        ? 'STALE: redshift changed since the fit'
+        : lineFitStale === 'spectrum'
+          ? 'STALE: spectrum re-reduced since the fit'
+          : '';
+      const caption = [zCaption, staleCaption].filter(Boolean).join('; ');
+      const color = lineFitStale ? '#9ca3af' : '#a855f7';
       traces.push({
         x: linesWave,
         y: linesContFlux,
         type: 'scatter' as const,
         mode: 'lines' as const,
-        name: 'Continuum',
-        line: { color: '#a855f7', width: 1, dash: 'dot' },
+        name: lineFitStale ? 'Continuum (stale)' : 'Continuum',
+        line: { color, width: 1, dash: 'dot' },
         hovertemplate: `λ: %{x:.3f} μm<br>continuum ${hoverLabel}: %{y:.3e}<extra></extra>`,
         xaxis: 'x',
         yaxis: 'y',
@@ -480,9 +512,9 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         y: linesModelFlux,
         type: 'scatter' as const,
         mode: 'lines' as const,
-        name: `Line model${zCaption}`,
-        line: { color: '#a855f7', width: 2 },
-        hovertemplate: `λ: %{x:.3f} μm<br>line model ${hoverLabel}: %{y:.3e}<extra></extra>`,
+        name: `Line model${caption ? ` (${caption})` : ''}`,
+        line: { color, width: 2, dash: lineFitStale ? 'dash' : 'solid' },
+        hovertemplate: `λ: %{x:.3f} μm<br>line model${lineFitStale ? ' (stale)' : ''} ${hoverLabel}: %{y:.3e}<extra></extra>`,
         xaxis: 'x',
         yaxis: 'y',
       });
@@ -597,7 +629,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
     };
 
     return { traces, layout, waveMin, waveMax };
-  }, [data, heat, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, grating, showModel, showLines, lineFitData, autoStretch]);
+  }, [data, heat, processedData, fluxUnit, colorscale, colorMin, colorMax, accentColorHex, plotColors, grating, showModel, showLines, lineFitData, lineFitStale, autoStretch]);
 
   // Emission line markers (drawn on the hidden overlay yaxis4 so they never
   // affect autoscaling or double-click reset) — the only traces that move
@@ -839,6 +871,18 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
                 : 'Show the fitted emission-line model + continuum (fit at the inspected redshift)'
           }
         />
+        {showLines && lineFitStale && (
+          <span
+            className="text-xs text-amber-600 dark:text-amber-400"
+            title={
+              lineFitStale === 'redshift'
+                ? 'The inspected redshift has changed since these lines were fit; re-run linefit and deploy lines to refresh.'
+                : 'The spectrum has been re-reduced since these lines were fit; re-run linefit and deploy lines to refresh.'
+            }
+          >
+            stale fit
+          </span>
+        )}
 
         {/* y-axis auto-stretch toggle (inspection shortcut: y) */}
         <PlotCheckbox

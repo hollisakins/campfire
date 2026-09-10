@@ -33,6 +33,15 @@ export interface LineFitData {
   z_used: number | null;
   z_source: string;
   z_quality: number | null;
+  /** Provenance the `spectrum_line_fits` row also carries: which inspection
+   *  (object version) and which spectrum bytes the fit belongs to. Whether
+   *  the fit is *stale* against the live inspection state is the status
+   *  view's call (`/api/objects/lines` → `stale_redshift` / `stale_spectrum`),
+   *  not something the plot decides from the sidecar alone. */
+  object_id: string | null;
+  object_version: number | null;
+  spectrum_hash: string | null;
+  fitted_at: string | null;
   z_fit: number | null;
   dv: number | null;
   sigma_v: number | null;

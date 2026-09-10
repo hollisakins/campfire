@@ -191,11 +191,37 @@ def publish_line_fits(sb, obs_name: str, lines_paths, *, program_slug: str,
     return dict(rows=n, refused_auto=len(refused), missing_spectra=len(missing))
 
 
-def lines_upload_tasks(obs_name: str, lines_paths, temp_dir: Path) -> list[UploadTask]:
+def split_auto_line_fits(lines_paths) -> tuple[list[Path], list[Path]]:
+    """Partition products into ``(inspected, auto)`` on the ``ZSRC`` header —
+    the provenance gate, read from the header alone so the upload step can
+    apply it without the pipeline reader."""
+    from astropy.io import fits
+    inspected, auto = [], []
+    for p in lines_paths:
+        try:
+            src = str(fits.getheader(p, 0).get('ZSRC', 'inspected'))
+        except Exception:
+            src = 'inspected'
+        (inspected if src == 'inspected' else auto).append(p)
+    return inspected, auto
+
+
+def lines_upload_tasks(obs_name: str, lines_paths, temp_dir: Path, *,
+                       allow_auto_z: bool = False) -> list[UploadTask]:
     """Upload tasks for the ``_lines.fits`` products and their ``_lines.json``
     sidecars, which are generated into ``temp_dir`` (the caller's deploy temp
-    directory, removed when the deploy finishes)."""
+    directory, removed when the deploy finishes).
+
+    The same provenance gate as :func:`publish_line_fits`: a product fit at
+    the auto redshift is neither uploaded nor given a sidecar unless
+    ``allow_auto_z`` — the sidecar is what the portal plots, so an unapproved
+    fit must not reach the front even when its catalog row is refused."""
     scope = Scope(obs=obs_name)
+    if not allow_auto_z:
+        lines_paths, refused = split_auto_line_fits(lines_paths)
+        if refused:
+            print(f"  {len(refused)} line-fit product(s) at an auto (uninspected) redshift not uploaded "
+                  f"— pass --allow-auto-z to publish them")
     tasks = []
     for p in lines_paths:
         tasks.append(UploadTask(p, storage_key('nirspec_lines', scope, p.name, scheme=KeyScheme.CANONICAL),
@@ -232,7 +258,8 @@ def deploy_lines(obs_name: str, config: dict, *, dry_run: bool = False,
         publish_line_fits(None, obs_name, lines_paths, program_slug=program_slug,
                           allow_auto_z=allow_auto_z, dry_run=True)
         if upload:
-            print(f"Would upload {len(lines_paths)} _lines.fits products (+ _lines.json sidecars) to OSN")
+            n_up = len(lines_paths) if allow_auto_z else len(split_auto_line_fits(lines_paths)[0])
+            print(f"Would upload {n_up} _lines.fits products (+ _lines.json sidecars) to OSN")
         return
 
     sb = get_supabase_client(config)
@@ -240,13 +267,13 @@ def deploy_lines(obs_name: str, config: dict, *, dry_run: bool = False,
         temp_dir = obs_dir / '.deploy_temp'
         temp_dir.mkdir(exist_ok=True)
         try:
-            tasks = lines_upload_tasks(obs_name, lines_paths, temp_dir)
+            tasks = lines_upload_tasks(obs_name, lines_paths, temp_dir, allow_auto_z=allow_auto_z)
             uploaded: set[str] = set()
             success, failed, failed_msgs = upload_files_parallel(
                 config, tasks, desc="Line fits", succeeded_out=uploaded, backend='osn')
             for msg in failed_msgs[:5]:
                 print(f"    - {msg}")
-            print(f"Uploaded {success}/{len(tasks)} line-fit products ({len(lines_paths)} FITS + JSON sidecars)")
+            print(f"Uploaded {success}/{len(tasks)} line-fit files ({len(tasks) // 2} FITS + JSON sidecars)")
             # Register before the temp dir goes: build_registry_rows hashes the
             # sidecar bytes from disk.
             if uploaded:

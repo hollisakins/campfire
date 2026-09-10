@@ -215,7 +215,13 @@ front, `/api/line-fit` as the streaming fallback) and draws the fitted model and
 continuum in the current flux unit, with the redshift the lines were fit at in the legend.
 The sidecar is fetched only when toggled on — most spectra have no fit until inspected —
 and the toggle greys out once absence is definitive (`has_lines: false` from the
-registry, or the route's 404).
+registry, or the route's 404). Staleness is not the sidecar's call: while the overlay is
+on the plot asks `/api/objects/lines` for the spectrum's fit status (the
+`spectrum_line_fits_status` view, the same answer the Emission Lines table shows) and
+draws a fit flagged `stale_redshift` / `stale_spectrum` greyed, dashed and labelled
+"stale", never as the current model. The provenance gate holds for the bytes as it does
+for the row: `lines_upload_tasks` uploads neither the FITS nor the sidecar of a product
+fit at the auto redshift unless the deploy passes `--allow-auto-z`.
 
 * `GET /api/v1/sync/lines` — keyset bulk fetch (mirrors `/sync/photometry`; RPC
   `get_line_fits_for_sync`, service role with the caller's program scope, publish gate via
