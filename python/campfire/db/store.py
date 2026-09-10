@@ -1372,11 +1372,21 @@ class LocalStore:
         previews and rate files. Nothing reads those rows locally, so they are
         dead weight in the mirror (and in ``verify``'s candidate set); a sync
         clears them once and keeps them out.
+
+        Rows that carry this machine's own state are kept whatever their kind:
+        ``campfire push`` caches the registry rows for the keys it pushes and
+        records the push fast-path on them (``pushed_*``), and a deploy machine
+        pushes sidecars and rate files too. Deleting those would cost the next
+        push its stat fast-path — every sync, since push re-creates them.
         """
         keep = list(keep_types)
         ph = ",".join("?" * len(keep))
         cursor = self._conn.execute(
-            f"DELETE FROM storage_objects WHERE product_type NOT IN ({ph})", keep,
+            f"""DELETE FROM storage_objects
+                WHERE product_type NOT IN ({ph})
+                  AND pushed_identity IS NULL
+                  AND local_path IS NULL""",
+            keep,
         )
         self._conn.commit()
         return cursor.rowcount

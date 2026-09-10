@@ -642,9 +642,18 @@ class TestTombstonesAndScopedPurge:
         from campfire.db.store import DOWNLOADABLE_PRODUCT_TYPES
         sidecar = dict(sample_storage_objects[0],
                        storage_key="spectra/ember_uds_p4/x_spec.json", product_type="spectrum_json")
-        store.upsert_storage_objects(sample_storage_objects + [sidecar])
+        # A sidecar this machine pushed carries the push fast-path bookkeeping
+        # and must survive (a deploy machine pushes sidecars and rate files).
+        pushed = dict(sample_storage_objects[0],
+                      storage_key="spectra/ember_uds_p4/y_spec.json", product_type="spectrum_json")
+        store.upsert_storage_objects(sample_storage_objects + [sidecar, pushed])
+        store.mark_object_pushed(pushed["storage_key"], "sha256:aaa", 1.0, 1024)
         assert store.drop_unmirrored_storage_rows(DOWNLOADABLE_PRODUCT_TYPES) == 1
-        assert store._conn.execute("SELECT COUNT(*) FROM storage_objects").fetchone()[0] == 3
+        left = sorted(r["storage_key"] for r in
+                      store._conn.execute("SELECT storage_key FROM storage_objects").fetchall())
+        assert "spectra/ember_uds_p4/x_spec.json" not in left
+        assert "spectra/ember_uds_p4/y_spec.json" in left
+        assert len(left) == 4
 
     def test_delete_objects_by_ids_drops_photometry(self, store, sample_objects):
         store.upsert_objects(sample_objects)
