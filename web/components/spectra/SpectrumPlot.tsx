@@ -155,6 +155,18 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   // already put in the shared cache serves immediately either way.
   const fitQuery = useRedshiftFit(fitsPath, showModel);
   const fitData = fitQuery.data ?? null;
+  // The toggle is greyed out only once absence is definitive: the resolve said
+  // no zfit sidecar is registered, or the fetch answered 404. It must NOT key
+  // on `fitData`, which is null until the toggle is on — the fetch follows
+  // showModel, so a disabled-until-fetched toggle can never be switched on.
+  const noFit = sidecarUrls.data?.has_zfit === false || (showModel && fitQuery.isSuccess && fitData === null);
+  // A fit that exists but could not be loaded (CDN front and streaming route
+  // both failed) is neither "no fit" nor a drawn overlay, so say so and offer
+  // a retry rather than leaving the toggle on over an empty plot. Scoped to
+  // showModel: a disabled query keeps its last error in the cache.
+  const fitError = showModel && fitQuery.error
+    ? (fitQuery.error instanceof Error ? fitQuery.error.message : 'Failed to load the redshift fit')
+    : null;
   // Emission-line fit overlay (the `_lines.json` sidecar: the linefit model +
   // continuum on the spectrum grid). Off by default and fetched only once
   // toggled on — most spectra have no line fit until they are inspected —
@@ -795,6 +807,22 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
           </button>
         </div>
       )}
+      {fitError && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+        >
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>Best-fit model unavailable: {fitError}</span>
+          <button
+            type="button"
+            onClick={() => { void fitQuery.refetch(); }}
+            className="ml-auto font-medium underline underline-offset-2"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-surface-2">
         <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />
@@ -846,13 +874,22 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
 
         <EmissionLinesControl showEmissionLines={showEmissionLines} onChange={setShowEmissionLines} />
 
-        {/* Model + chi²(z) toggle — disabled if no zfit data is available. */}
+        {/* Model + chi²(z) toggle — greyed out once the spectrum is known to
+            have no redshift fit. */}
         <PlotCheckbox
           label="Model"
-          checked={showModel && !!fitData}
-          disabled={!fitData}
+          checked={showModel && !noFit}
+          disabled={noFit}
           onChange={setShowModel}
-          title={fitData ? 'Show best-fit model + χ²(z)' : 'No redshift fit available for this spectrum'}
+          title={
+            noFit
+              ? 'No redshift fit available for this spectrum'
+              : fitError
+                ? `The redshift fit failed to load: ${fitError}`
+                : showModel && fitQuery.isPending
+                  ? 'Loading the redshift fit…'
+                  : 'Show best-fit model + χ²(z)'
+          }
         />
 
         {/* Emission-line fit overlay (model + continuum from cfpipe nirspec
