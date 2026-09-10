@@ -1,0 +1,62 @@
+# Example photometry deploy config — copy to $CAMPFIRE_ROOT/config/photometry.toml
+# (or pass --photometry-config). One [<field>] section per CAMPFIRE field; the
+# key must equal objects.field ("goods-n", "egs", ...). Consumed by
+# `campfire deploy photometry --field <field>` and, for changed objects only,
+# by every `campfire deploy --obs` run on a machine that has this file.
+#
+# Cross-match: nearest catalog source within match_radius_arcsec of each
+# object centroid; one row per (field, catalog_name, catalog_id). A new release
+# gets a new catalog_name, so retire the old one with --supersede after the
+# new rows land.
+
+[goods-n]
+catalog = "/data/catalogs/unicorn/GOODSN/goodsn_photom_v0.95.fits"
+catalog_name = "UNICORN GOODS-N v0.95"   # shown on the object page; part of the row key
+format = "fits"                          # anything astropy Table.read accepts
+flux_unit = "nJy"                        # uJy | nJy | Jy | AB_mag
+ra_column = "RA"
+dec_column = "DEC"
+id_column = "ID"
+match_radius_arcsec = 0.3
+max_flux_err = 1.0e6                     # catalog units; UNICORN marks no coverage with ~1e12
+
+# band name (lowercase; must be in FILTER_WAVELENGTHS to get a wavelength)
+# → catalog flux / error columns. Unknown names are stored without `wav`
+# and the SED plot skips them.
+[goods-n.bands]
+f435w = { flux = "FLUX_F435W", err = "FLUXERR_F435W" }
+f606w = { flux = "FLUX_F606W", err = "FLUXERR_F606W" }
+f814w = { flux = "FLUX_F814W", err = "FLUXERR_F814W" }
+f850lp = { flux = "FLUX_F850L", err = "FLUXERR_F850L" }   # UNICORN spells it F850L
+f090w = { flux = "FLUX_F090W", err = "FLUXERR_F090W" }
+f115w = { flux = "FLUX_F115W", err = "FLUXERR_F115W" }
+f150w = { flux = "FLUX_F150W", err = "FLUXERR_F150W" }
+f200w = { flux = "FLUX_F200W", err = "FLUXERR_F200W" }
+f277w = { flux = "FLUX_F277W", err = "FLUXERR_F277W" }
+f356w = { flux = "FLUX_F356W", err = "FLUXERR_F356W" }
+f410m = { flux = "FLUX_F410M", err = "FLUXERR_F410M" }
+f444w = { flux = "FLUX_F444W", err = "FLUXERR_F444W" }
+
+# UNICORN release photo-z: the field's *_photz_v*.fits plus the shared
+# template cube (P(z) sidecar + model SED on the object page).
+[goods-n.photoz]
+format = "unicorn"
+file = "/data/catalogs/unicorn/GOODSN/Photoz/goodsn_photz_v0.95.fits"
+templates = "/data/catalogs/unicorn/GOODSN/unicorn_templates_fiducial.fits"
+label = "UNICORN v0.95 (Lazy.jl)"
+color = "#8e6bb8"
+# scale_column = "SCALE_MODEL"           # photom column multiplying the model SED, if the release needs it
+
+# Native Lazy.jl output (single FITS: ext 1 z_best/chi2/coeffs, ext 2 P(z)
+# with the grid in row 0, ext 3 templates with per-template columns).
+[cosmos.photoz]
+format = "lazy"
+file = "/data/catalogs/cosmos/lazy_output.fits"
+label = "Lazy.jl photo-z"
+color = "#999999"
+id_column = "ID"
+z_best_column = "z_best"
+chi2_column = "chi2"
+coeffs_column = "coeffs"
+pz_ext = 2
+templates_ext = 3

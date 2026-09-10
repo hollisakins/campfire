@@ -49,7 +49,7 @@ print(obj)
 # Object(J141934.14+525238.7, z=6.6900, egs)
 #   12 spectra (G140H, G140M, G235H, G395H, G395M, PRISM)
 #   tags: blagn, hae, lrd, o3e
-#   Photometry(11 bands, UNICORN EGS v0.9)
+#   Photometry(25 bands, UNICORN EGS v0.98)
 
 obj.spectra[0].plot()              # quick-look matplotlib
 cf.plot_cutout(obj.object_id)      # NIRCam RGB + shutter overlay

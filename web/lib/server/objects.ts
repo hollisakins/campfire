@@ -196,6 +196,10 @@ export async function loadObjectHeader(objectId: string): Promise<{
  * since T2-A), for an object loadObjectHeader has already admitted. Never
  * rejects: the page passes this promise to the client tree, where a
  * rejection would surface as a page-level error instead of a missing SED.
+ *
+ * An object can own one row per catalog (the upsert key includes
+ * catalog_name), so the most recently deployed row wins — the same choice
+ * sync_photometry_to_objects makes for the denormalised photo_z columns.
  */
 export async function loadObjectPhotometry(objectDbId: number): Promise<ObjectPhotometry | null> {
   try {
@@ -204,6 +208,7 @@ export async function loadObjectPhotometry(objectDbId: number): Promise<ObjectPh
       .from('object_photometry')
       .select('catalog_name, catalog_id, match_distance_arcsec, photometry, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz')
       .eq('object_id', objectDbId)
+      .order('updated_at', { ascending: false })
       .limit(1)
       .maybeSingle();
     if (error) {
