@@ -1003,7 +1003,7 @@ BEGIN
   -- Tombstones: on the first incremental page (p_updated_since set, no
   -- cursor), the ids of in-scope objects that changed since the cursor and are
   -- no longer visible to this caller -- soft-deleted (is_active = false;
-  -- reconcile_objects stamps updated_at) or, for non-admins, left without a
+  -- apply_object_reconciliation stamps updated_at) or, for non-admins, left without a
   -- published spectrum (recompute_has_published_spectrum stamps updated_at on
   -- the flip). The client deletes them locally, so an incremental sync no
   -- longer leaves ghosts that force the next pull into a full resync. Only the

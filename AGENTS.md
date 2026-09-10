@@ -251,7 +251,7 @@ the first page of each of objects / spectra / storage returns `deleted_ids`
 registry rows that left the visible set) which the client deletes locally, so
 `pull` no longer falls back to a full resync after every deploy that regroups
 objects. Tombstones key on `updated_at`: soft-deletes stamp it in
-`reconcile_objects`, `recompute_has_published_spectrum` stamps objects whose
+`apply_object_reconciliation`, `recompute_has_published_spectrum` stamps objects whose
 publication flag flips, and `bump_spectra_updated_at_trigger` fires on
 `deploy_status`. Hard deletes (`deploy remove`) still need `campfire sync
 --full`, which the count-mismatch fallback triggers from `pull`. The sync RPCs
