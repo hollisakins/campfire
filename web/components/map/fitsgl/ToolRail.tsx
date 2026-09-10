@@ -3,12 +3,12 @@
 /**
  * Left tool rail (epic #337, Phase 4.5) — a slim docked-left glass column
  * (`docs/design-fitsgl-map-ux.md` §4): modal cursor tools (pan / ruler) above a
- * divider, then one-shot actions (fit-to-view, export PNG) and the Filters launcher
- * (opens the shared slide-over). The Display/Layers panels live in the right dock
- * (its own collapse chevron), so they're not duplicated here.
+ * divider, then the launchers and one-shot actions: go-to-coordinate, fit-to-view,
+ * export PNG, and the Filters slide-over. The Display/Layers panels live in the
+ * right dock (its own collapse chevron), so they're not duplicated here.
  */
 
-import { Hand, Ruler, Maximize2, Download, SlidersHorizontal } from 'lucide-react';
+import { Hand, Ruler, Crosshair, Maximize2, Download, SlidersHorizontal } from 'lucide-react';
 import { GLASS } from './glass';
 
 type Tool = 'pan' | 'ruler';
@@ -41,13 +41,25 @@ function ToolButton({ label, active, onClick, children, dot }: ToolButtonProps) 
 interface ToolRailProps {
   tool: Tool;
   onSetTool: (tool: Tool) => void;
+  /** Whether the go-to-coordinate box is open (lights the ⌖ button). */
+  gotoOpen: boolean;
+  onToggleGoto: () => void;
   onFit: () => void;
   onExport: () => void;
   onOpenFilters?: () => void;
   hasActiveFilters?: boolean;
 }
 
-export function ToolRail({ tool, onSetTool, onFit, onExport, onOpenFilters, hasActiveFilters }: ToolRailProps) {
+export function ToolRail({
+  tool,
+  onSetTool,
+  gotoOpen,
+  onToggleGoto,
+  onFit,
+  onExport,
+  onOpenFilters,
+  hasActiveFilters,
+}: ToolRailProps) {
   return (
     <div className={`absolute left-0 top-1/2 z-[500] flex -translate-y-1/2 flex-col gap-1 rounded-r-xl ${GLASS} p-1.5`}>
       <ToolButton label="Pan" active={tool === 'pan'} onClick={() => onSetTool('pan')}>
@@ -59,6 +71,9 @@ export function ToolRail({ tool, onSetTool, onFit, onExport, onOpenFilters, hasA
 
       <div className="mx-auto my-0.5 h-px w-5 bg-border" />
 
+      <ToolButton label="Go to coordinates (G)" active={gotoOpen} onClick={onToggleGoto}>
+        <Crosshair className="h-4 w-4" />
+      </ToolButton>
       <ToolButton label="Fit to view" onClick={onFit}>
         <Maximize2 className="h-4 w-4" />
       </ToolButton>

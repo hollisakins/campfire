@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import type { MapLayer, MapObjectMarker, FitsglDataset } from '@/lib/actions/map';
+import type { MapTarget } from '@/lib/utils/map-target';
 
 // Dynamic import to avoid SSR issues with Leaflet (requires window/document).
 // The chunk group (Leaflet + FitsGL, ~100 kB br) starts downloading at module
@@ -37,6 +38,7 @@ interface MapViewerWrapperProps {
   initialFilter?: string;
   initialCenter?: { ra: number; dec: number };
   initialZoom?: number;
+  initialTarget?: MapTarget | null;
   highlightObjectId?: string;
   markerFilter?: (marker: MapObjectMarker) => boolean;
   filteredIdSet?: Set<string> | null;

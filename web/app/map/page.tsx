@@ -2,6 +2,7 @@ import { SignInLink } from '@/components/auth/SignInLink';
 import { LogIn } from 'lucide-react';
 import { getMapLayers, getFitsglDatasets } from '@/lib/actions/map';
 import { MapPageContent } from './MapPageContent';
+import { parseTargetParam } from '@/lib/utils/map-target';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,6 +24,9 @@ export default async function MapPage({ searchParams }: MapPageProps) {
   const zoomParsed = zoomRaw !== undefined ? parseFloat(zoomRaw) : undefined;
   const zoom = zoomParsed !== undefined && Number.isFinite(zoomParsed) ? zoomParsed : undefined;
   const highlight = typeof params.highlight === 'string' ? params.highlight : undefined;
+  // The pinned go-to crosshair — its own param, since ra/dec mean the view centre
+  // and are rewritten on every pan. Malformed values degrade to no pin.
+  const target = parseTargetParam(params.target);
 
   const initialCenter = ra !== undefined && dec !== undefined ? { ra, dec } : undefined;
 
@@ -65,6 +69,7 @@ export default async function MapPage({ searchParams }: MapPageProps) {
       initialFilter={filter}
       initialCenter={initialCenter}
       initialZoom={zoom}
+      initialTarget={target}
       highlightObjectId={highlight}
     />
   );

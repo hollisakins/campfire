@@ -306,6 +306,9 @@ pre code.hljs {
   --primary-text: #fb923c;
   --primary-soft: rgba(251, 146, 60, 0.14);
   --on-primary: #1a1206;
+  /* Error text (the go-to box's parse hint): the dusk rose, since the light
+     theme's deep red is unreadable on the dark glass. */
+  --danger: #fb7185;
   /* Pre-composed translucent panel fill — the `/opacity` utility modifier isn't
      supported on these var-based colour tokens, so the glass surface uses this
      directly (opaque enough to stay legible over a white/grey stretch). */

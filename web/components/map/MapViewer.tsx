@@ -11,6 +11,7 @@ import {
 } from 'react-leaflet';
 import Link from 'next/link';
 import type { MapLayer, MapObjectMarker, FitsglDataset } from '@/lib/actions/map';
+import type { MapTarget } from '@/lib/utils/map-target';
 import { FitsGLMapSurface } from './FitsGLMapSurface';
 import { useFieldObjectMarkers } from '@/lib/hooks/useFieldObjectMarkers';
 import { useFieldSlits, WHOLE_FIELD_BBOX } from '@/lib/hooks/useFieldSlits';
@@ -216,6 +217,7 @@ interface MapViewerProps {
   initialFilter?: string;
   initialCenter?: { ra: number; dec: number };
   initialZoom?: number;
+  initialTarget?: MapTarget | null;
   highlightObjectId?: string;
   markerFilter?: (marker: MapObjectMarker) => boolean;
   filteredIdSet?: Set<string> | null;
@@ -231,6 +233,7 @@ export function MapViewer({
   initialFilter,
   initialCenter,
   initialZoom,
+  initialTarget,
   highlightObjectId,
   markerFilter,
   filteredIdSet,
@@ -474,6 +477,7 @@ export function MapViewer({
               ? initialZoom
               : undefined
           }
+          initialTarget={initialTarget}
           fields={fields}
           selectedField={selectedField}
           onFieldChange={handleFieldChange}
