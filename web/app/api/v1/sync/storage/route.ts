@@ -22,8 +22,24 @@ import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
  *          O(log N + limit) per page. The only pagination since T2-F (#511):
  *          a non-zero `offset` is refused with 400 and an upgrade message.
  * - include_counts: 'false' to skip total/accessible counts (default true)
+ * - product_types: comma-separated product kinds to return (default: all).
+ *          The Python client mirrors only the kinds it can download —
+ *          finals by default — instead of paging the whole registry.
+ * - observations / fields: comma-separated scope (union) for a per-scope
+ *          refresh, e.g. the intermediates of one observation before
+ *          `campfire pull --intermediate`.
+ *
+ * Response carries `deleted_ids` (tombstones) on the first incremental page:
+ * see the RPC.
  */
 import { rejectLegacyOffset } from '@/lib/api-sync-pagination';
+
+/** Comma-separated query value → trimmed non-empty items, or null if absent. */
+function parseList(raw: string | null): string[] | null {
+  if (raw === null) return null;
+  const items = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  return items.length > 0 ? items : null;
+}
 
 export async function GET(request: NextRequest) {
   const userId = await validateAuth(request);
@@ -57,10 +73,13 @@ export async function GET(request: NextRequest) {
     const afterId = afterRaw ? parseInt(afterRaw, 10) : null;
     const updatedSince = searchParams.get('updated_since') || null;
     const includeCounts = searchParams.get('include_counts') !== 'false';
+    const productTypes = parseList(searchParams.get('product_types'));
+    const observations = parseList(searchParams.get('observations'));
+    const fields = parseList(searchParams.get('fields'));
 
     const supabase = createServiceClient();
 
-    const { data, error } = await supabase.rpc('get_storage_objects_for_sync', {
+    const baseArgs = {
       p_program_slugs: accessibleProgramSlugs,
       p_updated_since: updatedSince,
       p_limit: limit,
@@ -69,7 +88,29 @@ export async function GET(request: NextRequest) {
       // is fail-closed to published, in-program rows.
       p_include_unpublished: admin,
       p_after_id: afterId,
+    };
+    // The scope arguments are sent only when the client asked for a scope, so
+    // an unscoped call still resolves against the pre-scope RPC signature.
+    const scopeArgs: Record<string, string[]> = {};
+    if (productTypes) scopeArgs.p_product_types = productTypes;
+    if (observations) scopeArgs.p_observations = observations;
+    if (fields) scopeArgs.p_fields = fields;
+    const scoped = Object.keys(scopeArgs).length > 0;
+
+    let { data, error } = await supabase.rpc('get_storage_objects_for_sync', {
+      ...baseArgs,
+      ...scopeArgs,
     });
+
+    // Deploy window: the Vercel build and the Supabase migration land
+    // independently on merge. If this build runs against an RPC that does not
+    // know the scope parameters yet (PostgREST: no matching function), fall
+    // back to the unscoped call — the client filters the rows it receives, so
+    // the only cost is an unfiltered page in that window.
+    if (error && scoped && error.code === 'PGRST202') {
+      console.warn('sync storage: RPC without scope parameters; retrying unscoped');
+      ({ data, error } = await supabase.rpc('get_storage_objects_for_sync', baseArgs));
+    }
 
     if (error) {
       console.error('Error in sync storage:', error);
@@ -89,6 +130,10 @@ export async function GET(request: NextRequest) {
         after: afterId,
       },
       total_accessible_count: result.total_accessible_count || 0,
+      // Tombstones: ids of registry rows that left the visible set since
+      // `updated_since` (superseded / revoked, or their spectrum un-published);
+      // first incremental page only, absent from an RPC predating the column.
+      deleted_ids: result.deleted_ids ?? [],
     });
   } catch (error) {
     console.error('Error in API /v1/sync/storage:', error);

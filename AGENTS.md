@@ -235,6 +235,29 @@ Slow-link workflow (CANDIDE→OSN): `campfire push` for the heavy bytes
 already landed and attaches it to the new deployment. `download` remains an
 alias of `pull`.
 
+**What `campfire sync` mirrors.** The five `/api/v1/sync/*` streams (objects,
+spectra, storage, photometry, line fits) are walked concurrently with keyset
+cursors (5000 rows per page, storage 10000; `CAMPFIRE_SYNC_PAGE_SIZE` /
+`CAMPFIRE_SYNC_STORAGE_PAGE_SIZE`). The storage mirror carries **finals only**
+(`FINAL_PRODUCT_TYPES`: `nirspec_spec`, `nircam_mosaic`) — not the sidecar
+JSON / zfit / line-fit / preview / rate rows that make up most of the registry,
+and not the intermediates: `pull --intermediate` indexes the intermediates of
+its selection on demand (`refresh_storage_scope()`, a full walk of that
+product-kind × observation/field slice, purged within the slice) before it
+plans. `campfire push` never depends on the mirror being complete (it fetches
+the live registry rows for its keys). Incremental syncs carry **tombstones**:
+the first page of each of objects / spectra / storage returns `deleted_ids`
+(soft-deleted objects, revoked spectra and members of a deleted object,
+registry rows that left the visible set) which the client deletes locally, so
+`pull` no longer falls back to a full resync after every deploy that regroups
+objects. Tombstones key on `updated_at`: soft-deletes stamp it in
+`reconcile_objects`, `recompute_has_published_spectrum` stamps objects whose
+publication flag flips, and `bump_spectra_updated_at_trigger` fires on
+`deploy_status`. Hard deletes (`deploy remove`) still need `campfire sync
+--full`, which the count-mismatch fallback triggers from `pull`. The sync RPCs
+run under a 120 s `statement_timeout` (service_role otherwise inherits
+authenticator's 8 s): the first page of every stream runs catalog-wide counts.
+
 ### Config plane (issue #303)
 
 The storage plane moves bytes; the **config plane** moves the three

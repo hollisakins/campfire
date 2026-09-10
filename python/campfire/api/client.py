@@ -6,7 +6,9 @@ Centralizes all URL construction and response parsing. Used by both the
 
 import warnings
 import os
-from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import (
+    Callable, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union,
+)
 
 from ..exceptions import (
     APIError,
@@ -20,19 +22,40 @@ from ..flags import (
 )
 from .session import APISession
 
+
+class SyncStream(NamedTuple):
+    """One fully walked /sync/* catalog.
+
+    ``rows`` is every row the walk kept, ``total`` the server's accessible
+    count for the stream (progress bars and the full-resync fallback), and
+    ``deleted_ids`` the tombstones from the first page of an incremental walk:
+    the integer ids of rows that changed since the cursor and are no longer
+    visible to the caller (soft-deleted objects, revoked spectra, superseded
+    registry rows). Empty on a full walk. A plain tuple, so ``rows, total, _ =``
+    unpacking and ``stream[0]`` both work.
+    """
+
+    rows: List[dict]
+    total: int
+    deleted_ids: List[int]
+
+
 #: Default page size for the /sync/* paginators. Overridable per run via the
 #: ``CAMPFIRE_SYNC_PAGE_SIZE`` env var — larger pages cut the per-page fixed cost
 #: (HTTP round-trip + server auth preamble + count-gating) at the price of wider
-#: responses and higher peak memory. Clamped to a sane range.
-DEFAULT_SYNC_PAGE_SIZE = 1000
+#: responses and higher peak memory. Clamped to a sane range. Each keyset page
+#: is a dependent round trip (page N+1 needs page N's cursor), and the fixed
+#: cost dominates the DB time (T2-F, #511: 42k objects in 15.5 s at 1000 rows
+#: per page, 10.3 s at 5000), so the default sits at the top of the range where
+#: a page still stays a few MB.
+DEFAULT_SYNC_PAGE_SIZE = 5000
 
-#: storage_objects is the largest sync catalog: every spectrum fans out into
-#: finals plus intermediate-lifecycle products, and NIRCam exposures pile on top,
-#: so its row count runs several times that of objects/spectra. It therefore
-#: paginates with a larger default page to cut the per-page round-trips. Override
-#: with ``CAMPFIRE_SYNC_STORAGE_PAGE_SIZE``; absent that, it tracks the shared
-#: ``CAMPFIRE_SYNC_PAGE_SIZE`` but never drops below this floor.
-DEFAULT_STORAGE_SYNC_PAGE_SIZE = 5000
+#: storage_objects rows are narrow (a key, hashes, sizes, scope columns), and
+#: even mirrored finals-only the stream is the largest of the five, so it pages
+#: larger still. Override with ``CAMPFIRE_SYNC_STORAGE_PAGE_SIZE``; absent
+#: that, it tracks the shared ``CAMPFIRE_SYNC_PAGE_SIZE`` but never drops below
+#: this floor.
+DEFAULT_STORAGE_SYNC_PAGE_SIZE = 10000
 
 _MAX_SYNC_PAGE_SIZE = 50000
 
@@ -244,7 +267,7 @@ class APIClient:
         self,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
-    ) -> Tuple[List[dict], int]:
+    ) -> "SyncStream":
         """Fetch all objects via the lightweight /sync/objects endpoint."""
         return self._paginate_sync_endpoint(
             "/sync/objects", "object_id", updated_since, on_page_complete,
@@ -279,7 +302,7 @@ class APIClient:
         self,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
-    ) -> Tuple[List[dict], int]:
+    ) -> "SyncStream":
         """Fetch all spectra via the /sync/spectra endpoint."""
         return self._paginate_sync_endpoint(
             "/sync/spectra", "spectrum_id", updated_since, on_page_complete,
@@ -319,16 +342,51 @@ class APIClient:
         self,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
-    ) -> Tuple[List[dict], int]:
+        product_types: Optional[Sequence[str]] = None,
+        observations: Optional[Sequence[str]] = None,
+        fields: Optional[Sequence[str]] = None,
+    ) -> "SyncStream":
         """Fetch the storage_objects mirror via /sync/storage (program-scoped).
 
         Paginates with the larger storage page size (``_storage_page_size``) since
         storage_objects is the biggest sync catalog. Cursor is the integer ``id``
         (storage_key is not uniquely constrained alone; see the RPC).
+
+        ``product_types`` narrows the walk to those product kinds (the client
+        mirrors only what it can download — finals by default); ``observations``
+        / ``fields`` narrow it to a scope (their union), for a per-selection
+        refresh such as the intermediates of one observation. The same filters
+        are re-applied to the rows received, so a server that does not know a
+        filter yet (the window between a web deploy and its migration) still
+        yields exactly the requested rows.
         """
+        extra: Dict[str, str] = {}
+        if product_types:
+            extra["product_types"] = ",".join(product_types)
+        if observations:
+            extra["observations"] = ",".join(observations)
+        if fields:
+            extra["fields"] = ",".join(fields)
+
+        row_filter = None
+        if extra:
+            kinds = set(product_types or ())
+            obs_set = set(observations or ())
+            field_set = set(fields or ())
+
+            def row_filter(r: dict) -> bool:
+                if kinds and r.get("product_type") not in kinds:
+                    return False
+                if obs_set or field_set:
+                    return (r.get("observation") in obs_set
+                            or r.get("field") in field_set)
+                return True
+
         return self._paginate_sync_endpoint(
             "/sync/storage", "id", updated_since, on_page_complete,
             page_size=self._storage_page_size,
+            extra_params=extra or None,
+            row_filter=row_filter,
         )
 
     def presign_keys(self, keys: List[str]) -> Dict[str, str]:
@@ -362,7 +420,9 @@ class APIClient:
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
         page_size: Optional[int] = None,
-    ) -> Tuple[List[dict], int]:
+        extra_params: Optional[dict] = None,
+        row_filter: Optional[Callable[[dict], bool]] = None,
+    ) -> "SyncStream":
         """Keyset-paginate through a /sync/* endpoint.
 
         Walks forward with a cursor on ``cursor_key`` — the endpoint's unique,
@@ -374,15 +434,22 @@ class APIClient:
 
         ``page_size`` overrides the shared per-client page size for endpoints that
         want a different one (e.g. the larger storage page); defaults to
-        ``self._page_size``.
+        ``self._page_size``. ``extra_params`` are sent with every page (scope
+        filters); ``row_filter`` drops rows the caller did not ask for — the
+        safety net for a server that ignores a scope parameter it does not know
+        yet (the deploy window between a web build and its migration).
 
-        Returns (items, total_accessible_count). Endpoints that carry no
-        ``total_accessible_count`` field (photometry) fall back to
-        ``pagination.total`` so callers still see a real count instead of a
-        false 0.
+        Returns a :class:`SyncStream`: ``(rows, total_accessible_count,
+        deleted_ids)``. Endpoints that carry no ``total_accessible_count`` field
+        (photometry) fall back to ``pagination.total`` so callers still see a
+        real count instead of a false 0. ``deleted_ids`` are the tombstones the
+        server attaches to the first page of an incremental walk (rows that
+        changed since ``updated_since`` and are no longer visible to the
+        caller); empty on a full walk and on servers that predate them.
         """
         page_size = page_size or self._page_size
         all_items: List[dict] = []
+        deleted_ids: List[int] = []
         total_accessible_count = 0
         total = 0
         fetched = 0
@@ -397,6 +464,8 @@ class APIClient:
                 "limit": page_size,
                 "include_counts": "true" if first_page else "false",
             }
+            if extra_params:
+                params.update(extra_params)
             if cursor is not None:
                 params["after"] = cursor
             if updated_since:
@@ -412,12 +481,16 @@ class APIClient:
                     if "total_accessible_count" in data
                     else total
                 )
+                deleted_ids = list(data.get("deleted_ids") or [])
                 first_page = False
             if not items:
                 break
-            all_items.extend(items)
-            fetched += len(items)
+            # The cursor advances on the raw page (the server's ordering), the
+            # filter applies only to what is kept.
             cursor = items[-1][cursor_key]
+            kept = [r for r in items if row_filter(r)] if row_filter else items
+            all_items.extend(kept)
+            fetched += len(kept)
             if on_page_complete:
                 on_page_complete(fetched, total)
             # A short page means the server has no more matching rows: stop
@@ -426,7 +499,7 @@ class APIClient:
             # by the `not items` break above).
             if len(items) < page_size:
                 break
-        return all_items, total_accessible_count
+        return SyncStream(all_items, total_accessible_count, deleted_ids)
 
     # ------------------------------------------------------------------
     # Spectrum JSON / redshift fit
@@ -621,7 +694,7 @@ class APIClient:
         self,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
-    ) -> Tuple[List[dict], int]:
+    ) -> "SyncStream":
         """Fetch all photometry records via the /sync/photometry endpoint.
 
         Keyset cursor is the integer ``id`` (object_photometry PK). The
@@ -637,7 +710,7 @@ class APIClient:
         self,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
-    ) -> Tuple[List[dict], int]:
+    ) -> "SyncStream":
         """Fetch all emission-line fits via the /sync/lines endpoint.
 
         One record per spectrum (``spectrum_id`` keyset cursor) with the
@@ -659,7 +732,7 @@ class APIClient:
                 "emission-line catalog was skipped.",
                 stacklevel=2,
             )
-            return [], 0
+            return SyncStream([], 0, [])
 
     def fetch_tags(self) -> List[dict]:
         """Fetch all tag metadata via the /sync/lists endpoint."""

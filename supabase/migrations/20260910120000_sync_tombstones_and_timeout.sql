@@ -1,38 +1,70 @@
--- Restore the statement_timeout backstop on the five /api/v1/sync/* RPCs and
--- make get_spectra_for_sync's first page a single-scan count.
+-- Sync: tombstones in the incremental streams, a finals-only storage mirror,
+-- and the statement_timeout backstop restored on the /api/v1/sync/* RPCs.
 --
--- Symptom: `campfire sync` fails with "canceling statement due to statement
--- timeout" on /sync/spectra. T2-F (#536, 2026-09-05) dropped the RPCs'
--- `SET statement_timeout = '120s'` as an OFFSET-era relic, so they fell back
--- to the role default: the routes call them as service_role, which has no
--- timeout of its own and inherits authenticator's 8 s. The exemption never
--- only covered deep OFFSET pages -- every stream's first page still runs
--- catalog-wide COUNTs, and the client fires all five first pages
--- concurrently -- so on a busy or small instance the counts were cancelled.
+-- Background: `campfire sync` was failing with "canceling statement due to
+-- statement timeout" on /sync/spectra. T2-F (#536, 2026-09-05) dropped the sync
+-- RPCs' `SET statement_timeout = '120s'` as an OFFSET-era relic, so they fell
+-- back to the role default: the routes call them as service_role, which has no
+-- timeout of its own and inherits authenticator's 8 s. The exemption never only
+-- covered deep OFFSET pages -- every stream's first page runs catalog-wide
+-- COUNTs, and the client fires all five first pages concurrently.
 --
---   * get_objects_for_sync / get_spectra_for_sync / get_photometry_for_sync /
---     get_storage_objects_for_sync / get_line_fits_for_sync: SET
---     statement_timeout = '120s' restored (bodies of all but spectra unchanged).
---   * get_spectra_for_sync: program scope tested on the row-local
---     spectra.program_slug (trigger-owned copy of the parent target's, #504)
---     instead of the joined target, so the keyset walk needs no targets
---     lookup per rejected row; the two three-table count joins collapse into
---     one pass over spectra (total_count as a FILTER on the same aggregate,
---     the soft-deleted-object exclusion as an anti-join against the
---     partial-indexed inactive set). Output is identical: same rows, same
---     order, same counts.
+-- What changes:
 --
--- Signatures are unchanged (CREATE OR REPLACE, no DROP).
+--   * get_objects_for_sync / get_spectra_for_sync / get_storage_objects_for_sync
+--     RETURN a fourth column, deleted_ids: on the first incremental page (a
+--     p_updated_since, no cursor) the integer ids of in-scope rows that changed
+--     since the cursor and are no longer visible to the caller -- soft-deleted
+--     objects, un-published spectra (and members of a soft-deleted object),
+--     registry rows that left the active state or whose spectrum was
+--     un-published. The client deletes them locally, so an incremental sync no
+--     longer leaves ghosts that force `campfire pull` into a full resync. Only
+--     ids travel; nothing about an unpublished row is disclosed. A return-type
+--     change is not a CREATE OR REPLACE, so the three are dropped and recreated
+--     (grants re-issued below).
 --
--- Hand-authored (no Docker on the authoring machine): every definition below
--- is copied verbatim from supabase/schemas/functions.sql (source of truth).
--- Verified on a throwaway PostgreSQL 16 built from the schema files: the
--- migration applied on top of the previous schema yields the same
--- pg_get_functiondef as the schema files themselves, and the rewritten
--- get_spectra_for_sync returns page-for-page identical output to the previous
--- definition on a ~96k-spectrum synthetic catalog (admin / scoped user /
--- incremental / cursor / full walk).
+--   * get_storage_objects_for_sync gains p_product_types / p_observations /
+--     p_fields (NULL = unfiltered): the client mirrors only the product kinds it
+--     can download (finals by default) and refreshes intermediates per
+--     observation / field when `pull --intermediate` asks, instead of paging the
+--     sidecar and intermediate rows that make up most of the registry.
+--
+--   * get_spectra_for_sync: revoked spectra never sync (they are the soft-deleted
+--     state, tombstoned instead; admins opting in still get drafts); program
+--     scope is tested on the row-local spectra.program_slug (trigger-owned copy
+--     of the parent target's, #504) so the keyset walk needs no targets lookup
+--     per rejected row; the two three-table count joins collapse into one pass
+--     over spectra.
+--
+--   * bump_spectra_updated_at_trigger fires on deploy_status too: a publish must
+--     enter a non-admin client's incremental delta (a draft inserted before the
+--     client's cursor was otherwise never seen), and a revoke is what the
+--     spectra / storage tombstones key on.
+--
+--   * recompute_has_published_spectrum writes only objects whose flag flips and
+--     stamps updated_at on them (the object tombstone for non-admins keys on
+--     it). Its objects_updated count is therefore flips, not members.
+--
+--   * All five sync RPCs (the three above plus get_photometry_for_sync and
+--     get_line_fits_for_sync): SET statement_timeout = '120s' restored.
+--
+-- Hand-authored (no Docker on the authoring machine): every definition below is
+-- copied verbatim from supabase/schemas/functions.sql and triggers.sql (source
+-- of truth). Verified on a throwaway PostgreSQL 16: applied on top of a database
+-- built from main's schema files it yields the same pg_get_functiondef /
+-- pg_get_triggerdef as a database built from the branch's schema files, and the
+-- tombstone scenarios (deactivate an object, revoke a spectrum, un-publish an
+-- object's last spectrum, scope filters) behave as described on a ~96k-spectrum
+-- synthetic catalog.
 
+-- Return type / signature changes: drop before create.
+DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT);
+DROP FUNCTION IF EXISTS public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT);
+DROP FUNCTION IF EXISTS public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, BIGINT);
+
+-- ---------------------------------------------------------------------------
+-- get_objects_for_sync
+-- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_program_slugs TEXT[],
   p_user_id UUID DEFAULT NULL,
@@ -47,7 +79,8 @@ CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   -- route (client floor 0.5.0) and p_offset is gone from the signature.
   p_after_object_id TEXT DEFAULT NULL
 )
-RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
+RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT,
+              deleted_ids INTEGER[])
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
 -- Statement-timeout backstop for the five /sync/* RPCs (this one,
@@ -152,6 +185,24 @@ BEGIN
       AND o.programs && p_program_slugs
       AND o.is_active = true
       AND (p_include_unpublished OR o.has_published_spectrum)
+  ),
+  -- Tombstones: on the first incremental page (p_updated_since set, no
+  -- cursor), the ids of in-scope objects that changed since the cursor and are
+  -- no longer visible to this caller -- soft-deleted (is_active = false;
+  -- reconcile_objects stamps updated_at) or, for non-admins, left without a
+  -- published spectrum (recompute_has_published_spectrum stamps updated_at on
+  -- the flip). The client deletes them locally, so an incremental sync no
+  -- longer leaves ghosts that force the next pull into a full resync. Only the
+  -- integer ids travel: nothing about an unpublished object is disclosed, and
+  -- an id the client never mirrored deletes nothing.
+  deleted AS (
+    SELECT COALESCE(array_agg(o.id ORDER BY o.id), '{}'::INTEGER[]) AS ids
+    FROM objects o
+    WHERE p_updated_since IS NOT NULL
+      AND p_after_object_id IS NULL
+      AND o.programs && p_program_slugs
+      AND o.updated_at > p_updated_since
+      AND NOT (o.is_active AND (p_include_unpublished OR o.has_published_spectrum))
   )
   SELECT
     COALESCE(jsonb_agg(
@@ -198,7 +249,8 @@ BEGIN
       ORDER BY m.object_id
     ), '[]'::jsonb),
     COALESCE((SELECT cnt FROM total), 0)::BIGINT,
-    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
+    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT,
+    (SELECT d.ids FROM deleted d)
   FROM matched m
   LEFT JOIN member_targets_agg mt ON mt.object_id = m.id
   LEFT JOIN spectra_agg         sp ON sp.object_id = m.id
@@ -207,6 +259,12 @@ BEGIN
 END;
 $$;
 
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO service_role;
+
+-- ---------------------------------------------------------------------------
+-- get_spectra_for_sync
+-- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
   p_program_slugs TEXT[],
   p_user_id UUID DEFAULT NULL,
@@ -219,7 +277,8 @@ CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
   -- get_objects_for_sync for the design; keyset-only since T2-F (#511).
   p_after_spectrum_id TEXT DEFAULT NULL
 )
-RETURNS TABLE(spectra JSONB, total_count BIGINT, total_accessible_count BIGINT)
+RETURNS TABLE(spectra JSONB, total_count BIGINT, total_accessible_count BIGINT,
+              deleted_ids INTEGER[])
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
 -- Timeout backstop for the first-page counts; see get_objects_for_sync.
@@ -247,8 +306,11 @@ BEGIN
     -- for every spectrum walked past).
     WHERE s.program_slug = ANY(p_program_slugs)
       AND (o.id IS NULL OR o.is_active = true)
-      -- B1: fail-closed publish gate (this RPC always bypasses RLS).
-      AND (p_include_unpublished OR s.deploy_status = 'published')
+      -- B1: fail-closed publish gate (this RPC always bypasses RLS). Drafts
+      -- sync only for admins opting in; revoked never syncs -- it is the
+      -- soft-deleted state and is tombstoned below instead.
+      AND (s.deploy_status = 'published'
+           OR (p_include_unpublished AND s.deploy_status = 'draft'))
       AND (p_updated_since IS NULL OR s.updated_at > p_updated_since)
       -- Keyset (#103): spectrum_id is UNIQUE (idx_spectra_spectrum_id), so a
       -- strict > needs no tiebreaker; keep the ordering column UNIQUE.
@@ -270,13 +332,44 @@ BEGIN
     FROM spectra s
     WHERE p_include_counts
       AND s.program_slug = ANY(p_program_slugs)
-      AND (p_include_unpublished OR s.deploy_status = 'published')
+      AND (s.deploy_status = 'published'
+           OR (p_include_unpublished AND s.deploy_status = 'draft'))
       AND NOT EXISTS (
         SELECT 1
         FROM targets t
         JOIN objects o ON o.id = t.object_id
         WHERE t.target_id = s.target_id
           AND o.is_active = false)
+  ),
+  -- Tombstones (see get_objects_for_sync): first incremental page only.
+  deleted AS (
+    SELECT COALESCE(array_agg(x.id ORDER BY x.id), '{}'::INTEGER[]) AS ids
+    FROM (
+      -- Un-published since the cursor: revoked for everyone, plus a draft an
+      -- admin's mirror may carry. set_spectra_deploy_status's write reaches
+      -- here because deploy_status is in bump_spectra_updated_at_trigger's
+      -- column list.
+      SELECT s.id
+      FROM spectra s
+      WHERE p_updated_since IS NOT NULL
+        AND p_after_spectrum_id IS NULL
+        AND s.program_slug = ANY(p_program_slugs)
+        AND s.updated_at > p_updated_since
+        AND NOT (s.deploy_status = 'published'
+                 OR (p_include_unpublished AND s.deploy_status = 'draft'))
+      UNION
+      -- Members of an object soft-deleted since the cursor: the spectrum row
+      -- itself did not change, so its own updated_at says nothing.
+      SELECT s.id
+      FROM spectra s
+      JOIN targets t ON t.target_id = s.target_id
+      JOIN objects o ON o.id = t.object_id
+      WHERE p_updated_since IS NOT NULL
+        AND p_after_spectrum_id IS NULL
+        AND s.program_slug = ANY(p_program_slugs)
+        AND o.is_active = false
+        AND o.updated_at > p_updated_since
+    ) x
   )
   SELECT
     COALESCE(jsonb_agg(
@@ -309,11 +402,18 @@ BEGIN
       ORDER BY m.spectrum_id
     ), '[]'::jsonb),
     COALESCE((SELECT c.total_cnt FROM counts c), 0)::BIGINT,
-    COALESCE((SELECT c.accessible_cnt FROM counts c), 0)::BIGINT
+    COALESCE((SELECT c.accessible_cnt FROM counts c), 0)::BIGINT,
+    (SELECT d.ids FROM deleted d)
   FROM matched m;
 END;
 $$;
 
+GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO service_role;
+
+-- ---------------------------------------------------------------------------
+-- get_photometry_for_sync
+-- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.get_photometry_for_sync(
   p_program_slugs TEXT[],
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
@@ -387,6 +487,12 @@ BEGIN
 END;
 $$;
 
+GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_photometry_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, INTEGER) TO service_role;
+
+-- ---------------------------------------------------------------------------
+-- get_line_fits_for_sync
+-- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.get_line_fits_for_sync(
   p_program_slugs TEXT[],
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
@@ -508,6 +614,12 @@ BEGIN
 END;
 $$;
 
+GRANT EXECUTE ON FUNCTION public.get_line_fits_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, INTEGER) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_line_fits_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, INTEGER) TO service_role;
+
+-- ---------------------------------------------------------------------------
+-- get_storage_objects_for_sync
+-- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.get_storage_objects_for_sync(
   p_program_slugs TEXT[],
   p_updated_since TIMESTAMPTZ DEFAULT NULL,
@@ -520,9 +632,19 @@ CREATE OR REPLACE FUNCTION public.get_storage_objects_for_sync(
   -- irrelevant to the client (it upserts by key), so this orders by the PK.
   -- Keyset-only since T2-F (#511): the scope predicate (published EXISTS
   -- checks) is evaluated on only ~p_limit rows past the seek.
-  p_after_id BIGINT DEFAULT NULL
+  p_after_id BIGINT DEFAULT NULL,
+  -- Mirror slimming: the client mirrors only the product kinds it can
+  -- download (finals by default) and refreshes intermediates per observation /
+  -- field when `pull --intermediate` asks for them, so it never pages through
+  -- the sidecar and intermediate rows that make up most of the registry.
+  -- NULL = unfiltered (the admin full mirror). observation / field scope is a
+  -- union, mirroring the client's pending-object query.
+  p_product_types TEXT[] DEFAULT NULL,
+  p_observations TEXT[] DEFAULT NULL,
+  p_fields TEXT[] DEFAULT NULL
 )
-RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
+RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT,
+              deleted_ids BIGINT[])
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
 -- Timeout backstop for the first-page counts; see get_objects_for_sync.
@@ -540,6 +662,10 @@ BEGIN
     SELECT so.updated_at
     FROM storage_objects so
     WHERE so.status = 'active'
+      AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
+      AND ((p_observations IS NULL AND p_fields IS NULL)
+           OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
+           OR so.field = ANY(COALESCE(p_fields, '{}'::TEXT[])))
       AND (
         p_include_unpublished
         OR (so.spectrum_id IS NOT NULL AND EXISTS (
@@ -562,6 +688,10 @@ BEGIN
     SELECT so.*
     FROM storage_objects so
     WHERE so.status = 'active'
+      AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
+      AND ((p_observations IS NULL AND p_fields IS NULL)
+           OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
+           OR so.field = ANY(COALESCE(p_fields, '{}'::TEXT[])))
       AND (
         p_include_unpublished
         OR (so.spectrum_id IS NOT NULL AND EXISTS (
@@ -591,6 +721,41 @@ BEGIN
   accessible AS (
     SELECT COUNT(*) AS cnt FROM scoped
     WHERE p_include_counts
+  ),
+  -- Tombstones (see get_objects_for_sync): first incremental page only. Rows
+  -- that left the active state, and active rows whose spectrum was
+  -- un-published (invisible to non-admins from now on; the spectrum's
+  -- updated_at moves on a deploy_status change). Not program-scoped: only
+  -- integer ids travel, and an id the client never mirrored deletes nothing.
+  -- Hard deletes (deploy remove) still need a full sync to clear.
+  deleted AS (
+    SELECT COALESCE(array_agg(x.id ORDER BY x.id), '{}'::BIGINT[]) AS ids
+    FROM (
+      SELECT so.id
+      FROM storage_objects so
+      WHERE p_updated_since IS NOT NULL
+        AND p_after_id IS NULL
+        AND so.status <> 'active'
+        AND so.updated_at > p_updated_since
+        AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
+        AND ((p_observations IS NULL AND p_fields IS NULL)
+             OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
+             OR so.field = ANY(COALESCE(p_fields, '{}'::TEXT[])))
+      UNION
+      SELECT so.id
+      FROM storage_objects so
+      JOIN spectra s ON s.spectrum_id = so.spectrum_id
+      WHERE p_updated_since IS NOT NULL
+        AND p_after_id IS NULL
+        AND NOT p_include_unpublished
+        AND so.status = 'active'
+        AND s.deploy_status <> 'published'
+        AND s.updated_at > p_updated_since
+        AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
+        AND ((p_observations IS NULL AND p_fields IS NULL)
+             OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
+             OR so.field = ANY(COALESCE(p_fields, '{}'::TEXT[])))
+    ) x
   )
   SELECT
     COALESCE(jsonb_agg(
@@ -621,7 +786,103 @@ BEGIN
       ORDER BY m.id
     ), '[]'::jsonb),
     COALESCE((SELECT cnt FROM total), 0)::BIGINT,
-    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
+    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT,
+    (SELECT d.ids FROM deleted d)
   FROM matched m;
 END;
 $$;
+
+GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, BIGINT, TEXT[], TEXT[], TEXT[]) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_storage_objects_for_sync(TEXT[], TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, BIGINT, TEXT[], TEXT[], TEXT[]) TO service_role;
+
+-- ---------------------------------------------------------------------------
+-- recompute_has_published_spectrum
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.recompute_has_published_spectrum(
+  p_target_ids text[] DEFAULT NULL,
+  p_field text DEFAULT NULL
+)
+RETURNS json
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_targets text[];
+  v_n_targets int := 0;
+  v_n_objects int := 0;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  IF p_target_ids IS NOT NULL THEN
+    v_targets := p_target_ids;
+  ELSIF p_field IS NOT NULL THEN
+    SELECT array_agg(t.target_id) INTO v_targets FROM targets t WHERE t.field = p_field;
+  ELSE
+    RAISE EXCEPTION 'recompute_has_published_spectrum requires p_target_ids or p_field';
+  END IF;
+
+  IF v_targets IS NULL OR array_length(v_targets, 1) IS NULL THEN
+    RETURN json_build_object('targets_updated', 0, 'objects_updated', 0);
+  END IF;
+
+  UPDATE targets t
+  SET has_published_spectrum = EXISTS (
+        SELECT 1 FROM spectra s
+        WHERE s.target_id = t.target_id AND s.deploy_status = 'published'
+      )
+  WHERE t.target_id = ANY(v_targets);
+  GET DIAGNOSTICS v_n_targets = ROW_COUNT;
+
+  -- Only rows whose flag actually flips are written, and the write stamps
+  -- updated_at: the flip changes what a non-admin sync client may see, and
+  -- get_objects_for_sync's incremental delta (and its tombstones) keys on
+  -- updated_at. objects_updated therefore counts flips, not members.
+  UPDATE objects o
+  SET has_published_spectrum = v.pub,
+      updated_at = now()
+  FROM (
+    SELECT o2.id,
+           EXISTS (SELECT 1 FROM targets t WHERE t.object_id = o2.id AND t.has_published_spectrum) AS pub
+    FROM objects o2
+    WHERE o2.id IN (
+      SELECT DISTINCT t2.object_id FROM targets t2
+      WHERE t2.target_id = ANY(v_targets) AND t2.object_id IS NOT NULL
+    )
+  ) v
+  WHERE o.id = v.id
+    AND o.has_published_spectrum IS DISTINCT FROM v.pub;
+  GET DIAGNOSTICS v_n_objects = ROW_COUNT;
+
+  RETURN json_build_object('targets_updated', v_n_targets, 'objects_updated', v_n_objects);
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.recompute_has_published_spectrum(text[], text) TO authenticated, service_role;
+
+-- ---------------------------------------------------------------------------
+-- bump_spectra_updated_at_trigger: + deploy_status
+-- ---------------------------------------------------------------------------
+DROP TRIGGER IF EXISTS bump_spectra_updated_at_trigger ON public.spectra;
+CREATE TRIGGER bump_spectra_updated_at_trigger
+  BEFORE UPDATE OF
+    dq_flags,
+    redshift_auto,
+    signal_to_noise,
+    thumbnail_svg_fnu,
+    thumbnail_svg_flambda,
+    fits_path,
+    file_hash,
+    -- zfit scalars on the row (perf T2-D2, #508): written by deploy and the
+    -- backfill; a sync client showing the fit summary must see them change.
+    chi2_min,
+    confidence,
+    -- Publication state: a publish must enter a non-admin client's incremental
+    -- delta (a draft inserted before its sync cursor was otherwise never
+    -- seen), and a revoke is what get_spectra_for_sync tombstones.
+    deploy_status
+  ON public.spectra
+  FOR EACH ROW EXECUTE FUNCTION public.bump_spectra_updated_at();

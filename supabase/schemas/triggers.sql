@@ -546,7 +546,11 @@ CREATE TRIGGER bump_spectra_updated_at_trigger
     -- zfit scalars on the row (perf T2-D2, #508): written by deploy and the
     -- backfill; a sync client showing the fit summary must see them change.
     chi2_min,
-    confidence
+    confidence,
+    -- Publication state: a publish must enter a non-admin client's incremental
+    -- delta (a draft inserted before its sync cursor was otherwise never
+    -- seen), and a revoke is what get_spectra_for_sync tombstones.
+    deploy_status
   ON public.spectra
   FOR EACH ROW EXECUTE FUNCTION public.bump_spectra_updated_at();
 

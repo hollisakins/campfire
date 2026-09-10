@@ -84,6 +84,9 @@ export async function GET(request: NextRequest) {
         after: afterSpectrumId,
       },
       total_accessible_count: result.total_accessible_count || 0,
+      // Tombstones: ids of spectra un-published (or under a soft-deleted
+      // object) since `updated_since`; first incremental page only.
+      deleted_ids: result.deleted_ids ?? [],
     });
   } catch (error) {
     console.error('Error in API /v1/sync/spectra:', error);

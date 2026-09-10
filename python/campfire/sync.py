@@ -16,6 +16,7 @@ import requests
 from tqdm import tqdm
 
 from .api.session import create_download_session
+from .db.store import DOWNLOADABLE_PRODUCT_TYPES, FINAL_PRODUCT_TYPES
 from .exceptions import DownloadError
 
 
@@ -51,21 +52,29 @@ def _apply_objects(store, fetched, updated_since, sync_ts):
     """Apply fetched objects to the local store (main-thread write phase).
 
     Returns (object_count, purged_count, incremental, needs_full_sync).
+    ``purged_count`` covers both the full-sync purge and the incremental
+    tombstones (soft-deleted or un-published objects the server named).
     """
-    all_objects, server_total = fetched
+    all_objects, server_total, deleted_ids = fetched
     incremental = updated_since is not None
 
     obj_count = store.upsert_objects(all_objects)
 
+    purged = 0
+    if deleted_ids:
+        purged += store.delete_objects_by_ids(deleted_ids)
+
+    # Fallback for what tombstones cannot express (hard deletes, a change in
+    # program access): a count mismatch after the delta still forces a full
+    # resync. With tombstones this should be rare rather than routine.
     needs_full_sync = False
     if incremental and server_total > 0:
         local_total = store._conn.execute("SELECT COUNT(*) FROM objects").fetchone()[0]
         if local_total != server_total:
             needs_full_sync = True
 
-    purged = 0
     if not incremental:
-        purged = store.purge_stale_objects(sync_ts)
+        purged += store.purge_stale_objects(sync_ts)
 
     return obj_count, purged, incremental, needs_full_sync
 
@@ -73,16 +82,26 @@ def _apply_objects(store, fetched, updated_since, sync_ts):
 def _apply_spectra(store, fetched, updated_since, sync_ts):
     """Apply fetched spectra to the local store.
 
-    Returns (spectra_count, purge_result, incremental).
+    Returns (spectra_count, purge_result, incremental). ``purge_result`` is
+    the full-sync purge dict, or ``{"purged_spectra": n}`` for the tombstones
+    an incremental delta named (revoked spectra, members of a soft-deleted
+    object); None when nothing was removed.
     """
-    all_spectra, _server_total = fetched
+    all_spectra, _server_total, deleted_ids = fetched
     incremental = updated_since is not None
 
     spec_count = store.upsert_spectra(all_spectra)
 
     purge_result = None
+    if deleted_ids:
+        n = store.delete_spectra_by_ids(deleted_ids)
+        if n:
+            purge_result = {"purged_spectra": n}
     if not incremental:
-        purge_result = store.purge_stale_spectra(sync_ts)
+        full = store.purge_stale_spectra(sync_ts)
+        if purge_result:
+            full["purged_spectra"] = full.get("purged_spectra", 0) + purge_result["purged_spectra"]
+        purge_result = full
 
     return spec_count, purge_result, incremental
 
@@ -92,7 +111,7 @@ def _apply_photometry(store, fetched, updated_since, sync_ts):
 
     Returns (record_count, purged_count).
     """
-    all_records, _total_count = fetched
+    all_records, _total_count, _deleted = fetched
 
     rec_count = store.upsert_photometry(all_records)
 
@@ -108,7 +127,7 @@ def _apply_line_fits(store, fetched, updated_since, sync_ts):
 
     Returns (record_count, purged_count).
     """
-    all_records, _total_count = fetched
+    all_records, _total_count, _deleted = fetched
 
     rec_count = store.upsert_line_fits(all_records)
 
@@ -131,33 +150,56 @@ def _sync_tags(api, store, show_progress):
 def _apply_storage(store, fetched, updated_since, sync_ts):
     """Apply the fetched storage_objects mirror to the local store.
 
-    Returns (row_count, purged, orphaned).
+    Returns (row_count, purged, orphaned). The full-sync purge is scoped to
+    the product kinds this sync walked (``MIRRORED_PRODUCT_TYPES``): rows of
+    the intermediate kinds are refreshed per selection by ``pull
+    --intermediate`` (see ``refresh_storage_scope``) and must survive a
+    catalog sync that never asked for them. Rows of kinds the client cannot
+    download at all (sidecar JSON, previews, rate files — the bulk of the
+    registry, mirrored by older clients) are dropped on every sync.
     """
-    all_rows, _server_total = fetched
+    all_rows, _server_total, deleted_ids = fetched
     incremental = updated_since is not None
 
     n = store.upsert_storage_objects(all_rows)
 
-    purged = 0
+    purged = store.drop_unmirrored_storage_rows(DOWNLOADABLE_PRODUCT_TYPES)
     orphaned: List[str] = []
+    if deleted_ids:
+        res = store.delete_storage_objects_by_ids(deleted_ids)
+        purged += res["purged"]
+        orphaned.extend(res["orphaned_files"])
     if not incremental:
-        res = store.purge_stale_storage_objects(sync_ts)
-        purged = res["purged"]
-        orphaned = res["orphaned_files"]
+        res = store.purge_stale_storage_objects(
+            sync_ts, product_types=list(MIRRORED_PRODUCT_TYPES),
+        )
+        purged += res["purged"]
+        orphaned.extend(res["orphaned_files"])
 
     return n, purged, orphaned
 
 
+#: Product kinds `campfire sync` mirrors: the finals the client downloads by
+#: default. The registry also carries every spectrum's sidecars (JSON, 1-D
+#: JSON, zfit, line fits), previews and rate files — several rows per spectrum
+#: that no client command reads — and the intermediates, which are fetched per
+#: selection when `pull --intermediate` asks for them. Walking only this set is
+#: what keeps the storage stream, the largest of the five, proportional to the
+#: spectra catalog instead of several times it.
+MIRRORED_PRODUCT_TYPES = FINAL_PRODUCT_TYPES
+
 # The five independent /sync/* catalogs, each pinned to a fixed progress row
 # (option A): a stable stacked group so every count stays anchored to a real
 # per-entity total instead of a meaningless catalog-wide sum. Fields:
-# (result key, APIClient method name, tqdm unit, padded bar label).
+# (result key, APIClient method name, tqdm unit, padded bar label, extra
+# keyword arguments for the fetcher).
 _FETCH_STREAMS = (
-    ("objects", "fetch_all_objects", "obj", "Objects   "),
-    ("spectra", "fetch_all_spectra", "spec", "Spectra   "),
-    ("storage", "fetch_all_storage", "obj", "Storage   "),
-    ("photometry", "fetch_all_photometry", "rec", "Photometry"),
-    ("line_fits", "fetch_all_line_fits", "fit", "Line fits "),
+    ("objects", "fetch_all_objects", "obj", "Objects   ", {}),
+    ("spectra", "fetch_all_spectra", "spec", "Spectra   ", {}),
+    ("storage", "fetch_all_storage", "obj", "Storage   ",
+     {"product_types": list(MIRRORED_PRODUCT_TYPES)}),
+    ("photometry", "fetch_all_photometry", "rec", "Photometry", {}),
+    ("line_fits", "fetch_all_line_fits", "fit", "Line fits ", {}),
 )
 
 
@@ -174,12 +216,13 @@ def _fetch_all_concurrent(api, cursors, use_bars, show_progress):
     try:
         with ThreadPoolExecutor(max_workers=len(_FETCH_STREAMS)) as executor:
             future_to_key = {}
-            for position, (key, method_name, unit, desc) in enumerate(_FETCH_STREAMS):
+            for position, (key, method_name, unit, desc, kwargs) in enumerate(_FETCH_STREAMS):
                 pbar, callback = _make_progress(use_bars, unit, desc, position=position)
                 bars.append(pbar)
                 method = getattr(api, method_name)
                 future = executor.submit(
-                    method, updated_since=cursors[key], on_page_complete=callback
+                    method, updated_since=cursors[key], on_page_complete=callback,
+                    **kwargs,
                 )
                 future_to_key[future] = key
             # Surfaces the first failing stream's exception once the pool drains.
@@ -198,8 +241,8 @@ def _fetch_all_concurrent(api, cursors, use_bars, show_progress):
     if show_progress and not use_bars:
         # Non-TTY (CI, redirected logs): no live bars, so emit one completion
         # line per stream instead.
-        for key, _method_name, _unit, desc in _FETCH_STREAMS:
-            rows = results.get(key, ([], 0))[0]
+        for key, _method_name, _unit, desc, _kwargs in _FETCH_STREAMS:
+            rows = results.get(key, ([], 0, []))[0]
             print(f"  {desc.strip()}: {len(rows):,}", file=sys.stderr)
 
     return results
@@ -289,12 +332,56 @@ def sync_metadata(
         "incremental": incremental and spec_incremental,
         "needs_full_sync": needs_full_sync,
     }
-    if spec_purge:
+    if spec_purge and spec_purge.get("purged_spectra"):
         result["purged_spectra"] = spec_purge["purged_spectra"]
     if storage_orphaned:
         result["orphaned_files"] = storage_orphaned
 
     return result
+
+
+def refresh_storage_scope(
+    api, store,
+    *,
+    product_types: List[str],
+    observations: Optional[List[str]] = None,
+    fields: Optional[List[str]] = None,
+    show_progress: bool = False,
+) -> dict:
+    """Bring one slice of the storage mirror up to date, non-incrementally.
+
+    ``campfire sync`` mirrors finals only (``MIRRORED_PRODUCT_TYPES``); the
+    intermediate kinds are fetched here, for the observations / fields a
+    ``pull --intermediate`` is about to act on, so a user who never pulls
+    intermediates never pages through them. The walk is a full one for the
+    slice (no ``updated_since``), after which mirror rows in the same slice the
+    server no longer returned are purged — the same tree-shaped reconciliation
+    a full sync does, restricted to (product kinds x scope).
+
+    Returns ``{"rows": n, "purged": n, "orphaned_files": [...]}``.
+    """
+    sync_ts = datetime.now(timezone.utc).isoformat()
+    pbar, callback = _make_progress(
+        show_progress and sys.stderr.isatty(), "obj", "Intermediates",
+    )
+    try:
+        rows, _total, _deleted = api.fetch_all_storage(
+            updated_since=None, on_page_complete=callback,
+            product_types=list(product_types),
+            observations=list(observations) if observations else None,
+            fields=list(fields) if fields else None,
+        )
+    finally:
+        if pbar is not None:
+            pbar.close()
+
+    n = store.upsert_storage_objects(rows)
+    res = store.purge_stale_storage_objects(
+        sync_ts, product_types=list(product_types),
+        observations=list(observations) if observations else None,
+        fields=list(fields) if fields else None,
+    )
+    return {"rows": n, "purged": res["purged"], "orphaned_files": res["orphaned_files"]}
 
 
 def _download_and_verify_key(

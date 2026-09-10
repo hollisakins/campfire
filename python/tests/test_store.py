@@ -559,3 +559,89 @@ class TestObservationQueries:
         store.upsert_spectra(sample_spectra)
         summary = store.get_observation_summary()
         assert len(summary) >= 1
+
+
+class TestTombstonesAndScopedPurge:
+    """Incremental deletions (server tombstones) and the finals-only mirror."""
+
+    def test_delete_objects_by_ids_drops_row_and_memberships(self, store, sample_objects):
+        store.upsert_objects(sample_objects)
+        assert store.count_objects() == 2
+        n = store.delete_objects_by_ids([1, 999])  # 999: never mirrored -> no-op
+        assert n == 1
+        assert store.count_objects() == 1
+        assert store.get_object("CAMPFIRE-J0001+0001") is None
+        rows = store._conn.execute(
+            "SELECT COUNT(*) FROM object_list_memberships WHERE object_id = ?",
+            ("CAMPFIRE-J0001+0001",),
+        ).fetchone()[0]
+        assert rows == 0
+
+    def test_delete_spectra_by_ids(self, store, sample_objects, sample_spectra):
+        store.upsert_objects(sample_objects)
+        store.upsert_spectra(sample_spectra)
+        before = store.count_spectra()
+        assert store.delete_spectra_by_ids([10]) == 1
+        assert store.count_spectra() == before - 1
+        assert store.get_spectrum("ember_uds_p4_prism_clear_100") is None
+
+    def test_delete_in_chunks(self, store, sample_objects):
+        store.upsert_objects(sample_objects)
+        # ids well past the chunk size: exercises the batching, deletes nothing
+        assert store.delete_objects_by_ids(range(1000, 2300)) == 0
+        assert store.count_objects() == 2
+
+    def test_delete_storage_objects_by_ids_reports_orphans(self, store, sample_storage_objects):
+        rows = [dict(r, id=100 + i) for i, r in enumerate(sample_storage_objects)]
+        store.upsert_storage_objects(rows)
+        store.mark_object_synced(
+            storage_key=rows[0]["storage_key"], local_path="nirspec/ember_uds_p4/a.fits",
+            local_file_hash="sha256:aaa", local_file_size=1024,
+        )
+        res = store.delete_storage_objects_by_ids([100, 101, 555])
+        assert res["purged"] == 2
+        assert res["orphaned_files"] == ["nirspec/ember_uds_p4/a.fits"]
+        left = store._conn.execute("SELECT id FROM storage_objects").fetchall()
+        assert [r["id"] for r in left] == [102]
+
+    def test_purge_scoped_to_product_types(self, store, sample_storage_objects):
+        finals = sample_storage_objects
+        inter = dict(finals[0], storage_key="products/nirspec/ember_uds_p4/jw01_nrs1_100.fits",
+                     product_type="nirspec_spectrum_exposure", spectrum_id=None,
+                     exposure_ref="jw01_nrs1_100")
+        store.upsert_storage_objects(finals + [inter])
+        import time
+        time.sleep(0.01)
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc).isoformat()
+        time.sleep(0.01)
+        # A finals-only walk re-sent only the cosmos final: the two uds finals
+        # are stale, the intermediate is outside the walk and must survive.
+        store.upsert_storage_objects([finals[2]])
+        res = store.purge_stale_storage_objects(ts, product_types=["nirspec_spec"])
+        assert res["purged"] == 2
+        kinds = sorted(r["product_type"] for r in
+                       store._conn.execute("SELECT product_type FROM storage_objects").fetchall())
+        assert kinds == ["nirspec_spec", "nirspec_spectrum_exposure"]
+
+    def test_purge_scoped_to_observation(self, store, sample_storage_objects):
+        store.upsert_storage_objects(sample_storage_objects)
+        import time
+        time.sleep(0.01)
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc).isoformat()
+        # Nothing re-sent for ember_uds_p4: only its rows go; cosmos untouched.
+        res = store.purge_stale_storage_objects(
+            ts, product_types=["nirspec_spec"], observations=["ember_uds_p4"],
+        )
+        assert res["purged"] == 2
+        left = store._conn.execute("SELECT observation FROM storage_objects").fetchall()
+        assert [r["observation"] for r in left] == ["ember_cosmos_p1"]
+
+    def test_drop_unmirrored_storage_rows(self, store, sample_storage_objects):
+        from campfire.db.store import DOWNLOADABLE_PRODUCT_TYPES
+        sidecar = dict(sample_storage_objects[0],
+                       storage_key="spectra/ember_uds_p4/x_spec.json", product_type="spectrum_json")
+        store.upsert_storage_objects(sample_storage_objects + [sidecar])
+        assert store.drop_unmirrored_storage_rows(DOWNLOADABLE_PRODUCT_TYPES) == 1
+        assert store._conn.execute("SELECT COUNT(*) FROM storage_objects").fetchone()[0] == 3

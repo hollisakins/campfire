@@ -120,7 +120,7 @@ def test_sync_apply_line_fits(tmp_path):
     from campfire.sync import _apply_line_fits
 
     store = LocalStore(tmp_path / "campfire.db")
-    count, purged = _apply_line_fits(store, ([_record(7)], 1), None, "2000-01-01T00:00:00+00:00")
+    count, purged = _apply_line_fits(store, ([_record(7)], 1, []), None, "2000-01-01T00:00:00+00:00")
     assert count == 1 and purged == 0
     assert store.query_line_fits()[0]["spectrum_id"] == 7
     store.close()
@@ -196,7 +196,7 @@ def test_fetch_all_line_fits_tolerates_missing_endpoint(monkeypatch):
 
     monkeypatch.setattr(client, "_paginate_sync_endpoint", _raise)
     with pytest.warns(UserWarning, match="sync/lines"):
-        assert client.fetch_all_line_fits() == ([], 0)
+        assert client.fetch_all_line_fits() == ([], 0, [])
 
 
 def test_non_release_line_fit_versions(tmp_path):

@@ -85,6 +85,10 @@ export async function GET(request: NextRequest) {
         after: afterObjectId,
       },
       total_accessible_count: result.total_accessible_count || 0,
+      // Tombstones: ids of objects that changed since `updated_since` and are
+      // no longer visible to this caller (first incremental page only; empty
+      // otherwise, and absent from an RPC that predates the column).
+      deleted_ids: result.deleted_ids ?? [],
     });
   } catch (error) {
     console.error('Error in API /v1/sync/objects:', error);
