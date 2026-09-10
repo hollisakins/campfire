@@ -886,14 +886,23 @@ CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   -- When non-NULL the scan seeks straight to the next id via the
   -- objects_object_id_key UNIQUE btree, so each page costs O(log N + limit).
   -- Keyset is the only pagination (T2-F, #511): OFFSET is refused at the
-  -- route (client floor 0.5.0), p_offset is gone from the signature, and so
-  -- is the 120 s statement_timeout exemption that existed for deep OFFSET
-  -- pages — every page runs under the role's default timeout.
+  -- route (client floor 0.5.0) and p_offset is gone from the signature.
   p_after_object_id TEXT DEFAULT NULL
 )
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Statement-timeout backstop for the five /sync/* RPCs (this one,
+-- get_spectra_for_sync, get_photometry_for_sync, get_storage_objects_for_sync,
+-- get_line_fits_for_sync). T2-F (#536) dropped it as an OFFSET-era relic, but
+-- it never only covered deep OFFSET pages: the first page of every stream
+-- still runs catalog-wide COUNTs, and `campfire sync` fires all five first
+-- pages concurrently. The routes call these as service_role, which has no
+-- timeout of its own and inherits authenticator's 8 s, so on a busy or small
+-- instance the counts were cancelled mid-sync ("canceling statement due to
+-- statement timeout" on /sync/spectra). Keyset pages themselves stay cheap;
+-- this only stops a slow first page from killing the whole sync.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -1071,6 +1080,8 @@ CREATE OR REPLACE FUNCTION public.get_spectra_for_sync(
 RETURNS TABLE(spectra JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Timeout backstop for the first-page counts; see get_objects_for_sync.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -1080,12 +1091,19 @@ BEGIN
            s.signal_to_noise, s.exposure_time,
            s.cfpipe_version, s.crds_context, s.jwst_version, s.date_obs, s.reduced_at,
            s.redshift_auto, s.dq_flags,
-           t.program_slug, t.observation, t.field,
+           -- program_slug / observation are the trigger-owned row-local copies
+           -- of the parent target's (perf T2-A, #504), so they read off the
+           -- spectra row; targets is joined only for field and the object link.
+           s.program_slug, s.observation, t.field,
            s.created_at, s.updated_at
     FROM spectra s
     JOIN targets t ON t.target_id = s.target_id
     LEFT JOIN objects o ON o.id = t.object_id
-    WHERE t.program_slug = ANY(p_program_slugs)
+    -- Program scope on the row-local column: the keyset walk down
+    -- idx_spectra_spectrum_id rejects out-of-scope rows without fetching the
+    -- target first (a user with a few programs used to pay a targets lookup
+    -- for every spectrum walked past).
+    WHERE s.program_slug = ANY(p_program_slugs)
       AND (o.id IS NULL OR o.is_active = true)
       -- B1: fail-closed publish gate (this RPC always bypasses RLS).
       AND (p_include_unpublished OR s.deploy_status = 'published')
@@ -1096,28 +1114,27 @@ BEGIN
     ORDER BY s.spectrum_id
     LIMIT p_limit
   ),
-  -- Count CTEs are gated on p_include_counts; when FALSE the planner
-  -- collapses them to One-Time Filter: false and skips the scan/join.
-  total AS (
-    SELECT COUNT(*) AS cnt
+  -- First-page counts, gated on p_include_counts (when FALSE the planner
+  -- collapses the CTE to One-Time Filter: false). One pass over spectra
+  -- yields both numbers: total_count (the incremental window) is a FILTER on
+  -- the scan that produces total_accessible_count, and the soft-deleted-
+  -- object exclusion is an anti-join against the (tiny, partial-indexed) set
+  -- of inactive objects. Previously two spectra x targets x objects hash
+  -- joins ran back to back on every first page.
+  counts AS (
+    SELECT COUNT(*) FILTER (WHERE p_updated_since IS NULL
+                              OR s.updated_at > p_updated_since) AS total_cnt,
+           COUNT(*) AS accessible_cnt
     FROM spectra s
-    JOIN targets t ON t.target_id = s.target_id
-    LEFT JOIN objects o ON o.id = t.object_id
     WHERE p_include_counts
-      AND t.program_slug = ANY(p_program_slugs)
-      AND (o.id IS NULL OR o.is_active = true)
+      AND s.program_slug = ANY(p_program_slugs)
       AND (p_include_unpublished OR s.deploy_status = 'published')
-      AND (p_updated_since IS NULL OR s.updated_at > p_updated_since)
-  ),
-  accessible AS (
-    SELECT COUNT(*) AS cnt
-    FROM spectra s
-    JOIN targets t ON t.target_id = s.target_id
-    LEFT JOIN objects o ON o.id = t.object_id
-    WHERE p_include_counts
-      AND t.program_slug = ANY(p_program_slugs)
-      AND (o.id IS NULL OR o.is_active = true)
-      AND (p_include_unpublished OR s.deploy_status = 'published')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM targets t
+        JOIN objects o ON o.id = t.object_id
+        WHERE t.target_id = s.target_id
+          AND o.is_active = false)
   )
   SELECT
     COALESCE(jsonb_agg(
@@ -1149,8 +1166,8 @@ BEGIN
       -- the last element). matched has no post-ORDER joins, but pin it anyway.
       ORDER BY m.spectrum_id
     ), '[]'::jsonb),
-    COALESCE((SELECT cnt FROM total), 0)::BIGINT,
-    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT
+    COALESCE((SELECT c.total_cnt FROM counts c), 0)::BIGINT,
+    COALESCE((SELECT c.accessible_cnt FROM counts c), 0)::BIGINT
   FROM matched m;
 END;
 $$;
@@ -1184,6 +1201,8 @@ CREATE OR REPLACE FUNCTION public.get_photometry_for_sync(
 RETURNS TABLE(photometry_records JSONB, total_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Timeout backstop for the first-page counts; see get_objects_for_sync.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -1266,6 +1285,8 @@ CREATE OR REPLACE FUNCTION public.get_line_fits_for_sync(
 RETURNS TABLE(line_fit_records JSONB, total_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Timeout backstop for the first-page counts; see get_objects_for_sync.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
@@ -4021,6 +4042,8 @@ CREATE OR REPLACE FUNCTION public.get_storage_objects_for_sync(
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT)
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
+-- Timeout backstop for the first-page counts; see get_objects_for_sync.
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   RETURN QUERY
