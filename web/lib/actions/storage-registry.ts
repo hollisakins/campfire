@@ -137,8 +137,17 @@ export interface StorageBudget {
   total_bytes: number;
   cap_bytes: number;
   pct_used: number;
+  registry_bytes: number;
+  tile_bytes: number;
   by_product_type: Record<string, number> | null;
   by_backend: Record<string, number> | null;
+  // get_storage_budget has always returned these two; the interface just
+  // dropped them (2026-08 dashboard redesign exposes them).
+  by_bucket: Record<string, number> | null;
+  // NOTE: by_status covers ALL statuses while total_bytes counts only active
+  // rows + tiles — superseded/revoked bytes sit OUTSIDE the total, so render
+  // them beside the budget meter, never as segments inside it.
+  by_status: Record<string, { count: number; bytes: number }> | null;
   error?: string;
 }
 

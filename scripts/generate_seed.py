@@ -128,6 +128,9 @@ def sql_value_or_null(row: dict, key: str) -> str:
 ADMIN_UUID = '11111111-1111-1111-1111-111111111111'
 USER_UUID = '22222222-2222-2222-2222-222222222222'
 VIEWER_UUID = '33333333-3333-3333-3333-333333333333'
+# Synthetic link account backing the seed's demo share link (admin-plane
+# fixtures) — mirrors the mint flow's read-only principal.
+LINK_UUID = '44444444-4444-4444-4444-444444444444'
 
 # Password will be set using crypt() function in SQL
 # This ensures compatibility with Supabase Auth's bcrypt implementation
@@ -1000,6 +1003,330 @@ def generate_sequence_resets(objects: list[dict], spectra: list[dict],
 
 # === Main ===
 
+def generate_admin_plane_sql() -> str:
+    """Admin-plane fixtures for the dashboard (2026-08 control-center redesign).
+
+    The production sampler covers the science catalog (targets/objects/spectra
+    + their comments and audit rows) but none of the admin plane, so on a
+    preview branch or local reset every dashboard panel that reads deployments,
+    exposure review, downloads, or the access queues rendered empty. This block
+    fills those tables with synthetic-but-plausible rows.
+
+    Design constraints, deliberately:
+      * Fully self-referential — every scope/user reference derives from rows
+        seeded above via INSERT ... SELECT, so this section needs NO production
+        queries and never goes stale against the sample.
+      * Relative timestamps (now() - interval ...) so a fresh reset always
+        shows *recent* activity instead of aging out.
+      * Deterministic — state mixing is modular arithmetic, never random().
+      * Placed LAST in the seed, after the hardcoded sequence resets, so
+        default-sequence inserts (comments, flag_audit_log) cannot collide
+        with the explicit prod ids inserted earlier.
+    """
+    return f"""-- ============================================
+-- 13. Admin-plane fixtures (dashboard)
+-- ============================================
+-- Synthetic deploy/review/usage rows so the /admin control center renders
+-- with live-looking data on preview branches and local resets. Everything
+-- derives from the sampled rows above; timestamps are relative to now();
+-- state mixing is deterministic. See generate_admin_plane_sql() in
+-- scripts/generate_seed.py.
+
+-- --- NIRCam field registry (derived from the sampled targets' fields) ------
+INSERT INTO public.fields (name, display_name, filters, created_at, config_hash, config_updated_at)
+SELECT f.field,
+       upper(replace(f.field, '_', '-')),
+       ARRAY['f277w', 'f444w'],
+       now() - interval '60 days' + (f.rn * interval '9 days'),
+       CASE WHEN f.rn % 2 = 0 THEN 'seedhash-' || f.field END,
+       CASE WHEN f.rn % 2 = 0 THEN now() - interval '10 days' END
+FROM (
+  SELECT d.field, row_number() OVER (ORDER BY d.field) AS rn
+  FROM (SELECT DISTINCT field FROM public.targets) d
+  ORDER BY d.field
+  LIMIT 4
+) f
+ON CONFLICT (name) DO NOTHING;
+
+-- Config plane: mark most observations as pushed, leave two local-only so the
+-- CONFIG attention rule has a small, realistic count.
+UPDATE public.observations SET
+  config_hash = 'seedhash-' || name,
+  config_updated_at = now() - interval '15 days'
+WHERE name NOT IN (SELECT name FROM public.observations ORDER BY name LIMIT 2);
+
+-- --- Deployments -----------------------------------------------------------
+-- One published deployment per observation (staggered ages), one per field,
+-- two drafts (one on an off-release dev build — the deploy CLI's warn path),
+-- and one revoked, so every lifecycle state renders.
+INSERT INTO public.deployments (observation, status, cfpipe_version, jwst_version, crds_context,
+                                n_targets, n_spectra, reduced_at, deployed_at, published_at, deployed_by)
+SELECT o.name, 'published', '0.9.3', '1.17.1', 'jwst_1321.pmap',
+       5 + o.rn % 20, 12 + (o.rn * 7) % 40,
+       now() - (o.rn * interval '2 days') - interval '6 hours',
+       now() - (o.rn * interval '2 days'),
+       now() - (o.rn * interval '2 days'),
+       '{ADMIN_UUID}'
+FROM (SELECT name, row_number() OVER (ORDER BY name) AS rn FROM public.observations) o;
+
+INSERT INTO public.deployments (field, status, cfpipe_version, jwst_version, crds_context,
+                                n_targets, deployed_at, published_at, deployed_by)
+SELECT f.name, 'published', '0.9.3', '1.17.1', 'jwst_1321.pmap',
+       96 + f.rn,
+       now() - (f.rn * interval '6 days'),
+       now() - (f.rn * interval '6 days'),
+       '{ADMIN_UUID}'
+FROM (SELECT name, row_number() OVER (ORDER BY name) AS rn FROM public.fields) f;
+
+INSERT INTO public.deployments (observation, status, cfpipe_version, jwst_version, crds_context,
+                                n_targets, n_spectra, deployed_at, deployed_by)
+SELECT name, 'draft', '0.9.4.dev6+ga1b2c3d', '1.17.1', 'jwst_1321.pmap',
+       8, 21, now() - interval '5 days', '{ADMIN_UUID}'
+FROM public.observations ORDER BY name LIMIT 1;
+
+INSERT INTO public.deployments (field, status, cfpipe_version, jwst_version, crds_context,
+                                n_targets, deployed_at, deployed_by)
+SELECT name, 'draft', '0.9.3', '1.17.1', 'jwst_1321.pmap',
+       64, now() - interval '30 hours', '{ADMIN_UUID}'
+FROM public.fields ORDER BY name LIMIT 1;
+
+INSERT INTO public.deployments (observation, status, cfpipe_version, jwst_version, crds_context,
+                                n_targets, n_spectra, deployed_at, published_at, revoked_at, deployed_by)
+SELECT name, 'revoked', '0.9.2', '1.17.1', 'jwst_1290.pmap',
+       6, 14, now() - interval '40 days', now() - interval '40 days', now() - interval '9 days', '{ADMIN_UUID}'
+FROM public.observations ORDER BY name OFFSET 1 LIMIT 1;
+
+UPDATE public.observations o SET latest_deployment_id = d.id
+FROM (SELECT DISTINCT ON (observation) observation, id
+      FROM public.deployments WHERE observation IS NOT NULL
+      ORDER BY observation, deployed_at DESC) d
+WHERE d.observation = o.name;
+
+UPDATE public.fields f SET latest_deployment_id = d.id
+FROM (SELECT DISTINCT ON (field) field, id
+      FROM public.deployments WHERE field IS NOT NULL
+      ORDER BY field, deployed_at DESC) d
+WHERE d.field = f.name;
+
+-- Attach the sampled spectra's storage rows to their observation's deployment
+-- so the "pushed, never deployed" integrity check counts only genuinely
+-- unattached objects (the provisional-hash rows below). The seed's spectra
+-- storage rows carry observation NULL by design, so resolve through
+-- spectrum_id -> spectra -> targets -> observations.
+UPDATE public.storage_objects so SET deployment_id = o.latest_deployment_id
+FROM public.spectra s
+JOIN public.targets t ON t.target_id = s.target_id
+JOIN public.observations o ON o.name = t.observation
+WHERE so.spectrum_id = s.spectrum_id
+  AND so.deployment_id IS NULL AND so.status = 'active';
+
+UPDATE public.storage_objects so SET deployment_id = o.latest_deployment_id
+FROM public.observations o
+WHERE so.observation = o.name AND so.deployment_id IS NULL AND so.status = 'active';
+
+-- --- Deploy events (audit log derived from the deployments above) ----------
+INSERT INTO public.deploy_events (actor, action, deployment_id, observation, field, status_to, affected_count, occurred_at)
+SELECT deployed_by, 'upload', id, observation, field, status, COALESCE(n_spectra, n_targets), deployed_at
+FROM public.deployments;
+
+INSERT INTO public.deploy_events (actor, action, deployment_id, observation, field, status_from, status_to, affected_count, occurred_at)
+SELECT deployed_by, 'publish', id, observation, field, 'draft', 'published', COALESCE(n_spectra, n_targets), published_at
+FROM public.deployments WHERE published_at IS NOT NULL;
+
+INSERT INTO public.deploy_events (actor, action, deployment_id, observation, field, status_from, status_to, affected_count, occurred_at)
+SELECT deployed_by, 'revoke', id, observation, field, 'published', 'revoked', COALESCE(n_spectra, n_targets), revoked_at
+FROM public.deployments WHERE revoked_at IS NOT NULL;
+
+INSERT INTO public.deploy_events (actor, action, occurred_at, metadata)
+VALUES ('{ADMIN_UUID}', 'config_sync', now() - interval '14 hours',
+        '{{"kinds": ["observations", "fields"]}}'::jsonb);
+
+-- --- NIRCam exposure review queue (2 fields x 2 filters x 4 detectors x 8) --
+INSERT INTO public.nircam_exposures (field, filter, detector, filename, visit, stage,
+                                     review_status, correction, mask_regions, notes,
+                                     review_decided_at, date_obs)
+SELECT f.name, flt.f, det.d,
+       format('jw%s001001_02101_%s_%s_%s_cal.fits',
+              lpad((100 + f.rn)::text, 5, '0'), lpad((10000 + n.i)::text, 5, '0'), det.d, flt.f),
+       format('visit_%s', 1 + n.i % 4),
+       'cal',
+       CASE WHEN n.i % 8 IN (0, 1, 2, 3) THEN 'approved'
+            WHEN n.i % 8 = 4 THEN 'excluded'
+            ELSE 'pending' END,
+       CASE WHEN n.i % 8 = 5 THEN 'needed'
+            WHEN n.i % 8 = 4 THEN 'done'
+            ELSE 'none' END,
+       CASE WHEN n.i % 8 = 3
+            THEN '[{{"kind": "polygon", "points": [[64, 64], [192, 64], [192, 192]]}}]'::jsonb END,
+       CASE WHEN n.i % 8 = 5 THEN 'seed fixture: cosmic-ray cluster near detector edge' END,
+       CASE WHEN n.i % 8 < 5 THEN now() - (n.i % 21) * interval '1 day' - interval '3 hours' END,
+       (now() AT TIME ZONE 'utc') - interval '200 days' + (n.i * interval '1 hour')
+FROM (SELECT name, row_number() OVER (ORDER BY name) AS rn
+      FROM public.fields ORDER BY name LIMIT 2) f
+CROSS JOIN (VALUES ('f277w'), ('f444w')) AS flt(f)
+CROSS JOIN (VALUES ('nrca1'), ('nrca2'), ('nrcb1'), ('nrcb2')) AS det(d)
+CROSS JOIN generate_series(0, 7) AS n(i);
+
+-- --- NIRSpec rate-mask review queue (3 obs x 2 detectors x 4 roots) --------
+INSERT INTO public.nirspec_rate_exposures (observation, exposure_root, detector, filename,
+                                           grating, stage, review_status, mask_regions)
+SELECT o.name,
+       format('jw%s_0%s101_0000%s', lpad((7000 + o.rn)::text, 5, '0'), 1 + r.i, 1 + r.i),
+       det.d,
+       format('jw%s_0%s101_%s_rate.fits', lpad((7000 + o.rn)::text, 5, '0'), 1 + r.i, det.d),
+       (ARRAY['prism', 'g395m'])[1 + r.i % 2],
+       'rate',
+       CASE WHEN (r.i * 2 + o.rn) % 5 < 3 THEN 'approved'
+            WHEN (r.i * 2 + o.rn) % 5 = 3 THEN 'pending'
+            ELSE 'excluded' END,
+       CASE WHEN (r.i + o.rn) % 6 = 0
+            THEN '[{{"kind": "polygon", "points": [[10, 900], [400, 900], [400, 1010]]}}]'::jsonb END
+FROM (SELECT name, row_number() OVER (ORDER BY name) AS rn
+      FROM public.observations ORDER BY name LIMIT 3) o
+CROSS JOIN (VALUES ('nrs1'), ('nrs2')) AS det(d)
+CROSS JOIN generate_series(0, 3) AS r(i);
+
+-- --- NIRSpec nods review (1 obs: 2 roots x 3 nods x 2 detectors x 2 sources)
+INSERT INTO public.spectrum_exposures (observation, exposure_root, nod, detector, source_id,
+                                       exp_group, grating, filename, stage, review_status)
+SELECT o.name,
+       format('jw07076020001_0%s101', 4 + r.i),
+       n.nod::text, det.d, s.sid, 1 + r.i, 'prism',
+       format('jw07076020001_0%s101_%s_%s_s%s_cal.fits', 4 + r.i, n.nod, det.d, s.sid),
+       'cal',
+       CASE WHEN (s.sid + n.nod + r.i) % 3 = 0 THEN 'pending' ELSE 'approved' END
+FROM (SELECT name FROM public.observations ORDER BY name LIMIT 1) o
+CROSS JOIN generate_series(0, 1) AS r(i)
+CROSS JOIN generate_series(1, 3) AS n(nod)
+CROSS JOIN (VALUES (101), (102)) AS s(sid)
+CROSS JOIN (VALUES ('nrs1'), ('nrs2')) AS det(d);
+
+INSERT INTO public.nirspec_source_review (observation, exposure_root, source_id,
+                                          stuck_shutters, bkg_overrides, notes)
+SELECT o.name, 'jw07076020001_04101', 101,
+       '[2, 3]'::jsonb, '{{"3": [1]}}'::jsonb, 'seed fixture: stuck shutter pair'
+FROM (SELECT name FROM public.observations ORDER BY name LIMIT 1) o;
+
+-- --- Storage: tombstones, provisional hashes, mosaics -----------------------
+-- Superseded copies of some sampled spectra (re-upload tombstones) so the
+-- status split and reclaimable figure are non-zero.
+INSERT INTO public.storage_objects (backend, bucket, storage_key, content_hash, size_bytes,
+                                    content_type, product_type, instrument, observation, status)
+SELECT so.backend, so.bucket, so.storage_key || '.superseded-' || so.id,
+       'sha256:' || md5(so.storage_key), (so.size_bytes * 0.9)::bigint,
+       so.content_type, so.product_type, so.instrument, so.observation, 'superseded'
+FROM public.storage_objects so
+WHERE so.status = 'active'
+ORDER BY so.id LIMIT 20;
+
+-- Three provisional etag-hashed exposures with no deployment attached — the
+-- integrity checks ("provisional hashes", "pushed, never deployed") demo rows.
+INSERT INTO public.storage_objects (backend, bucket, storage_key, content_hash, size_bytes,
+                                    content_type, product_type, instrument, field, status)
+SELECT 'osn', 'data',
+       format('nircam/%s/f277w/exposures/jw_seed_%s_cal.fits', f.name, g.i),
+       'etag:' || md5(f.name || g.i), 420000000 + g.i * 1000000,
+       'application/fits', 'nircam_exposure', 'nircam', f.name, 'active'
+FROM (SELECT name FROM public.fields ORDER BY name LIMIT 1) f
+CROSS JOIN generate_series(1, 3) AS g(i);
+
+-- Mosaics (compressed at rest) for by-product-type variety.
+INSERT INTO public.storage_objects (backend, bucket, storage_key, content_hash, size_bytes,
+                                    stored_size_bytes, content_type, product_type, instrument,
+                                    field, filter, status, deployment_id)
+SELECT 'osn', 'data',
+       format('nircam/%s/%s/mosaic_t1.fits', f.name, flt.f),
+       'sha256:' || md5(f.name || flt.f),
+       2500000000::bigint + f.rn * 130000000, 1300000000::bigint + f.rn * 70000000,
+       'application/fits', 'nircam_mosaic', 'nircam', f.name, flt.f, 'active',
+       f.latest_deployment_id
+FROM (SELECT name, latest_deployment_id, row_number() OVER (ORDER BY name) AS rn
+      FROM public.fields ORDER BY name LIMIT 2) f
+CROSS JOIN (VALUES ('f277w'), ('f444w')) AS flt(f);
+
+-- --- Downloads (uneven ~90-row series over the last 30 days) ----------------
+INSERT INTO public.download_log (user_id, download_type, target_count, file_count, target_ids, requested_at)
+SELECT (ARRAY['{ADMIN_UUID}', '{USER_UUID}', '{VIEWER_UUID}'])[1 + g.i % 3]::uuid,
+       (ARRAY['fits_single', 'fits_object', 'fits_zip', 'csv', 'fits_sync', 'sed_plot', 'fits_batch'])[1 + g.i % 7],
+       1 + g.i % 3,
+       1 + g.i % 6,
+       ARRAY(SELECT t.target_id FROM public.targets t ORDER BY t.id OFFSET g.i % 40 LIMIT 1 + g.i % 2),
+       now() - ((g.i * g.i) % 30) * interval '1 day' - (g.i % 13) * interval '67 minutes'
+FROM generate_series(0, 89) AS g(i);
+
+-- --- Access queues ----------------------------------------------------------
+INSERT INTO public.inspection_access_requests (user_id, status, message, created_at)
+VALUES ('{VIEWER_UUID}', 'pending',
+        'Requesting inspection access to help with the triage backlog.',
+        now() - interval '3 days');
+
+INSERT INTO public.inspection_access_requests (user_id, status, message, created_at, reviewed_at, reviewed_by)
+VALUES ('{USER_UUID}', 'approved', 'Joining the inspection effort.',
+        now() - interval '20 days', now() - interval '19 days', '{ADMIN_UUID}');
+
+INSERT INTO public.pending_invites (email, full_name, can_comment, can_inspect, invited_by, created_at, program_slugs)
+VALUES ('new.postdoc@example.edu', 'New Postdoc', TRUE, FALSE, '{ADMIN_UUID}',
+        now() - interval '2 days', ARRAY['ember']),
+       ('stale.invite@example.edu', 'Stale Invite', TRUE, FALSE, '{ADMIN_UUID}',
+        now() - interval '21 days', NULL);
+
+-- Share link backed by a synthetic link account (mirrors the mint flow).
+INSERT INTO auth.users (
+    id, instance_id, aud, role, email,
+    encrypted_password, email_confirmed_at,
+    created_at, updated_at, confirmation_token,
+    recovery_token, email_change_token_new, email_change
+) VALUES (
+    '{LINK_UUID}', '00000000-0000-0000-0000-000000000000',
+    'authenticated', 'authenticated', 'link-demo@campfire.dev',
+    {PASSWORD_SQL}, NOW(), NOW(), NOW(), '', '', '', ''
+);
+INSERT INTO auth.identities (
+    id, user_id, identity_data, provider, provider_id,
+    last_sign_in_at, created_at, updated_at
+) VALUES (
+    gen_random_uuid(), '{LINK_UUID}',
+    jsonb_build_object('sub', '{LINK_UUID}', 'email', 'link-demo@campfire.dev'),
+    'email', '{LINK_UUID}', NOW(), NOW(), NOW()
+);
+INSERT INTO public.user_profiles (user_id, username, full_name, is_link_account, can_comment, can_inspect, is_admin)
+VALUES ('{LINK_UUID}', 'link-demo', 'Shared link: demo', TRUE, FALSE, FALSE, FALSE);
+
+INSERT INTO public.share_links (token, label, observation, link_user_id, link_password,
+                                include_drafts, allow_download, created_by, created_at,
+                                view_count, last_seen_at)
+SELECT 'seeddemo00000000000000000000link', 'Collaborator preview (drafts)', o.name,
+       '{LINK_UUID}', 'password123', TRUE, TRUE, '{ADMIN_UUID}',
+       now() - interval '6 days', 14, now() - interval '1 day'
+FROM (SELECT name FROM public.observations ORDER BY name LIMIT 1) o;
+
+-- --- Recent inspection activity ---------------------------------------------
+-- The sampled flag_audit_log rows carry their production timestamps (months
+-- old), so the dashboard's 7-day counters would read zero; add a fresh burst.
+-- Runs after the sequence resets, so default ids cannot collide with the
+-- explicit prod ids above.
+INSERT INTO public.flag_audit_log (object_id, user_id, field_name, old_value, new_value, changed_at)
+SELECT o.id,
+       (ARRAY['{ADMIN_UUID}', '{USER_UUID}'])[1 + o.rn % 2]::uuid,
+       'redshift_quality', 0, 1 + o.rn % 4,
+       (now() AT TIME ZONE 'utc') - (o.rn % 7) * interval '1 day' - (o.rn * interval '31 minutes')
+FROM (SELECT id, row_number() OVER (ORDER BY id) AS rn
+      FROM public.objects ORDER BY id LIMIT 10) o;
+
+INSERT INTO public.comments (object_id, user_id, content, created_at)
+SELECT o.id, '{USER_UUID}',
+       'Seed fixture: line identifications look consistent with the quoted redshift.',
+       (now() AT TIME ZONE 'utc') - interval '2 days'
+FROM (SELECT id FROM public.objects ORDER BY id LIMIT 1) o;
+
+INSERT INTO public.comments (target_id, user_id, content, created_at)
+SELECT t.id, '{ADMIN_UUID}',
+       'Seed fixture: check the continuum slope before sign-off.',
+       (now() AT TIME ZONE 'utc') - interval '5 days'
+FROM (SELECT id FROM public.targets ORDER BY id LIMIT 1) t;
+"""
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Generate Supabase seed data from production database'
@@ -1130,6 +1457,9 @@ SET search_path TO public, auth, extensions;
     sql_parts.append(generate_sequence_resets(
         targets, spectra, comments, flag_entries, cross_matched_objects,
     ))
+    # Admin-plane fixtures go LAST: they are self-referential SQL over the
+    # rows above, and their default-sequence inserts must follow the resets.
+    sql_parts.append(generate_admin_plane_sql())
 
     # Write output
     full_sql = '\n'.join(sql_parts)

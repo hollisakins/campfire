@@ -90,9 +90,16 @@ export function AdminTable<TRow>({
     return <ErrorState message={error} />;
   }
 
-  if (!loading && total === 0) {
+  // Bare EmptyState only on page 1. `total` is a windowed count carried on the
+  // first returned row, so an out-of-range page (bookmark, back-nav, dashboard
+  // deep link after rows were triaged away) also reads as total === 0 — and
+  // returning here would drop the pagination footer, stranding the admin on an
+  // empty page with no way back. Past page 1, keep the Card + footer mounted
+  // and put the empty message in the body instead.
+  if (!loading && total === 0 && page <= 1) {
     return <EmptyState title={emptyTitle} description={emptyDescription} />;
   }
+  const outOfRange = !loading && total === 0 && page > 1;
 
   return (
     <Card className="overflow-hidden p-0">
@@ -140,6 +147,19 @@ export function AdminTable<TRow>({
             ))}
           </thead>
           <tbody>
+            {outOfRange && (
+              <tr className="border-t border-border">
+                <td colSpan={columns.length} className="px-4 py-6 text-center text-sm text-text-secondary">
+                  Nothing on this page any more —{' '}
+                  <button
+                    onClick={() => onPageChange(1)}
+                    className="text-primary-text hover:underline"
+                  >
+                    back to page 1
+                  </button>
+                </td>
+              </tr>
+            )}
             {loading
               ? Array.from({ length: Math.min(pageSize, 10) }).map((_, i) => (
                   <tr key={`skeleton-${i}`} className="animate-pulse border-t border-border">

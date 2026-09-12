@@ -44,6 +44,11 @@ export default function AdminCodesPage() {
   // Copy state
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
 
+  // Dashboard quick-action intent: /admin/codes?new=1 opens the create form.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('new')) setShowForm(true);
+  }, []);
+
   const fetchCodes = useCallback(async () => {
     setLoading(true);
     setError(null);

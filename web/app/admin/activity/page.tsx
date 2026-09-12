@@ -269,12 +269,30 @@ export default function AdminActivityPage() {
                     )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <Link
-                      href={`/nirspec/targets/${activity.target_display_id}`}
-                      className="text-sm font-mono text-primary hover:underline"
-                    >
-                      {activity.target_display_id}
-                    </Link>
+                    {/* Route by subject kind: object rows resolve at
+                        /nirspec/objects, legacy target rows at the
+                        /nirspec/targets redirect shim, spectrum rows
+                        ("target/GRATING") have no resolving route — render as
+                        plain text instead of a guaranteed 404. */}
+                    {activity.subject_kind === 'object' ? (
+                      <Link
+                        href={`/nirspec/objects/${encodeURIComponent(activity.target_display_id)}`}
+                        className="text-sm font-mono text-primary hover:underline"
+                      >
+                        {activity.target_display_id}
+                      </Link>
+                    ) : activity.subject_kind === 'target' ? (
+                      <Link
+                        href={`/nirspec/targets/${encodeURIComponent(activity.target_display_id)}`}
+                        className="text-sm font-mono text-primary hover:underline"
+                      >
+                        {activity.target_display_id}
+                      </Link>
+                    ) : (
+                      <span className="text-sm font-mono text-text-secondary">
+                        {activity.target_display_id || '—'}
+                      </span>
+                    )}
                   </td>
                   <td className="px-6 py-4">
                     {activity.type === 'comment' ? (
