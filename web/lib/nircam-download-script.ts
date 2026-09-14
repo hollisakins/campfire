@@ -69,6 +69,10 @@ export function downloadRouteUrl(origin: string, key: string): string {
 export interface EmbeddedDownloadToken {
   token: string;
   expiresAt: Date;
+  /** Minted for a share link rather than an account. The credential works the
+   *  same way; only the advice changes — a link visitor has no account, so no
+   *  API key to fall back on, and the script dies with the link. */
+  shareLink?: boolean;
 }
 
 export interface BuildScriptOptions {
@@ -95,7 +99,17 @@ export function buildNircamDownloadScript(
   const fields = [...new Set(rows.map((r) => r.field))];
   const token = opts.token;
 
-  const authNote = token
+  const authNote = token?.shareLink
+    ? `# Authentication: the script asks the CAMPFIRE API for each file's download
+# link at the moment it fetches that file, so the links never go stale.
+#
+# THIS FILE CONTAINS A CREDENTIAL — do not share it. DOWNLOAD_TOKEN below was
+# minted for the shared link you generated this script from: it downloads the
+# data that link shares, and nothing else, until
+# ${token.expiresAt.toISOString().slice(0, 10)} or until the link is revoked,
+# whichever comes first. Regenerate the script from the same shared page if it
+# stops working.`
+    : token
     ? `# Authentication: the script asks the CAMPFIRE API for each file's download
 # link at the moment it fetches that file, so the links never go stale.
 #
@@ -127,9 +141,11 @@ if [ -z "$API_KEY" ]; then
   exit 1
 fi`;
 
-  const rejectedHint = token
-    ? `The embedded token expires ${token.expiresAt.toISOString().slice(0, 10)}: regenerate the script from the field page, or set CAMPFIRE_API_KEY.`
-    : `Check it at $BASE_URL${API_KEYS_PATH}`;
+  const rejectedHint = token?.shareLink
+    ? `The shared link may have expired or been revoked, and the embedded token expires ${token.expiresAt.toISOString().slice(0, 10)}: open the shared page again to check.`
+    : token
+      ? `The embedded token expires ${token.expiresAt.toISOString().slice(0, 10)}: regenerate the script from the field page, or set CAMPFIRE_API_KEY.`
+      : `Check it at $BASE_URL${API_KEYS_PATH}`;
 
   let out = `#!/bin/bash
 # CAMPFIRE NIRCam Data Download Script

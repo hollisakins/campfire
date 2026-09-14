@@ -401,6 +401,91 @@ END $$;
 RESET ROLE;
 
 -- ---------------------------------------------------------------------------
+-- 8b) filter_link_storage_keys: the API path's restatement of the storage
+--     policy's link branches, used by GET /api/v1/storage/download to
+--     authorize a share link's bulk-download script.
+--
+--     The route calls it under service_role -- RLS bypassed -- so its
+--     PARAMETERS are the authorization, and drifting from the policy is a
+--     silent leak rather than an error. So assert the two against each other:
+--     record what each link can actually see through RLS, then check the
+--     function returns exactly that when called with RLS off, as the route
+--     calls it. The two halves run under different roles, so the RLS answers
+--     are passed between them through session settings.
+-- ---------------------------------------------------------------------------
+SET LOCAL ROLE authenticated;
+
+DO $$
+BEGIN
+  PERFORM pg_temp.zzz_as('00000000-0000-0000-0000-0000000000b1');  -- obs link
+  PERFORM set_config('zzz.rls_obs', (SELECT coalesce(string_agg(storage_key, ',' ORDER BY storage_key), '')
+                                     FROM storage_objects WHERE storage_key LIKE '/zzz/%'), false);
+
+  PERFORM pg_temp.zzz_as('00000000-0000-0000-0000-0000000000b6');  -- field link, drafts on
+  PERFORM set_config('zzz.rls_field', (SELECT coalesce(string_agg(storage_key, ',' ORDER BY storage_key), '')
+                                       FROM storage_objects WHERE storage_key LIKE '/zzz/%'), false);
+
+  PERFORM pg_temp.zzz_as('00000000-0000-0000-0000-0000000000b5');  -- allow_download = false
+  PERFORM set_config('zzz.rls_nodl', (SELECT coalesce(string_agg(storage_key, ',' ORDER BY storage_key), '')
+                                      FROM storage_objects WHERE storage_key LIKE '/zzz/%'), false);
+END $$;
+
+RESET ROLE;
+
+DO $$
+DECLARE
+  all_keys text[] := ARRAY(SELECT storage_key FROM storage_objects WHERE storage_key LIKE '/zzz/%');
+  fn text;
+BEGIN
+  -- Observation link: its own spectrum only -- not its sibling in the same
+  -- program, not the public program's, not the draft, and no NIRCam mosaic.
+  fn := (SELECT coalesce(string_agg(storage_key, ',' ORDER BY storage_key), '')
+         FROM filter_link_storage_keys(all_keys, ARRAY['zzz_sl_prog'], 'zzz_obs_shared', NULL, false));
+  IF fn <> current_setting('zzz.rls_obs') THEN
+    RAISE EXCEPTION 'obs link: function [%] != policy [%]', fn, current_setting('zzz.rls_obs');
+  END IF;
+  IF fn <> '/zzz/zzz-t-shared' THEN
+    RAISE EXCEPTION 'obs link authorized the wrong keys: %', fn;
+  END IF;
+
+  -- Field link with drafts: its field's mosaic, nothing from the other field.
+  -- accessible_program_slugs() is '{}' for a field link, so the function must
+  -- not need a program to say yes to a NIRCam deployment.
+  fn := (SELECT coalesce(string_agg(storage_key, ',' ORDER BY storage_key), '')
+         FROM filter_link_storage_keys(all_keys, '{}'::text[], NULL, 'zzz_sl_field', true));
+  IF fn <> current_setting('zzz.rls_field') THEN
+    RAISE EXCEPTION 'field link: function [%] != policy [%]', fn, current_setting('zzz.rls_field');
+  END IF;
+  IF fn <> '/zzz/mosaic_shared' THEN
+    RAISE EXCEPTION 'field link authorized the wrong keys: %', fn;
+  END IF;
+
+  -- include_drafts reaches the draft spectrum in scope, and still nothing else.
+  fn := (SELECT coalesce(string_agg(storage_key, ',' ORDER BY storage_key), '')
+         FROM filter_link_storage_keys(all_keys, ARRAY['zzz_sl_prog'], 'zzz_obs_shared', NULL, true));
+  IF fn <> '/zzz/zzz-t-draft,/zzz/zzz-t-shared' THEN
+    RAISE EXCEPTION 'obs link with drafts authorized the wrong keys: %', fn;
+  END IF;
+
+  -- allow_download = false is NOT this function's job: the route refuses the
+  -- credential outright (401) and never calls it. Assert the policy really
+  -- does hide every byte from that link, since that is what the route mirrors.
+  IF current_setting('zzz.rls_nodl') <> '' THEN
+    RAISE EXCEPTION 'allow_download=false link can still see storage rows: %', current_setting('zzz.rls_nodl');
+  END IF;
+
+  -- A scope-less call authorizes nothing: an unscoped link is a bug, and the
+  -- fail-open reading of it would be "every key in scope of the programs".
+  fn := (SELECT coalesce(string_agg(storage_key, ',' ORDER BY storage_key), '')
+         FROM filter_link_storage_keys(all_keys, ARRAY['zzz_sl_prog'], NULL, NULL, true));
+  IF fn <> '' THEN
+    RAISE EXCEPTION 'a link with no scope authorized keys: %', fn;
+  END IF;
+
+  RAISE NOTICE 'OK: filter_link_storage_keys matches the storage policy.';
+END $$;
+
+-- ---------------------------------------------------------------------------
 -- 9) A writable link account must be impossible to create at all.
 --
 -- Assertion 6 above checks that the write policies refuse a link account, but

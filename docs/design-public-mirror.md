@@ -733,3 +733,47 @@ that knows every principal shape, instead of a JS re-derivation that only knew
 one. The two `explicitAccessSlugs` sites in `programs.ts` stay hand-rolled
 deliberately — they mark which programs carry an explicit grant (an access
 badge), which is a different question from accessibility.
+
+### 13.8 Round four (2026-09-14): one door back into the API, for bulk downloads
+
+§13.6 closed `/api/v1/*` to link accounts outright, which was right for the
+routes it was reasoning about and wrong for one consequence nobody priced in:
+the NIRCam bulk-download script fetches every file through
+`GET /api/v1/storage/download`, so a share link — the principal most likely to
+be handed a whole field and told "grab the mosaics" — was the one principal
+that could browse the data but not bulk-download it. The panel said so
+("Bulk download is not available on a shared link; sign in with an account"),
+which is not advice a collaborator without an account can act on.
+
+The fix is not to re-open the API. §13.6's reasoning stands: program-grain
+authorization cannot express a link's scope, so a route that authorizes that
+way must stay shut. `/api/v1/storage/download` is the one route that does
+**not** authorize that way — it authorizes one key at a time through a SQL
+function — so it can express a link's scope, and it is the only route opened:
+
+- `filter_link_storage_keys` (`supabase/schemas/functions.sql`) is the
+  link-account counterpart of `filter_accessible_storage_keys`: same job,
+  narrowed on the observation/field axis with `include_drafts`, and a
+  deployment branch that needs no program at all (a field link has none).
+  It restates the storage policy's link branches exactly as the ordinary
+  function restates its user branches, and `check_share_link_scoping.sql`
+  asserts it returns exactly what the policy returns for each live link.
+- `authenticateStorageDownloadRequest()` accepts a link account **only**
+  through a download token, never an API key (it cannot mint one) and never
+  the access token it could lift from its own cookie jar — that would open
+  the rest of `/api/v1` by the back door, which is precisely what §13.6
+  closed. `validateAuth()` / `authenticateApiRequest()` are unchanged.
+- `allow_download` gates the whole thing, twice: no token is minted for a link
+  that has it off, and the route refuses the credential (401) before looking at
+  a key. Both read `share_links` live — link accounts are never memoized — so
+  revoking a link stops a running script on its next file, and the token is
+  minted with the link's own `expires_at` as its cap so the script's stated
+  expiry is the truth.
+
+Also fixed here, from the same reading: `GET/POST /api/download` (the portal's
+single-spectrum FITS button) authorized on the **spectra** row, which a
+downloads-off link can see, and then presigned without consulting
+`storage_objects`, where the opt-out lives. It now refuses a link account that
+may not download. That hole predates this change; it is fixed with it because
+the bulk-download panel now tells such a visitor the files are not available to
+them, and that sentence has to be true.
