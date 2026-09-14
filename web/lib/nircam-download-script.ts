@@ -1,18 +1,14 @@
 // The NIRCam bulk-download shell script (components/nircam/CurlScriptGenerator).
 //
-// Pure text generation, kept out of the component so the script's contract
-// can be tested: one `fetch` line per product, every download going through
-// GET /api/v1/storage/download (a fresh presigned url per file, minted at
-// download time, so the script never expires), complete files skipped and
-// partial ones resumed, so a failed run is simply re-run.
+// Kept out of the component so the script's contract can be tested: one
+// `fetch` line per product, every download going through
+// GET /api/v1/storage/download, which mints a fresh presigned url per file at
+// download time — so the script itself never goes stale. Complete files are
+// skipped and partial ones resumed, so a failed run is simply re-run.
 //
-// The script carries a download token (lib/auth/tokens.ts): a credential that
-// names the user and can only download what they may download, for 30 days.
-// It is what lets "download the script and run it" work without an API key,
-// and why the file must not be shared. CAMPFIRE_API_KEY in the environment
-// overrides it (an API key works after the token expires). The products come
-// from the field page's RLS-scoped listing, and the route re-authorizes every
-// key under the credential's own scope when the script actually runs.
+// The script embeds a download token (lib/auth/tokens.ts) scoped to the
+// viewer, so it runs without an API key; CAMPFIRE_API_KEY overrides it. The
+// route re-authorizes every key under that scope when the script runs.
 
 import type { NircamProductRow } from '@/lib/types';
 import { isCompressedKey } from '@/lib/layout';
@@ -100,32 +96,18 @@ export function buildNircamDownloadScript(
   const token = opts.token;
 
   const authNote = token?.shareLink
-    ? `# Authentication: the script asks the CAMPFIRE API for each file's download
-# link at the moment it fetches that file, so the links never go stale.
-#
-# THIS FILE CONTAINS A CREDENTIAL — do not share it. DOWNLOAD_TOKEN below was
-# minted for the shared link you generated this script from: it downloads the
-# data that link shares, and nothing else, until
-# ${token.expiresAt.toISOString().slice(0, 10)} or until the link is revoked,
-# whichever comes first. Regenerate the script from the same shared page if it
-# stops working.`
+    ? `# Scoped to the shared link this script came from, DOWNLOAD_TOKEN below
+# authorizes the downloads until ${token.expiresAt.toISOString().slice(0, 10)}, or until the link is revoked.
+# Regenerate the script from the same page if it stops working.`
     : token
-    ? `# Authentication: the script asks the CAMPFIRE API for each file's download
-# link at the moment it fetches that file, so the links never go stale.
-#
-# THIS FILE CONTAINS A CREDENTIAL — do not share it. DOWNLOAD_TOKEN below
-# lets whoever holds it download the CAMPFIRE products your account can,
-# and nothing else, until ${token.expiresAt.toISOString().slice(0, 10)}.
-# After that, regenerate the script from the field page — or set
-# CAMPFIRE_API_KEY to an API key from ${base}${API_KEYS_PATH}, which
-# takes precedence over the embedded token whenever it is set.`
-    : `# Authentication: the script asks the CAMPFIRE API for each file's download
-# link at the moment it fetches that file, so nothing in this script expires.
-# The API needs a key: create one at ${base}${API_KEYS_PATH}
+    ? `# DOWNLOAD_TOKEN below authorizes the downloads, and works until ${token.expiresAt.toISOString().slice(0, 10)}.
+# After that, regenerate the script from the field page, or set CAMPFIRE_API_KEY
+# (it takes precedence whenever set) to a key from
+# ${base}${API_KEYS_PATH}`
+    : `# Needs a CAMPFIRE API key — create one at ${base}${API_KEYS_PATH}
 # and export it before running (the script prompts for it otherwise):
 #
-#   export CAMPFIRE_API_KEY=sk_...
-#   bash ${NIRCAM_DOWNLOAD_SCRIPT_FILENAME}`;
+#   export CAMPFIRE_API_KEY=sk_...`;
 
   const credential = token
     ? `DOWNLOAD_TOKEN=${shellQuote(token.token)}
@@ -148,19 +130,19 @@ fi`;
       : `Check it at $BASE_URL${API_KEYS_PATH}`;
 
   let out = `#!/bin/bash
-# CAMPFIRE NIRCam Data Download Script
+# CAMPFIRE NIRCam data download
 # Generated: ${now.toISOString()}
 # Files: ${rows.length}
 # Total size: ${formatFileSize(totalBytes)}
 #
-# Resumable: if a run fails or is interrupted, just run the script again.
-# Files that already exist with the right size are skipped and partial
-# downloads (*.part) resume where they stopped.
+# Run: bash ${NIRCAM_DOWNLOAD_SCRIPT_FILENAME}
+# Re-run to resume: finished files are skipped, partial ones (*.part) continue
+# where they stopped.
 #
 ${authNote}
 #
-# Prefer a Python tool? The campfire CLI's \`campfire pull --field <field>\`
-# downloads the same products — see ${base}/docs/api/cli
+# The campfire CLI downloads the same products with
+# \`campfire pull --field <field>\` — see ${base}/docs/api/cli
 
 set -u
 
@@ -171,17 +153,15 @@ TOTAL=${rows.length}
 
 ${credential}
 
-# Every API call goes through here: the bearer rides in curl's config read
-# from stdin (-K -), never on the command line, where any other user on the
-# host could read it out of the process list (ps, /proc/<pid>/cmdline) for as
-# long as a transfer runs — and this script is written for shared clusters.
+# Every API call goes through here. The bearer rides in a curl config on
+# stdin (-K -) rather than the command line, which is readable by other users
+# on a shared host.
 auth_curl() {
   printf 'header = "Authorization: Bearer %s"\\n' "$API_KEY" | curl -K - "$@"
 }
 
-# Check the credential once, up front, rather than failing once per file: the
-# download route without a key answers 400 to an accepted credential and 401
-# to a rejected one, and never touches a file either way.
+# Check the credential once, up front: with no key= the download route answers
+# 400 to an accepted credential and 401 to a rejected one, touching no files.
 check_code=$(auth_curl -sS -o /dev/null -w '%{http_code}' "$BASE_URL/api/v1/storage/download")
 if [ "$check_code" = "401" ]; then
   echo "error: the API rejected this credential (HTTP 401). ${rejectedHint}" >&2
@@ -201,9 +181,9 @@ stale=0
 stale_files=""
 
 
-# probe_total <key> <offset>: the object's size according to the store, read
-# from the Content-Range of a one-byte range request at <offset> (a 206 and a
-# 416 both carry it). Empty when the store could not be asked.
+# probe_total <key> <offset>: the object's size per the store, from the
+# Content-Range of a one-byte range request (206 and 416 both carry it).
+# Empty when the store could not be asked.
 probe_total() {
   local hdr="$OUT_DIR/.probe.$$" total
   auth_curl -sSL -o /dev/null -D "$hdr" -r "$2-$2" \\
@@ -228,10 +208,8 @@ fetch() {
       skipped=$((skipped + 1))
       return 0
     fi
-    # The listing gave no size, or a different one (an older script wrote
-    # straight to this name and may have been cut short; or the product was
-    # re-deployed since this script was generated). The store is the truth:
-    # ask it how big the object is, without downloading anything.
+    # No size in the listing, or a different one (a truncated older download,
+    # or a re-deploy since this script was generated). Ask the store.
     total=$(probe_total "$key" "$size")
     if [ -n "$total" ] && [ "$size" -eq "$total" ]; then
       echo "  already downloaded (size verified against the store), skipping"
@@ -241,33 +219,28 @@ fetch() {
       skipped=$((skipped + 1))
       return 0
     fi
-    # Never resume a mismatched final file: if it is an older version of the
-    # product, appending the new one's tail would corrupt it. Fetch it again;
-    # the old file stays until the new one is complete. Any .part on disk is
-    # this script's own in-progress download of the current object (it is
-    # never seeded from the final file), so the loop below resumes it rather
-    # than starting over — a slow link makes net progress across runs.
+    # Never resume a mismatched final file: appending a new version's tail to
+    # an old one would corrupt it. Re-fetch, keeping the old file until the new
+    # one lands. Any .part is this script's own download of the current object,
+    # so the loop below resumes it and a slow link still makes progress.
     echo "  exists with $size bytes but the object is \${total:-of unknown size}; downloading again"
   fi
 
   mkdir -p "$(dirname "$file")"
   attempt=1
   while :; do
-    # -C - resumes the .part file. Each attempt asks the API for a fresh
-    # presigned link (the 302), and curl drops the Authorization header when
-    # it follows the redirect to the storage host, as the store requires.
-    # -D keeps the response headers: on a 416 the store's Content-Range
-    # carries the object's true size.
+    # -C - resumes the .part. Each attempt gets a fresh presigned link (the
+    # 302); curl drops the Authorization header on the redirect, as the store
+    # requires. -D keeps the headers for the 416 Content-Range below.
     code=$(auth_curl -fL --progress-bar -C - -o "$part" -D "$headers" -w '%{http_code}' \\
       "$BASE_URL/api/v1/storage/download?key=$key")
     rc=$?
     total=$(grep -i '^content-range:' "$headers" 2>/dev/null | tail -1 | sed 's|.*/||' | tr -dc '0-9')
     rm -f "$headers"
     if [ "$code" = "416" ]; then
-      # The .part already reaches the end of the object: a previous run died
-      # between the download finishing and the rename — or it is a leftover
-      # from an older, larger deploy, which can never resume (every offset is
-      # past the end). The Content-Range total tells the two apart.
+      # The .part reaches the end of the object: either a run that died before
+      # the rename, or a leftover from a larger older deploy that can never
+      # resume. The Content-Range total tells them apart.
       have=$(( $(wc -c < "$part") ))
       if [ -n "$total" ] && [ "$have" -ne "$total" ]; then
         echo "  partial file has $have bytes but the object is $total; starting over"
@@ -286,10 +259,8 @@ fetch() {
       return 0
     fi
     if [ "$rc" -eq 0 ]; then
-      # curl checked the body against Content-Length, so these are the whole
-      # object as the store has it. A listing that says otherwise is stale
-      # (re-deployed since this script was generated): worth a note, not a
-      # failure.
+      # curl checked the body against Content-Length, so this is the whole
+      # object. A listing that says otherwise is stale: a note, not a failure.
       have=$(( $(wc -c < "$part") ))
       mv -f "$part" "$file"
       downloaded=$((downloaded + 1))
@@ -343,7 +314,7 @@ echo ""
 echo "Done: $downloaded downloaded, $skipped already present, $failed failed"
 echo "Files saved in: $OUT_DIR/"
 if [ "$stale" -gt 0 ]; then
-  printf "\\nNote: %s file(s) differ in size from this script's listing — the product\\nmay have been re-deployed since the script was generated. The files on disk\\nare what the archive serves now; regenerate the script to refresh the listing.%b\\n" "$stale" "$stale_files"
+  printf "\\nNote: %s file(s) differ in size from this script's listing, so they were\\nlikely re-deployed since it was generated. The files on disk are what the\\narchive serves now; regenerate the script to refresh the listing.%b\\n" "$stale" "$stale_files"
 fi
 if [ "$failed" -gt 0 ]; then
   printf "\\nFailed:%b\\n\\nRe-run this script to retry them.\\n" "$failed_files" >&2

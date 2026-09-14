@@ -41,19 +41,16 @@ interface TokenState {
  * Bulk-download panel for a NIRCam product selection: a shell script the user
  * runs locally.
  *
- * The script carries no urls. Each file is fetched through
- * GET /api/v1/storage/download, which answers with a fresh presigned url at
- * download time — so the links never go stale, however long a whole-field
- * download takes. Files already on disk are skipped and partial downloads
- * resume, so a failed run is simply re-run. See lib/nircam-download-script.ts.
+ * The script carries no urls — each file is fetched through
+ * GET /api/v1/storage/download, which mints a fresh presigned url at download
+ * time, so nothing goes stale however long a whole-field download takes. See
+ * lib/nircam-download-script.ts.
  *
  * Opening the panel mints a download token for the viewer (one server call;
  * lib/auth/tokens.ts) and the script embeds it, so "download and run" needs no
- * setup. The token can only download what the viewer may download, for 30
- * days, so the file is a credential and the panel says so. A share-link
- * visitor gets one too — scoped to the link, expiring with it — unless the
- * link was minted with downloads off. If minting fails the script still
- * builds, in the form that reads CAMPFIRE_API_KEY or prompts for it.
+ * setup. A share-link visitor gets one scoped to the link, unless the link was
+ * minted with downloads off. If minting fails the script still builds, in the
+ * form that reads CAMPFIRE_API_KEY or prompts for it.
  */
 export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
   selectedImages,
@@ -177,21 +174,16 @@ export const CurlScriptGenerator: React.FC<CurlScriptGeneratorProps> = ({
                 <KeyRound className="w-4 h-4 text-text-secondary mt-0.5 shrink-0" />
                 {tokenState.token.shareLink ? (
                   <p className="text-sm text-text-secondary">
-                    Run with <code className="font-mono text-xs">bash {NIRCAM_DOWNLOAD_SCRIPT_FILENAME}</code>.
-                    It fetches each file&apos;s link as it goes and can be re-run to resume after a
-                    failure. The script contains a download credential for this shared link, valid
-                    until {tokenState.token.expiresAt.toLocaleDateString()} or until the link is
-                    revoked, and good for nothing but downloading the data shared with you — treat
-                    the file like a password and don&apos;t share it.
+                    Run with <code className="font-mono text-xs">bash {NIRCAM_DOWNLOAD_SCRIPT_FILENAME}</code>;
+                    re-run it to resume after a failure. It carries a download token for this
+                    shared link, good until {tokenState.token.expiresAt.toLocaleDateString()} or
+                    until the link is revoked.
                   </p>
                 ) : (
                   <p className="text-sm text-text-secondary">
-                    Run with <code className="font-mono text-xs">bash {NIRCAM_DOWNLOAD_SCRIPT_FILENAME}</code>.
-                    It fetches each file&apos;s link as it goes and can be re-run to resume after a
-                    failure. The script contains a download credential for your account, valid
-                    until {tokenState.token.expiresAt.toLocaleDateString()} and good for nothing but
-                    downloading what you can already download — treat the file like a password and
-                    don&apos;t share it. An{' '}
+                    Run with <code className="font-mono text-xs">bash {NIRCAM_DOWNLOAD_SCRIPT_FILENAME}</code>;
+                    re-run it to resume after a failure. It carries a download token for your
+                    account, good until {tokenState.token.expiresAt.toLocaleDateString()}. An{' '}
                     <Link href={API_KEYS_PATH} className="text-primary hover:underline">
                       API key
                     </Link>{' '}
