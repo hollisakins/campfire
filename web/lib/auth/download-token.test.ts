@@ -2,7 +2,13 @@
 // (api-auth.ts authenticateStorageDownloadRequest). The property that matters:
 // a download token opens GET /api/v1/storage/download for its user and
 // nothing else — it is never an access token, an access token is never a
-// download token, link accounts get no principal, and it expires.
+// download token, and it expires.
+//
+// Share links are the one principal shape that reaches /api/v1 at all, and
+// only here: a live link that permits downloads resolves to a principal from
+// its download token (so a shared field can be bulk-downloaded), while the
+// same link's access token still opens nothing, and a revoked / expired /
+// downloads-off link resolves to no credential at all.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
@@ -18,14 +24,32 @@ vi.mock('@/lib/supabase/service', () => ({
 }));
 
 let isLinkAccount = false;
-vi.mock('@/lib/auth/access-context', () => ({
-  getAccessContext: async (userId: string) => ({
-    isAdmin: false,
-    isLinkAccount,
-    linkScope: null,
-    accessibleSlugs: [`programs-of-${userId}`],
-  }),
-}));
+let linkScope: Record<string, unknown> | null = null;
+vi.mock('@/lib/auth/access-context', async () => {
+  // linkMayDownload is the real predicate: these tests are about which link
+  // shapes it lets through, so mocking it would test nothing.
+  const actual = await vi.importActual<typeof import('@/lib/auth/access-context')>(
+    '@/lib/auth/access-context',
+  );
+  return {
+    linkMayDownload: actual.linkMayDownload,
+    getAccessContext: async (userId: string) => ({
+      isAdmin: false,
+      isLinkAccount,
+      linkScope,
+      accessibleSlugs: [`programs-of-${userId}`],
+    }),
+  };
+});
+
+/** A live share link scoped to one NIRCam field. */
+function liveLink(over: Record<string, unknown> = {}) {
+  return {
+    active: true, observation: null, field: 'cosmos',
+    allowDownload: true, includeDrafts: false, expiresAt: null,
+    ...over,
+  };
+}
 
 import {
   generateAccessToken,
@@ -43,6 +67,7 @@ function request(bearer: string | null) {
 
 beforeEach(() => {
   isLinkAccount = false;
+  linkScope = null;
   vi.useRealTimers();
 });
 
@@ -94,12 +119,53 @@ describe('authenticateStorageDownloadRequest', () => {
     expect(await authenticateApiRequest(request(token))).toBeNull();
   });
 
-  it('refuses link accounts, a missing bearer, and garbage', async () => {
-    const { token } = await generateDownloadToken('link-user');
-    isLinkAccount = true;
-    expect(await authenticateStorageDownloadRequest(request(token))).toBeNull();
-    isLinkAccount = false;
+  it('refuses a missing bearer and garbage', async () => {
     expect(await authenticateStorageDownloadRequest(request(null))).toBeNull();
     expect(await authenticateStorageDownloadRequest(request('garbage'))).toBeNull();
+  });
+});
+
+describe('share links', () => {
+  it('a live link that permits downloads gets a principal from its download token', async () => {
+    const { token } = await generateDownloadToken('link-user');
+    isLinkAccount = true;
+    linkScope = liveLink();
+    expect(await authenticateStorageDownloadRequest(request(token))).toMatchObject({
+      userId: 'link-user',
+      method: 'download_token',
+      access: { isLinkAccount: true, linkScope: { field: 'cosmos' } },
+    });
+  });
+
+  it('but its access token still opens nothing — including this route', async () => {
+    const { token } = await generateAccessToken('link-user');
+    isLinkAccount = true;
+    linkScope = liveLink();
+    expect(await authenticateApiRequest(request(token))).toBeNull();
+    expect(await authenticateStorageDownloadRequest(request(token))).toBeNull();
+  });
+
+  it('and a download token minted for a link whose downloads are off, revoked, expired or unscoped is refused', async () => {
+    const { token } = await generateDownloadToken('link-user');
+    isLinkAccount = true;
+    for (const scope of [
+      liveLink({ allowDownload: false }),
+      liveLink({ active: false }),          // revoked or past expires_at
+      liveLink({ field: null }),            // no scope on either axis
+      null,                                 // unreadable profile (fail-closed)
+    ]) {
+      linkScope = scope;
+      expect(await authenticateStorageDownloadRequest(request(token))).toBeNull();
+    }
+  });
+
+  it('caps the token lifetime at the link expiry, and never extends it', async () => {
+    const short = new Date(Date.now() + 2 * 86400e3);
+    expect((await generateDownloadToken('link-user', { notAfter: short })).expiresAt).toEqual(short);
+
+    const far = new Date(Date.now() + 365 * 86400e3);
+    const days = ((await generateDownloadToken('link-user', { notAfter: far })).expiresAt.getTime() - Date.now()) / 86400e3;
+    expect(days).toBeGreaterThan(29.99);
+    expect(days).toBeLessThan(30.01);
   });
 });

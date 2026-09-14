@@ -43,11 +43,35 @@ export interface LinkScope {
   field: string | null;
   allowDownload: boolean;
   includeDrafts: boolean;
+  /** share_links.expires_at, or null when the link never expires. Callers
+   *  minting a credential for the link cap it here (lib/auth/tokens.ts). */
+  expiresAt: string | null;
 }
 
 export const DEAD_LINK_SCOPE: LinkScope = Object.freeze({
   active: false, observation: null, field: null, allowDownload: false, includeDrafts: false,
+  expiresAt: null,
 });
+
+/**
+ * Whether a link account's scope permits downloading bytes at all: the link
+ * must be live (not revoked, not expired), carry a scope, and have
+ * allow_download set. The SQL authority is link_allows_download(), ANDed into
+ * the storage_objects SELECT policy; this is the mirror for the service-role
+ * paths that do not run under RLS — minting a bulk-download credential
+ * (lib/actions/download-token.ts) and spending one (the storage download
+ * route). False for an ordinary user, who has no link scope at all: callers
+ * ask it only after checking isLinkAccount.
+ */
+export function linkMayDownload(access: AccessContext): boolean {
+  const scope = access.linkScope;
+  return (
+    !!scope &&
+    scope.active &&
+    scope.allowDownload &&
+    (scope.observation !== null || scope.field !== null)
+  );
+}
 
 export interface AccessContext {
   userId: string;
@@ -144,6 +168,7 @@ async function computeAccessContext(userId: string, db: SupabaseClient): Promise
       field: link.field ?? null,
       allowDownload: link.allow_download === true,
       includeDrafts: link.include_drafts === true,
+      expiresAt: link.expires_at ?? null,
     };
 
     let accessibleSlugs: string[] = [];

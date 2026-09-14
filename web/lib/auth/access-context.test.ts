@@ -3,8 +3,10 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   getAccessContext,
   invalidateAccessContext,
+  linkMayDownload,
   ACCESS_CONTEXT_TTL_MS,
   DEAD_LINK_SCOPE,
+  type AccessContext,
 } from './access-context';
 
 // ---------------------------------------------------------------------------
@@ -117,7 +119,7 @@ describe('getAccessContext — mirrors accessible_program_slugs()', () => {
     );
     expect(ctx.isAdmin).toBe(false);
     expect(ctx.isLinkAccount).toBe(true);
-    expect(ctx.linkScope).toEqual({ active: true, observation: 'obs-1', field: null, allowDownload: true, includeDrafts: false });
+    expect(ctx.linkScope).toEqual({ active: true, observation: 'obs-1', field: null, allowDownload: true, includeDrafts: false, expiresAt: null });
     expect(ctx.accessibleSlugs).toEqual(['priv1']);
   });
 
@@ -232,5 +234,30 @@ describe('getAccessContext — memo', () => {
     await getAccessContext(U, db);
     await getAccessContext('00000000-0000-0000-0000-00000000000b', db);
     expect(calls.length).toBe(6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// linkMayDownload: the mirror of link_allows_download() that the two
+// service-role bulk-download paths consult (minting the script's credential
+// and spending it). It must say yes to exactly one shape — a live, scoped
+// link with allow_download — because nothing downstream re-derives it.
+// ---------------------------------------------------------------------------
+describe('linkMayDownload', () => {
+  const ctx = (linkScope: AccessContext['linkScope']): AccessContext =>
+    ({ linkScope } as AccessContext);
+  const live = { active: true, observation: null, field: 'cosmos', allowDownload: true, includeDrafts: false, expiresAt: null };
+
+  it('yes for a live scoped link that permits downloads, on either axis', () => {
+    expect(linkMayDownload(ctx(live))).toBe(true);
+    expect(linkMayDownload(ctx({ ...live, observation: 'obs-1', field: null }))).toBe(true);
+  });
+
+  it('no for downloads off, revoked/expired, unscoped, or an ordinary user', () => {
+    expect(linkMayDownload(ctx({ ...live, allowDownload: false }))).toBe(false);
+    expect(linkMayDownload(ctx({ ...live, active: false }))).toBe(false);
+    expect(linkMayDownload(ctx(DEAD_LINK_SCOPE))).toBe(false);
+    expect(linkMayDownload(ctx({ ...live, field: null }))).toBe(false);
+    expect(linkMayDownload(ctx(null))).toBe(false);
   });
 });

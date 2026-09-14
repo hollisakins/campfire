@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authenticateStorageDownloadRequest } from '@/lib/api-auth';
+import { linkMayDownload } from '@/lib/auth/access-context';
 import { generateDownloadUrl } from '@/lib/r2';
 import { isKnownKey } from '@/lib/layout';
 
@@ -35,6 +36,14 @@ const URL_TTL_SECONDS = 21600; // 6 hours
  * follows a redirect to another host, which is what the store needs: a
  * presigned url must arrive without a second credential on the request.
  *
+ * SHARE LINKS. A link account reaches this route (and only this route) with a
+ * download token, so a shared field or observation can be bulk-downloaded the
+ * same way an account can. Its keys are authorized by filter_link_storage_keys
+ * instead — the link's own observation/field scope and its include_drafts flag,
+ * never a program set, because a field link has no accessible program at all.
+ * The live/allow_download check is redone here rather than trusted from the
+ * authenticator, so the two gates sit next to the query they protect.
+ *
  * `redirect=false` returns `{ url, expires_in }` instead, for callers that
  * want the url itself (mirrors GET /api/v1/spectra).
  *
@@ -48,6 +57,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid or missing authentication' }, { status: 401 });
   }
 
+  // A link that was revoked, expired or minted with downloads off: 401, the
+  // same answer the script's up-front credential check understands, rather
+  // than a 404 per file that reads like missing data.
+  const linkScope = principal.access.isLinkAccount ? principal.access.linkScope : null;
+  if (principal.access.isLinkAccount && !linkMayDownload(principal.access)) {
+    return NextResponse.json({ error: 'This share link does not permit downloads' }, { status: 401 });
+  }
+
   const key = request.nextUrl.searchParams.get('key');
   if (!key || !isKnownKey(key)) {
     return NextResponse.json(
@@ -58,11 +75,19 @@ export async function GET(request: NextRequest) {
 
   try {
     const supabase = createServiceClient();
-    const { data: allowedRows, error } = await supabase.rpc('filter_accessible_storage_keys', {
-      p_keys: [key],
-      p_program_slugs: principal.access.accessibleSlugs,
-      p_include_unpublished: principal.access.isAdmin,
-    });
+    const { data: allowedRows, error } = linkScope
+      ? await supabase.rpc('filter_link_storage_keys', {
+          p_keys: [key],
+          p_program_slugs: principal.access.accessibleSlugs,
+          p_observation: linkScope.observation,
+          p_field: linkScope.field,
+          p_include_drafts: linkScope.includeDrafts,
+        })
+      : await supabase.rpc('filter_accessible_storage_keys', {
+          p_keys: [key],
+          p_program_slugs: principal.access.accessibleSlugs,
+          p_include_unpublished: principal.access.isAdmin,
+        });
     if (error) {
       console.error('Error authorizing storage download key:', error);
       return NextResponse.json({ error: 'Failed to authorize key' }, { status: 500 });

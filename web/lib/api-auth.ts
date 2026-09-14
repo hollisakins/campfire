@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import crypto from 'crypto';
 import { validateAccessToken, validateDownloadToken } from '@/lib/auth/tokens';
-import { getAccessContext, type AccessContext } from '@/lib/auth/access-context';
+import { getAccessContext, linkMayDownload, type AccessContext } from '@/lib/auth/access-context';
 import { createServiceClient } from '@/lib/supabase/service';
 
 /**
@@ -56,6 +56,10 @@ export async function authenticateApiRequest(request: NextRequest): Promise<ApiP
   // The shared view itself never goes through here: browser pages use the
   // cookie session, and the cookie-capable cutout routes carry their own
   // link-scope checks. An unreadable profile also lands here (fail-closed).
+  //
+  // The single exception is the download token on GET /api/v1/storage/download
+  // (authenticateStorageDownloadRequest below), which authorizes per key at
+  // link grain — never through this function.
   if (access.isLinkAccount) return null;
 
   return { userId, method, access };
@@ -66,9 +70,22 @@ export async function authenticateApiRequest(request: NextRequest): Promise<ApiP
  * that also accepts a download token (lib/auth/tokens.ts), the credential
  * a generated bulk-download script carries. An API key or access token is
  * accepted exactly as authenticateApiRequest() accepts it; failing that, the
- * bearer is tried as a download token. Either way the principal resolves to
- * the same access context, and link accounts are refused for the same
- * reason as everywhere in /api/v1 (see authenticateApiRequest).
+ * bearer is tried as a download token.
+ *
+ * This is also the ONE place in /api/v1 where a link account resolves to a
+ * principal, and only through the download-token branch. The general refusal
+ * (see authenticateApiRequest) is about the program-grain authorization every
+ * other route does, which cannot express a link's scope; this route authorizes
+ * per key through filter_link_storage_keys, which can. The narrow acceptance
+ * is what lets a share link generate a working bulk-download script:
+ *
+ *   - only a download token, never an API key (a link account cannot mint one)
+ *     and never the access token a link visitor could lift from their cookie
+ *     jar — that would open the rest of /api/v1 to them by the back door;
+ *   - only while the link is live and permits downloads. Both are re-read
+ *     from share_links here on every request (link accounts are never
+ *     memoized), so a revocation, an expiry or a cleared allow_download
+ *     stops the running script on its next file.
  *
  * Nothing else should call this: a download token must not open any other
  * route, and keeping the acceptance in one place is how that stays true.
@@ -88,7 +105,7 @@ export async function authenticateStorageDownloadRequest(
   if (!userId) return null;
 
   const access = await getAccessContext(userId);
-  if (access.isLinkAccount) return null;
+  if (access.isLinkAccount && !linkMayDownload(access)) return null;
 
   return { userId, method: 'download_token', access };
 }

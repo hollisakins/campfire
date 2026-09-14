@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import type { NircamProductRow } from '@/lib/types';
 import {
+  API_KEYS_PATH,
   buildNircamDownloadScript,
   downloadRouteUrl,
   expectedBytes,
@@ -109,6 +110,19 @@ describe('buildNircamDownloadScript (text)', () => {
     expect(script).toContain('until 2026-10-07');
     // No prompt: the token is the no-setup path.
     expect(script).not.toContain('read -rsp');
+  });
+
+  it('a share-link token says what it is scoped to, and never mentions an API key', () => {
+    const script = buildNircamDownloadScript([mosaic('cosmos', 'f444w', 'a.fits', 10)], ORIGIN, {
+      token: { token: 'tok-link', expiresAt: new Date('2026-10-01T00:00:00Z'), shareLink: true },
+    });
+    expect(script).toContain("DOWNLOAD_TOKEN='tok-link'");
+    expect(script).toContain('minted for the shared link');
+    expect(script).toContain('until the link is revoked');
+    // A link visitor has no account, so no API key to be advised about — but
+    // the CAMPFIRE_API_KEY override itself stays in the credential line.
+    expect(script).not.toContain(API_KEYS_PATH);
+    expect(script).toContain('CAMPFIRE_API_KEY');
   });
 
   it('without a token, reads CAMPFIRE_API_KEY or prompts, and carries no credential', () => {

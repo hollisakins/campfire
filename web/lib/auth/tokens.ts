@@ -138,6 +138,10 @@ export async function validateAccessToken(token: string): Promise<string | null>
 // "download what this user may download" until it expires — the blast radius
 // the old presigned urls had, over a longer window — and no more.
 //
+// A SHARE LINK gets one too, when the link permits downloads: its "what this
+// user may download" is the link's own scope, re-resolved from share_links on
+// every request, so revoking the link kills the scripts minted from it.
+//
 // Distinct type AND audience: validateAccessToken() checks both, so a
 // download token can never pass as an access token (nor the reverse).
 
@@ -152,14 +156,25 @@ interface DownloadTokenPayload extends JWTPayload {
 
 /**
  * Mint a download token for `userId`. Whether the user may hold one at all
- * (link accounts may not) is the caller's check, made under the cookie
- * session that requested it.
+ * (a share link only when it permits downloads) is the caller's check, made
+ * under the cookie session that requested it.
+ *
+ * `notAfter` caps the lifetime below the default 30 days — a share link with
+ * an expiry mints a token that dies with the link. The cap is cosmetic for
+ * security (the route re-resolves the link on every request, so a revoked or
+ * expired link is refused whatever its token says) and load-bearing for
+ * honesty: the script tells the user when it stops working.
  */
 export async function generateDownloadToken(
   userId: string,
+  opts: { notAfter?: Date | null } = {},
 ): Promise<{ token: string; expiresAt: Date }> {
   const secret = getJwtSecret();
-  const expiresAt = new Date(Date.now() + DOWNLOAD_TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+  const defaultExpiry = Date.now() + DOWNLOAD_TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+  const cap = opts.notAfter?.getTime();
+  const expiresAt = new Date(
+    cap !== undefined && Number.isFinite(cap) ? Math.min(defaultExpiry, cap) : defaultExpiry,
+  );
 
   const token = await new SignJWT({
     sub: userId,

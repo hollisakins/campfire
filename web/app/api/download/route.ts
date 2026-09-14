@@ -1,7 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getRequestIdentity } from '@/lib/auth/identity';
+import { getRequestIdentity, getRequestPrincipal } from '@/lib/auth/identity';
+import { linkMayDownload } from '@/lib/auth/access-context';
 import { generateDownloadUrl, generateDownloadUrls } from '@/lib/r2';
 import { trackDownload, extractTargetIdFromFitsPath } from '@/lib/actions/download-tracking';
+
+/**
+ * A share link minted with allow_download off may read the catalog but must not
+ * reach a single byte. This route authorizes on the SPECTRA row (which such a
+ * link can see) and then presigns without consulting storage_objects — where
+ * the SQL opt-out lives — so the check has to be made here explicitly. Returns
+ * an error response to send, or null when the caller may download.
+ */
+async function refuseIfLinkWithoutDownloads(): Promise<NextResponse | null> {
+  const principal = await getRequestPrincipal();
+  if (!principal || !principal.access.isLinkAccount) return null;
+  if (linkMayDownload(principal.access)) return null;
+  return NextResponse.json(
+    { error: 'This shared link does not permit file downloads' },
+    { status: 403 },
+  );
+}
 
 /**
  * GET /api/download?path=<fits_path>
@@ -18,6 +36,9 @@ export async function GET(request: NextRequest) {
       { status: 401 }
     );
   }
+
+  const refused = await refuseIfLinkWithoutDownloads();
+  if (refused) return refused;
 
   // Get the fits_path from query parameters
   const searchParams = request.nextUrl.searchParams;
@@ -90,6 +111,9 @@ export async function POST(request: NextRequest) {
       { status: 401 }
     );
   }
+
+  const refused = await refuseIfLinkWithoutDownloads();
+  if (refused) return refused;
 
   try {
     const body = await request.json();
