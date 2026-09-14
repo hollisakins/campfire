@@ -105,8 +105,8 @@ describe('buildNircamDownloadScript (text)', () => {
     const script = buildNircamDownloadScript(rows, ORIGIN, { token: { token: 'eyJ.download.token', expiresAt } });
     expect(script).toContain(`DOWNLOAD_TOKEN='eyJ.download.token'`);
     expect(script).toContain('API_KEY="${CAMPFIRE_API_KEY:-$DOWNLOAD_TOKEN}"');
-    // The file is a credential and says so, with its expiry.
-    expect(script).toContain('THIS FILE CONTAINS A CREDENTIAL');
+    // The header names the credential and its expiry.
+    expect(script).toContain('DOWNLOAD_TOKEN below authorizes the downloads');
     expect(script).toContain('until 2026-10-07');
     // No prompt: the token is the no-setup path.
     expect(script).not.toContain('read -rsp');
@@ -117,7 +117,7 @@ describe('buildNircamDownloadScript (text)', () => {
       token: { token: 'tok-link', expiresAt: new Date('2026-10-01T00:00:00Z'), shareLink: true },
     });
     expect(script).toContain("DOWNLOAD_TOKEN='tok-link'");
-    expect(script).toContain('minted for the shared link');
+    expect(script).toContain('the shared link this script came from');
     expect(script).toContain('until the link is revoked');
     // A link visitor has no account, so no API key to be advised about — but
     // the CAMPFIRE_API_KEY override itself stays in the credential line.
