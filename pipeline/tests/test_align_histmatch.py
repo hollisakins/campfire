@@ -275,3 +275,110 @@ def test_delta_mag_lim_never_punishes_missing_mags():
                              image_mags={0: 22.0})
     ri, ii = m(ref_tab, im_tab, tp_pscale=LW_PSCALE)
     assert len(ri) >= 70                        # nothing was cut on mags
+
+
+# --- gross-shift vetting (sparse-catalog mis-lock) ---------------------------
+
+def _mislock_catalogs(seed=7, n_true=30, n_decoy=150, decoy_sigma=0.5,
+                      decoy_offset=(20.0, -15.0)):
+    """A sparse image catalog whose gross offset histogram is won by a LOOSE
+    spurious peak.
+
+    This is the EGS F470N regime in miniature: a handful of true refcat
+    counterparts (the raw WCS is already good — here 25 mas off) against a much
+    larger population of detections that are *not* counterparts but whose
+    nearest-reference offsets pile up at one wrong place on the CLUSTERING
+    scale. The decoys are deliberately loose (``decoy_sigma`` = 0.5") — that is
+    what a clustering coincidence looks like, and it is why the discriminator
+    works: a false peak wins the 0.5"-binned gross histogram without ever
+    producing TIGHT counterparts, while the true correspondence is tight by
+    definition.
+    """
+    rng = np.random.default_rng(seed)
+    ref = rng.uniform(0, 130, (400, 2))
+    true_idx = rng.choice(len(ref), n_true, replace=False)
+    # true counterparts: the exposure's real pointing error, 25 mas
+    im_true = ref[true_idx] + rng.normal(0, 0.025, (n_true, 2))
+    decoy_idx = rng.choice(np.setdiff1d(np.arange(len(ref)), true_idx),
+                           n_decoy, replace=False)
+    im_decoy = (ref[decoy_idx] - np.asarray(decoy_offset)
+                + rng.normal(0, decoy_sigma, (n_decoy, 2)))
+    return _tab(ref), _tab(np.vstack([im_true, im_decoy])), n_true
+
+
+def test_gross_mislock_is_declined_and_the_failure_mode_is_real():
+    # PAIRED assertion — the first arm proves the mis-lock exists (so the
+    # second cannot pass vacuously), the second proves the guard removes it.
+    ref_tab, im_tab, n_true = _mislock_catalogs()
+
+    # arm A: guard disabled (the pre-fix behaviour)
+    off = OffsetHistogramMatch(searchrad=70.0, gross_min_keep_frac=0.0)
+    _, ii_off = off(ref_tab, im_tab, tp_pscale=LW_PSCALE)
+    assert len(ii_off) >= 3
+    assert np.mean(ii_off >= n_true) > 0.8      # locked onto the DECOYS
+    assert off.diag['gross_keep_ratio'] < 0.5   # and it cost tight pairs
+
+    # arm B: the default guard declines the shift and finds the true sources
+    on = OffsetHistogramMatch(searchrad=70.0)
+    _, ii_on = on(ref_tab, im_tab, tp_pscale=LW_PSCALE)
+    assert len(ii_on) >= 3
+    assert np.mean(ii_on < n_true) > 0.8        # the true counterparts
+    assert on.diag['gross_tight_before'] >= n_true - 5
+
+
+def test_gross_shift_kept_for_a_real_acquisition_failure():
+    # No tight pairs to lose: the regime the gross stage exists for. The shift
+    # must be adopted and the 40" offset recovered.
+    rng = np.random.default_rng(11)
+    true = rng.uniform(0, 130, (120, 2))
+    offset = np.array([40.0, -12.0])
+    im = true - offset + rng.normal(0, 0.01, true.shape)
+    ref_tab, im_tab = _tab(np.vstack([true, rng.uniform(-10, 140, (300, 2))])), _tab(im)
+
+    m = OffsetHistogramMatch(searchrad=70.0)
+    ri, ii = m(ref_tab, im_tab, tp_pscale=LW_PSCALE)
+    # The shift must be adopted on its own merits, NOT via the n_before == 0
+    # bypass: assert it would clear the ratio test even if a coincidental pair
+    # or two existed at the input WCS.
+    nb, na = m.diag['gross_tight_before'], m.diag['gross_tight_after']
+    assert na >= 100
+    assert na >= 0.8 * max(nb, 1)
+    assert len(ii) >= 100                           # the offset was recovered
+    assert np.all(ri[np.argsort(ii)] == np.sort(ii))  # paired to their own refs
+
+
+def test_declining_a_redundant_prior_does_not_change_the_match():
+    """A clean, dense pool: the guard fires, and it costs nothing.
+
+    The gross stage's own proposal is only good to a few tenths of an arcsec
+    (0.5" histogram bins, a +-2-bin centroid), so on a well-pointed exposure it
+    displaces sources out of the 0.157" vetting radius even though it is
+    pointing the right way -- here it proposes (+0.26, +0.24)" for a true offset
+    of (0.05, 0.02)". The guard therefore DECLINES, which is correct: a pool
+    whose input WCS already has 300 tight counterparts does not need a
+    translation prior.
+
+    What has to hold is that declining costs nothing, and that is asserted on
+    the OUTCOME: both arms must recover the same true correspondences. This is
+    the synthetic counterpart of the measured COSMOS d1/d2 result (ratio 0.033,
+    and the same WCS and the same 16.4 / 14.8 mas either way).
+    """
+    rng = np.random.default_rng(13)
+    true = rng.uniform(0, 130, (300, 2))
+    im = true - [0.05, 0.02] + rng.normal(0, 0.01, true.shape)
+    ref_tab, im_tab = _tab(np.vstack([true, rng.uniform(-10, 140, (600, 2))])), _tab(im)
+
+    on = OffsetHistogramMatch(searchrad=70.0)
+    off = OffsetHistogramMatch(searchrad=70.0, gross_min_keep_frac=0.0)
+    ri_on, ii_on = on(ref_tab, im_tab, tp_pscale=LW_PSCALE)
+    ri_off, ii_off = off(ref_tab, im_tab, tp_pscale=LW_PSCALE)
+
+    # the ratio logic was reached on REAL tight pairs, not on coincidences
+    assert on.diag['gross_tight_before'] > 100
+    # ... and it declined, because the proposal is imprecise at this radius
+    assert on.diag['gross_keep_ratio'] < 0.8
+    # the outcome is what must not change: both arms pair image source i to its
+    # OWN reference (the first len(true) refcat rows are the true counterparts)
+    for ri, ii, who in ((ri_on, ii_on, 'guard on'), (ri_off, ii_off, 'guard off')):
+        assert len(ii) >= 250, who
+        assert np.array_equal(ri, ii), who
