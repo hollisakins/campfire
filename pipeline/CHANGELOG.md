@@ -29,6 +29,39 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- **`align`: the coarse gross shift must now earn its keep
+  (`gross_min_keep_frac`, default 0.8).** The gross-translation stage
+  (`histmatch._gross_shift`) picks the tallest bin of a 2-D pairwise-offset
+  histogram over `coarse_searchrad` and, until now, that peak was adopted with
+  no check of any kind. It is an argmax over a huge search volume whose risk
+  grows as the fraction of true counterparts falls, and **nothing downstream
+  could catch a wrong pick**: the 1-NN re-pairing happens at the shifted
+  positions, `d2d_max` confines the survivors to the false offset, and the
+  fit's `rmse` is measured on those same pairs, so a WCS tens of arcsec wrong
+  reports convergence. On EGS F470N — ~26 true refcat counterparts per detector
+  against several hundred detections — every pool locked onto a
+  clustering-scale peak and was dragged 6.0-62.9" off a raw WCS that was
+  already good to 24.8 mas, reporting `rmse` 0.0-0.2"; only the
+  `max_residual_arcsec` backstop caught it, at the cost of the whole filter.
+  The candidate shift is now vetted on the one thing the stage exists to do —
+  make the true counterpart *be* the nearest neighbour: image sources with a
+  reference inside the consensus rough-cut radius (2.5 px, ~0.157" LW /
+  0.078" SW) are counted with and without it, and the shift is adopted only if
+  it retains `gross_min_keep_frac` of them. The test is relative, so there is
+  no per-filter value to set or to forget to restore. Validated read-only on
+  real pools: all 10 F470N pools and all 6 F460M pools (F460M was mis-locking
+  too — it is **not** the known-good band it was taken for) go from *every
+  detector NOT_ALIGNED* to *every detector accepted*, landing at 8.5-20.4 mas
+  against a 11.9-38.3 mas raw WCS; the COSMOS acquisition failure
+  (`jw06368013001_09201_00003`) still recovers its 44.7" bit-for-bit; and two
+  clean COSMOS pools are unchanged to the milliarcsecond. `coarse_searchrad`
+  stays 70" and `max_residual_arcsec` stays 0.1". Declining costs only
+  a redundant translation prior — the matcher falls back to its
+  `searchrad=None` path, the one every iterate pass already runs. The ratio is
+  recorded per pool (`gross_keep_ratio`) and stamped as `ALGNGKR` (with
+  `ALGNGTB` / `ALGNGTA`), so a silently mis-locked exposure is a header grep
+  rather than a re-reduction. `gross_min_keep_frac = 0` restores the previous
+  behaviour for A/B work.
 - **`linefit`: doublet totals and honest blend centres (`LFITVER` 2).** Close
   doublets with a free ratio (NV, CIV, OIII], CIII], MgII, [OII], [SII];
   `linelist.DOUBLETS`) are now also reported as a *total* under the doublet's

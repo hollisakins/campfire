@@ -43,7 +43,14 @@ the gross translation as the peak of the 2-D pairwise-offset histogram within
 ``searchrad`` — the same idea ``XYXYMatch(use2dhist=True)`` uses for its
 initial estimate (bake-off-validated at 97–100%), implemented here by direct
 accumulation so no pair list is ever materialized. ``searchrad=None`` skips
-the stage (the iterate passes, already roughly aligned, don't need it).
+the stage (the iterate passes, already roughly aligned, don't need it). The
+candidate gross shift is then VETTED before it is adopted — it must not lose
+tight-radius 1-NN pairs relative to the input WCS
+(:meth:`OffsetHistogramMatch._vet_gross_shift`), because on a sparse catalog the
+argmax can lock onto a clustering-scale peak that is internally self-consistent:
+the 1-NN re-pairing, the ``d2d_max`` window and the fit's ``rmse`` all live
+inside the false correspondence set, so a WCS tens of arcsec wrong reports
+convergence.
 
 Units: the ``*_px`` knobs are **image pixels** — the validated JHAT COSMOS
 configuration carries over verbatim — converted per call via the ``tp_pscale``
@@ -86,6 +93,12 @@ _MAX_BINS = 200_000
 # +-2-bin patch the centroid refinement uses, excluded when hunting the runner-up
 # so the runner-up is a genuinely different peak and not the winner's own skirt.
 _GROSS_PEAK_HALFWIDTH_BINS = 2
+
+# Radius (IMAGE PIXELS, scaled per pool by tp_pscale) at which the gross shift is
+# vetted — the consensus stage's own rough-cut scale, ~0.157" LW / 0.078" SW.
+# Deliberately a module constant rather than a config knob: re-tuning
+# ``rough_cut_px_*`` must not be able to silently weaken the gross-stage guard.
+_GROSS_TIGHT_PX = 2.5
 
 
 def _smoothed_hist_peak(d, binsize, gaussian_sigma):
@@ -218,6 +231,13 @@ class OffsetHistogramMatch(MatchCatalogs):
         ``id`` values the solve assigned to each detector catalog.
     refcat_mag_col : str
         Reference-catalog magnitude column (``'mag'`` in campfire-refcat-v1).
+    gross_min_keep_frac : float
+        Fraction of the input WCS's tight-radius 1-NN pairs a candidate gross
+        shift must retain to be adopted (see :meth:`_vet_gross_shift`). ``0``
+        disables the check and restores the unconditional pre-guard behaviour —
+        for an A/B arm, not for production. Measured on real pools, a pool that
+        NEEDS the prior scores 209 and one that does not scores <= 0.32, so the
+        default 0.8 is not delicate.
 
     Attributes
     ----------
@@ -242,6 +262,14 @@ class OffsetHistogramMatch(MatchCatalogs):
             slope (see :meth:`_histogram_cut`). A ``nan`` contrast means the scan
             was degenerate — no slope was distinguishable from the winner — which
             is what a collapsed ``hist_binsize_arcsec`` produces.
+        ``gross_tight_before`` / ``gross_tight_after``, ``gross_keep_ratio``
+            Image sources with a reference inside ``_GROSS_TIGHT_PX`` pixels
+            BEFORE and AFTER the candidate gross shift, and their ratio
+            (:meth:`_vet_gross_shift`). Recorded on every ``searchrad`` pass
+            whether or not the shift was declined, so a survey can ask "did an
+            aligned exposure ship a gross shift that cost it matches?" from the
+            header alone. A ``nan`` ratio means there were no tight pairs to
+            lose — the acquisition-failure regime, where the shift is adopted.
         ``hist_binsize_arcsec``
             The consensus histogram bin as actually used (``binsize_px`` ×
             ``tp_pscale``). Expect a small fraction of an arcsec; a value near or
@@ -254,7 +282,7 @@ class OffsetHistogramMatch(MatchCatalogs):
                  rough_cut_px_max=2.5, nfwhm=2.5, nsigma=3.0,
                  histocut_order='dxdy', slope_max=10.0 / 2048.0,
                  slope_nsteps=200, delta_mag_lim=None, image_mags=None,
-                 refcat_mag_col='mag'):
+                 refcat_mag_col='mag', gross_min_keep_frac=0.8):
         if histocut_order not in ('dxdy', 'dydx'):
             raise ValueError(f"histocut_order must be 'dxdy' or 'dydx', "
                              f"got {histocut_order!r}")
@@ -272,6 +300,7 @@ class OffsetHistogramMatch(MatchCatalogs):
         self.delta_mag_lim = delta_mag_lim
         self.image_mags = image_mags
         self.refcat_mag_col = refcat_mag_col
+        self.gross_min_keep_frac = float(gross_min_keep_frac)
         # Peak-confidence stash for the last __call__ (see the class docstring):
         # the MatchCatalogs contract lets only row indices out, so the numbers
         # ride the instance. An instance reused across coarse passes is
@@ -343,6 +372,87 @@ class OffsetHistogramMatch(MatchCatalogs):
         dx0 = float((patch.sum(axis=1) * centers[i0:i1]).sum() / total)
         dy0 = float((patch.sum(axis=0) * centers[j0:j1]).sum() / total)
         return dx0, dy0
+
+    def _vet_gross_shift(self, tree, im_xy, gross, r_tight):
+        """The gross shift, or ``(0, 0)`` when adopting it would LOSE tight
+        1-NN pairs.
+
+        The gross stage exists for exactly one purpose — to make the true
+        counterpart *be* the nearest neighbour, which 1-NN needs and which is
+        false after an acquisition failure — so judge it on exactly that and
+        nothing else. Count image sources with a reference inside *r_tight*
+        with and without the candidate shift; keep the shift only if it does
+        not lose them. The test is RELATIVE, so it carries no per-filter value
+        and nothing to remember.
+
+        This is the guard the stage never had. ``argmax`` over a
+        ``2*searchrad`` square of 0.5" bins is a maximum-likelihood estimate
+        over a huge search volume, and its risk grows as the fraction of true
+        counterparts falls: on a sparse catalog a clustering-scale peak can
+        outvote the true one, and the wrong peak is INTERNALLY CONSISTENT — the
+        1-NN re-pairing below happens at ``im_xy + shift``, ``d2d_max``
+        confines the survivors to the false offset, and the fit's ``rmse`` is
+        measured on those same pairs, so it reports convergence. A wrong peak
+        cannot, however, manufacture tight counterparts, and it destroys the
+        ones the input WCS already had.
+
+        What the ratio actually separates is **"this pool needs a gross prior"**
+        from **"it does not"** — not "clean" from "mis-locked". Measured on real
+        pools at the shipped radius (jobs 871040 / 871048; 2 detectors per pool)::
+
+            NEEDED     COSMOS f356w d3, real acquisition failure      2 -> 418   209.0
+            HARMFUL    EGS f470n, 10 sparse pools                  43-65 -> 1-16  0.019-0.32
+            HARMFUL    EGS f460m, 6 sparse pools                  87-141 -> 6-11  0.065-0.13
+            REDUNDANT  COSMOS f356w d1/d2, clean and dense       1248 -> 41       0.033
+
+        The clean pools land LOW, not near 1: the gross proposal is itself only
+        good to ~0.25" (0.5" histogram bins, a +-2-bin centroid over a clustered
+        skirt), so even a CORRECT proposal displaces sources out of a 0.157"
+        radius. That is not a false positive — a pool whose input WCS already
+        has 1248 tight counterparts does not need a translation prior, and
+        declining it there is a measured no-op: both arms returned the same WCS
+        and the same 16.4 / 14.8 mas independent astrometry.
+
+        So the decision the threshold has to make is ``>= 209`` versus
+        ``<= 0.32``, a gap of ~650x, and 0.8 sits in the middle of it.
+
+        **Radius.** Swept 0.05"-1.0" on all three regimes (job 871048): every
+        radius up to ~0.25" gives the same verdict everywhere, and the NEEDED
+        case stays >= 19 even at 1.0". Above ~0.5" the discriminator dies — a
+        mis-lock's random pairs refill the wider annulus (f470n at 0.5":
+        57 -> 57, ratio 1.0) and the shift is wrongly kept. 2.5 px = 0.157" LW
+        sits in the middle of the usable window on a log scale, and is below it
+        for SW (0.078") where the pixels — and the astrometry — are finer.
+
+        **Declining is cheap, adopting a wrong shift is not.** Falling back to
+        ``(0, 0)`` leaves the matcher on its ``searchrad=None`` path — the one
+        every iterate pass already runs — which recovers a sub-arcsec pointing
+        error perfectly well without a gross prior. So a false decline costs
+        nothing but a redundant translation estimate, while a false accept
+        destroys the solve; the asymmetry is what licenses biasing the rule
+        toward declining.
+        """
+        n_before = int(np.count_nonzero(tree.query(im_xy, k=1)[0] <= r_tight))
+        n_after = int(np.count_nonzero(
+            tree.query(im_xy + gross, k=1)[0] <= r_tight))
+        self.diag.update(
+            gross_tight_before=n_before, gross_tight_after=n_after,
+            gross_keep_ratio=(n_after / n_before if n_before
+                              else float('nan')))
+        if self.gross_min_keep_frac <= 0:
+            return gross                   # guard disabled (config / A-B arm)
+        if n_before < _MIN_PAIRS:
+            # Nothing to lose: this IS the acquisition-failure regime the gross
+            # stage exists for. Adopt the shift — the group + residual gates
+            # downstream still judge the result.
+            return gross
+        if n_after >= self.gross_min_keep_frac * n_before:
+            return gross
+        log(f"OffsetHistogramMatch: gross shift ({gross[0]:+.2f}, "
+            f"{gross[1]:+.2f})\" LOSES tight pairs ({n_before} -> {n_after} "
+            f"within {r_tight:.3f}\"); declining it and matching around the "
+            f"input WCS.")
+        return np.zeros(2)
 
     # -- per-axis histogram cut (rotation scan + rough cut + sigma clip) ----
 
@@ -469,7 +579,11 @@ class OffsetHistogramMatch(MatchCatalogs):
                 log(f"OffsetHistogramMatch: no reference source within "
                     f"{self.searchrad:.0f}\" of any image source; no match.")
                 return _EMPTY
-            shift = np.asarray(gross)
+            # A gross shift is adopted only if it EARNS its keep (see
+            # _vet_gross_shift); otherwise the pool is matched around its input
+            # WCS, exactly as every iterate pass is.
+            shift = self._vet_gross_shift(tree, im_xy, np.asarray(gross),
+                                          _GROSS_TIGHT_PX * pscale)
 
         # Unbounded 1-NN: every image source pairs with its closest reference.
         # Most pairs are wrong at this stage by design — consensus decides.

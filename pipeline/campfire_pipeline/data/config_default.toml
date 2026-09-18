@@ -744,6 +744,30 @@
     slope_max         = 0.0048828125  # rotation-scan half-range, dimensionless
                                       # (= JHAT's 10px/2048px ~ 0.28 deg)
     slope_nsteps      = 200     # rotation-scan steps across [-slope_max, +]
+    # The gross shift must EARN its keep. `_gross_shift` is an argmax over a
+    # 2*coarse_searchrad square of 0.5" bins, and its risk grows as the fraction
+    # of true counterparts falls: on a sparse catalog (EGS f470n: ~26 true
+    # refcat counterparts per detector against several hundred detections) a
+    # clustering-scale peak outvotes the true one and drags the pool 6-63".
+    # Nothing downstream can recover, because the wrong peak is INTERNALLY
+    # consistent - the 1-NN re-pairing happens at the shifted positions, d2d_max
+    # confines the survivors to the false offset, and the fit's rmse is measured
+    # on those same pairs (reported 0.0-0.2" on a WCS tens of arcsec wrong).
+    # So the candidate shift is vetted: count image sources with a reference
+    # within the consensus rough-cut radius (2.5 px) with and without it, and
+    # adopt it only if it retains this fraction of them. Relative, so there is
+    # no per-filter value. What it separates, measured on real pools, is "this
+    # pool NEEDS a translation prior" (COSMOS acquisition failure: 2 -> 418
+    # tight pairs, ratio 209) from "it does not" - both the 16 mis-locked EGS
+    # f470n/f460m pools (ratio 0.019-0.32) AND clean dense COSMOS pools
+    # (1248 -> 41, 0.033: the gross proposal is itself only good to ~0.25", so
+    # a CORRECT proposal also loses tight pairs). Declining a redundant prior
+    # is a measured no-op - same WCS, same 16.4/14.8 mas - while declining a
+    # harmful one is the fix. So 0.8 decides between >= 209 and <= 0.32.
+    # Declining costs only a redundant translation prior: the matcher then runs
+    # its searchrad=None path, the one every iterate pass already uses.
+    # 0 disables the check (A/B arm only).
+    gross_min_keep_frac = 0.8
     # delta_mag_lim = [-3.0, 4.0]   # keep a 1-NN pair only if image_mag -
                                 # refcat_mag lies in this window (JHAT's COSMOS
                                 # value). Needs calibrated detection mags (auto

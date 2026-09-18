@@ -450,7 +450,7 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                          ref_border_arcmin=1.2, nclip=3, sigma=3.0,
                          max_residual_arcsec=0.1,
                          dva_repivot=True, dva_pivot='pool',
-                         fine_min_significance=1.4):
+                         fine_min_significance=1.4, gross_min_keep_frac=0.8):
     """Solve one pool of detectors; return a :class:`GroupSolution`.
 
     *detectors* is one pool (a module, or a whole channel when the caller pooled
@@ -462,8 +462,8 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
     count / coverage and accepted only if it reduces the residual
     (*tolerance* only flags ``within_tolerance`` in the result; it gates
     nothing). The ``d2d_max`` …
-    ``slope_nsteps`` / ``delta_mag_lim`` knobs pass straight to
-    :class:`OffsetHistogramMatch` (the ``*_px`` ones in image pixels,
+    ``slope_nsteps`` / ``delta_mag_lim`` / ``gross_min_keep_frac`` knobs pass
+    straight to :class:`OffsetHistogramMatch` (the ``*_px`` ones in image pixels,
     mirroring the validated JHAT configuration); ``delta_mag_lim`` reads image
     mags through the pool-unique ``id`` column assigned below, and judges only
     pairs where both mags are finite and calibrated.
@@ -559,16 +559,20 @@ def solve_exposure_group(detectors, refcat, *, key='group', pool_modules=None,
                 if np.isfinite(m))
 
     # 2. Coarse: one pooled rshift, iterated to convergence. Pass 0's matcher
-    #    carries the gross-translation stage (acquisition-failure recovery);
-    #    the iterate matcher drops it and re-pairs by pure 1-NN + consensus
-    #    around the already-corrected WCS.
+    #    carries the gross-translation stage (acquisition-failure recovery) —
+    #    whose candidate shift must EARN its keep against the input WCS's own
+    #    tight-radius pairs (`gross_min_keep_frac`), or a sparse catalog's
+    #    clustering-scale peak locks the whole pool onto a wrong, internally
+    #    self-consistent solution; the iterate matcher drops the stage and
+    #    re-pairs by pure 1-NN + consensus around the already-corrected WCS.
     hist_kwargs = dict(
         d2d_max=d2d_max, binsize_px=binsize_px,
         gaussian_sigma_px=gaussian_sigma_px,
         rough_cut_px_min=rough_cut_px_min, rough_cut_px_max=rough_cut_px_max,
         nfwhm=nfwhm, nsigma=hist_nsigma, histocut_order=histocut_order,
         slope_max=slope_max, slope_nsteps=slope_nsteps,
-        delta_mag_lim=delta_mag_lim, image_mags=image_mags)
+        delta_mag_lim=delta_mag_lim, image_mags=image_mags,
+        gross_min_keep_frac=gross_min_keep_frac)
     # Bound to locals (not passed as anonymous temporaries) so ``_coarse`` can
     # read each matcher's peak-confidence stash back off the instance.
     match0 = OffsetHistogramMatch(searchrad=coarse_searchrad, **hist_kwargs)

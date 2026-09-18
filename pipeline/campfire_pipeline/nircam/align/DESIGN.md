@@ -180,6 +180,33 @@ from `tweakwcs.XYXYMatch`:
   the same idea `XYXYMatch(use2dhist=True)` used for its initial estimate
   (bake-off-validated), but accumulated directly into the histogram so no pair
   list is ever materialized.
+- **The gross shift is vetted before it is adopted** (`_vet_gross_shift`,
+  `gross_min_keep_frac`, default 0.8). That histogram peak is an argmax over a
+  huge search volume, and its risk grows as the fraction of true counterparts
+  falls: on a sparse catalog a clustering-scale peak outvotes the true one, and
+  **nothing downstream can catch it**, because the wrong peak is internally
+  self-consistent — the 1-NN re-pairing happens at the shifted positions,
+  `d2d_max` confines the survivors to the false offset, and the fit's `rmse` is
+  measured on those same pairs. (EGS F470N: every pool dragged 6–62.9″ off a raw
+  WCS that was already good to 24.8 mas, reporting `rmse` 0.0–0.2″; only the
+  `max_residual_arcsec` backstop caught it, at the cost of the filter.) So the
+  stage is judged on the one thing it exists to do — make the true counterpart
+  *be* the nearest neighbour: count image sources with a reference inside the
+  consensus rough-cut radius (2.5 px) with and without the candidate shift, and
+  adopt it only if it retains `gross_min_keep_frac` of them. The test is
+  relative, so no per-filter value exists to forget. What it separates,
+  measured on real pools (jobs 871040/871048), is *needs a prior* from *doesn't*:
+  the COSMOS acquisition failure scores 209 (2 → 418 tight pairs), while all 16
+  mis-locked EGS F470N/F460M pools score 0.019–0.32 **and so do clean, dense
+  COSMOS pools** (1248 → 41, 0.033) — the gross proposal is itself only good to
+  ~0.25″, so a correct proposal also loses tight pairs, and declining it there
+  is a measured no-op (identical WCS, identical 16.4/14.8 mas). The threshold
+  therefore decides between ≥ 209 and ≤ 0.32. A radius sweep (0.05″–1.0″) gives
+  the same verdict everywhere below ~0.25″; above ~0.5″ random pairs refill the
+  annulus and the discriminator dies (F470N at 0.5″: 57 → 57). Declining costs only a redundant translation prior — the
+  matcher falls back to its `searchrad=None` path, the one every iterate pass
+  already runs. `gross_keep_ratio` is recorded on every pass and stamped as
+  `ALGNGKR`, so a silent mis-lock is a header grep, not a re-reduction.
 
 Later passes start from the corrected WCS and re-match with the same consensus
 matcher minus the gross stage (JHAT's `iterate_with_xyshifts`, generalized:
