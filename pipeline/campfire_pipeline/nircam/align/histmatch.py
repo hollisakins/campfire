@@ -416,6 +416,16 @@ class OffsetHistogramMatch(MatchCatalogs):
         So the decision the threshold has to make is ``>= 209`` versus
         ``<= 0.32``, a gap of ~650x, and 0.8 sits in the middle of it.
 
+        **The gap this cannot close.** The test needs tight pairs to exist
+        before it can ask whether a shift destroys them. A pool whose input WCS
+        is off by more than *r_tight* AND is sparse enough to yield no
+        coincidental pairs gives ``n_before = 0``, and the shift is adopted with
+        no evidence either way. Nothing here can fix that -- there is no
+        baseline to compare against -- so the group gate, the residual gate and
+        the stamped ``ALGNGKR`` / ``ALGNGCON`` remain the only protection in
+        that regime, and its consequence is a quarantined exposure rather than a
+        silently shipped one.
+
         **Radius.** Swept 0.05"-1.0" on all three regimes (job 871048): every
         radius up to ~0.25" gives the same verdict everywhere, and the NEEDED
         case stays >= 19 even at 1.0". Above ~0.5" the discriminator dies — a
@@ -441,10 +451,18 @@ class OffsetHistogramMatch(MatchCatalogs):
                               else float('nan')))
         if self.gross_min_keep_frac <= 0:
             return gross                   # guard disabled (config / A-B arm)
-        if n_before < _MIN_PAIRS:
+        if n_before == 0:
             # Nothing to lose: this IS the acquisition-failure regime the gross
-            # stage exists for. Adopt the shift — the group + residual gates
-            # downstream still judge the result.
+            # stage exists for, and the ratio test below would pass it anyway
+            # (n_after >= 0 always holds). Kept explicit because it is the one
+            # case where "no evidence" genuinely means "adopt".
+            #
+            # It is deliberately == 0 and not < _MIN_PAIRS. A wider bypass only
+            # ever changes the outcome for n_before in {1, 2}, and there it
+            # force-adopts a shift that took 1-2 tight pairs to zero -- exactly
+            # the signature this guard exists to reject, in exactly the sparse
+            # regime where mis-locks live. The validated acquisition failure
+            # (2 -> 418) clears the ratio test on its own and never needed it.
             return gross
         if n_after >= self.gross_min_keep_frac * n_before:
             return gross

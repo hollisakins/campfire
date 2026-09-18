@@ -337,23 +337,48 @@ def test_gross_shift_kept_for_a_real_acquisition_failure():
 
     m = OffsetHistogramMatch(searchrad=70.0)
     ri, ii = m(ref_tab, im_tab, tp_pscale=LW_PSCALE)
-    assert m.diag['gross_tight_before'] < 3         # nothing to lose
-    assert not np.isfinite(m.diag['gross_keep_ratio'])
+    # The shift must be adopted on its own merits, NOT via the n_before == 0
+    # bypass: assert it would clear the ratio test even if a coincidental pair
+    # or two existed at the input WCS.
+    nb, na = m.diag['gross_tight_before'], m.diag['gross_tight_after']
+    assert na >= 100
+    assert na >= 0.8 * max(nb, 1)
     assert len(ii) >= 100                           # the offset was recovered
     assert np.all(ri[np.argsort(ii)] == np.sort(ii))  # paired to their own refs
 
 
-def test_gross_guard_is_a_no_op_on_a_clean_exposure():
-    # A well-pointed dense exposure must be matched identically with the guard
-    # on and off — the guard may only ever fire on a shift that loses pairs.
+def test_declining_a_redundant_prior_does_not_change_the_match():
+    """A clean, dense pool: the guard fires, and it costs nothing.
+
+    The gross stage's own proposal is only good to a few tenths of an arcsec
+    (0.5" histogram bins, a +-2-bin centroid), so on a well-pointed exposure it
+    displaces sources out of the 0.157" vetting radius even though it is
+    pointing the right way -- here it proposes (+0.26, +0.24)" for a true offset
+    of (0.05, 0.02)". The guard therefore DECLINES, which is correct: a pool
+    whose input WCS already has 300 tight counterparts does not need a
+    translation prior.
+
+    What has to hold is that declining costs nothing, and that is asserted on
+    the OUTCOME: both arms must recover the same true correspondences. This is
+    the synthetic counterpart of the measured COSMOS d1/d2 result (ratio 0.033,
+    and the same WCS and the same 16.4 / 14.8 mas either way).
+    """
     rng = np.random.default_rng(13)
     true = rng.uniform(0, 130, (300, 2))
-    im = true - [0.30, 0.12] + rng.normal(0, 0.01, true.shape)
+    im = true - [0.05, 0.02] + rng.normal(0, 0.01, true.shape)
     ref_tab, im_tab = _tab(np.vstack([true, rng.uniform(-10, 140, (600, 2))])), _tab(im)
 
     on = OffsetHistogramMatch(searchrad=70.0)
     off = OffsetHistogramMatch(searchrad=70.0, gross_min_keep_frac=0.0)
     ri_on, ii_on = on(ref_tab, im_tab, tp_pscale=LW_PSCALE)
     ri_off, ii_off = off(ref_tab, im_tab, tp_pscale=LW_PSCALE)
-    assert np.array_equal(ii_on, ii_off) and np.array_equal(ri_on, ri_off)
-    assert on.diag['gross_keep_ratio'] >= 0.8
+
+    # the ratio logic was reached on REAL tight pairs, not on coincidences
+    assert on.diag['gross_tight_before'] > 100
+    # ... and it declined, because the proposal is imprecise at this radius
+    assert on.diag['gross_keep_ratio'] < 0.8
+    # the outcome is what must not change: both arms pair image source i to its
+    # OWN reference (the first len(true) refcat rows are the true counterparts)
+    for ri, ii, who in ((ri_on, ii_on, 'guard on'), (ri_off, ii_off, 'guard off')):
+        assert len(ii) >= 250, who
+        assert np.array_equal(ri, ii), who
