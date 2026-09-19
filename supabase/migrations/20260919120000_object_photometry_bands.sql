@@ -31,6 +31,23 @@
 -- Includes a one-time backfill of object_photometry_bands from the existing
 -- cross-match rows -- the same SELECT the trigger runs -- so photometry
 -- deployed before this migration is filterable at once.
+--
+-- Verified to apply (the third half of the AGENTS.md hand-authoring rule,
+-- after "verbatim" and "say so"): not locally -- this container had neither a
+-- Docker daemon for `supabase db start` nor permission to run a bare cluster,
+-- so the pre-push checks were only a pglast parse of every statement and a
+-- byte-diff of each definition against supabase/schemas/, which prove syntax
+-- and fidelity but not semantics. The execution happened in CI instead, and
+-- is what actually clears the rule: the `Supabase schema guards` workflow
+-- (.github/workflows/supabase-mv-indexes.yml) runs `supabase db reset
+-- --no-seed`, which builds the pre-change schema from the migration chain and
+-- then applies THIS file to it, and follows with supabase/tests/check_*.sql --
+-- including check_mv_unique_indexes.sql, which is the guard against exactly
+-- the hazard in section 8 below (a matview drop/recreate silently losing the
+-- unique index that REFRESH ... CONCURRENTLY needs). The Supabase preview
+-- branch for the PR applied it a second time, against seeded data. If you are
+-- reading this while changing the file, re-run that workflow rather than
+-- trusting the parse.
 
 
 -- =============================================================================
