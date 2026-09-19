@@ -594,6 +594,56 @@ ALTER TABLE "public"."object_photometry" SET (autovacuum_vacuum_scale_factor = 0
 COMMENT ON TABLE "public"."object_photometry" IS 'Photometric catalog cross-matches for objects. One row per object per catalog. Coordinates (ra, dec) are the durable positional key; object_id FK is refreshed after each objects rebuild via coordinate cross-matching.';
 
 
+COMMENT ON COLUMN "public"."object_photometry"."photometry" IS 'Per-catalog photometry payload: {flux_unit: "uJy", bands: {<band>: {flux, flux_err [uJy], wav, wav_min, wav_max [um]}}}. Built by campfire.deploy.photometry.build_photometry_payload; band names come from the per-field [field.bands] block of photometry.toml. Fluxes are in microjansky ALWAYS (the reader converts), so AB magnitude is 23.9 - 2.5*log10(flux) and a non-positive flux simply has no magnitude. The `bands` map is unnested into object_photometry_bands for indexed filter/sort — see that table.';
+
+
+-- object_photometry_bands: the `bands` map of object_photometry.photometry
+-- unnested to one row per (photometry row, band), so the catalog can be
+-- FILTERED and SORTED on a band's magnitude or S/N ("everything brighter than
+-- F444W = 27 at S/N > 5") from an index instead of a jsonb scan. Exactly the
+-- spectrum_lines pattern, one table over: derived, never written by deploy —
+-- the sync_object_photometry_bands trigger rebuilds a photometry row's bands
+-- on every insert/update of its `photometry` jsonb, and the FK cascades a
+-- dropped cross-match.
+--
+-- Keyed on photometry_id, NOT object_id: object_photometry.object_id is
+-- refreshed out-of-band after every objects rebuild (a plain UPDATE of that
+-- one column), so a copy of it here would need its own re-sync and could go
+-- stale between the two. Readers join through the parent row instead, which
+-- is always current by construction.
+--
+-- snr and mag are STORED GENERATED columns rather than trigger arithmetic:
+-- they are a pure function of (flux, flux_err) and cannot drift from the
+-- jsonb the trigger copied. mag is AB (fluxes are uJy by contract) and is
+-- NULL for a non-positive flux — a non-detection has no magnitude, and the
+-- S/N filter is the right tool for that population.
+CREATE TABLE IF NOT EXISTS "public"."object_photometry_bands" (
+    "photometry_id" integer NOT NULL,
+    "band" "text" NOT NULL,
+    "flux" double precision,
+    "flux_err" double precision,
+    "wav" double precision,
+    "snr" double precision GENERATED ALWAYS AS (
+        CASE WHEN "flux_err" > 0 THEN "flux" / "flux_err" END
+    ) STORED,
+    "mag" double precision GENERATED ALWAYS AS (
+        CASE WHEN "flux" > 0 THEN 23.9 - 2.5 * log("flux") END
+    ) STORED
+);
+
+
+ALTER TABLE "public"."object_photometry_bands" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."object_photometry_bands" IS 'object_photometry.photometry->bands unnested: one row per (photometry row, band) for indexed filter/sort on a band''s AB magnitude or S/N. Derived by the sync_object_photometry_bands trigger; never written directly. Join through object_photometry to reach the object (object_id is refreshed out-of-band and is deliberately not copied here).';
+
+COMMENT ON COLUMN "public"."object_photometry_bands"."flux" IS 'Band flux in microjansky, copied verbatim from the jsonb (object_photometry.photometry.flux_unit is always "uJy").';
+
+COMMENT ON COLUMN "public"."object_photometry_bands"."snr" IS 'Generated: flux / flux_err, NULL when the error is absent or non-positive. Signed — a non-detection can be negative, which is exactly what an "S/N > 3" filter should exclude.';
+
+COMMENT ON COLUMN "public"."object_photometry_bands"."mag" IS 'Generated: AB magnitude 23.9 - 2.5*log10(flux[uJy]), NULL for a non-positive flux (a non-detection has no magnitude and is simply absent from a magnitude-bounded selection).';
+
+
 
 CREATE TABLE IF NOT EXISTS "public"."object_lists" (
     "id" integer NOT NULL,
@@ -2136,6 +2186,14 @@ ALTER TABLE ONLY "public"."object_photometry"
     ADD CONSTRAINT "object_photometry_field_catalog_name_catalog_id_key" UNIQUE ("field", "catalog_name", "catalog_id");
 
 
+ALTER TABLE ONLY "public"."object_photometry_bands"
+    ADD CONSTRAINT "object_photometry_bands_pkey" PRIMARY KEY ("photometry_id", "band");
+
+
+ALTER TABLE ONLY "public"."object_photometry_bands"
+    ADD CONSTRAINT "object_photometry_bands_photometry_id_fkey" FOREIGN KEY ("photometry_id") REFERENCES "public"."object_photometry"("id") ON DELETE CASCADE;
+
+
 
 ALTER TABLE ONLY "public"."list_audit_log"
     ADD CONSTRAINT "list_audit_log_pkey" PRIMARY KEY ("id");
@@ -2564,6 +2622,11 @@ GRANT ALL ON TABLE "public"."object_list_members" TO "service_role";
 GRANT ALL ON TABLE "public"."object_photometry" TO "anon";
 GRANT ALL ON TABLE "public"."object_photometry" TO "authenticated";
 GRANT ALL ON TABLE "public"."object_photometry" TO "service_role";
+
+-- object_photometry_bands: visibility follows object_photometry (RLS); same grants.
+GRANT ALL ON TABLE "public"."object_photometry_bands" TO "anon";
+GRANT ALL ON TABLE "public"."object_photometry_bands" TO "authenticated";
+GRANT ALL ON TABLE "public"."object_photometry_bands" TO "service_role";
 
 
 

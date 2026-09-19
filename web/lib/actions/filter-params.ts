@@ -43,6 +43,17 @@ export interface FilterOptions {
   line_snr_max: number | null;
   /** Count fits whose inspected redshift has moved since the fit (default off). */
   line_include_stale: boolean;
+  /** Photometry band filter: a catalog band name as it appears in the
+   *  photometry payload (e.g. f444w; the list comes from /api/filter-options,
+   *  since bands are per-field catalog config rather than a fixed enum), or
+   *  null. The magnitude and S/N windows apply only while a band is set. */
+  band: string | null;
+  /** AB magnitude window. Remember magnitudes run backwards: band_mag_max is
+   *  the FAINTEST magnitude admitted, band_mag_min the brightest. */
+  band_mag_min: number | null;
+  band_mag_max: number | null;
+  band_snr_min: number | null;
+  band_snr_max: number | null;
   list_ids: number[];
   dq_flags: number[];
   inspected_only: boolean | null;
@@ -72,6 +83,11 @@ export const DEFAULT_FILTERS: FilterOptions = {
   line_snr_min: null,
   line_snr_max: null,
   line_include_stale: false,
+  band: null,
+  band_mag_min: null,
+  band_mag_max: null,
+  band_snr_min: null,
+  band_snr_max: null,
   list_ids: [],
   dq_flags: [],
   inspected_only: null,
@@ -130,6 +146,14 @@ export interface FilterRpcParams {
   p_line_snr_min?: number | null;
   p_line_snr_max?: number | null;
   p_line_include_stale?: boolean;
+  /** Photometry band filter — present ONLY while a band is set, for the same
+   *  reason as the line keys above: an RPC that has not yet been migrated
+   *  still answers the default list. */
+  p_band?: string;
+  p_band_mag_min?: number | null;
+  p_band_mag_max?: number | null;
+  p_band_snr_min?: number | null;
+  p_band_snr_max?: number | null;
 }
 
 /**
@@ -191,6 +215,22 @@ export function buildFilterParams(
         }
       : {};
 
+  // Unlike a line, a band name is not drawn from a fixed catalog — it is
+  // whatever the field's photometry.toml calls it — so there is nothing to
+  // validate against here. The RPC simply matches nothing for a name no
+  // catalog carries, which is the honest answer for an unknown band.
+  const band = filters?.band?.trim() || null;
+  const bandParams: Pick<FilterRpcParams, 'p_band' | 'p_band_mag_min' | 'p_band_mag_max' | 'p_band_snr_min' | 'p_band_snr_max'> =
+    band
+      ? {
+          p_band: band,
+          p_band_mag_min: filters?.band_mag_min ?? null,
+          p_band_mag_max: filters?.band_mag_max ?? null,
+          p_band_snr_min: filters?.band_snr_min ?? null,
+          p_band_snr_max: filters?.band_snr_max ?? null,
+        }
+      : {};
+
   return {
     p_program_slugs: accessibleProgramSlugs,
     p_filter_programs: filters?.programs && filters.programs.length > 0 ? filters.programs : null,
@@ -221,6 +261,7 @@ export function buildFilterParams(
     p_comment_search_scope: commentSearchScope,
     p_comment_user_id: commentUserId,
     ...lineParams,
+    ...bandParams,
   };
 }
 
@@ -228,4 +269,9 @@ export function buildFilterParams(
 export function hasLineFilter(filters: Partial<FilterOptions> | undefined): boolean {
   const line = filters?.line?.trim();
   return Boolean(line && isFilterableLine(line));
+}
+
+/** True when the filter state selects on a photometry band. */
+export function hasBandFilter(filters: Partial<FilterOptions> | undefined): boolean {
+  return Boolean(filters?.band?.trim());
 }

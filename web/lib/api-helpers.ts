@@ -106,6 +106,40 @@ export function lineFilterRpcParams(searchParams: URLSearchParams): {
   };
 }
 
+/**
+ * Photometry band filter query parameters of the v1 list endpoints
+ * (`band`, `band_mag_min`, `band_mag_max`, `band_snr_min`, `band_snr_max`) as
+ * RPC params — present only while `band` is set, so a request without one
+ * sends nothing and keeps working against a database that predates the
+ * parameters. There is no validation counterpart to invalidLineParam: band
+ * names are per-field catalog configuration, not a fixed catalog, so the
+ * server has nothing to check a name against and an unknown one simply
+ * matches no photometry.
+ */
+export function bandFilterRpcParams(searchParams: URLSearchParams): {
+  p_band?: string;
+  p_band_mag_min?: number | null;
+  p_band_mag_max?: number | null;
+  p_band_snr_min?: number | null;
+  p_band_snr_max?: number | null;
+} {
+  const band = searchParams.get('band')?.trim();
+  if (!band) return {};
+  const num = (key: string): number | null => {
+    const raw = searchParams.get(key);
+    if (raw === null || raw === '') return null;
+    const v = parseFloat(raw);
+    return Number.isFinite(v) ? v : null;
+  };
+  return {
+    p_band: band,
+    p_band_mag_min: num('band_mag_min'),
+    p_band_mag_max: num('band_mag_max'),
+    p_band_snr_min: num('band_snr_min'),
+    p_band_snr_max: num('band_snr_max'),
+  };
+}
+
 /** The `line` query parameter, when set, must name a filterable catalog entry. */
 export function invalidLineParam(searchParams: URLSearchParams): string | null {
   const line = searchParams.get('line')?.trim();

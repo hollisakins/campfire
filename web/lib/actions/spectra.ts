@@ -142,6 +142,14 @@ export async function getSpectra(
           p_line_snr_max: rpcParams.p_line_snr_max,
           p_line_include_stale: rpcParams.p_line_include_stale,
         } : {}),
+        // likewise the photometry band keys, only while a band is set
+        ...(rpcParams.p_band !== undefined ? {
+          p_band: rpcParams.p_band,
+          p_band_mag_min: rpcParams.p_band_mag_min,
+          p_band_mag_max: rpcParams.p_band_mag_max,
+          p_band_snr_min: rpcParams.p_band_snr_min,
+          p_band_snr_max: rpcParams.p_band_snr_max,
+        } : {}),
       };
     } else {
       callParams = {
@@ -197,6 +205,8 @@ export async function getSpectra(
           max_snr: obj.max_snr ?? undefined,
           max_exposure_time: obj.max_exposure_time ?? undefined,
           line_snr: obj.line_snr ?? null,
+          band_mag: obj.band_mag ?? null,
+          band_snr: obj.band_snr ?? null,
           created_at: obj.created_at,
           spectra: [],
           // Objects-specific fields
@@ -249,6 +259,8 @@ export async function getSpectra(
         max_snr: obj.max_snr ?? undefined,
         max_exposure_time: obj.max_exposure_time ?? undefined,
         line_snr: obj.line_snr ?? null,
+        band_mag: obj.band_mag ?? null,
+        band_snr: obj.band_snr ?? null,
         num_gratings: spectra.length,
       } as SpectrumTarget;
     });

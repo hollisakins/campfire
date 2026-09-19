@@ -305,6 +305,14 @@ export async function getFilteredObjectIds(
         p_line_snr_max: baseParams.p_line_snr_max,
         p_line_include_stale: baseParams.p_line_include_stale,
       } : {}),
+      // likewise the photometry band keys, only while a band is set
+      ...(baseParams.p_band !== undefined ? {
+        p_band: baseParams.p_band,
+        p_band_mag_min: baseParams.p_band_mag_min,
+        p_band_mag_max: baseParams.p_band_mag_max,
+        p_band_snr_min: baseParams.p_band_snr_min,
+        p_band_snr_max: baseParams.p_band_snr_max,
+      } : {}),
       p_comment_user_id: baseParams.p_comment_user_id,
     };
 

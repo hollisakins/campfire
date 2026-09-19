@@ -26,7 +26,22 @@ CREATE MATERIALIZED VIEW public.mv_filter_options AS
 SELECT 1 AS id,
     ARRAY(SELECT DISTINCT targets.field FROM public.targets WHERE targets.has_published_spectrum ORDER BY targets.field) AS fields,
     ARRAY(SELECT DISTINCT targets.observation FROM public.targets WHERE targets.observation IS NOT NULL AND targets.has_published_spectrum ORDER BY targets.observation) AS observations,
-    ARRAY(SELECT DISTINCT spectra.grating FROM public.spectra WHERE spectra.deploy_status = 'published' ORDER BY spectra.grating) AS gratings
+    ARRAY(SELECT DISTINCT spectra.grating FROM public.spectra WHERE spectra.deploy_status = 'published' ORDER BY spectra.grating) AS gratings,
+    -- Photometry bands the catalog's band filter can offer, in WAVELENGTH order
+    -- (the picker is read by eye, and f090w..f444w is not alphabetical once a
+    -- field mixes HST and JWST filters). Band names are per-field catalog
+    -- configuration ([field.bands] in photometry.toml), so this list is data,
+    -- not a fixed enum like the line catalog. Same published-only scope as the
+    -- rest of the matview, via the parent object.
+    ARRAY(
+        SELECT b.band
+        FROM public.object_photometry_bands b
+        JOIN public.object_photometry p ON p.id = b.photometry_id
+        JOIN public.objects o ON o.id = p.object_id
+        WHERE o.has_published_spectrum AND o.is_active
+        GROUP BY b.band
+        ORDER BY min(b.wav) NULLS LAST, b.band
+    ) AS photometry_bands
 WITH DATA;
 
 CREATE UNIQUE INDEX mv_filter_options_id ON public.mv_filter_options USING btree (id);

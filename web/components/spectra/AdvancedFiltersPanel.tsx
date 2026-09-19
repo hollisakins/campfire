@@ -34,6 +34,11 @@ interface AdvancedFiltersPanelProps {
   availablePrograms?: Program[];
   /** Available observations for the observation filter (required when showBasicFilters is true) */
   availableObservations?: string[];
+  /** Photometry bands the band filter can offer, wavelength-ordered
+   *  (/api/filter-options). Empty hides the photometry-band section entirely —
+   *  band names are per-field catalog config, so there is no fixed list to
+   *  fall back on. */
+  availableBands?: string[];
   /** Current view mode — controls filter labels and behavior */
   viewMode?: ViewMode;
 }
@@ -46,6 +51,7 @@ export function AdvancedFiltersPanel({
   showBasicFilters = false,
   availablePrograms = [],
   availableObservations = [],
+  availableBands = [],
   viewMode = 'objects',
 }: AdvancedFiltersPanelProps) {
   // Fetch available lists for the list filter
@@ -199,6 +205,7 @@ export function AdvancedFiltersPanel({
     (filters.max_exposure_time_min !== null ? 1 : 0) +
     (filters.max_exposure_time_max !== null ? 1 : 0) +
     (filters.line ? 1 : 0) +
+    (filters.band ? 1 : 0) +
     (filters.list_ids?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
 
@@ -250,6 +257,11 @@ export function AdvancedFiltersPanel({
       line_snr_min: null,
       line_snr_max: null,
       line_include_stale: false,
+      band: null,
+      band_mag_min: null,
+      band_mag_max: null,
+      band_snr_min: null,
+      band_snr_max: null,
       list_ids: [],
       list_ids_mode: 'any',
       dq_flags: [],
@@ -617,6 +629,82 @@ export function AdvancedFiltersPanel({
               </>
             )}
           </div>
+
+          {/* Photometry band Section */}
+          {availableBands.length > 0 && (
+            <div className="p-4 border-b border-border">
+              <div className="flex items-start gap-2 mb-4 p-3 rounded-lg bg-sky-50 dark:bg-sky-900/20 border border-sky-200 dark:border-sky-800">
+                <Info className="w-4 h-4 text-sky-600 dark:text-sky-400 mt-0.5 flex-shrink-0" />
+                <div className="text-xs text-sky-700 dark:text-sky-300">
+                  Broadband photometry from the field&apos;s cross-matched catalog, as AB
+                  magnitude and S/N rather than flux and error separately. Photometry
+                  belongs to the sky position, so{' '}
+                  {viewMode === 'spectra'
+                    ? 'every grating of one object carries the same values.'
+                    : 'each object carries one value per band.'}
+                </div>
+              </div>
+
+              <label className="block text-sm font-medium text-text-primary mb-1" htmlFor="band-filter-select">
+                Photometry band
+              </label>
+              <p className="text-xs text-text-secondary mb-2">Keep only rows with a measurement in this band</p>
+              <select
+                id="band-filter-select"
+                value={filters.band ?? ''}
+                onChange={(e) => {
+                  const band = e.target.value || null;
+                  onFiltersChange({
+                    ...filters,
+                    band,
+                    // the windows mean nothing without a band
+                    ...(band
+                      ? {}
+                      : { band_mag_min: null, band_mag_max: null, band_snr_min: null, band_snr_max: null }),
+                  });
+                }}
+                className="w-full px-3 py-2 text-sm rounded-lg border border-border bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
+              >
+                <option value="">Any (no band filter)</option>
+                {availableBands.map((b) => (
+                  <option key={b} value={b}>
+                    {b.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+
+              {filters.band && (
+                <>
+                  <div className="mt-4">
+                    <InlineRange
+                      label="Magnitude (AB)"
+                      description="Magnitudes run backwards: the minimum is the BRIGHTEST admitted, the maximum the faintest. A non-detection has no magnitude and is excluded by any bound here — cut on S/N instead."
+                      min={filters.band_mag_min ?? null}
+                      max={filters.band_mag_max ?? null}
+                      onChange={(min, max) => onFiltersChange({ ...filters, band_mag_min: min, band_mag_max: max })}
+                      minBound={0}
+                      maxBound={40}
+                      step={0.5}
+                      precision={2}
+                    />
+                  </div>
+                  <div className="mt-4">
+                    <InlineRange
+                      label="Band S/N"
+                      description="Signal-to-noise of the band flux. Signed, so a non-detection can be negative."
+                      min={filters.band_snr_min ?? null}
+                      max={filters.band_snr_max ?? null}
+                      onChange={(min, max) => onFiltersChange({ ...filters, band_snr_min: min, band_snr_max: max })}
+                      minBound={-100}
+                      maxBound={100000}
+                      step={0.5}
+                      precision={1}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {/* Tags Section */}
           {listOptions.length > 0 && (

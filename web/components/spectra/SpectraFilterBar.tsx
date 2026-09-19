@@ -35,6 +35,8 @@ interface SpectraFilterBarProps {
   availablePrograms: Program[];
   availableFields: string[];
   availableObservations: string[];
+  /** Photometry bands the band filter can offer (/api/filter-options). */
+  availableBands?: string[];
   className?: string;
   isSearchDebouncing?: boolean;
   viewMode?: ViewMode;
@@ -49,6 +51,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
   availablePrograms,
   availableFields,
   availableObservations,
+  availableBands = [],
   className = '',
   viewMode,
 }) => {
@@ -159,6 +162,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     (filters.max_exposure_time_min !== null ? 1 : 0) +
     (filters.max_exposure_time_max !== null ? 1 : 0) +
     (filters.line ? 1 : 0) +
+    (filters.band ? 1 : 0) +
     (filters.list_ids?.length ?? 0) +
     (filters.dq_flags?.length ?? 0);
 
@@ -194,6 +198,11 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
       line_snr_min: null,
       line_snr_max: null,
       line_include_stale: false,
+      band: null,
+      band_mag_min: null,
+      band_mag_max: null,
+      band_snr_min: null,
+      band_snr_max: null,
       list_ids: [],
       list_ids_mode: 'any',
       dq_flags: [],
@@ -388,6 +397,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         onClose={() => setPanelOpen(false)}
         filters={filters}
         onFiltersChange={onFiltersChange}
+        availableBands={availableBands}
         viewMode={viewMode}
       />
     </div>

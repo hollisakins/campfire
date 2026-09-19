@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateAuth } from '@/lib/api-auth';
-import { getAccessiblePrograms, invalidLineParam, isAdminUser, lineFilterRpcParams, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
+import { bandFilterRpcParams, getAccessiblePrograms, invalidLineParam, isAdminUser, lineFilterRpcParams, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
 import { createServiceClient } from '@/lib/supabase/server';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 import {
@@ -136,7 +136,7 @@ export async function GET(request: NextRequest) {
     const validSortColumns = [
       'target_id', 'spectrum_id', 'field', 'observation', 'program_slug', 'ra', 'dec',
       'redshift', 'redshift_quality', 'redshift_auto', 'signal_to_noise',
-      'exposure_time', 'grating', 'distance', 'line_snr',
+      'exposure_time', 'grating', 'distance', 'line_snr', 'band_mag', 'band_snr',
     ];
     const sortColumn = searchParams.get('sort') || 'spectrum_id';
     const sortDirection = searchParams.get('sort_dir') || 'asc';
@@ -184,6 +184,7 @@ export async function GET(request: NextRequest) {
       p_include_unpublished: includeUnpublished,
       p_include_count: includeCount,
       ...lineFilterRpcParams(searchParams),
+      ...bandFilterRpcParams(searchParams),
       ...cursorRpcParams(cursor),
     };
 

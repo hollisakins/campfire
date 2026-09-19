@@ -98,6 +98,19 @@ CREATE INDEX IF NOT EXISTS idx_object_photometry_field
 CREATE INDEX IF NOT EXISTS idx_object_photometry_object_id
     ON public.object_photometry USING btree (object_id) WHERE (object_id IS NOT NULL);
 
+-- object_photometry_bands: "band X brighter than mag m" / "band X at S/N >= y"
+-- are each one range scan on their index; the PK (photometry_id, band) serves
+-- the per-object lookups the list's Mag / Band S/N columns make. Partial, like
+-- idx_spectrum_lines_line_snr: a row with no magnitude (non-positive flux) or
+-- no S/N (missing error) can never match a bounded selection on it.
+CREATE INDEX IF NOT EXISTS idx_object_photometry_bands_band_mag
+    ON public.object_photometry_bands USING btree (band, mag)
+    WHERE mag IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_object_photometry_bands_band_snr
+    ON public.object_photometry_bands USING btree (band, snr DESC)
+    WHERE snr IS NOT NULL;
+
 
 -- =============================================================================
 -- object_lists

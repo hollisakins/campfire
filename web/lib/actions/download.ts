@@ -59,6 +59,8 @@ interface ObjectsCsvRow {
   max_snr: number | null;
   max_exposure_time: number | null;
   line_snr: number | null;     // best S/N in the filtered emission line; null without a line filter
+  band_mag: number | null;     // AB magnitude in the filtered band; null without a band filter
+  band_snr: number | null;     // S/N in the filtered band; null without a band filter
   member_target_ids: string;   // semicolon-separated
   distance: number | null;
   lists: string | null;        // semicolon-separated list slugs
@@ -83,6 +85,8 @@ interface SpectraCsvRow {
   redshift_auto: number | null;
   signal_to_noise: number | null;
   line_snr: number | null;     // S/N in the filtered emission line; null without a line filter
+  band_mag: number | null;     // parent object's AB magnitude in the filtered band; null without a band filter
+  band_snr: number | null;     // parent object's S/N in the filtered band; null without a band filter
   exposure_time: number | null;
   fits_path: string;
   program_slug: string;
@@ -157,7 +161,7 @@ export async function generateCSV(
         includeDistance ? 'asc' : sortDirection,
         [r => r.object_id],
       );
-      const csv = objectsRowsToCsv(rows, includeDistance, filters.line);
+      const csv = objectsRowsToCsv(rows, includeDistance, filters.line, filters.band);
 
       const objectIds = rows.map(r => r.object_id);
       trackDownload({
@@ -189,7 +193,7 @@ export async function generateCSV(
       includeDistance ? 'asc' : sortDirection,
       [r => r.target_id, r => r.grating],
     );
-    const csv = spectraRowsToCsv(rows, includeDistance, filters.line);
+    const csv = spectraRowsToCsv(rows, includeDistance, filters.line, filters.band);
 
     const targetIds = [...new Set(rows.map(r => r.target_id))];
     trackDownload({
@@ -233,6 +237,8 @@ const OBJECTS_CSV_SORT: Partial<Record<SortColumn, (r: ObjectsCsvRow) => CsvSort
   photo_z: r => r.photo_z,
   distance: r => r.distance,
   line_snr: r => r.line_snr,
+  band_mag: r => r.band_mag,
+  band_snr: r => r.band_snr,
 };
 
 const SPECTRA_CSV_SORT: Partial<Record<SortColumn, (r: SpectraCsvRow) => CsvSortValue>> = {
@@ -250,6 +256,8 @@ const SPECTRA_CSV_SORT: Partial<Record<SortColumn, (r: SpectraCsvRow) => CsvSort
   exposure_time: r => r.exposure_time,
   grating: r => r.grating,
   line_snr: r => r.line_snr,
+  band_mag: r => r.band_mag,
+  band_snr: r => r.band_snr,
   distance: r => r.distance,
 };
 
@@ -291,7 +299,7 @@ function sortCsvRows<T>(
 /**
  * Convert spectra-mode CSV export rows to CSV string (one row per spectrum)
  */
-function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, lineColumn: string | null = null): string {
+function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, lineColumn: string | null = null, bandColumn: string | null = null): string {
   // Spectra-mode CSV contains only per-spectrum info. redshift /
   // redshift_quality / last_inspected_* are parent-object state and belong in
   // the objects CSV. The per-spectrum auto-fit redshift is surfaced as
@@ -307,6 +315,9 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, lineC
     // the filtered emission line's S/N, only while a line filter is active
     // (escaped like a data cell: the name comes from the URL)
     ...(lineColumn ? [escapeCsvValue(`snr_${lineColumn}`)] : []),
+    // the filtered band's magnitude and S/N, only while a band filter is
+    // active (escaped the same way — the name comes from the URL)
+    ...(bandColumn ? [escapeCsvValue(`mag_${bandColumn}`), escapeCsvValue(`snr_${bandColumn}`)] : []),
     'exposure_time',
     'fits_path',
     'program_slug',
@@ -338,6 +349,9 @@ function spectraRowsToCsv(rows: SpectraCsvRow[], includeDistance: boolean, lineC
       row.redshift_auto != null ? row.redshift_auto.toFixed(6) : '',
       row.signal_to_noise != null ? row.signal_to_noise.toFixed(2) : '',
       ...(lineColumn ? [row.line_snr != null ? row.line_snr.toFixed(2) : ''] : []),
+      ...(bandColumn
+        ? [row.band_mag != null ? row.band_mag.toFixed(3) : '', row.band_snr != null ? row.band_snr.toFixed(2) : '']
+        : []),
       row.exposure_time != null ? row.exposure_time.toFixed(0) : '',
       escapeCsvValue(row.fits_path),
       escapeCsvValue(row.program_slug),
@@ -375,7 +389,7 @@ function collectSortedBands(rows: ObjectsCsvRow[]): string[] {
 /**
  * Convert objects-mode CSV export rows to CSV string
  */
-function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean, lineColumn: string | null = null): string {
+function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean, lineColumn: string | null = null, bandColumn: string | null = null): string {
   const sortedBands = collectSortedBands(rows);
 
   const columns = [
@@ -393,6 +407,12 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean, lineC
     // the filtered emission line's best S/N, only while a line filter is active
     // (escaped like a data cell: the name comes from the URL)
     ...(lineColumn ? [escapeCsvValue(`snr_${lineColumn}`)] : []),
+    // the filtered band's magnitude and S/N, only while a band filter is
+    // active. Redundant with the f_/e_ pair below for an objects export that
+    // carries the same band, and deliberately so: these are the two numbers
+    // the filter and the on-screen sort acted on, in the units they were
+    // expressed in.
+    ...(bandColumn ? [escapeCsvValue(`mag_${bandColumn}`), escapeCsvValue(`snr_${bandColumn}`)] : []),
     'max_exposure_time',
     'member_target_ids',
     'tags',
@@ -430,6 +450,9 @@ function objectsRowsToCsv(rows: ObjectsCsvRow[], includeDistance: boolean, lineC
       escapeCsvValue(row.gratings || ''),
       row.max_snr != null ? row.max_snr.toFixed(2) : '',
       ...(lineColumn ? [row.line_snr != null ? row.line_snr.toFixed(2) : ''] : []),
+      ...(bandColumn
+        ? [row.band_mag != null ? row.band_mag.toFixed(3) : '', row.band_snr != null ? row.band_snr.toFixed(2) : '']
+        : []),
       row.max_exposure_time != null ? row.max_exposure_time.toFixed(0) : '',
       escapeCsvValue(row.member_target_ids || ''),
       escapeCsvValue(row.lists || ''),

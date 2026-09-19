@@ -579,6 +579,12 @@ export interface SpectrumTarget extends DbTarget {
   /** S/N in the filtered emission line (objects: best member spectrum);
    *  present only while a line filter is active. */
   line_snr?: number | null;
+  /** AB magnitude and S/N in the filtered photometry band; present only while
+   *  a band filter is active. Object-level in both view modes — photometry
+   *  belongs to the sky position, so every grating of one object reports the
+   *  same pair. */
+  band_mag?: number | null;
+  band_snr?: number | null;
   num_gratings?: number;
   comments?: CommentWithUser[];
   parent_object_id?: string;

@@ -86,6 +86,14 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     line_snr_min: parseNumber('line_snr_min'),
     line_snr_max: parseNumber('line_snr_max'),
     line_include_stale: parseBoolean('line_stale') === true,
+    // a band name is per-field catalog config, not a fixed catalog, so there
+    // is nothing to validate it against — an unknown name simply matches no
+    // photometry row (see buildFilterParams).
+    band: searchParams.get('band')?.trim() || null,
+    band_mag_min: parseNumber('band_mag_min'),
+    band_mag_max: parseNumber('band_mag_max'),
+    band_snr_min: parseNumber('band_snr_min'),
+    band_snr_max: parseNumber('band_snr_max'),
     list_ids: parseNumberArray('tags'),
     dq_flags: parseNumberArray('dq_flags'),
     inspected_only: parseBoolean('inspected'),
@@ -200,6 +208,22 @@ export function filtersToURLParams(
     }
     if (filters.line_include_stale) {
       params.set('line_stale', 'true');
+    }
+  }
+  // The magnitude and S/N windows only mean something with a band.
+  if (filters.band) {
+    params.set('band', filters.band);
+    if (filters.band_mag_min !== null) {
+      params.set('band_mag_min', filters.band_mag_min.toString());
+    }
+    if (filters.band_mag_max !== null) {
+      params.set('band_mag_max', filters.band_mag_max.toString());
+    }
+    if (filters.band_snr_min !== null) {
+      params.set('band_snr_min', filters.band_snr_min.toString());
+    }
+    if (filters.band_snr_max !== null) {
+      params.set('band_snr_max', filters.band_snr_max.toString());
     }
   }
   if (filters.list_ids.length > 0) {

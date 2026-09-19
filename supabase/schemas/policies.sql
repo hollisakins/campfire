@@ -403,6 +403,44 @@ CREATE POLICY "admin_object_photometry_delete"
 
 
 -- =============================================================================
+-- object_photometry_bands (derived from object_photometry.photometry; same visibility)
+-- =============================================================================
+-- Readable iff the parent cross-match row is (one hop, exactly the shape
+-- spectrum_lines uses over spectrum_line_fits). Rows are written by the
+-- sync_object_photometry_bands trigger (SECURITY DEFINER, so an admin deploy
+-- upsert on object_photometry rebuilds them regardless of these policies);
+-- the admin write policies exist only for manual repair.
+
+ALTER TABLE object_photometry_bands ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "select_object_photometry_bands_by_parent" ON object_photometry_bands;
+CREATE POLICY "select_object_photometry_bands_by_parent"
+  ON object_photometry_bands FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.object_photometry p
+      WHERE p.id = object_photometry_bands.photometry_id
+    )
+  );
+
+DROP POLICY IF EXISTS "admin_object_photometry_bands_insert" ON object_photometry_bands;
+CREATE POLICY "admin_object_photometry_bands_insert"
+  ON object_photometry_bands FOR INSERT TO authenticated
+  WITH CHECK ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_object_photometry_bands_update" ON object_photometry_bands;
+CREATE POLICY "admin_object_photometry_bands_update"
+  ON object_photometry_bands FOR UPDATE TO authenticated
+  USING ((SELECT public.is_admin()))
+  WITH CHECK ((SELECT public.is_admin()));
+
+DROP POLICY IF EXISTS "admin_object_photometry_bands_delete" ON object_photometry_bands;
+CREATE POLICY "admin_object_photometry_bands_delete"
+  ON object_photometry_bands FOR DELETE TO authenticated
+  USING ((SELECT public.is_admin()));
+
+
+-- =============================================================================
 -- object_lists
 -- =============================================================================
 

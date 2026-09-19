@@ -788,6 +788,93 @@ GRANT EXECUTE ON FUNCTION public.object_line_snr(INTEGER, TEXT, BOOLEAN, TEXT[],
 
 
 -- =============================================================================
+-- Photometry band catalog helpers (object_photometry_bands)
+-- =============================================================================
+
+-- objects_matching_band_filter: the objects whose photometry in band p_band
+-- lies in the requested magnitude and/or S/N window. The photometry analogue
+-- of objects_matching_line_filter, and materialized the same way — ONCE per
+-- list call into an INTEGER[] probed with o.id = ANY(...) — so a filter that
+-- matches most of a field costs one scan, not a subplan per candidate row
+-- (#488 / #491).
+--
+-- No program scoping, unlike the line filter, and deliberately so: photometry
+-- is an external catalog cross-match keyed on sky position, not a product of
+-- any JWST program (objects.has_photometry and objects.photo_z are already
+-- plain, unscoped filterable columns). The set is only ever intersected with
+-- the caller's already access-scoped object set, so it can narrow what a
+-- viewer sees and never widen it.
+--
+-- An object with two cross-matches in the same band — the transient state
+-- while a field carries a new catalog release beside the old one, before
+-- `campfire deploy photometry --supersede` retires it — is reduced per
+-- quantity: min(mag) (the brightest measurement) and max(snr) (the best).
+-- These are exactly the aggregates object_band_mag / object_band_snr report
+-- for the Mag and Band S/N columns, so the line filter's invariant holds
+-- column by column: a row can never show a value outside the window that
+-- admitted it. A band with no magnitude (non-positive flux — a non-detection)
+-- has min(mag) NULL, so a magnitude window excludes it; select on S/N to
+-- reach that population.
+CREATE OR REPLACE FUNCTION public.objects_matching_band_filter(
+  p_band TEXT,
+  p_mag_min DOUBLE PRECISION,
+  p_mag_max DOUBLE PRECISION,
+  p_snr_min DOUBLE PRECISION,
+  p_snr_max DOUBLE PRECISION
+)
+RETURNS SETOF INTEGER
+LANGUAGE sql STABLE
+AS $$
+  SELECT p.object_id
+  FROM public.object_photometry_bands b
+  JOIN public.object_photometry p ON p.id = b.photometry_id
+  WHERE b.band = p_band
+    AND p.object_id IS NOT NULL
+  GROUP BY p.object_id
+  HAVING (p_mag_min IS NULL OR min(b.mag) >= p_mag_min)
+     AND (p_mag_max IS NULL OR min(b.mag) <= p_mag_max)
+     AND (p_snr_min IS NULL OR max(b.snr) >= p_snr_min)
+     AND (p_snr_max IS NULL OR max(b.snr) <= p_snr_max);
+$$;
+
+GRANT EXECUTE ON FUNCTION public.objects_matching_band_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.objects_matching_band_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) TO service_role;
+
+
+-- object_band_mag / object_band_snr: the object's AB magnitude and S/N in
+-- band p_band — the same per-quantity aggregates objects_matching_band_filter
+-- tested — for the list's sort keys and its "Mag" / "Band S/N" columns. Per
+-- candidate row (PK probes on object_photometry_bands through the object_id
+-- index), evaluated only when a band filter is active.
+CREATE OR REPLACE FUNCTION public.object_band_mag(p_object_id INTEGER, p_band TEXT)
+RETURNS DOUBLE PRECISION
+LANGUAGE sql STABLE
+AS $$
+  SELECT min(b.mag)
+  FROM public.object_photometry p
+  JOIN public.object_photometry_bands b ON b.photometry_id = p.id AND b.band = p_band
+  WHERE p.object_id = p_object_id;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.object_band_mag(INTEGER, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.object_band_mag(INTEGER, TEXT) TO service_role;
+
+
+CREATE OR REPLACE FUNCTION public.object_band_snr(p_object_id INTEGER, p_band TEXT)
+RETURNS DOUBLE PRECISION
+LANGUAGE sql STABLE
+AS $$
+  SELECT max(b.snr)
+  FROM public.object_photometry p
+  JOIN public.object_photometry_bands b ON b.photometry_id = p.id AND b.band = p_band
+  WHERE p.object_id = p_object_id;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.object_band_snr(INTEGER, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.object_band_snr(INTEGER, TEXT) TO service_role;
+
+
+-- =============================================================================
 -- objects_matching_observation_filter
 -- =============================================================================
 -- Viewer-scoped observation filtering for the object-level catalog RPCs
@@ -1765,6 +1852,15 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_line_include_stale BOOLEAN DEFAULT false,
+  -- Photometry band filter (object_photometry_bands): a catalog band name as
+  -- it appears in the photometry payload (e.g. f444w), an AB-magnitude window
+  -- and/or an S/N window, both open-ended when a bound is NULL. Sort columns
+  -- 'band_mag' / 'band_snr' are accepted only with p_band set.
+  p_band TEXT DEFAULT NULL,
+  p_band_mag_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
   -- Perf T1-5 (#501): the exact COUNT(*) over the whole filtered set is only
   -- needed once per filter combination; the client caches it and passes
   -- false on later pages / sorts. total_count is -1 when skipped.
@@ -1796,6 +1892,7 @@ SET plan_cache_mode = 'force_custom_plan'
 AS $$
 DECLARE
   v_line_spectrum_ids INTEGER[];
+  v_band_object_ids INTEGER[];
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
@@ -1838,7 +1935,8 @@ BEGIN
     'target_id', 'spectrum_id', 'field', 'observation', 'program_slug', 'ra', 'dec', 'redshift',
     'redshift_quality', 'redshift_auto', 'signal_to_noise', 'exposure_time', 'grating'
   ) OR (p_sort_column = 'distance' AND v_coord_search_active)
-    OR (p_sort_column = 'line_snr' AND p_line IS NOT NULL)) THEN
+    OR (p_sort_column = 'line_snr' AND p_line IS NOT NULL)
+    OR (p_sort_column IN ('band_mag', 'band_snr') AND p_band IS NOT NULL)) THEN
     p_sort_column := 'spectrum_id';
   END IF;
 
@@ -1859,6 +1957,16 @@ BEGIN
   IF p_line IS NOT NULL THEN
     v_line_spectrum_ids := ARRAY(SELECT public.spectra_matching_line_filter(
       p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false)));
+  END IF;
+
+  -- Photometry band filter: the objects whose photometry in p_band lies in the
+  -- magnitude / S/N window, materialized once per call the same way (see
+  -- objects_matching_band_filter for the invariants). Object-level even in the
+  -- spectra RPCs — photometry belongs to the sky position, not the spectrum —
+  -- so a spectrum matches iff its target's parent object does.
+  IF p_band IS NOT NULL THEN
+    v_band_object_ids := ARRAY(SELECT public.objects_matching_band_filter(
+      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max));
   END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -1925,6 +2033,11 @@ BEGIN
       CASE WHEN p_line IS NOT NULL THEN
         (SELECT __l.snr FROM public.spectrum_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
       END AS line_snr,
+      -- the parent object's magnitude and S/N in the filtered band (sort keys
+      -- + 'Mag' / 'Band S/N' columns). Object-level: photometry belongs to the
+      -- sky position, so every grating of one object reports the same pair.
+      CASE WHEN p_band IS NOT NULL THEN public.object_band_mag(t.object_id, p_band) END AS band_mag,
+      CASE WHEN p_band IS NOT NULL THEN public.object_band_snr(t.object_id, p_band) END AS band_snr,
       CASE
         WHEN v_coord_search_active THEN
           2 * DEGREES(ASIN(SQRT(
@@ -1954,6 +2067,7 @@ BEGIN
       AND (p_max_exposure_time_min IS NULL OR s.exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR s.exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR s.id = ANY(v_line_spectrum_ids))
+      AND (p_band IS NULL OR t.object_id = ANY(v_band_object_ids))
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_exclude) = 0)
@@ -2049,6 +2163,8 @@ BEGIN
         WHEN 'signal_to_noise' THEN df.signal_to_noise::double precision
         WHEN 'exposure_time' THEN df.exposure_time::double precision
         WHEN 'line_snr' THEN df.line_snr
+        WHEN 'band_mag' THEN df.band_mag
+        WHEN 'band_snr' THEN df.band_snr
       END AS sort_num
     FROM distance_filtered df
   ),
@@ -2125,6 +2241,8 @@ BEGIN
       'max_snr', r.max_snr,
       'max_exposure_time', r.max_exposure_time,
       'line_snr', r.line_snr,
+      'band_mag', r.band_mag,
+      'band_snr', r.band_snr,
       'created_at', r.created_at,
       'updated_at', r.updated_at,
       'distance', CASE WHEN v_coord_search_active THEN r.distance ELSE NULL END,
@@ -2214,6 +2332,15 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_line_include_stale BOOLEAN DEFAULT false,
+  -- Photometry band filter (object_photometry_bands): a catalog band name as
+  -- it appears in the photometry payload (e.g. f444w), an AB-magnitude window
+  -- and/or an S/N window, both open-ended when a bound is NULL. Sort columns
+  -- 'band_mag' / 'band_snr' are accepted only with p_band set.
+  p_band TEXT DEFAULT NULL,
+  p_band_mag_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
   -- Perf T1-5 (#501): see get_filtered_spectra_paginated. -1 when skipped.
   p_include_count BOOLEAN DEFAULT true,
   -- Perf T2-F (#511): keyset cursor for /api/v1/objects — see
@@ -2232,6 +2359,7 @@ SET plan_cache_mode = 'force_custom_plan'
 AS $$
 DECLARE
   v_line_object_ids INTEGER[];
+  v_band_object_ids INTEGER[];
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
@@ -2274,7 +2402,8 @@ BEGIN
     'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
     'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
   ) OR (p_sort_column = 'distance' AND v_coord_search_active)
-    OR (p_sort_column = 'line_snr' AND p_line IS NOT NULL)) THEN
+    OR (p_sort_column = 'line_snr' AND p_line IS NOT NULL)
+    OR (p_sort_column IN ('band_mag', 'band_snr') AND p_band IS NOT NULL)) THEN
     p_sort_column := 'object_id';
   END IF;
 
@@ -2297,6 +2426,16 @@ BEGIN
     v_line_object_ids := ARRAY(SELECT public.objects_matching_line_filter(
       p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false),
       p_program_slugs, p_include_unpublished));
+  END IF;
+
+  -- Photometry band filter: the objects whose photometry in p_band lies in the
+  -- magnitude / S/N window, materialized once per call the same way (see
+  -- objects_matching_band_filter for the invariants). Object-level even in the
+  -- spectra RPCs — photometry belongs to the sky position, not the spectrum —
+  -- so a spectrum matches iff its target's parent object does.
+  IF p_band IS NOT NULL THEN
+    v_band_object_ids := ARRAY(SELECT public.objects_matching_band_filter(
+      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max));
   END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -2379,6 +2518,7 @@ BEGIN
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
+      AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
@@ -2496,6 +2636,10 @@ BEGIN
       o.created_at,
       -- the object's best S/N in the filtered line (sort key + 'Line S/N' column)
       CASE WHEN p_line IS NOT NULL THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END AS line_snr,
+      -- the object's magnitude and S/N in the filtered band (sort keys + the
+      -- 'Mag' / 'Band S/N' columns); the same aggregates the band filter tested
+      CASE WHEN p_band IS NOT NULL THEN public.object_band_mag(o.id, p_band) END AS band_mag,
+      CASE WHEN p_band IS NOT NULL THEN public.object_band_snr(o.id, p_band) END AS band_snr,
       CASE
         WHEN v_coord_search_active THEN
           2 * DEGREES(ASIN(SQRT(
@@ -2543,6 +2687,7 @@ BEGIN
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
+      AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
@@ -2641,6 +2786,8 @@ BEGIN
         WHEN 'max_exposure_time' THEN c.max_exposure_time::double precision
         WHEN 'photo_z' THEN c.photo_z::double precision
         WHEN 'line_snr' THEN c.line_snr
+        WHEN 'band_mag' THEN c.band_mag
+        WHEN 'band_snr' THEN c.band_snr
       END AS sort_num
     FROM candidates c
   ),
@@ -2706,6 +2853,8 @@ BEGIN
         'max_snr', sa.max_snr,
         'max_exposure_time', sa.max_exposure_time,
         'line_snr', fo.line_snr,
+        'band_mag', fo.band_mag,
+        'band_snr', fo.band_snr,
         'redshift', fo.redshift,
         'redshift_quality', fo.redshift_quality,
         'redshift_inspected', fo.redshift_inspected,
@@ -2826,7 +2975,16 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_line TEXT DEFAULT NULL,
   p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
-  p_line_include_stale BOOLEAN DEFAULT false
+  p_line_include_stale BOOLEAN DEFAULT false,
+  -- Photometry band filter (object_photometry_bands): a catalog band name as
+  -- it appears in the photometry payload (e.g. f444w), an AB-magnitude window
+  -- and/or an S/N window, both open-ended when a bound is NULL. Sort columns
+  -- 'band_mag' / 'band_snr' are accepted only with p_band set.
+  p_band TEXT DEFAULT NULL,
+  p_band_mag_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_max DOUBLE PRECISION DEFAULT NULL
 )
 RETURNS TABLE(object_id TEXT)
 LANGUAGE plpgsql STABLE
@@ -2834,6 +2992,7 @@ SET plan_cache_mode = 'force_custom_plan'
 AS $$
 DECLARE
   v_line_object_ids INTEGER[];
+  v_band_object_ids INTEGER[];
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
@@ -2870,7 +3029,8 @@ BEGIN
     'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
     'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
   ) OR (p_sort_column = 'distance' AND v_coord_search_active)
-    OR (p_sort_column = 'line_snr' AND p_line IS NOT NULL)) THEN
+    OR (p_sort_column = 'line_snr' AND p_line IS NOT NULL)
+    OR (p_sort_column IN ('band_mag', 'band_snr') AND p_band IS NOT NULL)) THEN
     p_sort_column := 'object_id';
   END IF;
 
@@ -2882,6 +3042,16 @@ BEGIN
     v_line_object_ids := ARRAY(SELECT public.objects_matching_line_filter(
       p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false),
       p_program_slugs, p_include_unpublished));
+  END IF;
+
+  -- Photometry band filter: the objects whose photometry in p_band lies in the
+  -- magnitude / S/N window, materialized once per call the same way (see
+  -- objects_matching_band_filter for the invariants). Object-level even in the
+  -- spectra RPCs — photometry belongs to the sky position, not the spectrum —
+  -- so a spectrum matches iff its target's parent object does.
+  IF p_band IS NOT NULL THEN
+    v_band_object_ids := ARRAY(SELECT public.objects_matching_band_filter(
+      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max));
   END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -2958,6 +3128,7 @@ BEGIN
     AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
     AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
     AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
+    AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
     AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
     AND (
       p_inspected_only IS NULL
@@ -3064,6 +3235,10 @@ BEGIN
     CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN o.max_snr END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'line_snr' AND p_sort_direction = 'asc' THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END ASC NULLS LAST,
     CASE WHEN p_sort_column = 'line_snr' AND p_sort_direction = 'desc' THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'band_mag' AND p_sort_direction = 'asc' THEN public.object_band_mag(o.id, p_band) END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'band_mag' AND p_sort_direction = 'desc' THEN public.object_band_mag(o.id, p_band) END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'band_snr' AND p_sort_direction = 'asc' THEN public.object_band_snr(o.id, p_band) END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'band_snr' AND p_sort_direction = 'desc' THEN public.object_band_snr(o.id, p_band) END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'asc' THEN o.max_exposure_time END ASC NULLS LAST,
     CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'desc' THEN o.max_exposure_time END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'photo_z' AND p_sort_direction = 'asc' THEN o.photo_z END ASC NULLS LAST,
@@ -3148,7 +3323,16 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_line TEXT DEFAULT NULL,
   p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
-  p_line_include_stale BOOLEAN DEFAULT false
+  p_line_include_stale BOOLEAN DEFAULT false,
+  -- Photometry band filter (object_photometry_bands): a catalog band name as
+  -- it appears in the photometry payload (e.g. f444w), an AB-magnitude window
+  -- and/or an S/N window, both open-ended when a bound is NULL. Sort columns
+  -- 'band_mag' / 'band_snr' are accepted only with p_band set.
+  p_band TEXT DEFAULT NULL,
+  p_band_mag_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_max DOUBLE PRECISION DEFAULT NULL
 )
 RETURNS TABLE(prev_object_id TEXT, next_object_id TEXT, current_index BIGINT, total_count BIGINT)
 LANGUAGE plpgsql STABLE
@@ -3156,6 +3340,7 @@ SET plan_cache_mode = 'force_custom_plan'
 AS $$
 DECLARE
   v_line_object_ids INTEGER[];
+  v_band_object_ids INTEGER[];
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
@@ -3186,7 +3371,8 @@ BEGIN
     'object_id', 'field', 'ra', 'dec', 'redshift', 'redshift_quality',
     'n_targets', 'n_spectra', 'max_snr', 'max_exposure_time', 'photo_z'
   ) OR (p_sort_column = 'distance' AND v_coord_search_active)
-    OR (p_sort_column = 'line_snr' AND p_line IS NOT NULL)) THEN
+    OR (p_sort_column = 'line_snr' AND p_line IS NOT NULL)
+    OR (p_sort_column IN ('band_mag', 'band_snr') AND p_band IS NOT NULL)) THEN
     p_sort_column := 'object_id';
   END IF;
   IF v_coord_search_active AND p_sort_column = 'object_id' AND p_sort_direction = 'asc' THEN
@@ -3202,6 +3388,16 @@ BEGIN
     v_line_object_ids := ARRAY(SELECT public.objects_matching_line_filter(
       p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false),
       p_program_slugs, p_include_unpublished));
+  END IF;
+
+  -- Photometry band filter: the objects whose photometry in p_band lies in the
+  -- magnitude / S/N window, materialized once per call the same way (see
+  -- objects_matching_band_filter for the invariants). Object-level even in the
+  -- spectra RPCs — photometry belongs to the sky position, not the spectrum —
+  -- so a spectrum matches iff its target's parent object does.
+  IF p_band IS NOT NULL THEN
+    v_band_object_ids := ARRAY(SELECT public.objects_matching_band_filter(
+      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max));
   END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -3252,6 +3448,8 @@ BEGIN
         WHEN 'max_snr' THEN o.max_snr WHEN 'max_exposure_time' THEN o.max_exposure_time
         WHEN 'photo_z' THEN o.photo_z
         WHEN 'line_snr' THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished)
+        WHEN 'band_mag' THEN public.object_band_mag(o.id, p_band)
+        WHEN 'band_snr' THEN public.object_band_snr(o.id, p_band)
         WHEN 'distance' THEN
           2 * DEGREES(ASIN(SQRT(
             POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
@@ -3298,6 +3496,7 @@ BEGIN
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
+      AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -3459,6 +3658,15 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_line_include_stale BOOLEAN DEFAULT false,
+  -- Photometry band filter (object_photometry_bands): a catalog band name as
+  -- it appears in the photometry payload (e.g. f444w), an AB-magnitude window
+  -- and/or an S/N window, both open-ended when a bound is NULL. Sort columns
+  -- 'band_mag' / 'band_snr' are accepted only with p_band set.
+  p_band TEXT DEFAULT NULL,
+  p_band_mag_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_after_id INTEGER DEFAULT NULL, p_page_size INTEGER DEFAULT 5000
 )
 RETURNS TABLE(
@@ -3471,7 +3679,9 @@ RETURNS TABLE(
   dq_flags INTEGER,
   lists TEXT,
   -- S/N in the filtered emission line (NULL without a line filter)
-  line_snr DOUBLE PRECISION
+  line_snr DOUBLE PRECISION,
+  band_mag DOUBLE PRECISION,
+  band_snr DOUBLE PRECISION
 )
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
@@ -3479,6 +3689,7 @@ SET statement_timeout = '120s'
 AS $$
 DECLARE
   v_line_spectrum_ids INTEGER[];
+  v_band_object_ids INTEGER[];
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
@@ -3499,6 +3710,16 @@ BEGIN
   IF p_line IS NOT NULL THEN
     v_line_spectrum_ids := ARRAY(SELECT public.spectra_matching_line_filter(
       p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false)));
+  END IF;
+
+  -- Photometry band filter: the objects whose photometry in p_band lies in the
+  -- magnitude / S/N window, materialized once per call the same way (see
+  -- objects_matching_band_filter for the invariants). Object-level even in the
+  -- spectra RPCs — photometry belongs to the sky position, not the spectrum —
+  -- so a spectrum matches iff its target's parent object does.
+  IF p_band IS NOT NULL THEN
+    v_band_object_ids := ARRAY(SELECT public.objects_matching_band_filter(
+      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max));
   END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -3528,7 +3749,9 @@ BEGIN
       vl.lists,
       CASE WHEN p_line IS NOT NULL THEN
         (SELECT __l.snr FROM public.spectrum_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
-      END AS line_snr
+      END AS line_snr,
+      CASE WHEN p_band IS NOT NULL THEN public.object_band_mag(t.object_id, p_band) END AS band_mag,
+      CASE WHEN p_band IS NOT NULL THEN public.object_band_snr(t.object_id, p_band) END AS band_snr
     FROM targets t
     JOIN spectra s ON s.target_id = t.target_id
     LEFT JOIN objects o ON o.id = t.object_id
@@ -3546,6 +3769,7 @@ BEGIN
       AND (p_max_snr_min IS NULL OR s.signal_to_noise >= p_max_snr_min) AND (p_max_snr_max IS NULL OR s.signal_to_noise <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR s.exposure_time >= p_max_exposure_time_min) AND (p_max_exposure_time_max IS NULL OR s.exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR s.id = ANY(v_line_spectrum_ids))
+      AND (p_band IS NULL OR t.object_id = ANY(v_band_object_ids))
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_exclude) = 0)
@@ -3592,7 +3816,7 @@ BEGIN
     df.ra, df.dec, df.redshift, df.redshift_quality, df.redshift_auto,
     df.signal_to_noise, df.exposure_time, df.fits_path, df.program_slug,
     pr.program_name, df.last_inspected_at, up.full_name AS last_inspected_by,
-    df.distance, df.dq_flags, df.lists, df.line_snr
+    df.distance, df.dq_flags, df.lists, df.line_snr, df.band_mag, df.band_snr
   FROM distance_filtered df
   LEFT JOIN programs pr ON pr.slug = df.program_slug
   LEFT JOIN user_profiles up ON up.user_id = df.last_inspected_by
@@ -3652,6 +3876,15 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_line_include_stale BOOLEAN DEFAULT false,
+  -- Photometry band filter (object_photometry_bands): a catalog band name as
+  -- it appears in the photometry payload (e.g. f444w), an AB-magnitude window
+  -- and/or an S/N window, both open-ended when a bound is NULL. Sort columns
+  -- 'band_mag' / 'band_snr' are accepted only with p_band set.
+  p_band TEXT DEFAULT NULL,
+  p_band_mag_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_after_object_id TEXT DEFAULT NULL, p_page_size INTEGER DEFAULT 5000
 )
 RETURNS TABLE(
@@ -3669,7 +3902,9 @@ RETURNS TABLE(
   photo_z_err_lo DOUBLE PRECISION, photo_z_err_hi DOUBLE PRECISION,
   photometry JSONB,
   -- best S/N in the filtered emission line (NULL without a line filter)
-  line_snr DOUBLE PRECISION
+  line_snr DOUBLE PRECISION,
+  band_mag DOUBLE PRECISION,
+  band_snr DOUBLE PRECISION
 )
 LANGUAGE plpgsql STABLE
 SET plan_cache_mode = 'force_custom_plan'
@@ -3681,6 +3916,7 @@ SET statement_timeout = '120s'
 AS $$
 DECLARE
   v_line_object_ids INTEGER[];
+  v_band_object_ids INTEGER[];
   v_filtered_program_slugs TEXT[];
   v_coord_search_active BOOLEAN;
   v_comment_search_active BOOLEAN;
@@ -3712,6 +3948,16 @@ BEGIN
     v_line_object_ids := ARRAY(SELECT public.objects_matching_line_filter(
       p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false),
       p_program_slugs, p_include_unpublished));
+  END IF;
+
+  -- Photometry band filter: the objects whose photometry in p_band lies in the
+  -- magnitude / S/N window, materialized once per call the same way (see
+  -- objects_matching_band_filter for the invariants). Object-level even in the
+  -- spectra RPCs — photometry belongs to the sky position, not the spectrum —
+  -- so a spectrum matches iff its target's parent object does.
+  IF p_band IS NOT NULL THEN
+    v_band_object_ids := ARRAY(SELECT public.objects_matching_band_filter(
+      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max));
   END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -3784,6 +4030,7 @@ BEGIN
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
+      AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND o.redshift_quality = 0))
       AND (p_needs_review IS NULL
@@ -3886,7 +4133,9 @@ BEGIN
     mt.member_target_ids, po.distance, vl.lists,
     po.has_photometry, po.photo_z, po.photo_z_err_lo, po.photo_z_err_hi,
     phot.photometry,
-    CASE WHEN p_line IS NOT NULL THEN public.object_line_snr(po.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END AS line_snr
+    CASE WHEN p_line IS NOT NULL THEN public.object_line_snr(po.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END AS line_snr,
+    CASE WHEN p_band IS NOT NULL THEN public.object_band_mag(po.id, p_band) END AS band_mag,
+    CASE WHEN p_band IS NOT NULL THEN public.object_band_snr(po.id, p_band) END AS band_snr
   FROM page_objects po
   LEFT JOIN member_targets mt ON mt.object_id = po.id
   LEFT JOIN visible_lists vl ON vl.object_id = po.id
