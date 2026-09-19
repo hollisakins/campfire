@@ -794,10 +794,20 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       } satisfies ColumnDef<SpectrumTarget>]),
       // Both modes: S/N in the filtered emission line, only while a line filter
       // is active (objects: the best member spectrum). Sorted server-side.
+      //
+      // sortUndefined 'last' rather than a +/-Infinity sentinel, here and on
+      // the band columns below. TanStack returns early for 'first'/'last',
+      // BEFORE the desc inversion, so a missing value sorts last in BOTH
+      // directions — which is what the server's `NULLS LAST` does. A sentinel
+      // is only right in one direction (its default sortUndefined: 1 falls
+      // through to the inversion), so the client-side sort taken for small
+      // result sets (isFullDataset) disagreed with the paginated order, with
+      // adjacent-object navigation and with the CSV.
       ...(activeLine ? [{
         id: 'line_snr',
         minSize: 100,
-        accessorFn: (row: SpectrumTarget) => row.line_snr ?? -Infinity,
+        accessorFn: (row: SpectrumTarget) => row.line_snr ?? undefined,
+        sortUndefined: 'last' as const,
         header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
           <SortableHeader column={column} className="normal-case">{lineLabel(activeLine)} S/N</SortableHeader>
         ),
@@ -817,12 +827,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       // belongs to the sky position), sorted server-side. A non-detection has
       // no magnitude, so an em dash there is data, not a missing value — its
       // S/N, which can be negative, is the cell next door.
-      // sortUndefined 'last' rather than a +/-Infinity sentinel: TanStack
-      // returns early for it, BEFORE the desc inversion, so a missing value
-      // sorts last in BOTH directions — which is what the server's
-      // `NULLS LAST` does. A sentinel is only right in one direction, and the
-      // client-side sort (small result sets, isFullDataset) would then
-      // disagree with the paginated order and the CSV.
+      // sortUndefined 'last' for the same reason as line_snr above.
       ...(activeBand ? [{
         id: 'band_mag',
         minSize: 90,
