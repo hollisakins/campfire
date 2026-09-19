@@ -353,14 +353,16 @@ def test_clean_pool_keeps_its_gross_prior_and_is_unchanged():
 
     This assertion used to run the other way. At the old 0.5" gross bin the
     proposal on a well-pointed exposure landed ~0.26" from the truth - outside
-    the 0.157" vetting radius - so the guard DECLINED on essentially every clean
-    exposure (measured ratio 0.033 on real COSMOS pools). That was harmless but
-    meant the guard was firing where there was nothing to catch.
+    the 0.157" vetting radius - so the guard DECLINED (measured ratio 0.033 on
+    real COSMOS pools). At the shipped 0.25" bin it lands inside, and on THIS
+    fixture the ratio goes 0.01 -> 0.997.
 
-    At the shipped 0.25" bin the proposal resolves the true offset and the ratio
-    is ~1, so the prior is kept on its merits and the guard is reserved for
-    shifts that genuinely destroy counterparts. Either way the OUTCOME must be
-    the same, which is what the final assertions check.
+    That flip is a property of the fixture, not a claim about the sky: on the
+    1,624 real EGS F115W pools re-solved at 0.25" the median keep ratio is 0.119
+    and 1,368 pools still decline. Real detections are blended, mismatched
+    across bands and astrometrically noisier, so a correct proposal still costs
+    tight pairs. What must hold either way is the OUTCOME - same matches, same
+    astrometry, guard on or off - which is what the final assertions check.
     """
     rng = np.random.default_rng(13)
     true = rng.uniform(0, 130, (300, 2))

@@ -42,11 +42,15 @@ Release procedure: edit the `## Unreleased` section below, then run
   was already failing. Memory is bounded by `(2*searchrad/bin)^2` floats
   (320 kB at the 70" default).
 
-  Second-order benefit, measured: the finer proposal also stops the
-  `gross_min_keep_frac` guard from declining a *redundant* prior on clean
-  exposures. On real COSMOS pools the keep ratio was 0.033 (guard declined,
-  harmlessly); it is now ~1.0, so the guard is reserved for shifts that
-  genuinely destroy counterparts.
+  What the finer bin does *not* do is systematically lift the
+  `gross_min_keep_frac` keep ratio on real data. Measured over the 1,624 EGS
+  F115W pools re-solved at 0.25": median `ALGNGKR` 0.119, with 1,368 pools still
+  declining the prior and 256 keeping it. That is the expected behaviour - a
+  proposal that is *correct* to within a bin still displaces tight pairs, and
+  declining costs only a redundant translation prior - but it means the guard
+  keeps firing on clean pools, not only on harmful shifts. (The synthetic
+  fixture in `test_align_histmatch.py` does go 0.01 -> 0.997 at the finer bin;
+  that fixture is far cleaner than real sky and its ratio does not generalize.)
 - **`align`: the coarse gross shift must now earn its keep
   (`gross_min_keep_frac`, default 0.8).** The gross-translation stage
   (`histmatch._gross_shift`) picks the tallest bin of a 2-D pairwise-offset
