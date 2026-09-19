@@ -817,10 +817,17 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       // belongs to the sky position), sorted server-side. A non-detection has
       // no magnitude, so an em dash there is data, not a missing value — its
       // S/N, which can be negative, is the cell next door.
+      // sortUndefined 'last' rather than a +/-Infinity sentinel: TanStack
+      // returns early for it, BEFORE the desc inversion, so a missing value
+      // sorts last in BOTH directions — which is what the server's
+      // `NULLS LAST` does. A sentinel is only right in one direction, and the
+      // client-side sort (small result sets, isFullDataset) would then
+      // disagree with the paginated order and the CSV.
       ...(activeBand ? [{
         id: 'band_mag',
         minSize: 90,
-        accessorFn: (row: SpectrumTarget) => row.band_mag ?? Infinity,
+        accessorFn: (row: SpectrumTarget) => row.band_mag ?? undefined,
+        sortUndefined: 'last' as const,
         header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
           <SortableHeader column={column} className="normal-case">{activeBand.toUpperCase()} mag</SortableHeader>
         ),
@@ -833,7 +840,8 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       } satisfies ColumnDef<SpectrumTarget>, {
         id: 'band_snr',
         minSize: 100,
-        accessorFn: (row: SpectrumTarget) => row.band_snr ?? -Infinity,
+        accessorFn: (row: SpectrumTarget) => row.band_snr ?? undefined,
+        sortUndefined: 'last' as const,
         header: ({ column }: { column: { getIsSorted: () => false | 'asc' | 'desc'; toggleSorting: (desc?: boolean) => void } }) => (
           <SortableHeader column={column} className="normal-case">{activeBand.toUpperCase()} S/N</SortableHeader>
         ),
