@@ -29,6 +29,24 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- **`align`: the coarse gross-shift histogram now bins at 0.25", not 0.5".** At
+  0.5" a genuine arcsec-scale pointing error is smeared across the same cell
+  scale as the random-coincidence floor, so the true peak has no contrast to win
+  with and the `argmax` can land anywhere inside `coarse_searchrad`. Found on
+  EGS visit `jw06368060001`, which carries a 1.37" pointing error confirmed
+  independently in both channels: at 0.5" the coarse solve returned **69.38"**
+  (SW, 0/8 detectors accepted) and 0.63"/0.81" (LW, 0/2 accepted); at 0.25" all
+  three pools recover the true 1.37-1.92" and accept 8/8 and 2/2. Healthy pools
+  are **bit-identical** at 0.5 / 0.25 / 0.10 / 0.05 - same `n_matched`, same
+  coarse shift, same astrometry - so the change acts only where the coarser bin
+  was already failing. Memory is bounded by `(2*searchrad/bin)^2` floats
+  (320 kB at the 70" default).
+
+  Second-order benefit, measured: the finer proposal also stops the
+  `gross_min_keep_frac` guard from declining a *redundant* prior on clean
+  exposures. On real COSMOS pools the keep ratio was 0.033 (guard declined,
+  harmlessly); it is now ~1.0, so the guard is reserved for shifts that
+  genuinely destroy counterparts.
 - **`align`: the coarse gross shift must now earn its keep
   (`gross_min_keep_frac`, default 0.8).** The gross-translation stage
   (`histmatch._gross_shift`) picks the tallest bin of a 2-D pairwise-offset
