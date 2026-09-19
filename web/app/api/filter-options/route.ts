@@ -54,9 +54,19 @@ export async function GET() {
 
     // JWST PIDs (for program sorting) and the field/observation lists in
     // parallel — independent reads, one wall-clock hop.
+    //
+    // `select('*')`, not a column list, and deliberately: the migration and the
+    // Vercel deploy land independently on merge, so this build can run for a
+    // few minutes against a database whose mv_filter_options has no
+    // photometry_bands column yet. PostgREST rejects the WHOLE query for one
+    // unknown column, which would drop the fields and observations pickers —
+    // neither of which has anything to do with this feature — into the
+    // error fallback below. With '*' the column is simply absent from the row
+    // and `|| []` hides the band picker until the matview catches up. Adding a
+    // new column here is the same trade, so leave the star alone.
     const [{ data: obsData }, { data: filterData, error: filterError }] = await Promise.all([
       supabase.from('observations').select('program_slug, jwst_program_id'),
-      supabase.from('mv_filter_options').select('fields, observations, photometry_bands').single(),
+      supabase.from('mv_filter_options').select('*').single(),
     ]);
 
     const pidsBySlug: Record<string, number[]> = {};
