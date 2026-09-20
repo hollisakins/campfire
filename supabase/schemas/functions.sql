@@ -791,30 +791,96 @@ GRANT EXECUTE ON FUNCTION public.object_line_snr(INTEGER, TEXT, BOOLEAN, TEXT[],
 -- Photometry band catalog helpers (object_photometry_bands)
 -- =============================================================================
 
--- objects_matching_band_filter: the objects whose photometry in band p_band
--- lies in the requested magnitude and/or S/N window. The photometry analogue
--- of objects_matching_line_filter, and materialized the same way — ONCE per
--- list call into an INTEGER[] probed with o.id = ANY(...) — so a filter that
--- matches most of a field costs one scan, not a subplan per candidate row
--- (#488 / #491).
+-- object_band_values: for catalog band p_band, one row per viewer-visible
+-- object whose photometry lies in the requested magnitude and/or S/N window:
+-- (object_id, mag, snr), where mag / snr are the per-quantity aggregates the
+-- window was tested against. ONE set, built by ONE scan per statement, that
+-- the catalog RPCs read twice: objects_matching_band_filter (below) is its id
+-- projection, materialized once per call into an INTEGER[] and probed with
+-- o.id = ANY(...) like the grating / observation / line sets (#488 / #491),
+-- and a `LEFT JOIN public.object_band_values(...) bv ON bv.object_id = o.id`
+-- supplies the 'Mag' / 'Band S/N' columns and the band_mag / band_snr sort
+-- keys as a hash join. The photometry analogue of objects_matching_line_filter
+-- + object_line_snr, folded into one function.
 --
--- No program scoping, unlike the line filter, and deliberately so: photometry
--- is an external catalog cross-match keyed on sky position, not a product of
--- any JWST program (objects.has_photometry and objects.photo_z are already
--- plain, unscoped filterable columns). The set is only ever intersected with
--- the caller's already access-scoped object set, so it can narrow what a
--- viewer sees and never widen it.
+-- SECURITY DEFINER, deliberately. The first shipped version (a SECURITY
+-- INVOKER filter plus per-row object_band_mag / object_band_snr probes) timed
+-- out in production: under RLS every object_photometry_bands row the scan
+-- touched re-ran the derived table's policy, a correlated EXISTS on the parent
+-- cross-match whose own policy is a correlated EXISTS on objects, so one
+-- band-filtered list call cost ~30k nested subplans (0.6-3.5 s on a 990k-row
+-- copy of the table) before the per-row probes that sorting on the band added
+-- on top (2.9 s more, one probe per candidate row). Bypassing RLS and
+-- enforcing the SAME viewer scope with one hash join to objects is 10-50x
+-- cheaper (70 ms for the filter, 105 ms for the values of every visible
+-- object). The scope predicate below is a verbatim copy of
+-- select_objects_by_access (policies.sql); keep the two in step: it is what
+-- makes a direct call from a viewer return only what that viewer could read
+-- through the policy. A row is admitted only if its OBJECT is visible; the
+-- cross-match carries no access rule of its own (photometry is an external
+-- positional catalog, not a program product), and the objects join is on the
+-- object primary key, so a cross-match whose object_id is still NULL (before
+-- the post-rebuild FK refresh) is absent, as it is from every viewer's
+-- photometry anyway. Set search_path is the usual SECURITY DEFINER hygiene.
 --
--- An object with two cross-matches in the same band — the transient state
--- while a field carries a new catalog release beside the old one, before
--- `campfire deploy photometry --supersede` retires it — is reduced per
+-- An object with two cross-matches in the same band, the transient state
+-- while a field carries a new catalog release beside the old one before
+-- `campfire deploy photometry --supersede` retires it, is reduced per
 -- quantity: min(mag) (the brightest measurement) and max(snr) (the best).
--- These are exactly the aggregates object_band_mag / object_band_snr report
--- for the Mag and Band S/N columns, so the line filter's invariant holds
--- column by column: a row can never show a value outside the window that
--- admitted it. A band with no magnitude (non-positive flux — a non-detection)
--- has min(mag) NULL, so a magnitude window excludes it; select on S/N to
--- reach that population.
+-- The window is tested in HAVING against exactly those aggregates, and the
+-- same aggregates are what the row carries, so the line filter's invariant
+-- holds column by column: a row can never show a value outside the window
+-- that admitted it. No bound is pushed into WHERE on purpose: a row-level
+-- `mag <= hi` is exact for min(mag) but drops the sibling row that carries
+-- the object's max(snr), and the band equality already narrows the scan to
+-- one band's slice, which is where the cost is. A band with no magnitude
+-- (non-positive flux, a non-detection) has min(mag) NULL, so a magnitude
+-- window excludes it; select on S/N to reach that population.
+--
+-- p_band NULL yields no rows without touching the table: the RPCs join the
+-- function unconditionally and read NULL band_mag / band_snr when no band
+-- filter is active.
+CREATE OR REPLACE FUNCTION public.object_band_values(
+  p_band TEXT,
+  p_mag_min DOUBLE PRECISION DEFAULT NULL,
+  p_mag_max DOUBLE PRECISION DEFAULT NULL,
+  p_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_snr_max DOUBLE PRECISION DEFAULT NULL
+)
+RETURNS TABLE (object_id INTEGER, mag DOUBLE PRECISION, snr DOUBLE PRECISION)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+ROWS 20000
+AS $$
+  SELECT p.object_id, min(b.mag), max(b.snr)
+  FROM public.object_photometry_bands b
+  JOIN public.object_photometry p ON p.id = b.photometry_id
+  JOIN public.objects o ON o.id = p.object_id
+  WHERE p_band IS NOT NULL
+    AND b.band = p_band
+    -- Viewer scope: verbatim select_objects_by_access (policies.sql).
+    AND o.programs && (SELECT public.accessible_program_slugs())
+    AND (o.has_published_spectrum OR (SELECT public.is_admin())
+         OR (SELECT public.link_sees_drafts()))
+    AND ((SELECT NOT public.is_link_account())
+         OR o.observations && ARRAY[(SELECT public.link_observation())]::text[])
+  GROUP BY p.object_id
+  HAVING (p_mag_min IS NULL OR min(b.mag) >= p_mag_min)
+     AND (p_mag_max IS NULL OR min(b.mag) <= p_mag_max)
+     AND (p_snr_min IS NULL OR max(b.snr) >= p_snr_min)
+     AND (p_snr_max IS NULL OR max(b.snr) <= p_snr_max);
+$$;
+
+GRANT EXECUTE ON FUNCTION public.object_band_values(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.object_band_values(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) TO service_role;
+
+
+-- objects_matching_band_filter: the id projection of object_band_values, the
+-- shape every catalog RPC materializes once per call into an INTEGER[] and
+-- probes with o.id = ANY(...). Only ever intersected with the caller's
+-- already access-scoped object set, so it can narrow what a viewer sees and
+-- never widen it; the viewer scope inside object_band_values makes a direct
+-- call equally safe. SECURITY INVOKER and a single SELECT, so it inlines.
 CREATE OR REPLACE FUNCTION public.objects_matching_band_filter(
   p_band TEXT,
   p_mag_min DOUBLE PRECISION,
@@ -825,53 +891,12 @@ CREATE OR REPLACE FUNCTION public.objects_matching_band_filter(
 RETURNS SETOF INTEGER
 LANGUAGE sql STABLE
 AS $$
-  SELECT p.object_id
-  FROM public.object_photometry_bands b
-  JOIN public.object_photometry p ON p.id = b.photometry_id
-  WHERE b.band = p_band
-    AND p.object_id IS NOT NULL
-  GROUP BY p.object_id
-  HAVING (p_mag_min IS NULL OR min(b.mag) >= p_mag_min)
-     AND (p_mag_max IS NULL OR min(b.mag) <= p_mag_max)
-     AND (p_snr_min IS NULL OR max(b.snr) >= p_snr_min)
-     AND (p_snr_max IS NULL OR max(b.snr) <= p_snr_max);
+  SELECT v.object_id
+  FROM public.object_band_values(p_band, p_mag_min, p_mag_max, p_snr_min, p_snr_max) v;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.objects_matching_band_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.objects_matching_band_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) TO service_role;
-
-
--- object_band_mag / object_band_snr: the object's AB magnitude and S/N in
--- band p_band — the same per-quantity aggregates objects_matching_band_filter
--- tested — for the list's sort keys and its "Mag" / "Band S/N" columns. Per
--- candidate row (PK probes on object_photometry_bands through the object_id
--- index), evaluated only when a band filter is active.
-CREATE OR REPLACE FUNCTION public.object_band_mag(p_object_id INTEGER, p_band TEXT)
-RETURNS DOUBLE PRECISION
-LANGUAGE sql STABLE
-AS $$
-  SELECT min(b.mag)
-  FROM public.object_photometry p
-  JOIN public.object_photometry_bands b ON b.photometry_id = p.id AND b.band = p_band
-  WHERE p.object_id = p_object_id;
-$$;
-
-GRANT EXECUTE ON FUNCTION public.object_band_mag(INTEGER, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.object_band_mag(INTEGER, TEXT) TO service_role;
-
-
-CREATE OR REPLACE FUNCTION public.object_band_snr(p_object_id INTEGER, p_band TEXT)
-RETURNS DOUBLE PRECISION
-LANGUAGE sql STABLE
-AS $$
-  SELECT max(b.snr)
-  FROM public.object_photometry p
-  JOIN public.object_photometry_bands b ON b.photometry_id = p.id AND b.band = p_band
-  WHERE p.object_id = p_object_id;
-$$;
-
-GRANT EXECUTE ON FUNCTION public.object_band_snr(INTEGER, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.object_band_snr(INTEGER, TEXT) TO service_role;
 
 
 -- =============================================================================
@@ -2036,8 +2061,8 @@ BEGIN
       -- the parent object's magnitude and S/N in the filtered band (sort keys
       -- + 'Mag' / 'Band S/N' columns). Object-level: photometry belongs to the
       -- sky position, so every grating of one object reports the same pair.
-      CASE WHEN p_band IS NOT NULL THEN public.object_band_mag(t.object_id, p_band) END AS band_mag,
-      CASE WHEN p_band IS NOT NULL THEN public.object_band_snr(t.object_id, p_band) END AS band_snr,
+      bv.mag AS band_mag,
+      bv.snr AS band_snr,
       CASE
         WHEN v_coord_search_active THEN
           2 * DEGREES(ASIN(SQRT(
@@ -2050,6 +2075,8 @@ BEGIN
     FROM targets t
     JOIN spectra s ON s.target_id = t.target_id
     LEFT JOIN objects o ON o.id = t.object_id
+    -- band values (Mag / Band S/N columns + sort keys): one viewer-scoped scan per statement, hash-joined; NULLs when no band filter is active
+    LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max) bv ON bv.object_id = t.object_id
     WHERE
       t.program_slug = ANY(v_filtered_program_slugs)
       -- Hide spectra whose parent object was soft-deleted.
@@ -2638,8 +2665,8 @@ BEGIN
       CASE WHEN p_line IS NOT NULL THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END AS line_snr,
       -- the object's magnitude and S/N in the filtered band (sort keys + the
       -- 'Mag' / 'Band S/N' columns); the same aggregates the band filter tested
-      CASE WHEN p_band IS NOT NULL THEN public.object_band_mag(o.id, p_band) END AS band_mag,
-      CASE WHEN p_band IS NOT NULL THEN public.object_band_snr(o.id, p_band) END AS band_snr,
+      bv.mag AS band_mag,
+      bv.snr AS band_snr,
       CASE
         WHEN v_coord_search_active THEN
           2 * DEGREES(ASIN(SQRT(
@@ -2650,6 +2677,8 @@ BEGIN
         ELSE NULL
       END AS distance
     FROM objects o
+    -- band values (Mag / Band S/N columns + sort keys): one viewer-scoped scan per statement, hash-joined; NULLs when no band filter is active
+    LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max) bv ON bv.object_id = o.id
     WHERE
       o.programs && v_filtered_program_slugs
       AND o.is_active = true
@@ -3091,6 +3120,8 @@ BEGIN
   RETURN QUERY
   SELECT o.object_id
   FROM objects o
+  -- band values (Mag / Band S/N columns + sort keys): one viewer-scoped scan per statement, hash-joined; NULLs when no band filter is active
+  LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max) bv ON bv.object_id = o.id
   WHERE
     o.programs && v_filtered_program_slugs
     AND o.is_active = true
@@ -3235,10 +3266,10 @@ BEGIN
     CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN o.max_snr END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'line_snr' AND p_sort_direction = 'asc' THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END ASC NULLS LAST,
     CASE WHEN p_sort_column = 'line_snr' AND p_sort_direction = 'desc' THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END DESC NULLS LAST,
-    CASE WHEN p_sort_column = 'band_mag' AND p_sort_direction = 'asc' THEN public.object_band_mag(o.id, p_band) END ASC NULLS LAST,
-    CASE WHEN p_sort_column = 'band_mag' AND p_sort_direction = 'desc' THEN public.object_band_mag(o.id, p_band) END DESC NULLS LAST,
-    CASE WHEN p_sort_column = 'band_snr' AND p_sort_direction = 'asc' THEN public.object_band_snr(o.id, p_band) END ASC NULLS LAST,
-    CASE WHEN p_sort_column = 'band_snr' AND p_sort_direction = 'desc' THEN public.object_band_snr(o.id, p_band) END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'band_mag' AND p_sort_direction = 'asc' THEN bv.mag END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'band_mag' AND p_sort_direction = 'desc' THEN bv.mag END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'band_snr' AND p_sort_direction = 'asc' THEN bv.snr END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'band_snr' AND p_sort_direction = 'desc' THEN bv.snr END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'asc' THEN o.max_exposure_time END ASC NULLS LAST,
     CASE WHEN p_sort_column = 'max_exposure_time' AND p_sort_direction = 'desc' THEN o.max_exposure_time END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'photo_z' AND p_sort_direction = 'asc' THEN o.photo_z END ASC NULLS LAST,
@@ -3448,8 +3479,8 @@ BEGIN
         WHEN 'max_snr' THEN o.max_snr WHEN 'max_exposure_time' THEN o.max_exposure_time
         WHEN 'photo_z' THEN o.photo_z
         WHEN 'line_snr' THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished)
-        WHEN 'band_mag' THEN public.object_band_mag(o.id, p_band)
-        WHEN 'band_snr' THEN public.object_band_snr(o.id, p_band)
+        WHEN 'band_mag' THEN bv.mag
+        WHEN 'band_snr' THEN bv.snr
         WHEN 'distance' THEN
           2 * DEGREES(ASIN(SQRT(
             POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) +
@@ -3459,6 +3490,8 @@ BEGIN
         ELSE NULL
       END AS sort_num
     FROM objects o
+    -- band values (Mag / Band S/N columns + sort keys): one viewer-scoped scan per statement, hash-joined; NULLs when no band filter is active
+    LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max) bv ON bv.object_id = o.id
     WHERE
       o.programs && v_filtered_program_slugs
       AND o.is_active = true
@@ -3750,12 +3783,14 @@ BEGIN
       CASE WHEN p_line IS NOT NULL THEN
         (SELECT __l.snr FROM public.spectrum_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
       END AS line_snr,
-      CASE WHEN p_band IS NOT NULL THEN public.object_band_mag(t.object_id, p_band) END AS band_mag,
-      CASE WHEN p_band IS NOT NULL THEN public.object_band_snr(t.object_id, p_band) END AS band_snr
+      bv.mag AS band_mag,
+      bv.snr AS band_snr
     FROM targets t
     JOIN spectra s ON s.target_id = t.target_id
     LEFT JOIN objects o ON o.id = t.object_id
     LEFT JOIN visible_lists vl ON vl.object_id = t.object_id
+    -- band values (Mag / Band S/N columns + sort keys): one viewer-scoped scan per statement, hash-joined; NULLs when no band filter is active
+    LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max) bv ON bv.object_id = t.object_id
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
       AND (p_after_id IS NULL OR s.id > p_after_id)
       AND (o.id IS NULL OR o.is_active = true)
@@ -4134,9 +4169,11 @@ BEGIN
     po.has_photometry, po.photo_z, po.photo_z_err_lo, po.photo_z_err_hi,
     phot.photometry,
     CASE WHEN p_line IS NOT NULL THEN public.object_line_snr(po.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END AS line_snr,
-    CASE WHEN p_band IS NOT NULL THEN public.object_band_mag(po.id, p_band) END AS band_mag,
-    CASE WHEN p_band IS NOT NULL THEN public.object_band_snr(po.id, p_band) END AS band_snr
+    bv.mag AS band_mag,
+    bv.snr AS band_snr
   FROM page_objects po
+  -- band values (Mag / Band S/N columns + sort keys): one viewer-scoped scan per statement, hash-joined; NULLs when no band filter is active
+  LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max) bv ON bv.object_id = po.id
   LEFT JOIN member_targets mt ON mt.object_id = po.id
   LEFT JOIN visible_lists vl ON vl.object_id = po.id
   LEFT JOIN user_profiles up ON up.user_id = po.last_inspected_by

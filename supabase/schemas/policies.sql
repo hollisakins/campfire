@@ -410,6 +410,13 @@ CREATE POLICY "admin_object_photometry_delete"
 -- sync_object_photometry_bands trigger (SECURITY DEFINER, so an admin deploy
 -- upsert on object_photometry rebuilds them regardless of these policies);
 -- the admin write policies exist only for manual repair.
+--
+-- The catalog RPCs do NOT read this table through these policies: the
+-- two-hop correlated EXISTS chain (this row -> parent cross-match -> object)
+-- re-ran for every row of a band's slice and timed the band filter out in
+-- production, so object_band_values() (functions.sql) is SECURITY DEFINER
+-- and enforces the objects policy's predicate inline with one join. This
+-- policy still governs direct PostgREST reads of the table.
 
 ALTER TABLE object_photometry_bands ENABLE ROW LEVEL SECURITY;
 
