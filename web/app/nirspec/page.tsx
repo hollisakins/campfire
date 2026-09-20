@@ -82,6 +82,7 @@ function SpectraPageContent() {
   const availablePrograms = filterOptionsResult?.programs ?? [];
   const availableFields = filterOptionsResult?.fields ?? [];
   const availableObservations = filterOptionsResult?.observations ?? [];
+  const availableBands = filterOptionsResult?.photometry_bands ?? [];
 
   // Update isFullDataset when query results change
   useEffect(() => {
@@ -217,6 +218,7 @@ function SpectraPageContent() {
           availablePrograms={availablePrograms}
           availableFields={availableFields}
           availableObservations={availableObservations}
+          availableBands={availableBands}
           isSearchDebouncing={isDebouncing}
           viewMode={viewMode}
         />
@@ -241,6 +243,7 @@ function SpectraPageContent() {
           onViewModeChange={handleViewModeChange}
           hasCoordinateSearch={filters.coordinate_search !== null}
           activeLine={filters.line}
+          activeBand={filters.band}
           currentFilterParams={filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection, viewMode)}
           loading={loading}
           error={error}

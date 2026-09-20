@@ -1014,6 +1014,12 @@ def photometry(ctx, config_path, field, photometry_config, dry_run, no_photoz,
     if dry_run:
         print("Dry run — no changes made.")
     else:
+        # mv_filter_options carries photometry_bands, which feeds the portal's
+        # band picker — without this refresh a band deployed here is
+        # filterable by a hand-built URL but absent from the picker until the
+        # nightly backstop runs. The full field/observation deploys refresh
+        # after their own photometry step for the same reason.
+        refresh_filter_options(sb)
         print("Done.")
 
 

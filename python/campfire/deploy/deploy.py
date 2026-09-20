@@ -890,10 +890,6 @@ def deploy_observation(
             )
             print(f"  {n_clusters} clusters")
 
-            print()
-            refresh_filter_options(sb)
-            refresh_programs_overview(sb)
-
             # Photometry: cross-match the field's catalog and upsert rows
             # for objects touched by reconcile. Skipped silently if no
             # photometry config exists for the field, or the change set is
@@ -909,6 +905,16 @@ def deploy_observation(
                         sb, field, phot_path, config,
                         restrict_to_object_db_ids=changed_ids,
                     )
+
+            # AFTER the photometry upsert, not before: mv_filter_options now
+            # carries photometry_bands, so a refresh that runs first publishes
+            # a band list that predates the rows just written and a newly
+            # deployed band stays out of the portal's picker until some later
+            # refresh (the nightly backstop). Everything else this refresh
+            # covers is already written by here too.
+            print()
+            refresh_filter_options(sb)
+            refresh_programs_overview(sb)
 
         # Deploy pointings (JSONB on observations)
         pointings_ecsv = discover_pointings_ecsv(obs_dir, obs_name)

@@ -5,11 +5,15 @@ export interface FilterOptionsResult {
   programs: Program[];
   fields: string[];
   observations: string[];
+  /** Photometry bands the band filter can offer, in wavelength order. Band
+   *  names come from the per-field catalog config, so unlike the emission-line
+   *  catalog this list is data and has to be fetched. */
+  photometry_bands: string[];
   error?: string;
 }
 
 const NO_STORE = { 'Cache-Control': 'private, no-store' };
-const EMPTY: FilterOptionsResult = { programs: [], fields: [], observations: [] };
+const EMPTY: FilterOptionsResult = { programs: [], fields: [], observations: [], photometry_bands: [] };
 
 /**
  * GET /api/filter-options
@@ -50,9 +54,19 @@ export async function GET() {
 
     // JWST PIDs (for program sorting) and the field/observation lists in
     // parallel — independent reads, one wall-clock hop.
+    //
+    // `select('*')`, not a column list, and deliberately: the migration and the
+    // Vercel deploy land independently on merge, so this build can run for a
+    // few minutes against a database whose mv_filter_options has no
+    // photometry_bands column yet. PostgREST rejects the WHOLE query for one
+    // unknown column, which would drop the fields and observations pickers —
+    // neither of which has anything to do with this feature — into the
+    // error fallback below. With '*' the column is simply absent from the row
+    // and `|| []` hides the band picker until the matview catches up. Adding a
+    // new column here is the same trade, so leave the star alone.
     const [{ data: obsData }, { data: filterData, error: filterError }] = await Promise.all([
       supabase.from('observations').select('program_slug, jwst_program_id'),
-      supabase.from('mv_filter_options').select('fields, observations').single(),
+      supabase.from('mv_filter_options').select('*').single(),
     ]);
 
     const pidsBySlug: Record<string, number[]> = {};
@@ -71,7 +85,7 @@ export async function GET() {
     if (filterError) {
       console.error('Error fetching filter options:', filterError);
       return Response.json(
-        { programs, fields: [], observations: [], error: filterError.message } satisfies FilterOptionsResult,
+        { programs, fields: [], observations: [], photometry_bands: [], error: filterError.message } satisfies FilterOptionsResult,
         { headers: NO_STORE },
       );
     }
@@ -80,6 +94,7 @@ export async function GET() {
       programs,
       fields: filterData?.fields || [],
       observations: filterData?.observations || [],
+      photometry_bands: filterData?.photometry_bands || [],
     };
     return Response.json(body, { headers: NO_STORE });
   } catch (err) {

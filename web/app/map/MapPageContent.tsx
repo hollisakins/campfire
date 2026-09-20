@@ -182,6 +182,7 @@ export function MapPageContent({
         showBasicFilters={true}
         availablePrograms={availablePrograms}
         availableObservations={[]}
+        availableBands={filterOptionsResult?.photometry_bands ?? []}
       />
     </div>
   );

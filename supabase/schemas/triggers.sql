@@ -244,6 +244,37 @@ BEGIN
 END;
 $$;
 
+-- ---------------------------------------------------------------------------
+-- sync_object_photometry_bands
+--     Unnest NEW.photometry -> 'bands' (jsonb keyed by band name) into
+--     object_photometry_bands. The exact counterpart of sync_spectrum_lines
+--     on the photometry side, and SECURITY DEFINER for the same reason: the
+--     deploy CLI upserts object_photometry as an admin under RLS, and the
+--     derived table's own policies must not decide whether the mirror is
+--     rebuilt. snr and mag are generated columns, so only the raw flux pair
+--     and the pivot wavelength are copied; a missing or null field is a NULL
+--     column (the payload already wrote NaN as null).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.sync_object_photometry_bands() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  DELETE FROM public.object_photometry_bands WHERE photometry_id = NEW.id;
+  INSERT INTO public.object_photometry_bands (photometry_id, band, flux, flux_err, wav)
+  SELECT
+    NEW.id,
+    e.key,
+    (e.value ->> 'flux')::double precision,
+    (e.value ->> 'flux_err')::double precision,
+    (e.value ->> 'wav')::double precision
+  FROM jsonb_each(COALESCE(NEW.photometry -> 'bands', '{}'::jsonb)) AS e
+  WHERE jsonb_typeof(e.value) = 'object';
+  RETURN NEW;
+END;
+$$;
+
+
 CREATE OR REPLACE FUNCTION public.bump_spectra_updated_at() RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -577,6 +608,11 @@ DROP TRIGGER IF EXISTS sync_spectrum_lines_trigger ON public.spectrum_line_fits;
 CREATE TRIGGER sync_spectrum_lines_trigger
   AFTER INSERT OR UPDATE OF lines ON public.spectrum_line_fits
   FOR EACH ROW EXECUTE FUNCTION public.sync_spectrum_lines();
+
+DROP TRIGGER IF EXISTS sync_object_photometry_bands_trigger ON public.object_photometry;
+CREATE TRIGGER sync_object_photometry_bands_trigger
+  AFTER INSERT OR UPDATE OF photometry ON public.object_photometry
+  FOR EACH ROW EXECUTE FUNCTION public.sync_object_photometry_bands();
 
 DROP TRIGGER IF EXISTS bump_spectra_updated_at_trigger ON public.spectra;
 CREATE TRIGGER bump_spectra_updated_at_trigger
