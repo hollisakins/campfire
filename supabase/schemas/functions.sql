@@ -791,7 +791,7 @@ GRANT EXECUTE ON FUNCTION public.object_line_snr(INTEGER, TEXT, BOOLEAN, TEXT[],
 -- Photometry band catalog helpers (object_photometry_bands)
 -- =============================================================================
 
--- object_band_values: for catalog band p_band, one row per viewer-visible
+-- object_band_values: for catalog band p_band, one row per caller-visible
 -- object whose photometry lies in the requested magnitude and/or S/N window:
 -- (object_id, mag, snr), where mag / snr are the per-quantity aggregates the
 -- window was tested against. ONE set, built by ONE scan per statement, that
@@ -811,17 +811,38 @@ GRANT EXECUTE ON FUNCTION public.object_line_snr(INTEGER, TEXT, BOOLEAN, TEXT[],
 -- band-filtered list call cost ~30k nested subplans (0.6-3.5 s on a 990k-row
 -- copy of the table) before the per-row probes that sorting on the band added
 -- on top (2.9 s more, one probe per candidate row). Bypassing RLS and
--- enforcing the SAME viewer scope with one hash join to objects is 10-50x
+-- enforcing the caller's scope with one hash join to objects is 10-50x
 -- cheaper (70 ms for the filter, 105 ms for the values of every visible
--- object). The scope predicate below is a verbatim copy of
--- select_objects_by_access (policies.sql); keep the two in step: it is what
--- makes a direct call from a viewer return only what that viewer could read
--- through the policy. A row is admitted only if its OBJECT is visible; the
--- cross-match carries no access rule of its own (photometry is an external
--- positional catalog, not a program product), and the objects join is on the
--- object primary key, so a cross-match whose object_id is still NULL (before
--- the post-rebuild FK refresh) is absent, as it is from every viewer's
--- photometry anyway. Set search_path is the usual SECURITY DEFINER hygiene.
+-- object).
+--
+-- Scope: TWO gates, because the RPCs reach this function under two identities.
+--   * p_program_slugs / p_include_unpublished — the caller's already
+--     access-checked slug array and the admin opt-in for unpublished objects,
+--     exactly what objects_matching_line_filter takes and what every catalog
+--     RPC already applies to its own objects predicate. This is THE gate for
+--     the /api/v1 bearer routes, which authorize the user in the web layer and
+--     call the RPCs through the service-role client with these arguments:
+--     under that JWT auth.uid() is NULL, accessible_program_slugs() is the
+--     public set and is_admin() is false, so a helper that recomputed
+--     visibility from the JWT would strip private-program objects from an
+--     authorized API user's band filter (Codex review on #567).
+--   * The select_objects_by_access predicate (policies.sql), applied to every
+--     caller except the service role (auth.role() = 'service_role', the JWT
+--     role claim, the same test the deploy-side RPCs use): the web's cookie
+--     session, and a viewer calling the function directly over PostgREST.
+--     Defense in depth for the direct call: a viewer passing slugs they do
+--     not hold still gets only what the policy would show them. Copied
+--     verbatim; keep the two in step. The service role already bypasses RLS
+--     everywhere, so for it the explicit arguments decide. Keyed on the role
+--     claim, not on auth.uid() IS NULL: an `authenticated` request with no
+--     subject must still be policy-gated, and a direct database session
+--     (guards, migrations) is simply treated as a viewer.
+-- Either way the RPCs intersect the result with their own scoped object set,
+-- so this can narrow what a caller sees and never widen it. The objects join
+-- is on the object primary key, so a cross-match whose object_id is still
+-- NULL (before the post-rebuild FK refresh) is absent, as it is from every
+-- viewer's photometry anyway. Set search_path is the usual SECURITY DEFINER
+-- hygiene.
 --
 -- An object with two cross-matches in the same band, the transient state
 -- while a field carries a new catalog release beside the old one before
@@ -842,10 +863,12 @@ GRANT EXECUTE ON FUNCTION public.object_line_snr(INTEGER, TEXT, BOOLEAN, TEXT[],
 -- filter is active.
 CREATE OR REPLACE FUNCTION public.object_band_values(
   p_band TEXT,
-  p_mag_min DOUBLE PRECISION DEFAULT NULL,
-  p_mag_max DOUBLE PRECISION DEFAULT NULL,
-  p_snr_min DOUBLE PRECISION DEFAULT NULL,
-  p_snr_max DOUBLE PRECISION DEFAULT NULL
+  p_mag_min DOUBLE PRECISION,
+  p_mag_max DOUBLE PRECISION,
+  p_snr_min DOUBLE PRECISION,
+  p_snr_max DOUBLE PRECISION,
+  p_program_slugs TEXT[],
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS TABLE (object_id INTEGER, mag DOUBLE PRECISION, snr DOUBLE PRECISION)
 LANGUAGE sql STABLE SECURITY DEFINER
@@ -858,12 +881,20 @@ AS $$
   JOIN public.objects o ON o.id = p.object_id
   WHERE p_band IS NOT NULL
     AND b.band = p_band
-    -- Viewer scope: verbatim select_objects_by_access (policies.sql).
-    AND o.programs && (SELECT public.accessible_program_slugs())
-    AND (o.has_published_spectrum OR (SELECT public.is_admin())
-         OR (SELECT public.link_sees_drafts()))
-    AND ((SELECT NOT public.is_link_account())
-         OR o.observations && ARRAY[(SELECT public.link_observation())]::text[])
+    -- Gate 1: the caller's access-checked scope (what the RPCs apply themselves).
+    AND o.programs && p_program_slugs
+    AND (p_include_unpublished OR o.has_published_spectrum)
+    -- Gate 2: verbatim select_objects_by_access (policies.sql) for every
+    -- caller except the service role (the JWT role claim, the same test the
+    -- deploy-side RPCs use; NOT auth.uid() IS NULL, which an `authenticated`
+    -- request without a subject would also satisfy).
+    AND (COALESCE((SELECT auth.role()), '') = 'service_role' OR (
+      o.programs && (SELECT public.accessible_program_slugs())
+      AND (o.has_published_spectrum OR (SELECT public.is_admin())
+           OR (SELECT public.link_sees_drafts()))
+      AND ((SELECT NOT public.is_link_account())
+           OR o.observations && ARRAY[(SELECT public.link_observation())]::text[])
+    ))
   GROUP BY p.object_id
   HAVING (p_mag_min IS NULL OR min(b.mag) >= p_mag_min)
      AND (p_mag_max IS NULL OR min(b.mag) <= p_mag_max)
@@ -871,32 +902,35 @@ AS $$
      AND (p_snr_max IS NULL OR max(b.snr) <= p_snr_max);
 $$;
 
-GRANT EXECUTE ON FUNCTION public.object_band_values(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.object_band_values(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) TO service_role;
+GRANT EXECUTE ON FUNCTION public.object_band_values(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT[], BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.object_band_values(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT[], BOOLEAN) TO service_role;
 
 
 -- objects_matching_band_filter: the id projection of object_band_values, the
 -- shape every catalog RPC materializes once per call into an INTEGER[] and
 -- probes with o.id = ANY(...). Only ever intersected with the caller's
 -- already access-scoped object set, so it can narrow what a viewer sees and
--- never widen it; the viewer scope inside object_band_values makes a direct
--- call equally safe. SECURITY INVOKER and a single SELECT, so it inlines.
+-- never widen it; the gates inside object_band_values make a direct call
+-- equally safe. SECURITY INVOKER and a single SELECT, so it inlines.
 CREATE OR REPLACE FUNCTION public.objects_matching_band_filter(
   p_band TEXT,
   p_mag_min DOUBLE PRECISION,
   p_mag_max DOUBLE PRECISION,
   p_snr_min DOUBLE PRECISION,
-  p_snr_max DOUBLE PRECISION
+  p_snr_max DOUBLE PRECISION,
+  p_program_slugs TEXT[],
+  p_include_unpublished BOOLEAN DEFAULT false
 )
 RETURNS SETOF INTEGER
 LANGUAGE sql STABLE
 AS $$
   SELECT v.object_id
-  FROM public.object_band_values(p_band, p_mag_min, p_mag_max, p_snr_min, p_snr_max) v;
+  FROM public.object_band_values(p_band, p_mag_min, p_mag_max, p_snr_min, p_snr_max,
+                                 p_program_slugs, p_include_unpublished) v;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.objects_matching_band_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.objects_matching_band_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) TO service_role;
+GRANT EXECUTE ON FUNCTION public.objects_matching_band_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT[], BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.objects_matching_band_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT[], BOOLEAN) TO service_role;
 
 
 -- =============================================================================
@@ -1991,7 +2025,8 @@ BEGIN
   -- so a spectrum matches iff its target's parent object does.
   IF p_band IS NOT NULL THEN
     v_band_object_ids := ARRAY(SELECT public.objects_matching_band_filter(
-      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max));
+      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max,
+      p_program_slugs, p_include_unpublished));
   END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -2075,8 +2110,8 @@ BEGIN
     FROM targets t
     JOIN spectra s ON s.target_id = t.target_id
     LEFT JOIN objects o ON o.id = t.object_id
-    -- band values (Mag / Band S/N columns + sort keys): one viewer-scoped scan per statement, hash-joined; NULLs when no band filter is active
-    LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max) bv ON bv.object_id = t.object_id
+    -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
+    LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = t.object_id
     WHERE
       t.program_slug = ANY(v_filtered_program_slugs)
       -- Hide spectra whose parent object was soft-deleted.
@@ -2462,7 +2497,8 @@ BEGIN
   -- so a spectrum matches iff its target's parent object does.
   IF p_band IS NOT NULL THEN
     v_band_object_ids := ARRAY(SELECT public.objects_matching_band_filter(
-      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max));
+      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max,
+      p_program_slugs, p_include_unpublished));
   END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -2677,8 +2713,8 @@ BEGIN
         ELSE NULL
       END AS distance
     FROM objects o
-    -- band values (Mag / Band S/N columns + sort keys): one viewer-scoped scan per statement, hash-joined; NULLs when no band filter is active
-    LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max) bv ON bv.object_id = o.id
+    -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
+    LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = o.id
     WHERE
       o.programs && v_filtered_program_slugs
       AND o.is_active = true
@@ -3080,7 +3116,8 @@ BEGIN
   -- so a spectrum matches iff its target's parent object does.
   IF p_band IS NOT NULL THEN
     v_band_object_ids := ARRAY(SELECT public.objects_matching_band_filter(
-      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max));
+      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max,
+      p_program_slugs, p_include_unpublished));
   END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -3120,8 +3157,8 @@ BEGIN
   RETURN QUERY
   SELECT o.object_id
   FROM objects o
-  -- band values (Mag / Band S/N columns + sort keys): one viewer-scoped scan per statement, hash-joined; NULLs when no band filter is active
-  LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max) bv ON bv.object_id = o.id
+  -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
+  LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = o.id
   WHERE
     o.programs && v_filtered_program_slugs
     AND o.is_active = true
@@ -3428,7 +3465,8 @@ BEGIN
   -- so a spectrum matches iff its target's parent object does.
   IF p_band IS NOT NULL THEN
     v_band_object_ids := ARRAY(SELECT public.objects_matching_band_filter(
-      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max));
+      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max,
+      p_program_slugs, p_include_unpublished));
   END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -3490,8 +3528,8 @@ BEGIN
         ELSE NULL
       END AS sort_num
     FROM objects o
-    -- band values (Mag / Band S/N columns + sort keys): one viewer-scoped scan per statement, hash-joined; NULLs when no band filter is active
-    LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max) bv ON bv.object_id = o.id
+    -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
+    LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = o.id
     WHERE
       o.programs && v_filtered_program_slugs
       AND o.is_active = true
@@ -3752,7 +3790,8 @@ BEGIN
   -- so a spectrum matches iff its target's parent object does.
   IF p_band IS NOT NULL THEN
     v_band_object_ids := ARRAY(SELECT public.objects_matching_band_filter(
-      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max));
+      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max,
+      p_program_slugs, p_include_unpublished));
   END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -3789,8 +3828,8 @@ BEGIN
     JOIN spectra s ON s.target_id = t.target_id
     LEFT JOIN objects o ON o.id = t.object_id
     LEFT JOIN visible_lists vl ON vl.object_id = t.object_id
-    -- band values (Mag / Band S/N columns + sort keys): one viewer-scoped scan per statement, hash-joined; NULLs when no band filter is active
-    LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max) bv ON bv.object_id = t.object_id
+    -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
+    LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = t.object_id
     WHERE t.program_slug = ANY(v_filtered_program_slugs)
       AND (p_after_id IS NULL OR s.id > p_after_id)
       AND (o.id IS NULL OR o.is_active = true)
@@ -3992,7 +4031,8 @@ BEGIN
   -- so a spectrum matches iff its target's parent object does.
   IF p_band IS NOT NULL THEN
     v_band_object_ids := ARRAY(SELECT public.objects_matching_band_filter(
-      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max));
+      p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max,
+      p_program_slugs, p_include_unpublished));
   END IF;
 
   IF p_filter_programs IS NOT NULL AND array_length(p_filter_programs, 1) > 0 THEN
@@ -4172,8 +4212,8 @@ BEGIN
     bv.mag AS band_mag,
     bv.snr AS band_snr
   FROM page_objects po
-  -- band values (Mag / Band S/N columns + sort keys): one viewer-scoped scan per statement, hash-joined; NULLs when no band filter is active
-  LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max) bv ON bv.object_id = po.id
+  -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
+  LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = po.id
   LEFT JOIN member_targets mt ON mt.object_id = po.id
   LEFT JOIN visible_lists vl ON vl.object_id = po.id
   LEFT JOIN user_profiles up ON up.user_id = po.last_inspected_by

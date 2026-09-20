@@ -415,8 +415,10 @@ CREATE POLICY "admin_object_photometry_delete"
 -- two-hop correlated EXISTS chain (this row -> parent cross-match -> object)
 -- re-ran for every row of a band's slice and timed the band filter out in
 -- production, so object_band_values() (functions.sql) is SECURITY DEFINER
--- and enforces the objects policy's predicate inline with one join. This
--- policy still governs direct PostgREST reads of the table.
+-- and scopes its rows itself: the caller's explicit program slugs plus, for
+-- any caller with a user identity, a verbatim copy of the objects policy's
+-- predicate inline with one join. This policy still governs direct
+-- PostgREST reads of the table.
 
 ALTER TABLE object_photometry_bands ENABLE ROW LEVEL SECURITY;
 

@@ -1,18 +1,23 @@
--- Guard: the photometry band filter must stay VIEWER-SCOPED now that its
+-- Guard: the photometry band filter must stay CALLER-SCOPED now that its
 -- helper bypasses RLS.
 --
 -- object_band_values() (functions.sql) is SECURITY DEFINER: read under RLS,
 -- every object_photometry_bands row re-ran the derived table's two-hop policy
 -- chain (parent cross-match -> object) and the band filter timed out in
--- production, so the function enforces the select_objects_by_access predicate
--- itself with one join to objects. That makes the predicate copy load-bearing:
--- if it drifts from the policy, a band filter could surface proprietary or
--- draft objects to a viewer who cannot read them, or hide objects an admin
--- can. This asserts, for the helper and the catalog RPCs that join it, that a
--- public-only viewer, an admin and a viewer holding a private-program grant
--- each get exactly the objects the objects policy gives them, and that the
--- window is tested on the per-object aggregates (min mag / max S/N over an
--- object's cross-matches) the rows display.
+-- production. It scopes its rows with two gates instead: the caller's explicit
+-- p_program_slugs / p_include_unpublished (the only gate for a service-role
+-- caller, which is how the /api/v1 bearer routes reach the RPCs after
+-- authorizing the user in the web layer), and, for every other caller, the
+-- select_objects_by_access predicate copied from policies.sql. Both gates
+-- are load-bearing: if the explicit one is dropped an authorized API user
+-- loses their private programs under a band filter;
+-- if the policy copy drifts, a viewer calling the function directly with
+-- slugs they do not hold could see proprietary or draft objects. This asserts,
+-- for the helper and the catalog RPCs that join it, that a service-role
+-- caller, a public-only viewer, an admin and a viewer holding a
+-- private-program grant each get exactly the objects the objects policy
+-- gives them, and that the window is tested on the per-object aggregates
+-- (min mag / max S/N over an object's cross-matches) the rows display.
 --
 -- Run locally:
 --   eval "$(supabase status -o env | grep '^DB_URL=')"
@@ -33,6 +38,8 @@ DECLARE
   v_row   JSONB;
   v_count BIGINT;
   v_text  TEXT[];
+  c_pub   CONSTANT TEXT[] := ARRAY['zzz_bf_pub'];
+  c_both  CONSTANT TEXT[] := ARRAY['zzz_bf_pub', 'zzz_bf_prop'];
 BEGIN
   -- Fixtures ------------------------------------------------------------------
   INSERT INTO programs (slug, program_name, is_public) VALUES
@@ -98,70 +105,87 @@ BEGIN
     RAISE EXCEPTION 'fixture: trigger did not unnest 6 band rows';
   END IF;
 
-  -- 1) Helper semantics, no JWT (public programs only, not admin) --------------
-  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w') v);
+  -- 1) Helper semantics as the service role (role claim 'service_role': the
+  --    explicit arguments are the only gate, exactly the /api/v1 bearer-route
+  --    path, which authorizes the user in the web layer) ----------------------
+  PERFORM set_config('request.jwt.claims', json_build_object('role', 'service_role')::text, true);
+  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, NULL, NULL, NULL, c_pub) v);
   IF NOT (v_pub = ANY(v_ids) AND v_dual = ANY(v_ids) AND v_nodet = ANY(v_ids)) THEN
     RAISE EXCEPTION 'helper: dropped a visible public object: %', v_ids;
   END IF;
   IF v_prop = ANY(v_ids) OR v_draft = ANY(v_ids) THEN
-    RAISE EXCEPTION 'helper: leaked a proprietary or draft object to a public-only caller: %', v_ids;
+    RAISE EXCEPTION 'helper: public slugs, published only: leaked proprietary or draft object: %', v_ids;
+  END IF;
+  -- An API user authorized for the private program gets it (this is the
+  -- Codex-#567 case: the service-role client carries no auth.uid()).
+  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, NULL, NULL, NULL, c_both) v);
+  IF NOT (v_prop = ANY(v_ids)) OR v_draft = ANY(v_ids) THEN
+    RAISE EXCEPTION 'helper: both slugs, published only: want prop and not draft: %', v_ids;
+  END IF;
+  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, NULL, NULL, NULL, c_both, true) v);
+  IF NOT (v_prop = ANY(v_ids) AND v_draft = ANY(v_ids)) OR array_length(v_ids, 1) <> 5 THEN
+    RAISE EXCEPTION 'helper: both slugs + include_unpublished: want all 5 fixtures: %', v_ids;
   END IF;
 
   -- Per-object aggregates across two cross-matches: min(mag), max(snr).
-  SELECT v.mag, v.snr INTO v_mag, v_snr FROM public.object_band_values('f444w') v WHERE v.object_id = v_dual;
+  SELECT v.mag, v.snr INTO v_mag, v_snr FROM public.object_band_values('f444w', NULL, NULL, NULL, NULL, c_pub) v WHERE v.object_id = v_dual;
   IF abs(v_mag - 26.0) > 0.01 OR abs(v_snr - 7.99) > 0.05 THEN
     RAISE EXCEPTION 'helper: dual-catalog aggregates wrong: mag=%, snr=% (want 26.0, ~8)', v_mag, v_snr;
   END IF;
-  SELECT v.mag, v.snr INTO v_mag, v_snr FROM public.object_band_values('f444w') v WHERE v.object_id = v_nodet;
+  SELECT v.mag, v.snr INTO v_mag, v_snr FROM public.object_band_values('f444w', NULL, NULL, NULL, NULL, c_pub) v WHERE v.object_id = v_nodet;
   IF v_mag IS NOT NULL OR abs(v_snr + 1.0) > 0.01 THEN
     RAISE EXCEPTION 'helper: non-detection must carry NULL mag and its signed S/N: mag=%, snr=%', v_mag, v_snr;
   END IF;
 
   -- Windows are tested on those aggregates.
-  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, 26.5, NULL, NULL) v ORDER BY 1);
+  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, 26.5, NULL, NULL, c_pub) v ORDER BY 1);
   IF v_ids <> ARRAY[LEAST(v_pub, v_dual), GREATEST(v_pub, v_dual)] THEN
     RAISE EXCEPTION 'helper: mag <= 26.5 should be exactly {pub, dual} (no-mag row excluded): %', v_ids;
   END IF;
-  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', 25.5, NULL, NULL, NULL) v);
+  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', 25.5, NULL, NULL, NULL, c_pub) v);
   IF v_ids <> ARRAY[v_dual] THEN
     RAISE EXCEPTION 'helper: mag >= 25.5 should be exactly {dual}: %', v_ids;
   END IF;
-  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, NULL, 5, NULL) v ORDER BY 1);
+  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, NULL, 5, NULL, c_pub) v ORDER BY 1);
   IF v_ids <> ARRAY[LEAST(v_pub, v_dual), GREATEST(v_pub, v_dual)] THEN
     RAISE EXCEPTION 'helper: snr >= 5 should be {pub, dual} (dual via its BEST cross-match): %', v_ids;
   END IF;
-  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, NULL, NULL, 5) v);
+  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, NULL, NULL, 5, c_pub) v);
   IF v_ids <> ARRAY[v_nodet] THEN
     RAISE EXCEPTION 'helper: snr <= 5 should be exactly {nodet}: %', v_ids;
   END IF;
-  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, 25.5, 5, NULL) v);
+  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, 25.5, 5, NULL, c_pub) v);
   IF v_ids <> ARRAY[v_pub] THEN
     RAISE EXCEPTION 'helper: mag <= 25.5 AND snr >= 5 should be exactly {pub}: %', v_ids;
   END IF;
 
   -- The id projection is the same set; NULL / unknown band yield nothing.
-  IF ARRAY(SELECT public.objects_matching_band_filter('f444w', NULL, 26.5, NULL, NULL) ORDER BY 1)
-     <> ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, 26.5, NULL, NULL) v ORDER BY 1) THEN
+  IF ARRAY(SELECT public.objects_matching_band_filter('f444w', NULL, 26.5, NULL, NULL, c_pub) ORDER BY 1)
+     <> ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, 26.5, NULL, NULL, c_pub) v ORDER BY 1) THEN
     RAISE EXCEPTION 'objects_matching_band_filter disagrees with object_band_values';
   END IF;
-  IF EXISTS (SELECT 1 FROM public.object_band_values(NULL)) OR EXISTS (SELECT 1 FROM public.object_band_values('zzz_no_such_band')) THEN
+  IF EXISTS (SELECT 1 FROM public.object_band_values(NULL, NULL, NULL, NULL, NULL, c_both))
+     OR EXISTS (SELECT 1 FROM public.object_band_values('zzz_no_such_band', NULL, NULL, NULL, NULL, c_both)) THEN
     RAISE EXCEPTION 'helper: NULL or unknown band must yield no rows';
   END IF;
 
   -- 2) Public-only authenticated viewer, through RLS ---------------------------
-  -- zzz_bf_pub is public, so it is accessible with no JWT claims set.
+  -- zzz_bf_pub is public, so it is accessible with no subject claim; the role
+  -- claim is what tells the helper this is NOT the service role.
+  PERFORM set_config('request.jwt.claims', json_build_object('role', 'authenticated')::text, true);
   PERFORM set_config('role', 'authenticated', true);
 
-  -- Direct call of the SECURITY DEFINER helper must not widen the viewer's set.
-  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w') v);
+  -- Direct call of the SECURITY DEFINER helper must not widen the viewer's
+  -- set, even with slugs the viewer does not hold and the unpublished opt-in.
+  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, NULL, NULL, NULL, c_both, true) v);
   IF v_prop = ANY(v_ids) OR v_draft = ANY(v_ids) OR NOT (v_pub = ANY(v_ids)) THEN
-    RAISE EXCEPTION 'authenticated: direct helper call leaked or dropped rows: %', v_ids;
+    RAISE EXCEPTION 'authenticated: direct helper call with unheld slugs leaked or dropped rows: %', v_ids;
   END IF;
 
   -- Objects list: window + sort on the band; displayed values are the tested ones.
   SELECT targets, total_count INTO v_json, v_count
     FROM public.get_filtered_objects_paginated(
-      p_program_slugs => ARRAY['zzz_bf_pub'],
+      p_program_slugs => c_pub,
       p_fields        => ARRAY['zzz_bf_field'],
       p_band          => 'f444w',
       p_band_mag_max  => 26.5,
@@ -185,7 +209,7 @@ BEGIN
   -- No window: the no-magnitude row is admitted and sorts last.
   SELECT targets, total_count INTO v_json, v_count
     FROM public.get_filtered_objects_paginated(
-      p_program_slugs => ARRAY['zzz_bf_pub'],
+      p_program_slugs => c_pub,
       p_fields        => ARRAY['zzz_bf_field'],
       p_band          => 'f444w',
       p_sort_column   => 'band_mag',
@@ -197,7 +221,7 @@ BEGIN
 
   -- get_filtered_object_ids agrees (it sorts through the same join).
   v_text := ARRAY(SELECT object_id FROM public.get_filtered_object_ids(
-      p_program_slugs => ARRAY['zzz_bf_pub'],
+      p_program_slugs => c_pub,
       p_fields        => ARRAY['zzz_bf_field'],
       p_band          => 'f444w',
       p_band_mag_max  => 26.5,
@@ -210,7 +234,7 @@ BEGIN
   -- Spectra list: the band columns come from the parent object.
   SELECT targets, total_count INTO v_json, v_count
     FROM public.get_filtered_spectra_paginated(
-      p_program_slugs => ARRAY['zzz_bf_pub'],
+      p_program_slugs => c_pub,
       p_fields        => ARRAY['zzz_bf_field'],
       p_band          => 'f444w'
     );
@@ -222,13 +246,13 @@ BEGIN
   -- 3) Admin: every program, drafts included ----------------------------------
   PERFORM set_config('request.jwt.claims',
     json_build_object('sub', '00000000-0000-0000-0000-0000000000b1', 'role', 'authenticated')::text, true);
-  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w') v);
+  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, NULL, NULL, NULL, c_both, true) v);
   IF NOT (v_prop = ANY(v_ids) AND v_draft = ANY(v_ids) AND v_pub = ANY(v_ids)) THEN
     RAISE EXCEPTION 'admin: helper hid proprietary or draft objects: %', v_ids;
   END IF;
   SELECT total_count INTO v_count
     FROM public.get_filtered_objects_paginated(
-      p_program_slugs => ARRAY['zzz_bf_pub', 'zzz_bf_prop'],
+      p_program_slugs => c_both,
       p_fields        => ARRAY['zzz_bf_field'],
       p_band          => 'f444w',
       p_include_unpublished => true
@@ -240,13 +264,13 @@ BEGIN
   -- 4) Ordinary viewer with a grant on the private program --------------------
   PERFORM set_config('request.jwt.claims',
     json_build_object('sub', '00000000-0000-0000-0000-0000000000b2', 'role', 'authenticated')::text, true);
-  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w') v);
+  v_ids := ARRAY(SELECT v.object_id FROM public.object_band_values('f444w', NULL, NULL, NULL, NULL, c_both, true) v);
   IF NOT (v_prop = ANY(v_ids)) OR v_draft = ANY(v_ids) THEN
-    RAISE EXCEPTION 'granted viewer: helper should include the proprietary object and not the draft one: %', v_ids;
+    RAISE EXCEPTION 'granted viewer: helper should include the proprietary object and never the draft one: %', v_ids;
   END IF;
   SELECT total_count INTO v_count
     FROM public.get_filtered_objects_paginated(
-      p_program_slugs => ARRAY['zzz_bf_pub', 'zzz_bf_prop'],
+      p_program_slugs => c_both,
       p_fields        => ARRAY['zzz_bf_field'],
       p_band          => 'f444w'
     );
@@ -257,7 +281,7 @@ BEGIN
   PERFORM set_config('request.jwt.claims', '', true);
   PERFORM set_config('role', 'none', true);
 
-  RAISE NOTICE 'OK: band filter scoping holds (helper + objects / object_ids / spectra RPCs; public, admin and granted viewers).';
+  RAISE NOTICE 'OK: band filter scoping holds (helper + objects / object_ids / spectra RPCs; service-role, public, admin and granted callers).';
 END $$;
 
 ROLLBACK;
