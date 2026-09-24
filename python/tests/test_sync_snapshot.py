@@ -268,14 +268,20 @@ def test_unusable_snapshot_falls_back_to_live_walk(tmp_path, store, monkeypatch,
     assert not store.get_meta("sync_bootstrap")               # nothing left to recover
 
 
-def test_snapshot_older_than_the_deletion_journal_forces_a_full_sync(tmp_path, store, monkeypatch):
+def test_snapshot_older_than_the_deletion_journal_walks_live(tmp_path, store, monkeypatch):
     info, blobs = _snapshot_info()
     _serve(monkeypatch, blobs)
-    api = FakeAPI(info=info, catchup={"_objects_total": 2})
+    api = FakeAPI(info=info, catchup={"_objects_total": 2},
+                  live={"objects": [_obj(1)], "spectra": [_spec(1)]})
     api.deleted = None                                       # 410: not journaled that far back
     result = sync_metadata(api, store, tmp_path / "meta", full=True)
-    assert result["needs_full_sync"] is True
-    assert json.loads(store.get_meta("sync_bootstrap")) == {"phase": "loading"}
+
+    assert "snapshot_id" not in result                       # the live walk's result
+    live_calls = [c for c in api.calls if c[1] is None and c[2] is None]
+    assert {c[0] for c in live_calls} == {"objects", "spectra", "storage", "photometry", "line_fits"}
+    assert _ids(store, "objects") == [1]                     # snapshot-only rows purged
+    assert _ids(store, "spectra") == [101]
+    assert not store.get_meta("sync_bootstrap")
 
 
 def test_disk_error_during_download_falls_back(tmp_path, store, monkeypatch):
