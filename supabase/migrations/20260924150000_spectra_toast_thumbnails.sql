@@ -1,0 +1,25 @@
+-- spectra: store the inline SVG thumbnails out of line (TOAST).
+--
+-- thumbnail_svg_fnu / thumbnail_svg_flambda are ~1.9 KB of a ~2.3 KB row
+-- (79,158 of 79,722 rows exceed the 2 KB toast threshold), stored compressed
+-- inline, so the spectra heap is ~231 MB for 80k rows. Every per-row probe or
+-- scan of spectra (the /sync/* streams, the catalog RPCs) reads about one
+-- heap page per row, far past the instance's cache: a cold objects-sync page
+-- took 2.5 s against 1.1 s warm, almost all of it spectra heap fetches
+-- (2026-09-24 sync outage review).
+--
+-- A 128-byte toast_tuple_target makes the toaster move both SVGs out of line
+-- on every insert / update, shrinking the heap to ~20 % (local copy:
+-- 268 MB -> 17 MB). No reader or writer changes: deploy still upserts the
+-- columns, and the only reader, get_filtered_spectra_paginated's thumbnail
+-- join, detoasts at most a page of rows.
+--
+-- Existing rows move only when the table is rewritten, which cannot happen
+-- in a migration (VACUUM cannot run inside a transaction block): a one-off
+-- VACUUM FULL spectra (brief ACCESS EXCLUSIVE lock) or pg_repack follows,
+-- as for 20260904000200_autovacuum_hot_tables.
+--
+-- Hand-authored (no local Docker for `supabase db diff`). Matches
+-- supabase/schemas/tables.sql.
+
+ALTER TABLE public.spectra SET (toast_tuple_target = 128);
