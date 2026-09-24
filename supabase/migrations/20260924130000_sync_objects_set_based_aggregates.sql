@@ -1,0 +1,284 @@
+-- Objects sync stream: set-based scoped aggregates instead of a per-row LATERAL.
+--
+-- get_objects_for_sync computed each page object's caller-scoped aggregates
+-- (programs, gratings, n_targets, n_spectra, max_snr, max_exposure_time) with
+-- LEFT JOIN LATERAL object_scoped_aggregates(m.id, ...): one call per object,
+-- each re-probing targets and spectra (~14 buffer hits, ~0.14 ms per object on
+-- production; 690 ms of a 1.1 s 5000-row page, warm cache).
+--
+-- Fix (supabase/schemas/functions.sql): the page's members are read once
+-- (page_members: every target of every page object, flagged with the
+-- accessible-programs scope and the helper's recompute scope; member_spectra:
+-- their spectra), and member_targets_agg / spectra_agg / a new scoped_aggs CTE
+-- aggregate from those. scoped_aggs reproduces the helper exactly: the stored
+-- fast path (caller sees every program, no non-published member spectrum,
+-- visible count = stored n_spectra) or the published-gated recompute.
+-- object_scoped_aggregates itself is unchanged (the catalog RPCs still use it).
+--
+-- Measured on production with the body inlined (page 2, all programs, 5000
+-- rows, warm cache): 1124 ms / 126k buffers -> 456 ms / 40k buffers. Output
+-- verified identical on a production-shaped copy (mixed-program objects,
+-- draft/revoked spectra, targets without spectra, stale stored counts,
+-- objects without targets, inactive objects) for all-program, few-program,
+-- single-program, unpublished (admin), unpublished-few and incremental callers.
+--
+-- Hand-authored (no Docker here for `supabase db diff`); the function is copied
+-- verbatim from the schema file, which remains the source of truth. Same
+-- signature and return type, so CREATE OR REPLACE keeps the existing grants.
+
+CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
+  p_program_slugs TEXT[],
+  p_user_id UUID DEFAULT NULL,
+  p_updated_since TIMESTAMPTZ DEFAULT NULL,
+  p_limit INTEGER DEFAULT 1000,
+  p_include_counts BOOLEAN DEFAULT TRUE,
+  p_include_unpublished BOOLEAN DEFAULT false,
+  -- Keyset cursor (#103): the object_id of the last row of the previous page.
+  -- When non-NULL the scan seeks straight to the next id via the
+  -- objects_object_id_key UNIQUE btree, so each page costs O(log N + limit).
+  -- Keyset is the only pagination (T2-F, #511): OFFSET is refused at the
+  -- route (client floor 0.5.0) and p_offset is gone from the signature.
+  p_after_object_id TEXT DEFAULT NULL
+)
+RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT,
+              deleted_ids INTEGER[])
+LANGUAGE plpgsql STABLE
+SET plan_cache_mode = 'force_custom_plan'
+-- Statement-timeout backstop for the five /sync/* RPCs (this one,
+-- get_spectra_for_sync, get_photometry_for_sync, get_storage_objects_for_sync,
+-- get_line_fits_for_sync). T2-F (#536) dropped it as an OFFSET-era relic, but
+-- it never only covered deep OFFSET pages: the first page of every stream
+-- still runs catalog-wide COUNTs, and `campfire sync` fires all five first
+-- pages concurrently. The routes call these as service_role, which has no
+-- timeout of its own and inherits authenticator's 8 s, so on a busy or small
+-- instance the counts were cancelled mid-sync ("canceling statement due to
+-- statement timeout" on /sync/spectra). Keyset pages themselves stay cheap;
+-- this only stops a slow first page from killing the whole sync.
+SET statement_timeout = '120s'
+AS $$
+BEGIN
+  RETURN QUERY
+  -- matched is MATERIALIZED so the three aggregate CTEs below each see the
+  -- same ~p_limit-row set without re-evaluating the WHERE/ORDER/LIMIT.
+  WITH matched AS MATERIALIZED (
+    SELECT o.id, o.object_id, o.field, o.ra, o.dec,
+           o.n_targets, o.n_spectra, o.programs, o.gratings,
+           o.max_snr, o.max_exposure_time,
+           o.redshift, o.redshift_quality,
+           o.redshift_inspected, o.redshift_auto,
+           o.inspected_used_auto,
+           o.last_inspected_at, o.last_inspected_by,
+           o.last_data_change_at, o.staleness_reason,
+           o.version, o.is_active,
+           o.has_photometry, o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi,
+           o.created_at, o.updated_at
+    FROM objects o
+    WHERE o.programs && p_program_slugs
+      -- Phase D: hide soft-deleted objects from sync. Reactivation rewrites
+      -- updated_at, so re-activated rows get re-synced naturally on next pull.
+      AND o.is_active = true
+      -- B1: drop objects with no published spectrum (fail-closed).
+      AND (p_include_unpublished OR o.has_published_spectrum)
+      AND (p_updated_since IS NULL OR o.updated_at > p_updated_since)
+      -- Keyset (#103): seek past the previous page's last object_id. object_id
+      -- is UNIQUE, so a strict > needs no (sort_col, id) tiebreaker. Any future
+      -- change to this ORDER BY must keep the ordering column UNIQUE (or switch
+      -- to a row-value cursor) or keyset will skip/duplicate rows.
+      AND (p_after_object_id IS NULL OR o.object_id > p_after_object_id)
+    ORDER BY o.object_id
+    LIMIT p_limit
+  ),
+  -- One pass over the page's members (#569 follow-up). Every target of every
+  -- page object, flagged with the two scopes the aggregates below need; the
+  -- spectra join rides on it. Replaces a per-row LATERAL
+  -- object_scoped_aggregates() call (~24 buffer probes per object, ~1.6 s per
+  -- 5000-row page on production) plus two separate targets x spectra scans.
+  page_members AS MATERIALIZED (
+    SELECT t.object_id, t.target_id, t.program_slug,
+           -- member_target_ids / spectra payload scope: accessible programs.
+           t.program_slug = ANY(p_program_slugs) AS in_programs,
+           -- object_scoped_aggregates' recompute scope (its CTE m): accessible
+           -- programs AND, B1, a target that contributes a published spectrum.
+           (t.program_slug = ANY(p_program_slugs)
+            AND (p_include_unpublished OR t.has_published_spectrum)) AS in_scope
+    FROM targets t
+    WHERE t.object_id IN (SELECT id FROM matched)
+  ),
+  member_spectra AS MATERIALIZED (
+    SELECT pm.object_id, pm.in_programs, pm.in_scope,
+           s.id, s.target_id, s.grating, s.signal_to_noise, s.exposure_time,
+           s.redshift_auto, s.dq_flags, s.deploy_status,
+           (p_include_unpublished OR s.deploy_status = 'published') AS visible
+    FROM page_members pm
+    JOIN spectra s ON s.target_id = pm.target_id
+  ),
+  member_targets_agg AS (
+    SELECT pm.object_id,
+           jsonb_agg(pm.target_id ORDER BY pm.target_id) AS target_ids
+    FROM page_members pm
+    WHERE pm.in_programs
+    GROUP BY pm.object_id
+  ),
+  -- Phase D: per-spectrum payload (per design doc) so the Python client
+  -- can render redshift_auto and dq_flags per grating without a second
+  -- round-trip.
+  spectra_agg AS (
+    SELECT ms.object_id,
+           jsonb_agg(jsonb_build_object(
+             'id', ms.id,
+             'target_id', ms.target_id,
+             'grating', ms.grating,
+             'signal_to_noise', ms.signal_to_noise,
+             'exposure_time', ms.exposure_time,
+             'redshift_auto', ms.redshift_auto,
+             'dq_flags', ms.dq_flags
+           ) ORDER BY ms.target_id, ms.grating) AS spectra
+    FROM member_spectra ms
+    WHERE ms.in_programs AND ms.visible
+    GROUP BY ms.object_id
+  ),
+  -- Set-based object_scoped_aggregates() for the page: the same fast path and
+  -- recompute, per object. Keep in step with that function.
+  scope_targets AS (
+    SELECT pm.object_id,
+           array_agg(DISTINCT pm.program_slug ORDER BY pm.program_slug) AS programs,
+           COUNT(*)::integer AS n_targets
+    FROM page_members pm
+    WHERE pm.in_scope
+    GROUP BY pm.object_id
+  ),
+  scope_spectra AS (
+    SELECT ms.object_id,
+           -- Fast-path probes, over ALL member spectra (any program): no
+           -- non-published spectrum, and a visible count matching stored
+           -- n_spectra. This RPC runs RLS-free, so the count probe is
+           -- trivially true here, as it is for the helper's RLS-free callers.
+           bool_or(ms.deploy_status <> 'published') AS has_unpublished,
+           COUNT(*)::integer AS n_all,
+           -- Recompute (the helper's CTE sp): visible spectra of in-scope targets.
+           array_agg(DISTINCT ms.grating ORDER BY ms.grating)
+             FILTER (WHERE ms.in_scope AND ms.visible AND ms.grating IS NOT NULL) AS gratings,
+           (COUNT(*) FILTER (WHERE ms.in_scope AND ms.visible))::integer AS n_spectra,
+           MAX(ms.signal_to_noise) FILTER (WHERE ms.in_scope AND ms.visible) AS max_snr,
+           MAX(ms.exposure_time) FILTER (WHERE ms.in_scope AND ms.visible) AS max_exposure_time
+    FROM member_spectra ms
+    GROUP BY ms.object_id
+  ),
+  scoped_aggs AS (
+    SELECT m.id AS object_id,
+           -- The helper's `stored` branch condition; a NULL (e.g. a NULL
+           -- stored n_spectra) falls through to the recompute, as there.
+           COALESCE(NOT p_include_unpublished
+                    AND m.programs <@ p_program_slugs
+                    AND NOT COALESCE(ss.has_unpublished, false)
+                    AND m.n_spectra = COALESCE(ss.n_all, 0), false) AS use_stored,
+           st.programs AS r_programs, st.n_targets AS r_n_targets,
+           ss.gratings AS r_gratings, ss.n_spectra AS r_n_spectra,
+           ss.max_snr AS r_max_snr, ss.max_exposure_time AS r_max_exposure_time
+    FROM matched m
+    LEFT JOIN scope_targets st ON st.object_id = m.id
+    LEFT JOIN scope_spectra ss ON ss.object_id = m.id
+  ),
+  lists_agg AS (
+    SELECT olm.object_id,
+           jsonb_agg(ol.slug ORDER BY ol.slug) AS list_slugs
+    FROM object_list_members olm
+    JOIN object_lists ol ON ol.id = olm.list_id
+    WHERE olm.object_id IN (SELECT id FROM matched)
+      AND (ol.created_by = p_user_id
+           OR ol.visibility IN ('public_read', 'public_edit')
+           OR ol.id IN (SELECT list_id FROM object_list_shares WHERE user_id = p_user_id))
+    GROUP BY olm.object_id
+  ),
+  -- Count CTEs are gated on p_include_counts; when FALSE the planner
+  -- collapses them to One-Time Filter: false and skips the scan.
+  total AS (
+    SELECT COUNT(*) AS cnt
+    FROM objects o
+    WHERE p_include_counts
+      AND o.programs && p_program_slugs
+      AND o.is_active = true
+      AND (p_include_unpublished OR o.has_published_spectrum)
+      AND (p_updated_since IS NULL OR o.updated_at > p_updated_since)
+  ),
+  accessible AS (
+    SELECT COUNT(*) AS cnt
+    FROM objects o
+    WHERE p_include_counts
+      AND o.programs && p_program_slugs
+      AND o.is_active = true
+      AND (p_include_unpublished OR o.has_published_spectrum)
+  ),
+  -- Tombstones: on the first incremental page (p_updated_since set, no
+  -- cursor), the ids of in-scope objects that changed since the cursor and are
+  -- no longer visible to this caller -- soft-deleted (is_active = false;
+  -- apply_object_reconciliation stamps updated_at) or, for non-admins, left without a
+  -- published spectrum (recompute_has_published_spectrum stamps updated_at on
+  -- the flip). The client deletes them locally, so an incremental sync no
+  -- longer leaves ghosts that force the next pull into a full resync. Only the
+  -- integer ids travel: nothing about an unpublished object is disclosed, and
+  -- an id the client never mirrored deletes nothing.
+  deleted AS (
+    SELECT COALESCE(array_agg(o.id ORDER BY o.id), '{}'::INTEGER[]) AS ids
+    FROM objects o
+    WHERE p_updated_since IS NOT NULL
+      AND p_after_object_id IS NULL
+      AND o.programs && p_program_slugs
+      AND o.updated_at > p_updated_since
+      AND NOT (o.is_active AND (p_include_unpublished OR o.has_published_spectrum))
+  )
+  SELECT
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'id', m.id,
+        'object_id', m.object_id,
+        'field', m.field,
+        'ra', m.ra,
+        'dec', m.dec,
+        -- Aggregates scoped to the caller's accessible programs so a sync that
+        -- pulls a mixed-program object doesn't leak proprietary member metadata
+        -- into the Python catalog. Same semantics as object_scoped_aggregates(),
+        -- computed per page in scoped_aggs.
+        'n_targets', CASE WHEN sa.use_stored THEN m.n_targets ELSE COALESCE(sa.r_n_targets, 0) END,
+        'n_spectra', CASE WHEN sa.use_stored THEN m.n_spectra ELSE COALESCE(sa.r_n_spectra, 0) END,
+        'programs', CASE WHEN sa.use_stored THEN m.programs ELSE COALESCE(sa.r_programs, '{}') END,
+        'gratings', CASE WHEN sa.use_stored THEN m.gratings ELSE COALESCE(sa.r_gratings, '{}') END,
+        'max_snr', CASE WHEN sa.use_stored THEN m.max_snr ELSE sa.r_max_snr END,
+        'max_exposure_time', CASE WHEN sa.use_stored THEN m.max_exposure_time ELSE sa.r_max_exposure_time END,
+        'redshift', m.redshift,
+        'redshift_quality', m.redshift_quality,
+        'redshift_inspected', m.redshift_inspected,
+        'redshift_auto', m.redshift_auto,
+        'inspected_used_auto', m.inspected_used_auto,
+        'last_inspected_at', m.last_inspected_at,
+        'last_inspected_by', m.last_inspected_by,
+        'last_data_change_at', m.last_data_change_at,
+        'staleness_reason', m.staleness_reason,
+        'version', m.version,
+        'is_active', m.is_active,
+        'has_photometry', m.has_photometry,
+        'photo_z', m.photo_z,
+        'photo_z_err_lo', m.photo_z_err_lo,
+        'photo_z_err_hi', m.photo_z_err_hi,
+        'created_at', m.created_at,
+        'updated_at', m.updated_at,
+        'member_target_ids', COALESCE(mt.target_ids, '[]'::jsonb),
+        'spectra',           COALESCE(sp.spectra,    '[]'::jsonb),
+        'lists',             COALESCE(la.list_slugs, '[]'::jsonb)
+      )
+      -- Keyset (#103): the client uses the LAST element's object_id as the next
+      -- page's cursor, so the page array MUST be in object_id order. matched is
+      -- ORDER BY object_id, but the LEFT JOINs below can reorder it, so pin the
+      -- aggregate order explicitly.
+      ORDER BY m.object_id
+    ), '[]'::jsonb),
+    COALESCE((SELECT cnt FROM total), 0)::BIGINT,
+    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT,
+    (SELECT d.ids FROM deleted d)
+  FROM matched m
+  LEFT JOIN member_targets_agg mt ON mt.object_id = m.id
+  LEFT JOIN spectra_agg         sp ON sp.object_id = m.id
+  LEFT JOIN lists_agg           la ON la.object_id = m.id
+  JOIN scoped_aggs              sa ON sa.object_id = m.id;
+END;
+$$;

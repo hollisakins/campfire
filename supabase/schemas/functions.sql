@@ -1233,34 +1233,96 @@ BEGIN
     ORDER BY o.object_id
     LIMIT p_limit
   ),
-  member_targets_agg AS (
-    SELECT t.object_id,
-           jsonb_agg(t.target_id ORDER BY t.target_id) AS target_ids
+  -- One pass over the page's members (#569 follow-up). Every target of every
+  -- page object, flagged with the two scopes the aggregates below need; the
+  -- spectra join rides on it. Replaces a per-row LATERAL
+  -- object_scoped_aggregates() call (~24 buffer probes per object, ~1.6 s per
+  -- 5000-row page on production) plus two separate targets x spectra scans.
+  page_members AS MATERIALIZED (
+    SELECT t.object_id, t.target_id, t.program_slug,
+           -- member_target_ids / spectra payload scope: accessible programs.
+           t.program_slug = ANY(p_program_slugs) AS in_programs,
+           -- object_scoped_aggregates' recompute scope (its CTE m): accessible
+           -- programs AND, B1, a target that contributes a published spectrum.
+           (t.program_slug = ANY(p_program_slugs)
+            AND (p_include_unpublished OR t.has_published_spectrum)) AS in_scope
     FROM targets t
     WHERE t.object_id IN (SELECT id FROM matched)
-      AND t.program_slug = ANY(p_program_slugs)
-    GROUP BY t.object_id
+  ),
+  member_spectra AS MATERIALIZED (
+    SELECT pm.object_id, pm.in_programs, pm.in_scope,
+           s.id, s.target_id, s.grating, s.signal_to_noise, s.exposure_time,
+           s.redshift_auto, s.dq_flags, s.deploy_status,
+           (p_include_unpublished OR s.deploy_status = 'published') AS visible
+    FROM page_members pm
+    JOIN spectra s ON s.target_id = pm.target_id
+  ),
+  member_targets_agg AS (
+    SELECT pm.object_id,
+           jsonb_agg(pm.target_id ORDER BY pm.target_id) AS target_ids
+    FROM page_members pm
+    WHERE pm.in_programs
+    GROUP BY pm.object_id
   ),
   -- Phase D: per-spectrum payload (per design doc) so the Python client
   -- can render redshift_auto and dq_flags per grating without a second
   -- round-trip.
   spectra_agg AS (
-    SELECT t.object_id,
+    SELECT ms.object_id,
            jsonb_agg(jsonb_build_object(
-             'id', s.id,
-             'target_id', s.target_id,
-             'grating', s.grating,
-             'signal_to_noise', s.signal_to_noise,
-             'exposure_time', s.exposure_time,
-             'redshift_auto', s.redshift_auto,
-             'dq_flags', s.dq_flags
-           ) ORDER BY s.target_id, s.grating) AS spectra
-    FROM spectra s
-    JOIN targets t ON t.target_id = s.target_id
-    WHERE t.object_id IN (SELECT id FROM matched)
-      AND t.program_slug = ANY(p_program_slugs)
-      AND (p_include_unpublished OR s.deploy_status = 'published')
-    GROUP BY t.object_id
+             'id', ms.id,
+             'target_id', ms.target_id,
+             'grating', ms.grating,
+             'signal_to_noise', ms.signal_to_noise,
+             'exposure_time', ms.exposure_time,
+             'redshift_auto', ms.redshift_auto,
+             'dq_flags', ms.dq_flags
+           ) ORDER BY ms.target_id, ms.grating) AS spectra
+    FROM member_spectra ms
+    WHERE ms.in_programs AND ms.visible
+    GROUP BY ms.object_id
+  ),
+  -- Set-based object_scoped_aggregates() for the page: the same fast path and
+  -- recompute, per object. Keep in step with that function.
+  scope_targets AS (
+    SELECT pm.object_id,
+           array_agg(DISTINCT pm.program_slug ORDER BY pm.program_slug) AS programs,
+           COUNT(*)::integer AS n_targets
+    FROM page_members pm
+    WHERE pm.in_scope
+    GROUP BY pm.object_id
+  ),
+  scope_spectra AS (
+    SELECT ms.object_id,
+           -- Fast-path probes, over ALL member spectra (any program): no
+           -- non-published spectrum, and a visible count matching stored
+           -- n_spectra. This RPC runs RLS-free, so the count probe is
+           -- trivially true here, as it is for the helper's RLS-free callers.
+           bool_or(ms.deploy_status <> 'published') AS has_unpublished,
+           COUNT(*)::integer AS n_all,
+           -- Recompute (the helper's CTE sp): visible spectra of in-scope targets.
+           array_agg(DISTINCT ms.grating ORDER BY ms.grating)
+             FILTER (WHERE ms.in_scope AND ms.visible AND ms.grating IS NOT NULL) AS gratings,
+           (COUNT(*) FILTER (WHERE ms.in_scope AND ms.visible))::integer AS n_spectra,
+           MAX(ms.signal_to_noise) FILTER (WHERE ms.in_scope AND ms.visible) AS max_snr,
+           MAX(ms.exposure_time) FILTER (WHERE ms.in_scope AND ms.visible) AS max_exposure_time
+    FROM member_spectra ms
+    GROUP BY ms.object_id
+  ),
+  scoped_aggs AS (
+    SELECT m.id AS object_id,
+           -- The helper's `stored` branch condition; a NULL (e.g. a NULL
+           -- stored n_spectra) falls through to the recompute, as there.
+           COALESCE(NOT p_include_unpublished
+                    AND m.programs <@ p_program_slugs
+                    AND NOT COALESCE(ss.has_unpublished, false)
+                    AND m.n_spectra = COALESCE(ss.n_all, 0), false) AS use_stored,
+           st.programs AS r_programs, st.n_targets AS r_n_targets,
+           ss.gratings AS r_gratings, ss.n_spectra AS r_n_spectra,
+           ss.max_snr AS r_max_snr, ss.max_exposure_time AS r_max_exposure_time
+    FROM matched m
+    LEFT JOIN scope_targets st ON st.object_id = m.id
+    LEFT JOIN scope_spectra ss ON ss.object_id = m.id
   ),
   lists_agg AS (
     SELECT olm.object_id,
@@ -1320,13 +1382,14 @@ BEGIN
         'dec', m.dec,
         -- Aggregates scoped to the caller's accessible programs so a sync that
         -- pulls a mixed-program object doesn't leak proprietary member metadata
-        -- into the Python catalog. See object_scoped_aggregates().
-        'n_targets', sa.n_targets,
-        'n_spectra', sa.n_spectra,
-        'programs', sa.programs,
-        'gratings', sa.gratings,
-        'max_snr', sa.max_snr,
-        'max_exposure_time', sa.max_exposure_time,
+        -- into the Python catalog. Same semantics as object_scoped_aggregates(),
+        -- computed per page in scoped_aggs.
+        'n_targets', CASE WHEN sa.use_stored THEN m.n_targets ELSE COALESCE(sa.r_n_targets, 0) END,
+        'n_spectra', CASE WHEN sa.use_stored THEN m.n_spectra ELSE COALESCE(sa.r_n_spectra, 0) END,
+        'programs', CASE WHEN sa.use_stored THEN m.programs ELSE COALESCE(sa.r_programs, '{}') END,
+        'gratings', CASE WHEN sa.use_stored THEN m.gratings ELSE COALESCE(sa.r_gratings, '{}') END,
+        'max_snr', CASE WHEN sa.use_stored THEN m.max_snr ELSE sa.r_max_snr END,
+        'max_exposure_time', CASE WHEN sa.use_stored THEN m.max_exposure_time ELSE sa.r_max_exposure_time END,
         'redshift', m.redshift,
         'redshift_quality', m.redshift_quality,
         'redshift_inspected', m.redshift_inspected,
@@ -1361,7 +1424,7 @@ BEGIN
   LEFT JOIN member_targets_agg mt ON mt.object_id = m.id
   LEFT JOIN spectra_agg         sp ON sp.object_id = m.id
   LEFT JOIN lists_agg           la ON la.object_id = m.id
-  LEFT JOIN LATERAL public.object_scoped_aggregates(m.id, p_program_slugs, p_include_unpublished) sa ON true;
+  JOIN scoped_aggs              sa ON sa.object_id = m.id;
 END;
 $$;
 
