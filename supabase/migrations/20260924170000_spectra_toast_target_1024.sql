@@ -1,0 +1,23 @@
+-- spectra: raise toast_tuple_target 128 -> 1024 so only the SVG thumbnails
+-- are stored out of line.
+--
+-- 20260924150000 set 128 to push the two ~0.9 KB SVG thumbnails into TOAST.
+-- But the toaster moves a row's largest values out of line until the row
+-- fits the target, and a spectra row without its thumbnails is still ~0.5 KB,
+-- so at 128 it went on to externalize every text value over ~24 bytes. After
+-- the VACUUM FULL, 79,163 rows had spectrum_id, fits_path, file_hash and
+-- search_text in TOAST (and 24,511 their target_id), so every read of those
+-- columns became a TOAST fetch: an objects-sync page went from 0.64 s to
+-- 1.28 s (30k -> 108k buffers), a spectra-sync first page from 69k to 214k
+-- buffers, and a sort on spectrum_id took 8.5 s.
+--
+-- At 1024 the toaster stops after the two thumbnails (verified on a
+-- production-shaped copy: 512, 768 and 1024 all externalize only the SVGs,
+-- heap 268 MB -> 33 MB; 128 externalizes everything). A one-off
+-- VACUUM (FULL, ANALYZE) spectra follows outside this migration to re-store
+-- the rows written under 128.
+--
+-- Hand-authored (no local Docker for `supabase db diff`). Matches
+-- supabase/schemas/tables.sql.
+
+ALTER TABLE public.spectra SET (toast_tuple_target = 1024);
