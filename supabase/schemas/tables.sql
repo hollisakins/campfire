@@ -1400,6 +1400,37 @@ ALTER TABLE "public"."deploy_scope_state" OWNER TO "postgres";
 COMMENT ON TABLE "public"."deploy_scope_state" IS 'Optimistic-concurrency version per deploy scope (epic #210, B4). claim_deploy_scope does the compare-and-set so concurrent same-scope deploys are detected, not silently clobbered. Admin/internal.';
 
 
+-- sync_snapshots: the nightly public-scope catalog snapshot a first-time
+-- `campfire sync` downloads instead of paging the five /sync/* streams (the
+-- 2026-09-24 sync outage). One row per build by the /api/cron/sync-snapshot
+-- route; the files live in the private data bucket under
+-- sync-snapshots/<id>/, served only through /api/v1/sync/snapshot. Service-role
+-- only: RLS on with no policies, and no anon/authenticated grants.
+CREATE TABLE IF NOT EXISTS "public"."sync_snapshots" (
+    "id" bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    -- Database now() before the first page: the client's catch-up cursor, so
+    -- a row changed while the build was walking is re-fetched.
+    "started_at" timestamp with time zone NOT NULL,
+    "completed_at" timestamp with time zone,
+    "format_version" integer NOT NULL,
+    -- The program scope the snapshot was built for (the public programs at
+    -- build time). A caller's extras walk is their accessible programs minus
+    -- this set.
+    "public_programs" "text"[] NOT NULL,
+    -- [{stream, key, sha256, size, rows}], one entry per sync stream.
+    "files" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
+    "status" "text" DEFAULT 'building'::"text" NOT NULL,
+    "error" "text",
+    CONSTRAINT "sync_snapshots_status_check" CHECK (("status" = ANY (ARRAY['building'::"text", 'ready'::"text", 'failed'::"text"])))
+);
+
+
+ALTER TABLE "public"."sync_snapshots" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."sync_snapshots" IS 'Nightly public-scope catalog snapshots for first-time campfire sync (files in the private data bucket under sync-snapshots/<id>/). Written by the /api/cron/sync-snapshot route, read by /api/v1/sync/snapshot; service-role only.';
+
+
 CREATE TABLE IF NOT EXISTS "public"."password_reset_log" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "user_id" "uuid" NOT NULL,
@@ -2725,6 +2756,13 @@ GRANT SELECT ("token", "label", "observation", "field", "link_user_id",
               "expires_at", "revoked_at", "last_seen_at", "view_count")
   ON TABLE "public"."share_links" TO "authenticated";
 GRANT ALL ON TABLE "public"."share_links" TO "service_role";
+
+
+-- sync_snapshots is service-role only (the cron builder and the snapshot
+-- endpoint); the default privileges would otherwise hand it to anon/authenticated.
+REVOKE ALL ON TABLE "public"."sync_snapshots" FROM "anon";
+REVOKE ALL ON TABLE "public"."sync_snapshots" FROM "authenticated";
+GRANT ALL ON TABLE "public"."sync_snapshots" TO "service_role";
 
 
 -- deploy_scope_state is admin/internal concurrency state (RLS admin-only); not anon.

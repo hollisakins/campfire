@@ -1171,6 +1171,10 @@ DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, I
 -- dropped before CREATE (a return-type change is not a CREATE OR REPLACE).
 DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT);
 
+-- Sync snapshot extras walk: gained p_filter_program_slugs (a new signature,
+-- so the previous one is dropped before CREATE).
+DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT[]);
+
 CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_program_slugs TEXT[],
   p_user_id UUID DEFAULT NULL,
@@ -1183,7 +1187,15 @@ CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   -- objects_object_id_key UNIQUE btree, so each page costs O(log N + limit).
   -- Keyset is the only pagination (T2-F, #511): OFFSET is refused at the
   -- route (client floor 0.5.0) and p_offset is gone from the signature.
-  p_after_object_id TEXT DEFAULT NULL
+  p_after_object_id TEXT DEFAULT NULL,
+  -- Sync snapshot extras walk: when set, return only the objects a
+  -- public-scope snapshot cannot carry for this caller -- objects touching
+  -- these (the caller's non-snapshot) programs, whose scoped aggregates the
+  -- snapshot computed over public programs alone, plus members of the
+  -- caller's own or shared non-public lists, whose `lists` field the
+  -- snapshot lacks. Everything in the payload stays scoped to the full
+  -- p_program_slugs; this only narrows which objects are walked.
+  p_filter_program_slugs TEXT[] DEFAULT NULL
 )
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT,
               deleted_ids INTEGER[])
@@ -1230,6 +1242,16 @@ BEGIN
       -- change to this ORDER BY must keep the ordering column UNIQUE (or switch
       -- to a row-value cursor) or keyset will skip/duplicate rows.
       AND (p_after_object_id IS NULL OR o.object_id > p_after_object_id)
+      AND (p_filter_program_slugs IS NULL
+           OR o.programs && p_filter_program_slugs
+           OR o.id IN (
+             SELECT olm.object_id
+             FROM object_list_members olm
+             JOIN object_lists ol ON ol.id = olm.list_id
+             WHERE ol.visibility NOT IN ('public_read', 'public_edit')
+               AND (ol.created_by = p_user_id
+                    OR ol.id IN (SELECT list_id FROM object_list_shares
+                                 WHERE user_id = p_user_id))))
     ORDER BY o.object_id
     LIMIT p_limit
   ),
@@ -1428,8 +1450,33 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT[]) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT[]) TO service_role;
+
+
+-- =============================================================================
+-- sync_snapshot_begin
+-- (opens a nightly sync catalog snapshot build; /api/cron/sync-snapshot)
+-- =============================================================================
+-- Inserts the `building` row with the database's now() -- the client's
+-- catch-up cursor after loading the snapshot, so it must be taken before the
+-- first page is read -- and the public programs the snapshot is built for.
+-- Service-role only.
+CREATE OR REPLACE FUNCTION public.sync_snapshot_begin(p_format_version INTEGER)
+RETURNS SETOF public.sync_snapshots
+LANGUAGE sql
+AS $$
+  INSERT INTO public.sync_snapshots (started_at, format_version, public_programs)
+  SELECT now(), p_format_version,
+         COALESCE((SELECT array_agg(slug ORDER BY slug)
+                   FROM public.programs WHERE is_public), '{}'::text[])
+  RETURNING *;
+$$;
+
+REVOKE ALL ON FUNCTION public.sync_snapshot_begin(INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.sync_snapshot_begin(INTEGER) FROM anon;
+REVOKE ALL ON FUNCTION public.sync_snapshot_begin(INTEGER) FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.sync_snapshot_begin(INTEGER) TO service_role;
 
 
 -- =============================================================================
