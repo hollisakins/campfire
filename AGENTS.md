@@ -274,6 +274,28 @@ fallback that triggers one from `pull` exists for the objects stream only. The s
 run under a 120 s `statement_timeout` (service_role otherwise inherits
 authenticator's 8 s): the first page of every stream runs catalog-wide counts.
 
+**Sync catalog snapshot.** A first-time or `--full` sync does not page the streams out
+of Postgres. A Vercel cron (`web/vercel.json`, 05:00 UTC, `CRON_SECRET`) runs
+`/api/cron/sync-snapshot`, which walks the five streams once for the **public programs
+only** through the same `fetchSyncPage` the routes use (`web/lib/server/sync-streams.ts`).
+It writes one gzip JSONL file per stream to the private OSN bucket under
+`sync-snapshots/<id>/` and records the build in `sync_snapshots` (service-role only;
+the builder keeps the newest 3 ready builds). The keys are not a layout product: they
+are served only through the authenticated `/api/v1/sync/snapshot`, which returns
+presigned urls, or `available:false` for admins (they mirror drafts), before the first
+build, or when a snapshot program went private. The client (`campfire/snapshot.py`,
+`_bootstrap_from_snapshot` in `sync.py`) runs four steps:
+1. loads the files (sha256-verified);
+2. runs the **extras walk**, `snapshot=<id>` on every sync route: the caller's
+   accessible programs minus the snapshot's set, read from the row and never the
+   request. `get_objects_for_sync(p_filter_program_slugs)` also returns mixed
+   public/proprietary objects, whose aggregates need the full scope, and members of
+   the caller's private lists;
+3. purges what neither touched;
+4. runs the normal walk as the catch-up from the snapshot's `started_at`.
+
+Any unusable snapshot falls back to the live walk (`--no-snapshot` forces it).
+
 ### Config plane (issue #303)
 
 The storage plane moves bytes; the **config plane** moves the three
