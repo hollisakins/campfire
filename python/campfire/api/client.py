@@ -59,6 +59,12 @@ DEFAULT_STORAGE_SYNC_PAGE_SIZE = 10000
 
 _MAX_SYNC_PAGE_SIZE = 50000
 
+#: Read timeout for one /sync/* page. It must outlast the sync RPCs' own
+#: 120 s statement_timeout: a client that gives up first leaves its query
+#: running server-side, and a re-run stacks a second walk on top of the
+#: orphaned one (the 2026-09-24 outage, where the client timed out at 60 s).
+SYNC_READ_TIMEOUT = 150
+
 #: Page size for iter_objects / iter_spectra when the caller passes no ``limit``.
 #: Measured on prod (T2-F, #511): the per-page DB cost is ~0.1 s for objects and
 #: the rest of each round trip is route overhead + transfer, so fewer, larger
@@ -470,7 +476,7 @@ class APIClient:
                 params["after"] = cursor
             if updated_since:
                 params["updated_since"] = updated_since
-            response = self._session.get(path, params=params, timeout=60)
+            response = self._session.get(path, params=params, timeout=SYNC_READ_TIMEOUT)
             _handle_response_error(response, f"fetching {path}")
             data = response.json()
             items = data.get("data", [])

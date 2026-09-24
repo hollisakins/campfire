@@ -4792,11 +4792,12 @@ BEGIN
       AND (
         p_include_unpublished
         OR (so.spectrum_id IS NOT NULL AND EXISTS (
+              -- Row-local program_slug (perf T2-A, #504): no targets hop, and
+              -- idx_spectra_spectrum_id_scope answers it index-only.
               SELECT 1 FROM spectra s
-              JOIN targets t ON t.target_id = s.target_id
               WHERE s.spectrum_id = so.spectrum_id
                 AND s.deploy_status = 'published'
-                AND t.program_slug = ANY(p_program_slugs)))
+                AND s.program_slug = ANY(p_program_slugs)))
         OR (so.spectrum_id IS NULL AND so.deployment_id IS NOT NULL AND EXISTS (
               SELECT 1 FROM deployments d
               LEFT JOIN observations o ON o.name = d.observation
@@ -4808,7 +4809,14 @@ BEGIN
       )
   ),
   matched AS MATERIALIZED (
-    SELECT so.*
+    -- Explicit columns, not so.*: with the client's final product types this
+    -- is an index-only scan of idx_storage_objects_sync_finals, whose INCLUDE
+    -- list must cover everything read here.
+    SELECT so.id, so.backend, so.bucket, so.storage_key, so.content_hash,
+           so.sci_dq_hash, so.size_bytes, so.content_type, so.product_type,
+           so.instrument, so.status, so.observation, so.field, so.filter,
+           so.spectrum_id, so.exposure_ref, so.deployment_id, so.cfpipe_version,
+           so.created_at, so.updated_at
     FROM storage_objects so
     WHERE so.status = 'active'
       AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
@@ -4818,11 +4826,12 @@ BEGIN
       AND (
         p_include_unpublished
         OR (so.spectrum_id IS NOT NULL AND EXISTS (
+              -- Row-local program_slug (perf T2-A, #504): no targets hop, and
+              -- idx_spectra_spectrum_id_scope answers it index-only.
               SELECT 1 FROM spectra s
-              JOIN targets t ON t.target_id = s.target_id
               WHERE s.spectrum_id = so.spectrum_id
                 AND s.deploy_status = 'published'
-                AND t.program_slug = ANY(p_program_slugs)))
+                AND s.program_slug = ANY(p_program_slugs)))
         OR (so.spectrum_id IS NULL AND so.deployment_id IS NOT NULL AND EXISTS (
               SELECT 1 FROM deployments d
               LEFT JOIN observations o ON o.name = d.observation

@@ -187,6 +187,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_fits_path
 CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_spectrum_id
     ON public.spectra USING btree (spectrum_id);
 
+-- Index-only publish-scope probe for get_storage_objects_for_sync: its per-row
+-- "spectrum is published and in the caller's programs" check and the page's
+-- GREATEST(updated_at) join otherwise fetch the spectra heap, whose rows are
+-- ~3 KB wide (inline SVG thumbnails) — one heap page per registry row walked.
+CREATE INDEX IF NOT EXISTS idx_spectra_spectrum_id_scope
+    ON public.spectra USING btree (spectrum_id)
+    INCLUDE (deploy_status, program_slug, updated_at);
+
 -- Unified p_search blob (target_id + spectrum_id). Replaces the cross-table
 -- target_id-ILIKE-OR-spectrum_id-ILIKE predicate with a single indexable column.
 CREATE INDEX IF NOT EXISTS idx_spectra_search_text_trgm
@@ -524,6 +532,24 @@ CREATE INDEX IF NOT EXISTS idx_storage_objects_field_filter
 -- schema-qualified (pg_trgm lives in public, like idx_comments_content_trgm).
 CREATE INDEX IF NOT EXISTS idx_storage_objects_key_trgm
     ON public.storage_objects USING gin (storage_key public.gin_trgm_ops);
+
+-- `campfire sync` storage stream (get_storage_objects_for_sync with the
+-- client's FINAL_PRODUCT_TYPES): keyset on id over active finals, served
+-- index-only. Finals are ~10% of the registry and interleaved with their
+-- sidecars, so a walk of storage_objects_pkey read nearly the whole ~800 MB
+-- table per full sync, far past a small instance's cache and disk budget
+-- (the 2026-09-24 outage). The predicate must match the client's
+-- FINAL_PRODUCT_TYPES (python/campfire/db/store.py); a caller asking for
+-- other types still gets correct rows, just without this index. INCLUDE lists
+-- every column the RPC's `matched` / `scoped` CTEs read — keep it in step.
+CREATE INDEX IF NOT EXISTS idx_storage_objects_sync_finals
+    ON public.storage_objects USING btree (id)
+    INCLUDE (backend, bucket, storage_key, content_hash, sci_dq_hash, size_bytes,
+             content_type, product_type, instrument, status, observation, field,
+             "filter", spectrum_id, exposure_ref, deployment_id, cfpipe_version,
+             created_at, updated_at)
+    WHERE status = 'active'
+      AND product_type IN ('nirspec_spec', 'nircam_mosaic');
 
 
 -- =============================================================================
