@@ -386,10 +386,15 @@ ALTER TABLE "public"."spectra" OWNER TO "postgres";
 -- (compressed) they made the heap ~231 MB for 80k rows, so every per-row
 -- probe or scan of spectra (sync streams, catalog RPCs) read ~one heap page
 -- per row, far past a small instance's cache (2026-09-24 sync outage
--- review). A 128-byte target moves them out of line into TOAST on write,
--- which only the portal's thumbnail page join (<= a page of rows) reads.
--- Existing rows move on a table rewrite (VACUUM FULL / pg_repack), not here.
-ALTER TABLE "public"."spectra" SET (toast_tuple_target = 128);
+-- review). Once a row exceeds the 2 KB toast threshold the toaster moves
+-- its largest values out of line until the row fits this target: the two
+-- SVGs (~0.9 KB each) go first, leaving ~0.5 KB. The target must stay above
+-- that remainder -- at 128 the toaster went on to move spectrum_id,
+-- fits_path, file_hash and search_text out of line too, turning every read
+-- of them into a TOAST fetch. 1024 moves the thumbnails only; they are read
+-- by the portal's thumbnail page join (<= a page of rows) alone. Existing
+-- rows move on a table rewrite (VACUUM FULL / pg_repack), not here.
+ALTER TABLE "public"."spectra" SET (toast_tuple_target = 1024);
 
 
 COMMENT ON COLUMN "public"."spectra"."thumbnail_svg_fnu" IS 'Pre-generated SVG sparkline thumbnail in f_nu units. Set during deployment to avoid R2 fetches and CPU-intensive processing at runtime.';
