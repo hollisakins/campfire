@@ -13,10 +13,14 @@ import { NextResponse } from 'next/server';
  * pagination, so every client that predates the keyset sync walk (#103) is
  * below the floor. Kept in step with SYNC_CLIENT_FLOOR in
  * lib/api-sync-pagination.ts.
+ *
+ * 0.6.0 (latest only): a first-time sync bootstraps from the nightly
+ * catalog snapshot (/api/v1/sync/snapshot) instead of walking every stream.
+ * Older clients still walk live, so the floor stays.
  */
 export async function GET() {
   const response = NextResponse.json({
-    latest: '0.5.0',
+    latest: '0.6.0',
     minimum: '0.5.0',
   });
 
