@@ -681,6 +681,10 @@ def sync_cmd(full: bool, no_snapshot: bool, base_url: Optional[str],
             click.echo(f"✓ Full sync complete: {result['observations']} observations, "
                         f"{result['objects']} objects, {result['spectra']} spectra.")
 
+        if result.get("snapshot_stale"):
+            click.echo("  ⚠ The local catalog may not match the server; the next "
+                       "`campfire sync` will re-fetch it in full.")
+
         if result.get("objects_purged"):
             click.echo(f"  Removed {result['objects_purged']} objects deleted from server.")
         if result.get("purged_spectra"):

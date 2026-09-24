@@ -1511,6 +1511,40 @@ GRANT EXECUTE ON FUNCTION public.sync_snapshot_begin(INTEGER) TO service_role;
 
 
 -- =============================================================================
+-- get_sync_deletions
+-- (hard deletes since a sync snapshot's watermark; /api/v1/sync/deletions)
+-- =============================================================================
+-- The ids hard-deleted from each synced table after p_since, per stream,
+-- minus any id that exists again now (a row re-created under the same id is
+-- live, and the catch-up walk already brought it). Deliberately unscoped:
+-- only integer ids travel, and an id the client never mirrored deletes
+-- nothing -- the same contract as the sync RPCs' deleted_ids tombstones.
+-- Service-role only.
+CREATE OR REPLACE FUNCTION public.get_sync_deletions(p_since TIMESTAMPTZ)
+RETURNS TABLE(stream TEXT, row_ids BIGINT[])
+LANGUAGE sql STABLE
+SET search_path = public, pg_catalog
+AS $$
+  SELECT d.stream, array_agg(DISTINCT d.row_id ORDER BY d.row_id)
+  FROM public.sync_deletions d
+  WHERE d.deleted_at > p_since
+    AND NOT CASE d.stream
+      WHEN 'objects' THEN EXISTS (SELECT 1 FROM public.objects o WHERE o.id = d.row_id)
+      WHEN 'spectra' THEN EXISTS (SELECT 1 FROM public.spectra s WHERE s.id = d.row_id)
+      WHEN 'storage' THEN EXISTS (SELECT 1 FROM public.storage_objects so WHERE so.id = d.row_id)
+      WHEN 'photometry' THEN EXISTS (SELECT 1 FROM public.object_photometry p WHERE p.id = d.row_id)
+      WHEN 'line_fits' THEN EXISTS (SELECT 1 FROM public.spectrum_line_fits f WHERE f.spectrum_id = d.row_id)
+    END
+  GROUP BY d.stream;
+$$;
+
+REVOKE ALL ON FUNCTION public.get_sync_deletions(TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.get_sync_deletions(TIMESTAMPTZ) FROM anon;
+REVOKE ALL ON FUNCTION public.get_sync_deletions(TIMESTAMPTZ) FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.get_sync_deletions(TIMESTAMPTZ) TO service_role;
+
+
+-- =============================================================================
 -- get_spectra_for_sync
 -- (bulk fetch of per-spectrum download-relevant metadata for the Python
 -- client; complements get_objects_for_sync which carries display-level

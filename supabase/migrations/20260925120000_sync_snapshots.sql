@@ -17,6 +17,12 @@
 --     with the public programs and the catch-up watermark (start of the oldest
 --     open transaction minus a margin; SECURITY DEFINER to read
 --     pg_stat_activity). Service-role only.
+--   * sync_deletions, NEW (service-role only) + journal_sync_deletions
+--     statement triggers on objects / spectra / storage_objects /
+--     object_photometry / spectrum_line_fits + get_sync_deletions(p_since):
+--     hard deletes after a snapshot's watermark, which a bootstrapping client
+--     applies after its catch-up (a hard delete leaves nothing for the
+--     catch-up walk to return). Trimmed by the snapshot builder.
 --   * get_objects_for_sync: gains p_filter_program_slugs (the extras walk --
 --     objects touching the caller's non-snapshot programs, or in the caller's
 --     own/shared non-public lists; the payload stays scoped to the full
@@ -421,3 +427,116 @@ REVOKE ALL ON FUNCTION public.sync_snapshot_begin(INTEGER) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.sync_snapshot_begin(INTEGER) FROM anon;
 REVOKE ALL ON FUNCTION public.sync_snapshot_begin(INTEGER) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.sync_snapshot_begin(INTEGER) TO service_role;
+
+
+-- sync_deletions: journal of hard deletes from the five synced tables, so a
+-- client that bootstrapped from a sync snapshot can drop rows deleted after
+-- the snapshot was built (a hard delete leaves nothing for the catch-up walk
+-- to return, and a photometry supersede or `deploy remove` deletes outright).
+-- Filled by the journal_sync_deletions statement triggers, read through
+-- get_sync_deletions, trimmed by the snapshot builder to the oldest snapshot
+-- it keeps. Only integer ids: nothing about a deleted row is disclosed.
+-- Service-role only, like sync_snapshots.
+CREATE TABLE IF NOT EXISTS "public"."sync_deletions" (
+    "id" bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "stream" "text" NOT NULL,
+    -- objects.id / spectra.id / storage_objects.id / object_photometry.id /
+    -- spectrum_line_fits.spectrum_id -- the keys the client mirror uses.
+    "row_id" bigint NOT NULL,
+    -- The deleting transaction's now(): later than any snapshot watermark
+    -- taken while it was open (see sync_snapshot_begin).
+    "deleted_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "sync_deletions_stream_check" CHECK (("stream" = ANY (ARRAY['objects'::"text", 'spectra'::"text", 'storage'::"text", 'photometry'::"text", 'line_fits'::"text"])))
+);
+
+
+ALTER TABLE "public"."sync_deletions" OWNER TO "postgres";
+
+REVOKE ALL ON TABLE "public"."sync_deletions" FROM "anon";
+REVOKE ALL ON TABLE "public"."sync_deletions" FROM "authenticated";
+GRANT ALL ON TABLE "public"."sync_deletions" TO "service_role";
+
+ALTER TABLE public.sync_deletions ENABLE ROW LEVEL SECURITY;
+
+-- get_sync_deletions reads "deleted since <watermark>"; the builder trims by age.
+CREATE INDEX IF NOT EXISTS idx_sync_deletions_deleted_at
+    ON public.sync_deletions USING btree (deleted_at);
+
+
+-- =============================================================================
+-- get_sync_deletions
+-- (hard deletes since a sync snapshot's watermark; /api/v1/sync/deletions)
+-- =============================================================================
+-- The ids hard-deleted from each synced table after p_since, per stream,
+-- minus any id that exists again now (a row re-created under the same id is
+-- live, and the catch-up walk already brought it). Deliberately unscoped:
+-- only integer ids travel, and an id the client never mirrored deletes
+-- nothing -- the same contract as the sync RPCs' deleted_ids tombstones.
+-- Service-role only.
+CREATE OR REPLACE FUNCTION public.get_sync_deletions(p_since TIMESTAMPTZ)
+RETURNS TABLE(stream TEXT, row_ids BIGINT[])
+LANGUAGE sql STABLE
+SET search_path = public, pg_catalog
+AS $$
+  SELECT d.stream, array_agg(DISTINCT d.row_id ORDER BY d.row_id)
+  FROM public.sync_deletions d
+  WHERE d.deleted_at > p_since
+    AND NOT CASE d.stream
+      WHEN 'objects' THEN EXISTS (SELECT 1 FROM public.objects o WHERE o.id = d.row_id)
+      WHEN 'spectra' THEN EXISTS (SELECT 1 FROM public.spectra s WHERE s.id = d.row_id)
+      WHEN 'storage' THEN EXISTS (SELECT 1 FROM public.storage_objects so WHERE so.id = d.row_id)
+      WHEN 'photometry' THEN EXISTS (SELECT 1 FROM public.object_photometry p WHERE p.id = d.row_id)
+      WHEN 'line_fits' THEN EXISTS (SELECT 1 FROM public.spectrum_line_fits f WHERE f.spectrum_id = d.row_id)
+    END
+  GROUP BY d.stream;
+$$;
+
+REVOKE ALL ON FUNCTION public.get_sync_deletions(TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.get_sync_deletions(TIMESTAMPTZ) FROM anon;
+REVOKE ALL ON FUNCTION public.get_sync_deletions(TIMESTAMPTZ) FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.get_sync_deletions(TIMESTAMPTZ) TO service_role;
+
+
+-- =============================================================================
+-- journal_sync_deletions: hard deletes from the synced tables -> sync_deletions
+-- =============================================================================
+-- Statement-level with a transition table, so a bulk delete (a photometry
+-- supersede, `deploy remove`, a cascade from objects) journals in one INSERT.
+-- TG_ARGV: (stream name, key column). SECURITY DEFINER: the deleting role may
+-- be an admin session that cannot write the service-role-only journal.
+CREATE OR REPLACE FUNCTION public.journal_sync_deletions() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+BEGIN
+    EXECUTE format(
+        'INSERT INTO public.sync_deletions (stream, row_id) SELECT %L, %I FROM old_rows',
+        TG_ARGV[0], TG_ARGV[1]);
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.objects;
+CREATE TRIGGER journal_sync_deletions_trigger
+  AFTER DELETE ON public.objects REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('objects', 'id');
+
+DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.spectra;
+CREATE TRIGGER journal_sync_deletions_trigger
+  AFTER DELETE ON public.spectra REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('spectra', 'id');
+
+DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.storage_objects;
+CREATE TRIGGER journal_sync_deletions_trigger
+  AFTER DELETE ON public.storage_objects REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('storage', 'id');
+
+DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.object_photometry;
+CREATE TRIGGER journal_sync_deletions_trigger
+  AFTER DELETE ON public.object_photometry REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('photometry', 'id');
+
+DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.spectrum_line_fits;
+CREATE TRIGGER journal_sync_deletions_trigger
+  AFTER DELETE ON public.spectrum_line_fits REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('line_fits', 'spectrum_id');

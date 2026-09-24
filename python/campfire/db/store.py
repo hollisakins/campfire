@@ -1448,6 +1448,32 @@ class LocalStore:
         self._conn.commit()
         return n
 
+    def delete_photometry_by_ids(self, ids) -> int:
+        """Drop photometry cross-match rows the server hard-deleted (e.g. a
+        catalog superseded by ``deploy photometry --supersede``). Keyed on the
+        row id, so the rows that replaced them are left alone.
+        """
+        n = 0
+        for chunk in self._chunks(ids):
+            ph = ",".join("?" * len(chunk))
+            n += self._conn.execute(
+                f"DELETE FROM object_photometry WHERE id IN ({ph})", chunk,
+            ).rowcount
+        self._conn.commit()
+        return n
+
+    def delete_line_fits_by_spectrum_ids(self, spectrum_ids) -> int:
+        """Drop emission-line fits the server hard-deleted (keyed on the
+        spectrum's integer id, the line-fit table's PK)."""
+        n = 0
+        for chunk in self._chunks(spectrum_ids):
+            ph = ",".join("?" * len(chunk))
+            n += self._conn.execute(
+                f"DELETE FROM spectrum_line_fits WHERE spectrum_id IN ({ph})", chunk,
+            ).rowcount
+        self._conn.commit()
+        return n
+
     def delete_storage_objects_by_ids(self, ids) -> dict:
         """Drop mirror rows the server tombstoned (superseded / revoked / their
         spectrum un-published). Keyed on the registry id column, so a key that

@@ -1433,6 +1433,30 @@ CREATE TABLE IF NOT EXISTS "public"."sync_snapshots" (
 ALTER TABLE "public"."sync_snapshots" OWNER TO "postgres";
 
 
+-- sync_deletions: journal of hard deletes from the five synced tables, so a
+-- client that bootstrapped from a sync snapshot can drop rows deleted after
+-- the snapshot was built (a hard delete leaves nothing for the catch-up walk
+-- to return, and a photometry supersede or `deploy remove` deletes outright).
+-- Filled by the journal_sync_deletions statement triggers, read through
+-- get_sync_deletions, trimmed by the snapshot builder to the oldest snapshot
+-- it keeps. Only integer ids: nothing about a deleted row is disclosed.
+-- Service-role only, like sync_snapshots.
+CREATE TABLE IF NOT EXISTS "public"."sync_deletions" (
+    "id" bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "stream" "text" NOT NULL,
+    -- objects.id / spectra.id / storage_objects.id / object_photometry.id /
+    -- spectrum_line_fits.spectrum_id -- the keys the client mirror uses.
+    "row_id" bigint NOT NULL,
+    -- The deleting transaction's now(): later than any snapshot watermark
+    -- taken while it was open (see sync_snapshot_begin).
+    "deleted_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "sync_deletions_stream_check" CHECK (("stream" = ANY (ARRAY['objects'::"text", 'spectra'::"text", 'storage'::"text", 'photometry'::"text", 'line_fits'::"text"])))
+);
+
+
+ALTER TABLE "public"."sync_deletions" OWNER TO "postgres";
+
+
 COMMENT ON TABLE "public"."sync_snapshots" IS 'Nightly public-scope catalog snapshots for first-time campfire sync (files in the private data bucket under sync-snapshots/<id>/). Written by the /api/cron/sync-snapshot route, read by /api/v1/sync/snapshot; service-role only.';
 
 
@@ -2768,6 +2792,9 @@ GRANT ALL ON TABLE "public"."share_links" TO "service_role";
 REVOKE ALL ON TABLE "public"."sync_snapshots" FROM "anon";
 REVOKE ALL ON TABLE "public"."sync_snapshots" FROM "authenticated";
 GRANT ALL ON TABLE "public"."sync_snapshots" TO "service_role";
+REVOKE ALL ON TABLE "public"."sync_deletions" FROM "anon";
+REVOKE ALL ON TABLE "public"."sync_deletions" FROM "authenticated";
+GRANT ALL ON TABLE "public"."sync_deletions" TO "service_role";
 
 
 -- deploy_scope_state is admin/internal concurrency state (RLS admin-only); not anon.

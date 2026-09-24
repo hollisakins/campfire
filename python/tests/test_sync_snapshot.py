@@ -96,8 +96,10 @@ class FakeAPI:
     """fetch_all_* answer per walk kind: live (full), extras (snapshot=), catch-up (updated_since)."""
 
     def __init__(self, info=None, extras=None, catchup=None, live=None, info_error=None,
-                 fail=()):
+                 fail=(), deleted=None):
         self.info, self.info_error = info, info_error
+        self.deleted = {} if deleted is None else deleted   # None-valued: journal too old
+        self.deletion_requests = []
         self.fail = set(fail)              # walk kinds that raise: "extras" / "catchup"
         self.extras = extras or {}
         self.catchup = catchup or {}
@@ -135,6 +137,10 @@ class FakeAPI:
         if name in keys:
             return self._fetch(keys[name])
         raise AttributeError(name)
+
+    def get_sync_deletions(self, since):
+        self.deletion_requests.append(since)
+        return self.deleted
 
     def fetch_tags(self):
         return []
@@ -198,6 +204,9 @@ def test_bootstrap_loads_snapshot_extras_and_catches_up(tmp_path, store, monkeyp
         catchup={"objects": ([_obj(1, redshift=3.0, updated_at="2026-09-25T06:00:00Z")], []),
                  "spectra": ([], [102]),
                  "_objects_total": 3},
+        # Hard-deleted after the build (a photometry supersede): in the
+        # snapshot file, invisible to the catch-up, named by the journal.
+        deleted={"photometry": [501]},
     )
 
     result = sync_metadata(api, store, tmp_path / "meta", full=True)
@@ -207,7 +216,8 @@ def test_bootstrap_loads_snapshot_extras_and_catches_up(tmp_path, store, monkeyp
     assert result["needs_full_sync"] is False
     assert _ids(store, "objects") == [1, 2, 3]
     assert _ids(store, "spectra") == [101, 103]
-    assert _ids(store, "object_photometry") == [501]
+    assert _ids(store, "object_photometry") == []            # journal deletion applied
+    assert api.deletion_requests == [STARTED_AT]
     assert len(_ids(store, "storage_objects")) == 2
 
     by_id = {r["id"]: r for r in store._conn.execute("SELECT id, n_targets, redshift FROM objects")}
@@ -256,6 +266,16 @@ def test_unusable_snapshot_falls_back_to_live_walk(tmp_path, store, monkeypatch,
     assert {c[0] for c in live_calls} == {"objects", "spectra", "storage", "photometry", "line_fits"}
     assert not any(c[1] is not None for c in api.calls)      # no catch-up after a fallback
     assert not store.get_meta("sync_bootstrap")               # nothing left to recover
+
+
+def test_snapshot_older_than_the_deletion_journal_forces_a_full_sync(tmp_path, store, monkeypatch):
+    info, blobs = _snapshot_info()
+    _serve(monkeypatch, blobs)
+    api = FakeAPI(info=info, catchup={"_objects_total": 2})
+    api.deleted = None                                       # 410: not journaled that far back
+    result = sync_metadata(api, store, tmp_path / "meta", full=True)
+    assert result["needs_full_sync"] is True
+    assert json.loads(store.get_meta("sync_bootstrap")) == {"phase": "loading"}
 
 
 def test_disk_error_during_download_falls_back(tmp_path, store, monkeypatch):

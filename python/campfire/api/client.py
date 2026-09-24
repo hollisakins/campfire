@@ -775,6 +775,20 @@ class APIClient:
         data = response.json()
         return data if data.get("available") else None
 
+    def get_sync_deletions(self, since: str) -> Optional[Dict[str, List[int]]]:
+        """Ids hard-deleted from the synced tables after ``since``, per stream.
+
+        ``{"objects": [...], "spectra": [...], "storage": [...], "photometry":
+        [...], "line_fits": [...]}``. None when the server no longer journals
+        that far back (410) or predates the endpoint (404).
+        """
+        self._session._ensure_valid_token()
+        response = self._session.get("/sync/deletions", params={"since": since}, timeout=60)
+        if response.status_code in (404, 410):
+            return None
+        _handle_response_error(response, "fetching sync deletions")
+        return response.json().get("deleted", {})
+
     def fetch_tags(self) -> List[dict]:
         """Fetch all tag metadata via the /sync/lists endpoint."""
         self._session._ensure_valid_token()

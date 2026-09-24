@@ -1142,6 +1142,10 @@ CREATE POLICY "admin_select_deploy_events"
 
 ALTER TABLE sync_snapshots ENABLE ROW LEVEL SECURITY;
 
+-- sync_deletions: same (journal_sync_deletions writes as SECURITY DEFINER,
+-- get_sync_deletions reads under the service role).
+ALTER TABLE sync_deletions ENABLE ROW LEVEL SECURITY;
+
 
 -- =============================================================================
 -- deploy_scope_state (admin-only — multi-reducer concurrency, epic #210 B4)

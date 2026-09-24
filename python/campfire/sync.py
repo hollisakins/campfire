@@ -491,8 +491,28 @@ def sync_metadata(
         store, fetched["line_fits"], cursors["line_fits"], sync_ts
     )
 
-    # 2b. A snapshot bootstrap's purge runs only now, after its catch-up.
+    # 2b. A snapshot bootstrap finishes only now, after its catch-up: first the
+    #     rows hard-deleted since the snapshot's watermark (the catch-up cannot
+    #     return a row that no longer exists), then the purge.
+    snapshot_stale = False
     if pending is not None:
+        deleted = api.get_sync_deletions(pending["started_at"])
+        if deleted is None:
+            # The server no longer journals back to this snapshot (a catch-up
+            # resumed days later): its rows cannot be vouched for. Start over.
+            snapshot_stale = True
+            deleted = {}
+        obj_purged += store.delete_objects_by_ids(deleted.get("objects") or [])
+        n = store.delete_spectra_by_ids(deleted.get("spectra") or [])
+        if n:
+            spec_purge = spec_purge or {}
+            spec_purge["purged_spectra"] = spec_purge.get("purged_spectra", 0) + n
+        res = store.delete_storage_objects_by_ids(deleted.get("storage") or [])
+        storage_purged += res["purged"]
+        storage_orphaned = list(storage_orphaned) + res["orphaned_files"]
+        phot_purged += store.delete_photometry_by_ids(deleted.get("photometry") or [])
+        lines_purged += store.delete_line_fits_by_spectrum_ids(deleted.get("line_fits") or [])
+
         purged = _purge_after_bootstrap(store, pending["purge_ts"])
         obj_purged += purged["objects"]
         storage_purged += purged["storage"]
@@ -507,11 +527,12 @@ def sync_metadata(
         # purged mirror.
         server_total = fetched["objects"][1]
         local_total = store._conn.execute("SELECT COUNT(*) FROM objects").fetchone()[0]
-        needs_full_sync = server_total > 0 and local_total != server_total
+        needs_full_sync = snapshot_stale or (server_total > 0 and local_total != server_total)
         store.set_meta("snapshot_id", str(pending["snapshot_id"]))
         store.set_meta("snapshot_started_at", pending["started_at"])
-    # Every walk that got here completed: nothing left to recover.
-    _set_bootstrap_state(store, None)
+    # Every walk that got here completed: nothing left to recover -- unless the
+    # snapshot could not be vouched for, in which case the next sync is full.
+    _set_bootstrap_state(store, {"phase": "loading"} if snapshot_stale else None)
 
     # 3. Sync tag metadata (single request), then export CSVs.
     tags_count = _sync_tags(api, store, show_progress)
@@ -542,6 +563,7 @@ def sync_metadata(
     }
     if pending is not None:
         result["snapshot_id"] = pending["snapshot_id"]
+        result["snapshot_stale"] = snapshot_stale
     if spec_purge and spec_purge.get("purged_spectra"):
         result["purged_spectra"] = spec_purge["purged_spectra"]
     if storage_orphaned:

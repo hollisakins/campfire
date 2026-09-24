@@ -128,6 +128,22 @@ async function prune(supabase: SupabaseClient): Promise<void> {
     .select('id, files')
     .eq('status', 'failed');
   for (const row of dead ?? []) await dropSnapshot(supabase, row);
+
+  // Deletion journal: keep everything since the oldest snapshot still kept
+  // (/api/v1/sync/deletions answers 410 before that), nothing older.
+  const { data: oldest } = await supabase
+    .from('sync_snapshots')
+    .select('started_at')
+    .eq('status', 'ready')
+    .order('started_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (oldest) {
+    await supabase
+      .from('sync_deletions')
+      .delete()
+      .lt('deleted_at', (oldest as { started_at: string }).started_at);
+  }
 }
 
 export async function GET(request: NextRequest) {

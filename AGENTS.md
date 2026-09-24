@@ -292,7 +292,12 @@ build, or when a snapshot program went private. The client (`campfire/snapshot.p
    public/proprietary objects, whose aggregates need the full scope, and members of
    the caller's private lists;
 3. runs the normal walk as the catch-up from the snapshot's `started_at`;
-4. purges what none of the three touched.
+4. applies the hard deletes since `started_at` from `/api/v1/sync/deletions`, because a
+   hard-deleted row leaves nothing for the catch-up to return. Statement triggers
+   journal every delete from the five synced tables into `sync_deletions`, which the
+   builder trims to its oldest kept snapshot; the endpoint answers 410 for anything
+   older;
+5. purges what none of the steps touched.
 
 `started_at` is a watermark, not the build time: the start of the oldest transaction open when the build began, minus 5 minutes, so a write already in flight is not missed. The purge runs after the catch-up, so rows the catch-up restores keep their local download state. A `sync_bootstrap` `_meta` state makes an interrupted bootstrap recover on the next sync: an interrupted load forces a full sync, and an interrupted catch-up resumes from `started_at`. Any unusable snapshot, or any failure during load or the extras walk, falls back to the live walk in the same run (`--no-snapshot` forces it).
 
