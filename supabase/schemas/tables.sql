@@ -382,6 +382,15 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
 
 ALTER TABLE "public"."spectra" OWNER TO "postgres";
 
+-- The two inline SVG thumbnails are ~1.9 KB of a ~2.3 KB row. Left inline
+-- (compressed) they made the heap ~231 MB for 80k rows, so every per-row
+-- probe or scan of spectra (sync streams, catalog RPCs) read ~one heap page
+-- per row, far past a small instance's cache (2026-09-24 sync outage
+-- review). A 128-byte target moves them out of line into TOAST on write,
+-- which only the portal's thumbnail page join (<= a page of rows) reads.
+-- Existing rows move on a table rewrite (VACUUM FULL / pg_repack), not here.
+ALTER TABLE "public"."spectra" SET (toast_tuple_target = 128);
+
 
 COMMENT ON COLUMN "public"."spectra"."thumbnail_svg_fnu" IS 'Pre-generated SVG sparkline thumbnail in f_nu units. Set during deployment to avoid R2 fetches and CPU-intensive processing at runtime.';
 
