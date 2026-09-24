@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
+import { fetchSyncPage } from '@/lib/server/sync-streams';
+import { resolveSnapshotExtras } from '@/lib/server/sync-snapshot';
 
 /**
  * GET /api/v1/sync/storage
@@ -28,6 +30,11 @@ import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
  * - observations / fields: comma-separated scope (union) for a per-scope
  *          refresh, e.g. the intermediates of one observation before
  *          `campfire pull --intermediate`.
+ * - snapshot: id of the sync snapshot the client just loaded (extras mode):
+ *          only rows in the caller's programs that snapshot was not built
+ *          for (published field-deploy products, visible to everyone, come
+ *          back again -- harmless). A full walk: no updated_since, no counts,
+ *          no tombstones.
  *
  * Response carries `deleted_ids` (tombstones) on the first incremental page:
  * see the RPC.
@@ -72,45 +79,45 @@ export async function GET(request: NextRequest) {
     const afterRaw = searchParams.get('after');
     const afterId = afterRaw ? parseInt(afterRaw, 10) : null;
     const updatedSince = searchParams.get('updated_since') || null;
-    const includeCounts = searchParams.get('include_counts') !== 'false';
+    let includeCounts = searchParams.get('include_counts') !== 'false';
     const productTypes = parseList(searchParams.get('product_types'));
     const observations = parseList(searchParams.get('observations'));
     const fields = parseList(searchParams.get('fields'));
 
     const supabase = createServiceClient();
 
-    const baseArgs = {
-      p_program_slugs: accessibleProgramSlugs,
-      p_updated_since: updatedSince,
-      p_limit: limit,
-      p_include_counts: includeCounts,
+    let programSlugs = accessibleProgramSlugs;
+    const snapshotParam = searchParams.get('snapshot');
+    if (snapshotParam) {
+      const extras = await resolveSnapshotExtras(
+        supabase, snapshotParam, accessibleProgramSlugs, searchParams);
+      if (extras.error) return extras.error;
+      if (extras.extras.length === 0) {
+        return NextResponse.json({
+          data: [],
+          pagination: { total: 0, limit, after: afterId },
+          total_accessible_count: 0,
+          deleted_ids: [],
+        });
+      }
+      programSlugs = extras.extras;
+      includeCounts = false;
+    }
+
+    const { page, error } = await fetchSyncPage(supabase, 'storage', {
+      programSlugs,
+      userId: null,
+      updatedSince,
+      limit,
+      includeCounts,
       // Admins mirror everything (drafts + field-only products); everyone else
       // is fail-closed to published, in-program rows.
-      p_include_unpublished: admin,
-      p_after_id: afterId,
-    };
-    // The scope arguments are sent only when the client asked for a scope, so
-    // an unscoped call still resolves against the pre-scope RPC signature.
-    const scopeArgs: Record<string, string[]> = {};
-    if (productTypes) scopeArgs.p_product_types = productTypes;
-    if (observations) scopeArgs.p_observations = observations;
-    if (fields) scopeArgs.p_fields = fields;
-    const scoped = Object.keys(scopeArgs).length > 0;
-
-    let { data, error } = await supabase.rpc('get_storage_objects_for_sync', {
-      ...baseArgs,
-      ...scopeArgs,
+      includeUnpublished: admin,
+      after: afterId,
+      productTypes,
+      observations,
+      fields,
     });
-
-    // Deploy window: the Vercel build and the Supabase migration land
-    // independently on merge. If this build runs against an RPC that does not
-    // know the scope parameters yet (PostgREST: no matching function), fall
-    // back to the unscoped call — the client filters the rows it receives, so
-    // the only cost is an unfiltered page in that window.
-    if (error && scoped && error.code === 'PGRST202') {
-      console.warn('sync storage: RPC without scope parameters; retrying unscoped');
-      ({ data, error } = await supabase.rpc('get_storage_objects_for_sync', baseArgs));
-    }
 
     if (error) {
       console.error('Error in sync storage:', error);
@@ -120,20 +127,18 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const result = data?.[0] || { objects: [], total_count: 0, total_accessible_count: 0 };
-
     return NextResponse.json({
-      data: result.objects || [],
+      data: page.rows,
       pagination: {
-        total: result.total_count || 0,
+        total: page.total,
         limit,
         after: afterId,
       },
-      total_accessible_count: result.total_accessible_count || 0,
+      total_accessible_count: page.totalAccessible ?? 0,
       // Tombstones: ids of registry rows that left the visible set since
       // `updated_since` (superseded / revoked, or their spectrum un-published);
       // first incremental page only, absent from an RPC predating the column.
-      deleted_ids: result.deleted_ids ?? [],
+      deleted_ids: page.deletedIds,
     });
   } catch (error) {
     console.error('Error in API /v1/sync/storage:', error);

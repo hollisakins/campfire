@@ -733,3 +733,48 @@ DROP TRIGGER IF EXISTS enforce_profile_role_update_scope_trigger ON public.user_
 CREATE TRIGGER enforce_profile_role_update_scope_trigger
   BEFORE UPDATE ON public.user_profiles
   FOR EACH ROW EXECUTE FUNCTION public.enforce_profile_role_update_scope();
+
+
+-- =============================================================================
+-- journal_sync_deletions: hard deletes from the synced tables -> sync_deletions
+-- =============================================================================
+-- Statement-level with a transition table, so a bulk delete (a photometry
+-- supersede, `deploy remove`, a cascade from objects) journals in one INSERT.
+-- TG_ARGV: (stream name, key column). SECURITY DEFINER: the deleting role may
+-- be an admin session that cannot write the service-role-only journal.
+CREATE OR REPLACE FUNCTION public.journal_sync_deletions() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+BEGIN
+    EXECUTE format(
+        'INSERT INTO public.sync_deletions (stream, row_id) SELECT %L, %I FROM old_rows',
+        TG_ARGV[0], TG_ARGV[1]);
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.objects;
+CREATE TRIGGER journal_sync_deletions_trigger
+  AFTER DELETE ON public.objects REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('objects', 'id');
+
+DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.spectra;
+CREATE TRIGGER journal_sync_deletions_trigger
+  AFTER DELETE ON public.spectra REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('spectra', 'id');
+
+DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.storage_objects;
+CREATE TRIGGER journal_sync_deletions_trigger
+  AFTER DELETE ON public.storage_objects REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('storage', 'id');
+
+DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.object_photometry;
+CREATE TRIGGER journal_sync_deletions_trigger
+  AFTER DELETE ON public.object_photometry REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('photometry', 'id');
+
+DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.spectrum_line_fits;
+CREATE TRIGGER journal_sync_deletions_trigger
+  AFTER DELETE ON public.spectrum_line_fits REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('line_fits', 'spectrum_id');

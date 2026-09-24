@@ -618,16 +618,22 @@ def status(obs_scope, field_scope, base_url: Optional[str]):
 
 @cli.command(name="sync")
 @click.option("--full", is_flag=True, help="Force full sync (skip incremental)")
+@click.option("--no-snapshot", is_flag=True,
+              help="On a full sync, page every row from the server instead of "
+                   "starting from the nightly catalog snapshot")
 @click.option("--base-url", default=None, help="API base URL")
 @click.option("--migrate-layout/--no-migrate-layout", "migrate_layout", default=None,
               help="Migrate a pre-#212 local layout without prompting (or skip it). "
                    "Default: prompt when an old layout is detected on a TTY.")
-def sync_cmd(full: bool, base_url: Optional[str], migrate_layout: Optional[bool]):
+def sync_cmd(full: bool, no_snapshot: bool, base_url: Optional[str],
+             migrate_layout: Optional[bool]):
     """Sync the object catalog from the server (metadata only).
 
-    On first run, pulls the full catalog. On subsequent runs, only
-    fetches objects modified since the last sync (incremental).
-    Use --full to force a complete re-sync.
+    On first run, pulls the full catalog -- from the server's nightly catalog
+    snapshot when it has one, topped up with your non-public programs and
+    everything changed since. On subsequent runs, only fetches objects
+    modified since the last sync (incremental). Use --full to force a
+    complete re-sync.
 
     If the local data directory still uses the pre-#212 layout, sync detects it
     and offers to migrate it in place (products/<obs>/ -> products/nirspec/<obs>/,
@@ -662,9 +668,13 @@ def sync_cmd(full: bool, base_url: Optional[str], migrate_layout: Optional[bool]
             api, store, _meta_dir(),
             show_progress=True,
             full=full,
+            use_snapshot=not no_snapshot,
         )
 
-        if result.get("incremental"):
+        if result.get("snapshot_id"):
+            click.echo(f"✓ Full sync complete (from catalog snapshot {result['snapshot_id']}): "
+                        f"{result['observations']} observations.")
+        elif result.get("incremental"):
             click.echo(f"✓ Incremental sync complete: {result['observations']} observations, "
                         f"{result['objects']} objects, {result['spectra']} spectra updated.")
         else:
@@ -802,7 +812,10 @@ def download(obs_filter, program_filter, field_filter, grating_filter, filter_fi
 
         if result.get("needs_full_sync"):
             click.echo("  Local catalog out of sync with server, running full sync...")
-            result = sync_metadata(api, store, _meta_dir(), show_progress=True, full=True)
+            # A mismatch right after a snapshot bootstrap would only repeat
+            # with the same snapshot: walk live instead.
+            result = sync_metadata(api, store, _meta_dir(), show_progress=True, full=True,
+                                   use_snapshot=not result.get("snapshot_id"))
 
         parts = []
         if result.get("objects"):

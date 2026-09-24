@@ -1171,6 +1171,10 @@ DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, I
 -- dropped before CREATE (a return-type change is not a CREATE OR REPLACE).
 DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT);
 
+-- Sync snapshot extras walk: gained p_filter_program_slugs (a new signature,
+-- so the previous one is dropped before CREATE).
+DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT[]);
+
 CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   p_program_slugs TEXT[],
   p_user_id UUID DEFAULT NULL,
@@ -1183,7 +1187,15 @@ CREATE OR REPLACE FUNCTION public.get_objects_for_sync(
   -- objects_object_id_key UNIQUE btree, so each page costs O(log N + limit).
   -- Keyset is the only pagination (T2-F, #511): OFFSET is refused at the
   -- route (client floor 0.5.0) and p_offset is gone from the signature.
-  p_after_object_id TEXT DEFAULT NULL
+  p_after_object_id TEXT DEFAULT NULL,
+  -- Sync snapshot extras walk: when set, return only the objects a
+  -- public-scope snapshot cannot carry for this caller -- objects touching
+  -- these (the caller's non-snapshot) programs, whose scoped aggregates the
+  -- snapshot computed over public programs alone, plus members of the
+  -- caller's own or shared non-public lists, whose `lists` field the
+  -- snapshot lacks. Everything in the payload stays scoped to the full
+  -- p_program_slugs; this only narrows which objects are walked.
+  p_filter_program_slugs TEXT[] DEFAULT NULL
 )
 RETURNS TABLE(objects JSONB, total_count BIGINT, total_accessible_count BIGINT,
               deleted_ids INTEGER[])
@@ -1230,6 +1242,16 @@ BEGIN
       -- change to this ORDER BY must keep the ordering column UNIQUE (or switch
       -- to a row-value cursor) or keyset will skip/duplicate rows.
       AND (p_after_object_id IS NULL OR o.object_id > p_after_object_id)
+      AND (p_filter_program_slugs IS NULL
+           OR o.programs && p_filter_program_slugs
+           OR o.id IN (
+             SELECT olm.object_id
+             FROM object_list_members olm
+             JOIN object_lists ol ON ol.id = olm.list_id
+             WHERE ol.visibility NOT IN ('public_read', 'public_edit')
+               AND (ol.created_by = p_user_id
+                    OR ol.id IN (SELECT list_id FROM object_list_shares
+                                 WHERE user_id = p_user_id))))
     ORDER BY o.object_id
     LIMIT p_limit
   ),
@@ -1428,8 +1450,98 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT[]) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT, TEXT[]) TO service_role;
+
+
+-- =============================================================================
+-- sync_snapshot_begin
+-- (opens a nightly sync catalog snapshot build; /api/cron/sync-snapshot)
+-- =============================================================================
+-- Inserts the `building` row with the public programs the snapshot is built
+-- for and its `started_at` watermark: the client's catch-up cursor after
+-- loading the snapshot (`updated_at > started_at`), so every row the walk may
+-- have read in an old state must have an updated_at after it.
+--
+-- now() alone is not that. Writers stamp updated_at with THEIR transaction's
+-- start time, so a write whose transaction began before the build and
+-- committed after the builder read its page is absent from the snapshot yet
+-- has updated_at <= now(), and the catch-up would never return it. The
+-- watermark is therefore the start of the oldest transaction still open
+-- (read from pg_stat_activity, hence SECURITY DEFINER: postgres holds
+-- pg_read_all_stats), minus a margin for transactions that start in the
+-- instant between this read and the first page. A wider catch-up window only
+-- re-sends rows the client already holds.
+--
+-- One build at a time: idx_sync_snapshots_one_building allows a single
+-- `building` row, so a second concurrent call fails with unique_violation
+-- (the cron route answers 409). A build still `building` 15 minutes after it
+-- was created (by wall clock, created_at -- never the backdated started_at)
+-- died without marking itself failed and is retired here first, so it cannot
+-- block every later build.
+CREATE OR REPLACE FUNCTION public.sync_snapshot_begin(p_format_version INTEGER)
+RETURNS SETOF public.sync_snapshots
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+  UPDATE public.sync_snapshots
+     SET status = 'failed', error = 'abandoned: still building after 15 minutes'
+   WHERE status = 'building' AND created_at < now() - interval '15 minutes';
+
+  INSERT INTO public.sync_snapshots (started_at, format_version, public_programs)
+  SELECT LEAST(
+           now(),
+           COALESCE((SELECT min(a.xact_start)
+                     FROM pg_stat_activity a
+                     WHERE a.backend_type = 'client backend'
+                       AND a.pid <> pg_backend_pid()
+                       AND a.xact_start IS NOT NULL), now())
+         ) - interval '5 minutes',
+         p_format_version,
+         COALESCE((SELECT array_agg(slug ORDER BY slug)
+                   FROM public.programs WHERE is_public), '{}'::text[])
+  RETURNING *;
+$$;
+
+REVOKE ALL ON FUNCTION public.sync_snapshot_begin(INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.sync_snapshot_begin(INTEGER) FROM anon;
+REVOKE ALL ON FUNCTION public.sync_snapshot_begin(INTEGER) FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.sync_snapshot_begin(INTEGER) TO service_role;
+
+
+-- =============================================================================
+-- get_sync_deletions
+-- (hard deletes since a sync snapshot's watermark; /api/v1/sync/deletions)
+-- =============================================================================
+-- The ids hard-deleted from each synced table after p_since, per stream,
+-- minus any id that exists again now (a row re-created under the same id is
+-- live, and the catch-up walk already brought it). Deliberately unscoped:
+-- only integer ids travel, and an id the client never mirrored deletes
+-- nothing -- the same contract as the sync RPCs' deleted_ids tombstones.
+-- Service-role only.
+CREATE OR REPLACE FUNCTION public.get_sync_deletions(p_since TIMESTAMPTZ)
+RETURNS TABLE(stream TEXT, row_ids BIGINT[])
+LANGUAGE sql STABLE
+SET search_path = public, pg_catalog
+AS $$
+  SELECT d.stream, array_agg(DISTINCT d.row_id ORDER BY d.row_id)
+  FROM public.sync_deletions d
+  WHERE d.deleted_at > p_since
+    AND NOT CASE d.stream
+      WHEN 'objects' THEN EXISTS (SELECT 1 FROM public.objects o WHERE o.id = d.row_id)
+      WHEN 'spectra' THEN EXISTS (SELECT 1 FROM public.spectra s WHERE s.id = d.row_id)
+      WHEN 'storage' THEN EXISTS (SELECT 1 FROM public.storage_objects so WHERE so.id = d.row_id)
+      WHEN 'photometry' THEN EXISTS (SELECT 1 FROM public.object_photometry p WHERE p.id = d.row_id)
+      WHEN 'line_fits' THEN EXISTS (SELECT 1 FROM public.spectrum_line_fits f WHERE f.spectrum_id = d.row_id)
+    END
+  GROUP BY d.stream;
+$$;
+
+REVOKE ALL ON FUNCTION public.get_sync_deletions(TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.get_sync_deletions(TIMESTAMPTZ) FROM anon;
+REVOKE ALL ON FUNCTION public.get_sync_deletions(TIMESTAMPTZ) FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.get_sync_deletions(TIMESTAMPTZ) TO service_role;
 
 
 -- =============================================================================

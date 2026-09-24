@@ -1400,6 +1400,66 @@ ALTER TABLE "public"."deploy_scope_state" OWNER TO "postgres";
 COMMENT ON TABLE "public"."deploy_scope_state" IS 'Optimistic-concurrency version per deploy scope (epic #210, B4). claim_deploy_scope does the compare-and-set so concurrent same-scope deploys are detected, not silently clobbered. Admin/internal.';
 
 
+-- sync_snapshots: the nightly public-scope catalog snapshot a first-time
+-- `campfire sync` downloads instead of paging the five /sync/* streams (the
+-- 2026-09-24 sync outage). One row per build by the /api/cron/sync-snapshot
+-- route; the files live in the private data bucket under
+-- sync-snapshots/<id>/, served only through /api/v1/sync/snapshot. Service-role
+-- only: RLS on with no policies, and no anon/authenticated grants.
+CREATE TABLE IF NOT EXISTS "public"."sync_snapshots" (
+    "id" bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    -- Catch-up watermark, taken before the first page: the start of the
+    -- oldest transaction then open, minus a margin (sync_snapshot_begin), so
+    -- a row changed while the build was walking -- or committed by a
+    -- transaction already in flight when it began -- is re-fetched.
+    "started_at" timestamp with time zone NOT NULL,
+    "completed_at" timestamp with time zone,
+    -- Wall-clock build start. started_at is a backdated watermark and must
+    -- not be used to judge whether a build is still running.
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "format_version" integer NOT NULL,
+    -- The program scope the snapshot was built for (the public programs at
+    -- build time). A caller's extras walk is their accessible programs minus
+    -- this set.
+    "public_programs" "text"[] NOT NULL,
+    -- [{stream, key, sha256, size, rows}], one entry per sync stream.
+    "files" "jsonb" DEFAULT '[]'::"jsonb" NOT NULL,
+    "status" "text" DEFAULT 'building'::"text" NOT NULL,
+    "error" "text",
+    CONSTRAINT "sync_snapshots_status_check" CHECK (("status" = ANY (ARRAY['building'::"text", 'ready'::"text", 'failed'::"text"])))
+);
+
+
+ALTER TABLE "public"."sync_snapshots" OWNER TO "postgres";
+
+
+-- sync_deletions: journal of hard deletes from the five synced tables, so a
+-- client that bootstrapped from a sync snapshot can drop rows deleted after
+-- the snapshot was built (a hard delete leaves nothing for the catch-up walk
+-- to return, and a photometry supersede or `deploy remove` deletes outright).
+-- Filled by the journal_sync_deletions statement triggers, read through
+-- get_sync_deletions, trimmed by the snapshot builder to the oldest snapshot
+-- it keeps. Only integer ids: nothing about a deleted row is disclosed.
+-- Service-role only, like sync_snapshots.
+CREATE TABLE IF NOT EXISTS "public"."sync_deletions" (
+    "id" bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    "stream" "text" NOT NULL,
+    -- objects.id / spectra.id / storage_objects.id / object_photometry.id /
+    -- spectrum_line_fits.spectrum_id -- the keys the client mirror uses.
+    "row_id" bigint NOT NULL,
+    -- The deleting transaction's now(): later than any snapshot watermark
+    -- taken while it was open (see sync_snapshot_begin).
+    "deleted_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "sync_deletions_stream_check" CHECK (("stream" = ANY (ARRAY['objects'::"text", 'spectra'::"text", 'storage'::"text", 'photometry'::"text", 'line_fits'::"text"])))
+);
+
+
+ALTER TABLE "public"."sync_deletions" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."sync_snapshots" IS 'Nightly public-scope catalog snapshots for first-time campfire sync (files in the private data bucket under sync-snapshots/<id>/). Written by the /api/cron/sync-snapshot route, read by /api/v1/sync/snapshot; service-role only.';
+
+
 CREATE TABLE IF NOT EXISTS "public"."password_reset_log" (
     "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "user_id" "uuid" NOT NULL,
@@ -2725,6 +2785,16 @@ GRANT SELECT ("token", "label", "observation", "field", "link_user_id",
               "expires_at", "revoked_at", "last_seen_at", "view_count")
   ON TABLE "public"."share_links" TO "authenticated";
 GRANT ALL ON TABLE "public"."share_links" TO "service_role";
+
+
+-- sync_snapshots is service-role only (the cron builder and the snapshot
+-- endpoint); the default privileges would otherwise hand it to anon/authenticated.
+REVOKE ALL ON TABLE "public"."sync_snapshots" FROM "anon";
+REVOKE ALL ON TABLE "public"."sync_snapshots" FROM "authenticated";
+GRANT ALL ON TABLE "public"."sync_snapshots" TO "service_role";
+REVOKE ALL ON TABLE "public"."sync_deletions" FROM "anon";
+REVOKE ALL ON TABLE "public"."sync_deletions" FROM "authenticated";
+GRANT ALL ON TABLE "public"."sync_deletions" TO "service_role";
 
 
 -- deploy_scope_state is admin/internal concurrency state (RLS admin-only); not anon.

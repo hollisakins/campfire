@@ -274,6 +274,33 @@ fallback that triggers one from `pull` exists for the objects stream only. The s
 run under a 120 s `statement_timeout` (service_role otherwise inherits
 authenticator's 8 s): the first page of every stream runs catalog-wide counts.
 
+**Sync catalog snapshot.** A first-time or `--full` sync does not page the streams out
+of Postgres. A Vercel cron (`web/vercel.json`, 05:00 UTC, `CRON_SECRET`) runs
+`/api/cron/sync-snapshot`, which walks the five streams once for the **public programs
+only** through the same `fetchSyncPage` the routes use (`web/lib/server/sync-streams.ts`).
+It writes one gzip JSONL file per stream to the private OSN bucket under
+`sync-snapshots/<id>/` and records the build in `sync_snapshots` (service-role only;
+the builder keeps the newest 3 ready builds). The keys are not a layout product: they
+are served only through the authenticated `/api/v1/sync/snapshot`, which returns
+presigned urls, or `available:false` for admins (they mirror drafts), before the first
+build, or when a snapshot program went private. The client (`campfire/snapshot.py`,
+`_bootstrap_from_snapshot` in `sync.py`) runs four steps:
+1. loads the files (sha256-verified);
+2. runs the **extras walk**, `snapshot=<id>` on every sync route: the caller's
+   accessible programs minus the snapshot's set, read from the row and never the
+   request. `get_objects_for_sync(p_filter_program_slugs)` also returns mixed
+   public/proprietary objects, whose aggregates need the full scope, and members of
+   the caller's private lists;
+3. runs the normal walk as the catch-up from the snapshot's `started_at`;
+4. applies the hard deletes since `started_at` from `/api/v1/sync/deletions`, because a
+   hard-deleted row leaves nothing for the catch-up to return. Statement triggers
+   journal every delete from the five synced tables into `sync_deletions`, which the
+   builder trims to its oldest kept snapshot; the endpoint answers 410 for anything
+   older, and the client then walks live in the same run;
+5. purges what none of the steps touched.
+
+`started_at` is a watermark, not the build time: the start of the oldest transaction open when the build began, minus 5 minutes, so a write already in flight is not missed. The purge runs after the catch-up, so rows the catch-up restores keep their local download state. A `sync_bootstrap` `_meta` state makes an interrupted bootstrap recover on the next sync: an interrupted load forces a full sync, and an interrupted catch-up resumes from `started_at`. Any unusable snapshot, or any failure during load or the extras walk, falls back to the live walk in the same run (`--no-snapshot` forces it).
+
 ### Config plane (issue #303)
 
 The storage plane moves bytes; the **config plane** moves the three

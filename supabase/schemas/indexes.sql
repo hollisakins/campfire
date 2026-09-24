@@ -533,6 +533,21 @@ CREATE INDEX IF NOT EXISTS idx_storage_objects_field_filter
 CREATE INDEX IF NOT EXISTS idx_storage_objects_key_trgm
     ON public.storage_objects USING gin (storage_key public.gin_trgm_ops);
 
+
+-- =============================================================================
+-- sync_snapshots
+-- =============================================================================
+
+-- At most one snapshot build in flight: sync_snapshot_begin's INSERT fails
+-- with unique_violation while another row is `building` (see that function).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_snapshots_one_building
+    ON public.sync_snapshots USING btree ((true))
+    WHERE status = 'building';
+
+-- get_sync_deletions reads "deleted since <watermark>"; the builder trims by age.
+CREATE INDEX IF NOT EXISTS idx_sync_deletions_deleted_at
+    ON public.sync_deletions USING btree (deleted_at);
+
 -- `campfire sync` storage stream (get_storage_objects_for_sync with the
 -- client's FINAL_PRODUCT_TYPES): keyset on id over active finals, served
 -- index-only. Finals are ~10% of the registry and interleaved with their

@@ -179,8 +179,13 @@ class Campfire:
     # -------------------------------------------------------------------------
     # Sync / download
     # -------------------------------------------------------------------------
-    def sync(self, show_progress: bool = False, full: bool = False) -> dict:
-        """Sync the objects + spectra catalog from the server."""
+    def sync(self, show_progress: bool = False, full: bool = False,
+             use_snapshot: bool = True) -> dict:
+        """Sync the objects + spectra catalog from the server.
+
+        A full sync starts from the server's nightly catalog snapshot when it
+        offers one; ``use_snapshot=False`` pages every row instead.
+        """
         from .sync import sync_metadata
 
         if self._meta_dir is None:
@@ -205,7 +210,7 @@ class Campfire:
 
         return sync_metadata(
             self._api, self._local, self._meta_dir,
-            show_progress=show_progress, full=full,
+            show_progress=show_progress, full=full, use_snapshot=use_snapshot,
         )
 
     def download(

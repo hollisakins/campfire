@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
+import { fetchSyncPage } from '@/lib/server/sync-streams';
+import { resolveSnapshotExtras } from '@/lib/server/sync-snapshot';
 import { rejectLegacyOffset } from '@/lib/api-sync-pagination';
 
 /**
@@ -19,6 +21,9 @@ import { rejectLegacyOffset } from '@/lib/api-sync-pagination';
  * - after: keyset cursor — spectrum_id of the previous page's last row.
  *          Keyset-only: a non-zero `offset` is refused with 400.
  * - include_counts: 'false' to skip total_count (default true)
+ * - snapshot: id of the sync snapshot the client just loaded (extras mode):
+ *          only line fits in the caller's programs that snapshot was not built
+ *          for. A full walk: no updated_since, no counts.
  * - include_unpublished: 'true' (admins only) to include fits of unpublished spectra
  */
 export async function GET(request: NextRequest) {
@@ -48,22 +53,39 @@ export async function GET(request: NextRequest) {
     const afterRaw = searchParams.get('after');
     const afterId = afterRaw ? parseInt(afterRaw, 10) : null;
     const updatedSince = searchParams.get('updated_since') || null;
-    const includeCounts = searchParams.get('include_counts') !== 'false';
+    let includeCounts = searchParams.get('include_counts') !== 'false';
 
     const supabase = createServiceClient();
+
+    let programSlugs = accessibleProgramSlugs;
+    const snapshotParam = searchParams.get('snapshot');
+    if (snapshotParam) {
+      const extras = await resolveSnapshotExtras(
+        supabase, snapshotParam, accessibleProgramSlugs, searchParams);
+      if (extras.error) return extras.error;
+      if (extras.extras.length === 0) {
+        return NextResponse.json({
+          data: [],
+          pagination: { total: 0, limit, after: afterId },
+        });
+      }
+      programSlugs = extras.extras;
+      includeCounts = false;
+    }
 
     // Fits of unpublished spectra are admin-only behind explicit opt-in;
     // fail-closed otherwise (the RPC bypasses RLS).
     const includeUnpublished =
       searchParams.get('include_unpublished') === 'true' && (await isAdminUser(userId));
 
-    const { data, error } = await supabase.rpc('get_line_fits_for_sync', {
-      p_program_slugs: accessibleProgramSlugs,
-      p_updated_since: updatedSince,
-      p_limit: limit,
-      p_include_unpublished: includeUnpublished,
-      p_include_counts: includeCounts,
-      p_after_id: afterId,
+    const { page, error } = await fetchSyncPage(supabase, 'lines', {
+      programSlugs,
+      userId: null,
+      updatedSince,
+      limit,
+      includeCounts,
+      includeUnpublished,
+      after: afterId,
     });
 
     if (error) {
@@ -74,12 +96,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const result = data?.[0] || { line_fit_records: [], total_count: 0 };
-
     return NextResponse.json({
-      data: result.line_fit_records || [],
+      data: page.rows,
       pagination: {
-        total: result.total_count || 0,
+        total: page.total,
         limit,
         after: afterId,
       },

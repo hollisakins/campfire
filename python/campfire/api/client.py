@@ -65,6 +65,11 @@ _MAX_SYNC_PAGE_SIZE = 50000
 #: orphaned one (the 2026-09-24 outage, where the client timed out at 60 s).
 SYNC_READ_TIMEOUT = 150
 
+
+def _snapshot_params(snapshot: Optional[int]) -> Optional[dict]:
+    """``snapshot=<id>``: a sync route's extras walk for that snapshot."""
+    return {"snapshot": str(snapshot)} if snapshot is not None else None
+
 #: Page size for iter_objects / iter_spectra when the caller passes no ``limit``.
 #: Measured on prod (T2-F, #511): the per-page DB cost is ~0.1 s for objects and
 #: the rest of each round trip is route overhead + transfer, so fewer, larger
@@ -273,10 +278,16 @@ class APIClient:
         self,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
+        snapshot: Optional[int] = None,
     ) -> "SyncStream":
-        """Fetch all objects via the lightweight /sync/objects endpoint."""
+        """Fetch all objects via the lightweight /sync/objects endpoint.
+
+        ``snapshot`` walks the extras of that sync snapshot instead (see
+        :meth:`get_sync_snapshot`).
+        """
         return self._paginate_sync_endpoint(
             "/sync/objects", "object_id", updated_since, on_page_complete,
+            extra_params=_snapshot_params(snapshot),
         )
 
     # ------------------------------------------------------------------
@@ -308,10 +319,12 @@ class APIClient:
         self,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
+        snapshot: Optional[int] = None,
     ) -> "SyncStream":
         """Fetch all spectra via the /sync/spectra endpoint."""
         return self._paginate_sync_endpoint(
             "/sync/spectra", "spectrum_id", updated_since, on_page_complete,
+            extra_params=_snapshot_params(snapshot),
         )
 
     # ------------------------------------------------------------------
@@ -351,6 +364,7 @@ class APIClient:
         product_types: Optional[Sequence[str]] = None,
         observations: Optional[Sequence[str]] = None,
         fields: Optional[Sequence[str]] = None,
+        snapshot: Optional[int] = None,
     ) -> "SyncStream":
         """Fetch the storage_objects mirror via /sync/storage (program-scoped).
 
@@ -391,7 +405,7 @@ class APIClient:
         return self._paginate_sync_endpoint(
             "/sync/storage", "id", updated_since, on_page_complete,
             page_size=self._storage_page_size,
-            extra_params=extra or None,
+            extra_params={**extra, **(_snapshot_params(snapshot) or {})} or None,
             row_filter=row_filter,
         )
 
@@ -700,6 +714,7 @@ class APIClient:
         self,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
+        snapshot: Optional[int] = None,
     ) -> "SyncStream":
         """Fetch all photometry records via the /sync/photometry endpoint.
 
@@ -710,12 +725,14 @@ class APIClient:
         """
         return self._paginate_sync_endpoint(
             "/sync/photometry", "id", updated_since, on_page_complete,
+            extra_params=_snapshot_params(snapshot),
         )
 
     def fetch_all_line_fits(
         self,
         updated_since: Optional[str] = None,
         on_page_complete: Optional[Callable[[int, int], None]] = None,
+        snapshot: Optional[int] = None,
     ) -> "SyncStream":
         """Fetch all emission-line fits via the /sync/lines endpoint.
 
@@ -731,6 +748,7 @@ class APIClient:
         try:
             return self._paginate_sync_endpoint(
                 "/sync/lines", "spectrum_id", updated_since, on_page_complete,
+                extra_params=_snapshot_params(snapshot),
             )
         except NotFoundError:
             warnings.warn(
@@ -739,6 +757,37 @@ class APIClient:
                 stacklevel=2,
             )
             return SyncStream([], 0, [])
+
+    def get_sync_snapshot(self) -> Optional[dict]:
+        """The latest nightly sync catalog snapshot, or None to walk live.
+
+        Returns the /sync/snapshot answer when it offers a snapshot:
+        ``{snapshot_id, started_at, format_version, files: [{stream, url,
+        sha256, size, rows}]}`` with presigned urls. None when the server has
+        none for this caller (admins, none built yet, a program made private
+        since the build) or predates the endpoint (404).
+        """
+        self._session._ensure_valid_token()
+        response = self._session.get("/sync/snapshot", timeout=30)
+        if response.status_code == 404:
+            return None
+        _handle_response_error(response, "fetching the sync snapshot")
+        data = response.json()
+        return data if data.get("available") else None
+
+    def get_sync_deletions(self, since: str) -> Optional[Dict[str, List[int]]]:
+        """Ids hard-deleted from the synced tables after ``since``, per stream.
+
+        ``{"objects": [...], "spectra": [...], "storage": [...], "photometry":
+        [...], "line_fits": [...]}``. None when the server no longer journals
+        that far back (410) or predates the endpoint (404).
+        """
+        self._session._ensure_valid_token()
+        response = self._session.get("/sync/deletions", params={"since": since}, timeout=60)
+        if response.status_code in (404, 410):
+            return None
+        _handle_response_error(response, "fetching sync deletions")
+        return response.json().get("deleted", {})
 
     def fetch_tags(self) -> List[dict]:
         """Fetch all tag metadata via the /sync/lists endpoint."""

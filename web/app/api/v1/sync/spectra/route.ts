@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
+import { fetchSyncPage } from '@/lib/server/sync-streams';
+import { resolveSnapshotExtras } from '@/lib/server/sync-snapshot';
 
 /**
  * GET /api/v1/sync/spectra
@@ -18,6 +20,9 @@ import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
  *          a non-zero `offset` is refused with 400 and an upgrade message
  *          (client floor 0.5.0, see /api/v1/version).
  * - include_counts: 'false' to skip total_count / total_accessible_count (default true)
+ * - snapshot: id of the sync snapshot the client just loaded (extras mode):
+ *          only spectra in the caller's programs that snapshot was not built
+ *          for. A full walk: no updated_since, no counts, no tombstones.
  */
 import { rejectLegacyOffset } from '@/lib/api-sync-pagination';
 
@@ -47,23 +52,41 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '1000', 10);
     const afterSpectrumId = searchParams.get('after') || null;
     const updatedSince = searchParams.get('updated_since') || null;
-    const includeCounts = searchParams.get('include_counts') !== 'false';
+    let includeCounts = searchParams.get('include_counts') !== 'false';
 
     const supabase = createServiceClient();
+
+    let programSlugs = accessibleProgramSlugs;
+    const snapshotParam = searchParams.get('snapshot');
+    if (snapshotParam) {
+      const extras = await resolveSnapshotExtras(
+        supabase, snapshotParam, accessibleProgramSlugs, searchParams);
+      if (extras.error) return extras.error;
+      if (extras.extras.length === 0) {
+        return NextResponse.json({
+          data: [],
+          pagination: { total: 0, limit, after: afterSpectrumId },
+          total_accessible_count: 0,
+          deleted_ids: [],
+        });
+      }
+      programSlugs = extras.extras;
+      includeCounts = false;
+    }
 
     // Admins can opt in to syncing unpublished spectra; everyone else is
     // fail-closed to published rows only. No-op in B1.
     const includeUnpublished =
       searchParams.get('include_unpublished') === 'true' && (await isAdminUser(userId));
 
-    const { data, error } = await supabase.rpc('get_spectra_for_sync', {
-      p_program_slugs: accessibleProgramSlugs,
-      p_user_id: userId,
-      p_updated_since: updatedSince,
-      p_limit: limit,
-      p_include_counts: includeCounts,
-      p_include_unpublished: includeUnpublished,
-      p_after_spectrum_id: afterSpectrumId,
+    const { page, error } = await fetchSyncPage(supabase, 'spectra', {
+      programSlugs,
+      userId,
+      updatedSince,
+      limit,
+      includeCounts,
+      includeUnpublished,
+      after: afterSpectrumId,
     });
 
     if (error) {
@@ -74,19 +97,17 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const result = data?.[0] || { spectra: [], total_count: 0, total_accessible_count: 0 };
-
     return NextResponse.json({
-      data: result.spectra || [],
+      data: page.rows,
       pagination: {
-        total: result.total_count || 0,
+        total: page.total,
         limit,
         after: afterSpectrumId,
       },
-      total_accessible_count: result.total_accessible_count || 0,
+      total_accessible_count: page.totalAccessible ?? 0,
       // Tombstones: ids of spectra un-published (or under a soft-deleted
       // object) since `updated_since`; first incremental page only.
-      deleted_ids: result.deleted_ids ?? [],
+      deleted_ids: page.deletedIds,
     });
   } catch (error) {
     console.error('Error in API /v1/sync/spectra:', error);
