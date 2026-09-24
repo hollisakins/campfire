@@ -16,6 +16,7 @@ import pytest
 import requests
 
 from campfire.api.client import SyncStream
+from campfire.exceptions import APIError
 from campfire.db.store import LocalStore
 from campfire.sync import sync_metadata
 
@@ -94,8 +95,10 @@ def _snapshot_info(rows=SNAPSHOT_ROWS, **overrides):
 class FakeAPI:
     """fetch_all_* answer per walk kind: live (full), extras (snapshot=), catch-up (updated_since)."""
 
-    def __init__(self, info=None, extras=None, catchup=None, live=None, info_error=None):
+    def __init__(self, info=None, extras=None, catchup=None, live=None, info_error=None,
+                 fail=()):
         self.info, self.info_error = info, info_error
+        self.fail = set(fail)              # walk kinds that raise: "extras" / "catchup"
         self.extras = extras or {}
         self.catchup = catchup or {}
         self.live = live or {}
@@ -111,6 +114,10 @@ class FakeAPI:
     def _fetch(self, key):
         def fetch(updated_since=None, on_page_complete=None, snapshot=None, **_kw):
             self.calls.append((key, updated_since, snapshot))
+            kind = ("extras" if snapshot is not None
+                    else "catchup" if updated_since is not None else "live")
+            if kind in self.fail:
+                raise requests.ConnectionError(f"{kind} walk failed")
             if snapshot is not None:
                 rows, deleted = self.extras.get(key, []), []
             elif updated_since is not None:
@@ -228,6 +235,8 @@ def _bad_hash(info):
 @pytest.mark.parametrize("make_api", [
     pytest.param(lambda info: FakeAPI(info=None), id="none-offered"),
     pytest.param(lambda info: FakeAPI(info_error=requests.ConnectionError("down")), id="endpoint-error"),
+    pytest.param(lambda info: FakeAPI(info_error=APIError("500 from /sync/snapshot")), id="endpoint-500"),
+    pytest.param(lambda info: FakeAPI(info=info, fail={"extras"}), id="extras-walk-fails"),
     pytest.param(lambda info: FakeAPI(info={**info, "format_version": 2}), id="unknown-format"),
     pytest.param(lambda info: FakeAPI(info=_bad_hash(info)), id="hash-mismatch"),
     pytest.param(lambda info: FakeAPI(info={**info, "files": info["files"][:3]}), id="missing-stream"),
@@ -243,7 +252,80 @@ def test_unusable_snapshot_falls_back_to_live_walk(tmp_path, store, monkeypatch,
     assert "snapshot_id" not in result
     assert _ids(store, "objects") == [1, 4]      # live rows, and no snapshot leftovers
     assert _ids(store, "spectra") == [104]
-    assert all(c[1] is None and c[2] is None for c in api.calls)
+    live_calls = [c for c in api.calls if c[1] is None and c[2] is None]
+    assert {c[0] for c in live_calls} == {"objects", "spectra", "storage", "photometry", "line_fits"}
+    assert not any(c[1] is not None for c in api.calls)      # no catch-up after a fallback
+    assert not store.get_meta("sync_bootstrap")               # nothing left to recover
+
+
+def test_disk_error_during_download_falls_back(tmp_path, store, monkeypatch):
+    info, blobs = _snapshot_info()
+
+    class DiskFull(FakeDownloads):
+        def get(self, url, stream=True, timeout=None):
+            resp = super().get(url, stream, timeout)
+            def boom(chunk_size=1):
+                raise OSError(28, "No space left on device")
+            resp.iter_content = boom
+            return resp
+
+    monkeypatch.setattr("campfire.api.session.create_download_session",
+                        lambda *_a, **_k: DiskFull(blobs))
+    api = FakeAPI(info=info, live={"objects": [_obj(4)]})
+    result = sync_metadata(api, store, tmp_path / "meta", full=True)
+    assert "snapshot_id" not in result
+    assert _ids(store, "objects") == [4]
+
+
+def test_interrupted_catchup_resumes_on_next_sync(tmp_path, store, monkeypatch):
+    info, blobs = _snapshot_info()
+    _serve(monkeypatch, blobs)
+    store.upsert_objects([_obj(99)])          # gone from the server
+
+    api = FakeAPI(info=info, fail={"catchup"})
+    with pytest.raises(requests.ConnectionError):
+        sync_metadata(api, store, tmp_path / "meta", full=True)
+    state = json.loads(store.get_meta("sync_bootstrap"))
+    assert state["phase"] == "catchup" and state["started_at"] == STARTED_AT
+
+    # Next plain `campfire sync`: resumes the catch-up from the watermark (not
+    # from MAX(updated_at)), then runs the bootstrap's purge.
+    api2 = FakeAPI(catchup={"objects": ([_obj(2, redshift=4.0)], []), "_objects_total": 2})
+    result = sync_metadata(api2, store, tmp_path / "meta")
+    assert api2.snapshot_requests == 0
+    assert all(c[1] == STARTED_AT for c in api2.calls)
+    assert result["snapshot_id"] == 7
+    assert _ids(store, "objects") == [1, 2]   # 99 purged after the catch-up
+    assert not store.get_meta("sync_bootstrap")
+
+
+def test_interrupted_load_forces_a_full_sync(tmp_path, store):
+    store.upsert_objects([_obj(1)])
+    store.set_meta("sync_bootstrap", json.dumps({"phase": "loading"}))
+    api = FakeAPI(info=None, live={"objects": [_obj(1), _obj(5)]})
+    sync_metadata(api, store, tmp_path / "meta")      # not --full
+    assert all(c[1] is None for c in api.calls)
+    assert _ids(store, "objects") == [1, 5]
+    assert not store.get_meta("sync_bootstrap")
+
+
+def test_full_resync_keeps_local_state_of_rows_the_catchup_restores(tmp_path, store, monkeypatch):
+    # A final created after the snapshot's storage page was read, already
+    # downloaded here: missing from the snapshot, returned by the catch-up.
+    late = _storage(3)
+    store.upsert_storage_objects([late])
+    store.mark_object_synced(storage_key=late["storage_key"], local_path="nirspec/obs/late.fits",
+                             local_file_hash=late["content_hash"], local_file_size=10)
+    info, blobs = _snapshot_info()
+    _serve(monkeypatch, blobs)
+    api = FakeAPI(info=info, catchup={"storage": ([late], []), "_objects_total": 2})
+
+    result = sync_metadata(api, store, tmp_path / "meta", full=True)
+
+    row = store.get_storage_rows_by_keys([late["storage_key"]])[late["storage_key"]]
+    assert row["local_path"] == "nirspec/obs/late.fits"
+    assert late["storage_key"] not in [Path(p).name for p in result.get("orphaned_files", [])]
+    assert "nirspec/obs/late.fits" not in result.get("orphaned_files", [])
 
 
 def test_incremental_sync_never_asks_for_a_snapshot(tmp_path, store):

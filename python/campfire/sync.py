@@ -5,6 +5,7 @@ Session creation and manifest fetching are delegated to the ``api`` subpackage.
 """
 
 import hashlib
+import json
 import sys
 import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,7 +18,7 @@ from tqdm import tqdm
 
 from .api.session import create_download_session
 from .db.store import DOWNLOADABLE_PRODUCT_TYPES, FINAL_PRODUCT_TYPES
-from .exceptions import DownloadError
+from .exceptions import CampfireError, DownloadError
 
 
 # Single hashing implementation lives in the shared storage core; re-exported
@@ -279,6 +280,29 @@ _SNAPSHOT_UPSERTS = {
     "line_fits": "upsert_line_fits",
 }
 
+#: ``_meta`` key tracking an unfinished snapshot bootstrap across runs:
+#: ``{"phase": "loading"}`` while snapshot / extras rows go in (an interrupted
+#: load forces the next sync to start over as a full one), then
+#: ``{"phase": "catchup", "snapshot_id", "started_at", "purge_ts"}`` until the
+#: catch-up walk and the purge complete (an interrupted catch-up resumes from
+#: the snapshot's watermark on the next sync, then purges).
+_BOOTSTRAP_META = "sync_bootstrap"
+
+
+def _bootstrap_state(store) -> Optional[dict]:
+    raw = store.get_meta(_BOOTSTRAP_META)
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        state = json.loads(raw)
+    except ValueError:
+        return {"phase": "loading"}      # unreadable: start over
+    return state if isinstance(state, dict) else {"phase": "loading"}
+
+
+def _set_bootstrap_state(store, state: Optional[dict]) -> None:
+    store.set_meta(_BOOTSTRAP_META, json.dumps(state) if state else "")
+
 
 def _bootstrap_from_snapshot(api, store, meta_dir: Path, sync_ts: str,
                              use_bars: bool, show_progress: bool) -> Optional[dict]:
@@ -290,16 +314,16 @@ def _bootstrap_from_snapshot(api, store, meta_dir: Path, sync_ts: str,
        programs (their aggregates must cover everything the caller sees), and
        objects in the caller's private lists (their ``lists`` field). These
        overwrite the snapshot's copies.
-    3. Purge every mirror row neither step touched, exactly as a full walk's
-       purge does (everything is stamped after ``sync_ts``).
 
     The caller then runs the normal incremental walk from the snapshot's
-    ``started_at``, which brings everything changed since the build began --
-    including rows the builder read before they changed -- plus tombstones and
-    the objects count check.
+    ``started_at`` watermark -- everything changed since the build began,
+    tombstones included -- and only then purges the mirror rows none of the
+    three touched (everything they wrote is stamped after ``sync_ts``). Purging
+    last keeps the local bookkeeping of rows the catch-up restores.
 
-    Returns ``{"snapshot_id", "started_at", "purged": {...}, "orphaned_files"}``,
-    or None when there is no usable snapshot; the caller then walks live.
+    Returns ``{"snapshot_id", "started_at"}``, or None when there is no usable
+    snapshot or any step fails; the caller then walks live. The ``_meta``
+    bootstrap state makes an interrupted run recover on the next sync.
     """
     from .api.session import create_download_session
     from .snapshot import (SnapshotError, download_snapshot_file,
@@ -307,7 +331,7 @@ def _bootstrap_from_snapshot(api, store, meta_dir: Path, sync_ts: str,
 
     try:
         info = api.get_sync_snapshot()
-    except requests.RequestException as e:
+    except (requests.RequestException, CampfireError) as e:
         print(f"  Catalog snapshot unavailable ({e}); fetching live.", file=sys.stderr)
         return None
     if info is None:
@@ -322,6 +346,10 @@ def _bootstrap_from_snapshot(api, store, meta_dir: Path, sync_ts: str,
             print(f"  Downloading catalog snapshot ({total_mb:.0f} MB)...", file=sys.stderr)
         paths = {key: download_snapshot_file(f, snap_dir, session) for key, f in files.items()}
 
+        # From the first row written until the extras are in, the mirror holds
+        # a public-scope subset: a run that dies here must not look like a
+        # completed sync to the next one.
+        _set_bootstrap_state(store, {"phase": "loading"})
         for position, (key, path) in enumerate(paths.items()):
             upsert = getattr(store, _SNAPSHOT_UPSERTS[key])
             pbar = (tqdm(total=files[key].get("rows"), unit="row", position=position,
@@ -336,42 +364,44 @@ def _bootstrap_from_snapshot(api, store, meta_dir: Path, sync_ts: str,
             # Park the cursor below the stacked bars (see _fetch_all_concurrent).
             sys.stderr.write("\n" * len(paths))
             sys.stderr.flush()
-    except SnapshotError as e:
-        print(f"  Catalog snapshot unusable ({e}); fetching live.", file=sys.stderr)
+
+        snapshot_id = info["snapshot_id"]
+        extras = _fetch_all_concurrent(
+            api, {key: None for key in _SNAPSHOT_UPSERTS}, use_bars, show_progress,
+            snapshot=snapshot_id,
+        )
+        for key, method in _SNAPSHOT_UPSERTS.items():
+            rows = extras[key][0]
+            if rows:
+                getattr(store, method)(rows)
+    except (SnapshotError, requests.RequestException, CampfireError, OSError) as e:
+        print(f"  Catalog snapshot bootstrap failed ({e}); fetching live.", file=sys.stderr)
         return None
     finally:
         for leftover in snap_dir.glob("*.jsonl.gz*") if snap_dir.exists() else ():
             leftover.unlink(missing_ok=True)
 
-    snapshot_id = info["snapshot_id"]
-    extras = _fetch_all_concurrent(
-        api, {key: None for key in _SNAPSHOT_UPSERTS}, use_bars, show_progress,
-        snapshot=snapshot_id,
-    )
-    for key, method in _SNAPSHOT_UPSERTS.items():
-        rows = extras[key][0]
-        if rows:
-            getattr(store, method)(rows)
+    _set_bootstrap_state(store, {
+        "phase": "catchup", "snapshot_id": snapshot_id,
+        "started_at": info["started_at"], "purge_ts": sync_ts,
+    })
+    return {"snapshot_id": snapshot_id, "started_at": info["started_at"]}
 
+
+def _purge_after_bootstrap(store, purge_ts: str) -> dict:
+    """The full-sync purge of a snapshot bootstrap, run after its catch-up."""
     purged = {
-        "objects": store.purge_stale_objects(sync_ts),
-        "spectra": (store.purge_stale_spectra(sync_ts) or {}).get("purged_spectra", 0),
-        "photometry": store.purge_stale_photometry(sync_ts),
-        "line_fits": store.purge_stale_line_fits(sync_ts),
+        "objects": store.purge_stale_objects(purge_ts),
+        "spectra": (store.purge_stale_spectra(purge_ts) or {}).get("purged_spectra", 0),
+        "photometry": store.purge_stale_photometry(purge_ts),
+        "line_fits": store.purge_stale_line_fits(purge_ts),
     }
     storage = store.purge_stale_storage_objects(
-        sync_ts, product_types=list(MIRRORED_PRODUCT_TYPES))
+        purge_ts, product_types=list(MIRRORED_PRODUCT_TYPES))
     purged["storage"] = storage["purged"] + store.drop_unmirrored_storage_rows(
         DOWNLOADABLE_PRODUCT_TYPES)
-
-    store.set_meta("snapshot_id", str(snapshot_id))
-    store.set_meta("snapshot_started_at", info["started_at"])
-    return {
-        "snapshot_id": snapshot_id,
-        "started_at": info["started_at"],
-        "purged": purged,
-        "orphaned_files": storage["orphaned_files"],
-    }
+    purged["orphaned_files"] = storage["orphaned_files"]
+    return purged
 
 
 def sync_metadata(
@@ -403,6 +433,13 @@ def sync_metadata(
     # only rows the server no longer returns get purged.
     sync_ts = datetime.now(timezone.utc).isoformat()
 
+    # An earlier run that died mid-bootstrap: a load that never finished makes
+    # this a full sync again; a catch-up that never finished resumes below.
+    pending = _bootstrap_state(store)
+    if pending and pending.get("phase") != "catchup":
+        full = True
+        pending = None
+
     # Incremental cursors are store reads, so resolve them here on the main thread
     # before the workers start (workers must not touch the single-threaded
     # SQLite connection).
@@ -418,17 +455,21 @@ def sync_metadata(
     }
 
     # 0. A full walk starts from the nightly snapshot when there is one; the
-    #    walk below then becomes the catch-up from the snapshot's start time.
+    #    walk below then becomes the catch-up from the snapshot's watermark.
     boot = None
-    if use_snapshot and all(c is None for c in cursors.values()):
-        boot = _bootstrap_from_snapshot(api, store, meta_dir, sync_ts,
-                                        use_bars, show_progress)
-        if boot is not None:
-            cursors = {key: boot["started_at"] for key in cursors}
-        else:
-            # A failed bootstrap may have loaded rows; the live walk's purge
-            # boundary must postdate them.
-            sync_ts = datetime.now(timezone.utc).isoformat()
+    if full or all(c is None for c in cursors.values()):
+        pending = None                    # a full walk supersedes any pending catch-up
+        if use_snapshot:
+            boot = _bootstrap_from_snapshot(api, store, meta_dir, sync_ts,
+                                            use_bars, show_progress)
+            if boot is None:
+                # A failed bootstrap may have loaded rows; the live walk's purge
+                # boundary must postdate them.
+                sync_ts = datetime.now(timezone.utc).isoformat()
+            else:
+                pending = _bootstrap_state(store)
+    if pending is not None:
+        cursors = {key: pending["started_at"] for key in cursors}
 
     # 1. Fetch all four catalogs concurrently (network only).
     fetched = _fetch_all_concurrent(api, cursors, use_bars, show_progress)
@@ -449,6 +490,28 @@ def sync_metadata(
     lines_count, lines_purged = _apply_line_fits(
         store, fetched["line_fits"], cursors["line_fits"], sync_ts
     )
+
+    # 2b. A snapshot bootstrap's purge runs only now, after its catch-up.
+    if pending is not None:
+        purged = _purge_after_bootstrap(store, pending["purge_ts"])
+        obj_purged += purged["objects"]
+        storage_purged += purged["storage"]
+        phot_purged += purged["photometry"]
+        lines_purged += purged["line_fits"]
+        if purged["spectra"]:
+            spec_purge = spec_purge or {}
+            spec_purge["purged_spectra"] = (
+                spec_purge.get("purged_spectra", 0) + purged["spectra"])
+        storage_orphaned = list(storage_orphaned) + purged["orphaned_files"]
+        # The catch-up's count check ran before the purge; redo it on the
+        # purged mirror.
+        server_total = fetched["objects"][1]
+        local_total = store._conn.execute("SELECT COUNT(*) FROM objects").fetchone()[0]
+        needs_full_sync = server_total > 0 and local_total != server_total
+        store.set_meta("snapshot_id", str(pending["snapshot_id"]))
+        store.set_meta("snapshot_started_at", pending["started_at"])
+    # Every walk that got here completed: nothing left to recover.
+    _set_bootstrap_state(store, None)
 
     # 3. Sync tag metadata (single request), then export CSVs.
     tags_count = _sync_tags(api, store, show_progress)
@@ -474,20 +537,11 @@ def sync_metadata(
         "tags": tags_count,
         "stale_count": len(stale),
         "stale_files": stale,
-        "incremental": incremental and spec_incremental and boot is None,
+        "incremental": incremental and spec_incremental and pending is None,
         "needs_full_sync": needs_full_sync,
     }
-    if boot is not None:
-        result["snapshot_id"] = boot["snapshot_id"]
-        result["objects_purged"] += boot["purged"]["objects"]
-        result["storage_purged"] += boot["purged"]["storage"]
-        result["photometry_purged"] += boot["purged"]["photometry"]
-        result["line_fits_purged"] += boot["purged"]["line_fits"]
-        if boot["purged"]["spectra"]:
-            spec_purge = spec_purge or {}
-            spec_purge["purged_spectra"] = (
-                spec_purge.get("purged_spectra", 0) + boot["purged"]["spectra"])
-        storage_orphaned = list(storage_orphaned) + boot["orphaned_files"]
+    if pending is not None:
+        result["snapshot_id"] = pending["snapshot_id"]
     if spec_purge and spec_purge.get("purged_spectra"):
         result["purged_spectra"] = spec_purge["purged_spectra"]
     if storage_orphaned:

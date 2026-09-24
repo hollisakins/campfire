@@ -1408,8 +1408,10 @@ COMMENT ON TABLE "public"."deploy_scope_state" IS 'Optimistic-concurrency versio
 -- only: RLS on with no policies, and no anon/authenticated grants.
 CREATE TABLE IF NOT EXISTS "public"."sync_snapshots" (
     "id" bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    -- Database now() before the first page: the client's catch-up cursor, so
-    -- a row changed while the build was walking is re-fetched.
+    -- Catch-up watermark, taken before the first page: the start of the
+    -- oldest transaction then open, minus a margin (sync_snapshot_begin), so
+    -- a row changed while the build was walking -- or committed by a
+    -- transaction already in flight when it began -- is re-fetched.
     "started_at" timestamp with time zone NOT NULL,
     "completed_at" timestamp with time zone,
     "format_version" integer NOT NULL,

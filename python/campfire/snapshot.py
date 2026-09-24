@@ -72,7 +72,9 @@ def download_snapshot_file(
             for chunk in response.iter_content(chunk_size=1 << 20):
                 f.write(chunk)
                 hasher.update(chunk)
-    except requests.RequestException as e:
+    except (requests.RequestException, OSError) as e:
+        # OSError: the local write (disk full, permissions) -- still a reason
+        # to walk live rather than to fail the sync.
         tmp.unlink(missing_ok=True)
         raise SnapshotError(f"downloading the {file['stream']} snapshot failed: {e}") from e
 

@@ -13,7 +13,9 @@
 --     files, status). Service-role only: RLS on, no policies, no grants to
 --     anon/authenticated.
 --   * sync_snapshot_begin(p_format_version), NEW: inserts the `building` row
---     with the database's now() and the public programs. Service-role only.
+--     with the public programs and the catch-up watermark (start of the oldest
+--     open transaction minus a margin; SECURITY DEFINER to read
+--     pg_stat_activity). Service-role only.
 --   * get_objects_for_sync: gains p_filter_program_slugs (the extras walk --
 --     objects touching the caller's non-snapshot programs, or in the caller's
 --     own/shared non-public lists; the payload stays scoped to the full
@@ -38,8 +40,10 @@
 -- only: RLS on with no policies, and no anon/authenticated grants.
 CREATE TABLE IF NOT EXISTS "public"."sync_snapshots" (
     "id" bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    -- Database now() before the first page: the client's catch-up cursor, so
-    -- a row changed while the build was walking is re-fetched.
+    -- Catch-up watermark, taken before the first page: the start of the
+    -- oldest transaction then open, minus a margin (sync_snapshot_begin), so
+    -- a row changed while the build was walking -- or committed by a
+    -- transaction already in flight when it began -- is re-fetched.
     "started_at" timestamp with time zone NOT NULL,
     "completed_at" timestamp with time zone,
     "format_version" integer NOT NULL,
@@ -357,16 +361,36 @@ GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ,
 -- sync_snapshot_begin
 -- (opens a nightly sync catalog snapshot build; /api/cron/sync-snapshot)
 -- =============================================================================
--- Inserts the `building` row with the database's now() -- the client's
--- catch-up cursor after loading the snapshot, so it must be taken before the
--- first page is read -- and the public programs the snapshot is built for.
--- Service-role only.
+-- Inserts the `building` row with the public programs the snapshot is built
+-- for and its `started_at` watermark: the client's catch-up cursor after
+-- loading the snapshot (`updated_at > started_at`), so every row the walk may
+-- have read in an old state must have an updated_at after it.
+--
+-- now() alone is not that. Writers stamp updated_at with THEIR transaction's
+-- start time, so a write whose transaction began before the build and
+-- committed after the builder read its page is absent from the snapshot yet
+-- has updated_at <= now(), and the catch-up would never return it. The
+-- watermark is therefore the start of the oldest transaction still open
+-- (read from pg_stat_activity, hence SECURITY DEFINER: postgres holds
+-- pg_read_all_stats), minus a margin for transactions that start in the
+-- instant between this read and the first page. A wider catch-up window only
+-- re-sends rows the client already holds.
 CREATE OR REPLACE FUNCTION public.sync_snapshot_begin(p_format_version INTEGER)
 RETURNS SETOF public.sync_snapshots
 LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
 AS $$
   INSERT INTO public.sync_snapshots (started_at, format_version, public_programs)
-  SELECT now(), p_format_version,
+  SELECT LEAST(
+           now(),
+           COALESCE((SELECT min(a.xact_start)
+                     FROM pg_stat_activity a
+                     WHERE a.backend_type = 'client backend'
+                       AND a.pid <> pg_backend_pid()
+                       AND a.xact_start IS NOT NULL), now())
+         ) - interval '5 minutes',
+         p_format_version,
          COALESCE((SELECT array_agg(slug ORDER BY slug)
                    FROM public.programs WHERE is_public), '{}'::text[])
   RETURNING *;

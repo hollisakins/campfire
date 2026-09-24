@@ -294,7 +294,7 @@ build, or when a snapshot program went private. The client (`campfire/snapshot.p
 3. purges what neither touched;
 4. runs the normal walk as the catch-up from the snapshot's `started_at`.
 
-Any unusable snapshot falls back to the live walk (`--no-snapshot` forces it).
+`started_at` is a watermark, not the build time: the start of the oldest transaction open when the build began, minus 5 minutes, so a write already in flight is not missed. The purge runs after the catch-up, so rows the catch-up restores keep their local download state. A `sync_bootstrap` `_meta` state makes an interrupted bootstrap recover on the next sync: an interrupted load forces a full sync, and an interrupted catch-up resumes from `started_at`. Any unusable snapshot, or any failure during load or the extras walk, falls back to the live walk in the same run (`--no-snapshot` forces it).
 
 ### Config plane (issue #303)
 
