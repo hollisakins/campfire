@@ -51,9 +51,6 @@ const PAGE_SIZE: Record<SyncStreamName, number> = {
   lines: 5000,
 };
 
-// A build still `building` after this long died without marking itself failed.
-const STALE_BUILD_MS = 15 * 60 * 1000;
-
 async function buildStreamFile(
   supabase: SupabaseClient,
   stream: SyncStreamName,
@@ -123,11 +120,13 @@ async function prune(supabase: SupabaseClient): Promise<void> {
     .order('id', { ascending: false });
   for (const row of (ready ?? []).slice(SYNC_SNAPSHOT_KEEP)) await dropSnapshot(supabase, row);
 
-  const staleBefore = new Date(Date.now() - STALE_BUILD_MS).toISOString();
+  // Failed builds, including abandoned ones sync_snapshot_begin retired
+  // (still `building` 15 min after creation; maxDuration is 5 min). A live
+  // build is never `failed`, so this cannot touch one.
   const { data: dead } = await supabase
     .from('sync_snapshots')
     .select('id, files')
-    .or(`status.eq.failed,and(status.eq.building,started_at.lt.${staleBefore})`);
+    .eq('status', 'failed');
   for (const row of dead ?? []) await dropSnapshot(supabase, row);
 }
 
@@ -139,21 +138,15 @@ export async function GET(request: NextRequest) {
 
   const supabase = createServiceClient();
 
-  // One build at a time (a manual trigger overlapping the nightly run).
-  const staleBefore = new Date(Date.now() - STALE_BUILD_MS).toISOString();
-  const { data: running } = await supabase
-    .from('sync_snapshots')
-    .select('id')
-    .eq('status', 'building')
-    .gte('started_at', staleBefore)
-    .limit(1);
-  if (running && running.length > 0) {
-    return NextResponse.json({ error: 'a snapshot build is already running' }, { status: 409 });
-  }
-
+  // One build at a time, enforced atomically in the database: a second
+  // concurrent begin (a manual trigger overlapping the nightly run) hits
+  // idx_sync_snapshots_one_building.
   const { data: begun, error: beginError } = await supabase.rpc('sync_snapshot_begin', {
     p_format_version: SYNC_SNAPSHOT_FORMAT_VERSION,
   });
+  if (beginError?.code === '23505') {
+    return NextResponse.json({ error: 'a snapshot build is already running' }, { status: 409 });
+  }
   if (beginError || !begun?.[0]) {
     console.error('sync-snapshot: begin failed:', beginError);
     return NextResponse.json({ error: 'could not start a snapshot build' }, { status: 500 });
@@ -186,11 +179,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const { error: readyError } = await supabase
+    // Only a row still `building` becomes ready: a row retired or removed
+    // meanwhile must fail loudly, not report a snapshot that is not there.
+    const { data: marked, error: readyError } = await supabase
       .from('sync_snapshots')
       .update({ status: 'ready', completed_at: new Date().toISOString(), files })
-      .eq('id', snap.id);
+      .eq('id', snap.id)
+      .eq('status', 'building')
+      .select('id');
     if (readyError) throw new Error(`mark ready: ${readyError.message}`);
+    if (!marked || marked.length === 0) throw new Error('mark ready: build row no longer building');
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`sync-snapshot ${snap.id} failed:`, err);

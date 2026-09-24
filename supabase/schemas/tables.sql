@@ -1414,6 +1414,9 @@ CREATE TABLE IF NOT EXISTS "public"."sync_snapshots" (
     -- transaction already in flight when it began -- is re-fetched.
     "started_at" timestamp with time zone NOT NULL,
     "completed_at" timestamp with time zone,
+    -- Wall-clock build start. started_at is a backdated watermark and must
+    -- not be used to judge whether a build is still running.
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "format_version" integer NOT NULL,
     -- The program scope the snapshot was built for (the public programs at
     -- build time). A caller's extras walk is their accessible programs minus

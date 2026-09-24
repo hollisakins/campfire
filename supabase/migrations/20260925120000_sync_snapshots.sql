@@ -9,9 +9,10 @@
 -- loads them, fetches the rows a public snapshot cannot carry (an "extras"
 -- walk), then catches up incrementally from the snapshot's start time.
 --
---   * sync_snapshots, NEW: one row per build (started_at, public_programs,
---     files, status). Service-role only: RLS on, no policies, no grants to
---     anon/authenticated.
+--   * sync_snapshots, NEW: one row per build (started_at watermark,
+--     created_at wall clock, public_programs, files, status), at most one
+--     `building` at a time (idx_sync_snapshots_one_building). Service-role
+--     only: RLS on, no policies, no grants to anon/authenticated.
 --   * sync_snapshot_begin(p_format_version), NEW: inserts the `building` row
 --     with the public programs and the catch-up watermark (start of the oldest
 --     open transaction minus a margin; SECURITY DEFINER to read
@@ -46,6 +47,9 @@ CREATE TABLE IF NOT EXISTS "public"."sync_snapshots" (
     -- transaction already in flight when it began -- is re-fetched.
     "started_at" timestamp with time zone NOT NULL,
     "completed_at" timestamp with time zone,
+    -- Wall-clock build start. started_at is a backdated watermark and must
+    -- not be used to judge whether a build is still running.
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "format_version" integer NOT NULL,
     -- The program scope the snapshot was built for (the public programs at
     -- build time). A caller's extras walk is their accessible programs minus
@@ -71,6 +75,12 @@ REVOKE ALL ON TABLE "public"."sync_snapshots" FROM "authenticated";
 GRANT ALL ON TABLE "public"."sync_snapshots" TO "service_role";
 
 ALTER TABLE public.sync_snapshots ENABLE ROW LEVEL SECURITY;
+
+-- At most one snapshot build in flight: sync_snapshot_begin's INSERT fails
+-- with unique_violation while another row is `building` (see that function).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_snapshots_one_building
+    ON public.sync_snapshots USING btree ((true))
+    WHERE status = 'building';
 
 DROP FUNCTION IF EXISTS public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ, INTEGER, BOOLEAN, BOOLEAN, TEXT);
 
@@ -375,12 +385,23 @@ GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ,
 -- pg_read_all_stats), minus a margin for transactions that start in the
 -- instant between this read and the first page. A wider catch-up window only
 -- re-sends rows the client already holds.
+--
+-- One build at a time: idx_sync_snapshots_one_building allows a single
+-- `building` row, so a second concurrent call fails with unique_violation
+-- (the cron route answers 409). A build still `building` 15 minutes after it
+-- was created (by wall clock, created_at -- never the backdated started_at)
+-- died without marking itself failed and is retired here first, so it cannot
+-- block every later build.
 CREATE OR REPLACE FUNCTION public.sync_snapshot_begin(p_format_version INTEGER)
 RETURNS SETOF public.sync_snapshots
 LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public, pg_catalog
 AS $$
+  UPDATE public.sync_snapshots
+     SET status = 'failed', error = 'abandoned: still building after 15 minutes'
+   WHERE status = 'building' AND created_at < now() - interval '15 minutes';
+
   INSERT INTO public.sync_snapshots (started_at, format_version, public_programs)
   SELECT LEAST(
            now(),

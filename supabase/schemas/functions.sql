@@ -1472,12 +1472,23 @@ GRANT EXECUTE ON FUNCTION public.get_objects_for_sync(TEXT[], UUID, TIMESTAMPTZ,
 -- pg_read_all_stats), minus a margin for transactions that start in the
 -- instant between this read and the first page. A wider catch-up window only
 -- re-sends rows the client already holds.
+--
+-- One build at a time: idx_sync_snapshots_one_building allows a single
+-- `building` row, so a second concurrent call fails with unique_violation
+-- (the cron route answers 409). A build still `building` 15 minutes after it
+-- was created (by wall clock, created_at -- never the backdated started_at)
+-- died without marking itself failed and is retired here first, so it cannot
+-- block every later build.
 CREATE OR REPLACE FUNCTION public.sync_snapshot_begin(p_format_version INTEGER)
 RETURNS SETOF public.sync_snapshots
 LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public, pg_catalog
 AS $$
+  UPDATE public.sync_snapshots
+     SET status = 'failed', error = 'abandoned: still building after 15 minutes'
+   WHERE status = 'building' AND created_at < now() - interval '15 minutes';
+
   INSERT INTO public.sync_snapshots (started_at, format_version, public_programs)
   SELECT LEAST(
            now(),
