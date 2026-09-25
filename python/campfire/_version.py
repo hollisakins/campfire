@@ -6,4 +6,4 @@ it would otherwise define ``__version__``, so anything below the package root
 Bump together with ``python/pyproject.toml`` and the ``/api/v1/version`` floor.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"

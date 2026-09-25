@@ -57,6 +57,15 @@ DEFAULT_SYNC_PAGE_SIZE = 5000
 #: this floor.
 DEFAULT_STORAGE_SYNC_PAGE_SIZE = 10000
 
+#: Emission-line fit rows are the opposite: each carries every line's full
+#: measurement set (~11 KB of JSON on average, up to ~30 KB), so a page at the
+#: shared size was ~57 MB, built as one value on the database and relayed
+#: through PostgREST and the Vercel function -- past Cloudflare's 100 s origin
+#: timeout on a small instance (a 524 on `sync --full`, 2026-09-25). 250 rows
+#: keep a page near 3 MB. Override with ``CAMPFIRE_SYNC_LINES_PAGE_SIZE``; the
+#: shared ``CAMPFIRE_SYNC_PAGE_SIZE`` deliberately does not raise it.
+DEFAULT_LINES_SYNC_PAGE_SIZE = 250
+
 _MAX_SYNC_PAGE_SIZE = 50000
 
 #: Read timeout for one /sync/* page. It must outlast the sync RPCs' own
@@ -111,6 +120,11 @@ def _resolve_storage_sync_page_size() -> int:
             "CAMPFIRE_SYNC_STORAGE_PAGE_SIZE", DEFAULT_STORAGE_SYNC_PAGE_SIZE
         )
     return max(_resolve_sync_page_size(), DEFAULT_STORAGE_SYNC_PAGE_SIZE)
+
+
+def _resolve_lines_sync_page_size() -> int:
+    """Resolve the /sync/lines page size (``CAMPFIRE_SYNC_LINES_PAGE_SIZE``)."""
+    return _resolve_page_size("CAMPFIRE_SYNC_LINES_PAGE_SIZE", DEFAULT_LINES_SYNC_PAGE_SIZE)
 
 
 def _build_query_params(
@@ -223,6 +237,7 @@ class APIClient:
         self._session = session
         self._page_size = _resolve_sync_page_size()
         self._storage_page_size = _resolve_storage_sync_page_size()
+        self._lines_page_size = _resolve_lines_sync_page_size()
 
     # ------------------------------------------------------------------
     # Objects
@@ -748,6 +763,7 @@ class APIClient:
         try:
             return self._paginate_sync_endpoint(
                 "/sync/lines", "spectrum_id", updated_since, on_page_complete,
+                page_size=self._lines_page_size,
                 extra_params=_snapshot_params(snapshot),
             )
         except NotFoundError:

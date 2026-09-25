@@ -190,6 +190,7 @@ def test_fetch_all_line_fits_tolerates_missing_endpoint(monkeypatch):
     client = APIClient.__new__(APIClient)
     client._session = MagicMock()
     client._page_size = 100
+    client._lines_page_size = 100
 
     def _raise(*a, **k):
         raise NotFoundError("no such route")
