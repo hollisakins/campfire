@@ -65,6 +65,7 @@ const DOWNLOAD_TYPE_LABELS: Record<string, string> = {
   fits_zip: 'ZIP Archive',
   csv: 'CSV Export',
   sed_plot: 'SED Plot',
+  fits_sync: 'CLI Sync',
 };
 
 // Download type icons

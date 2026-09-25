@@ -93,6 +93,15 @@ export default function AdminUsersPage() {
     }
   }, []);
 
+  // Dashboard quick-action intent: /admin/users?new=invite|group opens the
+  // matching inline form on mount. Read from window.location (not
+  // useSearchParams) to avoid the Suspense-boundary requirement.
+  useEffect(() => {
+    const intent = new URLSearchParams(window.location.search).get('new');
+    if (intent === 'invite') setShowInviteForm(true);
+    else if (intent === 'group') setShowGroupForm(true);
+  }, []);
+
   const fetchUsers = useCallback(async () => {
     setLoading(true);
     setError(null);
