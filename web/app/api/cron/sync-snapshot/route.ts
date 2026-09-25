@@ -48,7 +48,10 @@ const PAGE_SIZE: Record<SyncStreamName, number> = {
   spectra: 5000,
   storage: 10000,
   photometry: 5000,
-  lines: 5000,
+  // Line-fit rows are ~11 KB of JSON each: 5000 made one ~50 MB value on the
+  // database (17.5 s for the first build). Matches the client's
+  // DEFAULT_LINES_SYNC_PAGE_SIZE.
+  lines: 250,
 };
 
 async function buildStreamFile(

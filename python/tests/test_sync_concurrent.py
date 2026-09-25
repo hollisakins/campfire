@@ -12,9 +12,11 @@ import pytest
 
 from campfire.api.client import (
     APIClient,
+    DEFAULT_LINES_SYNC_PAGE_SIZE,
     DEFAULT_STORAGE_SYNC_PAGE_SIZE,
     DEFAULT_SYNC_PAGE_SIZE,
     SyncStream,
+    _resolve_lines_sync_page_size,
     _resolve_storage_sync_page_size,
     _resolve_sync_page_size,
 )
@@ -202,6 +204,23 @@ def test_api_client_reads_env_page_size(monkeypatch):
     monkeypatch.setenv("CAMPFIRE_SYNC_PAGE_SIZE", "1234")
     client = APIClient(session=MagicMock())
     assert client._page_size == 1234
+
+
+# ---------------------------------------------------------------------------
+# Line-fits page size (line-fit rows are ~11 KB of JSON; a shared-size page
+# timed out at Cloudflare)
+# ---------------------------------------------------------------------------
+def test_line_fits_page_small_and_independent_of_shared(monkeypatch):
+    monkeypatch.delenv("CAMPFIRE_SYNC_LINES_PAGE_SIZE", raising=False)
+    monkeypatch.setenv("CAMPFIRE_SYNC_PAGE_SIZE", "20000")   # does not raise lines
+    session, calls = _canned_session([{"data": [{"spectrum_id": 1}], "pagination": {"total": 1}}])
+    APIClient(session=session).fetch_all_line_fits()
+    assert calls[0]["limit"] == DEFAULT_LINES_SYNC_PAGE_SIZE == 250
+
+
+def test_line_fits_page_size_override(monkeypatch):
+    monkeypatch.setenv("CAMPFIRE_SYNC_LINES_PAGE_SIZE", "100")
+    assert _resolve_lines_sync_page_size() == 100
 
 
 # ---------------------------------------------------------------------------
