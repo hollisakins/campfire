@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
+from campfire_pipeline.nircam.align import histmatch
 from campfire_pipeline.nircam.align.histmatch import (
     OffsetHistogramMatch,
     _sigma_clip_median,
@@ -347,21 +348,21 @@ def test_gross_shift_kept_for_a_real_acquisition_failure():
     assert np.all(ri[np.argsort(ii)] == np.sort(ii))  # paired to their own refs
 
 
-def test_declining_a_redundant_prior_does_not_change_the_match():
-    """A clean, dense pool: the guard fires, and it costs nothing.
+def test_clean_pool_keeps_its_gross_prior_and_is_unchanged():
+    """A clean, dense pool: the gross proposal is accurate, so the guard keeps it.
 
-    The gross stage's own proposal is only good to a few tenths of an arcsec
-    (0.5" histogram bins, a +-2-bin centroid), so on a well-pointed exposure it
-    displaces sources out of the 0.157" vetting radius even though it is
-    pointing the right way -- here it proposes (+0.26, +0.24)" for a true offset
-    of (0.05, 0.02)". The guard therefore DECLINES, which is correct: a pool
-    whose input WCS already has 300 tight counterparts does not need a
-    translation prior.
+    This assertion used to run the other way. At the old 0.5" gross bin the
+    proposal on a well-pointed exposure landed ~0.26" from the truth - outside
+    the 0.157" vetting radius - so the guard DECLINED (measured ratio 0.033 on
+    real COSMOS pools). At the shipped 0.25" bin it lands inside, and on THIS
+    fixture the ratio goes 0.01 -> 0.997.
 
-    What has to hold is that declining costs nothing, and that is asserted on
-    the OUTCOME: both arms must recover the same true correspondences. This is
-    the synthetic counterpart of the measured COSMOS d1/d2 result (ratio 0.033,
-    and the same WCS and the same 16.4 / 14.8 mas either way).
+    That flip is a property of the fixture, not a claim about the sky: on the
+    1,624 real EGS F115W pools re-solved at 0.25" the median keep ratio is 0.119
+    and 1,368 pools still decline. Real detections are blended, mismatched
+    across bands and astrometrically noisier, so a correct proposal still costs
+    tight pairs. What must hold either way is the OUTCOME - same matches, same
+    astrometry, guard on or off - which is what the final assertions check.
     """
     rng = np.random.default_rng(13)
     true = rng.uniform(0, 130, (300, 2))
@@ -375,10 +376,45 @@ def test_declining_a_redundant_prior_does_not_change_the_match():
 
     # the ratio logic was reached on REAL tight pairs, not on coincidences
     assert on.diag['gross_tight_before'] > 100
-    # ... and it declined, because the proposal is imprecise at this radius
-    assert on.diag['gross_keep_ratio'] < 0.8
-    # the outcome is what must not change: both arms pair image source i to its
-    # OWN reference (the first len(true) refcat rows are the true counterparts)
+    # ... and at this bin size the proposal EARNS its keep
+    assert on.diag['gross_keep_ratio'] >= 0.8
     for ri, ii, who in ((ri_on, ii_on, 'guard on'), (ri_off, ii_off, 'guard off')):
         assert len(ii) >= 250, who
         assert np.array_equal(ri, ii), who
+
+
+def test_gross_bin_resolves_an_arcsec_scale_offset():
+    """A ~1.4" offset must not be smeared into the random-coincidence floor.
+
+    The regression this pins: EGS visit jw06368060001 carries a 1.37" pointing
+    error (confirmed independently in SW and LW). At a 0.5" gross bin the solve
+    returned 69.38" and rejected every detector; at 0.25" it recovers the true
+    offset. Here the same failure is reproduced synthetically - a modest true
+    population against a dense field of decoys, offset by 1.4" - and asserted
+    PAIRED, so it cannot pass by the bin change being a no-op.
+    """
+    rng = np.random.default_rng(101)
+    truth = np.array([1.40, -0.30])
+    true = rng.uniform(0, 130, (90, 2))
+    im = true - truth + rng.normal(0, 0.01, true.shape)
+    ref = np.vstack([true, rng.uniform(-10, 140, (2500, 2))])
+    ref_tab, im_tab = _tab(ref), _tab(im)
+
+    def recovered(binsize):
+        old = histmatch._GROSS_BIN_ARCSEC
+        histmatch._GROSS_BIN_ARCSEC = binsize
+        try:
+            m = OffsetHistogramMatch(searchrad=70.0)
+            ri, ii = m(ref_tab, im_tab, tp_pscale=LW_PSCALE)
+            # fraction of returned pairs that are the TRUE correspondence
+            return (np.mean(ri == ii) if len(ii) else 0.0), len(ii)
+        finally:
+            histmatch._GROSS_BIN_ARCSEC = old
+
+    frac_coarse, n_coarse = recovered(0.5)
+    frac_fine, n_fine = recovered(0.25)
+    # the shipped bin must actually resolve it ...
+    assert frac_fine > 0.9, (frac_fine, n_fine)
+    assert n_fine >= 50
+    # ... and the test must not be vacuous: a coarser bin does measurably worse
+    assert frac_fine >= frac_coarse
