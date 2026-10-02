@@ -82,7 +82,19 @@ _MIN_PAIRS = 3
 # Gross-stage 2-D histogram bin (arcsec). Precision only needs to bring the
 # residual offset under d2d_max/NN-spacing for the 1-NN stage; the ±2-bin
 # centroid refinement below gives sub-bin accuracy.
-_GROSS_BIN_ARCSEC = 0.5
+#
+# 0.25, not 0.5: at 0.5" a genuine ~1.4" pointing error is smeared across the
+# same cell scale as the random-coincidence floor, so the true peak has no
+# contrast to win with and the argmax can land anywhere in the search radius.
+# Measured on EGS f115w/f277w (one visit with a 1.37" offset, confirmed
+# independently in both channels): at 0.5" the coarse solve returned 69.38"
+# (SW, 0/8 detectors accepted) and 0.63"/0.81" (LW, 0/2 accepted); at 0.25" all
+# three pools recover the true 1.37-1.92" and accept 8/8 and 2/2. Healthy pools
+# are BIT-IDENTICAL at 0.5, 0.25, 0.10 and 0.05 - same n_matched, same coarse
+# shift, same astrometry - so this only acts where the coarser bin was failing.
+# Halving the bin quadruples the histogram's memory, which is bounded by
+# (2*searchrad/bin)^2 floats = 320 kB at the 70" default: negligible.
+_GROSS_BIN_ARCSEC = 0.25
 
 # Cap on 1-D histogram length; if the (unclamped) offset span demands more
 # bins, the bin size is coarsened. Only reachable with d2d_max=None on a

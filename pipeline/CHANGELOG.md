@@ -29,6 +29,28 @@ Release procedure: edit the `## Unreleased` section below, then run
 ## Unreleased
 
 ### Algorithm
+- **`align`: the coarse gross-shift histogram now bins at 0.25", not 0.5".** At
+  0.5" a genuine arcsec-scale pointing error is smeared across the same cell
+  scale as the random-coincidence floor, so the true peak has no contrast to win
+  with and the `argmax` can land anywhere inside `coarse_searchrad`. Found on
+  EGS visit `jw06368060001`, which carries a 1.37" pointing error confirmed
+  independently in both channels: at 0.5" the coarse solve returned **69.38"**
+  (SW, 0/8 detectors accepted) and 0.63"/0.81" (LW, 0/2 accepted); at 0.25" all
+  three pools recover the true 1.37-1.92" and accept 8/8 and 2/2. Healthy pools
+  are **bit-identical** at 0.5 / 0.25 / 0.10 / 0.05 - same `n_matched`, same
+  coarse shift, same astrometry - so the change acts only where the coarser bin
+  was already failing. Memory is bounded by `(2*searchrad/bin)^2` floats
+  (320 kB at the 70" default).
+
+  What the finer bin does *not* do is systematically lift the
+  `gross_min_keep_frac` keep ratio on real data. Measured over the 1,624 EGS
+  F115W pools re-solved at 0.25": median `ALGNGKR` 0.119, with 1,368 pools still
+  declining the prior and 256 keeping it. That is the expected behaviour - a
+  proposal that is *correct* to within a bin still displaces tight pairs, and
+  declining costs only a redundant translation prior - but it means the guard
+  keeps firing on clean pools, not only on harmful shifts. (The synthetic
+  fixture in `test_align_histmatch.py` does go 0.01 -> 0.997 at the finer bin;
+  that fixture is far cleaner than real sky and its ratio does not generalize.)
 - **`align`: the coarse gross shift must now earn its keep
   (`gross_min_keep_frac`, default 0.8).** The gross-translation stage
   (`histmatch._gross_shift`) picks the tallest bin of a 2-D pairwise-offset
