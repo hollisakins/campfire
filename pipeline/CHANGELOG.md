@@ -133,6 +133,20 @@ Release procedure: edit the `## Unreleased` section below, then run
   silently quarantined now contribute to their mosaics.
 
 ### Infrastructure
+- **`[nircam.resample].write_context` — opt out of the drizzle context cube.**
+  `CON` is one int32 plane per 32 inputs at FULL tile size, held in RAM for
+  the whole drizzle: COSMOS f200w `primer` (1.15 Gpix, 3,903 inputs after
+  JELS) needs 122 planes = 521 GiB and OOMs on every 512 GB node, against
+  ~18 GiB for the SCI/WHT/variance accumulators. Nothing in the pipeline reads
+  `CON` (`split_extensions` emits sci/err/wht/srcmask only; bkgsub does not
+  touch it), so with `write_context = false` the science drizzle runs with
+  `disable_ctx=True` (the variance drizzle's existing path), the cube is never
+  allocated, and the i2d carries a 1x1x1 `CON` placeholder stamped
+  `CFNOCTX = T` in the primary header so it is distinguishable from an empty
+  context. campfire backend only; not in the manifest config hash, so flipping
+  it never marks tiles stale. Default `true`: existing products unchanged.
+  Cherry-picked from the unmerged PR #487 (8555c823, e07002fc) without the
+  tile scheduler.
 - `cfpipe nirspec linefit` no longer requires `observations.toml`: its inputs
   (products, `redshifts.toml`) sit at layout-derived paths, so the stage now
   resolves the observation from its name alone and uses the TOML only when
