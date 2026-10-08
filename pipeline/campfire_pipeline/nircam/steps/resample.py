@@ -76,6 +76,7 @@ def _drizzle_tile_via_campfire(
         blendheaders=resample_cfg.get('blendheaders', True),
         reduction_version=reduction_version,
         compress_context=resample_cfg.get('compress_context', True),
+        write_context=resample_cfg.get('write_context', True),
     )
 
 
