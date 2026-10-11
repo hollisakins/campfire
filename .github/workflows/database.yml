@@ -101,6 +101,9 @@ jobs:
           fi
           echo "no drift"
 
+      - name: Seed privacy check (synthetic identities, public programs only)
+        run: python3 scripts/check_seed_privacy.py
+
       - name: Reset database (migration chain + seed)
         run: supabase db reset --yes
 
