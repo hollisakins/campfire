@@ -151,9 +151,10 @@ jobs:
           for f in $new; do
             # First statement (comment lines and blank lines skipped) must be the
             # lock_timeout header; a prose header above it is encouraged.
-            first=$(grep -vE '^[[:space:]]*(--.*)?$' "$f" | head -n 1)
-            if ! echo "$first" | grep -qiE "^SET[[:space:]]+lock_timeout"; then
-              echo "::error file=$f::first statement must be: SET lock_timeout = '5s'; (then SET statement_timeout = '60s';) — found: $first"
+            # Both directives, exact values, in that order.
+            stmts=$(grep -vE '^[[:space:]]*(--.*)?$' "$f" | head -n 2 | tr -s '[:space:]' ' ')
+            if ! echo "$stmts" | grep -qiE "^SET lock_timeout = '5s'; SET statement_timeout = '60s'; ?$"; then
+              echo "::error file=$f::the first two statements must be: SET lock_timeout = '5s'; SET statement_timeout = '60s'; — found: $stmts"
               fail=1
             fi
           done
@@ -171,8 +172,12 @@ jobs:
       - name: Evaluate
         env:
           CHECK: ${{ needs.check.result }}
+          CHANGES: ${{ needs.changes.result }}
         run: |
           echo "check=$CHECK"
+          # A failed path-filter job skips every downstream job; "skipped" is
+          # only an acceptable verdict when the filter itself ran and said no.
+          [ "$CHANGES" = success ] || { echo "::error::changes job result: $CHANGES"; exit 1; }
           case "$CHECK" in
             success|skipped) ;;
             *) echo "::error::database check result: $CHECK"; exit 1 ;;
