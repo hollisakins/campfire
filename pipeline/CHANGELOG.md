@@ -140,6 +140,16 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ### Infrastructure
 - **Layout goldens: foreign roots, sibling round-trips, compressed keys.** `pipeline/tests/test_layout.py` pins the key contract against three new golden sections (`foreign_root_keys`, `sibling_roundtrips`, `compressed_keys`) shared with the TypeScript mirror, whose `PRODUCTS` table is now generated from `products.py` (`scripts/sync_layout_products.py`; CI fails on drift). No pipeline output changes.
+- **Science-content hash (P0b).** New `campfire_pipeline.metadata.science_hash`:
+  sha256 over every HDU's data block plus the header minus the volatile cards
+  (`CMPFRTIM`, `CMPFRDR`, `DATE`, `CHECKSUM`, `DATASUM`), version 1, with golden tests.
+  The summary reader emits it as `science_hash` beside `file_hash` and the
+  observation summary ECSV gains a `science_hash` column after `file_hash` (what
+  `campfire deploy` writes to `spectra.science_hash`); `cfpipe nirspec
+  linefit` writes it as `SCIHASH` and refits on it (older products without the card
+  keep comparing `SPECHASH`), so a rerun that only rewrites `CMPFRTIM` no longer
+  triggers a refit. A value-less header card hashes to a fixed token, so the hash
+  is the same in every process. No pixel or flux value changes.
 - **`[nircam.resample].write_context` — opt out of the drizzle context cube.**
   `CON` is one int32 plane per 32 inputs at FULL tile size, held in RAM for
   the whole drizzle: COSMOS f200w `primer` (1.15 Gpix, 3,903 inputs after

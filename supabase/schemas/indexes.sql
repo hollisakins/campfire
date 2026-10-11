@@ -194,6 +194,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_spectrum_id
 -- "spectrum is published and in the caller's programs" check and the page's
 -- GREATEST(updated_at) join otherwise fetch the spectra heap, whose rows are
 -- ~3 KB wide (inline SVG thumbnails) — one heap page per registry row walked.
+-- P0b: `campfire identify` and the DR provenance line look spectra up by
+-- science hash; the registry lookup covers archive copies (partial: NIRSpec FITS only).
+CREATE INDEX IF NOT EXISTS idx_spectra_science_hash
+    ON public.spectra USING btree (science_hash)
+    WHERE science_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_storage_objects_science_hash
+    ON public.storage_objects USING btree (science_hash)
+    WHERE science_hash IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_spectra_spectrum_id_scope
     ON public.spectra USING btree (spectrum_id)
     INCLUDE (deploy_status, program_slug, updated_at);
