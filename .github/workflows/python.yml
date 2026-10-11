@@ -101,11 +101,18 @@ jobs:
           cache-dependency-path: |
             layout/pyproject.toml
             pipeline/pyproject.toml
-      - name: Install (layout first, then the pipeline with its science stack)
+            python/pyproject.toml
+      - name: Install (layout first, then the pipeline with its science stack, then the client)
+        # Two layout tests (test_layout.py::test_cross_package_agreement,
+        # test_layout_212.py) import campfire.deploy.config to check the
+        # pipeline's directory contract against the deploy side, so the client
+        # is installed here too (with the deploy modules' direct imports, as in
+        # the client job).
         run: |
           python -m pip install --upgrade pip
           pip install -e ./layout
           pip install -e ./pipeline pytest
+          pip install -e ./python "supabase>=2.0" "boto3>=1.28" "spectres>=2.2"
       - name: Pipeline tests
         run: pytest pipeline/tests -q -p no:cacheprovider
 
