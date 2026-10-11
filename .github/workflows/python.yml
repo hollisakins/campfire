@@ -77,7 +77,9 @@ jobs:
       - name: Client tests
         run: pytest python -q -p no:cacheprovider
       - name: Layout golden (Python arm)
-        run: pytest pipeline/tests/test_layout.py -q -p no:cacheprovider
+        # test_cross_package_agreement needs campfire_pipeline (the jwst stack);
+        # the pipeline job covers it.
+        run: pytest pipeline/tests/test_layout.py -q -p no:cacheprovider -k "not cross_package_agreement"
 
   pipeline:
     needs: changes
