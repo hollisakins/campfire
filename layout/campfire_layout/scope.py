@@ -36,6 +36,7 @@ class LifecycleClass(str, Enum):
     EXTERNAL_MAST = "external-MAST"          # raw/ — re-fetchable from MAST
     REGENERABLE = "regenerable"              # cache/ — recomputable
     CLI_LOCAL = "cli-local"                  # meta/, cutouts/ — exist only on the client
+    RELEASE = "release"                      # dr/<tag>/ and archive/ — cloud-backed, immutable, never purged by sync
 
 
 class KeyScheme(str, Enum):

@@ -214,6 +214,8 @@ export interface Spectrum {
   grating: string;
   fits_path: string;
   cfpipe_version: string | null;
+  /** Science-content sha256 (P0b); null until backfilled / redeployed. */
+  science_hash?: string | null;
   signal_to_noise: number | null;
   exposure_time: number | null;
   created_at: string;
@@ -390,6 +392,8 @@ export interface NircamFieldSummary extends Omit<NircamFieldCard, 'layout_url'> 
   /** Provenance of the latest published deployment (deployments table);
    *  null when no deployment row is visible. */
   cfpipe_version: string | null;
+  /** Science-content sha256 (P0b); null until backfilled / redeployed. */
+  science_hash?: string | null;
   jwst_version: string | null;
   crds_context: string | null;
 }
