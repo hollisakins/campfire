@@ -638,7 +638,9 @@
     "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/manual_masks/x.reg",
     "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dr/DR2026.1/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
     "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits/.."
+    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits/..",
+    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/tiles/cosmos/f444w/3/4/5.png",
+    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/ember_egs_p1_summary.ecsv"
   ],
   "dr_relpaths": [
     {
@@ -667,6 +669,22 @@
     "dr/DR2026.1/meta/campfire.db",
     "dr/2026.1/products/nirspec/ember_egs_p1/x_spec.fits",
     "dr/DR2026.1/reference/nirspec/ember_egs_p1/redshifts.toml",
-    "dr/DR2026.1/products/nirspec/ember_egs_p1/manual_masks/x.reg"
+    "dr/DR2026.1/products/nirspec/ember_egs_p1/manual_masks/x.reg",
+    "dr/DR2026.1/products/nirspec/ember_egs_p1/ember_egs_p1_summary.ecsv",
+    "dr/DR2026.1/tiles/cosmos/f444w/3/4/5.png"
+  ],
+  "archive_rejected_hashes": [
+    "etag:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:junk",
+    "md5:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ""
+  ],
+  "archive_rejected_products": [
+    "tile",
+    "photometry_pz",
+    "summary",
+    "nirspec_manual_mask"
   ]
 }

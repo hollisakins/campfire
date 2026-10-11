@@ -27,9 +27,19 @@ _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 
 def archive_hex(content_hash: str) -> str:
-    """Normalize ``'sha256:<hex>'`` or bare hex to the 64-char lowercase hex."""
-    h = content_hash.split(":", 1)[1] if ":" in content_hash else content_hash
-    h = h.lower()
+    """Normalize ``'sha256:<hex>'`` or bare hex to the 64-char lowercase hex.
+
+    Only the sha256 scheme is an archive identity: a provisional ``etag:``
+    digest (allowed in ``storage_objects.content_hash``) must never mint an
+    archive address, so any other prefix is rejected rather than stripped.
+    """
+    scheme, sep, rest = content_hash.partition(":")
+    if sep:
+        if scheme.lower() != "sha256":
+            raise LayoutError(f"not a sha256 content hash: '{content_hash}'")
+        h = rest.lower()
+    else:
+        h = scheme.lower()
     if not _SHA256_HEX.match(h):
         raise LayoutError(f"not a sha256 content hash: '{content_hash}'")
     return h
@@ -105,8 +115,8 @@ def archive_key(product_type: str, scope: Scope, filename: Optional[str] = None,
     (NIRSpec finals and sidecars, NIRCam mosaics); key-only products raise.
     """
     spec = products.get(product_type)
-    if spec.bucket is None or not spec.mirrored or spec.lifecycle is not LifecycleClass.CLOUD_PRODUCT:
-        raise LayoutError(f"product '{product_type}' cannot be archived (not a mirrored cloud product)")
+    if not products.is_archivable(product_type):
+        raise LayoutError(f"product '{product_type}' cannot be archived (not a mirrored data-bucket cloud product)")
     spec.validate(scope)
     fname = spec.resolve_filename(scope, filename)
     if any(fname.endswith(sfx) for sfx in spec.compressed_suffixes):

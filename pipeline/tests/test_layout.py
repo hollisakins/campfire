@@ -174,6 +174,19 @@ def test_dr_rejected_relpaths():
             L.parse_relpath(rp)
 
 
+def test_archive_rejected_hashes_and_products():
+    spec = L.Scope(obs="ember_egs_p1")
+    for h in GOLDEN["archive_rejected_hashes"]:
+        with pytest.raises(LayoutError):
+            L.archive_hex(h)
+        with pytest.raises(LayoutError):
+            L.archive_key("nirspec_spec", spec, "ember_egs_p1_prism_clear_15182_spec.fits", content_hash=h)
+    assert L.archive_hex("SHA256:" + "A" * 64) == "a" * 64 == L.archive_hex("a" * 64)
+    for ptype in GOLDEN["archive_rejected_products"]:
+        assert L.is_archivable(ptype) is False
+    assert L.is_archivable("nirspec_spec") and L.is_archivable("nircam_mosaic")
+
+
 def test_dr_tree_helpers(tmp_path):
     assert L.is_dr_tag("DR2026.1") and not L.is_dr_tag("2026.1") and not L.is_dr_tag("DR2026")
     assert L.dr_dir("DR2026.1", root=tmp_path) == tmp_path / "dr" / "DR2026.1"

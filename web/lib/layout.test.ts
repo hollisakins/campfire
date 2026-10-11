@@ -23,6 +23,8 @@ import {
   observationFromKey,
   PRODUCTS,
   type Scope,
+  archiveHex,
+  isArchivable,
 } from './layout';
 import layoutProducts from './layout-products.json';
 
@@ -193,6 +195,17 @@ describe('release tree relpaths (P1): local only', () => {
   for (const rp of golden.dr_rejected_relpaths as string[]) {
     it(`rejects ${rp}`, () => expect(() => parseRelpath(rp)).toThrow());
   }
+  it('rejects non-sha256 hashes and non-archivable products', () => {
+    const scope = { obs: 'ember_egs_p1' };
+    for (const h of golden.archive_rejected_hashes as string[]) {
+      expect(() => archiveHex(h)).toThrow();
+      expect(() => archiveKey('nirspec_spec', scope, 'ember_egs_p1_prism_clear_15182_spec.fits', h)).toThrow();
+    }
+    expect(archiveHex('SHA256:' + 'A'.repeat(64))).toBe('a'.repeat(64));
+    for (const p of golden.archive_rejected_products as string[]) expect(isArchivable(p)).toBe(false);
+    expect(isArchivable('nirspec_spec')).toBe(true);
+    expect(isArchivable('nircam_mosaic')).toBe(true);
+  });
   it('live parses carry root live', () => {
     for (const c of golden.cases as Case[]) {
       if (!c.key_canonical || !c.bucket) continue;

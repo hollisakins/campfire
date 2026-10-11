@@ -190,6 +190,30 @@ export type KeyRoot = 'live' | 'archive' | 'dr';
 export const ARCHIVE_ROOT = 'archive';
 export const DR_ROOT = 'dr';
 const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/** Mirror of products.is_archivable: a mirrored, cloud-backed product on the
+ * data bucket (NIRSpec finals and sidecars, NIRCam mosaics). Tiles live on the
+ * tiles bucket and are never archived per object. */
+export function isArchivable(productType: string): boolean {
+  const s = PRODUCTS[productType];
+  return !!s && s.bucket === 'data' && s.mirrored && s.lifecycle === 'cloud-backed-product';
+}
+
+/** Mirror of keys.archive_hex: `sha256:<hex>` or bare hex → 64 lowercase hex
+ * chars. Any other scheme (a provisional `etag:` digest) is rejected, never
+ * stripped: it must not mint an archive address. */
+export function archiveHex(contentHash: string): string {
+  const i = contentHash.indexOf(':');
+  let hex: string;
+  if (i >= 0) {
+    if (contentHash.slice(0, i).toLowerCase() !== 'sha256') throw new LayoutError(`not a sha256 content hash: '${contentHash}'`);
+    hex = contentHash.slice(i + 1).toLowerCase();
+  } else {
+    hex = contentHash.toLowerCase();
+  }
+  if (!SHA256_HEX.test(hex)) throw new LayoutError(`not a sha256 content hash: '${contentHash}'`);
+  return hex;
+}
 const DR_TAG = /^DR\d{4}\.\d+$/;
 
 export interface ParsedKey {
@@ -269,7 +293,7 @@ export function parseRelpath(relpath: string): ParsedKey {
   if (tree === DR_ROOT) {
     if (seg.length >= 4 && isDrTag(seg[1]) && seg[2] === 'products') {
       const inner = parseRelpath(seg.slice(2).join('/'));
-      if (PRODUCTS[inner.productType]?.lifecycle !== 'cloud-backed-product') {
+      if (!isArchivable(inner.productType)) {
         throw new LayoutError(`unrecognized relpath '${relpath}' ('${inner.productType}' is not a release product)`);
       }
       return { ...inner, root: 'dr', rootId: seg[1] };
@@ -338,8 +362,7 @@ export function parseKey(key: string, opts?: { bucket?: Bucket }): ParsedKey {
     }
     const inner = parseRelpath(seg.slice(2).join('/'));
     if (inner.root !== 'live') throw new LayoutError(`unrecognized storage key '${key}' (nested roots)`);
-    const spec = PRODUCTS[inner.productType];
-    if (!spec || !spec.bucket || !spec.mirrored || spec.lifecycle !== 'cloud-backed-product') {
+    if (!isArchivable(inner.productType)) {
       throw new LayoutError(`unrecognized storage key '${key}' ('${inner.productType}' is not archivable)`);
     }
     return { ...inner, root: 'archive', rootId: seg[1] };
@@ -423,12 +446,11 @@ export function toCanonicalKey(key: string, opts?: { bucket?: Bucket }): string 
  * NIRCam mosaics) can be archived. */
 export function archiveKey(productType: string, scope: Scope, filename: string | undefined, contentHash: string): string {
   const s = get(productType);
-  if (!s.bucket || !s.mirrored || s.lifecycle !== 'cloud-backed-product') {
-    throw new LayoutError(`product '${productType}' cannot be archived (not a mirrored cloud product)`);
+  if (!isArchivable(productType)) {
+    throw new LayoutError(`product '${productType}' cannot be archived (not a mirrored data-bucket cloud product)`);
   }
   validate(s, scope);
-  const hex = (contentHash.includes(':') ? contentHash.split(':', 2)[1] : contentHash).toLowerCase();
-  if (!SHA256_HEX.test(hex)) throw new LayoutError(`not a sha256 content hash: '${contentHash}'`);
+  const hex = archiveHex(contentHash);
   let fname = resolveFilename(s, scope, filename);
   if (s.compressedSuffixes.some((sfx) => fname.endsWith(sfx))) fname = `${fname}.gz`;
   return `${ARCHIVE_ROOT}/${hex}/${relDir(s, scope)}/${fname}`;

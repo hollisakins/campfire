@@ -51,7 +51,7 @@ from .paths import (
     roots,
     shared_reference_dir,
 )
-from .products import PRODUCTS, ProductSpec, get
+from .products import PRODUCTS, ProductSpec, get, is_archivable
 from .scope import (
     Instrument,
     KeyScheme,
@@ -64,7 +64,7 @@ __all__ = [
     # vocabulary
     "Instrument", "KeyScheme", "LayoutError", "LifecycleClass", "Scope",
     # registry
-    "PRODUCTS", "ProductSpec", "get",
+    "PRODUCTS", "ProductSpec", "get", "is_archivable",
     # paths
     "Roots", "roots", "campfire_root", "dir_for", "local_path", "local_relpath",
     "nircam_work_dir", "dr_dir", "dr_relpath", "is_dr_tag",

@@ -134,7 +134,7 @@ def parse_relpath(relpath: str) -> ParsedKey:
     if tree == _paths.DR_ROOT:
         if len(seg) >= 4 and _paths.is_dr_tag(seg[1]) and seg[2] == "products":
             inner = parse_relpath("/".join(seg[2:]))
-            if products.get(inner.product_type).lifecycle is not LifecycleClass.CLOUD_PRODUCT:
+            if not products.is_archivable(inner.product_type):
                 raise LayoutError(f"unrecognized relpath '{relpath}' ('{inner.product_type}' is not a release product)")
             return ParsedKey(inner.product_type, inner.scope, inner.filename,
                              root=ROOT_DR, root_id=seg[1])
@@ -235,8 +235,7 @@ def parse_key(key: str, *, bucket: Optional[str] = None) -> ParsedKey:
         inner = parse_relpath("/".join(seg[2:]))
         if inner.root != ROOT_LIVE:
             raise LayoutError(f"unrecognized storage key '{key}' (nested roots)")
-        spec = products.get(inner.product_type)
-        if spec.bucket is None or not spec.mirrored or spec.lifecycle is not LifecycleClass.CLOUD_PRODUCT:
+        if not products.is_archivable(inner.product_type):
             raise LayoutError(f"unrecognized storage key '{key}' ('{inner.product_type}' is not archivable)")
         return ParsedKey(inner.product_type, inner.scope, inner.filename,
                          root=ROOT_ARCHIVE, root_id=seg[1])
