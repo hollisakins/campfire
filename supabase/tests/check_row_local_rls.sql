@@ -100,6 +100,9 @@ LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM set_config('request.jwt.claims', json_build_object('sub', p_uid, 'role', 'authenticated')::text, true);
 END $$;
+-- P-1: functions default to no PUBLIC execute, so the helper must be granted
+-- explicitly before it is called under SET LOCAL ROLE authenticated.
+GRANT EXECUTE ON FUNCTION pg_temp.zzz_rl_as(text) TO authenticated;
 
 CREATE OR REPLACE FUNCTION pg_temp.zzz_rl_visible() RETURNS jsonb
 LANGUAGE sql STABLE AS $$
@@ -113,6 +116,9 @@ LANGUAGE sql STABLE AS $$
     'nearby_t2',  (SELECT count(*) FROM get_nearby_shutters(10.1, 10.0, 2.0, 'zzz_rl_field'))
   );
 $$;
+-- P-1: functions default to no PUBLIC execute, so the helper must be granted
+-- explicitly before it is called under SET LOCAL ROLE authenticated.
+GRANT EXECUTE ON FUNCTION pg_temp.zzz_rl_visible() TO authenticated;
 
 -- ---------------------------------------------------------------------------
 -- 1) The copies are trigger-owned: written on insert, client value overridden.

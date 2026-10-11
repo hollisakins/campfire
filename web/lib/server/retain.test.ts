@@ -1,0 +1,208 @@
+// Retain-on-supersede (P2): the plan and the copy step, against a fake
+// registry and a fake S3 client. The S3 semantics mirrored here (HEAD 404,
+// conditional copy 412) are the ones measured against OSN on 2026-10-11.
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('server-only', () => ({}));
+
+import { CopyObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { executeRetain, planRetain, retainMode, summarizeDecisions, type LiveRow } from './retain';
+
+const SHA_A = 'sha256:' + 'a'.repeat(64);
+const SHA_B = 'sha256:' + 'b'.repeat(64);
+const LIVE_SPEC = 'data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits';
+const LEGACY_SPEC = 'spectra/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits';
+const LIVE_EXPOSURE = 'data/products/nirspec/ember_egs_p1/jw07076020001_04101_00001_nrs1_15182.fits';
+const ARCHIVE_SPEC = `archive/${'a'.repeat(64)}/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits`;
+
+function row(over: Partial<LiveRow> = {}): LiveRow {
+  return {
+    id: 1,
+    storage_key: LIVE_SPEC,
+    content_hash: SHA_A,
+    size_bytes: 1000,
+    stored_size_bytes: null,
+    content_type: 'application/fits',
+    product_type: 'nirspec_spec',
+    instrument: 'nirspec',
+    observation: 'ember_egs_p1',
+    spectrum_id: 'ember_egs_p1_prism_clear_15182',
+    program_slug: 'ember',
+    deployment_id: 42,
+    cfpipe_version: '0.6.0',
+    updated_at: '2026-10-01T00:00:00Z',
+    ...over,
+  };
+}
+
+/** Minimal PostgREST fake: `.from('storage_objects').select().in().eq().eq()` → rows. */
+function fakeSupabase(rows: LiveRow[]) {
+  const upserts: Array<{ row: Record<string, unknown>; opts: unknown }> = [];
+  const rpcs: Array<{ name: string; args: unknown }> = [];
+  const client = {
+    from: (table: string) => ({
+      select: () => ({
+        in: (_col: string, keys: string[]) => ({
+          eq: () => ({
+            eq: async () => ({ data: rows.filter((r) => keys.includes(r.storage_key)), error: null }),
+          }),
+        }),
+      }),
+      upsert: async (r: Record<string, unknown>, opts: unknown) => {
+        if (table !== 'storage_objects') throw new Error('unexpected table');
+        upserts.push({ row: r, opts });
+        return { error: null };
+      },
+    }),
+    rpc: async (name: string, args: unknown) => {
+      rpcs.push({ name, args });
+      return { data: null, error: null };
+    },
+  };
+  return { client: client as never, upserts, rpcs };
+}
+
+/** Fake S3 client: `send(cmd)` dispatches on the command class. */
+function fakeS3(objects: Record<string, { size: number; etag: string }>, opts: { copy412?: boolean } = {}) {
+  const sent: Array<{ kind: string; input: Record<string, unknown> }> = [];
+  const notFound = () => Object.assign(new Error('NotFound'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } });
+  const client = {
+    send: async (cmd: HeadObjectCommand | CopyObjectCommand) => {
+      const input = cmd.input as unknown as Record<string, unknown>;
+      if (cmd instanceof HeadObjectCommand) {
+        sent.push({ kind: 'head', input });
+        const o = objects[input.Key as string];
+        if (!o) throw notFound();
+        return { ContentLength: o.size, ETag: `"${o.etag}"` };
+      }
+      if (cmd instanceof CopyObjectCommand) {
+        sent.push({ kind: 'copy', input });
+        if (opts.copy412) throw Object.assign(new Error('PreconditionFailed'), { name: 'PreconditionFailed', $metadata: { httpStatusCode: 412 } });
+        const src = (input.CopySource as string).split('/').slice(1).join('/');
+        objects[input.Key as string] = { ...objects[src] };
+        return { CopyObjectResult: { ETag: `"${objects[src].etag}"` } };
+      }
+      throw new Error('unexpected command');
+    },
+  };
+  return { client: client as never, sent, objects };
+}
+
+describe('retainMode', () => {
+  it('defaults to log and accepts off/enforce', () => {
+    expect(retainMode({} as unknown as NodeJS.ProcessEnv)).toBe('log');
+    expect(retainMode({ RETAIN_MODE: 'enforce' } as unknown as NodeJS.ProcessEnv)).toBe('enforce');
+    expect(retainMode({ RETAIN_MODE: 'OFF' } as unknown as NodeJS.ProcessEnv)).toBe('off');
+    expect(retainMode({ RETAIN_MODE: 'bogus' } as unknown as NodeJS.ProcessEnv)).toBe('log');
+  });
+});
+
+describe('planRetain', () => {
+  it('retains a changed live NIRSpec final, by canonical key, with the archive key of the OLD hash', async () => {
+    const { client } = fakeSupabase([row()]);
+    const [d] = await planRetain([{ key: LEGACY_SPEC, newHash: SHA_B }], client);
+    expect(d.action).toBe('retain');
+    if (d.action === 'retain') {
+      expect(d.archiveKey).toBe(ARCHIVE_SPEC);
+      expect(d.row.storage_key).toBe(LIVE_SPEC);
+    }
+  });
+
+  it('skips new keys, non-retained types, no-op re-uploads and provisional hashes', async () => {
+    const { client } = fakeSupabase([
+      row(),
+      row({ id: 2, storage_key: LIVE_EXPOSURE, product_type: 'nirspec_spectrum_exposure' }),
+      row({ id: 3, storage_key: LIVE_SPEC.replace('15182', '99999'), content_hash: 'etag:deadbeef', spectrum_id: 'x' }),
+    ]);
+    const ds = await planRetain(
+      [
+        { key: 'data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_1_spec.fits' },
+        { key: LIVE_EXPOSURE },
+        { key: LIVE_SPEC, newHash: SHA_A },
+        { key: LIVE_SPEC.replace('15182', '99999') },
+      ],
+      client,
+    );
+    expect(ds.map((d) => d.action)).toEqual(['skip-new', 'skip-type', 'skip-unchanged', 'skip-provisional-hash']);
+    expect(summarizeDecisions(ds)).toEqual({ 'skip-new': 1, 'skip-type': 1, 'skip-unchanged': 1, 'skip-provisional-hash': 1 });
+  });
+
+  it('reports drift when the registry hash moved past the plan', async () => {
+    const { client } = fakeSupabase([row({ content_hash: SHA_B })]);
+    const [d] = await planRetain([{ key: LIVE_SPEC, expectedOldHash: SHA_A }], client);
+    expect(d.action).toBe('drift');
+  });
+
+  it('never considers archive rows (root filter) and tolerates unknown keys', async () => {
+    const { client } = fakeSupabase([]);
+    const ds = await planRetain([{ key: 'totally/made/up.bin' }], client);
+    expect(ds[0].action).toBe('skip-new');
+  });
+});
+
+describe('executeRetain', () => {
+  const decision = async () => {
+    const { client } = fakeSupabase([row()]);
+    const [d] = await planRetain([{ key: LIVE_SPEC, newHash: SHA_B }], client);
+    if (d.action !== 'retain') throw new Error('expected retain');
+    return d;
+  };
+
+  it('copies with the live ETag precondition and registers the archive row', async () => {
+    const d = await decision();
+    const s3 = fakeS3({ [LIVE_SPEC]: { size: 1000, etag: 'e1' } });
+    const sb = fakeSupabase([]);
+    const out = await executeRetain(d, { s3: s3.client, bucket: 'campfire-jwst', supabase: sb.client, actorId: 'u1', now: () => new Date('2026-10-11T00:00:00Z') });
+    expect(out).toEqual({ key: LIVE_SPEC, status: 'archived', archiveKey: ARCHIVE_SPEC, copied: true });
+    const copy = s3.sent.find((c) => c.kind === 'copy')!;
+    expect(copy.input.CopySource).toBe(`campfire-jwst/${LIVE_SPEC}`);
+    expect(copy.input.CopySourceIfMatch).toBe('e1');
+    expect(copy.input.Key).toBe(ARCHIVE_SPEC);
+    expect(sb.upserts).toHaveLength(1);
+    const r = sb.upserts[0].row;
+    expect(r).toMatchObject({
+      storage_key: ARCHIVE_SPEC, root: 'archive', status: 'archived', content_hash: SHA_A,
+      archived_from_key: LIVE_SPEC, program_slug: 'ember', spectrum_id: 'ember_egs_p1_prism_clear_15182',
+      product_type: 'nirspec_spec', archived_at: '2026-10-11T00:00:00.000Z', uploaded_by: 'u1',
+    });
+    expect(sb.upserts[0].opts).toMatchObject({ onConflict: 'backend,bucket,storage_key', ignoreDuplicates: true });
+    expect(sb.rpcs[0]).toMatchObject({ name: 'log_deploy_event', args: { p_action: 'archive' } });
+  });
+
+  it('does not copy again when the archive object already exists (dedup by hash) but still registers', async () => {
+    const d = await decision();
+    const s3 = fakeS3({ [LIVE_SPEC]: { size: 1000, etag: 'e1' }, [ARCHIVE_SPEC]: { size: 1000, etag: 'e1' } });
+    const sb = fakeSupabase([]);
+    const out = await executeRetain(d, { s3: s3.client, bucket: 'b', supabase: sb.client });
+    expect(out).toMatchObject({ status: 'archived', copied: false });
+    expect(s3.sent.filter((c) => c.kind === 'copy')).toHaveLength(0);
+    expect(sb.upserts).toHaveLength(1);
+  });
+
+  it('reports drift when the live size no longer matches the registry', async () => {
+    const d = await decision();
+    const s3 = fakeS3({ [LIVE_SPEC]: { size: 999, etag: 'e1' } });
+    const sb = fakeSupabase([]);
+    const out = await executeRetain(d, { s3: s3.client, bucket: 'b', supabase: sb.client });
+    expect(out.status).toBe('drift');
+    expect(s3.sent.filter((c) => c.kind === 'copy')).toHaveLength(0);
+    expect(sb.upserts).toHaveLength(0);
+  });
+
+  it('reports drift when the conditional copy fails its precondition (412)', async () => {
+    const d = await decision();
+    const s3 = fakeS3({ [LIVE_SPEC]: { size: 1000, etag: 'e1' } }, { copy412: true });
+    const sb = fakeSupabase([]);
+    const out = await executeRetain(d, { s3: s3.client, bucket: 'b', supabase: sb.client });
+    expect(out).toMatchObject({ status: 'drift' });
+    expect(sb.upserts).toHaveLength(0);
+  });
+
+  it('reports drift when the live object is missing (dangling registry row)', async () => {
+    const d = await decision();
+    const s3 = fakeS3({});
+    const sb = fakeSupabase([]);
+    const out = await executeRetain(d, { s3: s3.client, bucket: 'b', supabase: sb.client });
+    expect(out).toMatchObject({ status: 'drift' });
+  });
+});

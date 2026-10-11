@@ -10,7 +10,15 @@ import {
   getOsnWriteBucket,
   type StoragePurpose,
 } from '@/lib/storage';
-import { isKnownKey } from '@/lib/layout';
+import { isWritableKey } from '@/lib/layout';
+import { createServiceClient } from '@/lib/supabase/service';
+import {
+  executeRetains,
+  planRetain,
+  retainMode,
+  summarizeDecisions,
+  type RetainDecision,
+} from '@/lib/server/retain';
 
 const MAX_BATCH_SIZE = 500;
 const PRESIGN_EXPIRY_SECONDS = 3600; // 1 hour
@@ -28,11 +36,19 @@ const PRESIGN_EXPIRY_SECONDS = 3600; // 1 hour
  *                             // bucket (epic #210 / #216 — deploy → OSN). Only
  *                             // valid with bucket="data".
  *   uploads: [
- *     { key: "spectra/obs_name/file.fits", content_type: "application/fits" },
+ *     { key: "spectra/obs_name/file.fits", content_type: "application/fits",
+ *       expected_old_hash?: "sha256:…",   // registry hash the client planned against
+ *       new_hash?: "sha256:…" },          // hash of the bytes about to be PUT
  *     ...
  *   ],
  *   cache_control?: string  // optional, applied to all uploads
  * }
+ *
+ * Retain-on-supersede (P2, lib/server/retain.ts): for OSN data uploads that
+ * overwrite a live NIRSpec final/sidecar, the previous bytes are archived
+ * before the PUT is signed. RETAIN_MODE=log (default) only logs what would be
+ * archived; `enforce` copies + registers and answers 409 on drift; `off`
+ * skips the lookup. A 409 body lists the keys and reasons.
  *
  * Response:
  * {
@@ -105,7 +121,7 @@ export async function POST(request: NextRequest) {
     // Rejects traversal/unsafe keys and anything outside the layout contract, so
     // a presign can never sign an arbitrary or out-of-tree object.
     const badUpload = uploads.find(
-      (u: { key?: string }) => !u.key || !isKnownKey(u.key, { bucket: bucketId })
+      (u: { key?: string }) => !u.key || !isWritableKey(u.key, { bucket: bucketId })
     );
     if (badUpload) {
       return NextResponse.json(
@@ -120,6 +136,49 @@ export async function POST(request: NextRequest) {
     // 'r2' keeps today's behavior (R2 'data'/'tiles' purpose).
     const client = backend === 'osn' ? getOsnWriteClient() : getS3Client(bucketId as StoragePurpose);
     const bucket = backend === 'osn' ? getOsnWriteBucket() : getBucketName(bucketId as StoragePurpose);
+
+    // Retain-on-supersede gate (P2). Only OSN data uploads can overwrite a live
+    // final; legacy R2 deploys are not retained (R2 is read-only legacy).
+    const mode = retainMode();
+    if (mode !== 'off' && backend === 'osn' && bucketId === 'data') {
+      const supabase = createServiceClient();
+      const decisions = await planRetain(
+        uploads.map((u: { key: string; expected_old_hash?: string | null; new_hash?: string | null }) => ({
+          key: u.key,
+          expectedOldHash: u.expected_old_hash ?? null,
+          newHash: u.new_hash ?? null,
+        })),
+        supabase,
+      );
+      const summary = summarizeDecisions(decisions);
+      const toRetain = decisions.filter((d): d is Extract<RetainDecision, { action: 'retain' }> => d.action === 'retain');
+      const drifted = decisions.filter((d): d is Extract<RetainDecision, { action: 'drift' }> => d.action === 'drift');
+      if (mode === 'log') {
+        for (const d of toRetain) console.log(`[retain:log] would archive ${d.row.storage_key} (${d.row.content_hash}) -> ${d.archiveKey}`);
+        for (const d of drifted) console.log(`[retain:log] drift on ${d.key}: ${d.reason}`);
+        console.log(`[retain:log] presign batch of ${uploads.length}: ${JSON.stringify(summary)}`);
+      } else {
+        const outcomes = await executeRetains(toRetain, { s3: client, bucket, supabase, actorId: userId });
+        const failed = [
+          ...drifted.map((d) => ({ key: d.key, status: 'drift' as const, reason: d.reason })),
+          ...outcomes.filter((o) => o.status !== 'archived'),
+        ];
+        console.log(`[retain:enforce] presign batch of ${uploads.length}: ${JSON.stringify(summary)}; archived=${outcomes.filter((o) => o.status === 'archived').length} failed=${failed.length}`);
+        if (failed.length > 0) {
+          // Fail closed: an overwrite without a retained copy is the one
+          // unrecoverable event (decision D-P2-2). The CLI re-plans and retries;
+          // an admin may bypass with --no-retain (logged) once that exists.
+          return NextResponse.json(
+            {
+              error: 'retain_failed',
+              error_description: `${failed.length} object(s) could not be retained before overwrite; nothing was signed`,
+              failed,
+            },
+            { status: 409 },
+          );
+        }
+      }
+    }
 
     // Generate presigned URLs in parallel
     const urlEntries = await Promise.all(

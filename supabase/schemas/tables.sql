@@ -318,6 +318,7 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
     "thumbnail_svg_fnu" "text",
     "thumbnail_svg_flambda" "text",
     "file_hash" "text",
+    "science_hash" "text",
     "file_size" bigint,
     "exposure_time" double precision,
     -- Provenance, carried verbatim from the FITS primary header. cfpipe_version
@@ -406,6 +407,8 @@ COMMENT ON COLUMN "public"."spectra"."thumbnail_svg_flambda" IS 'Pre-generated S
 
 
 COMMENT ON COLUMN "public"."spectra"."file_hash" IS 'SHA-256 hash of the FITS file in R2. Used for incremental sync to detect changed files.';
+COMMENT ON COLUMN "public"."spectra"."science_hash" IS 'Science-content sha256 of the FITS file (campfire_pipeline.metadata.science_hash, version 1): every HDU''s data block plus the header minus the volatile cards CMPFRTIM / CMPFRDR / DATE / CHECKSUM / DATASUM. Unchanged by a no-op rerun or the data-release stamp; the identity for "changed since", line-fit staleness and `campfire identify` (P0b). NULL until the backfill / next deploy.';
+ALTER TABLE ONLY "public"."spectra" ADD CONSTRAINT "spectra_science_hash_check" CHECK (("science_hash" IS NULL OR "science_hash" ~ '^sha256:[0-9a-f]{64}$'::"text"));
 
 
 
@@ -1252,6 +1255,7 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- whole-file hash, and on exposure rows written before this column existed —
     -- the push planner reconciles those against content_hash and backfills.
     "wcs_hash" "text",
+    "science_hash" "text",
     "size_bytes" bigint NOT NULL,
     -- Bytes as stored in the bucket for transport-compressed products (gzipped
     -- mosaic FITS, epic #261 / PR #383); NULL = stored verbatim. size_bytes
@@ -1262,6 +1266,25 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     "product_type" "text" NOT NULL,
     "instrument" "text",
     "status" "text" NOT NULL DEFAULT 'active'::"text",
+    -- Data releases (P2): which root the key lives under. 'live' rows are the
+    -- mutable current pointers (upserted in place on redeploy); 'archive' rows
+    -- describe write-once objects under archive/<sha256>/<relpath>, written by
+    -- retain-on-supersede and the DR byte pass, never by a client PUT, and
+    -- protected by the protect_archive_rows trigger (no DELETE; the only UPDATE
+    -- is status archived -> collected).
+    "root" "text" NOT NULL DEFAULT 'live'::"text",
+    -- Row-local program scope (the row_local_rls pattern) so an archive row can
+    -- be authorized without a join to a live spectrum that may have moved on.
+    -- Set for NIRSpec rows (from spectra.program_slug); NULL for NIRCam.
+    "program_slug" "text",
+    -- Archive provenance: the live key whose bytes this object retained, when,
+    -- and the deployment whose upload superseded them (NULL for a freeze copy).
+    "archived_from_key" "text",
+    "archived_at" timestamp with time zone,
+    "archived_by_deployment" integer,
+    -- Mosaic retention (design §4.2): a collected archive row keeps hash, size
+    -- and date so a manifest resolves to "existed, collected on <date>".
+    "collected_at" timestamp with time zone,
     "observation" "text",
     "field" "text",
     "filter" "text",
@@ -1274,7 +1297,13 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "storage_objects_backend_check" CHECK (("backend" = ANY (ARRAY['r2'::"text", 'osn'::"text"]))),
     CONSTRAINT "storage_objects_bucket_check" CHECK (("bucket" = ANY (ARRAY['data'::"text", 'tiles'::"text"]))),
-    CONSTRAINT "storage_objects_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'superseded'::"text", 'revoked'::"text"]))),
+    CONSTRAINT "storage_objects_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'superseded'::"text", 'revoked'::"text", 'archived'::"text", 'collected'::"text"]))),
+    CONSTRAINT "storage_objects_root_check" CHECK (("root" = ANY (ARRAY['live'::"text", 'archive'::"text"]))),
+    -- An archive row is exactly an archived or collected object under archive/;
+    -- a live row never carries those statuses.
+    CONSTRAINT "storage_objects_root_status_check" CHECK (
+        ("root" = 'live'::"text" AND "status" <> ALL (ARRAY['archived'::"text", 'collected'::"text"]))
+        OR ("root" = 'archive'::"text" AND "status" = ANY (ARRAY['archived'::"text", 'collected'::"text"]) AND "storage_key" LIKE 'archive/%')),
     CONSTRAINT "storage_objects_instrument_check" CHECK (("instrument" IS NULL OR "instrument" = ANY (ARRAY['nirspec'::"text", 'nircam'::"text"]))),
     -- content_hash is scheme-prefixed: 'sha256:<hex>' is authoritative (deploy hashes
     -- the local file; spectra backfill reuses spectra.file_hash); 'etag:<hex>' is
@@ -1287,6 +1316,7 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     -- wcs_hash, like sci_dq_hash, is always an authoritative sha256 when present
     -- (computed from the local FITS header cards, never from a HEAD).
     CONSTRAINT "storage_objects_wcs_hash_check" CHECK (("wcs_hash" IS NULL OR "wcs_hash" ~ '^sha256:'::"text")),
+    CONSTRAINT "storage_objects_science_hash_check" CHECK (("science_hash" IS NULL OR "science_hash" ~ '^sha256:[0-9a-f]{64}$'::"text")),
     -- product_type tracks the campfire_layout PRODUCTS registry (every entry with a
     -- non-null bucket). A new cloud-backed product type requires a migration here.
     CONSTRAINT "storage_objects_product_type_check" CHECK (("product_type" = ANY (ARRAY[
@@ -1342,8 +1372,12 @@ COMMENT ON COLUMN "public"."storage_objects"."exposure_ref" IS 'Stable per-expos
 COMMENT ON COLUMN "public"."storage_objects"."sci_dq_hash" IS 'Science-only sha256(SCI+DQ) change-detection digest (epic #261, N1). Lets deploy skip re-uploading a NIRCam canonical exposure whose science is unchanged even though its whole-file content_hash shifted (pipeline re-save bumps header timestamps). Paired with wcs_hash: BOTH must match for deploy to skip an upload, since the array digest alone cannot see a re-alignment. content_hash remains the authoritative whole-file integrity token; this is never used for download/copy verification. NULL for products without a partial digest.';
 
 COMMENT ON COLUMN "public"."storage_objects"."wcs_hash" IS 'Astrometric change-detection digest: sha256 over the WCS-defining header cards of a NIRCam canonical exposure. The companion to sci_dq_hash — the align and wcs_shift steps rewrite an exposure''s WCS without touching a SCI or DQ pixel, so a science-only identity skipped re-aligned exposures and left the cloud copy on its pre-alignment astrometry. Never used for download/copy verification. NULL for whole-file-identity products, and on exposure rows written before this column existed (the push planner reconciles those against content_hash and backfills the digest without re-uploading).';
+COMMENT ON COLUMN "public"."storage_objects"."science_hash" IS 'Science-content sha256 for NIRSpec FITS products (nirspec_spec, nirspec_lines; P0b). Same definition as spectra.science_hash; NULL for every other product type and for rows that predate the backfill.';
 
 COMMENT ON COLUMN "public"."storage_objects"."status" IS 'active = current object; superseded = replaced by a newer hash (tombstone, GC-eligible later); revoked = un-published. Only active rows count toward the budget and the partial-unique constraint.';
+COMMENT ON COLUMN "public"."storage_objects"."root" IS 'live = mutable current pointer (upserted in place); archive = write-once object under archive/<sha256>/<relpath> (data releases, P2). Archive rows are never deleted and only move archived -> collected (protect_archive_rows).';
+COMMENT ON COLUMN "public"."storage_objects"."program_slug" IS 'Row-local program scope for NIRSpec rows (copied from spectra.program_slug by deploy / the retain step / the backfill), so archive rows authorize without a live join. NULL for NIRCam products.';
+COMMENT ON COLUMN "public"."storage_objects"."archived_from_key" IS 'Archive rows: the live key whose previous bytes this object retained (retain-on-supersede); NULL for a copy made by a DR freeze.';
 
 
 -- deploy_events: append-only audit log for the intermediate-product lifecycle
@@ -1368,7 +1402,7 @@ CREATE TABLE IF NOT EXISTS "public"."deploy_events" (
     "host" "text",
     "metadata" "jsonb",
     "occurred_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text", 'config_sync'::"text"])))
+    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text", 'config_sync'::"text", 'archive'::"text", 'collect'::"text", 'freeze'::"text", 'publish_dr'::"text", 'withdraw_dr'::"text"])))
 );
 
 
@@ -1385,8 +1419,17 @@ COMMENT ON TABLE "public"."deploy_events" IS 'Append-only audit log for the inte
 -- scope version when it starts and compare-and-sets it at finalize via
 -- claim_deploy_scope; a mismatch means another reducer deployed the same scope
 -- concurrently, so the clobber is DETECTED (and surfaced) rather than silent.
--- Deliberately the simplest mechanism that satisfies the gate: no leases, no
--- heartbeats — concurrent same-scope deploys are rare.
+--
+-- Deploy lease (data releases P1, docs/design-data-releases-impl-plan.md §3):
+-- the CAS only detects an overlap after the fact. The in_progress_* columns
+-- make a running deploy VISIBLE while it runs: begin_deploy_scope takes the
+-- lease at the start of a deploy (and refuses while another deploy holds a
+-- lease with a heartbeat younger than 30 minutes, unless told to steal it),
+-- heartbeat_deploy_scope refreshes heartbeat_at from the upload loop,
+-- claim_deploy_scope clears the lease at finalize and release_deploy_scope
+-- clears it on a clean abort. A lease whose heartbeat is older than 30 minutes
+-- is stale (a crashed deploy) and may be taken over without stealing.
+-- dr_readiness() lists live leases; the freeze reads them too.
 CREATE TABLE IF NOT EXISTS "public"."deploy_scope_state" (
     "scope_type" "text" NOT NULL,
     "scope_key" "text" NOT NULL,
@@ -1394,6 +1437,10 @@ CREATE TABLE IF NOT EXISTS "public"."deploy_scope_state" (
     "last_actor" "uuid",
     "last_deploy_at" timestamp with time zone,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "in_progress_since" timestamp with time zone,
+    "in_progress_by" "uuid",
+    "in_progress_host" "text",
+    "heartbeat_at" timestamp with time zone,
     CONSTRAINT "deploy_scope_state_scope_type_check" CHECK (("scope_type" = ANY (ARRAY['observation'::"text", 'field'::"text"])))
 );
 
@@ -1401,7 +1448,15 @@ CREATE TABLE IF NOT EXISTS "public"."deploy_scope_state" (
 ALTER TABLE "public"."deploy_scope_state" OWNER TO "postgres";
 
 
-COMMENT ON TABLE "public"."deploy_scope_state" IS 'Optimistic-concurrency version per deploy scope (epic #210, B4). claim_deploy_scope does the compare-and-set so concurrent same-scope deploys are detected, not silently clobbered. Admin/internal.';
+COMMENT ON TABLE "public"."deploy_scope_state" IS 'Optimistic-concurrency version per deploy scope (epic #210, B4) plus the visible deploy lease (data releases P1). claim_deploy_scope does the compare-and-set so concurrent same-scope deploys are detected, not silently clobbered; begin/heartbeat/release_deploy_scope hold a lease while a deploy runs. Admin/internal.';
+
+COMMENT ON COLUMN "public"."deploy_scope_state"."in_progress_since" IS 'Deploy lease: when the running deploy of this scope took the lease (begin_deploy_scope). NULL = no deploy in progress. Cleared by claim_deploy_scope (finalize) and release_deploy_scope (clean abort).';
+
+COMMENT ON COLUMN "public"."deploy_scope_state"."in_progress_by" IS 'Deploy lease: auth user id of the deployer holding the lease (NULL under service-role deploys).';
+
+COMMENT ON COLUMN "public"."deploy_scope_state"."in_progress_host" IS 'Deploy lease: hostname of the machine running the deploy, so two deploys by the same admin on different machines are told apart.';
+
+COMMENT ON COLUMN "public"."deploy_scope_state"."heartbeat_at" IS 'Deploy lease: last heartbeat from the running deploy (heartbeat_deploy_scope, every registration batch). A lease whose heartbeat is older than 30 minutes is stale and may be taken over without --steal-lease.';
 
 
 -- sync_snapshots: the nightly public-scope catalog snapshot a first-time
@@ -2592,175 +2647,180 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 -- Table grants (tables only — views and mat views excluded)
 -- ---------------------------------------------------------------------------
 
-GRANT ALL ON TABLE "public"."access_codes" TO "anon";
+REVOKE ALL ON TABLE "public"."access_codes" FROM "anon";
 GRANT ALL ON TABLE "public"."access_codes" TO "authenticated";
 GRANT ALL ON TABLE "public"."access_codes" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."api_keys" TO "anon";
+REVOKE ALL ON TABLE "public"."api_keys" FROM "anon";
 GRANT ALL ON TABLE "public"."api_keys" TO "authenticated";
 GRANT ALL ON TABLE "public"."api_keys" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."code_redemptions" TO "anon";
+REVOKE ALL ON TABLE "public"."code_redemptions" FROM "anon";
 GRANT ALL ON TABLE "public"."code_redemptions" TO "authenticated";
 GRANT ALL ON TABLE "public"."code_redemptions" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."comments" TO "anon";
+REVOKE ALL ON TABLE "public"."comments" FROM "anon";
 GRANT ALL ON TABLE "public"."comments" TO "authenticated";
 GRANT ALL ON TABLE "public"."comments" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."device_codes" TO "anon";
+REVOKE ALL ON TABLE "public"."device_codes" FROM "anon";
 GRANT ALL ON TABLE "public"."device_codes" TO "authenticated";
 GRANT ALL ON TABLE "public"."device_codes" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."deployments" TO "anon";
+REVOKE ALL ON TABLE "public"."deployments" FROM "anon";
 GRANT ALL ON TABLE "public"."deployments" TO "authenticated";
 GRANT ALL ON TABLE "public"."deployments" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."download_log" TO "anon";
+REVOKE ALL ON TABLE "public"."download_log" FROM "anon";
 GRANT ALL ON TABLE "public"."download_log" TO "authenticated";
 GRANT ALL ON TABLE "public"."download_log" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."flag_audit_log" TO "anon";
+REVOKE ALL ON TABLE "public"."flag_audit_log" FROM "anon";
 GRANT ALL ON TABLE "public"."flag_audit_log" TO "authenticated";
 GRANT ALL ON TABLE "public"."flag_audit_log" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."flag_definitions" TO "anon";
+REVOKE ALL ON TABLE "public"."flag_definitions" FROM "anon";
 GRANT ALL ON TABLE "public"."flag_definitions" TO "authenticated";
 GRANT ALL ON TABLE "public"."flag_definitions" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."map_layers" TO "anon";
+REVOKE ALL ON TABLE "public"."map_layers" FROM "anon";
 GRANT ALL ON TABLE "public"."map_layers" TO "authenticated";
 GRANT ALL ON TABLE "public"."map_layers" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "anon";
+REVOKE ALL ON TABLE "public"."fitsgl_datasets" FROM "anon";
 GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "authenticated";
 GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."spectra" TO "anon";
+REVOKE ALL ON TABLE "public"."spectra" FROM "anon";
 GRANT ALL ON TABLE "public"."spectra" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectra" TO "service_role";
 
 -- spectrum_line_fits: visibility follows spectra (RLS); same grants.
-GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "anon";
+REVOKE ALL ON TABLE "public"."spectrum_line_fits" FROM "anon";
 GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "service_role";
 
-GRANT ALL ON TABLE "public"."spectrum_lines" TO "anon";
+REVOKE ALL ON TABLE "public"."spectrum_lines" FROM "anon";
 GRANT ALL ON TABLE "public"."spectrum_lines" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectrum_lines" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."targets" TO "anon";
+REVOKE ALL ON TABLE "public"."targets" FROM "anon";
 GRANT ALL ON TABLE "public"."targets" TO "authenticated";
 GRANT ALL ON TABLE "public"."targets" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."objects" TO "anon";
+REVOKE ALL ON TABLE "public"."objects" FROM "anon";
 GRANT ALL ON TABLE "public"."objects" TO "authenticated";
 GRANT ALL ON TABLE "public"."objects" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."object_lists" TO "anon";
+REVOKE ALL ON TABLE "public"."object_lists" FROM "anon";
 GRANT ALL ON TABLE "public"."object_lists" TO "authenticated";
 GRANT ALL ON TABLE "public"."object_lists" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."object_list_members" TO "anon";
+REVOKE ALL ON TABLE "public"."object_list_members" FROM "anon";
 GRANT ALL ON TABLE "public"."object_list_members" TO "authenticated";
 GRANT ALL ON TABLE "public"."object_list_members" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."object_photometry" TO "anon";
+REVOKE ALL ON TABLE "public"."object_photometry" FROM "anon";
 GRANT ALL ON TABLE "public"."object_photometry" TO "authenticated";
 GRANT ALL ON TABLE "public"."object_photometry" TO "service_role";
 
 -- object_photometry_bands: visibility follows object_photometry (RLS); same grants.
-GRANT ALL ON TABLE "public"."object_photometry_bands" TO "anon";
+REVOKE ALL ON TABLE "public"."object_photometry_bands" FROM "anon";
 GRANT ALL ON TABLE "public"."object_photometry_bands" TO "authenticated";
 GRANT ALL ON TABLE "public"."object_photometry_bands" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."list_audit_log" TO "anon";
+REVOKE ALL ON TABLE "public"."list_audit_log" FROM "anon";
 GRANT ALL ON TABLE "public"."list_audit_log" TO "authenticated";
 GRANT ALL ON TABLE "public"."list_audit_log" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."object_list_shares" TO "anon";
+REVOKE ALL ON TABLE "public"."object_list_shares" FROM "anon";
 GRANT ALL ON TABLE "public"."object_list_shares" TO "authenticated";
 GRANT ALL ON TABLE "public"."object_list_shares" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."observations" TO "anon";
+REVOKE ALL ON TABLE "public"."observations" FROM "anon";
 GRANT ALL ON TABLE "public"."observations" TO "authenticated";
 GRANT ALL ON TABLE "public"."observations" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."programs" TO "anon";
+REVOKE ALL ON TABLE "public"."programs" FROM "anon";
 GRANT ALL ON TABLE "public"."programs" TO "authenticated";
 GRANT ALL ON TABLE "public"."programs" TO "service_role";
 
 
-GRANT ALL ON TABLE "public"."fields" TO "anon";
+REVOKE ALL ON TABLE "public"."fields" FROM "anon";
 GRANT ALL ON TABLE "public"."fields" TO "authenticated";
 GRANT ALL ON TABLE "public"."fields" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."nircam_images" TO "anon";
+REVOKE ALL ON TABLE "public"."nircam_images" FROM "anon";
 GRANT ALL ON TABLE "public"."nircam_images" TO "authenticated";
 GRANT ALL ON TABLE "public"."nircam_images" TO "service_role";
 
 
+REVOKE ALL ON TABLE "public"."nircam_exposures" FROM "anon";
 GRANT ALL ON TABLE "public"."nircam_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."nircam_exposures" TO "service_role";
 
 
 -- nirspec_rate_exposures is admin-only (RLS); not granted to anon. Mirrors nircam_exposures.
+REVOKE ALL ON TABLE "public"."nirspec_rate_exposures" FROM "anon";
 GRANT ALL ON TABLE "public"."nirspec_rate_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."nirspec_rate_exposures" TO "service_role";
 
 
 -- spectrum_exposures is admin-only (RLS); not granted to anon. Mirrors nircam_exposures.
+REVOKE ALL ON TABLE "public"."spectrum_exposures" FROM "anon";
 GRANT ALL ON TABLE "public"."spectrum_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectrum_exposures" TO "service_role";
 
 -- nirspec_source_review is admin-only (RLS); not granted to anon.
+REVOKE ALL ON TABLE "public"."nirspec_source_review" FROM "anon";
 GRANT ALL ON TABLE "public"."nirspec_source_review" TO "authenticated";
 GRANT ALL ON TABLE "public"."nirspec_source_review" TO "service_role";
 
 
 -- deploy_events is an admin/internal audit log (RLS admin-only); not granted to anon.
+REVOKE ALL ON TABLE "public"."deploy_events" FROM "anon";
 GRANT ALL ON TABLE "public"."deploy_events" TO "authenticated";
 GRANT ALL ON TABLE "public"."deploy_events" TO "service_role";
 
@@ -2802,59 +2862,61 @@ GRANT ALL ON TABLE "public"."sync_deletions" TO "service_role";
 
 
 -- deploy_scope_state is admin/internal concurrency state (RLS admin-only); not anon.
+REVOKE ALL ON TABLE "public"."deploy_scope_state" FROM "anon";
 GRANT ALL ON TABLE "public"."deploy_scope_state" TO "authenticated";
 GRANT ALL ON TABLE "public"."deploy_scope_state" TO "service_role";
 
 
 -- storage_objects is an admin/internal registry (RLS admin-only); not granted to anon.
+REVOKE ALL ON TABLE "public"."storage_objects" FROM "anon";
 GRANT ALL ON TABLE "public"."storage_objects" TO "authenticated";
 GRANT ALL ON TABLE "public"."storage_objects" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."password_reset_log" TO "anon";
+REVOKE ALL ON TABLE "public"."password_reset_log" FROM "anon";
 GRANT ALL ON TABLE "public"."password_reset_log" TO "authenticated";
 GRANT ALL ON TABLE "public"."password_reset_log" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."pending_invites" TO "anon";
+REVOKE ALL ON TABLE "public"."pending_invites" FROM "anon";
 GRANT ALL ON TABLE "public"."pending_invites" TO "authenticated";
 GRANT ALL ON TABLE "public"."pending_invites" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."inspection_access_requests" TO "anon";
+REVOKE ALL ON TABLE "public"."inspection_access_requests" FROM "anon";
 GRANT ALL ON TABLE "public"."inspection_access_requests" TO "authenticated";
 GRANT ALL ON TABLE "public"."inspection_access_requests" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."refresh_tokens" TO "anon";
+REVOKE ALL ON TABLE "public"."refresh_tokens" FROM "anon";
 GRANT ALL ON TABLE "public"."refresh_tokens" TO "authenticated";
 GRANT ALL ON TABLE "public"."refresh_tokens" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."shutters" TO "anon";
+REVOKE ALL ON TABLE "public"."shutters" FROM "anon";
 GRANT ALL ON TABLE "public"."shutters" TO "authenticated";
 GRANT ALL ON TABLE "public"."shutters" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."slit_regions" TO "anon";
+REVOKE ALL ON TABLE "public"."slit_regions" FROM "anon";
 GRANT ALL ON TABLE "public"."slit_regions" TO "authenticated";
 GRANT ALL ON TABLE "public"."slit_regions" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."user_profiles" TO "anon";
+REVOKE ALL ON TABLE "public"."user_profiles" FROM "anon";
 GRANT ALL ON TABLE "public"."user_profiles" TO "authenticated";
 GRANT ALL ON TABLE "public"."user_profiles" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."user_program_access" TO "anon";
+REVOKE ALL ON TABLE "public"."user_program_access" FROM "anon";
 GRANT ALL ON TABLE "public"."user_program_access" TO "authenticated";
 GRANT ALL ON TABLE "public"."user_program_access" TO "service_role";
 
@@ -2864,122 +2926,127 @@ GRANT ALL ON TABLE "public"."user_program_access" TO "service_role";
 -- Sequence grants
 -- ---------------------------------------------------------------------------
 
-GRANT ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."comments_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."comments_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."comments_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."comments_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."deployments_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."deployments_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."deployments_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."deployments_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."flag_audit_log_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."flag_audit_log_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."flag_audit_log_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."flag_audit_log_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."map_layers_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."map_layers_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."map_layers_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."map_layers_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."nircam_images_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "service_role";
 
 
+REVOKE ALL ON SEQUENCE "public"."nircam_exposures_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "service_role";
 
 
+REVOKE ALL ON SEQUENCE "public"."nirspec_rate_exposures_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."nirspec_rate_exposures_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nirspec_rate_exposures_id_seq" TO "service_role";
 
 
+REVOKE ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" TO "service_role";
 
+REVOKE ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" TO "service_role";
 
 
+REVOKE ALL ON SEQUENCE "public"."storage_objects_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."storage_objects_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."storage_objects_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."pending_invites_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."pending_invites_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."pending_invites_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."pending_invites_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."shutters_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."shutters_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."shutters_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."shutters_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."slit_regions_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."slit_regions_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."slit_regions_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."slit_regions_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."spectra_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."spectra_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."spectra_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."spectra_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."targets_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."targets_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."targets_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."targets_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."objects_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."objects_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."objects_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."objects_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."object_lists_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."object_lists_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."object_lists_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."object_lists_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."object_list_members_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."object_photometry_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."list_audit_log_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."object_list_shares_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "service_role";
 
@@ -2989,21 +3056,39 @@ GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "service_role";
 -- Default privileges
 -- ---------------------------------------------------------------------------
 
+-- Service-role-only tables: their sequences carry no authenticated grant, so the
+-- anon revoke lives here rather than beside one.
+REVOKE ALL ON SEQUENCE "public"."sync_deletions_id_seq" FROM "anon";
+REVOKE ALL ON SEQUENCE "public"."sync_snapshots_id_seq" FROM "anon";
+
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "service_role";
 
 
 
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "service_role";
+-- P-1 hardening: a new function is executable only by the roles it is granted
+-- to. Postgres grants EXECUTE to PUBLIC (every role, anon included) on creation
+-- unless the owner's default privileges say otherwise; this line says otherwise.
+-- Every function in functions.sql / triggers.sql also carries an explicit
+-- REVOKE ... FROM PUBLIC, anon (see the hardening blocks at the end of each).
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" REVOKE ALL ON FUNCTIONS FROM "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" REVOKE ALL ON TABLES FROM "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" REVOKE ALL ON SEQUENCES FROM "anon";
+-- The project also carries schema-less defaults for postgres (set at project
+-- creation) that grant anon on everything; Postgres merges global and
+-- per-schema defaults, so those must go too.
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" REVOKE ALL ON TABLES FROM "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" REVOKE ALL ON SEQUENCES FROM "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" REVOKE ALL ON FUNCTIONS FROM "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 
 
 
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "service_role";

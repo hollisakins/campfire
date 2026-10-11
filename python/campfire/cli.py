@@ -1226,6 +1226,62 @@ def verify(obs_filter, cloud, deep, as_json, local):
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# Data releases (admin)
+# ---------------------------------------------------------------------------
+
+
+@cli.group(name="dr")
+def dr_group():
+    """Data-release tooling (admin): readiness before a freeze."""
+
+
+@dr_group.command(name="status")
+@click.option("--json", "as_json", is_flag=True,
+              help="Print the raw dr_readiness() report as JSON")
+@click.option("--local", is_flag=True,
+              help="Against local Supabase (127.0.0.1:54321)")
+def dr_status(as_json, local):
+    """Is the catalog ready to freeze? The stage-1 readiness numbers.
+
+    Calls the admin-only dr_readiness() RPC and prints: published spectra by
+    cfpipe_version (by observation count), draft/revoked rows, deploys in
+    progress (the deploy lease), NIRCam fields with mosaics back in draft,
+    registry rows pointing at deleted spectra, provisional etag: hashes,
+    line-fit staleness, needs-review / implicit-pin counts and (once deployed)
+    science-hash coverage. Login mode (campfire login, RLS) is the normal path;
+    CAMPFIRE_DEPLOY_MODE=service-role works too.
+    """
+    import json as _json
+
+    from .dr import fetch_readiness, format_readiness
+
+    try:
+        from campfire.deploy.config import load_config
+        from campfire.deploy.supabase import get_supabase_client
+    except ImportError:
+        click.echo("✗ `campfire dr` needs the deploy extra: pip install campfire[deploy]")
+        sys.exit(2)
+    try:
+        config = load_config(None, local=local)
+        sb = get_supabase_client(config)
+        report = fetch_readiness(sb)
+    except Exception as e:  # noqa: BLE001 - one line, not a traceback
+        msg = getattr(e, "message", None) or str(e)
+        if "Admin privileges required" in msg:
+            click.echo("✗ dr status is admin-only.")
+        elif "dr_readiness" in msg and ("404" in msg or "not find" in msg.lower()):
+            click.echo("✗ dr_readiness() is not deployed on this database yet.")
+        else:
+            click.echo(f"✗ Could not fetch the readiness report: {msg}")
+        sys.exit(1)
+
+    if as_json:
+        click.echo(_json.dumps(report, indent=2, sort_keys=True))
+    else:
+        click.echo(format_readiness(report))
+
+
 def main():
     """Entry point for the CLI."""
     _register_deploy_group()

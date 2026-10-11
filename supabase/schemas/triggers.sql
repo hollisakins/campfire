@@ -624,6 +624,10 @@ CREATE TRIGGER bump_spectra_updated_at_trigger
     thumbnail_svg_flambda,
     fits_path,
     file_hash,
+    -- Science-content hash (P0b, decision D-P0-1): the backfill and every
+    -- deploy write it; `campfire identify` reads it from the local mirror, so a
+    -- change must enter the incremental delta.
+    science_hash,
     -- zfit scalars on the row (perf T2-D2, #508): written by deploy and the
     -- backfill; a sync client showing the fit summary must see them change.
     chi2_min,
@@ -778,3 +782,101 @@ DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.spectrum_line_fi
 CREATE TRIGGER journal_sync_deletions_trigger
   AFTER DELETE ON public.spectrum_line_fits REFERENCING OLD TABLE AS old_rows
   FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('line_fits', 'spectrum_id');
+
+-- ===========================================================================
+-- Privilege hardening (P-1): trigger functions are not RPC endpoints
+-- Postgres grants EXECUTE to PUBLIC on every new function, and the schema's
+-- default privileges used to add anon on top; both made every RPC here callable
+-- with the public anon key (findings §0.2). Explicit per-function revokes keep the
+-- grants to authenticated / service_role that each function declares above.
+-- Generated 2026-10-11 from the catalog; add a line here for every new function.
+-- ===========================================================================
+REVOKE ALL ON FUNCTION public.bump_object_version() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.bump_spectra_updated_at() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.enforce_object_user_update_scope() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.enforce_profile_role_update_scope() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.enforce_spectra_dq_user_update_scope() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.handle_new_user() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.journal_sync_deletions() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.log_list_membership_change() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.log_object_inspection_changes() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.log_spectrum_dq_changes() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.pin_redshift_on_signoff() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.propagate_target_publication_to_shutters() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.propagate_target_scope_to_spectra() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_object_photometry_bands() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_shutter_publication() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_spectra_target_scope() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_spectrum_lines() FROM PUBLIC, anon;
+-- GoTrue inserts auth.users as supabase_auth_admin; the trigger fires without an
+-- EXECUTE check, but keep the grant explicit so the intent is readable.
+GRANT EXECUTE ON FUNCTION public.handle_new_user() TO supabase_auth_admin;
+
+-- ---------------------------------------------------------------------------
+-- protect_archive_rows (data releases, P2)
+--
+-- Archive rows (root = 'archive') describe write-once objects: the content-
+-- addressed store is the thing a DR and a manifest point at, so the registry
+-- must not be able to forget or rewrite one. The only permitted change is the
+-- mosaic-retention transition archived -> collected (status, with
+-- collected_at assigned by the trigger, never by the caller); every other
+-- column is frozen (whole-row comparison, so a new column is frozen by
+-- default). Deletes are refused outright. Live rows are untouched. Bypass (for a genuine mistake) means
+-- disabling the trigger as postgres in a migration, on purpose, with a note.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.protect_archive_rows() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF OLD.root = 'archive' THEN
+      RAISE EXCEPTION 'archive registry rows are immutable: cannot delete %', OLD.storage_key
+        USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN OLD;
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    -- collected_at is assigned by the archived -> collected transition, never
+    -- supplied: an archived row starts without one, a row inserted as
+    -- collected (a backfill) is stamped now.
+    IF NEW.root = 'archive' THEN
+      NEW.collected_at := CASE WHEN NEW.status = 'collected' THEN now() ELSE NULL END;
+    END IF;
+    RETURN NEW;
+  END IF;
+  -- UPDATE
+  IF OLD.root <> 'archive' AND NEW.root = 'archive' THEN
+    RAISE EXCEPTION 'a live registry row cannot become an archive row (%); insert the archive row instead', OLD.storage_key
+      USING ERRCODE = 'integrity_constraint_violation';
+  END IF;
+  IF OLD.root = 'archive' THEN
+    -- The whole row is frozen except the status transition, its timestamp and
+    -- the bookkeeping updated_at (bumped by the generic trigger).
+    IF (to_jsonb(NEW) - 'status' - 'collected_at' - 'updated_at')
+       IS DISTINCT FROM (to_jsonb(OLD) - 'status' - 'collected_at' - 'updated_at')
+    THEN
+      RAISE EXCEPTION 'archive registry rows are immutable: % may only move archived -> collected', OLD.storage_key
+        USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF NEW.status IS DISTINCT FROM OLD.status THEN
+      IF NOT (OLD.status = 'archived' AND NEW.status = 'collected') THEN
+        RAISE EXCEPTION 'archive registry row % status may only move archived -> collected (got % -> %)',
+          OLD.storage_key, OLD.status, NEW.status USING ERRCODE = 'integrity_constraint_violation';
+      END IF;
+      NEW.collected_at := now();
+    ELSIF NEW.collected_at IS DISTINCT FROM OLD.collected_at THEN
+      RAISE EXCEPTION 'archive registry row %: collected_at follows the status transition', OLD.storage_key
+        USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- P-1 convention: no PUBLIC / anon execute on any function.
+REVOKE ALL ON FUNCTION public.protect_archive_rows() FROM PUBLIC, anon;
+
+DROP TRIGGER IF EXISTS protect_archive_rows_trigger ON public.storage_objects;
+CREATE TRIGGER protect_archive_rows_trigger
+  BEFORE INSERT OR UPDATE OR DELETE ON public.storage_objects
+  FOR EACH ROW EXECUTE FUNCTION public.protect_archive_rows();

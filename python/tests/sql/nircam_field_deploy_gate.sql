@@ -36,6 +36,8 @@ GRANT SELECT ON _dep TO authenticated, service_role;
 
 CREATE OR REPLACE FUNCTION pg_temp.gate_key() RETURNS text LANGUAGE sql AS
   $f$ SELECT 'data/products/nircam/leaktest/f444w/jw_gate_nrcalong.fits'::text $f$;
+-- P-1: functions default to no PUBLIC execute; grant the helper before SET ROLE.
+GRANT EXECUTE ON FUNCTION pg_temp.gate_key() TO authenticated, service_role;
 
 -- =========================================================================
 -- 1. DRAFT field deployment -> NON-ADMIN sees ZERO (RLS)

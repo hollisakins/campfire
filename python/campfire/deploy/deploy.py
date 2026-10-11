@@ -45,8 +45,7 @@ from campfire.deploy.supabase import (
     deploy_shutters as db_deploy_shutters,
     deploy_slits as db_deploy_slits,
     fetch_deployment_config,
-    claim_deploy_scope,
-    get_deploy_scope_version,
+    ScopeLease,
     get_lifecycle_status,
     get_supabase_client,
     get_user_id_from_token,
@@ -225,6 +224,7 @@ def _deploy_intermediates_only(
     obs_name: str, obs_dir, config: dict, *,
     dry_run: bool = False, auto_approve: bool = False,
     source_ids: list[int] | None = None,
+    steal_lease: bool = False,
 ) -> dict:
     """Deploy canonical spectrum-exposure intermediates for an observation with no
     stage3 finals yet (epic #210, B5) — the "reduced through stage2, review before
@@ -309,7 +309,11 @@ def _deploy_intermediates_only(
     )
 
     scope = Scope(obs=obs_name)
-    scope_version_at_start = get_deploy_scope_version(sb, 'observation', obs_name)
+    # Deploy lease (data releases P1): visible while this deploy runs; refuses
+    # (DeployScopeBusy, surfaced by the CLI) if another deploy of this
+    # observation is live. Also returns the B4 scope version for the finalize CAS.
+    lease = ScopeLease(sb, 'observation', obs_name, actor=user_id, steal=steal_lease)
+    lease.begin()
     upload_tasks = [
         UploadTask(p, storage_key('nirspec_spectrum_exposure', scope, p.name,
                                   scheme=KeyScheme.CANONICAL), 'application/fits')
@@ -352,7 +356,8 @@ def _deploy_intermediates_only(
     success, failed, failed_msgs = 0, 0, []
     flusher = registration_flusher(
         sb, store, plan, backend='osn', deployment_id=deployment_id,
-        uploaded_by=user_id, cfpipe_version=cfpipe_version)
+        uploaded_by=user_id, cfpipe_version=cfpipe_version,
+        heartbeat=lease.heartbeat)
     if plan.to_upload:
         print(f"Uploading {len(plan.to_upload)} of {len(upload_tasks)} intermediates "
               f"({len(exposure_files)} spectrum-exposures + {len(rate_files)} rate files) to OSN...")
@@ -398,7 +403,7 @@ def _deploy_intermediates_only(
             sb, build_spectrum_exposure_records(exposure_files, observation=obs_name, scope=scope))
         print(f"Upserted {n_grid} spectrum-exposure grid rows")
 
-    claim = claim_deploy_scope(sb, 'observation', obs_name, scope_version_at_start, actor=user_id)
+    claim = lease.claim()
     if claim.get('conflict'):
         print(f"⚠  CONCURRENT DEPLOY DETECTED for {obs_name}: another deploy advanced "
               f"this observation while this one was running.")
@@ -423,8 +428,12 @@ def deploy_observation(
     auto_approve: bool = False,
     defer_rebuild: bool = False,
     draft: bool = False,
+    steal_lease: bool = False,
 ) -> dict:
     """Full deployment: ECSV -> generate content -> R2 upload -> Supabase upsert.
+
+    *steal_lease* (data releases P1) takes the deploy lease over from a live
+    deploy of the same observation instead of refusing (``--steal-lease``).
 
     When *defer_rebuild* is True, the per-field objects reconciliation
     (and materialized-view refresh) is skipped so the caller can batch
@@ -452,7 +461,7 @@ def deploy_observation(
     if summary is None or len(summary) == 0:
         return _deploy_intermediates_only(
             obs_name, obs_dir, config, dry_run=dry_run, auto_approve=auto_approve,
-            source_ids=source_ids)
+            source_ids=source_ids, steal_lease=steal_lease)
 
     if source_ids:
         total = len(summary)
@@ -598,10 +607,9 @@ def deploy_observation(
             sys.exit(1)
         print("Deploying as draft (admin-only until published).")
 
-    # B4 multi-reducer safety: snapshot this observation's deploy-scope version
-    # now; we compare-and-set it at finalize to detect a concurrent deploy of the
-    # same observation (advisory — never blocks).
-    scope_version_at_start = get_deploy_scope_version(sb, 'observation', obs_name)
+    # B4 multi-reducer safety + the deploy lease (data releases P1) are taken
+    # after the interactive gates below, once the program/observation rows
+    # exist — see ScopeLease.begin() past the upserts.
 
     # Check for existing targets and confirm
     target_ids = [o['object_id'] for o in objects]
@@ -661,12 +669,23 @@ def deploy_observation(
     )
     print()
 
+    # Deploy lease (data releases P1): from here until the finalize CAS this
+    # deploy is visible in deploy_scope_state (`campfire dr status`). Refuses
+    # with DeployScopeBusy — surfaced by the CLI with --steal-lease as the way
+    # out — when another deploy of this observation is live; a lease with no
+    # heartbeat for 30 minutes is taken over as stale. begin() also returns the
+    # B4 scope version, compare-and-set at finalize (lease.claim()). The
+    # registration flusher heartbeats it; the CLI releases it if we exit
+    # abnormally before the claim.
+    user_id = get_user_id_from_token(config)
+    lease = ScopeLease(sb, 'observation', obs_name, actor=user_id, steal=steal_lease)
+    lease.begin()
+
     # Record the deployment UP FRONT (parity with deploy_nircam): it is the
     # provenance anchor and the visibility gate this deploy's registered
     # objects hang off — the flusher tags rows with it as uploads land, instead
     # of a post-hoc re-point. n_new_targets isn't known yet (it comes from the
     # objects upsert), so it's backfilled onto this row in the catalog phase.
-    user_id = get_user_id_from_token(config)
     deployment_id = insert_deployment(
         sb,
         observation=obs_name,
@@ -795,7 +814,8 @@ def deploy_observation(
             flusher = registration_flusher(
                 sb, store, push_plan, backend='osn', deployment_id=deployment_id,
                 uploaded_by=user_id,
-                cfpipe_version=summary.meta.get('cfpipe_version'))
+                cfpipe_version=summary.meta.get('cfpipe_version'),
+                heartbeat=lease.heartbeat)
 
             total_tasks = len(upload_tasks)
             print(f"Uploading {len(push_plan.to_upload)} of {len(upload_tasks)} "
@@ -1001,12 +1021,11 @@ def deploy_observation(
         # means another reducer deployed this same observation while we were
         # running — surface it so the operator can re-check (the writes are
         # idempotent by key, but a concurrent re-reduction may have interleaved).
-        claim = claim_deploy_scope(sb, 'observation', obs_name,
-                                   scope_version_at_start, actor=user_id)
+        claim = lease.claim()
         if claim.get('conflict'):
             print()
             print(f"⚠  CONCURRENT DEPLOY DETECTED for {obs_name}: another deploy "
-                  f"advanced this observation (version {scope_version_at_start} -> "
+                  f"advanced this observation (version {lease.version_at_start} -> "
                   f"{claim.get('current')}) while this one was running.")
             print("   Both deploys' writes are present; re-check the result and "
                   "re-deploy if a re-reduction was clobbered.")
