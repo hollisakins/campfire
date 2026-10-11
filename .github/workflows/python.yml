@@ -119,9 +119,13 @@ jobs:
       - name: Evaluate
         env:
           CLIENT: ${{ needs.client.result }}
+          CHANGES: ${{ needs.changes.result }}
           PIPELINE: ${{ needs.pipeline.result }}
         run: |
           echo "client=$CLIENT pipeline=$PIPELINE (pipeline is informational)"
+          # A failed path-filter job skips every downstream job; "skipped" is
+          # only an acceptable verdict when the filter itself ran and said no.
+          [ "$CHANGES" = success ] || { echo "::error::changes job result: $CHANGES"; exit 1; }
           case "$CLIENT" in
             success|skipped) ;;
             *) echo "::error::client job result: $CLIENT"; exit 1 ;;

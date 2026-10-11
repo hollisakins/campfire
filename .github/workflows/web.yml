@@ -80,8 +80,12 @@ jobs:
       - name: Evaluate
         env:
           CHECK: ${{ needs.check.result }}
+          CHANGES: ${{ needs.changes.result }}
         run: |
           echo "check=$CHECK"
+          # A failed path-filter job skips every downstream job; "skipped" is
+          # only an acceptable verdict when the filter itself ran and said no.
+          [ "$CHANGES" = success ] || { echo "::error::changes job result: $CHANGES"; exit 1; }
           case "$CHECK" in
             success|skipped) ;;
             *) echo "::error::web check result: $CHECK"; exit 1 ;;
