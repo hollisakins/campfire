@@ -449,12 +449,63 @@ def check_existing_objects(client: Client, target_ids: list[str]) -> dict[str, d
     return existing
 
 
+class ProgramVisibilityError(ValueError):
+    """A deploy would flip a public program private (P0a guard)."""
+
+
+FORCE_PRIVATE_FLIP_ENV = 'CAMPFIRE_ALLOW_PROGRAM_PRIVATE_FLIP'
+
+
+def _refuse_private_flip(client: Client, slug: str, data: dict, *, force: bool) -> None:
+    """Public -> private is a withdrawal, never a side effect of a deploy.
+
+    If the local section says ``is_public = false`` while the cloud row is
+    public, stop before anything is written (upsert_programs runs first in a
+    deploy, so nothing else has landed yet). ``force`` (or the
+    CAMPFIRE_ALLOW_PROGRAM_PRIVATE_FLIP=1 environment variable) lets an admin
+    do it deliberately; the flip is then recorded as a config_sync event.
+    A section that omits the key never reaches here (program_typed_row leaves
+    is_public out of the row, so the cloud value is kept).
+    """
+    if data.get('is_public') is not False:
+        return
+    resp = (client.table('programs').select('slug, is_public')
+            .in_('slug', [slug]).execute())
+    rows = getattr(resp, 'data', None) or []
+    cloud = rows[0] if rows else None
+    if not cloud or not cloud.get('is_public'):
+        return
+    import os
+    if force or os.environ.get(FORCE_PRIVATE_FLIP_ENV) == '1':
+        print(f"  Warning: making program '{slug}' PRIVATE (was public) because "
+              f"programs.toml says is_public = false and the flip was forced.")
+        log_deploy_event(client, action='config_sync',
+                         metadata={'kind': 'program_visibility',
+                                   'slug': slug, 'from': True, 'to': False,
+                                   'forced': True})
+        return
+    raise ProgramVisibilityError(
+        f"Refusing to make program '{slug}' private: the cloud row is public but "
+        f"programs.toml says is_public = false. Public -> private is a withdrawal, "
+        f"not a deploy side effect. Set is_public = true in programs.toml (or drop "
+        f"the key to leave the cloud value alone); to withdraw on purpose, re-run "
+        f"with {FORCE_PRIVATE_FLIP_ENV}=1."
+    )
+
+
 def upsert_programs(
     client: Client,
     program_slugs: list[str],
     programs_config: dict[str, dict],
+    *,
+    force_visibility: bool = False,
 ) -> None:
-    """Upsert program records."""
+    """Upsert program records.
+
+    Visibility guard (P0a): ``is_public`` is written only when the TOML
+    section states it, and a public -> private flip is refused unless forced
+    (see :func:`_refuse_private_flip`).
+    """
     for slug in program_slugs:
         if slug not in programs_config:
             # Refuse to invent a program from defaults: that silently creates
@@ -485,6 +536,7 @@ def upsert_programs(
             data = program_typed_row(slug, section)
         else:
             data = program_config_row(slug, section)
+        _refuse_private_flip(client, slug, data, force=force_visibility)
         client.table('programs').upsert(data, on_conflict='slug').execute()
         print(f"  + {slug} ({data['program_name']})")
         if 'config_hash' in data:

@@ -84,7 +84,7 @@ def test_program_config_row_normalizes_and_is_lossless():
     assert row["program_name"] == "CAPERS"
     assert row["pi_name"] is None            # '' never propagates (pre-#303 wart)
     assert row["description"] is None
-    assert row["is_public"] is False
+    assert "is_public" not in row            # omitted key never writes visibility (P0a)
     assert row["cycle"] == 3
     assert row["config"] == section
     assert row["config_hash"] == cs.config_hash(section)
@@ -349,3 +349,60 @@ def test_record_synced_never_raises_without_root(monkeypatch, capsys):
     monkeypatch.delenv("CAMPFIRE_ROOT", raising=False)
     cs.record_synced("programs", {"x": "sha256:aa"})   # must not raise
     assert "could not record" in capsys.readouterr().out
+
+
+# --- P0a: programs.toml can never flip a public program private by accident --
+
+def test_program_typed_row_writes_visibility_only_when_stated():
+    assert "is_public" not in cs.program_typed_row("x", {})
+    assert cs.program_typed_row("x", {"is_public": True})["is_public"] is True
+    assert cs.program_typed_row("x", {"is_public": False})["is_public"] is False
+
+
+def test_upsert_programs_omitted_visibility_leaves_cloud_alone():
+    from campfire.deploy.supabase import upsert_programs
+
+    client = _FakeClient(tables={"programs": [{"slug": "capers", "is_public": True}]})
+    upsert_programs(client, ["capers"], {"capers": {"slug": "capers", "program_name": "CAPERS"}})
+    (_t, _c, row), = client.store["upserts"]
+    assert "is_public" not in row
+
+
+def test_upsert_programs_refuses_public_to_private_flip(monkeypatch):
+    from campfire.deploy.supabase import ProgramVisibilityError, upsert_programs
+
+    monkeypatch.delenv("CAMPFIRE_ALLOW_PROGRAM_PRIVATE_FLIP", raising=False)
+    client = _FakeClient(tables={"programs": [{"slug": "capers", "is_public": True}]})
+    cfg = {"capers": {"slug": "capers", "program_name": "CAPERS", "is_public": False}}
+    with pytest.raises(ProgramVisibilityError, match="Refusing to make program 'capers' private"):
+        upsert_programs(client, ["capers"], cfg)
+    assert client.store["upserts"] == []          # nothing written
+
+
+def test_upsert_programs_private_flip_allowed_when_forced(monkeypatch, capsys):
+    from campfire.deploy.supabase import upsert_programs
+
+    cfg = {"capers": {"slug": "capers", "program_name": "CAPERS", "is_public": False}}
+    client = _FakeClient(tables={"programs": [{"slug": "capers", "is_public": True}]})
+    upsert_programs(client, ["capers"], cfg, force_visibility=True)
+    (_t, _c, row), = client.store["upserts"]
+    assert row["is_public"] is False
+    assert any(name == "log_deploy_event" for name, _ in client.store["rpcs"])
+    assert "PRIVATE" in capsys.readouterr().out
+
+    client = _FakeClient(tables={"programs": [{"slug": "capers", "is_public": True}]})
+    monkeypatch.setenv("CAMPFIRE_ALLOW_PROGRAM_PRIVATE_FLIP", "1")
+    upsert_programs(client, ["capers"], cfg)
+    assert client.store["upserts"][0][2]["is_public"] is False
+
+
+def test_upsert_programs_private_stays_private_and_new_rows_pass(monkeypatch):
+    from campfire.deploy.supabase import upsert_programs
+
+    monkeypatch.delenv("CAMPFIRE_ALLOW_PROGRAM_PRIVATE_FLIP", raising=False)
+    cfg = {"capers": {"slug": "capers", "program_name": "CAPERS", "is_public": False}}
+    for tables in ({"programs": [{"slug": "capers", "is_public": False}]}, {"programs": []}):
+        client = _FakeClient(tables=tables)
+        upsert_programs(client, ["capers"], cfg)
+        assert client.store["upserts"][0][2]["is_public"] is False
+
