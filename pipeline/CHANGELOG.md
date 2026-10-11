@@ -136,10 +136,13 @@ Release procedure: edit the `## Unreleased` section below, then run
 - **Science-content hash (P0b).** New `campfire_pipeline.metadata.science_hash`:
   sha256 over every HDU's data block plus the header minus the volatile cards
   (`CMPFRTIM`, `CMPFRDR`, `DATE`, `CHECKSUM`, `DATASUM`), version 1, with golden tests.
-  The summary reader emits it as `science_hash` beside `file_hash`; `cfpipe nirspec
+  The summary reader emits it as `science_hash` beside `file_hash` and the
+  observation summary ECSV gains a `science_hash` column after `file_hash` (what
+  `campfire deploy` writes to `spectra.science_hash`); `cfpipe nirspec
   linefit` writes it as `SCIHASH` and refits on it (older products without the card
   keep comparing `SPECHASH`), so a rerun that only rewrites `CMPFRTIM` no longer
-  triggers a refit. No pixel or flux value changes.
+  triggers a refit. A value-less header card hashes to a fixed token, so the hash
+  is the same in every process. No pixel or flux value changes.
 - `cfpipe nirspec linefit` no longer requires `observations.toml`: its inputs
   (products, `redshifts.toml`) sit at layout-derived paths, so the stage now
   resolves the observation from its name alone and uses the TOML only when

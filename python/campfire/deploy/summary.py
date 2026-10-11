@@ -132,6 +132,7 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
     Returns list of dicts with keys:
         target_id, grating, fits_path (R2 key), observation, program_slug,
         signal_to_noise, exposure_time, file_hash, file_size,
+        science_hash (when the summary carries the column; P0b),
         cfpipe_version, crds_context, jwst_version, date_obs, reduced_at,
         redshift_auto (per-grating zfit; Phase B)
 
@@ -172,6 +173,11 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
     # the row so RedshiftFitSummary fetches no zfit sidecar for them.
     has_chi2_min = 'chi2_min' in summary.colnames
     has_confidence = 'redshift_confidence' in summary.colnames
+    # P0b: the science-content hash (campfire_pipeline.metadata.science_hash),
+    # the identity that survives a CMPFRTIM rerun and the DR stamp. Summaries
+    # written before P0b have no column; those deploys leave the row's value
+    # alone (the backfill fills it).
+    has_science_hash = 'science_hash' in summary.colnames
 
     # Fallback to metadata for old ECSVs that lack per-row columns
     meta_jwst_version = _clean_str(summary.meta.get('jwst_version'))
@@ -227,6 +233,10 @@ def get_spectra_records(summary: Table, obs_name: str) -> list[dict]:
             rec['chi2_min'] = _finite_or_none(row['chi2_min'])
         if has_confidence:
             rec['confidence'] = _finite_or_none(row['redshift_confidence'])
+        # Same rule for the science hash: present => always sent, '' => NULL
+        # (a product the hasher could not read must not keep a stale hash).
+        if has_science_hash:
+            rec['science_hash'] = _clean_str(row['science_hash'])
 
         records.append(rec)
     return records

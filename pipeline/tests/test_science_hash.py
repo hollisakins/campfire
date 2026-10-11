@@ -145,3 +145,33 @@ def test_table_heap_and_strings_are_covered(tmp_path):
 def test_version_constant():
     assert sh.SCIENCE_HASH_VERSION == 1
     assert {"CMPFRTIM", "CMPFRDR", "DATE", "CHECKSUM", "DATASUM"} <= set(sh.VOLATILE_CARDS)
+
+
+# A value-less card (``FOO     =``) parses to astropy's ``Undefined`` sentinel,
+# whose repr carries a memory address. Pinned so the hash stays the same across
+# processes (the hasher writes the fixed token ``<UNDEFINED>`` for it).
+GOLDEN_UNDEFINED = "sha256:211516cb2af5cb503b55a2ed58f815c6a1bb076e59a97cb4cb5fe0dac9b6c1ac"
+
+
+def _undefined_card(path):
+    p = _image(path)
+    with fits.open(p, mode="update", do_not_scale_image_data=True) as h:
+        h[0].header.append(fits.Card.fromstring("UNDEFKW ="))
+        h.flush()
+    with fits.open(p) as h:  # the fixture really carries a value-less card
+        assert isinstance(h[0].header.cards["UNDEFKW"].value, fits.card.Undefined)
+    return p
+
+
+def test_undefined_card_is_deterministic(tmp_path):
+    p = _undefined_card(tmp_path / "f.fits")
+    first = sh.science_hash(p)
+    assert first == sh.science_hash(p)
+    assert first == GOLDEN_UNDEFINED
+    # The card is still part of the identity: dropping it changes the hash.
+    _rewrite_with(p, UNDEFKW=None)
+    assert sh.science_hash(p) != first
+    assert sh.science_hash(p) == GOLDEN_IMAGE
+    # And no Undefined repr (memory address) leaks into the header lines.
+    hdr = fits.Header([fits.Card.fromstring("UNDEFKW =")])
+    assert sh._header_lines(hdr) == ["UNDEFKW=<UNDEFINED>"]

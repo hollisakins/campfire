@@ -782,8 +782,10 @@ class LocalStore:
     def upsert_spectra(self, spectra_data: List[dict]) -> int:
         """Insert or update spectra (science metadata) from /sync/spectra.
 
-        File keys, hashes, and local-download state live in storage_objects
-        (synced separately); any fits_path/file_hash in the payload is ignored.
+        File keys, whole-file hashes, and local-download state live in
+        storage_objects (synced separately); any fits_path/file_hash in the
+        payload is ignored. ``science_hash`` (P0b) is science metadata and is
+        persisted here.
         """
         now = datetime.now(timezone.utc).isoformat()
         count = 0
@@ -792,17 +794,18 @@ class LocalStore:
             self._conn.execute(
                 """
                 INSERT INTO spectra
-                    (id, spectrum_id, target_id, object_id, grating,
+                    (id, spectrum_id, target_id, object_id, grating, science_hash,
                      signal_to_noise, exposure_time,
                      cfpipe_version, crds_context, jwst_version, date_obs, reduced_at,
                      redshift_auto, dq_flags,
                      program_slug, observation, field,
                      created_at, updated_at, _synced_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(spectrum_id) DO UPDATE SET
                     target_id=excluded.target_id,
                     object_id=excluded.object_id,
                     grating=excluded.grating,
+                    science_hash=excluded.science_hash,
                     signal_to_noise=excluded.signal_to_noise,
                     exposure_time=excluded.exposure_time,
                     cfpipe_version=excluded.cfpipe_version,
@@ -824,6 +827,7 @@ class LocalStore:
                     spec.get("target_id"),
                     spec.get("object_id"),
                     spec.get("grating"),
+                    spec.get("science_hash"),
                     spec.get("signal_to_noise"),
                     spec.get("exposure_time"),
                     spec.get("cfpipe_version"),

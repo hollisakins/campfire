@@ -7,8 +7,17 @@ Streams every ``_spec.fits`` / ``_lines.fits`` once from OSN (read-only GETs,
 ~58 GB in total for the live catalog), computes the science-content hash with
 the one shared implementation (``campfire_pipeline.metadata.science_hash``) and
 writes it to the matching ``spectra`` row (by ``spectrum_id``) and registry row
-(by ``storage_key``) in batches of 500. Rows that already carry a hash are
-skipped, so the run is resumable: kill it and start it again.
+(by ``id``) in batches of 500. Rows that already carry a hash are skipped, so
+the run is resumable: kill it and start it again.
+
+Write order matters for that resumability: per file the ``spectra`` row is
+written first and the registry row second, and the pending set is selected on
+the registry row's NULL hash, so the registry hash is the completion marker
+and a kill between the two writes leaves a row the next run redoes. The
+reverse order would strand ``spectra.science_hash`` forever. Each run also
+starts with a cheap repair pass (no downloads) that copies the registry hash
+onto any ``nirspec_spec`` spectrum whose row is still NULL, so stragglers from
+an older run of this script, or from any other write path, heal on rerun.
 
 Every written ``spectra`` row's ``updated_at`` moves (``science_hash`` is in the
 ``bump_spectra_updated_at`` column list, decision D-P0-1), so incremental-sync
@@ -38,6 +47,7 @@ from campfire_pipeline.metadata.science_hash import SCIENCE_HASH_VERSION, scienc
 
 PAGE = 1000
 WRITE_BATCH = 500
+LOOKUP_BATCH = 200   # spectrum_ids per in_() filter (URL length)
 PRODUCT_TYPES = ('nirspec_spec', 'nirspec_lines')
 
 
@@ -63,6 +73,62 @@ def fetch_pending(sb, product_types: tuple[str, ...], obs: str | None, limit: in
         after = page[-1]['id']
 
 
+def write_batch(sb, batch: list[tuple[dict, str]]) -> None:
+    """Write one batch: per file the spectra row (by spectrum_id) FIRST, then
+    the registry row (by id).
+
+    The registry hash is the completion marker (fetch_pending selects on it
+    being NULL), so it must be the last write: a kill between the two then
+    re-queues the file instead of stranding spectra.science_hash. Writes are
+    idempotent, so redoing a file is harmless.
+
+    UPDATE, not upsert: a column-subset upsert on spectra fails NOT NULL before
+    ON CONFLICT (see memory note on the partial-upsert trap)."""
+    for row, h in batch:
+        if row['product_type'] == 'nirspec_spec' and row.get('spectrum_id'):
+            sb.table('spectra').update({'science_hash': h}).eq('spectrum_id', row['spectrum_id']).execute()
+        sb.table('storage_objects').update({'science_hash': h}).eq('id', row['id']).execute()
+
+
+def repair_stragglers(sb, obs: str | None, dry_run: bool) -> int:
+    """Copy the registry hash onto ``spectra`` rows that are still NULL.
+
+    Walks spectra with a NULL science hash (keyset on id) and, for each page,
+    looks up the active ``nirspec_spec`` registry rows that already carry one.
+    No bytes are read: this only completes writes an earlier run (or an
+    interrupted deploy) left half done. Returns the number of rows repaired
+    (that would be repaired, on a dry run)."""
+    repaired = 0
+    after = 0
+    while True:
+        q = (sb.table('spectra').select('id, spectrum_id')
+             .is_('science_hash', 'null')
+             .gt('id', after).order('id').limit(PAGE))
+        if obs:
+            q = q.eq('observation', obs)
+        page = q.execute().data or []
+        if not page:
+            return repaired
+        after = page[-1]['id']
+        ids = [r['spectrum_id'] for r in page if r.get('spectrum_id')]
+        if not ids:
+            continue
+        reg: list[dict] = []
+        for i in range(0, len(ids), LOOKUP_BATCH):  # keep the in_() URL short
+            reg.extend(sb.table('storage_objects').select('spectrum_id, science_hash')
+                       .eq('status', 'active').eq('product_type', 'nirspec_spec')
+                       .in_('spectrum_id', ids[i:i + LOOKUP_BATCH])
+                       .not_.is_('science_hash', 'null')
+                       .execute().data or [])
+        for r in reg:
+            if not dry_run:
+                (sb.table('spectra').update({'science_hash': r['science_hash']})
+                 .eq('spectrum_id', r['spectrum_id']).execute())
+            repaired += 1
+        if len(page) < PAGE:
+            return repaired
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--dry-run', action='store_true')
@@ -76,6 +142,13 @@ def main() -> int:
     sb = get_supabase_client(config)
     bcfg = resolve_backend(config, 'osn')
     s3 = make_s3_client(bcfg, max_pool_connections=max(8, args.workers))
+
+    # Stragglers first: spectra rows left NULL by a kill between the two writes
+    # of an older run (which wrote the registry row first) heal here for free.
+    n_repaired = repair_stragglers(sb, args.obs, args.dry_run)
+    if n_repaired:
+        print(f"{'would repair' if args.dry_run else 'repaired'} {n_repaired} spectra rows "
+              f"from registry hashes already written")
 
     types_ = (args.product_type,) if args.product_type else PRODUCT_TYPES
     rows = fetch_pending(sb, types_, args.obs, args.limit)
@@ -100,17 +173,12 @@ def main() -> int:
                 pass
 
     def flush(batch: list[tuple[dict, str]]) -> None:
-        """Write one batch: registry rows by id, spectra rows by spectrum_id.
-
-        UPDATE, not upsert: a column-subset upsert on spectra fails NOT NULL
-        before ON CONFLICT (see memory note on the partial-upsert trap)."""
+        """write_batch with a fresh client on failure (see its docstring for
+        the write order)."""
         nonlocal sb
         for attempt in range(3):
             try:
-                for row, h in batch:
-                    sb.table('storage_objects').update({'science_hash': h}).eq('id', row['id']).execute()
-                    if row['product_type'] == 'nirspec_spec' and row.get('spectrum_id'):
-                        sb.table('spectra').update({'science_hash': h}).eq('spectrum_id', row['spectrum_id']).execute()
+                write_batch(sb, batch)
                 return
             except Exception:  # noqa: BLE001
                 if attempt == 2:

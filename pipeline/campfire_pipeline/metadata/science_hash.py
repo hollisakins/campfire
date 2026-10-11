@@ -22,7 +22,10 @@ changes, because every stored hash becomes incomparable):
 
 Header values go through astropy's parsed card value (so string padding,
 card formatting and CONTINUE splitting do not matter) and ``repr`` (so
-``1.0`` and ``1`` stay distinct, as they are distinct in the file). Data bytes
+``1.0`` and ``1`` stay distinct, as they are distinct in the file). A
+value-less card (``FOO     =``) parses to astropy's ``Undefined`` sentinel,
+whose ``repr`` carries a memory address, so it is written as the fixed token
+``<UNDEFINED>`` instead. Data bytes
 are taken from the on-disk data segment, so BSCALE/BZERO, byte order and
 variable-length-array heaps are covered exactly as stored.
 
@@ -53,6 +56,11 @@ VOLATILE_CARDS = frozenset({
 #: Commentary keywords (never part of the identity).
 _COMMENTARY = frozenset({"COMMENT", "HISTORY", ""})
 
+#: Fixed token for a value-less card: ``repr(fits.card.Undefined())`` is
+#: ``<astropy.io.fits.card.Undefined object at 0x...>``, different in every
+#: process, which would make the hash non-deterministic.
+_UNDEFINED_TOKEN = "<UNDEFINED>"
+
 
 def _header_lines(header: fits.Header) -> list[str]:
     lines = []
@@ -64,7 +72,10 @@ def _header_lines(header: fits.Header) -> list[str]:
             value = card.value
         except Exception:  # unparsable card: fall back to its raw image
             value = card.image.strip()
-        lines.append(f"{kw}={value!r}")
+        if isinstance(value, fits.card.Undefined):
+            lines.append(f"{kw}={_UNDEFINED_TOKEN}")
+        else:
+            lines.append(f"{kw}={value!r}")
     lines.sort()
     return lines
 
