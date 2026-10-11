@@ -1,0 +1,124 @@
+name: Python
+
+# Required check for every PR (branch protection → "python"). Runs the Python
+# suites that matter for the files a PR touches:
+#
+#   client   python/ (campfire CLI + client, 700+ tests, ~10 s) and the layout
+#            golden fixture (pipeline/tests/test_layout.py, the Python arm of
+#            layout/conformance/layout_golden.json). Triggered by changes under
+#            python/ or layout/.
+#   pipeline pipeline/tests (needs the full jwst stack; several minutes of
+#            install). Triggered by changes under pipeline/ or layout/.
+#            Informational until its CI runtime and flakiness are known
+#            (continue-on-error), then it joins the required aggregate.
+#
+# The `python` job is the only name branch protection should require: it runs
+# on every PR, even when nothing matched the filters, so a docs-only PR still
+# gets a green required check instead of a "waiting for status" that never
+# resolves. See docs/design-data-releases-infra-proposal.md §3.2.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      client: ${{ steps.filter.outputs.client }}
+      pipeline: ${{ steps.filter.outputs.pipeline }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            client:
+              - 'python/**'
+              - 'layout/**'
+              - '.github/workflows/python.yml'
+            pipeline:
+              - 'pipeline/**'
+              - 'layout/**'
+              - '.github/workflows/python.yml'
+
+  client:
+    needs: changes
+    if: needs.changes.outputs.client == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            layout/pyproject.toml
+            python/pyproject.toml
+      - name: Install (layout first; the client base install plus pytest)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./layout
+          pip install -e ./python pytest
+      - name: Client tests
+        run: pytest python -q -p no:cacheprovider
+      - name: Layout golden (Python arm)
+        run: pytest pipeline/tests/test_layout.py -q -p no:cacheprovider
+
+  pipeline:
+    needs: changes
+    if: needs.changes.outputs.pipeline == 'true'
+    runs-on: ubuntu-latest
+    # Informational for now: the jwst stack install is heavy and the suite's CI
+    # behaviour is unmeasured. Flip to false (and add it to the aggregate below)
+    # once it has run green for a few PRs.
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            layout/pyproject.toml
+            pipeline/pyproject.toml
+      - name: Install (layout first, then the pipeline with its science stack)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./layout
+          pip install -e ./pipeline pytest
+      - name: Pipeline tests
+        run: pytest pipeline/tests -q -p no:cacheprovider
+
+  python:
+    # The single required status check. Succeeds when every triggered job
+    # succeeded or was skipped by the path filter; fails otherwise.
+    needs: [changes, client, pipeline]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate
+        env:
+          CLIENT: ${{ needs.client.result }}
+          PIPELINE: ${{ needs.pipeline.result }}
+        run: |
+          echo "client=$CLIENT pipeline=$PIPELINE (pipeline is informational)"
+          case "$CLIENT" in
+            success|skipped) ;;
+            *) echo "::error::client job result: $CLIENT"; exit 1 ;;
+          esac

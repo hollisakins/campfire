@@ -74,3 +74,8 @@ tag_regex = "^pipeline-v(?P<version>\\d+\\.\\d+\\.\\d+)$"
 git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "pipeline-v*"]
 write_to = "campfire_pipeline/_version.py"
 fallback_version = "0.0.0+unknown"
+
+[tool.pytest.ini_options]
+# A bare `pytest` from pipeline/ collects only the suite, not experiments/ or
+# scripts/ (which carry pytest-named one-off harnesses that need local data).
+testpaths = ["tests"]

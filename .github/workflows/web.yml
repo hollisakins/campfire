@@ -1,0 +1,88 @@
+name: Web
+
+# Required check for every PR (branch protection → "web"). For PRs touching
+# web/ (or the layout golden the TS layout tests read): typecheck, the full
+# vitest suite, the production build with placeholder Supabase env, and the
+# First-Load-JS bundle budget (web/scripts/check-bundle-budget.mjs, 250 kB
+# gz per route; overrides live in the script). Replaces the former
+# web-bundle-budget.yml.
+#
+# The `web` job is the only name branch protection should require: it runs on
+# every PR and is green when the check job was skipped by the path filter.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            web:
+              - 'web/**'
+              - 'layout/conformance/**'
+              - '.github/workflows/web.yml'
+
+  check:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
+          SUPABASE_SERVICE_ROLE_KEY: placeholder-service-key
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+      - name: Bundle budget
+        run: npm run budget
+
+  web:
+    needs: [changes, check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate
+        env:
+          CHECK: ${{ needs.check.result }}
+        run: |
+          echo "check=$CHECK"
+          case "$CHECK" in
+            success|skipped) ;;
+            *) echo "::error::web check result: $CHECK"; exit 1 ;;
+          esac
