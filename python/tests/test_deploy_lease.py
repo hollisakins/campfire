@@ -7,6 +7,7 @@ DB half: ``sql/deploy_lease.sql`` runs against the local Supabase Postgres (see
 ``_localdb.py``) and must reach its PASS marker — busy raises, stale takeover,
 steal, holder-only heartbeat, claim clears, non-admin denied, anon revoked.
 """
+import time
 import types
 from pathlib import Path
 
@@ -128,6 +129,15 @@ def test_begin_steal_passes_flag():
 # heartbeat / release wrappers
 # ---------------------------------------------------------------------------
 
+def test_heartbeat_and_release_pass_the_version_token():
+    c = _FakeClient({'heartbeat_deploy_scope': True, 'release_deploy_scope': True})
+    heartbeat_deploy_scope(c, 'observation', 'o', actor='u', host='h', version=7)
+    release_deploy_scope(c, 'observation', 'o', actor='u', host='h', version=7)
+    assert [p['p_version'] for _, p in c.calls] == [7, 7]
+    assert c.calls[0][1] == {'p_scope_type': 'observation', 'p_scope_key': 'o',
+                             'p_actor': 'u', 'p_host': 'h', 'p_version': 7}
+
+
 def test_heartbeat_tristate():
     assert heartbeat_deploy_scope(_FakeClient({'heartbeat_deploy_scope': True}), 'observation', 'o') is True
     assert heartbeat_deploy_scope(_FakeClient({'heartbeat_deploy_scope': False}), 'observation', 'o') is False
@@ -151,11 +161,14 @@ def test_scope_lease_lifecycle_claim(capsys):
         'heartbeat_deploy_scope': True,
         'claim_deploy_scope': {'claimed': True, 'version': 3, 'conflict': False},
     })
-    lease = ScopeLease(client, 'observation', 'obs_a', actor='u1', host='h1')
+    lease = ScopeLease(client, 'observation', 'obs_a', actor='u1', host='h1',
+                       heartbeat_interval_s=None)
     assert lease.begin() == 2
     assert lease in sb_mod._ACTIVE_LEASES
     lease.heartbeat(); lease.heartbeat()
     assert lease.heartbeats == 2
+    # every heartbeat carried the ownership token begin() returned
+    assert [p['p_version'] for n, p in client.calls if n == 'heartbeat_deploy_scope'] == [2, 2]
     claim = lease.claim()
     assert claim['claimed'] and claim['version'] == 3
     # the claim passed the version begin() returned
@@ -194,8 +207,62 @@ def test_release_active_leases_on_abort():
     a.begin(); b.begin()
     assert release_active_leases() == 2
     assert sb_mod._ACTIVE_LEASES == []
-    rel = [c[1]['p_scope_key'] for c in client.calls if c[0] == 'release_deploy_scope']
-    assert sorted(rel) == ['obs_a', 'obs_b']
+    rel = [(c[1]['p_scope_key'], c[1]['p_version']) for c in client.calls if c[0] == 'release_deploy_scope']
+    assert sorted(rel) == [('obs_a', 1), ('obs_b', 1)]
+
+
+# ---------------------------------------------------------------------------
+# background timer: heartbeats arrive without any upload completing, and stop
+# the moment the lease is claimed or released
+# ---------------------------------------------------------------------------
+
+def _wait_for(pred, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(0.01)
+    return pred()
+
+
+def test_scope_lease_timer_heartbeats_without_progress():
+    client = _FakeClient({'begin_deploy_scope': {'version': 3}, 'heartbeat_deploy_scope': True,
+                          'release_deploy_scope': True})
+    lease = ScopeLease(client, 'field', 'cosmos', actor='u1', host='h', heartbeat_interval_s=0.02)
+    lease.begin()
+    # no add()/flush anywhere: the timer alone keeps the lease alive
+    assert _wait_for(lambda: lease.heartbeats >= 3)
+    assert all(p['p_version'] == 3 for n, p in client.calls if n == 'heartbeat_deploy_scope')
+    assert lease.release() is True
+    assert lease._timer is None
+    n_after = len([c for c in client.calls if c[0] == 'heartbeat_deploy_scope'])
+    time.sleep(0.1)
+    # nothing beats after the release
+    assert len([c for c in client.calls if c[0] == 'heartbeat_deploy_scope']) == n_after
+    assert client.calls[-1][0] == 'release_deploy_scope'
+
+
+def test_scope_lease_timer_stops_on_claim_and_survives_rpc_errors():
+    client = _FakeClient({'begin_deploy_scope': {'version': 1},
+                          'heartbeat_deploy_scope': _APIError('X', 'network'),
+                          'claim_deploy_scope': {'claimed': True, 'version': 2, 'conflict': False}})
+    lease = ScopeLease(client, 'observation', 'o', actor='u1', host='h', heartbeat_interval_s=0.02)
+    lease.begin()
+    assert _wait_for(lambda: len([c for c in client.calls if c[0] == 'heartbeat_deploy_scope']) >= 2)
+    assert lease.heartbeats == 0 and lease.leased   # failures are swallowed, the lease stays
+    assert lease.claim()['claimed']
+    assert lease._timer is None and lease not in sb_mod._ACTIVE_LEASES
+    assert client.calls[-1][0] == 'claim_deploy_scope'
+
+
+def test_scope_lease_timer_not_started_without_lease():
+    client = _FakeClient({'begin_deploy_scope': _APIError('PGRST202', 'missing'),
+                          'get_deploy_scope_version': 0})
+    lease = ScopeLease(client, 'observation', 'o', heartbeat_interval_s=0.01)
+    lease.begin()
+    time.sleep(0.05)
+    assert lease._timer is None
+    assert not [c for c in client.calls if c[0] == 'heartbeat_deploy_scope']
 
 
 def test_scope_lease_announces_steal_and_stale(capsys):

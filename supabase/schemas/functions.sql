@@ -6859,7 +6859,8 @@ GRANT EXECUTE ON FUNCTION public.set_deployment_status(integer, text, uuid, text
 --
 -- Deploy lease (data releases P1). The CAS detects an overlap only after the
 -- fact; the lease makes a running deploy visible while it runs:
---   begin_deploy_scope      take the lease at the start of a deploy
+--   begin_deploy_scope      take the lease at the start of a deploy; BUMPS the
+--                           version, so the lease version is the holder's token
 --   heartbeat_deploy_scope  refresh heartbeat_at from the upload loop (holder only)
 --   claim_deploy_scope      the finalize CAS; clears the lease when it succeeds
 --   release_deploy_scope    clear the lease without a version bump (clean abort)
@@ -6867,6 +6868,11 @@ GRANT EXECUTE ON FUNCTION public.set_deployment_status(integer, text, uuid, text
 -- older than that with no heartbeat is STALE — a crashed deploy — and
 -- begin_deploy_scope takes it over without p_steal; a live lease is refused
 -- (SQLSTATE CF409, message prefix deploy_scope_busy) unless p_steal.
+-- Ownership token: every begin advances the version and hands it to the
+-- caller; heartbeat / release / claim all carry it back. A deploy whose lease
+-- was stolen or taken over as stale therefore holds an outdated version: its
+-- heartbeats and release return false, and its finalize CAS conflicts instead
+-- of clearing the new holder's lease (the displaced process cannot win).
 -- All four are SECURITY DEFINER behind the admin-or-service-role guard; the
 -- table itself is admin-readable only (RLS) and never written by a client.
 
@@ -6919,9 +6925,12 @@ GRANT EXECUTE ON FUNCTION public.get_deploy_scope_version(text, text) TO authent
 -- — unless p_steal. A lease older than the ttl with no newer heartbeat is stale
 -- (the deploy crashed or lost its network) and is taken over without p_steal;
 -- the previous holder is still reported in the result so the operator sees it.
--- Returns {version, took_over_stale, stolen, previous}: version is the CAS
--- value the caller passes back to claim_deploy_scope at finalize (so the two
--- reads collapse into one round trip), previous is the displaced lease or null.
+-- Advances the scope version and returns the new value: {version,
+-- took_over_stale, stolen, previous}. version is the holder's token — the CAS
+-- value the caller passes back to claim_deploy_scope at finalize and the
+-- p_version of its heartbeats / release — so a later begin (steal or stale
+-- takeover) invalidates the displaced deploy's token by bumping again.
+-- previous is the displaced lease or null.
 CREATE OR REPLACE FUNCTION public.begin_deploy_scope(
   p_scope_type text,
   p_scope_key text,
@@ -6938,6 +6947,7 @@ DECLARE
   v_row deploy_scope_state%ROWTYPE;
   v_live boolean;
   v_previous json;
+  v_version integer;
 BEGIN
   SELECT COALESCE(up.is_admin, false) INTO v_is_admin
   FROM user_profiles up WHERE up.user_id = auth.uid();
@@ -6984,17 +6994,20 @@ BEGIN
   END IF;
 
   -- The holder identity the heartbeat / release RPCs match against: the
-  -- explicit actor, else the calling user (NULL under service_role).
+  -- explicit actor, else the calling user (NULL under service_role). The
+  -- version bump is the holder's token (see the block comment above).
   UPDATE deploy_scope_state
-  SET in_progress_since = now(),
+  SET version = version + 1,
+      in_progress_since = now(),
       in_progress_by = COALESCE(p_actor, auth.uid()),
       in_progress_host = p_host,
       heartbeat_at = now(),
       updated_at = now()
-  WHERE scope_type = p_scope_type AND scope_key = p_scope_key;
+  WHERE scope_type = p_scope_type AND scope_key = p_scope_key
+  RETURNING version INTO v_version;
 
   RETURN json_build_object(
-    'version', v_row.version,
+    'version', v_version,
     'took_over_stale', (v_row.in_progress_since IS NOT NULL AND NOT v_live),
     'stolen', (v_live AND p_steal),
     'previous', v_previous);
@@ -7009,15 +7022,19 @@ GRANT EXECUTE ON FUNCTION public.begin_deploy_scope(text, text, uuid, text, bool
 -- the lease. The holder is identified by (in_progress_by, in_progress_host):
 -- p_actor defaults to auth.uid() (NULL matches NULL, which is what a
 -- service-role deploy records), and p_host, when given, must match too so two
--- deploys by the same admin on different machines are told apart. Returns
--- true when the heartbeat was written; false means the lease was lost (stolen,
--- taken over as stale, released, or cleared by a concurrent finalize) and the
--- caller should warn — never raise: the heartbeat is best-effort by contract.
+-- deploys by the same admin on different machines are told apart, and
+-- p_version, when given, must equal the version begin_deploy_scope returned
+-- (the ownership token: a displaced deploy of the same actor and host on the
+-- same scope holds an older one). Returns true when the heartbeat was written;
+-- false means the lease was lost (stolen, taken over as stale, released, or
+-- cleared by a concurrent finalize) and the caller should warn — never raise:
+-- the heartbeat is best-effort by contract.
 CREATE OR REPLACE FUNCTION public.heartbeat_deploy_scope(
   p_scope_type text,
   p_scope_key text,
   p_actor uuid DEFAULT NULL,
-  p_host text DEFAULT NULL
+  p_host text DEFAULT NULL,
+  p_version integer DEFAULT NULL
 )
 RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER
@@ -7038,25 +7055,28 @@ BEGIN
   WHERE scope_type = p_scope_type AND scope_key = p_scope_key
     AND in_progress_since IS NOT NULL
     AND in_progress_by IS NOT DISTINCT FROM COALESCE(p_actor, auth.uid())
-    AND (p_host IS NULL OR in_progress_host IS NOT DISTINCT FROM p_host);
+    AND (p_host IS NULL OR in_progress_host IS NOT DISTINCT FROM p_host)
+    AND (p_version IS NULL OR version = p_version);
   GET DIAGNOSTICS v_n = ROW_COUNT;
   RETURN v_n > 0;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.heartbeat_deploy_scope(text, text, uuid, text) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.heartbeat_deploy_scope(text, text, uuid, text) TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.heartbeat_deploy_scope(text, text, uuid, text, integer) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.heartbeat_deploy_scope(text, text, uuid, text, integer) TO authenticated, service_role;
 
 
 -- release_deploy_scope: clear the lease WITHOUT bumping the version, for a
 -- deploy that aborts cleanly (operator said no at a prompt, nothing to do,
 -- capability gate failed) after begin_deploy_scope. Same holder rule as the
--- heartbeat; returns true when a lease was cleared.
+-- heartbeat (actor, host, and the version token when given); returns true
+-- when a lease was cleared.
 CREATE OR REPLACE FUNCTION public.release_deploy_scope(
   p_scope_type text,
   p_scope_key text,
   p_actor uuid DEFAULT NULL,
-  p_host text DEFAULT NULL
+  p_host text DEFAULT NULL,
+  p_version integer DEFAULT NULL
 )
 RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER
@@ -7081,18 +7101,20 @@ BEGIN
   WHERE scope_type = p_scope_type AND scope_key = p_scope_key
     AND in_progress_since IS NOT NULL
     AND in_progress_by IS NOT DISTINCT FROM COALESCE(p_actor, auth.uid())
-    AND (p_host IS NULL OR in_progress_host IS NOT DISTINCT FROM p_host);
+    AND (p_host IS NULL OR in_progress_host IS NOT DISTINCT FROM p_host)
+    AND (p_version IS NULL OR version = p_version);
   GET DIAGNOSTICS v_n = ROW_COUNT;
   RETURN v_n > 0;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.release_deploy_scope(text, text, uuid, text) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.release_deploy_scope(text, text, uuid, text) TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.release_deploy_scope(text, text, uuid, text, integer) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.release_deploy_scope(text, text, uuid, text, integer) TO authenticated, service_role;
 
 
 -- claim_deploy_scope: atomic compare-and-set. Bumps the scope version iff it
--- still equals p_expected_version (the value the deploy read at start). Returns
+-- still equals p_expected_version (the value begin_deploy_scope returned, i.e.
+-- the holder's token; a displaced deploy's older token conflicts here). Returns
 -- {claimed, version, current, conflict}: claimed=false + conflict=true means a
 -- concurrent deploy advanced the scope (the caller should surface the clobber).
 -- A successful claim also clears the deploy lease (the deploy is finished);
@@ -7174,6 +7196,9 @@ GRANT EXECUTE ON FUNCTION public.claim_deploy_scope(text, text, integer, uuid) T
 --     the legacy r2 backend (the retired R2 LIST/HEAD backfill was the only
 --     producer of etag: hashes) plus the finals slice as the DR-member safety
 --     net; science_hash on the active nirspec_spec slice.
+-- The function sets statement_timeout = '120s' like the sync RPCs: it runs
+-- catalog-wide aggregates, and service_role otherwise inherits authenticator's
+-- 8 s, which a Small or busy instance can exceed.
 -- No per-row function calls except inside spectrum_line_fits_status (16k rows,
 -- the ledger's own definition of staleness — reuse, do not re-derive).
 --
@@ -7202,6 +7227,7 @@ CREATE OR REPLACE FUNCTION public.dr_readiness()
 RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public, pg_temp
+SET statement_timeout = '120s'
 AS $$
 DECLARE
   v_is_admin boolean;

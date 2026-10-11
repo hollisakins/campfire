@@ -5,6 +5,8 @@ Handles upserts for programs, objects, and spectra tables, plus
 slit geometry deployment and filter cache refresh.
 """
 
+import threading
+
 from supabase import create_client, Client
 from supabase.client import ClientOptions
 
@@ -355,10 +357,15 @@ def claim_deploy_scope(
 # begin_deploy_scope takes the lease on a scope at the start of a deploy and
 # refuses (DeployScopeBusy) while another deploy holds one with a heartbeat
 # younger than 30 minutes, unless told to steal it; heartbeat_deploy_scope is
-# fired from the upload loop (registration_flusher); claim_deploy_scope clears
-# the lease at finalize; release_deploy_scope clears it on a clean abort. A
-# lease older than 30 minutes with no heartbeat is stale and is taken over
-# without stealing. Only the busy refusal is a hard stop: every other failure
+# fired by ScopeLease's background timer every LEASE_HEARTBEAT_INTERVAL_S for
+# as long as the lease is held (and, as a second cadence, from the upload loop's
+# registration_flusher); claim_deploy_scope clears the lease at finalize;
+# release_deploy_scope clears it on a clean abort. A lease older than 30
+# minutes with no heartbeat is stale and is taken over without stealing. The
+# version begin returns is the ownership token: every begin bumps it, and the
+# heartbeat / release / claim of a displaced deploy (stolen or taken over)
+# carry an older one and fail, so the displaced process can never clear or
+# finalize over the new holder. Only the busy refusal is a hard stop: every other failure
 # is advisory, like the CAS before it, so an older database or a flaky network
 # never blocks a deploy.
 
@@ -464,14 +471,17 @@ def begin_deploy_scope(
 
 def heartbeat_deploy_scope(
     client: Client, scope_type: str, scope_key: str, *,
-    actor: str | None = None, host: str | None = None,
+    actor: str | None = None, host: str | None = None, version: int | None = None,
 ) -> bool | None:
     """Refresh the lease heartbeat. True = written, False = the lease is no
-    longer ours (stolen / taken over / released), None = unknown (RPC failed)."""
+    longer ours (stolen / taken over / released), None = unknown (RPC failed).
+    *version* is the ownership token ``begin_deploy_scope`` returned: a
+    displaced deploy's older token is refused even from the same actor and
+    host."""
     try:
         resp = client.rpc('heartbeat_deploy_scope', {
             'p_scope_type': scope_type, 'p_scope_key': scope_key,
-            'p_actor': actor, 'p_host': host,
+            'p_actor': actor, 'p_host': host, 'p_version': version,
         }).execute()
         return bool(resp.data)
     except Exception:
@@ -480,13 +490,14 @@ def heartbeat_deploy_scope(
 
 def release_deploy_scope(
     client: Client, scope_type: str, scope_key: str, *,
-    actor: str | None = None, host: str | None = None,
+    actor: str | None = None, host: str | None = None, version: int | None = None,
 ) -> bool:
-    """Clear the lease without a version bump (clean abort). Never raises."""
+    """Clear the lease without a version bump (clean abort). Never raises.
+    Same holder rule as the heartbeat (actor, host, version token)."""
     try:
         resp = client.rpc('release_deploy_scope', {
             'p_scope_type': scope_type, 'p_scope_key': scope_key,
-            'p_actor': actor, 'p_host': host,
+            'p_actor': actor, 'p_host': host, 'p_version': version,
         }).execute()
         return bool(resp.data)
     except Exception:
@@ -499,27 +510,40 @@ def release_deploy_scope(
 # lease behind; a hard crash cannot release and goes stale instead.
 _ACTIVE_LEASES: list['ScopeLease'] = []
 
+# Background heartbeat cadence (seconds): 5 minutes against a 30-minute ttl,
+# independent of upload completions — one multi-GB mosaic on a slow link, or a
+# long planning / reconciliation phase, must not let a live deploy go stale.
+LEASE_HEARTBEAT_INTERVAL_S = 300.0
+
 
 class ScopeLease:
     """One deploy's lease on one scope: begin → heartbeat* → claim | release.
 
     Thin stateful wrapper over the four RPCs so the deploy flows thread one
     object (``lease.heartbeat`` into the registration flusher, ``lease.claim()``
-    at finalize) instead of five arguments.
+    at finalize) instead of five arguments. A successful ``begin()`` also
+    starts a daemon timer thread that heartbeats every
+    ``heartbeat_interval_s`` until ``claim()`` / ``release()``; the flusher
+    hook is the second, progress-driven cadence.
     """
 
     def __init__(self, client: Client, scope_type: str, scope_key: str, *,
-                 actor: str | None = None, host: str | None = None, steal: bool = False):
+                 actor: str | None = None, host: str | None = None, steal: bool = False,
+                 heartbeat_interval_s: float | None = LEASE_HEARTBEAT_INTERVAL_S):
         self.client = client
         self.scope_type = scope_type
         self.scope_key = scope_key
         self.actor = actor
         self.host = host if host is not None else deploy_host()
         self.steal = steal
+        self.heartbeat_interval_s = heartbeat_interval_s
         self.version_at_start: int = 0
         self.leased = False
         self.lost_warned = False
         self.heartbeats = 0
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._timer: threading.Thread | None = None
 
     def begin(self) -> int:
         """Take the lease; returns the scope version to CAS at finalize.
@@ -531,6 +555,7 @@ class ScopeLease:
         self.leased = bool(info.get('leased'))
         if self.leased:
             _ACTIVE_LEASES.append(self)
+            self._start_timer()
             prev = info.get('previous') or {}
             if info.get('stolen'):
                 print(f"⚠  Stole the deploy lease for {self.scope_type} '{self.scope_key}' from "
@@ -548,25 +573,30 @@ class ScopeLease:
         return self.version_at_start
 
     def heartbeat(self) -> None:
-        """Best-effort heartbeat; warns once if the lease is no longer ours."""
+        """Best-effort heartbeat; warns once if the lease is no longer ours.
+        Called from the timer thread and from the upload loop; serialized by a
+        lock so the two cadences never overlap."""
         if not self.leased:
             return
-        ok = heartbeat_deploy_scope(
-            self.client, self.scope_type, self.scope_key, actor=self.actor, host=self.host)
-        if ok:
-            self.heartbeats += 1
-        elif ok is False and not self.lost_warned:
-            self.lost_warned = True
-            print(f"⚠  Deploy lease for {self.scope_type} '{self.scope_key}' is no longer held by "
-                  f"this process (stolen, taken over as stale, or another deploy finalized). "
-                  f"Another deploy of the same scope may be running; re-check the result.")
+        with self._lock:
+            if not self.leased:
+                return
+            ok = heartbeat_deploy_scope(
+                self.client, self.scope_type, self.scope_key,
+                actor=self.actor, host=self.host, version=self.version_at_start)
+            if ok:
+                self.heartbeats += 1
+            elif ok is False and not self.lost_warned:
+                self.lost_warned = True
+                print(f"⚠  Deploy lease for {self.scope_type} '{self.scope_key}' is no longer held by "
+                      f"this process (stolen, taken over as stale, or another deploy finalized). "
+                      f"Another deploy of the same scope may be running; re-check the result.")
 
     def claim(self) -> dict:
         """Finalize: the version CAS (clears the lease on success)."""
-        result = claim_deploy_scope(
-            self.client, self.scope_type, self.scope_key, self.version_at_start, actor=self.actor)
         self._forget()
-        return result
+        return claim_deploy_scope(
+            self.client, self.scope_type, self.scope_key, self.version_at_start, actor=self.actor)
 
     def release(self) -> bool:
         """Clean abort: clear the lease without a version bump."""
@@ -574,10 +604,35 @@ class ScopeLease:
             return False
         self._forget()
         return release_deploy_scope(
-            self.client, self.scope_type, self.scope_key, actor=self.actor, host=self.host)
+            self.client, self.scope_type, self.scope_key,
+            actor=self.actor, host=self.host, version=self.version_at_start)
+
+    # -- background timer -------------------------------------------------
+    def _start_timer(self) -> None:
+        if not self.heartbeat_interval_s or self.heartbeat_interval_s <= 0:
+            return
+        self._stop.clear()
+        self._timer = threading.Thread(
+            target=self._timer_loop, name=f"lease-heartbeat:{self.scope_key}", daemon=True)
+        self._timer.start()
+
+    def _timer_loop(self) -> None:
+        while not self._stop.wait(self.heartbeat_interval_s):
+            if not self.leased:
+                break
+            try:
+                self.heartbeat()
+            except Exception:
+                pass  # best-effort by contract; the next tick tries again
 
     def _forget(self) -> None:
+        """Stop heartbeating (timer joined, so no beat lands after the claim
+        or release RPC) and drop the lease from the abort registry."""
         self.leased = False
+        self._stop.set()
+        timer, self._timer = self._timer, None
+        if timer is not None and timer is not threading.current_thread():
+            timer.join(timeout=30)
         try:
             _ACTIVE_LEASES.remove(self)
         except ValueError:

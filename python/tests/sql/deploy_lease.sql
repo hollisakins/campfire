@@ -2,17 +2,21 @@
 -- Deploy lease harness (data releases P1, docs/design-data-releases-impl-plan.md §3).
 -- =============================================================================
 -- Proves the visible lease on deploy_scope_state:
---   1. begin on a fresh scope inserts the row, takes the lease, returns version 0.
+--   1. begin on a fresh scope inserts the row, takes the lease, bumps the
+--      version 0 -> 1 and returns it (the holder's ownership token).
 --   2. a second begin while the lease is live RAISES deploy_scope_busy (CF409).
 --   3. heartbeat succeeds only for the holder (actor + host); a different host
 --      or actor gets false.
 --   4. p_steal takes a live lease over (stolen=true, previous.live=true); the
---      displaced deploy's heartbeat now returns false.
+--      displaced deploy's heartbeat now returns false — also for the SAME actor
+--      and host carrying the older version token (4b), whose release and claim
+--      fail too, while the new holder's token claims.
 --   5. release by the holder clears the lease without a version bump; a second
 --      release is a no-op (false).
 --   6. a lease whose heartbeat is older than deploy_lease_ttl() is stale and is
 --      taken over WITHOUT p_steal (took_over_stale=true).
---   7. a successful claim_deploy_scope bumps the version AND clears the lease.
+--   7. a successful claim_deploy_scope (expected = the token begin returned)
+--      bumps the version AND clears the lease; an older token conflicts.
 --   8. an authenticated admin calling with no p_actor is identified by
 --      auth.uid(): begin + heartbeat agree.
 --   9. a non-admin is denied all four RPCs; anon cannot execute them at all.
@@ -39,15 +43,15 @@ DECLARE
   a constant uuid := '11111111-1111-1111-1111-111111111111';
   b constant uuid := '22222222-2222-2222-2222-222222222222';
 BEGIN
-  -- 1. fresh scope: row inserted, lease taken, version 0
+  -- 1. fresh scope: row inserted, lease taken, version bumped 0 -> 1 and returned
   r := public.begin_deploy_scope('observation', 'lease_obs', a, 'host-a');
-  IF (r->>'version')::int <> 0 OR (r->>'took_over_stale')::boolean OR (r->>'stolen')::boolean
+  IF (r->>'version')::int <> 1 OR (r->>'took_over_stale')::boolean OR (r->>'stolen')::boolean
      OR r->'previous' IS NULL OR (r->'previous')::text <> 'null' THEN
-    RAISE EXCEPTION 'BEGIN1: expected version 0 / fresh lease, got %', r::text;
+    RAISE EXCEPTION 'BEGIN1: expected version 1 / fresh lease, got %', r::text;
   END IF;
   SELECT * INTO v_row FROM deploy_scope_state WHERE scope_type = 'observation' AND scope_key = 'lease_obs';
   IF v_row.in_progress_since IS NULL OR v_row.in_progress_by <> a OR v_row.in_progress_host <> 'host-a'
-     OR v_row.heartbeat_at IS NULL OR v_row.version <> 0 THEN
+     OR v_row.heartbeat_at IS NULL OR v_row.version <> 1 THEN
     RAISE EXCEPTION 'BEGIN1 ROW: lease fields not set: %', row_to_json(v_row)::text;
   END IF;
 
@@ -67,15 +71,21 @@ BEGIN
   IF (v_detail::json->>'in_progress_host') <> 'host-a' OR NOT (v_detail::json->>'live')::boolean THEN
     RAISE EXCEPTION 'BUSY DETAIL: expected the holder in DETAIL, got %', v_detail;
   END IF;
-  -- the refused begin must not have touched the lease
+  -- the refused begin must not have touched the lease nor the version
   SELECT * INTO v_row FROM deploy_scope_state WHERE scope_type = 'observation' AND scope_key = 'lease_obs';
-  IF v_row.in_progress_by <> a OR v_row.in_progress_host <> 'host-a' THEN
+  IF v_row.in_progress_by <> a OR v_row.in_progress_host <> 'host-a' OR v_row.version <> 1 THEN
     RAISE EXCEPTION 'BUSY ROW: refused begin changed the lease: %', row_to_json(v_row)::text;
   END IF;
 
-  -- 3. heartbeat: holder only
+  -- 3. heartbeat: holder only (with and without the version token)
   IF NOT public.heartbeat_deploy_scope('observation', 'lease_obs', a, 'host-a') THEN
     RAISE EXCEPTION 'HB1: holder heartbeat returned false';
+  END IF;
+  IF NOT public.heartbeat_deploy_scope('observation', 'lease_obs', a, 'host-a', 1) THEN
+    RAISE EXCEPTION 'HB1b: holder heartbeat with its token returned false';
+  END IF;
+  IF public.heartbeat_deploy_scope('observation', 'lease_obs', a, 'host-a', 0) THEN
+    RAISE EXCEPTION 'HB1c: holder heartbeat with a wrong token returned true';
   END IF;
   IF public.heartbeat_deploy_scope('observation', 'lease_obs', a, 'host-b') THEN
     RAISE EXCEPTION 'HB2: same actor on another host could heartbeat';
@@ -87,17 +97,53 @@ BEGIN
     RAISE EXCEPTION 'HB4: heartbeat on a scope without a lease returned true';
   END IF;
 
-  -- 4. steal
+  -- 4. steal: bumps the version again (token 2), displaces host-a
   r := public.begin_deploy_scope('observation', 'lease_obs', b, 'host-b', true);
-  IF NOT (r->>'stolen')::boolean OR (r->>'took_over_stale')::boolean
+  IF NOT (r->>'stolen')::boolean OR (r->>'took_over_stale')::boolean OR (r->>'version')::int <> 2
      OR (r->'previous'->>'in_progress_host') <> 'host-a' OR NOT (r->'previous'->>'live')::boolean THEN
-    RAISE EXCEPTION 'STEAL: expected stolen=true with previous host-a live, got %', r::text;
+    RAISE EXCEPTION 'STEAL: expected stolen=true version 2 with previous host-a live, got %', r::text;
   END IF;
   IF public.heartbeat_deploy_scope('observation', 'lease_obs', a, 'host-a') THEN
     RAISE EXCEPTION 'STEAL HB: displaced deploy could still heartbeat';
   END IF;
-  IF NOT public.heartbeat_deploy_scope('observation', 'lease_obs', b, 'host-b') THEN
+  IF NOT public.heartbeat_deploy_scope('observation', 'lease_obs', b, 'host-b', 2) THEN
     RAISE EXCEPTION 'STEAL HB2: new holder cannot heartbeat';
+  END IF;
+
+  -- 4b. ownership token: the SAME actor and host, displaced by a steal from a
+  -- second terminal, holds the older version and cannot heartbeat, release or
+  -- finalize over the new holder; the new holder's token wins the CAS.
+  PERFORM public.release_deploy_scope('observation', 'lease_obs', b, 'host-b', 2);
+  r := public.begin_deploy_scope('observation', 'lease_obs', a, 'host-a');          -- token 3
+  IF (r->>'version')::int <> 3 THEN
+    RAISE EXCEPTION 'TOKEN: expected version 3 after release + begin, got %', r::text;
+  END IF;
+  r := public.begin_deploy_scope('observation', 'lease_obs', a, 'host-a', true);    -- token 4
+  IF (r->>'version')::int <> 4 OR NOT (r->>'stolen')::boolean THEN
+    RAISE EXCEPTION 'TOKEN STEAL: expected stolen version 4, got %', r::text;
+  END IF;
+  IF public.heartbeat_deploy_scope('observation', 'lease_obs', a, 'host-a', 3) THEN
+    RAISE EXCEPTION 'TOKEN HB: displaced same-actor deploy heartbeat with the old token returned true';
+  END IF;
+  IF public.release_deploy_scope('observation', 'lease_obs', a, 'host-a', 3) THEN
+    RAISE EXCEPTION 'TOKEN REL: displaced same-actor deploy released the new lease';
+  END IF;
+  r := public.claim_deploy_scope('observation', 'lease_obs', 3, a);
+  IF (r->>'claimed')::boolean OR NOT (r->>'conflict')::boolean THEN
+    RAISE EXCEPTION 'TOKEN CLAIM: displaced deploy finalized with the old token: %', r::text;
+  END IF;
+  SELECT * INTO v_row FROM deploy_scope_state WHERE scope_type = 'observation' AND scope_key = 'lease_obs';
+  IF v_row.in_progress_since IS NULL OR v_row.version <> 4 THEN
+    RAISE EXCEPTION 'TOKEN ROW: displaced deploy disturbed the new holder''s lease: %', row_to_json(v_row)::text;
+  END IF;
+  r := public.claim_deploy_scope('observation', 'lease_obs', 4, a);
+  IF NOT (r->>'claimed')::boolean OR (r->>'version')::int <> 5 THEN
+    RAISE EXCEPTION 'TOKEN CLAIM2: new holder could not finalize with its token: %', r::text;
+  END IF;
+  -- back to the step-5 picture: b holds the lease on host-b
+  r := public.begin_deploy_scope('observation', 'lease_obs', b, 'host-b');          -- token 6
+  IF (r->>'version')::int <> 6 THEN
+    RAISE EXCEPTION 'TOKEN: expected version 6, got %', r::text;
   END IF;
 
   -- 5. release: holder only, no version bump, idempotent
@@ -109,7 +155,7 @@ BEGIN
   END IF;
   SELECT * INTO v_row FROM deploy_scope_state WHERE scope_type = 'observation' AND scope_key = 'lease_obs';
   IF v_row.in_progress_since IS NOT NULL OR v_row.in_progress_by IS NOT NULL
-     OR v_row.in_progress_host IS NOT NULL OR v_row.heartbeat_at IS NOT NULL OR v_row.version <> 0 THEN
+     OR v_row.in_progress_host IS NOT NULL OR v_row.heartbeat_at IS NOT NULL OR v_row.version <> 6 THEN
     RAISE EXCEPTION 'REL ROW: release left state behind or bumped the version: %', row_to_json(v_row)::text;
   END IF;
   IF public.release_deploy_scope('observation', 'lease_obs', b, 'host-b') THEN
@@ -117,15 +163,15 @@ BEGIN
   END IF;
 
   -- 6. stale lease: taken over without p_steal
-  PERFORM public.begin_deploy_scope('observation', 'lease_obs', a, 'host-a');
+  PERFORM public.begin_deploy_scope('observation', 'lease_obs', a, 'host-a');       -- token 7
   UPDATE deploy_scope_state
      SET heartbeat_at = now() - public.deploy_lease_ttl() - interval '1 minute',
          in_progress_since = now() - interval '3 hours'
    WHERE scope_type = 'observation' AND scope_key = 'lease_obs';
-  r := public.begin_deploy_scope('observation', 'lease_obs', b, 'host-b');
-  IF NOT (r->>'took_over_stale')::boolean OR (r->>'stolen')::boolean
+  r := public.begin_deploy_scope('observation', 'lease_obs', b, 'host-b');          -- token 8
+  IF NOT (r->>'took_over_stale')::boolean OR (r->>'stolen')::boolean OR (r->>'version')::int <> 8
      OR (r->'previous'->>'in_progress_host') <> 'host-a' OR (r->'previous'->>'live')::boolean THEN
-    RAISE EXCEPTION 'STALE: expected took_over_stale=true, got %', r::text;
+    RAISE EXCEPTION 'STALE: expected took_over_stale=true version 8, got %', r::text;
   END IF;
   SELECT * INTO v_row FROM deploy_scope_state WHERE scope_type = 'observation' AND scope_key = 'lease_obs';
   IF v_row.in_progress_by <> b OR v_row.in_progress_host <> 'host-b'
@@ -145,32 +191,32 @@ BEGIN
     RAISE EXCEPTION 'EDGE: a heartbeat younger than the ttl was treated as stale';
   END IF;
 
-  -- 7. claim clears the lease and bumps the version
-  r := public.claim_deploy_scope('observation', 'lease_obs', 0, b);
-  IF NOT (r->>'claimed')::boolean OR (r->>'version')::int <> 1 THEN
-    RAISE EXCEPTION 'CLAIM: expected claimed v1, got %', r::text;
+  -- 7. claim with the holder's token clears the lease and bumps the version
+  r := public.claim_deploy_scope('observation', 'lease_obs', 8, b);
+  IF NOT (r->>'claimed')::boolean OR (r->>'version')::int <> 9 THEN
+    RAISE EXCEPTION 'CLAIM: expected claimed v9, got %', r::text;
   END IF;
   SELECT * INTO v_row FROM deploy_scope_state WHERE scope_type = 'observation' AND scope_key = 'lease_obs';
   IF v_row.in_progress_since IS NOT NULL OR v_row.in_progress_by IS NOT NULL
      OR v_row.in_progress_host IS NOT NULL OR v_row.heartbeat_at IS NOT NULL
-     OR v_row.version <> 1 OR v_row.last_actor <> b THEN
+     OR v_row.version <> 9 OR v_row.last_actor <> b THEN
     RAISE EXCEPTION 'CLAIM ROW: claim did not clear the lease: %', row_to_json(v_row)::text;
   END IF;
-  -- begin on the claimed scope reports the new version (the CAS value for finalize)
+  -- begin on the claimed scope bumps again and reports the new token
   r := public.begin_deploy_scope('observation', 'lease_obs', a, 'host-a');
-  IF (r->>'version')::int <> 1 THEN
-    RAISE EXCEPTION 'BEGIN AFTER CLAIM: expected version 1, got %', r::text;
+  IF (r->>'version')::int <> 10 THEN
+    RAISE EXCEPTION 'BEGIN AFTER CLAIM: expected version 10, got %', r::text;
   END IF;
   -- a CONFLICTING claim (stale expected version) leaves the lease alone
-  r := public.claim_deploy_scope('observation', 'lease_obs', 0, b);
-  IF (r->>'claimed')::boolean OR NOT (r->>'conflict')::boolean THEN
-    RAISE EXCEPTION 'CLAIM CONFLICT: expected conflict, got %', r::text;
+  r := public.claim_deploy_scope('observation', 'lease_obs', 9, b);
+  IF (r->>'claimed')::boolean OR NOT (r->>'conflict')::boolean OR (r->>'current')::int <> 10 THEN
+    RAISE EXCEPTION 'CLAIM CONFLICT: expected conflict (current 10), got %', r::text;
   END IF;
   SELECT * INTO v_row FROM deploy_scope_state WHERE scope_type = 'observation' AND scope_key = 'lease_obs';
-  IF v_row.in_progress_by IS DISTINCT FROM a OR v_row.version <> 1 THEN
+  IF v_row.in_progress_by IS DISTINCT FROM a OR v_row.version <> 10 THEN
     RAISE EXCEPTION 'CLAIM CONFLICT ROW: conflicting claim changed the lease: %', row_to_json(v_row)::text;
   END IF;
-  PERFORM public.release_deploy_scope('observation', 'lease_obs', a, 'host-a');
+  PERFORM public.release_deploy_scope('observation', 'lease_obs', a, 'host-a', 10);
 
   -- invalid scope type
   v_busy := false;
