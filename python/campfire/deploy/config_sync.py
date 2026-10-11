@@ -124,14 +124,21 @@ def program_typed_row(slug: str, section: dict) -> dict:
     callers fall back to this when the section is not JSON-representable
     (deploy must never fail over a bare TOML date). Empty strings normalize
     to NULL (the pre-#303 upsert wrote ``''`` defaults; don't propagate them)."""
-    return {
+    row = {
         "slug": slug,
         "program_name": section.get("program_name") or slug,
         "pi_name": section.get("pi_name") or None,
         "description": section.get("description") or None,
-        "is_public": section.get("is_public", False),
         "cycle": section.get("cycle"),
     }
+    # Visibility is written only when the section states it. A missing key used
+    # to default to False, so a programs.toml that simply omitted it flipped a
+    # public program private on the next deploy (P0a, design-data-releases
+    # plan §2). Omitted = "leave the cloud value alone" (new rows take the
+    # column default, false).
+    if "is_public" in section:
+        row["is_public"] = bool(section["is_public"])
+    return row
 
 
 def program_config_row(slug: str, section: dict) -> dict:
