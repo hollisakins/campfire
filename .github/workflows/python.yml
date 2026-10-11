@@ -67,11 +67,13 @@ jobs:
           cache-dependency-path: |
             layout/pyproject.toml
             python/pyproject.toml
-      - name: Install (layout first; the client base install plus pytest)
+      - name: Install (layout first; the client base install plus the deploy-side libraries the tests import)
+        # `campfire[deploy]` would also pull campfire-pipeline (the jwst stack);
+        # the client tests only need the deploy modules' direct imports.
         run: |
           python -m pip install --upgrade pip
           pip install -e ./layout
-          pip install -e ./python pytest
+          pip install -e ./python pytest "supabase>=2.0" "boto3>=1.28" "spectres>=2.2"
       - name: Client tests
         run: pytest python -q -p no:cacheprovider
       - name: Layout golden (Python arm)
