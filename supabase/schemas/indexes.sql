@@ -194,6 +194,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_spectrum_id
 -- "spectrum is published and in the caller's programs" check and the page's
 -- GREATEST(updated_at) join otherwise fetch the spectra heap, whose rows are
 -- ~3 KB wide (inline SVG thumbnails) — one heap page per registry row walked.
+-- P2 archive rows: dedup-by-hash ("is this content already archived?"), the
+-- per-spectrum lookup the DR resolver and `identify` make, and the program
+-- scope the authz branch filters on. All partial on root = 'archive' so the
+-- 845k live rows pay nothing.
+CREATE INDEX IF NOT EXISTS idx_storage_objects_archive_hash
+    ON public.storage_objects USING btree (content_hash)
+    WHERE root = 'archive';
+CREATE INDEX IF NOT EXISTS idx_storage_objects_archive_spectrum
+    ON public.storage_objects USING btree (spectrum_id, product_type)
+    WHERE root = 'archive';
+CREATE INDEX IF NOT EXISTS idx_storage_objects_archive_program
+    ON public.storage_objects USING btree (program_slug)
+    WHERE root = 'archive';
+
 CREATE INDEX IF NOT EXISTS idx_spectra_spectrum_id_scope
     ON public.spectra USING btree (spectrum_id)
     INCLUDE (deploy_status, program_slug, updated_at);

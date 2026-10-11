@@ -1262,6 +1262,25 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     "product_type" "text" NOT NULL,
     "instrument" "text",
     "status" "text" NOT NULL DEFAULT 'active'::"text",
+    -- Data releases (P2): which root the key lives under. 'live' rows are the
+    -- mutable current pointers (upserted in place on redeploy); 'archive' rows
+    -- describe write-once objects under archive/<sha256>/<relpath>, written by
+    -- retain-on-supersede and the DR byte pass, never by a client PUT, and
+    -- protected by the protect_archive_rows trigger (no DELETE; the only UPDATE
+    -- is status archived -> collected).
+    "root" "text" NOT NULL DEFAULT 'live'::"text",
+    -- Row-local program scope (the row_local_rls pattern) so an archive row can
+    -- be authorized without a join to a live spectrum that may have moved on.
+    -- Set for NIRSpec rows (from spectra.program_slug); NULL for NIRCam.
+    "program_slug" "text",
+    -- Archive provenance: the live key whose bytes this object retained, when,
+    -- and the deployment whose upload superseded them (NULL for a freeze copy).
+    "archived_from_key" "text",
+    "archived_at" timestamp with time zone,
+    "archived_by_deployment" integer,
+    -- Mosaic retention (design §4.2): a collected archive row keeps hash, size
+    -- and date so a manifest resolves to "existed, collected on <date>".
+    "collected_at" timestamp with time zone,
     "observation" "text",
     "field" "text",
     "filter" "text",
@@ -1274,7 +1293,13 @@ CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "storage_objects_backend_check" CHECK (("backend" = ANY (ARRAY['r2'::"text", 'osn'::"text"]))),
     CONSTRAINT "storage_objects_bucket_check" CHECK (("bucket" = ANY (ARRAY['data'::"text", 'tiles'::"text"]))),
-    CONSTRAINT "storage_objects_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'superseded'::"text", 'revoked'::"text"]))),
+    CONSTRAINT "storage_objects_status_check" CHECK (("status" = ANY (ARRAY['active'::"text", 'superseded'::"text", 'revoked'::"text", 'archived'::"text", 'collected'::"text"]))),
+    CONSTRAINT "storage_objects_root_check" CHECK (("root" = ANY (ARRAY['live'::"text", 'archive'::"text"]))),
+    -- An archive row is exactly an archived or collected object under archive/;
+    -- a live row never carries those statuses.
+    CONSTRAINT "storage_objects_root_status_check" CHECK (
+        ("root" = 'live'::"text" AND "status" <> ALL (ARRAY['archived'::"text", 'collected'::"text"]))
+        OR ("root" = 'archive'::"text" AND "status" = ANY (ARRAY['archived'::"text", 'collected'::"text"]) AND "storage_key" LIKE 'archive/%')),
     CONSTRAINT "storage_objects_instrument_check" CHECK (("instrument" IS NULL OR "instrument" = ANY (ARRAY['nirspec'::"text", 'nircam'::"text"]))),
     -- content_hash is scheme-prefixed: 'sha256:<hex>' is authoritative (deploy hashes
     -- the local file; spectra backfill reuses spectra.file_hash); 'etag:<hex>' is
@@ -1344,6 +1369,9 @@ COMMENT ON COLUMN "public"."storage_objects"."sci_dq_hash" IS 'Science-only sha2
 COMMENT ON COLUMN "public"."storage_objects"."wcs_hash" IS 'Astrometric change-detection digest: sha256 over the WCS-defining header cards of a NIRCam canonical exposure. The companion to sci_dq_hash — the align and wcs_shift steps rewrite an exposure''s WCS without touching a SCI or DQ pixel, so a science-only identity skipped re-aligned exposures and left the cloud copy on its pre-alignment astrometry. Never used for download/copy verification. NULL for whole-file-identity products, and on exposure rows written before this column existed (the push planner reconciles those against content_hash and backfills the digest without re-uploading).';
 
 COMMENT ON COLUMN "public"."storage_objects"."status" IS 'active = current object; superseded = replaced by a newer hash (tombstone, GC-eligible later); revoked = un-published. Only active rows count toward the budget and the partial-unique constraint.';
+COMMENT ON COLUMN "public"."storage_objects"."root" IS 'live = mutable current pointer (upserted in place); archive = write-once object under archive/<sha256>/<relpath> (data releases, P2). Archive rows are never deleted and only move archived -> collected (protect_archive_rows).';
+COMMENT ON COLUMN "public"."storage_objects"."program_slug" IS 'Row-local program scope for NIRSpec rows (copied from spectra.program_slug by deploy / the retain step / the backfill), so archive rows authorize without a live join. NULL for NIRCam products.';
+COMMENT ON COLUMN "public"."storage_objects"."archived_from_key" IS 'Archive rows: the live key whose previous bytes this object retained (retain-on-supersede); NULL for a copy made by a DR freeze.';
 
 
 -- deploy_events: append-only audit log for the intermediate-product lifecycle
@@ -1368,7 +1396,7 @@ CREATE TABLE IF NOT EXISTS "public"."deploy_events" (
     "host" "text",
     "metadata" "jsonb",
     "occurred_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text", 'config_sync'::"text"])))
+    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text", 'config_sync'::"text", 'archive'::"text", 'collect'::"text", 'freeze'::"text", 'publish_dr'::"text", 'withdraw_dr'::"text"])))
 );
 
 

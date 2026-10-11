@@ -6645,7 +6645,8 @@ BEGIN
     RAISE EXCEPTION 'Access denied: Admin privileges required';
   END IF;
 
-  IF p_action NOT IN ('upload', 'publish', 'revoke', 'recover', 'supersede', 'delete', 'config_sync') THEN
+  IF p_action NOT IN ('upload', 'publish', 'revoke', 'recover', 'supersede', 'delete', 'config_sync',
+                      'archive', 'collect', 'freeze', 'publish_dr', 'withdraw_dr') THEN
     RAISE EXCEPTION 'Invalid deploy_event action: %', p_action;
   END IF;
 

@@ -778,3 +778,73 @@ DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.spectrum_line_fi
 CREATE TRIGGER journal_sync_deletions_trigger
   AFTER DELETE ON public.spectrum_line_fits REFERENCING OLD TABLE AS old_rows
   FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('line_fits', 'spectrum_id');
+
+-- ---------------------------------------------------------------------------
+-- protect_archive_rows (data releases, P2)
+--
+-- Archive rows (root = 'archive') describe write-once objects: the content-
+-- addressed store is the thing a DR and a manifest point at, so the registry
+-- must not be able to forget or rewrite one. The only permitted change is the
+-- mosaic-retention transition archived -> collected (status + collected_at),
+-- everything else about the row frozen. Deletes are refused outright. Live
+-- rows are untouched by this trigger. Bypass (for a genuine mistake) means
+-- disabling the trigger as postgres in a migration, on purpose, with a note.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.protect_archive_rows() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF OLD.root = 'archive' THEN
+      RAISE EXCEPTION 'archive registry rows are immutable: cannot delete %', OLD.storage_key
+        USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN OLD;
+  END IF;
+  -- UPDATE
+  IF OLD.root <> 'archive' AND NEW.root = 'archive' THEN
+    RAISE EXCEPTION 'a live registry row cannot become an archive row (%); insert the archive row instead', OLD.storage_key
+      USING ERRCODE = 'integrity_constraint_violation';
+  END IF;
+  IF OLD.root = 'archive' THEN
+    IF NEW.root IS DISTINCT FROM OLD.root
+       OR NEW.storage_key IS DISTINCT FROM OLD.storage_key
+       OR NEW.backend IS DISTINCT FROM OLD.backend
+       OR NEW.bucket IS DISTINCT FROM OLD.bucket
+       OR NEW.content_hash IS DISTINCT FROM OLD.content_hash
+       OR NEW.size_bytes IS DISTINCT FROM OLD.size_bytes
+       OR NEW.stored_size_bytes IS DISTINCT FROM OLD.stored_size_bytes
+       OR NEW.product_type IS DISTINCT FROM OLD.product_type
+       OR NEW.spectrum_id IS DISTINCT FROM OLD.spectrum_id
+       OR NEW.program_slug IS DISTINCT FROM OLD.program_slug
+       OR NEW.observation IS DISTINCT FROM OLD.observation
+       OR NEW.field IS DISTINCT FROM OLD.field
+       OR NEW.archived_from_key IS DISTINCT FROM OLD.archived_from_key
+       OR NEW.archived_at IS DISTINCT FROM OLD.archived_at
+       OR NEW.archived_by_deployment IS DISTINCT FROM OLD.archived_by_deployment
+    THEN
+      RAISE EXCEPTION 'archive registry rows are immutable: % may only move archived -> collected', OLD.storage_key
+        USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF NEW.status IS DISTINCT FROM OLD.status THEN
+      IF NOT (OLD.status = 'archived' AND NEW.status = 'collected') THEN
+        RAISE EXCEPTION 'archive registry row % status may only move archived -> collected (got % -> %)',
+          OLD.storage_key, OLD.status, NEW.status USING ERRCODE = 'integrity_constraint_violation';
+      END IF;
+      NEW.collected_at := COALESCE(NEW.collected_at, now());
+    ELSIF NEW.collected_at IS DISTINCT FROM OLD.collected_at THEN
+      RAISE EXCEPTION 'archive registry row %: collected_at follows the status transition', OLD.storage_key
+        USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+-- P-1 convention: no PUBLIC / anon execute on any function.
+REVOKE ALL ON FUNCTION public.protect_archive_rows() FROM PUBLIC, anon;
+
+DROP TRIGGER IF EXISTS protect_archive_rows_trigger ON public.storage_objects;
+CREATE TRIGGER protect_archive_rows_trigger
+  BEFORE UPDATE OR DELETE ON public.storage_objects
+  FOR EACH ROW EXECUTE FUNCTION public.protect_archive_rows();
