@@ -34,6 +34,43 @@ def test_errors_are_botocore_client_errors(fake_s3):
     assert ClientError is botocore.ClientError
 
 
+def test_modelled_exceptions_are_real_client_error_subclasses(fake_s3):
+    """``except client.exceptions.NoSuchKey:`` must catch what the fake raises.
+
+    ``except`` matches on the class hierarchy and never consults
+    ``__instancecheck__``, so the named classes have to be what is actually
+    raised — botocore builds them as ``ClientError`` subclasses, once per
+    code, and so does the fake."""
+    caught = None
+    try:
+        fake_s3.get_object(Bucket="b", Key="missing")
+    except fake_s3.exceptions.NoSuchKey as e:     # the handler under test
+        caught = e
+    except ClientError:                             # pragma: no cover
+        pytest.fail("NoSuchKey fell through to the generic ClientError clause")
+    assert caught is not None
+    assert type(caught) is fake_s3.exceptions.NoSuchKey
+    assert isinstance(caught, ClientError) and issubclass(type(caught), ClientError)
+    assert caught.response["Error"]["Code"] == "NoSuchKey"
+    assert caught.operation_name == "GetObject"
+
+    # a different modelled code is not caught by the NoSuchKey clause
+    with pytest.raises(fake_s3.exceptions.NoSuchBucket) as ei:
+        FakeS3Client(auto_create=False).get_object(Bucket="ghost", Key="k")
+    assert not isinstance(ei.value, fake_s3.exceptions.NoSuchKey)
+
+    # the classes are built once and shared between clients, like botocore's
+    other = FakeS3Client()
+    assert other.exceptions.NoSuchKey is fake_s3.exceptions.NoSuchKey
+    assert fake_s3.exceptions.NoSuchKey.__name__ == "NoSuchKey"
+
+    # an unmodelled code stays a plain ClientError (botocore raises those too)
+    fake_s3.put_object(Bucket="b", Key="k", Body=b"x")
+    with pytest.raises(ClientError) as ei:
+        fake_s3.put_object(Bucket="b", Key="k", Body=b"y", IfNoneMatch="*")
+    assert type(ei.value) is ClientError and _code(ei) == "PreconditionFailed"
+
+
 # --- put / get / head ---------------------------------------------------------
 
 def test_put_get_head_round_trip(fake_s3):

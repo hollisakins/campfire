@@ -62,6 +62,20 @@ def test_count_and_call_log(client):
     assert [(f.op, f.column, f.value) for f in call.filters] == [("gt", "n", 1)]
 
 
+def test_exact_count_is_the_total_not_the_page(client):
+    # PostgREST's count="exact" reports the matching total (Content-Range
+    # ``*/N``) regardless of range/limit; the page is just .data.
+    resp = client.table("t").select("*", count="exact").order("id").range(0, 0).execute()
+    assert [r["id"] for r in resp.data] == [1] and resp.count == 3
+    resp = client.table("t").select("*", count="exact").gt("n", 1).limit(1).execute()
+    assert len(resp.data) == 1 and resp.count == 2
+    # a page past the end is empty but still counts the total
+    resp = client.table("t").select("*", count="exact").range(10, 19).execute()
+    assert resp.data == [] and resp.count == 3
+    # no count requested -> None, whatever the paging
+    assert client.table("t").select("*").limit(1).execute().count is None
+
+
 def test_response_override_is_served_verbatim(client):
     client.responses["t"] = [{"id": 99}]
     assert client.table("t").select("*").eq("id", 1).execute().data == [{"id": 99}]

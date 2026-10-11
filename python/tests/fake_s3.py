@@ -90,10 +90,39 @@ _STATUS = {
 }
 
 
+# The error codes botocore models as named exception classes on an S3 client
+# (``client.exceptions.NoSuchKey`` ...). Each is a real ``ClientError``
+# subclass built once and cached, exactly as botocore's ClientExceptionsFactory
+# does, so ``except client.exceptions.NoSuchKey:`` catches by class hierarchy.
+# Everything else (PreconditionFailed, InvalidRange, a bare "404", ...) is a
+# plain ``ClientError``, which is also what botocore raises for them.
+MODELLED_ERROR_CODES = (
+    "NoSuchKey", "NoSuchBucket", "NoSuchUpload",
+    "BucketAlreadyExists", "BucketAlreadyOwnedByYou", "InvalidObjectState",
+    "ObjectNotInActiveTierError", "ObjectAlreadyInActiveTierError",
+)
+
+_CODE_EXCEPTIONS: dict[str, type] = {}
+
+
+def _code_exception(code: str) -> type:
+    """The cached ``ClientError`` subclass for a modelled error code."""
+    cls = _CODE_EXCEPTIONS.get(code)
+    if cls is None:
+        cls = type(code, (ClientError,), {"__module__": __name__})
+        _CODE_EXCEPTIONS[code] = cls
+    return cls
+
+
 def make_client_error(code: str, operation: str, message: Optional[str] = None,
                       status: Optional[int] = None) -> ClientError:
-    """A ``ClientError`` shaped like botocore's: ``e.response['Error']['Code']``."""
-    return ClientError(
+    """A ``ClientError`` shaped like botocore's: ``e.response['Error']['Code']``.
+
+    A modelled code (``MODELLED_ERROR_CODES``) is raised as its named subclass,
+    so both ``except ClientError`` and ``except client.exceptions.NoSuchKey``
+    catch it; any other code is a plain ``ClientError``."""
+    cls = _code_exception(code) if code in MODELLED_ERROR_CODES else ClientError
+    return cls(
         {
             "Error": {"Code": code, "Message": message or code},
             "ResponseMetadata": {"HTTPStatusCode": status or _STATUS.get(code, 400)},
@@ -752,32 +781,16 @@ class _Meta:
 
 
 class _Exceptions:
-    """``client.exceptions.NoSuchKey`` etc. — subclasses of ClientError so both
-    ``except ClientError`` and the named form catch the fake's errors."""
+    """``client.exceptions.NoSuchKey`` etc.: the same cached ``ClientError``
+    subclasses ``make_client_error`` raises for modelled codes, so
+    ``except client.exceptions.NoSuchKey:`` catches them by class (botocore's
+    exception-matching semantics — ``__instancecheck__`` hooks never apply to
+    ``except`` clauses, which walk the real class hierarchy)."""
 
     def __init__(self):
         self.ClientError = ClientError
-        for name in ("NoSuchKey", "NoSuchBucket", "NoSuchUpload"):
+        for name in MODELLED_ERROR_CODES:
             setattr(self, name, _code_exception(name))
-
-
-_CODE_EXCEPTIONS: dict[str, type] = {}
-
-
-def _code_exception(code: str) -> type:
-    cls = _CODE_EXCEPTIONS.get(code)
-    if cls is None:
-        # A metaclass hook so `except client.exceptions.NoSuchKey` matches a
-        # plain ClientError carrying that code (botocore's modeled exceptions
-        # are real subclasses; here isinstance is decided by the code).
-        class _Meta(type):
-            def __instancecheck__(cls_, inst):
-                return isinstance(inst, ClientError) and (
-                    inst.response.get("Error", {}).get("Code") == code)
-
-        cls = _Meta(code, (ClientError,), {})
-        _CODE_EXCEPTIONS[code] = cls
-    return cls
 
 
 # ----------------------------------------------------------------------
@@ -924,5 +937,6 @@ class FakeS3Transport:
 
 __all__ = [
     "FakeS3Client", "FakeS3Transport", "FakeHTTPResponse", "StreamingBody",
-    "ClientError", "make_client_error", "MIN_PART_SIZE", "FAKE_HOST",
+    "ClientError", "make_client_error", "MODELLED_ERROR_CODES", "MIN_PART_SIZE",
+    "FAKE_HOST",
 ]

@@ -323,7 +323,9 @@ class FakeQuery:
         return self._payload
 
     # -- execution --------------------------------------------------------
-    def _select_rows(self, rows: list[dict]) -> list[dict]:
+    def _matching_rows(self, rows: list[dict]) -> list[dict]:
+        """Filtered and ordered, but not yet paged — the set ``count="exact"``
+        reports (PostgREST's ``Content-Range`` total ignores range/limit)."""
         rows = [r for r in rows if all(_matches(r, f) for f in self._filters)]
         # Successive stable sorts, last-added first, give primary-key priority
         # to the first order() call. Postgres: NULLS LAST asc, NULLS FIRST desc.
@@ -332,12 +334,18 @@ class FakeQuery:
             # key for descending puts them first — Postgres's defaults.
             rows.sort(key=lambda r, c=column: (r.get(c) is None, r.get(c)),
                       reverse=desc)
+        return rows
+
+    def _page(self, rows: list[dict]) -> list[dict]:
         if self._range is not None:
             lo, hi = self._range
             rows = rows[lo:hi + 1]
         if self._limit is not None:
             rows = rows[:self._limit]
         return rows
+
+    def _select_rows(self, rows: list[dict]) -> list[dict]:
+        return self._page(self._matching_rows(rows))
 
     def execute(self) -> FakeResponse:
         c = self._client
@@ -356,8 +364,11 @@ class FakeQuery:
             if override is not None:
                 rows = override(self) if callable(override) else override
                 rows = list(rows)
+                total = len(rows)
             else:
-                rows = self._select_rows(table)
+                matching = self._matching_rows(table)
+                total = len(matching)          # before range/limit, as PostgREST
+                rows = self._page(matching)
             data: Any = rows
             if self._single == "single":
                 if len(rows) != 1:
@@ -371,7 +382,7 @@ class FakeQuery:
                         "JSON object requested, multiple (or no) rows returned",
                         "PGRST116")
                 data = rows[0] if rows else None
-            count = len(rows) if self._count else None
+            count = total if self._count else None
             return FakeResponse(data, count)
 
         if self._op == "insert":
