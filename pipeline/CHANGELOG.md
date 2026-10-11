@@ -133,6 +133,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   silently quarantined now contribute to their mosaics.
 
 ### Infrastructure
+- **Layout goldens: foreign roots, sibling round-trips, compressed keys.** `pipeline/tests/test_layout.py` pins the key contract against three new golden sections (`foreign_root_keys`, `sibling_roundtrips`, `compressed_keys`) shared with the TypeScript mirror, whose `PRODUCTS` table is now generated from `products.py` (`scripts/sync_layout_products.py`; CI fails on drift). No pipeline output changes.
 - **`[nircam.resample].write_context` — opt out of the drizzle context cube.**
   `CON` is one int32 plane per 32 inputs at FULL tile size, held in RAM for
   the whole drizzle: COSMOS f200w `primer` (1.15 Gpix, 3,903 inputs after
