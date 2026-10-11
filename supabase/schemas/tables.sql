@@ -2592,175 +2592,180 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 -- Table grants (tables only — views and mat views excluded)
 -- ---------------------------------------------------------------------------
 
-GRANT ALL ON TABLE "public"."access_codes" TO "anon";
+REVOKE ALL ON TABLE "public"."access_codes" FROM "anon";
 GRANT ALL ON TABLE "public"."access_codes" TO "authenticated";
 GRANT ALL ON TABLE "public"."access_codes" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."api_keys" TO "anon";
+REVOKE ALL ON TABLE "public"."api_keys" FROM "anon";
 GRANT ALL ON TABLE "public"."api_keys" TO "authenticated";
 GRANT ALL ON TABLE "public"."api_keys" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."code_redemptions" TO "anon";
+REVOKE ALL ON TABLE "public"."code_redemptions" FROM "anon";
 GRANT ALL ON TABLE "public"."code_redemptions" TO "authenticated";
 GRANT ALL ON TABLE "public"."code_redemptions" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."comments" TO "anon";
+REVOKE ALL ON TABLE "public"."comments" FROM "anon";
 GRANT ALL ON TABLE "public"."comments" TO "authenticated";
 GRANT ALL ON TABLE "public"."comments" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."device_codes" TO "anon";
+REVOKE ALL ON TABLE "public"."device_codes" FROM "anon";
 GRANT ALL ON TABLE "public"."device_codes" TO "authenticated";
 GRANT ALL ON TABLE "public"."device_codes" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."deployments" TO "anon";
+REVOKE ALL ON TABLE "public"."deployments" FROM "anon";
 GRANT ALL ON TABLE "public"."deployments" TO "authenticated";
 GRANT ALL ON TABLE "public"."deployments" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."download_log" TO "anon";
+REVOKE ALL ON TABLE "public"."download_log" FROM "anon";
 GRANT ALL ON TABLE "public"."download_log" TO "authenticated";
 GRANT ALL ON TABLE "public"."download_log" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."flag_audit_log" TO "anon";
+REVOKE ALL ON TABLE "public"."flag_audit_log" FROM "anon";
 GRANT ALL ON TABLE "public"."flag_audit_log" TO "authenticated";
 GRANT ALL ON TABLE "public"."flag_audit_log" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."flag_definitions" TO "anon";
+REVOKE ALL ON TABLE "public"."flag_definitions" FROM "anon";
 GRANT ALL ON TABLE "public"."flag_definitions" TO "authenticated";
 GRANT ALL ON TABLE "public"."flag_definitions" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."map_layers" TO "anon";
+REVOKE ALL ON TABLE "public"."map_layers" FROM "anon";
 GRANT ALL ON TABLE "public"."map_layers" TO "authenticated";
 GRANT ALL ON TABLE "public"."map_layers" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "anon";
+REVOKE ALL ON TABLE "public"."fitsgl_datasets" FROM "anon";
 GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "authenticated";
 GRANT ALL ON TABLE "public"."fitsgl_datasets" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."spectra" TO "anon";
+REVOKE ALL ON TABLE "public"."spectra" FROM "anon";
 GRANT ALL ON TABLE "public"."spectra" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectra" TO "service_role";
 
 -- spectrum_line_fits: visibility follows spectra (RLS); same grants.
-GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "anon";
+REVOKE ALL ON TABLE "public"."spectrum_line_fits" FROM "anon";
 GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "service_role";
 
-GRANT ALL ON TABLE "public"."spectrum_lines" TO "anon";
+REVOKE ALL ON TABLE "public"."spectrum_lines" FROM "anon";
 GRANT ALL ON TABLE "public"."spectrum_lines" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectrum_lines" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."targets" TO "anon";
+REVOKE ALL ON TABLE "public"."targets" FROM "anon";
 GRANT ALL ON TABLE "public"."targets" TO "authenticated";
 GRANT ALL ON TABLE "public"."targets" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."objects" TO "anon";
+REVOKE ALL ON TABLE "public"."objects" FROM "anon";
 GRANT ALL ON TABLE "public"."objects" TO "authenticated";
 GRANT ALL ON TABLE "public"."objects" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."object_lists" TO "anon";
+REVOKE ALL ON TABLE "public"."object_lists" FROM "anon";
 GRANT ALL ON TABLE "public"."object_lists" TO "authenticated";
 GRANT ALL ON TABLE "public"."object_lists" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."object_list_members" TO "anon";
+REVOKE ALL ON TABLE "public"."object_list_members" FROM "anon";
 GRANT ALL ON TABLE "public"."object_list_members" TO "authenticated";
 GRANT ALL ON TABLE "public"."object_list_members" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."object_photometry" TO "anon";
+REVOKE ALL ON TABLE "public"."object_photometry" FROM "anon";
 GRANT ALL ON TABLE "public"."object_photometry" TO "authenticated";
 GRANT ALL ON TABLE "public"."object_photometry" TO "service_role";
 
 -- object_photometry_bands: visibility follows object_photometry (RLS); same grants.
-GRANT ALL ON TABLE "public"."object_photometry_bands" TO "anon";
+REVOKE ALL ON TABLE "public"."object_photometry_bands" FROM "anon";
 GRANT ALL ON TABLE "public"."object_photometry_bands" TO "authenticated";
 GRANT ALL ON TABLE "public"."object_photometry_bands" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."list_audit_log" TO "anon";
+REVOKE ALL ON TABLE "public"."list_audit_log" FROM "anon";
 GRANT ALL ON TABLE "public"."list_audit_log" TO "authenticated";
 GRANT ALL ON TABLE "public"."list_audit_log" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."object_list_shares" TO "anon";
+REVOKE ALL ON TABLE "public"."object_list_shares" FROM "anon";
 GRANT ALL ON TABLE "public"."object_list_shares" TO "authenticated";
 GRANT ALL ON TABLE "public"."object_list_shares" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."observations" TO "anon";
+REVOKE ALL ON TABLE "public"."observations" FROM "anon";
 GRANT ALL ON TABLE "public"."observations" TO "authenticated";
 GRANT ALL ON TABLE "public"."observations" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."programs" TO "anon";
+REVOKE ALL ON TABLE "public"."programs" FROM "anon";
 GRANT ALL ON TABLE "public"."programs" TO "authenticated";
 GRANT ALL ON TABLE "public"."programs" TO "service_role";
 
 
-GRANT ALL ON TABLE "public"."fields" TO "anon";
+REVOKE ALL ON TABLE "public"."fields" FROM "anon";
 GRANT ALL ON TABLE "public"."fields" TO "authenticated";
 GRANT ALL ON TABLE "public"."fields" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."nircam_images" TO "anon";
+REVOKE ALL ON TABLE "public"."nircam_images" FROM "anon";
 GRANT ALL ON TABLE "public"."nircam_images" TO "authenticated";
 GRANT ALL ON TABLE "public"."nircam_images" TO "service_role";
 
 
+REVOKE ALL ON TABLE "public"."nircam_exposures" FROM "anon";
 GRANT ALL ON TABLE "public"."nircam_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."nircam_exposures" TO "service_role";
 
 
 -- nirspec_rate_exposures is admin-only (RLS); not granted to anon. Mirrors nircam_exposures.
+REVOKE ALL ON TABLE "public"."nirspec_rate_exposures" FROM "anon";
 GRANT ALL ON TABLE "public"."nirspec_rate_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."nirspec_rate_exposures" TO "service_role";
 
 
 -- spectrum_exposures is admin-only (RLS); not granted to anon. Mirrors nircam_exposures.
+REVOKE ALL ON TABLE "public"."spectrum_exposures" FROM "anon";
 GRANT ALL ON TABLE "public"."spectrum_exposures" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectrum_exposures" TO "service_role";
 
 -- nirspec_source_review is admin-only (RLS); not granted to anon.
+REVOKE ALL ON TABLE "public"."nirspec_source_review" FROM "anon";
 GRANT ALL ON TABLE "public"."nirspec_source_review" TO "authenticated";
 GRANT ALL ON TABLE "public"."nirspec_source_review" TO "service_role";
 
 
 -- deploy_events is an admin/internal audit log (RLS admin-only); not granted to anon.
+REVOKE ALL ON TABLE "public"."deploy_events" FROM "anon";
 GRANT ALL ON TABLE "public"."deploy_events" TO "authenticated";
 GRANT ALL ON TABLE "public"."deploy_events" TO "service_role";
 
@@ -2802,59 +2807,61 @@ GRANT ALL ON TABLE "public"."sync_deletions" TO "service_role";
 
 
 -- deploy_scope_state is admin/internal concurrency state (RLS admin-only); not anon.
+REVOKE ALL ON TABLE "public"."deploy_scope_state" FROM "anon";
 GRANT ALL ON TABLE "public"."deploy_scope_state" TO "authenticated";
 GRANT ALL ON TABLE "public"."deploy_scope_state" TO "service_role";
 
 
 -- storage_objects is an admin/internal registry (RLS admin-only); not granted to anon.
+REVOKE ALL ON TABLE "public"."storage_objects" FROM "anon";
 GRANT ALL ON TABLE "public"."storage_objects" TO "authenticated";
 GRANT ALL ON TABLE "public"."storage_objects" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."password_reset_log" TO "anon";
+REVOKE ALL ON TABLE "public"."password_reset_log" FROM "anon";
 GRANT ALL ON TABLE "public"."password_reset_log" TO "authenticated";
 GRANT ALL ON TABLE "public"."password_reset_log" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."pending_invites" TO "anon";
+REVOKE ALL ON TABLE "public"."pending_invites" FROM "anon";
 GRANT ALL ON TABLE "public"."pending_invites" TO "authenticated";
 GRANT ALL ON TABLE "public"."pending_invites" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."inspection_access_requests" TO "anon";
+REVOKE ALL ON TABLE "public"."inspection_access_requests" FROM "anon";
 GRANT ALL ON TABLE "public"."inspection_access_requests" TO "authenticated";
 GRANT ALL ON TABLE "public"."inspection_access_requests" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."refresh_tokens" TO "anon";
+REVOKE ALL ON TABLE "public"."refresh_tokens" FROM "anon";
 GRANT ALL ON TABLE "public"."refresh_tokens" TO "authenticated";
 GRANT ALL ON TABLE "public"."refresh_tokens" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."shutters" TO "anon";
+REVOKE ALL ON TABLE "public"."shutters" FROM "anon";
 GRANT ALL ON TABLE "public"."shutters" TO "authenticated";
 GRANT ALL ON TABLE "public"."shutters" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."slit_regions" TO "anon";
+REVOKE ALL ON TABLE "public"."slit_regions" FROM "anon";
 GRANT ALL ON TABLE "public"."slit_regions" TO "authenticated";
 GRANT ALL ON TABLE "public"."slit_regions" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."user_profiles" TO "anon";
+REVOKE ALL ON TABLE "public"."user_profiles" FROM "anon";
 GRANT ALL ON TABLE "public"."user_profiles" TO "authenticated";
 GRANT ALL ON TABLE "public"."user_profiles" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."user_program_access" TO "anon";
+REVOKE ALL ON TABLE "public"."user_program_access" FROM "anon";
 GRANT ALL ON TABLE "public"."user_program_access" TO "authenticated";
 GRANT ALL ON TABLE "public"."user_program_access" TO "service_role";
 
@@ -2864,122 +2871,127 @@ GRANT ALL ON TABLE "public"."user_program_access" TO "service_role";
 -- Sequence grants
 -- ---------------------------------------------------------------------------
 
-GRANT ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."inspection_access_requests_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."comments_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."comments_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."comments_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."comments_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."deployments_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."deployments_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."deployments_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."deployments_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."flag_audit_log_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."flag_audit_log_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."flag_audit_log_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."flag_audit_log_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."map_layers_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."map_layers_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."map_layers_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."map_layers_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."nircam_images_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nircam_images_id_seq" TO "service_role";
 
 
+REVOKE ALL ON SEQUENCE "public"."nircam_exposures_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nircam_exposures_id_seq" TO "service_role";
 
 
+REVOKE ALL ON SEQUENCE "public"."nirspec_rate_exposures_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."nirspec_rate_exposures_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nirspec_rate_exposures_id_seq" TO "service_role";
 
 
+REVOKE ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."spectrum_exposures_id_seq" TO "service_role";
 
+REVOKE ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."nirspec_source_review_id_seq" TO "service_role";
 
 
+REVOKE ALL ON SEQUENCE "public"."storage_objects_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."storage_objects_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."storage_objects_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."pending_invites_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."pending_invites_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."pending_invites_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."pending_invites_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."shutters_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."shutters_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."shutters_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."shutters_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."slit_regions_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."slit_regions_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."slit_regions_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."slit_regions_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."spectra_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."spectra_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."spectra_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."spectra_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."targets_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."targets_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."targets_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."targets_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."objects_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."objects_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."objects_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."objects_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."object_lists_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."object_lists_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."object_lists_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."object_lists_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."object_list_members_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."object_photometry_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."list_audit_log_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."list_audit_log_id_seq" TO "service_role";
 
 
 
-GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "anon";
+REVOKE ALL ON SEQUENCE "public"."object_list_shares_id_seq" FROM "anon";
 GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "authenticated";
 GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "service_role";
 
@@ -2989,21 +3001,39 @@ GRANT ALL ON SEQUENCE "public"."object_list_shares_id_seq" TO "service_role";
 -- Default privileges
 -- ---------------------------------------------------------------------------
 
+-- Service-role-only tables: their sequences carry no authenticated grant, so the
+-- anon revoke lives here rather than beside one.
+REVOKE ALL ON SEQUENCE "public"."sync_deletions_id_seq" FROM "anon";
+REVOKE ALL ON SEQUENCE "public"."sync_snapshots_id_seq" FROM "anon";
+
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "service_role";
 
 
 
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "service_role";
+-- P-1 hardening: a new function is executable only by the roles it is granted
+-- to. Postgres grants EXECUTE to PUBLIC (every role, anon included) on creation
+-- unless the owner's default privileges say otherwise; this line says otherwise.
+-- Every function in functions.sql / triggers.sql also carries an explicit
+-- REVOKE ... FROM PUBLIC, anon (see the hardening blocks at the end of each).
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" REVOKE ALL ON FUNCTIONS FROM "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" REVOKE ALL ON TABLES FROM "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" REVOKE ALL ON SEQUENCES FROM "anon";
+-- The project also carries schema-less defaults for postgres (set at project
+-- creation) that grant anon on everything; Postgres merges global and
+-- per-schema defaults, so those must go too.
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" REVOKE ALL ON TABLES FROM "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" REVOKE ALL ON SEQUENCES FROM "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" REVOKE ALL ON FUNCTIONS FROM "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 
 
 
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "service_role";
