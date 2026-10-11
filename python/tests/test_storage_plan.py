@@ -40,6 +40,11 @@ def _row(key, content_hash=None, sci_dq=None, status='active', **extra):
     return row
 
 
+def _core(tasks):
+    """Tasks minus the plan-stamped retain hashes (what the discovery step built)."""
+    return [(t.local_path, t.r2_key, t.content_type) for t in tasks]
+
+
 # --- identity selection -------------------------------------------------------
 
 def test_identity_kind_selection():
@@ -74,7 +79,7 @@ def test_new_file_uploads_without_plan_time_hash(tmp_path):
     task = _spec_task(tmp_path)
     plan = plan_push([task], server_rows={}, progress=False)
     assert plan.new == [task]
-    assert plan.to_upload == [task]
+    assert _core(plan.to_upload) == _core([task])
     # New files are not hashed at plan time (registration hashes per batch).
     assert task.r2_key not in plan.identities
 
@@ -97,8 +102,8 @@ def test_changed_file_uploads_and_reuses_hash(tmp_path):
     task = _spec_task(tmp_path, content=b"new-bytes")
     rows = {task.r2_key: _row(task.r2_key, 'sha256:' + '0' * 64)}
     plan = plan_push([task], rows, progress=False)
-    assert plan.changed == [task]
-    assert plan.to_upload == [task]
+    assert _core(plan.changed) == _core([task])
+    assert _core(plan.to_upload) == _core([task])
     # Whole-file hash computed for the decision is exposed for registration.
     h, size = plan.whole_file[task.r2_key]
     assert h == compute_file_hash(task.local_path)
@@ -109,7 +114,7 @@ def test_active_row_with_etag_hash_always_uploads(tmp_path):
     task = _spec_task(tmp_path)
     rows = {task.r2_key: _row(task.r2_key, 'etag:abc123')}
     plan = plan_push([task], rows, progress=False)
-    assert plan.changed == [task]
+    assert _core(plan.changed) == _core([task])
     # No comparable identity → not hashed at plan time either.
     assert task.r2_key not in plan.identities
 
@@ -181,7 +186,7 @@ def test_fast_path_ignored_when_server_identity_moved(tmp_path):
                            'pushed_mtime': st.st_mtime,
                            'pushed_size': st.st_size}}
     plan = plan_push([task], rows, local_rows=local, progress=False)
-    assert plan.changed == [task]
+    assert _core(plan.changed) == _core([task])
 
 
 # --- sci_dq identity end-to-end ------------------------------------------------
@@ -240,7 +245,7 @@ def test_sci_dq_science_change_uploads(tmp_path):
     rows = {task.r2_key: _row(task.r2_key, 'sha256:' + '9' * 64,
                               sci_dq=digest_other)}
     plan = plan_push([task], rows, progress=False)
-    assert plan.changed == [task]
+    assert _core(plan.changed) == _core([task])
     # sci_dq identity exposed for registration reuse; whole-file NOT computed
     # at plan time for sci_dq products.
     assert plan.identities[task.r2_key] == sci_dq_hash(task.local_path)
@@ -251,7 +256,7 @@ def test_legacy_exposure_row_without_sci_dq_uploads(tmp_path):
     task = _exposure_task(tmp_path)
     rows = {task.r2_key: _row(task.r2_key, 'sha256:' + '9' * 64, sci_dq=None)}
     plan = plan_push([task], rows, progress=False)
-    assert plan.changed == [task]
+    assert _core(plan.changed) == _core([task])
 
 
 # --- astrometric identity: the re-alignment case ------------------------------
@@ -268,8 +273,8 @@ def test_realignment_uploads_despite_identical_science(tmp_path):
     _realign(task.local_path, (150.0001, 2.0001))
     plan = plan_push([task], rows, progress=False)
 
-    assert plan.changed == [task]
-    assert plan.to_upload == [task]
+    assert _core(plan.changed) == _core([task])
+    assert _core(plan.to_upload) == _core([task])
     # Science digest is genuinely unchanged — only the WCS moved.
     assert plan.identities[task.r2_key] == sci
     assert plan.wcs_hashes[task.r2_key] != wcs_before
@@ -297,11 +302,11 @@ def test_both_components_must_match_to_skip(tmp_path):
     # Right WCS, wrong science → upload.
     rows = {task.r2_key: _row(task.r2_key, 'sha256:' + '9' * 64,
                               sci_dq='sha256:' + '0' * 64, wcs_hash=wcs)}
-    assert plan_push([task], rows, progress=False).changed == [task]
+    assert _core(plan_push([task], rows, progress=False).changed) == _core([task])
     # Right science, wrong WCS → upload.
     rows = {task.r2_key: _row(task.r2_key, 'sha256:' + '9' * 64,
                               sci_dq=sci, wcs_hash='sha256:' + '0' * 64)}
-    assert plan_push([task], rows, progress=False).changed == [task]
+    assert _core(plan_push([task], rows, progress=False).changed) == _core([task])
 
 
 def test_composed_identity_arms_the_stat_fast_path(tmp_path, monkeypatch):
@@ -368,7 +373,7 @@ def test_legacy_row_with_differing_bytes_uploads(tmp_path):
 
     plan = plan_push([task], rows, progress=False)
 
-    assert plan.changed == [task]
+    assert _core(plan.changed) == _core([task])
     assert plan.backfill == []
     # The whole-file hash the reconciliation computed is handed to registration
     # rather than thrown away.
@@ -392,4 +397,24 @@ def test_upload_order_preserved_across_reconciliation(tmp_path):
                        sci_dq='sha256:' + '0' * 64, wcs_hash='sha256:' + '1' * 64),
     }
     plan = plan_push([a, b, c], rows, progress=False)
-    assert plan.to_upload == [a, b, c]
+    assert _core(plan.to_upload) == _core([a, b, c])
+
+
+# --- retain-gate hashes (P2) --------------------------------------------------
+
+def test_changed_upload_carries_registry_and_local_hashes(tmp_path):
+    task = _spec_task(tmp_path)
+    old = 'sha256:' + '0' * 64
+    plan = plan_push([task], {task.r2_key: _row(task.r2_key, old)}, progress=False)
+    [t] = plan.to_upload
+    assert t.r2_key == task.r2_key and t.local_path == task.local_path
+    assert t.expected_old_hash == old
+    assert t.new_hash == compute_file_hash(task.local_path)
+
+
+def test_new_upload_carries_no_hashes(tmp_path):
+    task = _spec_task(tmp_path)
+    plan = plan_push([task], {}, progress=False)
+    [t] = plan.to_upload
+    assert t.expected_old_hash is None and t.new_hash is None
+    assert t == task

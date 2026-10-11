@@ -331,7 +331,28 @@ def plan_push(
         if v == 'unchanged':
             plan.unchanged.append(task)
             continue
+        task = _with_plan_hashes(task, server_rows.get(task.r2_key), plan)
         (plan.new if v == 'new' else plan.changed).append(task)
         plan.to_upload.append(task)
 
     return plan
+
+
+def _with_plan_hashes(task, row: Optional[dict], plan: PushPlan):
+    """Stamp the registry hash the plan saw and the local sha256 onto an upload.
+
+    The presign route's retain-on-supersede gate compares ``expected_old_hash``
+    with the live registry (drift between plan and PUT) and skips the archive
+    copy when ``new_hash`` equals the registry hash. Only whole-file sha256s are
+    sent: an exposure's registerable identity is the science digest, which is
+    not what the gate compares. Tasks without the fields (foreign shapes in
+    tests) pass through untouched.
+    """
+    if not hasattr(task, '_replace') or not hasattr(task, 'expected_old_hash'):
+        return task
+    old = row.get('content_hash') if row and row.get('status') == 'active' else None
+    whole = plan.whole_file.get(task.r2_key)
+    new = whole[0] if whole else None
+    if old is None and new is None:
+        return task
+    return task._replace(expected_old_hash=old, new_hash=new)

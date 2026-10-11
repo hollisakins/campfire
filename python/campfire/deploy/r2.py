@@ -87,15 +87,37 @@ def _upload_body(local_path: Path, *, compress: bool):
 
 
 class UploadTask(NamedTuple):
-    """Represents a file to be uploaded to the object store."""
+    """Represents a file to be uploaded to the object store.
+
+    ``expected_old_hash`` / ``new_hash`` are filled by the push planner
+    (``campfire.storage.plan.plan_push``) for tasks that replace a registered
+    object: the registry ``content_hash`` the plan was made against and the
+    sha256 of the local bytes. The presign route uses them for its
+    retain-on-supersede gate (drift check, true no-op skip). Both default to
+    ``None`` so every discovery site keeps constructing tasks positionally.
+    """
     local_path: Path
     r2_key: str
     content_type: str
+    expected_old_hash: Optional[str] = None
+    new_hash: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
 # Presigned URL mode
 # ---------------------------------------------------------------------------
+
+def _presign_upload_entry(t: UploadTask) -> dict:
+    """One ``uploads[]`` element; the hash fields only when the planner set them."""
+    entry = {'key': t.r2_key, 'content_type': t.content_type}
+    old = getattr(t, 'expected_old_hash', None)
+    new = getattr(t, 'new_hash', None)
+    if old:
+        entry['expected_old_hash'] = old
+    if new:
+        entry['new_hash'] = new
+    return entry
+
 
 # Max URLs per presign request -- the web route's hard cap. Since batching
 # went size-aware this is only the count guard (a batch of tiny files, e.g.
@@ -235,10 +257,7 @@ def request_presigned_urls(
         payload = {
             'bucket': bucket,
             'backend': backend,
-            'uploads': [
-                {'key': t.r2_key, 'content_type': t.content_type}
-                for t in batch
-            ],
+            'uploads': [_presign_upload_entry(t) for t in batch],
         }
         if cache_control:
             payload['cache_control'] = cache_control
