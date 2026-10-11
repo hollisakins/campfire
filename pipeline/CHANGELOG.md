@@ -28,6 +28,12 @@ Release procedure: edit the `## Unreleased` section below, then run
 
 ## Unreleased
 
+### Infrastructure
+- **Tests run in CI.** `.github/workflows/python.yml` runs `pipeline/tests` on PRs that
+  touch `pipeline/` or `layout/` (informational until its CI runtime is known) and the
+  layout golden fixture on every client change; `[tool.pytest.ini_options] testpaths =
+  ["tests"]` so a bare `pytest` no longer collects `experiments/` and `scripts/`.
+
 ### Algorithm
 - **`align`: the coarse gross-shift histogram now bins at 0.25", not 0.5".** At
   0.5" a genuine arcsec-scale pointing error is smeared across the same cell
