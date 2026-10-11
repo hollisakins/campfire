@@ -58,6 +58,20 @@ _PROBE = {
     'exposure': 'exp1', 'object_id': '42', 'catalog_id': 'cat1', 'tile': 'ne',
     'pixel_scale': '30mas', 'zoom': 3, 'x': 4, 'y': 5,
 }
+# A single favourable probe cannot tell a pure substitution from a builder that
+# also transforms its input (``s.obs.lower()``, ``s.filt.upper()``, a stripped
+# prefix, a zero-padded number). Every builder must reproduce the template on
+# all of these, which disagree with their transformed versions.
+_PROBES = [
+    _PROBE,
+    {**_PROBE, 'obs': 'EGS_P1', 'field': 'GOODS-N', 'filt': 'F444W', 'pid': 'PID7',
+     'data_subdir': 'Sub-2', 'source_id': 'SRC-01', 'detector': 'NRS2',
+     'exposure': 'Exp_02', 'object_id': '007', 'catalog_id': 'Cat.9', 'tile': 'SW',
+     'pixel_scale': '60MAS', 'zoom': 12, 'x': 100, 'y': 7},
+    {**_PROBE, 'obs': 'a', 'field': 'b', 'filt': 'c', 'pid': '0', 'data_subdir': 'd',
+     'source_id': 'e', 'detector': 'f', 'exposure': 'g', 'object_id': '0',
+     'catalog_id': 'h', 'tile': 'i', 'pixel_scale': 'j', 'zoom': 0, 'x': 0, 'y': 0},
+]
 
 
 def _scope_field_names() -> list[str]:
@@ -85,12 +99,14 @@ def _templatize(name: str, label: str, builder) -> str | None:
     unknown = used - set(_scope_field_names())
     if unknown:
         raise SystemExit(f'sync_layout_products: {name}.{label} references non-Scope fields {sorted(unknown)}')
-    # The template must reproduce the builder on a concrete scope.
-    probe = Scope(**_PROBE)
-    if _render(template, _PROBE) != builder(probe):
-        raise SystemExit(
-            f'sync_layout_products: {name}.{label} builder is not a pure template '
-            f'({template!r} renders {_render(template, _PROBE)!r}, builder gives {builder(probe)!r})')
+    # The template must reproduce the builder on several concrete scopes,
+    # including ones a transforming builder would alter.
+    for values in _PROBES:
+        probe = Scope(**values)
+        if _render(template, values) != builder(probe):
+            raise SystemExit(
+                f'sync_layout_products: {name}.{label} builder is not a pure template '
+                f'({template!r} renders {_render(template, values)!r}, builder gives {builder(probe)!r})')
     return template
 
 
