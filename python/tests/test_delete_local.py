@@ -8,37 +8,13 @@ and never touches files with no registry row. No DB.
 import hashlib
 from pathlib import Path
 
-import types
-
 from campfire.deploy import registry as reg
 from campfire.config import products_relpath
+from tests.fakes import FakePostgrest
 
 
-class _FakeQuery:
-    def __init__(self, rows):
-        self._rows = rows
-        self._eq = []
-
-    def select(self, *a, **k):
-        return self
-
-    def eq(self, col, val):
-        self._eq.append((col, val))
-        return self
-
-    def execute(self):
-        rows = list(self._rows)
-        for col, val in self._eq:
-            rows = [r for r in rows if r.get(col) == val]
-        return types.SimpleNamespace(data=rows)
-
-
-class _FakeClient:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def table(self, name):
-        return _FakeQuery(self._rows if name == 'storage_objects' else [])
+def _client(rows):
+    return FakePostgrest(tables={'storage_objects': rows})
 
 
 OBS = "ember_egs_p1"
@@ -64,7 +40,7 @@ def test_deletable_only_when_registered_with_sha256(tmp_path):
         "storage_key": SPEC_KEY, "content_hash": _sha256(body),
         "size_bytes": len(body), "observation": OBS, "bucket": "data", "status": "active",
     }]
-    plan = reg.plan_delete_local(_FakeClient(rows), OBS, tmp_path)
+    plan = reg.plan_delete_local(_client(rows), OBS, tmp_path)
     keys = [k for _, k, _ in plan.deletable]
     assert SPEC_KEY in keys
     assert local.exists()  # planning never deletes
@@ -77,7 +53,7 @@ def test_etag_only_hash_is_skipped(tmp_path):
         "storage_key": SPEC_KEY, "content_hash": "etag:deadbeef",
         "size_bytes": len(body), "observation": OBS, "bucket": "data", "status": "active",
     }]
-    plan = reg.plan_delete_local(_FakeClient(rows), OBS, tmp_path)
+    plan = reg.plan_delete_local(_client(rows), OBS, tmp_path)
     assert not plan.deletable
     assert any("provisional" in reason for _, _, reason in plan.skipped)
 
@@ -89,7 +65,7 @@ def test_verify_rejects_hash_mismatch(tmp_path):
         "storage_key": SPEC_KEY, "content_hash": _sha256(b"different-cloud-bytes"),
         "size_bytes": 99, "observation": OBS, "bucket": "data", "status": "active",
     }]
-    plan = reg.plan_delete_local(_FakeClient(rows), OBS, tmp_path, verify=True)
+    plan = reg.plan_delete_local(_client(rows), OBS, tmp_path, verify=True)
     assert not plan.deletable
     assert any("hash" in reason for _, _, reason in plan.skipped)
 
@@ -101,7 +77,7 @@ def test_verify_accepts_hash_match(tmp_path):
         "storage_key": SPEC_KEY, "content_hash": _sha256(body),
         "size_bytes": len(body), "observation": OBS, "bucket": "data", "status": "active",
     }]
-    plan = reg.plan_delete_local(_FakeClient(rows), OBS, tmp_path, verify=True)
+    plan = reg.plan_delete_local(_client(rows), OBS, tmp_path, verify=True)
     assert len(plan.deletable) == 1
 
 
@@ -111,7 +87,7 @@ def test_registered_but_absent_local_file(tmp_path):
         "storage_key": JSON_KEY, "content_hash": _sha256(b"z"),
         "size_bytes": 1, "observation": OBS, "bucket": "data", "status": "active",
     }]
-    plan = reg.plan_delete_local(_FakeClient(rows), OBS, tmp_path)
+    plan = reg.plan_delete_local(_client(rows), OBS, tmp_path)
     assert not plan.deletable
     assert JSON_KEY in plan.absent
 
@@ -119,7 +95,7 @@ def test_registered_but_absent_local_file(tmp_path):
 def test_unregistered_local_file_is_never_a_candidate(tmp_path):
     # A local file exists but has NO registry row -> never touched (not in the set).
     _make_local(tmp_path, SPEC_KEY, b"orphan-local")
-    plan = reg.plan_delete_local(_FakeClient([]), OBS, tmp_path)
+    plan = reg.plan_delete_local(_client([]), OBS, tmp_path)
     assert not plan.deletable and not plan.skipped and not plan.absent
 
 
@@ -136,9 +112,9 @@ def test_field_scope_selects_nircam_rows(tmp_path):
         "size_bytes": len(body), "observation": None, "field": "cosmos",
         "bucket": "data", "status": "active",
     }]
-    plan = reg.plan_delete_local(_FakeClient(rows), None, tmp_path, field="cosmos")
+    plan = reg.plan_delete_local(_client(rows), None, tmp_path, field="cosmos")
     assert [k for _, k, _ in plan.deletable] == [NIRCAM_KEY]
     assert local.exists()  # planning never deletes
     # observation mode with the field name finds nothing (row has observation NULL)
-    plan_obs = reg.plan_delete_local(_FakeClient(rows), "cosmos", tmp_path)
+    plan_obs = reg.plan_delete_local(_client(rows), "cosmos", tmp_path)
     assert not plan_obs.deletable

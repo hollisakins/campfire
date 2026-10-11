@@ -4,71 +4,18 @@ chain, no DB. The DB-backed pipeline consumer is covered by
 ``pipeline/tests/test_nircam_exclusions.py``.
 """
 import json
-import types
 
 from campfire.deploy import nircam_exclusions as nx
 from campfire.deploy.nircam import _upsert_exposures
+from tests.fakes import FakePostgrest
 
 
-# ---------------------------------------------------------------------------
-# fake client: .table().select().eq().in_().execute(), .upsert(), .insert()
-# ---------------------------------------------------------------------------
-
-class _FakeQuery:
-    def __init__(self, rows, sink):
-        self._rows = rows
-        self._eq = []
-        self._in = None
-        self._sink = sink
-
-    def select(self, *a, **k):
-        return self
-
-    def eq(self, col, val):
-        self._eq.append((col, val))
-        return self
-
-    def in_(self, col, vals):
-        self._in = (col, set(vals))
-        return self
-
-    def upsert(self, data, on_conflict=None):
-        self._sink['upserts'].append(list(data))
-        return self
-
-    def insert(self, data):
-        self._sink['inserts'].append(list(data))
-        return self
-
-    def execute(self):
-        rows = list(self._rows)
-        if self._in:
-            col, vals = self._in
-            rows = [r for r in rows if r.get(col) in vals]
-        for col, val in self._eq:
-            rows = [r for r in rows if r.get(col) == val]
-        return types.SimpleNamespace(data=rows)
-
-
-class _FakeClient:
-    def __init__(self, rows=None):
-        self._rows = rows or []
-        self.sink = {'upserts': [], 'inserts': []}
-
-    def table(self, name):
-        return _FakeQuery(self._rows, self.sink)
-
-    @property
-    def upserts(self):
-        return self.sink['upserts']
-
-    @property
-    def inserts(self):
-        return self.sink['inserts']
+def _exposures_client(rows):
+    return FakePostgrest(tables={'nircam_exposures': rows})
 
 
 def _patch_client(monkeypatch, rows):
-    client = _FakeClient(rows)
+    client = _exposures_client(rows)
     monkeypatch.setattr('campfire.deploy.supabase.get_supabase_client',
                         lambda config: client)
     return client
@@ -140,7 +87,7 @@ def test_redeploy_preserves_inspection_state():
     correction, notes, or mask_regions (spec: inspection survives re-reduction).
     """
     existing = [{'field': 'cosmos', 'filter': 'f444w', 'filename': 'root1'}]
-    client = _FakeClient(existing)
+    client = _exposures_client(existing)
     record = {
         'field': 'cosmos', 'filter': 'f444w', 'filename': 'root1',
         'detector': 'nrcalong', 'stage': 'outlier',
@@ -154,7 +101,7 @@ def test_redeploy_preserves_inspection_state():
 
     assert not client.inserts  # existing row → update path, no insert
     assert len(client.upserts) == 1
-    update = client.upserts[0][0]
+    update = client.upserted_rows()[0]
     for protected in ('review_status', 'correction', 'notes', 'mask_regions'):
         assert protected not in update, f"{protected} must be preserved on re-deploy"
     # pipeline-derived columns ARE refreshed

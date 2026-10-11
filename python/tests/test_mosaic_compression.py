@@ -91,33 +91,27 @@ def test_upload_body_cleans_up_temp_on_error(tmp_path):
 
 # --- stored_size_bytes capture (registry transport-size column) -------------
 
-class _FakeS3:
-    """Captures upload_file calls; records the staged body's size."""
-    def __init__(self):
-        self.calls = []
-
-    def upload_file(self, filename, bucket, key, ExtraArgs=None):
-        self.calls.append((Path(filename).stat().st_size, bucket, key))
-
-
-def test_upload_to_r2_returns_stored_gz_size(tmp_path):
+def test_upload_to_r2_returns_stored_gz_size(tmp_path, fake_s3):
     from campfire.deploy.r2 import upload_to_r2
     src = tmp_path / "mosaic_x_sci.fits"
     src.write_bytes(b"\x00" * 100_000)  # highly compressible
 
-    fake = _FakeS3()
-    stored = upload_to_r2(fake, "bucket", src, _key("mosaic_x_sci.fits"),
-                          "application/gzip", compress=True)
+    gz_key = _key("mosaic_x_sci.fits")
+    stored = upload_to_r2(fake_s3, "bucket", src, gz_key, "application/gzip", compress=True)
     # returned value == the gz body actually PUT, and much smaller than source
-    assert stored == fake.calls[0][0]
+    head = fake_s3.head_object(Bucket="bucket", Key=gz_key)
+    assert stored == head["ContentLength"]
     assert 0 < stored < 100_000
+    assert head["ContentType"] == "application/gzip"
+    assert gzip.decompress(fake_s3.body("bucket", gz_key)) == src.read_bytes()
 
     # verbatim upload: no stored size (stored bytes == logical size_bytes)
-    assert upload_to_r2(fake, "bucket", src, "data/x.fits",
+    assert upload_to_r2(fake_s3, "bucket", src, "data/x.fits",
                         "application/fits", compress=False) is None
+    assert fake_s3.body("bucket", "data/x.fits") == src.read_bytes()
 
 
-def test_direct_wrapper_collects_stored_sizes(tmp_path):
+def test_direct_wrapper_collects_stored_sizes(tmp_path, fake_s3):
     from campfire.deploy.r2 import UploadTask, upload_files_direct
     fits = tmp_path / "mosaic_x_sci.fits"
     fits.write_bytes(b"\x00" * 50_000)
@@ -129,13 +123,16 @@ def test_direct_wrapper_collects_stored_sizes(tmp_path):
 
     stored: dict[str, int] = {}
     ok, failed, _ = upload_files_direct(
-        _FakeS3(), "bucket",
+        fake_s3, "bucket",
         [UploadTask(fits, gz_key, "application/gzip"),
          UploadTask(png, png_key, "image/png")],
         max_workers=2, stored_sizes_out=stored)
     assert (ok, failed) == (2, 0)
     assert set(stored) == {gz_key}          # only the compressed product
     assert 0 < stored[gz_key] < 50_000
+    assert fake_s3.keys("bucket") == sorted([gz_key, png_key])
+    assert stored[gz_key] == fake_s3.head_object(Bucket="bucket", Key=gz_key)["ContentLength"]
+    assert fake_s3.body("bucket", png_key) == png.read_bytes()   # verbatim, not gzipped
 
 
 def test_registry_row_carries_stored_size_bytes(tmp_path):

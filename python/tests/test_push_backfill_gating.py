@@ -6,8 +6,6 @@ Planning is also what a dry run does: `campfire push --dry-run` and scoped
 explicit `apply_backfill` — otherwise a command advertised as a read-only diff
 mutates `storage_objects`.
 """
-import types
-
 import numpy as np
 import pytest
 from astropy.io import fits
@@ -16,47 +14,7 @@ from campfire_layout import KeyScheme, Scope, storage_key
 from campfire.deploy import push as push_mod
 from campfire.deploy.r2 import UploadTask
 from campfire.storage.hashing import compute_file_hash, exposure_identity
-
-
-class _FakeQuery:
-    """Records the writes it is asked to perform; reads return seeded rows."""
-
-    def __init__(self, rows, updates):
-        self._rows = rows
-        self._updates = updates
-        self._payload = None
-
-    def select(self, *_a, **_k):
-        return self
-
-    def update(self, payload):
-        self._payload = payload
-        return self
-
-    def eq(self, *_a):
-        return self
-
-    def in_(self, *_a):
-        return self
-
-    def is_(self, *_a):
-        return self
-
-    def execute(self):
-        if self._payload is not None:
-            self._updates.append(self._payload)
-            return types.SimpleNamespace(data=[])
-        return types.SimpleNamespace(data=list(self._rows))
-
-
-class _FakeClient:
-    def __init__(self, rows):
-        self._rows = rows
-        self.updates = []
-
-    def table(self, name):
-        return _FakeQuery(self._rows if name == 'storage_objects' else [],
-                          self.updates)
+from tests.fakes import FakePostgrest
 
 
 @pytest.fixture
@@ -87,7 +45,7 @@ def legacy_exposure(tmp_path):
 
 def test_planning_alone_does_not_write_to_the_registry(legacy_exposure):
     task, row, wcs = legacy_exposure
-    client = _FakeClient([row])
+    client = FakePostgrest(tables={'storage_objects': [row]})
 
     plan, _rows = plan_remote_push_default(client, [task])
 
@@ -101,12 +59,13 @@ def test_planning_alone_does_not_write_to_the_registry(legacy_exposure):
 
 def test_backfill_written_only_when_opted_in(legacy_exposure):
     task, row, wcs = legacy_exposure
-    client = _FakeClient([row])
+    client = FakePostgrest(tables={'storage_objects': [row]})
 
     push_mod.plan_remote_push(client, None, [task], backend='osn',
                               progress=False, apply_backfill=True)
 
-    assert client.updates == [{'wcs_hash': wcs}]
+    assert [u.patch for u in client.updates] == [{'wcs_hash': wcs}]
+    assert row['wcs_hash'] == wcs   # the registry row was reconciled in place
 
 
 def plan_remote_push_default(client, tasks):

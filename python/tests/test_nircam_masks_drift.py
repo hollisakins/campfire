@@ -2,36 +2,12 @@
 
 Pure-Python: a fake Supabase client + on-disk .reg fixtures under tmp_path.
 """
-import types
-
 from campfire.deploy import nircam_masks as nm
+from tests.fakes import FakePostgrest
 
 
-class _FakeQuery:
-    def __init__(self, rows):
-        self._rows = rows
-        self._eq = []
-
-    def select(self, *a, **k):
-        return self
-
-    def eq(self, col, val):
-        self._eq.append((col, val))
-        return self
-
-    def execute(self):
-        rows = list(self._rows)
-        for col, val in self._eq:
-            rows = [r for r in rows if r.get(col) == val]
-        return types.SimpleNamespace(data=rows)
-
-
-class _FakeClient:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def table(self, name):
-        return _FakeQuery(self._rows)
+def _client(rows):
+    return FakePostgrest(tables={'nircam_exposures': rows})
 
 
 _GENERATED_HEADER = (
@@ -61,7 +37,7 @@ def test_mask_drift_three_categories(monkeypatch, tmp_path):
         # 'handdrawn' has no row at all.
     ]
     monkeypatch.setattr('campfire.deploy.supabase.get_supabase_client',
-                        lambda config: _FakeClient(rows))
+                        lambda config: _client(rows))
     monkeypatch.setattr('campfire.deploy.nircam._resolve_nircam_dirs',
                         lambda field: {'masks': masks})
 
@@ -82,7 +58,7 @@ def test_mask_drift_clean(monkeypatch, tmp_path):
     rows = [{'field': 'cosmos', 'filter': 'f444w', 'filename': 'ok',
              'mask_regions': {'polygons': [{'vertices': [[1, 1], [2, 2], [3, 3]]}]}}]
     monkeypatch.setattr('campfire.deploy.supabase.get_supabase_client',
-                        lambda config: _FakeClient(rows))
+                        lambda config: _client(rows))
     monkeypatch.setattr('campfire.deploy.nircam._resolve_nircam_dirs',
                         lambda field: {'masks': masks})
     report = nm.mask_drift_report('cosmos', config={})

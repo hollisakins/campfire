@@ -5,49 +5,11 @@ sync-state file. Pure/local — no network, no real Supabase."""
 import datetime
 import json
 import textwrap
-import types
 
 import pytest
 
 from campfire.deploy import config_sync as cs
-
-
-# --- fake Supabase client ---------------------------------------------------
-
-class _FakeQuery:
-    def __init__(self, store, name):
-        self.store, self.name = store, name
-        self._filter = None
-
-    def select(self, _cols):
-        return self
-
-    def in_(self, col, values):
-        self._filter = (col, list(values))
-        return self
-
-    def upsert(self, row, on_conflict=None):
-        self.store["upserts"].append((self.name, on_conflict, row))
-        return self
-
-    def execute(self):
-        rows = self.store.get("tables", {}).get(self.name, [])
-        if self._filter is not None:
-            col, values = self._filter
-            rows = [r for r in rows if r.get(col) in values]
-        return types.SimpleNamespace(data=rows)
-
-
-class _FakeClient:
-    def __init__(self, tables=None):
-        self.store = {"upserts": [], "rpcs": [], "tables": tables or {}}
-
-    def table(self, name):
-        return _FakeQuery(self.store, name)
-
-    def rpc(self, name, params=None):
-        self.store["rpcs"].append((name, params))
-        return types.SimpleNamespace(execute=lambda: types.SimpleNamespace(data=None))
+from tests.fakes import FakePostgrest
 
 
 # --- canonical hash ----------------------------------------------------------
@@ -146,12 +108,12 @@ _PROGRAMS_TOML = """
 
 def test_push_kind_pushes_all_local_sections(tmp_path, monkeypatch):
     _write_toml(tmp_path, monkeypatch, "programs", _PROGRAMS_TOML)
-    client = _FakeClient()
+    client = FakePostgrest()
     sections = cs.load_sections("programs")
     n, pushed = cs.push_kind(client, "programs", sections)
     assert n == 2
     assert set(pushed) == {"capers", "cosmos3d"}
-    tables = [t for (t, _c, _r) in client.store["upserts"]]
+    tables = [t for (t, _c, _r) in client.upserts]
     assert tables == ["programs", "programs"]
 
 
@@ -159,22 +121,22 @@ def test_push_kind_skips_in_sync_sections(tmp_path, monkeypatch):
     _write_toml(tmp_path, monkeypatch, "programs", _PROGRAMS_TOML)
     sections = cs.load_sections("programs")
     same_hash = cs.config_hash(sections["capers"])
-    client = _FakeClient(tables={"programs": [
+    client = FakePostgrest(tables={"programs": [
         {"slug": "capers", "config_hash": same_hash}]})
     n, pushed = cs.push_kind(client, "programs", sections, ["capers"])
     assert n == 0                       # nothing written…
     assert pushed == {"capers": same_hash}   # …but the base is still recorded
-    assert client.store["upserts"] == []
+    assert client.upserts == []
 
 
 def test_push_kind_divergence_guard_refuses_then_force_wins(tmp_path, monkeypatch):
     _write_toml(tmp_path, monkeypatch, "programs", _PROGRAMS_TOML)
     sections = cs.load_sections("programs")
-    client = _FakeClient(tables={"programs": [
+    client = FakePostgrest(tables={"programs": [
         {"slug": "capers", "config_hash": "sha256:someone-elses-push"}]})
     base = {"capers": "sha256:what-i-synced-last"}   # cloud moved since
     n, pushed = cs.push_kind(client, "programs", sections, ["capers"], base=base)
-    assert n == 0 and pushed == {} and client.store["upserts"] == []
+    assert n == 0 and pushed == {} and client.upserts == []
     n, pushed = cs.push_kind(client, "programs", sections, ["capers"],
                              base=base, force=True)
     assert n == 1 and "capers" in pushed
@@ -183,10 +145,10 @@ def test_push_kind_divergence_guard_refuses_then_force_wins(tmp_path, monkeypatc
 def test_push_kind_skips_retired_rows(tmp_path, monkeypatch):
     _write_toml(tmp_path, monkeypatch, "programs", _PROGRAMS_TOML)
     sections = cs.load_sections("programs")
-    client = _FakeClient(tables={"programs": [
+    client = FakePostgrest(tables={"programs": [
         {"slug": "capers", "retired_at": "2026-08-01T00:00:00Z"}]})
     n, _ = cs.push_kind(client, "programs", sections, ["capers"])
-    assert n == 0 and client.store["upserts"] == []
+    assert n == 0 and client.upserts == []
 
 
 def test_push_kind_validates_observation_program_slug(tmp_path, monkeypatch):
@@ -200,7 +162,7 @@ def test_push_kind_validates_observation_program_slug(tmp_path, monkeypatch):
         field = "egs"
         files = ["jw06368*"]
     """)
-    client = _FakeClient()
+    client = FakePostgrest()
     sections = cs.load_sections("observations")
     n, pushed = cs.push_kind(client, "observations", sections,
                              programs_config={"capers": {}})
@@ -215,14 +177,14 @@ def test_push_kind_rejects_bare_toml_datetimes(tmp_path, monkeypatch):
         files = ["jw06368*"]
         taken = 2026-01-01
     """)
-    client = _FakeClient()
+    client = FakePostgrest()
     n, _ = cs.push_kind(client, "observations", cs.load_sections("observations"))
-    assert n == 0 and client.store["upserts"] == []
+    assert n == 0 and client.upserts == []
 
 
 def test_push_kind_dry_run_writes_nothing(tmp_path, monkeypatch):
     _write_toml(tmp_path, monkeypatch, "programs", _PROGRAMS_TOML)
-    n, pushed = cs.push_kind(_FakeClient(), "programs",
+    n, pushed = cs.push_kind(FakePostgrest(), "programs",
                              cs.load_sections("programs"), dry_run=True)
     assert n == 0 and pushed == {}
 
@@ -233,9 +195,9 @@ def test_push_kind_empty_names_pushes_nothing(tmp_path, monkeypatch):
     The fields default computes 'deployed fields ∩ local sections'; on a fresh
     DB that intersection is empty and must push zero sections."""
     _write_toml(tmp_path, monkeypatch, "programs", _PROGRAMS_TOML)
-    client = _FakeClient()
+    client = FakePostgrest()
     n, pushed = cs.push_kind(client, "programs", cs.load_sections("programs"), [])
-    assert n == 0 and pushed == {} and client.store["upserts"] == []
+    assert n == 0 and pushed == {} and client.upserts == []
 
 
 # --- state file --------------------------------------------------------------
@@ -265,13 +227,13 @@ def test_upsert_programs_survives_bare_toml_date(capsys):
     columns still land, only the config mirror is skipped (with a warning)."""
     from campfire.deploy.supabase import upsert_programs
 
-    client = _FakeClient()
+    client = FakePostgrest()
     programs_config = {"capers": {
         "slug": "capers", "program_name": "CAPERS",
         "launched": datetime.date(2026, 1, 1),
     }}
     upsert_programs(client, ["capers"], programs_config)
-    (table, on_conflict, row), = client.store["upserts"]
+    (table, on_conflict, row), = client.upserts
     assert table == "programs" and on_conflict == "slug"
     assert row["program_name"] == "CAPERS"
     assert "config" not in row and "config_hash" not in row
@@ -281,10 +243,10 @@ def test_upsert_programs_survives_bare_toml_date(capsys):
 def test_upsert_programs_mirrors_config_when_jsonable():
     from campfire.deploy.supabase import upsert_programs
 
-    client = _FakeClient()
+    client = FakePostgrest()
     programs_config = {"capers": {"slug": "capers", "program_name": "CAPERS"}}
     upsert_programs(client, ["capers"], programs_config)
-    (_t, _c, row), = client.store["upserts"]
+    (_t, _c, row), = client.upserts
     assert row["config"] == {"program_name": "CAPERS"}   # injected slug stripped
     assert row["config_hash"] == cs.config_hash({"program_name": "CAPERS"})
 
@@ -298,7 +260,7 @@ def test_upsert_observation_records_sync_base(tmp_path, monkeypatch):
 
     monkeypatch.setenv("CAMPFIRE_ROOT", str(tmp_path))
     section = {"program": "capers", "field": "egs", "files": ["jw06368*"]}
-    client = _FakeClient()
+    client = FakePostgrest()
     upsert_observation(client, "capers-egs-p1", "capers", 6368, "egs",
                        config_section=section)
     assert (cs.load_state()["base"]["observations"]["capers-egs-p1"]
@@ -314,7 +276,7 @@ def test_upsert_observation_records_sync_base(tmp_path, monkeypatch):
         files = ["jw06368*"]
         gratings = ["prism"]
     """)
-    client2 = _FakeClient(tables={"observations": [
+    client2 = FakePostgrest(tables={"observations": [
         {"name": "capers-egs-p1", "config_hash": cs.config_hash(section)}]})
     n, pushed = cs.push_kind(client2, "observations",
                              cs.load_sections("observations"),
@@ -327,7 +289,7 @@ def test_upsert_programs_records_sync_base(tmp_path, monkeypatch):
     from campfire.deploy.supabase import upsert_programs
 
     monkeypatch.setenv("CAMPFIRE_ROOT", str(tmp_path))
-    client = _FakeClient()
+    client = FakePostgrest()
     upsert_programs(client, ["capers"],
                     {"capers": {"slug": "capers", "program_name": "CAPERS"}})
     assert (cs.load_state()["base"]["programs"]["capers"]
@@ -339,7 +301,7 @@ def test_upsert_field_records_sync_base(tmp_path, monkeypatch):
 
     monkeypatch.setenv("CAMPFIRE_ROOT", str(tmp_path))
     section = {"filters": ["f444w"], "files": ["jw01727*"]}
-    client = _FakeClient()
+    client = FakePostgrest()
     upsert_field(client, {"name": "cosmos", "config": section})
     assert (cs.load_state()["base"]["fields"]["cosmos"]
             == cs.config_hash(section))

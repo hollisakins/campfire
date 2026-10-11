@@ -11,43 +11,13 @@ Pure/local — no network, no real Supabase.
 
 import json
 import textwrap
-import types
 
 import pytest
 
 from campfire.deploy import fields as F
 from campfire.deploy import nircam as nc
 from campfire.deploy.r2 import UploadTask
-
-
-# --- fake Supabase client ---------------------------------------------------
-
-class _FakeTable:
-    def __init__(self, store, name):
-        self.store, self.name = store, name
-
-    def select(self, _cols):
-        return self
-
-    def in_(self, _col, _values):
-        return self
-
-    def upsert(self, row, on_conflict=None):
-        self.store["upserts"].append((self.name, on_conflict, row))
-        return self
-
-    def execute(self):
-        if self.name == "deployments":
-            return types.SimpleNamespace(data=self.store.get("deployments", []))
-        return types.SimpleNamespace(data=self.store.get(self.name, []))
-
-
-class _FakeClient:
-    def __init__(self, deployments=None):
-        self.store = {"upserts": [], "deployments": deployments or []}
-
-    def table(self, name):
-        return _FakeTable(self.store, name)
+from tests.fakes import FakePostgrest
 
 
 _FIELDS_TOML = """
@@ -193,9 +163,9 @@ def test_upsert_field_on_deploy_writes_config_area_and_deployment(tmp_path, monk
     (products / "cosmos_layout.json").write_text(
         json.dumps({"coverage_area_arcmin2": 1944.0, "coverage_area_deg2": 0.54,
                     "pixel_scale_arcsec": 0.5}))
-    client = _FakeClient()
+    client = FakePostgrest()
     assert F.upsert_field_on_deploy(client, products, "cosmos", 42) is True
-    (name, on_conflict, row), = client.store["upserts"]
+    (name, on_conflict, row), = client.upserts
     assert name == "fields" and on_conflict == "name"
     assert row["latest_deployment_id"] == 42
     assert row["coverage_area_arcmin2"] == 1944.0
@@ -213,9 +183,9 @@ def test_upsert_field_on_deploy_lifts_pixel_scale_without_coverage(tmp_path, mon
     products.mkdir()
     (products / "cosmos_layout.json").write_text(
         json.dumps({"pixel_scale_arcsec": 0.5}))
-    client = _FakeClient()
+    client = FakePostgrest()
     assert F.upsert_field_on_deploy(client, products, "cosmos", 42) is True
-    (_t, _c, row), = client.store["upserts"]
+    (_t, _c, row), = client.upserts
     assert row["expmap_pixel_scale_arcsec"] == 0.5
     assert "coverage_area_arcmin2" not in row
 
@@ -226,18 +196,18 @@ def test_upsert_field_on_deploy_without_layout_omits_deploy_owned_columns(tmp_pa
     _write_root(tmp_path, monkeypatch)
     products = tmp_path / "products"
     products.mkdir()
-    client = _FakeClient()
+    client = FakePostgrest()
     assert F.upsert_field_on_deploy(client, products, "cosmos", 42) is True
-    (_t, _c, row), = client.store["upserts"]
+    (_t, _c, row), = client.upserts
     assert "expmap_pixel_scale_arcsec" not in row
     assert "coverage_area_arcmin2" not in row
 
 
 def test_upsert_field_on_deploy_skips_unknown_field(tmp_path, monkeypatch):
     _write_root(tmp_path, monkeypatch)
-    client = _FakeClient()
+    client = FakePostgrest()
     assert F.upsert_field_on_deploy(client, tmp_path, "not_a_field", 1) is False
-    assert client.store["upserts"] == []
+    assert client.upserts == []
 
 
 # --- sync_fields scoping ----------------------------------------------------
@@ -245,32 +215,32 @@ def test_upsert_field_on_deploy_skips_unknown_field(tmp_path, monkeypatch):
 def test_sync_fields_scopes_to_deployed_fields(tmp_path, monkeypatch):
     _write_root(tmp_path, monkeypatch)
     # Only cosmos has a deployment; uds is defined in fields.toml but not deployed.
-    client = _FakeClient(deployments=[{"field": "cosmos"}, {"field": None},
-                                      {"field": "cosmos"}])
+    client = FakePostgrest(tables={"deployments": [
+        {"field": "cosmos"}, {"field": None}, {"field": "cosmos"}]})
     n = F.sync_fields(client)  # field_names=None -> deployed only
     assert n == 1
-    names = [row["name"] for (_t, _c, row) in client.store["upserts"]]
+    names = [row["name"] for (_t, _c, row) in client.upserts]
     assert names == ["cosmos"]
     # config-only sync never sends the deploy-owned columns.
-    (_t, _c, row), = client.store["upserts"]
+    (_t, _c, row), = client.upserts
     assert "coverage_area_arcmin2" not in row
     assert "latest_deployment_id" not in row
 
 
 def test_sync_fields_single_field(tmp_path, monkeypatch):
     _write_root(tmp_path, monkeypatch)
-    client = _FakeClient()
+    client = FakePostgrest()
     n = F.sync_fields(client, ["uds"])
     assert n == 1
-    assert client.store["upserts"][0][2]["name"] == "uds"
+    assert client.upserts[0][2]["name"] == "uds"
 
 
 def test_sync_fields_dry_run_writes_nothing(tmp_path, monkeypatch):
     _write_root(tmp_path, monkeypatch)
-    client = _FakeClient(deployments=[{"field": "cosmos"}])
+    client = FakePostgrest(tables={"deployments": [{"field": "cosmos"}]})
     n = F.sync_fields(client, dry_run=True)
     assert n == 0
-    assert client.store["upserts"] == []
+    assert client.upserts == []
 
 
 # --- new artifact discovery -------------------------------------------------

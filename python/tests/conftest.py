@@ -4,6 +4,27 @@ import pytest
 import json
 
 
+# ---------------------------------------------------------------------------
+# Shared in-memory fakes (tests/fakes.py, tests/fake_s3.py)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def fake_postgrest():
+    """Factory for the shared PostgREST fake: ``fake_postgrest(tables={...},
+    rpc_handlers={...}, next_id=..., ...)`` returns a fresh ``FakePostgrest``
+    (see ``tests/fakes.py`` for the semantics and the assertion surface)."""
+    from tests.fakes import FakePostgrest
+    return FakePostgrest
+
+
+@pytest.fixture
+def fake_s3():
+    """A fresh in-memory S3 (``tests/fake_s3.py``): the boto3-client subset the
+    storage code drives, plus ``.transport`` for presigned PUT/GET."""
+    from tests.fake_s3 import FakeS3Client
+    return FakeS3Client()
+
+
 @pytest.fixture
 def sample_api_key():
     """Sample API key for testing."""
