@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 #   science-only NIRCam identity, and the pushed_* columns carry the PUSH-side
 #   bookkeeping (`campfire push` / deploy dedup) — the mirror now serves both
 #   transfer directions.
-SCHEMA_VERSION = 9  # 9: spectrum_line_fits (emission-line catalog)
+SCHEMA_VERSION = 10  # 10: spectra.science_hash (P0b); 9: spectrum_line_fits
 
 
 # Product-type classes the client download engine understands. Finals are the
@@ -69,7 +69,7 @@ OBJECT_EXPORT_COLUMNS = [
 # be traced to its exact pipeline version + CRDS context without opening FITS.
 SPECTRA_COLUMNS = [
     "id", "spectrum_id", "target_id", "object_id", "grating", "fits_path",
-    "file_hash", "file_size", "signal_to_noise", "exposure_time",
+    "file_hash", "science_hash", "file_size", "signal_to_noise", "exposure_time",
     "cfpipe_version", "crds_context", "jwst_version", "date_obs", "reduced_at",
     "redshift_auto", "dq_flags",
     "program_slug", "observation", "field",
@@ -79,7 +79,7 @@ SPECTRA_COLUMNS = [
 
 SPECTRA_EXPORT_COLUMNS = [
     "spectrum_id", "target_id", "object_id", "grating", "fits_path",
-    "file_hash", "file_size", "signal_to_noise", "exposure_time",
+    "file_hash", "science_hash", "file_size", "signal_to_noise", "exposure_time",
     "cfpipe_version", "crds_context", "jwst_version", "date_obs", "reduced_at",
     "redshift_auto", "dq_flags",
     "program_slug", "observation", "field", "local_path",
@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS spectra (
     target_id TEXT,
     object_id TEXT,
     grating TEXT NOT NULL,
+    science_hash TEXT,
     signal_to_noise REAL,
     exposure_time REAL,
     cfpipe_version TEXT,

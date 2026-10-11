@@ -148,6 +148,7 @@ def row_for_key(
     sci_dq_hash: Optional[str] = None,
     wcs_hash: Optional[str] = None,
     stored_size_bytes: Optional[int] = None,
+    science_hash: Optional[str] = None,
 ) -> dict | None:
     """Build one ``storage_objects`` row dict from a storage key + integrity info.
 
@@ -191,6 +192,10 @@ def row_for_key(
         # this the re-alignment never reaches the cloud. NULL for everything
         # that compares on the whole-file hash.
         'wcs_hash': wcs_hash,
+        # Science-content hash (P0b, NIRSpec FITS finals and line-fit products):
+        # the identity that survives the DR stamp and CMPFRTIM reruns. NULL for
+        # everything else; see campfire_pipeline.metadata.science_hash.
+        'science_hash': science_hash,
         'size_bytes': int(size_bytes),
         # Bytes as stored in the bucket for transport-compressed products
         # (gzipped mosaic FITS); NULL = stored verbatim (== size_bytes, which
@@ -287,10 +292,35 @@ def build_registry_rows(
             sci_dq_hash=sci_dq_hashes.get(task.r2_key),
             wcs_hash=wcs_hashes.get(task.r2_key),
             stored_size_bytes=stored_sizes.get(task.r2_key),
+            science_hash=_science_hash_for(task.r2_key, local),
         )
         if row is not None:
             rows.append(row)
     return rows
+
+
+#: Product types whose registry row carries a science-content hash (P0b).
+SCIENCE_HASH_PRODUCT_TYPES = frozenset({'nirspec_spec', 'nirspec_lines'})
+
+
+def _science_hash_for(key: str, local: Path) -> Optional[str]:
+    """Science hash for NIRSpec FITS products, None otherwise (or when the
+    pipeline package is not installed, which the base client install allows)."""
+    try:
+        product_type = parse_key(key).product_type
+    except LayoutError:
+        return None
+    if product_type not in SCIENCE_HASH_PRODUCT_TYPES:
+        return None
+    try:
+        from campfire_pipeline.metadata.science_hash import science_hash
+    except ImportError:
+        return None
+    try:
+        return science_hash(local)
+    except Exception as e:  # noqa: BLE001 — a bad FITS must not abort registration
+        print(f"  Warning: no science hash for {key}: {e}")
+        return None
 
 
 def set_active_deployment(client, keys: list[str], deployment_id: int) -> int:
