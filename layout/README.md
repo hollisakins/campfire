@@ -39,6 +39,23 @@ The whole contract is data: see `campfire_layout/products.py`, the declarative
   test (`pipeline/tests/test_layout.py`) and the TS test (`web/lib/layout.test.ts`),
   so python↔TS drift fails CI.
 
+## Regenerating the web mirror
+
+The TS side does not hand-copy the product table. `web/lib/layout.ts` builds its
+`PRODUCTS` registry and the two suffix-dispatch tables from
+`web/lib/layout-products.json`, which `scripts/sync_layout_products.py` generates
+from `campfire_layout/products.py` (plus the dispatch tables in `bijection.py`):
+one entry per `ProductSpec` with the `subdir` / `filename` / `legacy_prefix`
+builders flattened to `{obs}`-style templates, in registration order. **After any
+edit to `products.py` or to those tables, run `python scripts/sync_layout_products.py`
+and commit the JSON** (it is stdlib-only and reads the in-repo `layout/`, so no
+install is needed). CI runs the same script with `--check` — and
+`pipeline/tests/test_layout.py` repeats the check — so a stale copy fails. The
+imperative parsers in `layout.ts` (`parseRelpath` / `parseLegacyKey`, the tile
+regex, the in-directory `mosaic*` / `expmap*` / bare-`.fits` rules) mirror
+*code* in `bijection.py`, not registry data, and remain hand-written; the golden
+fixture pins every branch of both.
+
 ## Install (editable dev)
 
 ```bash
