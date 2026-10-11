@@ -1150,8 +1150,9 @@ ALTER TABLE sync_deletions ENABLE ROW LEVEL SECURITY;
 -- =============================================================================
 -- deploy_scope_state (admin-only — multi-reducer concurrency, epic #210 B4)
 -- =============================================================================
--- Mutated only by the claim_deploy_scope RPC (SECURITY DEFINER, service_role/
--- admin). Admin-readable for inspection; defense-in-depth RLS.
+-- Mutated only by the deploy-scope RPCs (claim / begin / heartbeat /
+-- release_deploy_scope — SECURITY DEFINER, service_role/admin). Admin-readable
+-- for inspection (the lease columns show in dr_readiness); defense-in-depth RLS.
 
 ALTER TABLE deploy_scope_state ENABLE ROW LEVEL SECURITY;
 

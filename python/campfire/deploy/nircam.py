@@ -44,7 +44,7 @@ from astropy.io import fits
 from campfire_layout import KeyScheme, Scope, is_compressed_key, storage_key
 from campfire.deploy.r2 import UploadTask, upload_files_parallel
 from campfire.deploy.supabase import (
-    claim_deploy_scope, deploy_event_metadata, get_deploy_scope_version,
+    ScopeLease, deploy_event_metadata,
     get_supabase_client, get_user_id_from_token, insert_deployment, log_deploy_event,
 )
 
@@ -479,7 +479,7 @@ def _read_field_provenance(dirs, field, filters, *, prefer_mosaic=True):
 
 
 def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
-                  skip_mosaics=False):
+                  skip_mosaics=False, steal_lease=False):
     """Push NIRCam exposure state to OSN + Supabase (epic #261, N1).
 
     Records a **field-scoped deployment** (provenance + the draft->published
@@ -634,9 +634,14 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     client = get_supabase_client(config)
     user_id = get_user_id_from_token(config)
 
-    # Read the field's optimistic-concurrency version BEFORE any work so a
-    # concurrent same-field deploy is detected at finalize (epic #210, B4 / D12).
-    scope_version = get_deploy_scope_version(client, 'field', field)
+    # Deploy lease (data releases P1) + the B4 / D12 optimistic-concurrency
+    # version, taken BEFORE any work: the lease makes this deploy visible while
+    # it runs (refusing — DeployScopeBusy, surfaced by the CLI with
+    # --steal-lease — if another deploy of this field is live; a lease with no
+    # heartbeat for 30 minutes is taken over as stale), and the version is
+    # compare-and-set at finalize so a concurrent same-field deploy is detected.
+    lease = ScopeLease(client, 'field', field, actor=user_id, steal=steal_lease)
+    lease.begin()
 
     # Batch-level provenance (audit B2, Phase 3). Best-effort: only mosaics carry
     # the version cards, so an exposure-only --draft deploy (no mosaic yet)
@@ -687,7 +692,8 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     flusher = registration_flusher(
         client, store, plan, backend=_CANONICAL_BACKEND,
         deployment_id=deployment_id, uploaded_by=user_id,
-        cfpipe_version=cfpipe_version, max_workers=upload_workers)
+        cfpipe_version=cfpipe_version, max_workers=upload_workers,
+        heartbeat=lease.heartbeat)
     if plan.to_upload:
         print(f"Uploading {len(plan.to_upload)} canonical FITS/expmap/PNG(s) to OSN...")
         success, failed, failures = upload_files_parallel(
@@ -733,7 +739,8 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
     else:
         mosaic_stats = _deploy_field_mosaics(dirs, field, config, client, filters,
                                              deployment_id, draft, user_id, store=store,
-                                             mosaics=mosaics_to_deploy)
+                                             mosaics=mosaics_to_deploy,
+                                             heartbeat=lease.heartbeat)
 
     # --- Field registry: upsert the fields.toml config + deploy-computed survey
     # area (issue #303). Rides the deploy so a field row exists exactly for fields
@@ -747,7 +754,7 @@ def deploy_nircam(field, config, filters=None, dry_run=False, draft=False,
         print(f"  fields: registry upsert skipped ({e})")
 
     # --- Multi-reducer scope claim + audit (epic #210, B4 / D12) -----------
-    claim = claim_deploy_scope(client, 'field', field, scope_version, actor=user_id)
+    claim = lease.claim()
     if claim.get('conflict'):
         print(f"⚠  CONCURRENT DEPLOY DETECTED for field '{field}': another reducer "
               f"advanced this field while this deploy was running. Re-run to reconcile.")
@@ -1054,7 +1061,7 @@ def discover_mosaic_thumbnail_tasks(mosaics, field):
 
 
 def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
-                          draft, user_id, store=None, mosaics=None):
+                          draft, user_id, store=None, mosaics=None, heartbeat=None):
     """Deploy this field's mosaics under the field deployment (epic #261, N2).
 
     Called from :func:`deploy_nircam` so ``campfire deploy --field`` ships exposures
@@ -1116,7 +1123,8 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
     flusher = registration_flusher(
         client, store, plan, backend=_CANONICAL_BACKEND,
         deployment_id=deployment_id, uploaded_by=user_id,
-        max_workers=_upload_workers(_CANONICAL_BACKEND), stored_sizes=stored_sizes)
+        max_workers=_upload_workers(_CANONICAL_BACKEND), stored_sizes=stored_sizes,
+        heartbeat=heartbeat)
     if plan.to_upload:
         print(f"  Uploading {len(plan.to_upload)} mosaic file(s) to OSN...")
         success, failed, failures = upload_files_parallel(

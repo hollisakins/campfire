@@ -35,8 +35,9 @@ the server registry, so a stale mirror can never mis-skip.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from campfire_layout import KeyScheme, Scope, storage_key
 
@@ -66,6 +67,46 @@ _PLAN_COLUMNS = (
 # of bookkeeping (the bytes themselves are already in the store; the next run
 # re-plans those keys as changed and re-lands them idempotently).
 REGISTRATION_BATCH = 200
+
+# Deploy-lease heartbeat cadence (data releases P1): once per registration batch
+# AND at least this often by wall clock, so an upload pass made of a few
+# multi-GB mosaics (which never fills a batch) still keeps its lease live well
+# inside the 30-minute staleness window.
+HEARTBEAT_INTERVAL_S = 300.0
+
+
+class _HeartbeatingFlusher(BatchFlusher):
+    """BatchFlusher that fires a best-effort heartbeat from the on_success path.
+
+    The heartbeat runs on the calling (single) thread like the flush itself;
+    it is one cheap RPC per ``batch_size`` landed files or per
+    ``HEARTBEAT_INTERVAL_S``, whichever comes first, and its failures are
+    swallowed — a lost heartbeat must never fail a transfer.
+    """
+
+    def __init__(self, flush_fn, *, batch_size: int, heartbeat: Callable[[], None],
+                 interval_s: float = HEARTBEAT_INTERVAL_S, clock=time.monotonic):
+        super().__init__(flush_fn, batch_size=batch_size)
+        self._heartbeat = heartbeat
+        self._interval_s = interval_s
+        self._clock = clock
+        self._since_heartbeat = 0
+        self._last_heartbeat = clock()
+        self.heartbeats = 0
+
+    def add(self, item) -> None:
+        super().add(item)
+        self._since_heartbeat += 1
+        now = self._clock()
+        if (self._since_heartbeat >= self._batch_size
+                or now - self._last_heartbeat >= self._interval_s):
+            self._since_heartbeat = 0
+            self._last_heartbeat = now
+            try:
+                self._heartbeat()
+                self.heartbeats += 1
+            except Exception:
+                pass
 
 
 def default_upload_workers(backend: Optional[str] = None) -> int:
@@ -205,6 +246,7 @@ def registration_flusher(
     max_workers: Optional[int] = None,
     batch_size: int = REGISTRATION_BATCH,
     stored_sizes: Optional[dict[str, int]] = None,
+    heartbeat: Optional[Callable[[], None]] = None,
 ) -> BatchFlusher:
     """Build the per-batch registration hook for an upload pass.
 
@@ -215,6 +257,12 @@ def registration_flusher(
     registry, mirrors them locally, and records the pushed_* fast-path state.
     Durable-progress is the point: bytes already in the store stay skippable
     even if the process dies mid-run.
+
+    ``heartbeat`` (the deploy lease, data releases P1) is called from the
+    on_success thread once per ``batch_size`` landed files and, so a handful of
+    multi-GB mosaics cannot let the lease go stale, whenever
+    ``HEARTBEAT_INTERVAL_S`` has passed since the last call. Best-effort: its
+    exceptions are swallowed and it never delays a flush.
     """
     from campfire.deploy.registry import build_registry_rows, upsert_storage_objects
 
@@ -290,6 +338,8 @@ def registration_flusher(
                 )
             store.commit()
 
+    if heartbeat is not None:
+        return _HeartbeatingFlusher(_flush, batch_size=batch_size, heartbeat=heartbeat)
     return BatchFlusher(_flush, batch_size=batch_size)
 
 
