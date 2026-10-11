@@ -182,10 +182,34 @@ export function storageKey(productType: string, scope: Scope, filename?: string,
 // Parsing (key → product/scope/filename)
 // ---------------------------------------------------------------------------
 
+/** Roots a parsed key or relpath can live under (mirror of bijection.py):
+ * 'live' is today's mutable tree / key space; 'archive' is the content-addressed
+ * cloud store `archive/<sha256>/<relpath>` (write-once, server-side only);
+ * 'dr' is the local release tree `dr/<tag>/products/<relpath>` (never a cloud key). */
+export type KeyRoot = 'live' | 'archive' | 'dr';
+export const ARCHIVE_ROOT = 'archive';
+export const DR_ROOT = 'dr';
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const DR_TAG = /^DR\d{4}\.\d+$/;
+
 export interface ParsedKey {
   productType: string;
   scope: Scope;
   filename: string;
+  /** Which root the key was parsed from. Every rebuild MUST honour it
+   * (`keyForParsed`); dropping the root would map an archive copy onto the
+   * live key, the failure the data-release design warns about. */
+  root: KeyRoot;
+  /** Archive content hash (64 hex) or the DR tag; null for live. */
+  rootId: string | null;
+}
+
+export function isDrTag(tag: string): boolean {
+  return DR_TAG.test(tag);
+}
+
+function live(pk: Omit<ParsedKey, 'root' | 'rootId'>): ParsedKey {
+  return { ...pk, root: 'live', rootId: null };
 }
 
 // Ordered suffix tables (most specific first) from layout-products.json —
@@ -240,66 +264,98 @@ export function parseRelpath(relpath: string): ParsedKey {
   const seg = relpath.split('/');
   const tree = seg[0];
 
+  // Release tree: dr/<tag>/products/<relpath> holds a live product's bytes under
+  // a release; meta/ and anything else under dr/ is not a product.
+  if (tree === DR_ROOT) {
+    if (seg.length >= 4 && isDrTag(seg[1]) && seg[2] === 'products') {
+      const inner = parseRelpath(seg.slice(2).join('/'));
+      if (PRODUCTS[inner.productType]?.lifecycle !== 'cloud-backed-product') {
+        throw new LayoutError(`unrecognized relpath '${relpath}' ('${inner.productType}' is not a release product)`);
+      }
+      return { ...inner, root: 'dr', rootId: seg[1] };
+    }
+    throw new LayoutError(`unrecognized relpath '${relpath}' (not a release product path)`);
+  }
+
   if (tree === 'products' && seg.length >= 4 && seg[1] === 'nirspec') {
     const obs = seg[2];
-    if (seg.length === 5 && seg[3] === 'manual_masks') return { productType: 'nirspec_manual_mask', scope: { obs }, filename: seg[4] };
-    if (seg.length === 4) return { productType: nirspecObsProduct(seg[3]), scope: { obs }, filename: seg[3] };
+    if (seg.length === 5 && seg[3] === 'manual_masks') return live({ productType: 'nirspec_manual_mask', scope: { obs }, filename: seg[4] });
+    if (seg.length === 4) return live({ productType: nirspecObsProduct(seg[3]), scope: { obs }, filename: seg[3] });
   }
   if (tree === 'products' && seg.length >= 4 && seg[1] === 'nircam') {
     const field = seg[2];
-    if (seg.length === 4 && seg[3].endsWith('_rgb.png')) return { productType: 'nircam_rgb', scope: { field }, filename: seg[3] };
-    if (seg.length === 4 && seg[3].endsWith('_layout.png')) return { productType: 'nircam_layout', scope: { field }, filename: seg[3] };
+    if (seg.length === 4 && seg[3].endsWith('_rgb.png')) return live({ productType: 'nircam_rgb', scope: { field }, filename: seg[3] });
+    if (seg.length === 4 && seg[3].endsWith('_layout.png')) return live({ productType: 'nircam_layout', scope: { field }, filename: seg[3] });
     if (seg.length === 5) {
       const filt = seg[3];
       const fname = seg[4];
       const pt = dispatch(fname, NIRCAM_FILTER_SUFFIXES);
-      if (pt) return { productType: pt, scope: { field, filt }, filename: fname };
-      if (fname.startsWith('mosaic')) return { productType: 'nircam_mosaic', scope: { field, filt }, filename: plainFilename('nircam_mosaic', fname) };
+      if (pt) return live({ productType: pt, scope: { field, filt }, filename: fname });
+      if (fname.startsWith('mosaic')) return live({ productType: 'nircam_mosaic', scope: { field, filt }, filename: plainFilename('nircam_mosaic', fname) });
       // '.png' is the dark web plot; '.fits' is the coverage map.
-      if (fname.startsWith('expmap')) return { productType: fname.endsWith('.png') ? 'nircam_expmap_plot' : 'nircam_expmap', scope: { field, filt }, filename: fname };
-      if (fname.endsWith('.fits')) return { productType: 'nircam_exposure', scope: { field, filt }, filename: fname };
+      if (fname.startsWith('expmap')) return live({ productType: fname.endsWith('.png') ? 'nircam_expmap_plot' : 'nircam_expmap', scope: { field, filt }, filename: fname });
+      if (fname.endsWith('.fits')) return live({ productType: 'nircam_exposure', scope: { field, filt }, filename: fname });
     }
   }
   if (tree === 'reference' && seg.length >= 4 && seg[1] === 'nirspec') {
     const obs = seg[2];
     const fname = seg[seg.length - 1];
-    if (fname === 'stuck_closed_shutters.toml') return { productType: 'nirspec_stuck_shutters', scope: { obs }, filename: fname };
-    if (fname === 'nodded_background_overrides.toml') return { productType: 'nirspec_bkg_override', scope: { obs }, filename: fname };
-    if (fname === 'redshifts.toml') return { productType: 'nirspec_redshifts', scope: { obs }, filename: fname };
+    if (fname === 'stuck_closed_shutters.toml') return live({ productType: 'nirspec_stuck_shutters', scope: { obs }, filename: fname });
+    if (fname === 'nodded_background_overrides.toml') return live({ productType: 'nirspec_bkg_override', scope: { obs }, filename: fname });
+    if (fname === 'redshifts.toml') return live({ productType: 'nirspec_redshifts', scope: { obs }, filename: fname });
   }
   if (tree === 'reference' && seg.length >= 4 && seg[1] === 'nircam') {
     const fname = seg[seg.length - 1];
     if (seg[2] === 'shared' && seg.length === 5) {
-      if (seg[3] === 'flats') return { productType: 'nircam_flat', scope: {}, filename: fname };
-      if (seg[3] === 'wisps') return { productType: 'nircam_wisp', scope: {}, filename: fname };
+      if (seg[3] === 'flats') return live({ productType: 'nircam_flat', scope: {}, filename: fname });
+      if (seg[3] === 'wisps') return live({ productType: 'nircam_wisp', scope: {}, filename: fname });
     } else {
       const field = seg[2];
       const kind = seg[3];
-      if (kind === 'masks') return { productType: 'nircam_mask', scope: { field }, filename: fname };
-      if (kind === 'astrom_cats') return { productType: 'nircam_astrom_cat', scope: { field }, filename: fname };
-      if (kind === 'bad_pixels') return { productType: 'nircam_bad_pixel', scope: { field }, filename: fname };
+      if (kind === 'masks') return live({ productType: 'nircam_mask', scope: { field }, filename: fname });
+      if (kind === 'astrom_cats') return live({ productType: 'nircam_astrom_cat', scope: { field }, filename: fname });
+      if (kind === 'bad_pixels') return live({ productType: 'nircam_bad_pixel', scope: { field }, filename: fname });
     }
   }
   if (tree === 'tiles' && seg.length === 6 && seg[5].endsWith('.png')) {
-    return { productType: 'tile', scope: { field: seg[1], filt: seg[2], zoom: +seg[3], x: +seg[4], y: +seg[5].slice(0, -4) }, filename: seg[5] };
+    return live({ productType: 'tile', scope: { field: seg[1], filt: seg[2], zoom: +seg[3], x: +seg[4], y: +seg[5].slice(0, -4) }, filename: seg[5] });
   }
-  if (tree === 'raw' && seg.length >= 4 && seg[1] === 'nirspec') return { productType: 'raw_nirspec', scope: { data_subdir: seg[2] }, filename: seg[seg.length - 1] };
-  if (tree === 'raw' && seg.length >= 5 && seg[1] === 'nircam') return { productType: 'raw_nircam', scope: { pid: seg[2], filt: seg[3] }, filename: seg[seg.length - 1] };
+  if (tree === 'raw' && seg.length >= 4 && seg[1] === 'nirspec') return live({ productType: 'raw_nirspec', scope: { data_subdir: seg[2] }, filename: seg[seg.length - 1] });
+  if (tree === 'raw' && seg.length >= 5 && seg[1] === 'nircam') return live({ productType: 'raw_nircam', scope: { pid: seg[2], filt: seg[3] }, filename: seg[seg.length - 1] });
 
   throw new LayoutError(`unrecognized relpath '${relpath}'`);
 }
 
 export function parseKey(key: string, opts?: { bucket?: Bucket }): ParsedKey {
   rejectUnsafe(key);
+  // Content-addressed archive: archive/<sha256 hex>/<relpath> (P1). The relpath
+  // is the product's live relpath; the root rides on the result and every
+  // rebuild goes through keyForParsed.
+  if (key.startsWith(`${ARCHIVE_ROOT}/`)) {
+    const seg = key.split('/');
+    if (seg.length < 3 || !SHA256_HEX.test(seg[1])) {
+      throw new LayoutError(`unrecognized storage key '${key}' (archive/<sha256>/<relpath> expected)`);
+    }
+    const inner = parseRelpath(seg.slice(2).join('/'));
+    if (inner.root !== 'live') throw new LayoutError(`unrecognized storage key '${key}' (nested roots)`);
+    const spec = PRODUCTS[inner.productType];
+    if (!spec || !spec.bucket || !spec.mirrored || spec.lifecycle !== 'cloud-backed-product') {
+      throw new LayoutError(`unrecognized storage key '${key}' ('${inner.productType}' is not archivable)`);
+    }
+    return { ...inner, root: 'archive', rootId: seg[1] };
+  }
   // Canonical 'data/' key: relpath (mirrored products) or 'data/' + legacy-form
   // prefix (key-only products like photometry, with no local relpath to mirror).
   if (key.startsWith('data/')) {
     const rest = key.slice('data/'.length);
+    let pk: ParsedKey;
     try {
-      return parseRelpath(rest);
+      pk = parseRelpath(rest);
     } catch {
       return parseLegacyKey(rest, opts);
     }
+    if (pk.root !== 'live') throw new LayoutError(`unrecognized storage key '${key}' (release trees are local only)`);
+    return pk;
   }
   return parseLegacyKey(key, opts);
 }
@@ -308,20 +364,20 @@ export function parseKey(key: string, opts?: { bucket?: Bucket }): ParsedKey {
 // today's bare keys) — same reason as parseRelpath.
 function parseLegacyKey(key: string, opts?: { bucket?: Bucket }): ParsedKey {
   const seg = key.split('/');
-  if (seg[0] === 'spectra' && seg.length === 3) return { productType: nirspecObsProduct(seg[2]), scope: { obs: seg[1] }, filename: seg[2] };
-  if (seg[0] === 'rgb' && seg.length === 3) return { productType: 'rgb', scope: { obs: seg[1] }, filename: seg[2] };
-  if (seg[0] === 'sed' && seg.length === 3) return { productType: 'sed', scope: { obs: seg[1] }, filename: seg[2] };
+  if (seg[0] === 'spectra' && seg.length === 3) return live({ productType: nirspecObsProduct(seg[2]), scope: { obs: seg[1] }, filename: seg[2] });
+  if (seg[0] === 'rgb' && seg.length === 3) return live({ productType: 'rgb', scope: { obs: seg[1] }, filename: seg[2] });
+  if (seg[0] === 'sed' && seg.length === 3) return live({ productType: 'sed', scope: { obs: seg[1] }, filename: seg[2] });
   if (seg[0] === 'nircam' && seg.length === 5 && seg[1] === 'exposures') {
     const pt = dispatch(seg[4], NIRCAM_FILTER_SUFFIXES);
-    if (pt) return { productType: pt, scope: { field: seg[2], filt: seg[3] }, filename: seg[4] };
+    if (pt) return live({ productType: pt, scope: { field: seg[2], filt: seg[3] }, filename: seg[4] });
   }
   if (seg[0] === 'photometry' && seg.length === 3) {
-    return { productType: 'photometry_pz', scope: { field: seg[1], object_id: seg[2].replace(/_pz\.json$/, '') }, filename: seg[2] };
+    return live({ productType: 'photometry_pz', scope: { field: seg[1], object_id: seg[2].replace(/_pz\.json$/, '') }, filename: seg[2] });
   }
 
   if (opts?.bucket === 'tiles' || TILE_RE.test(key)) {
     const m = TILE_RE.exec(key);
-    if (m) return { productType: 'tile', scope: { field: m[1], filt: m[2], zoom: +m[3], x: +m[4], y: +m[5] }, filename: `${m[5]}.png` };
+    if (m) return live({ productType: 'tile', scope: { field: m[1], filt: m[2], zoom: +m[3], x: +m[4], y: +m[5] }, filename: `${m[5]}.png` });
   }
 
   throw new LayoutError(`unrecognized storage key '${key}'`);
@@ -335,6 +391,12 @@ function parseLegacyKey(key: string, opts?: { bucket?: Bucket }): ParsedKey {
  * source key's prefix and scheme; only the filename suffix changes. */
 export function deriveSibling(key: string, targetProductType: string, opts?: { bucket?: Bucket }): string {
   const pk = parseKey(key, opts);
+  if (pk.root !== 'live') {
+    // Each archived sidecar sits under its OWN content hash; string surgery on
+    // the spec key would name an object that does not exist. Resolve siblings
+    // of an archive object through the registry / dr_members.
+    throw new LayoutError(`cannot derive a sibling of an archive key ('${key}'); look it up by hash`);
+  }
   const src = get(pk.productType);
   const tgt = get(targetProductType);
   if (src.suffix === null || tgt.suffix === null) {
@@ -351,8 +413,37 @@ export function deriveSibling(key: string, targetProductType: string, opts?: { b
  * either scheme, so passing an already-canonical key is idempotent. Throws
  * `LayoutError` for unknown/unsafe keys. */
 export function toCanonicalKey(key: string, opts?: { bucket?: Bucket }): string {
-  const pk = parseKey(key, opts);
-  return storageKey(pk.productType, pk.scope, pk.filename, 'canonical');
+  // An archive key is already its own canonical form; never collapse it onto
+  // the live key (which may hold newer bytes).
+  return keyForParsed(parseKey(key, opts), 'canonical');
+}
+
+/** Archive key for one object: `archive/<sha256 hex>/<relpath>` (mirror of
+ * keys.archive_key). Only mirrored cloud products (NIRSpec finals and sidecars,
+ * NIRCam mosaics) can be archived. */
+export function archiveKey(productType: string, scope: Scope, filename: string | undefined, contentHash: string): string {
+  const s = get(productType);
+  if (!s.bucket || !s.mirrored || s.lifecycle !== 'cloud-backed-product') {
+    throw new LayoutError(`product '${productType}' cannot be archived (not a mirrored cloud product)`);
+  }
+  validate(s, scope);
+  const hex = (contentHash.includes(':') ? contentHash.split(':', 2)[1] : contentHash).toLowerCase();
+  if (!SHA256_HEX.test(hex)) throw new LayoutError(`not a sha256 content hash: '${contentHash}'`);
+  let fname = resolveFilename(s, scope, filename);
+  if (s.compressedSuffixes.some((sfx) => fname.endsWith(sfx))) fname = `${fname}.gz`;
+  return `${ARCHIVE_ROOT}/${hex}/${relDir(s, scope)}/${fname}`;
+}
+
+/** Rebuild the storage key a ParsedKey came from, honouring its root: live →
+ * `storageKey` under `scheme`; archive → `archiveKey` with the parsed hash; dr →
+ * throws (a release tree is local; its objects live under `archive/`). */
+export function keyForParsed(pk: ParsedKey, scheme: KeyScheme = 'canonical'): string {
+  if (pk.root === 'live') return storageKey(pk.productType, pk.scope, pk.filename, scheme);
+  if (pk.root === 'archive') {
+    if (!pk.rootId) throw new LayoutError('archive ParsedKey without a content hash cannot be rebuilt');
+    return archiveKey(pk.productType, pk.scope, pk.filename, pk.rootId);
+  }
+  throw new LayoutError(`a '${pk.root}' path has no storage key`);
 }
 
 /** Rewrite *key* into the LEGACY scheme (today's bare key on R2). The dual-read
@@ -360,6 +451,7 @@ export function toCanonicalKey(key: string, opts?: { bucket?: Bucket }): string 
  * `LayoutError` for unknown/unsafe keys. */
 export function toLegacyKey(key: string, opts?: { bucket?: Bucket }): string {
   const pk = parseKey(key, opts);
+  if (pk.root !== 'live') throw new LayoutError(`an archive key has no legacy (R2) form: '${key}'`);
   return storageKey(pk.productType, pk.scope, pk.filename, 'legacy');
 }
 
@@ -380,19 +472,40 @@ export function isCompressedKey(key: string, opts?: { bucket?: Bucket }): boolea
   return !!s && s.compressedSuffixes.some((sfx) => pk.filename.endsWith(sfx));
 }
 
-/** True iff *key* parses to a cloud-backed product — the presign/proxy allowlist.
- * Rejects traversal/unsafe keys and keys resolving to non-cloud products. */
-export function isKnownKey(key: string, opts?: { bucket?: Bucket }): boolean {
+function parsedCloudKey(key: string, opts?: { bucket?: Bucket }): ParsedKey | null {
   let pk: ParsedKey;
   try {
     pk = parseKey(key, opts);
   } catch {
-    return false;
+    return null;
   }
   const s = PRODUCTS[pk.productType];
-  if (!s || !s.bucket) return false;
-  if (opts?.bucket && s.bucket !== opts.bucket) return false;
-  return true;
+  if (!s || !s.bucket) return null;
+  if (opts?.bucket && s.bucket !== opts.bucket) return null;
+  return pk;
+}
+
+/** True iff *key* names a cloud-backed object a client may READ through the
+ * presign / download / proxy routes: a live key or an archive copy. Rejects
+ * traversal/unsafe keys, non-cloud products and release-tree paths. */
+export function isReadableKey(key: string, opts?: { bucket?: Bucket }): boolean {
+  return parsedCloudKey(key, opts) !== null;
+}
+
+/** True iff a client may be handed a PUT for *key*: live keys only. Archive
+ * objects are written once, server-side (retain-on-supersede, the freeze byte
+ * pass) and never overwritten; the deploy presign route uses this, never
+ * `isReadableKey`. */
+export function isWritableKey(key: string, opts?: { bucket?: Bucket }): boolean {
+  const pk = parsedCloudKey(key, opts);
+  return pk !== null && pk.root === 'live';
+}
+
+/** Read allowlist (alias of `isReadableKey`, kept for callers). Before P1 this
+ * one predicate gated both reads and deploy PUTs; PUTs go through
+ * `isWritableKey` now. */
+export function isKnownKey(key: string, opts?: { bucket?: Bucket }): boolean {
+  return isReadableKey(key, opts);
 }
 
 /** Observation name for a NIRSpec object key (replaces extractObservationName). */

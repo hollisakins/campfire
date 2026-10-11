@@ -13,8 +13,26 @@ from __future__ import annotations
 
 from typing import Optional
 
+import re
+
 from . import products
-from .scope import KeyScheme, LayoutError, Scope
+from .scope import KeyScheme, LayoutError, LifecycleClass, Scope
+
+#: Root segment of the content-addressed archive (data-release design §4.2):
+#: ``archive/<sha256 hex>/<relpath>``. Objects under it are written once by the
+#: server-side retain / freeze steps and never overwritten; no client may mint
+#: a PUT under it (see :func:`bijection.is_writable_key`).
+ARCHIVE_ROOT = "archive"
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+
+def archive_hex(content_hash: str) -> str:
+    """Normalize ``'sha256:<hex>'`` or bare hex to the 64-char lowercase hex."""
+    h = content_hash.split(":", 1)[1] if ":" in content_hash else content_hash
+    h = h.lower()
+    if not _SHA256_HEX.match(h):
+        raise LayoutError(f"not a sha256 content hash: '{content_hash}'")
+    return h
 
 
 def bucket_for(product_type: str) -> str:
@@ -75,3 +93,22 @@ def storage_key(product_type: str, scope: Scope, filename: Optional[str] = None,
     if any(fname.endswith(sfx) for sfx in spec.compressed_suffixes):
         fname = f"{fname}.gz"
     return f"{key_prefix(product_type, scope, scheme=scheme)}/{fname}"
+
+
+def archive_key(product_type: str, scope: Scope, filename: Optional[str] = None, *,
+                content_hash: str) -> str:
+    """Archive key for one object: ``archive/<sha256 hex>/<relpath>``.
+
+    The relpath is the product's local relpath (so the key↔relpath bijection
+    holds under the archive root too) with the same ``.gz`` rule as
+    :func:`storage_key`. Only mirrored, cloud-backed products can be archived
+    (NIRSpec finals and sidecars, NIRCam mosaics); key-only products raise.
+    """
+    spec = products.get(product_type)
+    if spec.bucket is None or not spec.mirrored or spec.lifecycle is not LifecycleClass.CLOUD_PRODUCT:
+        raise LayoutError(f"product '{product_type}' cannot be archived (not a mirrored cloud product)")
+    spec.validate(scope)
+    fname = spec.resolve_filename(scope, filename)
+    if any(fname.endswith(sfx) for sfx in spec.compressed_suffixes):
+        fname = f"{fname}.gz"
+    return f"{ARCHIVE_ROOT}/{archive_hex(content_hash)}/{spec.rel_dir(scope)}/{fname}"

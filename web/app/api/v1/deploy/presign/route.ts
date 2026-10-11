@@ -10,7 +10,7 @@ import {
   getOsnWriteBucket,
   type StoragePurpose,
 } from '@/lib/storage';
-import { isKnownKey } from '@/lib/layout';
+import { isWritableKey } from '@/lib/layout';
 
 const MAX_BATCH_SIZE = 500;
 const PRESIGN_EXPIRY_SECONDS = 3600; // 1 hour
@@ -105,7 +105,7 @@ export async function POST(request: NextRequest) {
     // Rejects traversal/unsafe keys and anything outside the layout contract, so
     // a presign can never sign an arbitrary or out-of-tree object.
     const badUpload = uploads.find(
-      (u: { key?: string }) => !u.key || !isKnownKey(u.key, { bucket: bucketId })
+      (u: { key?: string }) => !u.key || !isWritableKey(u.key, { bucket: bucketId })
     );
     if (badUpload) {
       return NextResponse.json(

@@ -12,8 +12,14 @@ import {
   parseRelpath,
   deriveSibling,
   isKnownKey,
+  isReadableKey,
+  isWritableKey,
   isCompressedKey,
   toCanonicalKey,
+  toLegacyKey,
+  keyForParsed,
+  archiveKey,
+  isDrTag,
   observationFromKey,
   PRODUCTS,
   type Scope,
@@ -109,21 +115,93 @@ describe('compressed keys', () => {
   });
 });
 
-describe('foreign roots (archive/, dr/) are not part of the contract yet', () => {
-  // The data-release work introduces these roots; TODAY every entry point must
-  // reject them, so that work flips these rows explicitly when it lands.
+describe('foreign roots are rejected', () => {
+  // data/archive/…, data/dr/… and dr/… as CLOUD keys are not part of the
+  // contract (the release tree is local); dr/<tag>/meta is not a product path.
   for (const key of golden.foreign_root_keys as string[]) {
     it(key, () => {
       expect(() => parseKey(key)).toThrow();
       expect(() => parseKey(key, { bucket: 'data' })).toThrow();
       expect(() => parseKey(key, { bucket: 'tiles' })).toThrow();
-      expect(() => parseRelpath(key)).toThrow();
+      if (!key.startsWith('dr/DR') || !key.includes('/products/')) expect(() => parseRelpath(key)).toThrow();
       expect(() => toCanonicalKey(key)).toThrow();
       expect(isKnownKey(key)).toBe(false);
+      expect(isReadableKey(key)).toBe(false);
+      expect(isWritableKey(key)).toBe(false);
       expect(isCompressedKey(key)).toBe(false);
       expect(observationFromKey(key)).toBeNull();
     });
   }
+});
+
+interface ArchiveCase {
+  key: string; product_type: string; scope: Scope; filename: string; root_id: string;
+  relpath: string; live_canonical: string; compressed: boolean; bucket: string;
+}
+
+describe('archive keys (P1): read-only, root-preserving', () => {
+  for (const c of golden.archive_keys as ArchiveCase[]) {
+    it(c.key.split('/').pop()!, () => {
+      const pk = parseKey(c.key);
+      expect(pk.productType).toBe(c.product_type);
+      expect(pk.filename).toBe(c.filename);
+      expect(pk.root).toBe('archive');
+      expect(pk.rootId).toBe(c.root_id);
+      for (const [k, v] of Object.entries(c.scope)) expect((pk.scope as Record<string, unknown>)[k]).toBe(v);
+      // rebuilds to itself, never to the live key
+      expect(keyForParsed(pk)).toBe(c.key);
+      expect(toCanonicalKey(c.key)).toBe(c.key);
+      expect(archiveKey(pk.productType, pk.scope, pk.filename, `sha256:${c.root_id}`)).toBe(c.key);
+      const livePk = parseRelpath(c.relpath);
+      expect(livePk.root).toBe('live');
+      expect(keyForParsed(livePk)).toBe(c.live_canonical);
+      expect(() => toLegacyKey(c.key)).toThrow();
+      expect(isReadableKey(c.key)).toBe(true);
+      expect(isKnownKey(c.key)).toBe(true);
+      expect(isWritableKey(c.key)).toBe(false);
+      expect(isReadableKey(c.key, { bucket: 'data' })).toBe(true);
+      expect(isWritableKey(c.key, { bucket: 'data' })).toBe(false);
+      expect(isCompressedKey(c.key)).toBe(c.compressed);
+      expect(() => deriveSibling(c.key, 'zfit')).toThrow();
+    });
+  }
+  for (const key of golden.archive_rejected_keys as string[]) {
+    it(`rejects ${key}`, () => {
+      expect(() => parseKey(key)).toThrow();
+      expect(isReadableKey(key)).toBe(false);
+      expect(isWritableKey(key)).toBe(false);
+    });
+  }
+});
+
+interface DrCase { relpath: string; product_type: string; scope: Scope; filename: string; root_id: string; tree_class: string }
+
+describe('release tree relpaths (P1): local only', () => {
+  for (const c of golden.dr_relpaths as DrCase[]) {
+    it(c.relpath, () => {
+      const pk = parseRelpath(c.relpath);
+      expect(pk.productType).toBe(c.product_type);
+      expect(pk.filename).toBe(c.filename);
+      expect(pk.root).toBe('dr');
+      expect(pk.rootId).toBe(c.root_id);
+      expect(isDrTag(c.root_id)).toBe(true);
+      expect(() => keyForParsed(pk)).toThrow();
+      expect(() => parseKey(`data/${c.relpath}`)).toThrow();
+      expect(isReadableKey(c.relpath)).toBe(false);
+    });
+  }
+  for (const rp of golden.dr_rejected_relpaths as string[]) {
+    it(`rejects ${rp}`, () => expect(() => parseRelpath(rp)).toThrow());
+  }
+  it('live parses carry root live', () => {
+    for (const c of golden.cases as Case[]) {
+      if (!c.key_canonical || !c.bucket) continue;
+      const pk = parseKey(c.key_canonical, { bucket: c.bucket as 'data' | 'tiles' });
+      expect(pk.root).toBe('live');
+      expect(pk.rootId).toBeNull();
+      expect(keyForParsed(pk)).toBe(c.key_canonical);
+    }
+  });
 });
 
 describe('sibling round-trips', () => {
