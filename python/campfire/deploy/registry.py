@@ -32,7 +32,8 @@ from campfire_layout import (
     KeyScheme,
     LayoutError,
     bucket_for,
-    is_known_key,
+    is_writable_key,
+    key_for_parsed,
     parse_key,
     storage_key,
 )
@@ -148,6 +149,7 @@ def row_for_key(
     sci_dq_hash: Optional[str] = None,
     wcs_hash: Optional[str] = None,
     stored_size_bytes: Optional[int] = None,
+    science_hash: Optional[str] = None,
 ) -> dict | None:
     """Build one ``storage_objects`` row dict from a storage key + integrity info.
 
@@ -157,6 +159,11 @@ def row_for_key(
     can ``filter(None)``.
     """
     parsed = parse_key(storage_key, bucket=bucket)
+    if not parsed.is_live:
+        # Archive rows (archive/<sha>/<relpath>) are registered by the server-side
+        # retain / freeze steps with their own columns (P2). Building a live row
+        # for one here would record the live product/scope under an archive key.
+        raise LayoutError(f"row_for_key: '{storage_key}' is an archive key; not a live registry row")
     product_type = parsed.product_type
     obj_bucket = bucket or bucket_for(product_type)
 
@@ -191,6 +198,10 @@ def row_for_key(
         # this the re-alignment never reaches the cloud. NULL for everything
         # that compares on the whole-file hash.
         'wcs_hash': wcs_hash,
+        # Science-content hash (P0b, NIRSpec FITS finals and line-fit products):
+        # the identity that survives the DR stamp and CMPFRTIM reruns. NULL for
+        # everything else; see campfire_pipeline.metadata.science_hash.
+        'science_hash': science_hash,
         'size_bytes': int(size_bytes),
         # Bytes as stored in the bucket for transport-compressed products
         # (gzipped mosaic FITS); NULL = stored verbatim (== size_bytes, which
@@ -287,10 +298,35 @@ def build_registry_rows(
             sci_dq_hash=sci_dq_hashes.get(task.r2_key),
             wcs_hash=wcs_hashes.get(task.r2_key),
             stored_size_bytes=stored_sizes.get(task.r2_key),
+            science_hash=_science_hash_for(task.r2_key, local),
         )
         if row is not None:
             rows.append(row)
     return rows
+
+
+#: Product types whose registry row carries a science-content hash (P0b).
+SCIENCE_HASH_PRODUCT_TYPES = frozenset({'nirspec_spec', 'nirspec_lines'})
+
+
+def _science_hash_for(key: str, local: Path) -> Optional[str]:
+    """Science hash for NIRSpec FITS products, None otherwise (or when the
+    pipeline package is not installed, which the base client install allows)."""
+    try:
+        product_type = parse_key(key).product_type
+    except LayoutError:
+        return None
+    if product_type not in SCIENCE_HASH_PRODUCT_TYPES:
+        return None
+    try:
+        from campfire_pipeline.metadata.science_hash import science_hash
+    except ImportError:
+        return None
+    try:
+        return science_hash(local)
+    except Exception as e:  # noqa: BLE001 — a bad FITS must not abort registration
+        print(f"  Warning: no science hash for {key}: {e}")
+        return None
 
 
 def set_active_deployment(client, keys: list[str], deployment_id: int) -> int:
@@ -454,7 +490,9 @@ def canonical_key_for(legacy_key: str) -> str:
     relpath) form. Raises ``LayoutError`` for unknown/unsafe keys.
     """
     pk = parse_key(legacy_key)
-    return storage_key(pk.product_type, pk.scope, pk.filename, scheme=KeyScheme.CANONICAL)
+    # key_for_parsed honours the parsed root: an archive key is already its own
+    # canonical form and must never collapse onto the live key (P1).
+    return key_for_parsed(pk, scheme=KeyScheme.CANONICAL)
 
 
 def _canonical_identity(key: str) -> str:
@@ -518,7 +556,9 @@ def compute_reconcile(
                  else {_canonical_identity(k): k for k in danglable_keys if k})
     dangling = {danglable[c] for c in (danglable.keys() - bucket.keys())}
     orphans = {bucket[c] for c in (bucket.keys() - registry.keys())}
-    adoptable = {k for k in orphans if is_known_key(k)}
+    # Only LIVE keys may be adopted as active rows; archive objects without a
+    # row are a failed retain, reported as orphans, never adopted (P1).
+    adoptable = {k for k in orphans if is_writable_key(k)}
     return ReconcileReport(missing, dangling, orphans, adoptable)
 
 

@@ -169,6 +169,9 @@ LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM set_config('request.jwt.claims', json_build_object('sub', p_uid, 'role', 'authenticated')::text, true);
 END $$;
+-- P-1: functions default to no PUBLIC execute, so the helper must be granted
+-- explicitly before it is called under SET LOCAL ROLE authenticated.
+GRANT EXECUTE ON FUNCTION pg_temp.zzz_as(text) TO authenticated;
 
 -- Counts every table a link account could read, under the current principal.
 -- Returned as one row so each assertion block reads as a single comparison.
@@ -198,6 +201,9 @@ LANGUAGE sql STABLE AS $$
     'share_links', (SELECT count(*) FROM share_links     WHERE token LIKE 'zzz%')
   );
 $$;
+-- P-1: functions default to no PUBLIC execute, so the helper must be granted
+-- explicitly before it is called under SET LOCAL ROLE authenticated.
+GRANT EXECUTE ON FUNCTION pg_temp.zzz_visible() TO authenticated;
 
 SET LOCAL ROLE authenticated;
 

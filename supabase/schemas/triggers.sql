@@ -624,6 +624,10 @@ CREATE TRIGGER bump_spectra_updated_at_trigger
     thumbnail_svg_flambda,
     fits_path,
     file_hash,
+    -- Science-content hash (P0b, decision D-P0-1): the backfill and every
+    -- deploy write it; `campfire identify` reads it from the local mirror, so a
+    -- change must enter the incremental delta.
+    science_hash,
     -- zfit scalars on the row (perf T2-D2, #508): written by deploy and the
     -- backfill; a sync client showing the fit summary must see them change.
     chi2_min,
@@ -778,6 +782,35 @@ DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.spectrum_line_fi
 CREATE TRIGGER journal_sync_deletions_trigger
   AFTER DELETE ON public.spectrum_line_fits REFERENCING OLD TABLE AS old_rows
   FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('line_fits', 'spectrum_id');
+
+-- ===========================================================================
+-- Privilege hardening (P-1): trigger functions are not RPC endpoints
+-- Postgres grants EXECUTE to PUBLIC on every new function, and the schema's
+-- default privileges used to add anon on top; both made every RPC here callable
+-- with the public anon key (findings §0.2). Explicit per-function revokes keep the
+-- grants to authenticated / service_role that each function declares above.
+-- Generated 2026-10-11 from the catalog; add a line here for every new function.
+-- ===========================================================================
+REVOKE ALL ON FUNCTION public.bump_object_version() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.bump_spectra_updated_at() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.enforce_object_user_update_scope() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.enforce_profile_role_update_scope() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.enforce_spectra_dq_user_update_scope() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.handle_new_user() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.journal_sync_deletions() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.log_list_membership_change() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.log_object_inspection_changes() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.log_spectrum_dq_changes() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.pin_redshift_on_signoff() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.propagate_target_publication_to_shutters() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.propagate_target_scope_to_spectra() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_object_photometry_bands() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_shutter_publication() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_spectra_target_scope() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_spectrum_lines() FROM PUBLIC, anon;
+-- GoTrue inserts auth.users as supabase_auth_admin; the trigger fires without an
+-- EXECUTE check, but keep the grant explicit so the intent is readable.
+GRANT EXECUTE ON FUNCTION public.handle_new_user() TO supabase_auth_admin;
 
 -- ---------------------------------------------------------------------------
 -- protect_archive_rows (data releases, P2)

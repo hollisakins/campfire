@@ -354,6 +354,22 @@ class TestQuerySpectra:
         assert row is not None
         assert row["grating"] == "PRISM"
 
+    def test_science_hash_persists_and_updates(self, store, sample_objects, sample_spectra):
+        """P0b: the science_hash the /sync/spectra stream returns is written
+        on insert, overwritten on conflict, and visible on every read path."""
+        h1 = "sha256:" + "ab" * 32
+        h2 = "sha256:" + "cd" * 32
+        store.upsert_objects(sample_objects)
+        first = dict(sample_spectra[0], science_hash=h1)
+        store.upsert_spectra([first] + sample_spectra[1:])
+        assert store.get_spectrum("ember_uds_p4_prism_clear_100")["science_hash"] == h1
+        rows = {r["spectrum_id"]: r for r in store.query_spectra()}
+        assert rows["ember_uds_p4_prism_clear_100"]["science_hash"] == h1
+        assert rows[sample_spectra[1]["spectrum_id"]]["science_hash"] is None
+        # A later sync with a new value updates the existing row.
+        store.upsert_spectra([dict(first, science_hash=h2)])
+        assert store.get_spectrum("ember_uds_p4_prism_clear_100")["science_hash"] == h2
+
 
 class TestProvenance:
     """Provenance is carried verbatim through upsert -> query -> get and is
