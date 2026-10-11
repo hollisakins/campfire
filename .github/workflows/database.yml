@@ -1,0 +1,165 @@
+name: Database
+
+# Required check for every PR (branch protection → "database"). For PRs that
+# touch the database surface it builds the local stack on the CLI's native
+# runtime (no Docker) and runs, in order:
+#
+#   1. drift gate   `supabase db schema declarative sync --strict-coverage`
+#                   (pg-delta) must produce NO migration: supabase/schemas/ and
+#                   supabase/migrations/ describe the same database.
+#   2. db reset     the full migration chain + seed.sql apply cleanly.
+#   3. guards       every supabase/tests/check_*.sql (BEGIN … ROLLBACK).
+#   4. harnesses    the seed-anchored python/tests SQL harnesses
+#                   (CAMPFIRE_LOCAL_DB_URL, see python/tests/_localdb.py).
+#   5. headers      every migration added by the PR starts with the
+#                   lock_timeout / statement_timeout header.
+#
+# Replaces supabase-mv-indexes.yml. The `database` job is the only name branch
+# protection should require: it is green when `check` was skipped by the path
+# filter. See docs/design-data-releases-infra-proposal.md §3.2–3.4.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  SUPABASE_EXPERIMENTAL_STACK: "1"
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      database: ${{ steps.filter.outputs.database }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            database:
+              - 'supabase/**'
+              - 'scripts/generate_seed.py'
+              - 'python/tests/sql/**'
+              - 'python/tests/_localdb.py'
+              - 'python/tests/test_*_rls.py'
+              - 'python/tests/test_nircam_field_deploy_gate.py'
+              - 'python/tests/test_nircam_images_lifecycle.py'
+              - '.github/workflows/database.yml'
+
+  check:
+    needs: changes
+    if: needs.changes.outputs.database == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history of the PR range so the header check can list the
+          # migrations this PR adds.
+          fetch-depth: 0
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          # Pinned: the stack commands and pg-delta are experimental and outside
+          # the CLI compatibility promise. Bump deliberately.
+          version: 2.120.0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            layout/pyproject.toml
+            python/pyproject.toml
+
+      - name: Start the local stack (native runtime)
+        run: supabase start --runtime native
+
+      - name: Drift gate (schemas vs migrations, pg-delta)
+        run: |
+          set -e
+          supabase db schema declarative sync --strict-coverage --no-apply --name ci_drift_check
+          if [ -n "$(git status --porcelain -- supabase/migrations)" ]; then
+            echo "::error::supabase/schemas/ and supabase/migrations/ disagree. pg-delta generated:"
+            git status --porcelain -- supabase/migrations
+            for f in $(git ls-files --others --exclude-standard supabase/migrations); do
+              echo "----- $f"; cat "$f"
+            done
+            echo "Regenerate the migration from the schema files (supabase db schema declarative sync -f <name> --no-apply) and commit it."
+            exit 1
+          fi
+          echo "no drift"
+
+      - name: Reset database (migration chain + seed)
+        run: supabase db reset --yes
+
+      - name: Resolve DB URL
+        id: db
+        run: |
+          eval "$(supabase status -o env | grep '^DB_URL=')"
+          echo "url=$DB_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Schema guards
+        env:
+          DB_URL: ${{ steps.db.outputs.url }}
+        run: |
+          set -e
+          for f in supabase/tests/check_*.sql; do
+            echo "== $f"
+            psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Python SQL harnesses
+        env:
+          CAMPFIRE_LOCAL_DB_URL: ${{ steps.db.outputs.url }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./layout
+          pip install -e ./python pytest
+          pytest python/tests -q -p no:cacheprovider -rs \
+            -k "rls or lifecycle or field_deploy_gate"
+
+      - name: Migration header check (new files in this PR)
+        run: |
+          set -e
+          base="${{ github.event.pull_request.base.sha }}"
+          new=$(git diff --name-only --diff-filter=A "$base"...HEAD -- supabase/migrations/ || true)
+          [ -z "$new" ] && { echo "no new migrations"; exit 0; }
+          fail=0
+          for f in $new; do
+            if ! head -n 12 "$f" | grep -qiE "SET[[:space:]]+lock_timeout"; then
+              echo "::error file=$f::migration must start with: SET lock_timeout = '5s'; SET statement_timeout = '60s';"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Stop the stack
+        if: always()
+        run: supabase stop || true
+
+  database:
+    needs: [changes, check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate
+        env:
+          CHECK: ${{ needs.check.result }}
+        run: |
+          echo "check=$CHECK"
+          case "$CHECK" in
+            success|skipped) ;;
+            *) echo "::error::database check result: $CHECK"; exit 1 ;;
+          esac

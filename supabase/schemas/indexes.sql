@@ -20,6 +20,9 @@ CREATE INDEX IF NOT EXISTS idx_targets_field_observation
 
 CREATE INDEX IF NOT EXISTS idx_targets_target_id_trgm
     ON public.targets USING gin (target_id public.gin_trgm_ops);
+COMMENT ON INDEX "public"."idx_targets_target_id_trgm" IS 'Trigram index for fuzzy text search on object_id. Supports ILIKE with leading/trailing wildcards.
+Example: WHERE object_id ILIKE ''%cosmos%'' will use this index.
+Alternative: For prefix-only search, use text_pattern_ops index instead.';
 
 CREATE INDEX IF NOT EXISTS idx_targets_program_slug_field
     ON public.targets USING btree (program_slug, field);

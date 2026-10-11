@@ -1335,6 +1335,8 @@ COMMENT ON COLUMN "public"."storage_objects"."content_hash" IS 'Scheme-prefixed 
 
 COMMENT ON COLUMN "public"."storage_objects"."filter" IS 'Typed, indexed scope column for per-filter NIRCam products (nircam_exposure/_preview/_full, nircam_mosaic, nircam_expmap), denormalized from the campfire_layout key''s <field>/<filter>/ segment by deploy/row_for_key. NULL for NIRSpec and field-level products (no filter concept). Mirrors observation/field/spectrum_id — lets the registry filter/aggregate by filter without parsing keys.';
 
+COMMENT ON COLUMN "public"."storage_objects"."spectrum_id" IS 'Typed, indexed scope column (not an FK). spectra.spectrum_id is GENERATED from fits_path and not uniquely constrained, so an FK would over-constrain; an index provides the joinability the registry needs.';
+
 COMMENT ON COLUMN "public"."storage_objects"."exposure_ref" IS 'Stable per-exposure reference for intermediate products (nircam rootname; nirspec (root,nod,detector,source) tuple). Backs the partial unique (product_type, exposure_ref) WHERE status=''active'' — one current object per product/exposure.';
 
 COMMENT ON COLUMN "public"."storage_objects"."sci_dq_hash" IS 'Science-only sha256(SCI+DQ) change-detection digest (epic #261, N1). Lets deploy skip re-uploading a NIRCam canonical exposure whose science is unchanged even though its whole-file content_hash shifted (pipeline re-save bumps header timestamps). Paired with wcs_hash: BOTH must match for deploy to skip an upload, since the array digest alone cannot see a re-alignment. content_hash remains the authoritative whole-file integrity token; this is never used for download/copy verification. NULL for products without a partial digest.';
@@ -1371,6 +1373,8 @@ CREATE TABLE IF NOT EXISTS "public"."deploy_events" (
 
 
 ALTER TABLE "public"."deploy_events" OWNER TO "postgres";
+
+COMMENT ON COLUMN "public"."deploy_events"."field" IS 'NIRCam field scope (audit B5, Phase 3). Mirrors deployments.field; NULL for NIRSpec (observation) events. Authoritative — get_admin_deploy_events reads this, not metadata.';
 
 
 COMMENT ON TABLE "public"."deploy_events" IS 'Append-only audit log for the intermediate-product lifecycle (epic #210, B2/B3). One row per action (upload/publish/revoke/recover/supersede/delete), written only by the lifecycle RPCs (SECURITY DEFINER). deployment_id is nullable (some events are not tied to a deployment). Admin-readable; never client-inserted.';
