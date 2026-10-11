@@ -129,13 +129,15 @@ jobs:
       - name: Python SQL harnesses
         env:
           CAMPFIRE_LOCAL_DB_URL: ${{ steps.db.outputs.url }}
-        # Only the seven harness files: collecting the whole suite would import
-        # the deploy modules (supabase, boto3), which these tests do not need.
+        # Only the seven harness files (plus the seed checker's unit test):
+        # collecting the whole suite would import the deploy modules
+        # (supabase, boto3), which these tests do not need.
         run: |
           python -m pip install --upgrade pip
           pip install -e ./layout
           pip install -e ./python pytest
           pytest -q -p no:cacheprovider -rs \
+            python/tests/test_check_seed_privacy.py \
             python/tests/test_deploy_status_rls.py \
             python/tests/test_lifecycle_rls.py \
             python/tests/test_multireducer_rls.py \

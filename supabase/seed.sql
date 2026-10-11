@@ -1,6 +1,6 @@
 -- ============================================
 -- CAMPFIRE Seed Data (sample)
--- Generated: 2026-10-10T23:08:07.925584
+-- Generated: 2026-10-10T23:39:56.062727
 -- Programs: 31 (public only) | Observations: 42 | Fields: 5
 -- Targets: 104 | Objects: 103 | Spectra: 165 (1 draft, 1 revoked)
 -- Storage objects: 688 | Line fits: 19 | Photometry: 77
@@ -889,7 +889,7 @@ INSERT INTO public.targets (id, target_id, program_slug, observation, field, ra,
 VALUES (122172, 'glimpse_ddt_9886', 'glimpse_ddt', 'glimpse_ddt', 'Abell S1063', 342.25088500976, -44.55265045166, 3.62399631951276, NULL, 0, 0, 0, 191.672805786133, 73965.669, NULL, NULL, 7, TRUE);
 
 -- ============================================
--- 6. Spectra (from production; deploy_status published except the two lifecycle fixtures)
+-- 6. Spectra (published production rows only; the two lifecycle fixtures are demoted copies of such rows)
 -- ============================================
 
 INSERT INTO public.spectra (id, target_id, grating, fits_path, cfpipe_version, jwst_version, crds_context, date_obs, reduced_at, file_hash, file_size, signal_to_noise, exposure_time, thumbnail_svg_fnu, thumbnail_svg_flambda, redshift_auto, chi2_min, confidence, dq_flags, deploy_status)
@@ -1969,17 +1969,17 @@ VALUES (538, 'go1871', NULL, '22222222-2222-2222-2222-222222222222', '2026-09-17
 INSERT INTO public.deployments (id, observation, field, deployed_by, deployed_at, cfpipe_version, jwst_version, crds_context, config_snapshot, n_targets, n_spectra, n_new_targets, force_overwrite, source_ids_filter, supabase_only, stuck_shutters, reduced_at, status, published_at, revoked_at)
 VALUES (540, 'glimpse_ddt', NULL, '22222222-2222-2222-2222-222222222222', '2026-09-27T19:58:30.823688+00:00', '0.6.1.dev14+gab11954', '1.20.2', 'jwst_1481.pmap', NULL, 256, 256, 256, FALSE, NULL, FALSE, '{}'::jsonb, '2026-09-27T19:35:55.652994+00:00', 'published', '2026-09-27T19:58:30.782636+00:00', NULL);
 INSERT INTO public.deployments (id, observation, field, deployed_by, deployed_at, cfpipe_version, jwst_version, crds_context, config_snapshot, n_targets, n_spectra, n_new_targets, force_overwrite, source_ids_filter, supabase_only, stuck_shutters, reduced_at, status, published_at, revoked_at)
-VALUES (900001, 'jades_gds_udeep', NULL, '11111111-1111-1111-1111-111111111111', '2026-10-11T03:08:07+00:00', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, NULL, NULL, 'published', '2026-10-11T03:08:07+00:00', NULL);
+VALUES (900001, 'jades_gds_udeep', NULL, '11111111-1111-1111-1111-111111111111', '2026-10-11T03:39:56+00:00', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, NULL, NULL, 'published', '2026-10-11T03:39:56+00:00', NULL);
 INSERT INTO public.deployments (id, observation, field, deployed_by, deployed_at, cfpipe_version, jwst_version, crds_context, config_snapshot, n_targets, n_spectra, n_new_targets, force_overwrite, source_ids_filter, supabase_only, stuck_shutters, reduced_at, status, published_at, revoked_at)
-VALUES (900002, 'oasis_p1', NULL, '11111111-1111-1111-1111-111111111111', '2026-10-11T03:08:07+00:00', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, NULL, NULL, 'published', '2026-10-11T03:08:07+00:00', NULL);
+VALUES (900002, 'oasis_p1', NULL, '11111111-1111-1111-1111-111111111111', '2026-10-11T03:39:56+00:00', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, NULL, NULL, 'published', '2026-10-11T03:39:56+00:00', NULL);
 INSERT INTO public.deployments (id, observation, field, deployed_by, deployed_at, cfpipe_version, jwst_version, crds_context, config_snapshot, n_targets, n_spectra, n_new_targets, force_overwrite, source_ids_filter, supabase_only, stuck_shutters, reduced_at, status, published_at, revoked_at)
-VALUES (900003, 'oasis_p2', NULL, '11111111-1111-1111-1111-111111111111', '2026-10-11T03:08:07+00:00', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, NULL, NULL, 'published', '2026-10-11T03:08:07+00:00', NULL);
+VALUES (900003, 'oasis_p2', NULL, '11111111-1111-1111-1111-111111111111', '2026-10-11T03:39:56+00:00', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, NULL, NULL, 'published', '2026-10-11T03:39:56+00:00', NULL);
 INSERT INTO public.deployments (id, observation, field, deployed_by, deployed_at, cfpipe_version, jwst_version, crds_context, config_snapshot, n_targets, n_spectra, n_new_targets, force_overwrite, source_ids_filter, supabase_only, stuck_shutters, reduced_at, status, published_at, revoked_at)
-VALUES (900004, 'shellqs_j0217m0208', NULL, '11111111-1111-1111-1111-111111111111', '2026-10-11T03:08:07+00:00', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, NULL, NULL, 'published', '2026-10-11T03:08:07+00:00', NULL);
+VALUES (900004, 'shellqs_j0217m0208', NULL, '11111111-1111-1111-1111-111111111111', '2026-10-11T03:39:56+00:00', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, TRUE, NULL, NULL, 'published', '2026-10-11T03:39:56+00:00', NULL);
 INSERT INTO public.deployments (id, observation, field, deployed_by, deployed_at, cfpipe_version, jwst_version, crds_context, config_snapshot, n_targets, n_spectra, n_new_targets, force_overwrite, source_ids_filter, supabase_only, stuck_shutters, reduced_at, status, published_at, revoked_at)
-VALUES (900005, 'canucs_a370_p1', NULL, '11111111-1111-1111-1111-111111111111', '2026-10-11T03:08:07+00:00', 'v0.3', '1.20.2', 'jwst_1481.pmap', NULL, 1, 1, 0, FALSE, NULL, FALSE, NULL, NULL, 'draft', NULL, NULL);
+VALUES (900005, 'canucs_a370_p1', NULL, '11111111-1111-1111-1111-111111111111', '2026-10-11T03:39:56+00:00', 'v0.3', '1.20.2', 'jwst_1481.pmap', NULL, 1, 1, 0, FALSE, NULL, FALSE, NULL, NULL, 'draft', NULL, NULL);
 INSERT INTO public.deployments (id, observation, field, deployed_by, deployed_at, cfpipe_version, jwst_version, crds_context, config_snapshot, n_targets, n_spectra, n_new_targets, force_overwrite, source_ids_filter, supabase_only, stuck_shutters, reduced_at, status, published_at, revoked_at)
-VALUES (900006, 'canucs_macs0417_p1', NULL, '11111111-1111-1111-1111-111111111111', '2026-10-10T03:08:07+00:00', 'v0.3', '1.20.2', 'jwst_1481.pmap', NULL, 1, 1, 0, FALSE, NULL, FALSE, NULL, NULL, 'revoked', '2026-10-10T03:08:07+00:00', '2026-10-11T03:08:07+00:00');
+VALUES (900006, 'canucs_macs0417_p1', NULL, '11111111-1111-1111-1111-111111111111', '2026-10-10T03:39:56+00:00', 'v0.3', '1.20.2', 'jwst_1481.pmap', NULL, 1, 1, 0, FALSE, NULL, FALSE, NULL, NULL, 'revoked', '2026-10-10T03:39:56+00:00', '2026-10-11T03:39:56+00:00');
 
 UPDATE public.observations SET latest_deployment_id = 304 WHERE name = 'c3po_p1';
 UPDATE public.observations SET latest_deployment_id = 119 WHERE name = 'canucs_a370_p1';
@@ -3605,7 +3605,7 @@ INSERT INTO public.object_list_members (list_id, object_id, ra, dec, added_by) S
 INSERT INTO public.access_codes (code, description, grants_all_programs, is_active, created_by)
 VALUES ('CAMPFIRE-DEV', 'Development access code - grants all programs', TRUE, TRUE, '11111111-1111-1111-1111-111111111111');
 INSERT INTO public.access_codes (code, description, grants_all_programs, program_slugs, is_active, created_by)
-VALUES ('EMBER-ACCESS', 'EMBER program access code', FALSE, ARRAY['ember'], TRUE, '11111111-1111-1111-1111-111111111111');
+VALUES ('SEED-PROGRAM-ACCESS', 'Access code scoped to castellano3073', FALSE, ARRAY['castellano3073'], TRUE, '11111111-1111-1111-1111-111111111111');
 
 -- ============================================
 -- 11. Materialized View Refresh

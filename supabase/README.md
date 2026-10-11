@@ -71,7 +71,10 @@ npx -y supabase@2.120.0 db reset --yes                      # then the guards + 
 
 What the generator guarantees, and what the checker re-verifies on the file alone:
 only `is_public = true` programs and rows that reference them (the run aborts on
-the first violation); no production identities — every real `auth.users` uuid is
+the first violation; the checker also walks every `programs` / `program_slugs`
+array); only `deploy_status = 'published'` spectra are read from production (the
+draft and the revoked fixture are two of those demoted in the seed, never
+production's own drafts); no production identities — every real `auth.users` uuid is
 mapped onto `admin@` / `user@`, comment text is synthetic, the only emails are
 `@campfire.dev` and `@shared.invalid`. Besides the catalog it seeds the lifecycle
 surface: real `storage_objects` rows (hashes, sizes) for every sampled spectrum and

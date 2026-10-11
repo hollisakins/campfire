@@ -485,10 +485,18 @@ def fetch_observations(supabase, obs_names: list[str]) -> list[dict]:
 
 
 def fetch_spectra(supabase, target_ids: list[str]) -> list[dict]:
-    """Fetch all spectra for the given target_ids."""
+    """Fetch the *published* spectra of the given target_ids.
+
+    Only published rows leave production: a target is admitted on
+    ``has_published_spectrum`` and may carry a draft or revoked sibling whose
+    thumbnails, hashes and registry rows must never reach the public seed. The
+    draft / revoked lifecycle fixtures are demoted from these published rows
+    (``apply_lifecycle_victims``), never taken from production's own drafts.
+    """
     if not target_ids:
         return []
-    return _in_batches(supabase, 'spectra', 'target_id', target_ids)
+    return _in_batches(supabase, 'spectra', 'target_id', target_ids,
+                       extra=lambda q: q.eq('deploy_status', 'published'))
 
 
 def fetch_comments(supabase, target_int_ids: list[int]) -> list[dict]:
@@ -1014,10 +1022,15 @@ def pick_lifecycle_victims(
 
 
 def apply_lifecycle_victims(picks, spectra: list[dict], targets: list[dict]) -> None:
-    """Flip the chosen spectra and the publication flags of their target + object."""
-    # Everything sampled is published unless it is a chosen victim.
-    for s in spectra:
-        s['deploy_status'] = 'published'
+    """Flip the chosen spectra and the publication flags of their target + object.
+
+    Every sampled spectrum is a production *published* row (``fetch_spectra``
+    filters on it); this never promotes a row, it only demotes the two victims.
+    """
+    unpublished = [s['id'] for s in spectra if s.get('deploy_status') != 'published']
+    if unpublished:
+        raise SystemExit(f"{len(unpublished)} non-published production spectra reached the sample "
+                         f"(ids {unpublished[:5]}); fetch_spectra must filter on deploy_status")
     for t in targets:
         t['_has_published'] = True
     for status, target, spectrum, obj in picks:
@@ -1184,7 +1197,7 @@ VALUES ({obj['_db_id']}, {sql_escape(obj['object_id'])}, {sql_escape(obj['field'
 def generate_spectra_sql(spectra: list[dict]) -> str:
     """Generate INSERT statements for spectra (program_slug/observation are trigger-owned)."""
     lines = ['-- ============================================']
-    lines.append('-- 6. Spectra (from production; deploy_status published except the two lifecycle fixtures)')
+    lines.append('-- 6. Spectra (published production rows only; the two lifecycle fixtures are demoted copies of such rows)')
     lines.append('-- ============================================')
     lines.append('')
 
@@ -1572,17 +1585,23 @@ def generate_user_lists_sql(
     return '\n'.join(lines)
 
 
-def generate_access_codes_sql() -> str:
-    """Generate INSERT statements for access_codes."""
+def generate_access_codes_sql(guard: PublicGuard) -> str:
+    """Generate INSERT statements for access_codes.
+
+    One grants-all code and one program-scoped code. The scoped code names the
+    anchor program (public, always in the sample) so `program_slugs` never
+    references a program the seed does not carry.
+    """
     lines = ['-- ============================================']
     lines.append('-- 10. Access Codes')
     lines.append('-- ============================================')
     lines.append('')
 
+    guard.slug(ANCHOR_PROGRAM, 'program-scoped access code')
     lines.append(f"""INSERT INTO public.access_codes (code, description, grants_all_programs, is_active, created_by)
 VALUES ('CAMPFIRE-DEV', 'Development access code - grants all programs', TRUE, TRUE, {sql_escape(ADMIN_UUID)});""")
     lines.append(f"""INSERT INTO public.access_codes (code, description, grants_all_programs, program_slugs, is_active, created_by)
-VALUES ('EMBER-ACCESS', 'EMBER program access code', FALSE, ARRAY['ember'], TRUE, {sql_escape(ADMIN_UUID)});""")
+VALUES ('SEED-PROGRAM-ACCESS', {sql_escape(f'Access code scoped to {ANCHOR_PROGRAM}')}, FALSE, ARRAY[{sql_escape(ANCHOR_PROGRAM)}], TRUE, {sql_escape(ADMIN_UUID)});""")
 
     lines.append('')
     return '\n'.join(lines)
@@ -1729,10 +1748,21 @@ def generate_sample_seed(args, project_root: Path, supabase_dir: Path, output_pa
         raise SystemExit(f"Targets reference observations missing from the registry: {sorted(missing_obs)}")
     print(f"  Found {len(observations)} observations")
 
-    print("Fetching spectra...")
+    print("Fetching spectra (published only)...")
     spectra = sorted(fetch_spectra(supabase, target_ids), key=lambda s: s['id'])
     guard.rows(spectra, 'program_slug', 'spectrum')
     print(f"  Found {len(spectra)} spectra")
+    # A stale has_published_spectrum flag could admit a target with no published
+    # spectrum; such a target would seed an empty object, so drop it here.
+    with_spectra = {s['target_id'] for s in spectra}
+    orphans = [t['target_id'] for t in targets if t['target_id'] not in with_spectra]
+    if orphans:
+        print(f"  Dropping {len(orphans)} target(s) with no published spectrum: {orphans[:5]}")
+        targets = [t for t in targets if t['target_id'] in with_spectra]
+        target_ids = [t['target_id'] for t in targets]
+        target_int_ids = [t['id'] for t in targets]
+        target_id_map = {t['id']: t['id'] for t in targets}
+        target_names = {t['id']: t['target_id'] for t in targets}
 
     print("Fetching comments...")
     comments = fetch_comments(supabase, target_int_ids)
@@ -1879,7 +1909,7 @@ SET search_path TO public, auth, extensions;
     sql_parts.append(generate_user_lists_sql(
         targets, target_to_object_db_id, objects_by_db_id,
     ))
-    sql_parts.append(generate_access_codes_sql())
+    sql_parts.append(generate_access_codes_sql(guard))
     sql_parts.append(generate_sequence_resets(
         targets, spectra, comments, flag_entries, cross_matched_objects,
         deployments, nircam, photometry,

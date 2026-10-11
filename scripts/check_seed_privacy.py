@@ -12,8 +12,10 @@ This scans the generated file (no database needed) and exits non-zero when:
 * any email address outside `@campfire.dev` / `@shared.invalid` appears;
 * an IPv4 address appears;
 * a `programs` row is inserted with `is_public` other than TRUE, or any
-  inserted row names a `program_slug` (or a `programs` text[] element) that is
-  not one of the inserted public programs.
+  inserted row names a `program_slug` (or an element of a `programs` /
+  `program_slugs` text[] — `objects.programs`, `access_codes.program_slugs`,
+  `pending_invites.program_slugs`) that is not one of the inserted public
+  programs.
 
 Usage:
     python scripts/check_seed_privacy.py [path/to/seed.sql]
@@ -125,12 +127,26 @@ def sql_string(token: str) -> str | None:
     return None
 
 
+# Columns whose text[] elements are program slugs (every table that has one).
+PROGRAM_ARRAY_COLUMNS = ('programs', 'program_slugs')
+
+ARRAY_LITERAL_RE = re.compile(r"^'\{(.*)\}'(?:::text\[\])?$", re.S)
+ARRAY_ELEMENT_RE = re.compile(r'"((?:[^"\\]|\\.)*)"|([^,]+)')
+
+
 def sql_text_array(token: str) -> list[str]:
-    """Elements of an ARRAY['a', 'b'] literal ('{}' is empty)."""
+    """Elements of an ARRAY['a', 'b'] or '{a,"b"}' text[] literal ('{}' is empty)."""
     token = token.strip()
     if token.upper().startswith('ARRAY[') and token.endswith(']'):
         parts, _ = split_values(token[len('ARRAY['):-1])
         return [v for v in (sql_string(t) for t in parts) if v is not None]
+    m = ARRAY_LITERAL_RE.match(token)
+    if m:
+        body = m.group(1).replace("''", "'").strip()
+        if not body:
+            return []
+        return [(q if q else bare).strip().replace('\\"', '"').replace('\\\\', '\\')
+                for q, bare in ARRAY_ELEMENT_RE.findall(body)]
     return []
 
 
@@ -202,10 +218,11 @@ def main(argv: list[str]) -> int:
             slug = sql_string(row['program_slug'])
             if slug is not None and slug not in public:
                 referenced.setdefault(table, set()).add(slug)
-        if 'programs' in row:
-            for slug in sql_text_array(row['programs']):
-                if slug not in public:
-                    referenced.setdefault(table, set()).add(slug)
+        for column in PROGRAM_ARRAY_COLUMNS:
+            if column in row:
+                for slug in sql_text_array(row[column]):
+                    if slug not in public:
+                        referenced.setdefault(table, set()).add(slug)
     for table, slugs in sorted(referenced.items()):
         problems.append(f"{table}: references non-public program(s) {sorted(slugs)}")
 
