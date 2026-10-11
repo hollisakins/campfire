@@ -12,24 +12,11 @@ import { getRequestIdentity } from '@/lib/auth/identity';
 export async function GET() {
   const { user, supabase } = await getRequestIdentity();
 
-  // If not authenticated, return basic program list
+  // Signed out: there is nothing to return. The anon role has no privileges on
+  // the catalog tables (P-1 hardening), so a query here would be a permission
+  // error rather than the empty list RLS used to yield; answer directly.
   if (!user) {
-    try {
-      const { data: programs, error } = await supabase
-        .from('programs')
-        .select('slug, program_name')
-        .order('program_name', { ascending: true });
-
-      if (error) {
-        console.error('Error fetching programs:', error);
-        return NextResponse.json({ error: 'Failed to fetch programs' }, { status: 500 });
-      }
-
-      return NextResponse.json({ programs: programs || [] });
-    } catch (error) {
-      console.error('Error:', error);
-      return NextResponse.json({ error: 'Failed to fetch programs' }, { status: 500 });
-    }
+    return NextResponse.json({ programs: [] });
   }
 
   // If not admin, return basic program list

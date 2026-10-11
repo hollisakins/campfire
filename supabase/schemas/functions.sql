@@ -1582,7 +1582,7 @@ BEGIN
   RETURN QUERY
   WITH matched AS MATERIALIZED (
     SELECT s.id, s.spectrum_id, s.target_id, o.object_id AS object_id,
-           s.grating, s.fits_path, s.file_hash, s.file_size,
+           s.grating, s.fits_path, s.file_hash, s.science_hash, s.file_size,
            s.signal_to_noise, s.exposure_time,
            s.cfpipe_version, s.crds_context, s.jwst_version, s.date_obs, s.reduced_at,
            s.redshift_auto, s.dq_flags,
@@ -1695,6 +1695,7 @@ BEGIN
         'grating', m.grating,
         'fits_path', m.fits_path,
         'file_hash', m.file_hash,
+        'science_hash', m.science_hash,
         'file_size', m.file_size,
         'signal_to_noise', m.signal_to_noise,
         'exposure_time', m.exposure_time,
@@ -6645,7 +6646,8 @@ BEGIN
     RAISE EXCEPTION 'Access denied: Admin privileges required';
   END IF;
 
-  IF p_action NOT IN ('upload', 'publish', 'revoke', 'recover', 'supersede', 'delete', 'config_sync') THEN
+  IF p_action NOT IN ('upload', 'publish', 'revoke', 'recover', 'supersede', 'delete', 'config_sync',
+                      'archive', 'collect', 'freeze', 'publish_dr', 'withdraw_dr') THEN
     RAISE EXCEPTION 'Invalid deploy_event action: %', p_action;
   END IF;
 
@@ -6856,6 +6858,37 @@ GRANT EXECUTE ON FUNCTION public.set_deployment_status(integer, text, uuid, text
 -- when it starts (get_deploy_scope_version) and compare-and-sets at finalize
 -- (claim_deploy_scope). A version mismatch means another reducer deployed the
 -- same scope concurrently — the clobber is detected and surfaced, not silent.
+--
+-- Deploy lease (data releases P1). The CAS detects an overlap only after the
+-- fact; the lease makes a running deploy visible while it runs:
+--   begin_deploy_scope      take the lease at the start of a deploy; BUMPS the
+--                           version, so the lease version is the holder's token
+--   heartbeat_deploy_scope  refresh heartbeat_at from the upload loop (holder only)
+--   claim_deploy_scope      the finalize CAS; clears the lease when it succeeds
+--   release_deploy_scope    clear the lease without a version bump (clean abort)
+-- Liveness is "heartbeat younger than deploy_lease_ttl()" (30 minutes). A lease
+-- older than that with no heartbeat is STALE — a crashed deploy — and
+-- begin_deploy_scope takes it over without p_steal; a live lease is refused
+-- (SQLSTATE CF409, message prefix deploy_scope_busy) unless p_steal.
+-- Ownership token: every begin advances the version and hands it to the
+-- caller; heartbeat / release / claim all carry it back. A deploy whose lease
+-- was stolen or taken over as stale therefore holds an outdated version: its
+-- heartbeats and release return false, and its finalize CAS conflicts instead
+-- of clearing the new holder's lease (the displaced process cannot win).
+-- All four are SECURITY DEFINER behind the admin-or-service-role guard; the
+-- table itself is admin-readable only (RLS) and never written by a client.
+
+CREATE OR REPLACE FUNCTION public.deploy_lease_ttl()
+RETURNS interval
+LANGUAGE sql IMMUTABLE
+SET search_path = public, pg_temp
+AS $$ SELECT interval '30 minutes' $$;
+
+COMMENT ON FUNCTION public.deploy_lease_ttl() IS 'Deploy lease liveness window: a deploy_scope_state lease whose heartbeat is older than this is stale and may be taken over without stealing. One definition shared by begin_deploy_scope and dr_readiness.';
+
+REVOKE ALL ON FUNCTION public.deploy_lease_ttl() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.deploy_lease_ttl() TO authenticated, service_role;
+
 
 -- get_deploy_scope_version: the scope's current version (0 if it has never been
 -- deployed). SECURITY DEFINER so it reads uniformly under admin and service_role.
@@ -6882,13 +6915,213 @@ BEGIN
 END;
 $$;
 
+REVOKE ALL ON FUNCTION public.get_deploy_scope_version(text, text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_deploy_scope_version(text, text) TO authenticated, service_role;
 
 
+-- begin_deploy_scope: take the deploy lease on a scope at the start of a deploy.
+-- Inserts the scope row if it does not exist yet (version 0). Refuses with
+-- SQLSTATE CF409 / message 'deploy_scope_busy: ...' (DETAIL = json of the
+-- holder: in_progress_by, in_progress_host, in_progress_since, heartbeat_at)
+-- while another deploy holds a LIVE lease — heartbeat within deploy_lease_ttl()
+-- — unless p_steal. A lease older than the ttl with no newer heartbeat is stale
+-- (the deploy crashed or lost its network) and is taken over without p_steal;
+-- the previous holder is still reported in the result so the operator sees it.
+-- Advances the scope version and returns the new value: {version,
+-- took_over_stale, stolen, previous}. version is the holder's token — the CAS
+-- value the caller passes back to claim_deploy_scope at finalize and the
+-- p_version of its heartbeats / release — so a later begin (steal or stale
+-- takeover) invalidates the displaced deploy's token by bumping again.
+-- previous is the displaced lease or null.
+CREATE OR REPLACE FUNCTION public.begin_deploy_scope(
+  p_scope_type text,
+  p_scope_key text,
+  p_actor uuid DEFAULT NULL,
+  p_host text DEFAULT NULL,
+  p_steal boolean DEFAULT false
+)
+RETURNS json
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_row deploy_scope_state%ROWTYPE;
+  v_live boolean;
+  v_previous json;
+  v_version integer;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  IF p_scope_type NOT IN ('observation', 'field') THEN
+    RAISE EXCEPTION 'Invalid scope_type: %', p_scope_type;
+  END IF;
+
+  INSERT INTO deploy_scope_state (scope_type, scope_key)
+  VALUES (p_scope_type, p_scope_key)
+  ON CONFLICT (scope_type, scope_key) DO NOTHING;
+
+  -- Row lock: two deploys starting at the same instant serialize here, so the
+  -- second one sees the first one's lease and is refused.
+  SELECT * INTO v_row FROM deploy_scope_state
+  WHERE scope_type = p_scope_type AND scope_key = p_scope_key
+  FOR UPDATE;
+
+  v_live := v_row.in_progress_since IS NOT NULL
+            AND COALESCE(v_row.heartbeat_at, v_row.in_progress_since) > now() - deploy_lease_ttl();
+
+  IF v_row.in_progress_since IS NOT NULL THEN
+    v_previous := json_build_object(
+      'in_progress_by', v_row.in_progress_by,
+      'in_progress_host', v_row.in_progress_host,
+      'in_progress_since', v_row.in_progress_since,
+      'heartbeat_at', v_row.heartbeat_at,
+      'live', v_live);
+  END IF;
+
+  IF v_live AND NOT p_steal THEN
+    RAISE EXCEPTION 'deploy_scope_busy: % % is being deployed by % from % since % (last heartbeat %)',
+      p_scope_type, p_scope_key,
+      COALESCE(v_row.in_progress_by::text, 'service-role'),
+      COALESCE(v_row.in_progress_host, 'unknown host'),
+      to_char(v_row.in_progress_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS"Z"'),
+      to_char(COALESCE(v_row.heartbeat_at, v_row.in_progress_since) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS"Z"')
+      USING ERRCODE = 'CF409',
+            DETAIL = v_previous::text,
+            HINT = 'Wait for that deploy to finish, or re-run with --steal-lease if you are certain it is dead.';
+  END IF;
+
+  -- The holder identity the heartbeat / release RPCs match against: the
+  -- explicit actor, else the calling user (NULL under service_role). The
+  -- version bump is the holder's token (see the block comment above).
+  UPDATE deploy_scope_state
+  SET version = version + 1,
+      in_progress_since = now(),
+      in_progress_by = COALESCE(p_actor, auth.uid()),
+      in_progress_host = p_host,
+      heartbeat_at = now(),
+      updated_at = now()
+  WHERE scope_type = p_scope_type AND scope_key = p_scope_key
+  RETURNING version INTO v_version;
+
+  RETURN json_build_object(
+    'version', v_version,
+    'took_over_stale', (v_row.in_progress_since IS NOT NULL AND NOT v_live),
+    'stolen', (v_live AND p_steal),
+    'previous', v_previous);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.begin_deploy_scope(text, text, uuid, text, boolean) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.begin_deploy_scope(text, text, uuid, text, boolean) TO authenticated, service_role;
+
+
+-- heartbeat_deploy_scope: refresh heartbeat_at, only when the caller still holds
+-- the lease. The holder is identified by (in_progress_by, in_progress_host):
+-- p_actor defaults to auth.uid() (NULL matches NULL, which is what a
+-- service-role deploy records), and p_host, when given, must match too so two
+-- deploys by the same admin on different machines are told apart, and
+-- p_version, when given, must equal the version begin_deploy_scope returned
+-- (the ownership token: a displaced deploy of the same actor and host on the
+-- same scope holds an older one). Returns true when the heartbeat was written;
+-- false means the lease was lost (stolen, taken over as stale, released, or
+-- cleared by a concurrent finalize) and the caller should warn — never raise:
+-- the heartbeat is best-effort by contract.
+CREATE OR REPLACE FUNCTION public.heartbeat_deploy_scope(
+  p_scope_type text,
+  p_scope_key text,
+  p_actor uuid DEFAULT NULL,
+  p_host text DEFAULT NULL,
+  p_version integer DEFAULT NULL
+)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_n integer;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  UPDATE deploy_scope_state
+  SET heartbeat_at = now()
+  WHERE scope_type = p_scope_type AND scope_key = p_scope_key
+    AND in_progress_since IS NOT NULL
+    AND in_progress_by IS NOT DISTINCT FROM COALESCE(p_actor, auth.uid())
+    AND (p_host IS NULL OR in_progress_host IS NOT DISTINCT FROM p_host)
+    AND (p_version IS NULL OR version = p_version);
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  RETURN v_n > 0;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.heartbeat_deploy_scope(text, text, uuid, text, integer) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.heartbeat_deploy_scope(text, text, uuid, text, integer) TO authenticated, service_role;
+
+
+-- release_deploy_scope: clear the lease WITHOUT bumping the version, for a
+-- deploy that aborts cleanly (operator said no at a prompt, nothing to do,
+-- capability gate failed) after begin_deploy_scope. Same holder rule as the
+-- heartbeat (actor, host, and the version token when given); returns true
+-- when a lease was cleared.
+CREATE OR REPLACE FUNCTION public.release_deploy_scope(
+  p_scope_type text,
+  p_scope_key text,
+  p_actor uuid DEFAULT NULL,
+  p_host text DEFAULT NULL,
+  p_version integer DEFAULT NULL
+)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_n integer;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  UPDATE deploy_scope_state
+  SET in_progress_since = NULL,
+      in_progress_by = NULL,
+      in_progress_host = NULL,
+      heartbeat_at = NULL,
+      updated_at = now()
+  WHERE scope_type = p_scope_type AND scope_key = p_scope_key
+    AND in_progress_since IS NOT NULL
+    AND in_progress_by IS NOT DISTINCT FROM COALESCE(p_actor, auth.uid())
+    AND (p_host IS NULL OR in_progress_host IS NOT DISTINCT FROM p_host)
+    AND (p_version IS NULL OR version = p_version);
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  RETURN v_n > 0;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.release_deploy_scope(text, text, uuid, text, integer) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.release_deploy_scope(text, text, uuid, text, integer) TO authenticated, service_role;
+
+
 -- claim_deploy_scope: atomic compare-and-set. Bumps the scope version iff it
--- still equals p_expected_version (the value the deploy read at start). Returns
+-- still equals p_expected_version (the value begin_deploy_scope returned, i.e.
+-- the holder's token; a displaced deploy's older token conflicts here). Returns
 -- {claimed, version, current, conflict}: claimed=false + conflict=true means a
 -- concurrent deploy advanced the scope (the caller should surface the clobber).
+-- A successful claim also clears the deploy lease (the deploy is finished);
+-- a conflicting claim leaves the lease alone, so the other deploy's lease stays
+-- visible to dr_readiness.
 CREATE OR REPLACE FUNCTION public.claim_deploy_scope(
   p_scope_type text,
   p_scope_key text,
@@ -6915,10 +7148,12 @@ BEGIN
 
   -- CAS: insert at version 1 if the scope is new (expected 0); otherwise bump
   -- only when the stored version still matches what the caller read at start.
+  -- A successful bump also clears the lease fields: the deploy is over.
   INSERT INTO deploy_scope_state AS d (scope_type, scope_key, version, last_actor, last_deploy_at, updated_at)
   VALUES (p_scope_type, p_scope_key, 1, p_actor, now(), now())
   ON CONFLICT (scope_type, scope_key) DO UPDATE
-    SET version = d.version + 1, last_actor = p_actor, last_deploy_at = now(), updated_at = now()
+    SET version = d.version + 1, last_actor = p_actor, last_deploy_at = now(), updated_at = now(),
+        in_progress_since = NULL, in_progress_by = NULL, in_progress_host = NULL, heartbeat_at = NULL
     WHERE d.version = p_expected_version
   RETURNING d.version INTO v_new_version;
 
@@ -6934,7 +7169,260 @@ BEGIN
 END;
 $$;
 
+REVOKE ALL ON FUNCTION public.claim_deploy_scope(text, text, integer, uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.claim_deploy_scope(text, text, integer, uuid) TO authenticated, service_role;
+
+
+-- =============================================================================
+-- dr_readiness: "is the catalog ready to freeze?" (data releases P1)
+-- =============================================================================
+-- One jsonb report of the stage-1 numbers an admin checks before a data
+-- release (docs/design-data-releases-impl-findings.md §1): the published
+-- cfpipe_version mix, draft / revoked rows, live deploy leases, NIRCam fields
+-- whose mosaics went back to draft, registry rows pointing at deleted spectra,
+-- provisional etag: hashes, line-fit staleness, needs-review and implicit-pin
+-- counts, and (once PR #586 lands) rows without a science hash. Printed by
+-- `campfire dr status`; the admin deployments page can show it later.
+--
+-- Cost discipline (80k spectra / 845k registry rows on a Small instance): a
+-- handful of aggregates, each on an index or a single narrow pass —
+--   * ONE pass over published spectra (cfpipe_version × observation × program)
+--     feeds both spectra_by_version and the published counters;
+--   * draft/revoked spectra ride the partial idx_spectra_deploy_status;
+--   * objects: one pass over active rows (42k) for published / needs_review /
+--     implicit_pins;
+--   * storage_objects is touched only through the partial sync index
+--     (status = 'active' AND product_type IN finals) or (backend, status) —
+--     never a heap walk: dangling rows are the active nirspec_spec slice
+--     anti-joined on idx_spectra_spectrum_id_scope; etag: rows are counted over
+--     the legacy r2 backend (the retired R2 LIST/HEAD backfill was the only
+--     producer of etag: hashes) plus the finals slice as the DR-member safety
+--     net; science_hash on the active nirspec_spec slice.
+-- The function sets statement_timeout = '120s' like the sync RPCs: it runs
+-- catalog-wide aggregates, and service_role otherwise inherits authenticator's
+-- 8 s, which a Small or busy instance can exceed.
+-- No per-row function calls except inside spectrum_line_fits_status (16k rows,
+-- the ledger's own definition of staleness — reuse, do not re-derive).
+--
+-- needs_review is the catalog RPCs' predicate verbatim
+-- (get_filtered_objects_paginated and friends; keep in step):
+--   staleness_reason IS NOT NULL AND last_inspected_at IS NOT NULL
+--   AND (last_data_change_at IS NULL OR last_data_change_at > last_inspected_at)
+-- counted over active objects, the rows those RPCs list.
+--
+-- redrafted_nircam_fields: nircam_images is UNIQUE on (field, tile, filter,
+-- pixel_scale, extension, epoch), so a `--draft` re-deploy FLIPS the single
+-- published row to draft (findings §1.2) — there is never a published/draft
+-- pair for one key. "Re-drafted" is therefore detected per field: a field with
+-- at least one draft mosaic row that also has published mosaic rows or a
+-- published field deployment (i.e. the field has been live and part of it is
+-- now dark). A field that has only ever been draft is not listed.
+--
+-- science_hash_missing: the columns arrive with P0b (PR #586); this function
+-- is written to run before and after — it reads information_schema.columns
+-- and returns null for a column that does not exist yet.
+--
+-- SECURITY DEFINER (admin-or-service-role guard): the views and tables it reads
+-- are admin-readable anyway; definer rights keep the aggregates off the RLS
+-- policy chains (the per-row access predicates would dominate the cost).
+CREATE OR REPLACE FUNCTION public.dr_readiness()
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+SET statement_timeout = '120s'
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_spectra jsonb;
+  v_objects jsonb;
+  v_spectra_status jsonb;
+  v_nircam_drafts bigint;
+  v_deployments jsonb;
+  v_leases jsonb;
+  v_redrafted jsonb;
+  v_dangling jsonb;
+  v_etag jsonb;
+  v_lines jsonb;
+  v_has_sh_spectra boolean;
+  v_has_sh_storage boolean;
+  v_sh_spectra bigint;
+  v_sh_storage bigint;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  -- 1. published spectra: one pass, grouped on the three keys we need.
+  WITH po AS MATERIALIZED (
+    SELECT s.cfpipe_version, s.observation, s.program_slug, count(*) AS n
+    FROM spectra s
+    WHERE s.deploy_status = 'published'
+    GROUP BY 1, 2, 3
+  ),
+  by_version AS (
+    SELECT COALESCE(cfpipe_version, 'unknown') AS v,
+           sum(n) AS spectra,
+           count(DISTINCT observation) AS observations
+    FROM po
+    GROUP BY 1
+  )
+  SELECT jsonb_build_object(
+    'spectra_by_version',
+      (SELECT COALESCE(jsonb_object_agg(v, jsonb_build_object('spectra', spectra, 'observations', observations)), '{}'::jsonb)
+       FROM by_version),
+    'published',
+      (SELECT jsonb_build_object(
+         'spectra', COALESCE(sum(n), 0),
+         'observations', count(DISTINCT observation),
+         'programs', count(DISTINCT program_slug))
+       FROM po))
+  INTO v_spectra;
+
+  -- 2. draft / revoked spectra (partial index on deploy_status <> 'published').
+  SELECT jsonb_build_object(
+    'draft', count(*) FILTER (WHERE deploy_status = 'draft'),
+    'revoked', count(*) FILTER (WHERE deploy_status = 'revoked'))
+  INTO v_spectra_status
+  FROM spectra
+  WHERE deploy_status <> 'published';
+
+  -- 3. objects: published / needs_review / implicit pins in one pass over active rows.
+  SELECT jsonb_build_object(
+    'published', count(*) FILTER (WHERE has_published_spectrum),
+    'needs_review', count(*) FILTER (
+      WHERE staleness_reason IS NOT NULL
+        AND last_inspected_at IS NOT NULL
+        AND (last_data_change_at IS NULL OR last_data_change_at > last_inspected_at)),
+    'implicit_pins', count(*) FILTER (WHERE inspected_used_auto))
+  INTO v_objects
+  FROM objects
+  WHERE is_active;
+
+  -- 4. NIRCam drafts and deployments by status (small tables).
+  SELECT count(*) INTO v_nircam_drafts FROM nircam_images WHERE deploy_status = 'draft';
+
+  SELECT jsonb_build_object(
+    'draft', count(*) FILTER (WHERE status = 'draft'),
+    'revoked', count(*) FILTER (WHERE status = 'revoked'))
+  INTO v_deployments
+  FROM deployments;
+
+  -- 5. live deploy leases (with the stale flag the takeover rule uses).
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+      'scope_type', d.scope_type,
+      'scope_key', d.scope_key,
+      'version', d.version,
+      'in_progress_by', d.in_progress_by,
+      'in_progress_by_username', up.username,
+      'in_progress_host', d.in_progress_host,
+      'in_progress_since', d.in_progress_since,
+      'heartbeat_at', d.heartbeat_at,
+      'stale', COALESCE(d.heartbeat_at, d.in_progress_since) < now() - deploy_lease_ttl())
+    ORDER BY d.in_progress_since), '[]'::jsonb)
+  INTO v_leases
+  FROM deploy_scope_state d
+  LEFT JOIN user_profiles up ON up.user_id = d.in_progress_by
+  WHERE d.in_progress_since IS NOT NULL;
+
+  -- 6. re-drafted NIRCam fields (see the header comment for the definition).
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+      'field', f.field,
+      'draft_images', f.n_draft,
+      'published_images', f.n_published,
+      'published_deployments', f.n_published_deployments)
+    ORDER BY f.field), '[]'::jsonb)
+  INTO v_redrafted
+  FROM (
+    SELECT ni.field,
+           count(*) FILTER (WHERE ni.deploy_status = 'draft') AS n_draft,
+           count(*) FILTER (WHERE ni.deploy_status = 'published') AS n_published,
+           (SELECT count(*) FROM deployments dp
+             WHERE dp.field = ni.field AND dp.status = 'published') AS n_published_deployments
+    FROM nircam_images ni
+    GROUP BY ni.field
+  ) f
+  WHERE f.n_draft > 0 AND (f.n_published > 0 OR f.n_published_deployments > 0);
+
+  -- 7. dangling registry rows: active nirspec_spec rows whose spectrum has no
+  --    spectra row any more (deploy remove deletes spectra, not registry rows).
+  SELECT jsonb_build_object(
+    'count', COALESCE(sum(n), 0),
+    'by_observation', COALESCE(jsonb_object_agg(COALESCE(observation, 'unknown'), n), '{}'::jsonb))
+  INTO v_dangling
+  FROM (
+    SELECT so.observation, count(*) AS n
+    FROM storage_objects so
+    WHERE so.status = 'active'
+      AND so.product_type = 'nirspec_spec'
+      AND NOT EXISTS (SELECT 1 FROM spectra s WHERE s.spectrum_id = so.spectrum_id)
+    GROUP BY so.observation
+  ) x;
+
+  -- 8. provisional etag: hashes by product_type.
+  SELECT COALESCE(jsonb_object_agg(product_type, n), '{}'::jsonb)
+  INTO v_etag
+  FROM (
+    SELECT so.product_type, count(*) AS n
+    FROM storage_objects so
+    WHERE so.status = 'active'
+      AND so.content_hash LIKE 'etag:%'
+      AND (so.backend = 'r2' OR so.product_type IN ('nirspec_spec', 'nircam_mosaic'))
+    GROUP BY so.product_type
+  ) x;
+
+  -- 9. line-fit staleness from the ledger view.
+  SELECT jsonb_build_object(
+    'total', count(*),
+    'stale_redshift', count(*) FILTER (WHERE stale_redshift),
+    'stale_spectrum', count(*) FILTER (WHERE stale_spectrum))
+  INTO v_lines
+  FROM spectrum_line_fits_status;
+
+  -- 10. science hash coverage, only once the columns exist (P0b, PR #586).
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'spectra' AND column_name = 'science_hash'),
+         EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'storage_objects' AND column_name = 'science_hash')
+  INTO v_has_sh_spectra, v_has_sh_storage;
+  IF v_has_sh_spectra THEN
+    EXECUTE 'SELECT count(*) FROM public.spectra WHERE deploy_status = ''published'' AND science_hash IS NULL'
+      INTO v_sh_spectra;
+  END IF;
+  IF v_has_sh_storage THEN
+    EXECUTE 'SELECT count(*) FROM public.storage_objects WHERE status = ''active'' AND product_type = ''nirspec_spec'' AND science_hash IS NULL'
+      INTO v_sh_storage;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'generated_at', now(),
+    'spectra_by_version', v_spectra->'spectra_by_version',
+    'published', (v_spectra->'published') || jsonb_build_object('objects', v_objects->'published'),
+    'drafts', jsonb_build_object(
+      'spectra', v_spectra_status->'draft',
+      'nircam_images', v_nircam_drafts,
+      'deployments', v_deployments->'draft'),
+    'revoked', jsonb_build_object(
+      'spectra', v_spectra_status->'revoked',
+      'deployments', v_deployments->'revoked'),
+    'leases', v_leases,
+    'redrafted_nircam_fields', v_redrafted,
+    'dangling_registry_rows', v_dangling,
+    'etag_hash_rows', v_etag,
+    'line_fits', v_lines,
+    'needs_review', v_objects->'needs_review',
+    'implicit_pins', v_objects->'implicit_pins',
+    'science_hash_missing', jsonb_build_object(
+      'spectra', to_jsonb(v_sh_spectra),
+      'storage_objects', to_jsonb(v_sh_storage)));
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_readiness() IS 'Data-release readiness report (P1): published cfpipe_version mix, drafts/revoked, live deploy leases, re-drafted NIRCam fields, dangling nirspec_spec registry rows, etag: hashes, line-fit staleness, needs-review / implicit-pin counts, science_hash coverage. Admin or service_role; printed by `campfire dr status`.';
+
+REVOKE ALL ON FUNCTION public.dr_readiness() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_readiness() TO authenticated, service_role;
 
 
 -- =============================================================================
@@ -7999,3 +8487,110 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.sync_photometry_to_objects(TEXT) TO service_role;
+
+-- ===========================================================================
+-- Privilege hardening (P-1): no PUBLIC / anon EXECUTE on any function
+-- Postgres grants EXECUTE to PUBLIC on every new function, and the schema's
+-- default privileges used to add anon on top; both made every RPC here callable
+-- with the public anon key (findings §0.2). Explicit per-function revokes keep the
+-- grants to authenticated / service_role that each function declares above.
+-- Generated 2026-10-11 from the catalog; add a line here for every new function.
+-- ===========================================================================
+REVOKE ALL ON FUNCTION public.accessible_program_slugs() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.apply_object_reconciliation(p_field text, p_inserts jsonb, p_revivals jsonb, p_updates jsonb, p_orphan_ids integer[], p_updated_at timestamp with time zone) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.authorize_device_code(p_user_code text, p_user_id uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.bulk_set_target_object_fks(p_pairs jsonb, p_updated_at timestamp with time zone) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.can_comment() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.can_inspect() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.check_device_code_status(p_device_code text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.claim_deploy_scope(p_scope_type text, p_scope_key text, p_expected_version integer, p_actor uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.cleanup_expired_device_codes() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.cleanup_expired_refresh_tokens() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.compute_object_redshift_auto(p_field text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.consume_device_code(p_device_code text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.count_distinct_inspected_objects(p_user_id uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.deny_device_code(p_user_code text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.filter_accessible_storage_keys(p_keys text[], p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.filter_link_storage_keys(p_keys text[], p_program_slugs text[], p_observation text, p_field text, p_include_drafts boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.fitsgl_dataset_is_public(p_field text, p_tiles text[], p_bands text[], p_pixel_scale text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_activity_feed(p_include_comments boolean, p_include_inspections boolean, p_user_ids uuid[], p_include_system boolean, p_field_names text[], p_page integer, p_page_size integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_activity_users() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_adjacent_objects(p_current_object_id text, p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_sort_column text, p_sort_direction text, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_admin_deploy_events(p_action text, p_observation text, p_field text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_admin_deployments(p_status text, p_instrument text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_admin_exposure_facets() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_admin_exposure_neighbors(p_current_id integer, p_field text, p_filter text, p_detector text, p_review_status text, p_stage text, p_correction text, p_sort_column text, p_sort_direction text, p_window integer, p_search text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_admin_exposures(p_field text, p_filter text, p_detector text, p_review_status text, p_stage text, p_correction text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_search text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_admin_storage_facets() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_admin_storage_objects(p_product_type text, p_status text, p_field text, p_observation text, p_backend text, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_search text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_csv_export_objects(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_after_object_id text, p_page_size integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_csv_export_spectra(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_dq_flags_include_any integer, p_dq_flags_include_all integer, p_dq_flags_exclude integer, p_list_ids integer[], p_list_ids_mode text, p_search text, p_inspected_only boolean, p_needs_review boolean, p_has_photometry boolean, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_after_id integer, p_page_size integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_database_overview(p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_deploy_scope_version(p_scope_type text, p_scope_key text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_download_stats(p_days integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_field_object_markers(p_field text, p_include_unpublished boolean, p_cursor text, p_page_size integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_field_shutters(p_field text, p_cursor integer, p_page_size integer, p_ra_min double precision, p_ra_max double precision, p_dec_min double precision, p_dec_max double precision) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_filtered_object_ids(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_filtered_objects_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_filtered_spectra_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_dq_flags_include_any integer, p_dq_flags_include_all integer, p_dq_flags_exclude integer, p_list_ids integer[], p_list_ids_mode text, p_search text, p_inspected_only boolean, p_needs_review boolean, p_has_photometry boolean, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_thumbnails boolean, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_lifecycle_status() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_line_fits_for_sync(p_program_slugs text[], p_updated_since timestamp with time zone, p_limit integer, p_include_unpublished boolean, p_include_counts boolean, p_after_id integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_lists_for_sync(p_user_id uuid, p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_nearby_shutters(p_ra double precision, p_dec double precision, p_radius_arcsec double precision, p_field text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_nircam_field_summary(p_field text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_nircam_fields() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_objects_for_sync(p_program_slugs text[], p_user_id uuid, p_updated_since timestamp with time zone, p_limit integer, p_include_counts boolean, p_include_unpublished boolean, p_after_object_id text, p_filter_program_slugs text[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_objects_near(p_ra double precision, p_dec double precision, p_radius_degrees double precision, p_program_slugs text[], p_limit integer, p_exclude_object_id text, p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_observation_manifest(p_obs_name text, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_observation_stats(p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_observations_overview(p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_photometry_for_sync(p_program_slugs text[], p_updated_since timestamp with time zone, p_limit integer, p_include_unpublished boolean, p_include_counts boolean, p_after_id integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_program_stats() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_programs_overview() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_spectra_for_sync(p_program_slugs text[], p_user_id uuid, p_updated_since timestamp with time zone, p_limit integer, p_include_counts boolean, p_include_unpublished boolean, p_after_spectrum_id text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_storage_budget() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_storage_objects_for_sync(p_program_slugs text[], p_updated_since timestamp with time zone, p_limit integer, p_include_counts boolean, p_include_unpublished boolean, p_after_id bigint, p_product_types text[], p_observations text[], p_fields text[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_sync_deletions(p_since timestamp with time zone) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_targets_in_viewport(p_ra_min double precision, p_ra_max double precision, p_dec_min double precision, p_dec_max double precision, p_field text, p_limit integer, p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_user_profile_stats(p_user_id uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.increment_tile_version(p_field text, p_filter text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.is_admin() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.is_group_account() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.is_link_account() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.line_fit_stale_redshift(p_object_version integer, p_object_quality integer, p_object_redshift double precision, p_fit_object_version integer, p_fit_z_quality integer, p_fit_z_used double precision) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.link_allows_download() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.link_field() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.link_observation() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.link_sees_drafts() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.log_deploy_event(p_action text, p_actor uuid, p_deployment_id integer, p_observation text, p_field text, p_affected_count integer, p_metadata jsonb, p_host text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.member_editable_list_ids() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.object_band_values(p_band text, p_mag_min double precision, p_mag_max double precision, p_snr_min double precision, p_snr_max double precision, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.object_line_snr(p_object_id integer, p_line text, p_include_stale boolean, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.object_scoped_aggregates(p_object_id integer, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.objects_matching_band_filter(p_band text, p_mag_min double precision, p_mag_max double precision, p_snr_min double precision, p_snr_max double precision, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.objects_matching_grating_filter(p_gratings text[], p_gratings_mode text, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.objects_matching_line_filter(p_line text, p_snr_min double precision, p_snr_max double precision, p_include_stale boolean, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.objects_matching_observation_filter(p_observations text[], p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.recompute_has_published_spectrum(p_target_ids text[], p_field text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.recompute_object_search_text(p_object_ids integer[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.recompute_target_aggregates(p_target_ids text[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.redeem_access_code(p_code text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.refresh_all_matviews() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.refresh_filter_options() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.refresh_observations_overview() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.refresh_programs_overview() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.relink_list_members_for_field(p_field text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.relink_photometry_for_field(p_field text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.revoke_all_user_refresh_tokens(p_user_id uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.revoke_refresh_token(p_token_id uuid, p_user_id uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.rotate_refresh_token(p_old_token_hash text, p_new_token_hash text, p_expires_at timestamp with time zone, p_client_ip text, p_user_agent text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.scoped_program_slugs(p_program_slugs text[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.set_deployment_status(p_deployment_id integer, p_to text, p_actor uuid, p_host text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.set_spectra_deploy_status(p_spectrum_db_ids integer[], p_to text, p_action text, p_actor uuid, p_deployment_id integer, p_host text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.spectra_matching_line_filter(p_line text, p_snr_min double precision, p_snr_max double precision, p_include_stale boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_photometry_to_objects(p_field text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_snapshot_begin(p_format_version integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.update_api_key_last_used(key_hash_input text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.validate_api_key(key_hash_input text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.validate_refresh_token(p_token_hash text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.viewable_list_ids() FROM PUBLIC, anon;

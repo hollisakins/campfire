@@ -9,6 +9,7 @@ keys and the conformance fixture compare against.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Optional
 
@@ -26,7 +27,7 @@ def campfire_root(env: Optional[Mapping[str, str]] = None) -> Path:
 
 
 # Top-level tree segments, keyed by the name the registry uses.
-_TREES = ("raw", "products", "reference", "cache", "tiles", "meta", "cutouts")
+_TREES = ("raw", "products", "reference", "cache", "tiles", "meta", "cutouts", "dr")
 
 
 class Roots:
@@ -191,3 +192,32 @@ def glob_pattern(product_type: str, scope: Scope, suffix: str, *,
     e.g. ``'*_uncal.fits'``).
     """
     return str(dir_for(product_type, scope, root=root) / suffix)
+
+
+# ---------------------------------------------------------------------------
+# Data-release trees (P1): dr/<tag>/{meta,products}/…
+# ---------------------------------------------------------------------------
+
+DR_ROOT = "dr"
+_DR_TAG = re.compile(r"^DR\d{4}\.\d+$")
+
+
+def is_dr_tag(tag: str) -> bool:
+    """``DR<year>.<n>`` (design §4.3)."""
+    return bool(_DR_TAG.match(tag))
+
+
+def dr_dir(tag: str, *, root: Optional[Path] = None) -> Path:
+    """``$CAMPFIRE_ROOT/dr/<tag>``: a release's own tree (its sqlite under
+    ``meta/``, its bytes under ``products/<relpath>``). Lifecycle RELEASE: the
+    live mirror's purge / tombstone / rebuild logic never touches it."""
+    if not is_dr_tag(tag):
+        raise LayoutError(f"not a data-release tag: '{tag}'")
+    return roots(root).dr / tag
+
+
+def dr_relpath(tag: str, relpath: str) -> str:
+    """Relpath of a live product's bytes inside a release tree."""
+    if not is_dr_tag(tag):
+        raise LayoutError(f"not a data-release tag: '{tag}'")
+    return f"{DR_ROOT}/{tag}/{relpath}"

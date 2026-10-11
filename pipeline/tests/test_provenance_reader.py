@@ -18,9 +18,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 from astropy.io import fits
+from astropy.table import Table
 
 from campfire_pipeline.metadata.reader import read_fits_metadata
-from campfire_pipeline.metadata.summary import _earliest_reduced_at
+from campfire_pipeline.metadata.science_hash import science_hash
+from campfire_pipeline.metadata.summary import _earliest_reduced_at, generate_observation_summary
 
 
 def _write_spec_fits(path: Path, *, cmpfrver: str, cmpfrtim: str | None,
@@ -94,3 +96,25 @@ def test_reduced_at_absent_when_no_cmpfrtim(tmp_path):
 ])
 def test_earliest_reduced_at(values, expected):
     assert _earliest_reduced_at(values) == expected
+
+
+def test_summary_carries_science_hash_column(tmp_path):
+    """P0b: the observation summary carries science_hash per row (what deploy
+    writes to spectra.science_hash), equal to the shared hasher's value, and the
+    column survives the ECSV round trip as a plain string column."""
+    p = _write_spec_fits(
+        tmp_path / "ember_uds_p4_prism_clear_100_spec.fits",
+        cmpfrver="0.4.0",
+        cmpfrtim="2026-06-27T12:00:00+00:00",
+    )
+    summary = generate_observation_summary("ember_uds_p4", tmp_path)
+    assert len(summary) == 1
+    assert summary.colnames[-3:] == ["file_size", "file_hash", "science_hash"]
+    assert summary["science_hash"][0] == science_hash(p)
+    assert summary["science_hash"][0].startswith("sha256:")
+
+    out = tmp_path / "ember_uds_p4_summary.ecsv"
+    summary.write(out, format="ascii.ecsv")
+    back = Table.read(out, format="ascii.ecsv")
+    assert back["science_hash"][0] == science_hash(p)
+    assert back["file_hash"][0] == summary["file_hash"][0]

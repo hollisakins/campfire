@@ -156,3 +156,27 @@ def test_canonical_photometry_pz_registers_as_osn_field_scoped():
     assert row["field"] == "egs"
     assert row["observation"] is None
     assert row["exposure_ref"] is None
+
+
+# --- presign request carries the retain-gate hashes (P2) --------------------
+
+def test_request_presigned_urls_sends_plan_hashes_only_when_set(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured.update(json)
+        return _FakeResp(json)
+
+    monkeypatch.setattr(r2mod, "http_requests", types.SimpleNamespace(post=fake_post))
+    monkeypatch.setattr(r2mod, "_get_presign_headers", lambda cfg: {"Authorization": "Bearer x"})
+    monkeypatch.setattr(r2mod, "_get_presign_base_url", lambda: "https://example.test/api/v1")
+    f = tmp_path / "x_spec.fits"
+    f.write_bytes(b"x")
+    key = storage_key('nirspec_spec', Scope(obs='o'), 'x_spec.fits', scheme=KeyScheme.CANONICAL)
+    old, new = 'sha256:' + 'a' * 64, 'sha256:' + 'b' * 64
+    tasks = [UploadTask(f, key, 'application/fits'),
+             UploadTask(f, key + '2', 'application/fits', expected_old_hash=old, new_hash=new)]
+    r2mod.request_presigned_urls({}, tasks, bucket='data', backend='osn')
+    plain, stamped = captured['uploads']
+    assert set(plain) == {'key', 'content_type'}
+    assert stamped['expected_old_hash'] == old and stamped['new_hash'] == new

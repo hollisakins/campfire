@@ -431,12 +431,17 @@ def generate_observation_summary(obs_name: str, obs_dir: Path,
         'spec_file', 'zfit_file',
         'cfpipe_version', 'reduced_at', 'jwst_version', 'crds_context',
         'fits_filename', 'file_size', 'file_hash',
+        # Science-content hash (P0b): what deploy writes to spectra.science_hash.
+        'science_hash',
     ]
 
     table_data = {col: [] for col in columns}
     for row in rows:
         for col in columns:
             table_data[col].append(row.get(col))
+    # Keep science_hash a plain string column ('' when a product lacks it) so
+    # the ECSV round-trips without an object-dtype column; deploy maps '' to NULL.
+    table_data['science_hash'] = [v or '' for v in table_data['science_hash']]
 
     summary = Table(table_data)
 

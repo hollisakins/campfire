@@ -46,7 +46,7 @@ WITH DATA;
 
 CREATE UNIQUE INDEX mv_filter_options_id ON public.mv_filter_options USING btree (id);
 
-GRANT ALL ON TABLE public.mv_filter_options TO anon;
+REVOKE ALL ON TABLE public.mv_filter_options FROM anon;
 GRANT ALL ON TABLE public.mv_filter_options TO authenticated;
 GRANT ALL ON TABLE public.mv_filter_options TO service_role;
 
@@ -228,7 +228,7 @@ CROSS JOIN public.flag_definitions fd
 WHERE (s.deploy_status = 'published' OR public.is_admin())
 GROUP BY s.id, s.target_id, s.grating;
 
-GRANT ALL ON TABLE public.spectrum_flag_summary TO anon;
+REVOKE ALL ON TABLE public.spectrum_flag_summary FROM anon;
 GRANT ALL ON TABLE public.spectrum_flag_summary TO authenticated;
 GRANT ALL ON TABLE public.spectrum_flag_summary TO service_role;
 
@@ -315,6 +315,6 @@ LEFT JOIN public.objects o ON o.id = t.object_id
 -- soft-deleted objects are hidden everywhere else; keep the ledger consistent
 WHERE (o.id IS NULL OR o.is_active = true);
 
-GRANT ALL ON TABLE public.spectrum_line_fits_status TO anon;
+REVOKE ALL ON TABLE public.spectrum_line_fits_status FROM anon;
 GRANT ALL ON TABLE public.spectrum_line_fits_status TO authenticated;
 GRANT ALL ON TABLE public.spectrum_line_fits_status TO service_role;

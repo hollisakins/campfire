@@ -188,6 +188,31 @@ def _announce_auth_mode(config: dict) -> None:
         print("Deploy auth: local Supabase → direct uploads via local S3 creds.")
 
 
+def _run_deploy_flow(fn, *args, **kwargs):
+    """Run one deploy flow, surfacing the deploy lease (data releases P1).
+
+    A live lease held by another deploy of the same scope is a clean refusal
+    (exit 1 with who/where/since and the --steal-lease way out), not a
+    traceback. Any abnormal exit after the lease was taken — an exception,
+    Ctrl-C, a sys.exit inside the flow — releases the leases this process still
+    holds, so a cleanly aborted deploy does not leave a 30-minute lease behind
+    (a hard crash cannot release and simply goes stale).
+    """
+    from campfire.deploy.supabase import DeployScopeBusy, release_active_leases
+    try:
+        return fn(*args, **kwargs)
+    except DeployScopeBusy as e:
+        release_active_leases()
+        print()
+        print(f"Error: {e.describe()}")
+        sys.exit(1)
+    except BaseException:
+        n = release_active_leases()
+        if n:
+            print(f"  (released {n} deploy lease(s) on abort)")
+        raise
+
+
 def _fmt_bytes(n: int | float) -> str:
     """Human-readable byte count."""
     n = float(n)
@@ -230,6 +255,11 @@ def source_ids_option(f):
 @click.option('--supabase-only', is_flag=True, help='Skip R2 uploads, only update Supabase.')
 @click.option('--force-overwrite', is_flag=True, help='Reset inspection data for existing objects.')
 @click.option('--auto-approve', is_flag=True, help='Skip confirmation prompts.')
+@click.option('--steal-lease', 'steal_lease', is_flag=True,
+              help='Take the deploy lease over from a deploy of the same observation/'
+                   'field that is still live (heartbeat within 30 min). Only when you '
+                   'are certain that deploy is dead; a lease with no heartbeat for '
+                   '30 minutes is taken over automatically. See `campfire dr status`.')
 @click.option('--no-shutters', is_flag=True, help='Skip shutter deployment.')
 @click.option('--no-photometry', is_flag=True,
               help='Skip photometry upsert after objects reconcile.')
@@ -248,7 +278,7 @@ def source_ids_option(f):
                    'Equivalent to CAMPFIRE_DEPLOY_MODE=service-role.')
 @click.pass_context
 def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run,
-                 source_ids, supabase_only, force_overwrite, auto_approve,
+                 source_ids, supabase_only, force_overwrite, auto_approve, steal_lease,
                  no_shutters, no_photometry, skip_astrometry, draft, local,
                  service_role):
     """Deploy CAMPFIRE pipeline products to Supabase + object storage.
@@ -287,10 +317,11 @@ def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run
                                  service_role=ctx.obj['service_role'])
             _announce_auth_mode(config)
             from campfire.deploy.nircam import deploy_nircam
-            deploy_nircam(field, config,
-                          filters=list(filter_names) if filter_names else None,
-                          dry_run=dry_run, draft=draft,
-                          skip_mosaics=no_mosaics)
+            _run_deploy_flow(
+                deploy_nircam, field, config,
+                filters=list(filter_names) if filter_names else None,
+                dry_run=dry_run, draft=draft,
+                skip_mosaics=no_mosaics, steal_lease=steal_lease)
             return
         if not obs:
             print("Error: --obs (NIRSpec) or --field (NIRCam) is required for full deployment.")
@@ -309,7 +340,8 @@ def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run
         fields_needing_rebuild: set[str] = set()
 
         for obs_name in obs:
-            result = deploy_observation(
+            result = _run_deploy_flow(
+                deploy_observation,
                 obs_name,
                 config,
                 dry_run=dry_run,
@@ -322,6 +354,7 @@ def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run
                 auto_approve=auto_approve,
                 defer_rebuild=multi,
                 draft=draft,
+                steal_lease=steal_lease,
             )
             if result and result.get('needs_reconcile'):
                 fields_needing_rebuild.add(result['field'])
