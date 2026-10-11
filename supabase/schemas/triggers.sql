@@ -785,9 +785,10 @@ CREATE TRIGGER journal_sync_deletions_trigger
 -- Archive rows (root = 'archive') describe write-once objects: the content-
 -- addressed store is the thing a DR and a manifest point at, so the registry
 -- must not be able to forget or rewrite one. The only permitted change is the
--- mosaic-retention transition archived -> collected (status + collected_at),
--- everything else about the row frozen. Deletes are refused outright. Live
--- rows are untouched by this trigger. Bypass (for a genuine mistake) means
+-- mosaic-retention transition archived -> collected (status, with
+-- collected_at assigned by the trigger, never by the caller); every other
+-- column is frozen (whole-row comparison, so a new column is frozen by
+-- default). Deletes are refused outright. Live rows are untouched. Bypass (for a genuine mistake) means
 -- disabling the trigger as postgres in a migration, on purpose, with a note.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.protect_archive_rows() RETURNS trigger
@@ -802,27 +803,25 @@ BEGIN
     END IF;
     RETURN OLD;
   END IF;
+  IF TG_OP = 'INSERT' THEN
+    -- collected_at is assigned by the archived -> collected transition, never
+    -- supplied: an archived row starts without one, a row inserted as
+    -- collected (a backfill) is stamped now.
+    IF NEW.root = 'archive' THEN
+      NEW.collected_at := CASE WHEN NEW.status = 'collected' THEN now() ELSE NULL END;
+    END IF;
+    RETURN NEW;
+  END IF;
   -- UPDATE
   IF OLD.root <> 'archive' AND NEW.root = 'archive' THEN
     RAISE EXCEPTION 'a live registry row cannot become an archive row (%); insert the archive row instead', OLD.storage_key
       USING ERRCODE = 'integrity_constraint_violation';
   END IF;
   IF OLD.root = 'archive' THEN
-    IF NEW.root IS DISTINCT FROM OLD.root
-       OR NEW.storage_key IS DISTINCT FROM OLD.storage_key
-       OR NEW.backend IS DISTINCT FROM OLD.backend
-       OR NEW.bucket IS DISTINCT FROM OLD.bucket
-       OR NEW.content_hash IS DISTINCT FROM OLD.content_hash
-       OR NEW.size_bytes IS DISTINCT FROM OLD.size_bytes
-       OR NEW.stored_size_bytes IS DISTINCT FROM OLD.stored_size_bytes
-       OR NEW.product_type IS DISTINCT FROM OLD.product_type
-       OR NEW.spectrum_id IS DISTINCT FROM OLD.spectrum_id
-       OR NEW.program_slug IS DISTINCT FROM OLD.program_slug
-       OR NEW.observation IS DISTINCT FROM OLD.observation
-       OR NEW.field IS DISTINCT FROM OLD.field
-       OR NEW.archived_from_key IS DISTINCT FROM OLD.archived_from_key
-       OR NEW.archived_at IS DISTINCT FROM OLD.archived_at
-       OR NEW.archived_by_deployment IS DISTINCT FROM OLD.archived_by_deployment
+    -- The whole row is frozen except the status transition, its timestamp and
+    -- the bookkeeping updated_at (bumped by the generic trigger).
+    IF (to_jsonb(NEW) - 'status' - 'collected_at' - 'updated_at')
+       IS DISTINCT FROM (to_jsonb(OLD) - 'status' - 'collected_at' - 'updated_at')
     THEN
       RAISE EXCEPTION 'archive registry rows are immutable: % may only move archived -> collected', OLD.storage_key
         USING ERRCODE = 'integrity_constraint_violation';
@@ -832,7 +831,7 @@ BEGIN
         RAISE EXCEPTION 'archive registry row % status may only move archived -> collected (got % -> %)',
           OLD.storage_key, OLD.status, NEW.status USING ERRCODE = 'integrity_constraint_violation';
       END IF;
-      NEW.collected_at := COALESCE(NEW.collected_at, now());
+      NEW.collected_at := now();
     ELSIF NEW.collected_at IS DISTINCT FROM OLD.collected_at THEN
       RAISE EXCEPTION 'archive registry row %: collected_at follows the status transition', OLD.storage_key
         USING ERRCODE = 'integrity_constraint_violation';
@@ -846,5 +845,5 @@ REVOKE ALL ON FUNCTION public.protect_archive_rows() FROM PUBLIC, anon;
 
 DROP TRIGGER IF EXISTS protect_archive_rows_trigger ON public.storage_objects;
 CREATE TRIGGER protect_archive_rows_trigger
-  BEFORE UPDATE OR DELETE ON public.storage_objects
+  BEFORE INSERT OR UPDATE OR DELETE ON public.storage_objects
   FOR EACH ROW EXECUTE FUNCTION public.protect_archive_rows();

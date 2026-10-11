@@ -13,12 +13,12 @@ INSERT INTO programs (slug, program_name, is_public) VALUES ('zzz_ar_prog', 'Arc
 INSERT INTO fields (name) VALUES ('zzz_ar_field');
 INSERT INTO observations (name, program_slug, jwst_program_id, field) VALUES ('zzz_ar_obs', 'zzz_ar_prog', 9301, 'zzz_ar_field');
 
-INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, size_bytes, content_type, product_type, instrument, status, observation, spectrum_id, root, program_slug, archived_from_key, archived_at) VALUES
+INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, size_bytes, content_type, product_type, instrument, status, observation, spectrum_id, root, program_slug, archived_from_key, archived_at, collected_at) VALUES
   ('osn', 'data', 'data/products/nirspec/zzz_ar_obs/zzz_ar_obs_prism_clear_1_spec.fits',
-   'sha256:' || repeat('b', 64), 1000, 'application/fits', 'nirspec_spec', 'nirspec', 'active', 'zzz_ar_obs', 'zzz_ar_obs_prism_clear_1', 'live', 'zzz_ar_prog', NULL, NULL),
+   'sha256:' || repeat('b', 64), 1000, 'application/fits', 'nirspec_spec', 'nirspec', 'active', 'zzz_ar_obs', 'zzz_ar_obs_prism_clear_1', 'live', 'zzz_ar_prog', NULL, NULL, NULL),
   ('osn', 'data', 'archive/' || repeat('a', 64) || '/products/nirspec/zzz_ar_obs/zzz_ar_obs_prism_clear_1_spec.fits',
    'sha256:' || repeat('a', 64), 1000, 'application/fits', 'nirspec_spec', 'nirspec', 'archived', 'zzz_ar_obs', 'zzz_ar_obs_prism_clear_1', 'archive', 'zzz_ar_prog',
-   'data/products/nirspec/zzz_ar_obs/zzz_ar_obs_prism_clear_1_spec.fits', now());
+   'data/products/nirspec/zzz_ar_obs/zzz_ar_obs_prism_clear_1_spec.fits', now(), '2000-01-01');
 
 DO $$
 DECLARE
@@ -41,6 +41,18 @@ BEGIN
     UPDATE storage_objects SET program_slug = 'other' WHERE storage_key = k; ok := true;
   EXCEPTION WHEN integrity_constraint_violation THEN ok := false; END;
   IF ok THEN RAISE EXCEPTION 'FAIL: archive row program_slug rewritten'; END IF;
+  -- columns outside the original explicit list are frozen too (whole-row compare)
+  BEGIN
+    UPDATE storage_objects SET wcs_hash = 'sha256:' || repeat('f', 64) WHERE storage_key = k; ok := true;
+  EXCEPTION WHEN integrity_constraint_violation THEN ok := false; END;
+  IF ok THEN RAISE EXCEPTION 'FAIL: archive row wcs_hash rewritten'; END IF;
+  BEGIN
+    UPDATE storage_objects SET content_type = 'text/plain' WHERE storage_key = k; ok := true;
+  EXCEPTION WHEN integrity_constraint_violation THEN ok := false; END;
+  IF ok THEN RAISE EXCEPTION 'FAIL: archive row content_type rewritten'; END IF;
+  -- collected_at supplied at insert is discarded while archived
+  SELECT count(*) INTO n FROM storage_objects WHERE storage_key = k AND collected_at IS NOT NULL;
+  IF n <> 0 THEN RAISE EXCEPTION 'FAIL: archived row kept a caller-supplied collected_at'; END IF;
 
   -- 3. status may not go anywhere but collected
   BEGIN
@@ -49,9 +61,9 @@ BEGIN
   IF ok THEN RAISE EXCEPTION 'FAIL: archive row became active'; END IF;
 
   -- 4. archived -> collected allowed and stamped; nothing after that
-  UPDATE storage_objects SET status = 'collected' WHERE storage_key = k;
-  SELECT count(*) INTO n FROM storage_objects WHERE storage_key = k AND status = 'collected' AND collected_at IS NOT NULL;
-  IF n <> 1 THEN RAISE EXCEPTION 'FAIL: archived -> collected did not stamp collected_at'; END IF;
+  UPDATE storage_objects SET status = 'collected', collected_at = '2000-01-01' WHERE storage_key = k;
+  SELECT count(*) INTO n FROM storage_objects WHERE storage_key = k AND status = 'collected' AND collected_at > now() - interval '1 minute';
+  IF n <> 1 THEN RAISE EXCEPTION 'FAIL: archived -> collected did not stamp collected_at with the transition time'; END IF;
   BEGIN
     UPDATE storage_objects SET status = 'archived' WHERE storage_key = k; ok := true;
   EXCEPTION WHEN integrity_constraint_violation THEN ok := false; END;
