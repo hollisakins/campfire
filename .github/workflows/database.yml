@@ -106,9 +106,12 @@ jobs:
 
       - name: Resolve DB URL
         id: db
+        # Ports are per local project (no fixed ports in config.toml), so read the
+        # live value. `-o env` is not available under the stack commands.
         run: |
-          eval "$(supabase status -o env | grep '^DB_URL=')"
-          echo "url=$DB_URL" >> "$GITHUB_OUTPUT"
+          url=$(supabase status --output-format json | python3 -c 'import sys,json; print(json.load(sys.stdin)["env"]["DB_URL"])')
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "DB_URL=$url"
 
       - name: Schema guards
         env:

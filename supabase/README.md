@@ -11,7 +11,7 @@ macOS the whole stack runs as host processes:
 
 ```bash
 npx -y supabase@2.120.0 start --runtime native     # first run downloads the services (~35 s here)
-npx -y supabase@2.120.0 status -o env               # DB_URL, API_URL, keys
+npx -y supabase@2.120.0 status --output-format json  # endpoints and env (DB_URL, API_URL, keys)
 npx -y supabase@2.120.0 db reset                    # migration chain + seed.sql (~5 s)
 npx -y supabase@2.120.0 stop
 ```
@@ -45,7 +45,7 @@ plain migration. Generated migrations may use `GRANT`/`REVOKE` lines you did not
 ## Tests
 
 ```bash
-eval "$(npx -y supabase@2.120.0 status -o env | grep '^DB_URL=')"   # ports are per project
+DB_URL=$(npx -y supabase@2.120.0 status --output-format json | python3 -c 'import sys,json; print(json.load(sys.stdin)["env"]["DB_URL"])')
 for f in supabase/tests/check_*.sql; do psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$f"; done
 CAMPFIRE_LOCAL_DB_URL=$DB_URL pytest python/tests -k "rls or lifecycle or field_deploy_gate"
 ```

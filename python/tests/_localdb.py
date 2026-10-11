@@ -7,8 +7,8 @@ CLI's native runtime (no container, ports allocated per project), so the
 connection is resolved in this order:
 
 1. ``CAMPFIRE_LOCAL_DB_URL`` — a libpq URL; run with a local ``psql`` binary.
-   CI sets it from ``supabase status``; locally, ``supabase status -o env``
-   prints ``DB_URL``.
+   CI sets it from ``supabase status --output-format json`` (``.env.DB_URL``);
+   the same command prints it locally (ports are per local project).
 2. ``docker exec -i supabase_db_campfire psql`` — the classic Docker stack.
 
 Tests skip (never fail) when neither answers ``SELECT 1``.
@@ -58,7 +58,7 @@ def local_db_available() -> bool:
 requires_local_db = pytest.mark.skipif(
     not local_db_available(),
     reason=(
-        f"no local Supabase Postgres: set {ENV_VAR} (native stack: `supabase status -o env`) "
+        f"no local Supabase Postgres: set {ENV_VAR} (native stack: `supabase status --output-format json`, .env.DB_URL) "
         f"or run the Docker stack so container '{CONTAINER}' answers; then `supabase db reset`"
     ),
 )
