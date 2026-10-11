@@ -9,12 +9,16 @@ import {
   storageKey,
   bucketFor,
   parseKey,
+  parseRelpath,
   deriveSibling,
   isKnownKey,
   isCompressedKey,
+  toCanonicalKey,
+  observationFromKey,
   PRODUCTS,
   type Scope,
 } from './layout';
+import layoutProducts from './layout-products.json';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = resolve(here, '../../layout/conformance/layout_golden.json');
@@ -105,10 +109,84 @@ describe('compressed keys', () => {
   });
 });
 
+describe('foreign roots (archive/, dr/) are not part of the contract yet', () => {
+  // The data-release work introduces these roots; TODAY every entry point must
+  // reject them, so that work flips these rows explicitly when it lands.
+  for (const key of golden.foreign_root_keys as string[]) {
+    it(key, () => {
+      expect(() => parseKey(key)).toThrow();
+      expect(() => parseKey(key, { bucket: 'data' })).toThrow();
+      expect(() => parseKey(key, { bucket: 'tiles' })).toThrow();
+      expect(() => parseRelpath(key)).toThrow();
+      expect(() => toCanonicalKey(key)).toThrow();
+      expect(isKnownKey(key)).toBe(false);
+      expect(isCompressedKey(key)).toBe(false);
+      expect(observationFromKey(key)).toBeNull();
+    });
+  }
+});
+
+describe('sibling round-trips', () => {
+  // A spectrum key and the four sidecars the web's resolver derives from it
+  // (spectrum-sidecars.ts) form a clique under deriveSibling in both schemes.
+  type RoundTrip = { scheme: string; spec: string; sidecars: Record<string, string> };
+  for (const rt of golden.sibling_roundtrips as RoundTrip[]) {
+    it(`${rt.scheme}: spec <-> all four sidecars`, () => {
+      expect(Object.keys(rt.sidecars).sort()).toEqual(['nirspec_lines_json', 'spectrum_1d_json', 'spectrum_json', 'zfit']);
+      expect(parseKey(rt.spec).productType).toBe('nirspec_spec');
+      for (const [kind, key] of Object.entries(rt.sidecars)) {
+        expect(deriveSibling(rt.spec, kind)).toBe(key);
+        expect(deriveSibling(key, 'nirspec_spec')).toBe(rt.spec);
+        expect(parseKey(key).productType).toBe(kind);
+        for (const [other, otherKey] of Object.entries(rt.sidecars)) {
+          expect(deriveSibling(key, other)).toBe(otherKey);
+        }
+      }
+    });
+  }
+});
+
+describe('compressed keys (golden)', () => {
+  type Row = { key: string; product_type: string; scope: Scope; filename: string; relpath: string; compressed: boolean };
+  for (const row of golden.compressed_keys as Row[]) {
+    it(row.key, () => {
+      const pk = parseKey(row.key);
+      expect(pk.productType).toBe(row.product_type);
+      expect(pk.scope).toEqual(row.scope);
+      expect(pk.filename).toBe(row.filename); // plain local filename, '.gz' stripped
+      expect(isCompressedKey(row.key)).toBe(row.compressed);
+      expect(storageKey(pk.productType, pk.scope, pk.filename, 'canonical')).toBe(row.key);
+      const fromRelpath = parseRelpath(row.relpath);
+      expect(fromRelpath.productType).toBe(row.product_type);
+      expect(fromRelpath.filename).toBe(row.filename);
+      expect(toCanonicalKey(row.key)).toBe(row.key);
+    });
+  }
+});
+
 describe('registry parity', () => {
   it('every cloud-backed product has a golden case', () => {
     const covered = new Set((golden.cases as Case[]).map((c) => c.product_type));
     const missing = Object.keys(PRODUCTS).filter((p) => !covered.has(p));
     expect(missing).toEqual([]);
+  });
+  it('PRODUCTS is the generated table, in registration order', () => {
+    expect(Object.keys(PRODUCTS)).toEqual(layoutProducts.products.map((p) => p.name));
+  });
+  it('the lifecycle carried by the generated table matches the golden tree_class', () => {
+    // The python arm checks tree_class() against the fixture; TS has no
+    // tree_class, so the per-product lifecycle in the JSON is pinned here.
+    for (const c of golden.cases as Case[]) {
+      expect(PRODUCTS[c.product_type].lifecycle).toBe(c.tree_class);
+    }
+  });
+  it('suffix-dispatch tables name registered products with matching suffixes', () => {
+    const tables = [layoutProducts.dispatch.nirspec_obs_suffixes, layoutProducts.dispatch.nircam_filter_suffixes];
+    for (const table of tables) {
+      for (const [suffix, productType] of table) {
+        expect(PRODUCTS[productType]).toBeDefined();
+        expect(PRODUCTS[productType].suffix).toBe(suffix);
+      }
+    }
   });
 });
