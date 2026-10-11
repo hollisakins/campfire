@@ -401,8 +401,14 @@ def test_upsert_programs_private_stays_private_and_new_rows_pass(monkeypatch):
 
     monkeypatch.delenv("CAMPFIRE_ALLOW_PROGRAM_PRIVATE_FLIP", raising=False)
     cfg = {"capers": {"slug": "capers", "program_name": "CAPERS", "is_public": False}}
-    for tables in ({"programs": [{"slug": "capers", "is_public": False}]}, {"programs": []}):
-        client = _FakeClient(tables=tables)
-        upsert_programs(client, ["capers"], cfg)
-        assert client.store["upserts"][0][2]["is_public"] is False
+    # New row: the stated value is written.
+    client = _FakeClient(tables={"programs": []})
+    upsert_programs(client, ["capers"], cfg)
+    assert client.store["upserts"][0][2]["is_public"] is False
+    # Existing private row: the key is left out of the write, so a publish
+    # landing between the check and the upsert can never be undone by it.
+    client = _FakeClient(tables={"programs": [{"slug": "capers", "is_public": False}]})
+    upsert_programs(client, ["capers"], cfg)
+    assert "is_public" not in client.store["upserts"][0][2]
+    assert not any(name == "log_deploy_event" for name, _ in client.store["rpcs"])
 
