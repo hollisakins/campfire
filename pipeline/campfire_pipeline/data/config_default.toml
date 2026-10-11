@@ -982,6 +982,27 @@
     # rewrites the i2d compressed — one extra read+write per tile. Peak RSS is
     # the same either way; the rewrite streams CON tile-by-tile.
     compress_context = true
+    # Write the drizzle context cube (CON) into the i2d at all.
+    #
+    # CON is one int32 plane per 32 inputs at FULL tile size, so it costs
+    # tile_area * 4 * ceil(n_inputs/32) of RAM while drizzling, before any
+    # compression on write. On a deep tile that dwarfs everything else: COSMOS
+    # f200w `primer` (1.15 Gpix, 3,903 inputs) needs 122 planes = 521 GiB,
+    # which no 512 GB node can hold, against ~18 GiB for SCI+WHT+variance.
+    #
+    # NOTHING IN THIS PIPELINE READS CON: `split_extensions` writes out only
+    # sci/err/wht/srcmask, and bkgsub does not touch it. It is retained purely
+    # as an output product for external consumers, so it is safe to turn off
+    # when a tile would otherwise not fit. With this false the science drizzle
+    # runs with `disable_ctx=True` (the path the variance drizzle already uses)
+    # and the i2d carries a 1x1x1 CON placeholder, preserving the HDU layout.
+    # That placeholder is marked `CFNOCTX = T` in the primary header so a
+    # consumer can tell it from a genuinely empty context.
+    #
+    # Honored by the campfire backend only (jwst's Image3Pipeline always
+    # materialises CON). Not part of the manifest config hash (which covers
+    # pixel-affecting settings only), so flipping it does not mark tiles stale.
+    write_context = true
     # implementation = "jwst" routes the per-tile drizzle through
     # `jwst.pipeline.calwebb_image3.Image3Pipeline` (stcal Resample,
     # the historical default). "campfire" uses the campfire-native
