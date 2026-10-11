@@ -1,7 +1,7 @@
 """B2 (#218) intermediate-product lifecycle gate.
 
 DB-backed integration test: runs ``sql/b2_lifecycle.sql`` against the local
-Supabase Postgres via ``docker exec ... psql`` and asserts the harness reaches
+Supabase Postgres via psql (Docker container or native stack, see ``_localdb.py``) and asserts the harness reaches
 its PASS marker. The SQL drives the seed's published control object through a
 full revoke -> recover cycle using the B2 lifecycle RPCs (inside a rolled-back
 transaction) and proves end to end that:
@@ -17,44 +17,22 @@ without ``supabase start``). In CI it runs after ``supabase db reset``. Companio
 to ``test_deploy_status_rls.py`` (B1): B1 proves the readers hide unpublished
 data; this proves the RPCs that produce and reverse that state are correct.
 """
-import subprocess
 from pathlib import Path
 
 import pytest
 
-CONTAINER = "supabase_db_campfire"
 SQL_FILE = Path(__file__).parent / "sql" / "b2_lifecycle.sql"
 PASS_MARKER = "B2 LIFECYCLE HARNESS: ALL ASSERTIONS PASSED"
 
 
-def _docker_psql_available() -> bool:
-    """True iff the local Supabase Postgres container answers a trivial query."""
-    try:
-        r = subprocess.run(
-            ["docker", "exec", "-i", CONTAINER,
-             "psql", "-U", "postgres", "-d", "postgres", "-tA", "-c", "SELECT 1"],
-            capture_output=True, text=True, timeout=15,
-        )
-        return r.returncode == 0 and r.stdout.strip().startswith("1")
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return False
-
-
-requires_local_db = pytest.mark.skipif(
-    not _docker_psql_available(),
-    reason=f"local Supabase container '{CONTAINER}' not reachable (run `supabase start` + `supabase db reset`)",
-)
+from ._localdb import requires_local_db, run_sql  # noqa: E402
 
 
 @requires_local_db
 def test_lifecycle_publish_revoke_no_leak():
     """The full revoke/recover lifecycle keeps unpublished data hidden + audited."""
     sql = SQL_FILE.read_text()
-    result = subprocess.run(
-        ["docker", "exec", "-i", CONTAINER,
-         "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-f", "-"],
-        input=sql, capture_output=True, text=True, timeout=120,
-    )
+    result = run_sql(sql)
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
         f"B2 lifecycle harness FAILED (psql exit {result.returncode}).\n"
