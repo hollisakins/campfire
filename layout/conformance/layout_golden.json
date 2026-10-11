@@ -1,5 +1,5 @@
 {
-  "_comment": "Golden conformance fixture for the CAMPFIRE layout contract (issue #213, PR-2). Single source of truth consumed by BOTH the python test (pipeline/tests/test_layout.py) and the TS test (web/lib/layout.test.ts). A mismatch fails both arms, so python<->TS drift cannot merge. Fields: filename=null => scope-derived; relpath=null => key-only (no local home); key_legacy=null => reserved (no legacy key, adopts canonical form); key_canonical=null/bucket=null => not cloud-backed (no storage key). Sections beyond `cases`: `siblings` (single derive_sibling steps); `known_keys` / `unknown_keys` (the is_known_key presign allowlist); `foreign_root_keys` (keys under the archive/ and dr/ roots the data-release work will introduce: TODAY they must fail to parse, classify, or be known/compressed in both arms, so that work flips these rows explicitly when it lands); `sibling_roundtrips` (a NIRSpec spectrum key and all four sidecar keys derived from it, in both schemes: every pair must derive each other); `compressed_keys` (gzip-on-upload: the .gz cloud key parses to the plain local filename, rebuilds to the same key, and is_compressed_key agrees).",
+  "_comment": "Golden conformance fixture for the CAMPFIRE layout contract (issue #213, PR-2). Single source of truth consumed by BOTH the python test (pipeline/tests/test_layout.py) and the TS test (web/lib/layout.test.ts). A mismatch fails both arms, so python<->TS drift cannot merge. Fields: filename=null => scope-derived; relpath=null => key-only (no local home); key_legacy=null => reserved (no legacy key, adopts canonical form); key_canonical=null/bucket=null => not cloud-backed (no storage key). Sections beyond `cases`: `siblings` (single derive_sibling steps); `known_keys` / `unknown_keys` (the is_known_key presign allowlist); `foreign_root_keys` (keys under the archive/ and dr/ roots the data-release work will introduce: TODAY they must fail to parse, classify, or be known/compressed in both arms, so that work flips these rows explicitly when it lands); `sibling_roundtrips` (a NIRSpec spectrum key and all four sidecar keys derived from it, in both schemes: every pair must derive each other); `compressed_keys` (gzip-on-upload: the .gz cloud key parses to the plain local filename, rebuilds to the same key, and is_compressed_key agrees). P1 roots: `archive_keys` parse read-only (root archive, rebuild == key, never writable, sibling derivation refused, tree_class release); `archive_rejected_keys` do not parse; `dr_relpaths` parse (root dr, local only, no storage key); `dr_rejected_relpaths` do not; `foreign_root_keys` stay rejected everywhere (data/archive, data/dr, dr cloud keys).",
   "cases": [
     {
       "product_type": "nirspec_spec",
@@ -510,17 +510,13 @@
     "totally/made/up/key.bin",
     "spectra/ember_egs_p1/",
     "",
-    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
     "data/archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
-    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits.gz",
     "dr/DR2026.1/meta/campfire.db",
     "dr/DR2026.1/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
     "data/dr/DR2026.1/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits"
   ],
   "foreign_root_keys": [
-    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
     "data/archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
-    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits.gz",
     "dr/DR2026.1/meta/campfire.db",
     "dr/DR2026.1/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
     "data/dr/DR2026.1/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits"
@@ -592,5 +588,85 @@
       "relpath": "products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_thumb.png",
       "compressed": false
     }
+  ],
+  "archive_keys": [
+    {
+      "key": "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+      "product_type": "nirspec_spec",
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
+      "filename": "ember_egs_p1_prism_clear_15182_spec.fits",
+      "root_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+      "live_canonical": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+      "compressed": false,
+      "bucket": "data"
+    },
+    {
+      "key": "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits.gz",
+      "product_type": "nircam_mosaic",
+      "scope": {
+        "field": "cosmos",
+        "filt": "f444w"
+      },
+      "filename": "mosaic_cosmos_f444w_30mas_sci.fits",
+      "root_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "relpath": "products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits",
+      "live_canonical": "data/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits.gz",
+      "compressed": true,
+      "bucket": "data"
+    },
+    {
+      "key": "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json",
+      "product_type": "zfit",
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
+      "filename": "ember_egs_p1_prism_clear_15182_zfit.json",
+      "root_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "relpath": "products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json",
+      "live_canonical": "data/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_zfit.json",
+      "compressed": false,
+      "bucket": "data"
+    }
+  ],
+  "archive_rejected_keys": [
+    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+    "archive/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/photometry/cosmos/J1000_pz.json",
+    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/manual_masks/x.reg",
+    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dr/DR2026.1/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "archive/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits/.."
+  ],
+  "dr_relpaths": [
+    {
+      "relpath": "dr/DR2026.1/products/nirspec/ember_egs_p1/ember_egs_p1_prism_clear_15182_spec.fits",
+      "product_type": "nirspec_spec",
+      "scope": {
+        "obs": "ember_egs_p1"
+      },
+      "filename": "ember_egs_p1_prism_clear_15182_spec.fits",
+      "root_id": "DR2026.1",
+      "tree_class": "release"
+    },
+    {
+      "relpath": "dr/DR2027.12/products/nircam/cosmos/f444w/mosaic_cosmos_f444w_30mas_sci.fits",
+      "product_type": "nircam_mosaic",
+      "scope": {
+        "field": "cosmos",
+        "filt": "f444w"
+      },
+      "filename": "mosaic_cosmos_f444w_30mas_sci.fits",
+      "root_id": "DR2027.12",
+      "tree_class": "release"
+    }
+  ],
+  "dr_rejected_relpaths": [
+    "dr/DR2026.1/meta/campfire.db",
+    "dr/2026.1/products/nirspec/ember_egs_p1/x_spec.fits",
+    "dr/DR2026.1/reference/nirspec/ember_egs_p1/redshifts.toml",
+    "dr/DR2026.1/products/nirspec/ember_egs_p1/manual_masks/x.reg"
   ]
 }

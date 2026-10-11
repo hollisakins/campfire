@@ -21,6 +21,8 @@ _TREE_FALLBACK = {
     "cache": LifecycleClass.REGENERABLE,
     "meta": LifecycleClass.CLI_LOCAL,
     "cutouts": LifecycleClass.CLI_LOCAL,
+    "dr": LifecycleClass.RELEASE,
+    "archive": LifecycleClass.RELEASE,
 }
 
 
@@ -32,6 +34,9 @@ def tree_class(path_or_key: str) -> LifecycleClass:
             pk = parse(path_or_key)
         except LayoutError:
             continue
+        if pk.root != "live":
+            # A release copy is immutable wherever its product normally lives.
+            return LifecycleClass.RELEASE
         return products.get(pk.product_type).lifecycle
 
     # Fallback: classify by the top-level tree segment.

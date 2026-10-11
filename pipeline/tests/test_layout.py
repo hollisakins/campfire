@@ -98,20 +98,97 @@ def test_unknown_keys():
         assert L.is_known_key(key) is False, key
 
 
-def test_foreign_root_keys_are_not_part_of_the_contract_yet():
-    """Keys under the ``archive/`` and ``dr/`` roots (data-release work) must be
-    rejected everywhere TODAY — parse, classify, allowlist, compression — so the
-    PR that teaches the layout those roots flips these rows on purpose."""
+def test_foreign_root_keys_are_rejected():
+    """Keys that are not part of the contract: ``data/archive/…``, ``data/dr/…``
+    and ``dr/…`` as CLOUD keys (the release tree is local), plus ``dr/<tag>/meta``
+    as a relpath. Rejected by parse, classify, allowlists and compression."""
     for key in GOLDEN["foreign_root_keys"]:
         for bucket in (None, "data", "tiles"):
             with pytest.raises(LayoutError):
                 L.parse_key(key, bucket=bucket)
-        with pytest.raises(LayoutError):
-            L.parse_relpath(key)
-        with pytest.raises(LayoutError):
-            L.tree_class(key)
+        if not key.startswith("dr/DR") or "/products/" not in key:
+            with pytest.raises(LayoutError):
+                L.parse_relpath(key)
         assert L.is_known_key(key) is False, key
+        assert L.is_readable_key(key) is False, key
+        assert L.is_writable_key(key) is False, key
         assert L.is_compressed_key(key) is False, key
+
+
+@pytest.mark.parametrize("case", GOLDEN["archive_keys"], ids=lambda c: c["key"].split("/")[-1])
+def test_archive_keys_parse_read_only(case):
+    """``archive/<sha256>/<relpath>`` (P1): parses with root 'archive', rebuilds to
+    itself (never to the live key), is readable but never writable, has no
+    siblings by string surgery, and classifies as RELEASE."""
+    key = case["key"]
+    pk = L.parse_key(key)
+    assert pk.product_type == case["product_type"]
+    assert pk.filename == case["filename"]
+    assert pk.root == L.ROOT_ARCHIVE and pk.root_id == case["root_id"]
+    assert not pk.is_live
+    for k, v in case["scope"].items():
+        assert getattr(pk.scope, k) == v
+    assert L.key_for_parsed(pk) == key
+    assert L.archive_key(pk.product_type, pk.scope, pk.filename, content_hash="sha256:" + case["root_id"]) == key
+    assert L.key_to_relpath(key) == case["relpath"]
+    # The live key is a different object: rebuilding a LIVE parse of the same relpath gives it.
+    live = L.parse_relpath(case["relpath"])
+    assert live.is_live and L.key_for_parsed(live) == case["live_canonical"]
+    assert L.is_readable_key(key) is True and L.is_known_key(key) is True
+    assert L.is_writable_key(key) is False
+    assert L.is_compressed_key(key) is case["compressed"]
+    assert L.tree_class(key) is L.LifecycleClass.RELEASE
+    with pytest.raises(LayoutError):
+        L.derive_sibling(key, "zfit")
+    with pytest.raises(LayoutError):
+        L.relpath_to_key("dr/DR2026.1/" + case["relpath"])
+
+
+def test_archive_rejected_keys():
+    for key in GOLDEN["archive_rejected_keys"]:
+        with pytest.raises(LayoutError):
+            L.parse_key(key)
+        assert L.is_readable_key(key) is False and L.is_writable_key(key) is False
+
+
+@pytest.mark.parametrize("case", GOLDEN["dr_relpaths"], ids=lambda c: c["relpath"].split("/")[1])
+def test_dr_relpaths_parse_locally_only(case):
+    pk = L.parse_relpath(case["relpath"])
+    assert pk.product_type == case["product_type"] and pk.filename == case["filename"]
+    assert pk.root == L.ROOT_DR and pk.root_id == case["root_id"]
+    for k, v in case["scope"].items():
+        assert getattr(pk.scope, k) == v
+    assert L.tree_class(case["relpath"]) is L.LifecycleClass.RELEASE
+    assert L.dr_relpath(case["root_id"], "products/" + case["relpath"].split("/products/", 1)[1]) == case["relpath"]
+    with pytest.raises(LayoutError):
+        L.relpath_to_key(case["relpath"])
+    with pytest.raises(LayoutError):
+        L.key_for_parsed(pk)
+    with pytest.raises(LayoutError):
+        L.parse_key("data/" + case["relpath"])
+
+
+def test_dr_rejected_relpaths():
+    for rp in GOLDEN["dr_rejected_relpaths"]:
+        with pytest.raises(LayoutError):
+            L.parse_relpath(rp)
+
+
+def test_dr_tree_helpers(tmp_path):
+    assert L.is_dr_tag("DR2026.1") and not L.is_dr_tag("2026.1") and not L.is_dr_tag("DR2026")
+    assert L.dr_dir("DR2026.1", root=tmp_path) == tmp_path / "dr" / "DR2026.1"
+    assert L.roots(tmp_path).dr == tmp_path / "dr"
+    with pytest.raises(LayoutError):
+        L.dr_dir("nope", root=tmp_path)
+
+
+def test_live_parses_default_to_live_root():
+    for case in GOLDEN["cases"]:
+        if case.get("key_canonical"):
+            pk = L.parse_key(case["key_canonical"], bucket=case.get("bucket") or None) if case.get("bucket") else None
+            if pk is not None:
+                assert pk.is_live and pk.root_id is None
+                assert L.key_for_parsed(pk) == case["key_canonical"]
 
 
 def test_sibling_roundtrips():
