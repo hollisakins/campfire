@@ -349,6 +349,250 @@ def claim_deploy_scope(
         return {'claimed': True, 'conflict': False, 'error': str(e)}
 
 
+# ---------------------------------------------------------------------------
+# Deploy lease (data releases P1): a running deploy is visible while it runs.
+# ---------------------------------------------------------------------------
+# begin_deploy_scope takes the lease on a scope at the start of a deploy and
+# refuses (DeployScopeBusy) while another deploy holds one with a heartbeat
+# younger than 30 minutes, unless told to steal it; heartbeat_deploy_scope is
+# fired from the upload loop (registration_flusher); claim_deploy_scope clears
+# the lease at finalize; release_deploy_scope clears it on a clean abort. A
+# lease older than 30 minutes with no heartbeat is stale and is taken over
+# without stealing. Only the busy refusal is a hard stop: every other failure
+# is advisory, like the CAS before it, so an older database or a flaky network
+# never blocks a deploy.
+
+DEPLOY_SCOPE_BUSY_SQLSTATE = 'CF409'
+
+
+class DeployScopeBusy(RuntimeError):
+    """``begin_deploy_scope`` refused: another deploy holds a live lease."""
+
+    def __init__(self, scope_type: str, scope_key: str, message: str,
+                 holder: dict | None = None, hint: str | None = None):
+        super().__init__(message)
+        self.scope_type = scope_type
+        self.scope_key = scope_key
+        self.holder = holder or {}
+        self.hint = hint
+
+    def describe(self) -> str:
+        """Operator-facing multi-line description (who / where / since / heartbeat)."""
+        h = self.holder
+        who = h.get('in_progress_by') or 'service-role'
+        lines = [
+            f"Another deploy of {self.scope_type} '{self.scope_key}' is in progress.",
+            f"  by:        {who}",
+            f"  host:      {h.get('in_progress_host') or 'unknown'}",
+            f"  since:     {h.get('in_progress_since') or '?'}",
+            f"  heartbeat: {h.get('heartbeat_at') or '?'}",
+            "Wait for it to finish (a lease with no heartbeat for 30 minutes is taken "
+            "over automatically), or re-run with --steal-lease if you are certain it is dead.",
+        ]
+        return '\n'.join(lines)
+
+
+def deploy_host() -> str | None:
+    """The hostname recorded on the lease (best-effort)."""
+    try:
+        import socket
+        return socket.gethostname() or None
+    except Exception:
+        return None
+
+
+def _busy_error(exc: Exception) -> tuple[str, dict, str | None] | None:
+    """(message, holder, hint) when *exc* is the busy refusal, else None.
+
+    Duck-typed on the PostgREST APIError shape (code / message / details /
+    hint attributes) so it needs no postgrest import and works with any
+    client that surfaces the SQLSTATE and message.
+    """
+    code = getattr(exc, 'code', None)
+    message = getattr(exc, 'message', None) or str(exc)
+    if code != DEPLOY_SCOPE_BUSY_SQLSTATE and 'deploy_scope_busy' not in str(message):
+        return None
+    holder: dict = {}
+    details = getattr(exc, 'details', None)
+    if details:
+        try:
+            import json as _json
+            parsed = _json.loads(details) if isinstance(details, str) else details
+            if isinstance(parsed, dict):
+                holder = parsed
+        except Exception:
+            holder = {}
+    return str(message), holder, getattr(exc, 'hint', None)
+
+
+def begin_deploy_scope(
+    client: Client, scope_type: str, scope_key: str, *,
+    actor: str | None = None, host: str | None = None, steal: bool = False,
+) -> dict:
+    """Take the deploy lease on a scope at the start of a deploy.
+
+    Returns the RPC json ``{'version', 'took_over_stale', 'stolen', 'previous',
+    'leased': True}`` — ``version`` is the CAS value to pass back to
+    ``claim_deploy_scope`` at finalize. Raises :class:`DeployScopeBusy` when
+    another deploy holds a live lease and *steal* is False. Any other failure
+    (RPC missing on an older database, network) degrades to the pre-lease
+    behaviour: ``{'version': get_deploy_scope_version(...), 'leased': False,
+    'error': ...}``.
+    """
+    try:
+        resp = client.rpc('begin_deploy_scope', {
+            'p_scope_type': scope_type, 'p_scope_key': scope_key,
+            'p_actor': actor, 'p_host': host, 'p_steal': bool(steal),
+        }).execute()
+    except Exception as e:
+        busy = _busy_error(e)
+        if busy is not None:
+            message, holder, hint = busy
+            raise DeployScopeBusy(scope_type, scope_key, message, holder, hint) from e
+        return {'version': get_deploy_scope_version(client, scope_type, scope_key),
+                'leased': False, 'error': str(e)}
+    data = resp.data if isinstance(resp.data, dict) else {}
+    version = data.get('version')
+    return {
+        'version': int(version) if version is not None else 0,
+        'took_over_stale': bool(data.get('took_over_stale')),
+        'stolen': bool(data.get('stolen')),
+        'previous': data.get('previous'),
+        'leased': True,
+    }
+
+
+def heartbeat_deploy_scope(
+    client: Client, scope_type: str, scope_key: str, *,
+    actor: str | None = None, host: str | None = None,
+) -> bool | None:
+    """Refresh the lease heartbeat. True = written, False = the lease is no
+    longer ours (stolen / taken over / released), None = unknown (RPC failed)."""
+    try:
+        resp = client.rpc('heartbeat_deploy_scope', {
+            'p_scope_type': scope_type, 'p_scope_key': scope_key,
+            'p_actor': actor, 'p_host': host,
+        }).execute()
+        return bool(resp.data)
+    except Exception:
+        return None
+
+
+def release_deploy_scope(
+    client: Client, scope_type: str, scope_key: str, *,
+    actor: str | None = None, host: str | None = None,
+) -> bool:
+    """Clear the lease without a version bump (clean abort). Never raises."""
+    try:
+        resp = client.rpc('release_deploy_scope', {
+            'p_scope_type': scope_type, 'p_scope_key': scope_key,
+            'p_actor': actor, 'p_host': host,
+        }).execute()
+        return bool(resp.data)
+    except Exception:
+        return False
+
+
+# Leases this process currently holds (begin'd, neither claimed nor released).
+# The deploy CLI releases them when a deploy flow exits abnormally (exception,
+# Ctrl-C, sys.exit) so a cleanly aborted deploy does not leave a 30-minute
+# lease behind; a hard crash cannot release and goes stale instead.
+_ACTIVE_LEASES: list['ScopeLease'] = []
+
+
+class ScopeLease:
+    """One deploy's lease on one scope: begin → heartbeat* → claim | release.
+
+    Thin stateful wrapper over the four RPCs so the deploy flows thread one
+    object (``lease.heartbeat`` into the registration flusher, ``lease.claim()``
+    at finalize) instead of five arguments.
+    """
+
+    def __init__(self, client: Client, scope_type: str, scope_key: str, *,
+                 actor: str | None = None, host: str | None = None, steal: bool = False):
+        self.client = client
+        self.scope_type = scope_type
+        self.scope_key = scope_key
+        self.actor = actor
+        self.host = host if host is not None else deploy_host()
+        self.steal = steal
+        self.version_at_start: int = 0
+        self.leased = False
+        self.lost_warned = False
+        self.heartbeats = 0
+
+    def begin(self) -> int:
+        """Take the lease; returns the scope version to CAS at finalize.
+        Raises DeployScopeBusy (see begin_deploy_scope)."""
+        info = begin_deploy_scope(
+            self.client, self.scope_type, self.scope_key,
+            actor=self.actor, host=self.host, steal=self.steal)
+        self.version_at_start = int(info.get('version') or 0)
+        self.leased = bool(info.get('leased'))
+        if self.leased:
+            _ACTIVE_LEASES.append(self)
+            prev = info.get('previous') or {}
+            if info.get('stolen'):
+                print(f"⚠  Stole the deploy lease for {self.scope_type} '{self.scope_key}' from "
+                      f"{prev.get('in_progress_by') or 'service-role'} on "
+                      f"{prev.get('in_progress_host') or 'unknown host'} (last heartbeat "
+                      f"{prev.get('heartbeat_at') or '?'}). If that deploy is still running, "
+                      f"its writes will interleave with this one.")
+            elif info.get('took_over_stale'):
+                print(f"  Took over a stale deploy lease for {self.scope_type} '{self.scope_key}' "
+                      f"(held by {prev.get('in_progress_by') or 'service-role'} on "
+                      f"{prev.get('in_progress_host') or 'unknown host'}, last heartbeat "
+                      f"{prev.get('heartbeat_at') or '?'}) — that deploy is presumed dead.")
+        elif info.get('error'):
+            print(f"  Note: deploy lease unavailable ({info['error']}); continuing without it.")
+        return self.version_at_start
+
+    def heartbeat(self) -> None:
+        """Best-effort heartbeat; warns once if the lease is no longer ours."""
+        if not self.leased:
+            return
+        ok = heartbeat_deploy_scope(
+            self.client, self.scope_type, self.scope_key, actor=self.actor, host=self.host)
+        if ok:
+            self.heartbeats += 1
+        elif ok is False and not self.lost_warned:
+            self.lost_warned = True
+            print(f"⚠  Deploy lease for {self.scope_type} '{self.scope_key}' is no longer held by "
+                  f"this process (stolen, taken over as stale, or another deploy finalized). "
+                  f"Another deploy of the same scope may be running; re-check the result.")
+
+    def claim(self) -> dict:
+        """Finalize: the version CAS (clears the lease on success)."""
+        result = claim_deploy_scope(
+            self.client, self.scope_type, self.scope_key, self.version_at_start, actor=self.actor)
+        self._forget()
+        return result
+
+    def release(self) -> bool:
+        """Clean abort: clear the lease without a version bump."""
+        if not self.leased:
+            return False
+        self._forget()
+        return release_deploy_scope(
+            self.client, self.scope_type, self.scope_key, actor=self.actor, host=self.host)
+
+    def _forget(self) -> None:
+        self.leased = False
+        try:
+            _ACTIVE_LEASES.remove(self)
+        except ValueError:
+            pass
+
+
+def release_active_leases() -> int:
+    """Release every lease this process still holds (abnormal exit path)."""
+    n = 0
+    for lease in list(_ACTIVE_LEASES):
+        if lease.release():
+            n += 1
+    return n
+
+
 def get_latest_deployment_id(client: Client, observation: str) -> int | None:
     """The most recent deployment id for an observation (lifecycle anchor)."""
     resp = (client.table('deployments')

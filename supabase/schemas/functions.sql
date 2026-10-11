@@ -6856,6 +6856,31 @@ GRANT EXECUTE ON FUNCTION public.set_deployment_status(integer, text, uuid, text
 -- when it starts (get_deploy_scope_version) and compare-and-sets at finalize
 -- (claim_deploy_scope). A version mismatch means another reducer deployed the
 -- same scope concurrently — the clobber is detected and surfaced, not silent.
+--
+-- Deploy lease (data releases P1). The CAS detects an overlap only after the
+-- fact; the lease makes a running deploy visible while it runs:
+--   begin_deploy_scope      take the lease at the start of a deploy
+--   heartbeat_deploy_scope  refresh heartbeat_at from the upload loop (holder only)
+--   claim_deploy_scope      the finalize CAS; clears the lease when it succeeds
+--   release_deploy_scope    clear the lease without a version bump (clean abort)
+-- Liveness is "heartbeat younger than deploy_lease_ttl()" (30 minutes). A lease
+-- older than that with no heartbeat is STALE — a crashed deploy — and
+-- begin_deploy_scope takes it over without p_steal; a live lease is refused
+-- (SQLSTATE CF409, message prefix deploy_scope_busy) unless p_steal.
+-- All four are SECURITY DEFINER behind the admin-or-service-role guard; the
+-- table itself is admin-readable only (RLS) and never written by a client.
+
+CREATE OR REPLACE FUNCTION public.deploy_lease_ttl()
+RETURNS interval
+LANGUAGE sql IMMUTABLE
+SET search_path = public, pg_temp
+AS $$ SELECT interval '30 minutes' $$;
+
+COMMENT ON FUNCTION public.deploy_lease_ttl() IS 'Deploy lease liveness window: a deploy_scope_state lease whose heartbeat is older than this is stale and may be taken over without stealing. One definition shared by begin_deploy_scope and dr_readiness.';
+
+REVOKE ALL ON FUNCTION public.deploy_lease_ttl() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.deploy_lease_ttl() TO authenticated, service_role;
+
 
 -- get_deploy_scope_version: the scope's current version (0 if it has never been
 -- deployed). SECURITY DEFINER so it reads uniformly under admin and service_role.
@@ -6882,13 +6907,197 @@ BEGIN
 END;
 $$;
 
+REVOKE ALL ON FUNCTION public.get_deploy_scope_version(text, text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_deploy_scope_version(text, text) TO authenticated, service_role;
+
+
+-- begin_deploy_scope: take the deploy lease on a scope at the start of a deploy.
+-- Inserts the scope row if it does not exist yet (version 0). Refuses with
+-- SQLSTATE CF409 / message 'deploy_scope_busy: ...' (DETAIL = json of the
+-- holder: in_progress_by, in_progress_host, in_progress_since, heartbeat_at)
+-- while another deploy holds a LIVE lease — heartbeat within deploy_lease_ttl()
+-- — unless p_steal. A lease older than the ttl with no newer heartbeat is stale
+-- (the deploy crashed or lost its network) and is taken over without p_steal;
+-- the previous holder is still reported in the result so the operator sees it.
+-- Returns {version, took_over_stale, stolen, previous}: version is the CAS
+-- value the caller passes back to claim_deploy_scope at finalize (so the two
+-- reads collapse into one round trip), previous is the displaced lease or null.
+CREATE OR REPLACE FUNCTION public.begin_deploy_scope(
+  p_scope_type text,
+  p_scope_key text,
+  p_actor uuid DEFAULT NULL,
+  p_host text DEFAULT NULL,
+  p_steal boolean DEFAULT false
+)
+RETURNS json
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_row deploy_scope_state%ROWTYPE;
+  v_live boolean;
+  v_previous json;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  IF p_scope_type NOT IN ('observation', 'field') THEN
+    RAISE EXCEPTION 'Invalid scope_type: %', p_scope_type;
+  END IF;
+
+  INSERT INTO deploy_scope_state (scope_type, scope_key)
+  VALUES (p_scope_type, p_scope_key)
+  ON CONFLICT (scope_type, scope_key) DO NOTHING;
+
+  -- Row lock: two deploys starting at the same instant serialize here, so the
+  -- second one sees the first one's lease and is refused.
+  SELECT * INTO v_row FROM deploy_scope_state
+  WHERE scope_type = p_scope_type AND scope_key = p_scope_key
+  FOR UPDATE;
+
+  v_live := v_row.in_progress_since IS NOT NULL
+            AND COALESCE(v_row.heartbeat_at, v_row.in_progress_since) > now() - deploy_lease_ttl();
+
+  IF v_row.in_progress_since IS NOT NULL THEN
+    v_previous := json_build_object(
+      'in_progress_by', v_row.in_progress_by,
+      'in_progress_host', v_row.in_progress_host,
+      'in_progress_since', v_row.in_progress_since,
+      'heartbeat_at', v_row.heartbeat_at,
+      'live', v_live);
+  END IF;
+
+  IF v_live AND NOT p_steal THEN
+    RAISE EXCEPTION 'deploy_scope_busy: % % is being deployed by % from % since % (last heartbeat %)',
+      p_scope_type, p_scope_key,
+      COALESCE(v_row.in_progress_by::text, 'service-role'),
+      COALESCE(v_row.in_progress_host, 'unknown host'),
+      to_char(v_row.in_progress_since AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS"Z"'),
+      to_char(COALESCE(v_row.heartbeat_at, v_row.in_progress_since) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS"Z"')
+      USING ERRCODE = 'CF409',
+            DETAIL = v_previous::text,
+            HINT = 'Wait for that deploy to finish, or re-run with --steal-lease if you are certain it is dead.';
+  END IF;
+
+  -- The holder identity the heartbeat / release RPCs match against: the
+  -- explicit actor, else the calling user (NULL under service_role).
+  UPDATE deploy_scope_state
+  SET in_progress_since = now(),
+      in_progress_by = COALESCE(p_actor, auth.uid()),
+      in_progress_host = p_host,
+      heartbeat_at = now(),
+      updated_at = now()
+  WHERE scope_type = p_scope_type AND scope_key = p_scope_key;
+
+  RETURN json_build_object(
+    'version', v_row.version,
+    'took_over_stale', (v_row.in_progress_since IS NOT NULL AND NOT v_live),
+    'stolen', (v_live AND p_steal),
+    'previous', v_previous);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.begin_deploy_scope(text, text, uuid, text, boolean) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.begin_deploy_scope(text, text, uuid, text, boolean) TO authenticated, service_role;
+
+
+-- heartbeat_deploy_scope: refresh heartbeat_at, only when the caller still holds
+-- the lease. The holder is identified by (in_progress_by, in_progress_host):
+-- p_actor defaults to auth.uid() (NULL matches NULL, which is what a
+-- service-role deploy records), and p_host, when given, must match too so two
+-- deploys by the same admin on different machines are told apart. Returns
+-- true when the heartbeat was written; false means the lease was lost (stolen,
+-- taken over as stale, released, or cleared by a concurrent finalize) and the
+-- caller should warn — never raise: the heartbeat is best-effort by contract.
+CREATE OR REPLACE FUNCTION public.heartbeat_deploy_scope(
+  p_scope_type text,
+  p_scope_key text,
+  p_actor uuid DEFAULT NULL,
+  p_host text DEFAULT NULL
+)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_n integer;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  UPDATE deploy_scope_state
+  SET heartbeat_at = now()
+  WHERE scope_type = p_scope_type AND scope_key = p_scope_key
+    AND in_progress_since IS NOT NULL
+    AND in_progress_by IS NOT DISTINCT FROM COALESCE(p_actor, auth.uid())
+    AND (p_host IS NULL OR in_progress_host IS NOT DISTINCT FROM p_host);
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  RETURN v_n > 0;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.heartbeat_deploy_scope(text, text, uuid, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.heartbeat_deploy_scope(text, text, uuid, text) TO authenticated, service_role;
+
+
+-- release_deploy_scope: clear the lease WITHOUT bumping the version, for a
+-- deploy that aborts cleanly (operator said no at a prompt, nothing to do,
+-- capability gate failed) after begin_deploy_scope. Same holder rule as the
+-- heartbeat; returns true when a lease was cleared.
+CREATE OR REPLACE FUNCTION public.release_deploy_scope(
+  p_scope_type text,
+  p_scope_key text,
+  p_actor uuid DEFAULT NULL,
+  p_host text DEFAULT NULL
+)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_n integer;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  UPDATE deploy_scope_state
+  SET in_progress_since = NULL,
+      in_progress_by = NULL,
+      in_progress_host = NULL,
+      heartbeat_at = NULL,
+      updated_at = now()
+  WHERE scope_type = p_scope_type AND scope_key = p_scope_key
+    AND in_progress_since IS NOT NULL
+    AND in_progress_by IS NOT DISTINCT FROM COALESCE(p_actor, auth.uid())
+    AND (p_host IS NULL OR in_progress_host IS NOT DISTINCT FROM p_host);
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  RETURN v_n > 0;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.release_deploy_scope(text, text, uuid, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.release_deploy_scope(text, text, uuid, text) TO authenticated, service_role;
 
 
 -- claim_deploy_scope: atomic compare-and-set. Bumps the scope version iff it
 -- still equals p_expected_version (the value the deploy read at start). Returns
 -- {claimed, version, current, conflict}: claimed=false + conflict=true means a
 -- concurrent deploy advanced the scope (the caller should surface the clobber).
+-- A successful claim also clears the deploy lease (the deploy is finished);
+-- a conflicting claim leaves the lease alone, so the other deploy's lease stays
+-- visible to dr_readiness.
 CREATE OR REPLACE FUNCTION public.claim_deploy_scope(
   p_scope_type text,
   p_scope_key text,
@@ -6915,10 +7124,12 @@ BEGIN
 
   -- CAS: insert at version 1 if the scope is new (expected 0); otherwise bump
   -- only when the stored version still matches what the caller read at start.
+  -- A successful bump also clears the lease fields: the deploy is over.
   INSERT INTO deploy_scope_state AS d (scope_type, scope_key, version, last_actor, last_deploy_at, updated_at)
   VALUES (p_scope_type, p_scope_key, 1, p_actor, now(), now())
   ON CONFLICT (scope_type, scope_key) DO UPDATE
-    SET version = d.version + 1, last_actor = p_actor, last_deploy_at = now(), updated_at = now()
+    SET version = d.version + 1, last_actor = p_actor, last_deploy_at = now(), updated_at = now(),
+        in_progress_since = NULL, in_progress_by = NULL, in_progress_host = NULL, heartbeat_at = NULL
     WHERE d.version = p_expected_version
   RETURNING d.version INTO v_new_version;
 
@@ -6934,7 +7145,256 @@ BEGIN
 END;
 $$;
 
+REVOKE ALL ON FUNCTION public.claim_deploy_scope(text, text, integer, uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.claim_deploy_scope(text, text, integer, uuid) TO authenticated, service_role;
+
+
+-- =============================================================================
+-- dr_readiness: "is the catalog ready to freeze?" (data releases P1)
+-- =============================================================================
+-- One jsonb report of the stage-1 numbers an admin checks before a data
+-- release (docs/design-data-releases-impl-findings.md §1): the published
+-- cfpipe_version mix, draft / revoked rows, live deploy leases, NIRCam fields
+-- whose mosaics went back to draft, registry rows pointing at deleted spectra,
+-- provisional etag: hashes, line-fit staleness, needs-review and implicit-pin
+-- counts, and (once PR #586 lands) rows without a science hash. Printed by
+-- `campfire dr status`; the admin deployments page can show it later.
+--
+-- Cost discipline (80k spectra / 845k registry rows on a Small instance): a
+-- handful of aggregates, each on an index or a single narrow pass —
+--   * ONE pass over published spectra (cfpipe_version × observation × program)
+--     feeds both spectra_by_version and the published counters;
+--   * draft/revoked spectra ride the partial idx_spectra_deploy_status;
+--   * objects: one pass over active rows (42k) for published / needs_review /
+--     implicit_pins;
+--   * storage_objects is touched only through the partial sync index
+--     (status = 'active' AND product_type IN finals) or (backend, status) —
+--     never a heap walk: dangling rows are the active nirspec_spec slice
+--     anti-joined on idx_spectra_spectrum_id_scope; etag: rows are counted over
+--     the legacy r2 backend (the retired R2 LIST/HEAD backfill was the only
+--     producer of etag: hashes) plus the finals slice as the DR-member safety
+--     net; science_hash on the active nirspec_spec slice.
+-- No per-row function calls except inside spectrum_line_fits_status (16k rows,
+-- the ledger's own definition of staleness — reuse, do not re-derive).
+--
+-- needs_review is the catalog RPCs' predicate verbatim
+-- (get_filtered_objects_paginated and friends; keep in step):
+--   staleness_reason IS NOT NULL AND last_inspected_at IS NOT NULL
+--   AND (last_data_change_at IS NULL OR last_data_change_at > last_inspected_at)
+-- counted over active objects, the rows those RPCs list.
+--
+-- redrafted_nircam_fields: nircam_images is UNIQUE on (field, tile, filter,
+-- pixel_scale, extension, epoch), so a `--draft` re-deploy FLIPS the single
+-- published row to draft (findings §1.2) — there is never a published/draft
+-- pair for one key. "Re-drafted" is therefore detected per field: a field with
+-- at least one draft mosaic row that also has published mosaic rows or a
+-- published field deployment (i.e. the field has been live and part of it is
+-- now dark). A field that has only ever been draft is not listed.
+--
+-- science_hash_missing: the columns arrive with P0b (PR #586); this function
+-- is written to run before and after — it reads information_schema.columns
+-- and returns null for a column that does not exist yet.
+--
+-- SECURITY DEFINER (admin-or-service-role guard): the views and tables it reads
+-- are admin-readable anyway; definer rights keep the aggregates off the RLS
+-- policy chains (the per-row access predicates would dominate the cost).
+CREATE OR REPLACE FUNCTION public.dr_readiness()
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_is_admin boolean;
+  v_spectra jsonb;
+  v_objects jsonb;
+  v_spectra_status jsonb;
+  v_nircam_drafts bigint;
+  v_deployments jsonb;
+  v_leases jsonb;
+  v_redrafted jsonb;
+  v_dangling jsonb;
+  v_etag jsonb;
+  v_lines jsonb;
+  v_has_sh_spectra boolean;
+  v_has_sh_storage boolean;
+  v_sh_spectra bigint;
+  v_sh_storage bigint;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  -- 1. published spectra: one pass, grouped on the three keys we need.
+  WITH po AS MATERIALIZED (
+    SELECT s.cfpipe_version, s.observation, s.program_slug, count(*) AS n
+    FROM spectra s
+    WHERE s.deploy_status = 'published'
+    GROUP BY 1, 2, 3
+  ),
+  by_version AS (
+    SELECT COALESCE(cfpipe_version, 'unknown') AS v,
+           sum(n) AS spectra,
+           count(DISTINCT observation) AS observations
+    FROM po
+    GROUP BY 1
+  )
+  SELECT jsonb_build_object(
+    'spectra_by_version',
+      (SELECT COALESCE(jsonb_object_agg(v, jsonb_build_object('spectra', spectra, 'observations', observations)), '{}'::jsonb)
+       FROM by_version),
+    'published',
+      (SELECT jsonb_build_object(
+         'spectra', COALESCE(sum(n), 0),
+         'observations', count(DISTINCT observation),
+         'programs', count(DISTINCT program_slug))
+       FROM po))
+  INTO v_spectra;
+
+  -- 2. draft / revoked spectra (partial index on deploy_status <> 'published').
+  SELECT jsonb_build_object(
+    'draft', count(*) FILTER (WHERE deploy_status = 'draft'),
+    'revoked', count(*) FILTER (WHERE deploy_status = 'revoked'))
+  INTO v_spectra_status
+  FROM spectra
+  WHERE deploy_status <> 'published';
+
+  -- 3. objects: published / needs_review / implicit pins in one pass over active rows.
+  SELECT jsonb_build_object(
+    'published', count(*) FILTER (WHERE has_published_spectrum),
+    'needs_review', count(*) FILTER (
+      WHERE staleness_reason IS NOT NULL
+        AND last_inspected_at IS NOT NULL
+        AND (last_data_change_at IS NULL OR last_data_change_at > last_inspected_at)),
+    'implicit_pins', count(*) FILTER (WHERE inspected_used_auto))
+  INTO v_objects
+  FROM objects
+  WHERE is_active;
+
+  -- 4. NIRCam drafts and deployments by status (small tables).
+  SELECT count(*) INTO v_nircam_drafts FROM nircam_images WHERE deploy_status = 'draft';
+
+  SELECT jsonb_build_object(
+    'draft', count(*) FILTER (WHERE status = 'draft'),
+    'revoked', count(*) FILTER (WHERE status = 'revoked'))
+  INTO v_deployments
+  FROM deployments;
+
+  -- 5. live deploy leases (with the stale flag the takeover rule uses).
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+      'scope_type', d.scope_type,
+      'scope_key', d.scope_key,
+      'version', d.version,
+      'in_progress_by', d.in_progress_by,
+      'in_progress_by_username', up.username,
+      'in_progress_host', d.in_progress_host,
+      'in_progress_since', d.in_progress_since,
+      'heartbeat_at', d.heartbeat_at,
+      'stale', COALESCE(d.heartbeat_at, d.in_progress_since) < now() - deploy_lease_ttl())
+    ORDER BY d.in_progress_since), '[]'::jsonb)
+  INTO v_leases
+  FROM deploy_scope_state d
+  LEFT JOIN user_profiles up ON up.user_id = d.in_progress_by
+  WHERE d.in_progress_since IS NOT NULL;
+
+  -- 6. re-drafted NIRCam fields (see the header comment for the definition).
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+      'field', f.field,
+      'draft_images', f.n_draft,
+      'published_images', f.n_published,
+      'published_deployments', f.n_published_deployments)
+    ORDER BY f.field), '[]'::jsonb)
+  INTO v_redrafted
+  FROM (
+    SELECT ni.field,
+           count(*) FILTER (WHERE ni.deploy_status = 'draft') AS n_draft,
+           count(*) FILTER (WHERE ni.deploy_status = 'published') AS n_published,
+           (SELECT count(*) FROM deployments dp
+             WHERE dp.field = ni.field AND dp.status = 'published') AS n_published_deployments
+    FROM nircam_images ni
+    GROUP BY ni.field
+  ) f
+  WHERE f.n_draft > 0 AND (f.n_published > 0 OR f.n_published_deployments > 0);
+
+  -- 7. dangling registry rows: active nirspec_spec rows whose spectrum has no
+  --    spectra row any more (deploy remove deletes spectra, not registry rows).
+  SELECT jsonb_build_object(
+    'count', COALESCE(sum(n), 0),
+    'by_observation', COALESCE(jsonb_object_agg(COALESCE(observation, 'unknown'), n), '{}'::jsonb))
+  INTO v_dangling
+  FROM (
+    SELECT so.observation, count(*) AS n
+    FROM storage_objects so
+    WHERE so.status = 'active'
+      AND so.product_type = 'nirspec_spec'
+      AND NOT EXISTS (SELECT 1 FROM spectra s WHERE s.spectrum_id = so.spectrum_id)
+    GROUP BY so.observation
+  ) x;
+
+  -- 8. provisional etag: hashes by product_type.
+  SELECT COALESCE(jsonb_object_agg(product_type, n), '{}'::jsonb)
+  INTO v_etag
+  FROM (
+    SELECT so.product_type, count(*) AS n
+    FROM storage_objects so
+    WHERE so.status = 'active'
+      AND so.content_hash LIKE 'etag:%'
+      AND (so.backend = 'r2' OR so.product_type IN ('nirspec_spec', 'nircam_mosaic'))
+    GROUP BY so.product_type
+  ) x;
+
+  -- 9. line-fit staleness from the ledger view.
+  SELECT jsonb_build_object(
+    'total', count(*),
+    'stale_redshift', count(*) FILTER (WHERE stale_redshift),
+    'stale_spectrum', count(*) FILTER (WHERE stale_spectrum))
+  INTO v_lines
+  FROM spectrum_line_fits_status;
+
+  -- 10. science hash coverage, only once the columns exist (P0b, PR #586).
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'spectra' AND column_name = 'science_hash'),
+         EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'storage_objects' AND column_name = 'science_hash')
+  INTO v_has_sh_spectra, v_has_sh_storage;
+  IF v_has_sh_spectra THEN
+    EXECUTE 'SELECT count(*) FROM public.spectra WHERE deploy_status = ''published'' AND science_hash IS NULL'
+      INTO v_sh_spectra;
+  END IF;
+  IF v_has_sh_storage THEN
+    EXECUTE 'SELECT count(*) FROM public.storage_objects WHERE status = ''active'' AND product_type = ''nirspec_spec'' AND science_hash IS NULL'
+      INTO v_sh_storage;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'generated_at', now(),
+    'spectra_by_version', v_spectra->'spectra_by_version',
+    'published', (v_spectra->'published') || jsonb_build_object('objects', v_objects->'published'),
+    'drafts', jsonb_build_object(
+      'spectra', v_spectra_status->'draft',
+      'nircam_images', v_nircam_drafts,
+      'deployments', v_deployments->'draft'),
+    'revoked', jsonb_build_object(
+      'spectra', v_spectra_status->'revoked',
+      'deployments', v_deployments->'revoked'),
+    'leases', v_leases,
+    'redrafted_nircam_fields', v_redrafted,
+    'dangling_registry_rows', v_dangling,
+    'etag_hash_rows', v_etag,
+    'line_fits', v_lines,
+    'needs_review', v_objects->'needs_review',
+    'implicit_pins', v_objects->'implicit_pins',
+    'science_hash_missing', jsonb_build_object(
+      'spectra', to_jsonb(v_sh_spectra),
+      'storage_objects', to_jsonb(v_sh_storage)));
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_readiness() IS 'Data-release readiness report (P1): published cfpipe_version mix, drafts/revoked, live deploy leases, re-drafted NIRCam fields, dangling nirspec_spec registry rows, etag: hashes, line-fit staleness, needs-review / implicit-pin counts, science_hash coverage. Admin or service_role; printed by `campfire dr status`.';
+
+REVOKE ALL ON FUNCTION public.dr_readiness() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_readiness() TO authenticated, service_role;
 
 
 -- =============================================================================

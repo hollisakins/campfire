@@ -1385,8 +1385,17 @@ COMMENT ON TABLE "public"."deploy_events" IS 'Append-only audit log for the inte
 -- scope version when it starts and compare-and-sets it at finalize via
 -- claim_deploy_scope; a mismatch means another reducer deployed the same scope
 -- concurrently, so the clobber is DETECTED (and surfaced) rather than silent.
--- Deliberately the simplest mechanism that satisfies the gate: no leases, no
--- heartbeats — concurrent same-scope deploys are rare.
+--
+-- Deploy lease (data releases P1, docs/design-data-releases-impl-plan.md §3):
+-- the CAS only detects an overlap after the fact. The in_progress_* columns
+-- make a running deploy VISIBLE while it runs: begin_deploy_scope takes the
+-- lease at the start of a deploy (and refuses while another deploy holds a
+-- lease with a heartbeat younger than 30 minutes, unless told to steal it),
+-- heartbeat_deploy_scope refreshes heartbeat_at from the upload loop,
+-- claim_deploy_scope clears the lease at finalize and release_deploy_scope
+-- clears it on a clean abort. A lease whose heartbeat is older than 30 minutes
+-- is stale (a crashed deploy) and may be taken over without stealing.
+-- dr_readiness() lists live leases; the freeze reads them too.
 CREATE TABLE IF NOT EXISTS "public"."deploy_scope_state" (
     "scope_type" "text" NOT NULL,
     "scope_key" "text" NOT NULL,
@@ -1394,6 +1403,10 @@ CREATE TABLE IF NOT EXISTS "public"."deploy_scope_state" (
     "last_actor" "uuid",
     "last_deploy_at" timestamp with time zone,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "in_progress_since" timestamp with time zone,
+    "in_progress_by" "uuid",
+    "in_progress_host" "text",
+    "heartbeat_at" timestamp with time zone,
     CONSTRAINT "deploy_scope_state_scope_type_check" CHECK (("scope_type" = ANY (ARRAY['observation'::"text", 'field'::"text"])))
 );
 
@@ -1401,7 +1414,15 @@ CREATE TABLE IF NOT EXISTS "public"."deploy_scope_state" (
 ALTER TABLE "public"."deploy_scope_state" OWNER TO "postgres";
 
 
-COMMENT ON TABLE "public"."deploy_scope_state" IS 'Optimistic-concurrency version per deploy scope (epic #210, B4). claim_deploy_scope does the compare-and-set so concurrent same-scope deploys are detected, not silently clobbered. Admin/internal.';
+COMMENT ON TABLE "public"."deploy_scope_state" IS 'Optimistic-concurrency version per deploy scope (epic #210, B4) plus the visible deploy lease (data releases P1). claim_deploy_scope does the compare-and-set so concurrent same-scope deploys are detected, not silently clobbered; begin/heartbeat/release_deploy_scope hold a lease while a deploy runs. Admin/internal.';
+
+COMMENT ON COLUMN "public"."deploy_scope_state"."in_progress_since" IS 'Deploy lease: when the running deploy of this scope took the lease (begin_deploy_scope). NULL = no deploy in progress. Cleared by claim_deploy_scope (finalize) and release_deploy_scope (clean abort).';
+
+COMMENT ON COLUMN "public"."deploy_scope_state"."in_progress_by" IS 'Deploy lease: auth user id of the deployer holding the lease (NULL under service-role deploys).';
+
+COMMENT ON COLUMN "public"."deploy_scope_state"."in_progress_host" IS 'Deploy lease: hostname of the machine running the deploy, so two deploys by the same admin on different machines are told apart.';
+
+COMMENT ON COLUMN "public"."deploy_scope_state"."heartbeat_at" IS 'Deploy lease: last heartbeat from the running deploy (heartbeat_deploy_scope, every registration batch). A lease whose heartbeat is older than 30 minutes is stale and may be taken over without --steal-lease.';
 
 
 -- sync_snapshots: the nightly public-scope catalog snapshot a first-time
