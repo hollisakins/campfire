@@ -282,8 +282,14 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
     model.data = sci.astype(np.float32, copy=False)
     model.err = err.astype(np.float32, copy=False)
     model.wht = wht.astype(np.float32, copy=False)
-    ctx_out = (ctx[0] if (ctx.ndim == 3 and ctx.shape[0] == 1) else ctx)
-    ctx_out = ctx_out.astype(np.int32, copy=False)
+    # ctx is None when [nircam.resample].write_context = false. A 1x1x1
+    # placeholder keeps the SCI/ERR/CON/WHT HDU layout the ImageModel schema
+    # and downstream readers expect, without ever materialising the cube.
+    if ctx is None:
+        ctx_out = np.zeros((1, 1, 1), dtype=np.int32)
+    else:
+        ctx_out = (ctx[0] if (ctx.ndim == 3 and ctx.shape[0] == 1) else ctx)
+        ctx_out = ctx_out.astype(np.int32, copy=False)
 
     # CON is written tile-compressed (see compress_context_extension). It is
     # by far the largest extension: one int32 plane per 32 inputs, each at FULL
@@ -324,7 +330,7 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
 
     model.save(output_path)
 
-    if compress_context:
+    if compress_context and ctx is not None:
         compress_context_extension(output_path, ctx=ctx_out)
 
     with fits.open(output_path, mode='update') as hdul:
@@ -336,6 +342,17 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
             cmpfrver,
             'CAMPFIRE git commit (or pinned version)',
         )
+        # CON is retained purely for external consumers, so a placeholder
+        # must announce itself: without this card a 1x1x1 cube of zeros is
+        # indistinguishable from a genuinely empty context except by shape,
+        # and the placeholder is a plain ImageHDU where a full run writes a
+        # CompImageHDU. Stamped only when the cube was skipped (like
+        # CFEPOCH), so normal products keep byte-identical headers.
+        if ctx is None:
+            hdul[0].header['CFNOCTX'] = (
+                True,
+                'CAMPFIRE: CON is a placeholder (write_context=false)',
+            )
 
 
 def compress_context_extension(output_path, ctx=None):
@@ -566,6 +583,7 @@ def drizzle_tile(
     blendheaders=True,
     reduction_version='unknown',
     compress_context=True,
+    write_context=True,
 ):
     """Drizzle ``crf_files`` into a single i2d at ``output_path``.
 
@@ -615,19 +633,38 @@ def drizzle_tile(
     outwht = np.zeros(out_shape, dtype=np.float32)
     outvar = np.zeros(out_shape, dtype=np.float32)
     outvarw = np.zeros(out_shape, dtype=np.float32)
-    n_planes = max(1, (n_inputs + 31) // 32)
-    outctx = np.zeros((n_planes, ny, nx), dtype=np.int32)
+    # The context cube is one int32 plane per 32 inputs at FULL tile size, so
+    # it costs tile_area * 4 * ceil(n/32) — for a deep tile it dwarfs
+    # SCI+ERR+WHT combined (measured: 660 GiB for a 1.15 Gpix tile with 3,471
+    # inputs, vs ~104 GiB for everything else). Nothing in this pipeline reads
+    # CON: it is not among the extensions `_split_extensions` writes out
+    # (sci/err/wht/srcmask), and bkgsub does not touch it. `write_context =
+    # false` therefore skips the allocation entirely and drizzles with
+    # `disable_ctx=True` — the same path the variance drizzle below already
+    # uses — turning otherwise unschedulable tiles into ordinary ones.
+    if write_context:
+        n_planes = max(1, (n_inputs + 31) // 32)
+        outctx = np.zeros((n_planes, ny, nx), dtype=np.int32)
+    else:
+        outctx = None
 
     # fillval='NaN' leaves every zero-weight output pixel — no coverage OR masked
     # in all overlapping inputs — as NaN in SCI, which is why the mosaic no longer
     # needs a post-drizzle "set SCI=NaN where WHT=0" pass. The variance drizzle
     # keeps 'INDEF' (0): outvarw==0 pixels are turned into NaN by the
     # outvar/outvarw normalization below, so ERR is already NaN there.
-    sci_drizzle = Drizzle(
-        out_img=outsci, out_wht=outwht, out_ctx=outctx,
-        kernel=kernel, fillval='NaN',
-        max_ctx_id=n_inputs,
-    )
+    if write_context:
+        sci_drizzle = Drizzle(
+            out_img=outsci, out_wht=outwht, out_ctx=outctx,
+            kernel=kernel, fillval='NaN',
+            max_ctx_id=n_inputs,
+        )
+    else:
+        sci_drizzle = Drizzle(
+            out_img=outsci, out_wht=outwht,
+            kernel=kernel, fillval='NaN',
+            disable_ctx=True,
+        )
     var_drizzle = Drizzle(
         out_img=outvar, out_wht=outvarw,
         kernel=kernel, fillval='INDEF',
