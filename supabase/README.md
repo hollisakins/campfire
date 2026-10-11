@@ -55,6 +55,34 @@ harnesses are seed-anchored (user ids `1111…`, `2222…`, `3333…`, admin / u
 @campfire.dev, password `password123`) and skip when no local database answers
 (`python/tests/_localdb.py` resolves `CAMPFIRE_LOCAL_DB_URL`, then the Docker container).
 
+## Regenerate the seed
+
+`seed.sql` is a stratified sample of **public** production data plus synthetic
+accounts, written by `scripts/generate_seed.py` (read-only against production:
+`CAMPFIRE_SUPABASE_URL` + `CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY`, or the `[supabase]`
+block of `$CAMPFIRE_ROOT/config/deploy.toml`). Regenerate it whenever a migration
+changes a seeded table, or when a new table needs rows:
+
+```bash
+conda run -n campfire python scripts/generate_seed.py      # ~2 min, a few thousand rows read
+python scripts/check_seed_privacy.py                        # must print OK
+npx -y supabase@2.120.0 db reset --yes                      # then the guards + harnesses above
+```
+
+What the generator guarantees, and what the checker re-verifies on the file alone:
+only `is_public = true` programs and rows that reference them (the run aborts on
+the first violation); no production identities — every real `auth.users` uuid is
+mapped onto `admin@` / `user@`, comment text is synthetic, the only emails are
+`@campfire.dev` and `@shared.invalid`. Besides the catalog it seeds the lifecycle
+surface: real `storage_objects` rows (hashes, sizes) for every sampled spectrum and
+its sidecars, `spectrum_line_fits` (+ `spectrum_lines` by trigger), `object_photometry`
+(+ bands by trigger), one published deployment per observation plus a draft and a
+revoked one each with one spectrum attached, a few published `nircam_images` of one
+real field plus a draft one, the `fields` rows, and two share links (one live, one
+revoked; password `seed-link-password`). The objects of `castellano3073` are numbered
+first so the seed-anchored harnesses keep objects 1-3. Keep the file under 2 MB
+(`--objects-per-program` controls the sample size).
+
 ## CI
 
 `.github/workflows/database.yml` runs on every PR and, for PRs touching the database
