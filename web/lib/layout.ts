@@ -11,6 +11,18 @@
 // storage keys, the key→sibling derivation, key parsing, and the presign/proxy
 // allowlist. Scope field names are snake_case to match the contract + fixture
 // exactly (fidelity over JS idiom).
+//
+// The product table itself is NOT hand-mirrored: `PRODUCTS` and the two
+// suffix-dispatch tables are built from `./layout-products.json`, which
+// `scripts/sync_layout_products.py` generates from the python registry
+// (`products.py` + the `bijection.py` dispatch tables); CI runs it with
+// `--check`, so a registry edit without a regenerated JSON fails. What stays
+// hand-written below is *code* that mirrors python code, not data: the
+// directory-walking parsers (`parseRelpath` / `parseLegacyKey`), the tile
+// regex, the unsafe-key guard, and the in-directory prefix/fallback rules
+// (`mosaic*` / `expmap*` / bare `.fits`) — see the comments at each site.
+
+import layoutProducts from './layout-products.json';
 
 export type Bucket = 'data' | 'tiles';
 export type KeyScheme = 'legacy' | 'canonical';
@@ -35,11 +47,22 @@ export interface Scope {
   y?: number;
 }
 
+export type Instrument = 'nirspec' | 'nircam';
+export type LifecycleClass =
+  | 'cloud-backed-product'
+  | 'user-state'
+  | 'shared-calibration'
+  | 'external-MAST'
+  | 'regenerable'
+  | 'cli-local';
+
 type Builder = (s: Scope) => string;
 
 interface ProductSpec {
   name: string;
+  instrument: Instrument | null;
   tree: string; // products | reference | raw | cache | tiles | meta | cutouts
+  lifecycle: LifecycleClass;
   bucket: Bucket | null;
   scopeKeys: (keyof Scope)[];
   subdir: Builder;
@@ -51,90 +74,57 @@ interface ProductSpec {
   compressedSuffixes: string[]; // filenames ending in these are stored gzipped ('.gz' key); local file stays plain
 }
 
-function spec(p: Partial<ProductSpec> & Pick<ProductSpec, 'name' | 'tree' | 'scopeKeys' | 'subdir'>): ProductSpec {
+// One row of layout-products.json: the python ProductSpec with its Scope -> str
+// builders flattened to '{field}' templates (the generator proves each builder
+// is a pure substitution of Scope fields before it writes the template).
+interface GeneratedProduct {
+  name: string;
+  instrument: string | null;
+  tree: string;
+  lifecycle: string;
+  bucket: string | null;
+  scope_keys: string[];
+  subdir: string;
+  filename: string | null;
+  suffix: string | null;
+  legacy_prefix: string | null;
+  mirrored: boolean;
+  scheme_invariant: boolean;
+  compressed_suffixes: string[];
+}
+
+const PLACEHOLDER = /\{(\w+)\}/g;
+
+// Render a '{field}' template against a scope. Mirrors the python f-string
+// builders: a field is interpolated verbatim (ints such as zoom/x/y stringify),
+// and a missing field is caught by `validate`, exactly as before.
+function builder(template: string): Builder {
+  return (s) => template.replace(PLACEHOLDER, (_m, k: string) => String(s[k as keyof Scope]));
+}
+
+function fromGenerated(p: GeneratedProduct): ProductSpec {
   return {
-    bucket: null,
-    suffix: null,
-    legacyPrefix: null,
-    filename: null,
-    mirrored: true,
-    schemeInvariant: false,
-    compressedSuffixes: [],
-    ...p,
+    name: p.name,
+    instrument: p.instrument as Instrument | null,
+    tree: p.tree,
+    lifecycle: p.lifecycle as LifecycleClass,
+    bucket: p.bucket as Bucket | null,
+    scopeKeys: p.scope_keys as (keyof Scope)[],
+    subdir: builder(p.subdir),
+    suffix: p.suffix,
+    legacyPrefix: p.legacy_prefix === null ? null : builder(p.legacy_prefix),
+    filename: p.filename === null ? null : builder(p.filename),
+    mirrored: p.mirrored,
+    schemeInvariant: p.scheme_invariant,
+    compressedSuffixes: p.compressed_suffixes,
   };
 }
 
-const nirspecObs: Builder = (s) => `nirspec/${s.obs}`;
-const nircamFieldFilter: Builder = (s) => `nircam/${s.field}/${s.filt}`;
-
+/** The product registry, in the python registration order. */
 export const PRODUCTS: Record<string, ProductSpec> = {};
-function reg(p: ProductSpec) {
-  PRODUCTS[p.name] = p;
+for (const p of layoutProducts.products as GeneratedProduct[]) {
+  PRODUCTS[p.name] = fromGenerated(p);
 }
-
-// --- NIRSpec products (spectrum family shares products/nirspec/<obs>/) ---
-reg(spec({ name: 'nirspec_spec', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_spec.fits', legacyPrefix: (s) => `spectra/${s.obs}` }));
-reg(spec({ name: 'spectrum_json', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_spec.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
-// 1-D-only sibling of spectrum_json (perf T2-D2, #508): no 2-D S/N array.
-reg(spec({ name: 'spectrum_1d_json', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_spec_1d.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
-reg(spec({ name: 'zfit', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_zfit.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
-// Emission-line fit product (cfpipe nirspec linefit); new product, reserved canonical key.
-reg(spec({ name: 'nirspec_lines', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_lines.fits' }));
-// JSON sidecar of the line fit (model + continuum + line summary): the spectrum plot's "Lines" overlay.
-reg(spec({ name: 'nirspec_lines_json', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_lines.json' }));
-reg(spec({ name: 'nirspec_spectrum_exposure', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '.fits' }));
-reg(spec({ name: 'nirspec_rate', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_rate.fits' }));
-reg(spec({ name: 'rgb', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_rgb.png', legacyPrefix: (s) => `rgb/${s.obs}` }));
-reg(spec({ name: 'sed', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_sed.pdf', legacyPrefix: (s) => `sed/${s.obs}` }));
-
-// --- NIRCam products ---
-reg(spec({ name: 'nircam_exposure', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '.fits' }));
-reg(spec({ name: 'nircam_exposure_preview', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_preview.png', legacyPrefix: (s) => `nircam/exposures/${s.field}/${s.filt}` }));
-reg(spec({ name: 'nircam_exposure_full', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_full.png', legacyPrefix: (s) => `nircam/exposures/${s.field}/${s.filt}` }));
-reg(spec({ name: 'nircam_mosaic', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null, compressedSuffixes: ['.fits'] }));
-reg(spec({ name: 'nircam_rgb', tree: 'products', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}`, suffix: '_rgb.png' }));
-reg(spec({ name: 'nircam_expmap', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null }));
-reg(spec({ name: 'nircam_expmap_plot', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null }));
-reg(spec({ name: 'nircam_mosaic_thumbnail', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_thumb.png' }));
-reg(spec({ name: 'nircam_mosaic_quicklook', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_quicklook.png' }));
-reg(spec({ name: 'nircam_layout', tree: 'products', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}`, suffix: '_layout.png' }));
-
-// --- Map tiles (separate bucket, scheme-invariant) ---
-reg(spec({
-  name: 'tile', tree: 'tiles', bucket: 'tiles', scopeKeys: ['field', 'filt', 'zoom', 'x', 'y'],
-  subdir: (s) => `${s.field}/${s.filt}/${s.zoom}/${s.x}`, filename: (s) => `${s.y}.png`,
-  suffix: '.png', legacyPrefix: (s) => `${s.field}/${s.filt}/${s.zoom}/${s.x}`, schemeInvariant: true,
-}));
-
-// --- Photometry (key-only) ---
-reg(spec({
-  name: 'photometry_pz', tree: 'products', bucket: 'data', scopeKeys: ['field', 'object_id'],
-  subdir: (s) => `photometry/${s.field}`, filename: (s) => `${s.object_id}_pz.json`,
-  suffix: '_pz.json', legacyPrefix: (s) => `photometry/${s.field}`, mirrored: false,
-}));
-
-// --- Metadata (Postgres-resident; no storage key) ---
-for (const [name, suffix] of [['summary', '_summary.ecsv'], ['pointings', '_pointings.ecsv'], ['shutters', '_shutters.ecsv'], ['nirspec_config', '_config.toml']] as const) {
-  reg(spec({ name, tree: 'products', bucket: null, scopeKeys: ['obs'], subdir: nirspecObs, suffix, filename: (s) => `${s.obs}${suffix}` }));
-}
-
-// --- Reducer-decision reference state (user-state) ---
-reg(spec({ name: 'nirspec_manual_mask', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: (s) => `nirspec/${s.obs}/manual_masks`, suffix: '.reg' }));
-reg(spec({ name: 'nirspec_stuck_shutters', tree: 'reference', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: 'stuck_closed_shutters.toml', filename: () => 'stuck_closed_shutters.toml' }));
-// Inspected redshifts pulled from the portal for cfpipe nirspec linefit.
-reg(spec({ name: 'nirspec_redshifts', tree: 'reference', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: 'redshifts.toml', filename: () => 'redshifts.toml' }));
-reg(spec({ name: 'nirspec_bkg_override', tree: 'reference', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: 'nodded_background_overrides.toml', filename: () => 'nodded_background_overrides.toml' }));
-reg(spec({ name: 'nircam_mask', tree: 'reference', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}/masks` }));
-reg(spec({ name: 'nircam_astrom_cat', tree: 'reference', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}/astrom_cats` }));
-reg(spec({ name: 'nircam_bad_pixel', tree: 'reference', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}/bad_pixels` }));
-
-// --- Shared calibration references ---
-reg(spec({ name: 'nircam_flat', tree: 'reference', bucket: 'data', scopeKeys: [], subdir: () => 'nircam/shared/flats' }));
-reg(spec({ name: 'nircam_wisp', tree: 'reference', bucket: 'data', scopeKeys: [], subdir: () => 'nircam/shared/wisps' }));
-
-// --- Raw (external/MAST; not cloud-backed) ---
-reg(spec({ name: 'raw_nirspec', tree: 'raw', bucket: null, scopeKeys: ['data_subdir'], subdir: (s) => `nirspec/${s.data_subdir}` }));
-reg(spec({ name: 'raw_nircam', tree: 'raw', bucket: null, scopeKeys: ['pid', 'filt'], subdir: (s) => `nircam/${s.pid}/${s.filt}` }));
 
 function get(productType: string): ProductSpec {
   const s = PRODUCTS[productType];
@@ -192,33 +182,69 @@ export function storageKey(productType: string, scope: Scope, filename?: string,
 // Parsing (key → product/scope/filename)
 // ---------------------------------------------------------------------------
 
+/** Roots a parsed key or relpath can live under (mirror of bijection.py):
+ * 'live' is today's mutable tree / key space; 'archive' is the content-addressed
+ * cloud store `archive/<sha256>/<relpath>` (write-once, server-side only);
+ * 'dr' is the local release tree `dr/<tag>/products/<relpath>` (never a cloud key). */
+export type KeyRoot = 'live' | 'archive' | 'dr';
+export const ARCHIVE_ROOT = 'archive';
+export const DR_ROOT = 'dr';
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/** Mirror of products.is_archivable: a mirrored, cloud-backed product on the
+ * data bucket (NIRSpec finals and sidecars, NIRCam mosaics). Tiles live on the
+ * tiles bucket and are never archived per object. */
+export function isArchivable(productType: string): boolean {
+  const s = PRODUCTS[productType];
+  return !!s && s.bucket === 'data' && s.mirrored && s.lifecycle === 'cloud-backed-product';
+}
+
+/** Mirror of keys.archive_hex: `sha256:<hex>` or bare hex → 64 lowercase hex
+ * chars. Any other scheme (a provisional `etag:` digest) is rejected, never
+ * stripped: it must not mint an archive address. */
+export function archiveHex(contentHash: string): string {
+  const i = contentHash.indexOf(':');
+  let hex: string;
+  if (i >= 0) {
+    if (contentHash.slice(0, i).toLowerCase() !== 'sha256') throw new LayoutError(`not a sha256 content hash: '${contentHash}'`);
+    hex = contentHash.slice(i + 1).toLowerCase();
+  } else {
+    hex = contentHash.toLowerCase();
+  }
+  if (!SHA256_HEX.test(hex)) throw new LayoutError(`not a sha256 content hash: '${contentHash}'`);
+  return hex;
+}
+const DR_TAG = /^DR\d{4}\.\d+$/;
+
 export interface ParsedKey {
   productType: string;
   scope: Scope;
   filename: string;
+  /** Which root the key was parsed from. Every rebuild MUST honour it
+   * (`keyForParsed`); dropping the root would map an archive copy onto the
+   * live key, the failure the data-release design warns about. */
+  root: KeyRoot;
+  /** Archive content hash (64 hex) or the DR tag; null for live. */
+  rootId: string | null;
 }
 
-const NIRSPEC_OBS_SUFFIXES: [string, string][] = [
-  ['_spec.fits', 'nirspec_spec'],
-  ['_rate.fits', 'nirspec_rate'], // must precede the bare-'.fits' fallback below
-  ['_lines.fits', 'nirspec_lines'], // ditto
-  ['_lines.json', 'nirspec_lines_json'],
-  ['_spec_1d.json', 'spectrum_1d_json'],
-  ['_spec.json', 'spectrum_json'],
-  ['_zfit.json', 'zfit'],
-  ['_rgb.png', 'rgb'],
-  ['_sed.pdf', 'sed'],
-  ['_summary.ecsv', 'summary'],
-  ['_pointings.ecsv', 'pointings'],
-  ['_shutters.ecsv', 'shutters'],
-  ['_config.toml', 'nirspec_config'],
-];
-const NIRCAM_FILTER_SUFFIXES: [string, string][] = [
-  ['_preview.png', 'nircam_exposure_preview'],
-  ['_full.png', 'nircam_exposure_full'],
-  ['_thumb.png', 'nircam_mosaic_thumbnail'], // before the 'mosaic' prefix check
-  ['_quicklook.png', 'nircam_mosaic_quicklook'],
-];
+export function isDrTag(tag: string): boolean {
+  return DR_TAG.test(tag);
+}
+
+function live(pk: Omit<ParsedKey, 'root' | 'rootId'>): ParsedKey {
+  return { ...pk, root: 'live', rootId: null };
+}
+
+// Ordered suffix tables (most specific first) from layout-products.json —
+// the same tables bijection.py dispatches on, in the same order (e.g.
+// '_rate.fits' / '_lines.fits' precede the bare-'.fits' spectrum-exposure
+// fallback in `nirspecObsProduct`; '_thumb.png' precedes the 'mosaic' prefix
+// check in `parseRelpath`).
+const NIRSPEC_OBS_SUFFIXES = layoutProducts.dispatch.nirspec_obs_suffixes as [string, string][];
+const NIRCAM_FILTER_SUFFIXES = layoutProducts.dispatch.nircam_filter_suffixes as [string, string][];
+// Hand-written (no python data to generate from): the tile key shape is a
+// regex in bijection.py (_TILE_RE), not a registry field.
 const TILE_RE = /^([^/]+)\/([^/]+)\/(\d+)\/(\d+)\/(\d+)\.png$/;
 
 function dispatch(fname: string, table: [string, string][]): string | null {
@@ -238,6 +264,8 @@ function plainFilename(productType: string, fname: string): string {
   return fname;
 }
 
+// Hand-written: the bare-'.fits' fallback to the spectrum-exposure is code in
+// bijection._nirspec_obs_product, not a dispatch-table row.
 function nirspecObsProduct(fname: string): string {
   const pt = dispatch(fname, NIRSPEC_OBS_SUFFIXES);
   if (pt) return pt;
@@ -250,91 +278,129 @@ function rejectUnsafe(key: string): void {
   if (key.split('/').some((p) => p === '' || p === '.' || p === '..')) throw new LayoutError(`unsafe key '${key}'`);
 }
 
+// Hand-written mirror of bijection.parse_relpath: the directory walk, the
+// 'mosaic*' / 'expmap*' prefix rules and the fixed reference-file names are
+// imperative code on the python side too, so there is no registry data to
+// generate them from. Keep the two in step by hand; the golden fixture pins
+// every branch.
 export function parseRelpath(relpath: string): ParsedKey {
   rejectUnsafe(relpath);
   const seg = relpath.split('/');
   const tree = seg[0];
 
+  // Release tree: dr/<tag>/products/<relpath> holds a live product's bytes under
+  // a release; meta/ and anything else under dr/ is not a product.
+  if (tree === DR_ROOT) {
+    if (seg.length >= 4 && isDrTag(seg[1]) && seg[2] === 'products') {
+      const inner = parseRelpath(seg.slice(2).join('/'));
+      if (!isArchivable(inner.productType)) {
+        throw new LayoutError(`unrecognized relpath '${relpath}' ('${inner.productType}' is not a release product)`);
+      }
+      return { ...inner, root: 'dr', rootId: seg[1] };
+    }
+    throw new LayoutError(`unrecognized relpath '${relpath}' (not a release product path)`);
+  }
+
   if (tree === 'products' && seg.length >= 4 && seg[1] === 'nirspec') {
     const obs = seg[2];
-    if (seg.length === 5 && seg[3] === 'manual_masks') return { productType: 'nirspec_manual_mask', scope: { obs }, filename: seg[4] };
-    if (seg.length === 4) return { productType: nirspecObsProduct(seg[3]), scope: { obs }, filename: seg[3] };
+    if (seg.length === 5 && seg[3] === 'manual_masks') return live({ productType: 'nirspec_manual_mask', scope: { obs }, filename: seg[4] });
+    if (seg.length === 4) return live({ productType: nirspecObsProduct(seg[3]), scope: { obs }, filename: seg[3] });
   }
   if (tree === 'products' && seg.length >= 4 && seg[1] === 'nircam') {
     const field = seg[2];
-    if (seg.length === 4 && seg[3].endsWith('_rgb.png')) return { productType: 'nircam_rgb', scope: { field }, filename: seg[3] };
-    if (seg.length === 4 && seg[3].endsWith('_layout.png')) return { productType: 'nircam_layout', scope: { field }, filename: seg[3] };
+    if (seg.length === 4 && seg[3].endsWith('_rgb.png')) return live({ productType: 'nircam_rgb', scope: { field }, filename: seg[3] });
+    if (seg.length === 4 && seg[3].endsWith('_layout.png')) return live({ productType: 'nircam_layout', scope: { field }, filename: seg[3] });
     if (seg.length === 5) {
       const filt = seg[3];
       const fname = seg[4];
       const pt = dispatch(fname, NIRCAM_FILTER_SUFFIXES);
-      if (pt) return { productType: pt, scope: { field, filt }, filename: fname };
-      if (fname.startsWith('mosaic')) return { productType: 'nircam_mosaic', scope: { field, filt }, filename: plainFilename('nircam_mosaic', fname) };
+      if (pt) return live({ productType: pt, scope: { field, filt }, filename: fname });
+      if (fname.startsWith('mosaic')) return live({ productType: 'nircam_mosaic', scope: { field, filt }, filename: plainFilename('nircam_mosaic', fname) });
       // '.png' is the dark web plot; '.fits' is the coverage map.
-      if (fname.startsWith('expmap')) return { productType: fname.endsWith('.png') ? 'nircam_expmap_plot' : 'nircam_expmap', scope: { field, filt }, filename: fname };
-      if (fname.endsWith('.fits')) return { productType: 'nircam_exposure', scope: { field, filt }, filename: fname };
+      if (fname.startsWith('expmap')) return live({ productType: fname.endsWith('.png') ? 'nircam_expmap_plot' : 'nircam_expmap', scope: { field, filt }, filename: fname });
+      if (fname.endsWith('.fits')) return live({ productType: 'nircam_exposure', scope: { field, filt }, filename: fname });
     }
   }
   if (tree === 'reference' && seg.length >= 4 && seg[1] === 'nirspec') {
     const obs = seg[2];
     const fname = seg[seg.length - 1];
-    if (fname === 'stuck_closed_shutters.toml') return { productType: 'nirspec_stuck_shutters', scope: { obs }, filename: fname };
-    if (fname === 'nodded_background_overrides.toml') return { productType: 'nirspec_bkg_override', scope: { obs }, filename: fname };
-    if (fname === 'redshifts.toml') return { productType: 'nirspec_redshifts', scope: { obs }, filename: fname };
+    if (fname === 'stuck_closed_shutters.toml') return live({ productType: 'nirspec_stuck_shutters', scope: { obs }, filename: fname });
+    if (fname === 'nodded_background_overrides.toml') return live({ productType: 'nirspec_bkg_override', scope: { obs }, filename: fname });
+    if (fname === 'redshifts.toml') return live({ productType: 'nirspec_redshifts', scope: { obs }, filename: fname });
   }
   if (tree === 'reference' && seg.length >= 4 && seg[1] === 'nircam') {
     const fname = seg[seg.length - 1];
     if (seg[2] === 'shared' && seg.length === 5) {
-      if (seg[3] === 'flats') return { productType: 'nircam_flat', scope: {}, filename: fname };
-      if (seg[3] === 'wisps') return { productType: 'nircam_wisp', scope: {}, filename: fname };
+      if (seg[3] === 'flats') return live({ productType: 'nircam_flat', scope: {}, filename: fname });
+      if (seg[3] === 'wisps') return live({ productType: 'nircam_wisp', scope: {}, filename: fname });
     } else {
       const field = seg[2];
       const kind = seg[3];
-      if (kind === 'masks') return { productType: 'nircam_mask', scope: { field }, filename: fname };
-      if (kind === 'astrom_cats') return { productType: 'nircam_astrom_cat', scope: { field }, filename: fname };
-      if (kind === 'bad_pixels') return { productType: 'nircam_bad_pixel', scope: { field }, filename: fname };
+      if (kind === 'masks') return live({ productType: 'nircam_mask', scope: { field }, filename: fname });
+      if (kind === 'astrom_cats') return live({ productType: 'nircam_astrom_cat', scope: { field }, filename: fname });
+      if (kind === 'bad_pixels') return live({ productType: 'nircam_bad_pixel', scope: { field }, filename: fname });
     }
   }
   if (tree === 'tiles' && seg.length === 6 && seg[5].endsWith('.png')) {
-    return { productType: 'tile', scope: { field: seg[1], filt: seg[2], zoom: +seg[3], x: +seg[4], y: +seg[5].slice(0, -4) }, filename: seg[5] };
+    return live({ productType: 'tile', scope: { field: seg[1], filt: seg[2], zoom: +seg[3], x: +seg[4], y: +seg[5].slice(0, -4) }, filename: seg[5] });
   }
-  if (tree === 'raw' && seg.length >= 4 && seg[1] === 'nirspec') return { productType: 'raw_nirspec', scope: { data_subdir: seg[2] }, filename: seg[seg.length - 1] };
-  if (tree === 'raw' && seg.length >= 5 && seg[1] === 'nircam') return { productType: 'raw_nircam', scope: { pid: seg[2], filt: seg[3] }, filename: seg[seg.length - 1] };
+  if (tree === 'raw' && seg.length >= 4 && seg[1] === 'nirspec') return live({ productType: 'raw_nirspec', scope: { data_subdir: seg[2] }, filename: seg[seg.length - 1] });
+  if (tree === 'raw' && seg.length >= 5 && seg[1] === 'nircam') return live({ productType: 'raw_nircam', scope: { pid: seg[2], filt: seg[3] }, filename: seg[seg.length - 1] });
 
   throw new LayoutError(`unrecognized relpath '${relpath}'`);
 }
 
 export function parseKey(key: string, opts?: { bucket?: Bucket }): ParsedKey {
   rejectUnsafe(key);
+  // Content-addressed archive: archive/<sha256 hex>/<relpath> (P1). The relpath
+  // is the product's live relpath; the root rides on the result and every
+  // rebuild goes through keyForParsed.
+  if (key.startsWith(`${ARCHIVE_ROOT}/`)) {
+    const seg = key.split('/');
+    if (seg.length < 3 || !SHA256_HEX.test(seg[1])) {
+      throw new LayoutError(`unrecognized storage key '${key}' (archive/<sha256>/<relpath> expected)`);
+    }
+    const inner = parseRelpath(seg.slice(2).join('/'));
+    if (inner.root !== 'live') throw new LayoutError(`unrecognized storage key '${key}' (nested roots)`);
+    if (!isArchivable(inner.productType)) {
+      throw new LayoutError(`unrecognized storage key '${key}' ('${inner.productType}' is not archivable)`);
+    }
+    return { ...inner, root: 'archive', rootId: seg[1] };
+  }
   // Canonical 'data/' key: relpath (mirrored products) or 'data/' + legacy-form
   // prefix (key-only products like photometry, with no local relpath to mirror).
   if (key.startsWith('data/')) {
     const rest = key.slice('data/'.length);
+    let pk: ParsedKey;
     try {
-      return parseRelpath(rest);
+      pk = parseRelpath(rest);
     } catch {
       return parseLegacyKey(rest, opts);
     }
+    if (pk.root !== 'live') throw new LayoutError(`unrecognized storage key '${key}' (release trees are local only)`);
+    return pk;
   }
   return parseLegacyKey(key, opts);
 }
 
+// Hand-written mirror of bijection._parse_legacy_key (prefix dispatch on
+// today's bare keys) — same reason as parseRelpath.
 function parseLegacyKey(key: string, opts?: { bucket?: Bucket }): ParsedKey {
   const seg = key.split('/');
-  if (seg[0] === 'spectra' && seg.length === 3) return { productType: nirspecObsProduct(seg[2]), scope: { obs: seg[1] }, filename: seg[2] };
-  if (seg[0] === 'rgb' && seg.length === 3) return { productType: 'rgb', scope: { obs: seg[1] }, filename: seg[2] };
-  if (seg[0] === 'sed' && seg.length === 3) return { productType: 'sed', scope: { obs: seg[1] }, filename: seg[2] };
+  if (seg[0] === 'spectra' && seg.length === 3) return live({ productType: nirspecObsProduct(seg[2]), scope: { obs: seg[1] }, filename: seg[2] });
+  if (seg[0] === 'rgb' && seg.length === 3) return live({ productType: 'rgb', scope: { obs: seg[1] }, filename: seg[2] });
+  if (seg[0] === 'sed' && seg.length === 3) return live({ productType: 'sed', scope: { obs: seg[1] }, filename: seg[2] });
   if (seg[0] === 'nircam' && seg.length === 5 && seg[1] === 'exposures') {
     const pt = dispatch(seg[4], NIRCAM_FILTER_SUFFIXES);
-    if (pt) return { productType: pt, scope: { field: seg[2], filt: seg[3] }, filename: seg[4] };
+    if (pt) return live({ productType: pt, scope: { field: seg[2], filt: seg[3] }, filename: seg[4] });
   }
   if (seg[0] === 'photometry' && seg.length === 3) {
-    return { productType: 'photometry_pz', scope: { field: seg[1], object_id: seg[2].replace(/_pz\.json$/, '') }, filename: seg[2] };
+    return live({ productType: 'photometry_pz', scope: { field: seg[1], object_id: seg[2].replace(/_pz\.json$/, '') }, filename: seg[2] });
   }
 
   if (opts?.bucket === 'tiles' || TILE_RE.test(key)) {
     const m = TILE_RE.exec(key);
-    if (m) return { productType: 'tile', scope: { field: m[1], filt: m[2], zoom: +m[3], x: +m[4], y: +m[5] }, filename: `${m[5]}.png` };
+    if (m) return live({ productType: 'tile', scope: { field: m[1], filt: m[2], zoom: +m[3], x: +m[4], y: +m[5] }, filename: `${m[5]}.png` });
   }
 
   throw new LayoutError(`unrecognized storage key '${key}'`);
@@ -348,6 +414,12 @@ function parseLegacyKey(key: string, opts?: { bucket?: Bucket }): ParsedKey {
  * source key's prefix and scheme; only the filename suffix changes. */
 export function deriveSibling(key: string, targetProductType: string, opts?: { bucket?: Bucket }): string {
   const pk = parseKey(key, opts);
+  if (pk.root !== 'live') {
+    // Each archived sidecar sits under its OWN content hash; string surgery on
+    // the spec key would name an object that does not exist. Resolve siblings
+    // of an archive object through the registry / dr_members.
+    throw new LayoutError(`cannot derive a sibling of an archive key ('${key}'); look it up by hash`);
+  }
   const src = get(pk.productType);
   const tgt = get(targetProductType);
   if (src.suffix === null || tgt.suffix === null) {
@@ -364,8 +436,36 @@ export function deriveSibling(key: string, targetProductType: string, opts?: { b
  * either scheme, so passing an already-canonical key is idempotent. Throws
  * `LayoutError` for unknown/unsafe keys. */
 export function toCanonicalKey(key: string, opts?: { bucket?: Bucket }): string {
-  const pk = parseKey(key, opts);
-  return storageKey(pk.productType, pk.scope, pk.filename, 'canonical');
+  // An archive key is already its own canonical form; never collapse it onto
+  // the live key (which may hold newer bytes).
+  return keyForParsed(parseKey(key, opts), 'canonical');
+}
+
+/** Archive key for one object: `archive/<sha256 hex>/<relpath>` (mirror of
+ * keys.archive_key). Only mirrored cloud products (NIRSpec finals and sidecars,
+ * NIRCam mosaics) can be archived. */
+export function archiveKey(productType: string, scope: Scope, filename: string | undefined, contentHash: string): string {
+  const s = get(productType);
+  if (!isArchivable(productType)) {
+    throw new LayoutError(`product '${productType}' cannot be archived (not a mirrored data-bucket cloud product)`);
+  }
+  validate(s, scope);
+  const hex = archiveHex(contentHash);
+  let fname = resolveFilename(s, scope, filename);
+  if (s.compressedSuffixes.some((sfx) => fname.endsWith(sfx))) fname = `${fname}.gz`;
+  return `${ARCHIVE_ROOT}/${hex}/${relDir(s, scope)}/${fname}`;
+}
+
+/** Rebuild the storage key a ParsedKey came from, honouring its root: live →
+ * `storageKey` under `scheme`; archive → `archiveKey` with the parsed hash; dr →
+ * throws (a release tree is local; its objects live under `archive/`). */
+export function keyForParsed(pk: ParsedKey, scheme: KeyScheme = 'canonical'): string {
+  if (pk.root === 'live') return storageKey(pk.productType, pk.scope, pk.filename, scheme);
+  if (pk.root === 'archive') {
+    if (!pk.rootId) throw new LayoutError('archive ParsedKey without a content hash cannot be rebuilt');
+    return archiveKey(pk.productType, pk.scope, pk.filename, pk.rootId);
+  }
+  throw new LayoutError(`a '${pk.root}' path has no storage key`);
 }
 
 /** Rewrite *key* into the LEGACY scheme (today's bare key on R2). The dual-read
@@ -373,6 +473,7 @@ export function toCanonicalKey(key: string, opts?: { bucket?: Bucket }): string 
  * `LayoutError` for unknown/unsafe keys. */
 export function toLegacyKey(key: string, opts?: { bucket?: Bucket }): string {
   const pk = parseKey(key, opts);
+  if (pk.root !== 'live') throw new LayoutError(`an archive key has no legacy (R2) form: '${key}'`);
   return storageKey(pk.productType, pk.scope, pk.filename, 'legacy');
 }
 
@@ -393,19 +494,40 @@ export function isCompressedKey(key: string, opts?: { bucket?: Bucket }): boolea
   return !!s && s.compressedSuffixes.some((sfx) => pk.filename.endsWith(sfx));
 }
 
-/** True iff *key* parses to a cloud-backed product — the presign/proxy allowlist.
- * Rejects traversal/unsafe keys and keys resolving to non-cloud products. */
-export function isKnownKey(key: string, opts?: { bucket?: Bucket }): boolean {
+function parsedCloudKey(key: string, opts?: { bucket?: Bucket }): ParsedKey | null {
   let pk: ParsedKey;
   try {
     pk = parseKey(key, opts);
   } catch {
-    return false;
+    return null;
   }
   const s = PRODUCTS[pk.productType];
-  if (!s || !s.bucket) return false;
-  if (opts?.bucket && s.bucket !== opts.bucket) return false;
-  return true;
+  if (!s || !s.bucket) return null;
+  if (opts?.bucket && s.bucket !== opts.bucket) return null;
+  return pk;
+}
+
+/** True iff *key* names a cloud-backed object a client may READ through the
+ * presign / download / proxy routes: a live key or an archive copy. Rejects
+ * traversal/unsafe keys, non-cloud products and release-tree paths. */
+export function isReadableKey(key: string, opts?: { bucket?: Bucket }): boolean {
+  return parsedCloudKey(key, opts) !== null;
+}
+
+/** True iff a client may be handed a PUT for *key*: live keys only. Archive
+ * objects are written once, server-side (retain-on-supersede, the freeze byte
+ * pass) and never overwritten; the deploy presign route uses this, never
+ * `isReadableKey`. */
+export function isWritableKey(key: string, opts?: { bucket?: Bucket }): boolean {
+  const pk = parsedCloudKey(key, opts);
+  return pk !== null && pk.root === 'live';
+}
+
+/** Read allowlist (alias of `isReadableKey`, kept for callers). Before P1 this
+ * one predicate gated both reads and deploy PUTs; PUTs go through
+ * `isWritableKey` now. */
+export function isKnownKey(key: string, opts?: { bucket?: Bucket }): boolean {
+  return isReadableKey(key, opts);
 }
 
 /** Observation name for a NIRSpec object key (replaces extractObservationName). */

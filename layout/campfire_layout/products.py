@@ -372,3 +372,17 @@ def get(product_type: str) -> ProductSpec:
             f"unknown product_type '{product_type}'. "
             f"Known: {sorted(PRODUCTS)}"
         ) from None
+
+
+def is_archivable(product_type: str) -> bool:
+    """True for products that can live under ``archive/`` (and so in a release).
+
+    A mirrored, cloud-backed product on the **data** bucket: NIRSpec finals and
+    sidecars, NIRCam mosaics. Tiles are mirrored cloud products too, but they
+    live on the tiles bucket (the sole R2 exception) and are never archived
+    per object; key-only products (photometry) have no relpath to archive;
+    summaries and the like are cloud-lifecycle but not cloud-backed.
+    """
+    spec = PRODUCTS.get(product_type)
+    return bool(spec) and spec.bucket == "data" and spec.mirrored \
+        and spec.lifecycle is LifecycleClass.CLOUD_PRODUCT

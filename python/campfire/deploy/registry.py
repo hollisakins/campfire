@@ -32,7 +32,8 @@ from campfire_layout import (
     KeyScheme,
     LayoutError,
     bucket_for,
-    is_known_key,
+    is_writable_key,
+    key_for_parsed,
     parse_key,
     storage_key,
 )
@@ -158,6 +159,11 @@ def row_for_key(
     can ``filter(None)``.
     """
     parsed = parse_key(storage_key, bucket=bucket)
+    if not parsed.is_live:
+        # Archive rows (archive/<sha>/<relpath>) are registered by the server-side
+        # retain / freeze steps with their own columns (P2). Building a live row
+        # for one here would record the live product/scope under an archive key.
+        raise LayoutError(f"row_for_key: '{storage_key}' is an archive key; not a live registry row")
     product_type = parsed.product_type
     obj_bucket = bucket or bucket_for(product_type)
 
@@ -484,7 +490,9 @@ def canonical_key_for(legacy_key: str) -> str:
     relpath) form. Raises ``LayoutError`` for unknown/unsafe keys.
     """
     pk = parse_key(legacy_key)
-    return storage_key(pk.product_type, pk.scope, pk.filename, scheme=KeyScheme.CANONICAL)
+    # key_for_parsed honours the parsed root: an archive key is already its own
+    # canonical form and must never collapse onto the live key (P1).
+    return key_for_parsed(pk, scheme=KeyScheme.CANONICAL)
 
 
 def _canonical_identity(key: str) -> str:
@@ -548,7 +556,9 @@ def compute_reconcile(
                  else {_canonical_identity(k): k for k in danglable_keys if k})
     dangling = {danglable[c] for c in (danglable.keys() - bucket.keys())}
     orphans = {bucket[c] for c in (bucket.keys() - registry.keys())}
-    adoptable = {k for k in orphans if is_known_key(k)}
+    # Only LIVE keys may be adopted as active rows; archive objects without a
+    # row are a failed retain, reported as orphans, never adopted (P1).
+    adoptable = {k for k in orphans if is_writable_key(k)}
     return ReconcileReport(missing, dangling, orphans, adoptable)
 
 

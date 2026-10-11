@@ -17,7 +17,16 @@ from typing import Optional
 from . import keys as _keys
 from . import paths as _paths
 from . import products
-from .scope import KeyScheme, LayoutError, Scope
+from .scope import KeyScheme, LayoutError, LifecycleClass, Scope
+
+
+#: Roots a parsed key or relpath can live under. ``live`` is today's mutable
+#: tree / key space; ``archive`` is the content-addressed cloud store
+#: ``archive/<sha256>/<relpath>`` (write-once, server-side only); ``dr`` is the
+#: local release tree ``dr/<tag>/products/<relpath>`` (never a cloud key).
+ROOT_LIVE = "live"
+ROOT_ARCHIVE = "archive"
+ROOT_DR = "dr"
 
 
 @dataclass(frozen=True)
@@ -25,6 +34,17 @@ class ParsedKey:
     product_type: str
     scope: Scope
     filename: str
+    #: Which root the key/relpath was parsed from. Builders that rebuild a key
+    #: from a ParsedKey MUST honour it (:func:`key_for_parsed`); a parse that
+    #: silently dropped the root would map an archive copy back onto the live
+    #: key, which is exactly the failure the data-release design warns about.
+    root: str = ROOT_LIVE
+    #: The archive content hash (64 hex) or the DR tag; None for live.
+    root_id: Optional[str] = None
+
+    @property
+    def is_live(self) -> bool:
+        return self.root == ROOT_LIVE
 
 
 # Ordered suffix tables (most specific first). Within one directory context, a
@@ -108,6 +128,17 @@ def parse_relpath(relpath: str) -> ParsedKey:
     _reject_unsafe(relpath)
     seg = relpath.split("/")
     tree = seg[0]
+
+    # Release tree: dr/<tag>/products/<relpath> holds a live product's bytes
+    # under a release; meta/ and anything else under dr/ is not a product.
+    if tree == _paths.DR_ROOT:
+        if len(seg) >= 4 and _paths.is_dr_tag(seg[1]) and seg[2] == "products":
+            inner = parse_relpath("/".join(seg[2:]))
+            if not products.is_archivable(inner.product_type):
+                raise LayoutError(f"unrecognized relpath '{relpath}' ('{inner.product_type}' is not a release product)")
+            return ParsedKey(inner.product_type, inner.scope, inner.filename,
+                             root=ROOT_DR, root_id=seg[1])
+        raise LayoutError(f"unrecognized relpath '{relpath}' (not a release product path)")
 
     if tree == "products" and len(seg) >= 4 and seg[1] == "nirspec":
         obs = seg[2]
@@ -194,15 +225,33 @@ def parse_key(key: str, *, bucket: Optional[str] = None) -> ParsedKey:
     """
     _reject_unsafe(key)
 
+    # Content-addressed archive: archive/<sha256 hex>/<relpath>. The relpath is
+    # the product's live relpath, so parsing is delegated; the root is kept on
+    # the result and every rebuild goes through key_for_parsed.
+    if key.startswith(_keys.ARCHIVE_ROOT + "/"):
+        seg = key.split("/")
+        if len(seg) < 3 or not _keys._SHA256_HEX.match(seg[1]):
+            raise LayoutError(f"unrecognized storage key '{key}' (archive/<sha256>/<relpath> expected)")
+        inner = parse_relpath("/".join(seg[2:]))
+        if inner.root != ROOT_LIVE:
+            raise LayoutError(f"unrecognized storage key '{key}' (nested roots)")
+        if not products.is_archivable(inner.product_type):
+            raise LayoutError(f"unrecognized storage key '{key}' ('{inner.product_type}' is not archivable)")
+        return ParsedKey(inner.product_type, inner.scope, inner.filename,
+                         root=ROOT_ARCHIVE, root_id=seg[1])
+
     # Canonical data-bucket key: 'data/' + relpath (mirrored products), or
     # 'data/' + legacy-form prefix (key-only products like photometry, which have
     # no local relpath to mirror).
     if key.startswith("data/"):
         rest = key[len("data/"):]
         try:
-            return parse_relpath(rest)
+            pk = parse_relpath(rest)
         except LayoutError:
             return _parse_legacy_key(rest, bucket=bucket)
+        if pk.root != ROOT_LIVE:
+            raise LayoutError(f"unrecognized storage key '{key}' (release trees are local only)")
+        return pk
 
     return _parse_legacy_key(key, bucket=bucket)
 
@@ -249,9 +298,32 @@ def key_to_relpath(key: str, *, bucket: str = "data") -> str:
 
 
 def relpath_to_key(relpath: str, *, scheme: KeyScheme = KeyScheme.LEGACY) -> str:
-    """Map a local relpath to its storage key under the given scheme."""
+    """Map a local relpath to its storage key under the given scheme.
+
+    A release relpath (``dr/<tag>/products/…``) has no key of its own: the bytes
+    came from an archive object recorded in ``dr_members``. Refuse rather than
+    hand back the live key, which may hold newer bytes.
+    """
     pk = parse_relpath(relpath)
+    if pk.root != ROOT_LIVE:
+        raise LayoutError(f"'{relpath}' is a release path; resolve its archive key through dr_members")
     return _keys.storage_key(pk.product_type, pk.scope, pk.filename, scheme=scheme)
+
+
+def key_for_parsed(pk: ParsedKey, *, scheme: KeyScheme = KeyScheme.CANONICAL) -> str:
+    """Rebuild the storage key a ParsedKey came from, honouring its root.
+
+    live → :func:`keys.storage_key` under ``scheme``; archive →
+    :func:`keys.archive_key` with the parsed hash; dr → raises (a release tree is
+    local; its objects live under ``archive/``).
+    """
+    if pk.root == ROOT_LIVE:
+        return _keys.storage_key(pk.product_type, pk.scope, pk.filename, scheme=scheme)
+    if pk.root == ROOT_ARCHIVE:
+        if not pk.root_id:
+            raise LayoutError("archive ParsedKey without a content hash cannot be rebuilt")
+        return _keys.archive_key(pk.product_type, pk.scope, pk.filename, content_hash=pk.root_id)
+    raise LayoutError(f"a '{pk.root}' path has no storage key")
 
 
 def derive_sibling(key: str, target_product_type: str, *, bucket: Optional[str] = None) -> str:
@@ -260,6 +332,11 @@ def derive_sibling(key: str, target_product_type: str, *, bucket: Optional[str] 
     Preserves the source key's prefix and scheme; only the filename suffix changes.
     """
     pk = parse_key(key, bucket=bucket)
+    if pk.root != ROOT_LIVE:
+        # Each archived sidecar sits under its OWN content hash; string surgery
+        # on the spec key would name an object that does not exist. Siblings of
+        # an archive object are resolved through the registry / dr_members.
+        raise LayoutError(f"cannot derive a sibling of an archive key ('{key}'); look it up by hash")
     src = products.get(pk.product_type)
     tgt = products.get(target_product_type)
     if src.suffix is None or tgt.suffix is None:
@@ -295,18 +372,39 @@ def is_compressed_key(key: str, *, bucket: Optional[str] = None) -> bool:
     return any(pk.filename.endswith(sfx) for sfx in spec.compressed_suffixes)
 
 
-def is_known_key(key: str, *, bucket: Optional[str] = None) -> bool:
-    """True iff *key* parses to a cloud-backed product (presign/proxy allowlist).
-
-    Rejects traversal/unsafe keys and keys that resolve to non-cloud products.
-    """
+def _parsed_cloud_key(key: str, bucket: Optional[str]) -> Optional[ParsedKey]:
     try:
         pk = parse_key(key, bucket=bucket)
     except LayoutError:
-        return False
+        return None
     spec = products.get(pk.product_type)
     if spec.bucket is None:
-        return False
+        return None
     if bucket is not None and spec.bucket != bucket:
-        return False
-    return True
+        return None
+    return pk
+
+
+def is_readable_key(key: str, *, bucket: Optional[str] = None) -> bool:
+    """True iff *key* names a cloud-backed object a client may READ through the
+    presign / download / proxy routes: a live key or an archive copy. Rejects
+    traversal/unsafe keys, non-cloud products and release-tree paths."""
+    return _parsed_cloud_key(key, bucket) is not None
+
+
+def is_writable_key(key: str, *, bucket: Optional[str] = None) -> bool:
+    """True iff a client may be handed a PUT for *key*: live keys only. Archive
+    objects are written once, server-side (retain-on-supersede, the freeze
+    byte pass), and are never overwritten; the deploy presign route must use
+    this, never :func:`is_readable_key`."""
+    pk = _parsed_cloud_key(key, bucket)
+    return pk is not None and pk.root == ROOT_LIVE
+
+
+def is_known_key(key: str, *, bucket: Optional[str] = None) -> bool:
+    """Read allowlist (alias of :func:`is_readable_key`, kept for callers).
+
+    Before P1 this one predicate gated both reads and deploy PUTs; PUTs must
+    now go through :func:`is_writable_key`.
+    """
+    return is_readable_key(key, bucket=bucket)

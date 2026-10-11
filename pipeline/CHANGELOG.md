@@ -139,6 +139,7 @@ Release procedure: edit the `## Unreleased` section below, then run
   silently quarantined now contribute to their mosaics.
 
 ### Infrastructure
+- **Layout goldens: foreign roots, sibling round-trips, compressed keys.** `pipeline/tests/test_layout.py` pins the key contract against three new golden sections (`foreign_root_keys`, `sibling_roundtrips`, `compressed_keys`) shared with the TypeScript mirror, whose `PRODUCTS` table is now generated from `products.py` (`scripts/sync_layout_products.py`; CI fails on drift). No pipeline output changes.
 - **Science-content hash (P0b).** New `campfire_pipeline.metadata.science_hash`:
   sha256 over every HDU's data block plus the header minus the volatile cards
   (`CMPFRTIM`, `CMPFRDR`, `DATE`, `CHECKSUM`, `DATASUM`), version 1, with golden tests.
