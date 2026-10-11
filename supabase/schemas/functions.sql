@@ -1582,7 +1582,7 @@ BEGIN
   RETURN QUERY
   WITH matched AS MATERIALIZED (
     SELECT s.id, s.spectrum_id, s.target_id, o.object_id AS object_id,
-           s.grating, s.fits_path, s.file_hash, s.file_size,
+           s.grating, s.fits_path, s.file_hash, s.science_hash, s.file_size,
            s.signal_to_noise, s.exposure_time,
            s.cfpipe_version, s.crds_context, s.jwst_version, s.date_obs, s.reduced_at,
            s.redshift_auto, s.dq_flags,
@@ -1695,6 +1695,7 @@ BEGIN
         'grating', m.grating,
         'fits_path', m.fits_path,
         'file_hash', m.file_hash,
+        'science_hash', m.science_hash,
         'file_size', m.file_size,
         'signal_to_noise', m.signal_to_noise,
         'exposure_time', m.exposure_time,

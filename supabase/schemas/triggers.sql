@@ -624,6 +624,10 @@ CREATE TRIGGER bump_spectra_updated_at_trigger
     thumbnail_svg_flambda,
     fits_path,
     file_hash,
+    -- Science-content hash (P0b, decision D-P0-1): the backfill and every
+    -- deploy write it; `campfire identify` reads it from the local mirror, so a
+    -- change must enter the incremental delta.
+    science_hash,
     -- zfit scalars on the row (perf T2-D2, #508): written by deploy and the
     -- backfill; a sync client showing the fit summary must see them change.
     chi2_min,

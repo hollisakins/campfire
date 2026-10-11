@@ -486,9 +486,27 @@ def test_stage_writes_reads_and_skips(workspace):
     import json
     json.dumps(payload, allow_nan=False)     # NaN-free
 
+    # SCIHASH (P0b): the science-content hash of the input spectrum
+    from campfire_pipeline.metadata.science_hash import science_hash
+    spec10 = str(files[0]).replace('_lines.fits', '_spec.fits')
+    assert h['SCIHASH'] == science_hash(spec10)
     # second run: up to date, nothing refit
     counts = run_linefit(obs, cfg)
     assert counts['fit'] == 0 and counts['skipped_uptodate'] == 1
+    # a no-op rerun that only rewrites CMPFRTIM changes the whole-file hash but
+    # not the science hash → still up to date (the point of P0b)
+    from astropy.io import fits as _fits
+    with _fits.open(spec10, mode='update') as hh:
+        hh[0].header['CMPFRTIM'] = '2030-01-01T00:00:00+00:00'
+        hh.flush()
+    counts = run_linefit(obs, cfg)
+    assert counts['fit'] == 0 and counts['skipped_uptodate'] == 1
+    # but a real data change refits
+    with _fits.open(spec10, mode='update') as hh:
+        hh['SPEC1D'].data['fnu'][5] *= 1.01
+        hh.flush()
+    counts = run_linefit(obs, cfg)
+    assert counts['fit'] == 1
     # inspected redshift moved → refit exactly that spectrum
     write_redshifts([RedshiftEntry('obs1_10', z + 0.001, 4, 'CAMPFIRE-J1', 4, None),
                      RedshiftEntry('obs1_20', z, 2)], str(ref / 'redshifts.toml'), 'obs1')

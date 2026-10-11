@@ -45,6 +45,27 @@ def _spectra_table() -> Table:
     return t
 
 
+SCI_HASH = 'sha256:' + 'ab' * 32
+
+
+def test_get_spectra_records_carries_science_hash_when_present():
+    """P0b: the summary's science_hash rides into the spectra upsert body on
+    every deploy; an empty cell (product the hasher could not read) is sent as
+    NULL rather than dropped, so it cannot keep a stale hash."""
+    t = _spectra_table()
+    t['science_hash'] = [SCI_HASH, '']
+    r1, r2 = get_spectra_records(t, 'obs1')
+    assert r1['science_hash'] == SCI_HASH
+    assert 'science_hash' in r2 and r2['science_hash'] is None
+
+
+def test_get_spectra_records_omits_science_hash_for_old_ecsv():
+    """A pre-P0b summary has no column: the key is absent so the upsert
+    leaves whatever the backfill wrote on the row."""
+    r1, _ = get_spectra_records(_spectra_table(), 'obs1')
+    assert 'science_hash' not in r1
+
+
 def test_get_spectra_records_sanitizes_non_finite():
     records = get_spectra_records(_spectra_table(), 'obs1')
 
