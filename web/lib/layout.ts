@@ -11,6 +11,18 @@
 // storage keys, the key→sibling derivation, key parsing, and the presign/proxy
 // allowlist. Scope field names are snake_case to match the contract + fixture
 // exactly (fidelity over JS idiom).
+//
+// The product table itself is NOT hand-mirrored: `PRODUCTS` and the two
+// suffix-dispatch tables are built from `./layout-products.json`, which
+// `scripts/sync_layout_products.py` generates from the python registry
+// (`products.py` + the `bijection.py` dispatch tables); CI runs it with
+// `--check`, so a registry edit without a regenerated JSON fails. What stays
+// hand-written below is *code* that mirrors python code, not data: the
+// directory-walking parsers (`parseRelpath` / `parseLegacyKey`), the tile
+// regex, the unsafe-key guard, and the in-directory prefix/fallback rules
+// (`mosaic*` / `expmap*` / bare `.fits`) — see the comments at each site.
+
+import layoutProducts from './layout-products.json';
 
 export type Bucket = 'data' | 'tiles';
 export type KeyScheme = 'legacy' | 'canonical';
@@ -35,11 +47,22 @@ export interface Scope {
   y?: number;
 }
 
+export type Instrument = 'nirspec' | 'nircam';
+export type LifecycleClass =
+  | 'cloud-backed-product'
+  | 'user-state'
+  | 'shared-calibration'
+  | 'external-MAST'
+  | 'regenerable'
+  | 'cli-local';
+
 type Builder = (s: Scope) => string;
 
 interface ProductSpec {
   name: string;
+  instrument: Instrument | null;
   tree: string; // products | reference | raw | cache | tiles | meta | cutouts
+  lifecycle: LifecycleClass;
   bucket: Bucket | null;
   scopeKeys: (keyof Scope)[];
   subdir: Builder;
@@ -51,90 +74,57 @@ interface ProductSpec {
   compressedSuffixes: string[]; // filenames ending in these are stored gzipped ('.gz' key); local file stays plain
 }
 
-function spec(p: Partial<ProductSpec> & Pick<ProductSpec, 'name' | 'tree' | 'scopeKeys' | 'subdir'>): ProductSpec {
+// One row of layout-products.json: the python ProductSpec with its Scope -> str
+// builders flattened to '{field}' templates (the generator proves each builder
+// is a pure substitution of Scope fields before it writes the template).
+interface GeneratedProduct {
+  name: string;
+  instrument: string | null;
+  tree: string;
+  lifecycle: string;
+  bucket: string | null;
+  scope_keys: string[];
+  subdir: string;
+  filename: string | null;
+  suffix: string | null;
+  legacy_prefix: string | null;
+  mirrored: boolean;
+  scheme_invariant: boolean;
+  compressed_suffixes: string[];
+}
+
+const PLACEHOLDER = /\{(\w+)\}/g;
+
+// Render a '{field}' template against a scope. Mirrors the python f-string
+// builders: a field is interpolated verbatim (ints such as zoom/x/y stringify),
+// and a missing field is caught by `validate`, exactly as before.
+function builder(template: string): Builder {
+  return (s) => template.replace(PLACEHOLDER, (_m, k: string) => String(s[k as keyof Scope]));
+}
+
+function fromGenerated(p: GeneratedProduct): ProductSpec {
   return {
-    bucket: null,
-    suffix: null,
-    legacyPrefix: null,
-    filename: null,
-    mirrored: true,
-    schemeInvariant: false,
-    compressedSuffixes: [],
-    ...p,
+    name: p.name,
+    instrument: p.instrument as Instrument | null,
+    tree: p.tree,
+    lifecycle: p.lifecycle as LifecycleClass,
+    bucket: p.bucket as Bucket | null,
+    scopeKeys: p.scope_keys as (keyof Scope)[],
+    subdir: builder(p.subdir),
+    suffix: p.suffix,
+    legacyPrefix: p.legacy_prefix === null ? null : builder(p.legacy_prefix),
+    filename: p.filename === null ? null : builder(p.filename),
+    mirrored: p.mirrored,
+    schemeInvariant: p.scheme_invariant,
+    compressedSuffixes: p.compressed_suffixes,
   };
 }
 
-const nirspecObs: Builder = (s) => `nirspec/${s.obs}`;
-const nircamFieldFilter: Builder = (s) => `nircam/${s.field}/${s.filt}`;
-
+/** The product registry, in the python registration order. */
 export const PRODUCTS: Record<string, ProductSpec> = {};
-function reg(p: ProductSpec) {
-  PRODUCTS[p.name] = p;
+for (const p of layoutProducts.products as GeneratedProduct[]) {
+  PRODUCTS[p.name] = fromGenerated(p);
 }
-
-// --- NIRSpec products (spectrum family shares products/nirspec/<obs>/) ---
-reg(spec({ name: 'nirspec_spec', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_spec.fits', legacyPrefix: (s) => `spectra/${s.obs}` }));
-reg(spec({ name: 'spectrum_json', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_spec.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
-// 1-D-only sibling of spectrum_json (perf T2-D2, #508): no 2-D S/N array.
-reg(spec({ name: 'spectrum_1d_json', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_spec_1d.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
-reg(spec({ name: 'zfit', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_zfit.json', legacyPrefix: (s) => `spectra/${s.obs}` }));
-// Emission-line fit product (cfpipe nirspec linefit); new product, reserved canonical key.
-reg(spec({ name: 'nirspec_lines', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_lines.fits' }));
-// JSON sidecar of the line fit (model + continuum + line summary): the spectrum plot's "Lines" overlay.
-reg(spec({ name: 'nirspec_lines_json', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_lines.json' }));
-reg(spec({ name: 'nirspec_spectrum_exposure', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '.fits' }));
-reg(spec({ name: 'nirspec_rate', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_rate.fits' }));
-reg(spec({ name: 'rgb', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_rgb.png', legacyPrefix: (s) => `rgb/${s.obs}` }));
-reg(spec({ name: 'sed', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: '_sed.pdf', legacyPrefix: (s) => `sed/${s.obs}` }));
-
-// --- NIRCam products ---
-reg(spec({ name: 'nircam_exposure', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '.fits' }));
-reg(spec({ name: 'nircam_exposure_preview', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_preview.png', legacyPrefix: (s) => `nircam/exposures/${s.field}/${s.filt}` }));
-reg(spec({ name: 'nircam_exposure_full', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_full.png', legacyPrefix: (s) => `nircam/exposures/${s.field}/${s.filt}` }));
-reg(spec({ name: 'nircam_mosaic', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null, compressedSuffixes: ['.fits'] }));
-reg(spec({ name: 'nircam_rgb', tree: 'products', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}`, suffix: '_rgb.png' }));
-reg(spec({ name: 'nircam_expmap', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null }));
-reg(spec({ name: 'nircam_expmap_plot', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: null }));
-reg(spec({ name: 'nircam_mosaic_thumbnail', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_thumb.png' }));
-reg(spec({ name: 'nircam_mosaic_quicklook', tree: 'products', bucket: 'data', scopeKeys: ['field', 'filt'], subdir: nircamFieldFilter, suffix: '_quicklook.png' }));
-reg(spec({ name: 'nircam_layout', tree: 'products', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}`, suffix: '_layout.png' }));
-
-// --- Map tiles (separate bucket, scheme-invariant) ---
-reg(spec({
-  name: 'tile', tree: 'tiles', bucket: 'tiles', scopeKeys: ['field', 'filt', 'zoom', 'x', 'y'],
-  subdir: (s) => `${s.field}/${s.filt}/${s.zoom}/${s.x}`, filename: (s) => `${s.y}.png`,
-  suffix: '.png', legacyPrefix: (s) => `${s.field}/${s.filt}/${s.zoom}/${s.x}`, schemeInvariant: true,
-}));
-
-// --- Photometry (key-only) ---
-reg(spec({
-  name: 'photometry_pz', tree: 'products', bucket: 'data', scopeKeys: ['field', 'object_id'],
-  subdir: (s) => `photometry/${s.field}`, filename: (s) => `${s.object_id}_pz.json`,
-  suffix: '_pz.json', legacyPrefix: (s) => `photometry/${s.field}`, mirrored: false,
-}));
-
-// --- Metadata (Postgres-resident; no storage key) ---
-for (const [name, suffix] of [['summary', '_summary.ecsv'], ['pointings', '_pointings.ecsv'], ['shutters', '_shutters.ecsv'], ['nirspec_config', '_config.toml']] as const) {
-  reg(spec({ name, tree: 'products', bucket: null, scopeKeys: ['obs'], subdir: nirspecObs, suffix, filename: (s) => `${s.obs}${suffix}` }));
-}
-
-// --- Reducer-decision reference state (user-state) ---
-reg(spec({ name: 'nirspec_manual_mask', tree: 'products', bucket: 'data', scopeKeys: ['obs'], subdir: (s) => `nirspec/${s.obs}/manual_masks`, suffix: '.reg' }));
-reg(spec({ name: 'nirspec_stuck_shutters', tree: 'reference', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: 'stuck_closed_shutters.toml', filename: () => 'stuck_closed_shutters.toml' }));
-// Inspected redshifts pulled from the portal for cfpipe nirspec linefit.
-reg(spec({ name: 'nirspec_redshifts', tree: 'reference', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: 'redshifts.toml', filename: () => 'redshifts.toml' }));
-reg(spec({ name: 'nirspec_bkg_override', tree: 'reference', bucket: 'data', scopeKeys: ['obs'], subdir: nirspecObs, suffix: 'nodded_background_overrides.toml', filename: () => 'nodded_background_overrides.toml' }));
-reg(spec({ name: 'nircam_mask', tree: 'reference', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}/masks` }));
-reg(spec({ name: 'nircam_astrom_cat', tree: 'reference', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}/astrom_cats` }));
-reg(spec({ name: 'nircam_bad_pixel', tree: 'reference', bucket: 'data', scopeKeys: ['field'], subdir: (s) => `nircam/${s.field}/bad_pixels` }));
-
-// --- Shared calibration references ---
-reg(spec({ name: 'nircam_flat', tree: 'reference', bucket: 'data', scopeKeys: [], subdir: () => 'nircam/shared/flats' }));
-reg(spec({ name: 'nircam_wisp', tree: 'reference', bucket: 'data', scopeKeys: [], subdir: () => 'nircam/shared/wisps' }));
-
-// --- Raw (external/MAST; not cloud-backed) ---
-reg(spec({ name: 'raw_nirspec', tree: 'raw', bucket: null, scopeKeys: ['data_subdir'], subdir: (s) => `nirspec/${s.data_subdir}` }));
-reg(spec({ name: 'raw_nircam', tree: 'raw', bucket: null, scopeKeys: ['pid', 'filt'], subdir: (s) => `nircam/${s.pid}/${s.filt}` }));
 
 function get(productType: string): ProductSpec {
   const s = PRODUCTS[productType];
@@ -198,27 +188,15 @@ export interface ParsedKey {
   filename: string;
 }
 
-const NIRSPEC_OBS_SUFFIXES: [string, string][] = [
-  ['_spec.fits', 'nirspec_spec'],
-  ['_rate.fits', 'nirspec_rate'], // must precede the bare-'.fits' fallback below
-  ['_lines.fits', 'nirspec_lines'], // ditto
-  ['_lines.json', 'nirspec_lines_json'],
-  ['_spec_1d.json', 'spectrum_1d_json'],
-  ['_spec.json', 'spectrum_json'],
-  ['_zfit.json', 'zfit'],
-  ['_rgb.png', 'rgb'],
-  ['_sed.pdf', 'sed'],
-  ['_summary.ecsv', 'summary'],
-  ['_pointings.ecsv', 'pointings'],
-  ['_shutters.ecsv', 'shutters'],
-  ['_config.toml', 'nirspec_config'],
-];
-const NIRCAM_FILTER_SUFFIXES: [string, string][] = [
-  ['_preview.png', 'nircam_exposure_preview'],
-  ['_full.png', 'nircam_exposure_full'],
-  ['_thumb.png', 'nircam_mosaic_thumbnail'], // before the 'mosaic' prefix check
-  ['_quicklook.png', 'nircam_mosaic_quicklook'],
-];
+// Ordered suffix tables (most specific first) from layout-products.json —
+// the same tables bijection.py dispatches on, in the same order (e.g.
+// '_rate.fits' / '_lines.fits' precede the bare-'.fits' spectrum-exposure
+// fallback in `nirspecObsProduct`; '_thumb.png' precedes the 'mosaic' prefix
+// check in `parseRelpath`).
+const NIRSPEC_OBS_SUFFIXES = layoutProducts.dispatch.nirspec_obs_suffixes as [string, string][];
+const NIRCAM_FILTER_SUFFIXES = layoutProducts.dispatch.nircam_filter_suffixes as [string, string][];
+// Hand-written (no python data to generate from): the tile key shape is a
+// regex in bijection.py (_TILE_RE), not a registry field.
 const TILE_RE = /^([^/]+)\/([^/]+)\/(\d+)\/(\d+)\/(\d+)\.png$/;
 
 function dispatch(fname: string, table: [string, string][]): string | null {
@@ -238,6 +216,8 @@ function plainFilename(productType: string, fname: string): string {
   return fname;
 }
 
+// Hand-written: the bare-'.fits' fallback to the spectrum-exposure is code in
+// bijection._nirspec_obs_product, not a dispatch-table row.
 function nirspecObsProduct(fname: string): string {
   const pt = dispatch(fname, NIRSPEC_OBS_SUFFIXES);
   if (pt) return pt;
@@ -250,6 +230,11 @@ function rejectUnsafe(key: string): void {
   if (key.split('/').some((p) => p === '' || p === '.' || p === '..')) throw new LayoutError(`unsafe key '${key}'`);
 }
 
+// Hand-written mirror of bijection.parse_relpath: the directory walk, the
+// 'mosaic*' / 'expmap*' prefix rules and the fixed reference-file names are
+// imperative code on the python side too, so there is no registry data to
+// generate them from. Keep the two in step by hand; the golden fixture pins
+// every branch.
 export function parseRelpath(relpath: string): ParsedKey {
   rejectUnsafe(relpath);
   const seg = relpath.split('/');
@@ -319,6 +304,8 @@ export function parseKey(key: string, opts?: { bucket?: Bucket }): ParsedKey {
   return parseLegacyKey(key, opts);
 }
 
+// Hand-written mirror of bijection._parse_legacy_key (prefix dispatch on
+// today's bare keys) — same reason as parseRelpath.
 function parseLegacyKey(key: string, opts?: { bucket?: Bucket }): ParsedKey {
   const seg = key.split('/');
   if (seg[0] === 'spectra' && seg.length === 3) return { productType: nirspecObsProduct(seg[2]), scope: { obs: seg[1] }, filename: seg[2] };
