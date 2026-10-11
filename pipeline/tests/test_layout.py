@@ -98,6 +98,69 @@ def test_unknown_keys():
         assert L.is_known_key(key) is False, key
 
 
+def test_foreign_root_keys_are_not_part_of_the_contract_yet():
+    """Keys under the ``archive/`` and ``dr/`` roots (data-release work) must be
+    rejected everywhere TODAY — parse, classify, allowlist, compression — so the
+    PR that teaches the layout those roots flips these rows on purpose."""
+    for key in GOLDEN["foreign_root_keys"]:
+        for bucket in (None, "data", "tiles"):
+            with pytest.raises(LayoutError):
+                L.parse_key(key, bucket=bucket)
+        with pytest.raises(LayoutError):
+            L.parse_relpath(key)
+        with pytest.raises(LayoutError):
+            L.tree_class(key)
+        assert L.is_known_key(key) is False, key
+        assert L.is_compressed_key(key) is False, key
+
+
+def test_sibling_roundtrips():
+    """A NIRSpec spectrum key and its four sidecars (what the web's sidecar
+    resolver derives) form a clique under derive_sibling in both schemes."""
+    for rt in GOLDEN["sibling_roundtrips"]:
+        spec, sidecars = rt["spec"], rt["sidecars"]
+        assert set(sidecars) == {"spectrum_json", "spectrum_1d_json", "zfit", "nirspec_lines_json"}
+        assert L.parse_key(spec).product_type == "nirspec_spec"
+        for kind, key in sidecars.items():
+            assert L.derive_sibling(spec, kind) == key, (rt["scheme"], kind)
+            assert L.derive_sibling(key, "nirspec_spec") == spec, (rt["scheme"], kind)
+            assert L.parse_key(key).product_type == kind
+            for other, other_key in sidecars.items():
+                assert L.derive_sibling(key, other) == other_key, (rt["scheme"], kind, other)
+
+
+def test_compressed_keys():
+    """Gzip-on-upload: a '.fits.gz' mosaic key parses to the plain local
+    filename / relpath, rebuilds to the same key, and is_compressed_key agrees;
+    uncompressed siblings in the same directory pass through untouched."""
+    for row in GOLDEN["compressed_keys"]:
+        key = row["key"]
+        pk = L.parse_key(key)
+        assert pk.product_type == row["product_type"]
+        assert pk.scope == Scope.from_dict(row["scope"])
+        assert pk.filename == row["filename"]
+        assert L.is_compressed_key(key) is row["compressed"]
+        assert L.key_to_relpath(key) == row["relpath"]
+        assert L.parse_relpath(row["relpath"]).filename == row["filename"]
+        assert L.storage_key(pk.product_type, pk.scope, pk.filename, scheme=KeyScheme.CANONICAL) == key
+        assert L.relpath_to_key(row["relpath"], scheme=KeyScheme.CANONICAL) == key
+
+
+def test_generated_web_products_json_is_current():
+    """web/lib/layout-products.json (the TS PRODUCTS table) is generated from this
+    registry by scripts/sync_layout_products.py; a stale copy means the two arms
+    no longer share one table. Same check CI runs with ``--check``."""
+    import importlib.util
+
+    script = _FIXTURE.parents[2] / "scripts" / "sync_layout_products.py"
+    spec = importlib.util.spec_from_file_location("sync_layout_products", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.DST.exists(), f"{mod.DST} missing: run `python {script}`"
+    assert mod.DST.read_text(encoding="utf-8") == mod.render(mod.build()), (
+        f"{mod.DST} is stale: run `python {script}` and commit the result")
+
+
 def test_presign_allowlist_rejects_traversal():
     # The presign route's hardening: a fuzzed traversal key must never be signed.
     assert L.is_known_key("spectra/ember/../../secret.fits") is False
