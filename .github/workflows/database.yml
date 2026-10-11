@@ -149,8 +149,11 @@ jobs:
           [ -z "$new" ] && { echo "no new migrations"; exit 0; }
           fail=0
           for f in $new; do
-            if ! head -n 12 "$f" | grep -qiE "SET[[:space:]]+lock_timeout"; then
-              echo "::error file=$f::migration must start with: SET lock_timeout = '5s'; SET statement_timeout = '60s';"
+            # First statement (comment lines and blank lines skipped) must be the
+            # lock_timeout header; a prose header above it is encouraged.
+            first=$(grep -vE '^[[:space:]]*(--.*)?$' "$f" | head -n 1)
+            if ! echo "$first" | grep -qiE "^SET[[:space:]]+lock_timeout"; then
+              echo "::error file=$f::first statement must be: SET lock_timeout = '5s'; (then SET statement_timeout = '60s';) — found: $first"
               fail=1
             fi
           done
