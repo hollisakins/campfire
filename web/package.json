@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "budget": "node scripts/check-bundle-budget.mjs",
     "etc-models": "node scripts/sync-etc-models.mjs"
