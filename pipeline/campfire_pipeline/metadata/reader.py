@@ -13,6 +13,7 @@ import numpy as np
 from astropy.io import fits
 
 from campfire_pipeline.common.io import log
+from .science_hash import science_hash
 
 
 # ---------------------------------------------------------------------------
@@ -281,4 +282,7 @@ def read_fits_metadata(fits_path: Path, obs_name: str) -> dict:
             'fits_filename': fits_path.name,
             'file_size': fits_path.stat().st_size,
             'file_hash': _compute_file_hash(fits_path),
+            # Science-content hash (P0b): identical across reruns that only
+            # rewrite CMPFRTIM and across the DR stamp; see metadata/science_hash.py.
+            'science_hash': science_hash(fits_path),
         }

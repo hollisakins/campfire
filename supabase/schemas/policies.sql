@@ -227,7 +227,7 @@ ALTER TABLE targets ENABLE ROW LEVEL SECURITY;
 -- Targets visible if their program is accessible.
 DROP POLICY IF EXISTS "select_targets_by_access" ON targets;
 CREATE POLICY "select_targets_by_access"
-  ON targets FOR SELECT
+  ON targets FOR SELECT TO authenticated
   USING (
     program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     -- B1 (#217): hide targets whose only spectra are unpublished. Covers the
@@ -246,7 +246,7 @@ CREATE POLICY "select_targets_by_access"
 -- Users with can_inspect permission can update targets in accessible programs.
 DROP POLICY IF EXISTS "update_targets_by_access" ON targets;
 CREATE POLICY "update_targets_by_access"
-  ON targets FOR UPDATE
+  ON targets FOR UPDATE TO authenticated
   USING (
     program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     AND (SELECT public.can_inspect())
@@ -286,7 +286,7 @@ ALTER TABLE objects ENABLE ROW LEVEL SECURITY;
 -- a JOIN to targets on every read.
 DROP POLICY IF EXISTS "select_objects_by_access" ON objects;
 CREATE POLICY "select_objects_by_access"
-  ON objects FOR SELECT
+  ON objects FOR SELECT TO authenticated
   USING (
     programs && (SELECT public.accessible_program_slugs())
     -- B1 (#217): hide objects whose only member spectra are unpublished. Admins
@@ -327,7 +327,7 @@ CREATE POLICY "admin_objects_update"
 -- program access.
 DROP POLICY IF EXISTS "update_objects_by_access" ON objects;
 CREATE POLICY "update_objects_by_access"
-  ON objects FOR UPDATE
+  ON objects FOR UPDATE TO authenticated
   USING (
     programs && (SELECT public.accessible_program_slugs())
     AND (SELECT public.can_inspect())
@@ -368,7 +368,7 @@ ALTER TABLE object_photometry ENABLE ROW LEVEL SECURITY;
 -- the audit warns against for spectra, which gets a denormalized column instead.
 DROP POLICY IF EXISTS "select_object_photometry_by_access" ON object_photometry;
 CREATE POLICY "select_object_photometry_by_access"
-  ON object_photometry FOR SELECT
+  ON object_photometry FOR SELECT TO authenticated
   USING (
     object_id IS NOT NULL AND EXISTS (
       SELECT 1 FROM objects o
@@ -424,7 +424,7 @@ ALTER TABLE object_photometry_bands ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "select_object_photometry_bands_by_parent" ON object_photometry_bands;
 CREATE POLICY "select_object_photometry_bands_by_parent"
-  ON object_photometry_bands FOR SELECT
+  ON object_photometry_bands FOR SELECT TO authenticated
   USING (
     EXISTS (
       SELECT 1 FROM public.object_photometry p
@@ -509,7 +509,7 @@ CREATE POLICY "delete_own_lists"
 -- Admins can manage all lists including system lists.
 DROP POLICY IF EXISTS "admin_manage_lists" ON object_lists;
 CREATE POLICY "admin_manage_lists"
-  ON object_lists
+  ON object_lists TO authenticated
   USING ((SELECT public.is_admin()));
 
 
@@ -582,7 +582,7 @@ CREATE POLICY "delete_list_members"
 -- Admins can manage all list members.
 DROP POLICY IF EXISTS "admin_manage_list_members" ON object_list_members;
 CREATE POLICY "admin_manage_list_members"
-  ON object_list_members
+  ON object_list_members TO authenticated
   USING ((SELECT public.is_admin()));
 
 
@@ -675,7 +675,7 @@ CREATE POLICY "delete_list_shares"
 -- Admins can manage all shares.
 DROP POLICY IF EXISTS "admin_manage_list_shares" ON object_list_shares;
 CREATE POLICY "admin_manage_list_shares"
-  ON object_list_shares
+  ON object_list_shares TO authenticated
   USING ((SELECT public.is_admin()));
 
 
@@ -696,7 +696,7 @@ ALTER TABLE spectra ENABLE ROW LEVEL SECURITY;
 -- storage_objects inherits the win: its spectrum branch probes this table.
 DROP POLICY IF EXISTS "select_spectra_by_access" ON spectra;
 CREATE POLICY "select_spectra_by_access"
-  ON spectra FOR SELECT
+  ON spectra FOR SELECT TO authenticated
   USING (
     program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
     -- Share links (docs/design-public-mirror.md §5.2): narrow from the whole
@@ -786,7 +786,7 @@ ALTER TABLE comments ENABLE ROW LEVEL SECURITY;
 -- rebuilds) for no measurable gain.
 DROP POLICY IF EXISTS "select_comments_by_access" ON comments;
 CREATE POLICY "select_comments_by_access"
-  ON comments FOR SELECT
+  ON comments FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
     AND (
@@ -811,7 +811,7 @@ CREATE POLICY "select_comments_by_access"
 -- Users with can_comment permission can insert comments on accessible targets or objects.
 DROP POLICY IF EXISTS "insert_comments_by_access" ON comments;
 CREATE POLICY "insert_comments_by_access"
-  ON comments FOR INSERT
+  ON comments FOR INSERT TO authenticated
   WITH CHECK (
     (
       -- Target-level comments
@@ -847,7 +847,7 @@ ALTER TABLE flag_audit_log ENABLE ROW LEVEL SECURITY;
 -- the scope.
 DROP POLICY IF EXISTS "select_audit_by_access" ON flag_audit_log;
 CREATE POLICY "select_audit_by_access"
-  ON flag_audit_log FOR SELECT
+  ON flag_audit_log FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
     AND (
@@ -1006,7 +1006,7 @@ ALTER TABLE spectrum_line_fits ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "select_spectrum_line_fits_by_spectrum" ON spectrum_line_fits;
 CREATE POLICY "select_spectrum_line_fits_by_spectrum"
-  ON spectrum_line_fits FOR SELECT
+  ON spectrum_line_fits FOR SELECT TO authenticated
   USING (
     EXISTS (
       SELECT 1 FROM public.spectra s
@@ -1043,7 +1043,7 @@ ALTER TABLE spectrum_lines ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "select_spectrum_lines_by_spectrum" ON spectrum_lines;
 CREATE POLICY "select_spectrum_lines_by_spectrum"
-  ON spectrum_lines FOR SELECT
+  ON spectrum_lines FOR SELECT TO authenticated
   USING (
     EXISTS (
       SELECT 1 FROM public.spectra s
@@ -1563,7 +1563,7 @@ ALTER TABLE access_codes ENABLE ROW LEVEL SECURITY;
 -- codes (a public "read active codes" policy previously allowed exactly that).
 DROP POLICY IF EXISTS "admin_manage_codes" ON access_codes;
 CREATE POLICY "admin_manage_codes"
-  ON access_codes
+  ON access_codes TO authenticated
   USING ((SELECT public.is_admin()));
 
 -- Users can read codes they have already redeemed (the profile page's
@@ -1572,7 +1572,7 @@ CREATE POLICY "admin_manage_codes"
 -- stay invisible to non-admins.
 DROP POLICY IF EXISTS "Users can read own redeemed codes" ON access_codes;
 CREATE POLICY "Users can read own redeemed codes"
-  ON access_codes FOR SELECT
+  ON access_codes FOR SELECT TO authenticated
   USING (EXISTS (
     SELECT 1 FROM code_redemptions
     WHERE code_redemptions.code_id = access_codes.id
@@ -1589,19 +1589,19 @@ ALTER TABLE code_redemptions ENABLE ROW LEVEL SECURITY;
 -- Admins can see all redemptions.
 DROP POLICY IF EXISTS "admin_select_redemptions" ON code_redemptions;
 CREATE POLICY "admin_select_redemptions"
-  ON code_redemptions FOR SELECT
+  ON code_redemptions FOR SELECT TO authenticated
   USING ((SELECT public.is_admin()));
 
 -- Users can see own redemptions.
 DROP POLICY IF EXISTS "Users can see own redemptions" ON code_redemptions;
 CREATE POLICY "Users can see own redemptions"
-  ON code_redemptions FOR SELECT
+  ON code_redemptions FOR SELECT TO authenticated
   USING (user_id = (SELECT auth.uid()));
 
 -- Users can redeem codes.
 DROP POLICY IF EXISTS "Users can redeem codes" ON code_redemptions;
 CREATE POLICY "Users can redeem codes"
-  ON code_redemptions FOR INSERT
+  ON code_redemptions FOR INSERT TO authenticated
   WITH CHECK (user_id = (SELECT auth.uid()));
 
 
@@ -1658,13 +1658,13 @@ ALTER TABLE password_reset_log ENABLE ROW LEVEL SECURITY;
 -- Admins can view all reset logs.
 DROP POLICY IF EXISTS "admin_select_reset_logs" ON password_reset_log;
 CREATE POLICY "admin_select_reset_logs"
-  ON password_reset_log FOR SELECT
+  ON password_reset_log FOR SELECT TO authenticated
   USING ((SELECT public.is_admin()));
 
 -- Users can view own reset logs.
 DROP POLICY IF EXISTS "Users can view own reset logs" ON password_reset_log;
 CREATE POLICY "Users can view own reset logs"
-  ON password_reset_log FOR SELECT
+  ON password_reset_log FOR SELECT TO authenticated
   USING (user_id = (SELECT auth.uid()));
 
 

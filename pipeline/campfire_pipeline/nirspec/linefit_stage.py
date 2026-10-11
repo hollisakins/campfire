@@ -51,6 +51,7 @@ from campfire_pipeline.nirspec.linelist import DOUBLETS_BY_NAME
 from campfire_pipeline.nirspec.redshift_reference import (
     RedshiftEntry, load_redshifts, redshifts_path,
 )
+from campfire_pipeline.metadata.science_hash import science_hash
 
 log = logging.getLogger('nirspec_linefit')
 
@@ -202,7 +203,8 @@ def _fits_safe(v):
 
 
 def write_lines_file(path, result, *, z_source, entry: RedshiftEntry | None, spec_path,
-                     spec_hash, grating, filt, source_id, target_id, f_lsf, cfpipe_version):
+                     spec_hash, grating, filt, source_id, target_id, f_lsf, cfpipe_version,
+                     sci_hash=None):
     """Write the ``_lines.fits`` product."""
     s = result['summary']
     hdr = fits.Header()
@@ -245,6 +247,8 @@ def write_lines_file(path, result, *, z_source, entry: RedshiftEntry | None, spe
     hdr['TARGETID'] = (str(target_id), 'Catalog target_id')
     hdr['SPECFILE'] = (os.path.basename(spec_path), 'Input spectrum')
     hdr['SPECHASH'] = (spec_hash, 'sha256:<hex> of the input spectrum file')
+    if sci_hash:
+        hdr['SCIHASH'] = (sci_hash, 'science-content sha256 of the input spectrum (v1)')
     hdr['CMPFRVER'] = (cfpipe_version, 'campfire-pipeline version (PEP 440)')
     hdr['CMPFRTIM'] = (datetime.now(timezone.utc).isoformat(),
                        'UTC date/time of the line fit (ISO 8601)')
@@ -393,7 +397,13 @@ def lines_payload(lines: dict) -> dict:
 # Stage runner
 # ---------------------------------------------------------------------------
 
-def _needs_refit(lines_path, z, quality, spec_hash, overwrite):
+def _needs_refit(lines_path, z, quality, spec_hash, overwrite, sci_hash=None):
+    """Refit when the algorithm, redshift, quality or *science content* changed.
+
+    Products written since P0b carry ``SCIHASH`` (the science-content hash, which
+    survives a no-op rerun that only rewrites ``CMPFRTIM``); those compare on it.
+    Older products only have ``SPECHASH`` (whole-file) and keep comparing on that,
+    so nothing refits just because the card is missing."""
     if overwrite or not os.path.exists(lines_path):
         return True, 'new'
     try:
@@ -405,7 +415,10 @@ def _needs_refit(lines_path, z, quality, spec_hash, overwrite):
             return True, f"redshift changed ({hdr.get('ZUSED')} -> {z:.6f})"
         if int(hdr.get('ZQUAL', -1)) != int(quality):
             return True, 'quality changed'
-        if hdr.get('SPECHASH') != spec_hash:
+        if sci_hash and hdr.get('SCIHASH'):
+            if hdr.get('SCIHASH') != sci_hash:
+                return True, 'spectrum science content changed'
+        elif hdr.get('SPECHASH') != spec_hash:
             return True, 'spectrum changed'
     except Exception as e:
         return True, f'unreadable product ({e})'
@@ -415,7 +428,7 @@ def _needs_refit(lines_path, z, quality, spec_hash, overwrite):
 def _fit_one(args):
     """Worker: fit one spectrum. Returns (spec_file, status, message)."""
     (spec_file, z, z_source, entry, grating, filt, source_id, target_id, r_wav, r_val,
-     f_lsf, options, plot, cfpipe_version, spec_hash) = args
+     f_lsf, options, plot, cfpipe_version, spec_hash, sci_hash) = args
     try:
         tab = Table.read(spec_file, hdu='SPEC1D')
         wave = np.asarray(tab['wave'], dtype=float)
@@ -428,7 +441,8 @@ def _fit_one(args):
         lines_path = spec_file.replace('_spec.fits', LINES_SUFFIX)
         write_lines_file(lines_path, result, z_source=z_source, entry=entry, spec_path=spec_file,
                          spec_hash=spec_hash, grating=grating, filt=filt, source_id=source_id,
-                         target_id=target_id, f_lsf=f_lsf, cfpipe_version=cfpipe_version)
+                         target_id=target_id, f_lsf=f_lsf, cfpipe_version=cfpipe_version,
+                         sci_hash=sci_hash)
         if plot:
             from campfire_pipeline.nirspec.plots import plot_linefit_results
             try:
@@ -513,9 +527,10 @@ def run_linefit(obs, config, source_ids=None, overwrite=False, n_processes=1,
             counts['skipped_no_z'] += 1
             continue
         spec_hash = _sha256(spec_file)
+        sci_hash = science_hash(spec_file)
         quality = entry.quality if entry is not None else 0
         lines_path = spec_file.replace('_spec.fits', LINES_SUFFIX)
-        refit, why = _needs_refit(lines_path, z, quality, spec_hash, overwrite)
+        refit, why = _needs_refit(lines_path, z, quality, spec_hash, overwrite, sci_hash=sci_hash)
         if not refit:
             counts['skipped_uptodate'] += 1
             continue
@@ -524,7 +539,8 @@ def run_linefit(obs, config, source_ids=None, overwrite=False, n_processes=1,
         r_wav, r_val = r_cache[grating]
         f_lsf = float(zfit_opts.get(f'f_LSF_{grating}', zfit_opts.get('f_LSF', 1.0)))
         tasks.append((spec_file, z, z_source, entry, grating, parsed['filter'].lower(), source_id,
-                      target_id, r_wav, r_val, f_lsf, options, plot, cfpipe_version, spec_hash))
+                      target_id, r_wav, r_val, f_lsf, options, plot, cfpipe_version, spec_hash,
+                      sci_hash))
 
     log.info(f"linefit {obs.name}: {len(tasks)} to fit, {counts['skipped_uptodate']} up to date, "
              f"{counts['skipped_no_z']} without a usable redshift (min_quality={min_quality})")
