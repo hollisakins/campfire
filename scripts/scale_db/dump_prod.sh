@@ -17,10 +17,10 @@ URL="${CAMPFIRE_PROD_DB_URL:-}"
 if [ -z "$URL" ] && [ -r "$URL_FILE" ]; then URL="$(tr -d '[:space:]' < "$URL_FILE")"; fi
 [ -n "$URL" ] || { echo "no connection string: set CAMPFIRE_PROD_DB_URL or create $URL_FILE" >&2; exit 2; }
 
-repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/../.." && pwd -P)"
 mkdir -p "$OUT_DIR"; chmod 700 "$OUT_DIR"
-case "$(cd "$OUT_DIR" && pwd)" in
-  "$repo_root"/*) echo "refusing to write inside the repository: $OUT_DIR" >&2; exit 2 ;;
+case "$(cd "$OUT_DIR" && pwd -P)" in
+  "$repo_root"|"$repo_root"/*) echo "refusing to write inside the repository: $OUT_DIR" >&2; exit 2 ;;
 esac
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
