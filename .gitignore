@@ -83,3 +83,8 @@ reports/
 
 # pytest
 .pytest_cache/
+
+# Scale DB dumps live outside the repo; belt and braces if someone points the script here
+scripts/scale_db/*.dump
+scripts/scale_db/*.sha256
+scripts/scale_db/LATEST
