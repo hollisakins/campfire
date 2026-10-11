@@ -18,8 +18,10 @@ npx -y supabase@2.120.0 stop
 
 Pin the version you use (`2.120.0` at the time of writing; CI pins the same): the stack
 commands and the pg-delta engine are experimental and outside the CLI compatibility
-promise. A project keeps the runtime it was first started with; data lives under
-`~/.supabase/stacks/<id>/`. With Docker installed, plain `supabase start` keeps working.
+promise. **Each git branch is its own local project** (own data, own ports in
+20000–32767; `config.toml` deliberately fixes no ports): `supabase stack list` shows them,
+`supabase stop --all` stops them all, `supabase stack destroy` deletes one. A project keeps
+the runtime it was first started with; data lives under `~/.supabase/stacks/<id>/`. With Docker installed, plain `supabase start` keeps working.
 Known limits of the native runtime: `pg_cron` jobs do not run; Windows and Intel Macs are
 not supported.
 
@@ -43,7 +45,7 @@ plain migration. Generated migrations may use `GRANT`/`REVOKE` lines you did not
 ## Tests
 
 ```bash
-DB_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres        # from `status -o env`
+eval "$(npx -y supabase@2.120.0 status -o env | grep '^DB_URL=')"   # ports are per project
 for f in supabase/tests/check_*.sql; do psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$f"; done
 CAMPFIRE_LOCAL_DB_URL=$DB_URL pytest python/tests -k "rls or lifecycle or field_deploy_gate"
 ```
