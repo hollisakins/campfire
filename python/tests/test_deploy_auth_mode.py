@@ -15,6 +15,7 @@ from campfire.auth.credentials import StoredCredentials
 from campfire.auth.tokens import TokenManager
 from campfire.deploy.config import load_config
 from campfire.deploy.cli import _gate_admin
+from tests.fakes import FakePostgrest
 
 _SUPABASE_ENV = (
     "CAMPFIRE_SUPABASE_URL", "CAMPFIRE_SUPABASE_SERVICE_ROLE_KEY",
@@ -223,27 +224,6 @@ def test_toml_service_role_used_with_optin(tmp_path, monkeypatch):
 # Admin gate through the write client
 # --------------------------------------------------------------------------
 
-class _FakeRPC:
-    def __init__(self, data=None, exc=None):
-        self._data, self._exc = data, exc
-
-    def execute(self):
-        if self._exc:
-            raise self._exc
-        return SimpleNamespace(data=self._data)
-
-
-class _FakeClient:
-    def __init__(self, data=None, exc=None):
-        self._data, self._exc = data, exc
-        self.rpc_called = False
-
-    def rpc(self, name):
-        assert name == "is_admin"
-        self.rpc_called = True
-        return _FakeRPC(self._data, self._exc)
-
-
 def test_gate_skips_service_role_and_local(monkeypatch):
     def _boom(_cfg):
         raise AssertionError("service-role/local must not build a client to gate")
@@ -253,16 +233,16 @@ def test_gate_skips_service_role_and_local(monkeypatch):
 
 
 def test_gate_passes_for_admin(monkeypatch):
-    client = _FakeClient(data=True)
+    client = FakePostgrest(rpc_handlers={"is_admin": True})
     monkeypatch.setattr(
         "campfire.deploy.supabase.get_supabase_client", lambda _cfg: client
     )
     _gate_admin({"supabase": {"_auth_mode": "login"}})
-    assert client.rpc_called
+    assert client.rpcs == [("is_admin", None)]
 
 
 def test_gate_blocks_non_admin(monkeypatch):
-    client = _FakeClient(data=False)
+    client = FakePostgrest(rpc_handlers={"is_admin": False})
     monkeypatch.setattr(
         "campfire.deploy.supabase.get_supabase_client", lambda _cfg: client
     )
@@ -277,7 +257,8 @@ def test_gate_handles_expired_jwt(monkeypatch):
     from postgrest.exceptions import APIError
     err = APIError({"message": "JWT expired", "code": "PGRST303",
                     "hint": None, "details": None})
-    client = _FakeClient(exc=err)
+    client = FakePostgrest()
+    client.inject_error(err, rpc="is_admin")
     monkeypatch.setattr(
         "campfire.deploy.supabase.get_supabase_client", lambda _cfg: client
     )

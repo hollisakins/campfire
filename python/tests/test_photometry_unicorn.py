@@ -16,6 +16,7 @@ from campfire.deploy.photometry import (
     photoz_input_files,
     read_catalog,
 )
+from tests.fakes import FakePostgrest
 
 
 # ---------------------------------------------------------------------------
@@ -223,8 +224,7 @@ f444w = {{ flux = "FLUX_F444W", err = "FLUXERR_F444W" }}
 format = "lazy"
 file = "{lazy}"
 """)
-    client = _FakeClient([])
-    client.rpc = lambda *_a, **_k: type('R', (), {'execute': lambda self: type('D', (), {'data': 0})()})()
+    client = _photometry_client([])
     monkeypatch.setattr(mod, '_fetch_field_objects', lambda *_: [
         {'id': 1, 'object_id': 'gn_1', 'ra': 214.9, 'dec': 52.9},
         {'id': 2, 'object_id': 'gn_2', 'ra': 214.8, 'dec': 52.8}])
@@ -492,61 +492,10 @@ def test_read_catalog_rejects_unsupported_formats(tmp_path):
 # Supersede
 # ---------------------------------------------------------------------------
 
-class _FakeQuery:
-    def __init__(self, table):
-        self._t = table
-        self._filters = {}
-        self._range = None
-        self._delete_ids = None
-
-    def select(self, *_):
-        return self
-
-    def eq(self, col, val):
-        self._filters[col] = ('eq', val); return self
-
-    def neq(self, col, val):
-        self._filters[col] = ('neq', val); return self
-
-    def order(self, *_):
-        return self
-
-    def range(self, lo, hi):
-        self._range = (lo, hi); return self
-
-    def delete(self):
-        return self
-
-    def in_(self, col, ids):
-        assert col == 'id'
-        self._delete_ids = list(ids); return self
-
-    def execute(self):
-        if self._delete_ids is not None:
-            self._t.deleted.extend(self._delete_ids)
-            self._t.rows = [r for r in self._t.rows if r['id'] not in self._delete_ids]
-            return type('R', (), {'data': None})()
-        rows = [r for r in self._t.rows if all(
-            (r[c] == v) if op == 'eq' else (r[c] != v)
-            for c, (op, v) in self._filters.items())]
-        rows.sort(key=lambda r: r['id'])
-        lo, hi = self._range
-        return type('R', (), {'data': rows[lo:hi + 1]})()
-
-
-class _FakeTable:
-    def __init__(self, rows):
-        self.rows = rows
-        self.deleted = []
-
-
-class _FakeClient:
-    def __init__(self, rows):
-        self.t = _FakeTable(rows)
-
-    def table(self, name):
-        assert name == 'object_photometry'
-        return _FakeQuery(self.t)
+def _photometry_client(rows):
+    """A fake holding *rows* of ``object_photometry``; every RPC (the
+    ``sync_photometry_to_objects`` relink) answers 0."""
+    return FakePostgrest(tables={'object_photometry': rows}, rpc_default=0)
 
 
 def test_supersede_deletes_only_other_catalogs_in_field():
@@ -556,12 +505,13 @@ def test_supersede_deletes_only_other_catalogs_in_field():
         + [{'id': 9000, 'field': 'egs', 'catalog_name': 'other'}]
         + [{'id': 9500, 'field': 'goods-s', 'catalog_name': 'UNICORN GOODS-S v0.91'}]
     )
-    client = _FakeClient(rows)
+    client = _photometry_client(rows)
     deleted = _supersede_other_catalogs(client, 'egs', 'UNICORN EGS v0.98')
     assert deleted == {'UNICORN EGS v0.9': 1200, 'other': 1}
-    remaining = {(r['field'], r['catalog_name']) for r in client.t.rows}
+    remaining = {(r['field'], r['catalog_name']) for r in client.tables['object_photometry']}
     assert remaining == {('egs', 'UNICORN EGS v0.98'), ('goods-s', 'UNICORN GOODS-S v0.91')}
-    assert len(client.t.deleted) == 1201
+    assert len(client.deleted_rows()) == 1201
+    assert {c.table for c in client.calls} == {'object_photometry'}
 
 
 def test_supersede_dry_run_counts_without_deleting():
@@ -569,10 +519,10 @@ def test_supersede_dry_run_counts_without_deleting():
         [{'id': i, 'field': 'egs', 'catalog_name': 'UNICORN EGS v0.9'} for i in range(1, 11)]
         + [{'id': 50, 'field': 'egs', 'catalog_name': 'UNICORN EGS v0.98'}]
     )
-    client = _FakeClient(rows)
+    client = _photometry_client(rows)
     assert _supersede_other_catalogs(client, 'egs', 'UNICORN EGS v0.98', dry_run=True) == {
         'UNICORN EGS v0.9': 10}
-    assert client.t.deleted == [] and len(client.t.rows) == 11
+    assert client.deleted_rows() == [] and len(client.tables['object_photometry']) == 11
 
 
 def _supersede_setup(tmp_path, monkeypatch, catalog_ra, n_old, flux_col='FLUX_F444W'):
@@ -603,11 +553,10 @@ f444w = {{ flux = "{flux_col}", err = "FLUXERR_F444W" }}
 """)
     old_rows = [{'id': i, 'field': 'egs', 'catalog_name': 'UNICORN EGS v0.9'}
                 for i in range(1, n_old + 1)]
-    client = _FakeClient(old_rows)
+    client = _photometry_client(old_rows)
     monkeypatch.setattr(mod, '_fetch_field_objects', lambda *_: [
         {'id': 1, 'object_id': 'egs_1', 'ra': 214.9, 'dec': 52.9}])
     monkeypatch.setattr(mod, '_upsert_photometry', lambda *_: 0)
-    client.rpc = lambda *_a, **_k: type('R', (), {'execute': lambda self: type('D', (), {'data': 0})()})()
     return mod, client, cfg
 
 
@@ -616,7 +565,7 @@ def test_supersede_is_skipped_when_nothing_was_upserted(tmp_path, monkeypatch, c
     mod, client, cfg = _supersede_setup(tmp_path, monkeypatch, catalog_ra=200.0, n_old=3)
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
     assert result['n_matched'] == 0 and result['n_superseded'] == 0
-    assert len(client.t.rows) == 3 and client.t.deleted == []
+    assert len(client.tables['object_photometry']) == 3 and client.deleted_rows() == []
     assert 'skipping --supersede' in capsys.readouterr().out
 
 
@@ -626,20 +575,20 @@ def test_supersede_refuses_a_collapse_unless_forced(tmp_path, monkeypatch, capsy
     assert SUPERSEDE_MIN_RATIO * 10 > 1
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
     assert result['n_matched'] == 1 and result['n_superseded'] == 0
-    assert len(client.t.rows) == 10 and client.t.deleted == []
+    assert len(client.tables['object_photometry']) == 10 and client.deleted_rows() == []
     assert 'Pass --force' in capsys.readouterr().out
 
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
                                          supersede=True, supersede_force=True)
     assert result['n_superseded'] == 10
-    assert client.t.rows == [] and len(client.t.deleted) == 10
+    assert client.tables['object_photometry'] == [] and len(client.deleted_rows()) == 10
 
 
 def test_supersede_runs_when_the_new_catalog_covers_the_old(tmp_path, monkeypatch):
     mod, client, cfg = _supersede_setup(tmp_path, monkeypatch, catalog_ra=214.9, n_old=1)
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
     assert result['n_matched'] == 1 and result['n_superseded'] == 1
-    assert client.t.rows == []
+    assert client.tables['object_photometry'] == []
 
 
 def test_supersede_refuses_when_the_new_rows_carry_no_bands(tmp_path, monkeypatch, capsys):
@@ -650,7 +599,7 @@ def test_supersede_refuses_when_the_new_rows_carry_no_bands(tmp_path, monkeypatc
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
     out = capsys.readouterr().out
     assert result['n_matched'] == 1 and result['n_superseded'] == 0
-    assert len(client.t.rows) == 1 and client.t.deleted == []
+    assert len(client.tables['object_photometry']) == 1 and client.deleted_rows() == []
     assert 'carry no bands' in out and 'Pass --force' in out
 
     # Dry run agrees: nothing would be retired.
@@ -667,12 +616,12 @@ def test_dry_run_reports_supersede_outcome(tmp_path, monkeypatch, capsys):
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
                                          supersede=True, dry_run=True)
     out = capsys.readouterr().out
-    assert result['n_superseded'] == 0 and client.t.deleted == []
+    assert result['n_superseded'] == 0 and client.deleted_rows() == []
     assert 'Would retire 10 rows' in out and 'refused without --force' in out
     # ... unless forced.
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
                                          supersede=True, supersede_force=True, dry_run=True)
-    assert result['n_superseded'] == 10 and client.t.deleted == []
+    assert result['n_superseded'] == 10 and client.deleted_rows() == []
     # No matches at all: skipped, reports 0.
     (tmp_path / 'b').mkdir()
     mod, client, cfg = _supersede_setup(tmp_path / 'b', monkeypatch, catalog_ra=200.0, n_old=10)
@@ -685,4 +634,4 @@ def test_dry_run_reports_supersede_outcome(tmp_path, monkeypatch, capsys):
     mod, client, cfg = _supersede_setup(tmp_path / 'c', monkeypatch, catalog_ra=214.9, n_old=1)
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
                                          supersede=True, dry_run=True)
-    assert result['n_superseded'] == 1 and client.t.deleted == [] and len(client.t.rows) == 1
+    assert result['n_superseded'] == 1 and client.deleted_rows() == [] and len(client.tables['object_photometry']) == 1
