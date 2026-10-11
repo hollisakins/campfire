@@ -8,45 +8,24 @@ per-program scope), enforced across the storage_objects RLS +
 filter_accessible_storage_keys + get_storage_objects_for_sync, and that
 set_deployment_status flips a field deployment without the observation-NULL raise.
 
-Skips automatically when the local Supabase DB container is not reachable.
+Skips automatically when no local Supabase Postgres is reachable.
 """
-import subprocess
 from pathlib import Path
 
 import pytest
 
-CONTAINER = "supabase_db_campfire"
 SQL_FILE = Path(__file__).parent / "sql" / "nircam_field_deploy_gate.sql"
 PASS_MARKER = "ALL ASSERTIONS PASSED"
 
 
-def _docker_psql_available() -> bool:
-    try:
-        r = subprocess.run(
-            ["docker", "exec", "-i", CONTAINER,
-             "psql", "-U", "postgres", "-d", "postgres", "-tA", "-c", "SELECT 1"],
-            capture_output=True, text=True, timeout=15,
-        )
-        return r.returncode == 0 and r.stdout.strip().startswith("1")
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return False
-
-
-requires_local_db = pytest.mark.skipif(
-    not _docker_psql_available(),
-    reason=f"local Supabase container '{CONTAINER}' not reachable (run `supabase start` + `supabase db reset`)",
-)
+from ._localdb import requires_local_db, run_sql  # noqa: E402
 
 
 @requires_local_db
 def test_nircam_field_deploy_gate():
     """Draft field deploy admin-only; published field deploy public to everyone."""
     sql = SQL_FILE.read_text()
-    result = subprocess.run(
-        ["docker", "exec", "-i", CONTAINER,
-         "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-f", "-"],
-        input=sql, capture_output=True, text=True, timeout=120,
-    )
+    result = run_sql(sql)
     combined = result.stdout + result.stderr
     assert result.returncode == 0, (
         f"NIRCam field-deploy gate harness FAILED (psql exit {result.returncode}).\n"
