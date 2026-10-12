@@ -6458,13 +6458,31 @@ GRANT EXECUTE ON FUNCTION public.get_admin_storage_facets() TO authenticated;
 
 
 -- =============================================================================
--- get_storage_budget (epic #210, F1)
+-- get_storage_budget (epic #210, F1; classes P2)
 -- =============================================================================
--- Bytes-at-rest budget against the 20 TB cap. Egress is free (OSN academic
--- service), so the budget tracks storage only. Sums active storage_objects rows
--- (data bucket) plus aggregated tile bytes from map_layers (tiles are kept on R2
--- and intentionally not indexed per-object). SECURITY DEFINER + admin gate so a
--- non-admin cannot enumerate the registry. Used by `campfire deploy registry budget`.
+-- Bytes-at-rest budget against the cap. Egress is free (OSN academic service),
+-- so the budget tracks storage only. Sums every storage_objects KEY that still
+-- holds bytes in the data bucket at its stored size (COALESCE(stored_size_bytes,
+-- size_bytes): a gzipped mosaic costs its compressed size), plus aggregated tile
+-- bytes from map_layers (tiles are kept on R2 and intentionally not indexed
+-- per-object). SECURITY DEFINER + admin gate so a non-admin cannot enumerate the
+-- registry. Used by `campfire status` (admins) and the admin dashboard.
+--
+-- "Still holds bytes" is every status except 'collected': a superseded or
+-- revoked row is a GC-pending tombstone whose object is still in the bucket
+-- (`deploy revoke` retains bytes by design; nothing deletes until a gc), so
+-- hiding a field must not make the usage drop. (backend, bucket, storage_key)
+-- is unique across all statuses, so a row is a key and nothing is counted twice.
+--
+-- by_class (data releases P2): live (active) / archive (archived) / gc_pending
+-- (superseded + revoked) / collected. live + archive + gc_pending =
+-- registry_bytes. A collected archive row keeps its hash, size and date but no
+-- bytes (design §4.2), so it is reported by count and logical size and never
+-- counted against the cap.
+--
+-- The cap stays hard-coded: OSN allocations are expandable on request (NIRCam
+-- overhaul D2), so the number is an alarm threshold for operators, not a quota
+-- the system enforces. Change it here when the allocation changes.
 
 CREATE OR REPLACE FUNCTION public.get_storage_budget()
 RETURNS json
@@ -6476,7 +6494,7 @@ AS $$
 DECLARE
   result JSON;
   is_admin BOOLEAN;
-  cap_bytes BIGINT := 20::BIGINT * 1024 * 1024 * 1024 * 1024;  -- 20 TB
+  cap_bytes BIGINT := 20::BIGINT * 1024 * 1024 * 1024 * 1024;  -- 20 TB (OSN allocation)
   registry_bytes BIGINT;
   tile_bytes BIGINT;
   total_bytes BIGINT;
@@ -6493,9 +6511,11 @@ BEGIN
     RAISE EXCEPTION 'Access denied: Admin privileges required';
   END IF;
 
-  SELECT COALESCE(SUM(size_bytes), 0) INTO registry_bytes
+  -- Everything that still occupies the bucket, at its stored size (see the
+  -- header comment: every status but 'collected').
+  SELECT COALESCE(SUM(COALESCE(stored_size_bytes, size_bytes)), 0) INTO registry_bytes
   FROM storage_objects
-  WHERE status = 'active';
+  WHERE status <> 'collected';
 
   SELECT COALESCE(SUM(total_size_bytes), 0) INTO tile_bytes
   FROM map_layers;
@@ -6508,30 +6528,44 @@ BEGIN
     'pct_used', ROUND((total_bytes::NUMERIC / NULLIF(cap_bytes, 0)) * 100, 2),
     'registry_bytes', registry_bytes,
     'tile_bytes', tile_bytes,
+    -- P2 classes. live + archive + gc_pending = registry_bytes; collected occupies nothing.
+    'by_class', json_build_object(
+      'live', (SELECT json_build_object('count', COUNT(*), 'bytes', COALESCE(SUM(COALESCE(stored_size_bytes, size_bytes)), 0))
+               FROM storage_objects WHERE status = 'active'),
+      'archive', (SELECT json_build_object('count', COUNT(*), 'bytes', COALESCE(SUM(COALESCE(stored_size_bytes, size_bytes)), 0))
+                  FROM storage_objects WHERE status = 'archived'),
+      'gc_pending', (SELECT json_build_object('count', COUNT(*), 'bytes', COALESCE(SUM(COALESCE(stored_size_bytes, size_bytes)), 0))
+                     FROM storage_objects WHERE status IN ('superseded', 'revoked')),
+      'collected', (SELECT json_build_object('count', COUNT(*), 'bytes', 0,
+                                             'logical_bytes', COALESCE(SUM(size_bytes), 0))
+                    FROM storage_objects WHERE status = 'collected')
+    ),
     'by_backend', (
       SELECT COALESCE(json_object_agg(backend, bytes), '{}'::json)
       FROM (
-        SELECT backend, SUM(size_bytes) AS bytes
-        FROM storage_objects WHERE status = 'active'
+        SELECT backend, SUM(COALESCE(stored_size_bytes, size_bytes)) AS bytes
+        FROM storage_objects WHERE status <> 'collected'
         GROUP BY backend
       ) t
     ),
     'by_bucket', (
       SELECT COALESCE(json_object_agg(bucket, bytes), '{}'::json)
       FROM (
-        SELECT bucket, SUM(size_bytes) AS bytes
-        FROM storage_objects WHERE status = 'active'
+        SELECT bucket, SUM(COALESCE(stored_size_bytes, size_bytes)) AS bytes
+        FROM storage_objects WHERE status <> 'collected'
         GROUP BY bucket
       ) t
     ),
     'by_product_type', (
       SELECT COALESCE(json_object_agg(product_type, bytes), '{}'::json)
       FROM (
-        SELECT product_type, SUM(size_bytes) AS bytes
-        FROM storage_objects WHERE status = 'active'
+        SELECT product_type, SUM(COALESCE(stored_size_bytes, size_bytes)) AS bytes
+        FROM storage_objects WHERE status <> 'collected'
         GROUP BY product_type
       ) t
     ),
+    -- Every status, counted and at logical size (what the files measure
+    -- locally); the bucket cost of each class is in by_class.
     'by_status', (
       SELECT COALESCE(json_object_agg(status, json_build_object('count', cnt, 'bytes', bytes)), '{}'::json)
       FROM (
