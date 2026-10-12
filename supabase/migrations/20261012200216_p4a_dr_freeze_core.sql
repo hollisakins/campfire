@@ -573,7 +573,10 @@ BEGIN
                                'counts', jsonb_build_object('spectra', v_n_spectra, 'objects', v_n_objects,
                                  'line_fits', v_n_lines, 'photometry', v_n_phot, 'members', v_n_members),
                                'duration_ms', (extract(epoch FROM clock_timestamp() - v_t0) * 1000)::int));
-  EXCEPTION WHEN OTHERS THEN
+  EXCEPTION WHEN query_canceled OR OTHERS THEN
+    -- query_canceled is listed explicitly: OTHERS does not include it, and a
+    -- statement_timeout must leave the row in `failed` (not `freezing`
+    -- forever) so the next attempt is not refused as "already freezing".
     GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
     -- The block's writes are rolled back; record the failure on the row.
     UPDATE dr_releases
