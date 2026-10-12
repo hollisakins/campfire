@@ -9,6 +9,12 @@
 // the OSN_READ_ENABLED env flag — when unset/false it short-circuits to today's
 // behavior (presign R2 with the input key, no DB query), so the change is inert
 // until creds + flag are set. Resolution fails OPEN to R2 on any error.
+//
+// Archive copies (P2, `archive/<sha256>/<relpath>`) are the exception to every
+// R2 answer: they exist only on OSN (the archive store is OSN by construction;
+// retain-on-supersede and the freeze pass register them with backend 'osn'),
+// so an archive key resolves to OSN under its own key in every path — flag
+// off, no row, registry error — never to R2, where the object cannot exist.
 
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -19,7 +25,7 @@ import {
   getBucketNameForBackend,
   type DataBackend,
 } from './storage';
-import { storageKey, toCanonicalKey, toLegacyKey } from './layout';
+import { ARCHIVE_ROOT, storageKey, toCanonicalKey, toLegacyKey } from './layout';
 import { createServiceClient } from './supabase/server';
 
 // Max keys per storage_objects lookup. The `.in()` list rides in the request URL,
@@ -38,6 +44,21 @@ function toLegacyKeySafe(key: string): string {
   } catch {
     return key;
   }
+}
+
+/** True for a content-addressed archive key (`archive/<sha256>/<relpath>`).
+ * Archive objects live on OSN only; there is no R2 form to fall back to. */
+function isArchiveKey(key: string): boolean {
+  return key.startsWith(`${ARCHIVE_ROOT}/`);
+}
+
+/** The no-registry answer for one key: an archive key stays on OSN under its
+ * own key (its only possible home); anything else reads R2 under the legacy
+ * key (R2 retains the live bytes, so that is always safe for a live key). */
+function unresolved(key: string): ResolvedObject {
+  return isArchiveKey(key)
+    ? { backend: 'osn' as const, key, contentHash: null, registeredAt: null }
+    : { backend: 'r2' as const, key: toLegacyKeySafe(key), contentHash: null, registeredAt: null };
 }
 
 /** S3 client for the `data` storage backend (lazy, cached). */
@@ -120,17 +141,19 @@ function osnReadEnabled(): boolean {
  * key (R2 bytes are retained, so this is always a safe answer).
  *
  * Fails OPEN: with OSN reads disabled, or on any derivation/DB error, returns
- * R2 + the input key for every entry — never converts a today-working download
- * into an error.
+ * R2 + the input key for every live entry — never converts a today-working
+ * download into an error. An archive key (P2) is OSN-only: it resolves to OSN
+ * under its own key in every path, including the fallbacks, because R2 never
+ * holds archive objects and the live-key rollback cannot name one.
  */
 export async function resolveObjectBackends(keys: string[]): Promise<ResolvedObject[]> {
   // R2 reads always use the LEGACY key (where R2 retains the bytes), even if the
   // caller passed a canonical key (the client mirror holds canonical keys after
-  // migration). This is the rollback / fail-open answer for every key.
-  const r2Only = (): ResolvedObject[] =>
-    keys.map((key) => ({ backend: 'r2' as const, key: toLegacyKeySafe(key), contentHash: null, registeredAt: null }));
+  // migration). This is the rollback / fail-open answer for every live key;
+  // archive keys stay on OSN (see `unresolved`).
+  const fallback = (): ResolvedObject[] => keys.map(unresolved);
 
-  if (!osnReadEnabled()) return r2Only();
+  if (!osnReadEnabled()) return fallback();
 
   try {
     // Canonical form per input (LayoutError on an unrecognized key => R2 fallback).
@@ -204,6 +227,12 @@ export async function resolveObjectBackends(keys: string[]): Promise<ResolvedObj
       if (canonical && row?.backend === 'osn') {
         return { backend: 'osn' as const, key: canonical, contentHash: row.contentHash, registeredAt: row.registeredAt };
       }
+      // An archive key without a (visible) row is still OSN-only: serve it
+      // there with no content identity (the front url minter then declines
+      // and the caller streams), never from R2.
+      if (isArchiveKey(key)) {
+        return { backend: 'osn' as const, key, contentHash: null, registeredAt: null };
+      }
       return {
         backend: 'r2' as const,
         key: toLegacyKeySafe(key),
@@ -212,8 +241,8 @@ export async function resolveObjectBackends(keys: string[]): Promise<ResolvedObj
       };
     });
   } catch (err) {
-    console.error('[dual-read] backend resolution failed; falling back to R2:', err);
-    return r2Only();
+    console.error('[dual-read] backend resolution failed; falling back to R2 (archive keys stay on OSN):', err);
+    return fallback();
   }
 }
 

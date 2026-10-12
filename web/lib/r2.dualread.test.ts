@@ -138,6 +138,30 @@ describe('resolveObjectBackends — flag on', () => {
                            registeredAt: Date.parse('2026-10-11T12:00:00Z') / 1000 }]);
   });
 
+  it('archive key + OSN_READ_ENABLED off => OSN under its own key, no DB query (never R2)', async () => {
+    delete process.env.OSN_READ_ENABLED;
+    const ARCHIVE = 'archive/' + 'b'.repeat(64) + '/products/nirspec/ember_egs_p1/ember_egs_p1_101_spec.fits';
+    const [live, arch] = await resolveObjectBackends([LEGACY, ARCHIVE]);
+    expect(live).toMatchObject({ backend: 'r2', key: LEGACY });
+    expect(arch).toEqual({ backend: 'osn', key: ARCHIVE, contentHash: null, registeredAt: null });
+    expect(dbCalls).toBe(0);
+  });
+
+  it('archive key + DB error => stays on OSN under its own key while live keys fail open to R2', async () => {
+    const ARCHIVE = 'archive/' + 'c'.repeat(64) + '/products/nirspec/ember_egs_p1/ember_egs_p1_101_spec.fits';
+    dbError = new Error('boom');
+    const [live, arch] = await resolveObjectBackends([CANON, ARCHIVE]);
+    expect(live).toMatchObject({ backend: 'r2', key: LEGACY });
+    expect(arch).toEqual({ backend: 'osn', key: ARCHIVE, contentHash: null, registeredAt: null });
+  });
+
+  it('archive key with no registry row => OSN under its own key, no content identity', async () => {
+    const ARCHIVE = 'archive/' + 'd'.repeat(64) + '/products/nirspec/ember_egs_p1/ember_egs_p1_101_spec.fits';
+    dbRows = [];
+    const [arch] = await resolveObjectBackends([ARCHIVE]);
+    expect(arch).toEqual({ backend: 'osn', key: ARCHIVE, contentHash: null, registeredAt: null });
+  });
+
   it('DB error => fail open to R2 for all keys', async () => {
     dbError = new Error('supabase down');
     const out = await resolveObjectBackends([LEGACY]);
