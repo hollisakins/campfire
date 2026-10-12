@@ -133,12 +133,22 @@ export async function getStorageFacets(): Promise<StorageFacets> {
   }
 }
 
+export interface StorageBudgetClass {
+  count: number;
+  /** Bytes at rest (stored size); 0 for collected rows. */
+  bytes: number;
+  /** Collected rows only: the size the objects had before collection. */
+  logical_bytes?: number;
+}
+
 export interface StorageBudget {
   total_bytes: number;
   cap_bytes: number;
   pct_used: number;
   by_product_type: Record<string, number> | null;
   by_backend: Record<string, number> | null;
+  /** Data releases P2: live pointers / retained archive copies / collected rows. */
+  by_class?: { live: StorageBudgetClass; archive: StorageBudgetClass; collected: StorageBudgetClass } | null;
   error?: string;
 }
 

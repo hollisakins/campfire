@@ -234,6 +234,14 @@ function StoragePageInner() {
             <span className="text-text-secondary">
               of {fmtBytes((budget as StorageBudget).cap_bytes)} ({(budget as StorageBudget).pct_used}%)
             </span>
+            {(budget as StorageBudget).by_class && (
+              <span className="text-text-secondary text-xs">
+                live {fmtBytes((budget as StorageBudget).by_class!.live.bytes)}
+                {' · '}archive {fmtBytes((budget as StorageBudget).by_class!.archive.bytes)}
+                {(budget as StorageBudget).by_class!.collected.count > 0 &&
+                  ` · ${(budget as StorageBudget).by_class!.collected.count} collected`}
+              </span>
+            )}
           </div>
         </Card>
       )}

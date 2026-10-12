@@ -455,6 +455,34 @@ def whoami(base_url: Optional[str]):
             click.echo(f"Token expires: {loaded.expires_at}")
 
 
+def format_budget_lines(budget: dict) -> list[str]:
+    """The `campfire status` cloud-budget lines from a get_storage_budget() payload.
+
+    First line: bytes at rest against the cap. Second line (when the server
+    reports the P2 classes): how the registry splits into live pointers,
+    retained archive copies and collected archive rows (hash + size kept, no
+    bytes). Older servers without ``by_class`` print the first line only.
+    """
+    from .sync import format_size
+
+    used = format_size(int(budget.get("total_bytes", 0)))
+    cap = format_size(int(budget.get("cap_bytes", 0)))
+    pct = budget.get("pct_used", 0)
+    lines = [f"\nCloud storage: {used} of {cap} ({pct}%)"]
+    classes = budget.get("by_class") or {}
+    if classes:
+        live = classes.get("live") or {}
+        archive = classes.get("archive") or {}
+        collected = classes.get("collected") or {}
+        parts = [f"live {format_size(int(live.get('bytes', 0)))}",
+                 f"archive {format_size(int(archive.get('bytes', 0)))}"]
+        n_coll = int(collected.get("count", 0))
+        if n_coll:
+            parts.append(f"{n_coll} collected (no bytes)")
+        lines.append("  " + " · ".join(parts))
+    return lines
+
+
 @cli.command()
 @click.option("--obs", "obs_scope", multiple=True, cls=_VariadicOption,
               help="Also show the push-side diff for these observation(s) "
@@ -564,10 +592,8 @@ def status(obs_scope, field_scope, base_url: Optional[str]):
         api = APIClient(APISession(base_url=base_url))
         budget = api.get_storage_budget()
         if budget:
-            used = format_size(int(budget.get("total_bytes", 0)))
-            cap = format_size(int(budget.get("cap_bytes", 0)))
-            pct = budget.get("pct_used", 0)
-            click.echo(f"\nCloud storage: {used} of {cap} ({pct}%)")
+            for line in format_budget_lines(budget):
+                click.echo(line)
     except Exception:
         pass
 
