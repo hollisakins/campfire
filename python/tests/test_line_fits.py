@@ -160,7 +160,8 @@ def test_build_row_from_pipeline_product(tmp_path):
                       ("obs1_g395m_f290lp_11_lines.fits", "auto")):
         write_lines_file(tmp_path / name, res, z_source=src, entry=entry, spec_path=str(spec),
                          spec_hash="b" * 64, grating="g395m", filt="f290lp", source_id="10",
-                         target_id="obs1_10", f_lsf=1.5, cfpipe_version="1.2.3")
+                         target_id="obs1_10", f_lsf=1.5, cfpipe_version="1.2.3",
+                         sci_hash="sha256:" + "c" * 64)
 
     paths = sorted(tmp_path.glob("*_lines.fits"))
     rows, refused = build_line_fit_rows(paths, program_slug="ember-uds", observation="obs1")
@@ -172,6 +173,8 @@ def test_build_row_from_pipeline_product(tmp_path):
     assert row["fit_version"] == LINEFIT_VERSION and row["cfpipe_version"] == "1.2.3"
     assert row["f_lsf"] == 1.5
     assert row["spectrum_hash"] == "b" * 64 and row["n_lines"] >= 1
+    # P0c: the SCIHASH card rides along for line_fit_stale_spectrum
+    assert row["spectrum_science_hash"] == "sha256:" + "c" * 64
     assert row["lines"]["Halpha"]["flux"] > 4e-18 and row["lines"]["Halpha"]["label"] == "Hα"
     json.dumps(row, allow_nan=False)      # the upsert payload is JSON-clean
     rows, refused = build_line_fit_rows(paths, program_slug="ember-uds", observation="obs1",

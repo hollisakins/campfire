@@ -1181,9 +1181,11 @@ CREATE TABLE IF NOT EXISTS "public"."spectrum_line_fits" (
     "cfpipe_version" "text",
     "f_lsf" double precision,
     "spectrum_hash" "text",
+    "spectrum_science_hash" "text",
     "fitted_at" timestamp with time zone,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "spectrum_line_fits_spectrum_science_hash_check" CHECK (("spectrum_science_hash" IS NULL OR "spectrum_science_hash" ~ '^sha256:[0-9a-f]{64}$'::"text")),
     CONSTRAINT "spectrum_line_fits_z_source_check" CHECK (("z_source" = ANY (ARRAY['inspected'::"text", 'auto'::"text"]))),
     CONSTRAINT "spectrum_line_fits_z_quality_check" CHECK ((("z_quality" >= 0) AND ("z_quality" <= 4)))
 );
@@ -1195,6 +1197,8 @@ ALTER TABLE "public"."spectrum_line_fits" OWNER TO "postgres";
 COMMENT ON TABLE "public"."spectrum_line_fits" IS 'Emission-line fluxes per spectrum, measured at the inspected redshift (cfpipe nirspec linefit -> campfire deploy lines). One row per spectrum, replaced on re-fit; per-line values in `lines` jsonb keyed by pipeline line name. z_used / z_quality / object_version record the inspection state the fit used (see spectrum_line_fits_status for staleness).';
 
 COMMENT ON COLUMN "public"."spectrum_line_fits"."lines" IS 'Per-line records keyed by catalog name (components such as Halpha / CIII1907, accepted broad components as <line>_broad, and doublet totals such as CIII1908 / OII3727 / SII6725): {label, component (narrow|broad|doublet), wave_rest [vacuum A], wave_obs [um], flux, flux_err [erg/s/cm2], snr, ew_rest, ew_rest_err [A], cont, cont_err [erg/s/cm2/A], dv, dv_err, sigma_v, sigma_v_err, sigma_lsf_kms [km/s], complex, chi2, dof, npix, flags (bitmask: 1 tied, 2 blended, 4 blend, 8 edge, 16 kin_global, 32 kin_default, 64 broad, 128 no_continuum, 256 fit_failed, 512 masked, 1024 sigma_unresolved, 2048 resolved), blend_into, tied_to, members (doublet totals only: the two component names)}. NaN is null; a `blended` line carries no flux of its own (its blend primary reports the total). A doublet total is the covariance-propagated sum of its components where the grating resolves them (`resolved` set) and the single blended measurement where it does not, so it means the same thing in every grating: select on totals, not components. fit_version >= 2.';
+
+COMMENT ON COLUMN "public"."spectrum_line_fits"."spectrum_science_hash" IS 'Science-content sha256 of the spectrum the fit was made from (the SCIHASH card cfpipe nirspec linefit writes since P0b; same definition as spectra.science_hash). line_fit_stale_spectrum compares it with spectra.science_hash when both exist, so a redeploy that only rewrote volatile header cards does not read as a stale fit (P0c); NULL on products fitted before the card existed, which fall back to spectrum_hash.';
 
 COMMENT ON COLUMN "public"."spectrum_line_fits"."z_source" IS 'inspected = the portal redshift (objects.redshift at quality >= the pipeline min_quality); auto = the pipeline zfit redshift (QA fits, deployed only with --allow-auto-z).';
 

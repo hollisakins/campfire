@@ -141,6 +141,11 @@ def build_line_fit_row(product: dict, *, program_slug: str, observation: str) ->
         'cfpipe_version': _hdr_get(h, 'CMPFRVER', str),
         'f_lsf': _hdr_get(h, 'FLSF', float),
         'spectrum_hash': _hdr_get(h, 'SPECHASH', str),
+        # Science-content hash of the input spectrum (SCIHASH, written by
+        # linefit since P0b); the staleness ledger compares it with
+        # spectra.science_hash when both exist, else falls back to the
+        # whole-file pair above (P0c). Absent on older products.
+        'spectrum_science_hash': _hdr_get(h, 'SCIHASH', str),
         'fitted_at': _hdr_get(h, 'CMPFRTIM', str),
     }
 
