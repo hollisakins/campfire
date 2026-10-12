@@ -6722,6 +6722,177 @@ $$;
 GRANT EXECUTE ON FUNCTION public.recompute_has_published_spectrum(text[], text) TO authenticated, service_role;
 
 
+-- =============================================================================
+-- Needs-review (docs/design-needs-review.md, data releases P3)
+-- =============================================================================
+-- One rule: an object signed off at quality 1-3 needs review iff its set of
+-- PUBLISHED member spectra differs from the set the inspector saw at sign-off
+-- (objects.reviewed_spectrum_ids). Quality 4 never badges, reprocessing never
+-- badges, the auto redshift moving never badges. The flag is a derived column
+-- (objects.needs_review) so the list RPCs filter on an indexed boolean instead
+-- of a per-row membership join (the band-filter perf trap, plan §11 H72).
+--
+-- recompute_needs_review(p_object_ids): set-based recompute for the given
+-- objects; returns how many flags flipped. Called by the statement triggers in
+-- triggers.sql (spectra insert / delete / deploy_status / target_id; targets
+-- object_id / delete; objects quality / sign-off / is_active) and by the seed.
+-- SECURITY DEFINER: it must see every member spectrum regardless of the
+-- caller's RLS scope (a mixed public/proprietary object), and its UPDATE must
+-- not depend on the caller's objects policy. A flip bumps updated_at so sync
+-- clients pick it up (enforce_object_user_update_scope ignores both columns).
+CREATE OR REPLACE FUNCTION public.recompute_needs_review(p_object_ids integer[])
+RETURNS integer
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_n integer := 0;
+BEGIN
+  IF p_object_ids IS NULL OR cardinality(p_object_ids) = 0 THEN
+    RETURN 0;
+  END IF;
+
+  WITH ids AS (
+    SELECT DISTINCT x AS id FROM unnest(p_object_ids) AS x WHERE x IS NOT NULL
+  ),
+  current_members AS (
+    SELECT t.object_id AS id, array_agg(s.id ORDER BY s.id) AS ids
+    FROM targets t
+    JOIN spectra s ON s.target_id = t.target_id
+    WHERE t.object_id IN (SELECT id FROM ids)
+      AND s.deploy_status = 'published'
+    GROUP BY t.object_id
+  ),
+  flags AS (
+    SELECT o.id,
+           -- Every input is NOT NULL today; the COALESCE keeps the flag
+           -- assignable (needs_review is NOT NULL) should one ever go nullable.
+           COALESCE(
+             o.is_active
+             AND o.last_inspected_at IS NOT NULL
+             AND o.reviewed_spectrum_ids IS NOT NULL
+             AND COALESCE(o.redshift_quality, 0) BETWEEN 1 AND 3
+             AND COALESCE(c.ids, '{}'::integer[])
+                 IS DISTINCT FROM
+                 (SELECT COALESCE(array_agg(DISTINCT r ORDER BY r), '{}'::integer[])
+                  FROM unnest(o.reviewed_spectrum_ids) AS r),
+             false) AS flag
+    FROM objects o
+    JOIN ids ON ids.id = o.id
+    LEFT JOIN current_members c ON c.id = o.id
+  ),
+  upd AS (
+    UPDATE objects o
+    SET needs_review = f.flag,
+        updated_at = now()
+    FROM flags f
+    WHERE o.id = f.id
+      AND o.needs_review IS DISTINCT FROM f.flag
+    RETURNING o.id
+  )
+  SELECT count(*) INTO v_n FROM upd;
+
+  RETURN v_n;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.recompute_needs_review(integer[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.recompute_needs_review(integer[]) TO service_role;
+
+
+-- seed_reviewed_spectra: one-time seeding (D-P3-1), paged server-side and
+-- driven by scripts/backfill_reviewed_spectra.py. Pending = signed off with a
+-- NULL reviewed set. For each pending object the reviewed set becomes the
+-- member spectra whose row existed at sign-off (created_at <=
+-- last_inspected_at), whatever their publication status is NOW: a spectrum
+-- deployed after the inspector's last look is "unseen" and badges (46 objects
+-- in production on 2026-10-12), one revoked since the sign-off "left" and
+-- badges, and everything else clears. (The row's status at sign-off is not
+-- recorded anywhere, so existence is the best reconstruction; in production
+-- every spectrum is published, so the seed is exact today.) The stamping
+-- UPDATE fires the objects statement trigger, which recomputes the flag; the
+-- flip count is measured around it.
+--   p_after_id / p_limit : keyset page over pending ids (resumable);
+--   p_object_ids         : restrict to these ids (tests);
+--   p_dry_run            : count the pending ids in the page, write nothing.
+-- Returns {scanned, seeded, flipped, last_id} (last_id NULL when nothing was
+-- pending past p_after_id). Admin / service_role only.
+CREATE OR REPLACE FUNCTION public.seed_reviewed_spectra(
+  p_after_id integer DEFAULT 0,
+  p_limit integer DEFAULT 1000,
+  p_object_ids integer[] DEFAULT NULL,
+  p_dry_run boolean DEFAULT false
+)
+RETURNS json
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_ids integer[];
+  v_badged_before integer[];
+  v_seeded integer := 0;
+  v_flipped integer := 0;
+BEGIN
+  IF NOT (public.is_admin() OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  SELECT COALESCE(array_agg(id ORDER BY id), '{}'::integer[]) INTO v_ids
+  FROM (
+    SELECT o.id
+    FROM objects o
+    WHERE o.id > COALESCE(p_after_id, 0)
+      AND (p_object_ids IS NULL OR o.id = ANY(p_object_ids))
+      AND o.last_inspected_at IS NOT NULL
+      AND o.reviewed_spectrum_ids IS NULL
+    ORDER BY o.id
+    LIMIT GREATEST(COALESCE(p_limit, 1000), 1)
+  ) page;
+
+  IF cardinality(v_ids) = 0 THEN
+    RETURN json_build_object('scanned', 0, 'seeded', 0, 'flipped', 0, 'last_id', NULL);
+  END IF;
+  IF p_dry_run THEN
+    RETURN json_build_object('scanned', cardinality(v_ids), 'seeded', 0, 'flipped', 0,
+                             'last_id', v_ids[cardinality(v_ids)]);
+  END IF;
+
+  SELECT COALESCE(array_agg(id), '{}'::integer[]) INTO v_badged_before
+  FROM objects WHERE id = ANY(v_ids) AND needs_review;
+
+  WITH upd AS (
+    UPDATE objects o
+    SET reviewed_spectrum_ids = COALESCE((
+          SELECT array_agg(s.id ORDER BY s.id)
+          FROM targets t
+          JOIN spectra s ON s.target_id = t.target_id
+          WHERE t.object_id = o.id
+            -- spectra.created_at is timestamp WITHOUT time zone, written by now()
+            -- on a UTC server; compare it as UTC rather than via the session zone.
+            AND (s.created_at AT TIME ZONE 'UTC') <= o.last_inspected_at
+        ), '{}'::integer[])
+    WHERE o.id = ANY(v_ids)
+    RETURNING o.id
+  )
+  SELECT count(*) INTO v_seeded FROM upd;
+
+  -- Belt and braces: the statement trigger above already recomputed.
+  PERFORM public.recompute_needs_review(v_ids);
+
+  SELECT count(*) INTO v_flipped
+  FROM objects o
+  WHERE o.id = ANY(v_ids)
+    AND o.needs_review IS DISTINCT FROM (o.id = ANY(v_badged_before));
+
+  RETURN json_build_object('scanned', cardinality(v_ids), 'seeded', v_seeded, 'flipped', v_flipped,
+                           'last_id', v_ids[cardinality(v_ids)]);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.seed_reviewed_spectra(integer, integer, integer[], boolean) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.seed_reviewed_spectra(integer, integer, integer[], boolean) TO authenticated, service_role;
+
+
 -- log_deploy_event: append one row to the deploy_events audit log. The only
 -- sanctioned write path (deploy_events has no INSERT policy, so direct client
 -- inserts are denied). Used by the deploy CLI for 'upload' events; the set_*
@@ -8676,6 +8847,8 @@ REVOKE ALL ON FUNCTION public.objects_matching_grating_filter(p_gratings text[],
 REVOKE ALL ON FUNCTION public.objects_matching_line_filter(p_line text, p_snr_min double precision, p_snr_max double precision, p_include_stale boolean, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.objects_matching_observation_filter(p_observations text[], p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.recompute_has_published_spectrum(p_target_ids text[], p_field text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.recompute_needs_review(p_object_ids integer[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.seed_reviewed_spectra(p_after_id integer, p_limit integer, p_object_ids integer[], p_dry_run boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.recompute_object_search_text(p_object_ids integer[]) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.recompute_target_aggregates(p_target_ids text[]) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.redeem_access_code(p_code text) FROM PUBLIC, anon;

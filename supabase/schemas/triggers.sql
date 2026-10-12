@@ -577,6 +577,172 @@ CREATE TRIGGER pin_redshift_on_signoff_trigger
   BEFORE INSERT OR UPDATE OF redshift_inspected, redshift_quality ON public.objects
   FOR EACH ROW EXECUTE FUNCTION public.pin_redshift_on_signoff();
 
+-- ---------------------------------------------------------------------------
+-- Needs-review (docs/design-needs-review.md, data releases P3)
+-- ---------------------------------------------------------------------------
+-- stamp_reviewed_spectra: at every sign-off (any UPDATE that moves
+-- last_inspected_at: the inspect route, "mark as reviewed", admin SQL) record
+-- the published member spectrum ids the inspector saw and clear the badge.
+-- The database computes the set so no client can write a stale one; the
+-- column is not in enforce_object_user_update_scope's list, and the trigger
+-- is SECURITY DEFINER so a mixed-program object's members are all seen.
+DROP FUNCTION IF EXISTS public.stamp_reviewed_spectra CASCADE;
+
+CREATE OR REPLACE FUNCTION public.stamp_reviewed_spectra() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    IF NEW.last_inspected_at IS NOT NULL
+       AND NEW.last_inspected_at IS DISTINCT FROM OLD.last_inspected_at THEN
+        NEW.reviewed_spectrum_ids := COALESCE((
+            SELECT array_agg(s.id ORDER BY s.id)
+            FROM targets t
+            JOIN spectra s ON s.target_id = t.target_id
+            WHERE t.object_id = NEW.id
+              AND s.deploy_status = 'published'
+        ), '{}'::integer[]);
+        NEW.needs_review := false;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS stamp_reviewed_spectra_trigger ON public.objects;
+CREATE TRIGGER stamp_reviewed_spectra_trigger
+  BEFORE UPDATE OF last_inspected_at ON public.objects
+  FOR EACH ROW EXECUTE FUNCTION public.stamp_reviewed_spectra();
+
+-- recompute_needs_review_*: statement-level AFTER triggers that hand the
+-- touched objects to recompute_needs_review(). Postgres does not allow a
+-- column list (UPDATE OF ...) on a trigger with transition tables, so each
+-- UPDATE trigger fires on every statement and the function itself narrows to
+-- the rows whose relevant columns changed (old vs new joined on id); a
+-- statement that touched none of them costs one small join and no recompute.
+-- One function per table reads the transition tables its events declare (a
+-- transition table the firing event did not declare must not be referenced,
+-- hence the TG_OP branches). The recompute's own UPDATE changes only
+-- needs_review / updated_at, so the objects trigger it re-fires narrows to
+-- nothing and the chain stops there.
+DROP FUNCTION IF EXISTS public.recompute_needs_review_from_spectra CASCADE;
+
+CREATE OR REPLACE FUNCTION public.recompute_needs_review_from_spectra() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_ids integer[] := '{}';
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        v_ids := COALESCE(ARRAY(
+            SELECT DISTINCT t.object_id FROM new_rows n
+            JOIN targets t ON t.target_id = n.target_id
+            WHERE t.object_id IS NOT NULL), '{}'::integer[]);
+    ELSIF TG_OP = 'DELETE' THEN
+        v_ids := COALESCE(ARRAY(
+            SELECT DISTINCT t.object_id FROM old_rows o
+            JOIN targets t ON t.target_id = o.target_id
+            WHERE t.object_id IS NOT NULL), '{}'::integer[]);
+    ELSE
+        -- Only a publication flip or a re-targeting changes an object's
+        -- published member set; everything else (hashes, flags, timestamps)
+        -- is not a membership event.
+        v_ids := COALESCE(ARRAY(
+            SELECT DISTINCT t.object_id
+            FROM old_rows o
+            JOIN new_rows n ON n.id = o.id
+            JOIN targets t ON t.target_id IN (o.target_id, n.target_id)
+            WHERE t.object_id IS NOT NULL
+              AND (o.deploy_status IS DISTINCT FROM n.deploy_status
+                   OR o.target_id IS DISTINCT FROM n.target_id)), '{}'::integer[]);
+    END IF;
+    PERFORM public.recompute_needs_review(v_ids);
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS recompute_needs_review_spectra_insert ON public.spectra;
+CREATE TRIGGER recompute_needs_review_spectra_insert
+  AFTER INSERT ON public.spectra REFERENCING NEW TABLE AS new_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.recompute_needs_review_from_spectra();
+
+DROP TRIGGER IF EXISTS recompute_needs_review_spectra_update ON public.spectra;
+CREATE TRIGGER recompute_needs_review_spectra_update
+  AFTER UPDATE ON public.spectra
+  REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.recompute_needs_review_from_spectra();
+
+DROP TRIGGER IF EXISTS recompute_needs_review_spectra_delete ON public.spectra;
+CREATE TRIGGER recompute_needs_review_spectra_delete
+  AFTER DELETE ON public.spectra REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.recompute_needs_review_from_spectra();
+
+DROP FUNCTION IF EXISTS public.recompute_needs_review_from_targets CASCADE;
+
+CREATE OR REPLACE FUNCTION public.recompute_needs_review_from_targets() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_ids integer[] := '{}';
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        v_ids := COALESCE(ARRAY(
+            SELECT DISTINCT o.object_id FROM old_rows o WHERE o.object_id IS NOT NULL), '{}'::integer[]);
+    ELSE
+        -- A target changing object: both the losing and the receiving object.
+        v_ids := COALESCE(ARRAY(
+            SELECT DISTINCT x.object_id
+            FROM old_rows o
+            JOIN new_rows n ON n.id = o.id
+            CROSS JOIN LATERAL (VALUES (o.object_id), (n.object_id)) AS x(object_id)
+            WHERE o.object_id IS DISTINCT FROM n.object_id
+              AND x.object_id IS NOT NULL), '{}'::integer[]);
+    END IF;
+    PERFORM public.recompute_needs_review(v_ids);
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS recompute_needs_review_targets_update ON public.targets;
+CREATE TRIGGER recompute_needs_review_targets_update
+  AFTER UPDATE ON public.targets
+  REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.recompute_needs_review_from_targets();
+
+DROP TRIGGER IF EXISTS recompute_needs_review_targets_delete ON public.targets;
+CREATE TRIGGER recompute_needs_review_targets_delete
+  AFTER DELETE ON public.targets REFERENCING OLD TABLE AS old_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.recompute_needs_review_from_targets();
+
+DROP FUNCTION IF EXISTS public.recompute_needs_review_from_objects CASCADE;
+
+CREATE OR REPLACE FUNCTION public.recompute_needs_review_from_objects() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    -- The rule's own inputs: quality, sign-off (last_inspected_at, which
+    -- stamp_reviewed_spectra turns into a fresh reviewed set — in the list so
+    -- "mark as reviewed" recomputes too), the reviewed set, activity.
+    PERFORM public.recompute_needs_review(COALESCE(ARRAY(
+        SELECT n.id
+        FROM old_rows o
+        JOIN new_rows n ON n.id = o.id
+        WHERE o.redshift_quality IS DISTINCT FROM n.redshift_quality
+           OR o.last_inspected_at IS DISTINCT FROM n.last_inspected_at
+           OR o.reviewed_spectrum_ids IS DISTINCT FROM n.reviewed_spectrum_ids
+           OR o.is_active IS DISTINCT FROM n.is_active), '{}'::integer[]));
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS recompute_needs_review_objects_update ON public.objects;
+CREATE TRIGGER recompute_needs_review_objects_update
+  AFTER UPDATE ON public.objects
+  REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.recompute_needs_review_from_objects();
+
 
 -- Per-spectrum DQ flag changes
 DROP TRIGGER IF EXISTS track_spectrum_dq_changes ON public.spectra;
