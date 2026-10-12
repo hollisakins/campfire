@@ -1247,6 +1247,12 @@ def verify(obs_filter, cloud, deep, as_json, local):
                 if b["orphans"]:
                     click.echo(f"    {len(b['orphans'])} orphan bucket object(s) "
                                f"({len(b['adoptable'])} adoptable)")
+                if b.get("unregistered_archive"):
+                    click.echo(f"    ✗ {len(b['unregistered_archive'])} unregistered archive "
+                               f"object(s) (a retain copied bytes but never registered them; "
+                               f"never adopted as live):")
+                    for k in b["unregistered_archive"][:10]:
+                        click.echo(f"        unregistered: {k}")
             for label, err in report.get("errors", {}).items():
                 click.echo(f"  [{label}] bucket LIST unavailable: {err}")
             click.echo("\n  Cloud verification: "
@@ -1312,6 +1318,73 @@ def dr_status(as_json, local):
         click.echo(_json.dumps(report, indent=2, sort_keys=True))
     else:
         click.echo(format_readiness(report))
+
+
+# ---------------------------------------------------------------------------
+# Archive (admin)
+# ---------------------------------------------------------------------------
+
+
+@cli.group(name="archive")
+def archive_group():
+    """Content-addressed archive tooling (admin): retention."""
+
+
+@archive_group.command(name="gc")
+@click.option("--dry-run", is_flag=True,
+              help="List what the retention window would collect; change nothing "
+                   "(the only mode until P4 lands the real collection)")
+@click.option("--older-than", "older_than", type=int, default=None, metavar="DAYS",
+              help="Retention window in days (default: the placeholder in campfire.archive)")
+@click.option("--limit", type=int, default=None,
+              help="List at most N candidate rows (the totals always cover every candidate)")
+@click.option("--json", "as_json", is_flag=True, help="Print the report as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
+def archive_gc(dry_run, older_than, limit, as_json, local):
+    """Mosaic retention: which archive copies are past the window.
+
+    Lists archived NIRCam mosaics (never NIRSpec finals or sidecars) whose
+    archive copy is older than the window, with the bytes at rest they hold.
+    Admin-only: a non-admin's RLS view of the registry holds no archive rows,
+    so without the gate the report would read as an empty archive.
+    Collection itself -- flipping rows to `collected` (hash, size and date
+    kept; the object removed) while skipping anything a published DR
+    references -- lands with P4; until then only --dry-run is accepted.
+    """
+    import json as _json
+
+    from .archive import DEFAULT_RETENTION_DAYS, format_gc_report, gc_candidates, gc_report
+
+    if not dry_run:
+        click.echo("✗ `campfire archive gc` can only --dry-run until the data-release freeze "
+                   "(P4) lands: collection must skip every object a published DR references.")
+        sys.exit(2)
+    try:
+        from campfire.deploy.cli import _gate_admin
+        from campfire.deploy.config import load_config
+        from campfire.deploy.supabase import get_supabase_client
+    except ImportError:
+        click.echo("✗ `campfire archive` needs the deploy extra: pip install campfire[deploy]")
+        sys.exit(2)
+    days = DEFAULT_RETENTION_DAYS if older_than is None else older_than
+    config = load_config(None, local=local)
+    # Admin gate through the same client the listing uses: under RLS a
+    # non-admin sees only status = 'active' rows, so the archive query would
+    # succeed with nothing and read as "no candidates". Skipped for
+    # service-role / --local clients (no auth.uid()), like every deploy verb.
+    _gate_admin(config, what="`campfire archive gc`")
+    try:
+        sb = get_supabase_client(config)
+        rows = gc_candidates(sb, older_than_days=days)
+    except Exception as e:  # noqa: BLE001 - one line, not a traceback
+        msg = getattr(e, "message", None) or str(e)
+        click.echo(f"✗ Could not list archive rows: {msg}")
+        sys.exit(1)
+    report = gc_report(rows, older_than_days=days, max_rows=limit)
+    if as_json:
+        click.echo(_json.dumps(report, indent=2, sort_keys=True))
+    else:
+        click.echo(format_gc_report(report, max_rows=limit if limit is not None else 20))
 
 
 def main():

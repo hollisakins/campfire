@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
 from campfire_layout import (
+    ARCHIVE_ROOT,
     KeyScheme,
     LayoutError,
     bucket_for,
@@ -463,11 +464,14 @@ class ReconcileReport:
     """Result of comparing live DB pointers, registry rows, and bucket objects."""
 
     def __init__(self, missing: set[str], dangling: set[str], orphans: set[str],
-                 adoptable: set[str]):
+                 adoptable: set[str], unregistered_archive: Optional[set[str]] = None):
         self.missing = missing      # live pointer with no registry row (coverage gap)
         self.dangling = dangling    # registry row whose key is absent from the bucket
         self.orphans = orphans      # bucket key with no registry row
         self.adoptable = adoptable  # orphans that parse to a known product (insertable)
+        # Orphans under archive/: a retain that copied the bytes but never
+        # registered them (P2). Drift, like dangling; never adopted as live.
+        self.unregistered_archive = unregistered_archive if unregistered_archive is not None else set()
 
     @property
     def covered(self) -> bool:
@@ -478,7 +482,8 @@ class ReconcileReport:
         return (
             f"coverage: {'OK' if self.covered else 'GAP'} "
             f"(missing={len(self.missing)}, dangling={len(self.dangling)}, "
-            f"orphans={len(self.orphans)}, adoptable={len(self.adoptable)})"
+            f"orphans={len(self.orphans)}, adoptable={len(self.adoptable)}, "
+            f"unregistered_archive={len(self.unregistered_archive)})"
         )
 
 
@@ -559,7 +564,9 @@ def compute_reconcile(
     # Only LIVE keys may be adopted as active rows; archive objects without a
     # row are a failed retain, reported as orphans, never adopted (P1).
     adoptable = {k for k in orphans if is_writable_key(k)}
-    return ReconcileReport(missing, dangling, orphans, adoptable)
+    # ...and called out by name (P2): the copy exists, the row does not.
+    unregistered_archive = {k for k in orphans if k.startswith(f'{ARCHIVE_ROOT}/')}
+    return ReconcileReport(missing, dangling, orphans, adoptable, unregistered_archive)
 
 
 # ---------------------------------------------------------------------------
@@ -813,10 +820,14 @@ def cloud_reconcile_report(config: dict, client, *, include_buckets: bool = True
                 'dangling': sorted(rep.dangling),
                 'orphans': sorted(rep.orphans),
                 'adoptable': sorted(rep.adoptable),
+                'unregistered_archive': sorted(rep.unregistered_archive),
             }
 
     any_dangling = any(b['dangling'] for b in report['backends'].values())
-    report['ok'] = not report['missing'] and not any_dangling
+    # An archive object with no row is registry<->bucket drift too (a retain
+    # that did not finish); it fails the check like a dangling row does.
+    any_unregistered_archive = any(b['unregistered_archive'] for b in report['backends'].values())
+    report['ok'] = not report['missing'] and not any_dangling and not any_unregistered_archive
     return report
 
 

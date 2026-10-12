@@ -199,6 +199,17 @@ def test_reconcile_dangling_and_orphans_with_bucket():
     assert "evil/../x" not in rep.adoptable              # not a known key
 
 
+def test_reconcile_names_unregistered_archive_objects_and_never_adopts_them():
+    # P2: an archive object with no registry row is a retain that copied the
+    # bytes but never registered them -- reported by name, never adoptable.
+    arch = "archive/" + "a" * 64 + "/products/nirspec/o/o_prism_clear_1_spec.fits"
+    rep = reg.compute_reconcile([SPEC_KEY], [SPEC_KEY], [SPEC_KEY, arch, RGB_KEY])
+    assert arch in rep.orphans and arch not in rep.adoptable
+    assert rep.unregistered_archive == {arch}
+    assert RGB_KEY not in rep.unregistered_archive
+    assert "unregistered_archive=1" in rep.summary()
+
+
 def test_reconcile_no_bucket_skips_dangling_orphan():
     rep = reg.compute_reconcile(["a"], ["a"], None)
     assert rep.dangling == set()
