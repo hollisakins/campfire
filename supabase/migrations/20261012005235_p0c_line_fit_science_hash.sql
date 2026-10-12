@@ -1,4 +1,5 @@
-SET lock_timeout = '5s'; SET statement_timeout = '60s';
+SET lock_timeout = '5s';
+SET statement_timeout = '60s';
 
 SET local check_function_bodies = off;
 
