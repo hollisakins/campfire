@@ -278,7 +278,8 @@ GRANT SELECT ON public.nircam_reduction_progress TO authenticated;
 --    live inspection state of its object and the current spectrum hash.
 --    stale_redshift: the object's redshift / quality / version moved since the
 --    fit (re-pull + `cfpipe nirspec linefit` refits exactly those);
---    stale_spectrum: the spectrum bytes were re-deployed since the fit.
+--    stale_spectrum: the spectrum's science content was re-deployed since the
+--    fit (science hash when both sides carry one, whole-file hash otherwise).
 --    security_invoker: rows follow the caller's RLS on spectrum_line_fits.
 DROP VIEW IF EXISTS public.spectrum_line_fits_status;
 
@@ -306,8 +307,12 @@ SELECT f.spectrum_id,
        (o.id IS NOT NULL AND public.line_fit_stale_redshift(
           o.version, o.redshift_quality, (o.redshift)::double precision,
           f.object_version, f.z_quality, f.z_used)) AS stale_redshift,
-       (regexp_replace(s.file_hash, '^sha256:', '')
-          IS DISTINCT FROM regexp_replace(f.spectrum_hash, '^sha256:', '')) AS stale_spectrum
+       -- likewise one definition of "the spectrum changed since the fit"
+       -- (line_fit_stale_spectrum): science hash when both sides carry one,
+       -- whole-file hash otherwise (P0c)
+       public.line_fit_stale_spectrum(
+          s.file_hash, s.science_hash,
+          f.spectrum_hash, f.spectrum_science_hash) AS stale_spectrum
 FROM public.spectrum_line_fits f
 JOIN public.spectra s ON s.id = f.spectrum_id
 LEFT JOIN public.targets t ON t.target_id = f.target_id

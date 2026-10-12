@@ -1296,7 +1296,7 @@ LINE_FIT_COLUMNS = ['spectrum_id', 'target_id', 'grating', 'program_slug', 'obse
                     'z_source', 'z_quality', 'object_id', 'object_version', 'z_fit', 'z_fit_err',
                     'dv', 'dv_err', 'sigma_v', 'sigma_v_err', 'kin_source', 'n_lines', 'n_detected',
                     'n_broad', 'chi2', 'dof', 'lines', 'fit_version', 'cfpipe_version', 'f_lsf',
-                    'spectrum_hash', 'fitted_at', 'created_at', 'updated_at']
+                    'spectrum_hash', 'spectrum_science_hash', 'fitted_at', 'created_at', 'updated_at']
 LINE_FIT_JSON = {'lines'}
 
 

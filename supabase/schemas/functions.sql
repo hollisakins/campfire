@@ -672,6 +672,40 @@ $$;
 GRANT EXECUTE ON FUNCTION public.line_fit_stale_redshift(INTEGER, INTEGER, DOUBLE PRECISION, INTEGER, INTEGER, DOUBLE PRECISION) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.line_fit_stale_redshift(INTEGER, INTEGER, DOUBLE PRECISION, INTEGER, INTEGER, DOUBLE PRECISION) TO service_role;
 
+-- line_fit_stale_spectrum: the ONE definition of "the spectrum this fit was
+-- made from has changed since" (P0c, docs/design-data-releases-impl-plan.md
+-- §2). When both the live spectrum and the fit carry a science hash the
+-- science hash decides: a redeploy that only rewrote volatile header cards
+-- (CMPFRTIM, the DR stamp) moves file_hash but not science_hash and must not
+-- read as stale. When either side lacks one (rows that predate P0b, products
+-- fitted before linefit wrote SCIHASH) the whole-file pair decides, as before.
+-- Both sides are 'sha256:<hex>'; the scheme is stripped defensively so a bare
+-- digest from an older product still compares. Used by the
+-- spectrum_line_fits_status view and get_line_fits_for_sync, so the ledger
+-- and the mirrored record cannot disagree. IMMUTABLE SQL so the planner
+-- inlines it.
+CREATE OR REPLACE FUNCTION public.line_fit_stale_spectrum(
+  p_file_hash TEXT,
+  p_science_hash TEXT,
+  p_fit_spectrum_hash TEXT,
+  p_fit_science_hash TEXT
+)
+RETURNS BOOLEAN
+LANGUAGE sql IMMUTABLE
+AS $$
+  SELECT CASE
+    WHEN p_science_hash IS NOT NULL AND p_fit_science_hash IS NOT NULL THEN
+      regexp_replace(p_science_hash, '^sha256:', '')
+        IS DISTINCT FROM regexp_replace(p_fit_science_hash, '^sha256:', '')
+    ELSE
+      regexp_replace(p_file_hash, '^sha256:', '')
+        IS DISTINCT FROM regexp_replace(p_fit_spectrum_hash, '^sha256:', '')
+  END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.line_fit_stale_spectrum(TEXT, TEXT, TEXT, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.line_fit_stale_spectrum(TEXT, TEXT, TEXT, TEXT) TO service_role;
+
 
 -- objects_matching_line_filter: the viewer-visible objects whose BEST S/N in
 -- catalog line p_line — the max over their visible member spectra, the same
@@ -1877,16 +1911,15 @@ BEGIN
            -- incremental cursor (max local updated_at) advances past a
            -- re-inspection or redeploy instead of re-sending the row forever.
            GREATEST(f.updated_at, s.updated_at, o.updated_at) AS effective_updated_at,
-           -- staleness vs the live inspection state (see spectrum_line_fits_status)
-           (o.id IS NOT NULL AND (
-              o.version IS DISTINCT FROM f.object_version
-              OR o.redshift_quality IS DISTINCT FROM f.z_quality
-              OR o.redshift IS NULL
-              OR abs((o.redshift)::double precision - f.z_used) > 1e-5)) AS stale_redshift,
-           -- both sides are 'sha256:<hex>'; strip the scheme defensively so a
-           -- bare digest from an older product still compares.
-           (regexp_replace(s.file_hash, '^sha256:', '')
-              IS DISTINCT FROM regexp_replace(f.spectrum_hash, '^sha256:', '')) AS stale_spectrum
+           -- staleness vs the live inspection state: the same two functions
+           -- the spectrum_line_fits_status view calls, so the mirrored record
+           -- and the ledger cannot disagree.
+           (o.id IS NOT NULL AND public.line_fit_stale_redshift(
+              o.version, o.redshift_quality, (o.redshift)::double precision,
+              f.object_version, f.z_quality, f.z_used)) AS stale_redshift,
+           public.line_fit_stale_spectrum(
+              s.file_hash, s.science_hash,
+              f.spectrum_hash, f.spectrum_science_hash) AS stale_spectrum
     FROM spectrum_line_fits f
     JOIN spectra s ON s.id = f.spectrum_id
     LEFT JOIN targets t ON t.target_id = f.target_id
@@ -8558,6 +8591,7 @@ REVOKE ALL ON FUNCTION public.is_admin() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.is_group_account() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.is_link_account() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.line_fit_stale_redshift(p_object_version integer, p_object_quality integer, p_object_redshift double precision, p_fit_object_version integer, p_fit_z_quality integer, p_fit_z_used double precision) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.line_fit_stale_spectrum(p_file_hash text, p_science_hash text, p_fit_spectrum_hash text, p_fit_science_hash text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.link_allows_download() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.link_field() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.link_observation() FROM PUBLIC, anon;

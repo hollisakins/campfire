@@ -1009,11 +1009,18 @@ def batch_upsert_spectra(
     eliminating the need to pre-fetch existing records.
 
     Phase C: also returns the set of (target_id, grating) pairs whose
-    `file_hash` differs from the existing DB row — i.e. spectra that were
-    re-reduced or re-uploaded. `reconcile_field_objects()` uses this to set
+    spectrum CONTENT differs from the existing DB row — i.e. spectra that were
+    re-reduced. `reconcile_field_objects()` uses this to set
     `staleness_reason='reprocessed'` on affected objects. New rows (no
     existing hash) are NOT included; their parent object instead picks up
     the membership-based staleness signal.
+
+    "Changed" (P0c, docs/design-data-releases-impl-plan.md §2) is decided on
+    the science hash when BOTH the existing row and the new record carry one:
+    a rerun that only rewrote the volatile header cards (CMPFRTIM, the DR
+    stamp) moves `file_hash` but not `science_hash`, and must not flag the
+    object. When either side lacks a science hash (rows that predate P0b, a
+    summary without the column) the whole-file hash decides, as before.
 
     Args:
         spectra: List of dicts from summary.get_spectra_records(), optionally
@@ -1026,29 +1033,31 @@ def batch_upsert_spectra(
     if not spectra:
         return 0, set()
 
-    new_hashes: dict[tuple[str, str], str | None] = {
-        (s['target_id'], s['grating']): s.get('file_hash') for s in spectra
+    # (file_hash, science_hash) per incoming record.
+    new_hashes: dict[tuple[str, str], tuple[str | None, str | None]] = {
+        (s['target_id'], s['grating']): (s.get('file_hash'), s.get('science_hash'))
+        for s in spectra
     }
 
-    # Pre-fetch existing file_hashes for these (target_id, grating) pairs.
+    # Pre-fetch the existing hashes for these (target_id, grating) pairs.
     # PostgREST can't filter on tuples, so we fetch by target_id IN (...) and
     # filter Python-side. Gratings per target are few (<6), so the over-fetch
     # is small.
     target_ids = sorted({tid for (tid, _) in new_hashes.keys()})
-    existing_hashes: dict[tuple[str, str], str | None] = {}
+    existing_hashes: dict[tuple[str, str], tuple[str | None, str | None]] = {}
     fetch_batch = 200
     for i in range(0, len(target_ids), fetch_batch):
         batch = target_ids[i:i + fetch_batch]
         resp = (
             client.table('spectra')
-            .select('target_id, grating, file_hash')
+            .select('target_id, grating, file_hash, science_hash')
             .in_('target_id', batch)
             .execute()
         )
         for row in resp.data or []:
             key = (row['target_id'], row['grating'])
             if key in new_hashes:
-                existing_hashes[key] = row['file_hash']
+                existing_hashes[key] = (row.get('file_hash'), row.get('science_hash'))
 
     for i in range(0, len(spectra), batch_size):
         batch = spectra[i:i + batch_size]
@@ -1057,19 +1066,35 @@ def batch_upsert_spectra(
         ).execute()
 
     changed: set[tuple[str, str]] = set()
-    for key, new_hash in new_hashes.items():
+    for key, new_pair in new_hashes.items():
         if key not in existing_hashes:
             # Brand-new row. Membership signal, not a reprocessing signal.
             continue
-        old_hash = existing_hashes[key]
-        # Flag any delta — including NULL→hash, which occurs on the first
-        # upload after the file_hash field was added. Without this branch,
-        # pre-hash-rollout rows are silently treated as clean on their first
-        # re-upload, losing a real "data changed" signal.
-        if old_hash != new_hash:
+        if spectrum_content_changed(existing_hashes[key], new_pair):
             changed.add(key)
 
     return len(spectra), changed
+
+
+def spectrum_content_changed(
+    old: tuple[str | None, str | None],
+    new: tuple[str | None, str | None],
+) -> bool:
+    """The one rule for "this spectrum's content changed" between two rows.
+
+    ``old`` / ``new`` are ``(file_hash, science_hash)`` pairs. When both sides
+    carry a science hash, it alone decides (P0c): equal science hashes mean
+    the same science even if the file bytes differ. Otherwise the whole-file
+    hash decides, and any delta counts — including NULL→hash, which occurs on
+    the first upload after a hash column was added; without that branch,
+    pre-rollout rows are silently treated as clean on their first re-upload,
+    losing a real "data changed" signal.
+    """
+    old_file, old_sci = old
+    new_file, new_sci = new
+    if old_sci and new_sci:
+        return old_sci != new_sci
+    return old_file != new_file
 
 
 def fetch_spectrum_ids(client: Client, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], int]:

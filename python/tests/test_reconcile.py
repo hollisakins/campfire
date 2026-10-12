@@ -218,6 +218,55 @@ def test_batch_upsert_spectra_flags_hash_change():
     assert changed == {('t1', 'prism')}
 
 
+# P0c: the science hash decides "changed" when both sides carry one.
+
+def test_batch_upsert_spectra_same_science_hash_is_not_a_change():
+    # A rerun that only rewrote volatile header cards moves file_hash but not
+    # science_hash: the object must not be flagged reprocessed.
+    client = _mock_supabase_client(
+        [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:A', 'science_hash': 'sha256:S'}]
+    )
+    _, changed = batch_upsert_spectra(
+        client,
+        [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:B', 'science_hash': 'sha256:S'}],
+    )
+    assert changed == set()
+
+
+def test_batch_upsert_spectra_science_hash_change_is_a_change():
+    client = _mock_supabase_client(
+        [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:A', 'science_hash': 'sha256:S'}]
+    )
+    _, changed = batch_upsert_spectra(
+        client,
+        [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:A', 'science_hash': 'sha256:T'}],
+    )
+    assert changed == {('t1', 'prism')}
+
+
+def test_batch_upsert_spectra_falls_back_to_file_hash_without_a_science_hash():
+    # Existing row predates P0b (no science hash): the whole-file rule applies.
+    client = _mock_supabase_client(
+        [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:A', 'science_hash': None},
+         {'target_id': 't2', 'grating': 'prism', 'file_hash': 'sha256:A', 'science_hash': None}]
+    )
+    _, changed = batch_upsert_spectra(
+        client,
+        [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:B', 'science_hash': 'sha256:S'},
+         {'target_id': 't2', 'grating': 'prism', 'file_hash': 'sha256:A', 'science_hash': 'sha256:S'}],
+    )
+    assert changed == {('t1', 'prism')}
+    # ...and symmetrically when the NEW record lacks one (summary without the column).
+    client = _mock_supabase_client(
+        [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:A', 'science_hash': 'sha256:S'}]
+    )
+    _, changed = batch_upsert_spectra(
+        client,
+        [{'target_id': 't1', 'grating': 'prism', 'file_hash': 'sha256:B'}],
+    )
+    assert changed == {('t1', 'prism')}
+
+
 def test_update_spectra_zfit_scalars_updates_only_the_scalars_per_row():
     # A plain UPDATE per (target_id, grating), never an upsert: a partial
     # upsert trips the NOT NULL columns (fits_path, ...) before ON CONFLICT.
