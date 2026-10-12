@@ -536,13 +536,9 @@ BEGIN
       JOIN storage_objects so ON so.storage_key = ni.file_path
       WHERE ni.deploy_status = 'published' AND ni.field = ANY (comp.fields)
         AND so.root = 'live' AND so.status = 'active'
-      UNION ALL
-      -- P(z) sidecars of each photometry component's field.
-      SELECT p_tag, so.storage_key, 'photometry/' || pc.c, NULL, so.field, so.product_type,
-             NULL, so.backend, so.bucket, so.content_hash, so.science_hash, so.size_bytes, so.id
-      FROM unnest(comp.photometry) AS pc(c)
-      JOIN storage_objects so ON so.field = split_part(pc.c, '/', 1)
-      WHERE so.product_type = 'photometry_pz' AND so.root = 'live' AND so.status = 'active'
+      -- (P(z) sidecars are not members: photometry_pz is a key-only product the
+      -- layout cannot archive; the frozen dr_photometry rows carry the catalog
+      -- values, the sidecars stay live-only -- plan amendment D-P4-5.)
       ON CONFLICT (tag, storage_key) DO NOTHING
       RETURNING 1
     )
@@ -1008,7 +1004,7 @@ COMMENT ON TABLE "public"."dr_exports" IS 'Export ledger of a data release (P4b)
 
 COMMENT ON TABLE "public"."dr_line_fits" IS 'Frozen emission-line fits of a data release (spectrum_id = the live spectra.id at the freeze) with stale_redshift / stale_spectrum computed inside the freeze snapshot, so "reviewed against this DR" is a real statement.';
 
-COMMENT ON TABLE "public"."dr_members" IS 'Storage objects referenced by a data release (one row per live key at the freeze) and the archive copy the byte pass (P4c) makes for each: archive_key, byte_state pending → copied/stamped, stamped_hash. Program-scoped rows carry program_slug; field-level rows (mosaics, P(z) sidecars) carry field.';
+COMMENT ON TABLE "public"."dr_members" IS 'Storage objects referenced by a data release (one row per live key at the freeze) and the archive copy the byte pass (P4c) makes for each: archive_key, byte_state pending → copied/stamped, stamped_hash. Program-scoped rows carry program_slug; field-level rows (mosaics) carry field.';
 
 COMMENT ON TABLE "public"."dr_objects" IS 'Frozen objects of a data release: catalog aggregates, inspection state (redshift, quality, inspector, review state) and the auto-redshift source spectrum, all evaluated in the freeze snapshot. object_id is the live objects.id at the time, name the public object_id string.';
 

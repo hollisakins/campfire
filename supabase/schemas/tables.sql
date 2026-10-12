@@ -1658,8 +1658,8 @@ ALTER TABLE "public"."dr_objects" OWNER TO "postgres";
 COMMENT ON TABLE "public"."dr_objects" IS 'Frozen objects of a data release: catalog aggregates, inspection state (redshift, quality, inspector, review state) and the auto-redshift source spectrum, all evaluated in the freeze snapshot. object_id is the live objects.id at the time, name the public object_id string.';
 
 -- dr_members: every storage object the DR references (finals + sidecars per
--- spectrum, published mosaics per NIRCam field, P(z) sidecars per photometry
--- component) with the byte-pass state the P4c pass advances.
+-- spectrum, published mosaics per NIRCam field; P(z) sidecars are key-only and
+-- stay live, D-P4-5) with the byte-pass state the P4c pass advances.
 CREATE TABLE IF NOT EXISTS "public"."dr_members" (
     "tag" "text" NOT NULL,
     "storage_key" "text" NOT NULL,
@@ -1688,7 +1688,7 @@ CREATE TABLE IF NOT EXISTS "public"."dr_members" (
 
 ALTER TABLE "public"."dr_members" OWNER TO "postgres";
 
-COMMENT ON TABLE "public"."dr_members" IS 'Storage objects referenced by a data release (one row per live key at the freeze) and the archive copy the byte pass (P4c) makes for each: archive_key, byte_state pending → copied/stamped, stamped_hash. Program-scoped rows carry program_slug; field-level rows (mosaics, P(z) sidecars) carry field.';
+COMMENT ON TABLE "public"."dr_members" IS 'Storage objects referenced by a data release (one row per live key at the freeze) and the archive copy the byte pass (P4c) makes for each: archive_key, byte_state pending → copied/stamped, stamped_hash. Program-scoped rows carry program_slug; field-level rows (mosaics) carry field.';
 
 -- dr_line_fits: spectrum_line_fits of the frozen spectra, with the staleness
 -- flags evaluated in the same snapshot.

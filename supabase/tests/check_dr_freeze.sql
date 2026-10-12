@@ -280,7 +280,7 @@ BEGIN
     RAISE EXCEPTION 'photometry freeze wrong (n=%)', n;
   END IF;
 
-  -- members: 6 spectra x 5 products (zfit + lines via the key rule) + 2 mosaics + 1 pz
+  -- members: 6 spectra x 5 products (zfit + lines via the key rule) + 2 mosaics
   SELECT count(*) INTO n FROM dr_members WHERE tag = 'DR-zzz' AND component = 'nirspec' AND storage_key LIKE 'data/products/nirspec/zzz_dr_%';
   IF n <> 30 THEN RAISE EXCEPTION 'expected 30 nirspec members, got %', n; END IF;
   SELECT count(*) INTO n FROM dr_members WHERE tag = 'DR-zzz' AND product_type IN ('zfit', 'nirspec_lines_json') AND spectrum_id IS NULL;
@@ -293,8 +293,9 @@ BEGIN
   END IF;
   SELECT count(*) INTO n FROM dr_members WHERE tag = 'DR-zzz' AND component = 'nircam/zzz_drf';
   IF n <> 2 THEN RAISE EXCEPTION 'expected 2 mosaic members (published only), got %', n; END IF;
-  SELECT count(*) INTO n FROM dr_members WHERE tag = 'DR-zzz' AND component = 'photometry/zzz_drf/ZZZ CAT v1';
-  IF n <> 1 THEN RAISE EXCEPTION 'expected 1 P(z) member, got %', n; END IF;
+  -- P(z) sidecars are key-only products the layout cannot archive: never members (D-P4-5)
+  SELECT count(*) INTO n FROM dr_members WHERE tag = 'DR-zzz' AND component LIKE 'photometry/%';
+  IF n <> 0 THEN RAISE EXCEPTION 'P(z) sidecars must not be members, got %', n; END IF;
   IF EXISTS (SELECT 1 FROM dr_members WHERE tag = 'DR-zzz' AND byte_state <> 'pending') THEN
     RAISE EXCEPTION 'members should start pending';
   END IF;
@@ -368,7 +369,7 @@ DECLARE
     ['dr_releases',   $q$SELECT count(*)::text FROM dr_releases WHERE tag = 'DR-zzz'$q$],
     ['dr_spectra',    $q$SELECT count(*)::text FROM dr_spectra WHERE tag = 'DR-zzz' AND fits_path LIKE '/tmp/zzz_dr_%'$q$],
     ['dr_objects',    $q$SELECT count(*)::text FROM dr_objects WHERE tag = 'DR-zzz' AND name LIKE 'ZZZ-DR-%'$q$],
-    ['dr_members',    $q$SELECT count(*)::text FROM dr_members WHERE tag = 'DR-zzz' AND (storage_key LIKE 'data/products/nirspec/zzz_dr_%' OR storage_key LIKE 'data/products/nircam/zzz_drf/%' OR storage_key LIKE 'data/products/photometry/zzz_drf/%')$q$],
+    ['dr_members',    $q$SELECT count(*)::text FROM dr_members WHERE tag = 'DR-zzz' AND (storage_key LIKE 'data/products/nirspec/zzz_dr_%' OR storage_key LIKE 'data/products/nircam/zzz_drf/%')$q$],
     ['dr_line_fits',  $q$SELECT count(*)::text FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id LIKE 'zzz-dr-t-%'$q$],
     ['dr_photometry', $q$SELECT count(*)::text FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1'$q$],
     ['dr_exports',    $q$SELECT count(*)::text FROM dr_exports WHERE tag = 'DR-zzz'$q$]
@@ -378,7 +379,7 @@ DECLARE
     ['ERR', '0', '0', '0', '1'],
     ['ERR', '0', '0', '0', '6'],
     ['ERR', '0', '0', '0', '3'],
-    ['ERR', '0', '0', '0', '33'],
+    ['ERR', '0', '0', '0', '32'],
     ['ERR', '0', '0', '0', '2'],
     ['ERR', '0', '0', '0', '1'],
     ['ERR', '0', '0', '0', '1']
@@ -390,8 +391,8 @@ DECLARE
     ['ERR', '1', '1', '0', '1'],
     ['ERR', '3', '6', '0', '6'],
     ['ERR', '2', '3', '0', '3'],
-    -- members: 3 public spectra x 5 = 15 + 2 mosaics + 1 pz = 18 ; grantee all 33
-    ['ERR', '18', '33', '0', '33'],
+    -- members: 3 public spectra x 5 = 15 + 2 mosaics = 17 ; grantee all 32
+    ['ERR', '17', '32', '0', '32'],
     ['ERR', '2', '2', '0', '2'],   -- both fits are on public-program spectra
     ['ERR', '1', '1', '0', '1'],   -- MIX photometry overlaps the public program
     ['ERR', '0', '0', '0', '1']    -- exports: admin only
