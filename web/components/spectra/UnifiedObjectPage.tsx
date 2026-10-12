@@ -41,10 +41,10 @@ function buildInitialVisibility(members: ObjectMemberTarget[]): Record<number, b
 
 export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, photometry }) => {
   const { userProfile } = useAuth();
-  // Local override for last_inspected_at so the "Mark as reviewed" action in
-  // the StalenessBadge can hide the badge without a full refetch. Reset on
-  // object change (see navigation effect below).
-  const [lastInspectedOverride, setLastInspectedOverride] = useState<string | null>(null);
+  // Local override so the "Mark as reviewed" action in the StalenessBadge can
+  // hide the badge without a full refetch (the server clears needs_review on
+  // that sign-off). Reset on object change (see navigation effect below).
+  const [reviewedLocally, setReviewedLocally] = useState(false);
 
   const colors = useMemo(() => {
     const c: Record<string, string> = {};
@@ -211,7 +211,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
       inspection.resetState(initialInspection);
       setExpandedSpectra(new Set());
       setSpectrumVisibility(buildInitialVisibility(object.member_targets));
-      setLastInspectedOverride(null);
+      setReviewedLocally(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [object.id]);
@@ -280,13 +280,11 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
                 {object.object_id}
               </h1>
               <StalenessBadge
-                reason={object.staleness_reason}
-                lastInspectedAt={lastInspectedOverride ?? object.last_inspected_at}
-                lastDataChangeAt={object.last_data_change_at}
+                needsReview={!reviewedLocally && object.needs_review}
                 objectId={object.id}
                 version={inspection.version}
                 canMarkReviewed={!!userProfile?.can_inspect}
-                onReviewed={({ last_inspected_at }) => setLastInspectedOverride(last_inspected_at)}
+                onReviewed={() => setReviewedLocally(true)}
               />
               {!object.is_active && (
                 <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-surface-2 text-text-secondary">

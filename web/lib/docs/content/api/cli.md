@@ -207,7 +207,8 @@ Three CSVs are generated: `objects.csv` (one row per sky-object, with inspection
 | `has_photometry` | bool | Whether a photometry match exists |
 | `photo_z`, `photo_z_err_lo`, `photo_z_err_hi` | float | Photo-z (if matched) |
 | `last_inspected_at`, `last_inspected_by` | str | Inspection metadata |
-| `last_data_change_at`, `staleness_reason` | str | Staleness tracking |
+| `needs_review` | bool | Needs-review badge: a quality 1–3 object whose published member spectra changed since its last sign-off |
+| `last_data_change_at`, `staleness_reason` | str | Legacy staleness columns (no longer written; removed in a later release) |
 
 Tags are not denormalized into `objects.csv` — use `cf.query_objects(tags=[...])` or `cf.get_tags()` from the Python client.
 

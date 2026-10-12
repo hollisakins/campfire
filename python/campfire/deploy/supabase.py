@@ -1010,8 +1010,9 @@ def batch_upsert_spectra(
 
     Phase C: also returns the set of (target_id, grating) pairs whose
     spectrum CONTENT differs from the existing DB row — i.e. spectra that were
-    re-reduced. `reconcile_field_objects()` uses this to set
-    `staleness_reason='reprocessed'` on affected objects. New rows (no
+    re-reduced. (Formerly drove a 'reprocessed' review badge; since P3 the
+    needs-review badge is membership-only and trigger-maintained, so this set
+    is informational.) New rows (no
     existing hash) are NOT included; their parent object instead picks up
     the membership-based staleness signal.
 

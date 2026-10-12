@@ -604,6 +604,8 @@ export interface SpectrumTarget extends DbTarget {
   // Staleness fields surfaced in objects mode only.
   staleness_reason?: 'new_target' | 'reprocessed' | 'membership_changed' | 'migration_conflict' | null;
   last_data_change_at?: string | null;
+  /** P3 (docs/design-needs-review.md): the server-maintained badge flag. */
+  needs_review?: boolean;
   // Legacy shim — DQ flags now live per-spectrum (spectra[i].dq_flags);
   // a few UI surfaces still read a per-target summary.
   dq_flags?: number;
@@ -683,6 +685,10 @@ export interface ObjectDetail {
   last_inspected_by: string | null;
   last_data_change_at: string | null;
   staleness_reason: 'new_target' | 'reprocessed' | 'membership_changed' | 'migration_conflict' | null;
+  /** P3 (docs/design-needs-review.md): true iff a quality 1-3 object's published
+   *  member spectra differ from the set the inspector saw at sign-off. Maintained
+   *  by the database; the old staleness_reason columns are no longer written. */
+  needs_review: boolean;
   version: number;
   is_active: boolean;
   photo_z: number | null;

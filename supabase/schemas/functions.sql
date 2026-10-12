@@ -1259,7 +1259,7 @@ BEGIN
            o.redshift_inspected, o.redshift_auto,
            o.inspected_used_auto,
            o.last_inspected_at, o.last_inspected_by,
-           o.last_data_change_at, o.staleness_reason,
+           o.last_data_change_at, o.staleness_reason, o.needs_review,
            o.version, o.is_active,
            o.has_photometry, o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi,
            o.created_at, o.updated_at
@@ -1455,6 +1455,7 @@ BEGIN
         'last_inspected_by', m.last_inspected_by,
         'last_data_change_at', m.last_data_change_at,
         'staleness_reason', m.staleness_reason,
+        'needs_review', m.needs_review,
         'version', m.version,
         'is_active', m.is_active,
         'has_photometry', m.has_photometry,
@@ -2363,14 +2364,8 @@ BEGIN
       )
       AND (
         p_needs_review IS NULL
-        OR (p_needs_review = TRUE
-            AND o.staleness_reason IS NOT NULL
-            AND o.last_inspected_at IS NOT NULL
-            AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
-        OR (p_needs_review = FALSE
-            AND (o.staleness_reason IS NULL
-                 OR o.last_inspected_at IS NULL
-                 OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at)))
+          -- P3: the maintained badge flag (docs/design-needs-review.md), indexed
+          OR o.needs_review = p_needs_review
       )
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (
@@ -2799,14 +2794,8 @@ BEGIN
       )
       AND (
         p_needs_review IS NULL
-        OR (p_needs_review = TRUE
-            AND o.staleness_reason IS NOT NULL
-            AND o.last_inspected_at IS NOT NULL
-            AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
-        OR (p_needs_review = FALSE
-            AND (o.staleness_reason IS NULL
-                 OR o.last_inspected_at IS NULL
-                 OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at)))
+          -- P3: the maintained badge flag (docs/design-needs-review.md), indexed
+          OR o.needs_review = p_needs_review
       )
       AND (
         NOT v_coord_search_active
@@ -2901,6 +2890,7 @@ BEGIN
       o.last_inspected_by,
       o.last_data_change_at,
       o.staleness_reason,
+      o.needs_review,
       o.version,
       o.is_active,
       o.photo_z,
@@ -2970,14 +2960,8 @@ BEGIN
       )
       AND (
         p_needs_review IS NULL
-        OR (p_needs_review = TRUE
-            AND o.staleness_reason IS NOT NULL
-            AND o.last_inspected_at IS NOT NULL
-            AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
-        OR (p_needs_review = FALSE
-            AND (o.staleness_reason IS NULL
-                 OR o.last_inspected_at IS NULL
-                 OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at)))
+          -- P3: the maintained badge flag (docs/design-needs-review.md), indexed
+          OR o.needs_review = p_needs_review
       )
       AND (
         NOT v_coord_search_active
@@ -3138,6 +3122,7 @@ BEGIN
         'last_inspected_by', fo.last_inspected_by,
         'last_data_change_at', fo.last_data_change_at,
         'staleness_reason', fo.staleness_reason,
+        'needs_review', fo.needs_review,
         'version', fo.version,
         'is_active', fo.is_active,
         'photo_z', fo.photo_z,
@@ -3414,14 +3399,8 @@ BEGIN
     )
     AND (
       p_needs_review IS NULL
-      OR (p_needs_review = TRUE
-          AND o.staleness_reason IS NOT NULL
-          AND o.last_inspected_at IS NOT NULL
-          AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
-      OR (p_needs_review = FALSE
-          AND (o.staleness_reason IS NULL
-               OR o.last_inspected_at IS NULL
-               OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at)))
+        -- P3: the maintained badge flag (docs/design-needs-review.md), indexed
+        OR o.needs_review = p_needs_review
     )
     AND (
       NOT v_coord_search_active
@@ -3782,14 +3761,8 @@ BEGIN
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
         OR (p_inspected_only = FALSE AND o.redshift_quality = 0))
       AND (p_needs_review IS NULL
-        OR (p_needs_review = TRUE
-            AND o.staleness_reason IS NOT NULL
-            AND o.last_inspected_at IS NOT NULL
-            AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
-        OR (p_needs_review = FALSE
-            AND (o.staleness_reason IS NULL
-                 OR o.last_inspected_at IS NULL
-                 OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at))))
+        -- P3: the maintained badge flag (docs/design-needs-review.md), indexed
+        OR o.needs_review = p_needs_review)
       AND (
         NOT v_coord_search_active
         OR (
@@ -4072,14 +4045,8 @@ BEGIN
       AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND COALESCE(o.redshift_quality, 0) = 0))
       AND (p_needs_review IS NULL
-        OR (p_needs_review = TRUE
-            AND o.staleness_reason IS NOT NULL
-            AND o.last_inspected_at IS NOT NULL
-            AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
-        OR (p_needs_review = FALSE
-            AND (o.staleness_reason IS NULL
-                 OR o.last_inspected_at IS NULL
-                 OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at))))
+        -- P3: the maintained badge flag (docs/design-needs-review.md), indexed
+        OR o.needs_review = p_needs_review)
       AND (p_has_photometry IS NULL OR o.has_photometry = p_has_photometry)
       AND (NOT v_comment_search_active OR t.id IN (
         SELECT c.target_id FROM comments c WHERE c.target_id IS NOT NULL AND c.is_deleted = false
@@ -4175,7 +4142,7 @@ RETURNS TABLE(
   redshift NUMERIC, redshift_quality INTEGER,
   redshift_inspected NUMERIC, redshift_auto DOUBLE PRECISION,
   last_inspected_at TIMESTAMPTZ, last_inspected_by TEXT,
-  last_data_change_at TIMESTAMPTZ, staleness_reason TEXT, version INTEGER,
+  last_data_change_at TIMESTAMPTZ, staleness_reason TEXT, needs_review BOOLEAN, version INTEGER,
   n_targets INTEGER, n_spectra INTEGER,
   programs TEXT, gratings TEXT,
   max_snr DOUBLE PRECISION, max_exposure_time DOUBLE PRECISION,
@@ -4281,7 +4248,7 @@ BEGIN
       o.redshift, o.redshift_quality,
       o.redshift_inspected, o.redshift_auto,
       o.last_inspected_at, o.last_inspected_by,
-      o.last_data_change_at, o.staleness_reason, o.version,
+      o.last_data_change_at, o.staleness_reason, o.needs_review, o.version,
       CASE WHEN v_coord_search_active THEN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) * POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2))))
       ELSE NULL END AS distance,
@@ -4318,14 +4285,8 @@ BEGIN
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND o.redshift_quality = 0))
       AND (p_needs_review IS NULL
-        OR (p_needs_review = TRUE
-            AND o.staleness_reason IS NOT NULL
-            AND o.last_inspected_at IS NOT NULL
-            AND (o.last_data_change_at IS NULL OR o.last_data_change_at > o.last_inspected_at))
-        OR (p_needs_review = FALSE
-            AND (o.staleness_reason IS NULL
-                 OR o.last_inspected_at IS NULL
-                 OR (o.last_data_change_at IS NOT NULL AND o.last_data_change_at <= o.last_inspected_at))))
+        -- P3: the maintained badge flag (docs/design-needs-review.md), indexed
+        OR o.needs_review = p_needs_review)
       AND (NOT v_coord_search_active OR (
         -- #527: RA box widened by 1/cos(dec); a cone that reaches a pole spans
         -- every RA, so the RA bound is dropped there (the box is only the index
@@ -4406,7 +4367,7 @@ BEGIN
     po.redshift, po.redshift_quality,
     po.redshift_inspected, po.redshift_auto,
     po.last_inspected_at, up.full_name AS last_inspected_by,
-    po.last_data_change_at, po.staleness_reason, po.version,
+    po.last_data_change_at, po.staleness_reason, po.needs_review, po.version,
     -- Aggregates scoped to accessible (+ filtered) programs so mixed-program
     -- objects don't export proprietary member metadata. See
     -- object_scoped_aggregates().
@@ -7478,10 +7439,8 @@ GRANT EXECUTE ON FUNCTION public.claim_deploy_scope(text, text, integer, uuid) T
 -- No per-row function calls except inside spectrum_line_fits_status (16k rows,
 -- the ledger's own definition of staleness — reuse, do not re-derive).
 --
--- needs_review is the catalog RPCs' predicate verbatim
--- (get_filtered_objects_paginated and friends; keep in step):
---   staleness_reason IS NOT NULL AND last_inspected_at IS NOT NULL
---   AND (last_data_change_at IS NULL OR last_data_change_at > last_inspected_at)
+-- needs_review is the maintained objects.needs_review flag (P3,
+-- docs/design-needs-review.md; the catalog RPCs filter on the same column),
 -- counted over active objects, the rows those RPCs list.
 --
 -- redrafted_nircam_fields: nircam_images is UNIQUE on (field, tile, filter,
@@ -7565,10 +7524,7 @@ BEGIN
   -- 3. objects: published / needs_review / implicit pins in one pass over active rows.
   SELECT jsonb_build_object(
     'published', count(*) FILTER (WHERE has_published_spectrum),
-    'needs_review', count(*) FILTER (
-      WHERE staleness_reason IS NOT NULL
-        AND last_inspected_at IS NOT NULL
-        AND (last_data_change_at IS NULL OR last_data_change_at > last_inspected_at)),
+    'needs_review', count(*) FILTER (WHERE needs_review),
     'implicit_pins', count(*) FILTER (WHERE inspected_used_auto))
   INTO v_objects
   FROM objects
@@ -8069,8 +8025,9 @@ GRANT EXECUTE ON FUNCTION public.bulk_set_target_object_fks(JSONB, TIMESTAMPTZ) 
 --                 gratings[], observations[], max_snr, max_exposure_time,
 --                 member_target_db_ids[]}]
 --   p_revivals: as p_inserts plus {object_db_id} (the inactive row to revive)
---   p_updates:  as p_revivals plus {staleness_reason (nullable),
---                 reactivate (bool)}
+--   p_updates:  as p_revivals plus {reactivate (bool)}. (A staleness_reason
+--                 key from older clients is ignored: the needs-review badge is
+--                 trigger-maintained since P3.)
 --   p_orphan_ids: integer[] of object db ids to soft-delete.
 --
 -- Returns jsonb: {insert_id_map: {object_id: db_id}, revived_ids: [db_id],
@@ -8148,8 +8105,6 @@ BEGIN
   --    step 2 adopts that row, so it must not be soft-deleted out from under it.
   UPDATE objects o SET
     is_active = false,
-    last_data_change_at = p_updated_at,
-    staleness_reason = 'membership_changed',
     updated_at = p_updated_at
   WHERE o.id = ANY(p_orphan_ids)
     AND o.is_active
@@ -8189,8 +8144,6 @@ BEGIN
       max_snr = EXCLUDED.max_snr,
       max_exposure_time = EXCLUDED.max_exposure_time,
       is_active = true,
-      last_data_change_at = p_updated_at,
-      staleness_reason = 'membership_changed',
       updated_at = p_updated_at
     RETURNING id, object_id
   )
@@ -8213,8 +8166,6 @@ BEGIN
       observations = r.observations,
       max_snr = r.max_snr,
       max_exposure_time = r.max_exposure_time,
-      last_data_change_at = p_updated_at,
-      staleness_reason = 'membership_changed',
       updated_at = p_updated_at
     FROM jsonb_to_recordset(p_revivals) AS r(
       object_db_id INTEGER, object_id TEXT, ra DOUBLE PRECISION,
@@ -8242,22 +8193,13 @@ BEGIN
       max_snr = u.max_snr,
       max_exposure_time = u.max_exposure_time,
       is_active = CASE WHEN u.reactivate THEN true ELSE o.is_active END,
-      staleness_reason = CASE
-        WHEN u.reactivate THEN 'membership_changed'
-        WHEN u.staleness_reason IS NOT NULL THEN u.staleness_reason
-        ELSE o.staleness_reason
-      END,
-      last_data_change_at = CASE
-        WHEN u.reactivate OR u.staleness_reason IS NOT NULL THEN p_updated_at
-        ELSE o.last_data_change_at
-      END,
       updated_at = p_updated_at
     FROM jsonb_to_recordset(p_updates) AS u(
       object_db_id INTEGER, object_id TEXT, ra DOUBLE PRECISION,
       dec DOUBLE PRECISION, n_targets INTEGER, n_spectra INTEGER,
       programs TEXT[], gratings TEXT[], observations TEXT[],
       max_snr DOUBLE PRECISION, max_exposure_time DOUBLE PRECISION,
-      staleness_reason TEXT, reactivate BOOLEAN
+      reactivate BOOLEAN
     )
     WHERE o.id = u.object_db_id
     RETURNING o.id AS id, u.reactivate AS reactivated
@@ -8391,12 +8333,10 @@ GRANT EXECUTE ON FUNCTION public.recompute_target_aggregates(TEXT[]) TO service_
 -- for every signed-off object — this function never has to worry about
 -- moving a value out from under an inspector.
 --
--- Staleness signal: when redshift_auto changes for an already-signed-off
--- object (quality >= 2), we flag staleness_reason='reprocessed' and
--- bump last_data_change_at so the UI surfaces a "Needs Review" badge.
--- The pinned displayed redshift is unchanged, but the inspector should
--- know the underlying fit shifted in case they want to update their
--- override or reaffirm the existing one.
+-- No staleness signal (P3, docs/design-needs-review.md): the auto fit
+-- moving never badges. The pinned displayed redshift is unchanged; the
+-- needs-review badge is driven by membership only (objects.needs_review),
+-- and the pinned-to-auto class is a `dr status` count, not a to-do.
 --
 -- The badge only fires on solution-level changes: a shift within the same
 -- (1+z)-scaled z_delta tolerance used for grating refinement is by
@@ -8478,22 +8418,6 @@ BEGIN
   )
   UPDATE objects o
   SET redshift_auto = c.new_val,
-      staleness_reason = CASE
-        WHEN c.quality >= 2
-             AND c.old_auto IS DISTINCT FROM c.new_val
-             AND (c.old_auto IS NULL OR c.new_val IS NULL
-                  OR ABS(c.new_val - c.old_auto) / (1.0 + c.old_auto) >= z_delta)
-        THEN 'reprocessed'
-        ELSE o.staleness_reason
-      END,
-      last_data_change_at = CASE
-        WHEN c.quality >= 2
-             AND c.old_auto IS DISTINCT FROM c.new_val
-             AND (c.old_auto IS NULL OR c.new_val IS NULL
-                  OR ABS(c.new_val - c.old_auto) / (1.0 + c.old_auto) >= z_delta)
-        THEN NOW()
-        ELSE o.last_data_change_at
-      END,
       updated_at = NOW()
   FROM computed c
   WHERE o.id = c.id

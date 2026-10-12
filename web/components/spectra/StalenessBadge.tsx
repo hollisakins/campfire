@@ -2,21 +2,18 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
-import type { ObjectDetail } from '@/lib/types';
 
-type StalenessReason = ObjectDetail['staleness_reason'];
-
-const REASON_COPY: Record<NonNullable<StalenessReason>, string> = {
-  new_target: 'A new target was added to this object since the last inspection.',
-  reprocessed: 'One or more member spectra have been reprocessed since the last inspection.',
-  membership_changed: 'The set of member targets has changed since the last inspection.',
-  migration_conflict: 'During the object-centric migration, multiple member targets carried conflicting secure redshifts. Please review.',
-};
+// P3 (docs/design-needs-review.md): one rule, one reason. The server
+// maintains objects.needs_review — true iff a quality 1-3 object's published
+// member spectra differ from the set the inspector saw at sign-off — and
+// "Mark as reviewed" is a sign-off with no value change, which re-stamps the
+// reviewed set and clears the flag.
+const REASON_COPY =
+  'This object has new or removed spectra since its last inspection, and its redshift is not secure. Take another look.';
 
 interface StalenessBadgeProps {
-  reason: StalenessReason;
-  lastInspectedAt: string | null;
-  lastDataChangeAt: string | null;
+  /** objects.needs_review as served; nothing renders when false. */
+  needsReview: boolean;
   compact?: boolean;
   /** When present alongside `version`, enables the click-to-open popover with a
    *  "Mark as reviewed" action. Omit (or pass `compact`) for a static badge. */
@@ -30,9 +27,7 @@ interface StalenessBadgeProps {
 }
 
 export const StalenessBadge: React.FC<StalenessBadgeProps> = ({
-  reason,
-  lastInspectedAt,
-  lastDataChangeAt,
+  needsReview,
   compact = false,
   objectId,
   version,
@@ -62,10 +57,9 @@ export const StalenessBadge: React.FC<StalenessBadgeProps> = ({
     };
   }, [open]);
 
-  if (!reason || !lastInspectedAt) return null;
-  if (lastDataChangeAt && new Date(lastDataChangeAt) <= new Date(lastInspectedAt)) return null;
+  if (!needsReview) return null;
 
-  const tooltip = REASON_COPY[reason];
+  const tooltip = REASON_COPY;
   const interactive = !compact && typeof objectId === 'number' && typeof version === 'number';
 
   if (compact) {
