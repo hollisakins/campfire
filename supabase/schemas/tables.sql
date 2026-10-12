@@ -533,6 +533,14 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     "last_inspected_by" "uuid",
     "last_data_change_at" timestamp with time zone,
     "staleness_reason" "text",
+    -- Needs-review (docs/design-needs-review.md, data releases P3): the published
+    -- member spectrum ids the inspector saw at the last sign-off (stamped by the
+    -- stamp_reviewed_spectra trigger on last_inspected_at; NULL = never signed off
+    -- under this scheme) and the one derived badge flag, maintained by
+    -- recompute_needs_review() from statement triggers on spectra / targets /
+    -- objects. No human writes either column.
+    "reviewed_spectrum_ids" integer[],
+    "needs_review" boolean NOT NULL DEFAULT false,
     "version" integer NOT NULL DEFAULT 1,
     "is_active" boolean NOT NULL DEFAULT true,
     -- B1 (#217): true iff this object has >= 1 published member spectrum.
@@ -572,6 +580,12 @@ COMMENT ON COLUMN "public"."objects"."redshift" IS 'Generated column: NULL when 
 
 
 COMMENT ON COLUMN "public"."objects"."staleness_reason" IS 'Phase A: one of new_target | reprocessed | membership_changed | migration_conflict. Set by reconcile_field_objects() (Phase C) when last_data_change_at advances past last_inspected_at.';
+
+
+COMMENT ON COLUMN "public"."objects"."reviewed_spectrum_ids" IS 'Needs-review (P3): ids of the published member spectra at the last sign-off, sorted. Stamped by the stamp_reviewed_spectra trigger whenever last_inspected_at changes; NULL until the object is signed off (or seeded by scripts/backfill_reviewed_spectra.py). Never written by clients.';
+
+
+COMMENT ON COLUMN "public"."objects"."needs_review" IS 'Needs-review (P3): true iff the object was signed off at quality 1-3 and its published member spectrum set differs from reviewed_spectrum_ids (a spectrum the inspector never saw joined, or one they saw left). Quality 4 and reprocessing never badge. Derived: maintained by recompute_needs_review() via statement triggers; supersedes the staleness_reason / last_data_change_at predicate.';
 
 
 COMMENT ON COLUMN "public"."objects"."version" IS 'Phase A: optimistic-locking counter. Incremented by trigger only when redshift_inspected or redshift_quality changes. Clients pass expected_version on PATCH; mismatch → 409 Conflict.';

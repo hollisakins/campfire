@@ -78,6 +78,11 @@ CREATE INDEX IF NOT EXISTS idx_objects_search_text_trgm
 CREATE INDEX IF NOT EXISTS idx_objects_redshift_quality
     ON public.objects USING btree (redshift_quality);
 
+-- Needs-review badge filter (p_needs_review, P3): the flagged set is tiny
+-- (~50 of 42k), so a partial index answers the filter without a scan.
+CREATE INDEX IF NOT EXISTS idx_objects_needs_review
+    ON public.objects USING btree (id) WHERE needs_review;
+
 CREATE INDEX IF NOT EXISTS idx_objects_redshift
     ON public.objects USING btree (redshift);
 
