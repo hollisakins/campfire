@@ -37,15 +37,18 @@ BEGIN
   ),
   flags AS (
     SELECT o.id,
-           (o.is_active
-            AND o.last_inspected_at IS NOT NULL
-            AND o.reviewed_spectrum_ids IS NOT NULL
-            AND o.redshift_quality BETWEEN 1 AND 3
-            AND COALESCE(c.ids, '{}'::integer[])
-                IS DISTINCT FROM
-                (SELECT COALESCE(array_agg(DISTINCT r ORDER BY r), '{}'::integer[])
-                 FROM unnest(o.reviewed_spectrum_ids) AS r)
-           ) AS flag
+           -- Every input is NOT NULL today; the COALESCE keeps the flag
+           -- assignable (needs_review is NOT NULL) should one ever go nullable.
+           COALESCE(
+             o.is_active
+             AND o.last_inspected_at IS NOT NULL
+             AND o.reviewed_spectrum_ids IS NOT NULL
+             AND COALESCE(o.redshift_quality, 0) BETWEEN 1 AND 3
+             AND COALESCE(c.ids, '{}'::integer[])
+                 IS DISTINCT FROM
+                 (SELECT COALESCE(array_agg(DISTINCT r ORDER BY r), '{}'::integer[])
+                  FROM unnest(o.reviewed_spectrum_ids) AS r),
+             false) AS flag
     FROM objects o
     JOIN ids ON ids.id = o.id
     LEFT JOIN current_members c ON c.id = o.id
@@ -172,6 +175,7 @@ CREATE OR REPLACE FUNCTION public.seed_reviewed_spectra (
   AS $function$
 DECLARE
   v_ids integer[];
+  v_badged_before integer[];
   v_seeded integer := 0;
   v_flipped integer := 0;
 BEGIN
@@ -199,6 +203,9 @@ BEGIN
                              'last_id', v_ids[cardinality(v_ids)]);
   END IF;
 
+  SELECT COALESCE(array_agg(id), '{}'::integer[]) INTO v_badged_before
+  FROM objects WHERE id = ANY(v_ids) AND needs_review;
+
   WITH upd AS (
     UPDATE objects o
     SET reviewed_spectrum_ids = COALESCE((
@@ -206,7 +213,6 @@ BEGIN
           FROM targets t
           JOIN spectra s ON s.target_id = t.target_id
           WHERE t.object_id = o.id
-            AND s.deploy_status = 'published'
             -- spectra.created_at is timestamp WITHOUT time zone, written by now()
             -- on a UTC server; compare it as UTC rather than via the session zone.
             AND (s.created_at AT TIME ZONE 'UTC') <= o.last_inspected_at
@@ -216,7 +222,14 @@ BEGIN
   )
   SELECT count(*) INTO v_seeded FROM upd;
 
-  v_flipped := public.recompute_needs_review(v_ids);
+  -- Belt and braces: the statement trigger above already recomputed.
+  PERFORM public.recompute_needs_review(v_ids);
+
+  SELECT count(*) INTO v_flipped
+  FROM objects o
+  WHERE o.id = ANY(v_ids)
+    AND o.needs_review IS DISTINCT FROM (o.id = ANY(v_badged_before));
+
   RETURN json_build_object('scanned', cardinality(v_ids), 'seeded', v_seeded, 'flipped', v_flipped,
                            'last_id', v_ids[cardinality(v_ids)]);
 END;

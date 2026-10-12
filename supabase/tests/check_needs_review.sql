@@ -49,6 +49,7 @@ DECLARE
   a integer := (SELECT a FROM _nr);
   b integer := (SELECT b FROM _nr);
   new_sid integer;
+  seed json;
 BEGIN
   -- 0. Never signed off: no badge, no reviewed set.
   IF pg_temp.nr_flag('ZZZ-NR-A') OR pg_temp.nr_reviewed('ZZZ-NR-A') IS NOT NULL THEN
@@ -129,11 +130,27 @@ BEGIN
   PERFORM set_config('request.jwt.claims', json_build_object('role', 'service_role')::text, true);
   IF (public.seed_reviewed_spectra(0, 10, ARRAY[a], true)->>'scanned')::int <> 1 THEN RAISE EXCEPTION 'seed dry run must count the pending object'; END IF;
   IF pg_temp.nr_reviewed('ZZZ-NR-A') IS NOT NULL THEN RAISE EXCEPTION 'seed dry run must write nothing'; END IF;
-  IF (public.seed_reviewed_spectra(0, 10, ARRAY[a])->>'seeded')::int <> 1 THEN RAISE EXCEPTION 'seed must fill one object'; END IF;
+  seed := public.seed_reviewed_spectra(0, 10, ARRAY[a]);
+  IF (seed->>'seeded')::int <> 1 THEN RAISE EXCEPTION 'seed must fill one object, got %', seed; END IF;
+  IF (seed->>'flipped')::int <> 1 THEN RAISE EXCEPTION 'seed must report the badge it raised (flipped = 1), got %', seed; END IF;
   IF NOT pg_temp.nr_flag('ZZZ-NR-A') THEN RAISE EXCEPTION 'seed: a member deployed after sign-off must badge'; END IF;
   IF cardinality(pg_temp.nr_reviewed('ZZZ-NR-A')) <> 3 THEN
     RAISE EXCEPTION 'seed must stamp only the members that existed at sign-off (expected 3), got %', pg_temp.nr_reviewed('ZZZ-NR-A');
   END IF;
+  -- Seed reconstruction ignores CURRENT status: a member that existed at
+  -- sign-off but was revoked since is in the reviewed set and now "left".
+  UPDATE objects SET reviewed_spectrum_ids = NULL, needs_review = false WHERE id = b;
+  UPDATE objects SET is_active = true, redshift_quality = 2 WHERE id = b;      -- q2, no members left (b1 moved to A)
+  UPDATE targets SET object_id = b WHERE target_id = 'zzz-nr-a2';              -- give B a member again
+  UPDATE objects SET last_inspected_at = clock_timestamp() WHERE id = b;       -- sign off with a2's two spectra
+  UPDATE objects SET reviewed_spectrum_ids = NULL WHERE id = b;                -- pretend the seed has not run
+  UPDATE spectra SET deploy_status = 'revoked' WHERE target_id = 'zzz-nr-a2' AND grating = 'G140M';
+  seed := public.seed_reviewed_spectra(0, 10, ARRAY[b]);
+  IF (seed->>'seeded')::int <> 1 THEN RAISE EXCEPTION 'seed (B) must fill one object, got %', seed; END IF;
+  IF cardinality(pg_temp.nr_reviewed('ZZZ-NR-B')) <> 2 THEN
+    RAISE EXCEPTION 'seed must include the member revoked after sign-off, got %', pg_temp.nr_reviewed('ZZZ-NR-B');
+  END IF;
+  IF NOT pg_temp.nr_flag('ZZZ-NR-B') THEN RAISE EXCEPTION 'seed: a reviewed member revoked since sign-off must badge'; END IF;
   -- Seeding is idempotent: a filled set is never overwritten.
   IF (public.seed_reviewed_spectra(0, 10, ARRAY[a])->>'last_id') IS NOT NULL THEN RAISE EXCEPTION 'seed must not revisit a filled set'; END IF;
 

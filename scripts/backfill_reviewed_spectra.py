@@ -5,11 +5,11 @@ decision D-P3-1).
 
 The server-side ``seed_reviewed_spectra()`` pages over the signed-off objects
 whose ``reviewed_spectrum_ids`` is still NULL and records, for each, the
-published member spectra that existed at sign-off (``created_at <=
-last_inspected_at``) as the set the inspector saw, then recomputes
-``needs_review``. A spectrum deployed after the inspector's last look is
-"unseen" and badges (46 objects in production on 2026-10-12); every other
-badge clears. Seeded objects are never revisited, so the script is resumable
+member spectra that existed at sign-off (``created_at <= last_inspected_at``,
+whatever their publication status is now) as the set the inspector saw, then
+recomputes ``needs_review``. A spectrum deployed after the inspector's last
+look is "unseen" and badges (46 objects in production on 2026-10-12), one
+revoked since the sign-off "left" and badges; every other badge clears. Seeded objects are never revisited, so the script is resumable
 and idempotent; ``--dry-run`` only counts.
 
 Only a flag flip bumps ``objects.updated_at``, so sync clients see just the

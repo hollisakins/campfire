@@ -6765,15 +6765,18 @@ BEGIN
   ),
   flags AS (
     SELECT o.id,
-           (o.is_active
-            AND o.last_inspected_at IS NOT NULL
-            AND o.reviewed_spectrum_ids IS NOT NULL
-            AND o.redshift_quality BETWEEN 1 AND 3
-            AND COALESCE(c.ids, '{}'::integer[])
-                IS DISTINCT FROM
-                (SELECT COALESCE(array_agg(DISTINCT r ORDER BY r), '{}'::integer[])
-                 FROM unnest(o.reviewed_spectrum_ids) AS r)
-           ) AS flag
+           -- Every input is NOT NULL today; the COALESCE keeps the flag
+           -- assignable (needs_review is NOT NULL) should one ever go nullable.
+           COALESCE(
+             o.is_active
+             AND o.last_inspected_at IS NOT NULL
+             AND o.reviewed_spectrum_ids IS NOT NULL
+             AND COALESCE(o.redshift_quality, 0) BETWEEN 1 AND 3
+             AND COALESCE(c.ids, '{}'::integer[])
+                 IS DISTINCT FROM
+                 (SELECT COALESCE(array_agg(DISTINCT r ORDER BY r), '{}'::integer[])
+                  FROM unnest(o.reviewed_spectrum_ids) AS r),
+             false) AS flag
     FROM objects o
     JOIN ids ON ids.id = o.id
     LEFT JOIN current_members c ON c.id = o.id
@@ -6800,10 +6803,15 @@ GRANT EXECUTE ON FUNCTION public.recompute_needs_review(integer[]) TO service_ro
 -- seed_reviewed_spectra: one-time seeding (D-P3-1), paged server-side and
 -- driven by scripts/backfill_reviewed_spectra.py. Pending = signed off with a
 -- NULL reviewed set. For each pending object the reviewed set becomes the
--- published members whose spectrum row existed at sign-off
--- (created_at <= last_inspected_at), so a spectrum deployed after the
--- inspector's last look is "unseen" and badges (46 objects in production on
--- 2026-10-12) and everything else clears; then the flag is recomputed.
+-- member spectra whose row existed at sign-off (created_at <=
+-- last_inspected_at), whatever their publication status is NOW: a spectrum
+-- deployed after the inspector's last look is "unseen" and badges (46 objects
+-- in production on 2026-10-12), one revoked since the sign-off "left" and
+-- badges, and everything else clears. (The row's status at sign-off is not
+-- recorded anywhere, so existence is the best reconstruction; in production
+-- every spectrum is published, so the seed is exact today.) The stamping
+-- UPDATE fires the objects statement trigger, which recomputes the flag; the
+-- flip count is measured around it.
 --   p_after_id / p_limit : keyset page over pending ids (resumable);
 --   p_object_ids         : restrict to these ids (tests);
 --   p_dry_run            : count the pending ids in the page, write nothing.
@@ -6821,6 +6829,7 @@ SET search_path = public
 AS $$
 DECLARE
   v_ids integer[];
+  v_badged_before integer[];
   v_seeded integer := 0;
   v_flipped integer := 0;
 BEGIN
@@ -6848,6 +6857,9 @@ BEGIN
                              'last_id', v_ids[cardinality(v_ids)]);
   END IF;
 
+  SELECT COALESCE(array_agg(id), '{}'::integer[]) INTO v_badged_before
+  FROM objects WHERE id = ANY(v_ids) AND needs_review;
+
   WITH upd AS (
     UPDATE objects o
     SET reviewed_spectrum_ids = COALESCE((
@@ -6855,7 +6867,6 @@ BEGIN
           FROM targets t
           JOIN spectra s ON s.target_id = t.target_id
           WHERE t.object_id = o.id
-            AND s.deploy_status = 'published'
             -- spectra.created_at is timestamp WITHOUT time zone, written by now()
             -- on a UTC server; compare it as UTC rather than via the session zone.
             AND (s.created_at AT TIME ZONE 'UTC') <= o.last_inspected_at
@@ -6865,7 +6876,14 @@ BEGIN
   )
   SELECT count(*) INTO v_seeded FROM upd;
 
-  v_flipped := public.recompute_needs_review(v_ids);
+  -- Belt and braces: the statement trigger above already recomputed.
+  PERFORM public.recompute_needs_review(v_ids);
+
+  SELECT count(*) INTO v_flipped
+  FROM objects o
+  WHERE o.id = ANY(v_ids)
+    AND o.needs_review IS DISTINCT FROM (o.id = ANY(v_badged_before));
+
   RETURN json_build_object('scanned', cardinality(v_ids), 'seeded', v_seeded, 'flipped', v_flipped,
                            'last_id', v_ids[cardinality(v_ids)]);
 END;
