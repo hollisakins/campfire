@@ -56,7 +56,9 @@ export interface ResolvedObject {
    * as unix seconds; bumps on every re-deploy, after the bytes landed. The
    * delivery front binds it into the object token so the Worker can tell an
    * in-place overwrite (upstream Last-Modified newer than this) from the
-   * bytes the hash names. null when the key has no active row. */
+   * bytes the hash names. For an archive row (root = 'archive', write-once)
+   * it is archived_at, stamped after the server-side copy completed. null
+   * when the key has no active / archived row. */
   registeredAt: number | null;
 }
 
@@ -168,15 +170,19 @@ export async function resolveObjectBackends(keys: string[]): Promise<ResolvedObj
         chunks.map((chunk) =>
           supabase
             .from('storage_objects')
-            .select('storage_key, backend, content_hash, updated_at')
+            .select('storage_key, backend, content_hash, updated_at, root, archived_at')
             .in('storage_key', chunk)
-            .eq('status', 'active'),
+            // live pointers and retained copies; never 'collected' (no bytes)
+            .in('status', ['active', 'archived']),
         ),
       );
       for (const { data, error } of results) {
         if (error) throw error;
         for (const row of data ?? []) {
-          const registeredMs = row.updated_at ? Date.parse(String(row.updated_at)) : NaN;
+          // An archive object is registered when its copy completed
+          // (archived_at); a live one when its row was last upserted.
+          const stamp = row.root === 'archive' ? row.archived_at : row.updated_at;
+          const registeredMs = stamp ? Date.parse(String(stamp)) : NaN;
           const entry: RegistryEntry = {
             backend: row.backend as DataBackend,
             contentHash: String(row.content_hash),
