@@ -7480,12 +7480,22 @@ DECLARE
   v_has_sh_storage boolean;
   v_sh_spectra bigint;
   v_sh_storage bigint;
+  v_releases jsonb;
 BEGIN
   SELECT COALESCE(up.is_admin, false) INTO v_is_admin
   FROM user_profiles up WHERE up.user_id = auth.uid();
   IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
     RAISE EXCEPTION 'Access denied: Admin privileges required';
   END IF;
+
+  -- 0. data releases (P4a): every tag, newest first.
+  SELECT COALESCE(jsonb_agg(jsonb_build_object(
+      'tag', r.tag, 'state', r.state, 'components', r.components,
+      'frozen_at', r.frozen_at, 'published_at', r.published_at,
+      'withdrawn_at', r.withdrawn_at, 'counts', r.counts, 'error', r.error)
+    ORDER BY r.created_at DESC), '[]'::jsonb)
+  INTO v_releases
+  FROM dr_releases r;
 
   -- 1. published spectra: one pass, grouped on the three keys we need.
   WITH po AS MATERIALIZED (
@@ -7637,6 +7647,7 @@ BEGIN
       'spectra', v_spectra_status->'revoked',
       'deployments', v_deployments->'revoked'),
     'leases', v_leases,
+    'releases', v_releases,
     'redrafted_nircam_fields', v_redrafted,
     'dangling_registry_rows', v_dangling,
     'etag_hash_rows', v_etag,
@@ -7649,7 +7660,7 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_readiness() IS 'Data-release readiness report (P1): published cfpipe_version mix, drafts/revoked, live deploy leases, re-drafted NIRCam fields, dangling nirspec_spec registry rows, etag: hashes, line-fit staleness, needs-review / implicit-pin counts, science_hash coverage. Admin or service_role; printed by `campfire dr status`.';
+COMMENT ON FUNCTION public.dr_readiness() IS 'Data-release readiness report (P1): published cfpipe_version mix, drafts/revoked, live deploy leases, re-drafted NIRCam fields, dangling nirspec_spec registry rows, etag: hashes, line-fit staleness, needs-review / implicit-pin counts, science_hash coverage, and the data releases (P4a). Admin or service_role; printed by `campfire dr status`.';
 
 REVOKE ALL ON FUNCTION public.dr_readiness() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_readiness() TO authenticated, service_role;
@@ -8686,6 +8697,550 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.sync_photometry_to_objects(TEXT) TO service_role;
 
+
+-- =============================================================================
+-- Data releases: freeze core (P4a, docs/design-data-releases-impl-plan.md §6)
+-- =============================================================================
+-- Four pieces:
+--   dr_visible_tags()        the RLS helper: tags the caller may read
+--                            (published, or every state for admins);
+--   dr_enqueue_freeze()      the admin entry point `campfire dr freeze` calls
+--                            through PostgREST: validates tag + components,
+--                            refuses while a deploy lease is live or the tag is
+--                            published, writes the row in state `freezing` and
+--                            hands the work to a one-shot pg_cron job
+--                            (decision D-P4-1: no HTTP timeout in the path) --
+--                            or runs it inline where pg_cron is absent or when
+--                            asked (local stacks, tests, the seed);
+--   dr_freeze_job()          the freeze itself: ONE statement of data-modifying
+--                            CTEs, so every frozen table is written from the
+--                            same snapshot (the sub-statements of a WITH share
+--                            it), then the row is marked frozen with counts,
+--                            the snapshot xmin and the duration; any error
+--                            lands in state `failed` + error text, never in
+--                            a half-written DR (the statement is atomic and
+--                            the partial rows of a retried freeze are deleted
+--                            first);
+--   dr_purge_release()       deletes an UNPUBLISHED release and its rows (the
+--                            shadow-run clean-up; the published → withdrawn
+--                            path is P4d).
+-- The frozen tables take no FK to live rows; `published` is the only state
+-- the freeze reads (drafts are excluded by construction).
+
+CREATE OR REPLACE FUNCTION public.dr_visible_tags()
+RETURNS text[]
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT COALESCE(array_agg(r.tag), '{}'::text[])
+  FROM dr_releases r
+  WHERE r.state = 'published' OR (SELECT public.is_admin());
+$$;
+
+COMMENT ON FUNCTION public.dr_visible_tags() IS 'Data-release tags the caller may read: published ones for everyone (link accounts are excluded by the policies themselves), every state for admins. Uncorrelated in the dr_* policies so it is evaluated once per query.';
+
+REVOKE ALL ON FUNCTION public.dr_visible_tags() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_visible_tags() TO authenticated, service_role;
+
+
+-- Admin-or-service guard shared by the dr_* entry points. The freeze job
+-- itself also accepts the cron runner (session_user postgres), see below.
+CREATE OR REPLACE FUNCTION public.dr_require_admin()
+RETURNS void
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_is_admin boolean;
+BEGIN
+  SELECT COALESCE(up.is_admin, false) INTO v_is_admin
+  FROM user_profiles up WHERE up.user_id = auth.uid();
+  IF NOT (COALESCE(v_is_admin, false) OR COALESCE(auth.role(), '') = 'service_role') THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.dr_require_admin() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_require_admin() TO authenticated, service_role;
+
+
+-- Drop the one-shot cron job of a tag if pg_cron is present and the job
+-- exists. Dynamic SQL throughout: the cron schema does not exist on every
+-- environment the schema loads into (native local stack, preview branches).
+CREATE OR REPLACE FUNCTION public.dr_cron_unschedule(p_tag text)
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_job text := 'dr-freeze-' || p_tag;
+  v_exists boolean;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+    RETURN;
+  END IF;
+  EXECUTE 'SELECT EXISTS (SELECT 1 FROM cron.job WHERE jobname = $1)' INTO v_exists USING v_job;
+  IF v_exists THEN
+    EXECUTE 'SELECT cron.unschedule($1)' USING v_job;
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.dr_cron_unschedule(text) FROM PUBLIC, anon, authenticated;
+
+
+-- Validate a components array and return its parts. Raises on anything it
+-- does not recognise, on a NIRCam field without published mosaics and on a
+-- photometry (field, catalog) with no rows.
+CREATE OR REPLACE FUNCTION public.dr_parse_components(p_components jsonb,
+                                                       OUT nirspec boolean,
+                                                       OUT fields text[],
+                                                       OUT photometry text[])
+LANGUAGE plpgsql STABLE
+SET search_path = public
+AS $$
+DECLARE
+  c text;
+  v_field text;
+  v_catalog text;
+BEGIN
+  nirspec := false; fields := '{}'; photometry := '{}';
+  IF p_components IS NULL OR jsonb_typeof(p_components) <> 'array' OR jsonb_array_length(p_components) = 0 THEN
+    RAISE EXCEPTION 'components must be a non-empty JSON array of "nirspec", "nircam/<field>", "photometry/<field>/<catalog_name>"';
+  END IF;
+  FOR c IN SELECT jsonb_array_elements_text(p_components) LOOP
+    IF c = 'nirspec' THEN
+      nirspec := true;
+    ELSIF c LIKE 'nircam/%' THEN
+      v_field := substr(c, 8);
+      IF NOT EXISTS (SELECT 1 FROM nircam_images ni WHERE ni.field = v_field AND ni.deploy_status = 'published') THEN
+        RAISE EXCEPTION 'component %: no published NIRCam images for field %', c, v_field;
+      END IF;
+      fields := array_append(fields, v_field);
+    ELSIF c LIKE 'photometry/%/%' THEN
+      v_field := split_part(substr(c, 12), '/', 1);
+      v_catalog := substr(substr(c, 12), length(v_field) + 2);
+      IF NOT EXISTS (SELECT 1 FROM object_photometry op WHERE op.field = v_field AND op.catalog_name = v_catalog) THEN
+        RAISE EXCEPTION 'component %: no photometry rows for field % catalog %', c, v_field, v_catalog;
+      END IF;
+      photometry := array_append(photometry, v_field || '/' || v_catalog);
+    ELSE
+      RAISE EXCEPTION 'unknown component %', c;
+    END IF;
+  END LOOP;
+  SELECT array_agg(DISTINCT f ORDER BY f) INTO fields FROM unnest(fields) f;
+  SELECT array_agg(DISTINCT f ORDER BY f) INTO photometry FROM unnest(photometry) f;
+  fields := COALESCE(fields, '{}'); photometry := COALESCE(photometry, '{}');
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.dr_parse_components(jsonb) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_parse_components(jsonb) TO authenticated, service_role;
+
+
+-- The freeze. Runs as postgres (pg_cron / seed / inline from
+-- dr_enqueue_freeze, which is SECURITY DEFINER). Idempotent per tag: partial
+-- rows of the tag are deleted before the one-statement rewrite, so a killed or
+-- failed freeze converges on re-run (same rows, same hashes for the same
+-- snapshot of live).
+CREATE OR REPLACE FUNCTION public.dr_freeze_job(p_tag text)
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+-- A whole-catalog freeze is a few minutes on the Small instance (measured on
+-- the production-shaped scale DB; see the P4a PR); never run it under the role
+-- default.
+SET statement_timeout = '900s'
+SET lock_timeout = '30s'
+AS $$
+DECLARE
+  r dr_releases%ROWTYPE;
+  comp record;
+  v_t0 timestamptz := clock_timestamp();
+  v_n_spectra bigint; v_n_objects bigint; v_n_lines bigint; v_n_phot bigint; v_n_members bigint;
+  v_xmin bigint;
+  v_err text;
+BEGIN
+  -- Only the cron runner / seed (postgres) or an admin / service caller.
+  IF NOT (session_user = 'postgres' OR current_user = 'postgres'
+          OR COALESCE(auth.role(), '') = 'service_role'
+          OR (SELECT public.is_admin())) THEN
+    RAISE EXCEPTION 'Access denied: Admin privileges required';
+  END IF;
+
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'dr_freeze_job: no release %', p_tag;
+  END IF;
+  IF r.state <> 'freezing' THEN
+    RAISE EXCEPTION 'dr_freeze_job: release % is in state % (expected freezing)', p_tag, r.state;
+  END IF;
+
+  BEGIN
+    SELECT * INTO comp FROM dr_parse_components(r.components);
+
+    -- Partial rows of a previous attempt under this tag.
+    DELETE FROM dr_members    WHERE tag = p_tag;
+    DELETE FROM dr_line_fits  WHERE tag = p_tag;
+    DELETE FROM dr_photometry WHERE tag = p_tag;
+    DELETE FROM dr_spectra    WHERE tag = p_tag;
+    DELETE FROM dr_objects    WHERE tag = p_tag;
+    DELETE FROM dr_exports    WHERE tag = p_tag;
+
+    -- ONE statement: every sub-statement sees the same snapshot.
+    WITH
+    pub AS MATERIALIZED (
+      -- Published spectra (nirspec component) with the active object they
+      -- roll up to (NULL while a target has no active object).
+      SELECT s.id, s.spectrum_id, s.program_slug, s.observation, s.grating, s.target_id,
+             o.id AS obj_id, s.fits_path, s.file_hash, s.science_hash, s.file_size,
+             s.exposure_time, s.signal_to_noise, s.cfpipe_version, s.crds_context,
+             s.jwst_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min,
+             s.confidence, s.dq_flags,
+             CASE s.grating
+               WHEN 'PRISM' THEN 0 WHEN 'G395M' THEN 1 WHEN 'G395H' THEN 2
+               WHEN 'G235M' THEN 3 WHEN 'G235H' THEN 4 WHEN 'G140M' THEN 5
+               WHEN 'G140H' THEN 6 ELSE 7 END AS prio
+      FROM spectra s
+      JOIN targets t ON t.target_id = s.target_id
+      LEFT JOIN objects o ON o.id = t.object_id AND o.is_active
+      WHERE comp.nirspec AND s.deploy_status = 'published'
+    ),
+    ev AS (
+      -- Evidence programs per object: the programs of its published members.
+      SELECT p.obj_id, array_agg(DISTINCT p.program_slug ORDER BY p.program_slug) AS programs
+      FROM pub p WHERE p.obj_id IS NOT NULL GROUP BY p.obj_id
+    ),
+    -- Auto-redshift source: the compute_object_redshift_auto rule, set-based.
+    m AS (
+      SELECT p.obj_id, p.id, p.redshift_auto AS z, p.exposure_time, p.prio
+      FROM pub p WHERE p.obj_id IS NOT NULL AND p.redshift_auto IS NOT NULL
+    ),
+    pz AS (
+      SELECT DISTINCT ON (obj_id) obj_id, z AS prism_z FROM m WHERE prio = 0
+      ORDER BY obj_id, exposure_time DESC NULLS LAST, id
+    ),
+    base AS (
+      SELECT DISTINCT ON (obj_id) obj_id, id FROM m
+      ORDER BY obj_id, prio, exposure_time DESC NULLS LAST, id
+    ),
+    refined AS (
+      SELECT DISTINCT ON (m.obj_id) m.obj_id, m.id
+      FROM m JOIN pz ON pz.obj_id = m.obj_id
+      WHERE m.prio BETWEEN 1 AND 6 AND abs(m.z - pz.prism_z) / (1.0 + pz.prism_z) < 0.01
+      ORDER BY m.obj_id, m.prio, m.exposure_time DESC NULLS LAST, m.id
+    ),
+    zsrc AS (
+      SELECT b.obj_id, COALESCE(rf.id, b.id) AS id FROM base b LEFT JOIN refined rf ON rf.obj_id = b.obj_id
+    ),
+    objs AS MATERIALIZED (
+      SELECT o.*, ev.programs AS evidence_programs, zsrc.id AS z_source_spectrum_id
+      FROM objects o
+      JOIN ev ON ev.obj_id = o.id
+      LEFT JOIN zsrc ON zsrc.obj_id = o.id
+    ),
+    ins_spectra AS (
+      INSERT INTO dr_spectra (tag, spectrum_id, id, program_slug, observation, grating, target_id,
+                              object_id, fits_path, file_hash, science_hash, file_size, exposure_time,
+                              signal_to_noise, cfpipe_version, crds_context, jwst_version, date_obs,
+                              reduced_at, redshift_auto, chi2_min, confidence, dq_flags)
+      SELECT p_tag, p.spectrum_id, p.id, p.program_slug, p.observation, p.grating, p.target_id,
+             p.obj_id, p.fits_path, p.file_hash, p.science_hash, p.file_size, p.exposure_time,
+             p.signal_to_noise, p.cfpipe_version, p.crds_context, p.jwst_version, p.date_obs,
+             p.reduced_at, p.redshift_auto, p.chi2_min, p.confidence, p.dq_flags
+      FROM pub p
+      RETURNING 1
+    ),
+    ins_objects AS (
+      INSERT INTO dr_objects (tag, object_id, name, field, ra, dec, programs, evidence_programs,
+                              observations, gratings, n_targets, n_spectra, max_snr, max_exposure_time,
+                              photo_z, photo_z_err_lo, photo_z_err_hi, has_photometry,
+                              z_source_spectrum_id, redshift_auto, redshift_inspected, redshift,
+                              redshift_quality, inspected_used_auto, last_inspected_at,
+                              last_inspected_by, version, review_state)
+      SELECT p_tag, o.id, o.object_id, o.field, o.ra, o.dec, o.programs, o.evidence_programs,
+             o.observations, o.gratings, o.n_targets, o.n_spectra, o.max_snr, o.max_exposure_time,
+             o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi, o.has_photometry,
+             o.z_source_spectrum_id, o.redshift_auto, o.redshift_inspected, o.redshift,
+             o.redshift_quality, o.inspected_used_auto, o.last_inspected_at,
+             o.last_inspected_by, o.version,
+             jsonb_build_object('needs_review', o.needs_review,
+                                'reviewed_spectrum_ids', o.reviewed_spectrum_ids)
+      FROM objs o
+      RETURNING 1
+    ),
+    ins_lines AS (
+      INSERT INTO dr_line_fits (tag, spectrum_id, target_id, grating, program_slug, observation,
+                                object_id, object_version, z_used, z_source, z_quality, z_fit,
+                                z_fit_err, dv, dv_err, sigma_v, sigma_v_err, kin_source, n_lines,
+                                n_detected, n_broad, chi2, dof, lines, fit_version, cfpipe_version,
+                                f_lsf, spectrum_hash, spectrum_science_hash, fitted_at,
+                                stale_redshift, stale_spectrum)
+      SELECT p_tag, f.spectrum_id, f.target_id, f.grating, f.program_slug, f.observation,
+             f.object_id, f.object_version, f.z_used, f.z_source, f.z_quality, f.z_fit,
+             f.z_fit_err, f.dv, f.dv_err, f.sigma_v, f.sigma_v_err, f.kin_source, f.n_lines,
+             f.n_detected, f.n_broad, f.chi2, f.dof, f.lines, f.fit_version, f.cfpipe_version,
+             f.f_lsf, f.spectrum_hash, f.spectrum_science_hash, f.fitted_at,
+             -- the spectrum_line_fits_status predicates, in this snapshot
+             (o.id IS NOT NULL AND line_fit_stale_redshift(o.version, o.redshift_quality,
+                 o.redshift::double precision, f.object_version, f.z_quality, f.z_used)),
+             line_fit_stale_spectrum(p.file_hash, p.science_hash, f.spectrum_hash, f.spectrum_science_hash)
+      FROM spectrum_line_fits f
+      JOIN pub p ON p.id = f.spectrum_id
+      LEFT JOIN objs o ON o.id = p.obj_id
+      RETURNING 1
+    ),
+    ins_phot AS (
+      INSERT INTO dr_photometry (tag, photometry_id, object_id, programs, field, catalog_name,
+                                 catalog_id, ra, dec, match_distance_arcsec, photometry, photo_z,
+                                 photo_z_err_lo, photo_z_err_hi, has_pz)
+      SELECT p_tag, ph.id, ph.object_id, o.programs, ph.field, ph.catalog_name, ph.catalog_id,
+             ph.ra, ph.dec, ph.match_distance_arcsec, ph.photometry, ph.photo_z,
+             ph.photo_z_err_lo, ph.photo_z_err_hi, ph.has_pz
+      FROM object_photometry ph
+      JOIN objs o ON o.id = ph.object_id
+      WHERE (ph.field || '/' || ph.catalog_name) = ANY (comp.photometry)
+      RETURNING 1
+    ),
+    ins_members AS (
+      INSERT INTO dr_members (tag, storage_key, component, program_slug, field, product_type,
+                              spectrum_id, backend, bucket, content_hash, science_hash, size_bytes,
+                              registry_id)
+      -- NIRSpec finals + the sidecars registered with a spectrum_id, joined
+      -- FROM the published spectra.
+      SELECT p_tag, so.storage_key, 'nirspec', p.program_slug, NULL, so.product_type,
+             p.spectrum_id, so.backend, so.bucket, so.content_hash, so.science_hash,
+             so.size_bytes, so.id
+      FROM pub p
+      JOIN storage_objects so ON so.spectrum_id = p.spectrum_id
+      WHERE so.root = 'live' AND so.status = 'active'
+        AND so.product_type IN ('nirspec_spec', 'spectrum_json', 'spectrum_1d_json', 'zfit',
+                                'nirspec_lines', 'nirspec_lines_json')
+      UNION ALL
+      -- The zfit / line-fit sidecars deploy registered WITHOUT a spectrum_id
+      -- (every zfit, nirspec_lines and nirspec_lines_json row in production on
+      -- 2026-10-12): the layout puts them next to the spectrum under the same
+      -- base name (<base>_spec.fits -> <base>_zfit.json, _lines.fits,
+      -- _lines.json), so derive the key from the spectrum's registry row.
+      SELECT p_tag, so.storage_key, 'nirspec', c.program_slug, NULL, so.product_type,
+             c.spectrum_id, so.backend, so.bucket, so.content_hash, so.science_hash,
+             so.size_bytes, so.id
+      FROM (
+        SELECT p.spectrum_id, p.program_slug, p.observation,
+               regexp_replace(spec.storage_key, '_spec\.fits$', '') || sfx AS key
+        FROM pub p
+        JOIN storage_objects spec ON spec.spectrum_id = p.spectrum_id
+                                 AND spec.product_type = 'nirspec_spec'
+                                 AND spec.root = 'live' AND spec.status = 'active'
+        CROSS JOIN unnest(ARRAY['_zfit.json', '_lines.fits', '_lines.json']) AS sfx
+      ) c
+      JOIN storage_objects so ON so.storage_key = c.key
+      WHERE so.spectrum_id IS NULL AND so.root = 'live' AND so.status = 'active'
+        AND so.product_type IN ('zfit', 'nirspec_lines', 'nirspec_lines_json')
+        AND so.observation IS NOT DISTINCT FROM c.observation
+      UNION ALL
+      -- Published mosaics of each NIRCam field component, joined FROM nircam_images.
+      SELECT p_tag, so.storage_key, 'nircam/' || ni.field, NULL, ni.field, so.product_type,
+             NULL, so.backend, so.bucket, so.content_hash, so.science_hash, so.size_bytes, so.id
+      FROM nircam_images ni
+      JOIN storage_objects so ON so.storage_key = ni.file_path
+      WHERE ni.deploy_status = 'published' AND ni.field = ANY (comp.fields)
+        AND so.root = 'live' AND so.status = 'active'
+      UNION ALL
+      -- P(z) sidecars of each photometry component's field.
+      SELECT p_tag, so.storage_key, 'photometry/' || pc.c, NULL, so.field, so.product_type,
+             NULL, so.backend, so.bucket, so.content_hash, so.science_hash, so.size_bytes, so.id
+      FROM unnest(comp.photometry) AS pc(c)
+      JOIN storage_objects so ON so.field = split_part(pc.c, '/', 1)
+      WHERE so.product_type = 'photometry_pz' AND so.root = 'live' AND so.status = 'active'
+      ON CONFLICT (tag, storage_key) DO NOTHING
+      RETURNING 1
+    )
+    SELECT (SELECT count(*) FROM ins_spectra), (SELECT count(*) FROM ins_objects),
+           (SELECT count(*) FROM ins_lines), (SELECT count(*) FROM ins_phot),
+           (SELECT count(*) FROM ins_members),
+           pg_snapshot_xmin(pg_current_snapshot())::text::bigint
+      INTO v_n_spectra, v_n_objects, v_n_lines, v_n_phot, v_n_members, v_xmin;
+
+    UPDATE dr_releases
+       SET state = 'frozen',
+           frozen_at = now(),
+           frozen_by = COALESCE(auth.uid(), created_by),
+           freeze_duration_ms = (extract(epoch FROM clock_timestamp() - v_t0) * 1000)::int,
+           snapshot_xmin = v_xmin,
+           counts = jsonb_build_object(
+             'spectra', v_n_spectra, 'objects', v_n_objects, 'line_fits', v_n_lines,
+             'photometry', v_n_phot, 'members', v_n_members,
+             'nircam_fields', to_jsonb(comp.fields), 'photometry_components', to_jsonb(comp.photometry)),
+           error = NULL,
+           updated_at = now()
+     WHERE tag = p_tag;
+
+    -- Directly (log_deploy_event needs an auth uid; the cron runner has none).
+    INSERT INTO deploy_events (actor, action, affected_count, metadata)
+    VALUES (COALESCE(auth.uid(), r.created_by), 'freeze', v_n_spectra::int,
+            jsonb_build_object('dr_tag', p_tag, 'components', r.components,
+                               'counts', jsonb_build_object('spectra', v_n_spectra, 'objects', v_n_objects,
+                                 'line_fits', v_n_lines, 'photometry', v_n_phot, 'members', v_n_members),
+                               'duration_ms', (extract(epoch FROM clock_timestamp() - v_t0) * 1000)::int));
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
+    -- The block's writes are rolled back; record the failure on the row.
+    UPDATE dr_releases
+       SET state = 'failed', error = left(v_err, 2000), updated_at = now()
+     WHERE tag = p_tag;
+  END;
+
+  PERFORM dr_cron_unschedule(p_tag);
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_freeze_job(text) IS 'Data-release freeze (P4a): rewrites the six frozen tables of an UNPUBLISHED tag in one statement (one snapshot) from the published live rows, then marks the row frozen with counts, snapshot xmin and duration; any error lands in state failed with the message. Runs as postgres from the one-shot pg_cron job dr_enqueue_freeze schedules, inline where pg_cron is absent, and from the seed. Idempotent per tag.';
+
+REVOKE ALL ON FUNCTION public.dr_freeze_job(text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.dr_freeze_job(text) TO service_role;
+
+
+-- `campfire dr freeze`: validate, refuse unsafe starts, write the row, hand off.
+CREATE OR REPLACE FUNCTION public.dr_enqueue_freeze(
+  p_tag text,
+  p_components jsonb,
+  p_notes text DEFAULT NULL,
+  p_inline boolean DEFAULT false
+)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+-- The inline path runs the whole freeze under this call (local stacks / tests
+-- / small catalogs); production hands off to pg_cron within milliseconds.
+SET statement_timeout = '900s'
+AS $$
+DECLARE
+  r dr_releases%ROWTYPE;
+  comp record;
+  v_job text := 'dr-freeze-' || p_tag;
+  v_mode text;
+  v_at timestamp;
+  v_sched text;
+  v_tz text;
+BEGIN
+  PERFORM dr_require_admin();
+
+  IF p_tag IS NULL OR p_tag !~ '^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$' THEN
+    RAISE EXCEPTION 'invalid tag % (letters, digits, ., _ and -; 2-64 characters)', p_tag;
+  END IF;
+  SELECT * INTO comp FROM dr_parse_components(p_components);
+
+  -- A deploy in flight would make the frozen rows depend on when the
+  -- statement started relative to its upserts; readiness refuses to begin.
+  IF EXISTS (SELECT 1 FROM deploy_scope_state d
+              WHERE d.in_progress_since IS NOT NULL
+                AND COALESCE(d.heartbeat_at, d.in_progress_since) >= now() - deploy_lease_ttl()) THEN
+    RAISE EXCEPTION 'a deploy is in progress (live deploy lease); wait for it to finish or release it (campfire dr status lists leases)';
+  END IF;
+
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF FOUND THEN
+    IF r.state IN ('published', 'withdrawn') THEN
+      RAISE EXCEPTION 'release % is %; a DR is immutable once published (make a new tag)', p_tag, r.state;
+    ELSIF r.state = 'freezing' AND r.freeze_started_at > now() - interval '1 hour' THEN
+      RAISE EXCEPTION 'release % is already freezing (started %)', p_tag, r.freeze_started_at;
+    ELSIF r.state IN ('exporting', 'exported', 'copying', 'ready') THEN
+      RAISE EXCEPTION 'release % already has exports or archive bytes (state %); purge it first (campfire dr purge %)', p_tag, r.state, p_tag;
+    END IF;
+    UPDATE dr_releases
+       SET state = 'freezing', components = p_components, notes = COALESCE(p_notes, notes),
+           created_by = COALESCE(created_by, auth.uid()),
+           freeze_started_at = now(), frozen_at = NULL, frozen_by = NULL,
+           freeze_duration_ms = NULL, snapshot_xmin = NULL, counts = '{}'::jsonb,
+           error = NULL, updated_at = now()
+     WHERE tag = p_tag;
+  ELSE
+    INSERT INTO dr_releases (tag, state, components, notes, created_by, freeze_started_at)
+    VALUES (p_tag, 'freezing', p_components, p_notes, auth.uid(), now());
+  END IF;
+
+  IF NOT p_inline AND EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+    -- One-shot: a crontab for the next minute (pg_cron has no "run once");
+    -- dr_freeze_job unschedules it on both the success and the failure path.
+    v_tz := COALESCE(NULLIF(current_setting('cron.timezone', true), ''), 'GMT');
+    v_at := (now() AT TIME ZONE v_tz) + interval '1 minute';
+    v_sched := format('%s %s %s %s *', extract(minute FROM v_at)::int, extract(hour FROM v_at)::int,
+                      extract(day FROM v_at)::int, extract(month FROM v_at)::int);
+    PERFORM dr_cron_unschedule(p_tag);
+    EXECUTE 'SELECT cron.schedule($1, $2, $3)'
+      USING v_job, v_sched, format('SELECT public.dr_freeze_job(%L)', p_tag);
+    v_mode := 'cron';
+  ELSE
+    PERFORM dr_freeze_job(p_tag);
+    v_mode := 'inline';
+  END IF;
+
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag;
+  RETURN jsonb_build_object('tag', r.tag, 'state', r.state, 'mode', v_mode,
+                            'components', r.components, 'counts', r.counts, 'error', r.error,
+                            'freeze_started_at', r.freeze_started_at, 'frozen_at', r.frozen_at,
+                            'freeze_duration_ms', r.freeze_duration_ms);
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_enqueue_freeze(text, jsonb, text, boolean) IS 'Start a data-release freeze (P4a; `campfire dr freeze`). Admin or service_role. Validates the tag and components, refuses while a deploy lease is live or the tag is published, writes the dr_releases row in state freezing and schedules a one-shot pg_cron job for dr_freeze_job (D-P4-1); runs it inline where pg_cron is absent or when p_inline. Returns the row summary.';
+
+REVOKE ALL ON FUNCTION public.dr_enqueue_freeze(text, jsonb, text, boolean) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_enqueue_freeze(text, jsonb, text, boolean) TO authenticated, service_role;
+
+
+-- `campfire dr purge <tag>`: delete an unpublished release and every frozen
+-- row under it (the rehearsal DR after its shadow run, a failed attempt).
+CREATE OR REPLACE FUNCTION public.dr_purge_release(p_tag text)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+SET statement_timeout = '300s'
+AS $$
+DECLARE
+  r dr_releases%ROWTYPE;
+  n_members bigint; n_lines bigint; n_phot bigint; n_spectra bigint; n_objects bigint; n_exports bigint;
+BEGIN
+  PERFORM dr_require_admin();
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'no release %', p_tag;
+  END IF;
+  IF r.state IN ('published', 'withdrawn') THEN
+    RAISE EXCEPTION 'release % is %; a published DR is never purged (withdraw hides it, bytes stay)', p_tag, r.state;
+  END IF;
+  IF r.state = 'freezing' AND r.freeze_started_at > now() - interval '1 hour' THEN
+    RAISE EXCEPTION 'release % is freezing (started %); wait for it to finish or fail', p_tag, r.freeze_started_at;
+  END IF;
+  PERFORM dr_cron_unschedule(p_tag);
+  DELETE FROM dr_members    WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
+  DELETE FROM dr_line_fits  WHERE tag = p_tag; GET DIAGNOSTICS n_lines = ROW_COUNT;
+  DELETE FROM dr_photometry WHERE tag = p_tag; GET DIAGNOSTICS n_phot = ROW_COUNT;
+  DELETE FROM dr_spectra    WHERE tag = p_tag; GET DIAGNOSTICS n_spectra = ROW_COUNT;
+  DELETE FROM dr_objects    WHERE tag = p_tag; GET DIAGNOSTICS n_objects = ROW_COUNT;
+  DELETE FROM dr_exports    WHERE tag = p_tag; GET DIAGNOSTICS n_exports = ROW_COUNT;
+  DELETE FROM dr_releases   WHERE tag = p_tag;
+  INSERT INTO deploy_events (actor, action, affected_count, metadata)
+  VALUES (auth.uid(), 'delete', n_spectra::int,
+          jsonb_build_object('dr_tag', p_tag, 'purge', true, 'state_before', r.state,
+                             'rows', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
+                               'line_fits', n_lines, 'photometry', n_phot, 'members', n_members,
+                               'exports', n_exports)));
+  RETURN jsonb_build_object('tag', p_tag, 'state_before', r.state,
+                            'deleted', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
+                              'line_fits', n_lines, 'photometry', n_phot, 'members', n_members,
+                              'exports', n_exports));
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_purge_release(text) IS 'Delete an UNPUBLISHED data release and all its frozen rows (P4a; `campfire dr purge`). Admin or service_role. Refuses published / withdrawn tags and a freeze that is still running. Archive bytes already copied for the tag are left in place (dedup by hash; gc is the retention path).';
+
+REVOKE ALL ON FUNCTION public.dr_purge_release(text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_purge_release(text) TO authenticated, service_role;
+
+
 -- ===========================================================================
 -- Privilege hardening (P-1): no PUBLIC / anon EXECUTE on any function
 -- Postgres grants EXECUTE to PUBLIC on every new function, and the schema's
@@ -8795,3 +9350,10 @@ REVOKE ALL ON FUNCTION public.update_api_key_last_used(key_hash_input text) FROM
 REVOKE ALL ON FUNCTION public.validate_api_key(key_hash_input text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.validate_refresh_token(p_token_hash text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.viewable_list_ids() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_visible_tags() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_require_admin() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_cron_unschedule(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_parse_components(p_components jsonb) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_freeze_job(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_enqueue_freeze(p_tag text, p_components jsonb, p_notes text, p_inline boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_purge_release(p_tag text) FROM PUBLIC, anon;

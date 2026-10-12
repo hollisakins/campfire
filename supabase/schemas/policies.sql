@@ -1796,3 +1796,89 @@ CREATE POLICY "admin_manage_share_links"
   ON share_links TO authenticated
   USING ((SELECT public.is_admin()))
   WITH CHECK ((SELECT public.is_admin()));
+
+
+-- =============================================================================
+-- Data releases (P4a, docs/design-data-releases.md §4.4)
+-- =============================================================================
+-- A reader sees a DR ∩ the programs they currently hold, through the same
+-- accessible_program_slugs() path as live. Rows are visible only under a tag
+-- the caller may read (dr_visible_tags(): published, or every state for
+-- admins -- so the first production freeze is a shadow run nobody else sees).
+-- Share-link accounts get live scope only: every policy carries
+-- NOT is_link_account(). Writes go through the SECURITY DEFINER dr_* RPCs;
+-- there are no write policies and authenticated holds SELECT alone.
+
+ALTER TABLE dr_releases ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_spectra ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_objects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_line_fits ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_photometry ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_exports ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "select_dr_releases" ON dr_releases;
+CREATE POLICY "select_dr_releases"
+  ON dr_releases FOR SELECT TO authenticated
+  USING (
+    (SELECT NOT public.is_link_account())
+    AND tag = ANY((SELECT public.dr_visible_tags())::text[])
+  );
+
+-- Row-local program_slug, like select_spectra_by_access.
+DROP POLICY IF EXISTS "select_dr_spectra" ON dr_spectra;
+CREATE POLICY "select_dr_spectra"
+  ON dr_spectra FOR SELECT TO authenticated
+  USING (
+    (SELECT NOT public.is_link_account())
+    AND tag = ANY((SELECT public.dr_visible_tags())::text[])
+    AND program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+  );
+
+-- Array-overlap on the frozen programs, like select_objects_by_access.
+DROP POLICY IF EXISTS "select_dr_objects" ON dr_objects;
+CREATE POLICY "select_dr_objects"
+  ON dr_objects FOR SELECT TO authenticated
+  USING (
+    (SELECT NOT public.is_link_account())
+    AND tag = ANY((SELECT public.dr_visible_tags())::text[])
+    AND programs && (SELECT public.accessible_program_slugs())
+  );
+
+-- Program-scoped rows (NIRSpec finals and sidecars) by program_slug;
+-- field-level rows (mosaics, P(z) sidecars; program_slug IS NULL) are visible
+-- to every authenticated account, as published field deployments are live.
+DROP POLICY IF EXISTS "select_dr_members" ON dr_members;
+CREATE POLICY "select_dr_members"
+  ON dr_members FOR SELECT TO authenticated
+  USING (
+    (SELECT NOT public.is_link_account())
+    AND tag = ANY((SELECT public.dr_visible_tags())::text[])
+    AND (program_slug IS NULL
+         OR program_slug = ANY((SELECT public.accessible_program_slugs())::text[]))
+  );
+
+DROP POLICY IF EXISTS "select_dr_line_fits" ON dr_line_fits;
+CREATE POLICY "select_dr_line_fits"
+  ON dr_line_fits FOR SELECT TO authenticated
+  USING (
+    (SELECT NOT public.is_link_account())
+    AND tag = ANY((SELECT public.dr_visible_tags())::text[])
+    AND program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+  );
+
+DROP POLICY IF EXISTS "select_dr_photometry" ON dr_photometry;
+CREATE POLICY "select_dr_photometry"
+  ON dr_photometry FOR SELECT TO authenticated
+  USING (
+    (SELECT NOT public.is_link_account())
+    AND tag = ANY((SELECT public.dr_visible_tags())::text[])
+    AND programs && (SELECT public.accessible_program_slugs())
+  );
+
+-- The export ledger is operational state; readers never see storage keys
+-- (P4b hands out presigned partitions through its own route).
+DROP POLICY IF EXISTS "admin_select_dr_exports" ON dr_exports;
+CREATE POLICY "admin_select_dr_exports"
+  ON dr_exports FOR SELECT TO authenticated
+  USING ((SELECT public.is_admin()));

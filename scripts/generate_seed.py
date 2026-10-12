@@ -1607,6 +1607,36 @@ VALUES ('SEED-PROGRAM-ACCESS', {sql_escape(f'Access code scoped to {ANCHOR_PROGR
     return '\n'.join(lines)
 
 
+def generate_dr_fixture_sql() -> str:
+    """A tiny published data release frozen from the seeded catalog (P4a).
+
+    Runs the real freeze (dr_freeze_job) over the rows above, so the fixture
+    can never drift from the seed: whatever is published here is what
+    DR-seed carries. The RLS matrix (supabase/tests/check_dr_freeze.sql) and
+    the later export / web work read it. Components: the NIRSpec catalog and
+    the seeded NIRCam field's published mosaics.
+    """
+    lines = ['-- ============================================']
+    lines.append('-- 13. Data release fixture (P4a): DR-seed, frozen by the real freeze')
+    lines.append('-- ============================================')
+    lines.append('')
+    lines.append("INSERT INTO public.dr_releases (tag, state, components, created_by, freeze_started_at, notes)")
+    lines.append("SELECT 'DR-seed', 'freezing',")
+    lines.append("       (SELECT jsonb_agg(c) FROM (SELECT 'nirspec' AS c UNION ALL")
+    lines.append("         SELECT DISTINCT 'nircam/' || field FROM public.nircam_images WHERE deploy_status = 'published') x),")
+    lines.append(f"       '{ADMIN_UUID}', now(), 'Seed fixture: the seeded catalog frozen as a published release.';")
+    lines.append("SELECT public.dr_freeze_job('DR-seed');")
+    lines.append("UPDATE public.dr_releases SET state = 'published', published_at = now(),")
+    lines.append(f"       published_by = '{ADMIN_UUID}' WHERE tag = 'DR-seed' AND state = 'frozen';")
+    lines.append("DO $$ BEGIN")
+    lines.append("  IF (SELECT state FROM public.dr_releases WHERE tag = 'DR-seed') <> 'published' THEN")
+    lines.append("    RAISE EXCEPTION 'seed: DR-seed freeze failed: %', (SELECT error FROM public.dr_releases WHERE tag = 'DR-seed');")
+    lines.append("  END IF;")
+    lines.append("END $$;")
+    lines.append('')
+    return '\n'.join(lines)
+
+
 def generate_sequence_resets(objects: list[dict], spectra: list[dict],
                              comments: list[dict], flag_entries: list[dict],
                              cross_matched_objects: list[dict],
@@ -1910,6 +1940,7 @@ SET search_path TO public, auth, extensions;
         targets, target_to_object_db_id, objects_by_db_id,
     ))
     sql_parts.append(generate_access_codes_sql(guard))
+    sql_parts.append(generate_dr_fixture_sql())
     sql_parts.append(generate_sequence_resets(
         targets, spectra, comments, flag_entries, cross_matched_objects,
         deployments, nircam, photometry,
