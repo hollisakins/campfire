@@ -238,6 +238,8 @@ function StoragePageInner() {
               <span className="text-text-secondary text-xs">
                 live {fmtBytes((budget as StorageBudget).by_class!.live.bytes)}
                 {' · '}archive {fmtBytes((budget as StorageBudget).by_class!.archive.bytes)}
+                {((budget as StorageBudget).by_class!.gc_pending?.count ?? 0) > 0 &&
+                  ` · gc-pending ${fmtBytes((budget as StorageBudget).by_class!.gc_pending!.bytes)}`}
                 {(budget as StorageBudget).by_class!.collected.count > 0 &&
                   ` · ${(budget as StorageBudget).by_class!.collected.count} collected`}
               </span>

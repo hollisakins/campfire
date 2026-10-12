@@ -148,7 +148,13 @@ export interface StorageBudget {
   by_product_type: Record<string, number> | null;
   by_backend: Record<string, number> | null;
   /** Data releases P2: live pointers / retained archive copies / collected rows. */
-  by_class?: { live: StorageBudgetClass; archive: StorageBudgetClass; collected: StorageBudgetClass } | null;
+  by_class?: {
+    live: StorageBudgetClass;
+    archive: StorageBudgetClass;
+    /** superseded / revoked keys whose bytes are still in the bucket */
+    gc_pending?: StorageBudgetClass;
+    collected: StorageBudgetClass;
+  } | null;
   error?: string;
 }
 

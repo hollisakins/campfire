@@ -19,3 +19,12 @@ def test_budget_lines_no_collected_omits_it():
                                "by_class": {"live": {"count": 0, "bytes": 0}, "archive": {"count": 0, "bytes": 0},
                                             "collected": {"count": 0, "bytes": 0, "logical_bytes": 0}}})
     assert "collected" not in out[1]
+
+def test_budget_lines_gc_pending_shown_only_when_present():
+    base = {"total_bytes": 0, "cap_bytes": 1, "pct_used": 0}
+    classes = {"live": {"count": 1, "bytes": 1000}, "archive": {"count": 0, "bytes": 0},
+               "collected": {"count": 0, "bytes": 0, "logical_bytes": 0}}
+    out = format_budget_lines({**base, "by_class": {**classes, "gc_pending": {"count": 0, "bytes": 0}}})
+    assert "gc-pending" not in out[1]
+    out = format_budget_lines({**base, "by_class": {**classes, "gc_pending": {"count": 3, "bytes": 900}}})
+    assert "gc-pending 900" in out[1] and "(3)" in out[1]

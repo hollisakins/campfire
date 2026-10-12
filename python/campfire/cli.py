@@ -460,8 +460,10 @@ def format_budget_lines(budget: dict) -> list[str]:
 
     First line: bytes at rest against the cap. Second line (when the server
     reports the P2 classes): how the registry splits into live pointers,
-    retained archive copies and collected archive rows (hash + size kept, no
-    bytes). Older servers without ``by_class`` print the first line only.
+    retained archive copies, GC-pending tombstones (superseded / revoked keys
+    whose bytes are still in the bucket) and collected archive rows (hash +
+    size kept, no bytes). Older servers without ``by_class`` print the first
+    line only.
     """
     from .sync import format_size
 
@@ -474,8 +476,12 @@ def format_budget_lines(budget: dict) -> list[str]:
         live = classes.get("live") or {}
         archive = classes.get("archive") or {}
         collected = classes.get("collected") or {}
+        gc_pending = classes.get("gc_pending") or {}
         parts = [f"live {format_size(int(live.get('bytes', 0)))}",
                  f"archive {format_size(int(archive.get('bytes', 0)))}"]
+        n_gc = int(gc_pending.get("count", 0))
+        if n_gc:
+            parts.append(f"gc-pending {format_size(int(gc_pending.get('bytes', 0)))} ({n_gc})")
         n_coll = int(collected.get("count", 0))
         if n_coll:
             parts.append(f"{n_coll} collected (no bytes)")
