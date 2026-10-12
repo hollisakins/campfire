@@ -1210,15 +1210,27 @@ DROP POLICY IF EXISTS "admin_select_storage_objects" ON storage_objects;
 -- CAMPFIRE user precisely because it has no program scope, which means the link
 -- narrowing here is the ONLY thing keeping a field link off every other field's
 -- FITS.
+--
+-- Archive rows (data releases P2, root = 'archive'): a retained copy of a
+-- NIRSpec final or sidecar is readable by exactly the people who may read
+-- the live spectrum it came from -- the row's own program_slug (row-local, set
+-- by the retain step from the live row) must be accessible AND that spectrum
+-- must currently be published (draft for a link that sees drafts). Link
+-- accounts are narrowed on the row's own observation. Only status 'archived'
+-- qualifies: a 'collected' row has no bytes behind it. Mosaic freeze copies
+-- (no spectrum_id; P4) stay admin-only until the freeze lands its own branch.
+-- filter_accessible_storage_keys / filter_link_storage_keys restate this for
+-- the API path; supabase/tests/check_archive_authz.sql pins all three.
 DROP POLICY IF EXISTS "select_storage_objects_by_access" ON storage_objects;
 CREATE POLICY "select_storage_objects_by_access"
   ON storage_objects FOR SELECT TO authenticated
   USING (
     (SELECT public.is_admin())
     OR (
-    status = 'active'
-    AND ((SELECT NOT public.is_link_account())
-         OR (SELECT public.link_allows_download()))
+    ((SELECT NOT public.is_link_account())
+     OR (SELECT public.link_allows_download()))
+    AND (
+    (status = 'active'
     AND (
       (storage_objects.spectrum_id IS NOT NULL AND EXISTS (
          SELECT 1 FROM spectra s
@@ -1244,6 +1256,18 @@ CREATE POLICY "select_storage_objects_by_access"
            AND ((SELECT NOT public.is_link_account())
                 OR d.observation = (SELECT public.link_observation())
                 OR d.field = (SELECT public.link_field()))))
+    ))
+    OR
+    (storage_objects.root = 'archive' AND status = 'archived'
+     AND storage_objects.spectrum_id IS NOT NULL
+     AND storage_objects.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+     AND ((SELECT NOT public.is_link_account())
+          OR storage_objects.observation = (SELECT public.link_observation()))
+     AND EXISTS (
+       SELECT 1 FROM spectra s
+       WHERE s.spectrum_id = storage_objects.spectrum_id
+         AND (s.deploy_status = 'published'
+              OR (s.deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))))
     )
     )
   );

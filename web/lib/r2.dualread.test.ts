@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // --- registry (service-role client) -----------------------------------------
-let dbRows: Array<{ storage_key: string; backend: string; content_hash?: string; updated_at?: string }> = [];
+let dbRows: Array<{ storage_key: string; backend: string; content_hash?: string; updated_at?: string; root?: string; archived_at?: string | null }> = [];
 let dbError: unknown = null;
 let dbCalls = 0;
 
@@ -120,6 +120,46 @@ describe('resolveObjectBackends — flag on', () => {
     dbRows = [{ storage_key: CANON, backend: 'osn', content_hash: 'sha256:aa' }];
     const out = await resolveObjectBackends([CANON]);
     expect(out).toEqual([{ backend: 'osn', key: CANON, contentHash: 'sha256:aa', registeredAt: null }]);
+  });
+
+  it('live row: registeredAt is updated_at (unix seconds)', async () => {
+    dbRows = [{ storage_key: CANON, backend: 'osn', content_hash: 'sha256:aa', root: 'live',
+                updated_at: '2026-10-11T12:00:00.000Z', archived_at: null }];
+    const out = await resolveObjectBackends([CANON]);
+    expect(out[0].registeredAt).toBe(Date.parse('2026-10-11T12:00:00Z') / 1000);
+  });
+
+  it('archive row (P2): resolves under its own key with registeredAt = archived_at, not updated_at', async () => {
+    const ARCHIVE = 'archive/' + 'a'.repeat(64) + '/products/nirspec/ember_egs_p1/ember_egs_p1_101_spec.fits';
+    dbRows = [{ storage_key: ARCHIVE, backend: 'osn', content_hash: 'sha256:' + 'a'.repeat(64), root: 'archive',
+                updated_at: '2026-10-11T12:00:05.000Z', archived_at: '2026-10-11T12:00:00.000Z' }];
+    const out = await resolveObjectBackends([ARCHIVE]);
+    expect(out).toEqual([{ backend: 'osn', key: ARCHIVE, contentHash: 'sha256:' + 'a'.repeat(64),
+                           registeredAt: Date.parse('2026-10-11T12:00:00Z') / 1000 }]);
+  });
+
+  it('archive key + OSN_READ_ENABLED off => OSN under its own key, no DB query (never R2)', async () => {
+    delete process.env.OSN_READ_ENABLED;
+    const ARCHIVE = 'archive/' + 'b'.repeat(64) + '/products/nirspec/ember_egs_p1/ember_egs_p1_101_spec.fits';
+    const [live, arch] = await resolveObjectBackends([LEGACY, ARCHIVE]);
+    expect(live).toMatchObject({ backend: 'r2', key: LEGACY });
+    expect(arch).toEqual({ backend: 'osn', key: ARCHIVE, contentHash: null, registeredAt: null });
+    expect(dbCalls).toBe(0);
+  });
+
+  it('archive key + DB error => stays on OSN under its own key while live keys fail open to R2', async () => {
+    const ARCHIVE = 'archive/' + 'c'.repeat(64) + '/products/nirspec/ember_egs_p1/ember_egs_p1_101_spec.fits';
+    dbError = new Error('boom');
+    const [live, arch] = await resolveObjectBackends([CANON, ARCHIVE]);
+    expect(live).toMatchObject({ backend: 'r2', key: LEGACY });
+    expect(arch).toEqual({ backend: 'osn', key: ARCHIVE, contentHash: null, registeredAt: null });
+  });
+
+  it('archive key with no registry row => OSN under its own key, no content identity', async () => {
+    const ARCHIVE = 'archive/' + 'd'.repeat(64) + '/products/nirspec/ember_egs_p1/ember_egs_p1_101_spec.fits';
+    dbRows = [];
+    const [arch] = await resolveObjectBackends([ARCHIVE]);
+    expect(arch).toEqual({ backend: 'osn', key: ARCHIVE, contentHash: null, registeredAt: null });
   });
 
   it('DB error => fail open to R2 for all keys', async () => {
