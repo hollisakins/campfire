@@ -83,8 +83,11 @@ from campfire.deploy.supabase import (
 )
 
 
-def _gate_admin(config: dict) -> None:
+def _gate_admin(config: dict, *, what: str = 'Deploy') -> None:
     """Verify the deployer is an admin THROUGH the actual write client.
+
+    *what* names the command in the refusal (default ``Deploy``); other
+    admin-only verbs (``campfire archive gc``) reuse the gate with their own.
 
     Calls ``is_admin()`` via the same Supabase client the deploy will write
     with, so the gate and the writes share one identity + target + token — a
@@ -119,7 +122,7 @@ def _gate_admin(config: dict) -> None:
     if not resp.data:
         tm = config.get('supabase', {}).get('_token_manager')
         email = tm.get_user_email() if tm else None
-        print("Error: Deploy requires admin privileges.")
+        print(f"Error: {what} requires admin privileges.")
         if email:
             print(f"  Logged in as: {email}")
         print("  Contact an administrator to request access.")

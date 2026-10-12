@@ -27,8 +27,8 @@ def _row(i, *, days_ago, status='archived', product_type='nircam_mosaic', root='
     }
 
 
-def _client(rows):
-    return FakePostgrest(tables={'storage_objects': rows})
+def _client(rows, *, admin=True):
+    return FakePostgrest(tables={'storage_objects': rows}, rpc_handlers={'is_admin': admin})
 
 
 def test_gc_candidates_selects_old_archived_mosaics_only():
@@ -73,6 +73,17 @@ def test_gc_report_totals_bytes_at_rest_by_field():
     assert 'Candidates: 2 object(s)' in text and 'cosmos' in text and 'egs' in text
 
 
+def test_gc_report_limit_caps_rows_not_totals():
+    rows = [_row(1, days_ago=400), _row(6, days_ago=800, stored=400, field='egs')]
+    rep = gc_report(rows, older_than_days=365, now=NOW, max_rows=1)
+    assert rep['candidates'] == 2 and rep['bytes_at_rest'] == 1400 and len(rep['by_field']) == 2
+    assert rep['rows_shown'] == 1 and len(rep['rows']) == 1
+    text = format_gc_report(rep, max_rows=1)
+    assert 'Candidates: 2 object(s)' in text and '… 1 more (totals above include them' in text
+    full = gc_report(rows, older_than_days=365, now=NOW)
+    assert full['rows_shown'] == 2 and '… ' not in format_gc_report(full)
+
+
 def test_cli_gc_requires_dry_run():
     res = CliRunner().invoke(main_cli.cli, ['archive', 'gc'])
     assert res.exit_code == 2 and 'only --dry-run' in res.output
@@ -89,3 +100,26 @@ def test_cli_gc_dry_run_renders(monkeypatch):
     assert 'Candidates: 1 object(s)' in res.output
     res = CliRunner().invoke(main_cli.cli, ['archive', 'gc', '--dry-run', '--json'])
     assert res.exit_code == 0 and f'"older_than_days": {DEFAULT_RETENTION_DAYS}' in res.output
+
+
+def test_cli_gc_limit_keeps_full_totals(monkeypatch):
+    rows = [_row(1, days_ago=400), _row(6, days_ago=800, stored=400, field='egs')]
+    import campfire.deploy.config as cfg
+    import campfire.deploy.supabase as sb
+    monkeypatch.setattr(cfg, 'load_config', lambda *_a, **_k: {})
+    monkeypatch.setattr(sb, 'get_supabase_client', lambda _c: _client(rows))
+    res = CliRunner().invoke(main_cli.cli, ['archive', 'gc', '--dry-run', '--older-than', '365', '--limit', '1'])
+    assert res.exit_code == 0, res.output
+    assert 'Candidates: 2 object(s)' in res.output and '1.4 KB at rest' in res.output
+    assert res.output.count('archive/') == 1 and '… 1 more' in res.output
+
+
+def test_cli_gc_refuses_non_admin(monkeypatch):
+    rows = [_row(1, days_ago=400)]
+    import campfire.deploy.config as cfg
+    import campfire.deploy.supabase as sb
+    monkeypatch.setattr(cfg, 'load_config', lambda *_a, **_k: {})
+    monkeypatch.setattr(sb, 'get_supabase_client', lambda _c: _client(rows, admin=False))
+    res = CliRunner().invoke(main_cli.cli, ['archive', 'gc', '--dry-run'])
+    assert res.exit_code == 1
+    assert 'requires admin privileges' in res.output and 'Candidates' not in res.output

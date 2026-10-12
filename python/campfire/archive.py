@@ -36,13 +36,16 @@ _PAGE = 1000
 
 def gc_candidates(client, *, older_than_days: int = DEFAULT_RETENTION_DAYS,
                   product_types: Iterable[str] = COLLECTABLE_PRODUCT_TYPES,
-                  now: Optional[datetime] = None, limit: Optional[int] = None) -> list[dict]:
+                  now: Optional[datetime] = None) -> list[dict]:
     """Archive rows the retention window would collect, oldest first.
 
     ``archived`` mosaic rows (never ``collected``, never NIRSpec) whose
     ``archived_at`` is older than *older_than_days*. Paged on ``id`` so a large
-    archive never needs one unbounded request. DR membership is NOT checked
-    here (``dr_members`` arrives with P4); the report says so.
+    archive never needs one unbounded request. Always the full set: the
+    report's totals must describe everything the window selects, so any
+    display cap is applied by :func:`gc_report` (``max_rows``), never here.
+    DR membership is NOT checked here (``dr_members`` arrives with P4); the
+    report says so.
     """
     types = tuple(product_types)
     bad = [t for t in types if t not in COLLECTABLE_PRODUCT_TYPES]
@@ -68,8 +71,6 @@ def gc_candidates(client, *, older_than_days: int = DEFAULT_RETENTION_DAYS,
             break
         last_id = int(rows[-1]['id'])
     out.sort(key=lambda r: (str(r.get('archived_at') or ''), int(r.get('id') or 0)))
-    if limit is not None:
-        out = out[:limit]
     return out
 
 
@@ -81,9 +82,16 @@ def at_rest_bytes(row: dict) -> int:
     return int(v)
 
 
-def gc_report(rows: list[dict], *, older_than_days: int, now: Optional[datetime] = None) -> dict:
-    """The dry-run payload: candidates plus totals, JSON-serialisable."""
+def gc_report(rows: list[dict], *, older_than_days: int, now: Optional[datetime] = None,
+              max_rows: Optional[int] = None) -> dict:
+    """The dry-run payload: candidates plus totals, JSON-serialisable.
+
+    ``candidates`` / ``bytes_at_rest`` / ``by_field`` always cover every row;
+    *max_rows* caps only the per-object ``rows`` list (``rows_shown`` says how
+    many made it), so a ``--limit`` never understates what the window selects.
+    """
     now = now or datetime.now(timezone.utc)
+    shown = rows if max_rows is None else rows[:max(0, max_rows)]
     by_field: dict[str, dict[str, int]] = {}
     total = 0
     for r in rows:
@@ -101,6 +109,7 @@ def gc_report(rows: list[dict], *, older_than_days: int, now: Optional[datetime]
         'candidates': len(rows),
         'bytes_at_rest': total,
         'by_field': by_field,
+        'rows_shown': len(shown),
         'rows': [{
             'storage_key': r.get('storage_key'),
             'content_hash': r.get('content_hash'),
@@ -109,7 +118,7 @@ def gc_report(rows: list[dict], *, older_than_days: int, now: Optional[datetime]
             'filter': r.get('filter'),
             'archived_at': r.get('archived_at'),
             'archived_from_key': r.get('archived_from_key'),
-        } for r in rows],
+        } for r in shown],
     }
 
 
@@ -134,6 +143,7 @@ def format_gc_report(report: dict, *, max_rows: int = 20) -> str:
         for r in rows[:max_rows]:
             when = str(r.get('archived_at') or '')[:10]
             lines.append(f"    {when}  {format_size(int(r['bytes_at_rest'])):>10}  {r['storage_key']}")
-        if len(rows) > max_rows:
-            lines.append(f"    … {len(rows) - max_rows} more (use --json for all)")
+        hidden = int(report['candidates']) - min(len(rows), max_rows)
+        if hidden > 0:
+            lines.append(f"    … {hidden} more (totals above include them; --limit N / --json to list more)")
     return '\n'.join(lines)
