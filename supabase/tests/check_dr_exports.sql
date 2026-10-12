@@ -15,7 +15,9 @@
 --   3. keyset paging with a small limit covers each partition exactly once;
 --   4. dr_export_begin seeds the ledger idempotently and moves the state;
 --      dr_export_mark records files and the last ready one -> exported;
---      a published release refuses begin; non-admin refused everywhere.
+--      dr_export_invalidate sends files back to pending; dr_derive_state
+--      gives copying / ready from the member byte states; a published
+--      release refuses begin; non-admin refused everywhere.
 -- Run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/check_dr_exports.sql
 \set ON_ERROR_STOP on
 \set ADMIN '11111111-1111-1111-1111-111111111111'
@@ -61,8 +63,16 @@ BEGIN
   SELECT count(*) INTO n FROM dr_export_partitions('DR-seed') p WHERE p.stream = 'spectra' AND p.partition = prog;
   IF n <> 1 THEN RAISE EXCEPTION 'spectra partition for % missing', prog; END IF;
   SELECT p.storage_key INTO k FROM dr_export_partitions('DR-seed') p WHERE p.stream = 'members' AND p.partition = 'nircam/' || fld;
-  IF k <> 'dr/DR-seed/exports/members/nircam_' || regexp_replace(fld, '[^A-Za-z0-9._-]', '_', 'g') || '.jsonl.gz' THEN
+  IF k <> dr_export_key('DR-seed', 'members', 'nircam/' || fld) OR k !~ ('^dr/DR-seed/exports/members/nircam_[A-Za-z0-9._-]+-[0-9a-f]{8}\.jsonl\.gz$') THEN
     RAISE EXCEPTION 'unexpected member key %', k;
+  END IF;
+  -- key-safe names are used as is; others are sanitised + md5-suffixed, so
+  -- names that sanitise alike stay distinct (Codex on #600)
+  IF dr_export_key('T', 'spectra', prog) <> 'dr/T/exports/spectra/' || prog || '.jsonl.gz' THEN
+    RAISE EXCEPTION 'plain slug key altered: %', dr_export_key('T', 'spectra', prog);
+  END IF;
+  IF dr_export_key('T', 'members', 'photometry/goods-n/CAT v1') = dr_export_key('T', 'members', 'photometry/goods-n/CAT_v1') THEN
+    RAISE EXCEPTION 'export keys collide for names that sanitise alike';
   END IF;
   IF (SELECT p.n_rows FROM dr_export_partitions('DR-seed') p WHERE p.stream = 'spectra' AND p.partition = prog)
      <> (SELECT count(*) FROM dr_spectra WHERE tag = 'DR-seed' AND program_slug = prog) THEN
@@ -190,6 +200,28 @@ BEGIN
     format($q$SELECT (dr_export_mark('DR-seed', 'spectra', %L, 'ready', 'sha256:%s', 123, 45))->>'state'$q$, prog, repeat('a', 64)));
   IF got <> 'exported' THEN RAISE EXCEPTION 'last ready mark should move to exported, got %', got; END IF;
   IF (SELECT state FROM dr_releases WHERE tag = 'DR-seed') <> 'exported' THEN RAISE EXCEPTION 'release not exported'; END IF;
+
+  -- invalidate: the members files of one partition go back to pending, the
+  -- state follows (exporting); a rebuild brings it back to exported; with every
+  -- member copied the derived state is ready, and copying while members are
+  -- half done (the byte pass in flight)
+  PERFORM set_config('request.jwt.claims', '{"role":"service_role"}', true);
+  got := (dr_export_invalidate('DR-seed', 'members', prog))->>'invalidated';
+  IF got <> '1' OR (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'members' AND partition = prog) <> 'pending'
+     OR (SELECT state FROM dr_releases WHERE tag = 'DR-seed') <> 'exporting' THEN
+    RAISE EXCEPTION 'invalidate did not reset the partition (got %, state %)', got, (SELECT state FROM dr_releases WHERE tag = 'DR-seed');
+  END IF;
+  IF (dr_export_mark('DR-seed', 'members', prog, 'ready', 'sha256:' || repeat('b', 64), 1, 1))->>'state' <> 'exported' THEN
+    RAISE EXCEPTION 'rebuild should return to exported';
+  END IF;
+  UPDATE dr_members SET byte_state = 'copied', archive_key = 'archive/x/' || storage_key WHERE tag = 'DR-seed' AND program_slug = prog;
+  IF dr_derive_state('DR-seed') <> 'copying' THEN RAISE EXCEPTION 'half-copied members should derive copying, got %', dr_derive_state('DR-seed'); END IF;
+  UPDATE dr_members SET byte_state = 'copied', archive_key = 'archive/x/' || storage_key WHERE tag = 'DR-seed';
+  IF dr_derive_state('DR-seed') <> 'ready' THEN RAISE EXCEPTION 'all exported + all copied should derive ready, got %', dr_derive_state('DR-seed'); END IF;
+  -- a re-run of begin on a ready release is allowed and keeps it ready
+  IF (dr_export_begin('DR-seed'))->>'state' <> 'ready' THEN RAISE EXCEPTION 'begin on ready should keep ready'; END IF;
+  UPDATE dr_members SET byte_state = 'pending', archive_key = NULL WHERE tag = 'DR-seed';
+  IF dr_derive_state('DR-seed') <> 'exported' THEN RAISE EXCEPTION 'reverting members should derive exported'; END IF;
   IF (SELECT rows FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'spectra' AND partition = prog) <> 45
      OR (SELECT error FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'spectra' AND partition = prog) IS NOT NULL THEN
     RAISE EXCEPTION 'ready mark did not record rows / clear the error';

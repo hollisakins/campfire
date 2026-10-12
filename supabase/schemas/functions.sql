@@ -9424,19 +9424,29 @@ GRANT EXECUTE ON FUNCTION public.dr_purge_release(text) TO authenticated, servic
 --                                  stream (dr-format-v1.md lists the fields);
 --   dr_export_begin(tag)           seed the dr_exports ledger, state -> exporting;
 --   dr_export_mark(tag, stream, partition, ...)
---                                  record a built (or failed) file; the last
---                                  ready file moves the release to `exported`.
+--                                  record a built (or failed) file;
+--   dr_export_invalidate(tag, stream, partition)
+--                                  ready files back to pending (the byte pass
+--                                  uses it for the member partitions it changes);
+--   dr_derive_state(tag)           the state the ledger + member byte states
+--                                  imply (frozen / exporting / exported /
+--                                  copying / ready), applied after every write.
 -- All admin/service_role (the builder runs as the service role).
 
 CREATE OR REPLACE FUNCTION public.dr_export_key(p_tag text, p_stream text, p_partition text)
 RETURNS text
 LANGUAGE sql IMMUTABLE
 AS $$
-  -- dr/<tag>/exports/<stream>/<partition>.jsonl.gz; the partition is made
-  -- key-safe (catalog names carry spaces). The ledger records the key, so the
-  -- mapping never has to be inverted.
+  -- dr/<tag>/exports/<stream>/<partition>.jsonl.gz. A partition name made of
+  -- key-safe characters is used as is; any other name (component names carry
+  -- '/', catalog names spaces) is sanitised AND suffixed with the first 8 hex
+  -- of its md5, so two names that sanitise alike ("CAT v1" / "CAT_v1") still
+  -- get distinct keys. The ledger records the key, so nothing inverts this.
   SELECT 'dr/' || p_tag || '/exports/' || p_stream || '/'
-         || regexp_replace(p_partition, '[^A-Za-z0-9._-]', '_', 'g') || '.jsonl.gz';
+         || CASE WHEN p_partition ~ '^[A-Za-z0-9._-]+$' THEN p_partition
+                 ELSE regexp_replace(p_partition, '[^A-Za-z0-9._-]', '_', 'g')
+                      || '-' || left(md5(p_partition), 8) END
+         || '.jsonl.gz';
 $$;
 
 REVOKE ALL ON FUNCTION public.dr_export_key(text, text, text) FROM PUBLIC, anon;
@@ -9618,6 +9628,52 @@ REVOKE ALL ON FUNCTION public.dr_export_rows(text, text, text, text, integer) FR
 GRANT EXECUTE ON FUNCTION public.dr_export_rows(text, text, text, text, integer) TO authenticated, service_role;
 
 
+-- The release state the ledger and the member byte states imply (used by
+-- every export / byte-pass RPC after it writes). Only the five build states
+-- are ever derived; freezing / failed / published / withdrawn are left alone.
+--   frozen     no ledger rows and no archive bytes yet
+--   exporting  ledger rows exist and some are not ready
+--   exported   every ledger row ready, byte pass not finished
+--   copying    byte pass under way (some members copied/stamped/failed, some pending)
+--   ready      every ledger row ready AND every member copied or stamped
+CREATE OR REPLACE FUNCTION public.dr_derive_state(p_tag text)
+RETURNS text
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_cur text;
+  n_ledger int; n_ledger_open int;
+  n_members int; n_members_open int; n_members_done int;
+  v_new text;
+BEGIN
+  SELECT state INTO v_cur FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF v_cur IS NULL OR v_cur NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
+    RETURN v_cur;
+  END IF;
+  SELECT count(*), count(*) FILTER (WHERE state <> 'ready') INTO n_ledger, n_ledger_open
+  FROM dr_exports WHERE tag = p_tag;
+  SELECT count(*), count(*) FILTER (WHERE byte_state IN ('pending', 'failed')),
+         count(*) FILTER (WHERE byte_state IN ('copied', 'stamped'))
+    INTO n_members, n_members_open, n_members_done
+  FROM dr_members WHERE tag = p_tag;
+  v_new := CASE
+    WHEN n_ledger > 0 AND n_ledger_open = 0 AND n_members_open = 0 THEN 'ready'
+    WHEN n_members_done > 0 AND n_members_open > 0 THEN 'copying'
+    WHEN n_ledger > 0 AND n_ledger_open = 0 THEN 'exported'
+    WHEN n_ledger > 0 THEN 'exporting'
+    ELSE 'frozen' END;
+  IF v_new <> v_cur THEN
+    UPDATE dr_releases SET state = v_new, updated_at = now() WHERE tag = p_tag;
+  END IF;
+  RETURN v_new;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.dr_derive_state(text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.dr_derive_state(text) TO service_role;
+
+
 CREATE OR REPLACE FUNCTION public.dr_export_begin(p_tag text)
 RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER
@@ -9630,7 +9686,7 @@ BEGIN
   PERFORM dr_require_admin();
   SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'no release %', p_tag; END IF;
-  IF r.state NOT IN ('frozen', 'exporting', 'exported') THEN
+  IF r.state NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
     RAISE EXCEPTION 'release % is % (exports need a frozen, unpublished release)', p_tag, r.state;
   END IF;
   INSERT INTO dr_exports (tag, stream, partition, storage_key, state)
@@ -9640,16 +9696,12 @@ BEGIN
   GET DIAGNOSTICS n_new = ROW_COUNT;
   SELECT count(*) FILTER (WHERE state <> 'ready'), count(*) INTO n_pending, n_total
   FROM dr_exports WHERE tag = p_tag;
-  UPDATE dr_releases
-     SET state = CASE WHEN n_pending = 0 AND n_total > 0 THEN 'exported' ELSE 'exporting' END,
-         updated_at = now()
-   WHERE tag = p_tag;
   RETURN jsonb_build_object('tag', p_tag, 'new', n_new, 'pending', n_pending, 'total', n_total,
-                            'state', (SELECT state FROM dr_releases WHERE tag = p_tag));
+                            'state', dr_derive_state(p_tag));
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_export_begin(text) IS 'Seed the export ledger of a frozen data release from dr_export_partitions (idempotent: existing ledger rows are kept) and move the release to exporting (or exported when every file is already ready). Admin or service_role.';
+COMMENT ON FUNCTION public.dr_export_begin(text) IS 'Seed the export ledger of an unpublished data release from dr_export_partitions (idempotent: existing ledger rows are kept) and derive the release state (dr_derive_state). Admin or service_role.';
 
 REVOKE ALL ON FUNCTION public.dr_export_begin(text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_export_begin(text) TO authenticated, service_role;
@@ -9670,13 +9722,13 @@ LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  n_pending int; n_total int; v_state text;
+  n_pending int; n_total int;
 BEGIN
   PERFORM dr_require_admin();
   IF p_state NOT IN ('building', 'ready', 'failed', 'pending') THEN
     RAISE EXCEPTION 'invalid export state %', p_state;
   END IF;
-  IF (SELECT state FROM dr_releases WHERE tag = p_tag) NOT IN ('exporting', 'exported', 'frozen') THEN
+  IF (SELECT state FROM dr_releases WHERE tag = p_tag) NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
     RAISE EXCEPTION 'release % is not exporting', p_tag;
   END IF;
   UPDATE dr_exports
@@ -9692,17 +9744,53 @@ BEGIN
   END IF;
   SELECT count(*) FILTER (WHERE state <> 'ready'), count(*) INTO n_pending, n_total
   FROM dr_exports WHERE tag = p_tag;
-  v_state := CASE WHEN n_pending = 0 THEN 'exported' ELSE 'exporting' END;
-  UPDATE dr_releases SET state = v_state, updated_at = now()
-   WHERE tag = p_tag AND state IN ('exporting', 'exported', 'frozen');
-  RETURN jsonb_build_object('tag', p_tag, 'pending', n_pending, 'total', n_total, 'state', v_state);
+  RETURN jsonb_build_object('tag', p_tag, 'pending', n_pending, 'total', n_total,
+                            'state', dr_derive_state(p_tag));
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, integer, text) IS 'Record one export file of a data release as building / ready (sha256, size, rows) / failed (error) / pending; the last ready file moves the release to exported. Admin or service_role.';
+COMMENT ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, integer, text) IS 'Record one export file of a data release as building / ready (sha256, size, rows) / failed (error) / pending, then derive the release state (exported once every file is ready, ready once the byte pass is complete too). Admin or service_role.';
 
 REVOKE ALL ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, integer, text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, integer, text) TO authenticated, service_role;
+
+-- Send ready export files back to pending so the next `dr export` rebuilds
+-- them: the byte pass (P4c) calls it for the `members` partitions it changes
+-- (archive_key / byte_state / stamped_hash are part of the member rows, so a
+-- file built before the pass would keep pointing readers at the mutable live
+-- keys). p_stream NULL invalidates every stream; p_partition NULL every
+-- partition of the stream.
+CREATE OR REPLACE FUNCTION public.dr_export_invalidate(
+  p_tag text,
+  p_stream text DEFAULT NULL,
+  p_partition text DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  n int;
+BEGIN
+  PERFORM dr_require_admin();
+  IF (SELECT state FROM dr_releases WHERE tag = p_tag) NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
+    RAISE EXCEPTION 'release % is not in a build state', p_tag;
+  END IF;
+  UPDATE dr_exports
+     SET state = 'pending', sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL
+   WHERE tag = p_tag AND state = 'ready'
+     AND (p_stream IS NULL OR stream = p_stream)
+     AND (p_partition IS NULL OR partition = p_partition);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN jsonb_build_object('tag', p_tag, 'invalidated', n, 'state', dr_derive_state(p_tag));
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_export_invalidate(text, text, text) IS 'Send ready export files of a data release back to pending (a stream, a partition, or everything) so `dr export` rebuilds them; the byte pass uses it for the member partitions it changes. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_export_invalidate(text, text, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_invalidate(text, text, text) TO authenticated, service_role;
+
 
 
 -- ===========================================================================
@@ -9822,6 +9910,8 @@ REVOKE ALL ON FUNCTION public.dr_freeze_job(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_enqueue_freeze(p_tag text, p_components jsonb, p_notes text, p_inline boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_purge_release(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_begin(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_derive_state(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_invalidate(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_key(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_mark(p_tag text, p_stream text, p_partition text, p_state text, p_sha256 text, p_size_bytes bigint, p_rows integer, p_error text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_partitions(p_tag text) FROM PUBLIC, anon;

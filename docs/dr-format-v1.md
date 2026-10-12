@@ -20,9 +20,12 @@ routes. Readers obtain presigned urls from `/api/v1/dr/<tag>/partitions`, which
 returns only the partitions the caller holds, each with `sha256`, `size` and
 `rows` to verify against.
 
-`<partition>` in the key is the partition name made key-safe (every character
-outside `[A-Za-z0-9._-]` becomes `_`); the partitions route carries the real
-name alongside the url, so a reader never inverts the mapping.
+`<partition>` in the key is the partition name when it is already key-safe
+(`[A-Za-z0-9._-]+`, every program slug); any other name (component names carry
+`/`, catalog names spaces) is sanitised to that alphabet **and suffixed with
+`-` plus the first 8 hex digits of its md5**, so names that sanitise alike
+(`CAT v1` / `CAT_v1`) still get distinct keys. The partitions route carries the
+real name alongside the url, so a reader never inverts the mapping.
 
 ## Streams and partitions
 
@@ -34,11 +37,13 @@ name alongside the url, so a reader never inverts the mapping.
 | `photometry` | program slug | frozen photometry rows whose object's `programs` contains the slug |
 | `members` | program slug | NIRSpec finals + sidecars of that program |
 | `members` | `nircam/<field>` | the published mosaics of the field component |
-| `members` | `photometry/<field>/<catalog>` | the P(z) sidecars of the photometry component |
+
+P(z) sidecars are not members (they are key-only products the layout cannot
+archive; the `photometry` rows carry the catalog values).
 
 A partition is produced only when it has rows. Program partitions are
 visible to a viewer holding that program (the same `accessible_program_slugs()`
-scope as live); the two field-level member partitions are visible to every
+scope as live); the field-level member partitions are visible to every
 account, as published field deployments are live. Share-link accounts get
 nothing (the `/api/v1` bearer routes refuse them).
 
@@ -112,10 +117,20 @@ active object), `object_db_id`, `grating`, `fits_path`, `file_hash`,
 (whole-file hash of the stamped archive bytes). A reader downloads
 `archive_key` when `byte_state` is `copied` or `stamped`, else the live key.
 
-## Ledger
+## Ledger and lifecycle
 
 `dr_exports` holds one row per (tag, stream, partition): `storage_key`,
 `sha256` ("sha256:<hex>" of the gzip bytes), `size_bytes`, `rows`, `state`
 (`pending` | `building` | `ready` | `failed`), `built_at`, `error`. The builder
-is resumable: a run rebuilds only rows that are not `ready`, and the last
-`ready` row moves the release from `exporting` to `exported`.
+is resumable: a run rebuilds only rows that are not `ready`.
+
+The release state is derived from the ledger and the member byte states after
+every write (`dr_derive_state`): `frozen` (nothing built) → `exporting` (files
+pending) → `exported` (every file ready) → `copying` (byte pass under way) →
+`ready` (every file ready **and** every member copied or stamped). The byte
+pass changes member rows (`archive_key`, `byte_state`, `stamped_hash`), so it
+invalidates the `members` partitions it touches (`dr_export_invalidate`) and
+the next `campfire dr export` rebuilds exactly those files; a release is
+published only from `ready`, so a reader of a published release always sees
+member files that carry the archive keys. The partitions route's `complete`
+flag is false while any file is pending.

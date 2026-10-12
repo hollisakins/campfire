@@ -14,6 +14,8 @@ import { fetchRelease, runExportBudget } from '@/lib/server/dr-exports';
  * file to dr/<tag>/exports/ on the data bucket and recording sha256 / size /
  * rows in the ledger. Answers what was built, what failed and how many files
  * are still not ready; the caller repeats the call until `remaining` is 0.
+ * Re-runnable at any build state: the byte pass (P4c) invalidates the member
+ * partitions it changes, and the next run rebuilds exactly those.
  *
  * Body (optional): { budget_seconds?: number }  default 240, max 280 -- under
  * the 300 s function ceiling with room for the last upload.
@@ -55,7 +57,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ta
     const supabase = createServiceClient();
     const release = await fetchRelease(supabase, tag);
     if (!release) return NextResponse.json({ error: 'not_found' }, { status: 404 });
-    if (!['frozen', 'exporting', 'exported'].includes(release.state)) {
+    if (!['frozen', 'exporting', 'exported', 'copying', 'ready'].includes(release.state)) {
       return NextResponse.json(
         { error: 'invalid_state', error_description: `release is ${release.state}; exports need a frozen, unpublished release` },
         { status: 409 },

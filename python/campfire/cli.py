@@ -1443,7 +1443,10 @@ def dr_export(tag, budget, base_url, as_json):
     Loops the admin builder route until every (stream, partition) file under
     dr/TAG/exports/ is ready; each call builds for one time budget and the
     ledger (dr_exports) makes the loop resumable. The release moves from
-    frozen to exporting to exported. Needs `campfire login` as an admin.
+    frozen to exporting to exported (and to ready once the byte pass has
+    run too). Run it again after `dr bytes`: the byte pass invalidates the
+    member partitions it changed and only those are rebuilt. Needs
+    `campfire login` as an admin.
     """
     import json as _json
 
