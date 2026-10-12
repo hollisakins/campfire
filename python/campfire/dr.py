@@ -317,3 +317,56 @@ def format_releases(report: dict) -> list[str]:
             if r.get('error'):
                 lines.append(f"  {r.get('tag')}: {r.get('error')}")
     return lines
+
+
+# ---------------------------------------------------------------------------
+# exports (P4b)
+# ---------------------------------------------------------------------------
+
+def export_release(session, tag: str, *, budget_seconds: float = 240.0, max_calls: int = 200,
+                   echo=None) -> dict:
+    """Loop ``POST /api/v1/dr/<tag>/export`` until every partition is ready.
+
+    *session* is an ``APISession`` (bearer: the admin's login). Each call
+    builds partitions for one time budget and reports what is left; the loop
+    stops when ``remaining`` is 0, when a call built nothing and failed
+    something (a partition that cannot be built; retrying would spin), or
+    after *max_calls*. Returns the last response plus the totals.
+    """
+    totals = {'built': 0, 'failed': 0, 'calls': 0}
+    last: dict = {}
+    for _ in range(max_calls):
+        resp = session.post(f'/api/v1/dr/{tag}/export', json={'budget_seconds': budget_seconds},
+                            timeout=budget_seconds + 60)
+        if resp.status_code != 200:
+            try:
+                detail = resp.json()
+            except ValueError:
+                detail = {'error': resp.text[:200]}
+            raise RuntimeError(f"export call failed ({resp.status_code}): "
+                               f"{detail.get('error_description') or detail.get('error')}")
+        last = resp.json()
+        totals['calls'] += 1
+        totals['built'] += len(last.get('built') or [])
+        totals['failed'] += len(last.get('failed') or [])
+        if echo is not None:
+            for b in last.get('built') or []:
+                echo(f"  built {b.get('stream')}/{b.get('partition')}: {_n(b.get('rows'))} rows, "
+                     f"{_n(b.get('size'))} B")
+            for f in last.get('failed') or []:
+                echo(f"  FAILED {f.get('stream')}/{f.get('partition')}: {f.get('error')}")
+        remaining = int(last.get('remaining') or 0)
+        if remaining == 0:
+            break
+        if not last.get('built') and last.get('failed'):
+            break
+    return {**last, 'totals': totals}
+
+
+def fetch_partitions(session, tag: str) -> dict:
+    """``GET /api/v1/dr/<tag>/partitions`` for the caller."""
+    resp = session.get(f'/api/v1/dr/{tag}/partitions', timeout=60)
+    if resp.status_code == 404:
+        raise RuntimeError(f"release {tag} is not available to you (unknown, or not published)")
+    resp.raise_for_status()
+    return resp.json()

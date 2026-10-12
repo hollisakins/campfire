@@ -271,5 +271,93 @@ def test_status_shows_a_freeze_in_progress_and_manifest_by_type():
     assert 'freezing since 2026-10-13 20:00 UTC' in format_release(row)
     report = {'generated_at': None, 'spectra_by_version': {}, 'leases': [], 'releases': [row]}
     assert any('DR-t: freezing since' in l for l in format_releases(report))
-    frozen = {**FROZEN, 'counts': {**FROZEN['counts'], 'manifest_by_type': {'nirspec_spec': 163, 'zfit': 160}}}
-    assert 'manifest: 163 nirspec_spec · 160 zfit' in format_release(frozen)
+    frozen = {**FROZEN, 'counts': {**FROZEN['counts'], 'members_by_type': {'nirspec_spec': 163, 'zfit': 160}}}
+    assert 'members: 163 nirspec_spec · 160 zfit' in format_release(frozen)
+
+
+# ---------------------------------------------------------------------------
+# export loop (P4b)
+# ---------------------------------------------------------------------------
+
+from campfire.dr import export_release, fetch_partitions  # noqa: E402
+
+
+class _HttpResp:
+    def __init__(self, status, payload):
+        self.status_code = status
+        self._payload = payload
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"http {self.status_code}")
+
+
+class _FakeSession:
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.calls = []
+
+    def post(self, path, json=None, timeout=None):
+        self.calls.append(('POST', path, json))
+        return self.answers.pop(0)
+
+    def get(self, path, timeout=None):
+        self.calls.append(('GET', path, None))
+        return self.answers.pop(0)
+
+
+def test_export_release_loops_until_nothing_remains():
+    s = _FakeSession([
+        _HttpResp(200, {'state': 'exporting', 'built': [{'stream': 'objects', 'partition': 'p', 'rows': 3, 'size': 99}],
+                        'failed': [], 'remaining': 1, 'incomplete': True}),
+        _HttpResp(200, {'state': 'exported', 'built': [{'stream': 'spectra', 'partition': 'p', 'rows': 5, 'size': 10}],
+                        'failed': [], 'remaining': 0, 'incomplete': False}),
+    ])
+    echoed = []
+    out = export_release(s, 'DR-t', budget_seconds=30, echo=echoed.append)
+    assert out['state'] == 'exported' and out['totals'] == {'built': 2, 'failed': 0, 'calls': 2}
+    assert [c[1] for c in s.calls] == ['/api/v1/dr/DR-t/export'] * 2
+    assert s.calls[0][2] == {'budget_seconds': 30}
+    assert echoed == ['  built objects/p: 3 rows, 99 B', '  built spectra/p: 5 rows, 10 B']
+
+
+def test_export_release_stops_when_only_failures_remain():
+    s = _FakeSession([
+        _HttpResp(200, {'state': 'exporting', 'built': [], 'failed': [{'stream': 'objects', 'partition': 'p', 'error': 'boom'}],
+                        'remaining': 1, 'incomplete': False}),
+    ])
+    out = export_release(s, 'DR-t')
+    assert out['totals'] == {'built': 0, 'failed': 1, 'calls': 1} and out['remaining'] == 1
+
+
+def test_export_release_raises_on_http_error():
+    s = _FakeSession([_HttpResp(409, {'error': 'invalid_state', 'error_description': 'release is published'})])
+    with pytest.raises(RuntimeError, match='release is published'):
+        export_release(s, 'DR-t')
+
+
+def test_fetch_partitions_404_is_a_clear_error():
+    s = _FakeSession([_HttpResp(404, {'error': 'not_found'})])
+    with pytest.raises(RuntimeError, match='not published'):
+        fetch_partitions(s, 'DR-t')
+    s = _FakeSession([_HttpResp(200, {'tag': 'DR-t', 'partitions': []})])
+    assert fetch_partitions(s, 'DR-t')['tag'] == 'DR-t'
+
+
+def test_cli_export(monkeypatch):
+    s = _FakeSession([
+        _HttpResp(200, {'state': 'exported', 'built': [{'stream': 'objects', 'partition': 'p', 'rows': 1, 'size': 2}],
+                        'failed': [], 'remaining': 0}),
+    ])
+    monkeypatch.setattr(main_cli, '_require_auth', lambda base_url: s)
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'export', '--tag', 'DR-t', '--budget', '5'])
+    assert res.exit_code == 0, res.output
+    assert 'DR-t: exported · built 1 file(s) in 1 call(s) · 0 failed · 0 remaining' in res.output
+    s2 = _FakeSession([_HttpResp(200, {'state': 'exporting', 'built': [], 'failed': [{'stream': 'x', 'partition': 'y', 'error': 'e'}], 'remaining': 1})])
+    monkeypatch.setattr(main_cli, '_require_auth', lambda base_url: s2)
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'export', '--tag', 'DR-t'])
+    assert res.exit_code == 1 and 'FAILED x/y: e' in res.output

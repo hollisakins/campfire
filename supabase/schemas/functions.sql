@@ -9399,6 +9399,312 @@ GRANT EXECUTE ON FUNCTION public.dr_purge_release(text) TO authenticated, servic
 
 
 
+-- =============================================================================
+-- Data releases: exports (P4b, docs/design-data-releases-impl-plan.md §6,
+-- docs/dr-format-v1.md)
+-- =============================================================================
+-- One gzip JSONL file per (stream, partition) under dr/<tag>/exports/ on the
+-- data bucket, built from the frozen tables by the admin route
+-- /api/v1/dr/<tag>/export (looped by `campfire dr export`) and handed out per
+-- viewer by /api/v1/dr/<tag>/partitions. The partition is the program slug for
+-- the five program-scoped streams (objects, spectra, line_fits, photometry,
+-- members) and the component name (nircam/<field>, photometry/<field>/<cat>)
+-- for the field-level member rows, so a presigned url never carries a row
+-- the viewer could not read through RLS. Objects / photometry rows of a
+-- mixed-program object appear in each of their programs' partitions, with the
+-- aggregates of the objects row scoped to that partition's program (what the
+-- live scoped sync returns to a caller holding that one program); a reader
+-- holding several programs merges by id.
+--
+--   dr_export_partitions(tag)      every (stream, partition) with rows, its
+--                                  storage key and row count;
+--   dr_export_rows(tag, stream, partition, after, limit)
+--                                  one keyset page of a partition, each row
+--                                  shaped like the live sync row of the same
+--                                  stream (dr-format-v1.md lists the fields);
+--   dr_export_begin(tag)           seed the dr_exports ledger, state -> exporting;
+--   dr_export_mark(tag, stream, partition, ...)
+--                                  record a built (or failed) file; the last
+--                                  ready file moves the release to `exported`.
+-- All admin/service_role (the builder runs as the service role).
+
+CREATE OR REPLACE FUNCTION public.dr_export_key(p_tag text, p_stream text, p_partition text)
+RETURNS text
+LANGUAGE sql IMMUTABLE
+AS $$
+  -- dr/<tag>/exports/<stream>/<partition>.jsonl.gz; the partition is made
+  -- key-safe (catalog names carry spaces). The ledger records the key, so the
+  -- mapping never has to be inverted.
+  SELECT 'dr/' || p_tag || '/exports/' || p_stream || '/'
+         || regexp_replace(p_partition, '[^A-Za-z0-9._-]', '_', 'g') || '.jsonl.gz';
+$$;
+
+REVOKE ALL ON FUNCTION public.dr_export_key(text, text, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_key(text, text, text) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_export_partitions(p_tag text)
+RETURNS TABLE(stream text, partition text, storage_key text, n_rows bigint)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  PERFORM dr_require_admin();
+  RETURN QUERY
+  WITH counts AS (
+    SELECT 'objects'::text AS stream, p AS partition, count(*) AS n
+    FROM dr_objects o, unnest(o.programs) AS p WHERE o.tag = p_tag GROUP BY p
+    UNION ALL
+    SELECT 'spectra', s.program_slug, count(*) FROM dr_spectra s WHERE s.tag = p_tag GROUP BY s.program_slug
+    UNION ALL
+    SELECT 'line_fits', f.program_slug, count(*) FROM dr_line_fits f WHERE f.tag = p_tag GROUP BY f.program_slug
+    UNION ALL
+    SELECT 'photometry', p, count(*)
+    FROM dr_photometry ph, unnest(ph.programs) AS p WHERE ph.tag = p_tag GROUP BY p
+    UNION ALL
+    SELECT 'members', COALESCE(m.program_slug, m.component), count(*)
+    FROM dr_members m WHERE m.tag = p_tag GROUP BY COALESCE(m.program_slug, m.component)
+  )
+  SELECT c.stream, c.partition, dr_export_key(p_tag, c.stream, c.partition), c.n
+  FROM counts c
+  ORDER BY c.stream, c.partition;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_export_partitions(text) IS 'Every (stream, partition) of a data release that has rows, with the export storage key and the row count (P4b). Program-scoped streams partition by program slug; field-level member rows by component. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_export_partitions(text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_partitions(text) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_export_rows(
+  p_tag text,
+  p_stream text,
+  p_partition text,
+  p_after text DEFAULT NULL,
+  p_limit integer DEFAULT 2000
+)
+RETURNS TABLE(next_cursor text, row_json jsonb)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+SET statement_timeout = '120s'
+AS $$
+BEGIN
+  PERFORM dr_require_admin();
+  IF p_limit IS NULL OR p_limit < 1 OR p_limit > 10000 THEN
+    RAISE EXCEPTION 'p_limit must be between 1 and 10000';
+  END IF;
+
+  IF p_stream = 'objects' THEN
+    RETURN QUERY
+    SELECT o.name,
+           jsonb_build_object(
+             'id', o.object_id, 'object_id', o.name, 'field', o.field, 'ra', o.ra, 'dec', o.dec,
+             'programs', o.programs, 'evidence_programs', o.evidence_programs,
+             -- aggregates scoped to this partition's program (the live scoped
+             -- sync shape for a caller holding that one program)
+             'observations', COALESCE(agg.observations, '{}'::text[]),
+             'gratings', COALESCE(agg.gratings, '{}'::text[]),
+             'n_targets', COALESCE(agg.n_targets, 0), 'n_spectra', COALESCE(agg.n_spectra, 0),
+             'max_snr', agg.max_snr, 'max_exposure_time', agg.max_exposure_time,
+             'photo_z', o.photo_z, 'photo_z_err_lo', o.photo_z_err_lo, 'photo_z_err_hi', o.photo_z_err_hi,
+             'has_photometry', o.has_photometry,
+             'z_source_spectrum_id', o.z_source_spectrum_id,
+             'redshift_auto', o.redshift_auto, 'redshift_inspected', o.redshift_inspected,
+             'redshift', o.redshift, 'redshift_quality', o.redshift_quality,
+             'inspected_used_auto', o.inspected_used_auto,
+             'last_inspected_at', o.last_inspected_at, 'last_inspected_by', o.last_inspected_by,
+             'version', o.version, 'is_active', true,
+             'needs_review', COALESCE((o.review_state->>'needs_review')::boolean, false),
+             'reviewed_spectrum_ids', o.review_state->'reviewed_spectrum_ids')
+    FROM dr_objects o
+    LEFT JOIN LATERAL (
+      SELECT count(*) AS n_spectra, count(DISTINCT s.target_id) AS n_targets,
+             array_agg(DISTINCT s.grating ORDER BY s.grating) AS gratings,
+             array_agg(DISTINCT s.observation ORDER BY s.observation) AS observations,
+             max(s.signal_to_noise) AS max_snr, max(s.exposure_time) AS max_exposure_time
+      FROM dr_spectra s
+      WHERE s.tag = o.tag AND s.object_id = o.object_id AND s.program_slug = p_partition
+    ) agg ON true
+    WHERE o.tag = p_tag AND p_partition = ANY (o.programs)
+      AND (p_after IS NULL OR o.name > p_after)
+    ORDER BY o.name
+    LIMIT p_limit;
+
+  ELSIF p_stream = 'spectra' THEN
+    RETURN QUERY
+    SELECT s.spectrum_id,
+           jsonb_build_object(
+             'id', s.id, 'spectrum_id', s.spectrum_id, 'target_id', s.target_id,
+             'object_id', o.name, 'object_db_id', s.object_id,
+             'grating', s.grating, 'fits_path', s.fits_path,
+             'file_hash', s.file_hash, 'science_hash', s.science_hash, 'file_size', s.file_size,
+             'signal_to_noise', s.signal_to_noise, 'exposure_time', s.exposure_time,
+             'cfpipe_version', s.cfpipe_version, 'crds_context', s.crds_context,
+             'jwst_version', s.jwst_version, 'date_obs', s.date_obs, 'reduced_at', s.reduced_at,
+             'redshift_auto', s.redshift_auto, 'chi2_min', s.chi2_min, 'confidence', s.confidence,
+             'dq_flags', s.dq_flags, 'program_slug', s.program_slug, 'observation', s.observation,
+             'field', o.field)
+    FROM dr_spectra s
+    LEFT JOIN dr_objects o ON o.tag = s.tag AND o.object_id = s.object_id
+    WHERE s.tag = p_tag AND s.program_slug = p_partition
+      AND (p_after IS NULL OR s.spectrum_id > p_after)
+    ORDER BY s.spectrum_id
+    LIMIT p_limit;
+
+  ELSIF p_stream = 'line_fits' THEN
+    RETURN QUERY
+    SELECT f.spectrum_id::text,
+           jsonb_build_object(
+             'spectrum_id', f.spectrum_id, 'spectrum_name', s.spectrum_id,
+             'target_id', f.target_id, 'grating', f.grating,
+             'program_slug', f.program_slug, 'observation', f.observation,
+             'object_id', f.object_id, 'object_version', f.object_version,
+             'z_used', f.z_used, 'z_source', f.z_source, 'z_quality', f.z_quality,
+             'z_fit', f.z_fit, 'z_fit_err', f.z_fit_err, 'dv', f.dv, 'dv_err', f.dv_err,
+             'sigma_v', f.sigma_v, 'sigma_v_err', f.sigma_v_err, 'kin_source', f.kin_source,
+             'n_lines', f.n_lines, 'n_detected', f.n_detected, 'n_broad', f.n_broad,
+             'chi2', f.chi2, 'dof', f.dof, 'lines', f.lines, 'fit_version', f.fit_version,
+             'cfpipe_version', f.cfpipe_version, 'f_lsf', f.f_lsf,
+             'spectrum_hash', f.spectrum_hash, 'spectrum_science_hash', f.spectrum_science_hash,
+             'fitted_at', f.fitted_at, 'stale_redshift', f.stale_redshift, 'stale_spectrum', f.stale_spectrum)
+    FROM dr_line_fits f
+    LEFT JOIN dr_spectra s ON s.tag = f.tag AND s.id = f.spectrum_id
+    WHERE f.tag = p_tag AND f.program_slug = p_partition
+      AND (p_after IS NULL OR f.spectrum_id > p_after::integer)
+    ORDER BY f.spectrum_id
+    LIMIT p_limit;
+
+  ELSIF p_stream = 'photometry' THEN
+    RETURN QUERY
+    SELECT ph.photometry_id::text,
+           jsonb_build_object(
+             'id', ph.photometry_id, 'object_id', ph.object_id, 'programs', ph.programs,
+             'field', ph.field, 'catalog_name', ph.catalog_name, 'catalog_id', ph.catalog_id,
+             'ra', ph.ra, 'dec', ph.dec, 'match_distance_arcsec', ph.match_distance_arcsec,
+             'photometry', ph.photometry, 'photo_z', ph.photo_z,
+             'photo_z_err_lo', ph.photo_z_err_lo, 'photo_z_err_hi', ph.photo_z_err_hi, 'has_pz', ph.has_pz)
+    FROM dr_photometry ph
+    WHERE ph.tag = p_tag AND p_partition = ANY (ph.programs)
+      AND (p_after IS NULL OR ph.photometry_id > p_after::integer)
+    ORDER BY ph.photometry_id
+    LIMIT p_limit;
+
+  ELSIF p_stream = 'members' THEN
+    RETURN QUERY
+    SELECT m.storage_key,
+           jsonb_build_object(
+             'storage_key', m.storage_key, 'component', m.component,
+             'program_slug', m.program_slug, 'field', m.field, 'product_type', m.product_type,
+             'spectrum_id', m.spectrum_id, 'backend', m.backend, 'bucket', m.bucket,
+             'content_hash', m.content_hash, 'science_hash', m.science_hash,
+             'size_bytes', m.size_bytes, 'archive_key', m.archive_key,
+             'byte_state', m.byte_state, 'stamped_hash', m.stamped_hash)
+    FROM dr_members m
+    WHERE m.tag = p_tag AND COALESCE(m.program_slug, m.component) = p_partition
+      AND (p_after IS NULL OR m.storage_key > p_after)
+    ORDER BY m.storage_key
+    LIMIT p_limit;
+
+  ELSE
+    RAISE EXCEPTION 'unknown export stream % (objects, spectra, line_fits, photometry, members)', p_stream;
+  END IF;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_export_rows(text, text, text, text, integer) IS 'One keyset page of a data-release export partition (P4b): rows shaped like the live sync rows of the same stream (docs/dr-format-v1.md), objects with aggregates scoped to the partition program. next_cursor = the row''s key (pass the last one as p_after for the next page). Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_export_rows(text, text, text, text, integer) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_rows(text, text, text, text, integer) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_export_begin(p_tag text)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  r dr_releases%ROWTYPE;
+  n_new int; n_pending int; n_total int;
+BEGIN
+  PERFORM dr_require_admin();
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'no release %', p_tag; END IF;
+  IF r.state NOT IN ('frozen', 'exporting', 'exported') THEN
+    RAISE EXCEPTION 'release % is % (exports need a frozen, unpublished release)', p_tag, r.state;
+  END IF;
+  INSERT INTO dr_exports (tag, stream, partition, storage_key, state)
+  SELECT p_tag, p.stream, p.partition, p.storage_key, 'pending'
+  FROM dr_export_partitions(p_tag) p
+  ON CONFLICT (tag, stream, partition) DO NOTHING;
+  GET DIAGNOSTICS n_new = ROW_COUNT;
+  SELECT count(*) FILTER (WHERE state <> 'ready'), count(*) INTO n_pending, n_total
+  FROM dr_exports WHERE tag = p_tag;
+  UPDATE dr_releases
+     SET state = CASE WHEN n_pending = 0 AND n_total > 0 THEN 'exported' ELSE 'exporting' END,
+         updated_at = now()
+   WHERE tag = p_tag;
+  RETURN jsonb_build_object('tag', p_tag, 'new', n_new, 'pending', n_pending, 'total', n_total,
+                            'state', (SELECT state FROM dr_releases WHERE tag = p_tag));
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_export_begin(text) IS 'Seed the export ledger of a frozen data release from dr_export_partitions (idempotent: existing ledger rows are kept) and move the release to exporting (or exported when every file is already ready). Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_export_begin(text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_begin(text) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_export_mark(
+  p_tag text,
+  p_stream text,
+  p_partition text,
+  p_state text,
+  p_sha256 text DEFAULT NULL,
+  p_size_bytes bigint DEFAULT NULL,
+  p_rows integer DEFAULT NULL,
+  p_error text DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  n_pending int; n_total int; v_state text;
+BEGIN
+  PERFORM dr_require_admin();
+  IF p_state NOT IN ('building', 'ready', 'failed', 'pending') THEN
+    RAISE EXCEPTION 'invalid export state %', p_state;
+  END IF;
+  IF (SELECT state FROM dr_releases WHERE tag = p_tag) NOT IN ('exporting', 'exported', 'frozen') THEN
+    RAISE EXCEPTION 'release % is not exporting', p_tag;
+  END IF;
+  UPDATE dr_exports
+     SET state = p_state,
+         sha256 = CASE WHEN p_state = 'ready' THEN p_sha256 ELSE NULL END,
+         size_bytes = CASE WHEN p_state = 'ready' THEN p_size_bytes ELSE NULL END,
+         rows = CASE WHEN p_state = 'ready' THEN p_rows ELSE NULL END,
+         built_at = CASE WHEN p_state = 'ready' THEN now() ELSE NULL END,
+         error = CASE WHEN p_state = 'failed' THEN left(p_error, 2000) ELSE NULL END
+   WHERE tag = p_tag AND stream = p_stream AND partition = p_partition;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'no ledger row for % % %', p_tag, p_stream, p_partition;
+  END IF;
+  SELECT count(*) FILTER (WHERE state <> 'ready'), count(*) INTO n_pending, n_total
+  FROM dr_exports WHERE tag = p_tag;
+  v_state := CASE WHEN n_pending = 0 THEN 'exported' ELSE 'exporting' END;
+  UPDATE dr_releases SET state = v_state, updated_at = now()
+   WHERE tag = p_tag AND state IN ('exporting', 'exported', 'frozen');
+  RETURN jsonb_build_object('tag', p_tag, 'pending', n_pending, 'total', n_total, 'state', v_state);
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, integer, text) IS 'Record one export file of a data release as building / ready (sha256, size, rows) / failed (error) / pending; the last ready file moves the release to exported. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, integer, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, integer, text) TO authenticated, service_role;
+
+
 -- ===========================================================================
 -- Privilege hardening (P-1): no PUBLIC / anon EXECUTE on any function
 -- Postgres grants EXECUTE to PUBLIC on every new function, and the schema's
@@ -9515,3 +9821,8 @@ REVOKE ALL ON FUNCTION public.dr_parse_components(p_components jsonb) FROM PUBLI
 REVOKE ALL ON FUNCTION public.dr_freeze_job(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_enqueue_freeze(p_tag text, p_components jsonb, p_notes text, p_inline boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_purge_release(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_begin(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_key(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_mark(p_tag text, p_stream text, p_partition text, p_state text, p_sha256 text, p_size_bytes bigint, p_rows integer, p_error text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_partitions(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_rows(p_tag text, p_stream text, p_partition text, p_after text, p_limit integer) FROM PUBLIC, anon;

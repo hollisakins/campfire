@@ -1271,7 +1271,7 @@ def verify(obs_filter, cloud, deep, as_json, local):
 
 @cli.group(name="dr")
 def dr_group():
-    """Data-release tooling (admin): readiness, freeze, purge."""
+    """Data-release tooling (admin): readiness, freeze, export, purge."""
 
 
 @dr_group.command(name="status")
@@ -1429,6 +1429,42 @@ def dr_purge(tag, yes, local):
     deleted = result.get('deleted') or {}
     parts = [f"{int(v):,} {k}" for k, v in deleted.items() if v]
     click.echo(f"Purged {tag} (was {result.get('state_before')}): " + (' · '.join(parts) or 'no rows'))
+
+
+@dr_group.command(name="export")
+@click.option("--tag", required=True, metavar="TAG", help="Release tag to export")
+@click.option("--budget", type=float, default=240.0, show_default=True, metavar="SECONDS",
+              help="Time budget per builder call (the route caps it at 280 s)")
+@click.option("--base-url", default=None, help="API base URL (default: configured / production)")
+@click.option("--json", "as_json", is_flag=True, help="Print the final builder answer as JSON")
+def dr_export(tag, budget, base_url, as_json):
+    """Build the export files of a frozen release (P4b).
+
+    Loops the admin builder route until every (stream, partition) file under
+    dr/TAG/exports/ is ready; each call builds for one time budget and the
+    ledger (dr_exports) makes the loop resumable. The release moves from
+    frozen to exporting to exported. Needs `campfire login` as an admin.
+    """
+    import json as _json
+
+    from .dr import export_release
+
+    session = _require_auth(base_url)
+    click.echo(f"Exporting {tag} …")
+    try:
+        result = export_release(session, tag, budget_seconds=budget, echo=click.echo)
+    except Exception as e:  # noqa: BLE001 - one line, not a traceback
+        click.echo(f"✗ {e}")
+        sys.exit(1)
+    totals = result.get('totals') or {}
+    if as_json:
+        click.echo(_json.dumps(result, indent=2, sort_keys=True, default=str))
+    else:
+        click.echo(f"{tag}: {result.get('state')} · built {totals.get('built', 0)} file(s) in "
+                   f"{totals.get('calls', 0)} call(s) · {totals.get('failed', 0)} failed · "
+                   f"{result.get('remaining', 0)} remaining")
+    if result.get('failed') or int(result.get('remaining') or 0) > 0:
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
