@@ -39,6 +39,7 @@ type ObjectRow = {
   last_inspected_by: string | null;
   last_data_change_at: string | null;
   staleness_reason: ObjectHeader['staleness_reason'];
+  needs_review: boolean | null;
   version: number | null;
   is_active: boolean | null;
   photo_z: number | null;
@@ -175,6 +176,7 @@ export async function loadObjectHeader(objectId: string): Promise<{
       last_inspected_by: row.last_inspected_by ?? null,
       last_data_change_at: row.last_data_change_at ?? null,
       staleness_reason: row.staleness_reason ?? null,
+      needs_review: row.needs_review ?? false,
       version: row.version ?? 1,
       is_active: row.is_active ?? true,
       photo_z: row.photo_z ?? null,

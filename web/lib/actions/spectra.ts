@@ -223,6 +223,7 @@ export async function getSpectra(
           last_inspected_by: obj.last_inspected_by ?? null,
           last_data_change_at: obj.last_data_change_at ?? null,
           staleness_reason: obj.staleness_reason ?? null,
+          needs_review: obj.needs_review ?? false,
           // Fields not applicable in objects mode
           program_slug: obj.programs?.[0] ?? '',
           program_name: undefined,

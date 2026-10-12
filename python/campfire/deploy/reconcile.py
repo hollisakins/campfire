@@ -76,7 +76,6 @@ class Update:
     cluster_idx: int
     object: dict
     aggregates: ClusterAggregates
-    staleness_reason: str | None  # 'new_target' | 'membership_changed' | 'reprocessed' | None
 
 
 @dataclass
@@ -147,7 +146,7 @@ class Proposals:
     orphans: list[Orphan] = dc_field(default_factory=list)
     complex_overlaps: list[ComplexOverlap] = dc_field(default_factory=list)
     # No-op 1:1 matches: cluster and existing object have identical aggregates
-    # and no staleness signal. Skipped in apply_proposals to avoid bumping
+    # (membership and aggregates unchanged). Skipped in apply_proposals to avoid bumping
     # updated_at on every row (which would bloat incremental sync cursors).
     unchanged: int = 0
 
@@ -469,24 +468,15 @@ def classify(
             continue
         obj = obj_by_id[oid]
         agg = aggs[ci]
-        staleness = _detect_staleness(
-            obj=obj,
-            previous_member_target_ids=members_by_obj.get(oid, set()),
-            new_member_target_ids=agg.member_target_ids,
-            changed_hashes=changed_hashes,
-            spectra_map=spectra_map,
-        )
         # Skip no-op updates: same member set (enforced by the 1:1 guard
-        # above), no reprocessed spectra (staleness is None), and identical
-        # aggregates. Writing these would bump updated_at on every row and
-        # cause every incremental sync to re-pull the full field.
+        # above) and identical aggregates. Writing these would bump
+        # updated_at on every row and cause every incremental sync to re-pull
+        # the full field. A reprocessed spectrum is not a reason to write: the
+        # needs-review badge is membership-driven and maintained by database
+        # triggers (P3, docs/design-needs-review.md).
         # The object must already be active (inactive 1:1 matches need a
         # reactivation write in apply_proposals).
-        if (
-            staleness is None
-            and obj.get('is_active')
-            and _aggregates_match_object(agg, obj)
-        ):
+        if obj.get('is_active') and _aggregates_match_object(agg, obj):
             proposals.unchanged += 1
             handled_clusters.add(ci)
             handled_objects.add(oid)
@@ -496,7 +486,6 @@ def classify(
                 cluster_idx=ci,
                 object=obj,
                 aggregates=agg,
-                staleness_reason=staleness,
             )
         )
         handled_clusters.add(ci)
@@ -585,32 +574,6 @@ def _iso_to_epoch(iso: str | None) -> float:
         return datetime.fromisoformat(iso.replace('Z', '+00:00')).timestamp()
     except (ValueError, AttributeError):
         return 0.0
-
-
-def _detect_staleness(
-    *,
-    obj: dict,
-    previous_member_target_ids: set[str],
-    new_member_target_ids: set[str],
-    changed_hashes: set[tuple[str, str]],
-    spectra_map: dict[str, list[dict]],
-) -> str | None:
-    """Compute staleness_reason for a 1:1 matched cluster/object pair.
-
-    Priority (mutually exclusive): membership_changed > new_target > reprocessed > None.
-    """
-    added = new_member_target_ids - previous_member_target_ids
-    removed = previous_member_target_ids - new_member_target_ids
-    if removed or len(added) > 1:
-        return 'membership_changed'
-    if len(added) == 1:
-        return 'new_target'
-    # Membership unchanged — check for any member spectrum hash change.
-    for tid in new_member_target_ids:
-        for s in spectra_map.get(tid, []):
-            if (tid, s['grating']) in changed_hashes:
-                return 'reprocessed'
-    return None
 
 
 def _greedy_position_match(
@@ -807,7 +770,6 @@ def _apply_proposals_rpc(
         {
             **_agg_payload(u.aggregates),
             'object_db_id': u.object['id'],
-            'staleness_reason': u.staleness_reason,
             'reactivate': not u.object.get('is_active'),
         }
         for u in proposals.updates
@@ -840,11 +802,6 @@ def _apply_proposals_rpc(
     stats['reactivated'] = int(data.get('reactivated_count') or 0)
     stats['soft_deleted'] = int(data.get('orphaned_count') or 0)
     stats['target_fks_set'] = int(data.get('target_fks_set') or 0)
-    # Per-staleness breakdown — computed Python-side to preserve the legacy
-    # stat keys (the RPC doesn't need them).
-    for u in proposals.updates:
-        if u.staleness_reason:
-            stats[f'staleness_{u.staleness_reason}'] += 1
 
     changed_ids = set(inserted_ids) | set(revived_ids) | set(updated_ids)
     return dict(stats), changed_ids
@@ -897,34 +854,24 @@ def _apply_proposals_legacy(
             'observations': r.aggregates.observations,
             'max_snr': r.aggregates.max_snr,
             'max_exposure_time': r.aggregates.max_exposure_time,
-            'last_data_change_at': now,
-            'staleness_reason': 'membership_changed',
             'updated_at': now,
         }).eq('id', r.object['id']).execute()
         cluster_to_object_db_id[r.cluster_idx] = r.object['id']
         changed_ids.add(r.object['id'])
         stats['revived'] += 1
 
-    # 3. Updates — refresh aggregates on matched objects, set staleness if any.
+    # 3. Updates — refresh aggregates on matched objects.
     for u in proposals.updates:
         patch = _aggregate_to_update_dict(u.aggregates, now)
-        if u.staleness_reason is not None:
-            patch['last_data_change_at'] = now
-            patch['staleness_reason'] = u.staleness_reason
         # Membership-based match won an inactive object back — reactivate so
-        # the UI stops treating it as soft-deleted. Signal the reactivation
-        # via staleness so the operator sees it.
+        # the UI stops treating it as soft-deleted.
         if not u.object.get('is_active'):
             patch['is_active'] = True
-            patch['last_data_change_at'] = now
-            patch['staleness_reason'] = 'membership_changed'
             stats['reactivated'] += 1
         client.table('objects').update(patch).eq('id', u.object['id']).execute()
         cluster_to_object_db_id[u.cluster_idx] = u.object['id']
         changed_ids.add(u.object['id'])
         stats['updated'] += 1
-        if u.staleness_reason:
-            stats[f'staleness_{u.staleness_reason}'] += 1
 
     # 4. Splits — id-reuse for the inheritor; insert new objects for the rest.
     for s in proposals.splits:
@@ -935,8 +882,6 @@ def _apply_proposals_legacy(
             if i == s.inheritor_index:
                 # Reuse the existing object id; refresh aggregates + centroid.
                 patch = _aggregate_to_update_dict(d, now)
-                patch['last_data_change_at'] = now
-                patch['staleness_reason'] = 'membership_changed'
                 client.table('objects').update(patch).eq('id', s.object['id']).execute()
                 cluster_to_object_db_id[ci] = s.object['id']
                 new_object_db_ids.append(s.object['id'])
@@ -958,10 +903,8 @@ def _apply_proposals_legacy(
 
     # 5. Merges — id-reuse for the survivor; absorb losers' associated state.
     for m in proposals.merges:
-        # Update survivor's centroid + aggregates + staleness.
+        # Update survivor's centroid + aggregates.
         patch = _aggregate_to_update_dict(m.aggregates, now)
-        patch['last_data_change_at'] = now
-        patch['staleness_reason'] = 'membership_changed'
         client.table('objects').update(patch).eq('id', m.survivor['id']).execute()
         cluster_to_object_db_id[m.cluster_idx] = m.survivor['id']
         changed_ids.add(m.survivor['id'])
@@ -970,8 +913,6 @@ def _apply_proposals_legacy(
             _absorb_loser_state(client, loser_id=loser['id'], survivor_id=m.survivor['id'])
             client.table('objects').update({
                 'is_active': False,
-                'last_data_change_at': now,
-                'staleness_reason': 'membership_changed',
                 'updated_at': now,
             }).eq('id', loser['id']).execute()
         stats['merged'] += 1
@@ -981,8 +922,6 @@ def _apply_proposals_legacy(
     for o in proposals.orphans:
         client.table('objects').update({
             'is_active': False,
-            'last_data_change_at': now,
-            'staleness_reason': 'membership_changed',
             'updated_at': now,
         }).eq('id', o.object['id']).execute()
         stats['soft_deleted'] += 1
@@ -1358,8 +1297,6 @@ def split_object(
 
     # 2) Update original with its new aggregates (kept subset).
     patch = _aggregate_to_update_dict(keep_agg, now)
-    patch['last_data_change_at'] = now
-    patch['staleness_reason'] = 'membership_changed'
     client.table('objects').update(patch).eq('id', obj['id']).execute()
 
     # 3) Re-point moved target FKs to the new object.
@@ -1448,10 +1385,8 @@ def merge_objects(
 
     now = datetime.now(timezone.utc).isoformat()
 
-    # 1) Update survivor with combined aggregates + staleness.
+    # 1) Update survivor with combined aggregates.
     patch = _aggregate_to_update_dict(combined_agg, now)
-    patch['last_data_change_at'] = now
-    patch['staleness_reason'] = 'membership_changed'
     client.table('objects').update(patch).eq('id', survivor['id']).execute()
 
     # 2) For each source: absorb state, re-point targets, soft-delete.
@@ -1468,8 +1403,6 @@ def merge_objects(
                 }).execute()
         client.table('objects').update({
             'is_active': False,
-            'last_data_change_at': now,
-            'staleness_reason': 'membership_changed',
             'updated_at': now,
         }).eq('id', src['id']).execute()
 
@@ -1505,13 +1438,8 @@ def print_summary(field: str, proposals: Proposals, stats: dict[str, int] | None
     if proposals.complex_overlaps:
         print(f"    Overlaps:        {len(proposals.complex_overlaps)} (split+merge — operator must resolve)")
     if stats:
-        for k in (
-            'staleness_new_target',
-            'staleness_membership_changed',
-            'staleness_reprocessed',
-        ):
-            if stats.get(k):
-                print(f"    {k}: {stats[k]}")
+        if stats.get('reactivated'):
+            print(f"    reactivated: {stats['reactivated']}")
 
 
 # ---------------------------------------------------------------------------
@@ -1538,9 +1466,10 @@ def reconcile_field_objects(
         dry_run: Print plan without writing.
         yes: Skip interactive split/merge confirmation prompts.
         changed_hashes: Set of (target_id, grating) pairs whose spectrum
-            file_hash changed in this deploy. Used to set
-            staleness_reason='reprocessed'. Pass None or empty set for
-            standalone reconcile (no upsert ran).
+            content changed in this deploy. Accepted for call-site
+            compatibility and no longer used: reprocessing is not a review
+            need (P3, docs/design-needs-review.md); the badge is maintained
+            by database triggers on membership.
 
     Returns:
         (n_clusters, stats_dict, changed_object_db_ids). The third element is
@@ -1571,8 +1500,6 @@ def reconcile_field_objects(
                 if obj.get('is_active'):
                     client.table('objects').update({
                         'is_active': False,
-                        'last_data_change_at': now,
-                        'staleness_reason': 'membership_changed',
                         'updated_at': now,
                     }).eq('id', obj['id']).execute()
         return 0, {'soft_deleted': sum(1 for o in existing_objects if o.get('is_active'))}, set()

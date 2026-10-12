@@ -91,10 +91,8 @@ BEGIN
     RAISE EXCEPTION 'OBJECTS: expected %, got %', n_obs, r->'published'->>'objects';
   END IF;
 
-  -- needs_review: the catalog predicate over active objects
-  SELECT count(*) INTO n_nr FROM objects
-   WHERE is_active AND staleness_reason IS NOT NULL AND last_inspected_at IS NOT NULL
-     AND (last_data_change_at IS NULL OR last_data_change_at > last_inspected_at);
+  -- needs_review: the maintained badge flag over active objects (P3)
+  SELECT count(*) INTO n_nr FROM objects WHERE is_active AND needs_review;
   SELECT count(*) INTO n_pins FROM objects WHERE is_active AND inspected_used_auto;
   IF (r->>'needs_review')::bigint <> n_nr OR (r->>'implicit_pins')::bigint <> n_pins THEN
     RAISE EXCEPTION 'REVIEW: expected needs_review % / pins %, got % / %', n_nr, n_pins, r->>'needs_review', r->>'implicit_pins';

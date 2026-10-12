@@ -965,12 +965,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         minSize: 110,
         header: () => <>Status</>,
         cell: ({ row }: { row: { original: SpectrumTarget } }) => (
-          <StalenessBadge
-            reason={row.original.staleness_reason ?? null}
-            lastInspectedAt={row.original.last_inspected_at ?? null}
-            lastDataChangeAt={row.original.last_data_change_at ?? null}
-            compact
-          />
+          <StalenessBadge needsReview={row.original.needs_review ?? false} compact />
         ),
         enableSorting: false,
       } satisfies ColumnDef<SpectrumTarget>] : []),

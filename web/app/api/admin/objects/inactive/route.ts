@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
       .select(
         'id, object_id, field, ra, dec, programs, gratings, ' +
         'redshift, redshift_quality, last_inspected_at, last_data_change_at, ' +
-        'staleness_reason, updated_at'
+        'staleness_reason, needs_review, updated_at'
       )
       .eq('is_active', false)
       .order('updated_at', { ascending: false })

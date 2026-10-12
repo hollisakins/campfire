@@ -410,8 +410,7 @@ def test_apply_proposals_rpc_payload_and_parse():
                                         member_ids=('t10', 't11')))],
         updates=[Update(cluster_idx=1, object={'id': 500, 'is_active': True},
                         aggregates=_agg('JUPD', member_db_ids=(20,),
-                                        member_ids=('t20',)),
-                        staleness_reason='new_target')],
+                                        member_ids=('t20',)))],
         orphans=[Orphan(object={'id': 900})],
     )
 
@@ -440,14 +439,14 @@ def test_apply_proposals_rpc_payload_and_parse():
     assert 'member_target_ids' not in ins
     upd = params['p_updates'][0]
     assert upd['object_db_id'] == 500
-    assert upd['staleness_reason'] == 'new_target'
+    assert 'staleness_reason' not in upd   # P3: the badge is trigger-maintained
     assert upd['reactivate'] is False
 
     assert stats['inserted'] == 1
     assert stats['updated'] == 1
     assert stats['soft_deleted'] == 1
     assert stats['target_fks_set'] == 3
-    assert stats['staleness_new_target'] == 1
+    assert not any(k.startswith('staleness_') for k in stats)
     # changed_ids = inserted ∪ revived ∪ updated (orphans excluded).
     assert changed == {1001, 500}
 
@@ -456,7 +455,7 @@ def test_apply_proposals_rpc_reactivate_flag_for_inactive_update():
     # An inactive 1:1 match carries reactivate=True so the RPC flips is_active.
     proposals = Proposals(
         updates=[Update(cluster_idx=0, object={'id': 7, 'is_active': False},
-                        aggregates=_agg('JX'), staleness_reason=None)],
+                        aggregates=_agg('JX'))],
     )
     client = MagicMock()
     client.rpc.return_value.execute.return_value = MagicMock(data={

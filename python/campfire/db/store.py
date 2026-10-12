@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 #   science-only NIRCam identity, and the pushed_* columns carry the PUSH-side
 #   bookkeeping (`campfire push` / deploy dedup) — the mirror now serves both
 #   transfer directions.
-SCHEMA_VERSION = 10  # 10: spectra.science_hash (P0b); 9: spectrum_line_fits
+SCHEMA_VERSION = 11  # 11: objects.needs_review (P3); 10: spectra.science_hash (P0b); 9: spectrum_line_fits
 
 
 # Product-type classes the client download engine understands. Finals are the
@@ -47,7 +47,7 @@ OBJECT_COLUMNS = [
     "max_snr", "max_exposure_time",
     "redshift", "redshift_auto", "redshift_inspected", "redshift_quality",
     "last_inspected_at", "last_inspected_by",
-    "last_data_change_at", "staleness_reason", "version", "is_active",
+    "last_data_change_at", "staleness_reason", "needs_review", "version", "is_active",
     "has_photometry", "photo_z", "photo_z_err_lo", "photo_z_err_hi",
     "created_at", "updated_at",
 ]
@@ -60,7 +60,7 @@ OBJECT_EXPORT_COLUMNS = [
     "max_snr", "max_exposure_time",
     "has_photometry", "photo_z", "photo_z_err_lo", "photo_z_err_hi",
     "last_inspected_at", "last_inspected_by",
-    "last_data_change_at", "staleness_reason",
+    "last_data_change_at", "staleness_reason", "needs_review",
 ]
 
 # Columns exposed on `spectra` — flat per-spectrum rows. The provenance block
@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS objects (
     last_inspected_by TEXT,
     last_data_change_at TEXT,
     staleness_reason TEXT,
+    needs_review INTEGER DEFAULT 0,
     version INTEGER,
     is_active INTEGER DEFAULT 1,
     has_photometry INTEGER DEFAULT 0,
@@ -451,11 +452,11 @@ class LocalStore:
                      member_target_ids, max_snr, max_exposure_time,
                      redshift, redshift_auto, redshift_inspected, redshift_quality,
                      last_inspected_at, last_inspected_by,
-                     last_data_change_at, staleness_reason, version, is_active,
+                     last_data_change_at, staleness_reason, needs_review, version, is_active,
                      has_photometry, photo_z, photo_z_err_lo, photo_z_err_hi,
                      created_at, updated_at, _synced_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     obj.get("id"),
@@ -479,6 +480,7 @@ class LocalStore:
                     obj.get("last_inspected_by"),
                     obj.get("last_data_change_at"),
                     obj.get("staleness_reason"),
+                    1 if obj.get("needs_review") else 0,
                     obj.get("version"),
                     1 if obj.get("is_active", True) else 0,
                     1 if obj.get("has_photometry") else 0,
@@ -579,10 +581,8 @@ class LocalStore:
             where.append("COALESCE(o.redshift_quality, 0) = 0")
 
         if staleness:
-            where.append(
-                "o.last_data_change_at IS NOT NULL AND "
-                "(o.last_inspected_at IS NULL OR o.last_data_change_at > o.last_inspected_at)"
-            )
+            # P3: the server-maintained badge flag (docs/design-needs-review.md).
+            where.append("o.needs_review = 1")
 
         if has_photometry is True:
             where.append("o.has_photometry = 1")
