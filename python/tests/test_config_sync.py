@@ -324,9 +324,9 @@ def test_program_typed_row_writes_visibility_only_when_stated():
 def test_upsert_programs_omitted_visibility_leaves_cloud_alone():
     from campfire.deploy.supabase import upsert_programs
 
-    client = _FakeClient(tables={"programs": [{"slug": "capers", "is_public": True}]})
+    client = FakePostgrest(tables={"programs": [{"slug": "capers", "is_public": True}]})
     upsert_programs(client, ["capers"], {"capers": {"slug": "capers", "program_name": "CAPERS"}})
-    (_t, _c, row), = client.store["upserts"]
+    (row,) = client.upserted_rows("programs")
     assert "is_public" not in row
 
 
@@ -334,28 +334,28 @@ def test_upsert_programs_refuses_public_to_private_flip(monkeypatch):
     from campfire.deploy.supabase import ProgramVisibilityError, upsert_programs
 
     monkeypatch.delenv("CAMPFIRE_ALLOW_PROGRAM_PRIVATE_FLIP", raising=False)
-    client = _FakeClient(tables={"programs": [{"slug": "capers", "is_public": True}]})
+    client = FakePostgrest(tables={"programs": [{"slug": "capers", "is_public": True}]})
     cfg = {"capers": {"slug": "capers", "program_name": "CAPERS", "is_public": False}}
     with pytest.raises(ProgramVisibilityError, match="Refusing to make program 'capers' private"):
         upsert_programs(client, ["capers"], cfg)
-    assert client.store["upserts"] == []          # nothing written
+    assert client.upserted_rows("programs") == []          # nothing written
 
 
 def test_upsert_programs_private_flip_allowed_when_forced(monkeypatch, capsys):
     from campfire.deploy.supabase import upsert_programs
 
     cfg = {"capers": {"slug": "capers", "program_name": "CAPERS", "is_public": False}}
-    client = _FakeClient(tables={"programs": [{"slug": "capers", "is_public": True}]})
+    client = FakePostgrest(tables={"programs": [{"slug": "capers", "is_public": True}]})
     upsert_programs(client, ["capers"], cfg, force_visibility=True)
-    (_t, _c, row), = client.store["upserts"]
+    (row,) = client.upserted_rows("programs")
     assert row["is_public"] is False
-    assert any(name == "log_deploy_event" for name, _ in client.store["rpcs"])
+    assert any(r.name == "log_deploy_event" for r in client.rpcs)
     assert "PRIVATE" in capsys.readouterr().out
 
-    client = _FakeClient(tables={"programs": [{"slug": "capers", "is_public": True}]})
+    client = FakePostgrest(tables={"programs": [{"slug": "capers", "is_public": True}]})
     monkeypatch.setenv("CAMPFIRE_ALLOW_PROGRAM_PRIVATE_FLIP", "1")
     upsert_programs(client, ["capers"], cfg)
-    assert client.store["upserts"][0][2]["is_public"] is False
+    assert client.upserted_rows("programs")[0]["is_public"] is False
 
 
 def test_upsert_programs_private_stays_private_and_new_rows_pass(monkeypatch):
@@ -364,13 +364,13 @@ def test_upsert_programs_private_stays_private_and_new_rows_pass(monkeypatch):
     monkeypatch.delenv("CAMPFIRE_ALLOW_PROGRAM_PRIVATE_FLIP", raising=False)
     cfg = {"capers": {"slug": "capers", "program_name": "CAPERS", "is_public": False}}
     # New row: the stated value is written.
-    client = _FakeClient(tables={"programs": []})
+    client = FakePostgrest(tables={"programs": []})
     upsert_programs(client, ["capers"], cfg)
-    assert client.store["upserts"][0][2]["is_public"] is False
+    assert client.upserted_rows("programs")[0]["is_public"] is False
     # Existing private row: the key is left out of the write, so a publish
     # landing between the check and the upsert can never be undone by it.
-    client = _FakeClient(tables={"programs": [{"slug": "capers", "is_public": False}]})
+    client = FakePostgrest(tables={"programs": [{"slug": "capers", "is_public": False}]})
     upsert_programs(client, ["capers"], cfg)
-    assert "is_public" not in client.store["upserts"][0][2]
-    assert not any(name == "log_deploy_event" for name, _ in client.store["rpcs"])
+    assert "is_public" not in client.upserted_rows("programs")[0]
+    assert not any(r.name == "log_deploy_event" for r in client.rpcs)
 
