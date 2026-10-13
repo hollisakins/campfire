@@ -8,6 +8,7 @@ vi.mock('server-only', () => ({}));
 
 import {
   buildPartitionFile,
+  contentExportKey,
   openComponentPartitions,
   partitionVisible,
   releaseVisible,
@@ -55,6 +56,8 @@ function fakeSupabase(opts: {
   failRows?: string;
   /** stream/partition keys another run holds a claim on */
   busy?: string[];
+  /** the other run finishes the busy files while this one runs */
+  busyFinishes?: boolean;
 }) {
   const calls: { name: string; params: Record<string, unknown> }[] = [];
   const ledger = opts.ledger;
@@ -64,17 +67,20 @@ function fakeSupabase(opts: {
       if (name === 'dr_export_begin') return { data: { state: 'exporting' }, error: null };
       if (name === 'dr_export_mark') {
         const key = `${params.p_stream}/${params.p_partition}`;
+        const row = ledger.find((r) => r.stream === params.p_stream && r.partition === params.p_partition);
         if (params.p_state === 'building' && opts.busy?.includes(key)) {
+          // the other run finishes it meanwhile (the recount must see that)
+          if (opts.busyFinishes && row) row.state = 'ready';
           return { data: null, error: { message: `export file ${key} is being built by another run` } };
         }
-        const row = ledger.find((r) => r.stream === params.p_stream && r.partition === params.p_partition);
         if (params.p_state === 'building') {
           if (row) row.state = 'building';
-          return { data: { state: 'exporting', claim: `claim-${key}` }, error: null };
+          return { data: { state: 'exporting', claim: `claim-${key}`, base_key: row?.storage_key }, error: null };
         }
         if (row) {
           row.state = params.p_state as DrExportLedgerRow['state'];
           if (params.p_state === 'ready') {
+            row.storage_key = contentExportKey(row.storage_key as string, params.p_sha256 as string);
             row.sha256 = params.p_sha256 as string;
             row.size_bytes = params.p_size_bytes as number;
             row.rows = params.p_rows as number;
@@ -156,9 +162,12 @@ describe('runExportBudget', () => {
     expect(res.remaining).toBe(0);
     expect(res.incomplete).toBe(false);
     expect(res.state).toBe('exported');
+    // content-addressed keys, and the ledger records the same ones (Codex on #600)
     expect(puts.map((p) => p.Key)).toEqual([
-      'dr/DR-t/exports/objects/pub.jsonl.gz', 'dr/DR-t/exports/members/nircam/f.jsonl.gz',
+      expect.stringMatching(/^dr\/DR-t\/exports\/objects\/pub\.[0-9a-f]{16}\.jsonl\.gz$/),
+      expect.stringMatching(/^dr\/DR-t\/exports\/members\/nircam\/f\.[0-9a-f]{16}\.jsonl\.gz$/),
     ]);
+    expect(ledger.find((r) => r.stream === 'objects')!.storage_key).toBe(puts[0].Key);
     // the already-ready partition was neither rebuilt nor re-marked
     expect(calls.filter((c) => c.name === 'dr_export_rows' && c.params.p_stream === 'spectra')).toHaveLength(0);
     expect(ledger[1].sha256).toBe('sha256:old');
@@ -192,6 +201,31 @@ describe('runExportBudget', () => {
     expect(res.built).toHaveLength(1);
     expect(res.incomplete).toBe(true);
     expect(res.remaining).toBe(1);
+  });
+
+  it('content key format matches dr_export_content_key', () => {
+    const sha = `sha256:${'0123456789abcdef'.repeat(4)}`;
+    expect(contentExportKey('dr/T/exports/spectra/pub.jsonl.gz', sha)).toBe('dr/T/exports/spectra/pub.0123456789abcdef.jsonl.gz');
+    expect(contentExportKey('dr/T/exports/members/nircam_f-1a2b3c4d.jsonl.gz', sha))
+      .toBe('dr/T/exports/members/nircam_f-1a2b3c4d.0123456789abcdef.jsonl.gz');
+  });
+
+  it('a stale builder uploads to its own key, never the published one (Codex on #600)', async () => {
+    // two builds of the same partition with different bytes land on different keys
+    const sha1 = `sha256:${'a'.repeat(64)}`;
+    const sha2 = `sha256:${'b'.repeat(64)}`;
+    const base = 'dr/DR-t/exports/members/pub.jsonl.gz';
+    expect(contentExportKey(base, sha1)).not.toBe(contentExportKey(base, sha2));
+  });
+
+  it('remaining is recounted after a concurrent run finished a skipped file (Codex on #600)', async () => {
+    const s3 = { send: async () => {} };
+    const { client } = fakeSupabase({
+      pages, busy: ['objects/pub'], busyFinishes: true, ledger: [entry('objects', 'pub')],
+    });
+    const res = await runExportBudget(client, s3 as never, 'bucket', 'DR-t', 60_000);
+    expect(res.skipped).toHaveLength(1);
+    expect(res.remaining).toBe(0);
   });
 
   it('skips a file another run holds and passes its claim on ready / failed (Codex on #600)', async () => {

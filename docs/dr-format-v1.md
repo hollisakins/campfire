@@ -9,8 +9,14 @@ does not know. Design: `docs/design-data-releases.md` §4.3, plan §6 P4b.
 ## Files
 
 ```
-dr/<tag>/exports/<stream>/<partition>.jsonl.gz
+dr/<tag>/exports/<stream>/<partition>.<sha16>.jsonl.gz
 ```
+
+`<sha16>` is the first 16 hex digits of the file's sha256: built files are
+content-addressed, so a rebuild never overwrites the file a reader was handed,
+and an export run that lost its build claim can only write its own key. The
+ledger records the key of the ready file; readers use the url they are given
+and never construct keys.
 
 on the private data bucket (OSN). One file per (stream, partition); each line is
 one JSON object; the file is gzip bytes (content type `application/gzip`, not

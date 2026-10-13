@@ -245,13 +245,20 @@ export async function runExportBudget(
       skipped.push({ stream: entry.stream, partition: entry.partition, reason: claimError.message });
       continue;
     }
-    const claim = (claimed as { claim?: string } | null)?.claim ?? null;
+    const claimInfo = (claimed as { claim?: string; base_key?: string } | null) ?? {};
+    const claim = claimInfo.claim ?? null;
+    const baseKey = claimInfo.base_key ?? key;
     try {
       const { body, rows } = await buildPartitionFile(supabase, tag, entry.stream, entry.partition);
-      await s3.send(
-        new PutObjectCommand({ Bucket: bucket, Key: key, Body: body, ContentType: 'application/gzip' }),
-      );
       const sha256 = `sha256:${createHash('sha256').update(body).digest('hex')}`;
+      // Content-addressed upload: a run that lost its claim writes its stale
+      // bytes to its own key and never overwrites the published file; the
+      // ready mark records this same key server-side (dr_export_content_key).
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: bucket, Key: contentExportKey(baseKey, sha256), Body: body, ContentType: 'application/gzip',
+        }),
+      );
       const { data: marked, error: markError } = await supabase.rpc('dr_export_mark', {
         p_tag: tag, p_stream: entry.stream, p_partition: entry.partition, p_state: 'ready',
         p_sha256: sha256, p_size_bytes: body.length, p_rows: rows, p_claim: claim,
@@ -272,6 +279,19 @@ export async function runExportBudget(
     slowestMs = Math.max(slowestMs, now() - tp);
   }
 
-  const remaining = todo.length - built.length;
+  // Recounted from the ledger, not from this run's snapshot: another run may
+  // have finished files this one skipped (Codex on #600).
+  const after = await fetchLedger(supabase, tag);
+  const remaining = after.filter((r) => r.state !== 'ready').length;
   return { tag, state, built, failed, skipped, remaining, incomplete, duration_ms: now() - t0 };
+}
+
+/**
+ * The key a built export file is stored under: the partition's base key with
+ * the first 16 hex of the file's sha256 before `.jsonl.gz`. Must equal
+ * `dr_export_content_key` in the database (which records it at the ready mark).
+ */
+export function contentExportKey(baseKey: string, sha256: string): string {
+  const stem = baseKey.endsWith('.jsonl.gz') ? baseKey.slice(0, -'.jsonl.gz'.length) : baseKey;
+  return `${stem}.${sha256.slice('sha256:'.length, 'sha256:'.length + 16)}.jsonl.gz`;
 }

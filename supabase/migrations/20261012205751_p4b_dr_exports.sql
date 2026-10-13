@@ -104,6 +104,20 @@ $function$;
 
 REVOKE ALL ON FUNCTION "public"."dr_export_begin"(text) FROM PUBLIC, "anon";
 
+CREATE OR REPLACE FUNCTION public.dr_export_content_key (
+  p_base   text,
+  p_sha256 text
+)
+  RETURNS text
+  LANGUAGE sql
+  IMMUTABLE
+  AS $function$
+  SELECT left(p_base, length(p_base) - length('.jsonl.gz')) || '.'
+         || substr(p_sha256, length('sha256:') + 1, 16) || '.jsonl.gz';
+$function$;
+
+REVOKE ALL ON FUNCTION "public"."dr_export_content_key"(text, text) FROM PUBLIC, "anon";
+
 CREATE OR REPLACE FUNCTION public.dr_export_invalidate (
   p_tag       text,
   p_stream    text DEFAULT NULL::text,
@@ -224,6 +238,9 @@ BEGIN
       RAISE EXCEPTION 'export file % % of % was invalidated while it was being built (or never started); rebuild it',
         p_stream, p_partition, p_tag;
     END IF;
+    IF p_state = 'ready' AND (p_sha256 IS NULL OR p_sha256 !~ '^sha256:[0-9a-f]{64}$') THEN
+      RAISE EXCEPTION 'a ready export file needs its sha256 (sha256:<64 hex>)';
+    END IF;
     -- A builder's ready / failed mark must still hold the claim: a run that
     -- lost it (taken over, invalidated) never overwrites the newer state.
     IF p_claim IS NOT NULL AND (e.state IS DISTINCT FROM 'building' OR e.claim_token IS DISTINCT FROM p_claim) THEN
@@ -234,6 +251,10 @@ BEGIN
     END IF;
     UPDATE dr_exports
        SET state = p_state,
+           -- a ready file lives under its content-addressed key
+           storage_key = CASE WHEN p_state = 'ready'
+                              THEN dr_export_content_key(dr_export_key(p_tag, p_stream, p_partition), p_sha256)
+                              ELSE storage_key END,
            sha256 = CASE WHEN p_state = 'ready' THEN p_sha256 ELSE NULL END,
            size_bytes = CASE WHEN p_state = 'ready' THEN p_size_bytes ELSE NULL END,
            rows = CASE WHEN p_state = 'ready' THEN p_rows ELSE NULL END,
@@ -245,7 +266,9 @@ BEGIN
   SELECT count(*) FILTER (WHERE state <> 'ready'), count(*) INTO n_pending, n_total
   FROM dr_exports WHERE tag = p_tag;
   RETURN jsonb_build_object('tag', p_tag, 'pending', n_pending, 'total', n_total,
-                            'claim', v_claim, 'state', dr_derive_state(p_tag));
+                            'claim', v_claim,
+                            'base_key', dr_export_key(p_tag, p_stream, p_partition),
+                            'state', dr_derive_state(p_tag));
 END;
 $function$;
 
@@ -455,6 +478,14 @@ REVOKE ALL ON FUNCTION "public"."dr_export_begin"(text) FROM "postgres";
 GRANT EXECUTE ON FUNCTION "public"."dr_export_begin"(text) TO "postgres";
 
 GRANT EXECUTE ON FUNCTION "public"."dr_export_begin"(text) TO "service_role";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_export_content_key"(text, text) TO "authenticated";
+
+REVOKE ALL ON FUNCTION "public"."dr_export_content_key"(text, text) FROM "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_export_content_key"(text, text) TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_export_content_key"(text, text) TO "service_role";
 
 GRANT EXECUTE ON FUNCTION "public"."dr_export_invalidate"(text, text, text) TO "authenticated";
 

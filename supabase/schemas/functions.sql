@@ -9452,6 +9452,23 @@ $$;
 REVOKE ALL ON FUNCTION public.dr_export_key(text, text, text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_export_key(text, text, text) TO authenticated, service_role;
 
+-- The key a BUILT file is stored under: the partition's base key with the
+-- first 16 hex of the file's sha256 before `.jsonl.gz`
+-- (dr/<tag>/exports/<stream>/<partition>.<sha16>.jsonl.gz). Content-addressed,
+-- so a builder that lost its claim uploads its stale bytes to its own key and
+-- can never overwrite the file the ledger publishes (Codex on #600).
+-- contentExportKey in web/lib/server/dr-exports.ts computes the same string.
+CREATE OR REPLACE FUNCTION public.dr_export_content_key(p_base text, p_sha256 text)
+RETURNS text
+LANGUAGE sql IMMUTABLE
+AS $$
+  SELECT left(p_base, length(p_base) - length('.jsonl.gz')) || '.'
+         || substr(p_sha256, length('sha256:') + 1, 16) || '.jsonl.gz';
+$$;
+
+REVOKE ALL ON FUNCTION public.dr_export_content_key(text, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_content_key(text, text) TO authenticated, service_role;
+
 
 CREATE OR REPLACE FUNCTION public.dr_export_partitions(p_tag text)
 RETURNS TABLE(stream text, partition text, storage_key text, n_rows bigint)
@@ -9789,6 +9806,9 @@ BEGIN
       RAISE EXCEPTION 'export file % % of % was invalidated while it was being built (or never started); rebuild it',
         p_stream, p_partition, p_tag;
     END IF;
+    IF p_state = 'ready' AND (p_sha256 IS NULL OR p_sha256 !~ '^sha256:[0-9a-f]{64}$') THEN
+      RAISE EXCEPTION 'a ready export file needs its sha256 (sha256:<64 hex>)';
+    END IF;
     -- A builder's ready / failed mark must still hold the claim: a run that
     -- lost it (taken over, invalidated) never overwrites the newer state.
     IF p_claim IS NOT NULL AND (e.state IS DISTINCT FROM 'building' OR e.claim_token IS DISTINCT FROM p_claim) THEN
@@ -9799,6 +9819,10 @@ BEGIN
     END IF;
     UPDATE dr_exports
        SET state = p_state,
+           -- a ready file lives under its content-addressed key
+           storage_key = CASE WHEN p_state = 'ready'
+                              THEN dr_export_content_key(dr_export_key(p_tag, p_stream, p_partition), p_sha256)
+                              ELSE storage_key END,
            sha256 = CASE WHEN p_state = 'ready' THEN p_sha256 ELSE NULL END,
            size_bytes = CASE WHEN p_state = 'ready' THEN p_size_bytes ELSE NULL END,
            rows = CASE WHEN p_state = 'ready' THEN p_rows ELSE NULL END,
@@ -9810,7 +9834,9 @@ BEGIN
   SELECT count(*) FILTER (WHERE state <> 'ready'), count(*) INTO n_pending, n_total
   FROM dr_exports WHERE tag = p_tag;
   RETURN jsonb_build_object('tag', p_tag, 'pending', n_pending, 'total', n_total,
-                            'claim', v_claim, 'state', dr_derive_state(p_tag));
+                            'claim', v_claim,
+                            'base_key', dr_export_key(p_tag, p_stream, p_partition),
+                            'state', dr_derive_state(p_tag));
 END;
 $$;
 
@@ -9980,6 +10006,7 @@ REVOKE ALL ON FUNCTION public.dr_export_begin(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_derive_state(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_invalidate(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_key(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_content_key(p_base text, p_sha256 text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_mark(p_tag text, p_stream text, p_partition text, p_state text, p_sha256 text, p_size_bytes bigint, p_rows integer, p_error text, p_claim uuid) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_partitions(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_rows(p_tag text, p_stream text, p_partition text, p_after text, p_limit integer) FROM PUBLIC, anon;

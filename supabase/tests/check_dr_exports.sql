@@ -304,6 +304,26 @@ BEGIN
     IF (SELECT claim_token FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'objects' AND partition = prog) IS NOT NULL THEN
       RAISE EXCEPTION 'ready did not clear the claim';
     END IF;
+    -- a ready file is recorded under its content-addressed key (Codex on #600),
+    -- the same string contentExportKey computes in the builder
+    IF (SELECT storage_key FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'objects' AND partition = prog)
+       <> dr_export_content_key(dr_export_key('DR-seed', 'objects', prog), 'sha256:' || repeat('c', 64)) THEN
+      RAISE EXCEPTION 'ready file not under its content key: %',
+        (SELECT storage_key FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'objects' AND partition = prog);
+    END IF;
+    IF dr_export_content_key('dr/T/exports/spectra/pub.jsonl.gz', 'sha256:' || repeat('0123456789abcdef', 4))
+       <> 'dr/T/exports/spectra/pub.0123456789abcdef.jsonl.gz' THEN
+      RAISE EXCEPTION 'content key format drifted from the builder''s';
+    END IF;
+    PERFORM dr_export_invalidate('DR-seed', 'objects', prog);
+    c1 := (dr_export_mark('DR-seed', 'objects', prog, 'building'))->>'claim';
+    BEGIN
+      PERFORM dr_export_mark('DR-seed', 'objects', prog, 'ready', 'not-a-hash', 1, 1, NULL, c1);
+      RAISE EXCEPTION 'ready without a sha256 accepted';
+    EXCEPTION WHEN OTHERS THEN
+      IF SQLERRM NOT LIKE 'a ready export file needs its sha256%' THEN RAISE; END IF;
+    END;
+    PERFORM dr_export_mark('DR-seed', 'objects', prog, 'ready', 'sha256:' || repeat('c', 64), 1, 1, NULL, c1);
   END;
 
   -- a program slugged exactly like one of the release's components is refused
