@@ -20,7 +20,7 @@ DECLARE
   m dr_members%ROWTYPE;
   v_new text; v_key text; v_hash text;
   n_marked int := 0; n_registered int := 0; n_failed int := 0;
-  n_copied int := 0; n_stamped int := 0; n_pending int := 0;
+  n_copied int := 0; n_stamped int := 0; n_pending int := 0; n_stale int := 0;
   v_partitions text[] := '{}';
   v_rows int;
 BEGIN
@@ -74,6 +74,13 @@ BEGIN
         RAISE EXCEPTION 'science hash of % disagrees with the frozen one', m.storage_key;
       END IF;
       m.science_hash := COALESCE(m.science_hash, e->>'science_hash');
+    END IF;
+    -- A member already archived stays archived: a slower concurrent run's
+    -- failed / pending outcome for the same bytes is stale and ignored
+    -- (Codex on #601); it is counted, not applied.
+    IF m.byte_state IN ('copied', 'stamped') AND v_new IN ('failed', 'pending') THEN
+      n_stale := n_stale + 1;
+      CONTINUE;
     END IF;
 
     -- A newly created archive object gets its registry row (an existing row:
@@ -151,7 +158,7 @@ BEGIN
 
   RETURN jsonb_build_object('tag', p_tag, 'marked', n_marked, 'copied', n_copied, 'stamped', n_stamped,
                             'failed', n_failed, 'pending', n_pending, 'registered', n_registered,
-                            'state', dr_derive_state(p_tag));
+                            'stale', n_stale, 'state', dr_derive_state(p_tag));
 END;
 $function$;
 

@@ -259,6 +259,16 @@ BEGIN
   IF (SELECT byte_state FROM dr_members WHERE tag = 'DR-zzz-prev' AND storage_key = p.s2) <> 'stamped' THEN
     RAISE EXCEPTION 'the other release changed';
   END IF;
+  -- a slower concurrent run's failure for an already-archived member is stale:
+  -- ignored, counted, the archive key kept (Codex on #601)
+  res := dr_bytes_mark('DR-seed', jsonb_build_array(
+    jsonb_build_object('storage_key', p.j1, 'content_hash', pg_temp.zzz_ch(p.j1), 'state', 'failed', 'error', 'late')));
+  IF (res->>'stale')::int <> 1
+     OR (SELECT byte_state || '|' || archive_key FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.j1)
+        <> 'copied|' || j1_key THEN
+    RAISE EXCEPTION 'a stale failure regressed an archived member: % / %', res,
+      (SELECT to_jsonb(m) FROM dr_members m WHERE tag = 'DR-seed' AND storage_key = p.j1);
+  END IF;
   -- the same object again: no second registry row, no error
   res := dr_bytes_mark('DR-seed', jsonb_build_array(
     jsonb_build_object('storage_key', p.j1, 'content_hash', pg_temp.zzz_ch(p.j1), 'state', 'copied', 'archive_key', j1_key,
