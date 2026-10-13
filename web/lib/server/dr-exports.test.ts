@@ -370,6 +370,24 @@ describe('runExportBudget', () => {
     expect(deletes).toEqual([]);
   });
 
+  it('a failure another run repaired is reported as skipped (Codex on #600)', async () => {
+    const { s3 } = fakeS3();
+    const { client, ledger } = fakeSupabase({ pages, failRows: 'objects/pub', ledger: [entry('objects', 'pub')] });
+    // the overlapping run finishes the file right after this one marked it failed
+    const realRpc = (client as { rpc: (n: string, p: Record<string, unknown>) => Promise<unknown> }).rpc;
+    (client as { rpc: unknown }).rpc = async (name: string, params: Record<string, unknown>) => {
+      const out = await realRpc(name, params);
+      if (name === 'dr_export_mark' && params.p_state === 'failed') ledger[0].state = 'ready';
+      return out;
+    };
+    const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 60_000);
+    expect(res.remaining).toBe(0);
+    expect(res.failed).toEqual([]);
+    expect(res.skipped).toEqual([
+      { stream: 'objects', partition: 'pub', reason: expect.stringContaining('built by another run') },
+    ]);
+  });
+
   it('nothing is swept while files remain', async () => {
     const old = Date.now() - EXPORT_GARBAGE_GRACE_MS - 60_000;
     const { s3, deletes } = fakeS3({ 'dr/DR-t/exports/objects/x.aaaaaaaaaaaaaaaa.11111111.jsonl.gz': old });

@@ -341,6 +341,13 @@ BEGIN
     DELETE FROM dr_export_garbage WHERE tag = 'DR-seed';
     PERFORM dr_export_invalidate('DR-seed', 'objects', prog);
     c1 := (dr_export_mark('DR-seed', 'objects', prog, 'building'))->>'claim';
+    -- a purge waits for a live build claim (its upload would outlive the prefix delete)
+    BEGIN
+      PERFORM dr_purge_release('DR-seed');
+      RAISE EXCEPTION 'purge during a live build claim accepted';
+    EXCEPTION WHEN OTHERS THEN
+      IF SQLERRM NOT LIKE 'release DR-seed is being exported%' THEN RAISE; END IF;
+    END;
     PERFORM dr_export_mark('DR-seed', 'objects', prog, 'ready', 'sha256:' || repeat('d', 64), 1, 1, NULL, c1);
     IF (SELECT array_agg(storage_key) FROM dr_export_garbage WHERE tag = 'DR-seed')
        IS DISTINCT FROM ARRAY[dr_export_content_key(dr_export_key('DR-seed', 'objects', prog), 'sha256:' || repeat('c', 64), c2::uuid)] THEN

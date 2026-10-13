@@ -18,10 +18,14 @@ rebuild never overwrites the file a reader was handed, and an export run that
 lost its build claim can only write its own key. The ledger records the key of
 the ready file; readers use the url they are given and never construct keys.
 A build that loses its claim after uploading deletes its own object at once.
-Other keys the ledger no longer names (a partition rebuilt after a byte-pass
-invalidation, a build that died between its upload and its mark) are deleted by
-an export run that finds every file ready, once they are 30 minutes old; `campfire
-dr purge` deletes the whole `dr/<tag>/exports/` prefix (never with `--local`,
+Other keys the ledger no longer names are deleted once their grace (2 hours,
+longer than a presigned url lives) has passed: a file a rebuild replaced is aged
+from the replacement (`dr_export_garbage`), never from its upload; an object the
+ledger never named (a build that died between its upload and its mark) from its
+upload. The collector runs at the end of an export run that finds every file
+ready and daily (`/api/cron/dr-export-gc`). Nothing else may be written under
+`dr/<tag>/exports/`. `campfire dr purge` (refused while a build claim is live)
+deletes the whole `dr/<tag>/exports/` prefix (never with `--local`,
 whose database is local but whose bucket is the shared one).
 
 on the private data bucket (OSN). One file per (stream, partition); each line is
@@ -119,7 +123,7 @@ active object), `object_db_id`, `grating`, `fits_path`, `file_hash`,
 ### photometry
 
 `id` (live `object_photometry.id`), `object_id` (live `objects.id`),
-`programs` (the object's at the freeze), `field`, `catalog_name`, `catalog_id`,
+`programs` (`[<partition program>]`, as on the objects stream), `field`, `catalog_name`, `catalog_id`,
 `ra`, `dec`, `match_distance_arcsec`, `photometry`, `photo_z`,
 `photo_z_err_lo`, `photo_z_err_hi`, `has_pz`.
 

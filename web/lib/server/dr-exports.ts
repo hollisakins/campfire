@@ -17,6 +17,10 @@ import type { SupabaseClient } from '@supabase/supabase-js';
  * time and reports what is left; `campfire dr export` loops it. Each partition
  * is idempotent: a re-run rebuilds only the files that are not `ready`.
  *
+ * Everything under `dr/<tag>/exports/` is a built export file: the collector
+ * (`sweepSupersededExports`) deletes any key there the ledger does not name
+ * once its grace has passed, so nothing else may be written under that prefix.
+ *
  * Like the sync snapshots, the keys are not layout products: never registered
  * in storage_objects, never presignable through the storage routes; readers
  * get them only through /api/v1/dr/<tag>/partitions, which hands out the
@@ -315,6 +319,22 @@ export async function runExportBudget(
   const s = (status ?? {}) as { state?: string; remaining?: number };
   if (s.state) state = s.state;
   const remaining = Number(s.remaining ?? todo.length - built.length);
+  // A failure this run recorded that another run has since repaired is not a
+  // failure of the release (Codex on #600): re-read the ledger once and report
+  // those as skipped, so `campfire dr export` does not exit 1 on a complete export.
+  if (failed.length) {
+    const ready = new Set(
+      (await fetchLedger(supabase, tag).catch(() => [] as DrExportLedgerRow[]))
+        .filter((r) => r.state === 'ready').map((r) => `${r.stream}/${r.partition}`),
+    );
+    for (let i = failed.length - 1; i >= 0; i -= 1) {
+      const f = failed[i];
+      if (ready.has(`${f.stream}/${f.partition}`)) {
+        skipped.push({ stream: f.stream, partition: f.partition, reason: `built by another run after: ${f.error}` });
+        failed.splice(i, 1);
+      }
+    }
+  }
   // Once every file is ready, delete the export objects the ledger no longer
   // names (a partition rebuilt after a byte-pass invalidation, a build whose
   // claim was lost after its upload; Codex on #600).

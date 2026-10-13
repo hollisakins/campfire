@@ -9371,6 +9371,14 @@ BEGIN
   IF r.state = 'freezing' AND r.freeze_started_at > now() - interval '1 hour' THEN
     RAISE EXCEPTION 'release % is freezing (started %); wait for it to finish or fail', p_tag, r.freeze_started_at;
   END IF;
+  -- An export run still building a file would upload it after the prefix is
+  -- deleted, and nothing would name it again. A builder claims under this
+  -- same release-row lock, so once the purge commits no new claim is
+  -- possible; a claim older than the 10-minute takeover window is dead.
+  IF EXISTS (SELECT 1 FROM dr_exports x WHERE x.tag = p_tag AND x.state = 'building'
+              AND x.claimed_at > now() - interval '10 minutes') THEN
+    RAISE EXCEPTION 'release % is being exported (a build claim is live); wait for `campfire dr export` to finish', p_tag;
+  END IF;
   PERFORM dr_cron_unschedule(p_tag);
   DELETE FROM dr_manifest    WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
   DELETE FROM dr_line_fits  WHERE tag = p_tag; GET DIAGNOSTICS n_lines = ROW_COUNT;
@@ -9480,6 +9488,9 @@ CREATE OR REPLACE FUNCTION public.dr_export_partitions(p_tag text)
 RETURNS TABLE(stream text, partition text, storage_key text, n_rows bigint)
 LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path = public, pg_temp
+-- catalog-wide GROUP BYs over every frozen table: service_role would inherit
+-- authenticator's 8 s (the sync-RPC trap), as dr_export_rows does
+SET statement_timeout = '120s'
 AS $$
 BEGIN
   PERFORM dr_require_admin();
@@ -9547,8 +9558,10 @@ BEGIN
              'has_photometry', o.has_photometry,
              -- the anchor spectrum's id only when it is one of this program's
              'z_source_spectrum_id', CASE WHEN EXISTS (
-                 SELECT 1 FROM dr_spectra zs WHERE zs.tag = o.tag AND zs.id = o.z_source_spectrum_id
-                   AND zs.program_slug = p_partition) THEN o.z_source_spectrum_id END,
+                 -- anchored on the object (idx_dr_spectra_tag_object): the
+                 -- anchor is one of the object's spectra by construction
+                 SELECT 1 FROM dr_spectra zs WHERE zs.tag = o.tag AND zs.object_id = o.object_id
+                   AND zs.id = o.z_source_spectrum_id AND zs.program_slug = p_partition) THEN o.z_source_spectrum_id END,
              'redshift_auto', o.redshift_auto, 'redshift_inspected', o.redshift_inspected,
              'redshift', o.redshift, 'redshift_quality', o.redshift_quality,
              'inspected_used_auto', o.inspected_used_auto,
@@ -9562,7 +9575,7 @@ BEGIN
                  SELECT COALESCE(jsonb_agg(v ORDER BY v::text), '[]'::jsonb)
                  FROM jsonb_array_elements(o.review_state->'reviewed_spectrum_ids') v
                  WHERE EXISTS (SELECT 1 FROM dr_spectra rs
-                               WHERE rs.tag = o.tag AND rs.program_slug = p_partition
+                               WHERE rs.tag = o.tag AND rs.object_id = o.object_id AND rs.program_slug = p_partition
                                  AND (rs.id::text = v #>> '{}' OR rs.spectrum_id = v #>> '{}')))
                ELSE o.review_state->'reviewed_spectrum_ids' END)
     FROM dr_objects o
@@ -9719,6 +9732,8 @@ CREATE OR REPLACE FUNCTION public.dr_export_begin(p_tag text)
 RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public, pg_temp
+-- seeds the ledger through dr_export_partitions (catalog-wide)
+SET statement_timeout = '120s'
 AS $$
 DECLARE
   r dr_releases%ROWTYPE;
@@ -9734,6 +9749,8 @@ BEGIN
   -- exactly like one of the release's field-level components would share the
   -- open component file with its private rows (program slugs carry no format
   -- constraint). Refuse such a release rather than guess (Codex on #600).
+  -- Complete as written: dr_line_fits and dr_photometry take their program
+  -- slugs from these spectra and objects, so they cannot add a new one.
   IF EXISTS (SELECT 1 FROM jsonb_array_elements_text(r.components) c
              WHERE c.value LIKE '%/%'
                AND (EXISTS (SELECT 1 FROM dr_spectra s WHERE s.tag = p_tag AND s.program_slug = c.value)
