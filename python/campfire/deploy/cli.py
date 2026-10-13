@@ -838,7 +838,7 @@ def remove(ctx, config_path, obs, dry_run, local, force, supabase_only,
 
     Refuses if any target has user inspection data unless --force.
     """
-    from campfire.deploy.remove import RemovalLeaseLost, remove_observation
+    from campfire.deploy.remove import RemovalLeaseLost, RemovalRefused, remove_observation
 
     config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
@@ -851,7 +851,7 @@ def remove(ctx, config_path, obs, dry_run, local, force, supabase_only,
                 auto_approve=auto_approve,
                 skip_rebuild=skip_rebuild,
             )
-        except RemovalLeaseLost as e:
+        except (RemovalLeaseLost, RemovalRefused) as e:
             click.echo(f"\n✗ {e}")
             sys.exit(1)
 

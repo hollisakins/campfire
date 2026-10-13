@@ -235,11 +235,11 @@ def remove_observation(
             print(f"\n  REFUSED: {e}")
             if e.holder:
                 print("  " + e.describe().replace('\n', '\n  '))
-            return
+            raise RemovalRefused(f"{obs_name}: {e}") from e
         if not lease.leased:
             print(f"\n  REFUSED: could not take the deploy lease on {obs_name}; "
                   f"a removal never runs without it.")
-            return
+            raise RemovalRefused(f"{obs_name}: the deploy lease could not be taken")
     def still_held() -> bool:
         # Checked right before each destructive step (Codex on #602): a lease
         # stolen or taken over meanwhile means another deploy may be writing
@@ -275,6 +275,13 @@ class RemovalLeaseLost(RuntimeError):
     """The deploy lease of a removal was lost (stolen or taken over) mid-way."""
 
 
+class RemovalRefused(RuntimeError):
+    """A removal refused before deleting anything: a data release needs the
+    observation, the release check could not run, or the deploy lease could
+    not be taken. The CLI exits non-zero (Codex on #602: automation must not
+    read a refused removal as a successful one)."""
+
+
 def _release_blockers_refuse(sb, obs_name: str) -> bool:
     """True (after printing why) when a data release forbids removing *obs_name*."""
     from campfire.dr import format_references, observation_references
@@ -299,7 +306,7 @@ def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool
     """The removal proper (the caller holds the lease). True once rows were deleted."""
     field = obs['field']
     if _release_blockers_refuse(sb, obs_name):
-        return False
+        raise RemovalRefused(f"{obs_name}: a data release still needs it (see above)")
 
     targets = _fetch_targets(sb, obs_name)
     target_ids = [t['target_id'] for t in targets]

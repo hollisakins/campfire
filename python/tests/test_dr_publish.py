@@ -136,7 +136,9 @@ def _remove_env(monkeypatch, client):
 
 def test_remove_refuses_while_a_release_blocks(monkeypatch, capsys):
     rm, deleted = _remove_env(monkeypatch, _client(dr_observation_references=REFS))
-    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    # an error, not a silent return: automation must see the refusal (Codex on #602)
+    with pytest.raises(rm.RemovalRefused, match='a data release still needs it'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
     out = capsys.readouterr().out
     assert 'REFUSED' in out and 'BLOCKS removal' in out and 'dr withdraw' in out
     assert not deleted
@@ -146,7 +148,8 @@ def test_remove_fails_closed_when_the_check_cannot_run(monkeypatch, capsys):
     def boom(params):
         raise RuntimeError('Could not find the function public.dr_observation_references')
     rm, deleted = _remove_env(monkeypatch, _client(dr_observation_references=boom))
-    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    with pytest.raises(rm.RemovalRefused):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
     assert 'could not check the data releases' in capsys.readouterr().out
     assert not deleted
 
@@ -187,7 +190,8 @@ def test_remove_takes_the_lease_before_checking_and_claims_after(monkeypatch):
 def test_remove_releases_the_lease_when_refused(monkeypatch):
     c, order = _ordered_client(REFS)
     rm, deleted = _remove_env(monkeypatch, c)
-    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    with pytest.raises(rm.RemovalRefused):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
     assert not deleted
     assert order == ['begin', 'refs', 'release']
 
@@ -201,7 +205,8 @@ def test_remove_refused_while_a_freeze_or_deploy_holds_the_scope(monkeypatch, ca
         raise Busy()
     c, order = _ordered_client([], begin=busy)
     rm, deleted = _remove_env(monkeypatch, c)
-    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    with pytest.raises(rm.RemovalRefused, match='freeze is running'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
     out = capsys.readouterr().out
     assert 'REFUSED' in out and 'freeze is running' in out
     assert not deleted and order == ['begin']
@@ -213,7 +218,8 @@ def test_remove_refused_without_a_lease(monkeypatch, capsys):
     c, order = _ordered_client([], begin=broken)
     rm, deleted = _remove_env(monkeypatch, c)
     monkeypatch.setattr('campfire.deploy.supabase.get_deploy_scope_version', lambda *a, **k: 0)
-    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    with pytest.raises(rm.RemovalRefused, match='lease could not be taken'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
     assert 'could not take the deploy lease' in capsys.readouterr().out
     assert not deleted and 'refs' not in order
 
@@ -301,6 +307,20 @@ def test_remove_reports_an_indeterminate_claim(monkeypatch):
     with pytest.raises(rm.RemovalLeaseLost, match='final lease claim could not be confirmed'):
         rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
     assert deleted
+
+
+def test_cli_remove_exits_1_when_refused(monkeypatch):
+    # Codex on #602: `deploy remove --auto-approve` must not exit 0 on a refusal
+    import campfire.deploy.cli as dcli
+    import campfire.deploy.remove as rm
+
+    def refuse(obs_name, config, **kw):
+        raise rm.RemovalRefused(f'{obs_name}: a data release still needs it (see above)')
+    monkeypatch.setattr(dcli, 'load_config', lambda *a, **k: {})
+    monkeypatch.setattr(rm, 'remove_observation', refuse)
+    res = CliRunner().invoke(dcli.remove, ['--obs', 'obs1', '--auto-approve'])
+    assert res.exit_code == 1, res.output
+    assert 'a data release still needs it' in res.output
 
 
 def test_remove_dry_run_checks_without_leasing(monkeypatch):
