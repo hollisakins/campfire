@@ -419,16 +419,19 @@ def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool
 
     if not skip_rebuild:
         from campfire.deploy.reconcile import reconcile_field_objects
-        # reconciliation writes objects and target assignments too: still
-        # under the lease, or not at all (Codex on #602)
-        if not still_held():
-            raise RemovalLeaseLost(
-                f"the deploy lease on {obs_name} was lost after its rows and bytes were deleted; the object "
-                f"reconciliation of field '{field}' was NOT run (run `campfire deploy objects reconcile "
-                f"--field {field}` once the other deploy has finished)")
+
+        def lease_before_reconcile_write() -> None:
+            # reconciliation writes objects and target assignments too: still
+            # under the lease, checked at its write boundary (after its
+            # reads), or not at all (Codex on #602)
+            if not still_held():
+                raise RemovalLeaseLost(
+                    f"the deploy lease on {obs_name} was lost after its rows and bytes were deleted; the "
+                    f"object reconciliation of field '{field}' was NOT applied (run `campfire deploy objects "
+                    f"reconcile --field {field}` once the other deploy has finished)")
         print(f"\nReconciling objects for field '{field}'...")
         n_clusters, _stats, _changed_ids = reconcile_field_objects(
-            sb, field, abort_on_split_merge=True,
+            sb, field, abort_on_split_merge=True, before_write=lease_before_reconcile_write,
         )
         print(f"  {n_clusters} clusters")
 

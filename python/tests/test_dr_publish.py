@@ -322,11 +322,39 @@ def test_remove_rechecks_the_lease_before_reconciling(monkeypatch):
     # Codex on #602: reconciliation writes objects; never after the lease is lost
     import campfire.deploy.reconcile as rc
     rm, deleted = _remove_env(monkeypatch, _lease_client([True, True, False]))
-    ran = []
-    monkeypatch.setattr(rc, 'reconcile_field_objects', lambda *a, **k: ran.append(a) or (0, {}, []))
-    with pytest.raises(rm.RemovalLeaseLost, match='reconciliation of field .f. was NOT run'):
+    steps = []
+
+    def fake_reconcile(client, field, *, abort_on_split_merge, before_write=None):
+        steps.append('read')            # reads happen first...
+        before_write()                  # ...the lease is checked at the write boundary
+        steps.append('write')
+        return 0, {}, set()
+    monkeypatch.setattr(rc, 'reconcile_field_objects', fake_reconcile)
+    with pytest.raises(rm.RemovalLeaseLost, match='reconciliation of field .f. was NOT applied'):
         rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=False)
-    assert deleted and not ran
+    assert deleted and steps == ['read']
+
+
+def test_reconcile_calls_before_write_at_its_write_points(monkeypatch):
+    import campfire.deploy.reconcile as rc
+    calls = []
+    monkeypatch.setattr(rc, 'fetch_field_targets', lambda c, f: [])
+    monkeypatch.setattr(rc, 'fetch_existing_objects',
+                        lambda c, f: ([{'id': 1, 'is_active': True}, {'id': 2, 'is_active': True}], {}, None))
+
+    class Q:
+        def update(self, *a, **k):
+            calls.append('write')
+            return self
+
+        def eq(self, *a):
+            return self
+
+        def execute(self):
+            return None
+    client = type('C', (), {'table': lambda self, name: Q()})()
+    rc.reconcile_field_objects(client, 'f', before_write=lambda: calls.append('check'))
+    assert calls == ['check', 'write', 'check', 'write']
 
 
 def test_cli_remove_exits_1_when_refused(monkeypatch):
