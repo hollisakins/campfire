@@ -1461,7 +1461,8 @@ def reconcile_field_objects(
     """Incrementally reconcile the objects table for a field.
 
     *before_write()*, when given, runs immediately before every write (each
-    soft-delete of the no-targets path, and the apply of the proposals) and may
+    soft-delete of the no-targets path, the apply of the proposals, and the
+    field-wide redshift_auto recompute) and may
     raise to stop: `deploy remove` re-checks its deploy lease there, at the
     write boundary rather than before the reads (Codex on #602).
 
@@ -1548,6 +1549,8 @@ def reconcile_field_objects(
     stats, changed_ids = apply_proposals(client, field, proposals)
 
     print(f"  Computing object redshift_auto from member spectra...")
+    if before_write is not None:
+        before_write()          # a field-wide UPDATE too (Codex on #602)
     n_recomputed = compute_object_redshift_auto(client, field)
     stats['redshift_auto_set'] = n_recomputed
     print(f"    Updated {n_recomputed} objects")

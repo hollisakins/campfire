@@ -357,6 +357,23 @@ def test_reconcile_calls_before_write_at_its_write_points(monkeypatch):
     assert calls == ['check', 'write', 'check', 'write']
 
 
+def test_reconcile_checks_before_apply_and_before_the_redshift_recompute(monkeypatch):
+    # Codex on #602: the redshift recompute is a field-wide write as well
+    import campfire.deploy.reconcile as rc
+    calls = []
+    monkeypatch.setattr(rc, 'fetch_field_targets', lambda c, f: [{'target_id': 't1'}])
+    monkeypatch.setattr(rc, 'fetch_existing_objects', lambda c, f: ([], {}, None))
+    monkeypatch.setattr(rc, 'fetch_spectra_metadata', lambda c, ids: {})
+    monkeypatch.setattr(rc, 'cluster_targets', lambda t, r: [[0]])
+    monkeypatch.setattr(rc, 'classify', lambda **k: object())
+    monkeypatch.setattr(rc, 'print_summary', lambda *a, **k: None)
+    monkeypatch.setattr(rc, 'confirm_proposals', lambda *a, **k: None)
+    monkeypatch.setattr(rc, 'apply_proposals', lambda c, f, p: (calls.append('apply') or ({}, set())))
+    monkeypatch.setattr(rc, 'compute_object_redshift_auto', lambda c, f: calls.append('redshift') or 0)
+    rc.reconcile_field_objects(object(), 'f', before_write=lambda: calls.append('check'))
+    assert calls == ['check', 'apply', 'check', 'redshift']
+
+
 def test_cli_remove_exits_1_when_refused(monkeypatch):
     # Codex on #602: `deploy remove --auto-approve` must not exit 0 on a refusal
     import campfire.deploy.cli as dcli
