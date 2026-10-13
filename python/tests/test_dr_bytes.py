@@ -606,6 +606,22 @@ def test_cli_bytes_fails_while_earlier_failures_remain(monkeypatch):
     assert '1 member(s) of' in res.output and '--retry-failed' in res.output
 
 
+def test_cli_bytes_fails_when_the_summary_cannot_be_read(monkeypatch):
+    # Codex on #601: an unknown failure count is not a clean run
+    from click.testing import CliRunner
+
+    import campfire.cli as main_cli
+    client, _ = _fake_db([])
+
+    def broken(params):
+        raise RuntimeError('network down')
+    client.rpc_handlers['dr_bytes_summary'] = broken
+    _patch_cli(monkeypatch, client, s3=_s3())
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG])
+    assert res.exit_code == 1, res.output
+    assert 'could not read the byte-pass summary' in res.output
+
+
 def test_cli_bytes_runs_and_exits_1_on_failures(monkeypatch):
     from click.testing import CliRunner
 
