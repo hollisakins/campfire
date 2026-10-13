@@ -408,7 +408,7 @@ export interface NircamProductRow {
   filter: string;
   tile: string | null;        // null on expmap rows
   pixel_scale: string | null; // null on expmap rows
-  extension: string;          // sci, err, wht, srcmask, ... or 'exp'
+  extension: string;          // sci, err, wht, srcmask, exp (per-tile), ... or 'exp' (field expmap)
   epoch?: string;             // '' = full field (mosaics only)
   file_path: string;          // canonical storage key
   file_size?: number;         // logical (uncompressed) bytes

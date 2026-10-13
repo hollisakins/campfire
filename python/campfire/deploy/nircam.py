@@ -882,6 +882,9 @@ _MOSAIC_EXTENSIONS = (
     ('_err.fits', 'err'),
     ('_wht.fits', 'wht'),
     ('_srcmask.fits', 'srcmask'),
+    # Per-tile exposure map (EXPTIME + NEXP): the mosaic-scale member of the 'exp'
+    # family whose field-wide, coarse member is the nircam_expmap product.
+    ('_exp.fits', 'exp'),
 )
 
 # The i2d cube is the multi-extension science product the split _sci/_err/_wht
@@ -1066,7 +1069,7 @@ def _deploy_field_mosaics(dirs, field, config, client, filters, deployment_id,
 
     Called from :func:`deploy_nircam` so ``campfire deploy --field`` ships exposures
     and mosaics as one field deployment. Uploads each deployable mosaic product (the
-    split ``_sci/_err/_wht/_srcmask`` extensions — the heavy ``_i2d`` cube is
+    split ``_sci/_err/_wht/_srcmask/_exp`` extensions — the heavy ``_i2d`` cube is
     discovered but filtered out by :func:`deployable_mosaics`) to OSN under canonical
     keys — whole-file content-hash deduped via the push planner (with the pushed_*
     stat fast path, so an unchanged multi-GB mosaic is skipped without re-hashing)

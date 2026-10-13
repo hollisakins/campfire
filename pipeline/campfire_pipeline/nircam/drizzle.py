@@ -254,7 +254,8 @@ def _apply_output_metadata(model, *, blender, pixel_scale, pixfrac, kernel,
 def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
                     cmpfrver, exptime, *, pixel_scale, pixfrac, kernel,
                     weight_type, blender=None, n_pointings=None,
-                    pixel_scale_ratio=None, compress_context=True):
+                    pixel_scale_ratio=None, compress_context=True,
+                    exp_planes=None, exp_inputs=None, exp_used=None):
     """Write i2d FITS with the schema bkgsub and _split_extensions consume.
 
     Uses ``stdatamodels.jwst.datamodels.ImageModel`` so the HDU layout
@@ -353,6 +354,12 @@ def _write_i2d_fits(output_path, sci, err, wht, ctx, output_wcs,
                 True,
                 'CAMPFIRE: CON is a placeholder (write_context=false)',
             )
+
+    # Per-pixel exposure time + count, split out as ``_exp.fits`` by resample.
+    if exp_planes is not None:
+        from campfire_pipeline.nircam.mosaic_exp import append_exp_extensions
+        append_exp_extensions(output_path, *exp_planes, src='drizzle',
+                              ninputs=exp_inputs, nused=exp_used)
 
 
 def compress_context_extension(output_path, ctx=None):
@@ -510,6 +517,9 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
         in_shape = data.shape
         input_gwcs = deepcopy(model.meta.wcs)
         exptime = float(model.meta.exposure.exposure_time)
+        # XPOSURE, the quantity the exposure maps sum (as nircam/expmap.py does).
+        xposure = model.meta.exposure.effective_exposure_time
+        xposure = float(xposure if xposure is not None else exptime)
         input_pixelarea_a2 = model.meta.photometry.pixelarea_arcsecsq
 
         pixmap = _input_to_output_pixmap(input_gwcs, output_wcs, in_shape)
@@ -545,7 +555,7 @@ def _prepare_drizzle_input(crf_file, output_wcs, out_shape, *,
     return {
         'data': data, 'err': err,
         'var_total': var_total, 'weight': weight, 'var_weight': var_weight,
-        'pixmap': pixmap, 'exptime': exptime,
+        'pixmap': pixmap, 'exptime': exptime, 'xposure': xposure,
         'xmin': xmin, 'xmax': xmax, 'ymin': ymin, 'ymax': ymax,
         'in_shape': in_shape, 'input_gwcs': input_gwcs,
         'input_pixelarea_a2': input_pixelarea_a2,
@@ -633,6 +643,13 @@ def drizzle_tile(
     outwht = np.zeros(out_shape, dtype=np.float32)
     outvar = np.zeros(out_shape, dtype=np.float32)
     outvarw = np.zeros(out_shape, dtype=np.float32)
+    # Exposure maps (nircam/mosaic_exp.py): EXPTIME / NEXP over the inputs that
+    # put non-zero weight on each pixel, read off the weight change each
+    # add_image makes inside the input's bbox. No context cube needed, so they
+    # survive write_context = false.
+    outexpt = np.zeros(out_shape, dtype=np.float32)
+    outnexp = np.zeros(out_shape, dtype=np.int16)
+    exp_used = 0
     # The context cube is one int32 plane per 32 inputs at FULL tile size, so
     # it costs tile_area * 4 * ceil(n/32) — for a deep tile it dwarfs
     # SCI+ERR+WHT combined (measured: 660 GiB for a 1.15 Gpix tile with 3,471
@@ -688,7 +705,13 @@ def drizzle_tile(
             input_pixelarea_a2 = prep['input_pixelarea_a2']
 
         common = _add_image_kwargs(prep, pixfrac)
+        sly, slx = prep['sly'], prep['slx']
+        wht_before = outwht[sly, slx].copy()
         sci_drizzle.add_image(data=prep['data'], **common)
+        landed = outwht[sly, slx] != wht_before
+        outnexp[sly, slx] += landed
+        outexpt[sly, slx] += landed * np.float32(prep['xposure'])
+        exp_used += bool(landed.any())
         # The variance pass uses the *masked* variance weight from
         # _sanitize_variance (zero only at fully-dead pixels, where no variance
         # component is valid) so those are excluded from both the numerator and
@@ -741,6 +764,8 @@ def drizzle_tile(
         n_pointings=contributing if contributing > 0 else None,
         compress_context=compress_context,
         pixel_scale_ratio=pixel_scale_ratio,
+        exp_planes=(outexpt, outnexp), exp_inputs=contributing,
+        exp_used=exp_used,
     )
 
     log(f"  wrote {os.path.basename(output_path)} "

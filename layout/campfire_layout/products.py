@@ -195,7 +195,7 @@ _register(ProductSpec(
     legacy_prefix=lambda s: f"nircam/exposures/{s.field}/{s.filt}",
 ))
 # Drizzled mosaic outputs + their JSON manifests (mosaic_*). Reserved key. The
-# FITS extensions (_i2d/_sci/_err/_wht/_srcmask) are stored gzipped in the cloud
+# FITS extensions (_i2d/_sci/_err/_wht/_srcmask/_exp) are stored gzipped in the cloud
 # ('.fits.gz' key) so high-NaN mosaics transfer smaller; the local tree keeps the
 # plain '.fits' (pull decompresses). The '_manifest.json' sibling isn't a '.fits'
 # so it stays uncompressed; the '_thumb.png' is a separate product.
