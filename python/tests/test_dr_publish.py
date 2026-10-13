@@ -171,8 +171,9 @@ def _ordered_client(refs, *, begin=None):
             order.append(name)
             return value(params) if callable(value) else value
         return h
+    # as the real RPCs: the scope is at version 2, and begin bumps it to 3
     c = _client(begin_deploy_scope=rec('begin', begin or {'version': 3}),
-                get_deploy_scope_version=3,
+                get_deploy_scope_version=2,
                 dr_observation_references=rec('refs', refs),
                 claim_deploy_scope=rec('claim', True),
                 release_deploy_scope=rec('release', True),
@@ -441,8 +442,8 @@ def test_interactive_remove_refuses_a_same_size_redeploy(monkeypatch):
 
 
 def test_interactive_remove_refuses_when_redeployed_during_the_prompt(monkeypatch):
-    # every finished deploy bumps the scope version
-    c, order = _ordered_client([{**REFS[1]}], begin={'version': 4})
+    # another deploy's begin (and claim) bumped the scope past the one bump our begin makes
+    c, order = _ordered_client([{**REFS[1]}], begin={'version': 5})
     rm, deleted = _remove_env(monkeypatch, c)
     monkeypatch.setattr('builtins.input', lambda prompt: 'y')
     with pytest.raises(rm.RemovalRefused, match='redeployed after the confirmation'):

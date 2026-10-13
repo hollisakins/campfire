@@ -261,12 +261,15 @@ def remove_observation(
             if e.holder:
                 print("  " + e.describe().replace('\n', '\n  '))
             raise RemovalRefused(f"{obs_name}: {e}") from e
-        if confirmed_version is not None and lease.version_at_start != confirmed_version:
+        # begin_deploy_scope bumps the version once (the bump is the holder's
+        # token): anything more means another deploy began (and possibly
+        # finished) while the confirmation waited (Codex on #602)
+        if confirmed_version is not None and lease.version_at_start != confirmed_version + 1:
             lease.release()
             print(f"\n  REFUSED: {obs_name} was deployed again while the confirmation waited.")
             raise RemovalRefused(f"{obs_name} was redeployed after the confirmation "
-                                 f"(scope version {confirmed_version} -> {lease.version_at_start}); "
-                                 f"nothing was deleted, re-run to review it again")
+                                 f"(scope version {confirmed_version} at the confirmation, the lease took "
+                                 f"{lease.version_at_start}); nothing was deleted, re-run to review it again")
     def still_held() -> bool:
         # Checked right before each destructive step (Codex on #602): a lease
         # stolen or taken over meanwhile means another deploy may be writing
