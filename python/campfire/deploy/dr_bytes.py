@@ -502,6 +502,7 @@ class PassReport:
     bytes_moved: int = 0
     failures: list = field(default_factory=list)
     state: Optional[str] = None
+    superseded: int = 0
 
     def count(self, outcome: Outcome) -> None:
         self.by_action[outcome.action] = self.by_action.get(outcome.action, 0) + 1
@@ -513,7 +514,8 @@ class PassReport:
     def as_dict(self) -> dict:
         return {'tag': self.tag, 'dry_run': self.dry_run, 'seen': self.seen,
                 'by_action': self.by_action, 'by_state': self.by_state,
-                'bytes_moved': self.bytes_moved, 'failures': self.failures, 'state': self.state}
+                'bytes_moved': self.bytes_moved, 'failures': self.failures, 'state': self.state,
+                'superseded': self.superseded}
 
 
 def fetch_pending(client, tag: str, *, after: Optional[str] = None, limit: int = 500,
@@ -588,6 +590,10 @@ def run_byte_pass(client, s3, bucket: str, tag: str, *, workers: int = 8, page_s
                          for r, o in zip(rows[i:i + mark_batch], outcomes[i:i + mark_batch])]
                 res = mark_results(client, tag, batch)
                 report.state = res.get('state', report.state)
+                if int(res.get('superseded') or 0):
+                    # an earlier-frozen release stamped the same science first:
+                    # those members stay pending and reuse its object next run
+                    report.superseded += int(res['superseded'])
             log(f"  {report.seen:,} members: " +
                 ', '.join(f"{k} {v:,}" for k, v in sorted(report.by_state.items())) +
                 f" ({report.bytes_moved / 1e9:.2f} GB moved)")
@@ -614,6 +620,9 @@ def format_report(report: PassReport) -> str:
     lines = [f"Byte pass on {report.tag}: {report.seen:,} member(s) processed, "
              f"{report.bytes_moved / 1e9:.2f} GB moved; release state {report.state}"]
     lines += [f"  {k:<12} {v:>9,}" for k, v in sorted(report.by_action.items())]
+    if report.superseded:
+        lines.append(f"  {report.superseded:,} stamp(s) yielded to a release frozen earlier that stamped "
+                     f"the same science first; re-run to reuse its objects")
     for f in report.failures:
         lines.append(f"  ✗ {f['storage_key']}: {f['error']}")
     return '\n'.join(lines)

@@ -226,6 +226,22 @@ BEGIN
   SELECT count(*) INTO events_before FROM deploy_events WHERE action = 'archive' AND metadata->>'dr_tag' = 'DR-seed';
 
   -- ------------------------------------------------------------------ 3.
+  -- first freeze wins the stamp, atomically (Codex on #601): DR-zzz-prev,
+  -- frozen earlier, already stamped s2, so a fresh stamp of DR-seed's own
+  -- (a pass that fetched its page before that mark) is not recorded
+  res := dr_bytes_mark('DR-seed', jsonb_build_array(
+    jsonb_build_object('storage_key', p.s2, 'content_hash', pg_temp.zzz_ch(p.s2), 'state', 'stamped',
+                       'archive_key', 'archive/' || repeat('9', 64) || '/fresh/s2_spec.fits',
+                       'stamped_hash', 'sha256:' || repeat('9', 64),
+                       'registry', jsonb_build_object('content_type', 'application/fits'))));
+  IF (res->>'superseded')::int <> 1 OR (res->>'marked')::int <> 0 THEN
+    RAISE EXCEPTION 'a later release''s fresh stamp should yield to the earlier one: %', res;
+  END IF;
+  IF (SELECT byte_state FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s2) <> 'pending'
+     OR EXISTS (SELECT 1 FROM storage_objects WHERE storage_key = 'archive/' || repeat('9', 64) || '/fresh/s2_spec.fits') THEN
+    RAISE EXCEPTION 'the superseded stamp was recorded';
+  END IF;
+
   res := dr_bytes_mark('DR-seed', jsonb_build_array(
     jsonb_build_object('storage_key', p.s1, 'content_hash', pg_temp.zzz_ch(p.s1), 'state', 'stamped', 'archive_key', s1_key,
                        'stamped_hash', 'sha256:' || repeat('f', 64),
@@ -239,6 +255,19 @@ BEGIN
   IF (res->>'marked')::int <> 4 OR (res->>'stamped')::int <> 2 OR (res->>'copied')::int <> 1
      OR (res->>'failed')::int <> 1 OR (res->>'registered')::int <> 2 OR res->>'state' <> 'copying' THEN
     RAISE EXCEPTION 'mixed batch result wrong: %', res;
+  END IF;
+  -- DR-zzz-later (frozen after DR-seed) had stamped s1 itself; DR-seed's stamp
+  -- sends it back to pending so its next pass reuses this one (Codex on #601)
+  IF (res->>'restamped')::int <> 1
+     OR (SELECT byte_state || '|' || COALESCE(archive_key, '-') FROM dr_members
+          WHERE tag = 'DR-zzz-later' AND storage_key = p.s1) <> 'pending|-' THEN
+    RAISE EXCEPTION 'the later release should be re-pended: % / %', res,
+      (SELECT to_jsonb(d) FROM dr_members d WHERE tag = 'DR-zzz-later' AND storage_key = p.s1);
+  END IF;
+  -- ...and is now offered the earlier stamp
+  IF (SELECT b.reuse_archive_key FROM dr_bytes_pending('DR-zzz-later', NULL, 2000) b WHERE b.storage_key = p.s1)
+     IS DISTINCT FROM s1_key THEN
+    RAISE EXCEPTION 'the re-pended later release should be offered DR-seed''s stamp';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM storage_objects so JOIN dr_members m ON m.tag = 'DR-seed' AND m.storage_key = p.s1
                  WHERE so.storage_key = s1_key AND so.root = 'archive' AND so.status = 'archived'

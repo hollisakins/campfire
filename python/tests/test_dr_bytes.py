@@ -700,3 +700,21 @@ def test_cli_bytes_json_stdout_is_pure_json(monkeypatch):
     assert res.exit_code == 0, res.output
     assert json.loads(res.stdout)['by_state'] == {'copied': 1}
     assert 'Archiving the member bytes' in res.stderr
+
+
+def test_pass_reports_stamps_that_yield_to_an_earlier_release():
+    # Codex on #601: dr_bytes_mark does not record a fresh stamp when a release
+    # frozen earlier stamped the same science first; the pass says so
+    body = b'{"x": 1}'
+    client, state = _fake_db([_row(JSON_KEY, body, product_type='spectrum_json', byte_state='pending')])
+    real = client.rpc_handlers['dr_bytes_mark']
+
+    def mark(params):
+        out = real(params)
+        for r in state['rows']:
+            r['byte_state'] = 'pending'          # as if superseded
+        return {**out, 'marked': 0, 'superseded': len(params['p_results']), 'state': 'copying'}
+    client.rpc_handlers['dr_bytes_mark'] = mark
+    rep = B.run_byte_pass(client, _s3(**{JSON_KEY: body}), BUCKET, TAG, log=lambda *_: None)
+    assert rep.superseded == 1 and rep.as_dict()['superseded'] == 1
+    assert 'yielded to a release frozen earlier' in B.format_report(rep)
