@@ -145,6 +145,27 @@ def _stored_compressed(storage_key: str) -> bool:
         for sfx in getattr(spec, 'compressed_suffixes', ()) or ())
 
 
+INFLATE_OUT_BYTES = 8 << 20   # cap on any one decompressed piece
+
+
+def _inflate_into(h, d, data) -> None:
+    """Feed *data* through decompressor *d* into hash *h*, never producing more
+    than INFLATE_OUT_BYTES at a time: a NaN-heavy mosaic can compress 100:1, so
+    an unbounded ``d.decompress(chunk)`` would materialize the whole expansion
+    of each input chunk per worker (Codex on #601)."""
+    buf = data
+    while buf:
+        out = d.decompress(buf, INFLATE_OUT_BYTES)
+        h.update(out)
+        buf = d.unconsumed_tail
+    # drain anything still buffered internally, in bounded pieces too
+    while not d.eof:
+        out = d.decompress(b'', INFLATE_OUT_BYTES)
+        if not out:
+            break
+        h.update(out)
+
+
 def logical_sha256(stored: bytes, *, compressed: bool) -> str:
     """sha256 of the logical bytes: the stored body, gunzipped first when the
     product is stored transport-compressed (streamed, never fully inflated)."""
@@ -155,7 +176,7 @@ def logical_sha256(stored: bytes, *, compressed: bool) -> str:
     d = zlib.decompressobj(16 + zlib.MAX_WBITS)
     view = memoryview(stored)
     for i in range(0, len(view), 1 << 20):
-        h.update(d.decompress(view[i:i + (1 << 20)]))
+        _inflate_into(h, d, bytes(view[i:i + (1 << 20)]))
     h.update(d.flush())
     if not d.eof:
         raise ValueError('truncated gzip body')
@@ -434,7 +455,10 @@ def _stream_logical_sha256(s3, bucket: str, key: str, etag: str, *, compressed: 
         piece = body.read(chunk)
         if not piece:
             break
-        h.update(d.decompress(piece) if d else piece)
+        if d is not None:
+            _inflate_into(h, d, piece)
+        else:
+            h.update(piece)
     if d is not None:
         h.update(d.flush())
         if not d.eof:

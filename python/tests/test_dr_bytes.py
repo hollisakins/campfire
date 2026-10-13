@@ -370,6 +370,37 @@ def test_rewritten_gzipped_mosaic_is_verified_on_its_logical_bytes():
     assert (o.state, o.action) == ('failed', 'drift') and 'the release froze' in o.error
 
 
+def test_gunzip_output_is_bounded(monkeypatch):
+    # Codex on #601: a highly compressible body must not inflate a whole
+    # chunk's expansion at once
+    import gzip
+    import zlib
+    logical = b'\x00' * (5 << 20)           # 5 MiB of zeros -> a few KiB gzipped
+    stored = gzip.compress(logical)
+    monkeypatch.setattr(B, 'INFLATE_OUT_BYTES', 64 << 10)
+    seen = []
+    real = zlib.decompressobj
+
+    class Spy:
+        def __init__(self, *a):
+            self.d = real(*a)
+
+        def decompress(self, data, max_length=0):
+            out = self.d.decompress(data, max_length)
+            seen.append((max_length, len(out)))
+            return out
+
+        def __getattr__(self, name):
+            return getattr(self.d, name)
+    monkeypatch.setattr(zlib, 'decompressobj', Spy)
+    assert B.logical_sha256(stored, compressed=True) == B.sha256_hex(logical)
+    assert seen and all(m == 64 << 10 and n <= 64 << 10 for m, n in seen)
+    # and the streamed variant agrees
+    s3 = _s3(**{MOSAIC_KEY: stored})
+    etag = s3.head_object(Bucket=BUCKET, Key=MOSAIC_KEY)['ETag'].strip('"')
+    assert B._stream_logical_sha256(s3, BUCKET, MOSAIC_KEY, etag, compressed=True) == B.sha256_hex(logical)
+
+
 def test_unknown_stored_size_of_a_gzipped_mosaic_is_not_drift(monkeypatch):
     # Codex on #601: an old .fits.gz row without stored_size_bytes is unknown,
     # not its logical size; the CopyObject ceiling uses the HEAD instead
