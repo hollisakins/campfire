@@ -93,7 +93,10 @@ INSERT INTO spectra (target_id, grating, fits_path, deploy_status, redshift_auto
 INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, science_hash, size_bytes, content_type,
                              product_type, instrument, status, observation, program_slug, spectrum_id)
 SELECT 'osn', 'data', 'data/products/nirspec/' || s.observation || '/' || s.spectrum_id || k.sfx,
-       'sha256:' || md5(s.spectrum_id || k.sfx) || md5(k.sfx), s.science_hash, 1000 + k.i, 'application/octet-stream',
+       -- the final carries the spectrum's file hash (as deploy registers it)
+       CASE WHEN k.pt = 'nirspec_spec' THEN s.file_hash
+            ELSE 'sha256:' || md5(s.spectrum_id || k.sfx) || md5(k.sfx) END,
+       s.science_hash, 1000 + k.i, 'application/octet-stream',
        k.pt, 'nirspec', 'active', s.observation, s.program_slug,
        CASE WHEN k.with_sid THEN s.spectrum_id END
 FROM spectra s
@@ -437,6 +440,18 @@ BEGIN
     FROM spectra s
    WHERE s.fits_path = '/tmp/zzz_dr_mixp_prism_spec.fits' AND so.spectrum_id = s.spectrum_id
      AND so.product_type = 'nirspec_spec' AND so.status = 'revoked';
+  DELETE FROM dr_releases WHERE tag = 'DR-zzz-spec';
+
+  -- an active final whose hash is not the catalog row's (a --supabase-only
+  -- redeploy left the old row) fails too (Codex on #599)
+  UPDATE spectra SET file_hash = 'sha256:' || repeat('e', 64) WHERE fits_path = '/tmp/zzz_dr_mixp_prism_spec.fits';
+  got := pg_temp.zzz_dr_as('authenticated', admin,
+    $q$SELECT (public.dr_enqueue_freeze('DR-zzz-spec', '["nirspec"]', NULL, true))->>'state'$q$);
+  IF got <> 'failed' OR (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-spec')
+       NOT LIKE 'published spectra without an active registered final of the same file hash%' THEN
+    RAISE EXCEPTION 'stale final should fail the freeze: % / %', got, (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-spec');
+  END IF;
+  UPDATE spectra SET file_hash = 'sha256:' || repeat('3', 64) WHERE fits_path = '/tmp/zzz_dr_mixp_prism_spec.fits';
   DELETE FROM dr_releases WHERE tag = 'DR-zzz-spec';
   RAISE NOTICE 'OK 3: idempotence + failure path';
 END $$;

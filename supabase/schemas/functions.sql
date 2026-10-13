@@ -9157,9 +9157,13 @@ BEGIN
     FROM dr_spectra d
     WHERE d.tag = p_tag
       AND NOT EXISTS (SELECT 1 FROM dr_members m
-                      WHERE m.tag = p_tag AND m.spectrum_id = d.spectrum_id AND m.product_type = 'nirspec_spec');
+                      WHERE m.tag = p_tag AND m.spectrum_id = d.spectrum_id AND m.product_type = 'nirspec_spec'
+                        -- the SAME bytes the catalog row describes: a --supabase-only
+                        -- redeploy leaves the old registry row active (Codex on #599)
+                        AND (d.file_hash IS NULL OR m.content_hash = d.file_hash));
     IF v_missing IS NOT NULL THEN
-      RAISE EXCEPTION 'published spectra without an active registered final (redeploy them): %', left(v_missing, 1500);
+      RAISE EXCEPTION 'published spectra without an active registered final of the same file hash (redeploy them): %',
+        left(v_missing, 1500);
     END IF;
 
     UPDATE dr_releases
