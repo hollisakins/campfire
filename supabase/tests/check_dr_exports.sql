@@ -145,6 +145,12 @@ BEGIN
          AND NOT EXISTS (SELECT 1 FROM dr_spectra s WHERE s.tag = 'DR-seed' AND s.program_slug = pp.program_slug
                            AND s.id = (r.row_json->>'z_source_spectrum_id')::int));
   IF bad <> 0 THEN RAISE EXCEPTION '% objects rows leak another program''s membership or spectra', bad; END IF;
+  -- ...and the same for the photometry files
+  SELECT count(*) INTO bad
+  FROM (SELECT DISTINCT unnest(programs) AS p FROM dr_photometry WHERE tag = 'DR-seed') pp
+  CROSS JOIN LATERAL dr_export_rows('DR-seed', 'photometry', pp.p, NULL, 10000) r
+  WHERE r.row_json->'programs' <> jsonb_build_array(pp.p);
+  IF bad <> 0 THEN RAISE EXCEPTION '% photometry rows leak another program''s membership', bad; END IF;
 
   -- members
   SELECT count(*) INTO n FROM dr_export_rows('DR-seed', 'members', prog, NULL, 10000) r;

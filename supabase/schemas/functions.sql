@@ -9622,7 +9622,9 @@ BEGIN
     RETURN QUERY
     SELECT ph.photometry_id::text,
            jsonb_build_object(
-             'id', ph.photometry_id, 'object_id', ph.object_id, 'programs', ph.programs,
+             -- scoped to this partition, as in the objects stream: the file
+             -- must not reveal the object's other programs (Codex on #600)
+             'id', ph.photometry_id, 'object_id', ph.object_id, 'programs', ARRAY[p_partition],
              'field', ph.field, 'catalog_name', ph.catalog_name, 'catalog_id', ph.catalog_id,
              'ra', ph.ra, 'dec', ph.dec, 'match_distance_arcsec', ph.match_distance_arcsec,
              'photometry', ph.photometry, 'photo_z', ph.photo_z,
