@@ -1609,11 +1609,25 @@ def dr_bytes(tag, obs, field, workers, limit, retry_failed, dry_run, status_only
     except Exception as e:  # noqa: BLE001 - one line, not a traceback
         say(f"✗ {getattr(e, 'message', None) or e}")
         sys.exit(1)
+    # Failures stored by THIS or an EARLIER run: without --retry-failed the
+    # earlier ones are not even fetched, so the report alone can look clean
+    # while the release can never become ready (Codex on #601).
+    stored_failed = None
+    if not dry_run:
+        try:
+            summary = fetch_summary(sb, tag)
+            stored_failed = int(((summary.get('by_state') or {}).get('failed') or {}).get('count') or 0)
+        except Exception as e:  # noqa: BLE001
+            say(f"  (could not read the byte-pass summary: {getattr(e, 'message', None) or e})")
     if as_json:
-        click.echo(_json.dumps(report.as_dict(), indent=2, sort_keys=True, default=str))
+        click.echo(_json.dumps({**report.as_dict(), 'stored_failed': stored_failed},
+                               indent=2, sort_keys=True, default=str))
     else:
         click.echo(format_report(report))
-    if not dry_run and report.by_state.get('failed'):
+        if stored_failed:
+            click.echo(f"✗ {stored_failed:,} member(s) of {tag} are marked failed "
+                       f"(`campfire dr bytes --tag {tag} --status` lists them; rerun with --retry-failed)")
+    if not dry_run and (report.by_state.get('failed') or stored_failed):
         sys.exit(1)
 
 

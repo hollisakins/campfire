@@ -101,6 +101,14 @@ BEGIN
       RAISE EXCEPTION 'archive object % is not registered (pass its registry row)', v_key;
     END IF;
 
+    -- ...and on the live registry row a later freeze copies it from, while
+    -- that row still describes these exact bytes and has none (Codex on #601)
+    IF e->>'science_hash' IS NOT NULL THEN
+      UPDATE storage_objects so
+         SET science_hash = e->>'science_hash', updated_at = now()
+       WHERE so.backend = m.backend AND so.bucket = m.bucket AND so.storage_key = m.storage_key
+         AND so.root = 'live' AND so.content_hash = m.content_hash AND so.science_hash IS NULL;
+    END IF;
     UPDATE dr_members
        SET byte_state = v_new,
            science_hash = m.science_hash,

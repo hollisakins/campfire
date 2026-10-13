@@ -277,7 +277,9 @@ BEGIN
                        'stamped_hash', 'sha256:' || repeat('7', 64), 'science_hash', 'sha256:' || repeat('3', 64),
                        'registry', jsonb_build_object('size_bytes', 10))));
   IF (SELECT science_hash FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s3) <> 'sha256:' || repeat('3', 64)
-     OR (SELECT science_hash FROM storage_objects WHERE storage_key = 'archive/' || repeat('7', 64) || '/s3_spec.fits') <> 'sha256:' || repeat('3', 64) THEN
+     OR (SELECT science_hash FROM storage_objects WHERE storage_key = 'archive/' || repeat('7', 64) || '/s3_spec.fits') <> 'sha256:' || repeat('3', 64)
+     -- and on the live registry row the next freeze reads (Codex on #601)
+     OR (SELECT science_hash FROM storage_objects WHERE storage_key = p.s3 AND root = 'live') IS DISTINCT FROM 'sha256:' || repeat('3', 64) THEN
     RAISE EXCEPTION 'computed science hash not persisted';
   END IF;
   BEGIN

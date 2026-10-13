@@ -464,7 +464,15 @@ def _fake_db(rows):
         open_ = sum(1 for r in state['rows'] if r['byte_state'] in ('pending', 'failed'))
         return {'state': 'copying' if open_ else 'ready', 'marked': len(params['p_results'])}
 
-    client = FakePostgrest(rpc_handlers={'dr_bytes_pending': pending, 'dr_bytes_mark': mark})
+    def summary(params):
+        by = {}
+        for r in state['rows']:
+            by.setdefault(r['byte_state'], {'count': 0, 'bytes': 0})['count'] += 1
+        return {'tag': params['p_tag'], 'state': 'copying', 'members': len(state['rows']),
+                'by_state': by, 'failed_sample': []}
+
+    client = FakePostgrest(rpc_handlers={'dr_bytes_pending': pending, 'dr_bytes_mark': mark,
+                                         'dr_bytes_summary': summary})
     return client, state
 
 
@@ -581,6 +589,21 @@ def test_cli_bytes_dry_run_with_obs_prefix(monkeypatch):
     assert 'Dry run on' in res.output and 'copy' in res.output
     assert state['calls'][0]['p_prefix'] == 'data/products/nirspec/abc_p1/'
     assert not state['marks']
+
+
+def test_cli_bytes_fails_while_earlier_failures_remain(monkeypatch):
+    # Codex on #601: a rerun without --retry-failed fetches nothing, but the
+    # stored failure still keeps the release from becoming ready
+    from click.testing import CliRunner
+
+    import campfire.cli as main_cli
+    body = b'{"x": 1}'
+    rows = [_row(JSON_KEY, body, product_type='spectrum_json', byte_state='failed')]
+    client, _ = _fake_db(rows)
+    _patch_cli(monkeypatch, client, s3=_s3())
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG])
+    assert res.exit_code == 1, res.output
+    assert '1 member(s) of' in res.output and '--retry-failed' in res.output
 
 
 def test_cli_bytes_runs_and_exits_1_on_failures(monkeypatch):
