@@ -120,7 +120,9 @@ BEGIN
   -- Built member files no longer match the rows: back to pending.
   UPDATE dr_exports
      SET state = 'pending', sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL
-   WHERE tag = p_tag AND stream = 'members' AND state = 'ready' AND partition = ANY (v_partitions);
+   -- `building` too: a builder mid-way through this file read the old rows,
+   -- and dr_export_mark refuses its ready mark once the row is not building
+   WHERE tag = p_tag AND stream = 'members' AND state IN ('ready', 'building') AND partition = ANY (v_partitions);
 
   IF n_copied + n_stamped > 0 THEN
     INSERT INTO deploy_events (actor, action, affected_count, metadata)
@@ -164,7 +166,8 @@ CREATE OR REPLACE FUNCTION public.dr_bytes_pending (
     reuse_stamped_hash text,
     reuse_size_bytes   bigint,
     registry           jsonb,
-    frozen_at          timestamp with time zone
+    frozen_at          timestamp with time zone,
+    db_now             timestamp with time zone
   )
   LANGUAGE plpgsql
   STABLE
@@ -208,7 +211,10 @@ BEGIN
          -- the freeze's snapshot time: a live object last modified before it
          -- still holds the frozen bytes; one modified since must be verified
          -- by its hash before it is archived (Codex on #601)
-         (SELECT r.frozen_at FROM dr_releases r WHERE r.tag = p_tag)
+         (SELECT r.frozen_at FROM dr_releases r WHERE r.tag = p_tag),
+         -- the database clock, so the pass can measure its skew against the
+         -- object store's and size the window around frozen_at to it
+         clock_timestamp()
   FROM page pg
   -- the registry row the freeze captured (its metadata survives a redeploy)
   LEFT JOIN storage_objects src ON src.id = pg.registry_id

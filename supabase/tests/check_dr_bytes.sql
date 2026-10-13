@@ -190,6 +190,7 @@ BEGIN
 
   -- every export file built and ready first
   PERFORM dr_export_begin('DR-seed');
+  PERFORM dr_export_mark('DR-seed', e.stream, e.partition, 'building') FROM dr_exports e WHERE e.tag = 'DR-seed';
   PERFORM dr_export_mark('DR-seed', e.stream, e.partition, 'ready', 'sha256:' || repeat('a', 64), 1, 1)
   FROM dr_exports e WHERE e.tag = 'DR-seed';
   IF (SELECT state FROM dr_releases WHERE tag = 'DR-seed') <> 'exported' THEN RAISE EXCEPTION 'fixture: release not exported'; END IF;
@@ -256,6 +257,16 @@ BEGIN
   IF (res->>'registered')::int <> 0 OR (SELECT count(*) FROM storage_objects WHERE storage_key = j1_key) <> 1 THEN
     RAISE EXCEPTION 're-marking registered again: %', res;
   END IF;
+  -- a member file being BUILT when the byte pass changes its rows goes back
+  -- to pending, and the builder's ready mark is then refused (Codex on #601)
+  PERFORM dr_export_mark('DR-seed', 'members',
+    (SELECT COALESCE(program_slug, component) FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.j1), 'building');
+  PERFORM dr_bytes_mark('DR-seed', jsonb_build_array(
+    jsonb_build_object('storage_key', p.j1, 'state', 'copied', 'archive_key', j1_key)));
+  IF (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'members' AND partition =
+        (SELECT COALESCE(program_slug, component) FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.j1)) <> 'pending' THEN
+    RAISE EXCEPTION 'a building member file was not invalidated';
+  END IF;
   -- a science hash the pass computed for a member frozen without one is kept
   -- on the member and its archive row; one that disagrees is refused (Codex on #601)
   IF (SELECT science_hash FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s3) IS NOT NULL THEN
@@ -285,8 +296,10 @@ BEGIN
                                         'registry', jsonb_build_object('content_type', 'application/octet-stream')))
     FROM dr_members m WHERE m.tag = 'DR-seed' AND m.byte_state IN ('pending', 'failed')));
   IF res->>'state' <> 'exporting' THEN RAISE EXCEPTION 'every member done but member files pending: expected exporting, got %', res; END IF;
+  PERFORM dr_export_mark('DR-seed', e.stream, e.partition, 'building') FROM dr_exports e
+   WHERE e.tag = 'DR-seed' AND e.state <> 'ready';
   PERFORM dr_export_mark('DR-seed', e.stream, e.partition, 'ready', 'sha256:' || repeat('a', 64), 1, 1)
-  FROM dr_exports e WHERE e.tag = 'DR-seed' AND e.state <> 'ready';
+  FROM dr_exports e WHERE e.tag = 'DR-seed' AND e.state = 'building';
   IF (SELECT state FROM dr_releases WHERE tag = 'DR-seed') <> 'ready' THEN
     RAISE EXCEPTION 'every member and file done: expected ready, got %', (SELECT state FROM dr_releases WHERE tag = 'DR-seed');
   END IF;

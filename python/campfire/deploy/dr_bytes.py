@@ -234,7 +234,7 @@ def _copy_target(row: dict) -> str:
 
 
 def process_member(row: dict, *, tag: str, s3, bucket: str,
-                   verify_science: bool = True) -> Outcome:
+                   verify_science: bool = True, clock_margin: timedelta = None) -> Outcome:
     """Make one member's bytes exist under archive/ and say how."""
     key = row['storage_key']
     action = plan_action(row)
@@ -268,7 +268,7 @@ def process_member(row: dict, *, tag: str, s3, bucket: str,
             return Outcome(key, 'copied', 'reuse-copy', archive_key=row['source_key'])
         if action == 'stamp':
             return _stamp_member(row, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
-        return _copy_member(row, s3=s3, bucket=bucket)
+        return _copy_member(row, s3=s3, bucket=bucket, clock_margin=clock_margin or CLOCK_SKEW)
     except StampError as e:
         return Outcome(key, 'failed', 'error', error=f'stamp: {e}')
     except Exception as e:  # noqa: BLE001 - one member never stops the pass
@@ -314,7 +314,7 @@ def _stamp_member(row: dict, *, tag: str, s3, bucket: str, verify_science: bool)
                    registry=reg, bytes_moved=len(body) + len(stamped), science_hash=computed)
 
 
-def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:
+def _copy_member(row: dict, *, s3, bucket: str, clock_margin: timedelta = None) -> Outcome:
     key, src = row['storage_key'], row['source_key']
     target = _copy_target(row)
     stored = row.get('source_stored_size')
@@ -334,7 +334,8 @@ def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:
         return Outcome(key, 'failed', 'drift',
                        error=f"source {src} is {head.get('ContentLength')} bytes, the registry says {stored}")
     etag = (head.get('ETag') or '').strip('"')
-    if row.get('source_root') == 'live' and not _unchanged_since_freeze(head, row.get('frozen_at')):
+    if row.get('source_root') == 'live' and not _unchanged_since_freeze(head, row.get('frozen_at'),
+                                                                        clock_margin or CLOCK_SKEW):
         # The live object was (re)written after the freeze: its ETag proves
         # nothing about the frozen content hash, so a server-side copy could
         # archive replacement bytes under the old hash (Codex on #601). Small
@@ -369,22 +370,57 @@ def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:
                    bytes_moved=int(head.get('ContentLength') or 0))
 
 
-def _unchanged_since_freeze(head: dict, frozen_at) -> bool:
+def _parse_ts(value) -> Optional[datetime]:
+    if value is None or value == '':
+        return None
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _unchanged_since_freeze(head: dict, frozen_at, margin: timedelta = CLOCK_SKEW) -> bool:
     """True when the object was last written before the freeze snapshot.
 
     The deploy/freeze interlock means no deploy was writing while the freeze
     ran, so bytes last modified before it are the bytes the registry (and the
-    release) recorded. A skew margin guards against clock differences between
-    the database and the object store. Unknown times count as changed.
+    release) recorded. *margin* covers the clock difference between the
+    database and the object store (measured per run by
+    :func:`measure_clock_margin`, else the conservative default). Unknown
+    times count as changed.
     """
-    lm = head.get('LastModified')
-    if lm is None or not frozen_at:
+    lm, frozen_at = _parse_ts(head.get('LastModified')), _parse_ts(frozen_at)
+    if lm is None or frozen_at is None:
         return False
-    if isinstance(frozen_at, str):
-        frozen_at = datetime.fromisoformat(frozen_at.replace('Z', '+00:00'))
-    if lm.tzinfo is None:
-        lm = lm.replace(tzinfo=timezone.utc)
-    return lm < frozen_at - CLOCK_SKEW
+    return lm < frozen_at - margin
+
+
+def measure_clock_margin(s3, bucket: str, key: str, db_now, *, now=None) -> Optional[timedelta]:
+    """The window to keep around ``frozen_at``: |store clock - database clock|
+    plus the time between the two readings, plus 5 s for the 1 s resolution of
+    HTTP dates. Read from one HEAD's ``Date`` header against the ``db_now`` the
+    pending page carried; None when either reading is missing (the caller then
+    keeps the conservative default). Codex on #601: a fixed 2-minute window
+    wrongly failed large objects uploaded just before a freeze.
+    """
+    from email.utils import parsedate_to_datetime
+    import time as _time
+    db_now = _parse_ts(db_now)
+    if db_now is None or not key:
+        return None
+    t0 = (now or _time.monotonic)()
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+    except Exception:  # noqa: BLE001
+        return None
+    elapsed = (now or _time.monotonic)() - t0
+    date = ((head.get('ResponseMetadata') or {}).get('HTTPHeaders') or {}).get('date')
+    if not date:
+        return None
+    try:
+        store_now = parsedate_to_datetime(date)
+    except (TypeError, ValueError):
+        return None
+    return abs(store_now - db_now) + timedelta(seconds=elapsed + 5)
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +483,7 @@ def run_byte_pass(client, s3, bucket: str, tag: str, *, workers: int = 8, page_s
     """
     report = PassReport(tag=tag, dry_run=dry_run)
     need_pipeline = verify_science and not dry_run
+    margin: Optional[timedelta] = None
     after: Optional[str] = None
     lock = threading.Lock()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -474,8 +511,16 @@ def run_byte_pass(client, s3, bucket: str, tag: str, *, workers: int = 8, page_s
                     raise RuntimeError('stamping verifies science hashes with campfire-pipeline; '
                                        'install it (pip install -e ./pipeline) on this machine') from e
                 need_pipeline = False
+            if margin is None:
+                probe = next((r for r in rows if r.get('source_root') == 'live' and r.get('source_key')), None)
+                measured = (measure_clock_margin(s3, bucket, probe['source_key'], probe.get('db_now'))
+                            if probe else None)
+                margin = measured or CLOCK_SKEW
+                log(f"  clock window around the freeze: {margin.total_seconds():.0f} s "
+                    f"({'measured' if measured else 'default; the store sent no Date header'})")
             outcomes = list(pool.map(
-                lambda r: process_member(r, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science),
+                lambda r: process_member(r, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science,
+                                         clock_margin=margin),
                 rows))
             for o in outcomes:
                 with lock:
