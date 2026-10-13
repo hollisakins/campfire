@@ -9199,7 +9199,8 @@ BEGIN
     UPDATE dr_releases
        SET state = 'frozen',
            frozen_at = now(),
-           frozen_by = COALESCE(auth.uid(), created_by),
+           -- The requester of THIS freeze (a refreeze by another admin is theirs).
+           frozen_by = COALESCE(auth.uid(), r.freeze_requested_by, r.created_by),
            freeze_duration_ms = (extract(epoch FROM clock_timestamp() - v_t0) * 1000)::int,
            snapshot_xmin = v_xmin,
            counts = jsonb_build_object(
@@ -9212,7 +9213,7 @@ BEGIN
 
     -- Directly (log_deploy_event needs an auth uid; the cron runner has none).
     INSERT INTO deploy_events (actor, action, affected_count, metadata)
-    VALUES (COALESCE(auth.uid(), r.created_by), 'freeze', v_n_spectra::int,
+    VALUES (COALESCE(auth.uid(), r.freeze_requested_by, r.created_by), 'freeze', v_n_spectra::int,
             jsonb_build_object('dr_tag', p_tag, 'components', r.components,
                                'counts', jsonb_build_object('spectra', v_n_spectra, 'objects', v_n_objects,
                                  'line_fits', v_n_lines, 'photometry', v_n_phot, 'members', v_n_members),
@@ -9284,14 +9285,14 @@ BEGIN
     END IF;
     UPDATE dr_releases
        SET state = 'freezing', components = p_components, notes = COALESCE(p_notes, notes),
-           created_by = COALESCE(created_by, auth.uid()),
+           created_by = COALESCE(created_by, auth.uid()), freeze_requested_by = auth.uid(),
            freeze_started_at = now(), frozen_at = NULL, frozen_by = NULL,
            freeze_duration_ms = NULL, snapshot_xmin = NULL, counts = '{}'::jsonb,
            error = NULL, updated_at = now()
      WHERE tag = p_tag;
   ELSE
-    INSERT INTO dr_releases (tag, state, components, notes, created_by, freeze_started_at)
-    VALUES (p_tag, 'freezing', p_components, p_notes, auth.uid(), now());
+    INSERT INTO dr_releases (tag, state, components, notes, created_by, freeze_requested_by, freeze_started_at)
+    VALUES (p_tag, 'freezing', p_components, p_notes, auth.uid(), auth.uid(), now());
   END IF;
 
   IF NOT p_inline AND EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN

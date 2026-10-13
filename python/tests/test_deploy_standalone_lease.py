@@ -84,3 +84,43 @@ def test_dry_run_takes_no_lease(patched):
     patched(c)
     assert dcli._under_observation_lease({}, 'obs1', True, lambda *a: 'dry', 'obs1', {}) == 'dry'
     assert order == []
+
+
+def test_a_degraded_lease_refuses_the_writer(patched):
+    """begin_deploy_scope failing for a non-CF409 reason degrades to leased=False
+    in the full deploy; a standalone writer refuses instead of running unguarded."""
+    def broken(params):
+        raise RuntimeError('connection reset')
+    c, order = _client(broken)
+    patched(c)
+    ran = []
+    with pytest.raises(SystemExit) as exc:
+        dcli._under_scope_lease({}, 'field', 'cosmos', False, lambda *a: ran.append(a), 'x')
+    assert exc.value.code == 1 and not ran and 'claim' not in order
+
+
+def test_every_scope_is_leased_and_claimed(patched):
+    keys = []
+    c, order = _client(lambda p: keys.append(p['p_scope_key']) or {'version': 1})
+    patched(c)
+    dcli._under_scope_leases({}, [('field', 'a'), ('field', 'b'), ('field', 'a')], False,
+                             lambda: order.append('write'))
+    assert keys == ['a', 'b']
+    assert order == ['begin', 'begin', 'write', 'claim', 'claim']
+
+
+def test_field_lifecycle_flips_under_the_field_lease(patched, monkeypatch):
+    seen = {}
+    c, order = _client(lambda p: seen.update(p) or {'version': 3})
+    patched(c)
+    monkeypatch.setattr(dcli, 'load_config', lambda path, **kw: {})
+    monkeypatch.setattr(dcli, 'get_supabase_client', lambda config: c)
+    monkeypatch.setattr(dcli, 'get_user_id_from_token', lambda config: 'user-1')
+    monkeypatch.setattr(dcli, 'get_field_deployment_ids', lambda client, field: [7, 8])
+    monkeypatch.setattr(dcli, 'set_deployment_status',
+                        lambda client, dep, status, actor=None: order.append(f'flip{dep}') or {})
+    ctx = type('Ctx', (), {'obj': {}})()
+    dcli._lifecycle_transition(ctx, None, (), False, False,
+                               to_status='published', verb='Publish', field='cosmos')
+    assert seen['p_scope_type'] == 'field' and seen['p_scope_key'] == 'cosmos'
+    assert order == ['begin', 'flip7', 'flip8', 'claim']

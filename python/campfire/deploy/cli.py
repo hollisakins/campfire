@@ -231,20 +231,41 @@ def _under_observation_lease(config: dict, obs_name: str, dry_run: bool, fn, *ar
 
 def _under_scope_lease(config: dict, scope_type: str, scope_key: str, dry_run: bool, fn, *args, **kwargs):
     """`_under_observation_lease` for any deploy scope ('observation' / 'field')."""
+    return _under_scope_leases(config, [(scope_type, scope_key)], dry_run, fn, *args, **kwargs)
+
+
+def _under_scope_leases(config: dict, scopes, dry_run: bool, fn, *args, **kwargs):
+    """Run a standalone catalog writer under a deploy lease on every scope in `scopes`.
+
+    Unlike the full deploy, these writers do not fall back to running without
+    a lease: the lease is what keeps a data-release freeze from snapshotting
+    them half-way, so a lease that could not be taken (begin degraded on an
+    RPC error) refuses the command (exit 1) rather than running unguarded
+    (Codex on #599). Claimed on success, released on any failure.
+    """
     if dry_run:
         return fn(*args, **kwargs)
     from campfire.deploy.supabase import ScopeLease, get_supabase_client, get_user_id_from_token
 
     def run():
-        lease = ScopeLease(get_supabase_client(config), scope_type, scope_key,
-                           actor=get_user_id_from_token(config))
-        lease.begin()
+        client = get_supabase_client(config)
+        actor = get_user_id_from_token(config)
+        leases = []
         try:
+            for scope_type, scope_key in dict.fromkeys(scopes):
+                lease = ScopeLease(client, scope_type, scope_key, actor=actor)
+                lease.begin()
+                leases.append(lease)
+                if not lease.leased:
+                    print(f"Error: could not take the deploy lease for {scope_type} "
+                          f"'{scope_key}'; refusing to write without it. Retry shortly.")
+                    sys.exit(1)
             out = fn(*args, **kwargs)
         except BaseException:
-            lease.release()
+            for lease in leases:
+                lease.release()
             raise
-        if lease.leased:
+        for lease in leases:
             lease.claim()
         return out
     return _run_deploy_flow(run)
@@ -623,10 +644,13 @@ def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, v
             print(f"  [dry-run] {verb} field {field} ({len(dep_ids)} deployment(s): "
                   f"{', '.join('#'+str(d) for d in dep_ids)})")
             return
-        n_ok = 0
-        for dep_id in dep_ids:
-            if set_deployment_status(sb, dep_id, to_status, actor=actor) is not None:
-                n_ok += 1
+        def flip_all():
+            return sum(1 for dep_id in dep_ids
+                       if set_deployment_status(sb, dep_id, to_status, actor=actor) is not None)
+        # One RPC per deployment, so the field lease keeps a data-release
+        # freeze from landing between them and capturing a half-published
+        # field (an observation's flip is a single RPC and needs none).
+        n_ok = _under_scope_lease(config, 'field', field, False, flip_all)
         print(f"  {verb}ed field {field}: {n_ok}/{len(dep_ids)} deployment(s) -> {to_status}")
         return
     for obs_name in obs:
@@ -858,7 +882,10 @@ def objects_reconcile(ctx, config_path, field, all_fields, dry_run, radius, yes,
 
     for f in fields:
         print(f"\nReconciling objects for field '{f}'...")
-        reconcile_field_objects(
+        # Reconciliation writes the field's objects over several requests;
+        # the field lease keeps a data-release freeze out of the middle.
+        _under_scope_lease(
+            config, 'field', f, dry_run, reconcile_field_objects,
             sb, f, radius=radius, dry_run=dry_run, yes=yes,
         )  # standalone reconcile: changed_ids discarded; photometry refresh
         # is operator-driven via `campfire deploy photometry` if needed.
@@ -897,13 +924,14 @@ def objects_split(ctx, config_path, object_ref, move_target_ids, dry_run, yes, l
         campfire deploy objects split --object J100033.42+022054.8 \\
             --move 12345 67890
     """
-    from campfire.deploy.reconcile import split_object
+    from campfire.deploy.reconcile import resolve_object_ref, split_object
 
     config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
-    split_object(
-        sb, object_ref, list(move_target_ids),
-        dry_run=dry_run, yes=yes,
+    field = resolve_object_ref(sb, object_ref)['field']
+    _under_scope_lease(
+        config, 'field', field, dry_run, split_object,
+        sb, object_ref, list(move_target_ids), dry_run=dry_run, yes=yes,
     )
 
 
@@ -932,13 +960,15 @@ def objects_merge(ctx, config_path, survivor_ref, source_refs, dry_run, yes, loc
         campfire deploy objects merge --into J100033.42+022054.8 \\
             --from J100033.43+022054.9
     """
-    from campfire.deploy.reconcile import merge_objects
+    from campfire.deploy.reconcile import merge_objects, resolve_object_ref
 
     config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
-    merge_objects(
-        sb, survivor_ref, list(source_refs),
-        dry_run=dry_run, yes=yes,
+    fields = sorted({resolve_object_ref(sb, ref)['field']
+                     for ref in (survivor_ref, *source_refs)})
+    _under_scope_leases(
+        config, [('field', f) for f in fields], dry_run, merge_objects,
+        sb, survivor_ref, list(source_refs), dry_run=dry_run, yes=yes,
     )
 
 
@@ -1002,7 +1032,8 @@ def objects_rebuild(ctx, config_path, field, all_fields, dry_run, radius, force,
 
     for f in fields:
         print(f"\nRebuilding objects for field '{f}'...")
-        n_obj, n_multi = rebuild_field_objects(
+        n_obj, n_multi = _under_scope_lease(
+            config, 'field', f, dry_run, rebuild_field_objects,
             sb, f, radius=radius, dry_run=dry_run,
         )
         if not dry_run:

@@ -1557,6 +1557,8 @@ CREATE TABLE IF NOT EXISTS "public"."dr_releases" (
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "created_by" "uuid",
     "freeze_started_at" timestamp with time zone,
+    -- Who enqueued the current freeze (frozen_by once it lands; the pg_cron job has no auth uid).
+    "freeze_requested_by" "uuid",
     "frozen_at" timestamp with time zone,
     "frozen_by" "uuid",
     "freeze_duration_ms" integer,

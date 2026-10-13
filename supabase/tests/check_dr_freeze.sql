@@ -42,12 +42,14 @@ INSERT INTO auth.users (id, email) VALUES
   ('00000000-0000-0000-0000-0000000000d1', 'zzz-dr-admin@test.invalid'),
   ('00000000-0000-0000-0000-0000000000d2', 'zzz-dr-grantee@test.invalid'),
   ('00000000-0000-0000-0000-0000000000d3', 'zzz-dr-nogrant@test.invalid'),
-  ('00000000-0000-0000-0000-0000000000d4', 'zzz-dr-link@test.invalid');
+  ('00000000-0000-0000-0000-0000000000d4', 'zzz-dr-link@test.invalid'),
+  ('00000000-0000-0000-0000-0000000000d5', 'zzz-dr-admin2@test.invalid');
 INSERT INTO user_profiles (user_id, username, full_name, is_admin, is_link_account, can_comment, can_inspect) VALUES
   ('00000000-0000-0000-0000-0000000000d1', 'zzz-dr-admin',   'ZZZ DR Admin',   true,  false, true, true),
   ('00000000-0000-0000-0000-0000000000d2', 'zzz-dr-grantee', 'ZZZ DR Grantee', false, false, true, false),
   ('00000000-0000-0000-0000-0000000000d3', 'zzz-dr-nogrant', 'ZZZ DR NoGrant', false, false, true, false),
-  ('00000000-0000-0000-0000-0000000000d4', 'zzz-dr-link',    'ZZZ DR Link',    false, true,  false, false);
+  ('00000000-0000-0000-0000-0000000000d4', 'zzz-dr-link',    'ZZZ DR Link',    false, true,  false, false),
+  ('00000000-0000-0000-0000-0000000000d5', 'zzz-dr-admin2',  'ZZZ DR Admin 2', true,  false, true, true);
 INSERT INTO user_program_access (user_id, program_slug) VALUES
   ('00000000-0000-0000-0000-0000000000d2', 'zzz_dr_priv');
 INSERT INTO share_links (token, label, observation, link_user_id, link_password, include_drafts, allow_download, created_by)
@@ -646,6 +648,40 @@ BEGIN
   got := pg_temp.zzz_dr_as('authenticated', admin, $q$SELECT (public.dr_purge_release('DR-zzz'))::text$q$);
   IF got NOT LIKE 'ERR: no release%' THEN RAISE EXCEPTION 'purge of a missing tag should say so, got %', got; END IF;
   RAISE NOTICE 'OK 5: purge';
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 6. A refreeze by another admin records that admin (Codex on #599): the
+--    pg_cron job runs with no auth uid, so the requester is carried on the row.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  admin uuid := '00000000-0000-0000-0000-0000000000d1';
+  admin2 uuid := '00000000-0000-0000-0000-0000000000d5';
+  got text; r dr_releases%ROWTYPE;
+BEGIN
+  got := pg_temp.zzz_dr_as('authenticated', admin,
+    $q$SELECT (public.dr_enqueue_freeze('DR-zzz-who', '["nirspec"]', NULL, true))->>'state'$q$);
+  IF got <> 'frozen' THEN RAISE EXCEPTION 'first freeze did not land: %', got; END IF;
+  -- the refreeze is enqueued by admin2 for pg_cron; the job then runs without claims
+  got := pg_temp.zzz_dr_as('authenticated', admin2,
+    $q$SELECT (public.dr_enqueue_freeze('DR-zzz-who', '["nirspec"]', NULL, false))->>'state'$q$);
+  IF got NOT IN ('freezing', 'frozen') THEN RAISE EXCEPTION 'refreeze enqueue failed: %', got; END IF;
+  -- where pg_cron is absent the enqueue ran it inline as admin2; re-run the job
+  -- the way pg_cron does (no claims) either way, so the row is what names admin2
+  UPDATE dr_releases SET state = 'freezing', frozen_by = NULL WHERE tag = 'DR-zzz-who';
+  DELETE FROM deploy_events WHERE action = 'freeze' AND metadata->>'dr_tag' = 'DR-zzz-who';
+  PERFORM set_config('request.jwt.claims', '', true);
+  PERFORM public.dr_freeze_job('DR-zzz-who');
+  SELECT * INTO r FROM dr_releases WHERE tag = 'DR-zzz-who';
+  IF r.state <> 'frozen' OR r.created_by <> admin OR r.freeze_requested_by <> admin2 OR r.frozen_by <> admin2 THEN
+    RAISE EXCEPTION 'refreeze provenance wrong: %', to_jsonb(r);
+  END IF;
+  IF (SELECT array_agg(actor) FROM deploy_events WHERE action = 'freeze' AND metadata->>'dr_tag' = 'DR-zzz-who')
+       IS DISTINCT FROM ARRAY[admin2] THEN
+    RAISE EXCEPTION 'refreeze audit event should name the requester';
+  END IF;
+  RAISE NOTICE 'OK 6: refreeze provenance';
 END $$;
 
 ROLLBACK;
