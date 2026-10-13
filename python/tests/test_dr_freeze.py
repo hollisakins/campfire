@@ -320,8 +320,12 @@ def test_export_release_loops_until_nothing_remains():
     echoed = []
     out = export_release(s, 'DR-t', budget_seconds=30, echo=echoed.append)
     assert out['state'] == 'exported' and out['totals'] == {'built': 2, 'failed': 0, 'calls': 2}
-    assert [c[1] for c in s.calls] == ['/api/v1/dr/DR-t/export'] * 2
+    assert [c[1] for c in s.calls] == ['/dr/DR-t/export'] * 2
     assert s.calls[0][2] == {'budget_seconds': 30}
+    # paths are relative to the session's base url, which already ends in
+    # /api/v1 (Codex on #600: the old '/api/v1/dr/...' doubled it)
+    from campfire.api.session import DEFAULT_BASE_URL
+    assert DEFAULT_BASE_URL + s.calls[0][1] == 'https://campfire.hollisakins.com/api/v1/dr/DR-t/export'
     assert echoed == ['  built objects/p: 3 rows, 99 B', '  built spectra/p: 5 rows, 10 B']
 
 
@@ -346,6 +350,7 @@ def test_fetch_partitions_404_is_a_clear_error():
         fetch_partitions(s, 'DR-t')
     s = _FakeSession([_HttpResp(200, {'tag': 'DR-t', 'partitions': []})])
     assert fetch_partitions(s, 'DR-t')['tag'] == 'DR-t'
+    assert s.calls[-1][1] == '/dr/DR-t/partitions'
 
 
 def test_cli_export(monkeypatch):

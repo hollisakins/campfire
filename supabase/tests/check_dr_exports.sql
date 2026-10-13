@@ -196,6 +196,14 @@ BEGIN
   IF got <> 'exporting' OR (SELECT error FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'spectra' AND partition = prog) <> 'boom' THEN
     RAISE EXCEPTION 'failed mark not recorded (%)', got;
   END IF;
+  -- ready only from building: a failed (or pending) file was never built
+  got := pg_temp.zzz_as('authenticated', '11111111-1111-1111-1111-111111111111',
+    format($q$SELECT (dr_export_mark('DR-seed', 'spectra', %L, 'ready', 'sha256:%s', 123, 45))->>'state'$q$, prog, repeat('a', 64)));
+  IF got NOT LIKE 'ERR: export file spectra % was invalidated while it was being built%' THEN
+    RAISE EXCEPTION 'ready without building accepted: %', got;
+  END IF;
+  got := pg_temp.zzz_as('authenticated', '11111111-1111-1111-1111-111111111111',
+    format($q$SELECT (dr_export_mark('DR-seed', 'spectra', %L, 'building'))->>'state'$q$, prog));
   got := pg_temp.zzz_as('authenticated', '11111111-1111-1111-1111-111111111111',
     format($q$SELECT (dr_export_mark('DR-seed', 'spectra', %L, 'ready', 'sha256:%s', 123, 45))->>'state'$q$, prog, repeat('a', 64)));
   IF got <> 'exported' THEN RAISE EXCEPTION 'last ready mark should move to exported, got %', got; END IF;
@@ -211,6 +219,19 @@ BEGIN
      OR (SELECT state FROM dr_releases WHERE tag = 'DR-seed') <> 'exporting' THEN
     RAISE EXCEPTION 'invalidate did not reset the partition (got %, state %)', got, (SELECT state FROM dr_releases WHERE tag = 'DR-seed');
   END IF;
+  -- invalidated WHILE building: the builder's ready mark is refused (Codex on #601)
+  PERFORM dr_export_mark('DR-seed', 'members', prog, 'building');
+  PERFORM dr_export_invalidate('DR-seed', 'members', prog);
+  IF (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'members' AND partition = prog) <> 'pending' THEN
+    RAISE EXCEPTION 'invalidate should reset a building file';
+  END IF;
+  BEGIN
+    PERFORM dr_export_mark('DR-seed', 'members', prog, 'ready', 'sha256:' || repeat('b', 64), 1, 1);
+    RAISE EXCEPTION 'a file invalidated mid-build was marked ready';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM NOT LIKE 'export file members % was invalidated while it was being built%' THEN RAISE; END IF;
+  END;
+  PERFORM dr_export_mark('DR-seed', 'members', prog, 'building');
   IF (dr_export_mark('DR-seed', 'members', prog, 'ready', 'sha256:' || repeat('b', 64), 1, 1))->>'state' <> 'exported' THEN
     RAISE EXCEPTION 'rebuild should return to exported';
   END IF;

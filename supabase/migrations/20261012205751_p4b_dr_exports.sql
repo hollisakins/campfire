@@ -106,7 +106,7 @@ BEGIN
   END IF;
   UPDATE dr_exports
      SET state = 'pending', sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL
-   WHERE tag = p_tag AND state = 'ready'
+   WHERE tag = p_tag AND state IN ('ready', 'building')
      AND (p_stream IS NULL OR stream = p_stream)
      AND (p_partition IS NULL OR partition = p_partition);
   GET DIAGNOSTICS n = ROW_COUNT;
@@ -156,6 +156,7 @@ CREATE OR REPLACE FUNCTION public.dr_export_mark (
   AS $function$
 DECLARE
   n_pending int; n_total int;
+  v_cur text;
 BEGIN
   PERFORM dr_require_admin();
   IF p_state NOT IN ('building', 'ready', 'failed', 'pending') THEN
@@ -163,6 +164,20 @@ BEGIN
   END IF;
   IF (SELECT state FROM dr_releases WHERE tag = p_tag) NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
     RAISE EXCEPTION 'release % is not exporting', p_tag;
+  END IF;
+  -- A file is ready only if nothing invalidated it while it was being built:
+  -- the byte pass (and dr_export_invalidate) send `building` rows back to
+  -- pending too, so a builder finishing a file from rows that changed under
+  -- it is refused here instead of publishing stale member rows (Codex on #601).
+  SELECT e.state INTO v_cur FROM dr_exports e
+   WHERE e.tag = p_tag AND e.stream = p_stream AND e.partition = p_partition
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'no ledger row for % % %', p_tag, p_stream, p_partition;
+  END IF;
+  IF p_state = 'ready' AND v_cur IS DISTINCT FROM 'building' THEN
+    RAISE EXCEPTION 'export file % % of % was invalidated while it was being built (or never started); rebuild it',
+      p_stream, p_partition, p_tag;
   END IF;
   UPDATE dr_exports
      SET state = p_state,

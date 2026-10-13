@@ -336,7 +336,8 @@ def export_release(session, tag: str, *, budget_seconds: float = 240.0, max_call
     totals = {'built': 0, 'failed': 0, 'calls': 0}
     last: dict = {}
     for _ in range(max_calls):
-        resp = session.post(f'/api/v1/dr/{tag}/export', json={'budget_seconds': budget_seconds},
+        # relative to the session's base url, which already ends in /api/v1
+        resp = session.post(f'/dr/{tag}/export', json={'budget_seconds': budget_seconds},
                             timeout=budget_seconds + 60)
         if resp.status_code != 200:
             try:
@@ -365,7 +366,7 @@ def export_release(session, tag: str, *, budget_seconds: float = 240.0, max_call
 
 def fetch_partitions(session, tag: str) -> dict:
     """``GET /api/v1/dr/<tag>/partitions`` for the caller."""
-    resp = session.get(f'/api/v1/dr/{tag}/partitions', timeout=60)
+    resp = session.get(f'/dr/{tag}/partitions', timeout=60)
     if resp.status_code == 404:
         raise RuntimeError(f"release {tag} is not available to you (unknown, or not published)")
     resp.raise_for_status()
