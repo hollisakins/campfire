@@ -309,6 +309,26 @@ def test_remove_reports_an_indeterminate_claim(monkeypatch):
     assert deleted
 
 
+def test_remove_inspection_refusal_raises(monkeypatch):
+    # Codex on #602: the inspected-targets refusal is a refusal too
+    rm, deleted = _remove_env(monkeypatch, _client(dr_observation_references=[], heartbeat_deploy_scope=True))
+    monkeypatch.setattr(rm, '_is_inspected', lambda t: True)
+    with pytest.raises(rm.RemovalRefused, match='user inspection data'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert not deleted
+
+
+def test_remove_rechecks_the_lease_before_reconciling(monkeypatch):
+    # Codex on #602: reconciliation writes objects; never after the lease is lost
+    import campfire.deploy.reconcile as rc
+    rm, deleted = _remove_env(monkeypatch, _lease_client([True, True, False]))
+    ran = []
+    monkeypatch.setattr(rc, 'reconcile_field_objects', lambda *a, **k: ran.append(a) or (0, {}, []))
+    with pytest.raises(rm.RemovalLeaseLost, match='reconciliation of field .f. was NOT run'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=False)
+    assert deleted and not ran
+
+
 def test_cli_remove_exits_1_when_refused(monkeypatch):
     # Codex on #602: `deploy remove --auto-approve` must not exit 0 on a refusal
     import campfire.deploy.cli as dcli

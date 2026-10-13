@@ -344,7 +344,8 @@ def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool
         if len(inspected) > 5:
             print(f"    ... and {len(inspected) - 5} more")
         print(f"  Pass --force to proceed anyway.")
-        return False
+        # a refusal, not a success: the CLI exits non-zero (Codex on #602)
+        raise RemovalRefused(f"{obs_name}: {len(inspected)} target(s) have user inspection data (--force overrides)")
 
     if not targets and not n_shutters and not n_slits:
         print("\nNo data to remove.")
@@ -418,6 +419,13 @@ def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool
 
     if not skip_rebuild:
         from campfire.deploy.reconcile import reconcile_field_objects
+        # reconciliation writes objects and target assignments too: still
+        # under the lease, or not at all (Codex on #602)
+        if not still_held():
+            raise RemovalLeaseLost(
+                f"the deploy lease on {obs_name} was lost after its rows and bytes were deleted; the object "
+                f"reconciliation of field '{field}' was NOT run (run `campfire deploy objects reconcile "
+                f"--field {field}` once the other deploy has finished)")
         print(f"\nReconciling objects for field '{field}'...")
         n_clusters, _stats, _changed_ids = reconcile_field_objects(
             sb, field, abort_on_split_merge=True,
