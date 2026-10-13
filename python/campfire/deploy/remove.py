@@ -22,6 +22,7 @@ from campfire_layout import Scope, key_prefix
 from campfire.deploy.supabase import (
     DeployScopeBusy,
     ScopeLease,
+    heartbeat_deploy_scope,
     deploy_event_metadata,
     get_supabase_client,
     get_user_id_from_token,
@@ -229,15 +230,31 @@ def remove_observation(
             print(f"\n  REFUSED: could not take the deploy lease on {obs_name}; "
                   f"a removal never runs without it.")
             return
+    def still_held() -> bool:
+        # Checked right before each destructive step (Codex on #602): a lease
+        # stolen or taken over meanwhile means another deploy may be writing
+        # this observation, so nothing more is deleted. Unknown = not held.
+        if lease is None:
+            return True
+        return heartbeat_deploy_scope(sb, 'observation', obs_name, actor=lease.actor, host=lease.host,
+                                      version=lease.version_at_start) is True
     try:
         removed = _remove_checked(sb, obs, obs_name, config, dry_run=dry_run, force=force,
                                   supabase_only=supabase_only, auto_approve=auto_approve,
-                                  skip_rebuild=skip_rebuild)
+                                  skip_rebuild=skip_rebuild, still_held=still_held)
         if lease is not None and removed:
-            lease.claim()     # the data changed: bump the scope version
+            result = lease.claim()     # the data changed: bump the scope version
+            if result.get('conflict'):
+                raise RemovalLeaseLost(
+                    f"another deploy took the lease on {obs_name} while it was being removed; "
+                    f"re-check the observation (its rows or bytes may have been re-deployed)")
     finally:
         if lease is not None and lease.leased:
             lease.release()
+
+
+class RemovalLeaseLost(RuntimeError):
+    """The deploy lease of a removal was lost (stolen or taken over) mid-way."""
 
 
 def _release_blockers_refuse(sb, obs_name: str) -> bool:
@@ -259,7 +276,8 @@ def _release_blockers_refuse(sb, obs_name: str) -> bool:
 
 
 def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool, force: bool,
-                    supabase_only: bool, auto_approve: bool, skip_rebuild: bool) -> bool:
+                    supabase_only: bool, auto_approve: bool, skip_rebuild: bool,
+                    still_held=lambda: True) -> bool:
     """The removal proper (the caller holds the lease). True once rows were deleted."""
     field = obs['field']
     if _release_blockers_refuse(sb, obs_name):
@@ -331,12 +349,18 @@ def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool
             print("Aborted.")
             return False
 
+    if not still_held():
+        raise RemovalLeaseLost(f"the deploy lease on {obs_name} was lost before the delete; nothing was deleted")
     print(f"\nDeleting DB rows...")
     _delete_db_rows(sb, obs_name, target_ids)
     print(f"  Done.")
 
     n_r2_deleted = 0
     if not supabase_only:
+        if not still_held():
+            raise RemovalLeaseLost(
+                f"the deploy lease on {obs_name} was lost after its rows were deleted; the bucket prefixes "
+                f"were NOT deleted (another deploy may be uploading them)")
         print(f"\nDeleting R2 prefixes...")
         counts = _delete_r2_prefixes(config, obs_name)
         for prefix, n in counts.items():

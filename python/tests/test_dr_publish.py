@@ -148,7 +148,7 @@ def test_remove_fails_closed_when_the_check_cannot_run(monkeypatch, capsys):
 
 def test_remove_proceeds_when_nothing_blocks(monkeypatch):
     refs = [{**REFS[1]}]
-    rm, deleted = _remove_env(monkeypatch, _client(dr_observation_references=refs))
+    rm, deleted = _remove_env(monkeypatch, _client(dr_observation_references=refs, heartbeat_deploy_scope=True))
     rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
     assert deleted
 
@@ -211,6 +211,40 @@ def test_remove_refused_without_a_lease(monkeypatch, capsys):
     rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
     assert 'could not take the deploy lease' in capsys.readouterr().out
     assert not deleted and 'refs' not in order
+
+
+def _lease_client(heartbeats, *, claim=None):
+    beats = iter(heartbeats)
+    return _client(begin_deploy_scope={'version': 3},
+                   dr_observation_references=[{**REFS[1]}],
+                   heartbeat_deploy_scope=lambda p: next(beats),
+                   claim_deploy_scope=claim or {'claimed': True, 'conflict': False},
+                   release_deploy_scope=True)
+
+
+def test_remove_stops_before_deleting_when_the_lease_is_lost(monkeypatch):
+    # Codex on #602: a stolen / taken-over lease means another deploy may be
+    # writing the observation
+    rm, deleted = _remove_env(monkeypatch, _lease_client([False]))
+    with pytest.raises(rm.RemovalLeaseLost, match='nothing was deleted'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert not deleted
+
+
+def test_remove_keeps_the_bucket_when_the_lease_is_lost_after_the_rows(monkeypatch):
+    rm, deleted = _remove_env(monkeypatch, _lease_client([True, None]))
+    wiped = []
+    monkeypatch.setattr(rm, '_delete_r2_prefixes', lambda *a, **k: wiped.append(a) or {})
+    with pytest.raises(rm.RemovalLeaseLost, match='bucket prefixes were NOT deleted'):
+        rm.remove_observation('obs1', {}, supabase_only=False, auto_approve=True, skip_rebuild=True)
+    assert deleted and not wiped
+
+
+def test_remove_reports_a_claim_conflict(monkeypatch):
+    rm, deleted = _remove_env(monkeypatch, _lease_client([True], claim={'claimed': False, 'conflict': True}))
+    with pytest.raises(rm.RemovalLeaseLost, match='another deploy took the lease'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert deleted
 
 
 def test_remove_dry_run_checks_without_leasing(monkeypatch):
