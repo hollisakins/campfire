@@ -44,6 +44,10 @@ END $$;
 GRANT EXECUTE ON FUNCTION pg_temp.zzz_as(text, uuid, text) TO authenticated;
 
 -- One call, its error text (or 'ok').
+-- The frozen content hash of a DR-seed member (marks must name it).
+CREATE FUNCTION pg_temp.zzz_ch(p_key text) RETURNS text
+LANGUAGE sql AS $$ SELECT content_hash FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p_key $$;
+
 CREATE FUNCTION pg_temp.zzz_try(p_sql text) RETURNS text
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -159,10 +163,15 @@ BEGIN
   IF got NOT LIKE 'ERR: a copied member needs an archive key under archive/%' THEN RAISE EXCEPTION 'live key accepted as archive key: %', got; END IF;
   got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "state": "stamped", "archive_key": "archive/x"}]')$q$, to_jsonb(p.s1)));
   IF got NOT LIKE 'ERR: a stamped member needs the sha256%' THEN RAISE EXCEPTION 'stamp without hash accepted: %', got; END IF;
-  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "state": "stamped", "archive_key": "archive/x", "stamped_hash": "sha256:%s", "registry": {}}]')$q$, to_jsonb(p.j1), repeat('e', 64)));
+  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "content_hash": %s, "state": "stamped", "archive_key": "archive/x", "stamped_hash": "sha256:%s", "registry": {}}]')$q$, to_jsonb(p.j1), to_jsonb(pg_temp.zzz_ch(p.j1)), repeat('e', 64)));
   IF got NOT LIKE 'ERR: only NIRSpec FITS finals are stamped%' THEN RAISE EXCEPTION 'json stamp accepted: %', got; END IF;
-  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "state": "copied", "archive_key": "archive/nowhere"}]')$q$, to_jsonb(p.j1)));
+  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "content_hash": %s, "state": "copied", "archive_key": "archive/nowhere"}]')$q$, to_jsonb(p.j1), to_jsonb(pg_temp.zzz_ch(p.j1))));
   IF got NOT LIKE 'ERR: archive object archive/nowhere is not registered%' THEN RAISE EXCEPTION 'unregistered archive object accepted: %', got; END IF;
+  -- an outcome for another freeze generation's bytes is refused (Codex on #601)
+  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "content_hash": "sha256:%s", "state": "failed"}]')$q$, to_jsonb(p.j1), repeat('9', 64)));
+  IF got NOT LIKE 'ERR: outcome for % is for content % but the member froze%' THEN RAISE EXCEPTION 'cross-generation mark accepted: %', got; END IF;
+  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "state": "failed"}]')$q$, to_jsonb(p.j1)));
+  IF got NOT LIKE 'ERR: outcome for % is for content <none>%' THEN RAISE EXCEPTION 'mark without a content hash accepted: %', got; END IF;
   got := pg_temp.zzz_try($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": "data/no/such", "state": "failed"}]')$q$);
   IF got NOT LIKE 'ERR: no member data/no/such%' THEN RAISE EXCEPTION 'unknown member accepted: %', got; END IF;
   got := pg_temp.zzz_try($q$SELECT dr_bytes_mark('DR-seed', (SELECT jsonb_agg(jsonb_build_object('storage_key', 'k' || g, 'state', 'failed')) FROM generate_series(1, 2001) g))$q$);
@@ -199,14 +208,14 @@ BEGIN
 
   -- ------------------------------------------------------------------ 3.
   res := dr_bytes_mark('DR-seed', jsonb_build_array(
-    jsonb_build_object('storage_key', p.s1, 'state', 'stamped', 'archive_key', s1_key,
+    jsonb_build_object('storage_key', p.s1, 'content_hash', pg_temp.zzz_ch(p.s1), 'state', 'stamped', 'archive_key', s1_key,
                        'stamped_hash', 'sha256:' || repeat('f', 64),
                        'registry', jsonb_build_object('size_bytes', 12345, 'content_type', 'application/fits',
                                                       'instrument', 'nirspec', 'observation', 'no-such-obs', 'deployment_id', -1, 'cfpipe_version', '9.9.9')),
-    jsonb_build_object('storage_key', p.j1, 'state', 'copied', 'archive_key', j1_key,
+    jsonb_build_object('storage_key', p.j1, 'content_hash', pg_temp.zzz_ch(p.j1), 'state', 'copied', 'archive_key', j1_key,
                        'registry', jsonb_build_object('content_type', 'application/json')),
-    jsonb_build_object('storage_key', p.j2, 'state', 'failed', 'error', 'frozen bytes are gone'),
-    jsonb_build_object('storage_key', p.s2, 'state', 'stamped', 'archive_key', prev_key,
+    jsonb_build_object('storage_key', p.j2, 'content_hash', pg_temp.zzz_ch(p.j2), 'state', 'failed', 'error', 'frozen bytes are gone'),
+    jsonb_build_object('storage_key', p.s2, 'content_hash', pg_temp.zzz_ch(p.s2), 'state', 'stamped', 'archive_key', prev_key,
                        'stamped_hash', 'sha256:' || repeat('c', 64))));
   IF (res->>'marked')::int <> 4 OR (res->>'stamped')::int <> 2 OR (res->>'copied')::int <> 1
      OR (res->>'failed')::int <> 1 OR (res->>'registered')::int <> 2 OR res->>'state' <> 'copying' THEN
@@ -252,7 +261,7 @@ BEGIN
   END IF;
   -- the same object again: no second registry row, no error
   res := dr_bytes_mark('DR-seed', jsonb_build_array(
-    jsonb_build_object('storage_key', p.j1, 'state', 'copied', 'archive_key', j1_key,
+    jsonb_build_object('storage_key', p.j1, 'content_hash', pg_temp.zzz_ch(p.j1), 'state', 'copied', 'archive_key', j1_key,
                        'registry', jsonb_build_object('content_type', 'application/json'))));
   IF (res->>'registered')::int <> 0 OR (SELECT count(*) FROM storage_objects WHERE storage_key = j1_key) <> 1 THEN
     RAISE EXCEPTION 're-marking registered again: %', res;
@@ -262,7 +271,7 @@ BEGIN
   PERFORM dr_export_mark('DR-seed', 'members',
     (SELECT COALESCE(program_slug, component) FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.j1), 'building');
   PERFORM dr_bytes_mark('DR-seed', jsonb_build_array(
-    jsonb_build_object('storage_key', p.j1, 'state', 'copied', 'archive_key', j1_key)));
+    jsonb_build_object('storage_key', p.j1, 'content_hash', pg_temp.zzz_ch(p.j1), 'state', 'copied', 'archive_key', j1_key)));
   IF (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'members' AND partition =
         (SELECT COALESCE(program_slug, component) FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.j1)) <> 'pending' THEN
     RAISE EXCEPTION 'a building member file was not invalidated';
@@ -273,7 +282,7 @@ BEGIN
     RAISE EXCEPTION 'fixture: s3 should have no science hash';
   END IF;
   res := dr_bytes_mark('DR-seed', jsonb_build_array(
-    jsonb_build_object('storage_key', p.s3, 'state', 'stamped', 'archive_key', 'archive/' || repeat('7', 64) || '/s3_spec.fits',
+    jsonb_build_object('storage_key', p.s3, 'content_hash', pg_temp.zzz_ch(p.s3), 'state', 'stamped', 'archive_key', 'archive/' || repeat('7', 64) || '/s3_spec.fits',
                        'stamped_hash', 'sha256:' || repeat('7', 64), 'science_hash', 'sha256:' || repeat('3', 64),
                        'registry', jsonb_build_object('size_bytes', 10))));
   IF (SELECT science_hash FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s3) <> 'sha256:' || repeat('3', 64)
@@ -284,7 +293,7 @@ BEGIN
   END IF;
   BEGIN
     PERFORM dr_bytes_mark('DR-seed', jsonb_build_array(
-      jsonb_build_object('storage_key', p.s1, 'state', 'failed', 'science_hash', 'sha256:' || repeat('4', 64))));
+      jsonb_build_object('storage_key', p.s1, 'content_hash', pg_temp.zzz_ch(p.s1), 'state', 'failed', 'science_hash', 'sha256:' || repeat('4', 64))));
     RAISE EXCEPTION 'a disagreeing science hash was accepted';
   EXCEPTION WHEN OTHERS THEN
     IF SQLERRM NOT LIKE 'science hash of % disagrees%' THEN RAISE; END IF;
@@ -293,7 +302,7 @@ BEGIN
 
   -- ------------------------------------------------------------------ 4.
   res := dr_bytes_mark('DR-seed', (
-    SELECT jsonb_agg(jsonb_build_object('storage_key', m.storage_key, 'state', 'copied',
+    SELECT jsonb_agg(jsonb_build_object('storage_key', m.storage_key, 'content_hash', m.content_hash, 'state', 'copied',
                                         'archive_key', 'archive/' || md5(m.storage_key) || md5(m.storage_key) || '/' || substr(m.storage_key, 6),
                                         'registry', jsonb_build_object('content_type', 'application/octet-stream')))
     FROM dr_members m WHERE m.tag = 'DR-seed' AND m.byte_state IN ('pending', 'failed')));

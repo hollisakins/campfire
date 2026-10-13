@@ -364,6 +364,12 @@ def _copy_member(row: dict, *, s3, bucket: str, clock_margin: timedelta = None) 
     if stored is not None and int(head.get('ContentLength', -1)) != int(stored):
         return Outcome(key, 'failed', 'drift',
                        error=f"source {src} is {head.get('ContentLength')} bytes, the registry says {stored}")
+    # the stored size may be unknown (an old .fits.gz row): the ceiling is
+    # checked against what the store reports (Codex on #601)
+    if int(head.get('ContentLength') or 0) > COPY_LIMIT_BYTES:
+        return Outcome(key, 'failed', 'error',
+                       error=f"{int(head['ContentLength']):,} bytes exceeds the 5 GB CopyObject limit "
+                             f"(UploadPartCopy not implemented)")
     etag = (head.get('ETag') or '').strip('"')
     if row.get('source_root') == 'live' and not _unchanged_since_freeze(head, row.get('frozen_at'),
                                                                         clock_margin or CLOCK_SKEW):
@@ -567,7 +573,11 @@ def run_byte_pass(client, s3, bucket: str, tag: str, *, workers: int = 8, page_s
                 with lock:
                     report.count(o)
             for i in range(0, len(outcomes), mark_batch):
-                res = mark_results(client, tag, [o.as_result() for o in outcomes[i:i + mark_batch]])
+                # each outcome names the frozen content it is for, so a mark
+                # never lands on a re-frozen member of another generation
+                batch = [{**o.as_result(), 'content_hash': r['content_hash']}
+                         for r, o in zip(rows[i:i + mark_batch], outcomes[i:i + mark_batch])]
+                res = mark_results(client, tag, batch)
                 report.state = res.get('state', report.state)
             log(f"  {report.seen:,} members: " +
                 ', '.join(f"{k} {v:,}" for k, v in sorted(report.by_state.items())) +

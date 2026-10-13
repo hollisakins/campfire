@@ -10022,8 +10022,15 @@ BEGIN
          pg.size_bytes, pg.byte_state,
          CASE WHEN live.id IS NOT NULL THEN live.storage_key ELSE ret.storage_key END,
          CASE WHEN live.id IS NOT NULL THEN 'live' WHEN ret.id IS NOT NULL THEN 'archive' END,
-         CASE WHEN live.id IS NOT NULL THEN COALESCE(live.stored_size_bytes, live.size_bytes)
-              ELSE COALESCE(ret.stored_size_bytes, ret.size_bytes) END,
+         -- the STORED size; a transport-compressed object (.gz key) without a
+         -- recorded stored size is unknown (NULL), never its logical size
+         -- (Codex on #601)
+         CASE WHEN live.id IS NOT NULL THEN
+                CASE WHEN pg.storage_key LIKE '%.gz' THEN live.stored_size_bytes
+                     ELSE COALESCE(live.stored_size_bytes, live.size_bytes) END
+              ELSE
+                CASE WHEN pg.storage_key LIKE '%.gz' THEN ret.stored_size_bytes
+                     ELSE COALESCE(ret.stored_size_bytes, ret.size_bytes) END END,
          reuse.archive_key, reuse.stamped_hash, reuse.size_bytes,
          jsonb_build_object(
            'content_type', COALESCE(live.content_type, ret.content_type, src.content_type),
@@ -10124,6 +10131,14 @@ BEGIN
     END IF;
     SELECT * INTO m FROM dr_members WHERE tag = p_tag AND storage_key = e->>'storage_key' FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'no member % in %', e->>'storage_key', p_tag; END IF;
+    -- The outcome must be for THIS member's frozen bytes: a pass that fetched
+    -- its page before the tag was purged and re-frozen carries the old
+    -- generation's content hash (Codex on #601). Same hash = same bytes, so an
+    -- old outcome is only applied when it is still true.
+    IF e->>'content_hash' IS DISTINCT FROM m.content_hash THEN
+      RAISE EXCEPTION 'outcome for % is for content % but the member froze %; refetch and rerun',
+        m.storage_key, COALESCE(e->>'content_hash', '<none>'), m.content_hash;
+    END IF;
     IF v_new = 'stamped' AND m.product_type NOT IN ('nirspec_spec', 'nirspec_lines') THEN
       RAISE EXCEPTION 'only NIRSpec FITS finals are stamped (% is %)', m.storage_key, m.product_type;
     END IF;

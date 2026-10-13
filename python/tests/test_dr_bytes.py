@@ -364,6 +364,20 @@ def test_rewritten_gzipped_mosaic_is_verified_on_its_logical_bytes():
     assert (o.state, o.action) == ('failed', 'drift') and 'the release froze' in o.error
 
 
+def test_unknown_stored_size_of_a_gzipped_mosaic_is_not_drift(monkeypatch):
+    # Codex on #601: an old .fits.gz row without stored_size_bytes is unknown,
+    # not its logical size; the CopyObject ceiling uses the HEAD instead
+    import gzip
+    stored = gzip.compress(_fits_bytes(2))
+    row = _row(MOSAIC_KEY, _fits_bytes(2), product_type='nircam_mosaic', source_stored_size=None,
+               component='nircam/cosmos', program_slug=None)
+    o = B.process_member(row, tag=TAG, s3=_s3(**{MOSAIC_KEY: stored}), bucket=BUCKET)
+    assert (o.state, o.action) == ('copied', 'copy')
+    monkeypatch.setattr(B, 'COPY_LIMIT_BYTES', len(stored) - 1)
+    o = B.process_member(row, tag=TAG, s3=_s3(**{MOSAIC_KEY: stored}), bucket=BUCKET)
+    assert o.state == 'failed' and '5 GB CopyObject limit' in o.error
+
+
 def test_large_object_uploaded_just_before_the_freeze_is_copied_with_a_measured_window():
     frozen_at = datetime.now(timezone.utc) + timedelta(seconds=30)
     head = {'LastModified': datetime.now(timezone.utc)}
@@ -460,6 +474,8 @@ def _fake_db(rows):
         state['marks'].append(params['p_results'])
         by_key = {r['storage_key']: r for r in state['rows']}
         for res in params['p_results']:
+            # as dr_bytes_mark: the outcome must name the member's frozen content
+            assert res.get('content_hash') == by_key[res['storage_key']]['content_hash'], res
             by_key[res['storage_key']]['byte_state'] = res['state']
         open_ = sum(1 for r in state['rows'] if r['byte_state'] in ('pending', 'failed'))
         return {'state': 'copying' if open_ else 'ready', 'marked': len(params['p_results'])}
