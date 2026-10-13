@@ -1523,6 +1523,98 @@ def dr_export(tag, as_json, local):
         sys.exit(1)
 
 
+@dr_group.command(name="bytes")
+@click.option("--tag", required=True, metavar="TAG", help="Release tag whose member bytes to archive")
+@click.option("--obs", default=None, metavar="OBS", help="Only the NIRSpec members of one observation (the staged first run)")
+@click.option("--field", default=None, metavar="FIELD", help="Only the NIRCam mosaic members of one field")
+@click.option("--workers", type=int, default=8, show_default=True, help="Parallel transfers")
+@click.option("--limit", type=int, default=None, help="Process at most N members this run")
+@click.option("--retry-failed", is_flag=True, help="Take up members a previous run marked failed")
+@click.option("--dry-run", is_flag=True, help="Report what each pending member would need; touch nothing")
+@click.option("--status", "status_only", is_flag=True, help="Only print the byte-pass progress")
+@click.option("--json", "as_json", is_flag=True, help="Print the report as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
+def dr_bytes(tag, obs, field, workers, limit, retry_failed, dry_run, status_only, as_json, local):
+    """Archive the member bytes of a frozen release (P4c).
+
+    NIRSpec FITS finals are downloaded, stamped with CMPFRDR = TAG in the
+    primary header (science hash unchanged, verified) and uploaded to
+    archive/<sha256>/<relpath>; sidecars and mosaics are copied server-side,
+    unstamped. Objects another release already archived with the same science
+    (FITS) or content (the rest) are reused, so an unchanged file keeps the
+    stamp of the first release that froze it. Resumable: re-run until nothing
+    is pending; members whose frozen bytes are gone are marked failed with
+    the reason. Needs object-store credentials (CAMPFIRE_S3_* or deploy.toml)
+    and an admin login or the service role. Run `campfire dr export` again
+    afterwards: the member files it changed are rebuilt.
+    """
+    import json as _json
+
+    from campfire_layout import Scope, key_prefix
+    from campfire_layout.keys import KeyScheme
+
+    config, sb = _dr_client(local, what="`campfire dr bytes`")
+    from campfire.deploy.dr_bytes import fetch_summary, format_report, format_summary, run_byte_pass
+
+    if obs and field:
+        click.echo("✗ Pass --obs or --field, not both.")
+        sys.exit(2)
+    prefix = None
+    if obs:
+        prefix = key_prefix('nirspec_spec', Scope(obs=obs), scheme=KeyScheme.CANONICAL) + '/'
+    elif field:
+        prefix = key_prefix('nircam_mosaic', Scope(field=field, filt='x'), scheme=KeyScheme.CANONICAL).rsplit('/', 1)[0] + '/'
+
+    if status_only:
+        try:
+            summary = fetch_summary(sb, tag)
+        except Exception as e:  # noqa: BLE001
+            click.echo(f"✗ {getattr(e, 'message', None) or e}")
+            sys.exit(1)
+        click.echo(_json.dumps(summary, indent=2, sort_keys=True) if as_json else format_summary(summary))
+        return
+
+    s3 = bucket = None
+    if not dry_run:
+        # Members live on OSN: the [r2_osn] block (CAMPFIRE_S3_OSN_*), else a
+        # data block that itself points at OSN.
+        from campfire.deploy.backend import make_s3_client, resolve_backend
+        bcfg = None
+        errors = []
+        for purpose in ('osn', 'data'):
+            try:
+                cand = resolve_backend(config, purpose)
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"{purpose}: {e}")
+                continue
+            if cand.backend == 'osn':
+                bcfg = cand
+                break
+            errors.append(f"{purpose}: resolves to {cand.backend}, not OSN")
+        if bcfg is None:
+            click.echo("✗ `campfire dr bytes` needs OSN credentials for the data bucket "
+                       "(CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml): " + '; '.join(errors))
+            sys.exit(2)
+        s3 = make_s3_client(bcfg, max_pool_connections=max(workers, 10))
+        bucket = bcfg.bucket
+
+    scope = f" under {prefix}" if prefix else ""
+    click.echo(f"{'Planning' if dry_run else 'Archiving'} the member bytes of {tag}{scope} …")
+    try:
+        report = run_byte_pass(sb, s3, bucket, tag, workers=workers, limit=limit,
+                               include_failed=retry_failed, prefix=prefix, dry_run=dry_run,
+                               log=click.echo)
+    except Exception as e:  # noqa: BLE001 - one line, not a traceback
+        click.echo(f"✗ {getattr(e, 'message', None) or e}")
+        sys.exit(1)
+    if as_json:
+        click.echo(_json.dumps(report.as_dict(), indent=2, sort_keys=True, default=str))
+    else:
+        click.echo(format_report(report))
+    if not dry_run and report.by_state.get('failed'):
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Archive (admin)
 # ---------------------------------------------------------------------------

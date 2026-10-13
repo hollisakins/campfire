@@ -766,19 +766,15 @@ CREATE INDEX IF NOT EXISTS idx_dr_objects_tag_field
     ON public.dr_objects USING btree (tag, field);
 CREATE INDEX IF NOT EXISTS idx_dr_objects_programs
     ON public.dr_objects USING gin (programs);
--- the objects export pages in name order (dr_export_rows' keyset cursor);
--- the other streams page on their primary keys
-CREATE INDEX IF NOT EXISTS idx_dr_objects_tag_name
-    ON public.dr_objects USING btree (tag, name);
--- The byte pass walks pending rows per tag; dedup looks up by science hash.
-CREATE INDEX IF NOT EXISTS idx_dr_manifest_tag_pending
-    ON public.dr_manifest USING btree (tag, storage_key) WHERE (byte_state = 'pending');
-CREATE INDEX IF NOT EXISTS idx_dr_manifest_tag_component
-    ON public.dr_manifest USING btree (tag, component);
-CREATE INDEX IF NOT EXISTS idx_dr_manifest_science_hash
-    ON public.dr_manifest USING btree (science_hash) WHERE (science_hash IS NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_dr_manifest_spectrum
-    ON public.dr_manifest USING btree (spectrum_id) WHERE (spectrum_id IS NOT NULL);
+-- The byte pass walks pending (and, on a retry, failed) rows per tag; dedup looks up by science hash.
+CREATE INDEX IF NOT EXISTS idx_dr_members_tag_pending
+    ON public.dr_members USING btree (tag, storage_key) WHERE (byte_state = ANY (ARRAY['pending'::text, 'failed'::text]));
+CREATE INDEX IF NOT EXISTS idx_dr_members_tag_component
+    ON public.dr_members USING btree (tag, component);
+CREATE INDEX IF NOT EXISTS idx_dr_members_science_hash
+    ON public.dr_members USING btree (science_hash) WHERE (science_hash IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_dr_members_spectrum
+    ON public.dr_members USING btree (spectrum_id) WHERE (spectrum_id IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_dr_line_fits_tag_program
     ON public.dr_line_fits USING btree (tag, program_slug);
 CREATE INDEX IF NOT EXISTS idx_dr_photometry_tag_object
