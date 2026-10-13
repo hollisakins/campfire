@@ -449,3 +449,23 @@ def test_interactive_remove_refuses_when_redeployed_during_the_prompt(monkeypatc
     with pytest.raises(rm.RemovalRefused, match='redeployed after the confirmation'):
         rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=False, skip_rebuild=True)
     assert not deleted and order[-1] == 'release'
+
+
+def test_interactive_remove_reads_the_version_before_prompting(monkeypatch):
+    # Codex on #602: a standalone writer finishing during the prompt bumps the
+    # version without changing counts, targets or the deployment
+    c, order = _ordered_client([{**REFS[1]}])
+    rm, deleted = _remove_env(monkeypatch, c)
+    scope = {'version': 2}
+    monkeypatch.setattr(rm, 'get_deploy_scope_version', lambda *a, **k: scope['version'])
+
+    def prompt(text):
+        scope['version'] = 3                 # the writer finished while the prompt was open
+        return 'y'
+    monkeypatch.setattr('builtins.input', prompt)
+    # our own begin takes the scope from 3 to 4: equal to (a version read after the
+    # prompt) + 1, so only a read BEFORE the prompt catches the writer
+    c.rpc_handlers['begin_deploy_scope'] = lambda p: order.append('begin') or {'version': 4}
+    with pytest.raises(rm.RemovalRefused, match='redeployed after the confirmation'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=False, skip_rebuild=True)
+    assert not deleted

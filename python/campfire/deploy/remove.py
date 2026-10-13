@@ -237,13 +237,16 @@ def remove_observation(
     confirmed = None
     confirmed_version = None
     if not dry_run and not auto_approve:
+        # the scope version BEFORE the preview: every deploy of the observation
+        # that begins after it -- a full deploy, or a standalone json / zfit /
+        # lines writer finishing while the prompt is open -- moves it past the
+        # one bump our own begin makes (Codex on #602)
+        confirmed_version = get_deploy_scope_version(sb, 'observation', obs_name)
         confirmed = _remove_checked(sb, obs, obs_name, config, dry_run=False, force=force,
                                     supabase_only=supabase_only, auto_approve=False,
                                     skip_rebuild=skip_rebuild, confirm_only=True)
         if confirmed is None:
             return
-        # every finished deploy of the observation bumps its scope version
-        confirmed_version = get_deploy_scope_version(sb, 'observation', obs_name)
         obs = _fetch_observation(sb, obs_name)
         if obs is None:
             raise RemovalRefused(f"{obs_name}: the observation disappeared after the confirmation")
