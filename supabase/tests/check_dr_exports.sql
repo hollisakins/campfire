@@ -342,6 +342,13 @@ BEGIN
   UPDATE dr_spectra SET program_slug = prog WHERE tag = 'DR-seed' AND program_slug = 'nircam/' || prog;
   UPDATE dr_releases SET components = components - ('nircam/' || prog) WHERE tag = 'DR-seed';
 
+  -- the builder's end-of-run status: state and not-ready count in one snapshot
+  IF (dr_export_status('DR-seed')->>'remaining')::int
+       <> (SELECT count(*) FROM dr_exports WHERE tag = 'DR-seed' AND state <> 'ready')
+     OR dr_export_status('DR-seed')->>'state' <> (SELECT state FROM dr_releases WHERE tag = 'DR-seed') THEN
+    RAISE EXCEPTION 'dr_export_status disagrees with the ledger: %', dr_export_status('DR-seed');
+  END IF;
+
   -- an empty release cannot be exported (it could never become ready)
   INSERT INTO dr_releases (tag, state, components) VALUES ('DR-zzz-empty', 'frozen', '["nirspec"]');
   got := pg_temp.zzz_as('authenticated', '11111111-1111-1111-1111-111111111111', $q$SELECT (dr_export_begin('DR-zzz-empty'))::text$q$);

@@ -385,7 +385,8 @@ BEGIN
              'jwst_version', s.jwst_version, 'date_obs', s.date_obs, 'reduced_at', s.reduced_at,
              'redshift_auto', s.redshift_auto, 'chi2_min', s.chi2_min, 'confidence', s.confidence,
              'dq_flags', s.dq_flags, 'program_slug', s.program_slug, 'observation', s.observation,
-             'field', o.field)
+             -- the frozen target field: an objectless spectrum has no object row
+             'field', COALESCE(s.field, o.field))
     FROM dr_spectra s
     LEFT JOIN dr_objects o ON o.tag = s.tag AND o.object_id = s.object_id
     WHERE s.tag = p_tag AND s.program_slug = p_partition
@@ -455,6 +456,27 @@ $function$;
 
 REVOKE ALL ON FUNCTION "public"."dr_export_rows"(text, text, text, text, integer) FROM PUBLIC, "anon";
 
+CREATE OR REPLACE FUNCTION public.dr_export_status (
+  p_tag text
+)
+  RETURNS jsonb
+  LANGUAGE plpgsql
+  STABLE
+  SECURITY DEFINER
+  SET search_path TO 'public', 'pg_temp'
+  AS $function$
+BEGIN
+  PERFORM dr_require_admin();
+  RETURN (SELECT jsonb_build_object(
+            'tag', r.tag, 'state', r.state,
+            'remaining', (SELECT count(*) FROM dr_exports e WHERE e.tag = r.tag AND e.state <> 'ready'),
+            'total', (SELECT count(*) FROM dr_exports e WHERE e.tag = r.tag))
+          FROM dr_releases r WHERE r.tag = p_tag);
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION "public"."dr_export_status"(text) FROM PUBLIC, "anon";
+
 COMMENT ON FUNCTION "public"."dr_export_begin"(text) IS 'Seed the export ledger of an unpublished data release from dr_export_partitions (idempotent: existing ledger rows are kept) and derive the release state (dr_derive_state). Admin or service_role.';
 
 COMMENT ON FUNCTION "public"."dr_export_invalidate"(text, text, text) IS 'Send ready export files of a data release back to pending (a stream, a partition, or everything) so `dr export` rebuilds them; the byte pass uses it for the member partitions it changes. Admin or service_role.';
@@ -464,6 +486,8 @@ COMMENT ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigi
 COMMENT ON FUNCTION "public"."dr_export_partitions"(text) IS 'Every (stream, partition) of a data release that has rows, with the export storage key and the row count (P4b). Program-scoped streams partition by program slug; field-level member rows by component. Admin or service_role.';
 
 COMMENT ON FUNCTION "public"."dr_export_rows"(text, text, text, text, integer) IS 'One keyset page of a data-release export partition (P4b): rows shaped like the live sync rows of the same stream (docs/dr-format-v1.md), objects with aggregates scoped to the partition program. next_cursor = the row''s key (pass the last one as p_after for the next page). Admin or service_role.';
+
+COMMENT ON FUNCTION "public"."dr_export_status"(text) IS 'A data release''s state and its not-ready export file count, from one snapshot (P4b builder). Admin or service_role.';
 
 REVOKE ALL ON FUNCTION "public"."dr_derive_state"(text) FROM "postgres";
 
@@ -526,3 +550,11 @@ REVOKE ALL ON FUNCTION "public"."dr_export_rows"(text, text, text, text, integer
 GRANT EXECUTE ON FUNCTION "public"."dr_export_rows"(text, text, text, text, integer) TO "postgres";
 
 GRANT EXECUTE ON FUNCTION "public"."dr_export_rows"(text, text, text, text, integer) TO "service_role";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_export_status"(text) TO "authenticated";
+
+REVOKE ALL ON FUNCTION "public"."dr_export_status"(text) FROM "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_export_status"(text) TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_export_status"(text) TO "service_role";

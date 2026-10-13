@@ -9571,7 +9571,8 @@ BEGIN
              'jwst_version', s.jwst_version, 'date_obs', s.date_obs, 'reduced_at', s.reduced_at,
              'redshift_auto', s.redshift_auto, 'chi2_min', s.chi2_min, 'confidence', s.confidence,
              'dq_flags', s.dq_flags, 'program_slug', s.program_slug, 'observation', s.observation,
-             'field', o.field)
+             -- the frozen target field: an objectless spectrum has no object row
+             'field', COALESCE(s.field, o.field))
     FROM dr_spectra s
     LEFT JOIN dr_objects o ON o.tag = s.tag AND o.object_id = s.object_id
     WHERE s.tag = p_tag AND s.program_slug = p_partition
@@ -9845,6 +9846,29 @@ COMMENT ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, 
 REVOKE ALL ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, integer, text, uuid) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, integer, text, uuid) TO authenticated, service_role;
 
+-- The builder's end-of-run answer, read in ONE snapshot: the release state
+-- and how many ledger files are not ready (two PostgREST reads could straddle
+-- a concurrent byte pass or exporter; Codex on #600).
+CREATE OR REPLACE FUNCTION public.dr_export_status(p_tag text)
+RETURNS jsonb
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  PERFORM dr_require_admin();
+  RETURN (SELECT jsonb_build_object(
+            'tag', r.tag, 'state', r.state,
+            'remaining', (SELECT count(*) FROM dr_exports e WHERE e.tag = r.tag AND e.state <> 'ready'),
+            'total', (SELECT count(*) FROM dr_exports e WHERE e.tag = r.tag))
+          FROM dr_releases r WHERE r.tag = p_tag);
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_export_status(text) IS 'A data release''s state and its not-ready export file count, from one snapshot (P4b builder). Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_export_status(text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_status(text) TO authenticated, service_role;
+
 -- Send ready export files back to pending so the next `dr export` rebuilds
 -- them: the byte pass (P4c) calls it for the `members` partitions it changes
 -- (archive_key / byte_state / stamped_hash are part of the member rows, so a
@@ -10007,6 +10031,7 @@ REVOKE ALL ON FUNCTION public.dr_derive_state(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_invalidate(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_key(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_content_key(p_base text, p_sha256 text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_status(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_mark(p_tag text, p_stream text, p_partition text, p_state text, p_sha256 text, p_size_bytes bigint, p_rows integer, p_error text, p_claim uuid) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_partitions(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_rows(p_tag text, p_stream text, p_partition text, p_after text, p_limit integer) FROM PUBLIC, anon;

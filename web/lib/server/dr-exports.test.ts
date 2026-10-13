@@ -65,6 +65,10 @@ function fakeSupabase(opts: {
     rpc: async (name: string, params: Record<string, unknown>) => {
       calls.push({ name, params });
       if (name === 'dr_export_begin') return { data: { state: 'exporting' }, error: null };
+      if (name === 'dr_export_status') {
+        const remaining = ledger.filter((r) => r.state !== 'ready').length;
+        return { data: { state: ledger.length > 0 && remaining === 0 ? 'exported' : 'exporting', remaining }, error: null };
+      }
       if (name === 'dr_export_mark') {
         const key = `${params.p_stream}/${params.p_partition}`;
         const row = ledger.find((r) => r.stream === params.p_stream && r.partition === params.p_partition);

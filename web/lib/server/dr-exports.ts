@@ -281,11 +281,13 @@ export async function runExportBudget(
 
   // Recounted from the ledger, not from this run's snapshot: another run may
   // have finished files this one skipped (Codex on #600).
-  const after = await fetchLedger(supabase, tag);
-  const remaining = after.filter((r) => r.state !== 'ready').length;
-  // ...and the release state with it: another run may have moved it.
-  const current = await fetchRelease(supabase, tag);
-  if (current?.state) state = current.state;
+  // ...and the release state with it, both from ONE snapshot: another run may
+  // have moved either, and two reads could straddle a concurrent change.
+  const { data: status, error: statusError } = await supabase.rpc('dr_export_status', { p_tag: tag });
+  if (statusError) throw new Error(`dr_export_status: ${statusError.message}`);
+  const s = (status ?? {}) as { state?: string; remaining?: number };
+  if (s.state) state = s.state;
+  const remaining = Number(s.remaining ?? todo.length - built.length);
   return { tag, state, built, failed, skipped, remaining, incomplete, duration_ms: now() - t0 };
 }
 
