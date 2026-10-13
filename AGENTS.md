@@ -371,6 +371,21 @@ neither generates nor uploads them, the `deploy rgb`/`deploy sed` subcommands
 and their generators are removed, and the `targets.has_sed_plot` column is
 dropped — their legacy R2 remnants retire with A2.
 
+**Deploy leases and data-release freezes.** A freeze (`campfire dr freeze`) is one
+snapshot transaction, so it is internally consistent by construction; its post-freeze
+integrity checks (finals present with matching hashes, mosaics of the published
+deployment, non-empty components) are what make the release usable. The deploy lease
+(`deploy_scope_state`) exists so a freeze never snapshots a catalog write that spans
+several requests half-way: `begin_deploy_scope` refuses while a freeze runs, and a freeze
+refuses while any lease is live. So every `deploy` command that writes, over several
+requests, anything the freeze reads (spectra, objects, line fits, photometry, registry
+rows of release members, `nircam_images`) runs under a scope lease (`_under_scope_lease`
+and friends in `deploy/cli.py`), and no deploy runs unleased (`ScopeLease.begin` fails
+closed). `python/tests/test_deploy_freeze_contract.py` classifies every command; a new one
+fails it until it is classified. Run `dr freeze` when `dr status` shows no activity; an
+unleased admin edit overlapping a freeze yields a consistent snapshot of an intermediate
+catalog, not a corrupt one.
+
 **Deploy auth (issue #250).** Two decisions, kept independent:
 
 - **Supabase auth mode** is chosen *explicitly*, never inferred from which creds are present:

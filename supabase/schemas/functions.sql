@@ -7199,17 +7199,19 @@ BEGIN
   -- Data-release interlock (P4a): a freeze snapshot must not see a deploy's
   -- partial catalog update and a deploy must not start into a freeze. The
   -- same advisory lock is held by dr_freeze_job for the whole freeze
-  -- transaction, so a begin that arrives mid-freeze waits for it to commit
-  -- (~15 s on the full catalog); a release left in `freezing` (enqueued, the
-  -- pg_cron job not yet run) refuses the deploy outright.
-  PERFORM pg_advisory_xact_lock(hashtext('campfire.dr_freeze'));
-  IF EXISTS (SELECT 1 FROM dr_releases r WHERE r.state = 'freezing'
-              AND r.freeze_started_at > now() - interval '1 hour') THEN
+  -- transaction (a few minutes on the Small instance). It is TRIED, not
+  -- waited for: a blocking wait would outlast the API role's 8 s statement
+  -- timeout and surface as a generic timeout instead of this refusal. Held
+  -- means a freeze is running; a release left in `freezing` (enqueued, the
+  -- pg_cron job not yet run) refuses the deploy too.
+  IF NOT pg_try_advisory_xact_lock(hashtext('campfire.dr_freeze'))
+     OR EXISTS (SELECT 1 FROM dr_releases r WHERE r.state = 'freezing'
+                 AND r.freeze_started_at > now() - interval '1 hour') THEN
     RAISE EXCEPTION 'deploy_scope_busy: a data-release freeze is running (%); retry when `campfire dr status` shows it frozen',
-      (SELECT string_agg(r.tag, ', ') FROM dr_releases r WHERE r.state = 'freezing'
-        AND r.freeze_started_at > now() - interval '1 hour')
+      COALESCE((SELECT string_agg(r.tag, ', ') FROM dr_releases r WHERE r.state = 'freezing'
+                 AND r.freeze_started_at > now() - interval '1 hour'), 'a freeze holds the lock')
       USING ERRCODE = 'CF409',
-            HINT = 'A freeze takes under a minute on production; --steal-lease does not apply.';
+            HINT = 'A freeze takes a few minutes on production; --steal-lease does not apply.';
   END IF;
 
   INSERT INTO deploy_scope_state (scope_type, scope_key)
@@ -7507,6 +7509,7 @@ BEGIN
   -- 0. data releases (P4a): every tag, newest first.
   SELECT COALESCE(jsonb_agg(jsonb_build_object(
       'tag', r.tag, 'state', r.state, 'components', r.components,
+      'freeze_started_at', r.freeze_started_at,
       'frozen_at', r.frozen_at, 'published_at', r.published_at,
       'withdrawn_at', r.withdrawn_at, 'counts', r.counts, 'error', r.error)
     ORDER BY r.created_at DESC), '[]'::jsonb)
@@ -9210,6 +9213,12 @@ BEGIN
            counts = jsonb_build_object(
              'spectra', v_n_spectra, 'objects', v_n_objects, 'line_fits', v_n_lines,
              'photometry', v_n_phot, 'members', v_n_members,
+             -- per product type, so a shortfall (e.g. sidecars whose registry
+             -- row did not match the key) shows at freeze time, not in the
+             -- byte pass
+             'members_by_type', (SELECT COALESCE(jsonb_object_agg(t.product_type, t.n), '{}'::jsonb)
+                                 FROM (SELECT m.product_type, count(*) AS n FROM dr_members m
+                                       WHERE m.tag = p_tag GROUP BY m.product_type) t),
              'nircam_fields', to_jsonb(comp.fields), 'photometry_components', to_jsonb(comp.photometry)),
            error = NULL,
            updated_at = now()
@@ -9276,6 +9285,14 @@ BEGIN
               WHERE d.in_progress_since IS NOT NULL
                 AND COALESCE(d.heartbeat_at, d.in_progress_since) >= now() - deploy_lease_ttl()) THEN
     RAISE EXCEPTION 'a deploy is in progress (live deploy lease); wait for it to finish or release it (campfire dr status lists leases)';
+  END IF;
+  -- One freeze at a time: two jobs would contend for the freeze lock and the
+  -- loser would fail and retry on every pg_cron tick until the first is done.
+  IF EXISTS (SELECT 1 FROM dr_releases o WHERE o.tag <> p_tag AND o.state = 'freezing'
+              AND o.freeze_started_at > now() - interval '1 hour') THEN
+    RAISE EXCEPTION 'another release is freezing (%); wait for it (campfire dr status)',
+      (SELECT string_agg(o.tag, ', ') FROM dr_releases o WHERE o.tag <> p_tag AND o.state = 'freezing'
+        AND o.freeze_started_at > now() - interval '1 hour');
   END IF;
 
   SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;

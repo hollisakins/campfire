@@ -228,6 +228,9 @@ BEGIN
   INSERT INTO dr_releases (tag, state, components, freeze_started_at) VALUES ('DR-zzz-lock', 'freezing', '["nirspec"]', now());
   got := pg_temp.zzz_dr_as('authenticated', admin, $q$SELECT (public.begin_deploy_scope('observation', 'zzz_dr_obs_priv', NULL, 'zzz-host', false))::text$q$);
   IF got NOT LIKE 'ERR: deploy_scope_busy: a data-release freeze is running (DR-zzz-lock)%' THEN RAISE EXCEPTION 'deploy should be refused while freezing, got %', got; END IF;
+  -- and one freeze at a time: another tag is refused while it is freezing
+  got := pg_temp.zzz_dr_as('authenticated', admin, $q$SELECT (public.dr_enqueue_freeze('DR-zzz', '["nirspec"]', NULL, true))::text$q$);
+  IF got NOT LIKE 'ERR: another release is freezing (DR-zzz-lock)%' THEN RAISE EXCEPTION 'a second freeze should be refused, got %', got; END IF;
   DELETE FROM dr_releases WHERE tag = 'DR-zzz-lock';
   -- and a lease taken after the enqueue (the pg_cron delay) fails the job cleanly
   INSERT INTO dr_releases (tag, state, components, freeze_started_at) VALUES ('DR-zzz-late', 'freezing', '["nirspec"]', now());
@@ -272,6 +275,9 @@ BEGIN
     RAISE EXCEPTION 'release row incomplete: %', to_jsonb(r);
   END IF;
   IF r.notes <> 'rehearsal' THEN RAISE EXCEPTION 'notes not stored'; END IF;
+  IF (SELECT sum(v::int) FROM jsonb_each_text(r.counts->'members_by_type') AS t(k, v)) <> (r.counts->>'members')::int THEN
+    RAISE EXCEPTION 'members_by_type should add up to members: %', r.counts;
+  END IF;
 
   -- spectra: the 5 published ones of active objects + the inactive object's
   -- published spectrum is NOT frozen (its object is inactive -> object_id NULL

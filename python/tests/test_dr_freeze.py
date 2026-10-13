@@ -263,3 +263,13 @@ def test_cli_freeze_json_stdout_is_pure_json(monkeypatch):
     assert res.exit_code == 0, res.output
     assert json.loads(res.stdout)['state'] == 'frozen'
     assert 'Freeze of DR-t' in res.stderr
+
+
+def test_status_shows_a_freeze_in_progress_and_members_by_type():
+    # Fable review of #599: a freeze that never lands must be visible as such
+    row = {'tag': 'DR-t', 'state': 'freezing', 'freeze_started_at': '2026-10-13T20:00:00+00:00', 'counts': {}}
+    assert 'freezing since 2026-10-13 20:00 UTC' in format_release(row)
+    report = {'generated_at': None, 'spectra_by_version': {}, 'leases': [], 'releases': [row]}
+    assert any('DR-t: freezing since' in l for l in format_releases(report))
+    frozen = {**FROZEN, 'counts': {**FROZEN['counts'], 'members_by_type': {'nirspec_spec': 163, 'zfit': 160}}}
+    assert 'members: 163 nirspec_spec · 160 zfit' in format_release(frozen)

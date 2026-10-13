@@ -275,6 +275,12 @@ def format_release(row: dict) -> str:
         parts = [f"{_n(counts.get(k))} {k}" for k in ('spectra', 'objects', 'line_fits', 'photometry', 'members')
                  if counts.get(k) is not None]
         lines.append('  frozen: ' + ' · '.join(parts))
+        by_type = counts.get('members_by_type') or {}
+        if by_type:
+            lines.append('  members: ' + ' · '.join(f"{_n(v)} {k}" for k, v in sorted(by_type.items())))
+    if row.get('state') == 'freezing' and row.get('freeze_started_at'):
+        # a freeze that never lands (the pg_cron job did not run) is visible as such
+        lines.append(f"  freezing since {_when(row.get('freeze_started_at'))}")
     if row.get('frozen_at'):
         dur = row.get('freeze_duration_ms')
         dur_s = f" in {int(dur) / 1000:.1f} s" if dur is not None else ''
@@ -305,6 +311,8 @@ def format_releases(report: dict) -> list[str]:
         lines.extend(_table(rows, ['tag', 'state', 'spectra', 'objects', 'members', 'frozen', 'published'],
                             right={2, 3, 4}))
         for r in releases:
+            if r.get('state') == 'freezing' and r.get('freeze_started_at'):
+                lines.append(f"  {r.get('tag')}: freezing since {_when(r.get('freeze_started_at'))}")
             if r.get('error'):
                 lines.append(f"  {r.get('tag')}: {r.get('error')}")
     return lines
