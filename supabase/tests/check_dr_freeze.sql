@@ -196,6 +196,27 @@ BEGIN
   got := pg_temp.zzz_dr_as('authenticated', admin, $q$SELECT (public.dr_enqueue_freeze('DR-zzz', '[]', NULL, true))::text$q$);
   IF got NOT LIKE 'ERR: components must be a non-empty%' THEN RAISE EXCEPTION 'empty components should be refused, got %', got; END IF;
 
+  -- photometry rows hang off the frozen objects: no nirspec, no photometry (Codex on #599)
+  got := pg_temp.zzz_dr_as('authenticated', admin, $q$SELECT (public.dr_enqueue_freeze('DR-zzz', '["photometry/zzz_drf/ZZZ CAT v1"]', NULL, true))::text$q$);
+  IF got NOT LIKE 'ERR: photometry components need the nirspec component%' THEN RAISE EXCEPTION 'photometry-only freeze should be refused, got %', got; END IF;
+
+  -- interlock: while a release is `freezing`, a deploy cannot begin (CF409)
+  INSERT INTO dr_releases (tag, state, components, freeze_started_at) VALUES ('DR-zzz-lock', 'freezing', '["nirspec"]', now());
+  got := pg_temp.zzz_dr_as('authenticated', admin, $q$SELECT (public.begin_deploy_scope('observation', 'zzz_dr_obs_priv', NULL, 'zzz-host', false))::text$q$);
+  IF got NOT LIKE 'ERR: deploy_scope_busy: a data-release freeze is running (DR-zzz-lock)%' THEN RAISE EXCEPTION 'deploy should be refused while freezing, got %', got; END IF;
+  DELETE FROM dr_releases WHERE tag = 'DR-zzz-lock';
+  -- and a lease taken after the enqueue (the pg_cron delay) fails the job cleanly
+  INSERT INTO dr_releases (tag, state, components, freeze_started_at) VALUES ('DR-zzz-late', 'freezing', '["nirspec"]', now());
+  INSERT INTO deploy_scope_state (scope_type, scope_key, in_progress_since, heartbeat_at, in_progress_host)
+  VALUES ('observation', 'zzz_dr_obs_pub', now(), now(), 'zzz-host');
+  PERFORM public.dr_freeze_job('DR-zzz-late');
+  IF (SELECT state FROM dr_releases WHERE tag = 'DR-zzz-late') <> 'failed'
+     OR (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-late') NOT LIKE 'a deploy started after the freeze was enqueued%' THEN
+    RAISE EXCEPTION 'late lease should fail the job: %', (SELECT to_jsonb(r) FROM dr_releases r WHERE tag = 'DR-zzz-late');
+  END IF;
+  DELETE FROM dr_releases WHERE tag = 'DR-zzz-late';
+  DELETE FROM deploy_scope_state WHERE scope_key = 'zzz_dr_obs_pub';
+
   -- a live deploy lease blocks; a stale one does not
   INSERT INTO deploy_scope_state (scope_type, scope_key, in_progress_since, heartbeat_at, in_progress_host)
   VALUES ('observation', 'zzz_dr_obs_pub', now(), now(), 'zzz-host');
@@ -263,6 +284,20 @@ BEGIN
      OR (SELECT redshift FROM dr_objects WHERE tag = 'DR-zzz' AND object_id = mix) <> 2.5 THEN
     RAISE EXCEPTION 'MIX inspection state not frozen';
   END IF;
+  -- aggregates, programs and the auto redshift come from the PUBLISHED members
+  -- (Codex on #599): MIX has 3 published members in 2 programs; its auto
+  -- redshift is the PRISM-consistent G395M value, not the live column
+  IF (SELECT (n_spectra, n_targets, gratings, programs, redshift_auto::numeric(10,4)) FROM dr_objects WHERE tag = 'DR-zzz' AND object_id = mix)
+     IS DISTINCT FROM (3, 2, ARRAY['G140M', 'G395M', 'PRISM'], ARRAY['zzz_dr_priv', 'zzz_dr_pub'], 2.505::numeric(10,4)) THEN
+    RAISE EXCEPTION 'MIX frozen aggregates wrong: %', (SELECT to_jsonb(o) - 'review_state' FROM dr_objects o WHERE tag = 'DR-zzz' AND object_id = mix);
+  END IF;
+  SELECT o.id INTO pub_id FROM objects o WHERE o.object_id = 'ZZZ-DR-PUB';
+  -- PUB's G395M member is revoked: one published spectrum, one grating; its
+  -- live row still counts two (the reconcile aggregates include every member)
+  IF (SELECT (n_spectra, gratings) FROM dr_objects WHERE tag = 'DR-zzz' AND object_id = pub_id)
+     IS DISTINCT FROM (1, ARRAY['PRISM']) THEN
+    RAISE EXCEPTION 'PUB frozen aggregates should count the published member only: %', (SELECT to_jsonb(o) - 'review_state' FROM dr_objects o WHERE tag = 'DR-zzz' AND object_id = pub_id);
+  END IF;
 
   -- line fits: PUB fresh, MIX stale both ways, revoked spectrum's fit absent
   SELECT count(*) INTO n FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id LIKE 'zzz-dr-t-%';
@@ -276,7 +311,7 @@ BEGIN
 
   -- photometry: MIX only, with the object's programs
   SELECT count(*) INTO n FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1';
-  IF n <> 1 OR (SELECT programs FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1') <> ARRAY['zzz_dr_pub', 'zzz_dr_priv'] THEN
+  IF n <> 1 OR (SELECT programs FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1') <> ARRAY['zzz_dr_priv', 'zzz_dr_pub'] THEN
     RAISE EXCEPTION 'photometry freeze wrong (n=%)', n;
   END IF;
 
@@ -346,13 +381,12 @@ BEGIN
   IF got <> 'frozen' THEN RAISE EXCEPTION 'freeze after failure did not succeed: %', got; END IF;
   IF (SELECT error FROM dr_releases WHERE tag = 'DR-zzz') IS NOT NULL THEN RAISE EXCEPTION 'error not cleared'; END IF;
 
-  -- the job refuses a tag that is not freezing
-  BEGIN
-    PERFORM public.dr_freeze_job('DR-zzz');
-    RAISE EXCEPTION 'dr_freeze_job should refuse a frozen tag';
-  EXCEPTION WHEN OTHERS THEN
-    IF SQLERRM NOT LIKE '%expected freezing%' THEN RAISE; END IF;
-  END;
+  -- the job does nothing (and does not raise: the cron job must still get
+  -- unscheduled by the commit) on a tag that is not freezing
+  PERFORM public.dr_freeze_job('DR-zzz');
+  IF (SELECT state FROM dr_releases WHERE tag = 'DR-zzz') <> 'frozen' THEN
+    RAISE EXCEPTION 'dr_freeze_job on a frozen tag should leave it frozen';
+  END IF;
   RAISE NOTICE 'OK 3: idempotence + failure path';
 END $$;
 
