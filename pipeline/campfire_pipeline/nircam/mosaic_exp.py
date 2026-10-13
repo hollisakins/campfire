@@ -166,12 +166,20 @@ def exp_from_context(con_hdu, out_shape, xposure, rows=256):
     nexp = np.zeros(out_shape, dtype=np.int16)
     exptime = np.zeros(out_shape, dtype=np.float32)
     used = np.zeros(nplanes, dtype=np.uint32)
+    full = None
     for r0 in range(0, ny, rows):
         r1 = min(r0 + rows, ny)
-        if len(shape) == 3:
-            block = con_hdu.section[:, r0:r1, :]
-        else:
-            block = con_hdu.section[r0:r1, :][None]
+        if full is None:
+            try:
+                block = (con_hdu.section[:, r0:r1, :] if len(shape) == 3
+                         else con_hdu.section[r0:r1, :][None])
+            except OverflowError:
+                # astropy 7.2's CompImageHDU.section raises on some campfire
+                # i2d CONs (seen on COSMOS f470n) that `.data` reads fine, so
+                # fall back to decompressing the whole cube once.
+                full = con_hdu.data
+        if full is not None:
+            block = full[:, r0:r1, :] if len(shape) == 3 else full[r0:r1, :][None]
         block = np.ascontiguousarray(block).astype(np.uint32, copy=False)
         nexp[r0:r1] = popcount_planes(block)
         acc = np.zeros(block.shape[1:], dtype=np.float64)
