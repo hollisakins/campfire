@@ -50,7 +50,7 @@ LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM dr_export_begin(p_tag);
   PERFORM dr_bytes_mark(p_tag, (
-    SELECT jsonb_agg(jsonb_build_object('storage_key', m.storage_key, 'state', 'copied',
+    SELECT jsonb_agg(jsonb_build_object('storage_key', m.storage_key, 'content_hash', m.content_hash, 'state', 'copied',
                                         'archive_key', 'archive/' || md5(m.storage_key) || md5(m.storage_key) || '/' || substr(m.storage_key, 6),
                                         'registry', jsonb_build_object('content_type', 'application/octet-stream')))
     FROM dr_members m WHERE m.tag = p_tag AND m.byte_state NOT IN ('copied', 'stamped')));
