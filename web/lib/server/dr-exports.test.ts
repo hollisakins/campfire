@@ -100,6 +100,16 @@ function fakeSupabase(opts: {
       throw new Error(`unexpected rpc ${name}`);
     },
     from: (table: string) => {
+      if (table === 'dr_releases') {
+        // the release state the ledger implies (what dr_derive_state gives)
+        const state = ledger.length > 0 && ledger.every((r) => r.state === 'ready') ? 'exported' : 'exporting';
+        const r = {
+          select: () => r,
+          eq: () => r,
+          maybeSingle: async () => ({ data: { tag: 'DR-t', state }, error: null }),
+        };
+        return r;
+      }
       if (table !== 'dr_exports') throw new Error(table);
       const q = {
         select: () => q,
@@ -226,6 +236,8 @@ describe('runExportBudget', () => {
     const res = await runExportBudget(client, s3 as never, 'bucket', 'DR-t', 60_000);
     expect(res.skipped).toHaveLength(1);
     expect(res.remaining).toBe(0);
+    // the state is re-read too, not this run's stale `exporting` (Codex on #600)
+    expect(res.state).toBe('exported');
   });
 
   it('skips a file another run holds and passes its claim on ready / failed (Codex on #600)', async () => {

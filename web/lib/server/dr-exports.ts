@@ -283,6 +283,9 @@ export async function runExportBudget(
   // have finished files this one skipped (Codex on #600).
   const after = await fetchLedger(supabase, tag);
   const remaining = after.filter((r) => r.state !== 'ready').length;
+  // ...and the release state with it: another run may have moved it.
+  const current = await fetchRelease(supabase, tag);
+  if (current?.state) state = current.state;
   return { tag, state, built, failed, skipped, remaining, incomplete, duration_ms: now() - t0 };
 }
 
