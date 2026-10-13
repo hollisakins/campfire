@@ -28,7 +28,7 @@ import {
   RedshiftSliderControl,
   ControlDivider,
 } from './PlottingControls';
-import { LazyPlot as Plot } from '@/components/plot/LazyPlot';
+import { FullscreenPlot, ResizablePlot as Plot } from '@/components/plot/FullscreenPlot';
 
 // Custom colorscale definitions for scales not built into Plotly.js
 // Plasma, Inferno, and Magma are matplotlib colormaps not available in Plotly.js
@@ -790,7 +790,8 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
   }
 
   return (
-    <div className={bare ? '' : 'bg-card border border-border rounded-lg overflow-hidden'}>
+    <FullscreenPlot label={`${grating} spectrum`} className={bare ? '' : 'ring-1 ring-border rounded-lg overflow-hidden'}>
+      {(fullscreen, fullscreenButton) => <>
       {heatError && (
         <div
           role="alert"
@@ -824,7 +825,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         </div>
       )}
       {/* Controls */}
-      <div className="flex flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-surface-2">
+      <div className="relative flex shrink-0 flex-wrap items-center gap-4 pl-4 pr-14 py-2 border-b border-border bg-surface-2">
         <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />
 
         <ControlDivider />
@@ -939,6 +940,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
             }}
           />
         )}
+        {fullscreenButton}
       </div>
 
       {/* Plot */}
@@ -957,13 +959,13 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
             scale: 2,
           },
         }}
-        style={{ width: '100%', height: '700px' }}
+        className={fullscreen ? 'min-h-[300px] flex-1' : 'h-[700px]'}
         onRelayout={handleRelayout}
       />
 
       {/* χ²(z) panel — appears below the spectrum when Model is on. */}
       {chi2PlotData && (
-        <div className="border-t border-border">
+        <div className="shrink-0 border-t border-border">
           <Plot
             data={chi2PlotData.traces}
             layout={chi2PlotData.layout}
@@ -972,10 +974,11 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
               displayModeBar: false,
               displaylogo: false,
             }}
-            style={{ width: '100%', height: '220px' }}
+            className="h-[220px]"
           />
         </div>
       )}
-    </div>
+      </>}
+    </FullscreenPlot>
   );
 };

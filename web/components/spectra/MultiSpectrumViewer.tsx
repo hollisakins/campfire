@@ -20,7 +20,7 @@ import {
 } from './plotting-utils';
 import type { FluxUnit } from './plotting-utils';
 import { FluxUnitToggle, EmissionLinesControl, RedshiftSliderControl, ControlDivider } from './PlottingControls';
-import { LazyPlot as Plot } from '@/components/plot/LazyPlot';
+import { FullscreenPlot, ResizablePlot as Plot } from '@/components/plot/FullscreenPlot';
 
 export interface SpectrumSource {
   fitsPath: string;
@@ -234,7 +234,6 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plotLayout: any = {
       autosize: true,
-      height: 500,
       margin: { l: 70, r: 20, t: 40, b: 50 },
       paper_bgcolor: plotColors.paper,
       plot_bgcolor: plotColors.bg,
@@ -306,9 +305,10 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
   }
 
   return (
-    <div>
+    <FullscreenPlot label="Spectrum comparison">
+      {(fullscreen, fullscreenButton) => <>
       {/* Controls bar */}
-      <div className="flex items-center gap-4 flex-wrap px-4 py-2 border-b border-border bg-surface-2">
+      <div className="relative flex shrink-0 items-center gap-4 flex-wrap pl-4 pr-14 py-2 border-b border-border bg-surface-2">
         <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />
         <ControlDivider />
         <EmissionLinesControl showEmissionLines={showEmissionLines} onChange={setShowEmissionLines} />
@@ -318,10 +318,11 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
             <RedshiftSliderControl redshift={redshift} onChange={setRedshift} />
           </>
         )}
+        {fullscreenButton}
       </div>
 
       {/* Plot */}
-      <div className="relative">
+      <div className={fullscreen ? 'relative min-h-[300px] flex-1' : 'relative h-[500px]'}>
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center bg-card/80 z-10 rounded-lg">
             <div className="flex items-center gap-2">
@@ -344,10 +345,10 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
             modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'],
           }}
           onRelayout={handleRelayout}
-          style={{ width: '100%' }}
-          useResizeHandler
+          className="absolute inset-0"
         />
       </div>
-    </div>
+      </>}
+    </FullscreenPlot>
   );
 };
