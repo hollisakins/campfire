@@ -278,7 +278,7 @@ describe('runExportBudget', () => {
   });
 
   it('a lost claim is skipped, not failed, when another run finished the file (Codex on #600)', async () => {
-    const { s3 } = fakeS3();
+    const { s3, puts, deletes, store } = fakeS3();
     const { client } = fakeSupabase({ pages, loseClaim: ['objects/pub'], ledger: [entry('objects', 'pub')] });
     const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 60_000);
     expect(res.failed).toEqual([]);
@@ -286,6 +286,10 @@ describe('runExportBudget', () => {
       { stream: 'objects', partition: 'pub', reason: expect.stringContaining('claim lost while building') },
     ]);
     expect(res.remaining).toBe(0);
+    // its own upload is deleted at once, not left for a sweep that never returns (Codex on #600)
+    expect(puts).toHaveLength(1);
+    expect(deletes).toEqual([puts[0].Key]);
+    expect(store.has(puts[0].Key)).toBe(false);
   });
 
   it('once every file is ready, old objects the ledger does not name are swept (Codex on #600)', async () => {

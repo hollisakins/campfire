@@ -254,6 +254,7 @@ export async function runExportBudget(
       skipped.push({ stream: entry.stream, partition: entry.partition, reason: 'the building mark returned no claim' });
       continue;
     }
+    let uploadedKey: string | null = null;
     try {
       const { body, rows } = await buildPartitionFile(supabase, tag, entry.stream, entry.partition);
       const sha256 = `sha256:${createHash('sha256').update(body).digest('hex')}`;
@@ -261,11 +262,11 @@ export async function runExportBudget(
       // writes its stale bytes to its own key and never overwrites the
       // published file; the ready mark records this same key server-side
       // (dr_export_content_key).
+      const buildKey = contentExportKey(baseKey, sha256, claim);
       await s3.send(
-        new PutObjectCommand({
-          Bucket: bucket, Key: contentExportKey(baseKey, sha256, claim), Body: body, ContentType: 'application/gzip',
-        }),
+        new PutObjectCommand({ Bucket: bucket, Key: buildKey, Body: body, ContentType: 'application/gzip' }),
       );
+      uploadedKey = buildKey;
       const { data: marked, error: markError } = await supabase.rpc('dr_export_mark', {
         p_tag: tag, p_stream: entry.stream, p_partition: entry.partition, p_state: 'ready',
         p_sha256: sha256, p_size_bytes: body.length, p_rows: rows, p_claim: claim,
@@ -278,10 +279,17 @@ export async function runExportBudget(
       // With the claim: if this run lost it (taken over, invalidated), the
       // server leaves the newer state alone and says so -- then the file is
       // another run's, not a failure of this one (Codex on #600).
-      const { data: failMark } = await supabase.rpc('dr_export_mark', {
+      const { data: failMark, error: failError } = await supabase.rpc('dr_export_mark', {
         p_tag: tag, p_stream: entry.stream, p_partition: entry.partition, p_state: 'failed',
         p_error: message, p_claim: claim,
       });
+      if (uploadedKey && !failError) {
+        // The failed mark landed (or the claim is someone else's): the ledger
+        // does not name this build's key and never will -- keys are per build
+        // and a claim marks ready at most once -- so its object is deleted now
+        // rather than left for a sweep that may never come back (Codex on #600).
+        await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: uploadedKey })).catch(() => undefined);
+      }
       if ((failMark as { stale_claim?: boolean } | null)?.stale_claim) {
         skipped.push({ stream: entry.stream, partition: entry.partition, reason: `claim lost while building: ${message}` });
       } else {
@@ -308,7 +316,11 @@ export async function runExportBudget(
 }
 
 /**
- * Age an unreferenced export object must reach before the sweep deletes it.
+ * Age an unreferenced export object must reach before the sweep deletes it
+ * (a build that loses its claim deletes its own object at once; the sweep is
+ * for files superseded by a rebuild, which a reader may still be fetching, and
+ * for builds that died between their upload and their mark; `dr purge`
+ * removes whatever is left).
  * A builder marks its file ready seconds after uploading it, inside one route
  * call (maxDuration under 5 minutes), so an object this old that the ledger
  * does not name will never be named: its build was superseded or lost its

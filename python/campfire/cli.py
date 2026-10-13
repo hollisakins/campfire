@@ -1435,13 +1435,22 @@ def dr_purge(tag, yes, keep_exports, local):
     (or withdrawn) tags are never purged. The release's export files
     (dr/TAG/exports/ on the OSN data bucket) are deleted with it, which needs
     OSN credentials (CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml);
-    --keep-exports skips that. Archive bytes already copied for the tag stay
+    --keep-exports skips that. With --local the files are never touched: the
+    local database redirects Supabase only, so the bucket is still the shared
+    one and the same tag may be a production release. Archive bytes already copied for the tag stay
     (dedup by hash; retention is `campfire archive gc`).
     """
     from .dr import purge_release
 
     config, sb = _dr_client(local, what="`campfire dr purge`")
     s3 = bucket = None
+    if local and not keep_exports:
+        # --local redirects the database only; the object-store config is the
+        # shared one, so a local purge must never delete a (possibly
+        # production) release's exports (Codex on #600)
+        click.echo(f"  --local: the export files under dr/{tag}/exports/ are left alone "
+                   f"(the bucket is the shared one)")
+        keep_exports = True
     if not keep_exports:
         # resolved BEFORE the rows go, so a missing credential never strands
         # the files of a purged tag (nothing would name them afterwards)

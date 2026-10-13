@@ -435,3 +435,13 @@ def test_cli_export_json_stdout_is_pure_json(monkeypatch):
     assert res.exit_code == 0, res.output
     assert json.loads(res.stdout)['state'] == 'exported'
     assert 'Exporting DR-t' in res.stderr
+
+
+def test_cli_local_purge_never_touches_the_shared_bucket(monkeypatch):
+    # Codex on #600: --local redirects Supabase only; the bucket is production's
+    c = _FakeClient(rpc_data={'dr_purge_release': {'tag': 'DR-t', 'state_before': 'frozen', 'deleted': {}}})
+    swept = _purge_env(monkeypatch, c)
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t', '--yes', '--local'])
+    assert res.exit_code == 0, res.output
+    assert c.rpc_calls == [('dr_purge_release', {'p_tag': 'DR-t'})]
+    assert swept == [] and 'left alone' in res.output

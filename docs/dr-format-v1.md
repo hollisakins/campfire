@@ -17,10 +17,12 @@ first 8 hex digits of the build's claim token: every build has its own key, so a
 rebuild never overwrites the file a reader was handed, and an export run that
 lost its build claim can only write its own key. The ledger records the key of
 the ready file; readers use the url they are given and never construct keys.
-Keys the ledger no longer names (a partition rebuilt after a byte-pass
-invalidation, a build that lost its claim after uploading) are deleted by the
-export run that finds every file ready, once they are 30 minutes old; `campfire
-dr purge` deletes the whole `dr/<tag>/exports/` prefix.
+A build that loses its claim after uploading deletes its own object at once.
+Other keys the ledger no longer names (a partition rebuilt after a byte-pass
+invalidation, a build that died between its upload and its mark) are deleted by
+an export run that finds every file ready, once they are 30 minutes old; `campfire
+dr purge` deletes the whole `dr/<tag>/exports/` prefix (never with `--local`,
+whose database is local but whose bucket is the shared one).
 
 on the private data bucket (OSN). One file per (stream, partition); each line is
 one JSON object; the file is gzip bytes (content type `application/gzip`, not
