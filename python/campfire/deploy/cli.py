@@ -216,6 +216,35 @@ def _run_deploy_flow(fn, *args, **kwargs):
         raise
 
 
+def _under_observation_lease(config: dict, obs_name: str, dry_run: bool, fn, *args, **kwargs):
+    """Run a standalone per-observation writer under the observation's deploy lease.
+
+    The full `campfire deploy --obs` takes the lease itself; the standalone
+    `deploy json` / `zfit` / `lines` commands write registry rows, spectra and
+    line fits too, so they hold it as well: begin_deploy_scope refuses while a
+    data-release freeze runs, and a live lease makes the freeze refuse, so no
+    freeze can snapshot one of them half-way (Codex on #599). Claimed on
+    success (the scope changed), released on any failure; dry runs skip it.
+    """
+    if dry_run:
+        return fn(*args, **kwargs)
+    from campfire.deploy.supabase import ScopeLease, get_supabase_client, get_user_id_from_token
+
+    def run():
+        lease = ScopeLease(get_supabase_client(config), 'observation', obs_name,
+                           actor=get_user_id_from_token(config))
+        lease.begin()
+        try:
+            out = fn(*args, **kwargs)
+        except BaseException:
+            lease.release()
+            raise
+        if lease.leased:
+            lease.claim()
+        return out
+    return _run_deploy_flow(run)
+
+
 def _fmt_bytes(n: int | float) -> str:
     """Human-readable byte count."""
     n = float(n)
@@ -478,7 +507,8 @@ def json_cmd(ctx, config_path, obs, dry_run, local, source_ids):
     """Regenerate and upload spectrum JSON files."""
     config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
-        deploy_json(
+        _under_observation_lease(
+            config, obs_name, dry_run, deploy_json,
             obs_name, config,
             dry_run=dry_run,
             source_ids=list(source_ids) if source_ids else None,
@@ -495,7 +525,8 @@ def zfit(ctx, config_path, obs, dry_run, local, source_ids, force_overwrite, aut
     """Deploy zfit JSON files and update redshift_auto."""
     config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
-        deploy_zfit(
+        _under_observation_lease(
+            config, obs_name, dry_run, deploy_zfit,
             obs_name, config,
             dry_run=dry_run,
             force_overwrite=force_overwrite,
@@ -527,7 +558,8 @@ def lines(ctx, config_path, obs, dry_run, local, source_ids, allow_auto_z, uploa
     from campfire.deploy.lines import deploy_lines
     config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
-        deploy_lines(
+        _under_observation_lease(
+            config, obs_name, dry_run, deploy_lines,
             obs_name, config,
             dry_run=dry_run,
             source_ids=list(source_ids) if source_ids else None,

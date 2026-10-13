@@ -656,7 +656,10 @@ BEGIN
              so.size_bytes, so.id
       FROM pub p
       JOIN storage_objects so ON so.spectrum_id = p.spectrum_id
-      WHERE so.root = 'live' AND so.status = 'active'
+      -- members are the OSN data-bucket rows (where every data product lives
+      -- and what the byte pass archives): a legacy R2 twin of the same key is
+      -- never picked by plan order (Codex on #599)
+      WHERE so.root = 'live' AND so.status = 'active' AND so.backend = 'osn' AND so.bucket = 'data'
         AND so.product_type IN ('nirspec_spec', 'spectrum_json', 'spectrum_1d_json', 'zfit',
                                 'nirspec_lines', 'nirspec_lines_json')
       UNION ALL
@@ -675,10 +678,12 @@ BEGIN
         JOIN storage_objects spec ON spec.spectrum_id = p.spectrum_id
                                  AND spec.product_type = 'nirspec_spec'
                                  AND spec.root = 'live' AND spec.status = 'active'
+                                 AND spec.backend = 'osn' AND spec.bucket = 'data'
         CROSS JOIN unnest(ARRAY['_zfit.json', '_lines.fits', '_lines.json']) AS sfx
       ) c
       JOIN storage_objects so ON so.storage_key = c.key
       WHERE so.spectrum_id IS NULL AND so.root = 'live' AND so.status = 'active'
+        AND so.backend = 'osn' AND so.bucket = 'data'
         AND so.product_type IN ('zfit', 'nirspec_lines', 'nirspec_lines_json')
         AND so.observation IS NOT DISTINCT FROM c.observation
       UNION ALL
@@ -688,7 +693,7 @@ BEGIN
       FROM nircam_images ni
       JOIN storage_objects so ON so.storage_key = ni.file_path
       WHERE ni.deploy_status = 'published' AND ni.field = ANY (comp.fields)
-        AND so.root = 'live' AND so.status = 'active'
+        AND so.root = 'live' AND so.status = 'active' AND so.backend = 'osn' AND so.bucket = 'data'
       -- (P(z) sidecars are not members: photometry_pz is a key-only product the
       -- layout cannot archive; the frozen dr_photometry rows carry the catalog
       -- values, the sidecars stay live-only -- plan amendment D-P4-5.)

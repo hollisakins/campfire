@@ -109,6 +109,14 @@ CROSS JOIN (VALUES
   ('_lines.json',   'nirspec_lines_json', false, 5)
 ) AS k(sfx, pt, with_sid, i)
 WHERE t.target_id LIKE 'zzz-dr-t-%';
+-- a legacy R2 twin of a spec under the same key, with a provisional etag hash:
+-- the member must be the OSN row, deterministically (Codex on #599)
+INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, size_bytes, content_type, product_type,
+                             instrument, status, observation, program_slug, spectrum_id)
+SELECT 'r2', 'data', so.storage_key, 'etag:' || repeat('e', 32), so.size_bytes, so.content_type, so.product_type,
+       so.instrument, 'active', so.observation, so.program_slug, so.spectrum_id
+FROM storage_objects so JOIN spectra s ON s.spectrum_id = so.spectrum_id
+WHERE s.fits_path = '/tmp/zzz_dr_pub_prism_spec.fits' AND so.product_type = 'nirspec_spec' AND so.backend = 'osn';
 -- a superseded (retained) copy of a spec that must NOT become a member
 INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, size_bytes, content_type, product_type,
                              instrument, status, observation, program_slug, spectrum_id)
@@ -356,6 +364,10 @@ BEGIN
   IF n <> 0 THEN RAISE EXCEPTION 'key-derived sidecar members should carry the spectrum_id'; END IF;
   IF EXISTS (SELECT 1 FROM dr_members WHERE tag = 'DR-zzz' AND storage_key LIKE '%/old_%') THEN
     RAISE EXCEPTION 'superseded registry row became a member';
+  END IF;
+  -- every member is an OSN data-bucket row; the R2 twin never wins
+  IF EXISTS (SELECT 1 FROM dr_members WHERE tag = 'DR-zzz' AND (backend <> 'osn' OR bucket <> 'data' OR content_hash LIKE 'etag:%')) THEN
+    RAISE EXCEPTION 'a non-OSN registry row became a member';
   END IF;
   IF EXISTS (SELECT 1 FROM dr_members m JOIN spectra s ON s.spectrum_id = m.spectrum_id WHERE m.tag = 'DR-zzz' AND s.deploy_status <> 'published') THEN
     RAISE EXCEPTION 'member of an unpublished spectrum';
