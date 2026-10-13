@@ -241,6 +241,23 @@ BEGIN
      OR EXISTS (SELECT 1 FROM storage_objects WHERE storage_key = 'archive/' || repeat('9', 64) || '/fresh/s2_spec.fits') THEN
     RAISE EXCEPTION 'the superseded stamp was recorded';
   END IF;
+  -- ...unless the pass found that earlier object missing (Fable review of #601):
+  -- then the fresh stamp is the right outcome and is recorded, never refused
+  -- forever (in a sub-block that rolls itself back)
+  BEGIN
+    res := dr_bytes_mark('DR-seed', jsonb_build_array(
+      jsonb_build_object('storage_key', p.s2, 'content_hash', pg_temp.zzz_ch(p.s2), 'state', 'stamped',
+                         'archive_key', 'archive/' || repeat('9', 64) || '/fresh/s2_spec.fits',
+                         'stamped_hash', 'sha256:' || repeat('9', 64),
+                         'dangling', jsonb_build_array(prev_key),
+                         'registry', jsonb_build_object('content_type', 'application/fits'))));
+    IF (res->>'superseded')::int <> 0 OR (res->>'stamped')::int <> 1 THEN
+      RAISE EXCEPTION 'a fresh stamp past a dangling earlier one should be recorded: %', res;
+    END IF;
+    RAISE EXCEPTION 'zzz_rollback';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'zzz_rollback' THEN RAISE; END IF;
+  END;
 
   res := dr_bytes_mark('DR-seed', jsonb_build_array(
     jsonb_build_object('storage_key', p.s1, 'content_hash', pg_temp.zzz_ch(p.s1), 'state', 'stamped', 'archive_key', s1_key,

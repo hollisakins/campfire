@@ -1585,6 +1585,14 @@ def dr_bytes(tag, obs, field, workers, limit, retry_failed, dry_run, status_only
                 "(CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml): " + bucket)
             sys.exit(2)
 
+    model = getattr(getattr(s3, 'meta', None), 'service_model', None)
+    if model is not None:
+        # every archive write is a conditional PUT (If-None-Match); a botocore
+        # that predates S3 conditional writes rejects the parameter outright
+        if 'IfNoneMatch' not in model.operation_model('PutObject').input_shape.members:
+            say("✗ this boto3/botocore cannot send If-None-Match on PutObject; upgrade it "
+                "(pip install -U boto3)")
+            sys.exit(2)
     scope = f" under {prefix}" if prefix else ""
     say(f"{'Planning' if dry_run else 'Archiving'} the member bytes of {tag}{scope} …")
     try:
@@ -1616,7 +1624,10 @@ def dr_bytes(tag, obs, field, workers, limit, retry_failed, dry_run, status_only
         if stored_failed:
             click.echo(f"✗ {stored_failed:,} member(s) of {tag} are marked failed "
                        f"(`campfire dr bytes --tag {tag} --status` lists them; rerun with --retry-failed)")
-    if not dry_run and (report.by_state.get('failed') or stored_failed or summary_unknown):
+    # superseded stamps leave their members pending until a rerun reuses the
+    # earlier release's object: not done, so not a clean exit (Codex on #601)
+    if not dry_run and (report.by_state.get('failed') or stored_failed or summary_unknown
+                        or report.superseded):
         sys.exit(1)
 
 

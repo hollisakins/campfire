@@ -42,6 +42,7 @@ on the next run (the archive key is a function of the bytes).
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import re
@@ -55,7 +56,7 @@ from campfire_layout import LayoutError, archive_key, parse_key
 
 STAMPED_PRODUCT_TYPES = frozenset({'nirspec_spec', 'nirspec_lines'})
 STAMP_KEYWORD = 'CMPFRDR'
-STAMP_COMMENT = 'CAMPFIRE data release that first archived this file'
+STAMP_COMMENT = 'CAMPFIRE data release that first archived it'   # fits the card for tags up to 12 chars
 COPY_LIMIT_BYTES = 5 * 1000 ** 3          # S3 CopyObject: 5 GB per object
 VERIFY_LIMIT_BYTES = 64 * 1024 * 1024     # live copies verified by download (else streamed) up to this
 BLOCK = 2880
@@ -72,7 +73,10 @@ class StampError(ValueError):
 # The header stamp
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=64)
 def _stamp_card(tag: str) -> bytes:
+    # cached: one card per tag, built once (warnings.catch_warnings is not
+    # thread-safe and the pass stamps from a thread pool)
     import warnings
 
     from astropy.io import fits
@@ -137,15 +141,8 @@ def sha256_hex(data: bytes) -> str:
 
 def _stored_compressed(storage_key: str) -> bool:
     """True when the layout stores this key gzipped (``compressed_suffixes``)."""
-    from campfire_layout import products
-    try:
-        pk = parse_key(storage_key)
-    except (LayoutError, ValueError):
-        return False
-    spec = products.get(pk.product_type)
-    return storage_key.endswith('.gz') and any(
-        (pk.filename or '').endswith(sfx) or storage_key[:-3].endswith(sfx)
-        for sfx in getattr(spec, 'compressed_suffixes', ()) or ())
+    from campfire_layout import is_compressed_key
+    return is_compressed_key(storage_key)
 
 
 INFLATE_OUT_BYTES = 8 << 20   # cap on any one decompressed piece
@@ -223,6 +220,9 @@ class Outcome:
     registry: Optional[dict] = None
     bytes_moved: int = 0
     science_hash: Optional[str] = None   # computed here for a member frozen without one
+    # stamped candidates of other releases the pass found missing in the bucket:
+    # dr_bytes_mark does not hold this outcome to them (first-frozen rule)
+    dangling: list = field(default_factory=list)
 
     def as_result(self) -> dict:
         r = {'storage_key': self.storage_key, 'state': self.state}
@@ -236,6 +236,8 @@ class Outcome:
             r['registry'] = self.registry
         if self.science_hash:
             r['science_hash'] = self.science_hash
+        if self.dangling:
+            r['dangling'] = list(self.dangling)
         return r
 
 
@@ -308,8 +310,8 @@ def process_member(row: dict, *, tag: str, s3, bucket: str,
             return Outcome(key, 'failed', 'error', error='storage key does not parse as an archivable product')
         if action == 'drift':
             return Outcome(key, 'failed', 'drift',
-                           error='frozen bytes are gone: the live object changed since the freeze '
-                                 'and no archived copy of the frozen content exists')
+                           error='frozen bytes are gone: the live object changed (or was revoked) since '
+                                 'the freeze and no archived copy of the frozen content exists')
         if action == 'reuse-stamp':
             # every candidate in its release's freeze order: the first whose
             # object exists wins (first release wins the stamp, deterministic
@@ -318,19 +320,22 @@ def process_member(row: dict, *, tag: str, s3, bucket: str,
             cands = row.get('reuse_candidates') or [
                 {'archive_key': row['reuse_archive_key'], 'stamped_hash': row['reuse_stamped_hash'],
                  'size_bytes': row.get('reuse_size_bytes')}]
-            problems = []
+            problems, dangling = [], []
             for c in cands:
                 problem = _check_existing(s3, bucket, c['archive_key'], c.get('size_bytes'))
                 if problem is None:
                     return Outcome(key, 'stamped', 'reuse-stamp', archive_key=c['archive_key'],
-                                   stamped_hash=c['stamped_hash'])
+                                   stamped_hash=c['stamped_hash'], dangling=dangling)
                 problems.append(problem)
+                dangling.append(c['archive_key'])
             problem = '; '.join(problems)
             if not row.get('source_key'):
                 return Outcome(key, 'failed', 'drift',
                                error=f"stamped object to reuse {problem}, and the frozen bytes are gone")
             # stamp afresh from the frozen bytes (a new object under this tag)
-            return _stamp_member(row, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
+            out = _stamp_member(row, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
+            out.dangling = dangling
+            return out
         if action == 'reuse-copy':
             problem = _check_existing(s3, bucket, row['source_key'], row.get('source_stored_size'))
             if problem is not None:
@@ -395,7 +400,11 @@ def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:
     reg = _registry(row, size_bytes=row.get('size_bytes'))
     existing = _head(s3, bucket, target)
     if existing is not None:
-        if stored is not None and int(existing.get('ContentLength', -1)) != int(stored):
+        # The archive key names the LOGICAL content; a gzipped product's stored
+        # size depends on the compressor, so it is compared only for plain ones
+        # (Codex on #601).
+        if (stored is not None and not _stored_compressed(row['storage_key'])
+                and int(existing.get('ContentLength', -1)) != int(stored)):
             return Outcome(key, 'failed', 'error', error=f'{target} exists with a different size')
         return Outcome(key, 'copied', 'heal', archive_key=target, registry=reg)
     head = _head(s3, bucket, src)
@@ -423,7 +432,13 @@ def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:
         # bytes verified.
         size = int(head.get('ContentLength') or 0)
         if size > VERIFY_LIMIT_BYTES:
-            got = _stream_logical_sha256(s3, bucket, src, etag, compressed=_stored_compressed(row['storage_key']))
+            try:
+                got = _stream_logical_sha256(s3, bucket, src, etag,
+                                             compressed=_stored_compressed(row['storage_key']))
+            except Exception as e:  # noqa: BLE001
+                if _status_code(e) == 412:   # replaced between the HEAD and the GET
+                    return Outcome(key, 'failed', 'drift', error=f'source {src} changed during the read')
+                raise
             if got != row['content_hash']:
                 return Outcome(key, 'failed', 'drift',
                                error=f'source {src} holds {got}, the release froze {row["content_hash"]}')
@@ -436,7 +451,12 @@ def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:
                 raise
             return Outcome(key, 'copied', 'copy-verified', archive_key=target, registry=reg,
                            bytes_moved=2 * size)
-        body = s3.get_object(Bucket=bucket, Key=src, IfMatch=etag)['Body'].read()
+        try:
+            body = s3.get_object(Bucket=bucket, Key=src, IfMatch=etag)['Body'].read()
+        except Exception as e:  # noqa: BLE001
+            if _status_code(e) == 412:       # replaced between the HEAD and the GET
+                return Outcome(key, 'failed', 'drift', error=f'source {src} changed during the read')
+            raise
         # The registry hashes the LOGICAL bytes: a transport-compressed product
         # (mosaic FITS stored as .fits.gz) is hashed uncompressed (Codex on #601).
         got = logical_sha256(body, compressed=_stored_compressed(row['storage_key']))

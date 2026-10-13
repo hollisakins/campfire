@@ -253,6 +253,11 @@ def test_reuse_stamp_takes_the_first_existing_candidate_in_freeze_order():
     only_second = _s3(**{SPEC_KEY: body, 'archive/bb/second.fits': b'second'})
     o = B.process_member(row, tag=TAG, s3=only_second, bucket=BUCKET, verify_science=False)
     assert (o.action, o.archive_key, o.stamped_hash) == ('reuse-stamp', 'archive/bb/second.fits', 'sha256:' + 'b' * 64)
+    # the missing earlier candidate is reported, so dr_bytes_mark does not hold
+    # the outcome to it (Fable review of #601)
+    assert o.dangling == ['archive/aa/first.fits'] and o.as_result()['dangling'] == ['archive/aa/first.fits']
+    assert 'dangling' not in B.process_member(row, tag=TAG, s3=both, bucket=BUCKET,
+                                              verify_science=False).as_result()
 
 
 def test_trailing_gzip_members_are_rejected():
@@ -718,3 +723,57 @@ def test_pass_reports_stamps_that_yield_to_an_earlier_release():
     rep = B.run_byte_pass(client, _s3(**{JSON_KEY: body}), BUCKET, TAG, log=lambda *_: None)
     assert rep.superseded == 1 and rep.as_dict()['superseded'] == 1
     assert 'yielded to a release frozen earlier' in B.format_report(rep)
+
+
+def test_stamp_card_keeps_its_whole_comment():
+    # Fable review of #601: the comment used to be cut in every archived file
+    image = B._stamp_card('DR2026.0').decode()
+    assert len(image) == 80 and image.rstrip().endswith(B.STAMP_COMMENT)
+
+
+def test_existing_gzipped_archive_of_another_size_heals():
+    # Codex on #601: the key names the logical content; gzip sizes vary
+    import gzip
+    logical = _fits_bytes(2)
+    row = _row(MOSAIC_KEY, logical, product_type='nircam_mosaic', source_stored_size=len(gzip.compress(logical)),
+               component='nircam/cosmos', program_slug=None)
+    target = B._copy_target(row)
+    o = B.process_member(row, tag=TAG, s3=_s3(**{target: gzip.compress(logical, compresslevel=1) + b''}),
+                         bucket=BUCKET)
+    assert (o.state, o.action) == ('copied', 'heal')
+
+
+def test_a_source_replaced_between_head_and_get_is_drift(monkeypatch):
+    # Fable review of #601: the 412 of the conditional GET is drift, not error
+    body = b'{"x": 1}'
+    s3 = _s3(**{JSON_KEY: body})
+
+    class PreconditionFailed(Exception):
+        response = {'Error': {'Code': 'PreconditionFailed'}, 'ResponseMetadata': {'HTTPStatusCode': 412}}
+
+    def get_object(**kw):
+        raise PreconditionFailed()
+    monkeypatch.setattr(s3, 'get_object', get_object)
+    o = B.process_member(_row(JSON_KEY, body, product_type='spectrum_json'), tag=TAG, s3=s3, bucket=BUCKET)
+    assert (o.state, o.action) == ('failed', 'drift') and 'changed during the read' in o.error
+
+
+def test_cli_bytes_exits_1_while_stamps_are_superseded(monkeypatch):
+    # Codex on #601: superseded members stay pending; the run is not done
+    from click.testing import CliRunner
+
+    import campfire.cli as main_cli
+    body = b'{"x": 1}'
+    client, state = _fake_db([_row(JSON_KEY, body, product_type='spectrum_json')])
+    real = client.rpc_handlers['dr_bytes_mark']
+
+    def mark(params):
+        out = real(params)
+        for r in state['rows']:
+            r['byte_state'] = 'pending'
+        return {**out, 'marked': 0, 'superseded': len(params['p_results'])}
+    client.rpc_handlers['dr_bytes_mark'] = mark
+    _patch_cli(monkeypatch, client, s3=_s3(**{JSON_KEY: body}))
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG])
+    assert res.exit_code == 1, res.output
+    assert 'yielded to a release frozen earlier' in res.output

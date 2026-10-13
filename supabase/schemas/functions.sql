@@ -10187,6 +10187,10 @@ BEGIN
       WHERE d.storage_key = m.storage_key AND d.science_hash = m.science_hash
         AND d.byte_state = 'stamped' AND d.tag <> p_tag
         AND (r.frozen_at, r.tag) < (v_frozen_at, p_tag)
+        -- not a candidate the pass found missing in the bucket: the outcome
+        -- fell through to the next one (or stamped afresh) for that reason,
+        -- and holding it to a dangling key would refuse it forever
+        AND NOT (COALESCE(e->'dangling', '[]'::jsonb) ? d.archive_key)
       ORDER BY r.frozen_at, r.tag
       LIMIT 1;
       IF v_canon IS NOT NULL AND v_canon <> v_key THEN
