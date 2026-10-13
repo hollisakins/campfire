@@ -137,7 +137,7 @@ def _row(key, body, *, product_type='nirspec_spec', source_root='live', source_k
         'science_hash': None, 'size_bytes': len(body), 'byte_state': 'pending',
         'source_key': key if source_key is None else source_key, 'source_root': source_root,
         'source_stored_size': len(body),
-        'reuse_archive_key': None, 'reuse_stamped_hash': None, 'reuse_root_registered': False,
+        'reuse_archive_key': None, 'reuse_stamped_hash': None, 'reuse_size_bytes': None,
         'registry': {'content_type': 'application/fits', 'instrument': 'nirspec',
                      'observation': 'abc_p1', 'deployment_id': 7, 'cfpipe_version': '1.2.0',
                      'retained_key': None},
@@ -211,14 +211,51 @@ def test_stamp_member_verifies_the_science_hash():
     assert bad.state == 'failed' and 'science hash changed' in bad.error
 
 
-def test_reuse_stamp_touches_nothing():
+def test_reuse_stamp_only_heads_the_object():
     body = _fits_bytes(4)
-    s3 = _s3(**{SPEC_KEY: body})
+    s3 = _s3(**{SPEC_KEY: body, 'archive/aa/x.fits': b'stamped bytes'})
     o = B.process_member(_row(SPEC_KEY, body, reuse_archive_key='archive/aa/x.fits',
-                              reuse_stamped_hash='sha256:' + 'a' * 64),
+                              reuse_stamped_hash='sha256:' + 'a' * 64, reuse_size_bytes=13),
                          tag=TAG, s3=s3, bucket=BUCKET, verify_science=False)
     assert (o.state, o.action, o.archive_key, o.registry) == ('stamped', 'reuse-stamp', 'archive/aa/x.fits', None)
     assert not s3.ops('GetObject') and not s3.ops('PutObject')
+    assert s3.ops('HeadObject')
+
+
+def test_reuse_stamp_missing_object_stamps_afresh_or_fails():
+    # Codex on #601: a registry row whose object is gone is not reused
+    body = _fits_bytes(4)
+    s3 = _s3(**{SPEC_KEY: body})
+    row = _row(SPEC_KEY, body, reuse_archive_key='archive/aa/x.fits', reuse_stamped_hash='sha256:' + 'a' * 64)
+    o = B.process_member(row, tag=TAG, s3=s3, bucket=BUCKET, verify_science=False)
+    assert (o.state, o.action) == ('stamped', 'stamp') and o.archive_key != 'archive/aa/x.fits'
+    gone = B.process_member(dict(row, source_key='', source_root=None), tag=TAG, s3=_s3(), bucket=BUCKET,
+                            verify_science=False)
+    assert gone.state == 'failed' and 'missing from the bucket' in gone.error
+    # wrong size is not reused either
+    s3 = _s3(**{SPEC_KEY: body, 'archive/aa/x.fits': b'short'})
+    o = B.process_member(dict(row, reuse_size_bytes=999), tag=TAG, s3=s3, bucket=BUCKET, verify_science=False)
+    assert o.action == 'stamp'
+
+
+def test_reuse_copy_missing_object_fails():
+    body = b'{"x": 1}'
+    row = _row(JSON_KEY, body, product_type='spectrum_json')
+    target = B._copy_target(row)
+    o = B.process_member(dict(row, source_key=target, source_root='archive'), tag=TAG, s3=_s3(), bucket=BUCKET)
+    assert o.state == 'failed' and 'verify --cloud' in o.error
+
+
+def test_stamp_reports_a_science_hash_it_had_to_compute(monkeypatch):
+    # Codex on #601: persisted so later releases can reuse the stamped object
+    monkeypatch.setattr(B, 'science_hash_of', lambda data: 'sha256:' + '5' * 64)
+    body = _fits_bytes(4)
+    o = B.process_member(_row(SPEC_KEY, body), tag=TAG, s3=_s3(**{SPEC_KEY: body}), bucket=BUCKET)
+    assert o.state == 'stamped' and o.science_hash == 'sha256:' + '5' * 64
+    assert o.as_result()['science_hash'] == 'sha256:' + '5' * 64
+    known = B.process_member(_row(SPEC_KEY, body, science_hash='sha256:' + '5' * 64), tag=TAG,
+                             s3=_s3(**{SPEC_KEY: body}), bucket=BUCKET)
+    assert known.science_hash is None and 'science_hash' not in known.as_result()
 
 
 def test_copy_member_copies_conditionally():
@@ -462,3 +499,22 @@ def test_cli_bytes_status(monkeypatch):
     res = CliRunner().invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG, '--status'])
     assert res.exit_code == 0, res.output
     assert f'{TAG}: state copying, 2 members' in res.output
+
+
+def test_cli_bytes_json_stdout_is_pure_json(monkeypatch):
+    import json
+
+    from click.testing import CliRunner
+
+    import campfire.cli as main_cli
+    body = b'{"x": 1}'
+    client, _ = _fake_db([_row(JSON_KEY, body, product_type='spectrum_json')])
+    _patch_cli(monkeypatch, client, s3=_s3(**{JSON_KEY: body}))
+    try:
+        runner = CliRunner(mix_stderr=False)
+    except TypeError:  # click >= 8.2 always separates the streams
+        runner = CliRunner()
+    res = runner.invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG, '--json'])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.stdout)['by_state'] == {'copied': 1}
+    assert 'Archiving the member bytes' in res.stderr

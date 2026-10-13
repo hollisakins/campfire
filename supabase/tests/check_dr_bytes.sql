@@ -64,6 +64,7 @@ WITH spec AS (
 )
 SELECT (SELECT storage_key FROM spec WHERE i = 1) AS s1,
        (SELECT storage_key FROM spec WHERE i = 2) AS s2,
+       (SELECT storage_key FROM spec WHERE i = 3) AS s3,
        (SELECT storage_key FROM js WHERE i = 1) AS j1,
        (SELECT storage_key FROM js WHERE i = 2) AS j2,
        (SELECT storage_key FROM js WHERE i = 3) AS j3;
@@ -143,7 +144,8 @@ BEGIN
     RAISE EXCEPTION 'retained copy should be the source: %', to_jsonb(r);
   END IF;
   SELECT * INTO r FROM dr_bytes_pending('DR-seed', NULL, 2000) b WHERE b.storage_key = p.s2;
-  IF r.reuse_archive_key IS DISTINCT FROM prev_key OR r.reuse_stamped_hash <> 'sha256:' || repeat('c', 64) THEN
+  IF r.reuse_archive_key IS DISTINCT FROM prev_key OR r.reuse_stamped_hash <> 'sha256:' || repeat('c', 64)
+     OR r.reuse_size_bytes IS DISTINCT FROM (SELECT size_bytes FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s2) THEN
     RAISE EXCEPTION 'stamped object of the earlier release should be offered for reuse: %', to_jsonb(r);
   END IF;
   SELECT * INTO r FROM dr_bytes_pending('DR-seed', NULL, 2000) b WHERE b.storage_key = p.s1;
@@ -254,7 +256,27 @@ BEGIN
   IF (res->>'registered')::int <> 0 OR (SELECT count(*) FROM storage_objects WHERE storage_key = j1_key) <> 1 THEN
     RAISE EXCEPTION 're-marking registered again: %', res;
   END IF;
-  RAISE NOTICE 'OK 3: mixed batch (states, archive rows, event, export invalidation, idempotent)';
+  -- a science hash the pass computed for a member frozen without one is kept
+  -- on the member and its archive row; one that disagrees is refused (Codex on #601)
+  IF (SELECT science_hash FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s3) IS NOT NULL THEN
+    RAISE EXCEPTION 'fixture: s3 should have no science hash';
+  END IF;
+  res := dr_bytes_mark('DR-seed', jsonb_build_array(
+    jsonb_build_object('storage_key', p.s3, 'state', 'stamped', 'archive_key', 'archive/' || repeat('7', 64) || '/s3_spec.fits',
+                       'stamped_hash', 'sha256:' || repeat('7', 64), 'science_hash', 'sha256:' || repeat('3', 64),
+                       'registry', jsonb_build_object('size_bytes', 10))));
+  IF (SELECT science_hash FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s3) <> 'sha256:' || repeat('3', 64)
+     OR (SELECT science_hash FROM storage_objects WHERE storage_key = 'archive/' || repeat('7', 64) || '/s3_spec.fits') <> 'sha256:' || repeat('3', 64) THEN
+    RAISE EXCEPTION 'computed science hash not persisted';
+  END IF;
+  BEGIN
+    PERFORM dr_bytes_mark('DR-seed', jsonb_build_array(
+      jsonb_build_object('storage_key', p.s1, 'state', 'failed', 'science_hash', 'sha256:' || repeat('4', 64))));
+    RAISE EXCEPTION 'a disagreeing science hash was accepted';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM NOT LIKE 'science hash of % disagrees%' THEN RAISE; END IF;
+  END;
+  RAISE NOTICE 'OK 3: mixed batch (states, archive rows, event, export invalidation, idempotent, science hash kept)';
 
   -- ------------------------------------------------------------------ 4.
   res := dr_bytes_mark('DR-seed', (
@@ -273,7 +295,7 @@ BEGIN
   res := dr_bytes_summary('DR-seed');
   IF (res->>'pending_bytes')::bigint <> 0 OR res->'by_state' ? 'pending' OR res->'by_state' ? 'failed'
      OR ((res->'by_state'->'copied'->>'count')::int + (res->'by_state'->'stamped'->>'count')::int) <> (res->>'members')::int
-     OR (res->'by_state'->'stamped'->>'count')::int <> 2 THEN
+     OR (res->'by_state'->'stamped'->>'count')::int <> 3 THEN
     RAISE EXCEPTION 'summary wrong: %', res;
   END IF;
   RAISE NOTICE 'OK 4: all done -> ready; summary';

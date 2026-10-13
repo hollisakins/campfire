@@ -157,6 +157,7 @@ class Outcome:
     error: Optional[str] = None
     registry: Optional[dict] = None
     bytes_moved: int = 0
+    science_hash: Optional[str] = None   # computed here for a member frozen without one
 
     def as_result(self) -> dict:
         r = {'storage_key': self.storage_key, 'state': self.state}
@@ -168,6 +169,8 @@ class Outcome:
             r['error'] = self.error
         if self.registry is not None:
             r['registry'] = self.registry
+        if self.science_hash:
+            r['science_hash'] = self.science_hash
         return r
 
 
@@ -184,6 +187,16 @@ def _head(s3, bucket: str, key: str) -> Optional[dict]:
         if _status_code(e) == 404:
             return None
         raise
+
+
+def _check_existing(s3, bucket: str, key: str, size: Optional[int]) -> Optional[str]:
+    """None when *key* exists (with *size*, when known); else what is wrong."""
+    head = _head(s3, bucket, key)
+    if head is None:
+        return f'{key} is registered but missing from the bucket'
+    if size is not None and int(head.get('ContentLength', -1)) != int(size):
+        return f"{key} is {head.get('ContentLength')} bytes, the registry says {size}"
+    return None
 
 
 def _registry(row: dict, **overrides) -> dict:
@@ -233,9 +246,22 @@ def process_member(row: dict, *, tag: str, s3, bucket: str,
                            error='frozen bytes are gone: the live object changed since the freeze '
                                  'and no archived copy of the frozen content exists')
         if action == 'reuse-stamp':
-            return Outcome(key, 'stamped', 'reuse-stamp', archive_key=row['reuse_archive_key'],
-                           stamped_hash=row['reuse_stamped_hash'])
+            # the registry row is not proof the object exists (registry/bucket
+            # drift is what `verify --cloud` exists for): HEAD it (Codex on #601)
+            problem = _check_existing(s3, bucket, row['reuse_archive_key'], row.get('reuse_size_bytes'))
+            if problem is None:
+                return Outcome(key, 'stamped', 'reuse-stamp', archive_key=row['reuse_archive_key'],
+                               stamped_hash=row['reuse_stamped_hash'])
+            if not row.get('source_key'):
+                return Outcome(key, 'failed', 'drift',
+                               error=f"stamped object to reuse {problem}, and the frozen bytes are gone")
+            # stamp afresh from the frozen bytes (a new object under this tag)
+            return _stamp_member(row, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
         if action == 'reuse-copy':
+            problem = _check_existing(s3, bucket, row['source_key'], row.get('source_stored_size'))
+            if problem is not None:
+                return Outcome(key, 'failed', 'drift',
+                               error=f"archived copy {problem} (registry/bucket drift: run `campfire verify --cloud`)")
             return Outcome(key, 'copied', 'reuse-copy', archive_key=row['source_key'])
         if action == 'stamp':
             return _stamp_member(row, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
@@ -255,8 +281,11 @@ def _stamp_member(row: dict, *, tag: str, s3, bucket: str, verify_science: bool)
                        error=f'source {src} holds {got}, the release froze {row["content_hash"]}')
     stamped = stamp_fits(body, tag)
     stamped_hash = sha256_hex(stamped)
+    computed = None
     if verify_science:
-        expected = row.get('science_hash') or science_hash_of(body)
+        expected = row.get('science_hash')
+        if not expected:
+            expected = computed = science_hash_of(body)
         after = science_hash_of(stamped)
         if after != expected:
             return Outcome(key, 'failed', 'error',
@@ -276,9 +305,10 @@ def _stamp_member(row: dict, *, tag: str, s3, bucket: str, verify_science: bool)
         head = _head(s3, bucket, target)
         if head is None or int(head.get('ContentLength', -1)) != len(stamped):
             return Outcome(key, 'failed', 'error', error=f'{target} exists with different bytes')
-        return Outcome(key, 'stamped', 'heal', archive_key=target, stamped_hash=stamped_hash, registry=reg)
+        return Outcome(key, 'stamped', 'heal', archive_key=target, stamped_hash=stamped_hash,
+                       registry=reg, science_hash=computed)
     return Outcome(key, 'stamped', 'stamp', archive_key=target, stamped_hash=stamped_hash,
-                   registry=reg, bytes_moved=len(body) + len(stamped))
+                   registry=reg, bytes_moved=len(body) + len(stamped), science_hash=computed)
 
 
 def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:

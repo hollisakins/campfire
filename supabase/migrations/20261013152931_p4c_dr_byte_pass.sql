@@ -55,6 +55,18 @@ BEGIN
     IF v_new = 'stamped' AND m.product_type NOT IN ('nirspec_spec', 'nirspec_lines') THEN
       RAISE EXCEPTION 'only NIRSpec FITS finals are stamped (% is %)', m.storage_key, m.product_type;
     END IF;
+    -- A science hash the pass computed for a member frozen without one is kept
+    -- (member + archive row), so later releases can reuse the stamped object
+    -- (Codex on #601). A frozen hash is never overwritten.
+    IF e->>'science_hash' IS NOT NULL THEN
+      IF e->>'science_hash' !~ '^sha256:[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'malformed science hash for %', m.storage_key;
+      END IF;
+      IF m.science_hash IS NOT NULL AND m.science_hash <> e->>'science_hash' THEN
+        RAISE EXCEPTION 'science hash of % disagrees with the frozen one', m.storage_key;
+      END IF;
+      m.science_hash := COALESCE(m.science_hash, e->>'science_hash');
+    END IF;
 
     -- A newly created archive object gets its registry row (an existing row:
     -- the same object reused, or a crash after the insert, is kept as it is;
@@ -91,6 +103,7 @@ BEGIN
 
     UPDATE dr_members
        SET byte_state = v_new,
+           science_hash = m.science_hash,
            archive_key = CASE WHEN v_new IN ('copied', 'stamped') THEN v_key END,
            stamped_hash = CASE WHEN v_new = 'stamped' THEN v_hash END,
            byte_error = CASE WHEN v_new = 'failed' THEN left(COALESCE(e->>'error', 'failed'), 2000) END,
@@ -132,25 +145,25 @@ CREATE OR REPLACE FUNCTION public.dr_bytes_pending (
   p_prefix         text    DEFAULT NULL::text
 )
   RETURNS TABLE (
-    storage_key           text,
-    product_type          text,
-    component             text,
-    program_slug          text,
-    field                 text,
-    spectrum_id           text,
-    backend               text,
-    bucket                text,
-    content_hash          text,
-    science_hash          text,
-    size_bytes            bigint,
-    byte_state            text,
-    source_key            text,
-    source_root           text,
-    source_stored_size    bigint,
-    reuse_archive_key     text,
-    reuse_stamped_hash    text,
-    reuse_root_registered boolean,
-    registry              jsonb
+    storage_key        text,
+    product_type       text,
+    component          text,
+    program_slug       text,
+    field              text,
+    spectrum_id        text,
+    backend            text,
+    bucket             text,
+    content_hash       text,
+    science_hash       text,
+    size_bytes         bigint,
+    byte_state         text,
+    source_key         text,
+    source_root        text,
+    source_stored_size bigint,
+    reuse_archive_key  text,
+    reuse_stamped_hash text,
+    reuse_size_bytes   bigint,
+    registry           jsonb
   )
   LANGUAGE plpgsql
   STABLE
@@ -181,7 +194,7 @@ BEGIN
          CASE WHEN live.id IS NOT NULL THEN 'live' WHEN ret.id IS NOT NULL THEN 'archive' END,
          CASE WHEN live.id IS NOT NULL THEN COALESCE(live.stored_size_bytes, live.size_bytes)
               ELSE COALESCE(ret.stored_size_bytes, ret.size_bytes) END,
-         reuse.archive_key, reuse.stamped_hash, reuse.archive_key IS NOT NULL,
+         reuse.archive_key, reuse.stamped_hash, reuse.size_bytes,
          jsonb_build_object(
            'content_type', COALESCE(live.content_type, ret.content_type, src.content_type),
            'stored_size_bytes', COALESCE(live.stored_size_bytes, ret.stored_size_bytes),
@@ -212,7 +225,7 @@ BEGIN
   ) ret ON true
   -- a stamped object another release made from the same science (D-P4-2)
   LEFT JOIN LATERAL (
-    SELECT d.archive_key, d.stamped_hash FROM dr_members d
+    SELECT d.archive_key, d.stamped_hash, COALESCE(so.stored_size_bytes, so.size_bytes) AS size_bytes FROM dr_members d
     JOIN storage_objects so ON so.root = 'archive' AND so.status = 'archived'
                            AND so.storage_key = d.archive_key
     WHERE pg.product_type IN ('nirspec_spec', 'nirspec_lines') AND pg.science_hash IS NOT NULL

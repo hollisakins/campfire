@@ -1554,10 +1554,12 @@ def dr_bytes(tag, obs, field, workers, limit, retry_failed, dry_run, status_only
     from campfire_layout.keys import KeyScheme
 
     config, sb = _dr_client(local, what="`campfire dr bytes`")
+    # --json: stdout carries the JSON document alone; progress goes to stderr
+    say = (lambda m: click.echo(m, err=True)) if as_json else click.echo
     from campfire.deploy.dr_bytes import fetch_summary, format_report, format_summary, run_byte_pass
 
     if obs and field:
-        click.echo("✗ Pass --obs or --field, not both.")
+        say("✗ Pass --obs or --field, not both.")
         sys.exit(2)
     prefix = None
     if obs:
@@ -1569,7 +1571,7 @@ def dr_bytes(tag, obs, field, workers, limit, retry_failed, dry_run, status_only
         try:
             summary = fetch_summary(sb, tag)
         except Exception as e:  # noqa: BLE001
-            click.echo(f"✗ {getattr(e, 'message', None) or e}")
+            say(f"✗ {getattr(e, 'message', None) or e}")
             sys.exit(1)
         click.echo(_json.dumps(summary, indent=2, sort_keys=True) if as_json else format_summary(summary))
         return
@@ -1592,20 +1594,20 @@ def dr_bytes(tag, obs, field, workers, limit, retry_failed, dry_run, status_only
                 break
             errors.append(f"{purpose}: resolves to {cand.backend}, not OSN")
         if bcfg is None:
-            click.echo("✗ `campfire dr bytes` needs OSN credentials for the data bucket "
+            say("✗ `campfire dr bytes` needs OSN credentials for the data bucket "
                        "(CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml): " + '; '.join(errors))
             sys.exit(2)
         s3 = make_s3_client(bcfg, max_pool_connections=max(workers, 10))
         bucket = bcfg.bucket
 
     scope = f" under {prefix}" if prefix else ""
-    click.echo(f"{'Planning' if dry_run else 'Archiving'} the member bytes of {tag}{scope} …")
+    say(f"{'Planning' if dry_run else 'Archiving'} the member bytes of {tag}{scope} …")
     try:
         report = run_byte_pass(sb, s3, bucket, tag, workers=workers, limit=limit,
                                include_failed=retry_failed, prefix=prefix, dry_run=dry_run,
-                               log=click.echo)
+                               log=say)
     except Exception as e:  # noqa: BLE001 - one line, not a traceback
-        click.echo(f"✗ {getattr(e, 'message', None) or e}")
+        say(f"✗ {getattr(e, 'message', None) or e}")
         sys.exit(1)
     if as_json:
         click.echo(_json.dumps(report.as_dict(), indent=2, sort_keys=True, default=str))
