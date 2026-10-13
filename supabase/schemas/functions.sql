@@ -10392,10 +10392,17 @@ BEGIN
   -- Either the removal sees `published` and refuses, or this sees the lease
   -- (Codex on #602).
   PERFORM pg_advisory_xact_lock(hashtext('campfire.dr_freeze'));
+  -- only leases on scopes this release covers matter: an unrelated upload
+  -- elsewhere cannot touch what the release names (Codex on #602)
   IF EXISTS (SELECT 1 FROM deploy_scope_state d
               WHERE d.in_progress_since IS NOT NULL
-                AND COALESCE(d.heartbeat_at, d.in_progress_since) >= now() - deploy_lease_ttl()) THEN
-    RAISE EXCEPTION 'a deploy or removal is in progress (live deploy lease); publish % when it has finished', p_tag;
+                AND COALESCE(d.heartbeat_at, d.in_progress_since) >= now() - deploy_lease_ttl()
+                AND ((d.scope_type = 'observation'
+                      AND d.scope_key IN (SELECT DISTINCT s.observation FROM dr_spectra s WHERE s.tag = p_tag))
+                  OR (d.scope_type = 'field'
+                      AND d.scope_key IN (SELECT DISTINCT m.field FROM dr_members m WHERE m.tag = p_tag AND m.field IS NOT NULL)
+                         ))) THEN
+    RAISE EXCEPTION 'a deploy or removal is in progress on a scope % covers (live deploy lease); publish it when that has finished', p_tag;
   END IF;
   -- A STALE lease on a scope this release covers belongs to a process that
   -- stopped heartbeating and could resume: bump its version (the ownership

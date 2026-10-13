@@ -99,13 +99,18 @@ BEGIN
   got := pg_temp.zzz_as('authenticated', usr, $q$SELECT count(*)::text FROM dr_spectra WHERE tag = 'DR-seed'$q$);
   IF got <> '0' THEN RAISE EXCEPTION 'reader saw % unpublished rows', got; END IF;
 
-  -- a live deploy / removal lease blocks the publish (Codex on #602)
+  -- a live deploy / removal lease on one of the release's observations blocks
+  -- the publish; one on an unrelated scope does not (it stays live through the
+  -- publish below) (Codex on #602)
   INSERT INTO deploy_scope_state (scope_type, scope_key, in_progress_since, heartbeat_at, in_progress_host)
-  VALUES ('observation', 'zzz-lease-obs', now(), now(), 'zzz-host')
+  VALUES ('observation', obs, now(), now(), 'zzz-host'),
+         ('observation', 'zzz-unrelated-live', now(), now(), 'zzz-host')
   ON CONFLICT (scope_type, scope_key) DO UPDATE SET in_progress_since = now(), heartbeat_at = now();
   got := pg_temp.zzz_try($q$SELECT dr_publish('DR-seed')$q$);
-  IF got NOT LIKE 'ERR: a deploy or removal is in progress%' THEN RAISE EXCEPTION 'publish under a live lease: %', got; END IF;
-  DELETE FROM deploy_scope_state WHERE scope_key = 'zzz-lease-obs';
+  IF got NOT LIKE 'ERR: a deploy or removal is in progress on a scope DR-seed covers%' THEN
+    RAISE EXCEPTION 'publish under a live lease on its own observation: %', got;
+  END IF;
+  DELETE FROM deploy_scope_state WHERE scope_type = 'observation' AND scope_key = obs;
   -- a STALE lease on one of the release's observations is invalidated by the
   -- publish (version bumped, lease cleared), so its holder cannot resume;
   -- a stale lease on an unrelated scope is left alone (Codex on #602)
@@ -124,7 +129,8 @@ BEGIN
   IF (SELECT version FROM deploy_scope_state WHERE scope_key = 'zzz-unrelated-obs') <> 7 THEN
     RAISE EXCEPTION 'publish touched an unrelated stale lease';
   END IF;
-  IF got <> 'published' THEN RAISE EXCEPTION 'admin publish: %', got; END IF;
+  IF got <> 'published' THEN RAISE EXCEPTION 'admin publish (with an unrelated live lease): %', got; END IF;
+  DELETE FROM deploy_scope_state WHERE scope_key IN ('zzz-unrelated-live', 'zzz-unrelated-obs');
   IF NOT EXISTS (SELECT 1 FROM dr_releases WHERE tag = 'DR-seed' AND state = 'published' AND doi = '10.5281/zenodo.123456'
                  AND known_issues = 'none known' AND published_by = adm AND published_at IS NOT NULL) THEN
     RAISE EXCEPTION 'published row incomplete: %', (SELECT to_jsonb(r) FROM dr_releases r WHERE tag = 'DR-seed');
