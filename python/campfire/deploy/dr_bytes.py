@@ -158,6 +158,11 @@ def _inflate_into(h, d, data) -> None:
         out = d.decompress(buf, INFLATE_OUT_BYTES)
         h.update(out)
         buf = d.unconsumed_tail
+        # bytes after the end of the gzip stream (a second concatenated
+        # member, or garbage) would otherwise be accepted unhashed: the hash
+        # must cover the whole stored object (Codex on #601)
+        if d.eof and d.unused_data:
+            raise ValueError('trailing data after the gzip stream (concatenated members are not accepted)')
     # drain anything still buffered internally, in bounded pieces too
     while not d.eof:
         out = d.decompress(b'', INFLATE_OUT_BYTES)
@@ -180,6 +185,8 @@ def logical_sha256(stored: bytes, *, compressed: bool) -> str:
     h.update(d.flush())
     if not d.eof:
         raise ValueError('truncated gzip body')
+    if d.unused_data:
+        raise ValueError('trailing data after the gzip stream (concatenated members are not accepted)')
     return 'sha256:' + h.hexdigest()
 
 
@@ -301,12 +308,21 @@ def process_member(row: dict, *, tag: str, s3, bucket: str,
                            error='frozen bytes are gone: the live object changed since the freeze '
                                  'and no archived copy of the frozen content exists')
         if action == 'reuse-stamp':
-            # the registry row is not proof the object exists (registry/bucket
-            # drift is what `verify --cloud` exists for): HEAD it (Codex on #601)
-            problem = _check_existing(s3, bucket, row['reuse_archive_key'], row.get('reuse_size_bytes'))
-            if problem is None:
-                return Outcome(key, 'stamped', 'reuse-stamp', archive_key=row['reuse_archive_key'],
-                               stamped_hash=row['reuse_stamped_hash'])
+            # every candidate in its release's freeze order: the first whose
+            # object exists wins (first release wins the stamp, deterministic
+            # even after concurrent passes); a registry row is not proof the
+            # object exists, so each is HEAD-checked (Codex on #601)
+            cands = row.get('reuse_candidates') or [
+                {'archive_key': row['reuse_archive_key'], 'stamped_hash': row['reuse_stamped_hash'],
+                 'size_bytes': row.get('reuse_size_bytes')}]
+            problems = []
+            for c in cands:
+                problem = _check_existing(s3, bucket, c['archive_key'], c.get('size_bytes'))
+                if problem is None:
+                    return Outcome(key, 'stamped', 'reuse-stamp', archive_key=c['archive_key'],
+                                   stamped_hash=c['stamped_hash'])
+                problems.append(problem)
+            problem = '; '.join(problems)
             if not row.get('source_key'):
                 return Outcome(key, 'failed', 'drift',
                                error=f"stamped object to reuse {problem}, and the frozen bytes are gone")
@@ -463,6 +479,8 @@ def _stream_logical_sha256(s3, bucket: str, key: str, etag: str, *, compressed: 
         h.update(d.flush())
         if not d.eof:
             raise ValueError(f'{key}: truncated gzip body')
+        if d.unused_data:
+            raise ValueError(f'{key}: trailing data after the gzip stream')
     return 'sha256:' + h.hexdigest()
 
 

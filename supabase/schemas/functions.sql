@@ -9992,7 +9992,7 @@ RETURNS TABLE (
   spectrum_id text, backend text, bucket text, content_hash text, science_hash text,
   size_bytes bigint, byte_state text,
   source_key text, source_root text, source_stored_size bigint,
-  reuse_archive_key text, reuse_stamped_hash text, reuse_size_bytes bigint,
+  reuse_archive_key text, reuse_stamped_hash text, reuse_size_bytes bigint, reuse_candidates jsonb,
   registry jsonb,
   frozen_at timestamptz,
   db_now timestamptz
@@ -10031,7 +10031,8 @@ BEGIN
               ELSE
                 CASE WHEN pg.storage_key LIKE '%.gz' THEN ret.stored_size_bytes
                      ELSE COALESCE(ret.stored_size_bytes, ret.size_bytes) END END,
-         reuse.archive_key, reuse.stamped_hash, reuse.size_bytes,
+         reuse.cands->0->>'archive_key', reuse.cands->0->>'stamped_hash',
+         (reuse.cands->0->>'size_bytes')::bigint, COALESCE(reuse.cands, '[]'::jsonb),
          jsonb_build_object(
            'content_type', COALESCE(live.content_type, ret.content_type, src.content_type),
            'stored_size_bytes', COALESCE(live.stored_size_bytes, ret.stored_size_bytes),
@@ -10067,18 +10068,23 @@ BEGIN
     ORDER BY so.id
     LIMIT 1
   ) ret ON true
-  -- a stamped object another release made from the same science (D-P4-2)
+  -- stamped objects other releases made from the same science (D-P4-2), every
+  -- candidate, in the order their releases were FROZEN: the pass reuses the
+  -- first one whose object still exists, so the first release wins the stamp
+  -- deterministically even when two passes stamped concurrently, and a fresh
+  -- stamp made after an earlier candidate went missing is still reachable
+  -- (Codex on #601)
   LEFT JOIN LATERAL (
-    SELECT d.archive_key, d.stamped_hash, COALESCE(so.stored_size_bytes, so.size_bytes) AS size_bytes FROM dr_members d
+    SELECT jsonb_agg(jsonb_build_object('archive_key', d.archive_key, 'stamped_hash', d.stamped_hash,
+                                        'size_bytes', COALESCE(so.stored_size_bytes, so.size_bytes))
+                     ORDER BY r.frozen_at NULLS LAST, d.tag) AS cands
+    FROM dr_members d
+    JOIN dr_releases r ON r.tag = d.tag
     JOIN storage_objects so ON so.root = 'archive' AND so.status = 'archived'
                            AND so.storage_key = d.archive_key
     WHERE pg.product_type IN ('nirspec_spec', 'nirspec_lines') AND pg.science_hash IS NOT NULL
       AND d.science_hash = pg.science_hash AND d.storage_key = pg.storage_key
       AND d.tag <> pg.tag AND d.byte_state = 'stamped'
-    -- newest first: if an older candidate's object went missing, the pass
-    -- stamped a fresh one, and later releases should reuse THAT (Codex on #601)
-    ORDER BY d.updated_at DESC
-    LIMIT 1
   ) reuse ON true
   ORDER BY pg.storage_key;
 END;

@@ -241,6 +241,35 @@ def test_reuse_stamp_missing_object_stamps_afresh_or_fails():
     assert o.action == 'stamp'
 
 
+def test_reuse_stamp_takes_the_first_existing_candidate_in_freeze_order():
+    # Codex on #601: first release wins, deterministically, and a dangling
+    # earlier candidate falls through to the next one
+    body = _fits_bytes(4)
+    cands = [{'archive_key': 'archive/aa/first.fits', 'stamped_hash': 'sha256:' + 'a' * 64, 'size_bytes': 5},
+             {'archive_key': 'archive/bb/second.fits', 'stamped_hash': 'sha256:' + 'b' * 64, 'size_bytes': 6}]
+    row = _row(SPEC_KEY, body, reuse_archive_key=cands[0]['archive_key'],
+               reuse_stamped_hash=cands[0]['stamped_hash'], reuse_candidates=cands)
+    both = _s3(**{SPEC_KEY: body, 'archive/aa/first.fits': b'first', 'archive/bb/second.fits': b'second'})
+    o = B.process_member(row, tag=TAG, s3=both, bucket=BUCKET, verify_science=False)
+    assert (o.action, o.archive_key) == ('reuse-stamp', 'archive/aa/first.fits')
+    only_second = _s3(**{SPEC_KEY: body, 'archive/bb/second.fits': b'second'})
+    o = B.process_member(row, tag=TAG, s3=only_second, bucket=BUCKET, verify_science=False)
+    assert (o.action, o.archive_key, o.stamped_hash) == ('reuse-stamp', 'archive/bb/second.fits', 'sha256:' + 'b' * 64)
+
+
+def test_trailing_gzip_members_are_rejected():
+    # Codex on #601: gzip(frozen) + gzip(other) must not verify as frozen
+    import gzip
+    logical = _fits_bytes(2)
+    stored = gzip.compress(logical) + gzip.compress(b'extra payload')
+    with pytest.raises(ValueError, match='trailing data'):
+        B.logical_sha256(stored, compressed=True)
+    s3 = _s3(**{MOSAIC_KEY: stored})
+    etag = s3.head_object(Bucket=BUCKET, Key=MOSAIC_KEY)['ETag'].strip('"')
+    with pytest.raises(ValueError, match='trailing data'):
+        B._stream_logical_sha256(s3, BUCKET, MOSAIC_KEY, etag, compressed=True)
+
+
 def test_reuse_copy_missing_object_fails():
     body = b'{"x": 1}'
     row = _row(JSON_KEY, body, product_type='spectrum_json')
