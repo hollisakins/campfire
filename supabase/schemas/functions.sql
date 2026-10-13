@@ -9378,6 +9378,7 @@ BEGIN
   DELETE FROM dr_spectra    WHERE tag = p_tag; GET DIAGNOSTICS n_spectra = ROW_COUNT;
   DELETE FROM dr_objects    WHERE tag = p_tag; GET DIAGNOSTICS n_objects = ROW_COUNT;
   DELETE FROM dr_exports    WHERE tag = p_tag; GET DIAGNOSTICS n_exports = ROW_COUNT;
+  DELETE FROM dr_export_garbage WHERE tag = p_tag;  -- `campfire dr purge` deletes the prefix itself
   DELETE FROM dr_releases   WHERE tag = p_tag;
   INSERT INTO deploy_events (actor, action, affected_count, metadata)
   VALUES (auth.uid(), 'delete', n_spectra::int,
@@ -9839,6 +9840,16 @@ BEGIN
         RETURN jsonb_build_object('tag', p_tag, 'stale_claim', true, 'state', v_release);
       END IF;
       RAISE EXCEPTION 'export file % % of % is no longer claimed by this run; rebuild it', p_stream, p_partition, p_tag;
+    END IF;
+    -- A ready mark that replaces a previously built file records the old key
+    -- as garbage, with when: readers may hold presigned urls for it, so the
+    -- collector keeps it for longer than they live (Codex on #600).
+    IF p_state = 'ready' AND e.storage_key IS DISTINCT FROM dr_export_key(p_tag, p_stream, p_partition)
+       AND e.storage_key IS DISTINCT FROM dr_export_content_key(dr_export_key(p_tag, p_stream, p_partition), p_sha256,
+                                                                COALESCE(p_claim, e.claim_token))
+       AND e.storage_key IS NOT NULL THEN
+      INSERT INTO dr_export_garbage (tag, storage_key) VALUES (p_tag, e.storage_key)
+      ON CONFLICT (tag, storage_key) DO NOTHING;
     END IF;
     UPDATE dr_exports
        SET state = p_state,

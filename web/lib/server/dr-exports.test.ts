@@ -13,7 +13,7 @@ import {
   partitionVisible,
   releaseVisible,
   runExportBudget,
-  EXPORT_SWEEP_MIN_AGE_MS,
+  EXPORT_GARBAGE_GRACE_MS,
   type DrExportLedgerRow,
 } from './dr-exports';
 
@@ -93,6 +93,10 @@ function fakeSupabase(opts: {
   busyFinishes?: boolean;
   /** stream/partition keys whose claim is taken over while this run builds them */
   loseClaim?: string[];
+  /** stream/partition keys whose ready mark commits but answers with an error */
+  loseReadyAnswer?: string[];
+  /** dr_export_garbage rows */
+  garbage?: { tag: string; storage_key: string; superseded_at: string }[];
 }) {
   const calls: { name: string; params: Record<string, unknown> }[] = [];
   const ledger = opts.ledger;
@@ -115,6 +119,15 @@ function fakeSupabase(opts: {
         if (params.p_state === 'building') {
           if (row) row.state = 'building';
           return { data: { state: 'exporting', claim: `claim-${key}`, base_key: row?.storage_key }, error: null };
+        }
+        if (opts.loseReadyAnswer?.includes(key) && row && params.p_state === 'ready') {
+          // the mark commits server-side, but its answer never arrives
+          row.state = 'ready';
+          row.storage_key = contentExportKey(row.storage_key as string, params.p_sha256 as string, params.p_claim as string);
+          return { data: null, error: { message: 'fetch failed' } };
+        }
+        if (opts.loseReadyAnswer?.includes(key) && row?.state === 'ready' && params.p_state === 'failed') {
+          return { data: { stale_claim: true, state: 'exported' }, error: null };
         }
         if (opts.loseClaim?.includes(key) && params.p_claim) {
           // another run took the file over and finished it meanwhile
@@ -155,6 +168,29 @@ function fakeSupabase(opts: {
         };
         return r;
       }
+      if (table === 'dr_export_garbage') {
+        const garbage = (opts.garbage ??= []);
+        const filters: Record<string, unknown> = {};
+        const del = {
+          eq: (col: string, v: unknown) => {
+            filters[col] = v;
+            if ('tag' in filters && 'storage_key' in filters) {
+              const i = garbage.findIndex((g) => g.tag === filters.tag && g.storage_key === filters.storage_key);
+              if (i >= 0) garbage.splice(i, 1);
+            }
+            return del;
+          },
+          then: (resolve: (v: unknown) => void) => resolve({ data: null, error: null }),
+        };
+        const q = {
+          select: () => q,
+          eq: (_col: string, v: unknown) => { filters.tag = v; return q; },
+          delete: () => del,
+          then: (resolve: (v: unknown) => void) =>
+            resolve({ data: garbage.filter((g) => g.tag === filters.tag).map((g) => ({ ...g })), error: null }),
+        };
+        return q;
+      }
       if (table !== 'dr_exports') throw new Error(table);
       const q = {
         select: () => q,
@@ -165,7 +201,7 @@ function fakeSupabase(opts: {
       return q;
     },
   };
-  return { client: client as never, calls, ledger };
+  return { client: client as never, calls, ledger, garbage: () => opts.garbage ?? [] };
 }
 
 const entry = (stream: DrExportLedgerRow['stream'], partition: string, state: DrExportLedgerRow['state'] = 'pending'): DrExportLedgerRow => ({
@@ -292,25 +328,50 @@ describe('runExportBudget', () => {
     expect(store.has(puts[0].Key)).toBe(false);
   });
 
-  it('once every file is ready, old objects the ledger does not name are swept (Codex on #600)', async () => {
-    const old = Date.now() - EXPORT_SWEEP_MIN_AGE_MS - 60_000;
+  it('once every file is ready, unnamed objects past their grace are swept (Codex on #600)', async () => {
+    const old = Date.now() - EXPORT_GARBAGE_GRACE_MS - 60_000;
+    const recent = new Date(Date.now() - 60_000).toISOString();
+    const long = new Date(old).toISOString();
     const { s3, deletes, store } = fakeS3({
-      'dr/DR-t/exports/objects/pub.aaaaaaaaaaaaaaaa.11111111.jsonl.gz': old,    // superseded build
+      'dr/DR-t/exports/objects/pub.aaaaaaaaaaaaaaaa.11111111.jsonl.gz': old,    // replaced long ago
+      'dr/DR-t/exports/objects/pub.dddddddddddddddd.44444444.jsonl.gz': old,    // uploaded long ago, replaced a minute ago
+      'dr/DR-t/exports/objects/pub.eeeeeeeeeeeeeeee.55555555.jsonl.gz': old,    // never named (a build that died)
       'dr/DR-t/exports/objects/pub.bbbbbbbbbbbbbbbb.22222222.jsonl.gz': Date.now(), // too young: may be in flight
       'dr/DR-u/exports/objects/pub.cccccccccccccccc.33333333.jsonl.gz': old,    // another release
     });
-    const { client, ledger } = fakeSupabase({ pages, ledger: [entry('objects', 'pub')] });
+    const { client, ledger, garbage } = fakeSupabase({
+      pages, ledger: [entry('objects', 'pub')],
+      garbage: [
+        { tag: 'DR-t', storage_key: 'dr/DR-t/exports/objects/pub.aaaaaaaaaaaaaaaa.11111111.jsonl.gz', superseded_at: long },
+        { tag: 'DR-t', storage_key: 'dr/DR-t/exports/objects/pub.dddddddddddddddd.44444444.jsonl.gz', superseded_at: recent },
+        { tag: 'DR-t', storage_key: 'dr/DR-t/exports/objects/gone.ffffffffffffffff.66666666.jsonl.gz', superseded_at: long },
+      ],
+    });
     const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 60_000);
     expect(res.remaining).toBe(0);
-    expect(res.swept).toBe(1);
-    expect(deletes).toEqual(['dr/DR-t/exports/objects/pub.aaaaaaaaaaaaaaaa.11111111.jsonl.gz']);
-    // the file the ledger names stays, as do the young and the foreign ones
+    expect(res.swept).toBe(2);
+    expect(deletes.sort()).toEqual([
+      'dr/DR-t/exports/objects/pub.aaaaaaaaaaaaaaaa.11111111.jsonl.gz',
+      'dr/DR-t/exports/objects/pub.eeeeeeeeeeeeeeee.55555555.jsonl.gz',
+    ]);
+    // a file replaced a minute ago is kept for its grace however old its upload (Codex on #600)
+    expect(store.has('dr/DR-t/exports/objects/pub.dddddddddddddddd.44444444.jsonl.gz')).toBe(true);
     expect(store.has(ledger[0].storage_key as string)).toBe(true);
-    expect(store.size).toBe(3);
+    // garbage rows go with their objects, and rows whose object is gone are dropped
+    expect(garbage().map((g) => g.storage_key)).toEqual(['dr/DR-t/exports/objects/pub.dddddddddddddddd.44444444.jsonl.gz']);
+  });
+
+  it('a lost answer to a committed ready mark never deletes the published file (Codex on #600)', async () => {
+    const { s3, puts, deletes } = fakeS3();
+    const { client, ledger } = fakeSupabase({ pages, loseReadyAnswer: ['objects/pub'], ledger: [entry('objects', 'pub')] });
+    await runExportBudget(client, s3, 'bucket', 'DR-t', 60_000);
+    expect(ledger[0].state).toBe('ready');
+    expect(ledger[0].storage_key).toBe(puts[0].Key);
+    expect(deletes).toEqual([]);
   });
 
   it('nothing is swept while files remain', async () => {
-    const old = Date.now() - EXPORT_SWEEP_MIN_AGE_MS - 60_000;
+    const old = Date.now() - EXPORT_GARBAGE_GRACE_MS - 60_000;
     const { s3, deletes } = fakeS3({ 'dr/DR-t/exports/objects/x.aaaaaaaaaaaaaaaa.11111111.jsonl.gz': old });
     const { client } = fakeSupabase({ pages, failRows: 'objects/pub', ledger: [entry('objects', 'pub')] });
     const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 60_000);

@@ -337,6 +337,18 @@ BEGIN
        <> 'dr/T/exports/spectra/pub.0123456789abcdef.a1b2c3d4.jsonl.gz' THEN
       RAISE EXCEPTION 'content key format drifted from the builder''s';
     END IF;
+    -- a rebuild records the file it replaces as garbage, with when (Codex on #600)
+    DELETE FROM dr_export_garbage WHERE tag = 'DR-seed';
+    PERFORM dr_export_invalidate('DR-seed', 'objects', prog);
+    c1 := (dr_export_mark('DR-seed', 'objects', prog, 'building'))->>'claim';
+    PERFORM dr_export_mark('DR-seed', 'objects', prog, 'ready', 'sha256:' || repeat('d', 64), 1, 1, NULL, c1);
+    IF (SELECT array_agg(storage_key) FROM dr_export_garbage WHERE tag = 'DR-seed')
+       IS DISTINCT FROM ARRAY[dr_export_content_key(dr_export_key('DR-seed', 'objects', prog), 'sha256:' || repeat('c', 64), c2::uuid)] THEN
+      RAISE EXCEPTION 'the superseded file should be garbage: %', (SELECT array_agg(storage_key) FROM dr_export_garbage WHERE tag = 'DR-seed');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM dr_export_garbage WHERE tag = 'DR-seed' AND superseded_at > now() - interval '1 minute') THEN
+      RAISE EXCEPTION 'superseded_at should be the replacement time';
+    END IF;
     PERFORM dr_export_invalidate('DR-seed', 'objects', prog);
     c1 := (dr_export_mark('DR-seed', 'objects', prog, 'building'))->>'claim';
     BEGIN

@@ -1816,6 +1816,7 @@ ALTER TABLE dr_manifest ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_line_fits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_photometry ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_exports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_export_garbage ENABLE ROW LEVEL SECURITY;  -- service-role only: no policies
 
 DROP POLICY IF EXISTS "select_dr_releases" ON dr_releases;
 CREATE POLICY "select_dr_releases"

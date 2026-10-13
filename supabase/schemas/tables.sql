@@ -1790,6 +1790,20 @@ ALTER TABLE "public"."dr_exports" OWNER TO "postgres";
 
 COMMENT ON TABLE "public"."dr_exports" IS 'Export ledger of a data release (P4b): one JSONL.gz per (stream, partition) under dr/<tag>/exports/, with sha256, size and row count once built. Admin-only; readers get partitions through /api/v1/dr/<tag>/partitions.';
 
+-- dr_export_garbage: built export files the ledger stopped naming (a rebuild
+-- replaced them), with WHEN, so the collector keeps each one for longer than
+-- the presigned URLs handed out for it stay valid (P4b).
+CREATE TABLE IF NOT EXISTS "public"."dr_export_garbage" (
+    "tag" "text" NOT NULL,
+    "storage_key" "text" NOT NULL,
+    "superseded_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "dr_export_garbage_pkey" PRIMARY KEY ("tag", "storage_key")
+);
+
+ALTER TABLE "public"."dr_export_garbage" OWNER TO "postgres";
+
+COMMENT ON TABLE "public"."dr_export_garbage" IS 'Superseded data-release export files (P4b): written by dr_export_mark when a ready mark replaces a built key, read and cleared by the export collector (end of an export run, /api/cron/dr-export-gc), which deletes a file once it has been unreferenced longer than a presigned URL lives. Service-role only.';
+
 
 
 COMMENT ON TABLE "public"."sync_snapshots" IS 'Nightly public-scope catalog snapshots for first-time campfire sync (files in the private data bucket under sync-snapshots/<id>/). Written by the /api/cron/sync-snapshot route, read by /api/v1/sync/snapshot; service-role only.';
@@ -3168,6 +3182,9 @@ REVOKE ALL ON TABLE "public"."dr_exports" FROM "anon";
 REVOKE ALL ON TABLE "public"."dr_exports" FROM "authenticated";
 GRANT SELECT ON TABLE "public"."dr_exports" TO "authenticated";
 GRANT ALL ON TABLE "public"."dr_exports" TO "service_role";
+REVOKE ALL ON TABLE "public"."dr_export_garbage" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_export_garbage" FROM "authenticated";
+GRANT ALL ON TABLE "public"."dr_export_garbage" TO "service_role";
 
 
 

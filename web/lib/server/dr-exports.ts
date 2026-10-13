@@ -284,11 +284,18 @@ export async function runExportBudget(
         p_error: message, p_claim: claim,
       });
       if (uploadedKey && !failError) {
-        // The failed mark landed (or the claim is someone else's): the ledger
-        // does not name this build's key and never will -- keys are per build
-        // and a claim marks ready at most once -- so its object is deleted now
-        // rather than left for a sweep that may never come back (Codex on #600).
-        await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: uploadedKey })).catch(() => undefined);
+        // The ledger does not name this build's key and never will -- keys are
+        // per build and a claim marks ready at most once -- so its object is
+        // deleted now rather than left for a sweep that may never come back
+        // (Codex on #600). Unless the ready mark itself committed and only its
+        // answer was lost: the ledger is re-read first, and the object is kept
+        // whenever it is named (or the read fails; the collector decides later).
+        const named = await fetchLedger(supabase, tag)
+          .then((rows) => rows.some((r) => r.storage_key === uploadedKey))
+          .catch(() => true);
+        if (!named) {
+          await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: uploadedKey })).catch(() => undefined);
+        }
       }
       if ((failMark as { stale_claim?: boolean } | null)?.stale_claim) {
         skipped.push({ stream: entry.stream, partition: entry.partition, reason: `claim lost while building: ${message}` });
@@ -316,19 +323,23 @@ export async function runExportBudget(
 }
 
 /**
- * Age an unreferenced export object must reach before the sweep deletes it
- * (a build that loses its claim deletes its own object at once; the sweep is
- * for files superseded by a rebuild, which a reader may still be fetching, and
- * for builds that died between their upload and their mark; `dr purge`
- * removes whatever is left).
- * A builder marks its file ready seconds after uploading it, inside one route
- * call (maxDuration under 5 minutes), so an object this old that the ledger
- * does not name will never be named: its build was superseded or lost its
- * claim, and a claim marks ready at most once (keys are per build).
+ * How long an export file stays after it stopped being referenced: longer than
+ * the presigned urls `/api/v1/dr/<tag>/partitions` hands out live (1 h), so a
+ * reader holding the url of a file a rebuild just replaced can still fetch it.
+ * A file the ledger replaced is aged from `dr_export_garbage.superseded_at`
+ * (the replacement), never from its upload; an object the ledger never named
+ * (a build that died between its upload and its mark; a build that loses its
+ * claim deletes its own object at once) was never handed out, and is aged
+ * from its upload.
  */
-export const EXPORT_SWEEP_MIN_AGE_MS = 30 * 60_000;
+export const EXPORT_GARBAGE_GRACE_MS = 2 * 60 * 60_000;
 
-/** Delete the objects under `dr/<tag>/exports/` that no ledger row names and that are old enough. */
+/**
+ * Delete the objects under `dr/<tag>/exports/` that no ledger row names and
+ * whose grace has passed. Run at the end of an export run that finds every
+ * file ready, and daily for every release by /api/cron/dr-export-gc (so a file
+ * superseded by the last run is still collected). Returns the number deleted.
+ */
 export async function sweepSupersededExports(
   supabase: SupabaseClient,
   s3: S3Client,
@@ -346,13 +357,33 @@ export async function sweepSupersededExports(
     }
     token = page.IsTruncated ? page.NextContinuationToken : undefined;
   } while (token);
-  // the ledger AFTER the listing: a file marked ready meanwhile is named here
+  // the ledger and the garbage AFTER the listing: a file marked ready (or
+  // replaced) meanwhile is seen here
   const named = new Set((await fetchLedger(supabase, tag)).map((r) => r.storage_key).filter(Boolean));
+  const { data: garbageRows, error: garbageError } = await supabase
+    .from('dr_export_garbage')
+    .select('storage_key, superseded_at')
+    .eq('tag', tag);
+  if (garbageError) throw new Error(`dr_export_garbage lookup failed: ${garbageError.message}`);
+  const supersededAt = new Map(
+    ((garbageRows as { storage_key: string; superseded_at: string }[] | null) ?? [])
+      .map((g) => [g.storage_key, Date.parse(g.superseded_at)] as const),
+  );
+  const listed = new Set(keys.map((k) => k.key));
   let n = 0;
   for (const { key, modified } of keys) {
-    if (named.has(key) || now() - modified < EXPORT_SWEEP_MIN_AGE_MS) continue;
+    if (named.has(key)) continue;
+    const since = supersededAt.get(key) ?? modified;
+    if (now() - since < EXPORT_GARBAGE_GRACE_MS) continue;
     await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     n += 1;
+    if (supersededAt.has(key)) {
+      await supabase.from('dr_export_garbage').delete().eq('tag', tag).eq('storage_key', key);
+    }
+  }
+  // garbage rows whose object is already gone
+  for (const key of supersededAt.keys()) {
+    if (!listed.has(key)) await supabase.from('dr_export_garbage').delete().eq('tag', tag).eq('storage_key', key);
   }
   return n;
 }

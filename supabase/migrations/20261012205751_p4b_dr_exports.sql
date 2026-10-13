@@ -10,6 +10,18 @@ SET statement_timeout = '60s';
 
 SET local check_function_bodies = off;
 
+CREATE TABLE "public"."dr_export_garbage" (
+  "tag"           text                     NOT NULL,
+  "storage_key"   text                     NOT NULL,
+  "superseded_at" timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT "dr_export_garbage_pkey" PRIMARY KEY (TAG, storage_key)
+);
+
+ALTER TABLE "public"."dr_export_garbage"
+  ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE "public"."dr_export_garbage" FROM "anon", "authenticated";
+
 ALTER TABLE "public"."dr_exports"
   ADD COLUMN "claim_token" uuid;
 
@@ -250,6 +262,16 @@ BEGIN
         RETURN jsonb_build_object('tag', p_tag, 'stale_claim', true, 'state', v_release);
       END IF;
       RAISE EXCEPTION 'export file % % of % is no longer claimed by this run; rebuild it', p_stream, p_partition, p_tag;
+    END IF;
+    -- A ready mark that replaces a previously built file records the old key
+    -- as garbage, with when: readers may hold presigned urls for it, so the
+    -- collector keeps it for longer than they live (Codex on #600).
+    IF p_state = 'ready' AND e.storage_key IS DISTINCT FROM dr_export_key(p_tag, p_stream, p_partition)
+       AND e.storage_key IS DISTINCT FROM dr_export_content_key(dr_export_key(p_tag, p_stream, p_partition), p_sha256,
+                                                                COALESCE(p_claim, e.claim_token))
+       AND e.storage_key IS NOT NULL THEN
+      INSERT INTO dr_export_garbage (tag, storage_key) VALUES (p_tag, e.storage_key)
+      ON CONFLICT (tag, storage_key) DO NOTHING;
     END IF;
     UPDATE dr_exports
        SET state = p_state,
@@ -498,6 +520,52 @@ $function$;
 
 REVOKE ALL ON FUNCTION "public"."dr_export_status"(text) FROM PUBLIC, "anon";
 
+CREATE OR REPLACE FUNCTION public.dr_purge_release (
+  p_tag text
+)
+  RETURNS jsonb
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path TO 'public', 'pg_temp'
+  SET statement_timeout TO '300s'
+  AS $function$
+DECLARE
+  r dr_releases%ROWTYPE;
+  n_members bigint; n_lines bigint; n_phot bigint; n_spectra bigint; n_objects bigint; n_exports bigint;
+BEGIN
+  PERFORM dr_require_admin();
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'no release %', p_tag;
+  END IF;
+  IF r.state IN ('published', 'withdrawn') THEN
+    RAISE EXCEPTION 'release % is %; a published DR is never purged (withdraw hides it, bytes stay)', p_tag, r.state;
+  END IF;
+  IF r.state = 'freezing' AND r.freeze_started_at > now() - interval '1 hour' THEN
+    RAISE EXCEPTION 'release % is freezing (started %); wait for it to finish or fail', p_tag, r.freeze_started_at;
+  END IF;
+  PERFORM dr_cron_unschedule(p_tag);
+  DELETE FROM dr_members    WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
+  DELETE FROM dr_line_fits  WHERE tag = p_tag; GET DIAGNOSTICS n_lines = ROW_COUNT;
+  DELETE FROM dr_photometry WHERE tag = p_tag; GET DIAGNOSTICS n_phot = ROW_COUNT;
+  DELETE FROM dr_spectra    WHERE tag = p_tag; GET DIAGNOSTICS n_spectra = ROW_COUNT;
+  DELETE FROM dr_objects    WHERE tag = p_tag; GET DIAGNOSTICS n_objects = ROW_COUNT;
+  DELETE FROM dr_exports    WHERE tag = p_tag; GET DIAGNOSTICS n_exports = ROW_COUNT;
+  DELETE FROM dr_export_garbage WHERE tag = p_tag;  -- `campfire dr purge` deletes the prefix itself
+  DELETE FROM dr_releases   WHERE tag = p_tag;
+  INSERT INTO deploy_events (actor, action, affected_count, metadata)
+  VALUES (auth.uid(), 'delete', n_spectra::int,
+          jsonb_build_object('dr_tag', p_tag, 'purge', true, 'state_before', r.state,
+                             'rows', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
+                               'line_fits', n_lines, 'photometry', n_phot, 'members', n_members,
+                               'exports', n_exports)));
+  RETURN jsonb_build_object('tag', p_tag, 'state_before', r.state,
+                            'deleted', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
+                              'line_fits', n_lines, 'photometry', n_phot, 'members', n_members,
+                              'exports', n_exports));
+END;
+$function$;
+
 COMMENT ON FUNCTION "public"."dr_export_begin"(text) IS 'Seed the export ledger of an unpublished data release from dr_export_partitions (idempotent: existing ledger rows are kept) and derive the release state (dr_derive_state). Admin or service_role.';
 
 COMMENT ON FUNCTION "public"."dr_export_invalidate"(text, text, text) IS 'Send ready export files of a data release back to pending (a stream, a partition, or everything) so `dr export` rebuilds them; the byte pass uses it for the member partitions it changes. Admin or service_role.';
@@ -509,6 +577,8 @@ COMMENT ON FUNCTION "public"."dr_export_partitions"(text) IS 'Every (stream, par
 COMMENT ON FUNCTION "public"."dr_export_rows"(text, text, text, text, integer) IS 'One keyset page of a data-release export partition (P4b): rows shaped like the live sync rows of the same stream (docs/dr-format-v1.md), objects with aggregates scoped to the partition program. next_cursor = the row''s key (pass the last one as p_after for the next page). Admin or service_role.';
 
 COMMENT ON FUNCTION "public"."dr_export_status"(text) IS 'A data release''s state and its not-ready export file count, from one snapshot (P4b builder). Admin or service_role.';
+
+COMMENT ON TABLE "public"."dr_export_garbage" IS 'Superseded data-release export files (P4b): written by dr_export_mark when a ready mark replaces a built key, read and cleared by the export collector (end of an export run, /api/cron/dr-export-gc), which deletes a file once it has been unreferenced longer than a presigned URL lives. Service-role only.';
 
 REVOKE ALL ON FUNCTION "public"."dr_derive_state"(text) FROM "postgres";
 
@@ -579,3 +649,9 @@ REVOKE ALL ON FUNCTION "public"."dr_export_status"(text) FROM "postgres";
 GRANT EXECUTE ON FUNCTION "public"."dr_export_status"(text) TO "postgres";
 
 GRANT EXECUTE ON FUNCTION "public"."dr_export_status"(text) TO "service_role";
+
+REVOKE ALL ON TABLE "public"."dr_export_garbage" FROM "postgres";
+
+GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."dr_export_garbage" TO "postgres";
+
+GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."dr_export_garbage" TO "service_role";
