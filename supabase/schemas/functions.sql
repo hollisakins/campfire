@@ -9056,7 +9056,11 @@ BEGIN
                                 n_detected, n_broad, chi2, dof, lines, fit_version, cfpipe_version,
                                 f_lsf, spectrum_hash, spectrum_science_hash, fitted_at,
                                 stale_redshift, stale_spectrum)
-      SELECT p_tag, f.spectrum_id, f.target_id, f.grating, f.program_slug, f.observation,
+      -- target / grating / program / observation from the JOINED (frozen)
+      -- spectrum, not the fit's own denormalized copies: those can be stale
+      -- after a metadata correction, and dr_line_fits authorizes on
+      -- program_slug, like the live policy authorizes through spectra (Codex on #599)
+      SELECT p_tag, f.spectrum_id, p.target_id, p.grating, p.program_slug, p.observation,
              f.object_id, f.object_version, f.z_used, f.z_source, f.z_quality, f.z_fit,
              f.z_fit_err, f.dv, f.dv_err, f.sigma_v, f.sigma_v_err, f.kin_source, f.n_lines,
              f.n_detected, f.n_broad, f.chi2, f.dof, f.lines, f.fit_version, f.cfpipe_version,

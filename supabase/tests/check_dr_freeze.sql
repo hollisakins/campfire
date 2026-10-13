@@ -132,6 +132,10 @@ SELECT s.id, s.target_id, s.grating, t.program_slug, t.observation,
        CASE WHEN t.target_id = 'zzz-dr-t-mixp' THEN 'sha256:' || repeat('0', 64) ELSE s.science_hash END
 FROM spectra s JOIN targets t ON t.target_id = s.target_id JOIN objects o ON o.id = t.object_id
 WHERE s.fits_path IN ('/tmp/zzz_dr_pub_prism_spec.fits', '/tmp/zzz_dr_pub_g395m_spec.fits', '/tmp/zzz_dr_mixp_prism_spec.fits');
+-- the PUB fit's denormalized program is stale (a metadata correction after the
+-- fit): the frozen fit must take its spectrum's program (Codex on #599)
+UPDATE spectrum_line_fits f SET program_slug = 'zzz_dr_priv'
+  FROM spectra s WHERE s.id = f.spectrum_id AND s.fits_path = '/tmp/zzz_dr_pub_prism_spec.fits';
 
 -- Photometry: a row for MIX and one for the inactive object (excluded).
 INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z)
@@ -317,6 +321,11 @@ BEGIN
   END IF;
   IF NOT (SELECT stale_redshift AND stale_spectrum FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id = 'zzz-dr-t-mixp') THEN
     RAISE EXCEPTION 'MIX line fit should be stale on both axes';
+  END IF;
+  -- the frozen fit carries its spectrum's program, not the fit's stale copy
+  IF (SELECT program_slug FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id = 'zzz-dr-t-pub') <> 'zzz_dr_pub' THEN
+    RAISE EXCEPTION 'frozen line fit kept a stale program: %',
+      (SELECT program_slug FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id = 'zzz-dr-t-pub');
   END IF;
 
   -- photometry: MIX only, with the object's programs
