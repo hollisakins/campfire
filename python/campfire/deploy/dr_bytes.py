@@ -376,12 +376,25 @@ def _copy_member(row: dict, *, s3, bucket: str, clock_margin: timedelta = None) 
         # The live object was (re)written after the freeze: its ETag proves
         # nothing about the frozen content hash, so a server-side copy could
         # archive replacement bytes under the old hash (Codex on #601). Small
-        # objects are verified by their sha256 and uploaded; large ones fail.
+        # objects are verified by their sha256 and uploaded; large ones are
+        # verified by a streamed hash under If-Match on this ETag and then
+        # copied server-side bound to the SAME ETag, so the bytes copied are
+        # the bytes verified (Codex on #601: never failed unverified).
         size = int(head.get('ContentLength') or 0)
         if size > VERIFY_LIMIT_BYTES:
-            return Outcome(key, 'failed', 'drift',
-                           error=f'source {src} was rewritten after the freeze and is too large '
-                                 f'({size:,} bytes) to verify against the frozen hash')
+            got = _stream_logical_sha256(s3, bucket, src, etag, compressed=_stored_compressed(row['storage_key']))
+            if got != row['content_hash']:
+                return Outcome(key, 'failed', 'drift',
+                               error=f'source {src} holds {got}, the release froze {row["content_hash"]}')
+            try:
+                s3.copy_object(Bucket=bucket, Key=target, CopySource={'Bucket': bucket, 'Key': src},
+                               CopySourceIfMatch=etag, MetadataDirective='COPY')
+            except Exception as e:  # noqa: BLE001
+                if _status_code(e) == 412:
+                    return Outcome(key, 'failed', 'drift', error=f'source {src} changed during the copy')
+                raise
+            return Outcome(key, 'copied', 'copy-verified', archive_key=target, registry=reg,
+                           bytes_moved=2 * size)
         body = s3.get_object(Bucket=bucket, Key=src, IfMatch=etag)['Body'].read()
         # The registry hashes the LOGICAL bytes: a transport-compressed product
         # (mosaic FITS stored as .fits.gz) is hashed uncompressed (Codex on #601).
@@ -407,6 +420,26 @@ def _copy_member(row: dict, *, s3, bucket: str, clock_margin: timedelta = None) 
         raise
     return Outcome(key, 'copied', 'copy', archive_key=target, registry=reg,
                    bytes_moved=int(head.get('ContentLength') or 0))
+
+
+def _stream_logical_sha256(s3, bucket: str, key: str, etag: str, *, compressed: bool,
+                           chunk: int = 8 << 20) -> str:
+    """sha256 of an object's logical bytes, streamed (never held in memory),
+    under If-Match on *etag*; gunzipped on the fly when stored compressed."""
+    import zlib
+    body = s3.get_object(Bucket=bucket, Key=key, IfMatch=etag)['Body']
+    h = hashlib.sha256()
+    d = zlib.decompressobj(16 + zlib.MAX_WBITS) if compressed else None
+    while True:
+        piece = body.read(chunk)
+        if not piece:
+            break
+        h.update(d.decompress(piece) if d else piece)
+    if d is not None:
+        h.update(d.flush())
+        if not d.eof:
+            raise ValueError(f'{key}: truncated gzip body')
+    return 'sha256:' + h.hexdigest()
 
 
 def _parse_ts(value) -> Optional[datetime]:

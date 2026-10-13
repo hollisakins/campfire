@@ -292,16 +292,22 @@ def test_copy_member_rewritten_after_the_freeze_is_verified_by_hash():
     o = B.process_member(row, tag=TAG, s3=s3, bucket=BUCKET)
     assert (o.state, o.action) == ('failed', 'drift') and 'the release froze' in o.error
     assert not [k for k in s3.keys(BUCKET) if k.startswith('archive/')]
-    # too large to verify by download: refused
+    # too large to download whole: verified by a streamed hash, then copied
+    # server-side under the same ETag -- never failed unverified (Codex on #601)
     big = dict(row, source_stored_size=None)
     s3 = _s3(**{JSON_KEY: body})
     monkey_limit = B.VERIFY_LIMIT_BYTES
     try:
         B.VERIFY_LIMIT_BYTES = 4
         o = B.process_member(big, tag=TAG, s3=s3, bucket=BUCKET)
+        assert (o.state, o.action) == ('copied', 'copy-verified')
+        assert s3.ops('CopyObject')[-1][1].get('CopySourceIfMatch')
+        assert s3.body(BUCKET, o.archive_key) == body
+        # and different bytes are still refused
+        o = B.process_member(big, tag=TAG, s3=_s3(**{JSON_KEY: b'{"x": 2}'}), bucket=BUCKET)
+        assert o.state == 'failed' and 'the release froze' in o.error
     finally:
         B.VERIFY_LIMIT_BYTES = monkey_limit
-    assert o.state == 'failed' and 'too large' in o.error
     # an unknown freeze time counts as changed (verified path)
     o = B.process_member(dict(row, frozen_at=None), tag=TAG, s3=_s3(**{JSON_KEY: body}), bucket=BUCKET)
     assert o.action == 'copy-verified'

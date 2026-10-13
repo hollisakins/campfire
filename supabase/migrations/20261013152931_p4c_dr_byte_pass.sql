@@ -274,7 +274,9 @@ BEGIN
     WHERE pg.product_type IN ('nirspec_spec', 'nirspec_lines') AND pg.science_hash IS NOT NULL
       AND d.science_hash = pg.science_hash AND d.storage_key = pg.storage_key
       AND d.tag <> pg.tag AND d.byte_state = 'stamped'
-    ORDER BY d.updated_at
+    -- newest first: if an older candidate's object went missing, the pass
+    -- stamped a fresh one, and later releases should reuse THAT (Codex on #601)
+    ORDER BY d.updated_at DESC
     LIMIT 1
   ) reuse ON true
   ORDER BY pg.storage_key;
