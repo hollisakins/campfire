@@ -1591,6 +1591,9 @@ CREATE TABLE IF NOT EXISTS "public"."dr_spectra" (
     "observation" "text" NOT NULL,
     "grating" "text" NOT NULL,
     "target_id" "text" NOT NULL,
+    -- the target's field, frozen here: a spectrum whose target has no active
+    -- object has no dr_objects row to take it from (Codex on #600)
+    "field" "text",
     "object_id" integer,
     "fits_path" "text" NOT NULL,
     "file_hash" "text",

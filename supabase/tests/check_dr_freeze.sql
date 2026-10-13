@@ -273,6 +273,13 @@ BEGIN
   END IF;
   SELECT object_id INTO n FROM dr_spectra WHERE tag = 'DR-zzz' AND fits_path = '/tmp/zzz_dr_inact_prism_spec.fits';
   IF n IS NOT NULL THEN RAISE EXCEPTION 'spectrum of an inactive object should carry object_id NULL'; END IF;
+  -- ...but keeps its target's field (Codex on #600)
+  IF (SELECT field FROM dr_spectra WHERE tag = 'DR-zzz' AND fits_path = '/tmp/zzz_dr_inact_prism_spec.fits') IS DISTINCT FROM 'zzz_drf' THEN
+    RAISE EXCEPTION 'objectless spectrum lost its target field';
+  END IF;
+  IF EXISTS (SELECT 1 FROM dr_spectra WHERE tag = 'DR-zzz' AND fits_path LIKE '/tmp/zzz_dr_%' AND field IS NULL) THEN
+    RAISE EXCEPTION 'a frozen spectrum has no field';
+  END IF;
 
   -- objects: PUB, MIX, PRIV; not DRAFTONLY, not INACTIVE
   SELECT count(*) INTO n FROM dr_objects WHERE tag = 'DR-zzz' AND name LIKE 'ZZZ-DR-%';

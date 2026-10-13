@@ -196,6 +196,7 @@ CREATE TABLE "public"."dr_spectra" (
   "observation"     text                     NOT NULL,
   "grating"         text                     NOT NULL,
   "target_id"       text                     NOT NULL,
+  "field"           text,
   "object_id"       integer,
   "fits_path"       text                     NOT NULL,
   "file_hash"       text,
@@ -492,7 +493,7 @@ BEGIN
       -- Published spectra (nirspec component) with the active object they
       -- roll up to (NULL while a target has no active object).
       SELECT s.id, s.spectrum_id, s.program_slug, s.observation, s.grating, s.target_id,
-             o.id AS obj_id, s.fits_path, s.file_hash, s.science_hash, s.file_size,
+             t.field AS target_field, o.id AS obj_id, s.fits_path, s.file_hash, s.science_hash, s.file_size,
              s.exposure_time, s.signal_to_noise, s.cfpipe_version, s.crds_context,
              s.jwst_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min,
              s.confidence, s.dq_flags,
@@ -579,11 +580,11 @@ BEGIN
     ),
     ins_spectra AS (
       INSERT INTO dr_spectra (tag, spectrum_id, id, program_slug, observation, grating, target_id,
-                              object_id, fits_path, file_hash, science_hash, file_size, exposure_time,
+                              field, object_id, fits_path, file_hash, science_hash, file_size, exposure_time,
                               signal_to_noise, cfpipe_version, crds_context, jwst_version, date_obs,
                               reduced_at, redshift_auto, chi2_min, confidence, dq_flags)
       SELECT p_tag, p.spectrum_id, p.id, p.program_slug, p.observation, p.grating, p.target_id,
-             p.obj_id, p.fits_path, p.file_hash, p.science_hash, p.file_size, p.exposure_time,
+             p.target_field, p.obj_id, p.fits_path, p.file_hash, p.science_hash, p.file_size, p.exposure_time,
              p.signal_to_noise, p.cfpipe_version, p.crds_context, p.jwst_version, p.date_obs,
              p.reduced_at, p.redshift_auto, p.chi2_min, p.confidence, p.dq_flags
       FROM pub p
