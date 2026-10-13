@@ -8881,6 +8881,7 @@ DECLARE
   v_t0 timestamptz := clock_timestamp();
   v_n_spectra bigint; v_n_objects bigint; v_n_lines bigint; v_n_phot bigint; v_n_members bigint;
   v_xmin bigint;
+  v_missing text;
   v_err text;
 BEGIN
   -- Only the cron runner / seed (postgres) or an admin / service caller.
@@ -9136,6 +9137,19 @@ BEGIN
            (SELECT count(*) FROM ins_members),
            pg_snapshot_xmin(pg_current_snapshot())::text::bigint
       INTO v_n_spectra, v_n_objects, v_n_lines, v_n_phot, v_n_members, v_xmin;
+
+    -- Every published mosaic of a selected field must have become a member: a
+    -- mosaic without an active registry row would otherwise be dropped with no
+    -- trace (there is no frozen NIRCam table to recover it from). Raising here
+    -- rolls the inserts back and records the release as failed (Codex on #599).
+    SELECT string_agg(ni.file_path, ', ' ORDER BY ni.file_path) INTO v_missing
+    FROM nircam_images ni
+    WHERE ni.deploy_status = 'published' AND ni.field = ANY (comp.fields)
+      AND NOT EXISTS (SELECT 1 FROM dr_members m WHERE m.tag = p_tag AND m.storage_key = ni.file_path);
+    IF v_missing IS NOT NULL THEN
+      RAISE EXCEPTION 'published mosaics without an active registry row (deploy them again, or leave the field out): %',
+        left(v_missing, 1500);
+    END IF;
 
     UPDATE dr_releases
        SET state = 'frozen',

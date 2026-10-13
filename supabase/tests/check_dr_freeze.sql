@@ -402,6 +402,22 @@ BEGIN
   IF (SELECT state FROM dr_releases WHERE tag = 'DR-zzz') <> 'frozen' THEN
     RAISE EXCEPTION 'dr_freeze_job on a frozen tag should leave it frozen';
   END IF;
+
+  -- a published mosaic without an active registry row fails the freeze
+  -- instead of being dropped silently (Codex on #599)
+  INSERT INTO nircam_images (field, tile, filter, pixel_scale, extension, epoch, file_path, deploy_status, deployment_id)
+  VALUES ('zzz_drf', 'main', 'f150w', '30mas', 'sci', '', 'data/products/nircam/zzz_drf/f150w/zzz_drf_f150w_sci.fits', 'published', 990101);
+  got := pg_temp.zzz_dr_as('authenticated', admin,
+    $q$SELECT (public.dr_enqueue_freeze('DR-zzz-mos', '["nircam/zzz_drf"]', NULL, true))->>'state'$q$);
+  IF got <> 'failed' OR (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-mos')
+       NOT LIKE 'published mosaics without an active registry row%zzz_drf_f150w_sci.fits%' THEN
+    RAISE EXCEPTION 'unregistered mosaic should fail the freeze: % / %', got, (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-mos');
+  END IF;
+  IF EXISTS (SELECT 1 FROM dr_members WHERE tag = 'DR-zzz-mos') THEN
+    RAISE EXCEPTION 'the failed freeze left members behind';
+  END IF;
+  DELETE FROM dr_releases WHERE tag = 'DR-zzz-mos';
+  DELETE FROM nircam_images WHERE file_path = 'data/products/nircam/zzz_drf/f150w/zzz_drf_f150w_sci.fits';
   RAISE NOTICE 'OK 3: idempotence + failure path';
 END $$;
 
