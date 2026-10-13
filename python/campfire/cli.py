@@ -1375,22 +1375,24 @@ def dr_freeze(tag, nirspec, fields, photometry, notes, inline, no_wait, poll, ti
         click.echo(f"✗ {e}")
         sys.exit(2)
     config, sb = _dr_client(local, what="`campfire dr freeze`")
+    # --json: stdout carries the JSON document alone; progress goes to stderr
+    say = (lambda m: click.echo(m, err=True)) if as_json else click.echo
     if local:
         inline = True
     try:
         summary = enqueue_freeze(sb, tag, components, notes=notes, inline=inline)
     except Exception as e:  # noqa: BLE001 - one line, not a traceback
         msg = getattr(e, "message", None) or str(e)
-        click.echo(f"✗ Could not start the freeze: {msg}")
+        say(f"✗ Could not start the freeze: {msg}")
         sys.exit(1)
-    click.echo(f"Freeze of {tag} ({', '.join(components)}): {summary.get('state')} "
-               f"[{summary.get('mode')}]")
+    say(f"Freeze of {tag} ({', '.join(components)}): {summary.get('state')} "
+        f"[{summary.get('mode')}]")
     row = summary
     if summary.get('state') == 'freezing' and not no_wait:
         try:
-            row = wait_for_freeze(sb, tag, poll_seconds=poll, timeout_seconds=timeout, echo=click.echo)
+            row = wait_for_freeze(sb, tag, poll_seconds=poll, timeout_seconds=timeout, echo=say)
         except TimeoutError as e:
-            click.echo(f"… {e}; `campfire dr status` shows it when it lands.")
+            say(f"… {e}; `campfire dr status` shows it when it lands.")
             sys.exit(3)
     if as_json:
         click.echo(_json.dumps(row, indent=2, sort_keys=True, default=str))

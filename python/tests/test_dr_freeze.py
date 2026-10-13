@@ -249,3 +249,17 @@ def test_cli_help_lists_verbs():
     res = CliRunner().invoke(main_cli.cli, ['dr', '--help'])
     assert res.exit_code == 0
     assert 'freeze' in res.output and 'purge' in res.output and 'status' in res.output
+
+
+def test_cli_freeze_json_stdout_is_pure_json(monkeypatch):
+    # Codex on #599: progress lines go to stderr so `--json | jq` works
+    c = _FakeClient(rpc_data={'dr_enqueue_freeze': {**FROZEN, 'mode': 'inline'}})
+    _patch(monkeypatch, c)
+    try:
+        runner = CliRunner(mix_stderr=False)
+    except TypeError:  # click >= 8.2 always separates the streams
+        runner = CliRunner()
+    res = runner.invoke(main_cli.cli, ['dr', 'freeze', '--tag', 'DR-t', '--nirspec', '--local', '--json'])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.stdout)['state'] == 'frozen'
+    assert 'Freeze of DR-t' in res.stderr

@@ -8984,6 +8984,16 @@ BEGIN
              max(p.signal_to_noise) AS max_snr, max(p.exposure_time) AS max_exposure_time
       FROM pub p WHERE p.obj_id IS NOT NULL GROUP BY p.obj_id
     ),
+    phz AS (
+      -- photo-z from the SELECTED catalogs only, with the live rule (the newest
+      -- cross-match, sync_photometry_to_objects); none selected -> NULL / false,
+      -- so dr_objects never advertises photometry dr_photometry does not carry
+      SELECT DISTINCT ON (ph.object_id) ph.object_id, ph.photo_z, ph.photo_z_err_lo, ph.photo_z_err_hi
+      FROM object_photometry ph
+      WHERE ph.object_id IS NOT NULL
+        AND (ph.field || '/' || ph.catalog_name) = ANY (comp.photometry)
+      ORDER BY ph.object_id, ph.updated_at DESC
+    ),
     objs AS MATERIALIZED (
       SELECT o.id, o.object_id, o.field, o.ra, o.dec,
              -- the frozen access scope IS the evidence: programs of the
@@ -8992,7 +9002,7 @@ BEGIN
              ev.programs AS programs, ev.programs AS evidence_programs,
              agg.observations, agg.gratings, agg.n_targets::int AS n_targets, agg.n_spectra::int AS n_spectra,
              agg.max_snr, agg.max_exposure_time,
-             o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi, o.has_photometry,
+             phz.photo_z, phz.photo_z_err_lo, phz.photo_z_err_hi, (phz.object_id IS NOT NULL) AS has_photometry,
              zsrc.id AS z_source_spectrum_id,
              -- the auto redshift of the published anchor spectrum (the live
              -- value may come from an excluded member)
@@ -9006,6 +9016,7 @@ BEGIN
       JOIN ev ON ev.obj_id = o.id
       JOIN agg ON agg.obj_id = o.id
       LEFT JOIN zsrc ON zsrc.obj_id = o.id
+      LEFT JOIN phz ON phz.object_id = o.id
     ),
     ins_spectra AS (
       INSERT INTO dr_spectra (tag, spectrum_id, id, program_slug, observation, grating, target_id,

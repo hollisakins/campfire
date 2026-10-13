@@ -134,6 +134,13 @@ WHERE s.fits_path IN ('/tmp/zzz_dr_pub_prism_spec.fits', '/tmp/zzz_dr_pub_g395m_
 INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z)
 SELECT o.id, 'zzz_drf', o.ra, o.dec, 'ZZZ CAT v1', o.object_id, '{"bands":{}}'::jsonb, 2.4
 FROM objects o WHERE o.object_id IN ('ZZZ-DR-MIX', 'ZZZ-DR-INACTIVE');
+-- a newer cross-match of MIX from a catalog the release does NOT select, and the
+-- denormalized live object rows pointing at it / at nothing frozen (Codex on #599)
+INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z, updated_at)
+SELECT o.id, 'zzz_drf', o.ra, o.dec, 'ZZZ CAT v2', o.object_id, '{"bands":{}}'::jsonb, 9.9, now() + interval '1 minute'
+FROM objects o WHERE o.object_id = 'ZZZ-DR-MIX';
+UPDATE objects SET photo_z = 9.9, has_photometry = true WHERE object_id = 'ZZZ-DR-MIX';
+UPDATE objects SET photo_z = 7.0, has_photometry = true WHERE object_id = 'ZZZ-DR-PUB';
 INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, size_bytes, content_type, product_type, status, field)
 VALUES ('osn', 'data', 'data/products/photometry/zzz_drf/pz/zzz_1.json', 'sha256:' || repeat('a1', 32), 50, 'application/json', 'photometry_pz', 'active', 'zzz_drf');
 
@@ -313,6 +320,14 @@ BEGIN
   SELECT count(*) INTO n FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1';
   IF n <> 1 OR (SELECT programs FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1') <> ARRAY['zzz_dr_priv', 'zzz_dr_pub'] THEN
     RAISE EXCEPTION 'photometry freeze wrong (n=%)', n;
+  END IF;
+  -- object photo-z fields follow the SELECTED catalog, not the live row
+  IF (SELECT (d.photo_z, d.has_photometry) FROM dr_objects d JOIN objects o ON o.id = d.object_id
+      WHERE d.tag = 'DR-zzz' AND o.object_id = 'ZZZ-DR-MIX') IS DISTINCT FROM (2.4::double precision, true)
+     OR (SELECT (d.photo_z, d.has_photometry) FROM dr_objects d JOIN objects o ON o.id = d.object_id
+         WHERE d.tag = 'DR-zzz' AND o.object_id = 'ZZZ-DR-PUB') IS DISTINCT FROM (NULL::double precision, false) THEN
+    RAISE EXCEPTION 'frozen photo-z fields wrong: %', (SELECT jsonb_agg(jsonb_build_object('o', o.object_id, 'z', d.photo_z, 'has', d.has_photometry))
+                                                        FROM dr_objects d JOIN objects o ON o.id = d.object_id WHERE d.tag = 'DR-zzz');
   END IF;
 
   -- members: 6 spectra x 5 products (zfit + lines via the key rule) + 2 mosaics
