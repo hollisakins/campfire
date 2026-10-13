@@ -139,8 +139,6 @@ def _row(key, body, *, product_type='nirspec_spec', source_root='live', source_k
         'source_key': key if source_key is None else source_key, 'source_root': source_root,
         'source_stored_size': len(body),
         'reuse_archive_key': None, 'reuse_stamped_hash': None, 'reuse_size_bytes': None,
-        # objects the fake store seeds "now" predate this freeze
-        'frozen_at': (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
         'registry': {'content_type': 'application/fits', 'instrument': 'nirspec',
                      'observation': 'abc_p1', 'deployment_id': 7, 'cfpipe_version': '1.2.0',
                      'retained_key': None},
@@ -294,29 +292,29 @@ def test_copy_member_copies_conditionally():
     body = b'{"x": 1}'
     s3 = _s3(**{JSON_KEY: body})
     o = B.process_member(_row(JSON_KEY, body, product_type='spectrum_json'), tag=TAG, s3=s3, bucket=BUCKET)
-    assert (o.state, o.action) == ('copied', 'copy')
+    assert (o.state, o.action) == ('copied', 'copy-verified')
     assert o.archive_key.startswith('archive/' + B.sha256_hex(body).split(':')[1] + '/')
     assert s3.body(BUCKET, o.archive_key) == body
-    copy = s3.ops('CopyObject')[-1][1]
-    assert copy.get('CopySourceIfMatch')
+    assert s3.ops('PutObject')[-1][1].get('IfNoneMatch') == '*'
     assert o.registry['size_bytes'] == len(body)
     # and a re-run heals
     again = B.process_member(_row(JSON_KEY, body, product_type='spectrum_json'), tag=TAG, s3=s3, bucket=BUCKET)
     assert (again.state, again.action) == ('copied', 'heal')
 
 
-def test_copy_member_rewritten_after_the_freeze_is_verified_by_hash():
-    # Codex on #601: an ETag read now says nothing about the frozen hash
+def test_live_copy_is_always_verified_by_hash():
+    # Codex on #601: neither an ETag nor a modification time proves the frozen
+    # hash -- `campfire push` writes an object before it registers its hash, so
+    # unregistered replacement bytes can predate the freeze
     body = b'{"x": 1}'
-    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-    row = _row(JSON_KEY, body, product_type='spectrum_json', frozen_at=past)
-    # same bytes rewritten after the freeze: verified, uploaded, not copied
+    row = _row(JSON_KEY, body, product_type='spectrum_json')
+    # the frozen bytes: verified, uploaded, not copied
     s3 = _s3(**{JSON_KEY: body})
     o = B.process_member(row, tag=TAG, s3=s3, bucket=BUCKET)
     assert (o.state, o.action) == ('copied', 'copy-verified')
     assert s3.body(BUCKET, o.archive_key) == body and not s3.ops('CopyObject')
     assert s3.ops('PutObject')[-1][1].get('IfNoneMatch') == '*'
-    # different bytes of the same length: refused, nothing archived
+    # replacement bytes of the same length (an unflushed push): refused, nothing archived
     s3 = _s3(**{JSON_KEY: b'{"x": 2}'})
     o = B.process_member(row, tag=TAG, s3=s3, bucket=BUCKET)
     assert (o.state, o.action) == ('failed', 'drift') and 'the release froze' in o.error
@@ -337,56 +335,19 @@ def test_copy_member_rewritten_after_the_freeze_is_verified_by_hash():
         assert o.state == 'failed' and 'the release froze' in o.error
     finally:
         B.VERIFY_LIMIT_BYTES = monkey_limit
-    # an unknown freeze time counts as changed (verified path)
-    o = B.process_member(dict(row, frozen_at=None), tag=TAG, s3=_s3(**{JSON_KEY: body}), bucket=BUCKET)
-    assert o.action == 'copy-verified'
-
-
-def test_clock_margin_is_measured_from_the_store_date():
-    # Codex on #601: size the window to the real skew, not a fixed 2 minutes
-    db_now = datetime(2026, 10, 13, 12, 0, 0, tzinfo=timezone.utc)
-
-    class Store:
-        def __init__(self, date):
-            self.date = date
-
-        def head_object(self, **kw):
-            hdrs = {'date': self.date} if self.date else {}
-            return {'ResponseMetadata': {'HTTPHeaders': hdrs}}
-    ticks = iter([0.0, 0.5])
-    m = B.measure_clock_margin(Store('Mon, 13 Oct 2026 12:00:03 GMT'), BUCKET, 'k', db_now.isoformat(),
-                               now=lambda: next(ticks))
-    assert m == timedelta(seconds=3 + 0.5 + 5)
-    assert B.measure_clock_margin(Store(None), BUCKET, 'k', db_now) is None
-    assert B.measure_clock_margin(Store('garbage'), BUCKET, 'k', db_now) is None
-    assert B.measure_clock_margin(Store('Mon, 13 Oct 2026 12:00:03 GMT'), BUCKET, 'k', None) is None
-
-
-def test_clock_margin_survives_latency_cancelling_a_lagging_store_clock():
-    # Codex on #601: the store lags the database by 10 s and the page fetch
-    # took 8 s; the raw difference reads 2 s, the true skew is 10 s
-    db_now = datetime(2026, 10, 13, 12, 0, 0, tzinfo=timezone.utc)
-
-    class Store:
-        def head_object(self, **kw):
-            return {'ResponseMetadata': {'HTTPHeaders': {'date': 'Mon, 13 Oct 2026 11:59:58 GMT'}}}
-    m = B.measure_clock_margin(Store(), BUCKET, 'k', db_now, started=0.0, now=lambda: 8.5)
-    assert m >= timedelta(seconds=10)
-    assert m == timedelta(seconds=2 + 8.5 + 5)
 
 
 MOSAIC_KEY = 'data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_full_sci.fits.gz'
 
 
-def test_rewritten_gzipped_mosaic_is_verified_on_its_logical_bytes():
+def test_gzipped_mosaic_is_verified_on_its_logical_bytes():
     # Codex on #601: the registry hashes the uncompressed FITS
     import gzip
     logical = _fits_bytes(2)
     stored = gzip.compress(logical)
     assert B._stored_compressed(MOSAIC_KEY) and not B._stored_compressed(JSON_KEY)
     assert B.logical_sha256(stored, compressed=True) == B.sha256_hex(logical)
-    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-    row = _row(MOSAIC_KEY, logical, product_type='nircam_mosaic', frozen_at=past,
+    row = _row(MOSAIC_KEY, logical, product_type='nircam_mosaic',
                source_stored_size=len(stored), component='nircam/cosmos', program_slug=None)
     s3 = _s3(**{MOSAIC_KEY: stored})
     o = B.process_member(row, tag=TAG, s3=s3, bucket=BUCKET)
@@ -438,38 +399,15 @@ def test_unknown_stored_size_of_a_gzipped_mosaic_is_not_drift(monkeypatch):
     row = _row(MOSAIC_KEY, _fits_bytes(2), product_type='nircam_mosaic', source_stored_size=None,
                component='nircam/cosmos', program_slug=None)
     o = B.process_member(row, tag=TAG, s3=_s3(**{MOSAIC_KEY: stored}), bucket=BUCKET)
-    assert (o.state, o.action) == ('copied', 'copy')
+    assert (o.state, o.action) == ('copied', 'copy-verified')
     monkeypatch.setattr(B, 'COPY_LIMIT_BYTES', len(stored) - 1)
     o = B.process_member(row, tag=TAG, s3=_s3(**{MOSAIC_KEY: stored}), bucket=BUCKET)
     assert o.state == 'failed' and '5 GB CopyObject limit' in o.error
 
 
-def test_large_object_uploaded_just_before_the_freeze_is_copied_with_a_measured_window():
-    frozen_at = datetime.now(timezone.utc) + timedelta(seconds=30)
-    head = {'LastModified': datetime.now(timezone.utc)}
-    # inside the conservative default window, outside a measured 8 s one
-    assert not B._unchanged_since_freeze(head, frozen_at.isoformat())
-    assert B._unchanged_since_freeze(head, frozen_at.isoformat(), timedelta(seconds=8))
-    body = b'{"x": 1}'
-    row = _row(JSON_KEY, body, product_type='spectrum_json', frozen_at=frozen_at.isoformat())
-    s3 = _s3(**{JSON_KEY: body})
-    o = B.process_member(row, tag=TAG, s3=s3, bucket=BUCKET, clock_margin=timedelta(seconds=8))
-    assert (o.state, o.action) == ('copied', 'copy') and s3.ops('CopyObject')
-
-
-def test_pass_falls_back_to_the_default_window_without_a_date_header():
-    body = b'{"x": 1}'
-    client, _ = _fake_db([_row(JSON_KEY, body, product_type='spectrum_json', db_now=datetime.now(timezone.utc).isoformat())])
-    logs = []
-    rep = B.run_byte_pass(client, _s3(**{JSON_KEY: body}), BUCKET, TAG, log=logs.append)
-    assert rep.by_state == {'copied': 1}
-    assert any('clock window' in l and '120 s' in l for l in logs)
-
-
 def test_copy_from_a_retained_copy_stays_server_side():
     body = b'{"x": 1}'
-    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-    row = _row(JSON_KEY, body, product_type='spectrum_json', frozen_at=past)
+    row = _row(JSON_KEY, body, product_type='spectrum_json')
     retained = 'archive/' + 'e' * 64 + '/elsewhere.json'      # a different key than the target
     s3 = _s3(**{retained: body})
     o = B.process_member(dict(row, source_key=retained, source_root='archive'), tag=TAG, s3=s3, bucket=BUCKET)

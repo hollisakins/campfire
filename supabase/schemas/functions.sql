@@ -9993,16 +9993,17 @@ RETURNS TABLE (
   size_bytes bigint, byte_state text,
   source_key text, source_root text, source_stored_size bigint,
   reuse_archive_key text, reuse_stamped_hash text, reuse_size_bytes bigint, reuse_candidates jsonb,
-  registry jsonb,
-  frozen_at timestamptz,
-  db_now timestamptz
+  registry jsonb
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
+DECLARE
+  v_frozen_at timestamptz;
 BEGIN
   PERFORM dr_require_admin();
-  IF NOT EXISTS (SELECT 1 FROM dr_releases r WHERE r.tag = p_tag) THEN
+  SELECT r.frozen_at INTO v_frozen_at FROM dr_releases r WHERE r.tag = p_tag;
+  IF NOT FOUND THEN
     RAISE EXCEPTION 'no release %', p_tag;
   END IF;
   RETURN QUERY
@@ -10041,14 +10042,7 @@ BEGIN
            'filter', COALESCE(live.filter, ret.filter, src.filter),
            'deployment_id', COALESCE(live.deployment_id, ret.deployment_id, src.deployment_id),
            'cfpipe_version', COALESCE(live.cfpipe_version, ret.cfpipe_version, src.cfpipe_version),
-           'retained_key', ret.storage_key),
-         -- the freeze's snapshot time: a live object last modified before it
-         -- still holds the frozen bytes; one modified since must be verified
-         -- by its hash before it is archived (Codex on #601)
-         (SELECT r.frozen_at FROM dr_releases r WHERE r.tag = p_tag),
-         -- the database clock, so the pass can measure its skew against the
-         -- object store's and size the window around frozen_at to it
-         clock_timestamp()
+           'retained_key', ret.storage_key)
   FROM page pg
   -- the registry row the freeze captured (its metadata survives a redeploy)
   LEFT JOIN storage_objects src ON src.id = pg.registry_id
@@ -10073,11 +10067,14 @@ BEGIN
   -- first one whose object still exists, so the first release wins the stamp
   -- deterministically even when two passes stamped concurrently, and a fresh
   -- stamp made after an earlier candidate went missing is still reachable
-  -- (Codex on #601)
+  -- (Codex on #601). Only releases frozen BEFORE this one, in the total order
+  -- (frozen_at, tag): a release never reuses a later release's stamp, even
+  -- when that release's pass ran first, so a stamp always names the earliest
+  -- release that holds it (Codex on #601).
   LEFT JOIN LATERAL (
     SELECT jsonb_agg(jsonb_build_object('archive_key', d.archive_key, 'stamped_hash', d.stamped_hash,
                                         'size_bytes', COALESCE(so.stored_size_bytes, so.size_bytes))
-                     ORDER BY r.frozen_at NULLS LAST, d.tag) AS cands
+                     ORDER BY r.frozen_at, d.tag) AS cands
     FROM dr_members d
     JOIN dr_releases r ON r.tag = d.tag
     JOIN storage_objects so ON so.root = 'archive' AND so.status = 'archived'
@@ -10085,6 +10082,7 @@ BEGIN
     WHERE pg.product_type IN ('nirspec_spec', 'nirspec_lines') AND pg.science_hash IS NOT NULL
       AND d.science_hash = pg.science_hash AND d.storage_key = pg.storage_key
       AND d.tag <> pg.tag AND d.byte_state = 'stamped'
+      AND (r.frozen_at, r.tag) < (v_frozen_at, p_tag)
   ) reuse ON true
   ORDER BY pg.storage_key;
 END;

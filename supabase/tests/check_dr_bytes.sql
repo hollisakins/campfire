@@ -129,7 +129,8 @@ BEGIN
          m.product_type, m.program_slug, m.storage_key, now()
   FROM dr_members m WHERE m.tag = 'DR-seed' AND m.storage_key = p.j3;
   -- an earlier release stamped s2 from the same science
-  INSERT INTO dr_releases (tag, state, components) VALUES ('DR-zzz-prev', 'frozen', '["nirspec"]');
+  INSERT INTO dr_releases (tag, state, components, frozen_at)
+  VALUES ('DR-zzz-prev', 'frozen', '["nirspec"]', (SELECT frozen_at FROM dr_releases WHERE tag = 'DR-seed') - interval '1 day');
   INSERT INTO dr_members (tag, storage_key, component, program_slug, product_type, spectrum_id, backend, bucket,
                           content_hash, science_hash, size_bytes, byte_state, archive_key, stamped_hash)
   SELECT 'DR-zzz-prev', m.storage_key, m.component, m.program_slug, m.product_type, m.spectrum_id, m.backend, m.bucket,
@@ -154,6 +155,24 @@ BEGIN
   END IF;
   SELECT * INTO r FROM dr_bytes_pending('DR-seed', NULL, 2000) b WHERE b.storage_key = p.s1;
   IF r.reuse_archive_key IS NOT NULL THEN RAISE EXCEPTION 'nothing to reuse for s1'; END IF;
+  -- a release frozen AFTER this one stamped s1 (its pass ran first): never
+  -- offered, so DR-seed stamps afresh under its own tag (Codex on #601)
+  INSERT INTO dr_releases (tag, state, components, frozen_at)
+  VALUES ('DR-zzz-later', 'frozen', '["nirspec"]', (SELECT frozen_at FROM dr_releases WHERE tag = 'DR-seed') + interval '1 day');
+  INSERT INTO dr_members (tag, storage_key, component, program_slug, product_type, spectrum_id, backend, bucket,
+                          content_hash, science_hash, size_bytes, byte_state, archive_key, stamped_hash)
+  SELECT 'DR-zzz-later', m.storage_key, m.component, m.program_slug, m.product_type, m.spectrum_id, m.backend, m.bucket,
+         m.content_hash, m.science_hash, m.size_bytes, 'stamped', 'archive/' || repeat('7', 64) || '/later.fits', 'sha256:' || repeat('7', 64)
+  FROM dr_members m WHERE m.tag = 'DR-seed' AND m.storage_key = p.s1;
+  INSERT INTO storage_objects (backend, bucket, storage_key, root, status, content_hash, science_hash, size_bytes,
+                               content_type, product_type, program_slug, archived_from_key, archived_at)
+  SELECT m.backend, m.bucket, 'archive/' || repeat('7', 64) || '/later.fits', 'archive', 'archived', 'sha256:' || repeat('7', 64),
+         m.science_hash, m.size_bytes, 'application/fits', m.product_type, m.program_slug, m.storage_key, now()
+  FROM dr_members m WHERE m.tag = 'DR-seed' AND m.storage_key = p.s1;
+  SELECT * INTO r FROM dr_bytes_pending('DR-seed', NULL, 2000) b WHERE b.storage_key = p.s1;
+  IF r.reuse_archive_key IS NOT NULL OR r.reuse_candidates <> '[]'::jsonb THEN
+    RAISE EXCEPTION 'a later release''s stamp must not be offered: %', to_jsonb(r);
+  END IF;
   RAISE NOTICE 'OK 1: pending (paging, prefix, live / retained / gone sources, cross-release reuse)';
 
   -- ------------------------------------------------------------------ 2.
