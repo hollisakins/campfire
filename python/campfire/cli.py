@@ -1578,27 +1578,12 @@ def dr_bytes(tag, obs, field, workers, limit, retry_failed, dry_run, status_only
 
     s3 = bucket = None
     if not dry_run:
-        # Members live on OSN: the [r2_osn] block (CAMPFIRE_S3_OSN_*), else a
-        # data block that itself points at OSN.
-        from campfire.deploy.backend import make_s3_client, resolve_backend
-        bcfg = None
-        errors = []
-        for purpose in ('osn', 'data'):
-            try:
-                cand = resolve_backend(config, purpose)
-            except Exception as e:  # noqa: BLE001
-                errors.append(f"{purpose}: {e}")
-                continue
-            if cand.backend == 'osn':
-                bcfg = cand
-                break
-            errors.append(f"{purpose}: resolves to {cand.backend}, not OSN")
-        if bcfg is None:
+        # Members live on OSN (the same bucket as the exports)
+        s3, bucket = _dr_osn_s3(config, max_pool_connections=max(workers, 10))
+        if s3 is None:
             say("✗ `campfire dr bytes` needs OSN credentials for the data bucket "
-                       "(CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml): " + '; '.join(errors))
+                "(CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml): " + bucket)
             sys.exit(2)
-        s3 = make_s3_client(bcfg, max_pool_connections=max(workers, 10))
-        bucket = bcfg.bucket
 
     scope = f" under {prefix}" if prefix else ""
     say(f"{'Planning' if dry_run else 'Archiving'} the member bytes of {tag}{scope} …")
