@@ -255,9 +255,36 @@ def test_remove_keeps_the_bucket_when_the_lease_is_lost_after_the_rows(monkeypat
         wiped.append(obs)
         return {}
     monkeypatch.setattr(rm, '_delete_r2_prefixes', fake_prefixes)
-    with pytest.raises(rm.RemovalLeaseLost, match='its rows were deleted; stopped before bucket prefix'):
+    with pytest.raises(rm.RemovalLeaseLost, match='its rows were deleted; bucket pages deleted: none; stopped before bucket prefix'):
         rm.remove_observation('obs1', {}, supabase_only=False, auto_approve=True, skip_rebuild=True)
     assert deleted == ['spectra batch 1', 'targets batch 1'] and not wiped
+
+
+def test_remove_rechecks_the_lease_before_every_bucket_page(monkeypatch):
+    # Codex on #602: one prefix can span many delete_objects pages
+    from campfire.deploy import tiles
+
+    class Paged:
+        def __init__(self):
+            self.deleted = []
+
+        def get_paginator(self, name):
+            pages = [{'Contents': [{'Key': 'k1'}]}, {'Contents': [{'Key': 'k2'}]}]
+            return type('P', (), {'paginate': lambda self, **kw: iter(pages)})()
+
+        def delete_objects(self, Bucket, Delete):
+            self.deleted.extend(o['Key'] for o in Delete['Objects'])
+    store = Paged()
+    beats = iter([True, False])
+    with pytest.raises(RuntimeError, match='lost'):
+        def guard(n):
+            if not next(beats):
+                raise RuntimeError('lease lost')
+        tiles.delete_r2_prefix(store, 'b', 'p/', before_page=guard)
+    assert store.deleted == ['k1']
+    # and without a callback it still deletes every page
+    store2 = Paged()
+    assert tiles.delete_r2_prefix(store2, 'b', 'p/') == 2 and store2.deleted == ['k1', 'k2']
 
 
 def test_remove_reports_a_claim_conflict(monkeypatch):

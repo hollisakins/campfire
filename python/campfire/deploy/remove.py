@@ -189,8 +189,9 @@ def _delete_r2_prefixes(config: dict, obs_name: str, check=lambda step: None) ->
     counts: dict[str, int] = {}
     for label, product_type in R2_REMOVE_PRODUCTS:
         full = f"{key_prefix(product_type, scope)}/"
-        check(f'prefix {full}')
-        counts[label] = delete_r2_prefix(client, bucket, full)
+        # before EVERY delete page, not once per prefix (Codex on #602)
+        counts[label] = delete_r2_prefix(client, bucket, full,
+                                         before_page=lambda n, p=full: check(f'prefix {p} page {n}'))
     return counts
 
 
@@ -372,10 +373,15 @@ def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool
         # before EVERY destructive request (Codex on #602): a lease lost
         # mid-way stops the delete at the next batch
         if not still_held():
-            what = ('nothing was deleted' if not done else
-                    f"deleted so far: {', '.join(done)}; stopped before {step}; the bucket prefixes were NOT deleted"
-                    if not step.startswith('prefix') else
-                    f"its rows were deleted; stopped before bucket {step} (another deploy may be uploading it)")
+            pages = [d for d in done if d.startswith('prefix')]
+            if not done:
+                what = 'nothing was deleted'
+            elif not step.startswith('prefix'):
+                what = (f"deleted so far: {', '.join(done)}; stopped before {step}; "
+                        f"the bucket prefixes were NOT deleted")
+            else:
+                what = (f"its rows were deleted; bucket pages deleted: {', '.join(pages) or 'none'}; "
+                        f"stopped before bucket {step} (another deploy may be uploading it)")
             raise RemovalLeaseLost(f"the deploy lease on {obs_name} was lost during the removal: {what}")
         done.append(step)
 
