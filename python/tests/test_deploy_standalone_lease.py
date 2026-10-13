@@ -70,6 +70,15 @@ def test_a_freeze_in_progress_refuses_cleanly(patched):
     assert exc.value.code == 1 and not ran
 
 
+def test_field_scope_lease_for_photometry(patched):
+    seen = {}
+    c, order = _client(lambda p: seen.update(p) or {'version': 2})
+    patched(c)
+    dcli._under_scope_lease({}, 'field', 'cosmos', False, lambda *a: order.append('write'), 'x')
+    assert seen['p_scope_type'] == 'field' and seen['p_scope_key'] == 'cosmos'
+    assert order == ['begin', 'write', 'claim']
+
+
 def test_dry_run_takes_no_lease(patched):
     c, order = _client({'version': 4})
     patched(c)

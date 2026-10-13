@@ -226,12 +226,17 @@ def _under_observation_lease(config: dict, obs_name: str, dry_run: bool, fn, *ar
     freeze can snapshot one of them half-way (Codex on #599). Claimed on
     success (the scope changed), released on any failure; dry runs skip it.
     """
+    return _under_scope_lease(config, 'observation', obs_name, dry_run, fn, *args, **kwargs)
+
+
+def _under_scope_lease(config: dict, scope_type: str, scope_key: str, dry_run: bool, fn, *args, **kwargs):
+    """`_under_observation_lease` for any deploy scope ('observation' / 'field')."""
     if dry_run:
         return fn(*args, **kwargs)
     from campfire.deploy.supabase import ScopeLease, get_supabase_client, get_user_id_from_token
 
     def run():
-        lease = ScopeLease(get_supabase_client(config), 'observation', obs_name,
+        lease = ScopeLease(get_supabase_client(config), scope_type, scope_key,
                            actor=get_user_id_from_token(config))
         lease.begin()
         try:
@@ -1057,7 +1062,11 @@ def photometry(ctx, config_path, field, photometry_config, dry_run, no_photoz,
     sb = get_supabase_client(config)
 
     print(f"\nDeploying photometry for field '{field}'...")
-    result = deploy_field_photometry(
+    # under the field's deploy lease: the catalog upsert / prune / supersede
+    # and the object photo-z sync are several requests, and a data-release
+    # freeze must never snapshot them half-way (Codex on #599)
+    result = _under_scope_lease(
+        config, 'field', field, dry_run, deploy_field_photometry,
         sb, field, phot_config_path, config,
         include_photoz=not no_photoz,
         dry_run=dry_run,

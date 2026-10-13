@@ -450,6 +450,23 @@ BEGIN
   DELETE FROM dr_releases WHERE tag = 'DR-zzz-mos';
   DELETE FROM nircam_images WHERE file_path = 'data/products/nircam/zzz_drf/f150w/zzz_drf_f150w_sci.fits';
 
+  -- a mosaic `campfire push --field` replaced ahead of its deploy (registry row
+  -- re-registered with no deployment) is not frozen under the published image
+  -- (Codex on #599)
+  UPDATE storage_objects SET deployment_id = NULL, content_hash = 'sha256:' || repeat('7', 64)
+   WHERE storage_key = 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_sci.fits' AND root = 'live';
+  got := pg_temp.zzz_dr_as('authenticated', admin,
+    $q$SELECT (public.dr_enqueue_freeze('DR-zzz-push', '["nircam/zzz_drf"]', NULL, true))->>'state'$q$);
+  IF got <> 'failed' OR (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-push')
+       NOT LIKE 'published mosaics without an active registry row of their deployment%zzz_drf_f444w_sci.fits%' THEN
+    RAISE EXCEPTION 'a pushed-but-unpublished mosaic should fail the freeze: % / %', got,
+      (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-push');
+  END IF;
+  UPDATE storage_objects SET deployment_id = 990101,
+         content_hash = 'sha256:' || md5(storage_key) || md5('f444w')
+   WHERE storage_key = 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_sci.fits' AND root = 'live';
+  DELETE FROM dr_releases WHERE tag = 'DR-zzz-push';
+
   -- likewise a published spectrum whose final FITS has no active registry row
   UPDATE storage_objects so SET status = 'revoked'
     FROM spectra s

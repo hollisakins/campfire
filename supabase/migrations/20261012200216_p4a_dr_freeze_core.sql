@@ -694,6 +694,11 @@ BEGIN
       JOIN storage_objects so ON so.storage_key = ni.file_path
       WHERE ni.deploy_status = 'published' AND ni.field = ANY (comp.fields)
         AND so.root = 'live' AND so.status = 'active' AND so.backend = 'osn' AND so.bucket = 'data'
+        -- the bytes of the PUBLISHED deployment: `campfire push --field` can
+        -- register a replacement mosaic (deployment_id NULL) before the deploy
+        -- that publishes it; that row must not be frozen under the old image
+        -- (the post-freeze check then fails the freeze; Codex on #599)
+        AND so.deployment_id IS NOT DISTINCT FROM ni.deployment_id
       -- (P(z) sidecars are not members: photometry_pz is a key-only product the
       -- layout cannot archive; the frozen dr_photometry rows carry the catalog
       -- values, the sidecars stay live-only -- plan amendment D-P4-5.)
@@ -715,7 +720,7 @@ BEGIN
     WHERE ni.deploy_status = 'published' AND ni.field = ANY (comp.fields)
       AND NOT EXISTS (SELECT 1 FROM dr_members m WHERE m.tag = p_tag AND m.storage_key = ni.file_path);
     IF v_missing IS NOT NULL THEN
-      RAISE EXCEPTION 'published mosaics without an active registry row (deploy them again, or leave the field out): %',
+      RAISE EXCEPTION 'published mosaics without an active registry row of their deployment (finish or redo the field deploy, or leave the field out): %',
         left(v_missing, 1500);
     END IF;
     -- Likewise every frozen spectrum needs its final FITS as a member (a
