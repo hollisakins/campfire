@@ -121,7 +121,12 @@ def _remove_env(monkeypatch, client):
     monkeypatch.setattr(rm, '_count_by_obs', lambda sb, t, o: 0)
     monkeypatch.setattr(rm, '_count_comments', lambda sb, ids: 0)
     monkeypatch.setattr(rm, '_is_inspected', lambda t: False)
-    monkeypatch.setattr(rm, '_delete_db_rows', lambda *a, **k: deleted.append(a))
+    def fake_delete(sb, obs, ids, check=lambda step: None):
+        # two batches, each guarded like the real helper
+        for step in ('spectra batch 1', 'targets batch 1'):
+            check(step)
+            deleted.append(step)
+    monkeypatch.setattr(rm, '_delete_db_rows', fake_delete)
     monkeypatch.setattr(rm, 'log_deploy_event', lambda *a, **k: None)
     monkeypatch.setattr(rm, 'refresh_filter_options', lambda sb: None)
     monkeypatch.setattr(rm, 'refresh_programs_overview', lambda sb: None)
@@ -231,18 +236,42 @@ def test_remove_stops_before_deleting_when_the_lease_is_lost(monkeypatch):
     assert not deleted
 
 
-def test_remove_keeps_the_bucket_when_the_lease_is_lost_after_the_rows(monkeypatch):
-    rm, deleted = _remove_env(monkeypatch, _lease_client([True, None]))
+def test_remove_stops_mid_batch_when_the_lease_is_lost(monkeypatch):
+    # Codex on #602: re-checked before EVERY batch, not once before the helper
+    rm, deleted = _remove_env(monkeypatch, _lease_client([True, False]))
     wiped = []
     monkeypatch.setattr(rm, '_delete_r2_prefixes', lambda *a, **k: wiped.append(a) or {})
-    with pytest.raises(rm.RemovalLeaseLost, match='bucket prefixes were NOT deleted'):
+    with pytest.raises(rm.RemovalLeaseLost, match='deleted so far: spectra batch 1; stopped before targets batch 1'):
         rm.remove_observation('obs1', {}, supabase_only=False, auto_approve=True, skip_rebuild=True)
-    assert deleted and not wiped
+    assert deleted == ['spectra batch 1'] and not wiped
+
+
+def test_remove_keeps_the_bucket_when_the_lease_is_lost_after_the_rows(monkeypatch):
+    rm, deleted = _remove_env(monkeypatch, _lease_client([True, True, None]))
+    wiped = []
+
+    def fake_prefixes(config, obs, check=lambda step: None):
+        check('prefix data/products/nirspec/obs1/')
+        wiped.append(obs)
+        return {}
+    monkeypatch.setattr(rm, '_delete_r2_prefixes', fake_prefixes)
+    with pytest.raises(rm.RemovalLeaseLost, match='its rows were deleted; stopped before bucket prefix'):
+        rm.remove_observation('obs1', {}, supabase_only=False, auto_approve=True, skip_rebuild=True)
+    assert deleted == ['spectra batch 1', 'targets batch 1'] and not wiped
 
 
 def test_remove_reports_a_claim_conflict(monkeypatch):
-    rm, deleted = _remove_env(monkeypatch, _lease_client([True], claim={'claimed': False, 'conflict': True}))
+    rm, deleted = _remove_env(monkeypatch, _lease_client([True, True], claim={'claimed': False, 'conflict': True}))
     with pytest.raises(rm.RemovalLeaseLost, match='another deploy took the lease'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert deleted
+
+
+def test_remove_reports_an_indeterminate_claim(monkeypatch):
+    # Codex on #602: claim_deploy_scope turns RPC errors into a nominal success
+    rm, deleted = _remove_env(monkeypatch, _lease_client(
+        [True, True], claim={'claimed': True, 'conflict': False, 'error': 'timeout'}))
+    with pytest.raises(rm.RemovalLeaseLost, match='final lease claim could not be confirmed'):
         rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
     assert deleted
 

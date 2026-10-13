@@ -106,8 +106,24 @@ BEGIN
   got := pg_temp.zzz_try($q$SELECT dr_publish('DR-seed')$q$);
   IF got NOT LIKE 'ERR: a deploy or removal is in progress%' THEN RAISE EXCEPTION 'publish under a live lease: %', got; END IF;
   DELETE FROM deploy_scope_state WHERE scope_key = 'zzz-lease-obs';
+  -- a STALE lease on one of the release's observations is invalidated by the
+  -- publish (version bumped, lease cleared), so its holder cannot resume;
+  -- a stale lease on an unrelated scope is left alone (Codex on #602)
+  INSERT INTO deploy_scope_state (scope_type, scope_key, version, in_progress_since, heartbeat_at, in_progress_host)
+  VALUES ('observation', obs, 7, now() - interval '2 days', now() - interval '2 days', 'zzz-host'),
+         ('observation', 'zzz-unrelated-obs', 7, now() - interval '2 days', now() - interval '2 days', 'zzz-host')
+  ON CONFLICT (scope_type, scope_key) DO UPDATE
+    SET version = 7, in_progress_since = now() - interval '2 days', heartbeat_at = now() - interval '2 days',
+        in_progress_host = 'zzz-host';
 
   got := pg_temp.zzz_as('authenticated', adm, $q$SELECT dr_publish('DR-seed', '10.5281/zenodo.123456', 'none known')->>'state'$q$);
+  IF (SELECT version FROM deploy_scope_state WHERE scope_type = 'observation' AND scope_key = obs) <> 8
+     OR (SELECT in_progress_since FROM deploy_scope_state WHERE scope_type = 'observation' AND scope_key = obs) IS NOT NULL THEN
+    RAISE EXCEPTION 'publish did not invalidate a stale lease on its observation';
+  END IF;
+  IF (SELECT version FROM deploy_scope_state WHERE scope_key = 'zzz-unrelated-obs') <> 7 THEN
+    RAISE EXCEPTION 'publish touched an unrelated stale lease';
+  END IF;
   IF got <> 'published' THEN RAISE EXCEPTION 'admin publish: %', got; END IF;
   IF NOT EXISTS (SELECT 1 FROM dr_releases WHERE tag = 'DR-seed' AND state = 'published' AND doi = '10.5281/zenodo.123456'
                  AND known_issues = 'none known' AND published_by = adm AND published_at IS NOT NULL) THEN

@@ -145,32 +145,40 @@ def _inspection_summary(row: dict) -> str:
 # Delete helpers
 # ---------------------------------------------------------------------------
 
-def _delete_db_rows(sb: Client, obs_name: str, target_ids: list[str]) -> None:
+def _delete_db_rows(sb: Client, obs_name: str, target_ids: list[str], check=lambda step: None) -> None:
     """Delete child rows, then targets; null latest_deployment_id.
 
     Order matters: spectra have a plain FK (no CASCADE) on targets.target_id,
     shutters/slit_regions have plain FKs on observations.name. Targets have
     CASCADE from comments.target_id and flag_audit_log.target_id, which
     take care of attached inspection artifacts automatically.
+
+    *check(step)* runs before every request and raises to stop the delete
+    (the removal's lease re-check, Codex on #602).
     """
     for i in range(0, len(target_ids), BATCH_SIZE):
         batch = target_ids[i:i + BATCH_SIZE]
+        check(f'spectra batch {i // BATCH_SIZE + 1}')
         sb.table('spectra').delete().in_('target_id', batch).execute()
 
+    check('shutters')
     sb.table('shutters').delete().eq('observation', obs_name).execute()
+    check('slit regions')
     sb.table('slit_regions').delete().eq('observation', obs_name).execute()
 
     for i in range(0, len(target_ids), BATCH_SIZE):
         batch = target_ids[i:i + BATCH_SIZE]
+        check(f'targets batch {i // BATCH_SIZE + 1}')
         sb.table('targets').delete().in_('target_id', batch).execute()
 
+    check('the observation update')
     (sb.table('observations')
      .update({'latest_deployment_id': None})
      .eq('name', obs_name)
      .execute())
 
 
-def _delete_r2_prefixes(config: dict, obs_name: str) -> dict[str, int]:
+def _delete_r2_prefixes(config: dict, obs_name: str, check=lambda step: None) -> dict[str, int]:
     from campfire.deploy.backend import resolve_backend
     from campfire.deploy.r2 import get_r2_client
     from campfire.deploy.tiles import delete_r2_prefix
@@ -181,6 +189,7 @@ def _delete_r2_prefixes(config: dict, obs_name: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     for label, product_type in R2_REMOVE_PRODUCTS:
         full = f"{key_prefix(product_type, scope)}/"
+        check(f'prefix {full}')
         counts[label] = delete_r2_prefix(client, bucket, full)
     return counts
 
@@ -248,6 +257,14 @@ def remove_observation(
                 raise RemovalLeaseLost(
                     f"another deploy took the lease on {obs_name} while it was being removed; "
                     f"re-check the observation (its rows or bytes may have been re-deployed)")
+            if result.get('error') or not result.get('claimed'):
+                # indeterminate (claim_deploy_scope turns RPC errors into a
+                # nominal success): the version may not be bumped and the lease
+                # may stay live until it goes stale (Codex on #602)
+                raise RemovalLeaseLost(
+                    f"{obs_name} was removed, but the final lease claim could not be confirmed "
+                    f"({result.get('error') or 'not claimed'}); check `campfire dr status` / the deploy "
+                    f"lease before deploying it again")
     finally:
         if lease is not None and lease.leased:
             lease.release()
@@ -349,20 +366,27 @@ def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool
             print("Aborted.")
             return False
 
-    if not still_held():
-        raise RemovalLeaseLost(f"the deploy lease on {obs_name} was lost before the delete; nothing was deleted")
+    done: list[str] = []
+
+    def check(step: str) -> None:
+        # before EVERY destructive request (Codex on #602): a lease lost
+        # mid-way stops the delete at the next batch
+        if not still_held():
+            what = ('nothing was deleted' if not done else
+                    f"deleted so far: {', '.join(done)}; stopped before {step}; the bucket prefixes were NOT deleted"
+                    if not step.startswith('prefix') else
+                    f"its rows were deleted; stopped before bucket {step} (another deploy may be uploading it)")
+            raise RemovalLeaseLost(f"the deploy lease on {obs_name} was lost during the removal: {what}")
+        done.append(step)
+
     print(f"\nDeleting DB rows...")
-    _delete_db_rows(sb, obs_name, target_ids)
+    _delete_db_rows(sb, obs_name, target_ids, check=check)
     print(f"  Done.")
 
     n_r2_deleted = 0
     if not supabase_only:
-        if not still_held():
-            raise RemovalLeaseLost(
-                f"the deploy lease on {obs_name} was lost after its rows were deleted; the bucket prefixes "
-                f"were NOT deleted (another deploy may be uploading them)")
         print(f"\nDeleting R2 prefixes...")
-        counts = _delete_r2_prefixes(config, obs_name)
+        counts = _delete_r2_prefixes(config, obs_name, check=check)
         for prefix, n in counts.items():
             print(f"  {prefix}/{obs_name}/: {n} object(s)")
         n_r2_deleted = sum(counts.values())

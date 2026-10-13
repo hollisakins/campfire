@@ -179,6 +179,18 @@ BEGIN
                 AND COALESCE(d.heartbeat_at, d.in_progress_since) >= now() - deploy_lease_ttl()) THEN
     RAISE EXCEPTION 'a deploy or removal is in progress (live deploy lease); publish % when it has finished', p_tag;
   END IF;
+  -- A STALE lease on a scope this release covers belongs to a process that
+  -- stopped heartbeating and could resume: bump its version (the ownership
+  -- token heartbeat / claim check) and clear it, so a resumed removal fails its
+  -- next lease check instead of deleting what is now published (Codex on #602).
+  UPDATE deploy_scope_state d
+     SET version = d.version + 1, in_progress_since = NULL, in_progress_by = NULL,
+         in_progress_host = NULL, heartbeat_at = NULL, updated_at = now()
+   WHERE d.in_progress_since IS NOT NULL
+     AND ((d.scope_type = 'observation'
+           AND d.scope_key IN (SELECT DISTINCT s.observation FROM dr_spectra s WHERE s.tag = p_tag))
+       OR (d.scope_type = 'field'
+           AND d.scope_key IN (SELECT DISTINCT m.field FROM dr_members m WHERE m.tag = p_tag AND m.field IS NOT NULL)));
   IF r.state <> 'withdrawn' THEN
     v_state := dr_derive_state(p_tag);
     IF v_state IS DISTINCT FROM 'ready' THEN
