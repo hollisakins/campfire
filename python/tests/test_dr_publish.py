@@ -1,0 +1,220 @@
+"""Data releases P4d: publish / withdraw / diff / removal references, and the
+`deploy remove` hook. The database side is supabase/tests/check_dr_publish.sql."""
+import json
+
+import pytest
+from click.testing import CliRunner
+
+import campfire.cli as main_cli
+from campfire import dr
+from tests.fakes import FakePostgrest
+
+TAG = 'DR2026.0-rehearsal'
+ROW = {'tag': TAG, 'state': 'published', 'counts': {'spectra': 3}, 'published_at': '2026-10-13T12:00:00+00:00',
+       'doi': '10.5281/zenodo.1'}
+DIFF = {'tag': TAG, 'state': 'ready', 'frozen_at': '2026-10-13T10:00:00+00:00',
+        'counts': {'object_renamed': 1, 'spectrum_new': 2, 'some_future_kind': 1},
+        'samples': {'object_renamed': [{'object_id': 7, 'name': 'J1', 'frozen': 'J1', 'live': 'J1-b'}],
+                    'spectrum_new': [{'spectrum_id': 'obs_1_prism'}, {'spectrum_id': 'obs_2_prism'}],
+                    'some_future_kind': [{'spectrum_id': 'x'}]}}
+REFS = [{'tag': TAG, 'state': 'published', 'n_spectra': 4, 'n_members': 16, 'n_unarchived': 0, 'blocks': True},
+        {'tag': 'DR-old', 'state': 'withdrawn', 'n_spectra': 4, 'n_members': 16, 'n_unarchived': 0, 'blocks': False}]
+
+
+def _client(**handlers):
+    return FakePostgrest(rpc_handlers=handlers)
+
+
+def test_rpc_wrappers_pass_parameters():
+    seen = {}
+
+    def grab(name, value):
+        def h(params):
+            seen[name] = params
+            return value
+        return h
+    c = _client(dr_publish=grab('pub', ROW), dr_withdraw=grab('wd', {**ROW, 'state': 'withdrawn'}),
+                dr_diff=grab('diff', DIFF), dr_observation_references=grab('refs', REFS))
+    assert dr.publish_release(c, TAG, doi='10.5281/zenodo.1')['state'] == 'published'
+    assert seen['pub'] == {'p_tag': TAG, 'p_doi': '10.5281/zenodo.1', 'p_known_issues': None}
+    assert dr.withdraw_release(c, TAG, 'bad')['state'] == 'withdrawn'
+    assert seen['wd'] == {'p_tag': TAG, 'p_reason': 'bad'}
+    assert dr.fetch_diff(c, TAG, limit=3)['counts']['object_renamed'] == 1
+    assert seen['diff'] == {'p_tag': TAG, 'p_limit': 3}
+    assert [r['tag'] for r in dr.removal_blockers(c, 'obs')] == [TAG]
+    assert seen['refs'] == {'p_observation': 'obs'}
+
+
+def test_unexpected_payload_raises():
+    with pytest.raises(RuntimeError, match='unexpected payload'):
+        dr.publish_release(_client(dr_publish=None), TAG)
+
+
+def test_format_diff_and_references():
+    text = dr.format_diff(DIFF, samples=1)
+    assert 'objects renamed' in text and 'J1 (#7): J1 → J1-b' in text
+    assert 'obs_1_prism' in text and 'obs_2_prism' not in text      # capped at 1 sample
+    assert 'some_future_kind' in text                              # unknown kinds still shown
+    assert dr.format_diff({**DIFF, 'counts': {}}).endswith('no differences')
+    refs = dr.format_references('obs', REFS)
+    assert 'BLOCKS removal' in refs and 'ok to remove' in refs
+    assert dr.format_references('obs', []) == 'obs: in no data release'
+
+
+def _patch(monkeypatch, client):
+    import campfire.deploy.cli as dcli
+    import campfire.deploy.config as cfg
+    import campfire.deploy.supabase as sb
+    monkeypatch.setattr(cfg, 'load_config', lambda *a, **k: {'supabase': {'_auth_mode': 'local'}})
+    monkeypatch.setattr(sb, 'get_supabase_client', lambda config: client)
+    monkeypatch.setattr(dcli, '_gate_admin', lambda config, **k: None)
+
+
+def test_cli_publish_withdraw(monkeypatch):
+    c = _client(dr_publish=ROW, dr_withdraw={**ROW, 'state': 'withdrawn', 'withdrawn_at': '2026-10-13T13:00:00+00:00'})
+    _patch(monkeypatch, c)
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'publish', TAG, '--doi', '10.5281/zenodo.1', '--yes'])
+    assert res.exit_code == 0, res.output
+    assert f'{TAG}: published' in res.output
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'withdraw', TAG, '--reason', 'calibration', '--yes'])
+    assert res.exit_code == 0 and 'withdrawn at' in res.output
+    # the prompt defaults to no
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'publish', TAG], input='\n')
+    assert res.exit_code == 1 and 'Aborted' in res.output
+    assert c.rpc_names().count('dr_publish') == 1
+
+
+def test_cli_publish_refused_is_one_line(monkeypatch):
+    def refuse(params):
+        raise RuntimeError('release DR is copying (publish needs ready)')
+    _patch(monkeypatch, _client(dr_publish=refuse))
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'publish', TAG, '--yes'])
+    assert res.exit_code == 1 and 'publish needs ready' in res.output
+
+
+def test_cli_diff_and_refs(monkeypatch):
+    _patch(monkeypatch, _client(dr_diff=DIFF, dr_observation_references=REFS))
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'diff', TAG, 'live', '--limit', '2'])
+    assert res.exit_code == 0 and 'objects renamed' in res.output
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'diff', TAG, '--json'])
+    assert json.loads(res.output)['counts']['spectrum_new'] == 2
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'refs', '--obs', 'obs'])
+    assert res.exit_code == 1 and 'BLOCKS removal' in res.output
+    _patch(monkeypatch, _client(dr_observation_references=[]))
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'refs', '--obs', 'obs'])
+    assert res.exit_code == 0 and 'in no data release' in res.output
+
+
+# ---------------------------------------------------------------------------
+# deploy remove consults the releases
+# ---------------------------------------------------------------------------
+
+def _remove_env(monkeypatch, client):
+    import campfire.deploy.remove as rm
+    deleted = []
+    monkeypatch.setattr(rm, 'get_supabase_client', lambda cfg: client)
+    monkeypatch.setattr(rm, 'get_user_id_from_token', lambda cfg: 'user-1')
+    monkeypatch.setattr(rm, '_fetch_observation',
+                        lambda sb, o: {'name': o, 'field': 'f', 'program_slug': 'p', 'latest_deployment_id': 1})
+    monkeypatch.setattr(rm, '_fetch_targets', lambda sb, o: [{'target_id': 't1', 'id': 1}])
+    monkeypatch.setattr(rm, '_count_spectra', lambda sb, ids: 3)
+    monkeypatch.setattr(rm, '_count_by_obs', lambda sb, t, o: 0)
+    monkeypatch.setattr(rm, '_count_comments', lambda sb, ids: 0)
+    monkeypatch.setattr(rm, '_is_inspected', lambda t: False)
+    monkeypatch.setattr(rm, '_delete_db_rows', lambda *a, **k: deleted.append(a))
+    monkeypatch.setattr(rm, 'log_deploy_event', lambda *a, **k: None)
+    monkeypatch.setattr(rm, 'refresh_filter_options', lambda sb: None)
+    monkeypatch.setattr(rm, 'refresh_programs_overview', lambda sb: None)
+    monkeypatch.setattr(rm, 'refresh_observations_overview', lambda sb: None)
+    return rm, deleted
+
+
+def test_remove_refuses_while_a_release_blocks(monkeypatch, capsys):
+    rm, deleted = _remove_env(monkeypatch, _client(dr_observation_references=REFS))
+    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    out = capsys.readouterr().out
+    assert 'REFUSED' in out and 'BLOCKS removal' in out and 'dr withdraw' in out
+    assert not deleted
+
+
+def test_remove_fails_closed_when_the_check_cannot_run(monkeypatch, capsys):
+    def boom(params):
+        raise RuntimeError('Could not find the function public.dr_observation_references')
+    rm, deleted = _remove_env(monkeypatch, _client(dr_observation_references=boom))
+    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert 'could not check the data releases' in capsys.readouterr().out
+    assert not deleted
+
+
+def test_remove_proceeds_when_nothing_blocks(monkeypatch):
+    refs = [{**REFS[1]}]
+    rm, deleted = _remove_env(monkeypatch, _client(dr_observation_references=refs))
+    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert deleted
+
+
+# Codex on #602: the check runs under the observation's deploy lease
+
+def _ordered_client(refs, *, begin=None):
+    order = []
+
+    def rec(name, value):
+        def h(params):
+            order.append(name)
+            return value(params) if callable(value) else value
+        return h
+    c = _client(begin_deploy_scope=rec('begin', begin or {'version': 3}),
+                dr_observation_references=rec('refs', refs),
+                claim_deploy_scope=rec('claim', True),
+                release_deploy_scope=rec('release', True),
+                heartbeat_deploy_scope=rec('heartbeat', True))
+    return c, order
+
+
+def test_remove_takes_the_lease_before_checking_and_claims_after(monkeypatch):
+    c, order = _ordered_client([{**REFS[1]}])
+    rm, deleted = _remove_env(monkeypatch, c)
+    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert deleted
+    assert order[:2] == ['begin', 'refs'] and order[-1] == 'claim' and 'release' not in order
+
+
+def test_remove_releases_the_lease_when_refused(monkeypatch):
+    c, order = _ordered_client(REFS)
+    rm, deleted = _remove_env(monkeypatch, c)
+    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert not deleted
+    assert order == ['begin', 'refs', 'release']
+
+
+def test_remove_refused_while_a_freeze_or_deploy_holds_the_scope(monkeypatch, capsys):
+    class Busy(Exception):
+        code = 'CF409'
+        message = 'deploy_scope_busy: a data-release freeze is running (DR-x)'
+
+    def busy(params):
+        raise Busy()
+    c, order = _ordered_client([], begin=busy)
+    rm, deleted = _remove_env(monkeypatch, c)
+    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    out = capsys.readouterr().out
+    assert 'REFUSED' in out and 'freeze is running' in out
+    assert not deleted and order == ['begin']
+
+
+def test_remove_refused_without_a_lease(monkeypatch, capsys):
+    def broken(params):
+        raise RuntimeError('network down')
+    c, order = _ordered_client([], begin=broken)
+    rm, deleted = _remove_env(monkeypatch, c)
+    monkeypatch.setattr('campfire.deploy.supabase.get_deploy_scope_version', lambda *a, **k: 0)
+    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert 'could not take the deploy lease' in capsys.readouterr().out
+    assert not deleted and 'refs' not in order
+
+
+def test_remove_dry_run_checks_without_leasing(monkeypatch):
+    c, order = _ordered_client([{**REFS[1]}])
+    rm, deleted = _remove_env(monkeypatch, c)
+    rm.remove_observation('obs1', {}, dry_run=True, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert not deleted and order == ['refs']

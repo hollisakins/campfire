@@ -20,6 +20,8 @@ from supabase import Client
 
 from campfire_layout import Scope, key_prefix
 from campfire.deploy.supabase import (
+    DeployScopeBusy,
+    ScopeLease,
     deploy_event_metadata,
     get_supabase_client,
     get_user_id_from_token,
@@ -204,7 +206,65 @@ def remove_observation(
         print(f"Observation '{obs_name}' not found. Nothing to do.")
         return
 
+    # Data releases (P4d): a published release keeps its observations live,
+    # and an unpublished one needs the live bytes until its byte pass has
+    # archived them. The check runs UNDER the observation's deploy lease, held
+    # until the deletes are done: begin_deploy_scope refuses while a freeze
+    # runs, a live lease makes a freeze and dr_publish refuse, and both sides
+    # take the same lock -- so no release can start depending on this
+    # observation between the check and the deletes (Codex on #602). Fails
+    # closed: without the lease or the check, nothing is deleted. A dry run
+    # checks without leasing.
+    lease = None
+    if not dry_run:
+        lease = ScopeLease(sb, 'observation', obs_name, actor=get_user_id_from_token(config))
+        try:
+            lease.begin()
+        except DeployScopeBusy as e:
+            print(f"\n  REFUSED: {e}")
+            if e.holder:
+                print("  " + e.describe().replace('\n', '\n  '))
+            return
+        if not lease.leased:
+            print(f"\n  REFUSED: could not take the deploy lease on {obs_name}; "
+                  f"a removal never runs without it.")
+            return
+    try:
+        removed = _remove_checked(sb, obs, obs_name, config, dry_run=dry_run, force=force,
+                                  supabase_only=supabase_only, auto_approve=auto_approve,
+                                  skip_rebuild=skip_rebuild)
+        if lease is not None and removed:
+            lease.claim()     # the data changed: bump the scope version
+    finally:
+        if lease is not None and lease.leased:
+            lease.release()
+
+
+def _release_blockers_refuse(sb, obs_name: str) -> bool:
+    """True (after printing why) when a data release forbids removing *obs_name*."""
+    from campfire.dr import format_references, observation_references
+    try:
+        refs = observation_references(sb, obs_name)
+    except Exception as e:  # noqa: BLE001 - a missing RPC or an error both refuse
+        print(f"\n  REFUSED: could not check the data releases that reference {obs_name} "
+              f"({getattr(e, 'message', None) or e}).")
+        return True
+    if any(r.get('blocks') for r in refs):
+        print()
+        print("  REFUSED: " + format_references(obs_name, refs).replace('\n', '\n  '))
+        print("  A published release is withdrawn with `campfire dr withdraw`; an unpublished one "
+              "finishes `campfire dr bytes` or is purged with `campfire dr purge`.")
+        return True
+    return False
+
+
+def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool, force: bool,
+                    supabase_only: bool, auto_approve: bool, skip_rebuild: bool) -> bool:
+    """The removal proper (the caller holds the lease). True once rows were deleted."""
     field = obs['field']
+    if _release_blockers_refuse(sb, obs_name):
+        return False
+
     targets = _fetch_targets(sb, obs_name)
     target_ids = [t['target_id'] for t in targets]
     target_db_ids = [t['id'] for t in targets if t.get('id') is not None]
@@ -241,15 +301,15 @@ def remove_observation(
         if len(inspected) > 5:
             print(f"    ... and {len(inspected) - 5} more")
         print(f"  Pass --force to proceed anyway.")
-        return
+        return False
 
     if not targets and not n_shutters and not n_slits:
         print("\nNo data to remove.")
-        return
+        return False
 
     if dry_run:
         print("\nDry run — no changes made.")
-        return
+        return False
 
     if not auto_approve:
         summary = (
@@ -269,7 +329,7 @@ def remove_observation(
         response = input(prompt)
         if response.lower() != 'y':
             print("Aborted.")
-            return
+            return False
 
     print(f"\nDeleting DB rows...")
     _delete_db_rows(sb, obs_name, target_ids)
@@ -309,3 +369,4 @@ def remove_observation(
     refresh_observations_overview(sb)
 
     print(f"\nRemoved observation '{obs_name}'.")
+    return True

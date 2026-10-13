@@ -1634,6 +1634,116 @@ def dr_archive(tag, obs, field, workers, limit, retry_failed, dry_run, status_on
         sys.exit(1)
 
 
+@dr_group.command(name="publish")
+@click.argument("tag")
+@click.option("--doi", default=None, metavar="DOI", help="DOI of the release, e.g. 10.5281/zenodo.123456")
+@click.option("--known-issues", default=None, help="Known-issues text shown with the release")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
+@click.option("--json", "as_json", is_flag=True, help="Print the release row as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
+def dr_publish(tag, doi, known_issues, yes, as_json, local):
+    """Publish a release (P4d): ready -> published.
+
+    The release must be `ready` (every export file built, every member
+    archived; re-derived on the server), or `withdrawn` to publish it again.
+    Publishing makes the frozen rows visible to every reader within their
+    programs. Admin only.
+    """
+    import json as _json
+
+    from .dr import format_release, publish_release
+
+    config, sb = _dr_client(local, what="`campfire dr publish`")
+    if not yes and not click.confirm(f"Publish {tag} to every reader of its programs?", default=False):
+        click.echo("Aborted.")
+        sys.exit(1)
+    try:
+        row = publish_release(sb, tag, doi=doi, known_issues=known_issues)
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"✗ Could not publish {tag}: {getattr(e, 'message', None) or e}", err=as_json)
+        sys.exit(1)
+    click.echo(_json.dumps(row, indent=2, sort_keys=True, default=str) if as_json else format_release(row))
+
+
+@dr_group.command(name="withdraw")
+@click.argument("tag")
+@click.option("--reason", required=True, help="Why (appended to the release's known issues)")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
+@click.option("--json", "as_json", is_flag=True, help="Print the release row as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
+def dr_withdraw(tag, reason, yes, as_json, local):
+    """Withdraw a published release (P4d): hidden from non-admins, kept intact.
+
+    Rows and archive objects stay (a published release is never deleted);
+    `dr publish TAG` makes it visible again. Admin only.
+    """
+    import json as _json
+
+    from .dr import format_release, withdraw_release
+
+    config, sb = _dr_client(local, what="`campfire dr withdraw`")
+    if not yes and not click.confirm(f"Withdraw {tag}? Readers lose access until it is published again.", default=False):
+        click.echo("Aborted.")
+        sys.exit(1)
+    try:
+        row = withdraw_release(sb, tag, reason)
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"✗ Could not withdraw {tag}: {getattr(e, 'message', None) or e}", err=as_json)
+        sys.exit(1)
+    click.echo(_json.dumps(row, indent=2, sort_keys=True, default=str) if as_json else format_release(row))
+
+
+@dr_group.command(name="diff")
+@click.argument("tag")
+@click.argument("against", required=False, default="live", type=click.Choice(["live"]))
+@click.option("--limit", type=int, default=20, show_default=True, help="Samples per kind")
+@click.option("--json", "as_json", is_flag=True, help="Print the diff as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
+def dr_diff(tag, against, limit, as_json, local):
+    """What changed in live since TAG was frozen (P4d).
+
+    Spectra whose science changed, left the published set or are new;
+    objects renamed, re-redshifted, re-graded or deactivated; review
+    contradictions raised or cleared since the freeze. Admin only.
+    """
+    import json as _json
+
+    from .dr import fetch_diff, format_diff
+
+    config, sb = _dr_client(local, what="`campfire dr diff`")
+    try:
+        diff = fetch_diff(sb, tag, limit=limit)
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"✗ Could not diff {tag}: {getattr(e, 'message', None) or e}", err=as_json)
+        sys.exit(1)
+    click.echo(_json.dumps(diff, indent=2, sort_keys=True, default=str) if as_json else format_diff(diff))
+
+
+@dr_group.command(name="refs")
+@click.option("--obs", required=True, metavar="OBS", help="Observation name")
+@click.option("--json", "as_json", is_flag=True, help="Print the references as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
+def dr_refs(obs, as_json, local):
+    """Which releases froze spectra of OBS, and whether they block a removal (P4d).
+
+    `deploy remove` runs the same check and refuses while any release
+    blocks; check it by hand before the manual grating-delete procedure.
+    """
+    import json as _json
+
+    from .dr import format_references, observation_references
+
+    config, sb = _dr_client(local, what="`campfire dr refs`")
+    try:
+        refs = observation_references(sb, obs)
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"✗ Could not read references: {getattr(e, 'message', None) or e}", err=as_json)
+        sys.exit(1)
+    click.echo(_json.dumps(refs, indent=2, sort_keys=True, default=str) if as_json else format_references(obs, refs))
+    if any(r.get('blocks') for r in refs):
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Archive (admin)
 # ---------------------------------------------------------------------------
