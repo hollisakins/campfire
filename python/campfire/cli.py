@@ -1404,20 +1404,52 @@ def dr_freeze(tag, nirspec, fields, photometry, notes, inline, no_wait, poll, ti
         sys.exit(0)
 
 
+def _dr_osn_s3(config, *, max_pool_connections: int = 10):
+    """(s3 client, bucket) for the OSN data bucket the data releases live on,
+    or (None, reason). The [r2_osn] block (CAMPFIRE_S3_OSN_*), else a data
+    block that itself points at OSN."""
+    from campfire.deploy.backend import make_s3_client, resolve_backend
+    errors = []
+    for purpose in ('osn', 'data'):
+        try:
+            cand = resolve_backend(config, purpose)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{purpose}: {e}")
+            continue
+        if cand.backend == 'osn':
+            return make_s3_client(cand, max_pool_connections=max_pool_connections), cand.bucket
+        errors.append(f"{purpose}: resolves to {cand.backend}, not OSN")
+    return None, '; '.join(errors)
+
+
 @dr_group.command(name="purge")
 @click.argument("tag")
 @click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
+@click.option("--keep-exports", is_flag=True,
+              help="Delete the rows only, leaving the export files under dr/TAG/exports/ (no OSN credentials needed)")
 @click.option("--local", is_flag=True, help="Against local Supabase")
-def dr_purge(tag, yes, local):
+def dr_purge(tag, yes, keep_exports, local):
     """Delete an UNPUBLISHED release and all its frozen rows.
 
     The clean-up after a rehearsal freeze or a failed attempt. Published
-    (or withdrawn) tags are never purged; archive bytes already copied for
-    the tag stay (dedup by hash; retention is `campfire archive gc`).
+    (or withdrawn) tags are never purged. The release's export files
+    (dr/TAG/exports/ on the OSN data bucket) are deleted with it, which needs
+    OSN credentials (CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml);
+    --keep-exports skips that. Archive bytes already copied for the tag stay
+    (dedup by hash; retention is `campfire archive gc`).
     """
     from .dr import purge_release
 
     config, sb = _dr_client(local, what="`campfire dr purge`")
+    s3 = bucket = None
+    if not keep_exports:
+        # resolved BEFORE the rows go, so a missing credential never strands
+        # the files of a purged tag (nothing would name them afterwards)
+        s3, bucket = _dr_osn_s3(config)
+        if s3 is None:
+            click.echo(f"✗ Deleting the export files of {tag} needs OSN credentials ({bucket}); "
+                       f"pass --keep-exports to purge the rows only.")
+            sys.exit(2)
     if not yes:
         click.confirm(f"Delete release {tag} and every frozen row under it?", abort=True)
     try:
@@ -1429,6 +1461,15 @@ def dr_purge(tag, yes, local):
     deleted = result.get('deleted') or {}
     parts = [f"{int(v):,} {k}" for k, v in deleted.items() if v]
     click.echo(f"Purged {tag} (was {result.get('state_before')}): " + (' · '.join(parts) or 'no rows'))
+    if s3 is not None:
+        # only after the purge succeeded: a refused purge (published tag) keeps its files
+        from campfire.deploy.tiles import delete_r2_prefix
+        try:
+            n = delete_r2_prefix(s3, bucket, f"dr/{tag}/exports/")
+        except Exception as e:  # noqa: BLE001
+            click.echo(f"✗ The rows are gone, but deleting dr/{tag}/exports/ failed: {e}")
+            sys.exit(1)
+        click.echo(f"  deleted {n:,} export file(s) under dr/{tag}/exports/")
 
 
 @dr_group.command(name="export")

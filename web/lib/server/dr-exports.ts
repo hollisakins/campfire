@@ -2,7 +2,7 @@ import 'server-only';
 
 import { createHash } from 'crypto';
 import { createGzip } from 'zlib';
-import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3';
 import type { S3Client } from '@aws-sdk/client-s3';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
@@ -187,6 +187,8 @@ export interface ExportRunResult {
   remaining: number;
   /** True when the time budget ran out before every file was built. */
   incomplete: boolean;
+  /** Superseded export objects deleted by the end-of-run sweep (only once every file is ready). */
+  swept: number;
   duration_ms: number;
 }
 
@@ -248,15 +250,20 @@ export async function runExportBudget(
     const claimInfo = (claimed as { claim?: string; base_key?: string } | null) ?? {};
     const claim = claimInfo.claim ?? null;
     const baseKey = claimInfo.base_key ?? key;
+    if (!claim) {
+      skipped.push({ stream: entry.stream, partition: entry.partition, reason: 'the building mark returned no claim' });
+      continue;
+    }
     try {
       const { body, rows } = await buildPartitionFile(supabase, tag, entry.stream, entry.partition);
       const sha256 = `sha256:${createHash('sha256').update(body).digest('hex')}`;
-      // Content-addressed upload: a run that lost its claim writes its stale
-      // bytes to its own key and never overwrites the published file; the
-      // ready mark records this same key server-side (dr_export_content_key).
+      // A per-build key (content hash + claim): a run that lost its claim
+      // writes its stale bytes to its own key and never overwrites the
+      // published file; the ready mark records this same key server-side
+      // (dr_export_content_key).
       await s3.send(
         new PutObjectCommand({
-          Bucket: bucket, Key: contentExportKey(baseKey, sha256), Body: body, ContentType: 'application/gzip',
+          Bucket: bucket, Key: contentExportKey(baseKey, sha256, claim), Body: body, ContentType: 'application/gzip',
         }),
       );
       const { data: marked, error: markError } = await supabase.rpc('dr_export_mark', {
@@ -268,13 +275,18 @@ export async function runExportBudget(
       built.push({ stream: entry.stream, partition: entry.partition, rows, size: body.length });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      failed.push({ stream: entry.stream, partition: entry.partition, error: message });
       // With the claim: if this run lost it (taken over, invalidated), the
-      // server leaves the newer state alone.
-      await supabase.rpc('dr_export_mark', {
+      // server leaves the newer state alone and says so -- then the file is
+      // another run's, not a failure of this one (Codex on #600).
+      const { data: failMark } = await supabase.rpc('dr_export_mark', {
         p_tag: tag, p_stream: entry.stream, p_partition: entry.partition, p_state: 'failed',
         p_error: message, p_claim: claim,
       });
+      if ((failMark as { stale_claim?: boolean } | null)?.stale_claim) {
+        skipped.push({ stream: entry.stream, partition: entry.partition, reason: `claim lost while building: ${message}` });
+      } else {
+        failed.push({ stream: entry.stream, partition: entry.partition, error: message });
+      }
     }
     slowestMs = Math.max(slowestMs, now() - tp);
   }
@@ -288,15 +300,59 @@ export async function runExportBudget(
   const s = (status ?? {}) as { state?: string; remaining?: number };
   if (s.state) state = s.state;
   const remaining = Number(s.remaining ?? todo.length - built.length);
-  return { tag, state, built, failed, skipped, remaining, incomplete, duration_ms: now() - t0 };
+  // Once every file is ready, delete the export objects the ledger no longer
+  // names (a partition rebuilt after a byte-pass invalidation, a build whose
+  // claim was lost after its upload; Codex on #600).
+  const swept = remaining === 0 ? await sweepSupersededExports(supabase, s3, bucket, tag, now) : 0;
+  return { tag, state, built, failed, skipped, remaining, incomplete, swept, duration_ms: now() - t0 };
+}
+
+/**
+ * Age an unreferenced export object must reach before the sweep deletes it.
+ * A builder marks its file ready seconds after uploading it, inside one route
+ * call (maxDuration under 5 minutes), so an object this old that the ledger
+ * does not name will never be named: its build was superseded or lost its
+ * claim, and a claim marks ready at most once (keys are per build).
+ */
+export const EXPORT_SWEEP_MIN_AGE_MS = 30 * 60_000;
+
+/** Delete the objects under `dr/<tag>/exports/` that no ledger row names and that are old enough. */
+export async function sweepSupersededExports(
+  supabase: SupabaseClient,
+  s3: S3Client,
+  bucket: string,
+  tag: string,
+  now: () => number = Date.now,
+): Promise<number> {
+  const prefix = `dr/${tag}/exports/`;
+  const keys: { key: string; modified: number }[] = [];
+  let token: string | undefined;
+  do {
+    const page = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken: token }));
+    for (const o of page.Contents ?? []) {
+      if (o.Key) keys.push({ key: o.Key, modified: o.LastModified ? o.LastModified.getTime() : now() });
+    }
+    token = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (token);
+  // the ledger AFTER the listing: a file marked ready meanwhile is named here
+  const named = new Set((await fetchLedger(supabase, tag)).map((r) => r.storage_key).filter(Boolean));
+  let n = 0;
+  for (const { key, modified } of keys) {
+    if (named.has(key) || now() - modified < EXPORT_SWEEP_MIN_AGE_MS) continue;
+    await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    n += 1;
+  }
+  return n;
 }
 
 /**
  * The key a built export file is stored under: the partition's base key with
- * the first 16 hex of the file's sha256 before `.jsonl.gz`. Must equal
- * `dr_export_content_key` in the database (which records it at the ready mark).
+ * the first 16 hex of the file's sha256 and the first 8 hex of the build's
+ * claim token before `.jsonl.gz`. Must equal `dr_export_content_key` in the
+ * database (which records it at the ready mark).
  */
-export function contentExportKey(baseKey: string, sha256: string): string {
+export function contentExportKey(baseKey: string, sha256: string, claim: string): string {
   const stem = baseKey.endsWith('.jsonl.gz') ? baseKey.slice(0, -'.jsonl.gz'.length) : baseKey;
-  return `${stem}.${sha256.slice('sha256:'.length, 'sha256:'.length + 16)}.jsonl.gz`;
+  const sha16 = sha256.slice('sha256:'.length, 'sha256:'.length + 16);
+  return `${stem}.${sha16}.${claim.replace(/-/g, '').slice(0, 8)}.jsonl.gz`;
 }

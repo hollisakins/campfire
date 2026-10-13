@@ -13,8 +13,41 @@ import {
   partitionVisible,
   releaseVisible,
   runExportBudget,
+  EXPORT_SWEEP_MIN_AGE_MS,
   type DrExportLedgerRow,
 } from './dr-exports';
+
+/** An in-memory S3: Put / ListObjectsV2 / DeleteObject, keyed by command class. */
+function fakeS3(seed: Record<string, number> = {}) {
+  const store = new Map<string, { Body?: Buffer; modified: number }>();
+  for (const [k, modified] of Object.entries(seed)) store.set(k, { modified });
+  const puts: { Key: string; Body: Buffer }[] = [];
+  const deletes: string[] = [];
+  const s3 = {
+    send: async (cmd: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      const input = cmd.input as { Key: string; Body: Buffer; Prefix: string };
+      switch (cmd.constructor.name) {
+        case 'PutObjectCommand':
+          puts.push({ Key: input.Key, Body: input.Body });
+          store.set(input.Key, { Body: input.Body, modified: Date.now() });
+          return {};
+        case 'ListObjectsV2Command':
+          return {
+            Contents: [...store.entries()].filter(([k]) => k.startsWith(input.Prefix))
+              .map(([Key, v]) => ({ Key, LastModified: new Date(v.modified) })),
+            IsTruncated: false,
+          };
+        case 'DeleteObjectCommand':
+          deletes.push(input.Key);
+          store.delete(input.Key);
+          return {};
+        default:
+          throw new Error(`unexpected command ${cmd.constructor.name}`);
+      }
+    },
+  };
+  return { s3: s3 as never, send: s3.send, puts, deletes, store };
+}
 
 describe('visibility', () => {
   const open = openComponentPartitions(['nirspec', 'nircam/cosmos', 'photometry/cosmos/COSMOS v1.2']);
@@ -58,6 +91,8 @@ function fakeSupabase(opts: {
   busy?: string[];
   /** the other run finishes the busy files while this one runs */
   busyFinishes?: boolean;
+  /** stream/partition keys whose claim is taken over while this run builds them */
+  loseClaim?: string[];
 }) {
   const calls: { name: string; params: Record<string, unknown> }[] = [];
   const ledger = opts.ledger;
@@ -81,10 +116,16 @@ function fakeSupabase(opts: {
           if (row) row.state = 'building';
           return { data: { state: 'exporting', claim: `claim-${key}`, base_key: row?.storage_key }, error: null };
         }
+        if (opts.loseClaim?.includes(key) && params.p_claim) {
+          // another run took the file over and finished it meanwhile
+          if (row) row.state = 'ready';
+          if (params.p_state === 'failed') return { data: { stale_claim: true, state: 'exported' }, error: null };
+          return { data: null, error: { message: `export file ${key} is no longer claimed by this run` } };
+        }
         if (row) {
           row.state = params.p_state as DrExportLedgerRow['state'];
           if (params.p_state === 'ready') {
-            row.storage_key = contentExportKey(row.storage_key as string, params.p_sha256 as string);
+            row.storage_key = contentExportKey(row.storage_key as string, params.p_sha256 as string, params.p_claim as string);
             row.sha256 = params.p_sha256 as string;
             row.size_bytes = params.p_size_bytes as number;
             row.rows = params.p_rows as number;
@@ -163,23 +204,22 @@ describe('runExportBudget', () => {
   };
 
   it('builds every non-ready partition, uploads, marks ready, reaches exported', async () => {
-    const puts: { Key: string; Body: Buffer }[] = [];
-    const s3 = { send: async (cmd: { input: { Key: string; Body: Buffer } }) => { puts.push(cmd.input); } };
+    const { s3, puts } = fakeS3();
     const { client, ledger, calls } = fakeSupabase({
       pages,
       ledger: [entry('objects', 'pub'), entry('spectra', 'pub', 'ready'), entry('members', 'nircam/f', 'failed')],
     });
     ledger[1].sha256 = 'sha256:old';
-    const res = await runExportBudget(client, s3 as never, 'bucket', 'DR-t', 60_000);
+    const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 60_000);
     expect(res.built.map((b) => `${b.stream}/${b.partition}`)).toEqual(['objects/pub', 'members/nircam/f']);
     expect(res.failed).toEqual([]);
     expect(res.remaining).toBe(0);
     expect(res.incomplete).toBe(false);
     expect(res.state).toBe('exported');
-    // content-addressed keys, and the ledger records the same ones (Codex on #600)
+    // per-build keys (content hash + claim), and the ledger records the same ones (Codex on #600)
     expect(puts.map((p) => p.Key)).toEqual([
-      expect.stringMatching(/^dr\/DR-t\/exports\/objects\/pub\.[0-9a-f]{16}\.jsonl\.gz$/),
-      expect.stringMatching(/^dr\/DR-t\/exports\/members\/nircam\/f\.[0-9a-f]{16}\.jsonl\.gz$/),
+      expect.stringMatching(/^dr\/DR-t\/exports\/objects\/pub\.[0-9a-f]{16}\.[^.]{8}\.jsonl\.gz$/),
+      expect.stringMatching(/^dr\/DR-t\/exports\/members\/nircam\/f\.[0-9a-f]{16}\.[^.]{8}\.jsonl\.gz$/),
     ]);
     expect(ledger.find((r) => r.stream === 'objects')!.storage_key).toBe(puts[0].Key);
     // the already-ready partition was neither rebuilt nor re-marked
@@ -193,11 +233,11 @@ describe('runExportBudget', () => {
   });
 
   it('a failing partition is marked failed and the run continues', async () => {
-    const s3 = { send: async () => {} };
+    const { s3 } = fakeS3();
     const { client, ledger } = fakeSupabase({
       pages, ledger: [entry('objects', 'pub'), entry('spectra', 'pub')], failRows: 'objects/pub',
     });
-    const res = await runExportBudget(client, s3 as never, 'bucket', 'DR-t', 60_000);
+    const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 60_000);
     expect(res.failed).toEqual([{ stream: 'objects', partition: 'pub', error: expect.stringContaining('boom') }]);
     expect(res.built.map((b) => b.stream)).toEqual(['spectra']);
     expect(res.remaining).toBe(1);
@@ -207,11 +247,11 @@ describe('runExportBudget', () => {
   });
 
   it('stops at the budget and reports incomplete', async () => {
-    const s3 = { send: async () => {} };
+    const { s3 } = fakeS3();
     const { client } = fakeSupabase({ pages, ledger: [entry('objects', 'pub'), entry('spectra', 'pub')] });
     let t = 0;
     const now = () => (t += 1000);
-    const res = await runExportBudget(client, s3 as never, 'bucket', 'DR-t', 1500, now);
+    const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 1500, now);
     expect(res.built).toHaveLength(1);
     expect(res.incomplete).toBe(true);
     expect(res.remaining).toBe(1);
@@ -219,25 +259,68 @@ describe('runExportBudget', () => {
 
   it('content key format matches dr_export_content_key', () => {
     const sha = `sha256:${'0123456789abcdef'.repeat(4)}`;
-    expect(contentExportKey('dr/T/exports/spectra/pub.jsonl.gz', sha)).toBe('dr/T/exports/spectra/pub.0123456789abcdef.jsonl.gz');
-    expect(contentExportKey('dr/T/exports/members/nircam_f-1a2b3c4d.jsonl.gz', sha))
-      .toBe('dr/T/exports/members/nircam_f-1a2b3c4d.0123456789abcdef.jsonl.gz');
+    const claim = 'a1b2c3d4-e5f6-4711-8899-aabbccddeeff';
+    expect(contentExportKey('dr/T/exports/spectra/pub.jsonl.gz', sha, claim))
+      .toBe('dr/T/exports/spectra/pub.0123456789abcdef.a1b2c3d4.jsonl.gz');
+    expect(contentExportKey('dr/T/exports/members/nircam_f-1a2b3c4d.jsonl.gz', sha, claim))
+      .toBe('dr/T/exports/members/nircam_f-1a2b3c4d.0123456789abcdef.a1b2c3d4.jsonl.gz');
   });
 
-  it('a stale builder uploads to its own key, never the published one (Codex on #600)', async () => {
-    // two builds of the same partition with different bytes land on different keys
+  it('every build has its own key, never the published one (Codex on #600)', async () => {
+    // different bytes, or the same bytes under another claim, land on different keys
     const sha1 = `sha256:${'a'.repeat(64)}`;
     const sha2 = `sha256:${'b'.repeat(64)}`;
     const base = 'dr/DR-t/exports/members/pub.jsonl.gz';
-    expect(contentExportKey(base, sha1)).not.toBe(contentExportKey(base, sha2));
+    const c1 = '11111111-0000-4000-8000-000000000000';
+    const c2 = '22222222-0000-4000-8000-000000000000';
+    expect(contentExportKey(base, sha1, c1)).not.toBe(contentExportKey(base, sha2, c1));
+    expect(contentExportKey(base, sha1, c1)).not.toBe(contentExportKey(base, sha1, c2));
+  });
+
+  it('a lost claim is skipped, not failed, when another run finished the file (Codex on #600)', async () => {
+    const { s3 } = fakeS3();
+    const { client } = fakeSupabase({ pages, loseClaim: ['objects/pub'], ledger: [entry('objects', 'pub')] });
+    const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 60_000);
+    expect(res.failed).toEqual([]);
+    expect(res.skipped).toEqual([
+      { stream: 'objects', partition: 'pub', reason: expect.stringContaining('claim lost while building') },
+    ]);
+    expect(res.remaining).toBe(0);
+  });
+
+  it('once every file is ready, old objects the ledger does not name are swept (Codex on #600)', async () => {
+    const old = Date.now() - EXPORT_SWEEP_MIN_AGE_MS - 60_000;
+    const { s3, deletes, store } = fakeS3({
+      'dr/DR-t/exports/objects/pub.aaaaaaaaaaaaaaaa.11111111.jsonl.gz': old,    // superseded build
+      'dr/DR-t/exports/objects/pub.bbbbbbbbbbbbbbbb.22222222.jsonl.gz': Date.now(), // too young: may be in flight
+      'dr/DR-u/exports/objects/pub.cccccccccccccccc.33333333.jsonl.gz': old,    // another release
+    });
+    const { client, ledger } = fakeSupabase({ pages, ledger: [entry('objects', 'pub')] });
+    const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 60_000);
+    expect(res.remaining).toBe(0);
+    expect(res.swept).toBe(1);
+    expect(deletes).toEqual(['dr/DR-t/exports/objects/pub.aaaaaaaaaaaaaaaa.11111111.jsonl.gz']);
+    // the file the ledger names stays, as do the young and the foreign ones
+    expect(store.has(ledger[0].storage_key as string)).toBe(true);
+    expect(store.size).toBe(3);
+  });
+
+  it('nothing is swept while files remain', async () => {
+    const old = Date.now() - EXPORT_SWEEP_MIN_AGE_MS - 60_000;
+    const { s3, deletes } = fakeS3({ 'dr/DR-t/exports/objects/x.aaaaaaaaaaaaaaaa.11111111.jsonl.gz': old });
+    const { client } = fakeSupabase({ pages, failRows: 'objects/pub', ledger: [entry('objects', 'pub')] });
+    const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 60_000);
+    expect(res.remaining).toBe(1);
+    expect(res.swept).toBe(0);
+    expect(deletes).toEqual([]);
   });
 
   it('remaining is recounted after a concurrent run finished a skipped file (Codex on #600)', async () => {
-    const s3 = { send: async () => {} };
+    const { s3 } = fakeS3();
     const { client } = fakeSupabase({
       pages, busy: ['objects/pub'], busyFinishes: true, ledger: [entry('objects', 'pub')],
     });
-    const res = await runExportBudget(client, s3 as never, 'bucket', 'DR-t', 60_000);
+    const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 60_000);
     expect(res.skipped).toHaveLength(1);
     expect(res.remaining).toBe(0);
     // the state is re-read too, not this run's stale `exporting` (Codex on #600)
@@ -245,14 +328,14 @@ describe('runExportBudget', () => {
   });
 
   it('skips a file another run holds and passes its claim on ready / failed (Codex on #600)', async () => {
-    const s3 = { send: async () => {} };
+    const { s3 } = fakeS3();
     const { client, ledger, calls } = fakeSupabase({
       pages,
       failRows: 'members/nircam/f',
       busy: ['objects/pub'],
       ledger: [entry('objects', 'pub'), entry('spectra', 'pub'), entry('members', 'nircam/f')],
     });
-    const res = await runExportBudget(client, s3 as never, 'bucket', 'DR-t', 60_000);
+    const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 60_000);
     expect(res.skipped).toEqual([
       { stream: 'objects', partition: 'pub', reason: expect.stringContaining('being built by another run') },
     ]);
@@ -271,14 +354,16 @@ describe('runExportBudget', () => {
     // each partition's upload takes 100 s: after the first, 180 s of a 280 s
     // budget are left, less than twice the slowest partition -> stop
     let t = 0;
-    const s3 = { send: async () => { t += 100_000; } };
+    const slow = fakeS3();
+    const s3 = { send: async (cmd: never) => { t += 100_000; return slow.send(cmd); } } as never;
     const { client } = fakeSupabase({ pages, ledger: [entry('objects', 'pub'), entry('spectra', 'pub')] });
-    const res = await runExportBudget(client, s3 as never, 'bucket', 'DR-t', 280_000, () => t);
+    const res = await runExportBudget(client, s3, 'bucket', 'DR-t', 280_000, () => t);
     expect(res.built).toHaveLength(1);
     expect(res.incomplete).toBe(true);
     // fast partitions all fit
     t = 0;
-    const fast = { send: async () => { t += 1_000; } };
+    const quick = fakeS3();
+    const fast = { send: async (cmd: never) => { t += 1_000; return quick.send(cmd); } };
     const { client: c2 } = fakeSupabase({ pages, ledger: [entry('objects', 'pub'), entry('spectra', 'pub')] });
     const res2 = await runExportBudget(c2, fast as never, 'bucket', 'DR-t', 280_000, () => t);
     expect(res2.built).toHaveLength(2);

@@ -9,14 +9,18 @@ does not know. Design: `docs/design-data-releases.md` §4.3, plan §6 P4b.
 ## Files
 
 ```
-dr/<tag>/exports/<stream>/<partition>.<sha16>.jsonl.gz
+dr/<tag>/exports/<stream>/<partition>.<sha16>.<claim8>.jsonl.gz
 ```
 
-`<sha16>` is the first 16 hex digits of the file's sha256: built files are
-content-addressed, so a rebuild never overwrites the file a reader was handed,
-and an export run that lost its build claim can only write its own key. The
-ledger records the key of the ready file; readers use the url they are given
-and never construct keys.
+`<sha16>` is the first 16 hex digits of the file's sha256 and `<claim8>` the
+first 8 hex digits of the build's claim token: every build has its own key, so a
+rebuild never overwrites the file a reader was handed, and an export run that
+lost its build claim can only write its own key. The ledger records the key of
+the ready file; readers use the url they are given and never construct keys.
+Keys the ledger no longer names (a partition rebuilt after a byte-pass
+invalidation, a build that lost its claim after uploading) are deleted by the
+export run that finds every file ready, once they are 30 minutes old; `campfire
+dr purge` deletes the whole `dr/<tag>/exports/` prefix.
 
 on the private data bucket (OSN). One file per (stream, partition); each line is
 one JSON object; the file is gzip bytes (content type `application/gzip`, not

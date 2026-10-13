@@ -9453,21 +9453,26 @@ REVOKE ALL ON FUNCTION public.dr_export_key(text, text, text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_export_key(text, text, text) TO authenticated, service_role;
 
 -- The key a BUILT file is stored under: the partition's base key with the
--- first 16 hex of the file's sha256 before `.jsonl.gz`
--- (dr/<tag>/exports/<stream>/<partition>.<sha16>.jsonl.gz). Content-addressed,
--- so a builder that lost its claim uploads its stale bytes to its own key and
--- can never overwrite the file the ledger publishes (Codex on #600).
--- contentExportKey in web/lib/server/dr-exports.ts computes the same string.
-CREATE OR REPLACE FUNCTION public.dr_export_content_key(p_base text, p_sha256 text)
+-- first 16 hex of the file's sha256 and the first 8 hex of the build's claim
+-- token before `.jsonl.gz`
+-- (dr/<tag>/exports/<stream>/<partition>.<sha16>.<claim8>.jsonl.gz). Unique per
+-- build, so a builder that lost its claim uploads its stale bytes to its own
+-- key and can never overwrite the file the ledger publishes (Codex on #600),
+-- and a key nothing references can never become referenced later (a claim
+-- marks ready at most once), which is what lets the export sweep delete
+-- superseded files safely. contentExportKey in web/lib/server/dr-exports.ts
+-- computes the same string.
+CREATE OR REPLACE FUNCTION public.dr_export_content_key(p_base text, p_sha256 text, p_claim uuid)
 RETURNS text
 LANGUAGE sql IMMUTABLE
 AS $$
   SELECT left(p_base, length(p_base) - length('.jsonl.gz')) || '.'
-         || substr(p_sha256, length('sha256:') + 1, 16) || '.jsonl.gz';
+         || substr(p_sha256, length('sha256:') + 1, 16) || '.'
+         || left(replace(p_claim::text, '-', ''), 8) || '.jsonl.gz';
 $$;
 
-REVOKE ALL ON FUNCTION public.dr_export_content_key(text, text) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.dr_export_content_key(text, text) TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.dr_export_content_key(text, text, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_content_key(text, text, uuid) TO authenticated, service_role;
 
 
 CREATE OR REPLACE FUNCTION public.dr_export_partitions(p_tag text)
@@ -9837,9 +9842,11 @@ BEGIN
     END IF;
     UPDATE dr_exports
        SET state = p_state,
-           -- a ready file lives under its content-addressed key
+           -- a ready file lives under its build's key (content hash + claim);
+           -- a ready mark always follows this row's building claim
            storage_key = CASE WHEN p_state = 'ready'
-                              THEN dr_export_content_key(dr_export_key(p_tag, p_stream, p_partition), p_sha256)
+                              THEN dr_export_content_key(dr_export_key(p_tag, p_stream, p_partition), p_sha256,
+                                                         COALESCE(p_claim, e.claim_token))
                               ELSE storage_key END,
            sha256 = CASE WHEN p_state = 'ready' THEN p_sha256 ELSE NULL END,
            size_bytes = CASE WHEN p_state = 'ready' THEN p_size_bytes ELSE NULL END,
@@ -10047,7 +10054,7 @@ REVOKE ALL ON FUNCTION public.dr_export_begin(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_derive_state(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_invalidate(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_key(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.dr_export_content_key(p_base text, p_sha256 text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_content_key(p_base text, p_sha256 text, p_claim uuid) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_status(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_mark(p_tag text, p_stream text, p_partition text, p_state text, p_sha256 text, p_size_bytes bigint, p_rows integer, p_error text, p_claim uuid) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_partitions(p_tag text) FROM PUBLIC, anon;

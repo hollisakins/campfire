@@ -106,17 +106,19 @@ REVOKE ALL ON FUNCTION "public"."dr_export_begin"(text) FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.dr_export_content_key (
   p_base   text,
-  p_sha256 text
+  p_sha256 text,
+  p_claim  uuid
 )
   RETURNS text
   LANGUAGE sql
   IMMUTABLE
   AS $function$
   SELECT left(p_base, length(p_base) - length('.jsonl.gz')) || '.'
-         || substr(p_sha256, length('sha256:') + 1, 16) || '.jsonl.gz';
+         || substr(p_sha256, length('sha256:') + 1, 16) || '.'
+         || left(replace(p_claim::text, '-', ''), 8) || '.jsonl.gz';
 $function$;
 
-REVOKE ALL ON FUNCTION "public"."dr_export_content_key"(text, text) FROM PUBLIC, "anon";
+REVOKE ALL ON FUNCTION "public"."dr_export_content_key"(text, text, uuid) FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.dr_export_invalidate (
   p_tag       text,
@@ -251,9 +253,11 @@ BEGIN
     END IF;
     UPDATE dr_exports
        SET state = p_state,
-           -- a ready file lives under its content-addressed key
+           -- a ready file lives under its build's key (content hash + claim);
+           -- a ready mark always follows this row's building claim
            storage_key = CASE WHEN p_state = 'ready'
-                              THEN dr_export_content_key(dr_export_key(p_tag, p_stream, p_partition), p_sha256)
+                              THEN dr_export_content_key(dr_export_key(p_tag, p_stream, p_partition), p_sha256,
+                                                         COALESCE(p_claim, e.claim_token))
                               ELSE storage_key END,
            sha256 = CASE WHEN p_state = 'ready' THEN p_sha256 ELSE NULL END,
            size_bytes = CASE WHEN p_state = 'ready' THEN p_size_bytes ELSE NULL END,
@@ -520,13 +524,13 @@ GRANT EXECUTE ON FUNCTION "public"."dr_export_begin"(text) TO "postgres";
 
 GRANT EXECUTE ON FUNCTION "public"."dr_export_begin"(text) TO "service_role";
 
-GRANT EXECUTE ON FUNCTION "public"."dr_export_content_key"(text, text) TO "authenticated";
+GRANT EXECUTE ON FUNCTION "public"."dr_export_content_key"(text, text, uuid) TO "authenticated";
 
-REVOKE ALL ON FUNCTION "public"."dr_export_content_key"(text, text) FROM "postgres";
+REVOKE ALL ON FUNCTION "public"."dr_export_content_key"(text, text, uuid) FROM "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."dr_export_content_key"(text, text) TO "postgres";
+GRANT EXECUTE ON FUNCTION "public"."dr_export_content_key"(text, text, uuid) TO "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."dr_export_content_key"(text, text) TO "service_role";
+GRANT EXECUTE ON FUNCTION "public"."dr_export_content_key"(text, text, uuid) TO "service_role";
 
 GRANT EXECUTE ON FUNCTION "public"."dr_export_invalidate"(text, text, text) TO "authenticated";
 

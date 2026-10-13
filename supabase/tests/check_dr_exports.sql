@@ -325,15 +325,16 @@ BEGIN
     IF (SELECT claim_token FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'objects' AND partition = prog) IS NOT NULL THEN
       RAISE EXCEPTION 'ready did not clear the claim';
     END IF;
-    -- a ready file is recorded under its content-addressed key (Codex on #600),
-    -- the same string contentExportKey computes in the builder
+    -- a ready file is recorded under its build's key, content hash + claim
+    -- (Codex on #600), the same string contentExportKey computes in the builder
     IF (SELECT storage_key FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'objects' AND partition = prog)
-       <> dr_export_content_key(dr_export_key('DR-seed', 'objects', prog), 'sha256:' || repeat('c', 64)) THEN
-      RAISE EXCEPTION 'ready file not under its content key: %',
+       <> dr_export_content_key(dr_export_key('DR-seed', 'objects', prog), 'sha256:' || repeat('c', 64), c2::uuid) THEN
+      RAISE EXCEPTION 'ready file not under its build key: %',
         (SELECT storage_key FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'objects' AND partition = prog);
     END IF;
-    IF dr_export_content_key('dr/T/exports/spectra/pub.jsonl.gz', 'sha256:' || repeat('0123456789abcdef', 4))
-       <> 'dr/T/exports/spectra/pub.0123456789abcdef.jsonl.gz' THEN
+    IF dr_export_content_key('dr/T/exports/spectra/pub.jsonl.gz', 'sha256:' || repeat('0123456789abcdef', 4),
+                             'a1b2c3d4-e5f6-4711-8899-aabbccddeeff')
+       <> 'dr/T/exports/spectra/pub.0123456789abcdef.a1b2c3d4.jsonl.gz' THEN
       RAISE EXCEPTION 'content key format drifted from the builder''s';
     END IF;
     PERFORM dr_export_invalidate('DR-seed', 'objects', prog);
