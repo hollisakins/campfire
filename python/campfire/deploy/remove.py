@@ -23,6 +23,7 @@ from campfire.deploy.supabase import (
     DeployScopeBusy,
     DeployScopeUnavailable,
     ScopeLease,
+    get_deploy_scope_version,
     heartbeat_deploy_scope,
     deploy_event_metadata,
     get_supabase_client,
@@ -234,12 +235,15 @@ def remove_observation(
     # under the lease and refuse if the observation changed meanwhile (Codex
     # on #602).
     confirmed = None
+    confirmed_version = None
     if not dry_run and not auto_approve:
         confirmed = _remove_checked(sb, obs, obs_name, config, dry_run=False, force=force,
                                     supabase_only=supabase_only, auto_approve=False,
                                     skip_rebuild=skip_rebuild, confirm_only=True)
         if confirmed is None:
             return
+        # every finished deploy of the observation bumps its scope version
+        confirmed_version = get_deploy_scope_version(sb, 'observation', obs_name)
         obs = _fetch_observation(sb, obs_name)
         if obs is None:
             raise RemovalRefused(f"{obs_name}: the observation disappeared after the confirmation")
@@ -257,6 +261,12 @@ def remove_observation(
             if e.holder:
                 print("  " + e.describe().replace('\n', '\n  '))
             raise RemovalRefused(f"{obs_name}: {e}") from e
+        if confirmed_version is not None and lease.version_at_start != confirmed_version:
+            lease.release()
+            print(f"\n  REFUSED: {obs_name} was deployed again while the confirmation waited.")
+            raise RemovalRefused(f"{obs_name} was redeployed after the confirmation "
+                                 f"(scope version {confirmed_version} -> {lease.version_at_start}); "
+                                 f"nothing was deleted, re-run to review it again")
     def still_held() -> bool:
         # Checked right before each destructive step (Codex on #602): a lease
         # stolen or taken over meanwhile means another deploy may be writing
@@ -379,11 +389,20 @@ def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool
         print("\nDry run — no changes made.")
         return False
 
-    plan = (len(targets), n_spectra, n_shutters, n_slits, n_comments)
-    if confirmed is not None and plan != tuple(confirmed):
+    # what the operator reviews: the counts, and the identity of what they
+    # count -- the latest deployment and every target -- so a same-size
+    # redeploy during the prompt is not mistaken for it (Codex on #602)
+    plan = {
+        'counts': (len(targets), n_spectra, n_shutters, n_slits, n_comments),
+        'deployment': obs.get('latest_deployment_id'),
+        'targets': tuple(sorted(str(t) for t in target_ids)),
+    }
+    if confirmed is not None and plan != confirmed:
+        what = ('its counts' if plan['counts'] != confirmed['counts']
+                else 'its latest deployment' if plan['deployment'] != confirmed['deployment']
+                else 'its targets')
         raise RemovalRefused(
-            f"{obs_name} changed between the confirmation and the removal "
-            f"(confirmed targets/spectra/shutters/slits/comments {tuple(confirmed)}, now {plan}); "
+            f"{obs_name} changed between the confirmation and the removal ({what}); "
             f"nothing was deleted, re-run to review it again")
 
     if confirm_only and not auto_approve:

@@ -172,6 +172,7 @@ def _ordered_client(refs, *, begin=None):
             return value(params) if callable(value) else value
         return h
     c = _client(begin_deploy_scope=rec('begin', begin or {'version': 3}),
+                get_deploy_scope_version=3,
                 dr_observation_references=rec('refs', refs),
                 claim_deploy_scope=rec('claim', True),
                 release_deploy_scope=rec('release', True),
@@ -423,5 +424,27 @@ def test_interactive_remove_refuses_when_the_observation_changed(monkeypatch):
     monkeypatch.setattr(rm, '_count_spectra', lambda sb, ids: next(counts))
     monkeypatch.setattr('builtins.input', lambda prompt: 'y')
     with pytest.raises(rm.RemovalRefused, match='changed between the confirmation'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=False, skip_rebuild=True)
+    assert not deleted and order[-1] == 'release'
+
+
+def test_interactive_remove_refuses_a_same_size_redeploy(monkeypatch):
+    # Codex on #602: equal counts, different targets / deployment
+    c, order = _ordered_client([{**REFS[1]}])
+    rm, deleted = _remove_env(monkeypatch, c)
+    targets = iter([[{'target_id': 't1', 'id': 1}], [{'target_id': 't9', 'id': 9}]])
+    monkeypatch.setattr(rm, '_fetch_targets', lambda sb, o: next(targets))
+    monkeypatch.setattr('builtins.input', lambda prompt: 'y')
+    with pytest.raises(rm.RemovalRefused, match='its targets'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=False, skip_rebuild=True)
+    assert not deleted and order[-1] == 'release'
+
+
+def test_interactive_remove_refuses_when_redeployed_during_the_prompt(monkeypatch):
+    # every finished deploy bumps the scope version
+    c, order = _ordered_client([{**REFS[1]}], begin={'version': 4})
+    rm, deleted = _remove_env(monkeypatch, c)
+    monkeypatch.setattr('builtins.input', lambda prompt: 'y')
+    with pytest.raises(rm.RemovalRefused, match='redeployed after the confirmation'):
         rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=False, skip_rebuild=True)
     assert not deleted and order[-1] == 'release'
