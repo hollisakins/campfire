@@ -255,6 +255,73 @@ BEGIN
     IF SQLERRM NOT LIKE 'no ledger row%' THEN RAISE; END IF;
   END;
 
+  -- claims (Codex on #600): building is an atomic claim with a token; a second
+  -- run is refused while the claim is fresh; ready / failed must hold it; a
+  -- dead run's stale claim is taken over
+  DECLARE
+    c1 uuid; c2 uuid; res jsonb;
+  BEGIN
+    PERFORM dr_export_invalidate('DR-seed', 'objects', prog);
+    c1 := (dr_export_mark('DR-seed', 'objects', prog, 'building'))->>'claim';
+    IF c1 IS NULL THEN RAISE EXCEPTION 'building returned no claim'; END IF;
+    BEGIN
+      PERFORM dr_export_mark('DR-seed', 'objects', prog, 'building');
+      RAISE EXCEPTION 'a second claim on a fresh building row was accepted';
+    EXCEPTION WHEN OTHERS THEN
+      IF SQLERRM NOT LIKE 'export file objects % is being built by another run%' THEN RAISE; END IF;
+    END;
+    -- a wrong token cannot finish it, and a stale-claim failure leaves it alone
+    BEGIN
+      PERFORM dr_export_mark('DR-seed', 'objects', prog, 'ready', 'sha256:' || repeat('c', 64), 1, 1, NULL, gen_random_uuid());
+      RAISE EXCEPTION 'ready with a foreign claim was accepted';
+    EXCEPTION WHEN OTHERS THEN
+      IF SQLERRM NOT LIKE 'export file objects % is no longer claimed by this run%' THEN RAISE; END IF;
+    END;
+    res := dr_export_mark('DR-seed', 'objects', prog, 'failed', NULL, NULL, NULL, 'late', gen_random_uuid());
+    IF NOT (res->>'stale_claim')::boolean
+       OR (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'objects' AND partition = prog) <> 'building' THEN
+      RAISE EXCEPTION 'a stale failed mark overwrote the claim: %', res;
+    END IF;
+    -- the holder finishes it; a later loser cannot mark the ready file failed
+    PERFORM dr_export_mark('DR-seed', 'objects', prog, 'ready', 'sha256:' || repeat('c', 64), 1, 1, NULL, c1);
+    res := dr_export_mark('DR-seed', 'objects', prog, 'failed', NULL, NULL, NULL, 'loser', c1);
+    IF (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'objects' AND partition = prog) <> 'ready' THEN
+      RAISE EXCEPTION 'the losing run clobbered a ready file';
+    END IF;
+    BEGIN
+      PERFORM dr_export_mark('DR-seed', 'objects', prog, 'building');
+      RAISE EXCEPTION 'claiming a ready file was accepted';
+    EXCEPTION WHEN OTHERS THEN
+      IF SQLERRM NOT LIKE 'export file objects % is already ready%' THEN RAISE; END IF;
+    END;
+    -- a dead run's claim older than the ceiling is taken over
+    PERFORM dr_export_invalidate('DR-seed', 'objects', prog);
+    c1 := (dr_export_mark('DR-seed', 'objects', prog, 'building'))->>'claim';
+    UPDATE dr_exports SET claimed_at = now() - interval '11 minutes' WHERE tag = 'DR-seed' AND stream = 'objects' AND partition = prog;
+    c2 := (dr_export_mark('DR-seed', 'objects', prog, 'building'))->>'claim';
+    IF c2 IS NULL OR c2 = c1 THEN RAISE EXCEPTION 'stale claim not taken over'; END IF;
+    PERFORM dr_export_mark('DR-seed', 'objects', prog, 'ready', 'sha256:' || repeat('c', 64), 1, 1, NULL, c2);
+    IF (SELECT claim_token FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'objects' AND partition = prog) IS NOT NULL THEN
+      RAISE EXCEPTION 'ready did not clear the claim';
+    END IF;
+  END;
+
+  -- a program slugged exactly like one of the release's components is refused
+  -- (its private rows would share the open component file; Codex on #600)
+  UPDATE dr_releases SET components = components || to_jsonb(prog) WHERE tag = 'DR-seed';
+  UPDATE dr_releases SET components = jsonb_set(components, ARRAY[(jsonb_array_length(components) - 1)::text], to_jsonb('nircam/' || prog))
+   WHERE tag = 'DR-seed';
+  UPDATE dr_spectra SET program_slug = 'nircam/' || prog WHERE tag = 'DR-seed' AND spectrum_id =
+    (SELECT spectrum_id FROM dr_spectra WHERE tag = 'DR-seed' AND program_slug = prog ORDER BY spectrum_id LIMIT 1);
+  BEGIN
+    PERFORM dr_export_begin('DR-seed');
+    RAISE EXCEPTION 'a slug/component collision was accepted';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM NOT LIKE 'release DR-seed has a program slug equal to one of its component names%' THEN RAISE; END IF;
+  END;
+  UPDATE dr_spectra SET program_slug = prog WHERE tag = 'DR-seed' AND program_slug = 'nircam/' || prog;
+  UPDATE dr_releases SET components = components - ('nircam/' || prog) WHERE tag = 'DR-seed';
+
   -- an empty release cannot be exported (it could never become ready)
   INSERT INTO dr_releases (tag, state, components) VALUES ('DR-zzz-empty', 'frozen', '["nirspec"]');
   got := pg_temp.zzz_as('authenticated', '11111111-1111-1111-1111-111111111111', $q$SELECT (dr_export_begin('DR-zzz-empty'))::text$q$);

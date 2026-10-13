@@ -59,18 +59,38 @@ export interface DrReleaseRow {
   known_issues: string | null;
 }
 
-/** A partition name of a field-level member component (nircam/<field>, photometry/<field>/<catalog>). */
+/** A component name of a field-level member component (nircam/<field>, photometry/<field>/<catalog>). */
 export function isComponentPartition(partition: string): boolean {
   return partition.startsWith('nircam/') || partition.startsWith('photometry/');
 }
 
 /**
- * Whether a viewer holding `accessible` programs may fetch a partition:
- * program partitions within their programs; field-level member partitions
- * always (published field deployments are visible to every account, as live).
+ * The partitions open to every account: the release's own field-level
+ * components, as frozen in `dr_releases.components`. Judged from the release,
+ * never from a partition's name alone: program slugs carry no format
+ * constraint, so a program could be named like a component (Codex on #600;
+ * `dr_export_begin` also refuses a release where one is).
  */
-export function partitionVisible(partition: string, accessible: ReadonlySet<string>): boolean {
-  return isComponentPartition(partition) || accessible.has(partition);
+export function openComponentPartitions(components: unknown): ReadonlySet<string> {
+  const list = Array.isArray(components) ? components : [];
+  return new Set(list.filter((c): c is string => typeof c === 'string' && isComponentPartition(c)));
+}
+
+/**
+ * Whether a viewer holding `accessible` programs may fetch a (stream,
+ * partition): program partitions of any stream within their programs; a
+ * field-level component partition only on the `members` stream, and only when
+ * it is one of the release's components (published field deployments are
+ * visible to every account, as live).
+ */
+export function partitionVisible(
+  stream: string,
+  partition: string,
+  accessible: ReadonlySet<string>,
+  openComponents: ReadonlySet<string>,
+): boolean {
+  if (stream === 'members' && openComponents.has(partition)) return true;
+  return accessible.has(partition);
 }
 
 /** Readers see a published release; admins see every state (the shadow run). */
@@ -161,6 +181,8 @@ export interface ExportRunResult {
   state: string;
   built: { stream: string; partition: string; rows: number; size: number }[];
   failed: { stream: string; partition: string; error: string }[];
+  /** Files another run was building (or that became ready) when this run tried to claim them. */
+  skipped: { stream: string; partition: string; reason: string }[];
   /** Ledger rows still not ready after this run. */
   remaining: number;
   /** True when the time budget ran out before every file was built. */
@@ -200,6 +222,7 @@ export async function runExportBudget(
   const todo = ledger.filter((r) => r.state !== 'ready');
   const built: ExportRunResult['built'] = [];
   const failed: ExportRunResult['failed'] = [];
+  const skipped: ExportRunResult['skipped'] = [];
   let incomplete = false;
   let slowestMs = 0;
 
@@ -212,10 +235,18 @@ export async function runExportBudget(
     }
     const tp = now();
     const key = entry.storage_key ?? '';
+    // Claim the file atomically first (Codex on #600): another run holding a
+    // fresh claim -- or a file that became ready meanwhile -- is skipped, not
+    // failed, so overlapping runs never clobber each other's results.
+    const { data: claimed, error: claimError } = await supabase.rpc('dr_export_mark', {
+      p_tag: tag, p_stream: entry.stream, p_partition: entry.partition, p_state: 'building',
+    });
+    if (claimError) {
+      skipped.push({ stream: entry.stream, partition: entry.partition, reason: claimError.message });
+      continue;
+    }
+    const claim = (claimed as { claim?: string } | null)?.claim ?? null;
     try {
-      await supabase.rpc('dr_export_mark', {
-        p_tag: tag, p_stream: entry.stream, p_partition: entry.partition, p_state: 'building',
-      });
       const { body, rows } = await buildPartitionFile(supabase, tag, entry.stream, entry.partition);
       await s3.send(
         new PutObjectCommand({ Bucket: bucket, Key: key, Body: body, ContentType: 'application/gzip' }),
@@ -223,7 +254,7 @@ export async function runExportBudget(
       const sha256 = `sha256:${createHash('sha256').update(body).digest('hex')}`;
       const { data: marked, error: markError } = await supabase.rpc('dr_export_mark', {
         p_tag: tag, p_stream: entry.stream, p_partition: entry.partition, p_state: 'ready',
-        p_sha256: sha256, p_size_bytes: body.length, p_rows: rows,
+        p_sha256: sha256, p_size_bytes: body.length, p_rows: rows, p_claim: claim,
       });
       if (markError) throw new Error(`mark ready: ${markError.message}`);
       state = String((marked as { state?: string } | null)?.state ?? state);
@@ -231,14 +262,16 @@ export async function runExportBudget(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       failed.push({ stream: entry.stream, partition: entry.partition, error: message });
+      // With the claim: if this run lost it (taken over, invalidated), the
+      // server leaves the newer state alone.
       await supabase.rpc('dr_export_mark', {
         p_tag: tag, p_stream: entry.stream, p_partition: entry.partition, p_state: 'failed',
-        p_error: message,
+        p_error: message, p_claim: claim,
       });
     }
     slowestMs = Math.max(slowestMs, now() - tp);
   }
 
   const remaining = todo.length - built.length;
-  return { tag, state, built, failed, remaining, incomplete, duration_ms: now() - t0 };
+  return { tag, state, built, failed, skipped, remaining, incomplete, duration_ms: now() - t0 };
 }

@@ -344,6 +344,20 @@ def test_export_release_raises_on_http_error():
         export_release(s, 'DR-t')
 
 
+def test_export_release_stops_when_another_run_holds_the_claims():
+    # Codex on #600: claims are atomic; a call that only skips must not spin
+    s = _FakeSession([
+        _HttpResp(200, {'state': 'exporting', 'built': [], 'failed': [],
+                        'skipped': [{'stream': 'objects', 'partition': 'p', 'reason': 'being built by another run'}],
+                        'remaining': 1}),
+        _HttpResp(200, {'state': 'exported', 'built': [], 'failed': [], 'remaining': 0}),
+    ])
+    echoed = []
+    out = export_release(s, 'DR-t', echo=echoed.append)
+    assert out['totals']['calls'] == 1 and out['remaining'] == 1
+    assert any('skipped objects/p' in e for e in echoed)
+
+
 def test_fetch_partitions_404_is_a_clear_error():
     s = _FakeSession([_HttpResp(404, {'error': 'not_found'})])
     with pytest.raises(RuntimeError, match='not published'):

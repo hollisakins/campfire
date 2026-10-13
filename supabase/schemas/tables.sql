@@ -1777,6 +1777,11 @@ CREATE TABLE IF NOT EXISTS "public"."dr_exports" (
     "state" "text" DEFAULT 'pending'::"text" NOT NULL,
     "built_at" timestamp with time zone,
     "error" "text",
+    -- the builder run holding a `building` row (P4b): its claim token and when
+    -- it claimed; ready / failed marks must present the token, and a claim
+    -- older than the builder's ceiling (10 minutes) may be taken over
+    "claim_token" "uuid",
+    "claimed_at" timestamp with time zone,
     CONSTRAINT "dr_exports_pkey" PRIMARY KEY ("tag", "stream", "partition"),
     CONSTRAINT "dr_exports_state_check" CHECK (("state" = ANY (ARRAY['pending'::"text", 'building'::"text", 'ready'::"text", 'failed'::"text"])))
 );

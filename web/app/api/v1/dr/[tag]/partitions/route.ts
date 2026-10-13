@@ -7,6 +7,7 @@ import { getBucketNameForBackend, getS3ClientForBackend } from '@/lib/storage';
 import {
   fetchLedger,
   fetchRelease,
+  openComponentPartitions,
   partitionVisible,
   releaseVisible,
 } from '@/lib/server/dr-exports';
@@ -52,10 +53,11 @@ export async function GET(request: NextRequest, context: { params: Promise<{ tag
     }
 
     const accessible = new Set(principal.access.accessibleSlugs);
+    const open = openComponentPartitions(release.components);
     const ledger = await fetchLedger(supabase, tag);
     const complete = ledger.length > 0 && ledger.every((r) => r.state === 'ready');
     const held = ledger.filter(
-      (r) => r.state === 'ready' && r.storage_key && partitionVisible(r.partition, accessible),
+      (r) => r.state === 'ready' && r.storage_key && partitionVisible(r.stream, r.partition, accessible, open),
     );
 
     const client = getS3ClientForBackend('osn');

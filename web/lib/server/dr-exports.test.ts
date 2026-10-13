@@ -8,6 +8,7 @@ vi.mock('server-only', () => ({}));
 
 import {
   buildPartitionFile,
+  openComponentPartitions,
   partitionVisible,
   releaseVisible,
   runExportBudget,
@@ -15,12 +16,28 @@ import {
 } from './dr-exports';
 
 describe('visibility', () => {
-  it('program partitions need the program; field-level partitions are open', () => {
+  const open = openComponentPartitions(['nirspec', 'nircam/cosmos', 'photometry/cosmos/COSMOS v1.2']);
+
+  it('program partitions need the program; the release components are open on members', () => {
     const held = new Set(['pub']);
-    expect(partitionVisible('pub', held)).toBe(true);
-    expect(partitionVisible('priv', held)).toBe(false);
-    expect(partitionVisible('nircam/cosmos', held)).toBe(true);
-    expect(partitionVisible('photometry/cosmos/COSMOS v1.2', held)).toBe(true);
+    expect(partitionVisible('spectra', 'pub', held, open)).toBe(true);
+    expect(partitionVisible('spectra', 'priv', held, open)).toBe(false);
+    expect(partitionVisible('members', 'nircam/cosmos', held, open)).toBe(true);
+    expect(partitionVisible('members', 'photometry/cosmos/COSMOS v1.2', held, open)).toBe(true);
+    expect([...open]).not.toContain('nirspec');
+  });
+
+  it('a component-shaped name is not open on other streams or outside the release (Codex on #600)', () => {
+    const held = new Set(['pub']);
+    // a private program slugged like a component: its program streams stay gated
+    for (const stream of ['objects', 'spectra', 'line_fits', 'photometry']) {
+      expect(partitionVisible(stream, 'nircam/cosmos', held, open)).toBe(false);
+    }
+    // a component the release did not freeze is not open either
+    expect(partitionVisible('members', 'nircam/egs', held, open)).toBe(false);
+    expect(partitionVisible('members', 'nircam/egs', new Set(['nircam/egs']), open)).toBe(true);
+    expect(openComponentPartitions(null).size).toBe(0);
+    expect(openComponentPartitions([1, 'nircam/x']).has('nircam/x')).toBe(true);
   });
 
   it('readers see published releases only; admins every state', () => {
@@ -36,6 +53,8 @@ function fakeSupabase(opts: {
   pages: Record<string, { next_cursor: string; row_json: unknown }[][]>;
   ledger: DrExportLedgerRow[];
   failRows?: string;
+  /** stream/partition keys another run holds a claim on */
+  busy?: string[];
 }) {
   const calls: { name: string; params: Record<string, unknown> }[] = [];
   const ledger = opts.ledger;
@@ -44,7 +63,15 @@ function fakeSupabase(opts: {
       calls.push({ name, params });
       if (name === 'dr_export_begin') return { data: { state: 'exporting' }, error: null };
       if (name === 'dr_export_mark') {
+        const key = `${params.p_stream}/${params.p_partition}`;
+        if (params.p_state === 'building' && opts.busy?.includes(key)) {
+          return { data: null, error: { message: `export file ${key} is being built by another run` } };
+        }
         const row = ledger.find((r) => r.stream === params.p_stream && r.partition === params.p_partition);
+        if (params.p_state === 'building') {
+          if (row) row.state = 'building';
+          return { data: { state: 'exporting', claim: `claim-${key}` }, error: null };
+        }
         if (row) {
           row.state = params.p_state as DrExportLedgerRow['state'];
           if (params.p_state === 'ready') {
@@ -165,6 +192,29 @@ describe('runExportBudget', () => {
     expect(res.built).toHaveLength(1);
     expect(res.incomplete).toBe(true);
     expect(res.remaining).toBe(1);
+  });
+
+  it('skips a file another run holds and passes its claim on ready / failed (Codex on #600)', async () => {
+    const s3 = { send: async () => {} };
+    const { client, ledger, calls } = fakeSupabase({
+      pages,
+      failRows: 'members/nircam/f',
+      busy: ['objects/pub'],
+      ledger: [entry('objects', 'pub'), entry('spectra', 'pub'), entry('members', 'nircam/f')],
+    });
+    const res = await runExportBudget(client, s3 as never, 'bucket', 'DR-t', 60_000);
+    expect(res.skipped).toEqual([
+      { stream: 'objects', partition: 'pub', reason: expect.stringContaining('being built by another run') },
+    ]);
+    // the held file was neither built nor marked failed
+    expect(calls.filter((c) => c.name === 'dr_export_rows' && c.params.p_stream === 'objects')).toHaveLength(0);
+    expect(ledger[0].state).toBe('pending');
+    const marks = calls.filter((c) => c.name === 'dr_export_mark' && c.params.p_state !== 'building');
+    expect(marks.map((c) => [c.params.p_state, c.params.p_claim])).toEqual([
+      ['ready', 'claim-spectra/pub'],
+      ['failed', 'claim-members/nircam/f'],
+    ]);
+    expect(res.remaining).toBe(2);
   });
 
   it('keeps headroom for another partition before the function deadline (Codex on #600)', async () => {

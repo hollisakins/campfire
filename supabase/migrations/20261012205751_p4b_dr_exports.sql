@@ -10,6 +10,12 @@ SET statement_timeout = '60s';
 
 SET local check_function_bodies = off;
 
+ALTER TABLE "public"."dr_exports"
+  ADD COLUMN "claim_token" uuid;
+
+ALTER TABLE "public"."dr_exports"
+  ADD COLUMN "claimed_at" timestamp WITH time zone;
+
 CREATE OR REPLACE FUNCTION public.dr_derive_state (
   p_tag text
 )
@@ -67,6 +73,17 @@ BEGIN
   IF r.state NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
     RAISE EXCEPTION 'release % is % (exports need a frozen, unpublished release)', p_tag, r.state;
   END IF;
+  -- Partitions are named by program slug or by component; a program slugged
+  -- exactly like one of the release's field-level components would share the
+  -- open component file with its private rows (program slugs carry no format
+  -- constraint). Refuse such a release rather than guess (Codex on #600).
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements_text(r.components) c
+             WHERE c.value LIKE '%/%'
+               AND (EXISTS (SELECT 1 FROM dr_spectra s WHERE s.tag = p_tag AND s.program_slug = c.value)
+                    OR EXISTS (SELECT 1 FROM dr_objects o WHERE o.tag = p_tag AND c.value = ANY (o.programs))
+                    OR EXISTS (SELECT 1 FROM dr_members m WHERE m.tag = p_tag AND m.program_slug = c.value))) THEN
+    RAISE EXCEPTION 'release % has a program slug equal to one of its component names; rename the program', p_tag;
+  END IF;
   INSERT INTO dr_exports (tag, stream, partition, storage_key, state)
   SELECT p_tag, p.stream, p.partition, p.storage_key, 'pending'
   FROM dr_export_partitions(p_tag) p
@@ -101,11 +118,13 @@ DECLARE
   n int;
 BEGIN
   PERFORM dr_require_admin();
-  IF (SELECT state FROM dr_releases WHERE tag = p_tag) NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
+  -- release row first, then ledger rows (the lock order every dr_* writer uses)
+  IF (SELECT state FROM dr_releases WHERE tag = p_tag FOR UPDATE) NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
     RAISE EXCEPTION 'release % is not in a build state', p_tag;
   END IF;
   UPDATE dr_exports
-     SET state = 'pending', sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL
+     SET state = 'pending', sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL,
+         claim_token = NULL, claimed_at = NULL
    WHERE tag = p_tag AND state IN ('ready', 'building')
      AND (p_stream IS NULL OR stream = p_stream)
      AND (p_partition IS NULL OR partition = p_partition);
@@ -147,7 +166,8 @@ CREATE OR REPLACE FUNCTION public.dr_export_mark (
   p_sha256     text    DEFAULT NULL::text,
   p_size_bytes bigint  DEFAULT NULL::bigint,
   p_rows       integer DEFAULT NULL::integer,
-  p_error      text    DEFAULT NULL::text
+  p_error      text    DEFAULT NULL::text,
+  p_claim      uuid    DEFAULT NULL::uuid
 )
   RETURNS jsonb
   LANGUAGE plpgsql
@@ -156,48 +176,80 @@ CREATE OR REPLACE FUNCTION public.dr_export_mark (
   AS $function$
 DECLARE
   n_pending int; n_total int;
-  v_cur text;
+  v_release text;
+  e dr_exports%ROWTYPE;
+  v_claim uuid;
 BEGIN
   PERFORM dr_require_admin();
   IF p_state NOT IN ('building', 'ready', 'failed', 'pending') THEN
     RAISE EXCEPTION 'invalid export state %', p_state;
   END IF;
-  IF (SELECT state FROM dr_releases WHERE tag = p_tag) NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
+  -- Lock order: the release row first, then the ledger row -- the same order
+  -- as dr_bytes_mark and dr_derive_state, so concurrent builders and byte
+  -- passes queue instead of deadlocking (Codex on #601).
+  SELECT state INTO v_release FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF v_release IS NULL OR v_release NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
     RAISE EXCEPTION 'release % is not exporting', p_tag;
   END IF;
-  -- A file is ready only if nothing invalidated it while it was being built:
-  -- the byte pass (and dr_export_invalidate) send `building` rows back to
-  -- pending too, so a builder finishing a file from rows that changed under
-  -- it is refused here instead of publishing stale member rows (Codex on #601).
-  SELECT e.state INTO v_cur FROM dr_exports e
-   WHERE e.tag = p_tag AND e.stream = p_stream AND e.partition = p_partition
+  SELECT * INTO e FROM dr_exports x
+   WHERE x.tag = p_tag AND x.stream = p_stream AND x.partition = p_partition
    FOR UPDATE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'no ledger row for % % %', p_tag, p_stream, p_partition;
   END IF;
-  IF p_state = 'ready' AND v_cur IS DISTINCT FROM 'building' THEN
-    RAISE EXCEPTION 'export file % % of % was invalidated while it was being built (or never started); rebuild it',
-      p_stream, p_partition, p_tag;
-  END IF;
-  UPDATE dr_exports
-     SET state = p_state,
-         sha256 = CASE WHEN p_state = 'ready' THEN p_sha256 ELSE NULL END,
-         size_bytes = CASE WHEN p_state = 'ready' THEN p_size_bytes ELSE NULL END,
-         rows = CASE WHEN p_state = 'ready' THEN p_rows ELSE NULL END,
-         built_at = CASE WHEN p_state = 'ready' THEN now() ELSE NULL END,
-         error = CASE WHEN p_state = 'failed' THEN left(p_error, 2000) ELSE NULL END
-   WHERE tag = p_tag AND stream = p_stream AND partition = p_partition;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'no ledger row for % % %', p_tag, p_stream, p_partition;
+
+  IF p_state = 'building' THEN
+    -- An atomic claim: refused while another run holds a fresh one, so two
+    -- overlapping `dr export` runs never build the same file (Codex on #600).
+    -- A claim older than the builder's ceiling is a dead run's and is taken over.
+    IF e.state = 'building' AND e.claimed_at > now() - interval '10 minutes'
+       AND e.claim_token IS DISTINCT FROM p_claim THEN
+      RAISE EXCEPTION 'export file % % of % is being built by another run', p_stream, p_partition, p_tag
+        USING ERRCODE = 'CF409';
+    END IF;
+    IF e.state = 'ready' THEN
+      RAISE EXCEPTION 'export file % % of % is already ready', p_stream, p_partition, p_tag USING ERRCODE = 'CF409';
+    END IF;
+    v_claim := gen_random_uuid();
+    UPDATE dr_exports
+       SET state = 'building', claim_token = v_claim, claimed_at = now(),
+           sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL
+     WHERE tag = p_tag AND stream = p_stream AND partition = p_partition;
+  ELSE
+    -- A file is ready only if nothing invalidated it while it was being built:
+    -- the byte pass (and dr_export_invalidate) send `building` rows back to
+    -- pending, so a builder finishing a file from rows that changed under it is
+    -- refused instead of publishing stale member rows (Codex on #601).
+    IF p_state = 'ready' AND e.state IS DISTINCT FROM 'building' THEN
+      RAISE EXCEPTION 'export file % % of % was invalidated while it was being built (or never started); rebuild it',
+        p_stream, p_partition, p_tag;
+    END IF;
+    -- A builder's ready / failed mark must still hold the claim: a run that
+    -- lost it (taken over, invalidated) never overwrites the newer state.
+    IF p_claim IS NOT NULL AND (e.state IS DISTINCT FROM 'building' OR e.claim_token IS DISTINCT FROM p_claim) THEN
+      IF p_state = 'failed' THEN
+        RETURN jsonb_build_object('tag', p_tag, 'stale_claim', true, 'state', v_release);
+      END IF;
+      RAISE EXCEPTION 'export file % % of % is no longer claimed by this run; rebuild it', p_stream, p_partition, p_tag;
+    END IF;
+    UPDATE dr_exports
+       SET state = p_state,
+           sha256 = CASE WHEN p_state = 'ready' THEN p_sha256 ELSE NULL END,
+           size_bytes = CASE WHEN p_state = 'ready' THEN p_size_bytes ELSE NULL END,
+           rows = CASE WHEN p_state = 'ready' THEN p_rows ELSE NULL END,
+           built_at = CASE WHEN p_state = 'ready' THEN now() ELSE NULL END,
+           error = CASE WHEN p_state = 'failed' THEN left(p_error, 2000) ELSE NULL END,
+           claim_token = NULL, claimed_at = NULL
+     WHERE tag = p_tag AND stream = p_stream AND partition = p_partition;
   END IF;
   SELECT count(*) FILTER (WHERE state <> 'ready'), count(*) INTO n_pending, n_total
   FROM dr_exports WHERE tag = p_tag;
   RETURN jsonb_build_object('tag', p_tag, 'pending', n_pending, 'total', n_total,
-                            'state', dr_derive_state(p_tag));
+                            'claim', v_claim, 'state', dr_derive_state(p_tag));
 END;
 $function$;
 
-REVOKE ALL ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigint, integer, text) FROM PUBLIC, "anon";
+REVOKE ALL ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigint, integer, text, uuid) FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.dr_export_partitions (
   p_tag text
@@ -384,7 +436,7 @@ COMMENT ON FUNCTION "public"."dr_export_begin"(text) IS 'Seed the export ledger 
 
 COMMENT ON FUNCTION "public"."dr_export_invalidate"(text, text, text) IS 'Send ready export files of a data release back to pending (a stream, a partition, or everything) so `dr export` rebuilds them; the byte pass uses it for the member partitions it changes. Admin or service_role.';
 
-COMMENT ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigint, integer, text) IS 'Record one export file of a data release as building / ready (sha256, size, rows) / failed (error) / pending, then derive the release state (exported once every file is ready, ready once the byte pass is complete too). Admin or service_role.';
+COMMENT ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigint, integer, text, uuid) IS 'Record one export file of a data release: building is an atomic claim (returns a claim token; refused while another run holds a fresh claim), ready (sha256, size, rows; only from building) / failed (error) / pending; a builder passes its claim token so a run that lost the claim never overwrites newer state. Then derive the release state. Admin or service_role.';
 
 COMMENT ON FUNCTION "public"."dr_export_partitions"(text) IS 'Every (stream, partition) of a data release that has rows, with the export storage key and the row count (P4b). Program-scoped streams partition by program slug; field-level member rows by component. Admin or service_role.';
 
@@ -420,13 +472,13 @@ GRANT EXECUTE ON FUNCTION "public"."dr_export_key"(text, text, text) TO "postgre
 
 GRANT EXECUTE ON FUNCTION "public"."dr_export_key"(text, text, text) TO "service_role";
 
-GRANT EXECUTE ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigint, integer, text) TO "authenticated";
+GRANT EXECUTE ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigint, integer, text, uuid) TO "authenticated";
 
-REVOKE ALL ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigint, integer, text) FROM "postgres";
+REVOKE ALL ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigint, integer, text, uuid) FROM "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigint, integer, text) TO "postgres";
+GRANT EXECUTE ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigint, integer, text, uuid) TO "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigint, integer, text) TO "service_role";
+GRANT EXECUTE ON FUNCTION "public"."dr_export_mark"(text, text, text, text, text, bigint, integer, text, uuid) TO "service_role";
 
 GRANT EXECUTE ON FUNCTION "public"."dr_export_partitions"(text) TO "authenticated";
 

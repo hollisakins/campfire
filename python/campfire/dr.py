@@ -329,9 +329,10 @@ def export_release(session, tag: str, *, budget_seconds: float = 240.0, max_call
 
     *session* is an ``APISession`` (bearer: the admin's login). Each call
     builds partitions for one time budget and reports what is left; the loop
-    stops when ``remaining`` is 0, when a call built nothing and failed
-    something (a partition that cannot be built; retrying would spin), or
-    after *max_calls*. Returns the last response plus the totals.
+    stops when ``remaining`` is 0, when a call built nothing and failed or
+    skipped something (a partition that cannot be built, or another run
+    holding the claims; retrying would spin), or after *max_calls*. Returns
+    the last response plus the totals.
     """
     totals = {'built': 0, 'failed': 0, 'calls': 0}
     last: dict = {}
@@ -356,10 +357,14 @@ def export_release(session, tag: str, *, budget_seconds: float = 240.0, max_call
                      f"{_n(b.get('size'))} B")
             for f in last.get('failed') or []:
                 echo(f"  FAILED {f.get('stream')}/{f.get('partition')}: {f.get('error')}")
+            for s in last.get('skipped') or []:
+                echo(f"  skipped {s.get('stream')}/{s.get('partition')}: {s.get('reason')}")
         remaining = int(last.get('remaining') or 0)
         if remaining == 0:
             break
-        if not last.get('built') and last.get('failed'):
+        if not last.get('built') and (last.get('failed') or last.get('skipped')):
+            # nothing buildable by this run: a broken partition, or another
+            # `dr export` holding the claims -- stop instead of spinning
             break
     return {**last, 'totals': totals}
 

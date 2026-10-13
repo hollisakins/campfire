@@ -45,7 +45,7 @@ const entry = (stream: string, partition: string, state = 'ready') => ({
 
 beforeEach(() => {
   release = {
-    tag: 'DR-t', state: 'published', components: ['nirspec', 'nircam/f'], dr_format_version: 1,
+    tag: 'DR-t', state: 'published', components: ['nirspec', 'nircam/f', 'photometry/f/CAT v1'], dr_format_version: 1,
     counts: { spectra: 2 }, frozen_at: 't', published_at: 't', withdrawn_at: null, doi: null, notes: null, known_issues: null,
   };
   ledger = [
@@ -75,6 +75,20 @@ describe('principals', () => {
     const pz = body.partitions.find((p: { partition: string }) => p.partition === 'photometry/f/CAT v1');
     expect(pz.url).toBe('https://signed/dr/DR-t/exports/members/photometry_f_CAT_v1.jsonl.gz');
     expect(pz.sha256).toBe('sha256:x');
+  });
+
+  it('a component-shaped program slug is not open (Codex on #600)', async () => {
+    // a private program named like a component: its program streams, and any
+    // component the release did not freeze, stay gated
+    ledger.push(entry('spectra', 'nircam/f'), entry('objects', 'nircam/f'), entry('members', 'nircam/g'));
+    principal = { userId: 'u', access: { isAdmin: false, accessibleSlugs: ['pub'] } };
+    const names = (await (await get()).json()).partitions.map(
+      (p: { stream: string; partition: string }) => `${p.stream}/${p.partition}`,
+    );
+    expect(names).not.toContain('spectra/nircam/f');
+    expect(names).not.toContain('objects/nircam/f');
+    expect(names).not.toContain('members/nircam/g');
+    expect(names).toContain('members/nircam/f');
   });
 
   it('a grantee gets both programs; pending files are never handed out', async () => {
