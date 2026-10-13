@@ -41,6 +41,7 @@ import os
 import re
 import tempfile
 import threading
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional
@@ -51,6 +52,8 @@ STAMPED_PRODUCT_TYPES = frozenset({'nirspec_spec', 'nirspec_lines'})
 STAMP_KEYWORD = 'CMPFRDR'
 STAMP_COMMENT = 'CAMPFIRE data release that first archived this file'
 COPY_LIMIT_BYTES = 5 * 1000 ** 3          # S3 CopyObject: 5 GB per object
+VERIFY_LIMIT_BYTES = 64 * 1024 * 1024     # rewritten-since-freeze objects verified by download up to this
+CLOCK_SKEW = timedelta(minutes=2)          # database vs object-store clocks
 BLOCK = 2880
 CARD = 80
 _TAG_RE = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
@@ -331,6 +334,30 @@ def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:
         return Outcome(key, 'failed', 'drift',
                        error=f"source {src} is {head.get('ContentLength')} bytes, the registry says {stored}")
     etag = (head.get('ETag') or '').strip('"')
+    if row.get('source_root') == 'live' and not _unchanged_since_freeze(head, row.get('frozen_at')):
+        # The live object was (re)written after the freeze: its ETag proves
+        # nothing about the frozen content hash, so a server-side copy could
+        # archive replacement bytes under the old hash (Codex on #601). Small
+        # objects are verified by their sha256 and uploaded; large ones fail.
+        size = int(head.get('ContentLength') or 0)
+        if size > VERIFY_LIMIT_BYTES:
+            return Outcome(key, 'failed', 'drift',
+                           error=f'source {src} was rewritten after the freeze and is too large '
+                                 f'({size:,} bytes) to verify against the frozen hash')
+        body = s3.get_object(Bucket=bucket, Key=src, IfMatch=etag)['Body'].read()
+        got = sha256_hex(body)
+        if got != row['content_hash']:
+            return Outcome(key, 'failed', 'drift',
+                           error=f'source {src} holds {got}, the release froze {row["content_hash"]}')
+        try:
+            s3.put_object(Bucket=bucket, Key=target, Body=body, IfNoneMatch='*',
+                          ContentType=reg.get('content_type') or 'application/octet-stream')
+        except Exception as e:  # noqa: BLE001
+            if _status_code(e) != 412:
+                raise
+            return Outcome(key, 'copied', 'heal', archive_key=target, registry=reg)
+        return Outcome(key, 'copied', 'copy-verified', archive_key=target, registry=reg,
+                       bytes_moved=2 * len(body))
     try:
         s3.copy_object(Bucket=bucket, Key=target, CopySource={'Bucket': bucket, 'Key': src},
                        CopySourceIfMatch=etag, MetadataDirective='COPY')
@@ -340,6 +367,24 @@ def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:
         raise
     return Outcome(key, 'copied', 'copy', archive_key=target, registry=reg,
                    bytes_moved=int(head.get('ContentLength') or 0))
+
+
+def _unchanged_since_freeze(head: dict, frozen_at) -> bool:
+    """True when the object was last written before the freeze snapshot.
+
+    The deploy/freeze interlock means no deploy was writing while the freeze
+    ran, so bytes last modified before it are the bytes the registry (and the
+    release) recorded. A skew margin guards against clock differences between
+    the database and the object store. Unknown times count as changed.
+    """
+    lm = head.get('LastModified')
+    if lm is None or not frozen_at:
+        return False
+    if isinstance(frozen_at, str):
+        frozen_at = datetime.fromisoformat(frozen_at.replace('Z', '+00:00'))
+    if lm.tzinfo is None:
+        lm = lm.replace(tzinfo=timezone.utc)
+    return lm < frozen_at - CLOCK_SKEW
 
 
 # ---------------------------------------------------------------------------

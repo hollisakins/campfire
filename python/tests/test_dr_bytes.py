@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
@@ -138,6 +139,8 @@ def _row(key, body, *, product_type='nirspec_spec', source_root='live', source_k
         'source_key': key if source_key is None else source_key, 'source_root': source_root,
         'source_stored_size': len(body),
         'reuse_archive_key': None, 'reuse_stamped_hash': None, 'reuse_size_bytes': None,
+        # objects the fake store seeds "now" predate this freeze
+        'frozen_at': (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
         'registry': {'content_type': 'application/fits', 'instrument': 'nirspec',
                      'observation': 'abc_p1', 'deployment_id': 7, 'cfpipe_version': '1.2.0',
                      'retained_key': None},
@@ -271,6 +274,47 @@ def test_copy_member_copies_conditionally():
     # and a re-run heals
     again = B.process_member(_row(JSON_KEY, body, product_type='spectrum_json'), tag=TAG, s3=s3, bucket=BUCKET)
     assert (again.state, again.action) == ('copied', 'heal')
+
+
+def test_copy_member_rewritten_after_the_freeze_is_verified_by_hash():
+    # Codex on #601: an ETag read now says nothing about the frozen hash
+    body = b'{"x": 1}'
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    row = _row(JSON_KEY, body, product_type='spectrum_json', frozen_at=past)
+    # same bytes rewritten after the freeze: verified, uploaded, not copied
+    s3 = _s3(**{JSON_KEY: body})
+    o = B.process_member(row, tag=TAG, s3=s3, bucket=BUCKET)
+    assert (o.state, o.action) == ('copied', 'copy-verified')
+    assert s3.body(BUCKET, o.archive_key) == body and not s3.ops('CopyObject')
+    assert s3.ops('PutObject')[-1][1].get('IfNoneMatch') == '*'
+    # different bytes of the same length: refused, nothing archived
+    s3 = _s3(**{JSON_KEY: b'{"x": 2}'})
+    o = B.process_member(row, tag=TAG, s3=s3, bucket=BUCKET)
+    assert (o.state, o.action) == ('failed', 'drift') and 'the release froze' in o.error
+    assert not [k for k in s3.keys(BUCKET) if k.startswith('archive/')]
+    # too large to verify by download: refused
+    big = dict(row, source_stored_size=None)
+    s3 = _s3(**{JSON_KEY: body})
+    monkey_limit = B.VERIFY_LIMIT_BYTES
+    try:
+        B.VERIFY_LIMIT_BYTES = 4
+        o = B.process_member(big, tag=TAG, s3=s3, bucket=BUCKET)
+    finally:
+        B.VERIFY_LIMIT_BYTES = monkey_limit
+    assert o.state == 'failed' and 'too large' in o.error
+    # an unknown freeze time counts as changed (verified path)
+    o = B.process_member(dict(row, frozen_at=None), tag=TAG, s3=_s3(**{JSON_KEY: body}), bucket=BUCKET)
+    assert o.action == 'copy-verified'
+
+
+def test_copy_from_a_retained_copy_stays_server_side():
+    body = b'{"x": 1}'
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    row = _row(JSON_KEY, body, product_type='spectrum_json', frozen_at=past)
+    retained = 'archive/' + 'e' * 64 + '/elsewhere.json'      # a different key than the target
+    s3 = _s3(**{retained: body})
+    o = B.process_member(dict(row, source_key=retained, source_root='archive'), tag=TAG, s3=s3, bucket=BUCKET)
+    assert (o.state, o.action) == ('copied', 'copy') and s3.ops('CopyObject')
 
 
 def test_copy_member_reuses_the_retained_copy():

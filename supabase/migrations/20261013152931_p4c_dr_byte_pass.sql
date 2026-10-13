@@ -163,7 +163,8 @@ CREATE OR REPLACE FUNCTION public.dr_bytes_pending (
     reuse_archive_key  text,
     reuse_stamped_hash text,
     reuse_size_bytes   bigint,
-    registry           jsonb
+    registry           jsonb,
+    frozen_at          timestamp with time zone
   )
   LANGUAGE plpgsql
   STABLE
@@ -203,7 +204,11 @@ BEGIN
            'filter', COALESCE(live.filter, ret.filter, src.filter),
            'deployment_id', COALESCE(live.deployment_id, ret.deployment_id, src.deployment_id),
            'cfpipe_version', COALESCE(live.cfpipe_version, ret.cfpipe_version, src.cfpipe_version),
-           'retained_key', ret.storage_key)
+           'retained_key', ret.storage_key),
+         -- the freeze's snapshot time: a live object last modified before it
+         -- still holds the frozen bytes; one modified since must be verified
+         -- by its hash before it is archived (Codex on #601)
+         (SELECT r.frozen_at FROM dr_releases r WHERE r.tag = p_tag)
   FROM page pg
   -- the registry row the freeze captured (its metadata survives a redeploy)
   LEFT JOIN storage_objects src ON src.id = pg.registry_id
