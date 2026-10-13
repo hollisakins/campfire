@@ -418,6 +418,26 @@ BEGIN
   END IF;
   DELETE FROM dr_releases WHERE tag = 'DR-zzz-mos';
   DELETE FROM nircam_images WHERE file_path = 'data/products/nircam/zzz_drf/f150w/zzz_drf_f150w_sci.fits';
+
+  -- likewise a published spectrum whose final FITS has no active registry row
+  UPDATE storage_objects so SET status = 'revoked'
+    FROM spectra s
+   WHERE s.fits_path = '/tmp/zzz_dr_mixp_prism_spec.fits' AND so.spectrum_id = s.spectrum_id
+     AND so.product_type = 'nirspec_spec' AND so.status = 'active';
+  got := pg_temp.zzz_dr_as('authenticated', admin,
+    $q$SELECT (public.dr_enqueue_freeze('DR-zzz-spec', '["nirspec"]', NULL, true))->>'state'$q$);
+  IF got <> 'failed' OR (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-spec')
+       NOT LIKE 'published spectra without an active registered final%' THEN
+    RAISE EXCEPTION 'unregistered final should fail the freeze: % / %', got, (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-spec');
+  END IF;
+  IF EXISTS (SELECT 1 FROM dr_spectra WHERE tag = 'DR-zzz-spec') THEN
+    RAISE EXCEPTION 'the failed freeze left spectra behind';
+  END IF;
+  UPDATE storage_objects so SET status = 'active'
+    FROM spectra s
+   WHERE s.fits_path = '/tmp/zzz_dr_mixp_prism_spec.fits' AND so.spectrum_id = s.spectrum_id
+     AND so.product_type = 'nirspec_spec' AND so.status = 'revoked';
+  DELETE FROM dr_releases WHERE tag = 'DR-zzz-spec';
   RAISE NOTICE 'OK 3: idempotence + failure path';
 END $$;
 

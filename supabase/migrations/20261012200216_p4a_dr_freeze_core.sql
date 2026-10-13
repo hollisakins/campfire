@@ -708,6 +708,17 @@ BEGIN
       RAISE EXCEPTION 'published mosaics without an active registry row (deploy them again, or leave the field out): %',
         left(v_missing, 1500);
     END IF;
+    -- Likewise every frozen spectrum needs its final FITS as a member (a
+    -- --supabase-only deploy or registry drift would leave a catalogued
+    -- spectrum the byte pass can never archive).
+    SELECT string_agg(d.spectrum_id, ', ' ORDER BY d.spectrum_id) INTO v_missing
+    FROM dr_spectra d
+    WHERE d.tag = p_tag
+      AND NOT EXISTS (SELECT 1 FROM dr_members m
+                      WHERE m.tag = p_tag AND m.spectrum_id = d.spectrum_id AND m.product_type = 'nirspec_spec');
+    IF v_missing IS NOT NULL THEN
+      RAISE EXCEPTION 'published spectra without an active registered final (redeploy them): %', left(v_missing, 1500);
+    END IF;
 
     UPDATE dr_releases
        SET state = 'frozen',
