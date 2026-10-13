@@ -469,6 +469,19 @@ BEGIN
   END IF;
   UPDATE spectra SET file_hash = 'sha256:' || repeat('3', 64) WHERE fits_path = '/tmp/zzz_dr_mixp_prism_spec.fits';
   DELETE FROM dr_releases WHERE tag = 'DR-zzz-spec';
+
+  -- a selected catalog whose rows are all orphans freezes nothing: refused
+  -- rather than listed as an empty component (Codex on #599)
+  INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z)
+  VALUES (NULL, 'zzz_drf', 170.5, 4.5, 'ZZZ ORPHANS', 'orphan-1', '{"bands":{}}'::jsonb, 1.1);
+  got := pg_temp.zzz_dr_as('authenticated', admin,
+    $q$SELECT (public.dr_enqueue_freeze('DR-zzz-orph', '["nirspec","photometry/zzz_drf/ZZZ ORPHANS"]', NULL, true))->>'state'$q$);
+  IF got <> 'failed' OR (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-orph')
+       NOT LIKE 'photometry components matching no frozen object%ZZZ ORPHANS%' THEN
+    RAISE EXCEPTION 'an all-orphan catalog should fail the freeze: % / %', got, (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-orph');
+  END IF;
+  DELETE FROM dr_releases WHERE tag = 'DR-zzz-orph';
+  DELETE FROM object_photometry WHERE catalog_name = 'ZZZ ORPHANS';
   RAISE NOTICE 'OK 3: idempotence + failure path';
 END $$;
 

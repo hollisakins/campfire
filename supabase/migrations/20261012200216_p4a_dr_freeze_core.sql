@@ -728,6 +728,17 @@ BEGIN
       RAISE EXCEPTION 'published spectra without an active registered final of the same file hash (redeploy them): %',
         left(v_missing, 1500);
     END IF;
+    -- ...and every selected photometry catalog must freeze at least one row: a
+    -- catalog whose rows are all orphans or match no frozen object would be
+    -- listed as a component with nothing behind it (Codex on #599)
+    SELECT string_agg(c, ', ' ORDER BY c) INTO v_missing
+    FROM unnest(comp.photometry) c
+    WHERE NOT EXISTS (SELECT 1 FROM dr_photometry ph
+                      WHERE ph.tag = p_tag AND (ph.field || '/' || ph.catalog_name) = c);
+    IF v_missing IS NOT NULL THEN
+      RAISE EXCEPTION 'photometry components matching no frozen object (leave them out, or cross-match first): %',
+        left(v_missing, 1500);
+    END IF;
 
     UPDATE dr_releases
        SET state = 'frozen',
