@@ -728,6 +728,11 @@ BEGIN
       RAISE EXCEPTION 'published spectra without an active registered final of the same file hash (redeploy them): %',
         left(v_missing, 1500);
     END IF;
+    -- ...the nirspec component must freeze at least one spectrum (everything
+    -- still draft or revoked would list it with nothing behind it; Codex on #599)...
+    IF comp.nirspec AND v_n_spectra = 0 THEN
+      RAISE EXCEPTION 'the nirspec component froze no spectra (nothing is published)';
+    END IF;
     -- ...and every selected photometry catalog must freeze at least one row: a
     -- catalog whose rows are all orphans or match no frozen object would be
     -- listed as a component with nothing behind it (Codex on #599)

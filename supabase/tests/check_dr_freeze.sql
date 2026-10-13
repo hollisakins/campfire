@@ -482,6 +482,24 @@ BEGIN
   END IF;
   DELETE FROM dr_releases WHERE tag = 'DR-zzz-orph';
   DELETE FROM object_photometry WHERE catalog_name = 'ZZZ ORPHANS';
+
+  -- nirspec selected with nothing published: refused, not an empty release
+  -- (Codex on #599). Triggers off so the objects are left exactly as they were.
+  CREATE TEMP TABLE zzz_was_pub AS SELECT id FROM spectra WHERE deploy_status = 'published';
+  SET LOCAL session_replication_role = replica;
+  UPDATE spectra SET deploy_status = 'draft' WHERE id IN (SELECT id FROM zzz_was_pub);
+  SET LOCAL session_replication_role = origin;
+  got := pg_temp.zzz_dr_as('authenticated', admin,
+    $q$SELECT (public.dr_enqueue_freeze('DR-zzz-none', '["nirspec"]', NULL, true))->>'state'$q$);
+  SET LOCAL session_replication_role = replica;
+  UPDATE spectra SET deploy_status = 'published' WHERE id IN (SELECT id FROM zzz_was_pub);
+  SET LOCAL session_replication_role = origin;
+  IF got <> 'failed' OR (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-none')
+       NOT LIKE 'the nirspec component froze no spectra%' THEN
+    RAISE EXCEPTION 'an empty nirspec freeze should fail: % / %', got, (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-none');
+  END IF;
+  DELETE FROM dr_releases WHERE tag = 'DR-zzz-none';
+  DROP TABLE zzz_was_pub;
   RAISE NOTICE 'OK 3: idempotence + failure path';
 END $$;
 
