@@ -216,7 +216,7 @@ def _run_deploy_flow(fn, *args, **kwargs):
         raise
 
 
-def _under_observation_lease(config: dict, obs_name: str, dry_run: bool, fn, *args, **kwargs):
+def _under_observation_lease(config: dict, obs_name: str, dry_run: bool, fn, /, *args, **kwargs):
     """Run a standalone per-observation writer under the observation's deploy lease.
 
     The full `campfire deploy --obs` takes the lease itself; the standalone
@@ -229,13 +229,16 @@ def _under_observation_lease(config: dict, obs_name: str, dry_run: bool, fn, *ar
     return _under_scope_lease(config, 'observation', obs_name, dry_run, fn, *args, **kwargs)
 
 
-def _under_scope_lease(config: dict, scope_type: str, scope_key: str, dry_run: bool, fn, *args, **kwargs):
+def _under_scope_lease(config: dict, scope_type: str, scope_key: str, dry_run: bool, fn, /, *args, **kwargs):
     """`_under_observation_lease` for any deploy scope ('observation' / 'field')."""
     return _under_scope_leases(config, [(scope_type, scope_key)], dry_run, fn, *args, **kwargs)
 
 
-def _under_scope_leases(config: dict, scopes, dry_run: bool, fn, *args, **kwargs):
+def _under_scope_leases(config: dict, scopes, dry_run: bool, fn, /, *args, **kwargs):
     """Run a standalone catalog writer under a deploy lease on every scope in `scopes`.
+
+    The helper's own parameters are positional-only, so the writer's
+    keyword arguments (``dry_run=`` above all) pass through to it untouched.
 
     Unlike the full deploy, these writers do not fall back to running without
     a lease: the lease is what keeps a data-release freeze from snapshotting
@@ -269,6 +272,21 @@ def _under_scope_leases(config: dict, scopes, dry_run: bool, fn, *args, **kwargs
             lease.claim()
         return out
     return _run_deploy_flow(run)
+
+
+def _confirm_then_lease(config: dict, field: str, dry_run: bool, yes: bool, fn, /, *args):
+    """Run an interactive objects edit (split / merge): preview and confirm
+    with NO lease held, then apply under the field lease.
+
+    A lease held across the prompt would block deploys, freezes and publishes
+    for as long as the operator sits at it (or after they walk away; the
+    heartbeat keeps it live). The applying run re-reads every row under the
+    lease and prints the plan it applies.
+    """
+    if not dry_run and not yes and sys.stdin.isatty():
+        fn(*args, dry_run=True, yes=False)
+        click.confirm("Apply?", abort=True)
+    return _under_scope_lease(config, 'field', field, dry_run, fn, *args, dry_run=dry_run, yes=True)
 
 
 def _fmt_bytes(n: int | float) -> str:
@@ -929,10 +947,8 @@ def objects_split(ctx, config_path, object_ref, move_target_ids, dry_run, yes, l
     config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
     field = resolve_object_ref(sb, object_ref)['field']
-    _under_scope_lease(
-        config, 'field', field, dry_run, split_object,
-        sb, object_ref, list(move_target_ids), dry_run=dry_run, yes=yes,
-    )
+    _confirm_then_lease(config, field, dry_run, yes, split_object,
+                        sb, object_ref, list(move_target_ids))
 
 
 @objects.command('merge')
@@ -964,12 +980,10 @@ def objects_merge(ctx, config_path, survivor_ref, source_refs, dry_run, yes, loc
 
     config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
-    fields = sorted({resolve_object_ref(sb, ref)['field']
-                     for ref in (survivor_ref, *source_refs)})
-    _under_scope_leases(
-        config, [('field', f) for f in fields], dry_run, merge_objects,
-        sb, survivor_ref, list(source_refs), dry_run=dry_run, yes=yes,
-    )
+    # merge_objects refuses a cross-field merge, so the survivor's field is the one
+    field = resolve_object_ref(sb, survivor_ref)['field']
+    _confirm_then_lease(config, field, dry_run, yes, merge_objects,
+                        sb, survivor_ref, list(source_refs))
 
 
 @objects.command('rebuild')

@@ -124,3 +124,56 @@ def test_field_lifecycle_flips_under_the_field_lease(patched, monkeypatch):
                                to_status='published', verb='Publish', field='cosmos')
     assert seen['p_scope_type'] == 'field' and seen['p_scope_key'] == 'cosmos'
     assert order == ['begin', 'flip7', 'flip8', 'claim']
+
+
+def test_interactive_objects_edit_confirms_before_leasing(patched, monkeypatch):
+    c, order = _client({'version': 1})
+    patched(c)
+    monkeypatch.setattr(dcli.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(dcli.click, 'confirm', lambda *a, **k: order.append('confirm'))
+
+    def edit(sb, ref, *, dry_run, yes):
+        order.append(f'edit dry={dry_run} yes={yes}')
+    dcli._confirm_then_lease({}, 'cosmos', False, False, edit, None, 'J1')
+    # previewed and confirmed with no lease; applied under it without a second prompt
+    assert order == ['edit dry=True yes=False', 'confirm', 'begin', 'edit dry=False yes=True', 'claim']
+
+
+def test_objects_edit_with_yes_skips_the_preview(patched):
+    c, order = _client({'version': 1})
+    patched(c)
+    dcli._confirm_then_lease({}, 'cosmos', False, True,
+                             lambda sb, ref, *, dry_run, yes: order.append('edit'), None, 'J1')
+    assert order == ['begin', 'edit', 'claim']
+
+
+def test_writer_keywords_named_like_the_helper_pass_through(patched):
+    # every real caller forwards dry_run= (and the objects edits yes=) to the writer
+    c, order = _client({'version': 4})
+    patched(c)
+    seen = {}
+
+    def writer(obs, config, *, dry_run, source_ids=None):
+        seen.update(dry_run=dry_run, source_ids=source_ids)
+        return 'ok'
+    assert dcli._under_observation_lease({}, 'obs1', False, writer, 'obs1', {},
+                                         dry_run=False, source_ids=['a']) == 'ok'
+    assert seen == {'dry_run': False, 'source_ids': ['a']}
+    assert dcli._under_scope_lease({}, 'field', 'f', True, writer, 'f', {}, dry_run=True) == 'ok'
+    assert seen['dry_run'] is True
+
+
+@pytest.mark.parametrize('dry', [True, False])
+def test_deploy_json_command_end_to_end(patched, monkeypatch, dry):
+    from click.testing import CliRunner
+    c, order = _client({'version': 4})
+    patched(c)
+    monkeypatch.setattr(dcli, '_gate_admin', lambda *a, **k: None)
+    monkeypatch.setattr(dcli, 'load_config', lambda *a, **k: {})
+    calls = []
+    monkeypatch.setattr(dcli, 'deploy_json', lambda obs, config, **kw: calls.append((obs, kw)))
+    args = ['json', '--obs', 'obs1'] + (['--dry-run'] if dry else [])
+    res = CliRunner().invoke(dcli.deploy_group, args, obj={})
+    assert res.exit_code == 0, (res.output, res.exception)
+    assert calls == [('obs1', {'dry_run': dry, 'source_ids': None})]
+    assert order == ([] if dry else ['begin', 'claim'])
