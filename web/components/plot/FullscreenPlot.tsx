@@ -15,7 +15,7 @@ export function FullscreenPlot({
 }: {
   label: string;
   className?: string;
-  children: (fullscreen: boolean) => ReactNode;
+  children: (fullscreen: boolean, fullscreenButton: ReactNode) => ReactNode;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
@@ -24,7 +24,10 @@ export function FullscreenPlot({
   useLayoutEffect(() => {
     const dialog = dialogRef.current!;
     if (!fullscreen) {
-      if (!dialog.open) dialog.show();
+      if (!dialog.open) {
+        dialog.show();
+        toggleRef.current?.focus({ preventScroll: true });
+      }
       return;
     }
 
@@ -58,20 +61,19 @@ export function FullscreenPlot({
         ? 'fixed inset-0 flex h-[100dvh] w-screen flex-col overflow-auto border-0'
         : `static block w-full border-0 ${className}`}`}
     >
-      <div className="flex shrink-0 items-center justify-end border-b border-border px-4 py-1.5">
+      {children(fullscreen,
         <button
           ref={toggleRef}
           type="button"
           onClick={() => setFullscreen(value => !value)}
           aria-expanded={fullscreen}
+          aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}
           title={fullscreen ? 'Exit full screen (Esc)' : 'View plot full screen'}
-          className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs text-text-secondary hover:bg-card-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+          className="absolute right-3 top-2 inline-flex items-center justify-center rounded p-1.5 text-text-secondary hover:bg-card-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
         >
           {fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-          {fullscreen ? 'Exit full screen' : 'Full screen'}
         </button>
-      </div>
-      {children(fullscreen)}
+      )}
     </dialog>
   );
 }

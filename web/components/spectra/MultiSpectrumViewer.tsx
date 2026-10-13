@@ -306,9 +306,9 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
 
   return (
     <FullscreenPlot label="Spectrum comparison">
-      {(fullscreen) => <>
+      {(fullscreen, fullscreenButton) => <>
       {/* Controls bar */}
-      <div className="flex shrink-0 items-center gap-4 flex-wrap px-4 py-2 border-b border-border bg-surface-2">
+      <div className="relative flex shrink-0 items-center gap-4 flex-wrap pl-4 pr-14 py-2 border-b border-border bg-surface-2">
         <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />
         <ControlDivider />
         <EmissionLinesControl showEmissionLines={showEmissionLines} onChange={setShowEmissionLines} />
@@ -318,6 +318,7 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
             <RedshiftSliderControl redshift={redshift} onChange={setRedshift} />
           </>
         )}
+        {fullscreenButton}
       </div>
 
       {/* Plot */}

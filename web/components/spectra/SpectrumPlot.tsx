@@ -791,7 +791,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
 
   return (
     <FullscreenPlot label={`${grating} spectrum`} className={bare ? '' : 'ring-1 ring-border rounded-lg overflow-hidden'}>
-      {(fullscreen) => <>
+      {(fullscreen, fullscreenButton) => <>
       {heatError && (
         <div
           role="alert"
@@ -825,7 +825,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
         </div>
       )}
       {/* Controls */}
-      <div className="flex shrink-0 flex-wrap items-center gap-4 px-4 py-2 border-b border-border bg-surface-2">
+      <div className="relative flex shrink-0 flex-wrap items-center gap-4 pl-4 pr-14 py-2 border-b border-border bg-surface-2">
         <FluxUnitToggle fluxUnit={fluxUnit} onChange={setFluxUnit} />
 
         <ControlDivider />
@@ -940,6 +940,7 @@ export const SpectrumPlot: React.FC<SpectrumPlotProps> = ({
             }}
           />
         )}
+        {fullscreenButton}
       </div>
 
       {/* Plot */}
