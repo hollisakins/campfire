@@ -327,6 +327,43 @@ def test_clock_margin_is_measured_from_the_store_date():
     assert B.measure_clock_margin(Store('Mon, 13 Oct 2026 12:00:03 GMT'), BUCKET, 'k', None) is None
 
 
+def test_clock_margin_survives_latency_cancelling_a_lagging_store_clock():
+    # Codex on #601: the store lags the database by 10 s and the page fetch
+    # took 8 s; the raw difference reads 2 s, the true skew is 10 s
+    db_now = datetime(2026, 10, 13, 12, 0, 0, tzinfo=timezone.utc)
+
+    class Store:
+        def head_object(self, **kw):
+            return {'ResponseMetadata': {'HTTPHeaders': {'date': 'Mon, 13 Oct 2026 11:59:58 GMT'}}}
+    m = B.measure_clock_margin(Store(), BUCKET, 'k', db_now, started=0.0, now=lambda: 8.5)
+    assert m >= timedelta(seconds=10)
+    assert m == timedelta(seconds=2 + 8.5 + 5)
+
+
+MOSAIC_KEY = 'data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_full_sci.fits.gz'
+
+
+def test_rewritten_gzipped_mosaic_is_verified_on_its_logical_bytes():
+    # Codex on #601: the registry hashes the uncompressed FITS
+    import gzip
+    logical = _fits_bytes(2)
+    stored = gzip.compress(logical)
+    assert B._stored_compressed(MOSAIC_KEY) and not B._stored_compressed(JSON_KEY)
+    assert B.logical_sha256(stored, compressed=True) == B.sha256_hex(logical)
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    row = _row(MOSAIC_KEY, logical, product_type='nircam_mosaic', frozen_at=past,
+               source_stored_size=len(stored), component='nircam/cosmos', program_slug=None)
+    s3 = _s3(**{MOSAIC_KEY: stored})
+    o = B.process_member(row, tag=TAG, s3=s3, bucket=BUCKET)
+    assert (o.state, o.action) == ('copied', 'copy-verified')
+    assert o.archive_key.endswith('.fits.gz') and s3.body(BUCKET, o.archive_key) == stored
+    # a different logical mosaic is still refused (by size or by hash)
+    other = gzip.compress(_fits_bytes(3))
+    o = B.process_member(dict(row, source_stored_size=len(other)), tag=TAG,
+                         s3=_s3(**{MOSAIC_KEY: other}), bucket=BUCKET)
+    assert (o.state, o.action) == ('failed', 'drift') and 'the release froze' in o.error
+
+
 def test_large_object_uploaded_just_before_the_freeze_is_copied_with_a_measured_window():
     frozen_at = datetime.now(timezone.utc) + timedelta(seconds=30)
     head = {'LastModified': datetime.now(timezone.utc)}

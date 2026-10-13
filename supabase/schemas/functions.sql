@@ -10191,9 +10191,11 @@ BEGIN
 
   -- Built member files no longer match the rows: back to pending.
   UPDATE dr_exports
-     SET state = 'pending', sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL
+     SET state = 'pending', sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL,
+         claim_token = NULL, claimed_at = NULL
    -- `building` too: a builder mid-way through this file read the old rows,
    -- and dr_export_mark refuses its ready mark once the row is not building
+   -- (lock order: the release row is already held above, as in dr_export_mark)
    WHERE tag = p_tag AND stream = 'members' AND state IN ('ready', 'building') AND partition = ANY (v_partitions);
 
   IF n_copied + n_stamped > 0 THEN

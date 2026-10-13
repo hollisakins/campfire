@@ -41,6 +41,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -129,6 +130,36 @@ def stamp_fits(data: bytes, tag: str) -> bytes:
 
 def sha256_hex(data: bytes) -> str:
     return 'sha256:' + hashlib.sha256(data).hexdigest()
+
+
+def _stored_compressed(storage_key: str) -> bool:
+    """True when the layout stores this key gzipped (``compressed_suffixes``)."""
+    from campfire_layout import products
+    try:
+        pk = parse_key(storage_key)
+    except (LayoutError, ValueError):
+        return False
+    spec = products.get(pk.product_type)
+    return storage_key.endswith('.gz') and any(
+        (pk.filename or '').endswith(sfx) or storage_key[:-3].endswith(sfx)
+        for sfx in getattr(spec, 'compressed_suffixes', ()) or ())
+
+
+def logical_sha256(stored: bytes, *, compressed: bool) -> str:
+    """sha256 of the logical bytes: the stored body, gunzipped first when the
+    product is stored transport-compressed (streamed, never fully inflated)."""
+    if not compressed:
+        return sha256_hex(stored)
+    import zlib
+    h = hashlib.sha256()
+    d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    view = memoryview(stored)
+    for i in range(0, len(view), 1 << 20):
+        h.update(d.decompress(view[i:i + (1 << 20)]))
+    h.update(d.flush())
+    if not d.eof:
+        raise ValueError('truncated gzip body')
+    return 'sha256:' + h.hexdigest()
 
 
 def science_hash_of(data: bytes) -> str:
@@ -346,7 +377,9 @@ def _copy_member(row: dict, *, s3, bucket: str, clock_margin: timedelta = None) 
                            error=f'source {src} was rewritten after the freeze and is too large '
                                  f'({size:,} bytes) to verify against the frozen hash')
         body = s3.get_object(Bucket=bucket, Key=src, IfMatch=etag)['Body'].read()
-        got = sha256_hex(body)
+        # The registry hashes the LOGICAL bytes: a transport-compressed product
+        # (mosaic FITS stored as .fits.gz) is hashed uncompressed (Codex on #601).
+        got = logical_sha256(body, compressed=_stored_compressed(row['storage_key']))
         if got != row['content_hash']:
             return Outcome(key, 'failed', 'drift',
                            error=f'source {src} holds {got}, the release froze {row["content_hash"]}')
@@ -394,25 +427,31 @@ def _unchanged_since_freeze(head: dict, frozen_at, margin: timedelta = CLOCK_SKE
     return lm < frozen_at - margin
 
 
-def measure_clock_margin(s3, bucket: str, key: str, db_now, *, now=None) -> Optional[timedelta]:
-    """The window to keep around ``frozen_at``: |store clock - database clock|
-    plus the time between the two readings, plus 5 s for the 1 s resolution of
-    HTTP dates. Read from one HEAD's ``Date`` header against the ``db_now`` the
-    pending page carried; None when either reading is missing (the caller then
-    keeps the conservative default). Codex on #601: a fixed 2-minute window
-    wrongly failed large objects uploaded just before a freeze.
+def measure_clock_margin(s3, bucket: str, key: str, db_now, *, started: Optional[float] = None,
+                         now=None) -> Optional[timedelta]:
+    """The window to keep around ``frozen_at``, bounding the clock skew.
+
+    ``db_now`` was read at some instant during the pending-page fetch, and the
+    store's ``Date`` at some instant during the HEAD here, so the gap between
+    the two readings lies in [0, L] with L = the time from the START of that
+    fetch (*started*, a monotonic reading) to the end of the HEAD. Then
+    |skew| <= |Date - db_now| + L, plus 5 s for the 1 s resolution of HTTP
+    dates. Adding L whole (not just the HEAD's duration) keeps the bound valid
+    when a lagging store clock and the response latency cancel (Codex on #601).
+    None when either reading is missing (the caller keeps the default).
     """
     from email.utils import parsedate_to_datetime
     import time as _time
+    clock = now or _time.monotonic
     db_now = _parse_ts(db_now)
     if db_now is None or not key:
         return None
-    t0 = (now or _time.monotonic)()
+    t0 = clock() if started is None else started
     try:
         head = s3.head_object(Bucket=bucket, Key=key)
     except Exception:  # noqa: BLE001
         return None
-    elapsed = (now or _time.monotonic)() - t0
+    elapsed = clock() - t0
     date = ((head.get('ResponseMetadata') or {}).get('HTTPHeaders') or {}).get('date')
     if not date:
         return None
@@ -491,6 +530,7 @@ def run_byte_pass(client, s3, bucket: str, tag: str, *, workers: int = 8, page_s
             want = page_size if limit is None else min(page_size, limit - report.seen)
             if want <= 0:
                 break
+            fetch_started = time.monotonic()
             rows = fetch_pending(client, tag, after=after, limit=want,
                                  include_failed=include_failed, prefix=prefix)
             if not rows:
@@ -513,7 +553,8 @@ def run_byte_pass(client, s3, bucket: str, tag: str, *, workers: int = 8, page_s
                 need_pipeline = False
             if margin is None:
                 probe = next((r for r in rows if r.get('source_root') == 'live' and r.get('source_key')), None)
-                measured = (measure_clock_margin(s3, bucket, probe['source_key'], probe.get('db_now'))
+                measured = (measure_clock_margin(s3, bucket, probe['source_key'], probe.get('db_now'),
+                                                 started=fetch_started)
                             if probe else None)
                 margin = measured or CLOCK_SKEW
                 log(f"  clock window around the freeze: {margin.total_seconds():.0f} s "
