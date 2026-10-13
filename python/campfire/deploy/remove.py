@@ -21,6 +21,7 @@ from supabase import Client
 from campfire_layout import Scope, key_prefix
 from campfire.deploy.supabase import (
     DeployScopeBusy,
+    DeployScopeUnavailable,
     ScopeLease,
     heartbeat_deploy_scope,
     deploy_event_metadata,
@@ -247,15 +248,15 @@ def remove_observation(
         lease = ScopeLease(sb, 'observation', obs_name, actor=get_user_id_from_token(config))
         try:
             lease.begin()
+        except DeployScopeUnavailable as e:
+            print(f"\n  REFUSED: could not take the deploy lease on {obs_name} ({e}); "
+                  f"a removal never runs without it.")
+            raise RemovalRefused(f"{obs_name}: the deploy lease could not be taken") from e
         except DeployScopeBusy as e:
             print(f"\n  REFUSED: {e}")
             if e.holder:
                 print("  " + e.describe().replace('\n', '\n  '))
             raise RemovalRefused(f"{obs_name}: {e}") from e
-        if not lease.leased:
-            print(f"\n  REFUSED: could not take the deploy lease on {obs_name}; "
-                  f"a removal never runs without it.")
-            raise RemovalRefused(f"{obs_name}: the deploy lease could not be taken")
     def still_held() -> bool:
         # Checked right before each destructive step (Codex on #602): a lease
         # stolen or taken over meanwhile means another deploy may be writing
