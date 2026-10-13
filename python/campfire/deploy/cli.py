@@ -240,11 +240,11 @@ def _under_scope_leases(config: dict, scopes, dry_run: bool, fn, /, *args, **kwa
     The helper's own parameters are positional-only, so the writer's
     keyword arguments (``dry_run=`` above all) pass through to it untouched.
 
-    Unlike the full deploy, these writers do not fall back to running without
-    a lease: the lease is what keeps a data-release freeze from snapshotting
-    them half-way, so a lease that could not be taken (begin degraded on an
-    RPC error) refuses the command (exit 1) rather than running unguarded
-    (Codex on #599). Claimed on success, released on any failure.
+    No writer runs without its lease: the lease is what keeps a data-release
+    freeze from snapshotting it half-way, so a lease that could not be taken
+    (busy, or begin failing on an RPC error) refuses the command (exit 1)
+    rather than running unguarded (Codex on #599). Claimed on success,
+    released on any failure.
     """
     if dry_run:
         return fn(*args, **kwargs)
@@ -257,12 +257,8 @@ def _under_scope_leases(config: dict, scopes, dry_run: bool, fn, /, *args, **kwa
         try:
             for scope_type, scope_key in dict.fromkeys(scopes):
                 lease = ScopeLease(client, scope_type, scope_key, actor=actor)
-                lease.begin()
+                lease.begin()      # fails closed: DeployScopeBusy / DeployScopeUnavailable -> exit 1
                 leases.append(lease)
-                if not lease.leased:
-                    print(f"Error: could not take the deploy lease for {scope_type} "
-                          f"'{scope_key}'; refusing to write without it. Retry shortly.")
-                    sys.exit(1)
             out = fn(*args, **kwargs)
         except BaseException:
             for lease in leases:
@@ -449,7 +445,7 @@ def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run
                 from campfire.deploy.config import resolve_photometry_config
                 phot_path = resolve_photometry_config(None)
 
-            for field in sorted(fields_needing_rebuild):
+            def rebuild_field(field):
                 print(f"\nReconciling objects for field '{field}'...")
                 _, _, changed_ids = reconcile_field_objects(
                     sb, field, abort_on_split_merge=True,
@@ -463,6 +459,12 @@ def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run
                         sb, field, phot_path, config,
                         restrict_to_object_db_ids=changed_ids,
                     )
+
+            for field in sorted(fields_needing_rebuild):
+                # the observation leases are released by now: the deferred
+                # catalog writes hold the field's lease, so a data-release
+                # freeze cannot land between them (Codex on #599)
+                _under_scope_lease(config, 'field', field, False, rebuild_field, field)
 
             print()
             refresh_filter_options(sb)

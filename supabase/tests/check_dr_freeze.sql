@@ -469,6 +469,25 @@ BEGIN
    WHERE storage_key = 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_sci.fits' AND root = 'live';
   DELETE FROM dr_releases WHERE tag = 'DR-zzz-push';
 
+  -- a legacy image row with no deployment pairs with a pushed row with none:
+  -- NULL = NULL proves nothing, so it fails the freeze too (Codex on #599)
+  UPDATE nircam_images SET deployment_id = NULL
+   WHERE file_path = 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_sci.fits';
+  UPDATE storage_objects SET deployment_id = NULL
+   WHERE storage_key = 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_sci.fits' AND root = 'live';
+  got := pg_temp.zzz_dr_as('authenticated', admin,
+    $q$SELECT (public.dr_enqueue_freeze('DR-zzz-null', '["nircam/zzz_drf"]', NULL, true))->>'state'$q$);
+  IF got <> 'failed' OR (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-null')
+       NOT LIKE 'published mosaics without an active registry row of their deployment%zzz_drf_f444w_sci.fits%' THEN
+    RAISE EXCEPTION 'a NULL/NULL deployment pair should fail the freeze: % / %', got,
+      (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-null');
+  END IF;
+  UPDATE nircam_images SET deployment_id = 990101
+   WHERE file_path = 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_sci.fits';
+  UPDATE storage_objects SET deployment_id = 990101
+   WHERE storage_key = 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_sci.fits' AND root = 'live';
+  DELETE FROM dr_releases WHERE tag = 'DR-zzz-null';
+
   -- likewise a published spectrum whose final FITS has no active registry row
   UPDATE storage_objects so SET status = 'revoked'
     FROM spectra s

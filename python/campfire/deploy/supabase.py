@@ -399,6 +399,17 @@ class DeployScopeBusy(RuntimeError):
         return '\n'.join(lines)
 
 
+class DeployScopeUnavailable(DeployScopeBusy):
+    """``begin_deploy_scope`` failed for another reason (an RPC or network
+    error): the lease could not be taken. A deploy never runs without it,
+    because the lease is what keeps a data-release freeze from snapshotting a
+    deploy half-way (Codex on #599); the CLI exits 1 like a busy scope."""
+
+    def describe(self) -> str:
+        return (f"Could not take the deploy lease on {self.scope_type} '{self.scope_key}' "
+                f"({self}). A deploy never runs without it; retry shortly.")
+
+
 def deploy_host() -> str | None:
     """The hostname recorded on the lease (best-effort)."""
     try:
@@ -442,9 +453,10 @@ def begin_deploy_scope(
     'leased': True}`` — ``version`` is the CAS value to pass back to
     ``claim_deploy_scope`` at finalize. Raises :class:`DeployScopeBusy` when
     another deploy holds a live lease and *steal* is False. Any other failure
-    (RPC missing on an older database, network) degrades to the pre-lease
-    behaviour: ``{'version': get_deploy_scope_version(...), 'leased': False,
-    'error': ...}``.
+    (RPC missing on an older database, network) returns ``{'version':
+    get_deploy_scope_version(...), 'leased': False, 'error': ...}``, which
+    :meth:`ScopeLease.begin` turns into :class:`DeployScopeUnavailable`: no
+    deploy runs without its lease.
     """
     try:
         resp = client.rpc('begin_deploy_scope', {
@@ -547,7 +559,9 @@ class ScopeLease:
 
     def begin(self) -> int:
         """Take the lease; returns the scope version to CAS at finalize.
-        Raises DeployScopeBusy (see begin_deploy_scope)."""
+        Raises DeployScopeBusy (see begin_deploy_scope), or
+        DeployScopeUnavailable when the lease could not be taken at all: no
+        deploy runs unleased (fail closed; Codex on #599)."""
         info = begin_deploy_scope(
             self.client, self.scope_type, self.scope_key,
             actor=self.actor, host=self.host, steal=self.steal)
@@ -568,8 +582,9 @@ class ScopeLease:
                       f"(held by {prev.get('in_progress_by') or 'service-role'} on "
                       f"{prev.get('in_progress_host') or 'unknown host'}, last heartbeat "
                       f"{prev.get('heartbeat_at') or '?'}) — that deploy is presumed dead.")
-        elif info.get('error'):
-            print(f"  Note: deploy lease unavailable ({info['error']}); continuing without it.")
+        else:
+            raise DeployScopeUnavailable(self.scope_type, self.scope_key,
+                                         str(info.get('error') or 'begin_deploy_scope returned no lease'))
         return self.version_at_start
 
     def heartbeat(self) -> None:

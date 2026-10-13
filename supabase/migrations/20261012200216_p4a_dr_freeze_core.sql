@@ -698,8 +698,12 @@ BEGIN
         -- the bytes of the PUBLISHED deployment: `campfire push --field` can
         -- register a replacement mosaic (deployment_id NULL) before the deploy
         -- that publishes it; that row must not be frozen under the old image
-        -- (the post-freeze check then fails the freeze; Codex on #599)
-        AND so.deployment_id IS NOT DISTINCT FROM ni.deployment_id
+        -- (the post-freeze check then fails the freeze; Codex on #599). Plain
+        -- equality: a NULL on either side (a legacy image row, an unattached
+        -- push) proves nothing, so it is not frozen and the freeze fails
+        -- loudly instead (production: no published image or live mosaic row
+        -- has a NULL deployment, 2026-10-13).
+        AND so.deployment_id = ni.deployment_id
       -- (P(z) sidecars are not members: photometry_pz is a key-only product the
       -- layout cannot archive; the frozen dr_photometry rows carry the catalog
       -- values, the sidecars stay live-only -- plan amendment D-P4-5.)

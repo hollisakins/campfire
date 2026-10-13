@@ -177,3 +177,26 @@ def test_deploy_json_command_end_to_end(patched, monkeypatch, dry):
     assert res.exit_code == 0, (res.output, res.exception)
     assert calls == [('obs1', {'dry_run': dry, 'source_ids': None})]
     assert order == ([] if dry else ['begin', 'claim'])
+
+
+def test_multi_obs_deferred_reconcile_holds_the_field_lease(patched, monkeypatch):
+    # Codex on #599: the per-observation leases are gone by the deferred phase
+    from click.testing import CliRunner
+    import campfire.deploy.reconcile as rec
+    keys = []
+    c, order = _client(lambda p: keys.append((p['p_scope_type'], p['p_scope_key'])) or {'version': 1})
+    patched(c)
+    monkeypatch.setattr(dcli, '_gate_admin', lambda *a, **k: None)
+    monkeypatch.setattr(dcli, 'load_config', lambda *a, **k: {'supabase': {}})
+    monkeypatch.setattr(dcli, 'get_supabase_client', lambda config: c)
+    for name in ('refresh_filter_options', 'refresh_programs_overview', 'refresh_observations_overview'):
+        monkeypatch.setattr(dcli, name, lambda sb: None)
+    monkeypatch.setattr(dcli, 'deploy_observation',
+                        lambda obs, config, **kw: {'needs_reconcile': True, 'field': 'cosmos'})
+    monkeypatch.setattr(rec, 'reconcile_field_objects',
+                        lambda sb, field, **kw: order.append(f'reconcile {field}') or (0, {}, []))
+    res = CliRunner().invoke(dcli.deploy_group, ['--obs', 'a', 'b', '--no-photometry'],
+                             obj={'service_role': False})
+    assert res.exit_code == 0, (res.output, res.exception)
+    assert keys == [('field', 'cosmos')]
+    assert order == ['begin', 'reconcile cosmos', 'claim']

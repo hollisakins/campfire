@@ -194,7 +194,10 @@ def test_scope_lease_not_leased_skips_heartbeat():
     client = _FakeClient({'begin_deploy_scope': _APIError('PGRST202', 'missing'),
                           'get_deploy_scope_version': 0})
     lease = ScopeLease(client, 'observation', 'obs_a')
-    lease.begin()
+    # a lease that could not be taken fails closed (Codex on #599): no deploy runs unleased
+    with pytest.raises(sb_mod.DeployScopeUnavailable, match='missing'):
+        lease.begin()
+    assert isinstance(sb_mod.DeployScopeUnavailable('observation', 'o', 'x'), sb_mod.DeployScopeBusy)
     lease.heartbeat()
     assert not [c for c in client.calls if c[0] == 'heartbeat_deploy_scope']
     assert lease not in sb_mod._ACTIVE_LEASES
@@ -259,7 +262,8 @@ def test_scope_lease_timer_not_started_without_lease():
     client = _FakeClient({'begin_deploy_scope': _APIError('PGRST202', 'missing'),
                           'get_deploy_scope_version': 0})
     lease = ScopeLease(client, 'observation', 'o', heartbeat_interval_s=0.01)
-    lease.begin()
+    with pytest.raises(sb_mod.DeployScopeUnavailable):
+        lease.begin()
     time.sleep(0.05)
     assert lease._timer is None
     assert not [c for c in client.calls if c[0] == 'heartbeat_deploy_scope']
