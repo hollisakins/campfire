@@ -59,8 +59,12 @@ objects row are scoped to the partition's program** (`n_targets`, `n_spectra`,
 `gratings`, `observations`, `max_snr`, `max_exposure_time` count only that
 program's frozen spectra), exactly what the live scoped sync returns to a caller
 holding that one program. A reader holding several programs merges rows by `id`
-and recomputes the aggregates from the spectra it holds; `programs` and
-`evidence_programs` are the full frozen arrays in every copy.
+and recomputes the aggregates from the spectra it holds. Nothing in a program's
+file names another program or another program's spectra: `programs` and
+`evidence_programs` are `[<partition program>]`, `reviewed_spectrum_ids` keeps
+that program's spectra only, and `z_source_spectrum_id` is null when the anchor
+spectrum belongs to another program (a reader holding several programs unions
+the arrays across its copies).
 
 Within a partition rows are ordered by the stream's key (`objects`: `object_id`
 name; `spectra`: `spectrum_id`; `line_fits`: `spectrum_id`; `photometry`: `id`;
@@ -76,8 +80,8 @@ Frozen-only fields are added; live-only operational fields (`updated_at`,
 ### objects
 
 `id` (the live `objects.id` at the freeze), `object_id` (the public name),
-`field`, `ra`, `dec`, `programs`, `evidence_programs` (programs of the
-published members), `observations`, `gratings`, `n_targets`, `n_spectra`,
+`field`, `ra`, `dec`, `programs`, `evidence_programs` (the partition program),
+`observations`, `gratings`, `n_targets`, `n_spectra`,
 `max_snr`, `max_exposure_time` (the six scoped to the partition program),
 `photo_z`, `photo_z_err_lo`, `photo_z_err_hi`, `has_photometry`,
 `z_source_spectrum_id` (the `spectra.id` whose auto fit anchors

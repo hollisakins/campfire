@@ -130,6 +130,21 @@ BEGIN
     SELECT (r.row_json->>'id')::int FROM dr_export_rows('DR-seed', 'objects', prog, NULL, 10000) r
   ) x;
   IF bad <> 0 OR n2 <> 0 THEN RAISE EXCEPTION 'objects partition differs from the live scoped sync for %: % rows differ, % missing', prog, bad, n2; END IF;
+  -- nothing in a program's objects file names another program or another
+  -- program's spectra (Codex on #600), for every program partition
+  SELECT count(*) INTO bad
+  FROM (SELECT DISTINCT program_slug FROM dr_spectra WHERE tag = 'DR-seed') pp
+  CROSS JOIN LATERAL dr_export_rows('DR-seed', 'objects', pp.program_slug, NULL, 10000) r
+  WHERE r.row_json->'programs' <> jsonb_build_array(pp.program_slug)
+     OR r.row_json->'evidence_programs' <> jsonb_build_array(pp.program_slug)
+     OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(r.row_json->'reviewed_spectrum_ids') = 'array'
+                                                         THEN r.row_json->'reviewed_spectrum_ids' ELSE '[]'::jsonb END) v
+                WHERE NOT EXISTS (SELECT 1 FROM dr_spectra s WHERE s.tag = 'DR-seed' AND s.program_slug = pp.program_slug
+                                    AND (s.id::text = v #>> '{}' OR s.spectrum_id = v #>> '{}')))
+     OR (r.row_json->>'z_source_spectrum_id' IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM dr_spectra s WHERE s.tag = 'DR-seed' AND s.program_slug = pp.program_slug
+                           AND s.id = (r.row_json->>'z_source_spectrum_id')::int));
+  IF bad <> 0 THEN RAISE EXCEPTION '% objects rows leak another program''s membership or spectra', bad; END IF;
 
   -- members
   SELECT count(*) INTO n FROM dr_export_rows('DR-seed', 'members', prog, NULL, 10000) r;

@@ -341,7 +341,10 @@ BEGIN
     SELECT o.name,
            jsonb_build_object(
              'id', o.object_id, 'object_id', o.name, 'field', o.field, 'ra', o.ra, 'dec', o.dec,
-             'programs', o.programs, 'evidence_programs', o.evidence_programs,
+             -- program membership scoped to THIS partition: the file is handed
+             -- to any holder of p_partition, who must not learn which other
+             -- (possibly proprietary) programs share the object (Codex on #600)
+             'programs', ARRAY[p_partition], 'evidence_programs', ARRAY[p_partition],
              -- aggregates scoped to this partition's program (the live scoped
              -- sync shape for a caller holding that one program)
              'observations', COALESCE(agg.observations, '{}'::text[]),
@@ -350,14 +353,26 @@ BEGIN
              'max_snr', agg.max_snr, 'max_exposure_time', agg.max_exposure_time,
              'photo_z', o.photo_z, 'photo_z_err_lo', o.photo_z_err_lo, 'photo_z_err_hi', o.photo_z_err_hi,
              'has_photometry', o.has_photometry,
-             'z_source_spectrum_id', o.z_source_spectrum_id,
+             -- the anchor spectrum's id only when it is one of this program's
+             'z_source_spectrum_id', CASE WHEN EXISTS (
+                 SELECT 1 FROM dr_spectra zs WHERE zs.tag = o.tag AND zs.id = o.z_source_spectrum_id
+                   AND zs.program_slug = p_partition) THEN o.z_source_spectrum_id END,
              'redshift_auto', o.redshift_auto, 'redshift_inspected', o.redshift_inspected,
              'redshift', o.redshift, 'redshift_quality', o.redshift_quality,
              'inspected_used_auto', o.inspected_used_auto,
              'last_inspected_at', o.last_inspected_at, 'last_inspected_by', o.last_inspected_by,
              'version', o.version, 'is_active', true,
              'needs_review', COALESCE((o.review_state->>'needs_review')::boolean, false),
-             'reviewed_spectrum_ids', o.review_state->'reviewed_spectrum_ids')
+             -- only this program's spectra among the signed-off set
+             -- (a JSON null / absent set is passed through as it is)
+             'reviewed_spectrum_ids', CASE
+               WHEN jsonb_typeof(o.review_state->'reviewed_spectrum_ids') = 'array' THEN (
+                 SELECT COALESCE(jsonb_agg(v ORDER BY v::text), '[]'::jsonb)
+                 FROM jsonb_array_elements(o.review_state->'reviewed_spectrum_ids') v
+                 WHERE EXISTS (SELECT 1 FROM dr_spectra rs
+                               WHERE rs.tag = o.tag AND rs.program_slug = p_partition
+                                 AND (rs.id::text = v #>> '{}' OR rs.spectrum_id = v #>> '{}')))
+               ELSE o.review_state->'reviewed_spectrum_ids' END)
     FROM dr_objects o
     LEFT JOIN LATERAL (
       SELECT count(*) AS n_spectra, count(DISTINCT s.target_id) AS n_targets,
