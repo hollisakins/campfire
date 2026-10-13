@@ -393,3 +393,35 @@ def test_remove_dry_run_checks_without_leasing(monkeypatch):
     rm, deleted = _remove_env(monkeypatch, c)
     rm.remove_observation('obs1', {}, dry_run=True, supabase_only=True, auto_approve=True, skip_rebuild=True)
     assert not deleted and order == ['refs']
+
+
+# Codex on #602: an interactive removal confirms before it takes the lease
+
+def test_interactive_remove_confirms_before_leasing_then_rechecks(monkeypatch):
+    c, order = _ordered_client([{**REFS[1]}])
+    rm, deleted = _remove_env(monkeypatch, c)
+    monkeypatch.setattr('builtins.input', lambda prompt: order.append('prompt') or 'y')
+    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=False, skip_rebuild=True)
+    assert deleted
+    # previewed and confirmed with no lease, then every check again under it
+    assert order[:4] == ['refs', 'prompt', 'begin', 'refs'] and order[-1] == 'claim'
+    assert order.count('prompt') == 1
+
+
+def test_interactive_remove_declined_takes_no_lease(monkeypatch):
+    c, order = _ordered_client([{**REFS[1]}])
+    rm, deleted = _remove_env(monkeypatch, c)
+    monkeypatch.setattr('builtins.input', lambda prompt: 'n')
+    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=False, skip_rebuild=True)
+    assert not deleted and 'begin' not in order
+
+
+def test_interactive_remove_refuses_when_the_observation_changed(monkeypatch):
+    c, order = _ordered_client([{**REFS[1]}])
+    rm, deleted = _remove_env(monkeypatch, c)
+    counts = iter([3, 5])        # a deploy added spectra while the prompt waited
+    monkeypatch.setattr(rm, '_count_spectra', lambda sb, ids: next(counts))
+    monkeypatch.setattr('builtins.input', lambda prompt: 'y')
+    with pytest.raises(rm.RemovalRefused, match='changed between the confirmation'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=False, skip_rebuild=True)
+    assert not deleted and order[-1] == 'release'

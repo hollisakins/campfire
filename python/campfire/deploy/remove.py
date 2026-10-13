@@ -226,6 +226,22 @@ def remove_observation(
     # observation between the check and the deletes (Codex on #602). Fails
     # closed: without the lease or the check, nothing is deleted. A dry run
     # checks without leasing.
+    #
+    # An interactive removal previews and confirms BEFORE taking the lease, so
+    # an operator sitting at (or abandoning) the prompt holds no lease that
+    # would block deploys, freezes and publishes; the checks then run again
+    # under the lease and refuse if the observation changed meanwhile (Codex
+    # on #602).
+    confirmed = None
+    if not dry_run and not auto_approve:
+        confirmed = _remove_checked(sb, obs, obs_name, config, dry_run=False, force=force,
+                                    supabase_only=supabase_only, auto_approve=False,
+                                    skip_rebuild=skip_rebuild, confirm_only=True)
+        if confirmed is None:
+            return
+        obs = _fetch_observation(sb, obs_name)
+        if obs is None:
+            raise RemovalRefused(f"{obs_name}: the observation disappeared after the confirmation")
     lease = None
     if not dry_run:
         lease = ScopeLease(sb, 'observation', obs_name, actor=get_user_id_from_token(config))
@@ -250,8 +266,9 @@ def remove_observation(
                                       version=lease.version_at_start) is True
     try:
         removed = _remove_checked(sb, obs, obs_name, config, dry_run=dry_run, force=force,
-                                  supabase_only=supabase_only, auto_approve=auto_approve,
-                                  skip_rebuild=skip_rebuild, still_held=still_held)
+                                  supabase_only=supabase_only, auto_approve=True,
+                                  skip_rebuild=skip_rebuild, still_held=still_held,
+                                  confirmed=confirmed)
         if lease is not None and removed:
             result = lease.claim()     # the data changed: bump the scope version
             if result.get('conflict'):
@@ -302,8 +319,14 @@ def _release_blockers_refuse(sb, obs_name: str) -> bool:
 
 def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool, force: bool,
                     supabase_only: bool, auto_approve: bool, skip_rebuild: bool,
-                    still_held=lambda: True) -> bool:
-    """The removal proper (the caller holds the lease). True once rows were deleted."""
+                    still_held=lambda: True, confirm_only: bool = False, confirmed=None):
+    """The removal proper (the caller holds the lease). True once rows were deleted.
+
+    With *confirm_only* (no lease held): run the checks, show the preview, ask,
+    and return what was confirmed (the counts) or None; nothing is deleted.
+    With *confirmed*: the checks re-run under the lease and the removal refuses
+    when the counts are no longer the ones the operator confirmed.
+    """
     field = obs['field']
     if _release_blockers_refuse(sb, obs_name):
         raise RemovalRefused(f"{obs_name}: a data release still needs it (see above)")
@@ -349,13 +372,20 @@ def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool
 
     if not targets and not n_shutters and not n_slits:
         print("\nNo data to remove.")
-        return False
+        return None if confirm_only else False
 
     if dry_run:
         print("\nDry run — no changes made.")
         return False
 
-    if not auto_approve:
+    plan = (len(targets), n_spectra, n_shutters, n_slits, n_comments)
+    if confirmed is not None and plan != tuple(confirmed):
+        raise RemovalRefused(
+            f"{obs_name} changed between the confirmation and the removal "
+            f"(confirmed targets/spectra/shutters/slits/comments {tuple(confirmed)}, now {plan}); "
+            f"nothing was deleted, re-run to review it again")
+
+    if confirm_only and not auto_approve:
         summary = (
             f"{len(targets)} targets, {n_spectra} spectra, "
             f"{n_shutters} shutters, {n_slits} slit regions"
@@ -373,7 +403,10 @@ def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool
         response = input(prompt)
         if response.lower() != 'y':
             print("Aborted.")
-            return False
+            return None
+        return plan
+    if confirm_only:
+        return plan
 
     done: list[str] = []
 
