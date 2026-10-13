@@ -234,6 +234,14 @@ BEGIN
     IF SQLERRM NOT LIKE 'no ledger row%' THEN RAISE; END IF;
   END;
 
+  -- an empty release cannot be exported (it could never become ready)
+  INSERT INTO dr_releases (tag, state, components) VALUES ('DR-zzz-empty', 'frozen', '["nirspec"]');
+  got := pg_temp.zzz_as('authenticated', '11111111-1111-1111-1111-111111111111', $q$SELECT (dr_export_begin('DR-zzz-empty'))::text$q$);
+  IF got NOT LIKE 'ERR: release DR-zzz-empty has nothing to export%' THEN RAISE EXCEPTION 'empty release export: %', got; END IF;
+  IF EXISTS (SELECT 1 FROM dr_exports WHERE tag = 'DR-zzz-empty') OR (SELECT state FROM dr_releases WHERE tag = 'DR-zzz-empty') <> 'frozen' THEN
+    RAISE EXCEPTION 'refused empty export wrote something';
+  END IF;
+
   -- published: begin refused
   UPDATE dr_releases SET state = 'published', published_at = now() WHERE tag = 'DR-seed';
   got := pg_temp.zzz_as('authenticated', '11111111-1111-1111-1111-111111111111', $q$SELECT (dr_export_begin('DR-seed'))::text$q$);

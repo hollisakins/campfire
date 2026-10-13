@@ -166,4 +166,22 @@ describe('runExportBudget', () => {
     expect(res.incomplete).toBe(true);
     expect(res.remaining).toBe(1);
   });
+
+  it('keeps headroom for another partition before the function deadline (Codex on #600)', async () => {
+    // each partition's upload takes 100 s: after the first, 180 s of a 280 s
+    // budget are left, less than twice the slowest partition -> stop
+    let t = 0;
+    const s3 = { send: async () => { t += 100_000; } };
+    const { client } = fakeSupabase({ pages, ledger: [entry('objects', 'pub'), entry('spectra', 'pub')] });
+    const res = await runExportBudget(client, s3 as never, 'bucket', 'DR-t', 280_000, () => t);
+    expect(res.built).toHaveLength(1);
+    expect(res.incomplete).toBe(true);
+    // fast partitions all fit
+    t = 0;
+    const fast = { send: async () => { t += 1_000; } };
+    const { client: c2 } = fakeSupabase({ pages, ledger: [entry('objects', 'pub'), entry('spectra', 'pub')] });
+    const res2 = await runExportBudget(c2, fast as never, 'bucket', 'DR-t', 280_000, () => t);
+    expect(res2.built).toHaveLength(2);
+    expect(res2.incomplete).toBe(false);
+  });
 });

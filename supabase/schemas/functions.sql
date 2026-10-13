@@ -9694,6 +9694,12 @@ BEGIN
   FROM dr_export_partitions(p_tag) p
   ON CONFLICT (tag, stream, partition) DO NOTHING;
   GET DIAGNOSTICS n_new = ROW_COUNT;
+  -- An empty release would seed an empty ledger and never become ready
+  -- (dr_derive_state needs ledger rows), while the builder reported nothing
+  -- remaining: refuse it outright (Codex on #600).
+  IF NOT EXISTS (SELECT 1 FROM dr_exports e WHERE e.tag = p_tag) THEN
+    RAISE EXCEPTION 'release % has nothing to export (the freeze captured no rows); purge it and freeze again', p_tag;
+  END IF;
   SELECT count(*) FILTER (WHERE state <> 'ready'), count(*) INTO n_pending, n_total
   FROM dr_exports WHERE tag = p_tag;
   RETURN jsonb_build_object('tag', p_tag, 'new', n_new, 'pending', n_pending, 'total', n_total,

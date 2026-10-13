@@ -169,9 +169,19 @@ export interface ExportRunResult {
 }
 
 /**
+ * Headroom kept before starting another partition: a partition starts only
+ * while the budget left covers the larger of this and twice the slowest
+ * partition built so far, so the last one started finishes inside the
+ * route's `maxDuration` instead of being cut off mid-upload (and left
+ * `building` for the next call to redo).
+ */
+export const PARTITION_RESERVE_MS = 30_000;
+
+/**
  * Seed the ledger, then build pending / failed partitions until the budget
  * is spent. One partition at a time, each marked `building` → `ready` (or
- * `failed` with the error, and the run continues with the next one).
+ * `failed` with the error, and the run continues with the next one). The
+ * first partition always starts, so every call makes progress.
  */
 export async function runExportBudget(
   supabase: SupabaseClient,
@@ -191,12 +201,16 @@ export async function runExportBudget(
   const built: ExportRunResult['built'] = [];
   const failed: ExportRunResult['failed'] = [];
   let incomplete = false;
+  let slowestMs = 0;
 
   for (const entry of todo) {
-    if (now() - t0 > budgetMs) {
+    const left = budgetMs - (now() - t0);
+    const started = built.length + failed.length;
+    if (started > 0 && left < Math.max(PARTITION_RESERVE_MS, 2 * slowestMs)) {
       incomplete = true;
       break;
     }
+    const tp = now();
     const key = entry.storage_key ?? '';
     try {
       await supabase.rpc('dr_export_mark', {
@@ -222,6 +236,7 @@ export async function runExportBudget(
         p_error: message,
       });
     }
+    slowestMs = Math.max(slowestMs, now() - tp);
   }
 
   const remaining = todo.length - built.length;

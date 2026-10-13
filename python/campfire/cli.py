@@ -1453,11 +1453,13 @@ def dr_export(tag, budget, base_url, as_json):
     from .dr import export_release
 
     session = _require_auth(base_url)
-    click.echo(f"Exporting {tag} …")
+    # --json: stdout carries the JSON document alone; progress goes to stderr
+    say = (lambda m: click.echo(m, err=True)) if as_json else click.echo
+    say(f"Exporting {tag} …")
     try:
-        result = export_release(session, tag, budget_seconds=budget, echo=click.echo)
+        result = export_release(session, tag, budget_seconds=budget, echo=say)
     except Exception as e:  # noqa: BLE001 - one line, not a traceback
-        click.echo(f"✗ {e}")
+        say(f"✗ {e}")
         sys.exit(1)
     totals = result.get('totals') or {}
     if as_json:

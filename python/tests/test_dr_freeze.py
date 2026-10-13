@@ -361,3 +361,19 @@ def test_cli_export(monkeypatch):
     monkeypatch.setattr(main_cli, '_require_auth', lambda base_url: s2)
     res = CliRunner().invoke(main_cli.cli, ['dr', 'export', '--tag', 'DR-t'])
     assert res.exit_code == 1 and 'FAILED x/y: e' in res.output
+
+
+def test_cli_export_json_stdout_is_pure_json(monkeypatch):
+    s = _FakeSession([
+        _HttpResp(200, {'state': 'exported', 'built': [{'stream': 'objects', 'partition': 'p', 'rows': 1, 'size': 2}],
+                        'failed': [], 'remaining': 0}),
+    ])
+    monkeypatch.setattr(main_cli, '_require_auth', lambda base_url: s)
+    try:
+        runner = CliRunner(mix_stderr=False)
+    except TypeError:  # click >= 8.2 always separates the streams
+        runner = CliRunner()
+    res = runner.invoke(main_cli.cli, ['dr', 'export', '--tag', 'DR-t', '--json'])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.stdout)['state'] == 'exported'
+    assert 'Exporting DR-t' in res.stderr
