@@ -490,11 +490,13 @@ DECLARE
   pub_expected text[][] := ARRAY[
     ['ERR', '1', '1', '0', '1'],
     ['ERR', '3', '6', '0', '6'],
-    ['ERR', '2', '3', '0', '3'],
+    -- objects: a reader must hold EVERY program of an object (its frozen
+    -- aggregates span them all; Codex on #599): nogrant sees PUB only, not MIX
+    ['ERR', '1', '3', '0', '3'],
     -- members: 3 public spectra x 5 = 15 + 2 mosaics = 17 ; grantee all 32
     ['ERR', '17', '32', '0', '32'],
     ['ERR', '2', '2', '0', '2'],   -- both fits are on public-program spectra
-    ['ERR', '1', '1', '0', '1'],   -- MIX photometry overlaps the public program
+    ['ERR', '0', '1', '0', '1'],   -- MIX photometry: same all-programs rule
     ['ERR', '0', '0', '0', '1']    -- exports: admin only
   ];
   i int; got text; who text; uid uuid; role text; j int;

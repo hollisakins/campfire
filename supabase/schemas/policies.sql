@@ -1842,7 +1842,12 @@ CREATE POLICY "select_dr_objects"
   USING (
     (SELECT NOT public.is_link_account())
     AND tag = ANY((SELECT public.dr_visible_tags())::text[])
-    AND programs && (SELECT public.accessible_program_slugs())
+    -- every program of the object: a frozen row's aggregates (and its
+    -- programs / observations arrays) span all its programs, so a reader
+    -- holding only some of them would learn the others' names and counts.
+    -- Partial-access readers get the object with aggregates scoped to their
+    -- program from the export partitions instead (Codex on #599).
+    AND programs <@ (SELECT public.accessible_program_slugs())
   );
 
 -- Program-scoped rows (NIRSpec finals and sidecars) by program_slug;
@@ -1873,7 +1878,8 @@ CREATE POLICY "select_dr_photometry"
   USING (
     (SELECT NOT public.is_link_account())
     AND tag = ANY((SELECT public.dr_visible_tags())::text[])
-    AND programs && (SELECT public.accessible_program_slugs())
+    -- the row carries its object's programs array: same rule as dr_objects
+    AND programs <@ (SELECT public.accessible_program_slugs())
   );
 
 -- The export ledger is operational state; readers never see storage keys

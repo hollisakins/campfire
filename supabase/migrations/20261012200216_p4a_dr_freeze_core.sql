@@ -1149,14 +1149,14 @@ CREATE POLICY "select_dr_objects" ON "public"."dr_objects"
   FOR SELECT
   TO "authenticated"
   USING
-    ((( SELECT (NOT public.is_link_account())) AND (TAG = ANY (( SELECT public.dr_visible_tags() AS dr_visible_tags)::text[])) AND (programs && ( SELECT
+    ((( SELECT (NOT public.is_link_account())) AND (TAG = ANY (( SELECT public.dr_visible_tags() AS dr_visible_tags)::text[])) AND (programs <@ ( SELECT
     public.accessible_program_slugs() AS accessible_program_slugs))));
 
 CREATE POLICY "select_dr_photometry" ON "public"."dr_photometry"
   FOR SELECT
   TO "authenticated"
   USING
-    ((( SELECT (NOT public.is_link_account())) AND (TAG = ANY (( SELECT public.dr_visible_tags() AS dr_visible_tags)::text[])) AND (programs && ( SELECT
+    ((( SELECT (NOT public.is_link_account())) AND (TAG = ANY (( SELECT public.dr_visible_tags() AS dr_visible_tags)::text[])) AND (programs <@ ( SELECT
     public.accessible_program_slugs() AS accessible_program_slugs))));
 
 CREATE POLICY "select_dr_releases" ON "public"."dr_releases"
