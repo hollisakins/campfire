@@ -750,3 +750,29 @@ def test_a_source_replaced_between_head_and_get_is_drift(monkeypatch):
     monkeypatch.setattr(s3, 'get_object', get_object)
     o = B.process_member(_row(JSON_KEY, body, product_type='spectrum_json'), tag=TAG, s3=s3, bucket=BUCKET)
     assert (o.state, o.action) == ('failed', 'drift') and 'changed during the read' in o.error
+
+
+def test_a_raced_put_registers_the_winners_gzip_size(monkeypatch):
+    # Codex on #601: another run created the target, with another gzip encoding,
+    # between this run's HEAD and its conditional PUT
+    import gzip
+    logical = _fits_bytes(2)
+    stored = gzip.compress(logical)
+    row = _row(MOSAIC_KEY, logical, product_type='nircam_mosaic', source_stored_size=len(stored),
+               component='nircam/cosmos', program_slug=None)
+    target = B._copy_target(row)
+    winner = gzip.compress(logical, compresslevel=1)
+    assert len(winner) != len(stored)
+    s3 = _s3(**{MOSAIC_KEY: stored})
+    real_put = s3.put_object
+
+    class PreconditionFailed(Exception):
+        response = {'Error': {'Code': 'PreconditionFailed'}, 'ResponseMetadata': {'HTTPStatusCode': 412}}
+
+    def put_object(**kw):
+        real_put(Bucket=kw['Bucket'], Key=kw['Key'], Body=winner)   # the other run wins
+        raise PreconditionFailed()
+    monkeypatch.setattr(s3, 'put_object', put_object)
+    o = B.process_member(row, tag=TAG, s3=s3, bucket=BUCKET)
+    assert (o.state, o.action) == ('copied', 'heal')
+    assert o.registry['stored_size_bytes'] == len(winner)

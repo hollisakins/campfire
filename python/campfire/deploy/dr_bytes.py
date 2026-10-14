@@ -476,6 +476,11 @@ def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:
         except Exception as e:  # noqa: BLE001
             if _status_code(e) != 412:
                 raise
+            # another run created it first, maybe with another gzip encoding of
+            # the same content: register the winner's size (Codex on #601)
+            winner = _head(s3, bucket, target)
+            if winner is not None and winner.get('ContentLength') is not None:
+                reg = {**reg, 'stored_size_bytes': int(winner['ContentLength'])}
             return Outcome(key, 'copied', 'heal', archive_key=target, registry=reg)
         return Outcome(key, 'copied', 'copy-verified', archive_key=target, registry=reg,
                        bytes_moved=2 * len(body))
