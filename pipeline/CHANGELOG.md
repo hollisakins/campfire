@@ -35,6 +35,33 @@ Release procedure: edit the `## Unreleased` section below, then run
   ["tests"]` so a bare `pytest` no longer collects `experiments/` and `scripts/`.
 
 ### Algorithm
+- **`resample` now writes a per-tile exposure map, `<mosaic>_exp.fits`, next to
+  the split `_sci/_err/_wht`.** It is the full-resolution, per-tile member of the
+  `exp` family; the field-wide `expmap_<field>_<filter>.fits` is the coarse member.
+  The first image, `EXPTIME`, is the summed `XPOSURE` in seconds, the same quantity
+  as the field expmap. The second, `NEXP`, is the number of contributing inputs, an
+  int16 that catalog noise models stratify on. Both cover exactly the pixels where
+  an input put non-zero drizzle weight: chip gaps and masks are exact, and both
+  are 0 wherever SCI is NaN. The field expmap stacks S_REGION footprints instead,
+  so the two agree in units but not in masking. The file is an empty primary plus
+  two GZIP_2 images on the SCI WCS (EXPTIME stored losslessly), a few MB per tile,
+  with `EXPSRC` / `NINPUTS` / `NUSED` cards. The i2d carries the same two
+  extensions, and deploy ships `_exp.fits` as mosaic extension `exp`.
+  - The campfire backend counts both planes while drizzling, from the weight
+    change each input makes inside its bbox. It costs two planes instead of
+    `ceil(n/32)` int32 planes, so it is produced with `write_context = false`
+    too. It matches the context cube except where an input's weight on a pixel
+    is below float32 resolution of the running weight sum: that contribution
+    changes neither WHT nor SCI, so it is not counted, while cdriz still sets
+    its context bit. On a real COSMOS A1 f444w sub-tile this was 14 of 2.25M
+    pixels, one input lower each.
+  - The jwst backend derives both from its CON, weighting each bit by its
+    `HDRTAB` row's `XPOSURE`.
+  - `cfpipe nircam mosaic-exp --field F` backfills existing mosaics without
+    touching them. It uses the i2d / `_aux` CON + HDRTAB when CON is real, and
+    otherwise the detector footprints of the manifest inputs (`EXPSRC =
+    footprint`, which ignores per-pixel masks inside a detector).
+  - Additive only: no existing pixel, extension or file name changes.
 - **`align`: the coarse gross-shift histogram now bins at 0.25", not 0.5".** At
   0.5" a genuine arcsec-scale pointing error is smeared across the same cell
   scale as the random-coincidence floor, so the true peak has no contrast to win

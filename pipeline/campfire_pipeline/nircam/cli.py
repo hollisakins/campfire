@@ -8,6 +8,7 @@ Top-level commands:
     cfpipe nircam <step>     # any individual step
     cfpipe nircam run --all  # whole pipeline
     cfpipe nircam check      # tile-staleness probe
+    cfpipe nircam mosaic-exp # backfill per-tile exposure maps (_exp.fits)
     cfpipe nircam status     # per-exposure CFP_* completion table
     cfpipe nircam reset      # clear CFP_* keys / wipe canonical files
 
@@ -406,6 +407,28 @@ def expmap(config, field, filters, stage, pixel_scale, padding,
         out_dir=out_dir,
         n_processes=processes,
         overwrite=overwrite,
+    )
+
+
+@main.command(name='mosaic-exp')
+@common_options
+@processing_options
+@tile_option
+def mosaic_exp(config, field, filters, processes, overwrite, tiles):
+    """Backfill per-tile exposure maps (``<mosaic>_exp.fits``: EXPTIME + NEXP).
+
+    New mosaics get one from ``resample``; this covers mosaics drizzled before
+    that. Uses the i2d (or ``_aux``) CON cube + HDRTAB when present, else the
+    manifest inputs' detector footprints. Reads only — never modifies a mosaic.
+    """
+    _, field_obj = _setup(config, field)
+    from campfire_pipeline.nircam.mosaic_exp import run_exp_backfill
+    run_exp_backfill(
+        field_obj,
+        _resolve_filters(filters, field_obj),
+        tiles=list(tiles) if tiles else None,
+        overwrite=overwrite,
+        n_processes=processes,
     )
 
 

@@ -153,7 +153,9 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
       // Merge mosaics + expmaps into the single products list. Expmaps ride as
       // a synthetic 'exp' extension with no tile axis; their scale is the
       // field's expmap grid (one shared WCS across every filter), not a
-      // per-product axis like a mosaic's.
+      // per-product axis like a mosaic's. Each mosaic tile also carries its own
+      // full-resolution 'exp' extension (_exp.fits: EXPTIME + NEXP), so 'exp'
+      // spans both scales: per tile at the mosaic scale, field-wide coarse.
       const mosaicRows: NircamProductRow[] = (imagesRes.error ? [] : imagesRes.images).map(
         (img) => ({
           kind: 'mosaic',

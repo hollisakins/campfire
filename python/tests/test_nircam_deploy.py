@@ -350,6 +350,28 @@ def test_discover_mosaics_manifest_based_version_free_keys(tmp_path):
     assert row["field"] == "cosmos"
 
 
+def test_discover_mosaics_ships_exp(tmp_path):
+    # The per-tile exposure map (resample's `_exp.fits`) is a deployable split
+    # extension like srcmask: discovered, kept by deployable_mosaics, gzipped
+    # under a nircam_mosaic key.
+    fdir = tmp_path / "products" / "nircam" / "cosmos" / "f444w"
+    fdir.mkdir(parents=True)
+    base = "mosaic_nircam_f444w_cosmos_30mas_A1"
+    _write_manifest(fdir, base, field="cosmos", filt="f444w", tile="A1", scale="30mas")
+    for suffix in ("_i2d.fits", "_sci.fits", "_exp.fits"):
+        (fdir / f"{base}{suffix}").write_bytes(b"\x00")
+
+    dirs = {"products": tmp_path / "products" / "nircam" / "cosmos"}
+    deployable = nc.deployable_mosaics(nc.discover_mosaics(dirs, "cosmos", ["f444w"]))
+    exp = next(m for m in deployable if m["extension"] == "exp")
+    assert exp["storage_key"] == \
+        "data/products/nircam/cosmos/f444w/mosaic_nircam_f444w_cosmos_30mas_A1_exp.fits.gz"
+    row = reg.row_for_key(exp["storage_key"], backend="osn",
+                          content_hash="sha256:" + "a" * 64, size_bytes=1,
+                          content_type="application/gzip")
+    assert row["product_type"] == "nircam_mosaic"
+
+
 def test_deployable_mosaics_drops_i2d(tmp_path):
     # i2d stays *discoverable* — provenance stamping and the FitsGL pyramid read
     # it locally — but it must never reach the cloud upload / nircam_images index

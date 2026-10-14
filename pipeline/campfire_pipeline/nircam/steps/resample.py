@@ -13,7 +13,7 @@ that have completed outlier detection are eligible to be drizzled.
 
 Mosaic outputs: ``CMPFRTIM`` / ``CMPFRVER`` stamping on the primary header,
 optional 2D background subtraction via ``SubtractBackground``, and optional
-extension splitting into ``_sci/_err/_wht/_srcmask`` files. The mosaic
+extension splitting into ``_sci/_err/_wht/_srcmask/_exp`` files. The mosaic
 basename is version-free (epic #261, N2 / D3) — one canonical name per
 ``(field, filter, tile, pixel_scale)`` — so there is no ``_latest_`` alias.
 """
@@ -172,6 +172,20 @@ def _drizzle_tile_via_jwst(
             log(f"  compressed CON: {before / 2**30:.1f} GiB → "
                 f"{after / 2**30:.1f} GiB "
                 f"({before / max(after, 1):.1f}x smaller)")
+
+    # jwst always materialises CON, so the exposure maps come from it, each bit
+    # weighted by its HDRTAB row's XPOSURE (the campfire backend counts them
+    # while drizzling instead; see nircam/mosaic_exp.py).
+    from campfire_pipeline.nircam.mosaic_exp import (
+        append_exp_extensions, exp_from_context,
+    )
+    with fits.open(output_path, memmap=True) as hdul:
+        exptime, nexp, nused = exp_from_context(
+            hdul['CON'], hdul['SCI'].shape, hdul['HDRTAB'].data['XPOSURE'],
+        )
+    append_exp_extensions(output_path, exptime, nexp, src='context',
+                          ninputs=len(selected_files), nused=nused)
+    del exptime, nexp
 
     with fits.open(output_path, mode='update') as hdul:
         hdul[0].header['CMPFRTIM'] = (
@@ -425,13 +439,17 @@ def resample_step(filtname, exposure_files, field, step_config,
                 for suffix in required
             )
             if not missing_extensions:
-                # SRCMASK is only expected when the i2d carries that extension.
-                srcmask_path = os.path.join(
-                    mosaic_outdir, base.replace('_i2d.fits', '_srcmask.fits'),
-                )
-                if not os.path.exists(srcmask_path):
+                # SRCMASK / EXPTIME are only expected when the i2d carries them
+                # (the exposure maps are absent from i2ds drizzled before them).
+                optional = [(ext, os.path.join(
+                                mosaic_outdir, base.replace('_i2d.fits', suffix)))
+                            for ext, suffix in (('SRCMASK', '_srcmask.fits'),
+                                                ('EXPTIME', '_exp.fits'))]
+                absent = [ext for ext, path in optional
+                          if not os.path.exists(path)]
+                if absent:
                     with fits.open(mosaic_file) as hdul:
-                        missing_extensions = 'SRCMASK' in hdul
+                        missing_extensions = any(ext in hdul for ext in absent)
             if missing_extensions:
                 log(f"  {mosaic_name} i2d present but split extensions "
                     f"missing; re-splitting")
@@ -447,6 +465,11 @@ def resample_step(filtname, exposure_files, field, step_config,
                 wht = hdul['WHT'].data.copy() if do_split else None
                 srcmask = (hdul['SRCMASK'].data.copy()
                            if do_split and 'SRCMASK' in hdul else None)
+                exp_planes = exp_hdr = None
+                if do_split and 'EXPTIME' in hdul and 'NEXP' in hdul:
+                    exp_planes = (hdul['EXPTIME'].data.copy(),
+                                  hdul['NEXP'].data.copy())
+                    exp_hdr = hdul['NEXP'].header.copy()
 
         if do_split:
             log("  splitting extensions")
@@ -480,6 +503,18 @@ def resample_step(filtname, exposure_files, field, step_config,
                 )
             else:
                 log(f"  {mosaic_name} has no SRCMASK extension")
+
+            if exp_planes is not None:
+                from campfire_pipeline.nircam.mosaic_exp import write_exp_file
+                write_exp_file(
+                    os.path.join(mosaic_outdir,
+                                 base.replace('_i2d.fits', '_exp.fits')),
+                    *exp_planes, exp_hdr, src=exp_hdr['EXPSRC'],
+                    ninputs=exp_hdr['NINPUTS'], nused=exp_hdr.get('NUSED'),
+                )
+            else:
+                log(f"  {mosaic_name} has no EXPTIME/NEXP extensions "
+                    f"(`cfpipe nircam mosaic-exp` backfills _exp.fits)")
 
         if do_plot:
             from campfire_pipeline.nircam.steps._plots import (
