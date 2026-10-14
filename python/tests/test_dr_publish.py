@@ -84,6 +84,17 @@ def test_cli_publish_withdraw(monkeypatch):
     assert c.rpc_names().count('dr_publish') == 1
 
 
+def test_cli_json_prompts_stay_off_stdout(monkeypatch):
+    # Codex on #602: with --json and no --yes, stdout carries the JSON alone
+    import json
+    c = _client(dr_publish=ROW, dr_withdraw={**ROW, 'state': 'withdrawn', 'withdrawn_at': '2026-10-13T13:00:00+00:00'})
+    _patch(monkeypatch, c)
+    for args in (['publish', TAG], ['withdraw', TAG, '--reason', 'calibration']):
+        res = CliRunner().invoke(main_cli.cli, ['dr', *args, '--json'], input='y\n')
+        assert res.exit_code == 0, res.output
+        assert json.loads(res.stdout)['tag'] == TAG and '?' in res.stderr
+
+
 def test_cli_publish_refused_is_one_line(monkeypatch):
     def refuse(params):
         raise RuntimeError('release DR is copying (publish needs ready)')

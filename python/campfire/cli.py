@@ -1798,8 +1798,9 @@ def dr_publish(tag, doi, known_issues, yes, as_json, local):
                    ', '.join(f"{v:,} {k.replace('_', ' ')}" for k, v in moved.items() if v) +
                    f" (`campfire dr diff {tag}`). The release still publishes its frozen rows.",
                    err=as_json)
-    if not yes and not click.confirm(f"Publish {tag} to every reader of its programs?", default=False):
-        click.echo("Aborted.")
+    if not yes and not click.confirm(f"Publish {tag} to every reader of its programs?", default=False,
+                                     err=as_json):
+        click.echo("Aborted.", err=as_json)
         sys.exit(1)
     try:
         row = publish_release(sb, tag, doi=doi, known_issues=known_issues)
@@ -1827,8 +1828,9 @@ def dr_withdraw(tag, reason, yes, as_json, local):
     from .dr import format_release, withdraw_release
 
     config, sb = _dr_client(local, what="`campfire dr withdraw`")
-    if not yes and not click.confirm(f"Withdraw {tag}? Readers lose access until it is published again.", default=False):
-        click.echo("Aborted.")
+    if not yes and not click.confirm(f"Withdraw {tag}? Readers lose access until it is published again.",
+                                     default=False, err=as_json):
+        click.echo("Aborted.", err=as_json)
         sys.exit(1)
     try:
         row = withdraw_release(sb, tag, reason)
