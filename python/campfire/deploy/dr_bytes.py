@@ -1,7 +1,7 @@
 """
 Data-release byte pass (P4c, docs/design-data-releases-impl-plan.md §6).
 
-``campfire dr bytes --tag T`` makes every member of a frozen release exist
+``campfire dr archive --tag T`` makes every member of a frozen release exist
 under ``archive/`` on the data bucket, so the release keeps resolving after the
 live objects are redeployed or removed:
 
@@ -26,7 +26,9 @@ live objects are redeployed or removed:
   CopyObject's 5 GB ceiling is checked up front; no stored mosaic exceeds
   4.3 GB today.
 * **Reuse (D-P4-2)**: a FITS another release already stamped from the same
-  science is reused (first DR wins the stamp); an unstamped object already
+  science is reused (the first release to archive a file owns its stamp; two
+  passes racing on the same file may each stamp their own copy, which costs one
+  duplicate object and nothing else); an unstamped object already
   archived with the frozen content hash (retain-on-supersede, an earlier
   release) is reused as it is.
 * **Drift**: when the live object no longer holds the frozen bytes and no
@@ -220,9 +222,6 @@ class Outcome:
     registry: Optional[dict] = None
     bytes_moved: int = 0
     science_hash: Optional[str] = None   # computed here for a member frozen without one
-    # stamped candidates of other releases the pass found missing in the bucket:
-    # dr_bytes_mark does not hold this outcome to them (first-frozen rule)
-    dangling: list = field(default_factory=list)
 
     def as_result(self) -> dict:
         r = {'storage_key': self.storage_key, 'state': self.state}
@@ -236,8 +235,6 @@ class Outcome:
             r['registry'] = self.registry
         if self.science_hash:
             r['science_hash'] = self.science_hash
-        if self.dangling:
-            r['dangling'] = list(self.dangling)
         return r
 
 
@@ -313,29 +310,26 @@ def process_member(row: dict, *, tag: str, s3, bucket: str,
                            error='frozen bytes are gone: the live object changed (or was revoked) since '
                                  'the freeze and no archived copy of the frozen content exists')
         if action == 'reuse-stamp':
-            # every candidate in its release's freeze order: the first whose
-            # object exists wins (first release wins the stamp, deterministic
-            # even after concurrent passes); a registry row is not proof the
-            # object exists, so each is HEAD-checked (Codex on #601)
+            # every candidate, earliest archived first: the first whose object
+            # exists is reused (the first release to archive a file owns its
+            # stamp); a registry row is not proof the object exists, so each is
+            # HEAD-checked and a missing one falls through (Codex on #601)
             cands = row.get('reuse_candidates') or [
                 {'archive_key': row['reuse_archive_key'], 'stamped_hash': row['reuse_stamped_hash'],
                  'size_bytes': row.get('reuse_size_bytes')}]
-            problems, dangling = [], []
+            problems = []
             for c in cands:
                 problem = _check_existing(s3, bucket, c['archive_key'], c.get('size_bytes'))
                 if problem is None:
                     return Outcome(key, 'stamped', 'reuse-stamp', archive_key=c['archive_key'],
-                                   stamped_hash=c['stamped_hash'], dangling=dangling)
+                                   stamped_hash=c['stamped_hash'])
                 problems.append(problem)
-                dangling.append(c['archive_key'])
             problem = '; '.join(problems)
             if not row.get('source_key'):
                 return Outcome(key, 'failed', 'drift',
                                error=f"stamped object to reuse {problem}, and the frozen bytes are gone")
             # stamp afresh from the frozen bytes (a new object under this tag)
-            out = _stamp_member(row, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
-            out.dangling = dangling
-            return out
+            return _stamp_member(row, tag=tag, s3=s3, bucket=bucket, verify_science=verify_science)
         if action == 'reuse-copy':
             problem = _check_existing(s3, bucket, row['source_key'], row.get('source_stored_size'))
             if problem is not None:
@@ -522,7 +516,6 @@ class PassReport:
     bytes_moved: int = 0
     failures: list = field(default_factory=list)
     state: Optional[str] = None
-    superseded: int = 0
 
     def count(self, outcome: Outcome) -> None:
         self.by_action[outcome.action] = self.by_action.get(outcome.action, 0) + 1
@@ -534,8 +527,7 @@ class PassReport:
     def as_dict(self) -> dict:
         return {'tag': self.tag, 'dry_run': self.dry_run, 'seen': self.seen,
                 'by_action': self.by_action, 'by_state': self.by_state,
-                'bytes_moved': self.bytes_moved, 'failures': self.failures, 'state': self.state,
-                'superseded': self.superseded}
+                'bytes_moved': self.bytes_moved, 'failures': self.failures, 'state': self.state}
 
 
 def fetch_pending(client, tag: str, *, after: Optional[str] = None, limit: int = 500,
@@ -610,10 +602,6 @@ def run_byte_pass(client, s3, bucket: str, tag: str, *, workers: int = 8, page_s
                          for r, o in zip(rows[i:i + mark_batch], outcomes[i:i + mark_batch])]
                 res = mark_results(client, tag, batch)
                 report.state = res.get('state', report.state)
-                if int(res.get('superseded') or 0):
-                    # an earlier-frozen release stamped the same science first:
-                    # those members stay pending and reuse its object next run
-                    report.superseded += int(res['superseded'])
             log(f"  {report.seen:,} members: " +
                 ', '.join(f"{k} {v:,}" for k, v in sorted(report.by_state.items())) +
                 f" ({report.bytes_moved / 1e9:.2f} GB moved)")
@@ -624,7 +612,7 @@ def run_byte_pass(client, s3, bucket: str, tag: str, *, workers: int = 8, page_s
 
 def format_summary(summary: dict) -> str:
     by = summary.get('by_state') or {}
-    lines = [f"{summary.get('tag')}: state {summary.get('state')}, {int(summary.get('members') or 0):,} members"]
+    lines = [f"{summary.get('tag')}: state {summary.get('state')}, {int(summary.get('manifest') or 0):,} manifest files"]
     for st in ('pending', 'failed', 'copied', 'stamped'):
         if st in by:
             lines.append(f"  {st:<8} {int(by[st]['count']):>9,}  {int(by[st]['bytes']) / 1e9:10.2f} GB")
@@ -640,9 +628,6 @@ def format_report(report: PassReport) -> str:
     lines = [f"Byte pass on {report.tag}: {report.seen:,} member(s) processed, "
              f"{report.bytes_moved / 1e9:.2f} GB moved; release state {report.state}"]
     lines += [f"  {k:<12} {v:>9,}" for k, v in sorted(report.by_action.items())]
-    if report.superseded:
-        lines.append(f"  {report.superseded:,} stamp(s) yielded to a release frozen earlier that stamped "
-                     f"the same science first; re-run to reuse its objects")
     for f in report.failures:
         lines.append(f"  ✗ {f['storage_key']}: {f['error']}")
     return '\n'.join(lines)

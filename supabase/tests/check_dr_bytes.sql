@@ -46,7 +46,7 @@ GRANT EXECUTE ON FUNCTION pg_temp.zzz_as(text, uuid, text) TO authenticated;
 -- One call, its error text (or 'ok').
 -- The frozen content hash of a DR-seed member (marks must name it).
 CREATE FUNCTION pg_temp.zzz_ch(p_key text) RETURNS text
-LANGUAGE sql AS $$ SELECT content_hash FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p_key $$;
+LANGUAGE sql AS $$ SELECT content_hash FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p_key $$;
 
 CREATE FUNCTION pg_temp.zzz_try(p_sql text) RETURNS text
 LANGUAGE plpgsql AS $$
@@ -60,10 +60,10 @@ END $$;
 -- The members the checks use.
 CREATE TEMP TABLE zzz_pick AS
 WITH spec AS (
-  SELECT storage_key, row_number() OVER (ORDER BY storage_key) AS i FROM dr_members
+  SELECT storage_key, row_number() OVER (ORDER BY storage_key) AS i FROM dr_manifest
   WHERE tag = 'DR-seed' AND product_type = 'nirspec_spec'
 ), js AS (
-  SELECT storage_key, row_number() OVER (ORDER BY storage_key) AS i FROM dr_members
+  SELECT storage_key, row_number() OVER (ORDER BY storage_key) AS i FROM dr_manifest
   WHERE tag = 'DR-seed' AND product_type = 'spectrum_json'
 )
 SELECT (SELECT storage_key FROM spec WHERE i = 1) AS s1,
@@ -73,7 +73,7 @@ SELECT (SELECT storage_key FROM spec WHERE i = 1) AS s1,
        (SELECT storage_key FROM js WHERE i = 2) AS j2,
        (SELECT storage_key FROM js WHERE i = 3) AS j3;
 -- the seed's registry rows carry no science hash; give the two FITS one each
-UPDATE dr_members m SET science_hash = 'sha256:' || repeat(CASE WHEN m.storage_key = p.s1 THEN '1' ELSE '2' END, 64)
+UPDATE dr_manifest m SET science_hash = 'sha256:' || repeat(CASE WHEN m.storage_key = p.s1 THEN '1' ELSE '2' END, 64)
 FROM zzz_pick p WHERE m.tag = 'DR-seed' AND m.storage_key IN (p.s1, p.s2);
 
 DO $$
@@ -90,8 +90,8 @@ BEGIN
 
   -- ------------------------------------------------------------------ 1.
   SELECT count(*) INTO n FROM dr_bytes_pending('DR-seed', NULL, 2000);
-  IF n <> (SELECT count(*) FROM dr_members WHERE tag = 'DR-seed') THEN
-    RAISE EXCEPTION 'pending should list every member: % vs %', n, (SELECT count(*) FROM dr_members WHERE tag = 'DR-seed');
+  IF n <> (SELECT count(*) FROM dr_manifest WHERE tag = 'DR-seed') THEN
+    RAISE EXCEPTION 'pending should list every member: % vs %', n, (SELECT count(*) FROM dr_manifest WHERE tag = 'DR-seed');
   END IF;
   IF EXISTS (SELECT 1 FROM dr_bytes_pending('DR-seed', NULL, 2000) b
              WHERE b.source_root IS DISTINCT FROM 'live' OR b.source_key <> b.storage_key
@@ -106,13 +106,13 @@ BEGIN
     CROSS JOIN LATERAL (SELECT max(b.storage_key) AS last FROM dr_bytes_pending('DR-seed', pages.after, 50) b) q
     WHERE q.last IS NOT NULL AND pages.depth < 100
   ) SELECT count(*) - 1 INTO n FROM pages;
-  IF n <> ceil((SELECT count(*) FROM dr_members WHERE tag = 'DR-seed') / 50.0) THEN
+  IF n <> ceil((SELECT count(*) FROM dr_manifest WHERE tag = 'DR-seed') / 50.0) THEN
     RAISE EXCEPTION 'paging by 50 took % pages', n;
   END IF;
   -- one observation through the key prefix
   obs_prefix := regexp_replace(p.s1, '[^/]+$', '');
   SELECT count(*) INTO n FROM dr_bytes_pending('DR-seed', NULL, 2000, false, obs_prefix);
-  SELECT count(*) INTO n2 FROM dr_members WHERE tag = 'DR-seed' AND storage_key LIKE obs_prefix || '%';
+  SELECT count(*) INTO n2 FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key LIKE obs_prefix || '%';
   IF n <> n2 OR n = 0 THEN RAISE EXCEPTION 'prefix % gave % members, expected %', obs_prefix, n, n2; END IF;
 
   -- the live object of j2 moved on and nothing retained it: bytes gone
@@ -121,26 +121,26 @@ BEGIN
   -- j3 moved on too, but retain-on-supersede kept the frozen bytes
   UPDATE storage_objects SET content_hash = 'sha256:' || repeat('d', 64)
    WHERE storage_key = p.j3 AND root = 'live';
-  ret_key := 'archive/' || substr((SELECT content_hash FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.j3), 8)
+  ret_key := 'archive/' || substr((SELECT content_hash FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.j3), 8)
              || '/' || substr(p.j3, 6);
   INSERT INTO storage_objects (backend, bucket, storage_key, root, status, content_hash, size_bytes, content_type,
                                product_type, program_slug, archived_from_key, archived_at)
   SELECT m.backend, m.bucket, ret_key, 'archive', 'archived', m.content_hash, m.size_bytes, 'application/json',
          m.product_type, m.program_slug, m.storage_key, now()
-  FROM dr_members m WHERE m.tag = 'DR-seed' AND m.storage_key = p.j3;
+  FROM dr_manifest m WHERE m.tag = 'DR-seed' AND m.storage_key = p.j3;
   -- an earlier release stamped s2 from the same science
   INSERT INTO dr_releases (tag, state, components, frozen_at)
   VALUES ('DR-zzz-prev', 'frozen', '["nirspec"]', (SELECT frozen_at FROM dr_releases WHERE tag = 'DR-seed') - interval '1 day');
-  INSERT INTO dr_members (tag, storage_key, component, program_slug, product_type, spectrum_id, backend, bucket,
+  INSERT INTO dr_manifest (tag, storage_key, component, program_slug, product_type, spectrum_id, backend, bucket,
                           content_hash, science_hash, size_bytes, byte_state, archive_key, stamped_hash)
   SELECT 'DR-zzz-prev', m.storage_key, m.component, m.program_slug, m.product_type, m.spectrum_id, m.backend, m.bucket,
          m.content_hash, m.science_hash, m.size_bytes, 'stamped', prev_key, 'sha256:' || repeat('c', 64)
-  FROM dr_members m WHERE m.tag = 'DR-seed' AND m.storage_key = p.s2;
+  FROM dr_manifest m WHERE m.tag = 'DR-seed' AND m.storage_key = p.s2;
   INSERT INTO storage_objects (backend, bucket, storage_key, root, status, content_hash, science_hash, size_bytes,
                                content_type, product_type, program_slug, archived_from_key, archived_at)
   SELECT m.backend, m.bucket, prev_key, 'archive', 'archived', 'sha256:' || repeat('c', 64), m.science_hash, m.size_bytes,
          'application/fits', m.product_type, m.program_slug, m.storage_key, now()
-  FROM dr_members m WHERE m.tag = 'DR-seed' AND m.storage_key = p.s2;
+  FROM dr_manifest m WHERE m.tag = 'DR-seed' AND m.storage_key = p.s2;
 
   SELECT * INTO r FROM dr_bytes_pending('DR-seed', NULL, 2000) b WHERE b.storage_key = p.j2;
   IF r.source_key IS NOT NULL OR r.source_root IS NOT NULL THEN RAISE EXCEPTION 'gone bytes should have no source: %', to_jsonb(r); END IF;
@@ -150,28 +150,29 @@ BEGIN
   END IF;
   SELECT * INTO r FROM dr_bytes_pending('DR-seed', NULL, 2000) b WHERE b.storage_key = p.s2;
   IF r.reuse_archive_key IS DISTINCT FROM prev_key OR r.reuse_stamped_hash <> 'sha256:' || repeat('c', 64)
-     OR r.reuse_size_bytes IS DISTINCT FROM (SELECT size_bytes FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s2) THEN
+     OR r.reuse_size_bytes IS DISTINCT FROM (SELECT size_bytes FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.s2) THEN
     RAISE EXCEPTION 'stamped object of the earlier release should be offered for reuse: %', to_jsonb(r);
   END IF;
   SELECT * INTO r FROM dr_bytes_pending('DR-seed', NULL, 2000) b WHERE b.storage_key = p.s1;
   IF r.reuse_archive_key IS NOT NULL THEN RAISE EXCEPTION 'nothing to reuse for s1'; END IF;
-  -- a release frozen AFTER this one stamped s1 (its pass ran first): never
-  -- offered, so DR-seed stamps afresh under its own tag (Codex on #601)
+  -- another release (frozen later, its pass ran first) stamped s1: the first
+  -- release to archive a file owns its stamp, so DR-seed is offered it
   INSERT INTO dr_releases (tag, state, components, frozen_at)
   VALUES ('DR-zzz-later', 'frozen', '["nirspec"]', (SELECT frozen_at FROM dr_releases WHERE tag = 'DR-seed') + interval '1 day');
-  INSERT INTO dr_members (tag, storage_key, component, program_slug, product_type, spectrum_id, backend, bucket,
+  INSERT INTO dr_manifest (tag, storage_key, component, program_slug, product_type, spectrum_id, backend, bucket,
                           content_hash, science_hash, size_bytes, byte_state, archive_key, stamped_hash)
   SELECT 'DR-zzz-later', m.storage_key, m.component, m.program_slug, m.product_type, m.spectrum_id, m.backend, m.bucket,
          m.content_hash, m.science_hash, m.size_bytes, 'stamped', 'archive/' || repeat('7', 64) || '/later.fits', 'sha256:' || repeat('7', 64)
-  FROM dr_members m WHERE m.tag = 'DR-seed' AND m.storage_key = p.s1;
+  FROM dr_manifest m WHERE m.tag = 'DR-seed' AND m.storage_key = p.s1;
   INSERT INTO storage_objects (backend, bucket, storage_key, root, status, content_hash, science_hash, size_bytes,
                                content_type, product_type, program_slug, archived_from_key, archived_at)
   SELECT m.backend, m.bucket, 'archive/' || repeat('7', 64) || '/later.fits', 'archive', 'archived', 'sha256:' || repeat('7', 64),
          m.science_hash, m.size_bytes, 'application/fits', m.product_type, m.program_slug, m.storage_key, now()
-  FROM dr_members m WHERE m.tag = 'DR-seed' AND m.storage_key = p.s1;
+  FROM dr_manifest m WHERE m.tag = 'DR-seed' AND m.storage_key = p.s1;
   SELECT * INTO r FROM dr_bytes_pending('DR-seed', NULL, 2000) b WHERE b.storage_key = p.s1;
-  IF r.reuse_archive_key IS NOT NULL OR r.reuse_candidates <> '[]'::jsonb THEN
-    RAISE EXCEPTION 'a later release''s stamp must not be offered: %', to_jsonb(r);
+  IF r.reuse_archive_key IS DISTINCT FROM 'archive/' || repeat('7', 64) || '/later.fits'
+     OR jsonb_array_length(r.reuse_candidates) <> 1 THEN
+    RAISE EXCEPTION 'any release''s stamp should be offered for reuse: %', to_jsonb(r);
   END IF;
   RAISE NOTICE 'OK 1: pending (paging, prefix, live / retained / gone sources, cross-release reuse)';
 
@@ -197,7 +198,7 @@ BEGIN
   IF got NOT LIKE 'ERR: at most 2000 results%' THEN RAISE EXCEPTION 'oversized batch accepted: %', got; END IF;
   got := pg_temp.zzz_try($q$SELECT dr_bytes_mark('DR-seed', '{"storage_key": "x"}')$q$);
   IF got NOT LIKE 'ERR: results must be a json array%' THEN RAISE EXCEPTION 'non-array accepted: %', got; END IF;
-  IF EXISTS (SELECT 1 FROM dr_members WHERE tag = 'DR-seed' AND byte_state <> 'pending') THEN
+  IF EXISTS (SELECT 1 FROM dr_manifest WHERE tag = 'DR-seed' AND byte_state <> 'pending') THEN
     RAISE EXCEPTION 'a refused batch wrote member states';
   END IF;
   RAISE NOTICE 'OK 2: malformed batches refused, nothing written';
@@ -214,7 +215,7 @@ DECLARE
 BEGIN
   PERFORM set_config('request.jwt.claims', '{"role":"service_role"}', true);
   SELECT * INTO p FROM zzz_pick;
-  j1_key := 'archive/' || substr((SELECT content_hash FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.j1), 8) || '/' || substr(p.j1, 6);
+  j1_key := 'archive/' || substr((SELECT content_hash FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.j1), 8) || '/' || substr(p.j1, 6);
 
   -- every export file built and ready first
   PERFORM dr_export_begin('DR-seed');
@@ -222,42 +223,10 @@ BEGIN
   PERFORM dr_export_mark('DR-seed', e.stream, e.partition, 'ready', 'sha256:' || repeat('a', 64), 1, 1)
   FROM dr_exports e WHERE e.tag = 'DR-seed';
   IF (SELECT state FROM dr_releases WHERE tag = 'DR-seed') <> 'exported' THEN RAISE EXCEPTION 'fixture: release not exported'; END IF;
-  SELECT COALESCE(program_slug, component) INTO part FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s1;
+  SELECT COALESCE(program_slug, component) INTO part FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.s1;
   SELECT count(*) INTO events_before FROM deploy_events WHERE action = 'archive' AND metadata->>'dr_tag' = 'DR-seed';
 
   -- ------------------------------------------------------------------ 3.
-  -- first freeze wins the stamp, atomically (Codex on #601): DR-zzz-prev,
-  -- frozen earlier, already stamped s2, so a fresh stamp of DR-seed's own
-  -- (a pass that fetched its page before that mark) is not recorded
-  res := dr_bytes_mark('DR-seed', jsonb_build_array(
-    jsonb_build_object('storage_key', p.s2, 'content_hash', pg_temp.zzz_ch(p.s2), 'state', 'stamped',
-                       'archive_key', 'archive/' || repeat('9', 64) || '/fresh/s2_spec.fits',
-                       'stamped_hash', 'sha256:' || repeat('9', 64),
-                       'registry', jsonb_build_object('content_type', 'application/fits'))));
-  IF (res->>'superseded')::int <> 1 OR (res->>'marked')::int <> 0 THEN
-    RAISE EXCEPTION 'a later release''s fresh stamp should yield to the earlier one: %', res;
-  END IF;
-  IF (SELECT byte_state FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s2) <> 'pending'
-     OR EXISTS (SELECT 1 FROM storage_objects WHERE storage_key = 'archive/' || repeat('9', 64) || '/fresh/s2_spec.fits') THEN
-    RAISE EXCEPTION 'the superseded stamp was recorded';
-  END IF;
-  -- ...unless the pass found that earlier object missing (Fable review of #601):
-  -- then the fresh stamp is the right outcome and is recorded, never refused
-  -- forever (in a sub-block that rolls itself back)
-  BEGIN
-    res := dr_bytes_mark('DR-seed', jsonb_build_array(
-      jsonb_build_object('storage_key', p.s2, 'content_hash', pg_temp.zzz_ch(p.s2), 'state', 'stamped',
-                         'archive_key', 'archive/' || repeat('9', 64) || '/fresh/s2_spec.fits',
-                         'stamped_hash', 'sha256:' || repeat('9', 64),
-                         'dangling', jsonb_build_array(prev_key),
-                         'registry', jsonb_build_object('content_type', 'application/fits'))));
-    IF (res->>'superseded')::int <> 0 OR (res->>'stamped')::int <> 1 THEN
-      RAISE EXCEPTION 'a fresh stamp past a dangling earlier one should be recorded: %', res;
-    END IF;
-    RAISE EXCEPTION 'zzz_rollback';
-  EXCEPTION WHEN OTHERS THEN
-    IF SQLERRM <> 'zzz_rollback' THEN RAISE; END IF;
-  END;
 
   res := dr_bytes_mark('DR-seed', jsonb_build_array(
     jsonb_build_object('storage_key', p.s1, 'content_hash', pg_temp.zzz_ch(p.s1), 'state', 'stamped', 'archive_key', s1_key,
@@ -273,20 +242,7 @@ BEGIN
      OR (res->>'failed')::int <> 1 OR (res->>'registered')::int <> 2 OR res->>'state' <> 'copying' THEN
     RAISE EXCEPTION 'mixed batch result wrong: %', res;
   END IF;
-  -- DR-zzz-later (frozen after DR-seed) had stamped s1 itself; DR-seed's stamp
-  -- sends it back to pending so its next pass reuses this one (Codex on #601)
-  IF (res->>'restamped')::int <> 1
-     OR (SELECT byte_state || '|' || COALESCE(archive_key, '-') FROM dr_members
-          WHERE tag = 'DR-zzz-later' AND storage_key = p.s1) <> 'pending|-' THEN
-    RAISE EXCEPTION 'the later release should be re-pended: % / %', res,
-      (SELECT to_jsonb(d) FROM dr_members d WHERE tag = 'DR-zzz-later' AND storage_key = p.s1);
-  END IF;
-  -- ...and is now offered the earlier stamp
-  IF (SELECT b.reuse_archive_key FROM dr_bytes_pending('DR-zzz-later', NULL, 2000) b WHERE b.storage_key = p.s1)
-     IS DISTINCT FROM s1_key THEN
-    RAISE EXCEPTION 'the re-pended later release should be offered DR-seed''s stamp';
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM storage_objects so JOIN dr_members m ON m.tag = 'DR-seed' AND m.storage_key = p.s1
+  IF NOT EXISTS (SELECT 1 FROM storage_objects so JOIN dr_manifest m ON m.tag = 'DR-seed' AND m.storage_key = p.s1
                  WHERE so.storage_key = s1_key AND so.root = 'archive' AND so.status = 'archived'
                    AND so.content_hash = 'sha256:' || repeat('f', 64) AND so.science_hash = m.science_hash
                    AND so.size_bytes = 12345 AND so.archived_from_key = p.s1 AND so.observation IS NULL AND so.deployment_id IS NULL AND so.program_slug IS NOT DISTINCT FROM m.program_slug
@@ -294,34 +250,34 @@ BEGIN
                    AND so.product_type = 'nirspec_spec') THEN
     RAISE EXCEPTION 'stamped archive row wrong: %', (SELECT to_jsonb(so) FROM storage_objects so WHERE so.storage_key = s1_key);
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM storage_objects so JOIN dr_members m ON m.tag = 'DR-seed' AND m.storage_key = p.j1
+  IF NOT EXISTS (SELECT 1 FROM storage_objects so JOIN dr_manifest m ON m.tag = 'DR-seed' AND m.storage_key = p.j1
                  WHERE so.storage_key = j1_key AND so.content_hash = m.content_hash AND so.size_bytes = m.size_bytes
                    AND so.archived_from_key = p.j1) THEN
     RAISE EXCEPTION 'copied archive row wrong';
   END IF;
-  IF (SELECT byte_state || '|' || archive_key || '|' || stamped_hash FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s1)
+  IF (SELECT byte_state || '|' || archive_key || '|' || stamped_hash FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.s1)
      <> 'stamped|' || s1_key || '|sha256:' || repeat('f', 64) THEN
     RAISE EXCEPTION 's1 member not stamped';
   END IF;
-  IF (SELECT byte_state || '|' || byte_error FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.j2) <> 'failed|frozen bytes are gone' THEN
+  IF (SELECT byte_state || '|' || byte_error FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.j2) <> 'failed|frozen bytes are gone' THEN
     RAISE EXCEPTION 'failure not recorded';
   END IF;
-  IF (SELECT archive_key FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s2) <> prev_key THEN
+  IF (SELECT archive_key FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.s2) <> prev_key THEN
     RAISE EXCEPTION 'reused stamp not recorded';
   END IF;
   SELECT count(*) INTO n FROM deploy_events WHERE action = 'archive' AND metadata->>'dr_tag' = 'DR-seed';
   IF n <> events_before + 1 THEN RAISE EXCEPTION 'expected one archive event per batch, got %', n - events_before; END IF;
   -- the touched member partition is back to pending, the rest stay ready
-  IF (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'members' AND partition = part) <> 'pending' THEN
+  IF (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'manifest' AND partition = part) <> 'pending' THEN
     RAISE EXCEPTION 'member partition % not invalidated', part;
   END IF;
   IF EXISTS (SELECT 1 FROM dr_exports WHERE tag = 'DR-seed' AND state <> 'ready'
-             AND NOT (stream = 'members' AND partition IN (SELECT COALESCE(m.program_slug, m.component) FROM dr_members m
+             AND NOT (stream = 'manifest' AND partition IN (SELECT COALESCE(m.program_slug, m.component) FROM dr_manifest m
                                                            WHERE m.tag = 'DR-seed' AND m.storage_key IN (p.s1, p.s2, p.j1, p.j2)))) THEN
     RAISE EXCEPTION 'unrelated export files were invalidated';
   END IF;
   -- the earlier release is untouched
-  IF (SELECT byte_state FROM dr_members WHERE tag = 'DR-zzz-prev' AND storage_key = p.s2) <> 'stamped' THEN
+  IF (SELECT byte_state FROM dr_manifest WHERE tag = 'DR-zzz-prev' AND storage_key = p.s2) <> 'stamped' THEN
     RAISE EXCEPTION 'the other release changed';
   END IF;
   -- a slower concurrent run's failure for an already-archived member is stale:
@@ -329,10 +285,10 @@ BEGIN
   res := dr_bytes_mark('DR-seed', jsonb_build_array(
     jsonb_build_object('storage_key', p.j1, 'content_hash', pg_temp.zzz_ch(p.j1), 'state', 'failed', 'error', 'late')));
   IF (res->>'stale')::int <> 1
-     OR (SELECT byte_state || '|' || archive_key FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.j1)
+     OR (SELECT byte_state || '|' || archive_key FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.j1)
         <> 'copied|' || j1_key THEN
     RAISE EXCEPTION 'a stale failure regressed an archived member: % / %', res,
-      (SELECT to_jsonb(m) FROM dr_members m WHERE tag = 'DR-seed' AND storage_key = p.j1);
+      (SELECT to_jsonb(m) FROM dr_manifest m WHERE tag = 'DR-seed' AND storage_key = p.j1);
   END IF;
   -- the same object again: no second registry row, no error
   res := dr_bytes_mark('DR-seed', jsonb_build_array(
@@ -343,24 +299,24 @@ BEGIN
   END IF;
   -- a member file being BUILT when the byte pass changes its rows goes back
   -- to pending, and the builder's ready mark is then refused (Codex on #601)
-  PERFORM dr_export_mark('DR-seed', 'members',
-    (SELECT COALESCE(program_slug, component) FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.j1), 'building');
+  PERFORM dr_export_mark('DR-seed', 'manifest',
+    (SELECT COALESCE(program_slug, component) FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.j1), 'building');
   PERFORM dr_bytes_mark('DR-seed', jsonb_build_array(
     jsonb_build_object('storage_key', p.j1, 'content_hash', pg_temp.zzz_ch(p.j1), 'state', 'copied', 'archive_key', j1_key)));
-  IF (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'members' AND partition =
-        (SELECT COALESCE(program_slug, component) FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.j1)) <> 'pending' THEN
+  IF (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'manifest' AND partition =
+        (SELECT COALESCE(program_slug, component) FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.j1)) <> 'pending' THEN
     RAISE EXCEPTION 'a building member file was not invalidated';
   END IF;
   -- a science hash the pass computed for a member frozen without one is kept
   -- on the member and its archive row; one that disagrees is refused (Codex on #601)
-  IF (SELECT science_hash FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s3) IS NOT NULL THEN
+  IF (SELECT science_hash FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.s3) IS NOT NULL THEN
     RAISE EXCEPTION 'fixture: s3 should have no science hash';
   END IF;
   res := dr_bytes_mark('DR-seed', jsonb_build_array(
     jsonb_build_object('storage_key', p.s3, 'content_hash', pg_temp.zzz_ch(p.s3), 'state', 'stamped', 'archive_key', 'archive/' || repeat('7', 64) || '/s3_spec.fits',
                        'stamped_hash', 'sha256:' || repeat('7', 64), 'science_hash', 'sha256:' || repeat('3', 64),
                        'registry', jsonb_build_object('size_bytes', 10))));
-  IF (SELECT science_hash FROM dr_members WHERE tag = 'DR-seed' AND storage_key = p.s3) <> 'sha256:' || repeat('3', 64)
+  IF (SELECT science_hash FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.s3) <> 'sha256:' || repeat('3', 64)
      OR (SELECT science_hash FROM storage_objects WHERE storage_key = 'archive/' || repeat('7', 64) || '/s3_spec.fits') <> 'sha256:' || repeat('3', 64)
      -- and on the live registry row the next freeze reads (Codex on #601)
      OR (SELECT science_hash FROM storage_objects WHERE storage_key = p.s3 AND root = 'live') IS DISTINCT FROM 'sha256:' || repeat('3', 64) THEN
@@ -380,7 +336,7 @@ BEGIN
     SELECT jsonb_agg(jsonb_build_object('storage_key', m.storage_key, 'content_hash', m.content_hash, 'state', 'copied',
                                         'archive_key', 'archive/' || md5(m.storage_key) || md5(m.storage_key) || '/' || substr(m.storage_key, 6),
                                         'registry', jsonb_build_object('content_type', 'application/octet-stream')))
-    FROM dr_members m WHERE m.tag = 'DR-seed' AND m.byte_state IN ('pending', 'failed')));
+    FROM dr_manifest m WHERE m.tag = 'DR-seed' AND m.byte_state IN ('pending', 'failed')));
   IF res->>'state' <> 'exporting' THEN RAISE EXCEPTION 'every member done but member files pending: expected exporting, got %', res; END IF;
   PERFORM dr_export_mark('DR-seed', e.stream, e.partition, 'building') FROM dr_exports e
    WHERE e.tag = 'DR-seed' AND e.state <> 'ready';
@@ -393,7 +349,7 @@ BEGIN
   IF n <> 0 THEN RAISE EXCEPTION 'nothing should be pending, got %', n; END IF;
   res := dr_bytes_summary('DR-seed');
   IF (res->>'pending_bytes')::bigint <> 0 OR res->'by_state' ? 'pending' OR res->'by_state' ? 'failed'
-     OR ((res->'by_state'->'copied'->>'count')::int + (res->'by_state'->'stamped'->>'count')::int) <> (res->>'members')::int
+     OR ((res->'by_state'->'copied'->>'count')::int + (res->'by_state'->'stamped'->>'count')::int) <> (res->>'manifest')::int
      OR (res->'by_state'->'stamped'->>'count')::int <> 3 THEN
     RAISE EXCEPTION 'summary wrong: %', res;
   END IF;

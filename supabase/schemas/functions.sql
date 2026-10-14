@@ -9468,7 +9468,7 @@ GRANT EXECUTE ON FUNCTION public.dr_export_key(text, text, text) TO authenticate
 -- key and can never overwrite the file the ledger publishes (Codex on #600),
 -- and a key nothing references can never become referenced later (a claim
 -- marks ready at most once), which is what lets the export sweep delete
--- superseded files safely. contentExportKey in web/lib/server/dr-exports.ts
+-- superseded files safely. content_export_key in python/campfire/dr_export.py
 -- computes the same string.
 CREATE OR REPLACE FUNCTION public.dr_export_content_key(p_base text, p_sha256 text, p_claim uuid)
 RETURNS text
@@ -9955,7 +9955,7 @@ GRANT EXECUTE ON FUNCTION public.dr_export_invalidate(text, text, text) TO authe
 -- =============================================================================
 -- Data releases: byte pass (P4c, docs/design-data-releases-impl-plan.md §6)
 -- =============================================================================
--- `campfire dr bytes` makes every member's bytes exist under archive/: NIRSpec
+-- `campfire dr archive` makes every member's bytes exist under archive/: NIRSpec
 -- FITS finals (nirspec_spec, nirspec_lines) are downloaded, stamped (CMPFRDR in
 -- the primary header) and uploaded to archive/<sha256 of the stamped bytes>/
 -- <relpath>; sidecars and mosaics are copied server-side, unstamped, to
@@ -9998,17 +9998,14 @@ RETURNS TABLE (
 LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
-DECLARE
-  v_frozen_at timestamptz;
 BEGIN
   PERFORM dr_require_admin();
-  SELECT r.frozen_at INTO v_frozen_at FROM dr_releases r WHERE r.tag = p_tag;
-  IF NOT FOUND THEN
+  IF NOT EXISTS (SELECT 1 FROM dr_releases r WHERE r.tag = p_tag) THEN
     RAISE EXCEPTION 'no release %', p_tag;
   END IF;
   RETURN QUERY
   WITH page AS (
-    SELECT m.* FROM dr_members m
+    SELECT m.* FROM dr_manifest m
     WHERE m.tag = p_tag
       AND m.byte_state IN ('pending', 'failed')
       AND (m.byte_state = 'pending' OR p_include_failed)
@@ -10062,27 +10059,21 @@ BEGIN
     ORDER BY so.id
     LIMIT 1
   ) ret ON true
-  -- stamped objects other releases made from the same science (D-P4-2), every
-  -- candidate, in the order their releases were FROZEN: the pass reuses the
-  -- first one whose object still exists, so the first release wins the stamp
-  -- deterministically even when two passes stamped concurrently, and a fresh
-  -- stamp made after an earlier candidate went missing is still reachable
-  -- (Codex on #601). Only releases frozen BEFORE this one, in the total order
-  -- (frozen_at, tag): a release never reuses a later release's stamp, even
-  -- when that release's pass ran first, so a stamp always names the earliest
-  -- release that holds it (Codex on #601).
+  -- stamped objects any other release made from the same science (D-P4-2):
+  -- the first release to ARCHIVE a file owns its stamp, and every later pass
+  -- reuses that object. Every candidate, earliest archived first: the pass
+  -- reuses the first whose object still exists, so a missing one falls
+  -- through to the next (or to a fresh stamp).
   LEFT JOIN LATERAL (
     SELECT jsonb_agg(jsonb_build_object('archive_key', d.archive_key, 'stamped_hash', d.stamped_hash,
                                         'size_bytes', COALESCE(so.stored_size_bytes, so.size_bytes))
-                     ORDER BY r.frozen_at, d.tag) AS cands
-    FROM dr_members d
-    JOIN dr_releases r ON r.tag = d.tag
+                     ORDER BY so.archived_at, d.tag) AS cands
+    FROM dr_manifest d
     JOIN storage_objects so ON so.root = 'archive' AND so.status = 'archived'
                            AND so.storage_key = d.archive_key
     WHERE pg.product_type IN ('nirspec_spec', 'nirspec_lines') AND pg.science_hash IS NOT NULL
       AND d.science_hash = pg.science_hash AND d.storage_key = pg.storage_key
       AND d.tag <> pg.tag AND d.byte_state = 'stamped'
-      AND (r.frozen_at, r.tag) < (v_frozen_at, p_tag)
   ) reuse ON true
   ORDER BY pg.storage_key;
 END;
@@ -10102,16 +10093,12 @@ AS $$
 DECLARE
   v_state text;
   e jsonb;
-  m dr_members%ROWTYPE;
+  m dr_manifest%ROWTYPE;
   v_new text; v_key text; v_hash text;
   n_marked int := 0; n_registered int := 0; n_failed int := 0;
   n_copied int := 0; n_stamped int := 0; n_pending int := 0; n_stale int := 0;
-  n_superseded int := 0; n_restamped int := 0;
   v_partitions text[] := '{}';
   v_rows int;
-  v_frozen_at timestamptz;
-  v_canon text;
-  v_other record;
 BEGIN
   PERFORM dr_require_admin();
   IF jsonb_typeof(p_results) IS DISTINCT FROM 'array' THEN
@@ -10120,12 +10107,7 @@ BEGIN
   IF jsonb_array_length(p_results) > 2000 THEN
     RAISE EXCEPTION 'at most 2000 results per call (got %)', jsonb_array_length(p_results);
   END IF;
-  -- One mark at a time, across releases: the stamp rules below read and write
-  -- other releases' members, so two passes marking the same file must not
-  -- interleave (Codex on #601). Marks are short (one batch); taken before any
-  -- row lock, so it orders every mark the same way.
-  PERFORM pg_advisory_xact_lock(hashtext('campfire.dr_bytes_mark'));
-  SELECT state, frozen_at INTO v_state, v_frozen_at FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  SELECT state INTO v_state FROM dr_releases WHERE tag = p_tag FOR UPDATE;
   IF v_state IS NULL THEN RAISE EXCEPTION 'no release %', p_tag; END IF;
   IF v_state NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
     RAISE EXCEPTION 'release % is % (the byte pass needs a frozen, unpublished release)', p_tag, v_state;
@@ -10144,7 +10126,7 @@ BEGIN
     IF v_new = 'stamped' AND (v_hash IS NULL OR v_hash !~ '^sha256:[0-9a-f]{64}$') THEN
       RAISE EXCEPTION 'a stamped member needs the sha256 of the stamped bytes (%)', e->>'storage_key';
     END IF;
-    SELECT * INTO m FROM dr_members WHERE tag = p_tag AND storage_key = e->>'storage_key' FOR UPDATE;
+    SELECT * INTO m FROM dr_manifest WHERE tag = p_tag AND storage_key = e->>'storage_key' FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'no member % in %', e->>'storage_key', p_tag; END IF;
     -- The outcome must be for THIS member's frozen bytes: a pass that fetched
     -- its page before the tag was purged and re-frozen carries the old
@@ -10175,28 +10157,6 @@ BEGIN
     IF m.byte_state IN ('copied', 'stamped') AND v_new IN ('failed', 'pending') THEN
       n_stale := n_stale + 1;
       CONTINUE;
-    END IF;
-    -- First freeze wins the stamp, atomically (Codex on #601): a release frozen
-    -- earlier already holds a stamped object of these science bytes, so this
-    -- one's own stamp is not recorded; the member stays as it was and the next
-    -- pass reuses the earlier object (dr_bytes_pending offers it). The object
-    -- just uploaded is left unregistered.
-    IF v_new = 'stamped' AND m.science_hash IS NOT NULL THEN
-      SELECT d.archive_key INTO v_canon
-      FROM dr_members d JOIN dr_releases r ON r.tag = d.tag
-      WHERE d.storage_key = m.storage_key AND d.science_hash = m.science_hash
-        AND d.byte_state = 'stamped' AND d.tag <> p_tag
-        AND (r.frozen_at, r.tag) < (v_frozen_at, p_tag)
-        -- not a candidate the pass found missing in the bucket: the outcome
-        -- fell through to the next one (or stamped afresh) for that reason,
-        -- and holding it to a dangling key would refuse it forever
-        AND NOT (COALESCE(e->'dangling', '[]'::jsonb) ? d.archive_key)
-      ORDER BY r.frozen_at, r.tag
-      LIMIT 1;
-      IF v_canon IS NOT NULL AND v_canon <> v_key THEN
-        n_superseded := n_superseded + 1;
-        CONTINUE;
-      END IF;
     END IF;
 
     -- A newly created archive object gets its registry row (an existing row:
@@ -10240,7 +10200,7 @@ BEGIN
        WHERE so.backend = m.backend AND so.bucket = m.bucket AND so.storage_key = m.storage_key
          AND so.root = 'live' AND so.content_hash = m.content_hash AND so.science_hash IS NULL;
     END IF;
-    UPDATE dr_members
+    UPDATE dr_manifest
        SET byte_state = v_new,
            science_hash = m.science_hash,
            archive_key = CASE WHEN v_new IN ('copied', 'stamped') THEN v_key END,
@@ -10248,36 +10208,6 @@ BEGIN
            byte_error = CASE WHEN v_new = 'failed' THEN left(COALESCE(e->>'error', 'failed'), 2000) END,
            updated_at = now()
      WHERE tag = p_tag AND storage_key = m.storage_key;
-    -- ...and the other way round: releases frozen AFTER this one that stamped
-    -- their own object of the same science (their pass ran first) go back to
-    -- pending while they are unpublished, so their next pass reuses this
-    -- stamp. A published release keeps what it published (immutable). The
-    -- other release's row is locked before its member and export rows, the
-    -- order dr_export_mark and dr_export_invalidate use.
-    IF v_new = 'stamped' AND m.science_hash IS NOT NULL THEN
-      FOR v_other IN
-        SELECT DISTINCT d.tag FROM dr_members d JOIN dr_releases r ON r.tag = d.tag
-        WHERE d.storage_key = m.storage_key AND d.science_hash = m.science_hash
-          AND d.byte_state = 'stamped' AND d.archive_key <> v_key
-          AND (r.frozen_at, r.tag) > (v_frozen_at, p_tag)
-        ORDER BY d.tag
-      LOOP
-        PERFORM 1 FROM dr_releases r WHERE r.tag = v_other.tag
-           AND r.state IN ('frozen', 'exporting', 'exported', 'copying', 'ready') FOR UPDATE;
-        CONTINUE WHEN NOT FOUND;
-        UPDATE dr_exports x
-           SET state = 'pending', sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL,
-               claim_token = NULL, claimed_at = NULL
-         WHERE x.tag = v_other.tag AND x.stream = 'members' AND x.state IN ('ready', 'building')
-           AND x.partition IN (SELECT COALESCE(d.program_slug, d.component) FROM dr_members d
-                               WHERE d.tag = v_other.tag AND d.storage_key = m.storage_key);
-        UPDATE dr_members d
-           SET byte_state = 'pending', archive_key = NULL, stamped_hash = NULL, byte_error = NULL, updated_at = now()
-         WHERE d.tag = v_other.tag AND d.storage_key = m.storage_key AND d.byte_state = 'stamped' AND d.archive_key <> v_key;
-        PERFORM dr_derive_state(v_other.tag);
-        n_restamped := n_restamped + 1;
-      END LOOP;
-    END IF;
     n_marked := n_marked + 1;
     CASE v_new WHEN 'copied' THEN n_copied := n_copied + 1;
                WHEN 'stamped' THEN n_stamped := n_stamped + 1;
@@ -10293,7 +10223,7 @@ BEGIN
    -- `building` too: a builder mid-way through this file read the old rows,
    -- and dr_export_mark refuses its ready mark once the row is not building
    -- (lock order: the release row is already held above, as in dr_export_mark)
-   WHERE tag = p_tag AND stream = 'members' AND state IN ('ready', 'building') AND partition = ANY (v_partitions);
+   WHERE tag = p_tag AND stream = 'manifest' AND state IN ('ready', 'building') AND partition = ANY (v_partitions);
 
   IF n_copied + n_stamped > 0 THEN
     INSERT INTO deploy_events (actor, action, affected_count, metadata)
@@ -10304,8 +10234,7 @@ BEGIN
 
   RETURN jsonb_build_object('tag', p_tag, 'marked', n_marked, 'copied', n_copied, 'stamped', n_stamped,
                             'failed', n_failed, 'pending', n_pending, 'registered', n_registered,
-                            'stale', n_stale, 'superseded', n_superseded, 'restamped', n_restamped,
-                            'state', dr_derive_state(p_tag));
+                            'stale', n_stale, 'state', dr_derive_state(p_tag));
 END;
 $$;
 
@@ -10327,16 +10256,16 @@ BEGIN
   SELECT jsonb_build_object(
     'tag', p_tag,
     'state', (SELECT state FROM dr_releases WHERE tag = p_tag),
-    'members', count(*),
+    'manifest', count(*),
     'by_state', (SELECT COALESCE(jsonb_object_agg(s.byte_state, jsonb_build_object('count', s.n, 'bytes', s.b)), '{}'::jsonb)
                  FROM (SELECT byte_state, count(*) AS n, COALESCE(sum(size_bytes), 0) AS b
-                       FROM dr_members WHERE tag = p_tag GROUP BY byte_state) s),
+                       FROM dr_manifest WHERE tag = p_tag GROUP BY byte_state) s),
     'pending_bytes', COALESCE(sum(size_bytes) FILTER (WHERE byte_state IN ('pending', 'failed')), 0),
     'failed_sample', (SELECT COALESCE(jsonb_agg(jsonb_build_object('storage_key', f.storage_key, 'error', f.byte_error)), '[]'::jsonb)
-                      FROM (SELECT storage_key, byte_error FROM dr_members
+                      FROM (SELECT storage_key, byte_error FROM dr_manifest
                             WHERE tag = p_tag AND byte_state = 'failed' ORDER BY storage_key LIMIT 10) f))
   INTO out
-  FROM dr_members WHERE tag = p_tag;
+  FROM dr_manifest WHERE tag = p_tag;
   RETURN out;
 END;
 $$;

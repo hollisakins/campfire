@@ -239,9 +239,9 @@ def test_reuse_stamp_missing_object_stamps_afresh_or_fails():
     assert o.action == 'stamp'
 
 
-def test_reuse_stamp_takes_the_first_existing_candidate_in_freeze_order():
-    # Codex on #601: first release wins, deterministically, and a dangling
-    # earlier candidate falls through to the next one
+def test_reuse_stamp_takes_the_first_existing_candidate():
+    # the earliest archived candidate whose object exists is reused, and a
+    # missing one falls through to the next (Codex on #601)
     body = _fits_bytes(4)
     cands = [{'archive_key': 'archive/aa/first.fits', 'stamped_hash': 'sha256:' + 'a' * 64, 'size_bytes': 5},
              {'archive_key': 'archive/bb/second.fits', 'stamped_hash': 'sha256:' + 'b' * 64, 'size_bytes': 6}]
@@ -253,11 +253,6 @@ def test_reuse_stamp_takes_the_first_existing_candidate_in_freeze_order():
     only_second = _s3(**{SPEC_KEY: body, 'archive/bb/second.fits': b'second'})
     o = B.process_member(row, tag=TAG, s3=only_second, bucket=BUCKET, verify_science=False)
     assert (o.action, o.archive_key, o.stamped_hash) == ('reuse-stamp', 'archive/bb/second.fits', 'sha256:' + 'b' * 64)
-    # the missing earlier candidate is reported, so dr_bytes_mark does not hold
-    # the outcome to it (Fable review of #601)
-    assert o.dangling == ['archive/aa/first.fits'] and o.as_result()['dangling'] == ['archive/aa/first.fits']
-    assert 'dangling' not in B.process_member(row, tag=TAG, s3=both, bucket=BUCKET,
-                                              verify_science=False).as_result()
 
 
 def test_trailing_gzip_members_are_rejected():
@@ -493,7 +488,7 @@ def _fake_db(rows):
         by = {}
         for r in state['rows']:
             by.setdefault(r['byte_state'], {'count': 0, 'bytes': 0})['count'] += 1
-        return {'tag': params['p_tag'], 'state': 'copying', 'members': len(state['rows']),
+        return {'tag': params['p_tag'], 'state': 'copying', 'manifest': len(state['rows']),
                 'by_state': by, 'failed_sample': []}
 
     client = FakePostgrest(rpc_handlers={'dr_bytes_pending': pending, 'dr_bytes_mark': mark,
@@ -574,7 +569,7 @@ def test_pass_requires_the_pipeline_for_science_checks(monkeypatch):
 
 
 def test_format_summary():
-    text = B.format_summary({'tag': TAG, 'state': 'copying', 'members': 3,
+    text = B.format_summary({'tag': TAG, 'state': 'copying', 'manifest': 3,
                              'by_state': {'pending': {'count': 1, 'bytes': 10},
                                           'stamped': {'count': 2, 'bytes': 2_000_000_000}},
                              'failed_sample': [{'storage_key': 'k', 'error': 'gone'}]})
@@ -608,7 +603,7 @@ def test_cli_bytes_dry_run_with_obs_prefix(monkeypatch):
             _row('data/products/nirspec/other/other_1_prism_spec.json', body, product_type='spectrum_json')]
     client, state = _fake_db(rows)
     _patch_cli(monkeypatch, client)
-    res = CliRunner().invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG, '--obs', 'abc_p1', '--dry-run'])
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'archive', '--tag', TAG, '--obs', 'abc_p1', '--dry-run'])
     assert res.exit_code == 0, res.output
     assert 'under data/products/nirspec/abc_p1/' in res.output
     assert 'Dry run on' in res.output and 'copy' in res.output
@@ -626,7 +621,7 @@ def test_cli_bytes_fails_while_earlier_failures_remain(monkeypatch):
     rows = [_row(JSON_KEY, body, product_type='spectrum_json', byte_state='failed')]
     client, _ = _fake_db(rows)
     _patch_cli(monkeypatch, client, s3=_s3())
-    res = CliRunner().invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG])
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'archive', '--tag', TAG])
     assert res.exit_code == 1, res.output
     assert '1 member(s) of' in res.output and '--retry-failed' in res.output
 
@@ -642,7 +637,7 @@ def test_cli_bytes_fails_when_the_summary_cannot_be_read(monkeypatch):
         raise RuntimeError('network down')
     client.rpc_handlers['dr_bytes_summary'] = broken
     _patch_cli(monkeypatch, client, s3=_s3())
-    res = CliRunner().invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG])
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'archive', '--tag', TAG])
     assert res.exit_code == 1, res.output
     assert 'could not read the byte-pass summary' in res.output
 
@@ -657,7 +652,7 @@ def test_cli_bytes_runs_and_exits_1_on_failures(monkeypatch):
             _row('data/products/nirspec/abc_p1/abc_p1_9_prism_spec.json', body, product_type='spectrum_json')]
     client, state = _fake_db(rows)
     _patch_cli(monkeypatch, client, s3=s3)
-    res = CliRunner().invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG, '--workers', '2'])
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'archive', '--tag', TAG, '--workers', '2'])
     assert res.exit_code == 1, res.output
     assert 'copy' in res.output and '✗ data/products/nirspec/abc_p1/abc_p1_9_prism_spec.json' in res.output
     assert {r['byte_state'] for r in rows} == {'copied', 'failed'}
@@ -669,7 +664,7 @@ def test_cli_bytes_refuses_a_non_osn_backend(monkeypatch):
     import campfire.cli as main_cli
     client, _ = _fake_db([])
     _patch_cli(monkeypatch, client, s3=_s3(), backend='r2')
-    res = CliRunner().invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG])
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'archive', '--tag', TAG])
     assert res.exit_code == 2 and 'needs OSN credentials' in res.output
     assert 'osn: resolves to r2' in res.output
 
@@ -679,13 +674,13 @@ def test_cli_bytes_status(monkeypatch):
 
     import campfire.cli as main_cli
     client = FakePostgrest(rpc_handlers={'dr_bytes_summary': {
-        'tag': TAG, 'state': 'copying', 'members': 2,
+        'tag': TAG, 'state': 'copying', 'manifest': 2,
         'by_state': {'pending': {'count': 1, 'bytes': 5}, 'copied': {'count': 1, 'bytes': 5}},
         'failed_sample': []}})
     _patch_cli(monkeypatch, client)
-    res = CliRunner().invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG, '--status'])
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'archive', '--tag', TAG, '--status'])
     assert res.exit_code == 0, res.output
-    assert f'{TAG}: state copying, 2 members' in res.output
+    assert f'{TAG}: state copying, 2 manifest files' in res.output
 
 
 def test_cli_bytes_json_stdout_is_pure_json(monkeypatch):
@@ -701,28 +696,11 @@ def test_cli_bytes_json_stdout_is_pure_json(monkeypatch):
         runner = CliRunner(mix_stderr=False)
     except TypeError:  # click >= 8.2 always separates the streams
         runner = CliRunner()
-    res = runner.invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG, '--json'])
+    res = runner.invoke(main_cli.cli, ['dr', 'archive', '--tag', TAG, '--json'])
     assert res.exit_code == 0, res.output
     assert json.loads(res.stdout)['by_state'] == {'copied': 1}
     assert 'Archiving the member bytes' in res.stderr
 
-
-def test_pass_reports_stamps_that_yield_to_an_earlier_release():
-    # Codex on #601: dr_bytes_mark does not record a fresh stamp when a release
-    # frozen earlier stamped the same science first; the pass says so
-    body = b'{"x": 1}'
-    client, state = _fake_db([_row(JSON_KEY, body, product_type='spectrum_json', byte_state='pending')])
-    real = client.rpc_handlers['dr_bytes_mark']
-
-    def mark(params):
-        out = real(params)
-        for r in state['rows']:
-            r['byte_state'] = 'pending'          # as if superseded
-        return {**out, 'marked': 0, 'superseded': len(params['p_results']), 'state': 'copying'}
-    client.rpc_handlers['dr_bytes_mark'] = mark
-    rep = B.run_byte_pass(client, _s3(**{JSON_KEY: body}), BUCKET, TAG, log=lambda *_: None)
-    assert rep.superseded == 1 and rep.as_dict()['superseded'] == 1
-    assert 'yielded to a release frozen earlier' in B.format_report(rep)
 
 
 def test_stamp_card_keeps_its_whole_comment():
@@ -756,24 +734,3 @@ def test_a_source_replaced_between_head_and_get_is_drift(monkeypatch):
     monkeypatch.setattr(s3, 'get_object', get_object)
     o = B.process_member(_row(JSON_KEY, body, product_type='spectrum_json'), tag=TAG, s3=s3, bucket=BUCKET)
     assert (o.state, o.action) == ('failed', 'drift') and 'changed during the read' in o.error
-
-
-def test_cli_bytes_exits_1_while_stamps_are_superseded(monkeypatch):
-    # Codex on #601: superseded members stay pending; the run is not done
-    from click.testing import CliRunner
-
-    import campfire.cli as main_cli
-    body = b'{"x": 1}'
-    client, state = _fake_db([_row(JSON_KEY, body, product_type='spectrum_json')])
-    real = client.rpc_handlers['dr_bytes_mark']
-
-    def mark(params):
-        out = real(params)
-        for r in state['rows']:
-            r['byte_state'] = 'pending'
-        return {**out, 'marked': 0, 'superseded': len(params['p_results'])}
-    client.rpc_handlers['dr_bytes_mark'] = mark
-    _patch_cli(monkeypatch, client, s3=_s3(**{JSON_KEY: body}))
-    res = CliRunner().invoke(main_cli.cli, ['dr', 'bytes', '--tag', TAG])
-    assert res.exit_code == 1, res.output
-    assert 'yielded to a release frozen earlier' in res.output

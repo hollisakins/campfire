@@ -1523,7 +1523,7 @@ def dr_export(tag, as_json, local):
         sys.exit(1)
 
 
-@dr_group.command(name="bytes")
+@dr_group.command(name="archive")
 @click.option("--tag", required=True, metavar="TAG", help="Release tag whose member bytes to archive")
 @click.option("--obs", default=None, metavar="OBS", help="Only the NIRSpec members of one observation (the staged first run)")
 @click.option("--field", default=None, metavar="FIELD", help="Only the NIRCam mosaic members of one field")
@@ -1534,26 +1534,25 @@ def dr_export(tag, as_json, local):
 @click.option("--status", "status_only", is_flag=True, help="Only print the byte-pass progress")
 @click.option("--json", "as_json", is_flag=True, help="Print the report as JSON")
 @click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
-def dr_bytes(tag, obs, field, workers, limit, retry_failed, dry_run, status_only, as_json, local):
-    """Archive the member bytes of a frozen release (P4c).
+def dr_archive(tag, obs, field, workers, limit, retry_failed, dry_run, status_only, as_json, local):
+    """Archive the files of a frozen release (P4c): its manifest, under archive/.
 
-    NIRSpec FITS finals are downloaded, stamped with CMPFRDR = TAG in the
-    primary header (science hash unchanged, verified) and uploaded to
-    archive/<sha256>/<relpath>; sidecars and mosaics are copied server-side,
-    unstamped. Objects another release already archived with the same science
-    (FITS) or content (the rest) are reused, so an unchanged file keeps the
-    stamp of the first release that froze it. Resumable: re-run until nothing
-    is pending; members whose frozen bytes are gone are marked failed with
-    the reason. Needs object-store credentials (CAMPFIRE_S3_* or deploy.toml)
-    and an admin login or the service role. Run `campfire dr export` again
-    afterwards: the member files it changed are rebuilt.
+    Every file is first verified against the hash recorded at the freeze.
+    NIRSpec FITS finals are stamped with CMPFRDR = TAG in the primary header
+    (science hash unchanged, verified) and uploaded to archive/<sha256>/<relpath>;
+    sidecars and mosaics are archived unstamped. A file another release already
+    archived is reused, so an unchanged FITS keeps the stamp of the first
+    release that archived it. Resumable: re-run until nothing is pending; a file
+    whose frozen bytes are gone is marked failed with the reason. Needs OSN
+    credentials (CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml) and an admin
+    login. (`campfire archive gc` is the unrelated retention tool.)
     """
     import json as _json
 
     from campfire_layout import Scope, key_prefix
     from campfire_layout.keys import KeyScheme
 
-    config, sb = _dr_client(local, what="`campfire dr bytes`")
+    config, sb = _dr_client(local, what="`campfire dr archive`")
     # --json: stdout carries the JSON document alone; progress goes to stderr
     say = (lambda m: click.echo(m, err=True)) if as_json else click.echo
     from campfire.deploy.dr_bytes import fetch_summary, format_report, format_summary, run_byte_pass
@@ -1581,7 +1580,7 @@ def dr_bytes(tag, obs, field, workers, limit, retry_failed, dry_run, status_only
         # Members live on OSN (the same bucket as the exports)
         s3, bucket = _dr_osn_s3(config, max_pool_connections=max(workers, 10))
         if s3 is None:
-            say("✗ `campfire dr bytes` needs OSN credentials for the data bucket "
+            say("✗ `campfire dr archive` needs OSN credentials for the data bucket "
                 "(CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml): " + bucket)
             sys.exit(2)
 
@@ -1615,7 +1614,7 @@ def dr_bytes(tag, obs, field, workers, limit, retry_failed, dry_run, status_only
             # unknown is not clean: earlier failures may remain (Codex on #601)
             summary_unknown = True
             say(f"✗ could not read the byte-pass summary ({getattr(e, 'message', None) or e}); "
-                f"run `campfire dr bytes --tag {tag} --status` to check for failed members")
+                f"run `campfire dr archive --tag {tag} --status` to check for failed members")
     if as_json:
         click.echo(_json.dumps({**report.as_dict(), 'stored_failed': stored_failed},
                                indent=2, sort_keys=True, default=str))
@@ -1623,11 +1622,8 @@ def dr_bytes(tag, obs, field, workers, limit, retry_failed, dry_run, status_only
         click.echo(format_report(report))
         if stored_failed:
             click.echo(f"✗ {stored_failed:,} member(s) of {tag} are marked failed "
-                       f"(`campfire dr bytes --tag {tag} --status` lists them; rerun with --retry-failed)")
-    # superseded stamps leave their members pending until a rerun reuses the
-    # earlier release's object: not done, so not a clean exit (Codex on #601)
-    if not dry_run and (report.by_state.get('failed') or stored_failed or summary_unknown
-                        or report.superseded):
+                       f"(`campfire dr archive --tag {tag} --status` lists them; rerun with --retry-failed)")
+    if not dry_run and (report.by_state.get('failed') or stored_failed or summary_unknown):
         sys.exit(1)
 
 
