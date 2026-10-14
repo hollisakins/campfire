@@ -77,7 +77,7 @@ export async function GET(request: NextRequest) {
       radiusDegrees = convertRadiusToDegrees(parseFloat(radius), 'arcsec');
     }
 
-    const listIds = await resolveListIds(supabase, parseCSV(searchParams.get('lists')));
+    const listIds = await resolveListIds(supabase, parseCSV(searchParams.get('lists')), userId);
 
     const inspectedOnlyParam = searchParams.get('inspected_only');
     const inspectedOnly = inspectedOnlyParam
@@ -176,7 +176,22 @@ export async function GET(request: NextRequest) {
       ...bandFilterRpcParams(searchParams),
     };
 
-    const { data, error } = await supabase.rpc('get_filtered_objects_paginated', rpcParams);
+    // p_viewer_id scopes each object's `lists` to what this key's user may see:
+    // the service-role client bypasses the RLS that does so in the portal.
+    let { data, error } = await supabase.rpc('get_filtered_objects_paginated', {
+      ...rpcParams,
+      p_viewer_id: userId,
+    });
+
+    // Deploy window: the Vercel build and the Supabase migration land
+    // independently on merge. Against an RPC that does not know p_viewer_id yet
+    // (PostgREST: no matching function), retry without it. That RPC does not
+    // scope lists at all, and the new one shows only public lists when the
+    // viewer is omitted, so the retry never shows more than the database would.
+    if (error && error.code === 'PGRST202') {
+      console.warn('v1/objects: RPC without p_viewer_id; retrying without it');
+      ({ data, error } = await supabase.rpc('get_filtered_objects_paginated', rpcParams));
+    }
 
     if (error) {
       console.error('Error fetching objects:', error);

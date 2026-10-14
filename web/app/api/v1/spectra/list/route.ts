@@ -83,7 +83,7 @@ export async function GET(request: NextRequest) {
       radiusDegrees = convertRadiusToDegrees(parseFloat(radius), 'arcsec');
     }
 
-    const listIds = await resolveListIds(supabase, parseCSV(searchParams.get('lists')));
+    const listIds = await resolveListIds(supabase, parseCSV(searchParams.get('lists')), userId);
 
     const inspectedOnlyParam = searchParams.get('inspected_only');
     const inspectedOnly = inspectedOnlyParam
