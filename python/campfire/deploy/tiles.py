@@ -80,14 +80,21 @@ def purge_cutout_store(config: dict, field: str) -> int | None:
         return None
 
 
-def delete_r2_prefix(r2_client, bucket: str, prefix: str) -> int:
-    """Delete all objects under a prefix in R2. Returns number deleted."""
+def delete_r2_prefix(r2_client, bucket: str, prefix: str, before_page=None) -> int:
+    """Delete all objects under a prefix in R2. Returns number deleted.
+
+    *before_page(n)*, when given, runs before each page's ``delete_objects``
+    request and may raise to stop the delete (``deploy remove`` re-checks its
+    deploy lease there).
+    """
     deleted = 0
     paginator = r2_client.get_paginator('list_objects_v2')
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+    for n, page in enumerate(paginator.paginate(Bucket=bucket, Prefix=prefix), start=1):
         objects = page.get('Contents', [])
         if not objects:
             continue
+        if before_page is not None:
+            before_page(n)
         keys = [{'Key': obj['Key']} for obj in objects]
         r2_client.delete_objects(Bucket=bucket, Delete={'Objects': keys})
         deleted += len(keys)

@@ -30,6 +30,7 @@ LEASED = {
     'objects split': dcli.objects_split,
     'objects merge': dcli.objects_merge,
     'objects rebuild': dcli.objects_rebuild,
+    'remove': __import__('campfire.deploy.remove', fromlist=['remove_observation']).remove_observation,
 }
 
 EXEMPT = {
@@ -49,9 +50,7 @@ EXEMPT = {
     'nirspec pull-stuck-shutters': 'read-only', 'nirspec pull-bkg-overrides': 'read-only',
 }
 
-KNOWN_GAP = {
-    'remove': 'leased in #602 (P4d), which holds the observation lease through every delete batch',
-}
+KNOWN_GAP: dict = {}
 
 
 def _commands(group, prefix=''):

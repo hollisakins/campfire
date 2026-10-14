@@ -346,7 +346,11 @@ def claim_deploy_scope(
             'p_scope_type': scope_type, 'p_scope_key': scope_key,
             'p_expected_version': expected_version, 'p_actor': actor,
         }).execute()
-        return resp.data if isinstance(resp.data, dict) else {'claimed': True, 'conflict': False}
+        if isinstance(resp.data, dict):
+            return resp.data
+        # nominal success for the advisory deploy path, flagged so a caller
+        # that needs a confirmed claim (deploy remove) fails closed (Codex on #602)
+        return {'claimed': True, 'conflict': False, 'error': f'unexpected claim response: {resp.data!r}'}
     except Exception as e:
         return {'claimed': True, 'conflict': False, 'error': str(e)}
 

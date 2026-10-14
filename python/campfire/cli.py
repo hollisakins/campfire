@@ -1271,7 +1271,45 @@ def verify(obs_filter, cloud, deep, as_json, local):
 
 @cli.group(name="dr")
 def dr_group():
-    """Data-release tooling (admin): readiness, freeze, export, purge."""
+    """Data releases (admin): frozen, citable snapshots of the published catalog.
+
+    \b
+    A release goes through four steps, in this order:
+      1. freeze    snapshot the published catalog into frozen tables
+                   (minutes; refused while any deploy is running)
+      2. archive   verify every file the release names (its manifest) and
+                   copy it under archive/, so redeploys cannot break it
+                   (hours for the first release: it reads every mosaic once)
+      3. export    write the release's export files (gzip JSONL per stream
+                   and program) for readers to download
+      4. publish   make it visible to readers (a deliberate step: DOI,
+                   known issues; review `dr diff` first)
+
+    \b
+    `campfire dr build --tag T --nirspec ...` runs steps 1-3 and resumes
+    where it stopped; each step can also be run on its own, and each ends by
+    printing the next one. `dr status` shows every release; `dr diff`
+    compares one with live; `dr refs --obs X` lists the releases that need
+    an observation; `dr withdraw` hides a published release; `dr purge`
+    deletes an unpublished one.
+    """
+
+
+def _dr_hint(sb, tag: str, say=click.echo) -> None:
+    """Print the release's next step (best effort)."""
+    from .dr import fetch_next_step
+    hint = fetch_next_step(sb, tag)
+    if hint:
+        say(hint)
+
+
+def _check_conditional_put(s3, say) -> None:
+    """Every archive write is a conditional PUT (If-None-Match); a botocore that
+    predates S3 conditional writes rejects the parameter outright."""
+    model = getattr(getattr(s3, 'meta', None), 'service_model', None)
+    if model is not None and 'IfNoneMatch' not in model.operation_model('PutObject').input_shape.members:
+        say("✗ this boto3/botocore cannot send If-None-Match on PutObject; upgrade it (pip install -U boto3)")
+        sys.exit(2)
 
 
 @dr_group.command(name="status")
@@ -1398,6 +1436,7 @@ def dr_freeze(tag, nirspec, fields, photometry, notes, inline, no_wait, poll, ti
         click.echo(_json.dumps(row, indent=2, sort_keys=True, default=str))
     else:
         click.echo(format_release(row))
+    _dr_hint(sb, tag, say)
     if row.get('state') == 'failed':
         sys.exit(1)
     if row.get('state') not in FREEZE_TERMINAL_STATES:
@@ -1519,6 +1558,7 @@ def dr_export(tag, as_json, local):
         click.echo(_json.dumps(report.as_dict(), indent=2, sort_keys=True, default=str))
     else:
         click.echo(format_export_report(report))
+    _dr_hint(sb, tag, say)
     if report.failed or report.remaining > 0:
         sys.exit(1)
 
@@ -1591,14 +1631,7 @@ def dr_archive(tag, obs, field, workers, limit, retry_failed, dry_run, status_on
                 "(CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml): " + bucket)
             sys.exit(2)
 
-    model = getattr(getattr(s3, 'meta', None), 'service_model', None)
-    if model is not None:
-        # every archive write is a conditional PUT (If-None-Match); a botocore
-        # that predates S3 conditional writes rejects the parameter outright
-        if 'IfNoneMatch' not in model.operation_model('PutObject').input_shape.members:
-            say("✗ this boto3/botocore cannot send If-None-Match on PutObject; upgrade it "
-                "(pip install -U boto3)")
-            sys.exit(2)
+    _check_conditional_put(s3, say)
     scope = f" under {prefix}" if prefix else ""
     say(f"{'Planning' if dry_run else 'Archiving'} the member bytes of {tag}{scope} …")
     try:
@@ -1630,7 +1663,231 @@ def dr_archive(tag, obs, field, workers, limit, retry_failed, dry_run, status_on
         if stored_failed:
             click.echo(f"✗ {stored_failed:,} member(s) of {tag} are marked failed "
                        f"(`campfire dr archive --tag {tag} --status` lists them; rerun with --retry-failed)")
+    if not dry_run and not prefix:
+        _dr_hint(sb, tag, say)
+    elif not dry_run:
+        say(f"Archived the files under {prefix}; run `campfire dr archive --tag {tag}` for the rest.")
     if not dry_run and (report.by_state.get('failed') or stored_failed or summary_unknown):
+        sys.exit(1)
+
+
+@dr_group.command(name="build")
+@click.option("--tag", required=True, metavar="TAG", help="Release tag, e.g. DR2026.1")
+@click.option("--nirspec", is_flag=True, help="Freeze with the NIRSpec catalog component (first run only)")
+@click.option("--field", "fields", multiple=True, metavar="FIELD",
+              help="Freeze with the published NIRCam mosaics of FIELD (repeatable; first run only)")
+@click.option("--photometry", "photometry", multiple=True, metavar="FIELD/CATALOG",
+              help="Freeze with a photometry catalog component (repeatable; first run only)")
+@click.option("--notes", default=None, help="Free-text notes stored on the release row (first run only)")
+@click.option("--workers", type=int, default=8, show_default=True, help="Parallel transfers while archiving")
+def dr_build(tag, nirspec, fields, photometry, notes, workers):
+    """Freeze, archive and export a release: steps 1-3, resumable.
+
+    Each step is skipped when it is already done, so re-running after an
+    interruption picks up where it stopped: an unfrozen TAG is frozen with the
+    given components (they are ignored once TAG is frozen; re-freeze with
+    `dr freeze`), its manifest files are archived (`dr archive`), and its
+    export files are built (`dr export`). Stops at the first step that leaves
+    work undone and says what to fix. Publishing stays a separate, deliberate
+    step: `campfire dr publish TAG`.
+    """
+    from campfire.deploy.dr_bytes import fetch_summary, format_report, run_byte_pass
+
+    from .dr import (components_from_options, enqueue_freeze, fetch_release, format_release,
+                     wait_for_freeze)
+    from .dr_export import format_export_report, run_export
+
+    config, sb = _dr_client(False, what="`campfire dr build`")
+    s3, bucket = _dr_osn_s3(config, max_pool_connections=max(workers, 10))
+    if s3 is None:
+        click.echo(f"✗ `campfire dr build` needs OSN credentials for the data bucket ({bucket}).")
+        sys.exit(2)
+    _check_conditional_put(s3, click.echo)
+
+    # 1. freeze (unless TAG is already frozen)
+    row = fetch_release(sb, tag)
+    if row is not None and row.get('state') in ('published', 'withdrawn'):
+        click.echo(f"✗ {tag} is {row['state']}; a published release is never rebuilt (make a new tag).")
+        sys.exit(1)
+    if row is None or row.get('state') == 'failed':
+        try:
+            components = components_from_options(nirspec=nirspec, fields=fields, photometry=photometry)
+        except ValueError as e:
+            click.echo(f"✗ {tag} is not frozen yet; pass its components (--nirspec, --field, --photometry): {e}")
+            sys.exit(2)
+        click.echo(f"1/3 Freezing {tag} ({', '.join(components)}) …")
+        try:
+            row = enqueue_freeze(sb, tag, components, notes=notes)
+        except Exception as e:  # noqa: BLE001
+            click.echo(f"✗ Could not start the freeze: {getattr(e, 'message', None) or e}")
+            sys.exit(1)
+    else:
+        if nirspec or fields or photometry or notes:
+            click.echo(f"  ({tag} is already frozen; the component options are ignored. "
+                       f"Re-freeze it with `campfire dr freeze`.)")
+        click.echo(f"1/3 {tag} is frozen.")
+    if row.get('state') == 'freezing':
+        try:
+            row = wait_for_freeze(sb, tag, echo=click.echo)
+        except TimeoutError as e:
+            click.echo(f"… {e}; re-run `campfire dr build --tag {tag}` once `dr status` shows it frozen.")
+            sys.exit(3)
+    if row.get('state') == 'failed':
+        click.echo(format_release(row))
+        _dr_hint(sb, tag)
+        sys.exit(1)
+
+    # 2. archive
+    click.echo(f"2/3 Archiving the manifest files of {tag} …")
+    try:
+        report = run_byte_pass(sb, s3, bucket, tag, workers=workers, log=click.echo)
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"✗ {getattr(e, 'message', None) or e}")
+        sys.exit(1)
+    if report.seen:
+        click.echo(format_report(report))
+    by = (fetch_summary(sb, tag) or {}).get('by_state') or {}
+    if int((by.get('failed') or {}).get('count') or 0) or int((by.get('pending') or {}).get('count') or 0):
+        _dr_hint(sb, tag)
+        sys.exit(1)
+
+    # 3. export
+    click.echo(f"3/3 Exporting {tag} …")
+    try:
+        exp = run_export(sb, s3, bucket, tag, log=click.echo)
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"✗ {getattr(e, 'message', None) or e}")
+        sys.exit(1)
+    click.echo(format_export_report(exp))
+    _dr_hint(sb, tag)
+    if exp.failed or exp.remaining > 0:
+        sys.exit(1)
+
+
+@dr_group.command(name="publish")
+@click.argument("tag")
+@click.option("--doi", default=None, metavar="DOI", help="DOI of the release, e.g. 10.5281/zenodo.123456")
+@click.option("--known-issues", default=None, help="Known-issues text shown with the release")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
+@click.option("--json", "as_json", is_flag=True, help="Print the release row as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
+def dr_publish(tag, doi, known_issues, yes, as_json, local):
+    """Publish a release (P4d): ready -> published.
+
+    The release must be `ready` (every export file built, every member
+    archived; re-derived on the server), or `withdrawn` to publish it again.
+    Publishing makes the frozen rows visible to every reader within their
+    programs. Admin only.
+    """
+    import json as _json
+
+    from .dr import fetch_diff, format_release, publish_release
+
+    config, sb = _dr_client(local, what="`campfire dr publish`")
+    # A ready release no longer pins its observations (its bytes are archived),
+    # so live may have moved on since the freeze. Say so before publishing
+    # (Fable review of #602); `campfire dr diff` has the details.
+    try:
+        counts = (fetch_diff(sb, tag, limit=0) or {}).get('counts') or {}
+    except Exception:  # noqa: BLE001 - a warning only; dr_publish decides
+        counts = {}
+    moved = {k: int(counts.get(k) or 0) for k in
+             ('spectrum_gone', 'spectrum_unpublished', 'spectrum_science_changed')}
+    if any(moved.values()):
+        click.echo(f"⚠  Live has moved on since {tag} was frozen: " +
+                   ', '.join(f"{v:,} {k.replace('_', ' ')}" for k, v in moved.items() if v) +
+                   f" (`campfire dr diff {tag}`). The release still publishes its frozen rows.",
+                   err=as_json)
+    if not yes and not click.confirm(f"Publish {tag} to every reader of its programs?", default=False,
+                                     err=as_json):
+        click.echo("Aborted.", err=as_json)
+        sys.exit(1)
+    try:
+        row = publish_release(sb, tag, doi=doi, known_issues=known_issues)
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"✗ Could not publish {tag}: {getattr(e, 'message', None) or e}", err=as_json)
+        sys.exit(1)
+    click.echo(_json.dumps(row, indent=2, sort_keys=True, default=str) if as_json else format_release(row))
+    _dr_hint(sb, tag, (lambda m: click.echo(m, err=True)) if as_json else click.echo)
+
+
+@dr_group.command(name="withdraw")
+@click.argument("tag")
+@click.option("--reason", required=True, help="Why (appended to the release's known issues)")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
+@click.option("--json", "as_json", is_flag=True, help="Print the release row as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
+def dr_withdraw(tag, reason, yes, as_json, local):
+    """Withdraw a published release (P4d): hidden from non-admins, kept intact.
+
+    Rows and archive objects stay (a published release is never deleted);
+    `dr publish TAG` makes it visible again. Admin only.
+    """
+    import json as _json
+
+    from .dr import format_release, withdraw_release
+
+    config, sb = _dr_client(local, what="`campfire dr withdraw`")
+    if not yes and not click.confirm(f"Withdraw {tag}? Readers lose access until it is published again.",
+                                     default=False, err=as_json):
+        click.echo("Aborted.", err=as_json)
+        sys.exit(1)
+    try:
+        row = withdraw_release(sb, tag, reason)
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"✗ Could not withdraw {tag}: {getattr(e, 'message', None) or e}", err=as_json)
+        sys.exit(1)
+    click.echo(_json.dumps(row, indent=2, sort_keys=True, default=str) if as_json else format_release(row))
+
+
+@dr_group.command(name="diff")
+@click.argument("tag")
+@click.argument("against", required=False, default="live", type=click.Choice(["live"]))
+@click.option("--limit", type=int, default=20, show_default=True, help="Samples per kind")
+@click.option("--json", "as_json", is_flag=True, help="Print the diff as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
+def dr_diff(tag, against, limit, as_json, local):
+    """What changed in live since TAG was frozen (P4d).
+
+    Spectra whose science changed, left the published set or are new;
+    objects renamed, re-redshifted, re-graded or deactivated; review
+    contradictions raised or cleared since the freeze. Admin only.
+    """
+    import json as _json
+
+    from .dr import fetch_diff, format_diff
+
+    config, sb = _dr_client(local, what="`campfire dr diff`")
+    try:
+        diff = fetch_diff(sb, tag, limit=limit)
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"✗ Could not diff {tag}: {getattr(e, 'message', None) or e}", err=as_json)
+        sys.exit(1)
+    click.echo(_json.dumps(diff, indent=2, sort_keys=True, default=str) if as_json else format_diff(diff))
+
+
+@dr_group.command(name="refs")
+@click.option("--obs", required=True, metavar="OBS", help="Observation name")
+@click.option("--json", "as_json", is_flag=True, help="Print the references as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
+def dr_refs(obs, as_json, local):
+    """Which releases froze spectra of OBS, and whether they block a removal (P4d).
+
+    `deploy remove` runs the same check and refuses while any release
+    blocks; check it by hand before the manual grating-delete procedure.
+    """
+    import json as _json
+
+    from .dr import format_references, observation_references
+
+    config, sb = _dr_client(local, what="`campfire dr refs`")
+    try:
+        refs = observation_references(sb, obs)
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"✗ Could not read references: {getattr(e, 'message', None) or e}", err=as_json)
+        sys.exit(1)
+    click.echo(_json.dumps(refs, indent=2, sort_keys=True, default=str) if as_json else format_references(obs, refs))
+    if any(r.get('blocks') for r in refs):
         sys.exit(1)
 
 

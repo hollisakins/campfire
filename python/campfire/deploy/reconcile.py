@@ -1456,8 +1456,15 @@ def reconcile_field_objects(
     yes: bool = False,
     abort_on_split_merge: bool = False,
     changed_hashes: set[tuple[str, str]] | None = None,
+    before_write=None,
 ) -> tuple[int, dict[str, int], set[int]]:
     """Incrementally reconcile the objects table for a field.
+
+    *before_write()*, when given, runs immediately before every write (each
+    soft-delete of the no-targets path, the apply of the proposals, and the
+    field-wide redshift_auto recompute) and may
+    raise to stop: `deploy remove` re-checks its deploy lease there, at the
+    write boundary rather than before the reads (Codex on #602).
 
     Args:
         client: Supabase client (service role).
@@ -1498,6 +1505,8 @@ def reconcile_field_objects(
             now = datetime.now(timezone.utc).isoformat()
             for obj in existing_objects:
                 if obj.get('is_active'):
+                    if before_write is not None:
+                        before_write()
                     client.table('objects').update({
                         'is_active': False,
                         'updated_at': now,
@@ -1535,9 +1544,13 @@ def reconcile_field_objects(
     )
 
     print(f"  Applying...")
+    if before_write is not None:
+        before_write()
     stats, changed_ids = apply_proposals(client, field, proposals)
 
     print(f"  Computing object redshift_auto from member spectra...")
+    if before_write is not None:
+        before_write()          # a field-wide UPDATE too (Codex on #602)
     n_recomputed = compute_object_redshift_auto(client, field)
     stats['redshift_auto_set'] = n_recomputed
     print(f"    Updated {n_recomputed} objects")

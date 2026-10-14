@@ -128,6 +128,9 @@ def test_remove_observation_emits_delete_event(monkeypatch):
     monkeypatch.setattr(rm, "_delete_db_rows", lambda *a, **k: None)
     monkeypatch.setattr(rm, "refresh_filter_options", lambda sb: None)
     monkeypatch.setattr(rm, "refresh_programs_overview", lambda sb: None)
+    import campfire.deploy.supabase as dsb
+    monkeypatch.setattr(dsb, "claim_deploy_scope",
+                        lambda *a, **k: {"claimed": True, "conflict": False})
     events = []
     monkeypatch.setattr(rm, "log_deploy_event",
                         lambda sb, **kw: events.append(kw))

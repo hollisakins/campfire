@@ -206,7 +206,7 @@ def test_cli_freeze_waits_for_cron_job(monkeypatch):
     assert res.exit_code == 0, res.output
     assert c.rpc_calls[0][1]['p_components'] == ['nirspec', 'nircam/cosmos']
     assert c.rpc_calls[0][1]['p_inline'] is False
-    payload = json.loads(res.output[res.output.index('{'):])
+    payload = json.loads(res.stdout[res.stdout.index('{'):])   # the next-step hint goes to stderr
     assert payload['state'] == 'frozen'
 
 

@@ -331,3 +331,141 @@ def fetch_files(session, tag: str) -> dict:
         raise RuntimeError(f"release {tag} is not available to you (unknown, or not published)")
     resp.raise_for_status()
     return resp.json()
+
+
+# ---------------------------------------------------------------------------
+# publish / withdraw / diff / removal references (P4d)
+# ---------------------------------------------------------------------------
+
+DIFF_KINDS = (
+    ('spectrum_science_changed', 'spectra whose science changed'),
+    ('spectrum_unpublished', 'spectra no longer published'),
+    ('spectrum_gone', 'spectra deleted'),
+    ('spectrum_new', 'published spectra not in the release'),
+    ('object_gone', 'objects no longer active'),
+    ('object_renamed', 'objects renamed'),
+    ('object_redshift_changed', 'objects whose redshift changed'),
+    ('object_quality_changed', 'objects whose quality changed'),
+    ('review_raised', 'review contradictions raised since the freeze'),
+    ('review_cleared', 'review contradictions cleared since the freeze'),
+)
+
+
+def _rpc_dict(client, name: str, params: dict) -> dict:
+    data = client.rpc(name, params).execute().data
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{name} returned an unexpected payload: {data!r}")
+    return data
+
+
+def publish_release(client, tag: str, *, doi: str | None = None, known_issues: str | None = None) -> dict:
+    """``dr_publish``: ready (or withdrawn) → published; returns the release row."""
+    return _rpc_dict(client, 'dr_publish', {'p_tag': tag, 'p_doi': doi, 'p_known_issues': known_issues})
+
+
+def withdraw_release(client, tag: str, reason: str) -> dict:
+    """``dr_withdraw``: published → withdrawn (rows and bytes kept); returns the release row."""
+    return _rpc_dict(client, 'dr_withdraw', {'p_tag': tag, 'p_reason': reason})
+
+
+def fetch_diff(client, tag: str, *, limit: int = 20) -> dict:
+    """``dr_diff``: what changed in live since the freeze (counts + samples per kind)."""
+    return _rpc_dict(client, 'dr_diff', {'p_tag': tag, 'p_limit': limit})
+
+
+def observation_references(client, observation: str) -> list[dict]:
+    """``dr_observation_references``: releases that froze spectra of *observation*."""
+    data = client.rpc('dr_observation_references', {'p_observation': observation}).execute().data
+    return list(data or [])
+
+
+def format_diff(diff: dict, *, samples: int = 5) -> str:
+    counts = diff.get('counts') or {}
+    head = f"{diff.get('tag')} ({diff.get('state')}, frozen {_when(diff.get('frozen_at'))}) vs live:"
+    if not counts:
+        return head + ' no differences'
+    lines = [head]
+    known = {k for k, _ in DIFF_KINDS}
+    for kind, label in list(DIFF_KINDS) + [(k, k) for k in sorted(counts) if k not in known]:
+        if not counts.get(kind):
+            continue
+        lines.append(f"  {_n(counts[kind]):>8}  {label}")
+        for item in (diff.get('samples') or {}).get(kind, [])[:samples]:
+            ident = item.get('spectrum_id') or f"{item.get('name')} (#{item.get('object_id')})"
+            extra = ''
+            if 'frozen' in item or 'live' in item:
+                extra = f": {item.get('frozen')} → {item.get('live')}"
+                if item.get('compared') == 'file_hash':
+                    extra += ' (file hash)'
+            lines.append(f"            {ident}{extra}")
+    return '\n'.join(lines)
+
+
+def format_references(observation: str, refs: list[dict]) -> str:
+    if not refs:
+        return f"{observation}: in no data release"
+    lines = [f"{observation}: frozen in {len(refs)} release(s)"]
+    for r in refs:
+        flag = 'BLOCKS removal' if r.get('blocks') else 'ok to remove'
+        lines.append(f"  {r.get('tag')} ({r.get('state')}): {_n(r.get('n_spectra'))} spectra, "
+                     f"{_n(r.get('n_members'))} members, {_n(r.get('n_unarchived'))} not archived yet — {flag}")
+    return '\n'.join(lines)
+
+
+def removal_blockers(client, observation: str) -> list[dict]:
+    """The releases that make a destructive live change to *observation* unsafe.
+
+    Raises when the check itself cannot run (a database without the RPC, an
+    error): ``deploy remove`` must fail closed rather than delete bytes a
+    release still needs.
+    """
+    return [r for r in observation_references(client, observation) if r.get('blocks')]
+
+
+# ---------------------------------------------------------------------------
+# the lifecycle: what to run next
+# ---------------------------------------------------------------------------
+
+def next_step_hint(tag: str, state: str | None, *, archive_open: int = 0, archive_failed: int = 0,
+                   exports_total: int = 0, exports_remaining: int = 0) -> str:
+    """The next command for a release, from its state and its archive / export
+    progress. The order is freeze -> archive -> export -> publish."""
+    if state is None:
+        return f"Next: `campfire dr freeze --tag {tag} --nirspec ...` (or `campfire dr build --tag {tag} --nirspec ...`)."
+    if state == 'freezing':
+        return f"{tag} is freezing; `campfire dr status` shows when it lands."
+    if state == 'failed':
+        return (f"The freeze of {tag} failed (the error is shown above): fix it and re-run "
+                f"`campfire dr freeze --tag {tag} ...`, or `campfire dr purge {tag}`.")
+    if state == 'published':
+        return f"{tag} is published. (`campfire dr withdraw {tag} --reason ...` hides it again.)"
+    if state == 'withdrawn':
+        return f"{tag} is withdrawn; `campfire dr publish {tag}` publishes it again."
+    if archive_failed:
+        return (f"{archive_failed:,} manifest file(s) of {tag} failed to archive: "
+                f"`campfire dr archive --tag {tag} --status` lists them; fix the cause and re-run "
+                f"`campfire dr archive --tag {tag} --retry-failed`.")
+    if archive_open:
+        return f"Next: `campfire dr archive --tag {tag}` (or `campfire dr build --tag {tag}`, which also exports)."
+    if exports_total == 0 or exports_remaining:
+        return f"Next: `campfire dr export --tag {tag}` (or `campfire dr build --tag {tag}`)."
+    if state == 'ready':
+        return f"Next: review `campfire dr diff {tag}`, then `campfire dr publish {tag} --doi ...`."
+    return f"`campfire dr status` shows where {tag} stands."
+
+
+def fetch_next_step(client, tag: str) -> str | None:
+    """``next_step_hint`` for TAG, read from the database; None when the
+    progress cannot be read (a hint never fails a command)."""
+    try:
+        row = fetch_release(client, tag)
+        if row is None:
+            return next_step_hint(tag, None)
+        by = (client.rpc('dr_bytes_summary', {'p_tag': tag}).execute().data or {}).get('by_state') or {}
+        n = lambda k: int((by.get(k) or {}).get('count') or 0)  # noqa: E731
+        ledger = (client.table('dr_exports').select('state').eq('tag', tag).execute().data) or []
+        return next_step_hint(tag, row.get('state'), archive_open=n('pending'), archive_failed=n('failed'),
+                              exports_total=len(ledger),
+                              exports_remaining=sum(1 for r in ledger if r.get('state') != 'ready'))
+    except Exception:  # noqa: BLE001
+        return None

@@ -16,10 +16,16 @@ Comments and ``flag_audit_log`` rows attached to affected targets are
 removed via the existing ``ON DELETE CASCADE`` foreign-key constraints.
 """
 
+import time
+
 from supabase import Client
 
 from campfire_layout import Scope, key_prefix
 from campfire.deploy.supabase import (
+    DeployScopeBusy,
+    DeployScopeUnavailable,
+    ScopeLease,
+    heartbeat_deploy_scope,
     deploy_event_metadata,
     get_supabase_client,
     get_user_id_from_token,
@@ -142,32 +148,40 @@ def _inspection_summary(row: dict) -> str:
 # Delete helpers
 # ---------------------------------------------------------------------------
 
-def _delete_db_rows(sb: Client, obs_name: str, target_ids: list[str]) -> None:
+def _delete_db_rows(sb: Client, obs_name: str, target_ids: list[str], check=lambda step: None) -> None:
     """Delete child rows, then targets; null latest_deployment_id.
 
     Order matters: spectra have a plain FK (no CASCADE) on targets.target_id,
     shutters/slit_regions have plain FKs on observations.name. Targets have
     CASCADE from comments.target_id and flag_audit_log.target_id, which
     take care of attached inspection artifacts automatically.
+
+    *check(step)* runs before every request and raises to stop the delete
+    (the removal's lease re-check, Codex on #602).
     """
     for i in range(0, len(target_ids), BATCH_SIZE):
         batch = target_ids[i:i + BATCH_SIZE]
+        check(f'spectra batch {i // BATCH_SIZE + 1}')
         sb.table('spectra').delete().in_('target_id', batch).execute()
 
+    check('shutters')
     sb.table('shutters').delete().eq('observation', obs_name).execute()
+    check('slit regions')
     sb.table('slit_regions').delete().eq('observation', obs_name).execute()
 
     for i in range(0, len(target_ids), BATCH_SIZE):
         batch = target_ids[i:i + BATCH_SIZE]
+        check(f'targets batch {i // BATCH_SIZE + 1}')
         sb.table('targets').delete().in_('target_id', batch).execute()
 
+    check('the observation update')
     (sb.table('observations')
      .update({'latest_deployment_id': None})
      .eq('name', obs_name)
      .execute())
 
 
-def _delete_r2_prefixes(config: dict, obs_name: str) -> dict[str, int]:
+def _delete_r2_prefixes(config: dict, obs_name: str, check=lambda step: None) -> dict[str, int]:
     from campfire.deploy.backend import resolve_backend
     from campfire.deploy.r2 import get_r2_client
     from campfire.deploy.tiles import delete_r2_prefix
@@ -178,7 +192,9 @@ def _delete_r2_prefixes(config: dict, obs_name: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     for label, product_type in R2_REMOVE_PRODUCTS:
         full = f"{key_prefix(product_type, scope)}/"
-        counts[label] = delete_r2_prefix(client, bucket, full)
+        # before EVERY delete page, not once per prefix (Codex on #602)
+        counts[label] = delete_r2_prefix(client, bucket, full,
+                                         before_page=lambda n, p=full: check(f'prefix {p} page {n}'))
     return counts
 
 
@@ -204,7 +220,160 @@ def remove_observation(
         print(f"Observation '{obs_name}' not found. Nothing to do.")
         return
 
+    # Data releases (P4d): a published release keeps its observations live,
+    # and an unpublished one needs the live bytes until its byte pass has
+    # archived them. The check runs UNDER the observation's deploy lease, held
+    # until the deletes are done: begin_deploy_scope refuses while a freeze
+    # runs, a live lease makes a freeze and dr_publish refuse, and both sides
+    # take the same lock -- so no release can start depending on this
+    # observation between the check and the deletes (Codex on #602). Fails
+    # closed: without the lease or the check, nothing is deleted. A dry run
+    # checks without leasing.
+    #
+    # An interactive removal previews and confirms BEFORE taking the lease, so
+    # an operator sitting at (or abandoning) the prompt holds no lease that
+    # would block deploys, freezes and publishes; the checks then run again
+    # under the lease and refuse if the observation changed meanwhile (Codex
+    # on #602).
+    confirmed = None
+    confirmed_version = None
+    if not dry_run and not auto_approve:
+        # the scope version BEFORE the preview: every deploy of the observation
+        # that begins after it -- a full deploy, or a standalone json / zfit /
+        # lines writer finishing while the prompt is open -- moves it past the
+        # one bump our own begin makes (Codex on #602)
+        confirmed_version = _read_scope_version(sb, obs_name)
+        confirmed = _remove_checked(sb, obs, obs_name, config, dry_run=False, force=force,
+                                    supabase_only=supabase_only, auto_approve=False,
+                                    skip_rebuild=skip_rebuild, confirm_only=True)
+        if confirmed is None:
+            return
+        obs = _fetch_observation(sb, obs_name)
+        if obs is None:
+            raise RemovalRefused(f"{obs_name}: the observation disappeared after the confirmation")
+    lease = None
+    if not dry_run:
+        lease = ScopeLease(sb, 'observation', obs_name, actor=get_user_id_from_token(config))
+        try:
+            lease.begin()
+        except DeployScopeUnavailable as e:
+            print(f"\n  REFUSED: could not take the deploy lease on {obs_name} ({e}); "
+                  f"a removal never runs without it.")
+            raise RemovalRefused(f"{obs_name}: the deploy lease could not be taken") from e
+        except DeployScopeBusy as e:
+            print(f"\n  REFUSED: {e}")
+            if e.holder:
+                print("  " + e.describe().replace('\n', '\n  '))
+            raise RemovalRefused(f"{obs_name}: {e}") from e
+        # begin_deploy_scope bumps the version once (the bump is the holder's
+        # token): anything more means another deploy began (and possibly
+        # finished) while the confirmation waited (Codex on #602)
+        if confirmed_version is not None and lease.version_at_start != confirmed_version + 1:
+            lease.release()
+            print(f"\n  REFUSED: {obs_name} was deployed again while the confirmation waited.")
+            raise RemovalRefused(f"{obs_name} was redeployed after the confirmation "
+                                 f"(scope version {confirmed_version} at the confirmation, the lease took "
+                                 f"{lease.version_at_start}); nothing was deleted, re-run to review it again")
+    def still_held() -> bool:
+        # Checked right before each destructive step (Codex on #602): a lease
+        # stolen or taken over meanwhile means another deploy may be writing
+        # this observation, so nothing more is deleted. An unknown answer (the
+        # RPC failed) is retried once, then treated as not held -- and said
+        # so, rather than blamed on another deploy (Fable review of #602).
+        if lease is None:
+            return True
+        for attempt in range(2):
+            ok = heartbeat_deploy_scope(sb, 'observation', obs_name, actor=lease.actor, host=lease.host,
+                                        version=lease.version_at_start)
+            if ok is not None:
+                break
+            if attempt == 0:
+                time.sleep(2)
+        if ok is None:
+            still_held.why = 'could not be confirmed (the heartbeat RPC failed twice)'
+        return ok is True
+    still_held.why = 'was lost (stolen, taken over, or invalidated by a publish)'
+    try:
+        removed = _remove_checked(sb, obs, obs_name, config, dry_run=dry_run, force=force,
+                                  supabase_only=supabase_only, auto_approve=True,
+                                  skip_rebuild=skip_rebuild, still_held=still_held,
+                                  confirmed=confirmed)
+        if lease is not None and removed:
+            result = lease.claim()     # the data changed: bump the scope version
+            if result.get('conflict'):
+                raise RemovalLeaseLost(
+                    f"another deploy took the lease on {obs_name} while it was being removed; "
+                    f"re-check the observation (its rows or bytes may have been re-deployed)")
+            if result.get('error') or not result.get('claimed'):
+                # indeterminate (claim_deploy_scope turns RPC errors into a
+                # nominal success): the version may not be bumped and the lease
+                # may stay live until it goes stale (Codex on #602)
+                raise RemovalLeaseLost(
+                    f"{obs_name} was removed, but the final lease claim could not be confirmed "
+                    f"({result.get('error') or 'not claimed'}); check `campfire dr status` / the deploy "
+                    f"lease before deploying it again")
+    finally:
+        if lease is not None and lease.leased:
+            lease.release()
+
+
+def _read_scope_version(sb, obs_name: str) -> int:
+    """The observation's deploy-scope version, strictly: the generic helper
+    turns an RPC failure into 0, which would later read as "redeployed while
+    the confirmation waited" (Fable review of #602)."""
+    try:
+        resp = sb.rpc('get_deploy_scope_version', {
+            'p_scope_type': 'observation', 'p_scope_key': obs_name}).execute()
+    except Exception as e:  # noqa: BLE001
+        print(f"\n  REFUSED: could not read the deploy-scope version of {obs_name} "
+              f"({getattr(e, 'message', None) or e}).")
+        raise RemovalRefused(f"{obs_name}: could not read its deploy-scope version") from e
+    return int(resp.data) if resp.data is not None else 0
+
+
+class RemovalLeaseLost(RuntimeError):
+    """The deploy lease of a removal was lost (stolen or taken over) mid-way."""
+
+
+class RemovalRefused(RuntimeError):
+    """A removal refused before deleting anything: a data release needs the
+    observation, the release check could not run, or the deploy lease could
+    not be taken. The CLI exits non-zero (Codex on #602: automation must not
+    read a refused removal as a successful one)."""
+
+
+def _release_blockers_refuse(sb, obs_name: str) -> bool:
+    """True (after printing why) when a data release forbids removing *obs_name*."""
+    from campfire.dr import format_references, observation_references
+    try:
+        refs = observation_references(sb, obs_name)
+    except Exception as e:  # noqa: BLE001 - a missing RPC or an error both refuse
+        print(f"\n  REFUSED: could not check the data releases that reference {obs_name} "
+              f"({getattr(e, 'message', None) or e}).")
+        return True
+    if any(r.get('blocks') for r in refs):
+        print()
+        print("  REFUSED: " + format_references(obs_name, refs).replace('\n', '\n  '))
+        print("  A published release is withdrawn with `campfire dr withdraw`; an unpublished one "
+              "finishes `campfire dr archive` or is purged with `campfire dr purge`.")
+        return True
+    return False
+
+
+def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool, force: bool,
+                    supabase_only: bool, auto_approve: bool, skip_rebuild: bool,
+                    still_held=lambda: True, confirm_only: bool = False, confirmed=None):
+    """The removal proper (the caller holds the lease). True once rows were deleted.
+
+    With *confirm_only* (no lease held): run the checks, show the preview, ask,
+    and return what was confirmed (the counts) or None; nothing is deleted.
+    With *confirmed*: the checks re-run under the lease and the removal refuses
+    when the counts are no longer the ones the operator confirmed.
+    """
     field = obs['field']
+    if _release_blockers_refuse(sb, obs_name):
+        raise RemovalRefused(f"{obs_name}: a data release still needs it (see above)")
+
     targets = _fetch_targets(sb, obs_name)
     target_ids = [t['target_id'] for t in targets]
     target_db_ids = [t['id'] for t in targets if t.get('id') is not None]
@@ -241,17 +410,41 @@ def remove_observation(
         if len(inspected) > 5:
             print(f"    ... and {len(inspected) - 5} more")
         print(f"  Pass --force to proceed anyway.")
-        return
+        # a refusal, not a success: the CLI exits non-zero (Codex on #602)
+        raise RemovalRefused(f"{obs_name}: {len(inspected)} target(s) have user inspection data (--force overrides)")
 
     if not targets and not n_shutters and not n_slits:
-        print("\nNo data to remove.")
-        return
+        # No rows left, but an earlier removal may have stopped after its rows
+        # and before the rest (the bucket prefixes, clearing the latest
+        # deployment, the field reconcile): finish those -- harmless no-ops on
+        # an observation that never had any -- instead of stranding them
+        # (Fable review / Codex on #602).
+        rest = "the latest deployment cleared and the field reconciled"
+        if not supabase_only:
+            rest = "the bucket prefixes deleted, " + rest
+        print(f"\nNo database rows remain; {rest} (finishing an earlier removal that stopped part-way).")
 
     if dry_run:
         print("\nDry run — no changes made.")
-        return
+        return False
 
-    if not auto_approve:
+    # what the operator reviews: the counts, and the identity of what they
+    # count -- the latest deployment and every target -- so a same-size
+    # redeploy during the prompt is not mistaken for it (Codex on #602)
+    plan = {
+        'counts': (len(targets), n_spectra, n_shutters, n_slits, n_comments),
+        'deployment': obs.get('latest_deployment_id'),
+        'targets': tuple(sorted(str(t) for t in target_ids)),
+    }
+    if confirmed is not None and plan != confirmed:
+        what = ('its counts' if plan['counts'] != confirmed['counts']
+                else 'its latest deployment' if plan['deployment'] != confirmed['deployment']
+                else 'its targets')
+        raise RemovalRefused(
+            f"{obs_name} changed between the confirmation and the removal ({what}); "
+            f"nothing was deleted, re-run to review it again")
+
+    if confirm_only and not auto_approve:
         summary = (
             f"{len(targets)} targets, {n_spectra} spectra, "
             f"{n_shutters} shutters, {n_slits} slit regions"
@@ -269,16 +462,40 @@ def remove_observation(
         response = input(prompt)
         if response.lower() != 'y':
             print("Aborted.")
-            return
+            return None
+        return plan
+    if confirm_only:
+        return plan
+
+    done: list[str] = []
+
+    def check(step: str) -> None:
+        # before EVERY destructive request (Codex on #602): a lease lost
+        # mid-way stops the delete at the next batch
+        if not still_held():
+            pages = [d for d in done if d.startswith('prefix')]
+            if not done:
+                what = 'nothing was deleted'
+            elif not step.startswith('prefix'):
+                what = (f"deleted so far: {', '.join(done)}; stopped before {step}; "
+                        f"the bucket prefixes were NOT deleted")
+            else:
+                what = (f"its rows were deleted; bucket pages deleted: {', '.join(pages) or 'none'}; "
+                        f"stopped before bucket {step} (another deploy may be uploading it)")
+            why = getattr(still_held, 'why', 'was lost')
+            raise RemovalLeaseLost(f"the deploy lease on {obs_name} {why} during the removal: "
+                                   f"{what}. Re-run `campfire deploy remove --obs {obs_name}` to finish it "
+                                   f"(it deletes what is left, rows or bucket prefixes)")
+        done.append(step)
 
     print(f"\nDeleting DB rows...")
-    _delete_db_rows(sb, obs_name, target_ids)
+    _delete_db_rows(sb, obs_name, target_ids, check=check)
     print(f"  Done.")
 
     n_r2_deleted = 0
     if not supabase_only:
         print(f"\nDeleting R2 prefixes...")
-        counts = _delete_r2_prefixes(config, obs_name)
+        counts = _delete_r2_prefixes(config, obs_name, check=check)
         for prefix, n in counts.items():
             print(f"  {prefix}/{obs_name}/: {n} object(s)")
         n_r2_deleted = sum(counts.values())
@@ -297,9 +514,19 @@ def remove_observation(
 
     if not skip_rebuild:
         from campfire.deploy.reconcile import reconcile_field_objects
+
+        def lease_before_reconcile_write() -> None:
+            # reconciliation writes objects and target assignments too: still
+            # under the lease, checked at its write boundary (after its
+            # reads), or not at all (Codex on #602)
+            if not still_held():
+                raise RemovalLeaseLost(
+                    f"the deploy lease on {obs_name} was lost after its rows and bytes were deleted; the "
+                    f"object reconciliation of field '{field}' was NOT applied (run `campfire deploy objects "
+                    f"reconcile --field {field}` once the other deploy has finished)")
         print(f"\nReconciling objects for field '{field}'...")
         n_clusters, _stats, _changed_ids = reconcile_field_objects(
-            sb, field, abort_on_split_merge=True,
+            sb, field, abort_on_split_merge=True, before_write=lease_before_reconcile_write,
         )
         print(f"  {n_clusters} clusters")
 
@@ -309,3 +536,4 @@ def remove_observation(
     refresh_observations_overview(sb)
 
     print(f"\nRemoved observation '{obs_name}'.")
+    return True
