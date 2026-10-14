@@ -504,10 +504,19 @@ def test_a_rerun_finishes_a_removal_that_stopped_before_the_bucket(monkeypatch):
     wiped = []
     monkeypatch.setattr(rm, '_delete_r2_prefixes', lambda config, obs, check=None: wiped.append(obs) or {'x': 2})
     rm.remove_observation('obs1', {}, supabase_only=False, auto_approve=True, skip_rebuild=True)
-    assert wiped == ['obs1']
-    # supabase-only keeps the old answer
+    assert wiped == ['obs1'] and deleted == ['spectra batch 1', 'targets batch 1']
+
+
+def test_a_rerun_finishes_a_supabase_only_removal(monkeypatch):
+    # Codex on #602: the rows are gone, but latest_deployment_id / the reconcile
+    # may not be; a --supabase-only rerun finishes them and leaves the bucket
+    rm, deleted = _remove_env(monkeypatch, _lease_client([True, True]))
+    monkeypatch.setattr(rm, '_fetch_targets', lambda sb, o: [])
+    monkeypatch.setattr(rm, '_count_spectra', lambda sb, ids: 0)
+    wiped = []
+    monkeypatch.setattr(rm, '_delete_r2_prefixes', lambda config, obs, check=None: wiped.append(obs) or {})
     rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
-    assert wiped == ['obs1']
+    assert deleted == ['spectra batch 1', 'targets batch 1'] and wiped == []
 
 
 def test_a_failed_version_read_refuses_with_that_reason(monkeypatch, capsys):

@@ -414,15 +414,15 @@ def _remove_checked(sb, obs: dict, obs_name: str, config: dict, *, dry_run: bool
         raise RemovalRefused(f"{obs_name}: {len(inspected)} target(s) have user inspection data (--force overrides)")
 
     if not targets and not n_shutters and not n_slits:
-        if supabase_only:
-            print("\nNo data to remove.")
-            return None if confirm_only else False
         # No rows left, but an earlier removal may have stopped after its rows
-        # and before the bucket prefixes / the reconcile: finish those (they
-        # are harmless no-ops on an observation that never had any) instead of
-        # stranding the bytes (Fable review of #602).
-        print("\nNo database rows remain; the bucket prefixes are deleted and the field reconciled "
-              "(finishing an earlier removal that stopped part-way).")
+        # and before the rest (the bucket prefixes, clearing the latest
+        # deployment, the field reconcile): finish those -- harmless no-ops on
+        # an observation that never had any -- instead of stranding them
+        # (Fable review / Codex on #602).
+        rest = "the latest deployment cleared and the field reconciled"
+        if not supabase_only:
+            rest = "the bucket prefixes deleted, " + rest
+        print(f"\nNo database rows remain; {rest} (finishing an earlier removal that stopped part-way).")
 
     if dry_run:
         print("\nDry run — no changes made.")
