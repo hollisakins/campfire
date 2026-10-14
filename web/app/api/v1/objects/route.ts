@@ -186,11 +186,12 @@ export async function GET(request: NextRequest) {
     // Deploy window: the Vercel build and the Supabase migration land
     // independently on merge. Against an RPC that does not know p_viewer_id yet
     // (PostgREST: no matching function), retry without it. That RPC does not
-    // scope lists at all, and the new one shows only public lists when the
-    // viewer is omitted, so the retry never shows more than the database would.
+    // scope `lists` at all, so its lists are dropped below (fail closed).
+    let listsUnscoped = false;
     if (error && error.code === 'PGRST202') {
-      console.warn('v1/objects: RPC without p_viewer_id; retrying without it');
+      console.warn('v1/objects: RPC without p_viewer_id; retrying without it, lists withheld');
       ({ data, error } = await supabase.rpc('get_filtered_objects_paginated', rpcParams));
+      listsUnscoped = true;
     }
 
     if (error) {
@@ -222,7 +223,11 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ data: result.targets || [], pagination }, { headers });
+    const objects: Record<string, unknown>[] = result.targets || [];
+    return NextResponse.json(
+      { data: listsUnscoped ? objects.map(o => ({ ...o, lists: [] })) : objects, pagination },
+      { headers },
+    );
   } catch (error) {
     console.error('Error in API /v1/objects:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
