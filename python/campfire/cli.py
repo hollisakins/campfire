@@ -1543,7 +1543,9 @@ def dr_archive(tag, obs, field, workers, limit, retry_failed, dry_run, status_on
     sidecars and mosaics are archived unstamped. A file another release already
     archived is reused, so an unchanged FITS keeps the stamp of the first
     release that archived it. Resumable: re-run until nothing is pending; a file
-    whose frozen bytes are gone is marked failed with the reason. Needs OSN
+    whose frozen bytes are gone is marked failed with the reason. One run per
+    release at a time: a second is refused while the first holds the release
+    (a run that died frees it after 10 minutes), and purge waits too. Needs OSN
     credentials (CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml) and an admin
     login. (`campfire archive gc` is the unrelated retention tool.)
     """

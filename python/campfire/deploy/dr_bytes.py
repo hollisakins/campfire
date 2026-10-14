@@ -38,7 +38,9 @@ live objects are redeployed or removed:
 The database side is three RPCs: ``dr_bytes_pending`` (a keyset page of work,
 with the source of each member's frozen bytes resolved server-side),
 ``dr_bytes_mark`` (a batch of outcomes, the archive registry rows, one deploy
-event, export invalidation, the derived state) and ``dr_bytes_summary``.
+event, export invalidation, the derived state) and ``dr_bytes_summary``. One
+run per release: ``dr_archive_claim`` refuses a second while the first's claim
+is live, and ``dr_bytes_mark`` accepts only the claim holder's outcomes.
 Every step is idempotent: a crash after a PUT is healed by the existence check
 on the next run (the archive key is a function of the bytes).
 """
@@ -557,9 +559,53 @@ def fetch_pending(client, tag: str, *, after: Optional[str] = None, limit: int =
     return list(resp.data or [])
 
 
-def mark_results(client, tag: str, results: list[dict]) -> dict:
-    resp = client.rpc('dr_bytes_mark', {'p_tag': tag, 'p_results': results}).execute()
+def mark_results(client, tag: str, results: list[dict], claim: str) -> dict:
+    resp = client.rpc('dr_bytes_mark', {'p_tag': tag, 'p_results': results, 'p_claim': claim}).execute()
     return resp.data or {}
+
+
+CLAIM_HEARTBEAT_S = 60     # well inside the 10-minute takeover window in SQL
+
+
+class ArchiveClaim:
+    """The one `dr archive` run allowed per release (dr_archive_claim).
+
+    Taken on entry (refused while another run's claim is live), refreshed by a
+    background thread and by every mark, released on exit. A heartbeat that
+    finds the claim taken over sets ``lost``; the next mark is refused anyway.
+    """
+
+    def __init__(self, client, tag: str, *, interval: Optional[float] = None):
+        self.client, self.tag = client, tag
+        self.interval = CLAIM_HEARTBEAT_S if interval is None else interval
+        self.claim: Optional[str] = None
+        self.lost: Optional[str] = None
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def __enter__(self) -> 'ArchiveClaim':
+        self.claim = str(self.client.rpc('dr_archive_claim', {'p_tag': self.tag, 'p_claim': None}).execute().data)
+        self._thread = threading.Thread(target=self._beat, name=f'dr-archive-claim-{self.tag}', daemon=True)
+        self._thread.start()
+        return self
+
+    def _beat(self) -> None:
+        while not self._stop.wait(self.interval):
+            try:
+                self.client.rpc('dr_archive_claim', {'p_tag': self.tag, 'p_claim': self.claim}).execute()
+            except Exception as e:  # noqa: BLE001 - a network blip is retried next beat
+                if 'not held by this run' in str(getattr(e, 'message', None) or e):
+                    self.lost = str(getattr(e, 'message', None) or e)
+                    return
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        try:
+            self.client.rpc('dr_archive_release', {'p_tag': self.tag, 'p_claim': self.claim}).execute()
+        except Exception:  # noqa: BLE001 - an unreleased claim expires in 10 minutes
+            pass
 
 
 def fetch_summary(client, tag: str) -> dict:
@@ -579,6 +625,22 @@ def run_byte_pass(client, s3, bucket: str, tag: str, *, workers: int = 8, page_s
     (``include_failed``) takes them up again on a later run.
     """
     report = PassReport(tag=tag, dry_run=dry_run)
+    if dry_run:
+        return _run_pages(client, s3, bucket, tag, report, None, workers=workers, page_size=page_size,
+                          mark_batch=mark_batch, limit=limit, include_failed=include_failed,
+                          prefix=prefix, verify_science=verify_science, log=log)
+    # one run per release: a second one is refused here, before any byte moves
+    with ArchiveClaim(client, tag) as claim:
+        return _run_pages(client, s3, bucket, tag, report, claim, workers=workers, page_size=page_size,
+                          mark_batch=mark_batch, limit=limit, include_failed=include_failed,
+                          prefix=prefix, verify_science=verify_science, log=log)
+
+
+def _run_pages(client, s3, bucket: str, tag: str, report: PassReport, claim: Optional[ArchiveClaim], *,
+               workers: int, page_size: int, mark_batch: int, limit: Optional[int],
+               include_failed: bool, prefix: Optional[str], verify_science: bool,
+               log: Callable[[str], None]) -> PassReport:
+    dry_run = claim is None
     need_pipeline = verify_science and not dry_run
     after: Optional[str] = None
     lock = threading.Lock()
@@ -618,13 +680,15 @@ def run_byte_pass(client, s3, bucket: str, tag: str, *, workers: int = 8, page_s
                 # never lands on a re-frozen member of another generation
                 batch = [{**o.as_result(), 'content_hash': r['content_hash']}
                          for r, o in zip(rows[i:i + mark_batch], outcomes[i:i + mark_batch])]
-                res = mark_results(client, tag, batch)
+                res = mark_results(client, tag, batch, claim.claim)
                 report.state = res.get('state', report.state)
             log(f"  {report.seen:,} members: " +
                 ', '.join(f"{k} {v:,}" for k, v in sorted(report.by_state.items())) +
                 f" ({report.bytes_moved / 1e9:.2f} GB moved)")
             if len(rows) < want:
                 break
+            if claim is not None and claim.lost:
+                raise RuntimeError(claim.lost)
     return report
 
 

@@ -461,8 +461,29 @@ def test_unexpected_errors_fail_one_member_only():
 # run_byte_pass
 # ---------------------------------------------------------------------------
 
-def _fake_db(rows):
-    state = {'rows': rows, 'marks': [], 'calls': []}
+CLAIM = '00000000-0000-4000-8000-0000000000aa'
+
+
+def _fake_db(rows, *, held_by=None):
+    """A fake dr_bytes_* / dr_archive_* API; *held_by* is another run's live claim."""
+    state = {'rows': rows, 'marks': [], 'calls': [], 'claim': held_by, 'claim_calls': []}
+
+    def claim(params):
+        state['claim_calls'].append(params['p_claim'])
+        if params['p_claim'] is None:
+            if state['claim'] is not None:
+                raise RuntimeError(f"release {params['p_tag']} is being archived by another run")
+            state['claim'] = CLAIM
+        elif params['p_claim'] != state['claim']:
+            raise RuntimeError('the archive claim is not held by this run')
+        return state['claim']
+
+    def release(params):
+        ok = params['p_claim'] == state['claim']
+        if ok:
+            state['claim'] = None
+        state['released'] = ok
+        return ok
 
     def pending(params):
         state['calls'].append(params)
@@ -475,6 +496,8 @@ def _fake_db(rows):
         return sorted(todo, key=lambda r: r['storage_key'])[:lim]
 
     def mark(params):
+        if params.get('p_claim') is None or params['p_claim'] != state['claim']:
+            raise RuntimeError('the archive claim is not held by this run')
         state['marks'].append(params['p_results'])
         by_key = {r['storage_key']: r for r in state['rows']}
         for res in params['p_results']:
@@ -492,7 +515,8 @@ def _fake_db(rows):
                 'by_state': by, 'failed_sample': []}
 
     client = FakePostgrest(rpc_handlers={'dr_bytes_pending': pending, 'dr_bytes_mark': mark,
-                                         'dr_bytes_summary': summary})
+                                         'dr_bytes_summary': summary, 'dr_archive_claim': claim,
+                                         'dr_archive_release': release})
     return client, state
 
 
@@ -776,3 +800,58 @@ def test_a_raced_put_registers_the_winners_gzip_size(monkeypatch):
     o = B.process_member(row, tag=TAG, s3=s3, bucket=BUCKET)
     assert (o.state, o.action) == ('copied', 'heal')
     assert o.registry['stored_size_bytes'] == len(winner)
+
+
+def test_one_archive_run_per_release():
+    # a second run is refused before any byte moves; the first releases its claim
+    body = b'{"x": 1}'
+    s3 = _s3(**{JSON_KEY: body})
+    client, state = _fake_db([_row(JSON_KEY, body, product_type='spectrum_json')],
+                             held_by='00000000-0000-4000-8000-0000000000bb')
+    import pytest
+    with pytest.raises(RuntimeError, match='being archived by another run'):
+        B.run_byte_pass(client, s3, BUCKET, TAG, verify_science=False, log=lambda *_: None)
+    assert not state['calls'] and not state['marks']
+
+    client, state = _fake_db([_row(JSON_KEY, body, product_type='spectrum_json')])
+    rep = B.run_byte_pass(client, s3, BUCKET, TAG, verify_science=False, log=lambda *_: None)
+    assert rep.by_state == {'copied': 1} and state['released'] and state['claim'] is None
+
+
+def test_a_dry_run_takes_no_claim():
+    body = b'{"x": 1}'
+    client, state = _fake_db([_row(JSON_KEY, body, product_type='spectrum_json')],
+                             held_by='00000000-0000-4000-8000-0000000000bb')
+    rep = B.run_byte_pass(client, None, BUCKET, TAG, dry_run=True, log=lambda *_: None)
+    assert rep.seen == 1 and state['claim_calls'] == []
+
+
+def test_a_claim_taken_over_stops_the_run():
+    # the heartbeat finds another run holding the claim: the run stops after its page
+    import time
+    rows, s3 = [], _s3()
+    for i in range(4):
+        key = f'data/products/nirspec/abc_p1/abc_p1_{i}_prism_spec.json'
+        body = f'{{"i": {i}}}'.encode()
+        s3.seed(BUCKET, key, body)
+        rows.append(_row(key, body, product_type='spectrum_json'))
+    client, state = _fake_db(rows)
+    real_pending = client.rpc_handlers['dr_bytes_pending']
+
+    def pending(params):
+        out = real_pending(params)
+        if params['p_after'] is not None:       # after the first page: taken over
+            state['claim'] = 'someone-else'
+            time.sleep(0.2)                     # let the heartbeat notice
+        return out
+    client.rpc_handlers['dr_bytes_pending'] = pending
+    import pytest
+    old = B.CLAIM_HEARTBEAT_S
+    B.CLAIM_HEARTBEAT_S = 0.05
+    try:
+        with pytest.raises(Exception, match='not held by this run'):
+            B.run_byte_pass(client, s3, BUCKET, TAG, page_size=2, mark_batch=2,
+                            verify_science=False, log=lambda *_: None)
+    finally:
+        B.CLAIM_HEARTBEAT_S = old
+    assert len(state['marks']) == 1          # only the first page was recorded

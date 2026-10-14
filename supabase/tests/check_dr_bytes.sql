@@ -18,13 +18,20 @@
 --      the touched member partition's export file back to pending (others
 --      untouched), state copying; marking the same object again inserts nothing;
 --   4. every member done + exports rebuilt -> ready; dr_bytes_summary;
---   5. a published release refuses marks; non-admins are refused everywhere.
+--   5. a published release refuses marks; non-admins are refused everywhere;
+--   6. one archive run per release: dr_archive_claim refuses a second claim
+--      while one is live, takes over a dead one, refuses a heartbeat on a
+--      claim taken over; dr_bytes_mark refuses a run without the claim;
+--      dr_archive_release; dr_purge_release refuses while a claim is live.
 -- Run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/check_dr_bytes.sql
 \set ON_ERROR_STOP on
 BEGIN;
 
 -- The seed publishes DR-seed; the byte pass runs before publish.
-UPDATE dr_releases SET state = 'frozen', published_at = NULL WHERE tag = 'DR-seed';
+-- Sections 1-5 mark as one archive run holding the release's claim.
+UPDATE dr_releases SET state = 'frozen', published_at = NULL,
+       archive_claim = '00000000-0000-4000-8000-0000000000aa', archive_claimed_at = now()
+ WHERE tag = 'DR-seed';
 
 CREATE FUNCTION pg_temp.zzz_as(p_role text, p_uid uuid, p_sql text) RETURNS text
 LANGUAGE plpgsql AS $$
@@ -47,6 +54,10 @@ GRANT EXECUTE ON FUNCTION pg_temp.zzz_as(text, uuid, text) TO authenticated;
 -- The frozen content hash of a DR-seed member (marks must name it).
 CREATE FUNCTION pg_temp.zzz_ch(p_key text) RETURNS text
 LANGUAGE sql AS $$ SELECT content_hash FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p_key $$;
+
+-- dr_bytes_mark as the run holding the claim
+CREATE FUNCTION pg_temp.zzz_mark(p_tag text, p_results jsonb) RETURNS jsonb
+LANGUAGE sql AS $$ SELECT dr_bytes_mark(p_tag, p_results, '00000000-0000-4000-8000-0000000000aa'::uuid) $$;
 
 CREATE FUNCTION pg_temp.zzz_try(p_sql text) RETURNS text
 LANGUAGE plpgsql AS $$
@@ -177,26 +188,26 @@ BEGIN
   RAISE NOTICE 'OK 1: pending (paging, prefix, live / retained / gone sources, cross-release reuse)';
 
   -- ------------------------------------------------------------------ 2.
-  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "state": "done"}]')$q$, to_jsonb(p.j1)));
+  got := pg_temp.zzz_try(format($q$SELECT pg_temp.zzz_mark('DR-seed', '[{"storage_key": %s, "state": "done"}]')$q$, to_jsonb(p.j1)));
   IF got NOT LIKE 'ERR: invalid byte state%' THEN RAISE EXCEPTION 'bad state accepted: %', got; END IF;
-  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "state": "copied", "archive_key": "data/x"}]')$q$, to_jsonb(p.j1)));
+  got := pg_temp.zzz_try(format($q$SELECT pg_temp.zzz_mark('DR-seed', '[{"storage_key": %s, "state": "copied", "archive_key": "data/x"}]')$q$, to_jsonb(p.j1)));
   IF got NOT LIKE 'ERR: a copied member needs an archive key under archive/%' THEN RAISE EXCEPTION 'live key accepted as archive key: %', got; END IF;
-  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "state": "stamped", "archive_key": "archive/x"}]')$q$, to_jsonb(p.s1)));
+  got := pg_temp.zzz_try(format($q$SELECT pg_temp.zzz_mark('DR-seed', '[{"storage_key": %s, "state": "stamped", "archive_key": "archive/x"}]')$q$, to_jsonb(p.s1)));
   IF got NOT LIKE 'ERR: a stamped member needs the sha256%' THEN RAISE EXCEPTION 'stamp without hash accepted: %', got; END IF;
-  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "content_hash": %s, "state": "stamped", "archive_key": "archive/x", "stamped_hash": "sha256:%s", "registry": {}}]')$q$, to_jsonb(p.j1), to_jsonb(pg_temp.zzz_ch(p.j1)), repeat('e', 64)));
+  got := pg_temp.zzz_try(format($q$SELECT pg_temp.zzz_mark('DR-seed', '[{"storage_key": %s, "content_hash": %s, "state": "stamped", "archive_key": "archive/x", "stamped_hash": "sha256:%s", "registry": {}}]')$q$, to_jsonb(p.j1), to_jsonb(pg_temp.zzz_ch(p.j1)), repeat('e', 64)));
   IF got NOT LIKE 'ERR: only NIRSpec FITS finals are stamped%' THEN RAISE EXCEPTION 'json stamp accepted: %', got; END IF;
-  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "content_hash": %s, "state": "copied", "archive_key": "archive/nowhere"}]')$q$, to_jsonb(p.j1), to_jsonb(pg_temp.zzz_ch(p.j1))));
+  got := pg_temp.zzz_try(format($q$SELECT pg_temp.zzz_mark('DR-seed', '[{"storage_key": %s, "content_hash": %s, "state": "copied", "archive_key": "archive/nowhere"}]')$q$, to_jsonb(p.j1), to_jsonb(pg_temp.zzz_ch(p.j1))));
   IF got NOT LIKE 'ERR: archive object archive/nowhere is not registered%' THEN RAISE EXCEPTION 'unregistered archive object accepted: %', got; END IF;
   -- an outcome for another freeze generation's bytes is refused (Codex on #601)
-  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "content_hash": "sha256:%s", "state": "failed"}]')$q$, to_jsonb(p.j1), repeat('9', 64)));
+  got := pg_temp.zzz_try(format($q$SELECT pg_temp.zzz_mark('DR-seed', '[{"storage_key": %s, "content_hash": "sha256:%s", "state": "failed"}]')$q$, to_jsonb(p.j1), repeat('9', 64)));
   IF got NOT LIKE 'ERR: outcome for % is for content % but the member froze%' THEN RAISE EXCEPTION 'cross-generation mark accepted: %', got; END IF;
-  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "state": "failed"}]')$q$, to_jsonb(p.j1)));
+  got := pg_temp.zzz_try(format($q$SELECT pg_temp.zzz_mark('DR-seed', '[{"storage_key": %s, "state": "failed"}]')$q$, to_jsonb(p.j1)));
   IF got NOT LIKE 'ERR: outcome for % is for content <none>%' THEN RAISE EXCEPTION 'mark without a content hash accepted: %', got; END IF;
-  got := pg_temp.zzz_try($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": "data/no/such", "state": "failed"}]')$q$);
+  got := pg_temp.zzz_try($q$SELECT pg_temp.zzz_mark('DR-seed', '[{"storage_key": "data/no/such", "state": "failed"}]')$q$);
   IF got NOT LIKE 'ERR: no member data/no/such%' THEN RAISE EXCEPTION 'unknown member accepted: %', got; END IF;
-  got := pg_temp.zzz_try($q$SELECT dr_bytes_mark('DR-seed', (SELECT jsonb_agg(jsonb_build_object('storage_key', 'k' || g, 'state', 'failed')) FROM generate_series(1, 2001) g))$q$);
+  got := pg_temp.zzz_try($q$SELECT pg_temp.zzz_mark('DR-seed', (SELECT jsonb_agg(jsonb_build_object('storage_key', 'k' || g, 'state', 'failed')) FROM generate_series(1, 2001) g))$q$);
   IF got NOT LIKE 'ERR: at most 2000 results%' THEN RAISE EXCEPTION 'oversized batch accepted: %', got; END IF;
-  got := pg_temp.zzz_try($q$SELECT dr_bytes_mark('DR-seed', '{"storage_key": "x"}')$q$);
+  got := pg_temp.zzz_try($q$SELECT pg_temp.zzz_mark('DR-seed', '{"storage_key": "x"}')$q$);
   IF got NOT LIKE 'ERR: results must be a json array%' THEN RAISE EXCEPTION 'non-array accepted: %', got; END IF;
   IF EXISTS (SELECT 1 FROM dr_manifest WHERE tag = 'DR-seed' AND byte_state <> 'pending') THEN
     RAISE EXCEPTION 'a refused batch wrote member states';
@@ -228,7 +239,7 @@ BEGIN
 
   -- ------------------------------------------------------------------ 3.
 
-  res := dr_bytes_mark('DR-seed', jsonb_build_array(
+  res := pg_temp.zzz_mark('DR-seed', jsonb_build_array(
     jsonb_build_object('storage_key', p.s1, 'content_hash', pg_temp.zzz_ch(p.s1), 'state', 'stamped', 'archive_key', s1_key,
                        'stamped_hash', 'sha256:' || repeat('f', 64),
                        'registry', jsonb_build_object('size_bytes', 12345, 'content_type', 'application/fits',
@@ -282,7 +293,7 @@ BEGIN
   END IF;
   -- a slower concurrent run's failure for an already-archived member is stale:
   -- ignored, counted, the archive key kept (Codex on #601)
-  res := dr_bytes_mark('DR-seed', jsonb_build_array(
+  res := pg_temp.zzz_mark('DR-seed', jsonb_build_array(
     jsonb_build_object('storage_key', p.j1, 'content_hash', pg_temp.zzz_ch(p.j1), 'state', 'failed', 'error', 'late')));
   IF (res->>'stale')::int <> 1
      OR (SELECT byte_state || '|' || archive_key FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.j1)
@@ -291,7 +302,7 @@ BEGIN
       (SELECT to_jsonb(m) FROM dr_manifest m WHERE tag = 'DR-seed' AND storage_key = p.j1);
   END IF;
   -- the same object again: no second registry row, no error
-  res := dr_bytes_mark('DR-seed', jsonb_build_array(
+  res := pg_temp.zzz_mark('DR-seed', jsonb_build_array(
     jsonb_build_object('storage_key', p.j1, 'content_hash', pg_temp.zzz_ch(p.j1), 'state', 'copied', 'archive_key', j1_key,
                        'registry', jsonb_build_object('content_type', 'application/json'))));
   IF (res->>'registered')::int <> 0 OR (SELECT count(*) FROM storage_objects WHERE storage_key = j1_key) <> 1 THEN
@@ -301,7 +312,7 @@ BEGIN
   -- to pending, and the builder's ready mark is then refused (Codex on #601)
   PERFORM dr_export_mark('DR-seed', 'manifest',
     (SELECT COALESCE(program_slug, component) FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.j1), 'building');
-  PERFORM dr_bytes_mark('DR-seed', jsonb_build_array(
+  PERFORM pg_temp.zzz_mark('DR-seed', jsonb_build_array(
     jsonb_build_object('storage_key', p.j1, 'content_hash', pg_temp.zzz_ch(p.j1), 'state', 'copied', 'archive_key', j1_key)));
   IF (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'manifest' AND partition =
         (SELECT COALESCE(program_slug, component) FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.j1)) <> 'pending' THEN
@@ -312,7 +323,7 @@ BEGIN
   IF (SELECT science_hash FROM dr_manifest WHERE tag = 'DR-seed' AND storage_key = p.s3) IS NOT NULL THEN
     RAISE EXCEPTION 'fixture: s3 should have no science hash';
   END IF;
-  res := dr_bytes_mark('DR-seed', jsonb_build_array(
+  res := pg_temp.zzz_mark('DR-seed', jsonb_build_array(
     jsonb_build_object('storage_key', p.s3, 'content_hash', pg_temp.zzz_ch(p.s3), 'state', 'stamped', 'archive_key', 'archive/' || repeat('7', 64) || '/s3_spec.fits',
                        'stamped_hash', 'sha256:' || repeat('7', 64), 'science_hash', 'sha256:' || repeat('3', 64),
                        'registry', jsonb_build_object('size_bytes', 10))));
@@ -323,7 +334,7 @@ BEGIN
     RAISE EXCEPTION 'computed science hash not persisted';
   END IF;
   BEGIN
-    PERFORM dr_bytes_mark('DR-seed', jsonb_build_array(
+    PERFORM pg_temp.zzz_mark('DR-seed', jsonb_build_array(
       jsonb_build_object('storage_key', p.s1, 'content_hash', pg_temp.zzz_ch(p.s1), 'state', 'failed', 'science_hash', 'sha256:' || repeat('4', 64))));
     RAISE EXCEPTION 'a disagreeing science hash was accepted';
   EXCEPTION WHEN OTHERS THEN
@@ -332,7 +343,7 @@ BEGIN
   RAISE NOTICE 'OK 3: mixed batch (states, archive rows, event, export invalidation, idempotent, science hash kept)';
 
   -- ------------------------------------------------------------------ 4.
-  res := dr_bytes_mark('DR-seed', (
+  res := pg_temp.zzz_mark('DR-seed', (
     SELECT jsonb_agg(jsonb_build_object('storage_key', m.storage_key, 'content_hash', m.content_hash, 'state', 'copied',
                                         'archive_key', 'archive/' || md5(m.storage_key) || md5(m.storage_key) || '/' || substr(m.storage_key, 6),
                                         'registry', jsonb_build_object('content_type', 'application/octet-stream')))
@@ -368,7 +379,7 @@ BEGIN
   SELECT * INTO p FROM zzz_pick;
   got := pg_temp.zzz_as('authenticated', usr, $q$SELECT count(*)::text FROM dr_bytes_pending('DR-seed')$q$);
   IF got NOT LIKE 'ERR:%' THEN RAISE EXCEPTION 'non-admin read the pending list: %', got; END IF;
-  got := pg_temp.zzz_as('authenticated', usr, format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "state": "pending"}]')::text$q$, to_jsonb(p.j1)));
+  got := pg_temp.zzz_as('authenticated', usr, format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "state": "pending"}]', NULL)::text$q$, to_jsonb(p.j1)));
   IF got NOT LIKE 'ERR:%' THEN RAISE EXCEPTION 'non-admin marked: %', got; END IF;
   got := pg_temp.zzz_as('authenticated', usr, $q$SELECT dr_bytes_summary('DR-seed')::text$q$);
   IF got NOT LIKE 'ERR:%' THEN RAISE EXCEPTION 'non-admin read the summary: %', got; END IF;
@@ -376,15 +387,76 @@ BEGIN
   IF got <> 'ready' THEN RAISE EXCEPTION 'admin summary: %', got; END IF;
   got := pg_temp.zzz_try($q$SELECT dr_bytes_summary('DR-no-such-tag')$q$);
   IF got NOT LIKE 'ERR: no release DR-no-such-tag%' THEN RAISE EXCEPTION 'summary of an unknown tag: %', got; END IF;
-  IF has_function_privilege('anon', 'public.dr_bytes_mark(text, jsonb)', 'EXECUTE')
+  IF has_function_privilege('anon', 'public.dr_bytes_mark(text, jsonb, uuid)', 'EXECUTE')
+     OR has_function_privilege('anon', 'public.dr_archive_claim(text, uuid)', 'EXECUTE')
+     OR has_function_privilege('anon', 'public.dr_archive_release(text, uuid)', 'EXECUTE')
      OR has_function_privilege('anon', 'public.dr_bytes_pending(text, text, integer, boolean, text)', 'EXECUTE')
      OR has_function_privilege('anon', 'public.dr_bytes_summary(text)', 'EXECUTE') THEN
     RAISE EXCEPTION 'anon can execute a byte-pass RPC';
   END IF;
   UPDATE dr_releases SET state = 'published', published_at = now() WHERE tag = 'DR-seed';
-  got := pg_temp.zzz_try(format($q$SELECT dr_bytes_mark('DR-seed', '[{"storage_key": %s, "state": "pending"}]')$q$, to_jsonb(p.j1)));
+  got := pg_temp.zzz_try(format($q$SELECT pg_temp.zzz_mark('DR-seed', '[{"storage_key": %s, "state": "pending"}]')$q$, to_jsonb(p.j1)));
   IF got NOT LIKE 'ERR: release DR-seed is published%' THEN RAISE EXCEPTION 'published release accepted a mark: %', got; END IF;
   RAISE NOTICE 'OK 5: published refuses marks; non-admins refused; anon has no EXECUTE';
+END $$;
+
+-- ------------------------------------------------------------------ 6.
+DO $$
+DECLARE
+  got text; c1 uuid; c2 uuid;
+  mine uuid := '00000000-0000-4000-8000-0000000000aa';
+BEGIN
+  PERFORM set_config('request.jwt.claims', '{"role":"service_role"}', true);
+  UPDATE dr_releases SET state = 'copying', published_at = NULL WHERE tag = 'DR-seed';
+  -- a second run is refused while the claim is live
+  got := pg_temp.zzz_try($q$SELECT dr_archive_claim('DR-seed')$q$);
+  IF got NOT LIKE 'ERR: release DR-seed is being archived by another run%' THEN
+    RAISE EXCEPTION 'a second archive claim was accepted: %', got;
+  END IF;
+  -- marks without the claim are refused
+  got := pg_temp.zzz_try($q$SELECT dr_bytes_mark('DR-seed', '[]', gen_random_uuid())$q$);
+  IF got NOT LIKE 'ERR: the archive claim on DR-seed is not held by this run%' THEN
+    RAISE EXCEPTION 'a mark without the claim was accepted: %', got;
+  END IF;
+  got := pg_temp.zzz_try($q$SELECT dr_bytes_mark('DR-seed', '[]', NULL)$q$);
+  IF got NOT LIKE 'ERR: the archive claim on DR-seed is not held by this run%' THEN
+    RAISE EXCEPTION 'a mark with no claim was accepted: %', got;
+  END IF;
+  -- purge waits for a live archive run
+  got := pg_temp.zzz_try($q$SELECT dr_purge_release('DR-seed')$q$);
+  IF got NOT LIKE 'ERR: release DR-seed is being archived%' THEN
+    RAISE EXCEPTION 'purge ran during a live archive claim: %', got;
+  END IF;
+  -- the holder's heartbeat refreshes it; a stranger's is refused
+  IF dr_archive_claim('DR-seed', mine) <> mine THEN RAISE EXCEPTION 'heartbeat changed the claim'; END IF;
+  got := pg_temp.zzz_try($q$SELECT dr_archive_claim('DR-seed', gen_random_uuid())$q$);
+  IF got NOT LIKE 'ERR: the archive claim on DR-seed is not held by this run%' THEN
+    RAISE EXCEPTION 'a stranger refreshed the claim: %', got;
+  END IF;
+  -- a dead claim (not refreshed for 10 minutes) is taken over, and the old
+  -- holder's heartbeat and marks are then refused
+  UPDATE dr_releases SET archive_claimed_at = now() - interval '11 minutes' WHERE tag = 'DR-seed';
+  c1 := dr_archive_claim('DR-seed');
+  IF c1 IS NULL OR c1 = mine THEN RAISE EXCEPTION 'takeover of a dead claim: %', c1; END IF;
+  got := pg_temp.zzz_try(format($q$SELECT dr_archive_claim('DR-seed', %L)$q$, mine));
+  IF got NOT LIKE 'ERR: the archive claim on DR-seed is not held by this run%' THEN
+    RAISE EXCEPTION 'the old holder refreshed a claim taken over: %', got;
+  END IF;
+  got := pg_temp.zzz_try($q$SELECT pg_temp.zzz_mark('DR-seed', '[]')$q$);
+  IF got NOT LIKE 'ERR: the archive claim on DR-seed is not held by this run%' THEN
+    RAISE EXCEPTION 'the old holder marked after a takeover: %', got;
+  END IF;
+  -- release: only the holder's call clears it
+  IF dr_archive_release('DR-seed', mine) THEN RAISE EXCEPTION 'a stale holder released the claim'; END IF;
+  IF NOT dr_archive_release('DR-seed', c1) THEN RAISE EXCEPTION 'the holder could not release'; END IF;
+  IF (SELECT archive_claim FROM dr_releases WHERE tag = 'DR-seed') IS NOT NULL THEN
+    RAISE EXCEPTION 'release left the claim set';
+  END IF;
+  c2 := dr_archive_claim('DR-seed');
+  IF c2 IS NULL THEN RAISE EXCEPTION 'no claim after a release'; END IF;
+  got := pg_temp.zzz_try($q$SELECT dr_archive_claim('DR-no-such-tag')$q$);
+  IF got NOT LIKE 'ERR: no release DR-no-such-tag%' THEN RAISE EXCEPTION 'claim on an unknown tag: %', got; END IF;
+  RAISE NOTICE 'OK 6: one archive run per release (claim, heartbeat, takeover, release, purge waits)';
 END $$;
 
 ROLLBACK;

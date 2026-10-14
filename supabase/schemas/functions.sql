@@ -9379,6 +9379,10 @@ BEGIN
               AND x.claimed_at > now() - interval '10 minutes') THEN
     RAISE EXCEPTION 'release % is being exported (a build claim is live); wait for `campfire dr export` to finish', p_tag;
   END IF;
+  -- likewise an archive run: it would upload archive objects no row names (P4c)
+  IF r.archive_claim IS NOT NULL AND r.archive_claimed_at > now() - interval '10 minutes' THEN
+    RAISE EXCEPTION 'release % is being archived (a claim is live); wait for `campfire dr archive` to finish', p_tag;
+  END IF;
   PERFORM dr_cron_unschedule(p_tag);
   DELETE FROM dr_manifest    WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
   DELETE FROM dr_line_fits  WHERE tag = p_tag; GET DIAGNOSTICS n_lines = ROW_COUNT;
@@ -9972,7 +9976,7 @@ GRANT EXECUTE ON FUNCTION public.dr_export_invalidate(text, text, text) TO authe
 --       the frozen content hash, else the retained archive copy, else NULL =
 --       the bytes are gone), an existing archive object to reuse, and the
 --       registry metadata the archive row needs;
---   dr_bytes_mark(tag, results)
+--   dr_bytes_mark(tag, results, claim)
 --       a batch of outcomes (copied / stamped / failed / pending): member byte
 --       states, the archive registry rows for newly created objects, one
 --       `archive` deploy event per batch, the touched member partitions' export
@@ -10085,13 +10089,70 @@ REVOKE ALL ON FUNCTION public.dr_bytes_pending(text, text, integer, boolean, tex
 GRANT EXECUTE ON FUNCTION public.dr_bytes_pending(text, text, integer, boolean, text) TO authenticated, service_role;
 
 
-CREATE OR REPLACE FUNCTION public.dr_bytes_mark(p_tag text, p_results jsonb)
+CREATE OR REPLACE FUNCTION public.dr_archive_claim(p_tag text, p_claim uuid DEFAULT NULL)
+RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  r dr_releases%ROWTYPE;
+BEGIN
+  PERFORM dr_require_admin();
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'no release %', p_tag; END IF;
+  IF p_claim IS NOT NULL THEN
+    -- a heartbeat: refresh our own claim, which nobody has taken over
+    IF r.archive_claim IS DISTINCT FROM p_claim THEN
+      RAISE EXCEPTION 'the archive claim on % is not held by this run (another `campfire dr archive` took it over)', p_tag;
+    END IF;
+  ELSIF r.archive_claim IS NOT NULL AND r.archive_claimed_at > now() - interval '10 minutes' THEN
+    RAISE EXCEPTION 'release % is being archived by another run (claimed %, refreshed %); wait for it to finish',
+      p_tag, r.archive_claim, r.archive_claimed_at;
+  END IF;
+  UPDATE dr_releases
+     SET archive_claim = COALESCE(p_claim, gen_random_uuid()), archive_claimed_at = now()
+   WHERE tag = p_tag
+  RETURNING archive_claim INTO p_claim;
+  RETURN p_claim;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_archive_claim(text, uuid) IS 'Take (p_claim NULL) or refresh (p_claim = the run''s claim) the one `campfire dr archive` run of a data release (P4c). Taking refuses while another claim was refreshed in the last 10 minutes; refreshing refuses a claim another run took over. Returns the claim. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_archive_claim(text, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_archive_claim(text, uuid) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_archive_release(p_tag text, p_claim uuid)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  n int;
+BEGIN
+  PERFORM dr_require_admin();
+  UPDATE dr_releases SET archive_claim = NULL, archive_claimed_at = NULL
+   WHERE tag = p_tag AND archive_claim = p_claim;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n > 0;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_archive_release(text, uuid) IS 'Release a `campfire dr archive` run''s claim on a data release (P4c); false when the claim is no longer this run''s. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_archive_release(text, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_archive_release(text, uuid) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_bytes_mark(p_tag text, p_results jsonb, p_claim uuid)
 RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_state text;
+  v_claim uuid;
   e jsonb;
   m dr_manifest%ROWTYPE;
   v_new text; v_key text; v_hash text;
@@ -10107,11 +10168,17 @@ BEGIN
   IF jsonb_array_length(p_results) > 2000 THEN
     RAISE EXCEPTION 'at most 2000 results per call (got %)', jsonb_array_length(p_results);
   END IF;
-  SELECT state INTO v_state FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  SELECT state, archive_claim INTO v_state, v_claim FROM dr_releases WHERE tag = p_tag FOR UPDATE;
   IF v_state IS NULL THEN RAISE EXCEPTION 'no release %', p_tag; END IF;
   IF v_state NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
     RAISE EXCEPTION 'release % is % (the byte pass needs a frozen, unpublished release)', p_tag, v_state;
   END IF;
+  -- one archive run per release: only the run holding the claim records
+  -- outcomes, and each batch refreshes it
+  IF p_claim IS NULL OR v_claim IS DISTINCT FROM p_claim THEN
+    RAISE EXCEPTION 'the archive claim on % is not held by this run (another `campfire dr archive` took it over)', p_tag;
+  END IF;
+  UPDATE dr_releases SET archive_claimed_at = now() WHERE tag = p_tag;
 
   FOR e IN SELECT * FROM jsonb_array_elements(p_results) LOOP
     v_new := e->>'state';
@@ -10238,10 +10305,10 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_bytes_mark(text, jsonb) IS 'Record a batch (at most 2000) of data-release byte-pass outcomes (P4c): [{storage_key, state copied|stamped|failed|pending, archive_key, stamped_hash, error, registry}]; inserts the archive registry row for each newly created object (registry given), refuses a copied/stamped member whose archive object is not registered, sends the touched member partitions'' export files back to pending, logs one archive deploy event and derives the release state once. Admin or service_role.';
+COMMENT ON FUNCTION public.dr_bytes_mark(text, jsonb, uuid) IS 'Record a batch (at most 2000) of data-release byte-pass outcomes (P4c): [{storage_key, state copied|stamped|failed|pending, archive_key, stamped_hash, error, registry}]; inserts the archive registry row for each newly created object (registry given), refuses a copied/stamped member whose archive object is not registered, sends the touched member partitions'' export files back to pending, logs one archive deploy event and derives the release state once. Only the run holding the release''s archive claim (dr_archive_claim) may mark; each call refreshes it. Admin or service_role.';
 
-REVOKE ALL ON FUNCTION public.dr_bytes_mark(text, jsonb) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.dr_bytes_mark(text, jsonb) TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.dr_bytes_mark(text, jsonb, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_bytes_mark(text, jsonb, uuid) TO authenticated, service_role;
 
 
 CREATE OR REPLACE FUNCTION public.dr_bytes_summary(p_tag text)
@@ -10397,7 +10464,9 @@ REVOKE ALL ON FUNCTION public.dr_enqueue_freeze(p_tag text, p_components jsonb, 
 REVOKE ALL ON FUNCTION public.dr_purge_release(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_begin(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_bytes_pending(p_tag text, p_after text, p_limit integer, p_include_failed boolean, p_prefix text) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.dr_bytes_mark(p_tag text, p_results jsonb) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_bytes_mark(p_tag text, p_results jsonb, p_claim uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_archive_claim(p_tag text, p_claim uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_archive_release(p_tag text, p_claim uuid) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_bytes_summary(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_derive_state(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_invalidate(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
