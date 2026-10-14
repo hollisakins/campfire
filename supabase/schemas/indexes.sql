@@ -766,9 +766,13 @@ CREATE INDEX IF NOT EXISTS idx_dr_objects_tag_field
     ON public.dr_objects USING btree (tag, field);
 CREATE INDEX IF NOT EXISTS idx_dr_objects_programs
     ON public.dr_objects USING gin (programs);
--- The byte pass walks pending rows per tag; dedup looks up by science hash.
+-- the objects export pages in name order (dr_export_rows' keyset cursor);
+-- the other streams page on their primary keys
+CREATE INDEX IF NOT EXISTS idx_dr_objects_tag_name
+    ON public.dr_objects USING btree (tag, name);
+-- The byte pass walks pending (and, on a retry, failed) rows per tag; dedup looks up by science hash.
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_tag_pending
-    ON public.dr_manifest USING btree (tag, storage_key) WHERE (byte_state = 'pending');
+    ON public.dr_manifest USING btree (tag, storage_key) WHERE (byte_state = ANY (ARRAY['pending'::text, 'failed'::text]));
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_tag_component
     ON public.dr_manifest USING btree (tag, component);
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_science_hash

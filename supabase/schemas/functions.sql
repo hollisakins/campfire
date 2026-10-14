@@ -9386,6 +9386,18 @@ BEGIN
   IF r.state = 'freezing' AND r.freeze_started_at > now() - interval '1 hour' THEN
     RAISE EXCEPTION 'release % is freezing (started %); wait for it to finish or fail', p_tag, r.freeze_started_at;
   END IF;
+  -- An export run still building a file would upload it after the prefix is
+  -- deleted, and nothing would name it again. A builder claims under this
+  -- same release-row lock, so once the purge commits no new claim is
+  -- possible; a claim older than the 10-minute takeover window is dead.
+  IF EXISTS (SELECT 1 FROM dr_exports x WHERE x.tag = p_tag AND x.state = 'building'
+              AND x.claimed_at > now() - interval '10 minutes') THEN
+    RAISE EXCEPTION 'release % is being exported (a build claim is live); wait for `campfire dr export` to finish', p_tag;
+  END IF;
+  -- likewise an archive run: it would upload archive objects no row names (P4c)
+  IF r.archive_claim IS NOT NULL AND r.archive_claimed_at > now() - interval '10 minutes' THEN
+    RAISE EXCEPTION 'release % is being archived (a claim is live); wait for `campfire dr archive` to finish', p_tag;
+  END IF;
   PERFORM dr_cron_unschedule(p_tag);
   DELETE FROM dr_manifest    WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
   DELETE FROM dr_line_fits  WHERE tag = p_tag; GET DIAGNOSTICS n_lines = ROW_COUNT;
@@ -9412,6 +9424,941 @@ COMMENT ON FUNCTION public.dr_purge_release(text) IS 'Delete an UNPUBLISHED data
 REVOKE ALL ON FUNCTION public.dr_purge_release(text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_purge_release(text) TO authenticated, service_role;
 
+
+
+-- =============================================================================
+-- Data releases: exports (P4b, docs/design-data-releases-impl-plan.md §6,
+-- docs/dr-format-v1.md)
+-- =============================================================================
+-- One gzip JSONL file per (stream, partition) under dr/<tag>/exports/ on the
+-- data bucket, built from the frozen tables by `campfire dr export` (on the
+-- admin's machine, python/campfire/dr_export.py) and handed out per viewer by
+-- /api/v1/dr/<tag>/files. The partition (a file's scope) is the program slug
+-- for the five program-scoped streams (objects, spectra, line_fits, photometry,
+-- manifest) and the component name (nircam/<field>, photometry/<field>/<cat>)
+-- for the field-level manifest rows, so a presigned url never carries a row
+-- the viewer could not read through RLS. Objects / photometry rows of a
+-- mixed-program object appear in each of their programs' partitions, with the
+-- aggregates of the objects row scoped to that partition's program (what the
+-- live scoped sync returns to a caller holding that one program); a reader
+-- holding several programs merges by id.
+--
+--   dr_export_partitions(tag)      every (stream, partition) with rows, its
+--                                  storage key and row count;
+--   dr_export_rows(tag, stream, partition, after, limit)
+--                                  one keyset page of a partition, each row
+--                                  shaped like the live sync row of the same
+--                                  stream (dr-format-v1.md lists the fields);
+--   dr_export_begin(tag)           seed the dr_exports ledger, state -> exporting;
+--   dr_export_mark(tag, stream, partition, ...)
+--                                  record a built (or failed) file;
+--   dr_export_invalidate(tag, stream, partition)
+--                                  ready files back to pending (the byte pass
+--                                  uses it for the member partitions it changes);
+--   dr_derive_state(tag)           the state the ledger + member byte states
+--                                  imply (frozen / exporting / exported /
+--                                  copying / ready), applied after every write.
+-- All admin/service_role (the builder runs as the service role).
+
+CREATE OR REPLACE FUNCTION public.dr_export_key(p_tag text, p_stream text, p_partition text)
+RETURNS text
+LANGUAGE sql IMMUTABLE
+AS $$
+  -- dr/<tag>/exports/<stream>/<partition>.jsonl.gz. A partition name made of
+  -- key-safe characters is used as is; any other name (component names carry
+  -- '/', catalog names spaces) is sanitised AND suffixed with the first 8 hex
+  -- of its md5, so two names that sanitise alike ("CAT v1" / "CAT_v1") still
+  -- get distinct keys. The ledger records the key, so nothing inverts this.
+  SELECT 'dr/' || p_tag || '/exports/' || p_stream || '/'
+         || CASE WHEN p_partition ~ '^[A-Za-z0-9._-]+$' THEN p_partition
+                 ELSE regexp_replace(p_partition, '[^A-Za-z0-9._-]', '_', 'g')
+                      || '-' || left(md5(p_partition), 8) END
+         || '.jsonl.gz';
+$$;
+
+REVOKE ALL ON FUNCTION public.dr_export_key(text, text, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_key(text, text, text) TO authenticated, service_role;
+
+-- The key a BUILT file is stored under: the partition's base key with the
+-- first 16 hex of the file's sha256 and the first 8 hex of the build's claim
+-- token before `.jsonl.gz`
+-- (dr/<tag>/exports/<stream>/<partition>.<sha16>.<claim8>.jsonl.gz). Unique per
+-- build, so a builder that lost its claim uploads its stale bytes to its own
+-- key and can never overwrite the file the ledger publishes (Codex on #600),
+-- and a key nothing references can never become referenced later (a claim
+-- marks ready at most once), which is what lets the export sweep delete
+-- superseded files safely. content_export_key in python/campfire/dr_export.py
+-- computes the same string.
+CREATE OR REPLACE FUNCTION public.dr_export_content_key(p_base text, p_sha256 text, p_claim uuid)
+RETURNS text
+LANGUAGE sql IMMUTABLE
+AS $$
+  SELECT left(p_base, length(p_base) - length('.jsonl.gz')) || '.'
+         || substr(p_sha256, length('sha256:') + 1, 16) || '.'
+         || left(replace(p_claim::text, '-', ''), 8) || '.jsonl.gz';
+$$;
+
+REVOKE ALL ON FUNCTION public.dr_export_content_key(text, text, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_content_key(text, text, uuid) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_export_partitions(p_tag text)
+RETURNS TABLE(stream text, partition text, storage_key text, n_rows bigint)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+-- catalog-wide GROUP BYs over every frozen table: service_role would inherit
+-- authenticator's 8 s (the sync-RPC trap), as dr_export_rows does
+SET statement_timeout = '120s'
+AS $$
+BEGIN
+  PERFORM dr_require_admin();
+  RETURN QUERY
+  WITH counts AS (
+    SELECT 'objects'::text AS stream, p AS partition, count(*) AS n
+    FROM dr_objects o, unnest(o.programs) AS p WHERE o.tag = p_tag GROUP BY p
+    UNION ALL
+    SELECT 'spectra', s.program_slug, count(*) FROM dr_spectra s WHERE s.tag = p_tag GROUP BY s.program_slug
+    UNION ALL
+    SELECT 'line_fits', f.program_slug, count(*) FROM dr_line_fits f WHERE f.tag = p_tag GROUP BY f.program_slug
+    UNION ALL
+    SELECT 'photometry', p, count(*)
+    FROM dr_photometry ph, unnest(ph.programs) AS p WHERE ph.tag = p_tag GROUP BY p
+    UNION ALL
+    SELECT 'manifest', COALESCE(m.program_slug, m.component), count(*)
+    FROM dr_manifest m WHERE m.tag = p_tag GROUP BY COALESCE(m.program_slug, m.component)
+  )
+  SELECT c.stream, c.partition, dr_export_key(p_tag, c.stream, c.partition), c.n
+  FROM counts c
+  ORDER BY c.stream, c.partition;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_export_partitions(text) IS 'Every (stream, partition) of a data release that has rows, with the export storage key and the row count (P4b). Program-scoped streams partition by program slug; field-level member rows by component. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_export_partitions(text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_partitions(text) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_export_rows(
+  p_tag text,
+  p_stream text,
+  p_partition text,
+  p_after text DEFAULT NULL,
+  p_limit integer DEFAULT 2000
+)
+RETURNS TABLE(next_cursor text, row_json jsonb)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+SET statement_timeout = '120s'
+AS $$
+BEGIN
+  PERFORM dr_require_admin();
+  IF p_limit IS NULL OR p_limit < 1 OR p_limit > 10000 THEN
+    RAISE EXCEPTION 'p_limit must be between 1 and 10000';
+  END IF;
+
+  IF p_stream = 'objects' THEN
+    RETURN QUERY
+    SELECT o.name,
+           jsonb_build_object(
+             'id', o.object_id, 'object_id', o.name, 'field', o.field, 'ra', o.ra, 'dec', o.dec,
+             -- program membership scoped to THIS partition: the file is handed
+             -- to any holder of p_partition, who must not learn which other
+             -- (possibly proprietary) programs share the object (Codex on #600)
+             'programs', ARRAY[p_partition], 'evidence_programs', ARRAY[p_partition],
+             -- aggregates scoped to this partition's program (the live scoped
+             -- sync shape for a caller holding that one program)
+             'observations', COALESCE(agg.observations, '{}'::text[]),
+             'gratings', COALESCE(agg.gratings, '{}'::text[]),
+             'n_targets', COALESCE(agg.n_targets, 0), 'n_spectra', COALESCE(agg.n_spectra, 0),
+             'max_snr', agg.max_snr, 'max_exposure_time', agg.max_exposure_time,
+             'photo_z', o.photo_z, 'photo_z_err_lo', o.photo_z_err_lo, 'photo_z_err_hi', o.photo_z_err_hi,
+             'has_photometry', o.has_photometry,
+             -- the anchor spectrum's id only when it is one of this program's
+             'z_source_spectrum_id', CASE WHEN EXISTS (
+                 -- anchored on the object (idx_dr_spectra_tag_object): the
+                 -- anchor is one of the object's spectra by construction
+                 SELECT 1 FROM dr_spectra zs WHERE zs.tag = o.tag AND zs.object_id = o.object_id
+                   AND zs.id = o.z_source_spectrum_id AND zs.program_slug = p_partition) THEN o.z_source_spectrum_id END,
+             'redshift_auto', o.redshift_auto, 'redshift_inspected', o.redshift_inspected,
+             'redshift', o.redshift, 'redshift_quality', o.redshift_quality,
+             'inspected_used_auto', o.inspected_used_auto,
+             'last_inspected_at', o.last_inspected_at, 'last_inspected_by', o.last_inspected_by,
+             'version', o.version, 'is_active', true,
+             'needs_review', COALESCE((o.review_state->>'needs_review')::boolean, false),
+             -- only this program's spectra among the signed-off set
+             -- (a JSON null / absent set is passed through as it is)
+             'reviewed_spectrum_ids', CASE
+               WHEN jsonb_typeof(o.review_state->'reviewed_spectrum_ids') = 'array' THEN (
+                 SELECT COALESCE(jsonb_agg(v ORDER BY v::text), '[]'::jsonb)
+                 FROM jsonb_array_elements(o.review_state->'reviewed_spectrum_ids') v
+                 WHERE EXISTS (SELECT 1 FROM dr_spectra rs
+                               WHERE rs.tag = o.tag AND rs.object_id = o.object_id AND rs.program_slug = p_partition
+                                 AND (rs.id::text = v #>> '{}' OR rs.spectrum_id = v #>> '{}')))
+               ELSE o.review_state->'reviewed_spectrum_ids' END)
+    FROM dr_objects o
+    LEFT JOIN LATERAL (
+      SELECT count(*) AS n_spectra, count(DISTINCT s.target_id) AS n_targets,
+             array_agg(DISTINCT s.grating ORDER BY s.grating) AS gratings,
+             array_agg(DISTINCT s.observation ORDER BY s.observation) AS observations,
+             max(s.signal_to_noise) AS max_snr, max(s.exposure_time) AS max_exposure_time
+      FROM dr_spectra s
+      WHERE s.tag = o.tag AND s.object_id = o.object_id AND s.program_slug = p_partition
+    ) agg ON true
+    WHERE o.tag = p_tag AND p_partition = ANY (o.programs)
+      AND (p_after IS NULL OR o.name > p_after)
+    ORDER BY o.name
+    LIMIT p_limit;
+
+  ELSIF p_stream = 'spectra' THEN
+    RETURN QUERY
+    SELECT s.spectrum_id,
+           jsonb_build_object(
+             'id', s.id, 'spectrum_id', s.spectrum_id, 'target_id', s.target_id,
+             'object_id', o.name, 'object_db_id', s.object_id,
+             'grating', s.grating, 'fits_path', s.fits_path,
+             'file_hash', s.file_hash, 'science_hash', s.science_hash, 'file_size', s.file_size,
+             'signal_to_noise', s.signal_to_noise, 'exposure_time', s.exposure_time,
+             'cfpipe_version', s.cfpipe_version, 'crds_context', s.crds_context,
+             'jwst_version', s.jwst_version, 'date_obs', s.date_obs, 'reduced_at', s.reduced_at,
+             'redshift_auto', s.redshift_auto, 'chi2_min', s.chi2_min, 'confidence', s.confidence,
+             'dq_flags', s.dq_flags, 'program_slug', s.program_slug, 'observation', s.observation,
+             -- the frozen target field: an objectless spectrum has no object row
+             'field', COALESCE(s.field, o.field))
+    FROM dr_spectra s
+    LEFT JOIN dr_objects o ON o.tag = s.tag AND o.object_id = s.object_id
+    WHERE s.tag = p_tag AND s.program_slug = p_partition
+      AND (p_after IS NULL OR s.spectrum_id > p_after)
+    ORDER BY s.spectrum_id
+    LIMIT p_limit;
+
+  ELSIF p_stream = 'line_fits' THEN
+    RETURN QUERY
+    SELECT f.spectrum_id::text,
+           jsonb_build_object(
+             'spectrum_id', f.spectrum_id, 'spectrum_name', s.spectrum_id,
+             'target_id', f.target_id, 'grating', f.grating,
+             'program_slug', f.program_slug, 'observation', f.observation,
+             'object_id', f.object_id, 'object_version', f.object_version,
+             'z_used', f.z_used, 'z_source', f.z_source, 'z_quality', f.z_quality,
+             'z_fit', f.z_fit, 'z_fit_err', f.z_fit_err, 'dv', f.dv, 'dv_err', f.dv_err,
+             'sigma_v', f.sigma_v, 'sigma_v_err', f.sigma_v_err, 'kin_source', f.kin_source,
+             'n_lines', f.n_lines, 'n_detected', f.n_detected, 'n_broad', f.n_broad,
+             'chi2', f.chi2, 'dof', f.dof, 'lines', f.lines, 'fit_version', f.fit_version,
+             'cfpipe_version', f.cfpipe_version, 'f_lsf', f.f_lsf,
+             'spectrum_hash', f.spectrum_hash, 'spectrum_science_hash', f.spectrum_science_hash,
+             'fitted_at', f.fitted_at, 'stale_redshift', f.stale_redshift, 'stale_spectrum', f.stale_spectrum)
+    FROM dr_line_fits f
+    LEFT JOIN dr_spectra s ON s.tag = f.tag AND s.id = f.spectrum_id
+    WHERE f.tag = p_tag AND f.program_slug = p_partition
+      AND (p_after IS NULL OR f.spectrum_id > p_after::integer)
+    ORDER BY f.spectrum_id
+    LIMIT p_limit;
+
+  ELSIF p_stream = 'photometry' THEN
+    RETURN QUERY
+    SELECT ph.photometry_id::text,
+           jsonb_build_object(
+             -- scoped to this partition, as in the objects stream: the file
+             -- must not reveal the object's other programs (Codex on #600)
+             'id', ph.photometry_id, 'object_id', ph.object_id, 'programs', ARRAY[p_partition],
+             'field', ph.field, 'catalog_name', ph.catalog_name, 'catalog_id', ph.catalog_id,
+             'ra', ph.ra, 'dec', ph.dec, 'match_distance_arcsec', ph.match_distance_arcsec,
+             'photometry', ph.photometry, 'photo_z', ph.photo_z,
+             'photo_z_err_lo', ph.photo_z_err_lo, 'photo_z_err_hi', ph.photo_z_err_hi, 'has_pz', ph.has_pz)
+    FROM dr_photometry ph
+    WHERE ph.tag = p_tag AND p_partition = ANY (ph.programs)
+      AND (p_after IS NULL OR ph.photometry_id > p_after::integer)
+    ORDER BY ph.photometry_id
+    LIMIT p_limit;
+
+  ELSIF p_stream = 'manifest' THEN
+    RETURN QUERY
+    SELECT m.storage_key,
+           jsonb_build_object(
+             'storage_key', m.storage_key, 'component', m.component,
+             'program_slug', m.program_slug, 'field', m.field, 'product_type', m.product_type,
+             'spectrum_id', m.spectrum_id, 'backend', m.backend, 'bucket', m.bucket,
+             'content_hash', m.content_hash, 'science_hash', m.science_hash,
+             'size_bytes', m.size_bytes, 'archive_key', m.archive_key,
+             'byte_state', m.byte_state, 'stamped_hash', m.stamped_hash)
+    FROM dr_manifest m
+    WHERE m.tag = p_tag AND COALESCE(m.program_slug, m.component) = p_partition
+      AND (p_after IS NULL OR m.storage_key > p_after)
+    ORDER BY m.storage_key
+    LIMIT p_limit;
+
+  ELSE
+    RAISE EXCEPTION 'unknown export stream % (objects, spectra, line_fits, photometry, manifest)', p_stream;
+  END IF;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_export_rows(text, text, text, text, integer) IS 'One keyset page of a data-release export partition (P4b): rows shaped like the live sync rows of the same stream (docs/dr-format-v1.md), objects with aggregates scoped to the partition program. next_cursor = the row''s key (pass the last one as p_after for the next page). Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_export_rows(text, text, text, text, integer) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_rows(text, text, text, text, integer) TO authenticated, service_role;
+
+
+-- The release state the ledger and the member byte states imply (used by
+-- every export / byte-pass RPC after it writes). Only the five build states
+-- are ever derived; freezing / failed / published / withdrawn are left alone.
+--   frozen     no ledger rows and no archive bytes yet
+--   exporting  ledger rows exist and some are not ready
+--   exported   every ledger row ready, byte pass not finished
+--   copying    byte pass under way (some members copied/stamped/failed, some pending)
+--   ready      every ledger row ready AND every member copied or stamped
+CREATE OR REPLACE FUNCTION public.dr_derive_state(p_tag text)
+RETURNS text
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_cur text;
+  n_ledger int; n_ledger_open int;
+  n_members int; n_members_open int; n_members_done int;
+  v_new text;
+BEGIN
+  SELECT state INTO v_cur FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF v_cur IS NULL OR v_cur NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
+    RETURN v_cur;
+  END IF;
+  SELECT count(*), count(*) FILTER (WHERE state <> 'ready') INTO n_ledger, n_ledger_open
+  FROM dr_exports WHERE tag = p_tag;
+  SELECT count(*), count(*) FILTER (WHERE byte_state IN ('pending', 'failed')),
+         count(*) FILTER (WHERE byte_state IN ('copied', 'stamped'))
+    INTO n_members, n_members_open, n_members_done
+  FROM dr_manifest WHERE tag = p_tag;
+  v_new := CASE
+    WHEN n_ledger > 0 AND n_ledger_open = 0 AND n_members_open = 0 THEN 'ready'
+    WHEN n_members_done > 0 AND n_members_open > 0 THEN 'copying'
+    WHEN n_ledger > 0 AND n_ledger_open = 0 THEN 'exported'
+    WHEN n_ledger > 0 THEN 'exporting'
+    ELSE 'frozen' END;
+  IF v_new <> v_cur THEN
+    UPDATE dr_releases SET state = v_new, updated_at = now() WHERE tag = p_tag;
+  END IF;
+  RETURN v_new;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.dr_derive_state(text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.dr_derive_state(text) TO service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_export_begin(p_tag text)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+-- seeds the ledger through dr_export_partitions (catalog-wide)
+SET statement_timeout = '120s'
+AS $$
+DECLARE
+  r dr_releases%ROWTYPE;
+  n_new int; n_pending int; n_total int;
+BEGIN
+  PERFORM dr_require_admin();
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'no release %', p_tag; END IF;
+  IF r.state NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
+    RAISE EXCEPTION 'release % is % (exports need a frozen, unpublished release)', p_tag, r.state;
+  END IF;
+  -- Partitions are named by program slug or by component; a program slugged
+  -- exactly like one of the release's field-level components would share the
+  -- open component file with its private rows (program slugs carry no format
+  -- constraint). Refuse such a release rather than guess (Codex on #600).
+  -- Complete as written: dr_line_fits and dr_photometry take their program
+  -- slugs from these spectra and objects, so they cannot add a new one.
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements_text(r.components) c
+             WHERE c.value LIKE '%/%'
+               AND (EXISTS (SELECT 1 FROM dr_spectra s WHERE s.tag = p_tag AND s.program_slug = c.value)
+                    OR EXISTS (SELECT 1 FROM dr_objects o WHERE o.tag = p_tag AND c.value = ANY (o.programs))
+                    OR EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.program_slug = c.value))) THEN
+    RAISE EXCEPTION 'release % has a program slug equal to one of its component names; rename the program', p_tag;
+  END IF;
+  INSERT INTO dr_exports (tag, stream, partition, storage_key, state)
+  SELECT p_tag, p.stream, p.partition, p.storage_key, 'pending'
+  FROM dr_export_partitions(p_tag) p
+  ON CONFLICT (tag, stream, partition) DO NOTHING;
+  GET DIAGNOSTICS n_new = ROW_COUNT;
+  -- An empty release would seed an empty ledger and never become ready
+  -- (dr_derive_state needs ledger rows), while the builder reported nothing
+  -- remaining: refuse it outright (Codex on #600).
+  IF NOT EXISTS (SELECT 1 FROM dr_exports e WHERE e.tag = p_tag) THEN
+    RAISE EXCEPTION 'release % has nothing to export (the freeze captured no rows); purge it and freeze again', p_tag;
+  END IF;
+  SELECT count(*) FILTER (WHERE state <> 'ready'), count(*) INTO n_pending, n_total
+  FROM dr_exports WHERE tag = p_tag;
+  RETURN jsonb_build_object('tag', p_tag, 'new', n_new, 'pending', n_pending, 'total', n_total,
+                            'state', dr_derive_state(p_tag));
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_export_begin(text) IS 'Seed the export ledger of an unpublished data release from dr_export_partitions (idempotent: existing ledger rows are kept) and derive the release state (dr_derive_state). Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_export_begin(text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_begin(text) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_export_mark(
+  p_tag text,
+  p_stream text,
+  p_partition text,
+  p_state text,
+  p_sha256 text DEFAULT NULL,
+  p_size_bytes bigint DEFAULT NULL,
+  p_rows integer DEFAULT NULL,
+  p_error text DEFAULT NULL,
+  p_claim uuid DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  n_pending int; n_total int;
+  v_release text;
+  e dr_exports%ROWTYPE;
+  v_claim uuid;
+BEGIN
+  PERFORM dr_require_admin();
+  IF p_state NOT IN ('building', 'ready', 'failed', 'pending') THEN
+    RAISE EXCEPTION 'invalid export state %', p_state;
+  END IF;
+  -- Lock order: the release row first, then the ledger row -- the same order
+  -- as dr_bytes_mark and dr_derive_state, so concurrent builders and byte
+  -- passes queue instead of deadlocking (Codex on #601).
+  SELECT state INTO v_release FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF v_release IS NULL OR v_release NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
+    RAISE EXCEPTION 'release % is not exporting', p_tag;
+  END IF;
+  SELECT * INTO e FROM dr_exports x
+   WHERE x.tag = p_tag AND x.stream = p_stream AND x.partition = p_partition
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'no ledger row for % % %', p_tag, p_stream, p_partition;
+  END IF;
+
+  IF p_state = 'building' THEN
+    -- An atomic claim: refused while another run holds a fresh one, so two
+    -- overlapping `dr export` runs never build the same file (Codex on #600).
+    -- A claim older than the builder's ceiling is a dead run's and is taken over.
+    IF e.state = 'building' AND e.claimed_at > now() - interval '10 minutes'
+       AND e.claim_token IS DISTINCT FROM p_claim THEN
+      RAISE EXCEPTION 'export file % % of % is being built by another run', p_stream, p_partition, p_tag
+        USING ERRCODE = 'CF409';
+    END IF;
+    IF e.state = 'ready' THEN
+      RAISE EXCEPTION 'export file % % of % is already ready', p_stream, p_partition, p_tag USING ERRCODE = 'CF409';
+    END IF;
+    v_claim := gen_random_uuid();
+    UPDATE dr_exports
+       SET state = 'building', claim_token = v_claim, claimed_at = now(),
+           sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL
+     WHERE tag = p_tag AND stream = p_stream AND partition = p_partition;
+  ELSE
+    -- A file is ready only if nothing invalidated it while it was being built:
+    -- the byte pass (and dr_export_invalidate) send `building` rows back to
+    -- pending, so a builder finishing a file from rows that changed under it is
+    -- refused instead of publishing stale member rows (Codex on #601).
+    IF p_state = 'ready' AND e.state IS DISTINCT FROM 'building' THEN
+      RAISE EXCEPTION 'export file % % of % was invalidated while it was being built (or never started); rebuild it',
+        p_stream, p_partition, p_tag;
+    END IF;
+    IF p_state = 'ready' AND (p_sha256 IS NULL OR p_sha256 !~ '^sha256:[0-9a-f]{64}$') THEN
+      RAISE EXCEPTION 'a ready export file needs its sha256 (sha256:<64 hex>)';
+    END IF;
+    -- A builder's ready / failed mark must still hold the claim: a run that
+    -- lost it (taken over, invalidated) never overwrites the newer state.
+    IF p_claim IS NOT NULL AND (e.state IS DISTINCT FROM 'building' OR e.claim_token IS DISTINCT FROM p_claim) THEN
+      IF p_state = 'failed' THEN
+        RETURN jsonb_build_object('tag', p_tag, 'stale_claim', true, 'state', v_release);
+      END IF;
+      RAISE EXCEPTION 'export file % % of % is no longer claimed by this run; rebuild it', p_stream, p_partition, p_tag;
+    END IF;
+    UPDATE dr_exports
+       SET state = p_state,
+           -- a ready file lives under its build's key (content hash + claim);
+           -- a ready mark always follows this row's building claim
+           storage_key = CASE WHEN p_state = 'ready'
+                              THEN dr_export_content_key(dr_export_key(p_tag, p_stream, p_partition), p_sha256,
+                                                         COALESCE(p_claim, e.claim_token))
+                              ELSE storage_key END,
+           sha256 = CASE WHEN p_state = 'ready' THEN p_sha256 ELSE NULL END,
+           size_bytes = CASE WHEN p_state = 'ready' THEN p_size_bytes ELSE NULL END,
+           rows = CASE WHEN p_state = 'ready' THEN p_rows ELSE NULL END,
+           built_at = CASE WHEN p_state = 'ready' THEN now() ELSE NULL END,
+           error = CASE WHEN p_state = 'failed' THEN left(p_error, 2000) ELSE NULL END,
+           claim_token = NULL, claimed_at = NULL
+     WHERE tag = p_tag AND stream = p_stream AND partition = p_partition;
+  END IF;
+  SELECT count(*) FILTER (WHERE state <> 'ready'), count(*) INTO n_pending, n_total
+  FROM dr_exports WHERE tag = p_tag;
+  RETURN jsonb_build_object('tag', p_tag, 'pending', n_pending, 'total', n_total,
+                            'claim', v_claim,
+                            'base_key', dr_export_key(p_tag, p_stream, p_partition),
+                            'state', dr_derive_state(p_tag));
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, integer, text, uuid) IS 'Record one export file of a data release: building is an atomic claim (returns a claim token; refused while another run holds a fresh claim), ready (sha256, size, rows; only from building) / failed (error) / pending; a builder passes its claim token so a run that lost the claim never overwrites newer state. Then derive the release state. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, integer, text, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_mark(text, text, text, text, text, bigint, integer, text, uuid) TO authenticated, service_role;
+
+-- The builder's end-of-run answer, read in ONE snapshot: the release state
+-- and how many ledger files are not ready (two PostgREST reads could straddle
+-- a concurrent byte pass or exporter; Codex on #600).
+CREATE OR REPLACE FUNCTION public.dr_export_status(p_tag text)
+RETURNS jsonb
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  PERFORM dr_require_admin();
+  RETURN (SELECT jsonb_build_object(
+            'tag', r.tag, 'state', r.state,
+            'remaining', (SELECT count(*) FROM dr_exports e WHERE e.tag = r.tag AND e.state <> 'ready'),
+            'total', (SELECT count(*) FROM dr_exports e WHERE e.tag = r.tag))
+          FROM dr_releases r WHERE r.tag = p_tag);
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_export_status(text) IS 'A data release''s state and its not-ready export file count, from one snapshot (P4b builder). Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_export_status(text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_status(text) TO authenticated, service_role;
+
+-- Send ready export files back to pending so the next `dr export` rebuilds
+-- them: the byte pass (P4c) calls it for the `manifest` partitions it changes
+-- (archive_key / byte_state / stamped_hash are part of the member rows, so a
+-- file built before the pass would keep pointing readers at the mutable live
+-- keys). p_stream NULL invalidates every stream; p_partition NULL every
+-- partition of the stream.
+CREATE OR REPLACE FUNCTION public.dr_export_invalidate(
+  p_tag text,
+  p_stream text DEFAULT NULL,
+  p_partition text DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  n int;
+BEGIN
+  PERFORM dr_require_admin();
+  -- release row first, then ledger rows (the lock order every dr_* writer uses)
+  IF (SELECT state FROM dr_releases WHERE tag = p_tag FOR UPDATE) NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
+    RAISE EXCEPTION 'release % is not in a build state', p_tag;
+  END IF;
+  UPDATE dr_exports
+     SET state = 'pending', sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL,
+         claim_token = NULL, claimed_at = NULL
+   WHERE tag = p_tag AND state IN ('ready', 'building')
+     AND (p_stream IS NULL OR stream = p_stream)
+     AND (p_partition IS NULL OR partition = p_partition);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN jsonb_build_object('tag', p_tag, 'invalidated', n, 'state', dr_derive_state(p_tag));
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_export_invalidate(text, text, text) IS 'Send ready export files of a data release back to pending (a stream, a partition, or everything) so `dr export` rebuilds them; the byte pass uses it for the member partitions it changes. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_export_invalidate(text, text, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_export_invalidate(text, text, text) TO authenticated, service_role;
+
+
+
+
+-- =============================================================================
+-- Data releases: byte pass (P4c, docs/design-data-releases-impl-plan.md §6)
+-- =============================================================================
+-- `campfire dr archive` makes every member's bytes exist under archive/: NIRSpec
+-- FITS finals (nirspec_spec, nirspec_lines) are downloaded, stamped (CMPFRDR in
+-- the primary header) and uploaded to archive/<sha256 of the stamped bytes>/
+-- <relpath>; sidecars and mosaics are copied server-side, unstamped, to
+-- archive/<content_hash>/<relpath>. One archive object per science hash
+-- (D-P4-2): a FITS another release already stamped with the same science hash is
+-- reused (first DR wins the stamp), and an unstamped object already archived
+-- with the same content hash (retain-on-supersede, an earlier release) is
+-- reused as it is. The pass runs on the admin machine with object-store
+-- credentials; these RPCs hand it its work and record its results.
+--
+--   dr_bytes_pending(tag, after, limit, include_failed, prefix)
+--       one keyset page of members still to do, each with where its frozen
+--       bytes are now (source_key: the live key while the live row still holds
+--       the frozen content hash, else the retained archive copy, else NULL =
+--       the bytes are gone), an existing archive object to reuse, and the
+--       registry metadata the archive row needs;
+--   dr_bytes_mark(tag, results, claim)
+--       a batch of outcomes (copied / stamped / failed / pending): member byte
+--       states, the archive registry rows for newly created objects, one
+--       `archive` deploy event per batch, the touched member partitions' export
+--       files back to pending, and the derived release state, once per batch
+--       (dr_derive_state counts every member of the tag);
+--   dr_bytes_summary(tag)   counts and bytes per byte_state (progress / status).
+
+CREATE OR REPLACE FUNCTION public.dr_bytes_pending(
+  p_tag text,
+  p_after text DEFAULT NULL,
+  p_limit integer DEFAULT 500,
+  p_include_failed boolean DEFAULT false,
+  p_prefix text DEFAULT NULL
+)
+RETURNS TABLE (
+  storage_key text, product_type text, component text, program_slug text, field text,
+  spectrum_id text, backend text, bucket text, content_hash text, science_hash text,
+  size_bytes bigint, byte_state text,
+  source_key text, source_root text, source_stored_size bigint,
+  reuse_archive_key text, reuse_stamped_hash text, reuse_size_bytes bigint, reuse_candidates jsonb,
+  registry jsonb
+)
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  PERFORM dr_require_admin();
+  IF NOT EXISTS (SELECT 1 FROM dr_releases r WHERE r.tag = p_tag) THEN
+    RAISE EXCEPTION 'no release %', p_tag;
+  END IF;
+  RETURN QUERY
+  WITH page AS (
+    SELECT m.* FROM dr_manifest m
+    WHERE m.tag = p_tag
+      AND m.byte_state IN ('pending', 'failed')
+      AND (m.byte_state = 'pending' OR p_include_failed)
+      AND (p_after IS NULL OR m.storage_key > p_after)
+      -- one observation / field first (the S gate): a key prefix
+      AND (p_prefix IS NULL OR (m.storage_key >= p_prefix AND left(m.storage_key, length(p_prefix)) = p_prefix))
+    ORDER BY m.storage_key
+    LIMIT LEAST(GREATEST(COALESCE(p_limit, 500), 1), 2000)
+  )
+  SELECT pg.storage_key, pg.product_type, pg.component, pg.program_slug, pg.field,
+         pg.spectrum_id, pg.backend, pg.bucket, pg.content_hash, pg.science_hash,
+         pg.size_bytes, pg.byte_state,
+         CASE WHEN live.id IS NOT NULL THEN live.storage_key ELSE ret.storage_key END,
+         CASE WHEN live.id IS NOT NULL THEN 'live' WHEN ret.id IS NOT NULL THEN 'archive' END,
+         -- the STORED size; a transport-compressed object (.gz key) without a
+         -- recorded stored size is unknown (NULL), never its logical size
+         -- (Codex on #601)
+         CASE WHEN live.id IS NOT NULL THEN
+                CASE WHEN pg.storage_key LIKE '%.gz' THEN live.stored_size_bytes
+                     ELSE COALESCE(live.stored_size_bytes, live.size_bytes) END
+              ELSE
+                CASE WHEN pg.storage_key LIKE '%.gz' THEN ret.stored_size_bytes
+                     ELSE COALESCE(ret.stored_size_bytes, ret.size_bytes) END END,
+         reuse.cands->0->>'archive_key', reuse.cands->0->>'stamped_hash',
+         (reuse.cands->0->>'size_bytes')::bigint, COALESCE(reuse.cands, '[]'::jsonb),
+         jsonb_build_object(
+           'content_type', COALESCE(live.content_type, ret.content_type, src.content_type),
+           'stored_size_bytes', COALESCE(live.stored_size_bytes, ret.stored_size_bytes),
+           'instrument', COALESCE(live.instrument, ret.instrument, src.instrument),
+           'observation', COALESCE(live.observation, ret.observation, src.observation),
+           'filter', COALESCE(live.filter, ret.filter, src.filter),
+           'deployment_id', COALESCE(live.deployment_id, ret.deployment_id, src.deployment_id),
+           'cfpipe_version', COALESCE(live.cfpipe_version, ret.cfpipe_version, src.cfpipe_version),
+           'retained_key', ret.storage_key)
+  FROM page pg
+  -- the registry row the freeze captured (its metadata survives a redeploy)
+  LEFT JOIN storage_objects src ON src.id = pg.registry_id
+  -- the live object, while it still holds the frozen bytes
+  LEFT JOIN LATERAL (
+    SELECT so.* FROM storage_objects so
+    WHERE so.backend = pg.backend AND so.bucket = pg.bucket AND so.storage_key = pg.storage_key
+      AND so.root = 'live' AND so.status = 'active' AND so.content_hash = pg.content_hash
+    LIMIT 1
+  ) live ON true
+  -- an unstamped archive copy of exactly the frozen bytes (retain-on-supersede,
+  -- or an earlier release's server-side copy)
+  LEFT JOIN LATERAL (
+    SELECT so.* FROM storage_objects so
+    WHERE so.root = 'archive' AND so.status = 'archived'
+      AND so.content_hash = pg.content_hash AND so.archived_from_key = pg.storage_key
+    ORDER BY so.id
+    LIMIT 1
+  ) ret ON true
+  -- stamped objects any other release made from the same science (D-P4-2):
+  -- the first release to ARCHIVE a file owns its stamp, and every later pass
+  -- reuses that object. Every candidate, earliest archived first: the pass
+  -- reuses the first whose object still exists, so a missing one falls
+  -- through to the next (or to a fresh stamp).
+  LEFT JOIN LATERAL (
+    SELECT jsonb_agg(jsonb_build_object('archive_key', d.archive_key, 'stamped_hash', d.stamped_hash,
+                                        'size_bytes', COALESCE(so.stored_size_bytes, so.size_bytes))
+                     ORDER BY so.archived_at, d.tag) AS cands
+    FROM dr_manifest d
+    JOIN storage_objects so ON so.root = 'archive' AND so.status = 'archived'
+                           AND so.storage_key = d.archive_key
+    WHERE pg.product_type IN ('nirspec_spec', 'nirspec_lines') AND pg.science_hash IS NOT NULL
+      AND d.science_hash = pg.science_hash AND d.storage_key = pg.storage_key
+      AND d.tag <> pg.tag AND d.byte_state = 'stamped'
+  ) reuse ON true
+  ORDER BY pg.storage_key;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_bytes_pending(text, text, integer, boolean, text) IS 'One keyset page (by storage_key, at most 2000) of a data release''s members still to archive (P4c): pending, plus failed when asked, optionally under one key prefix; per member the source of its frozen bytes (the live key while it still holds them, else the retained archive copy, else NULL), a stamped archive object of the same science from another release to reuse, and the registry metadata for the archive row. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_bytes_pending(text, text, integer, boolean, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_bytes_pending(text, text, integer, boolean, text) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_archive_claim(p_tag text, p_claim uuid DEFAULT NULL)
+RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  r dr_releases%ROWTYPE;
+BEGIN
+  PERFORM dr_require_admin();
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'no release %', p_tag; END IF;
+  IF p_claim IS NOT NULL THEN
+    -- a heartbeat: refresh our own claim, which nobody has taken over
+    IF r.archive_claim IS DISTINCT FROM p_claim THEN
+      RAISE EXCEPTION 'the archive claim on % is not held by this run (another `campfire dr archive` took it over)', p_tag;
+    END IF;
+  ELSIF r.archive_claim IS NOT NULL AND r.archive_claimed_at > now() - interval '10 minutes' THEN
+    RAISE EXCEPTION 'release % is being archived by another run (claimed %, refreshed %); wait for it to finish',
+      p_tag, r.archive_claim, r.archive_claimed_at;
+  END IF;
+  UPDATE dr_releases
+     SET archive_claim = COALESCE(p_claim, gen_random_uuid()), archive_claimed_at = now()
+   WHERE tag = p_tag
+  RETURNING archive_claim INTO p_claim;
+  RETURN p_claim;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_archive_claim(text, uuid) IS 'Take (p_claim NULL) or refresh (p_claim = the run''s claim) the one `campfire dr archive` run of a data release (P4c). Taking refuses while another claim was refreshed in the last 10 minutes; refreshing refuses a claim another run took over. Returns the claim. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_archive_claim(text, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_archive_claim(text, uuid) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_archive_release(p_tag text, p_claim uuid)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  n int;
+BEGIN
+  PERFORM dr_require_admin();
+  UPDATE dr_releases SET archive_claim = NULL, archive_claimed_at = NULL
+   WHERE tag = p_tag AND archive_claim = p_claim;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n > 0;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_archive_release(text, uuid) IS 'Release a `campfire dr archive` run''s claim on a data release (P4c); false when the claim is no longer this run''s. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_archive_release(text, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_archive_release(text, uuid) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_bytes_mark(p_tag text, p_results jsonb, p_claim uuid)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_state text;
+  v_claim uuid;
+  e jsonb;
+  m dr_manifest%ROWTYPE;
+  v_new text; v_key text; v_hash text;
+  n_marked int := 0; n_registered int := 0; n_failed int := 0;
+  n_copied int := 0; n_stamped int := 0; n_pending int := 0; n_stale int := 0;
+  v_partitions text[] := '{}';
+  v_rows int;
+BEGIN
+  PERFORM dr_require_admin();
+  IF jsonb_typeof(p_results) IS DISTINCT FROM 'array' THEN
+    RAISE EXCEPTION 'results must be a json array';
+  END IF;
+  IF jsonb_array_length(p_results) > 2000 THEN
+    RAISE EXCEPTION 'at most 2000 results per call (got %)', jsonb_array_length(p_results);
+  END IF;
+  SELECT state, archive_claim INTO v_state, v_claim FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF v_state IS NULL THEN RAISE EXCEPTION 'no release %', p_tag; END IF;
+  IF v_state NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
+    RAISE EXCEPTION 'release % is % (the byte pass needs a frozen, unpublished release)', p_tag, v_state;
+  END IF;
+  -- one archive run per release: only the run holding the claim records
+  -- outcomes, and each batch refreshes it
+  IF p_claim IS NULL OR v_claim IS DISTINCT FROM p_claim THEN
+    RAISE EXCEPTION 'the archive claim on % is not held by this run (another `campfire dr archive` took it over)', p_tag;
+  END IF;
+  UPDATE dr_releases SET archive_claimed_at = now() WHERE tag = p_tag;
+
+  FOR e IN SELECT * FROM jsonb_array_elements(p_results) LOOP
+    v_new := e->>'state';
+    v_key := e->>'archive_key';
+    v_hash := e->>'stamped_hash';
+    IF v_new IS NULL OR v_new NOT IN ('pending', 'copied', 'stamped', 'failed') THEN
+      RAISE EXCEPTION 'invalid byte state % for %', v_new, e->>'storage_key';
+    END IF;
+    IF v_new IN ('copied', 'stamped') AND (v_key IS NULL OR v_key NOT LIKE 'archive/%') THEN
+      RAISE EXCEPTION 'a % member needs an archive key under archive/ (%)', v_new, e->>'storage_key';
+    END IF;
+    IF v_new = 'stamped' AND (v_hash IS NULL OR v_hash !~ '^sha256:[0-9a-f]{64}$') THEN
+      RAISE EXCEPTION 'a stamped member needs the sha256 of the stamped bytes (%)', e->>'storage_key';
+    END IF;
+    SELECT * INTO m FROM dr_manifest WHERE tag = p_tag AND storage_key = e->>'storage_key' FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'no member % in %', e->>'storage_key', p_tag; END IF;
+    -- The outcome must be for THIS member's frozen bytes: a pass that fetched
+    -- its page before the tag was purged and re-frozen carries the old
+    -- generation's content hash (Codex on #601). Same hash = same bytes, so an
+    -- old outcome is only applied when it is still true.
+    IF e->>'content_hash' IS DISTINCT FROM m.content_hash THEN
+      RAISE EXCEPTION 'outcome for % is for content % but the member froze %; refetch and rerun',
+        m.storage_key, COALESCE(e->>'content_hash', '<none>'), m.content_hash;
+    END IF;
+    IF v_new = 'stamped' AND m.product_type NOT IN ('nirspec_spec', 'nirspec_lines') THEN
+      RAISE EXCEPTION 'only NIRSpec FITS finals are stamped (% is %)', m.storage_key, m.product_type;
+    END IF;
+    -- A science hash the pass computed for a member frozen without one is kept
+    -- (member + archive row), so later releases can reuse the stamped object
+    -- (Codex on #601). A frozen hash is never overwritten.
+    IF e->>'science_hash' IS NOT NULL THEN
+      IF e->>'science_hash' !~ '^sha256:[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'malformed science hash for %', m.storage_key;
+      END IF;
+      IF m.science_hash IS NOT NULL AND m.science_hash <> e->>'science_hash' THEN
+        RAISE EXCEPTION 'science hash of % disagrees with the frozen one', m.storage_key;
+      END IF;
+      m.science_hash := COALESCE(m.science_hash, e->>'science_hash');
+    END IF;
+    -- A member already archived stays archived: a slower concurrent run's
+    -- failed / pending outcome for the same bytes is stale and ignored
+    -- (Codex on #601); it is counted, not applied.
+    IF m.byte_state IN ('copied', 'stamped') AND v_new IN ('failed', 'pending') THEN
+      n_stale := n_stale + 1;
+      CONTINUE;
+    END IF;
+
+    -- A newly created archive object gets its registry row (an existing row:
+    -- the same object reused, or a crash after the insert, is kept as it is;
+    -- archive rows are immutable).
+    IF v_new IN ('copied', 'stamped') AND (e->'registry') IS NOT NULL AND jsonb_typeof(e->'registry') = 'object' THEN
+      INSERT INTO storage_objects (backend, bucket, storage_key, root, status, content_hash, science_hash,
+                                   size_bytes, stored_size_bytes, content_type, product_type, instrument,
+                                   observation, field, filter, spectrum_id, program_slug, deployment_id,
+                                   cfpipe_version, archived_from_key, archived_at, uploaded_by, updated_at)
+      VALUES (m.backend, m.bucket, v_key, 'archive', 'archived',
+              CASE WHEN v_new = 'stamped' THEN v_hash ELSE m.content_hash END,
+              m.science_hash,
+              COALESCE((e->'registry'->>'size_bytes')::bigint, m.size_bytes),
+              (e->'registry'->>'stored_size_bytes')::bigint,
+              COALESCE(e->'registry'->>'content_type', 'application/octet-stream'),
+              m.product_type, e->'registry'->>'instrument',
+              -- provenance only: an observation or deployment removed since
+              -- the freeze must not abort the batch on its foreign key
+              (SELECT o.name FROM observations o WHERE o.name = e->'registry'->>'observation'),
+              m.field, e->'registry'->>'filter', m.spectrum_id, m.program_slug,
+              (SELECT d.id FROM deployments d WHERE d.id = (e->'registry'->>'deployment_id')::integer),
+              e->'registry'->>'cfpipe_version',
+              m.storage_key, now(), auth.uid(), now())
+      ON CONFLICT (backend, bucket, storage_key) DO NOTHING;
+      GET DIAGNOSTICS v_rows = ROW_COUNT;
+      n_registered := n_registered + v_rows;
+    END IF;
+    IF v_new IN ('copied', 'stamped') AND NOT EXISTS (
+         SELECT 1 FROM storage_objects so
+         WHERE so.backend = m.backend AND so.bucket = m.bucket AND so.storage_key = v_key
+           AND so.root = 'archive' AND so.status = 'archived') THEN
+      RAISE EXCEPTION 'archive object % is not registered (pass its registry row)', v_key;
+    END IF;
+
+    -- ...and on the live registry row a later freeze copies it from, while
+    -- that row still describes these exact bytes and has none (Codex on #601)
+    IF e->>'science_hash' IS NOT NULL THEN
+      UPDATE storage_objects so
+         SET science_hash = e->>'science_hash', updated_at = now()
+       WHERE so.backend = m.backend AND so.bucket = m.bucket AND so.storage_key = m.storage_key
+         AND so.root = 'live' AND so.content_hash = m.content_hash AND so.science_hash IS NULL;
+    END IF;
+    UPDATE dr_manifest
+       SET byte_state = v_new,
+           science_hash = m.science_hash,
+           archive_key = CASE WHEN v_new IN ('copied', 'stamped') THEN v_key END,
+           stamped_hash = CASE WHEN v_new = 'stamped' THEN v_hash END,
+           byte_error = CASE WHEN v_new = 'failed' THEN left(COALESCE(e->>'error', 'failed'), 2000) END,
+           updated_at = now()
+     WHERE tag = p_tag AND storage_key = m.storage_key;
+    n_marked := n_marked + 1;
+    CASE v_new WHEN 'copied' THEN n_copied := n_copied + 1;
+               WHEN 'stamped' THEN n_stamped := n_stamped + 1;
+               WHEN 'failed' THEN n_failed := n_failed + 1;
+               ELSE n_pending := n_pending + 1; END CASE;
+    v_partitions := array_append(v_partitions, COALESCE(m.program_slug, m.component));
+  END LOOP;
+
+  -- Built member files no longer match the rows: back to pending.
+  UPDATE dr_exports
+     SET state = 'pending', sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL,
+         claim_token = NULL, claimed_at = NULL
+   -- `building` too: a builder mid-way through this file read the old rows,
+   -- and dr_export_mark refuses its ready mark once the row is not building
+   -- (lock order: the release row is already held above, as in dr_export_mark)
+   WHERE tag = p_tag AND stream = 'manifest' AND state IN ('ready', 'building') AND partition = ANY (v_partitions);
+
+  IF n_copied + n_stamped > 0 THEN
+    INSERT INTO deploy_events (actor, action, affected_count, metadata)
+    VALUES (auth.uid(), 'archive', n_copied + n_stamped,
+            jsonb_build_object('dr_tag', p_tag, 'copied', n_copied, 'stamped', n_stamped,
+                               'registered', n_registered, 'failed', n_failed));
+  END IF;
+
+  RETURN jsonb_build_object('tag', p_tag, 'marked', n_marked, 'copied', n_copied, 'stamped', n_stamped,
+                            'failed', n_failed, 'pending', n_pending, 'registered', n_registered,
+                            'stale', n_stale, 'state', dr_derive_state(p_tag));
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_bytes_mark(text, jsonb, uuid) IS 'Record a batch (at most 2000) of data-release byte-pass outcomes (P4c): [{storage_key, state copied|stamped|failed|pending, archive_key, stamped_hash, error, registry}]; inserts the archive registry row for each newly created object (registry given), refuses a copied/stamped member whose archive object is not registered, sends the touched member partitions'' export files back to pending, logs one archive deploy event and derives the release state once. Only the run holding the release''s archive claim (dr_archive_claim) may mark; each call refreshes it. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_bytes_mark(text, jsonb, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_bytes_mark(text, jsonb, uuid) TO authenticated, service_role;
+
+
+CREATE OR REPLACE FUNCTION public.dr_bytes_summary(p_tag text)
+RETURNS jsonb
+LANGUAGE plpgsql STABLE SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  out jsonb;
+BEGIN
+  PERFORM dr_require_admin();
+  IF NOT EXISTS (SELECT 1 FROM dr_releases r WHERE r.tag = p_tag) THEN
+    RAISE EXCEPTION 'no release %', p_tag;
+  END IF;
+  SELECT jsonb_build_object(
+    'tag', p_tag,
+    'state', (SELECT state FROM dr_releases WHERE tag = p_tag),
+    'manifest', count(*),
+    'by_state', (SELECT COALESCE(jsonb_object_agg(s.byte_state, jsonb_build_object('count', s.n, 'bytes', s.b)), '{}'::jsonb)
+                 FROM (SELECT byte_state, count(*) AS n, COALESCE(sum(size_bytes), 0) AS b
+                       FROM dr_manifest WHERE tag = p_tag GROUP BY byte_state) s),
+    'pending_bytes', COALESCE(sum(size_bytes) FILTER (WHERE byte_state IN ('pending', 'failed')), 0),
+    'failed_sample', (SELECT COALESCE(jsonb_agg(jsonb_build_object('storage_key', f.storage_key, 'error', f.byte_error)), '[]'::jsonb)
+                      FROM (SELECT storage_key, byte_error FROM dr_manifest
+                            WHERE tag = p_tag AND byte_state = 'failed' ORDER BY storage_key LIMIT 10) f))
+  INTO out
+  FROM dr_manifest WHERE tag = p_tag;
+  RETURN out;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_bytes_summary(text) IS 'Byte-pass progress of a data release (P4c): members per byte_state with their bytes, the bytes still pending, a sample of failures. Admin or service_role.';
+
+REVOKE ALL ON FUNCTION public.dr_bytes_summary(text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_bytes_summary(text) TO authenticated, service_role;
 
 
 -- ===========================================================================
@@ -9530,3 +10477,17 @@ REVOKE ALL ON FUNCTION public.dr_parse_components(p_components jsonb) FROM PUBLI
 REVOKE ALL ON FUNCTION public.dr_freeze_job(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_enqueue_freeze(p_tag text, p_components jsonb, p_notes text, p_inline boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_purge_release(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_begin(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_bytes_pending(p_tag text, p_after text, p_limit integer, p_include_failed boolean, p_prefix text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_bytes_mark(p_tag text, p_results jsonb, p_claim uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_archive_claim(p_tag text, p_claim uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_archive_release(p_tag text, p_claim uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_bytes_summary(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_derive_state(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_invalidate(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_key(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_content_key(p_base text, p_sha256 text, p_claim uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_status(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_mark(p_tag text, p_stream text, p_partition text, p_state text, p_sha256 text, p_size_bytes bigint, p_rows integer, p_error text, p_claim uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_partitions(p_tag text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_export_rows(p_tag text, p_stream text, p_partition text, p_after text, p_limit integer) FROM PUBLIC, anon;

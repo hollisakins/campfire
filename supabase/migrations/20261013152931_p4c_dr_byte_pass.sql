@@ -1,0 +1,497 @@
+SET lock_timeout = '5s';
+SET statement_timeout = '60s';
+
+SET local check_function_bodies = off;
+
+DROP INDEX "public"."idx_dr_manifest_tag_pending";
+
+ALTER TABLE "public"."dr_releases"
+  ADD COLUMN "archive_claim" uuid;
+
+ALTER TABLE "public"."dr_releases"
+  ADD COLUMN "archive_claimed_at" timestamp WITH time zone;
+
+CREATE OR REPLACE FUNCTION public.dr_archive_claim (
+  p_tag   text,
+  p_claim uuid DEFAULT NULL::uuid
+)
+  RETURNS uuid
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path TO 'public', 'pg_temp'
+  AS $function$
+DECLARE
+  r dr_releases%ROWTYPE;
+BEGIN
+  PERFORM dr_require_admin();
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'no release %', p_tag; END IF;
+  IF p_claim IS NOT NULL THEN
+    -- a heartbeat: refresh our own claim, which nobody has taken over
+    IF r.archive_claim IS DISTINCT FROM p_claim THEN
+      RAISE EXCEPTION 'the archive claim on % is not held by this run (another `campfire dr archive` took it over)', p_tag;
+    END IF;
+  ELSIF r.archive_claim IS NOT NULL AND r.archive_claimed_at > now() - interval '10 minutes' THEN
+    RAISE EXCEPTION 'release % is being archived by another run (claimed %, refreshed %); wait for it to finish',
+      p_tag, r.archive_claim, r.archive_claimed_at;
+  END IF;
+  UPDATE dr_releases
+     SET archive_claim = COALESCE(p_claim, gen_random_uuid()), archive_claimed_at = now()
+   WHERE tag = p_tag
+  RETURNING archive_claim INTO p_claim;
+  RETURN p_claim;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION "public"."dr_archive_claim"(text, uuid) FROM PUBLIC, "anon";
+
+CREATE OR REPLACE FUNCTION public.dr_archive_release (
+  p_tag   text,
+  p_claim uuid
+)
+  RETURNS boolean
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path TO 'public', 'pg_temp'
+  AS $function$
+DECLARE
+  n int;
+BEGIN
+  PERFORM dr_require_admin();
+  UPDATE dr_releases SET archive_claim = NULL, archive_claimed_at = NULL
+   WHERE tag = p_tag AND archive_claim = p_claim;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n > 0;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION "public"."dr_archive_release"(text, uuid) FROM PUBLIC, "anon";
+
+CREATE OR REPLACE FUNCTION public.dr_bytes_mark (
+  p_tag     text,
+  p_results jsonb,
+  p_claim   uuid
+)
+  RETURNS jsonb
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path TO 'public', 'pg_temp'
+  AS $function$
+DECLARE
+  v_state text;
+  v_claim uuid;
+  e jsonb;
+  m dr_manifest%ROWTYPE;
+  v_new text; v_key text; v_hash text;
+  n_marked int := 0; n_registered int := 0; n_failed int := 0;
+  n_copied int := 0; n_stamped int := 0; n_pending int := 0; n_stale int := 0;
+  v_partitions text[] := '{}';
+  v_rows int;
+BEGIN
+  PERFORM dr_require_admin();
+  IF jsonb_typeof(p_results) IS DISTINCT FROM 'array' THEN
+    RAISE EXCEPTION 'results must be a json array';
+  END IF;
+  IF jsonb_array_length(p_results) > 2000 THEN
+    RAISE EXCEPTION 'at most 2000 results per call (got %)', jsonb_array_length(p_results);
+  END IF;
+  SELECT state, archive_claim INTO v_state, v_claim FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF v_state IS NULL THEN RAISE EXCEPTION 'no release %', p_tag; END IF;
+  IF v_state NOT IN ('frozen', 'exporting', 'exported', 'copying', 'ready') THEN
+    RAISE EXCEPTION 'release % is % (the byte pass needs a frozen, unpublished release)', p_tag, v_state;
+  END IF;
+  -- one archive run per release: only the run holding the claim records
+  -- outcomes, and each batch refreshes it
+  IF p_claim IS NULL OR v_claim IS DISTINCT FROM p_claim THEN
+    RAISE EXCEPTION 'the archive claim on % is not held by this run (another `campfire dr archive` took it over)', p_tag;
+  END IF;
+  UPDATE dr_releases SET archive_claimed_at = now() WHERE tag = p_tag;
+
+  FOR e IN SELECT * FROM jsonb_array_elements(p_results) LOOP
+    v_new := e->>'state';
+    v_key := e->>'archive_key';
+    v_hash := e->>'stamped_hash';
+    IF v_new IS NULL OR v_new NOT IN ('pending', 'copied', 'stamped', 'failed') THEN
+      RAISE EXCEPTION 'invalid byte state % for %', v_new, e->>'storage_key';
+    END IF;
+    IF v_new IN ('copied', 'stamped') AND (v_key IS NULL OR v_key NOT LIKE 'archive/%') THEN
+      RAISE EXCEPTION 'a % member needs an archive key under archive/ (%)', v_new, e->>'storage_key';
+    END IF;
+    IF v_new = 'stamped' AND (v_hash IS NULL OR v_hash !~ '^sha256:[0-9a-f]{64}$') THEN
+      RAISE EXCEPTION 'a stamped member needs the sha256 of the stamped bytes (%)', e->>'storage_key';
+    END IF;
+    SELECT * INTO m FROM dr_manifest WHERE tag = p_tag AND storage_key = e->>'storage_key' FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'no member % in %', e->>'storage_key', p_tag; END IF;
+    -- The outcome must be for THIS member's frozen bytes: a pass that fetched
+    -- its page before the tag was purged and re-frozen carries the old
+    -- generation's content hash (Codex on #601). Same hash = same bytes, so an
+    -- old outcome is only applied when it is still true.
+    IF e->>'content_hash' IS DISTINCT FROM m.content_hash THEN
+      RAISE EXCEPTION 'outcome for % is for content % but the member froze %; refetch and rerun',
+        m.storage_key, COALESCE(e->>'content_hash', '<none>'), m.content_hash;
+    END IF;
+    IF v_new = 'stamped' AND m.product_type NOT IN ('nirspec_spec', 'nirspec_lines') THEN
+      RAISE EXCEPTION 'only NIRSpec FITS finals are stamped (% is %)', m.storage_key, m.product_type;
+    END IF;
+    -- A science hash the pass computed for a member frozen without one is kept
+    -- (member + archive row), so later releases can reuse the stamped object
+    -- (Codex on #601). A frozen hash is never overwritten.
+    IF e->>'science_hash' IS NOT NULL THEN
+      IF e->>'science_hash' !~ '^sha256:[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'malformed science hash for %', m.storage_key;
+      END IF;
+      IF m.science_hash IS NOT NULL AND m.science_hash <> e->>'science_hash' THEN
+        RAISE EXCEPTION 'science hash of % disagrees with the frozen one', m.storage_key;
+      END IF;
+      m.science_hash := COALESCE(m.science_hash, e->>'science_hash');
+    END IF;
+    -- A member already archived stays archived: a slower concurrent run's
+    -- failed / pending outcome for the same bytes is stale and ignored
+    -- (Codex on #601); it is counted, not applied.
+    IF m.byte_state IN ('copied', 'stamped') AND v_new IN ('failed', 'pending') THEN
+      n_stale := n_stale + 1;
+      CONTINUE;
+    END IF;
+
+    -- A newly created archive object gets its registry row (an existing row:
+    -- the same object reused, or a crash after the insert, is kept as it is;
+    -- archive rows are immutable).
+    IF v_new IN ('copied', 'stamped') AND (e->'registry') IS NOT NULL AND jsonb_typeof(e->'registry') = 'object' THEN
+      INSERT INTO storage_objects (backend, bucket, storage_key, root, status, content_hash, science_hash,
+                                   size_bytes, stored_size_bytes, content_type, product_type, instrument,
+                                   observation, field, filter, spectrum_id, program_slug, deployment_id,
+                                   cfpipe_version, archived_from_key, archived_at, uploaded_by, updated_at)
+      VALUES (m.backend, m.bucket, v_key, 'archive', 'archived',
+              CASE WHEN v_new = 'stamped' THEN v_hash ELSE m.content_hash END,
+              m.science_hash,
+              COALESCE((e->'registry'->>'size_bytes')::bigint, m.size_bytes),
+              (e->'registry'->>'stored_size_bytes')::bigint,
+              COALESCE(e->'registry'->>'content_type', 'application/octet-stream'),
+              m.product_type, e->'registry'->>'instrument',
+              -- provenance only: an observation or deployment removed since
+              -- the freeze must not abort the batch on its foreign key
+              (SELECT o.name FROM observations o WHERE o.name = e->'registry'->>'observation'),
+              m.field, e->'registry'->>'filter', m.spectrum_id, m.program_slug,
+              (SELECT d.id FROM deployments d WHERE d.id = (e->'registry'->>'deployment_id')::integer),
+              e->'registry'->>'cfpipe_version',
+              m.storage_key, now(), auth.uid(), now())
+      ON CONFLICT (backend, bucket, storage_key) DO NOTHING;
+      GET DIAGNOSTICS v_rows = ROW_COUNT;
+      n_registered := n_registered + v_rows;
+    END IF;
+    IF v_new IN ('copied', 'stamped') AND NOT EXISTS (
+         SELECT 1 FROM storage_objects so
+         WHERE so.backend = m.backend AND so.bucket = m.bucket AND so.storage_key = v_key
+           AND so.root = 'archive' AND so.status = 'archived') THEN
+      RAISE EXCEPTION 'archive object % is not registered (pass its registry row)', v_key;
+    END IF;
+
+    -- ...and on the live registry row a later freeze copies it from, while
+    -- that row still describes these exact bytes and has none (Codex on #601)
+    IF e->>'science_hash' IS NOT NULL THEN
+      UPDATE storage_objects so
+         SET science_hash = e->>'science_hash', updated_at = now()
+       WHERE so.backend = m.backend AND so.bucket = m.bucket AND so.storage_key = m.storage_key
+         AND so.root = 'live' AND so.content_hash = m.content_hash AND so.science_hash IS NULL;
+    END IF;
+    UPDATE dr_manifest
+       SET byte_state = v_new,
+           science_hash = m.science_hash,
+           archive_key = CASE WHEN v_new IN ('copied', 'stamped') THEN v_key END,
+           stamped_hash = CASE WHEN v_new = 'stamped' THEN v_hash END,
+           byte_error = CASE WHEN v_new = 'failed' THEN left(COALESCE(e->>'error', 'failed'), 2000) END,
+           updated_at = now()
+     WHERE tag = p_tag AND storage_key = m.storage_key;
+    n_marked := n_marked + 1;
+    CASE v_new WHEN 'copied' THEN n_copied := n_copied + 1;
+               WHEN 'stamped' THEN n_stamped := n_stamped + 1;
+               WHEN 'failed' THEN n_failed := n_failed + 1;
+               ELSE n_pending := n_pending + 1; END CASE;
+    v_partitions := array_append(v_partitions, COALESCE(m.program_slug, m.component));
+  END LOOP;
+
+  -- Built member files no longer match the rows: back to pending.
+  UPDATE dr_exports
+     SET state = 'pending', sha256 = NULL, size_bytes = NULL, rows = NULL, built_at = NULL, error = NULL,
+         claim_token = NULL, claimed_at = NULL
+   -- `building` too: a builder mid-way through this file read the old rows,
+   -- and dr_export_mark refuses its ready mark once the row is not building
+   -- (lock order: the release row is already held above, as in dr_export_mark)
+   WHERE tag = p_tag AND stream = 'manifest' AND state IN ('ready', 'building') AND partition = ANY (v_partitions);
+
+  IF n_copied + n_stamped > 0 THEN
+    INSERT INTO deploy_events (actor, action, affected_count, metadata)
+    VALUES (auth.uid(), 'archive', n_copied + n_stamped,
+            jsonb_build_object('dr_tag', p_tag, 'copied', n_copied, 'stamped', n_stamped,
+                               'registered', n_registered, 'failed', n_failed));
+  END IF;
+
+  RETURN jsonb_build_object('tag', p_tag, 'marked', n_marked, 'copied', n_copied, 'stamped', n_stamped,
+                            'failed', n_failed, 'pending', n_pending, 'registered', n_registered,
+                            'stale', n_stale, 'state', dr_derive_state(p_tag));
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION "public"."dr_bytes_mark"(text, jsonb, uuid) FROM PUBLIC, "anon";
+
+CREATE OR REPLACE FUNCTION public.dr_bytes_pending (
+  p_tag            text,
+  p_after          text    DEFAULT NULL::text,
+  p_limit          integer DEFAULT 500,
+  p_include_failed boolean DEFAULT false,
+  p_prefix         text    DEFAULT NULL::text
+)
+  RETURNS TABLE (
+    storage_key        text,
+    product_type       text,
+    component          text,
+    program_slug       text,
+    field              text,
+    spectrum_id        text,
+    backend            text,
+    bucket             text,
+    content_hash       text,
+    science_hash       text,
+    size_bytes         bigint,
+    byte_state         text,
+    source_key         text,
+    source_root        text,
+    source_stored_size bigint,
+    reuse_archive_key  text,
+    reuse_stamped_hash text,
+    reuse_size_bytes   bigint,
+    reuse_candidates   jsonb,
+    registry           jsonb
+  )
+  LANGUAGE plpgsql
+  STABLE
+  SECURITY DEFINER
+  SET search_path TO 'public', 'pg_temp'
+  AS $function$
+BEGIN
+  PERFORM dr_require_admin();
+  IF NOT EXISTS (SELECT 1 FROM dr_releases r WHERE r.tag = p_tag) THEN
+    RAISE EXCEPTION 'no release %', p_tag;
+  END IF;
+  RETURN QUERY
+  WITH page AS (
+    SELECT m.* FROM dr_manifest m
+    WHERE m.tag = p_tag
+      AND m.byte_state IN ('pending', 'failed')
+      AND (m.byte_state = 'pending' OR p_include_failed)
+      AND (p_after IS NULL OR m.storage_key > p_after)
+      -- one observation / field first (the S gate): a key prefix
+      AND (p_prefix IS NULL OR (m.storage_key >= p_prefix AND left(m.storage_key, length(p_prefix)) = p_prefix))
+    ORDER BY m.storage_key
+    LIMIT LEAST(GREATEST(COALESCE(p_limit, 500), 1), 2000)
+  )
+  SELECT pg.storage_key, pg.product_type, pg.component, pg.program_slug, pg.field,
+         pg.spectrum_id, pg.backend, pg.bucket, pg.content_hash, pg.science_hash,
+         pg.size_bytes, pg.byte_state,
+         CASE WHEN live.id IS NOT NULL THEN live.storage_key ELSE ret.storage_key END,
+         CASE WHEN live.id IS NOT NULL THEN 'live' WHEN ret.id IS NOT NULL THEN 'archive' END,
+         -- the STORED size; a transport-compressed object (.gz key) without a
+         -- recorded stored size is unknown (NULL), never its logical size
+         -- (Codex on #601)
+         CASE WHEN live.id IS NOT NULL THEN
+                CASE WHEN pg.storage_key LIKE '%.gz' THEN live.stored_size_bytes
+                     ELSE COALESCE(live.stored_size_bytes, live.size_bytes) END
+              ELSE
+                CASE WHEN pg.storage_key LIKE '%.gz' THEN ret.stored_size_bytes
+                     ELSE COALESCE(ret.stored_size_bytes, ret.size_bytes) END END,
+         reuse.cands->0->>'archive_key', reuse.cands->0->>'stamped_hash',
+         (reuse.cands->0->>'size_bytes')::bigint, COALESCE(reuse.cands, '[]'::jsonb),
+         jsonb_build_object(
+           'content_type', COALESCE(live.content_type, ret.content_type, src.content_type),
+           'stored_size_bytes', COALESCE(live.stored_size_bytes, ret.stored_size_bytes),
+           'instrument', COALESCE(live.instrument, ret.instrument, src.instrument),
+           'observation', COALESCE(live.observation, ret.observation, src.observation),
+           'filter', COALESCE(live.filter, ret.filter, src.filter),
+           'deployment_id', COALESCE(live.deployment_id, ret.deployment_id, src.deployment_id),
+           'cfpipe_version', COALESCE(live.cfpipe_version, ret.cfpipe_version, src.cfpipe_version),
+           'retained_key', ret.storage_key)
+  FROM page pg
+  -- the registry row the freeze captured (its metadata survives a redeploy)
+  LEFT JOIN storage_objects src ON src.id = pg.registry_id
+  -- the live object, while it still holds the frozen bytes
+  LEFT JOIN LATERAL (
+    SELECT so.* FROM storage_objects so
+    WHERE so.backend = pg.backend AND so.bucket = pg.bucket AND so.storage_key = pg.storage_key
+      AND so.root = 'live' AND so.status = 'active' AND so.content_hash = pg.content_hash
+    LIMIT 1
+  ) live ON true
+  -- an unstamped archive copy of exactly the frozen bytes (retain-on-supersede,
+  -- or an earlier release's server-side copy)
+  LEFT JOIN LATERAL (
+    SELECT so.* FROM storage_objects so
+    WHERE so.root = 'archive' AND so.status = 'archived'
+      AND so.content_hash = pg.content_hash AND so.archived_from_key = pg.storage_key
+    ORDER BY so.id
+    LIMIT 1
+  ) ret ON true
+  -- stamped objects any other release made from the same science (D-P4-2):
+  -- the first release to ARCHIVE a file owns its stamp, and every later pass
+  -- reuses that object. Every candidate, earliest archived first: the pass
+  -- reuses the first whose object still exists, so a missing one falls
+  -- through to the next (or to a fresh stamp).
+  LEFT JOIN LATERAL (
+    SELECT jsonb_agg(jsonb_build_object('archive_key', d.archive_key, 'stamped_hash', d.stamped_hash,
+                                        'size_bytes', COALESCE(so.stored_size_bytes, so.size_bytes))
+                     ORDER BY so.archived_at, d.tag) AS cands
+    FROM dr_manifest d
+    JOIN storage_objects so ON so.root = 'archive' AND so.status = 'archived'
+                           AND so.storage_key = d.archive_key
+    WHERE pg.product_type IN ('nirspec_spec', 'nirspec_lines') AND pg.science_hash IS NOT NULL
+      AND d.science_hash = pg.science_hash AND d.storage_key = pg.storage_key
+      AND d.tag <> pg.tag AND d.byte_state = 'stamped'
+  ) reuse ON true
+  ORDER BY pg.storage_key;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION "public"."dr_bytes_pending"(text, text, integer, boolean, text) FROM PUBLIC, "anon";
+
+CREATE OR REPLACE FUNCTION public.dr_bytes_summary (
+  p_tag text
+)
+  RETURNS jsonb
+  LANGUAGE plpgsql
+  STABLE
+  SECURITY DEFINER
+  SET search_path TO 'public', 'pg_temp'
+  AS $function$
+DECLARE
+  out jsonb;
+BEGIN
+  PERFORM dr_require_admin();
+  IF NOT EXISTS (SELECT 1 FROM dr_releases r WHERE r.tag = p_tag) THEN
+    RAISE EXCEPTION 'no release %', p_tag;
+  END IF;
+  SELECT jsonb_build_object(
+    'tag', p_tag,
+    'state', (SELECT state FROM dr_releases WHERE tag = p_tag),
+    'manifest', count(*),
+    'by_state', (SELECT COALESCE(jsonb_object_agg(s.byte_state, jsonb_build_object('count', s.n, 'bytes', s.b)), '{}'::jsonb)
+                 FROM (SELECT byte_state, count(*) AS n, COALESCE(sum(size_bytes), 0) AS b
+                       FROM dr_manifest WHERE tag = p_tag GROUP BY byte_state) s),
+    'pending_bytes', COALESCE(sum(size_bytes) FILTER (WHERE byte_state IN ('pending', 'failed')), 0),
+    'failed_sample', (SELECT COALESCE(jsonb_agg(jsonb_build_object('storage_key', f.storage_key, 'error', f.byte_error)), '[]'::jsonb)
+                      FROM (SELECT storage_key, byte_error FROM dr_manifest
+                            WHERE tag = p_tag AND byte_state = 'failed' ORDER BY storage_key LIMIT 10) f))
+  INTO out
+  FROM dr_manifest WHERE tag = p_tag;
+  RETURN out;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION "public"."dr_bytes_summary"(text) FROM PUBLIC, "anon";
+
+CREATE OR REPLACE FUNCTION public.dr_purge_release (
+  p_tag text
+)
+  RETURNS jsonb
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path TO 'public', 'pg_temp'
+  SET statement_timeout TO '300s'
+  AS $function$
+DECLARE
+  r dr_releases%ROWTYPE;
+  n_members bigint; n_lines bigint; n_phot bigint; n_spectra bigint; n_objects bigint; n_exports bigint;
+BEGIN
+  PERFORM dr_require_admin();
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'no release %', p_tag;
+  END IF;
+  IF r.state IN ('published', 'withdrawn') THEN
+    RAISE EXCEPTION 'release % is %; a published DR is never purged (withdraw hides it, bytes stay)', p_tag, r.state;
+  END IF;
+  IF r.state = 'freezing' AND r.freeze_started_at > now() - interval '1 hour' THEN
+    RAISE EXCEPTION 'release % is freezing (started %); wait for it to finish or fail', p_tag, r.freeze_started_at;
+  END IF;
+  -- An export run still building a file would upload it after the prefix is
+  -- deleted, and nothing would name it again. A builder claims under this
+  -- same release-row lock, so once the purge commits no new claim is
+  -- possible; a claim older than the 10-minute takeover window is dead.
+  IF EXISTS (SELECT 1 FROM dr_exports x WHERE x.tag = p_tag AND x.state = 'building'
+              AND x.claimed_at > now() - interval '10 minutes') THEN
+    RAISE EXCEPTION 'release % is being exported (a build claim is live); wait for `campfire dr export` to finish', p_tag;
+  END IF;
+  -- likewise an archive run: it would upload archive objects no row names (P4c)
+  IF r.archive_claim IS NOT NULL AND r.archive_claimed_at > now() - interval '10 minutes' THEN
+    RAISE EXCEPTION 'release % is being archived (a claim is live); wait for `campfire dr archive` to finish', p_tag;
+  END IF;
+  PERFORM dr_cron_unschedule(p_tag);
+  DELETE FROM dr_manifest    WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
+  DELETE FROM dr_line_fits  WHERE tag = p_tag; GET DIAGNOSTICS n_lines = ROW_COUNT;
+  DELETE FROM dr_photometry WHERE tag = p_tag; GET DIAGNOSTICS n_phot = ROW_COUNT;
+  DELETE FROM dr_spectra    WHERE tag = p_tag; GET DIAGNOSTICS n_spectra = ROW_COUNT;
+  DELETE FROM dr_objects    WHERE tag = p_tag; GET DIAGNOSTICS n_objects = ROW_COUNT;
+  DELETE FROM dr_exports    WHERE tag = p_tag; GET DIAGNOSTICS n_exports = ROW_COUNT;
+  DELETE FROM dr_releases   WHERE tag = p_tag;
+  INSERT INTO deploy_events (actor, action, affected_count, metadata)
+  VALUES (auth.uid(), 'delete', n_spectra::int,
+          jsonb_build_object('dr_tag', p_tag, 'purge', true, 'state_before', r.state,
+                             'rows', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
+                               'line_fits', n_lines, 'photometry', n_phot, 'manifest', n_members,
+                               'exports', n_exports)));
+  RETURN jsonb_build_object('tag', p_tag, 'state_before', r.state,
+                            'deleted', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
+                              'line_fits', n_lines, 'photometry', n_phot, 'manifest', n_members,
+                              'exports', n_exports));
+END;
+$function$;
+
+CREATE INDEX idx_dr_manifest_tag_pending ON public.dr_manifest USING btree (TAG, storage_key)
+  WHERE (byte_state = ANY (ARRAY['pending'::text, 'failed'::text]));
+
+COMMENT ON FUNCTION "public"."dr_archive_claim"(text, uuid) IS 'Take (p_claim NULL) or refresh (p_claim = the run''s claim) the one `campfire dr archive` run of a data release (P4c). Taking refuses while another claim was refreshed in the last 10 minutes; refreshing refuses a claim another run took over. Returns the claim. Admin or service_role.';
+
+COMMENT ON FUNCTION "public"."dr_archive_release"(text, uuid) IS 'Release a `campfire dr archive` run''s claim on a data release (P4c); false when the claim is no longer this run''s. Admin or service_role.';
+
+COMMENT ON FUNCTION "public"."dr_bytes_mark"(text, jsonb, uuid) IS 'Record a batch (at most 2000) of data-release byte-pass outcomes (P4c): [{storage_key, state copied|stamped|failed|pending, archive_key, stamped_hash, error, registry}]; inserts the archive registry row for each newly created object (registry given), refuses a copied/stamped member whose archive object is not registered, sends the touched member partitions'' export files back to pending, logs one archive deploy event and derives the release state once. Only the run holding the release''s archive claim (dr_archive_claim) may mark; each call refreshes it. Admin or service_role.';
+
+COMMENT ON FUNCTION "public"."dr_bytes_pending"(text, text, integer, boolean, text) IS 'One keyset page (by storage_key, at most 2000) of a data release''s members still to archive (P4c): pending, plus failed when asked, optionally under one key prefix; per member the source of its frozen bytes (the live key while it still holds them, else the retained archive copy, else NULL), a stamped archive object of the same science from another release to reuse, and the registry metadata for the archive row. Admin or service_role.';
+
+COMMENT ON FUNCTION "public"."dr_bytes_summary"(text) IS 'Byte-pass progress of a data release (P4c): members per byte_state with their bytes, the bytes still pending, a sample of failures. Admin or service_role.';
+
+GRANT EXECUTE ON FUNCTION "public"."dr_archive_claim"(text, uuid) TO "authenticated";
+
+REVOKE ALL ON FUNCTION "public"."dr_archive_claim"(text, uuid) FROM "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_archive_claim"(text, uuid) TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_archive_claim"(text, uuid) TO "service_role";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_archive_release"(text, uuid) TO "authenticated";
+
+REVOKE ALL ON FUNCTION "public"."dr_archive_release"(text, uuid) FROM "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_archive_release"(text, uuid) TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_archive_release"(text, uuid) TO "service_role";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_bytes_mark"(text, jsonb, uuid) TO "authenticated";
+
+REVOKE ALL ON FUNCTION "public"."dr_bytes_mark"(text, jsonb, uuid) FROM "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_bytes_mark"(text, jsonb, uuid) TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_bytes_mark"(text, jsonb, uuid) TO "service_role";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_bytes_pending"(text, text, integer, boolean, text) TO "authenticated";
+
+REVOKE ALL ON FUNCTION "public"."dr_bytes_pending"(text, text, integer, boolean, text) FROM "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_bytes_pending"(text, text, integer, boolean, text) TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_bytes_pending"(text, text, integer, boolean, text) TO "service_role";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_bytes_summary"(text) TO "authenticated";
+
+REVOKE ALL ON FUNCTION "public"."dr_bytes_summary"(text) FROM "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_bytes_summary"(text) TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_bytes_summary"(text) TO "service_role";

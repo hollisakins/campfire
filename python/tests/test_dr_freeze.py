@@ -234,15 +234,54 @@ def test_cli_freeze_needs_a_component(monkeypatch):
     assert 'nothing to freeze' in res.output
 
 
+def _purge_env(monkeypatch, c, *, osn=True):
+    import campfire.deploy.tiles as tiles
+    swept = []
+    _patch(monkeypatch, c)
+    monkeypatch.setattr(main_cli, '_dr_osn_s3',
+                        lambda config, **kw: ('s3', 'campfire-data') if osn else (None, 'osn: no credentials'))
+
+    def fake_delete(client, bucket, prefix):
+        swept.append((client, bucket, prefix, len(c.rpc_calls)))
+        return 4
+    monkeypatch.setattr(tiles, 'delete_r2_prefix', fake_delete)
+    return swept
+
+
 def test_cli_purge(monkeypatch):
     c = _FakeClient(rpc_data={'dr_purge_release': {'tag': 'DR-t', 'state_before': 'frozen',
                                                    'deleted': {'spectra': 163, 'objects': 101, 'exports': 0}}})
-    _patch(monkeypatch, c)
+    swept = _purge_env(monkeypatch, c)
     res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t', '--yes'])
     assert res.exit_code == 0, res.output
     assert 'Purged DR-t (was frozen): 163 spectra · 101 objects' in res.output
+    # the export files go too, after the rows (Codex on #600)
+    assert swept == [('s3', 'campfire-data', 'dr/DR-t/exports/', 1)]
+    assert 'deleted 4 export file(s) under dr/DR-t/exports/' in res.output
     res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t'], input='n\n')
     assert res.exit_code == 1 and c.rpc_calls.count(('dr_purge_release', {'p_tag': 'DR-t'})) == 1
+    assert len(swept) == 1
+
+
+def test_cli_purge_without_osn_credentials_refuses_before_the_rows(monkeypatch):
+    c = _FakeClient(rpc_data={'dr_purge_release': {'tag': 'DR-t', 'state_before': 'frozen', 'deleted': {}}})
+    swept = _purge_env(monkeypatch, c, osn=False)
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t', '--yes'])
+    assert res.exit_code == 2 and 'needs OSN credentials' in res.output and '--keep-exports' in res.output
+    assert c.rpc_calls == [] and swept == []
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t', '--yes', '--keep-exports'])
+    assert res.exit_code == 0, res.output
+    assert c.rpc_calls == [('dr_purge_release', {'p_tag': 'DR-t'})] and swept == []
+
+
+def test_cli_purge_refused_keeps_the_export_files(monkeypatch):
+    def refuse(params):
+        raise RuntimeError('release DR-t is published; withdraw it, it is never purged')
+    c = _FakeClient(rpc_data={'dr_purge_release': refuse})
+    swept = _purge_env(monkeypatch, c)
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t', '--yes'])
+    assert res.exit_code == 1 and 'Could not purge' in res.output
+    assert swept == []
 
 
 def test_cli_help_lists_verbs():
@@ -273,3 +312,59 @@ def test_status_shows_a_freeze_in_progress_and_manifest_by_type():
     assert any('DR-t: freezing since' in l for l in format_releases(report))
     frozen = {**FROZEN, 'counts': {**FROZEN['counts'], 'manifest_by_type': {'nirspec_spec': 163, 'zfit': 160}}}
     assert 'manifest: 163 nirspec_spec · 160 zfit' in format_release(frozen)
+
+
+# ---------------------------------------------------------------------------
+# export files for readers (P4b); the builder is tested in test_dr_export.py
+# ---------------------------------------------------------------------------
+
+from campfire.dr import fetch_files  # noqa: E402
+
+
+class _HttpResp:
+    def __init__(self, status, payload):
+        self.status_code = status
+        self._payload = payload
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"http {self.status_code}")
+
+
+class _FakeSession:
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.calls = []
+
+    def get(self, path, timeout=None):
+        self.calls.append(('GET', path, None))
+        return self.answers.pop(0)
+
+
+def test_fetch_files_404_is_a_clear_error():
+    s = _FakeSession([_HttpResp(404, {'error': 'not_found'})])
+    with pytest.raises(RuntimeError, match='not published'):
+        fetch_files(s, 'DR-t')
+    s = _FakeSession([_HttpResp(200, {'tag': 'DR-t', 'files': []})])
+    assert fetch_files(s, 'DR-t')['tag'] == 'DR-t'
+    # relative to the session's base url, which already ends in /api/v1
+    assert s.calls[-1][1] == '/dr/DR-t/files'
+
+
+def test_cli_export_refuses_local():
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'export', '--tag', 'DR-t', '--local'])
+    assert res.exit_code == 2 and 'shared one' in res.output
+
+
+def test_cli_local_purge_never_touches_the_shared_bucket(monkeypatch):
+    # Codex on #600: --local redirects Supabase only; the bucket is production's
+    c = _FakeClient(rpc_data={'dr_purge_release': {'tag': 'DR-t', 'state_before': 'frozen', 'deleted': {}}})
+    swept = _purge_env(monkeypatch, c)
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t', '--yes', '--local'])
+    assert res.exit_code == 0, res.output
+    assert c.rpc_calls == [('dr_purge_release', {'p_tag': 'DR-t'})]
+    assert swept == [] and 'left alone' in res.output

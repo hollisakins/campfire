@@ -1574,6 +1574,11 @@ CREATE TABLE IF NOT EXISTS "public"."dr_releases" (
     "doi" "text",
     "notes" "text",
     "known_issues" "text",
+    -- The one `campfire dr archive` run allowed per release (P4c): its claim and
+    -- the last time it was refreshed (dr_archive_claim / dr_bytes_mark); a claim
+    -- not refreshed for 10 minutes is dead and may be taken over.
+    "archive_claim" "uuid",
+    "archive_claimed_at" timestamp with time zone,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "dr_releases_pkey" PRIMARY KEY ("tag"),
     CONSTRAINT "dr_releases_tag_check" CHECK (("tag" ~ '^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$'::"text")),
@@ -1777,13 +1782,19 @@ CREATE TABLE IF NOT EXISTS "public"."dr_exports" (
     "state" "text" DEFAULT 'pending'::"text" NOT NULL,
     "built_at" timestamp with time zone,
     "error" "text",
+    -- the builder run holding a `building` row (P4b): its claim token and when
+    -- it claimed; ready / failed marks must present the token, and a claim
+    -- older than the builder's ceiling (10 minutes) may be taken over
+    "claim_token" "uuid",
+    "claimed_at" timestamp with time zone,
     CONSTRAINT "dr_exports_pkey" PRIMARY KEY ("tag", "stream", "partition"),
     CONSTRAINT "dr_exports_state_check" CHECK (("state" = ANY (ARRAY['pending'::"text", 'building'::"text", 'ready'::"text", 'failed'::"text"])))
 );
 
 ALTER TABLE "public"."dr_exports" OWNER TO "postgres";
 
-COMMENT ON TABLE "public"."dr_exports" IS 'Export ledger of a data release (P4b): one JSONL.gz per (stream, partition) under dr/<tag>/exports/, with sha256, size and row count once built. Admin-only; readers get partitions through /api/v1/dr/<tag>/partitions.';
+COMMENT ON TABLE "public"."dr_exports" IS 'Export ledger of a data release (P4b): one JSONL.gz per (stream, scope: program or component) under dr/<tag>/exports/, with sha256, size and row count once built. Admin-only; built by `campfire dr export`, read through /api/v1/dr/<tag>/files.';
+
 
 
 
