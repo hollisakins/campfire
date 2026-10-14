@@ -216,6 +216,75 @@ def _run_deploy_flow(fn, *args, **kwargs):
         raise
 
 
+def _under_observation_lease(config: dict, obs_name: str, dry_run: bool, fn, /, *args, **kwargs):
+    """Run a standalone per-observation writer under the observation's deploy lease.
+
+    The full `campfire deploy --obs` takes the lease itself; the standalone
+    `deploy json` / `zfit` / `lines` commands write registry rows, spectra and
+    line fits too, so they hold it as well: begin_deploy_scope refuses while a
+    data-release freeze runs, and a live lease makes the freeze refuse, so no
+    freeze can snapshot one of them half-way (Codex on #599). Claimed on
+    success (the scope changed), released on any failure; dry runs skip it.
+    """
+    return _under_scope_lease(config, 'observation', obs_name, dry_run, fn, *args, **kwargs)
+
+
+def _under_scope_lease(config: dict, scope_type: str, scope_key: str, dry_run: bool, fn, /, *args, **kwargs):
+    """`_under_observation_lease` for any deploy scope ('observation' / 'field')."""
+    return _under_scope_leases(config, [(scope_type, scope_key)], dry_run, fn, *args, **kwargs)
+
+
+def _under_scope_leases(config: dict, scopes, dry_run: bool, fn, /, *args, **kwargs):
+    """Run a standalone catalog writer under a deploy lease on every scope in `scopes`.
+
+    The helper's own parameters are positional-only, so the writer's
+    keyword arguments (``dry_run=`` above all) pass through to it untouched.
+
+    No writer runs without its lease: the lease is what keeps a data-release
+    freeze from snapshotting it half-way, so a lease that could not be taken
+    (busy, or begin failing on an RPC error) refuses the command (exit 1)
+    rather than running unguarded (Codex on #599). Claimed on success,
+    released on any failure.
+    """
+    if dry_run:
+        return fn(*args, **kwargs)
+    from campfire.deploy.supabase import ScopeLease, get_supabase_client, get_user_id_from_token
+
+    def run():
+        client = get_supabase_client(config)
+        actor = get_user_id_from_token(config)
+        leases = []
+        try:
+            for scope_type, scope_key in dict.fromkeys(scopes):
+                lease = ScopeLease(client, scope_type, scope_key, actor=actor)
+                lease.begin()      # fails closed: DeployScopeBusy / DeployScopeUnavailable -> exit 1
+                leases.append(lease)
+            out = fn(*args, **kwargs)
+        except BaseException:
+            for lease in leases:
+                lease.release()
+            raise
+        for lease in leases:
+            lease.claim()
+        return out
+    return _run_deploy_flow(run)
+
+
+def _confirm_then_lease(config: dict, field: str, dry_run: bool, yes: bool, fn, /, *args):
+    """Run an interactive objects edit (split / merge): preview and confirm
+    with NO lease held, then apply under the field lease.
+
+    A lease held across the prompt would block deploys, freezes and publishes
+    for as long as the operator sits at it (or after they walk away; the
+    heartbeat keeps it live). The applying run re-reads every row under the
+    lease and prints the plan it applies.
+    """
+    if not dry_run and not yes and sys.stdin.isatty():
+        fn(*args, dry_run=True, yes=False)
+        click.confirm("Apply?", abort=True)
+    return _under_scope_lease(config, 'field', field, dry_run, fn, *args, dry_run=dry_run, yes=True)
+
+
 def _fmt_bytes(n: int | float) -> str:
     """Human-readable byte count."""
     n = float(n)
@@ -376,7 +445,7 @@ def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run
                 from campfire.deploy.config import resolve_photometry_config
                 phot_path = resolve_photometry_config(None)
 
-            for field in sorted(fields_needing_rebuild):
+            def rebuild_field(field):
                 print(f"\nReconciling objects for field '{field}'...")
                 _, _, changed_ids = reconcile_field_objects(
                     sb, field, abort_on_split_merge=True,
@@ -390,6 +459,12 @@ def deploy_group(ctx, config_path, obs, field, filter_names, no_mosaics, dry_run
                         sb, field, phot_path, config,
                         restrict_to_object_db_ids=changed_ids,
                     )
+
+            for field in sorted(fields_needing_rebuild):
+                # the observation leases are released by now: the deferred
+                # catalog writes hold the field's lease, so a data-release
+                # freeze cannot land between them (Codex on #599)
+                _under_scope_lease(config, 'field', field, False, rebuild_field, field)
 
             print()
             refresh_filter_options(sb)
@@ -478,7 +553,8 @@ def json_cmd(ctx, config_path, obs, dry_run, local, source_ids):
     """Regenerate and upload spectrum JSON files."""
     config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
-        deploy_json(
+        _under_observation_lease(
+            config, obs_name, dry_run, deploy_json,
             obs_name, config,
             dry_run=dry_run,
             source_ids=list(source_ids) if source_ids else None,
@@ -495,7 +571,8 @@ def zfit(ctx, config_path, obs, dry_run, local, source_ids, force_overwrite, aut
     """Deploy zfit JSON files and update redshift_auto."""
     config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
-        deploy_zfit(
+        _under_observation_lease(
+            config, obs_name, dry_run, deploy_zfit,
             obs_name, config,
             dry_run=dry_run,
             force_overwrite=force_overwrite,
@@ -527,7 +604,8 @@ def lines(ctx, config_path, obs, dry_run, local, source_ids, allow_auto_z, uploa
     from campfire.deploy.lines import deploy_lines
     config = load_config(config_path, local=_resolve_local(ctx, local))
     for obs_name in obs:
-        deploy_lines(
+        _under_observation_lease(
+            config, obs_name, dry_run, deploy_lines,
             obs_name, config,
             dry_run=dry_run,
             source_ids=list(source_ids) if source_ids else None,
@@ -578,19 +656,28 @@ def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, v
         # subset re-deploy spreads a field's objects across deployments, so flipping
         # only the newest would partially publish (or leave part of a revoked field
         # public). set_deployment_status per deployment also flips its nircam_images.
-        dep_ids = get_field_deployment_ids(sb, field)
-        if not dep_ids:
-            print(f"  field {field}: no deployment found, skipping")
-            return
         if dry_run:
+            dep_ids = get_field_deployment_ids(sb, field)
+            if not dep_ids:
+                print(f"  field {field}: no deployment found, skipping")
+                return
             print(f"  [dry-run] {verb} field {field} ({len(dep_ids)} deployment(s): "
                   f"{', '.join('#'+str(d) for d in dep_ids)})")
             return
-        n_ok = 0
-        for dep_id in dep_ids:
-            if set_deployment_status(sb, dep_id, to_status, actor=actor) is not None:
-                n_ok += 1
-        print(f"  {verb}ed field {field}: {n_ok}/{len(dep_ids)} deployment(s) -> {to_status}")
+        def flip_all():
+            # resolved under the lease, so a field deploy that finished just before
+            # (even the field's first) is included (Codex on #599)
+            current = get_field_deployment_ids(sb, field)
+            return current, sum(1 for dep_id in current
+                                if set_deployment_status(sb, dep_id, to_status, actor=actor) is not None)
+        # One RPC per deployment, so the field lease keeps a data-release
+        # freeze from landing between them and capturing a half-published
+        # field (an observation's flip is a single RPC and needs none).
+        current, n_ok = _under_scope_lease(config, 'field', field, False, flip_all)
+        if not current:
+            print(f"  field {field}: no deployment found, skipping")
+            return
+        print(f"  {verb}ed field {field}: {n_ok}/{len(current)} deployment(s) -> {to_status}")
         return
     for obs_name in obs:
         dep_id = get_latest_deployment_id(sb, obs_name)
@@ -821,7 +908,10 @@ def objects_reconcile(ctx, config_path, field, all_fields, dry_run, radius, yes,
 
     for f in fields:
         print(f"\nReconciling objects for field '{f}'...")
-        reconcile_field_objects(
+        # Reconciliation writes the field's objects over several requests;
+        # the field lease keeps a data-release freeze out of the middle.
+        _under_scope_lease(
+            config, 'field', f, dry_run, reconcile_field_objects,
             sb, f, radius=radius, dry_run=dry_run, yes=yes,
         )  # standalone reconcile: changed_ids discarded; photometry refresh
         # is operator-driven via `campfire deploy photometry` if needed.
@@ -860,14 +950,13 @@ def objects_split(ctx, config_path, object_ref, move_target_ids, dry_run, yes, l
         campfire deploy objects split --object J100033.42+022054.8 \\
             --move 12345 67890
     """
-    from campfire.deploy.reconcile import split_object
+    from campfire.deploy.reconcile import resolve_object_ref, split_object
 
     config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
-    split_object(
-        sb, object_ref, list(move_target_ids),
-        dry_run=dry_run, yes=yes,
-    )
+    field = resolve_object_ref(sb, object_ref)['field']
+    _confirm_then_lease(config, field, dry_run, yes, split_object,
+                        sb, object_ref, list(move_target_ids))
 
 
 @objects.command('merge')
@@ -895,14 +984,14 @@ def objects_merge(ctx, config_path, survivor_ref, source_refs, dry_run, yes, loc
         campfire deploy objects merge --into J100033.42+022054.8 \\
             --from J100033.43+022054.9
     """
-    from campfire.deploy.reconcile import merge_objects
+    from campfire.deploy.reconcile import merge_objects, resolve_object_ref
 
     config = load_config(config_path, local=_resolve_local(ctx, local))
     sb = get_supabase_client(config)
-    merge_objects(
-        sb, survivor_ref, list(source_refs),
-        dry_run=dry_run, yes=yes,
-    )
+    # merge_objects refuses a cross-field merge, so the survivor's field is the one
+    field = resolve_object_ref(sb, survivor_ref)['field']
+    _confirm_then_lease(config, field, dry_run, yes, merge_objects,
+                        sb, survivor_ref, list(source_refs))
 
 
 @objects.command('rebuild')
@@ -965,7 +1054,8 @@ def objects_rebuild(ctx, config_path, field, all_fields, dry_run, radius, force,
 
     for f in fields:
         print(f"\nRebuilding objects for field '{f}'...")
-        n_obj, n_multi = rebuild_field_objects(
+        n_obj, n_multi = _under_scope_lease(
+            config, 'field', f, dry_run, rebuild_field_objects,
             sb, f, radius=radius, dry_run=dry_run,
         )
         if not dry_run:
@@ -1025,7 +1115,11 @@ def photometry(ctx, config_path, field, photometry_config, dry_run, no_photoz,
     sb = get_supabase_client(config)
 
     print(f"\nDeploying photometry for field '{field}'...")
-    result = deploy_field_photometry(
+    # under the field's deploy lease: the catalog upsert / prune / supersede
+    # and the object photo-z sync are several requests, and a data-release
+    # freeze must never snapshot them half-way (Codex on #599)
+    result = _under_scope_lease(
+        config, 'field', field, dry_run, deploy_field_photometry,
         sb, field, phot_config_path, config,
         include_photoz=not no_photoz,
         dry_run=dry_run,

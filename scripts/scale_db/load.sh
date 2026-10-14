@@ -25,14 +25,28 @@ t1=$(date +%s); echo "db reset (chain, no seed): $((t1-t0)) s"
 # Triggers (FKs included) off for the bulk load: the dump is a consistent
 # snapshot and the chain's triggers would otherwise recompute derived rows for
 # every insert. Generated columns are not in the dump and recompute themselves.
+# The migration chain seeds a few rows itself (system object_lists, flag
+# definitions, ...), which a data-only restore would collide with: every table
+# the dump carries is truncated first, in the same transaction, so the result
+# is exactly the dump's data over the chain's schema. pg_restore >= 17 writes
+# to stdout only with an explicit `-f -`; a failed restore fails the load
+# (the pipeline would otherwise load nothing and exit 0 on psql's success).
+TABLES=$(pg_restore -l "$DUMP" | awk '/ TABLE DATA /{printf "%s%s.%s", sep, $(NF-2), $(NF-1); sep=", "}')
+[ -n "$TABLES" ] || { echo "no TABLE DATA entries in $DUMP" >&2; exit 2; }
 {
   echo "SET session_replication_role = replica;"
   echo "SET statement_timeout = 0;"
-  pg_restore --data-only --no-owner --no-privileges --format=custom "$DUMP"
-} | psql "$DB_URL" -v ON_ERROR_STOP=1 -q --single-transaction
+  echo "TRUNCATE TABLE $TABLES CASCADE;"
+  pg_restore --data-only --no-owner --no-privileges --format=custom -f - "$DUMP" || { echo "pg_restore failed" >&2; exit 1; }
+} | psql "$DB_URL" -v ON_ERROR_STOP=1 -q --single-transaction || { echo "restore failed" >&2; exit 1; }
 t2=$(date +%s); echo "restore: $((t2-t1)) s"
 
 psql "$DB_URL" -v ON_ERROR_STOP=1 -q -f "$here/scrub.sql"
+# Statistics before anything plans against the load: the first freeze
+# rehearsal (2026-10-12) ran for 10+ minutes on a catastrophic no-stats plan
+# because autoanalyze only caught up a minute after it began (the same
+# statement takes 13 s with statistics).
+psql "$DB_URL" -v ON_ERROR_STOP=1 -q -c "ANALYZE"
 t3=$(date +%s); echo "scrub + analyze: $((t3-t2)) s"
 
 psql "$DB_URL" -tA -c "SELECT 'objects '||count(*) FROM objects UNION ALL SELECT 'spectra '||count(*) FROM spectra UNION ALL SELECT 'storage_objects '||count(*) FROM storage_objects UNION ALL SELECT 'line_fits '||count(*) FROM spectrum_line_fits UNION ALL SELECT 'db_size '||pg_size_pretty(pg_database_size(current_database()))"

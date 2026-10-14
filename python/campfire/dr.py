@@ -1,8 +1,11 @@
-"""Data-release tooling: the readiness report (`campfire dr status`).
+"""Data-release tooling: readiness (`campfire dr status`), freeze and purge.
 
-P1 of the data-release plan (docs/design-data-releases-impl-plan.md §3). The
-numbers come from one SECURITY DEFINER RPC, ``dr_readiness()`` (admin or
-service role); this module fetches it and renders it as a readable report.
+P1 of the data-release plan (docs/design-data-releases-impl-plan.md §3) for the
+readiness report -- one SECURITY DEFINER RPC, ``dr_readiness()`` (admin or
+service role), fetched and rendered here -- and P4a (§6) for the freeze:
+``dr_enqueue_freeze`` starts it (pg_cron on production, inline where pg_cron is
+absent), the CLI polls ``dr_releases`` until it leaves ``freezing``, and
+``dr_purge_release`` deletes an unpublished tag.
 Nothing here depends on the deploy extra — the CLI resolves the Supabase client
 the same way ``campfire pull`` does and hands it in.
 """
@@ -124,6 +127,8 @@ def format_readiness(report: dict) -> str:
             ])
         lines.extend(_table(rows, ['scope', 'by', 'host', 'since', 'heartbeat', 'state']))
 
+    lines.extend(format_releases(report))
+
     redrafted = report.get('redrafted_nircam_fields') or []
     lines.append('')
     lines.append(f"Re-drafted NIRCam fields: {len(redrafted)}" + ('' if redrafted else '  (none)'))
@@ -167,3 +172,148 @@ def format_readiness(report: dict) -> str:
         f"Science hash missing: spectra {_n(sh.get('spectra'), absent)} · "
         f"storage_objects {_n(sh.get('storage_objects'), absent)}")
     return '\n'.join(lines)
+
+
+# ---------------------------------------------------------------------------
+# freeze / purge (P4a)
+# ---------------------------------------------------------------------------
+
+FREEZE_TERMINAL_STATES = frozenset({'frozen', 'failed', 'exporting', 'exported', 'copying',
+                                    'ready', 'published', 'withdrawn'})
+
+
+def components_from_options(*, nirspec: bool, fields: tuple[str, ...] | list[str] = (),
+                            photometry: tuple[str, ...] | list[str] = ()) -> list[str]:
+    """Build the components array ``dr_enqueue_freeze`` validates.
+
+    ``fields`` are NIRCam field names (``nircam/<field>``); ``photometry``
+    entries are ``<field>/<catalog_name>`` (``photometry/<field>/<catalog>``).
+    Order and duplicates are normalised so the same selection always produces
+    the same array.
+    """
+    out: list[str] = []
+    if nirspec:
+        out.append('nirspec')
+    for f in sorted(set(fields)):
+        out.append(f'nircam/{f}')
+    for p in sorted(set(photometry)):
+        if '/' not in p:
+            raise ValueError(f"--photometry expects <field>/<catalog_name>, got {p!r}")
+        out.append(f'photometry/{p}')
+    if not out:
+        raise ValueError('nothing to freeze: pass --nirspec, --field and/or --photometry')
+    return out
+
+
+def enqueue_freeze(client, tag: str, components: list[str], *, notes: str | None = None,
+                   inline: bool = False) -> dict:
+    """Call ``dr_enqueue_freeze``; returns the row summary it answers with."""
+    resp = client.rpc('dr_enqueue_freeze', {
+        'p_tag': tag, 'p_components': components, 'p_notes': notes, 'p_inline': inline,
+    }).execute()
+    data = resp.data
+    if not isinstance(data, dict):
+        raise RuntimeError(f"dr_enqueue_freeze returned an unexpected payload: {data!r}")
+    return data
+
+
+def fetch_release(client, tag: str) -> dict | None:
+    """The ``dr_releases`` row for *tag* (admins see every state), or None."""
+    resp = (client.table('dr_releases')
+            .select('tag,state,components,counts,error,freeze_started_at,frozen_at,'
+                    'freeze_duration_ms,published_at,withdrawn_at,notes')
+            .eq('tag', tag).limit(1).execute())
+    rows = resp.data or []
+    return rows[0] if rows else None
+
+
+def wait_for_freeze(client, tag: str, *, poll_seconds: float = 5.0, timeout_seconds: float = 3600.0,
+                    sleep=None, echo=None, clock=None) -> dict:
+    """Poll ``dr_releases`` until the freeze leaves ``freezing``.
+
+    Returns the final row. Raises ``TimeoutError`` after *timeout_seconds*;
+    the freeze keeps running server-side (pg_cron), so the caller can simply
+    poll again later with ``campfire dr status``.
+    """
+    import time as _time
+    sleep = sleep or _time.sleep
+    clock = clock or _time.monotonic
+    t0 = clock()
+    last_state = None
+    while True:
+        row = fetch_release(client, tag)
+        if row is None:
+            raise RuntimeError(f"release {tag} disappeared while waiting")
+        state = row.get('state')
+        if state != 'freezing' and state in FREEZE_TERMINAL_STATES or state == 'draft':
+            return row
+        if echo is not None and state != last_state:
+            echo(f"  {tag}: {state} …")
+            last_state = state
+        if clock() - t0 > timeout_seconds:
+            raise TimeoutError(f"freeze of {tag} still running after {int(timeout_seconds)} s")
+        sleep(poll_seconds)
+
+
+def purge_release(client, tag: str) -> dict:
+    """Call ``dr_purge_release``; returns the deleted-row summary."""
+    resp = client.rpc('dr_purge_release', {'p_tag': tag}).execute()
+    data = resp.data
+    if not isinstance(data, dict):
+        raise RuntimeError(f"dr_purge_release returned an unexpected payload: {data!r}")
+    return data
+
+
+def format_release(row: dict) -> str:
+    """One readable block for a ``dr_releases`` row / enqueue summary."""
+    counts = row.get('counts') or {}
+    lines = [f"{row.get('tag')}: {row.get('state')}"]
+    comps = row.get('components') or []
+    if comps:
+        lines.append(f"  components: {', '.join(str(c) for c in comps)}")
+    if counts:
+        label = {'manifest': 'manifest files'}
+        parts = [f"{_n(counts.get(k))} {label.get(k, k)}" for k in ('spectra', 'objects', 'line_fits', 'photometry', 'manifest')
+                 if counts.get(k) is not None]
+        lines.append('  frozen: ' + ' · '.join(parts))
+        by_type = counts.get('manifest_by_type') or {}
+        if by_type:
+            lines.append('  manifest: ' + ' · '.join(f"{_n(v)} {k}" for k, v in sorted(by_type.items())))
+    if row.get('state') == 'freezing' and row.get('freeze_started_at'):
+        # a freeze that never lands (the pg_cron job did not run) is visible as such
+        lines.append(f"  freezing since {_when(row.get('freeze_started_at'))}")
+    if row.get('frozen_at'):
+        dur = row.get('freeze_duration_ms')
+        dur_s = f" in {int(dur) / 1000:.1f} s" if dur is not None else ''
+        lines.append(f"  frozen at {_when(row.get('frozen_at'))}{dur_s}")
+    if row.get('published_at'):
+        lines.append(f"  published at {_when(row.get('published_at'))}")
+    if row.get('withdrawn_at'):
+        lines.append(f"  withdrawn at {_when(row.get('withdrawn_at'))}")
+    if row.get('error'):
+        lines.append(f"  error: {row.get('error')}")
+    return '\n'.join(lines)
+
+
+def format_releases(report: dict) -> list[str]:
+    """The releases section of ``format_readiness``."""
+    releases = report.get('releases')
+    if releases is None:
+        return []
+    lines = ['', f"Data releases: {len(releases)}" + ('' if releases else '  (none frozen yet)')]
+    if releases:
+        rows = []
+        for r in releases:
+            counts = r.get('counts') or {}
+            rows.append([str(r.get('tag')), str(r.get('state')),
+                         _n(counts.get('spectra'), '-'), _n(counts.get('objects'), '-'),
+                         _n(counts.get('manifest'), '-'),
+                         _when(r.get('frozen_at')), _when(r.get('published_at'))])
+        lines.extend(_table(rows, ['tag', 'state', 'spectra', 'objects', 'files', 'frozen', 'published'],
+                            right={2, 3, 4}))
+        for r in releases:
+            if r.get('state') == 'freezing' and r.get('freeze_started_at'):
+                lines.append(f"  {r.get('tag')}: freezing since {_when(r.get('freeze_started_at'))}")
+            if r.get('error'):
+                lines.append(f"  {r.get('tag')}: {r.get('error')}")
+    return lines

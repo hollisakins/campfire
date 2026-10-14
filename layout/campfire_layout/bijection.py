@@ -301,12 +301,12 @@ def relpath_to_key(relpath: str, *, scheme: KeyScheme = KeyScheme.LEGACY) -> str
     """Map a local relpath to its storage key under the given scheme.
 
     A release relpath (``dr/<tag>/products/…``) has no key of its own: the bytes
-    came from an archive object recorded in ``dr_members``. Refuse rather than
+    came from an archive object recorded in ``dr_manifest``. Refuse rather than
     hand back the live key, which may hold newer bytes.
     """
     pk = parse_relpath(relpath)
     if pk.root != ROOT_LIVE:
-        raise LayoutError(f"'{relpath}' is a release path; resolve its archive key through dr_members")
+        raise LayoutError(f"'{relpath}' is a release path; resolve its archive key through dr_manifest")
     return _keys.storage_key(pk.product_type, pk.scope, pk.filename, scheme=scheme)
 
 
@@ -335,7 +335,7 @@ def derive_sibling(key: str, target_product_type: str, *, bucket: Optional[str] 
     if pk.root != ROOT_LIVE:
         # Each archived sidecar sits under its OWN content hash; string surgery
         # on the spec key would name an object that does not exist. Siblings of
-        # an archive object are resolved through the registry / dr_members.
+        # an archive object are resolved through the registry / dr_manifest.
         raise LayoutError(f"cannot derive a sibling of an archive key ('{key}'); look it up by hash")
     src = products.get(pk.product_type)
     tgt = products.get(target_product_type)

@@ -3615,6 +3615,24 @@ REFRESH MATERIALIZED VIEW public.mv_filter_options;
 REFRESH MATERIALIZED VIEW public.mv_programs_overview;
 
 -- ============================================
+-- 13. Data release fixture (P4a): DR-seed, frozen by the real freeze
+-- ============================================
+
+INSERT INTO public.dr_releases (tag, state, components, created_by, freeze_started_at, notes)
+SELECT 'DR-seed', 'freezing',
+       (SELECT jsonb_agg(c) FROM (SELECT 'nirspec' AS c UNION ALL
+         SELECT DISTINCT 'nircam/' || field FROM public.nircam_images WHERE deploy_status = 'published') x),
+       '11111111-1111-1111-1111-111111111111', now(), 'Seed fixture: the seeded catalog frozen as a published release.';
+SELECT public.dr_freeze_job('DR-seed');
+UPDATE public.dr_releases SET state = 'published', published_at = now(),
+       published_by = '11111111-1111-1111-1111-111111111111' WHERE tag = 'DR-seed' AND state = 'frozen';
+DO $$ BEGIN
+  IF (SELECT state FROM public.dr_releases WHERE tag = 'DR-seed') <> 'published' THEN
+    RAISE EXCEPTION 'seed: DR-seed freeze failed: %', (SELECT error FROM public.dr_releases WHERE tag = 'DR-seed');
+  END IF;
+END $$;
+
+-- ============================================
 -- 12. Reset Sequences
 -- ============================================
 

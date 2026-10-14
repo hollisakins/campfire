@@ -748,3 +748,36 @@ CREATE INDEX IF NOT EXISTS idx_share_links_field
 
 -- NOTE: Materialized view indexes (mv_programs_overview, mv_filter_options)
 -- are defined in views.sql alongside the view definitions.
+
+
+-- =============================================================================
+-- Data releases (P4a)
+-- =============================================================================
+
+-- Per-program partition scans (exports, RLS) and the object join.
+CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_program
+    ON public.dr_spectra USING btree (tag, program_slug);
+CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_object
+    ON public.dr_spectra USING btree (tag, object_id);
+-- "which DRs is this spectrum in" (provenance line, identify).
+CREATE INDEX IF NOT EXISTS idx_dr_spectra_spectrum
+    ON public.dr_spectra USING btree (spectrum_id);
+CREATE INDEX IF NOT EXISTS idx_dr_objects_tag_field
+    ON public.dr_objects USING btree (tag, field);
+CREATE INDEX IF NOT EXISTS idx_dr_objects_programs
+    ON public.dr_objects USING gin (programs);
+-- The byte pass walks pending rows per tag; dedup looks up by science hash.
+CREATE INDEX IF NOT EXISTS idx_dr_manifest_tag_pending
+    ON public.dr_manifest USING btree (tag, storage_key) WHERE (byte_state = 'pending');
+CREATE INDEX IF NOT EXISTS idx_dr_manifest_tag_component
+    ON public.dr_manifest USING btree (tag, component);
+CREATE INDEX IF NOT EXISTS idx_dr_manifest_science_hash
+    ON public.dr_manifest USING btree (science_hash) WHERE (science_hash IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_dr_manifest_spectrum
+    ON public.dr_manifest USING btree (spectrum_id) WHERE (spectrum_id IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_dr_line_fits_tag_program
+    ON public.dr_line_fits USING btree (tag, program_slug);
+CREATE INDEX IF NOT EXISTS idx_dr_photometry_tag_object
+    ON public.dr_photometry USING btree (tag, object_id);
+CREATE INDEX IF NOT EXISTS idx_dr_photometry_tag_field_catalog
+    ON public.dr_photometry USING btree (tag, field, catalog_name);

@@ -417,7 +417,7 @@ export function deriveSibling(key: string, targetProductType: string, opts?: { b
   if (pk.root !== 'live') {
     // Each archived sidecar sits under its OWN content hash; string surgery on
     // the spec key would name an object that does not exist. Resolve siblings
-    // of an archive object through the registry / dr_members.
+    // of an archive object through the registry / dr_manifest.
     throw new LayoutError(`cannot derive a sibling of an archive key ('${key}'); look it up by hash`);
   }
   const src = get(pk.productType);

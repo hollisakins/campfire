@@ -1271,7 +1271,7 @@ def verify(obs_filter, cloud, deep, as_json, local):
 
 @cli.group(name="dr")
 def dr_group():
-    """Data-release tooling (admin): readiness before a freeze."""
+    """Data-release tooling (admin): readiness, freeze, purge."""
 
 
 @dr_group.command(name="status")
@@ -1318,6 +1318,117 @@ def dr_status(as_json, local):
         click.echo(_json.dumps(report, indent=2, sort_keys=True))
     else:
         click.echo(format_readiness(report))
+
+
+
+def _dr_client(local: bool, *, what: str):
+    """Resolve config + Supabase client for a dr verb, admin-gated in login mode."""
+    try:
+        from campfire.deploy.cli import _gate_admin
+        from campfire.deploy.config import load_config
+        from campfire.deploy.supabase import get_supabase_client
+    except ImportError:
+        click.echo("✗ `campfire dr` needs the deploy extra: pip install campfire[deploy]")
+        sys.exit(2)
+    config = load_config(None, local=local)
+    _gate_admin(config, what=what)
+    return config, get_supabase_client(config)
+
+
+@dr_group.command(name="freeze")
+@click.option("--tag", required=True, metavar="TAG",
+              help="Release tag, e.g. DR2026.1 (letters, digits, . _ -)")
+@click.option("--nirspec", is_flag=True, help="Include the NIRSpec catalog component")
+@click.option("--field", "fields", multiple=True, metavar="FIELD",
+              help="Include the published NIRCam mosaics of FIELD (repeatable)")
+@click.option("--photometry", "photometry", multiple=True, metavar="FIELD/CATALOG",
+              help="Include a photometry catalog component, e.g. cosmos/'COSMOS v1.2' (repeatable)")
+@click.option("--notes", default=None, help="Free-text notes stored on the release row")
+@click.option("--inline", is_flag=True,
+              help="Run the freeze inside the RPC call instead of a pg_cron job "
+                   "(local stacks; production uses the job)")
+@click.option("--no-wait", is_flag=True, help="Return after enqueueing; poll with `dr status`")
+@click.option("--poll", type=float, default=5.0, show_default=True, metavar="SECONDS",
+              help="Polling interval while waiting")
+@click.option("--timeout", type=float, default=3600.0, show_default=True, metavar="SECONDS",
+              help="Give up waiting after this long (the freeze keeps running server-side)")
+@click.option("--json", "as_json", is_flag=True, help="Print the final release row as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase")
+def dr_freeze(tag, nirspec, fields, photometry, notes, inline, no_wait, poll, timeout, as_json, local):
+    """Freeze a data release: frozen tables from the published catalog.
+
+    Writes dr_spectra / dr_objects / dr_manifest / dr_line_fits /
+    dr_photometry for TAG in one snapshot (P4a). Refused while a deploy
+    lease is live or TAG is already published; re-freezing an unpublished
+    tag rewrites it. Nothing is visible to non-admins until `dr publish`.
+    On production the work runs as a one-shot pg_cron job and this command
+    polls until it finishes; --local stacks run it inline.
+    """
+    import json as _json
+
+    from .dr import (FREEZE_TERMINAL_STATES, components_from_options, enqueue_freeze,
+                     format_release, wait_for_freeze)
+
+    try:
+        components = components_from_options(nirspec=nirspec, fields=fields, photometry=photometry)
+    except ValueError as e:
+        click.echo(f"✗ {e}")
+        sys.exit(2)
+    config, sb = _dr_client(local, what="`campfire dr freeze`")
+    # --json: stdout carries the JSON document alone; progress goes to stderr
+    say = (lambda m: click.echo(m, err=True)) if as_json else click.echo
+    if local:
+        inline = True
+    try:
+        summary = enqueue_freeze(sb, tag, components, notes=notes, inline=inline)
+    except Exception as e:  # noqa: BLE001 - one line, not a traceback
+        msg = getattr(e, "message", None) or str(e)
+        say(f"✗ Could not start the freeze: {msg}")
+        sys.exit(1)
+    say(f"Freeze of {tag} ({', '.join(components)}): {summary.get('state')} "
+        f"[{summary.get('mode')}]")
+    row = summary
+    if summary.get('state') == 'freezing' and not no_wait:
+        try:
+            row = wait_for_freeze(sb, tag, poll_seconds=poll, timeout_seconds=timeout, echo=say)
+        except TimeoutError as e:
+            say(f"… {e}; `campfire dr status` shows it when it lands.")
+            sys.exit(3)
+    if as_json:
+        click.echo(_json.dumps(row, indent=2, sort_keys=True, default=str))
+    else:
+        click.echo(format_release(row))
+    if row.get('state') == 'failed':
+        sys.exit(1)
+    if row.get('state') not in FREEZE_TERMINAL_STATES:
+        sys.exit(0)
+
+
+@dr_group.command(name="purge")
+@click.argument("tag")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
+@click.option("--local", is_flag=True, help="Against local Supabase")
+def dr_purge(tag, yes, local):
+    """Delete an UNPUBLISHED release and all its frozen rows.
+
+    The clean-up after a rehearsal freeze or a failed attempt. Published
+    (or withdrawn) tags are never purged; archive bytes already copied for
+    the tag stay (dedup by hash; retention is `campfire archive gc`).
+    """
+    from .dr import purge_release
+
+    config, sb = _dr_client(local, what="`campfire dr purge`")
+    if not yes:
+        click.confirm(f"Delete release {tag} and every frozen row under it?", abort=True)
+    try:
+        result = purge_release(sb, tag)
+    except Exception as e:  # noqa: BLE001 - one line, not a traceback
+        msg = getattr(e, "message", None) or str(e)
+        click.echo(f"✗ Could not purge {tag}: {msg}")
+        sys.exit(1)
+    deleted = result.get('deleted') or {}
+    parts = [f"{int(v):,} {k}" for k, v in deleted.items() if v]
+    click.echo(f"Purged {tag} (was {result.get('state_before')}): " + (' · '.join(parts) or 'no rows'))
 
 
 # ---------------------------------------------------------------------------

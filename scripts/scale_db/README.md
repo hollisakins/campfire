@@ -40,10 +40,16 @@ three fixed test accounts from `seed.sql` (`admin` / `user` / `viewer`, uuids
 ## Expectations
 
 Production on 2026-10-11: 1.9 GB database, of which ~1.1 GB is data-bearing heap
-(`storage_objects` 313 MB, `spectra` 202 MB mostly SVG thumbnails). Dump size and the
-restore time are recorded here after the first run; the budget is "minutes, not an hour".
-Load with triggers disabled (`session_replication_role = replica`), so derived tables that
-triggers maintain (`spectrum_lines`, `object_photometry_bands`) come from the dump as-is.
+(`storage_objects` 313 MB, `spectra` 202 MB mostly SVG thumbnails). First run
+(2026-10-12, Apple-silicon laptop): dump 199 MB (45 s read-only); restore ~1 min, scrub +
+ANALYZE ~30 s, 1.7 GB loaded. Load with triggers disabled
+(`session_replication_role = replica`), so derived tables that triggers maintain
+(`spectrum_lines`, `object_photometry_bands`) come from the dump as-is. The loader
+truncates every table the dump carries first (the migration chain seeds system
+`object_lists` rows a data-only restore would collide with) and runs an explicit
+`ANALYZE` after the scrub: without statistics the first query to plan against the load
+can be catastrophic (the P4a freeze rehearsal ran 10+ minutes on a no-stats plan, 13 s
+with statistics).
 
 ## Refresh
 
