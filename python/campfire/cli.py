@@ -1483,42 +1483,43 @@ def dr_purge(tag, yes, keep_exports, local):
 
 @dr_group.command(name="export")
 @click.option("--tag", required=True, metavar="TAG", help="Release tag to export")
-@click.option("--budget", type=float, default=240.0, show_default=True, metavar="SECONDS",
-              help="Time budget per builder call (the route caps it at 280 s)")
-@click.option("--base-url", default=None, help="API base URL (default: configured / production)")
-@click.option("--json", "as_json", is_flag=True, help="Print the final builder answer as JSON")
-def dr_export(tag, budget, base_url, as_json):
+@click.option("--json", "as_json", is_flag=True, help="Print the run report as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (refused: the bucket is the shared one)")
+def dr_export(tag, as_json, local):
     """Build the export files of a frozen release (P4b).
 
-    Loops the admin builder route until every (stream, partition) file under
-    dr/TAG/exports/ is ready; each call builds for one time budget and the
-    ledger (dr_exports) makes the loop resumable. The release moves from
-    frozen to exporting to exported (and to ready once the byte pass has
-    run too). Run it again after `dr bytes`: the byte pass invalidates the
-    member partitions it changed and only those are rebuilt. Needs
-    `campfire login` as an admin.
+    Writes one gzip JSONL file per (stream, program or component) under
+    dr/TAG/exports/ on the OSN data bucket, from the frozen rows, here on this
+    machine (OSN credentials: CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml).
+    The dr_exports ledger makes it resumable: a rerun builds only the files
+    that are not ready. Needs `campfire login` as an admin.
     """
     import json as _json
 
-    from .dr import export_release
+    from .dr_export import format_export_report, run_export
 
-    session = _require_auth(base_url)
-    # --json: stdout carries the JSON document alone; progress goes to stderr
     say = (lambda m: click.echo(m, err=True)) if as_json else click.echo
+    if local:
+        # a local ledger with the shared bucket: the end-of-run sweep would
+        # treat a production tag's files as superseded
+        say("✗ `campfire dr export --local` is refused: the bucket is the shared one.")
+        sys.exit(2)
+    config, sb = _dr_client(False, what="`campfire dr export`")
+    s3, bucket = _dr_osn_s3(config)
+    if s3 is None:
+        say(f"✗ `campfire dr export` needs OSN credentials for the data bucket ({bucket}).")
+        sys.exit(2)
     say(f"Exporting {tag} …")
     try:
-        result = export_release(session, tag, budget_seconds=budget, echo=say)
+        report = run_export(sb, s3, bucket, tag, log=say)
     except Exception as e:  # noqa: BLE001 - one line, not a traceback
-        say(f"✗ {e}")
+        say(f"✗ {getattr(e, 'message', None) or e}")
         sys.exit(1)
-    totals = result.get('totals') or {}
     if as_json:
-        click.echo(_json.dumps(result, indent=2, sort_keys=True, default=str))
+        click.echo(_json.dumps(report.as_dict(), indent=2, sort_keys=True, default=str))
     else:
-        click.echo(f"{tag}: {result.get('state')} · built {totals.get('built', 0)} file(s) in "
-                   f"{totals.get('calls', 0)} call(s) · {totals.get('failed', 0)} failed · "
-                   f"{result.get('remaining', 0)} remaining")
-    if result.get('failed') or int(result.get('remaining') or 0) > 0:
+        click.echo(format_export_report(report))
+    if report.failed or report.remaining > 0:
         sys.exit(1)
 
 

@@ -1,4 +1,4 @@
-// GET /api/v1/dr/<tag>/partitions -- the five principals: no auth, a user
+// GET /api/v1/dr/<tag>/files -- the five principals: no auth, a user
 // without the private program, a grantee, an admin on an unpublished release,
 // and the link account (refused by authenticateApiRequest, so it never gets a
 // principal here).
@@ -33,7 +33,7 @@ vi.mock('@/lib/server/dr-exports', async () => {
 import { GET } from './route';
 
 function get(tag = 'DR-t') {
-  return GET(new NextRequest(`http://x/api/v1/dr/${tag}/partitions`, { headers: { authorization: 'Bearer t' } }), {
+  return GET(new NextRequest(`http://x/api/v1/dr/${tag}/files`, { headers: { authorization: 'Bearer t' } }), {
     params: Promise.resolve({ tag }),
   });
 }
@@ -50,7 +50,7 @@ beforeEach(() => {
   };
   ledger = [
     entry('objects', 'pub'), entry('objects', 'priv'), entry('spectra', 'pub'), entry('spectra', 'priv'),
-    entry('members', 'pub'), entry('members', 'nircam/f'), entry('members', 'photometry/f/CAT v1'),
+    entry('manifest', 'pub'), entry('manifest', 'nircam/f'), entry('manifest', 'photometry/f/CAT v1'),
     entry('line_fits', 'priv', 'pending'),
   ];
 });
@@ -61,7 +61,7 @@ describe('principals', () => {
     expect((await get()).status).toBe(401);
   });
 
-  it('a user without the private program gets the public and field-level partitions only', async () => {
+  it('a user without the private program gets the public and field-level files only', async () => {
     principal = { userId: 'u', access: { isAdmin: false, accessibleSlugs: ['pub'] } };
     const res = await get();
     expect(res.status).toBe(200);
@@ -69,32 +69,32 @@ describe('principals', () => {
     expect(body.tag).toBe('DR-t');
     expect(body.format_version).toBe(1);
     expect(body.complete).toBe(false); // one ledger row still pending
-    expect(body.partitions.map((p: { stream: string; partition: string }) => `${p.stream}/${p.partition}`)).toEqual([
-      'objects/pub', 'spectra/pub', 'members/pub', 'members/nircam/f', 'members/photometry/f/CAT v1',
+    expect(body.files.map((p: { stream: string; scope: string }) => `${p.stream}/${p.scope}`)).toEqual([
+      'objects/pub', 'spectra/pub', 'manifest/pub', 'manifest/nircam/f', 'manifest/photometry/f/CAT v1',
     ]);
-    const pz = body.partitions.find((p: { partition: string }) => p.partition === 'photometry/f/CAT v1');
-    expect(pz.url).toBe('https://signed/dr/DR-t/exports/members/photometry_f_CAT_v1.jsonl.gz');
+    const pz = body.files.find((p: { scope: string }) => p.scope === 'photometry/f/CAT v1');
+    expect(pz.url).toBe('https://signed/dr/DR-t/exports/manifest/photometry_f_CAT_v1.jsonl.gz');
     expect(pz.sha256).toBe('sha256:x');
   });
 
   it('a component-shaped program slug is not open (Codex on #600)', async () => {
     // a private program named like a component: its program streams, and any
     // component the release did not freeze, stay gated
-    ledger.push(entry('spectra', 'nircam/f'), entry('objects', 'nircam/f'), entry('members', 'nircam/g'));
+    ledger.push(entry('spectra', 'nircam/f'), entry('objects', 'nircam/f'), entry('manifest', 'nircam/g'));
     principal = { userId: 'u', access: { isAdmin: false, accessibleSlugs: ['pub'] } };
-    const names = (await (await get()).json()).partitions.map(
-      (p: { stream: string; partition: string }) => `${p.stream}/${p.partition}`,
+    const names = (await (await get()).json()).files.map(
+      (p: { stream: string; scope: string }) => `${p.stream}/${p.scope}`,
     );
     expect(names).not.toContain('spectra/nircam/f');
     expect(names).not.toContain('objects/nircam/f');
-    expect(names).not.toContain('members/nircam/g');
-    expect(names).toContain('members/nircam/f');
+    expect(names).not.toContain('manifest/nircam/g');
+    expect(names).toContain('manifest/nircam/f');
   });
 
   it('a grantee gets both programs; pending files are never handed out', async () => {
     principal = { userId: 'g', access: { isAdmin: false, accessibleSlugs: ['pub', 'priv'] } };
     const body = await (await get()).json();
-    const names = body.partitions.map((p: { stream: string; partition: string }) => `${p.stream}/${p.partition}`);
+    const names = body.files.map((p: { stream: string; scope: string }) => `${p.stream}/${p.scope}`);
     expect(names).toContain('objects/priv');
     expect(names).toContain('spectra/priv');
     expect(names).not.toContain('line_fits/priv');

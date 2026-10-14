@@ -1,7 +1,7 @@
 # Data-release export format, version 1
 
-The on-disk shape of a CAMPFIRE data release (DR), as written by the export
-builder (`/api/v1/dr/<tag>/export`, looped by `campfire dr export`) and read by
+The on-disk shape of a CAMPFIRE data release (DR), as written by `campfire dr
+export` (on the admin's machine, `python/campfire/dr_export.py`) and read by
 `campfire pull --dr` and `Campfire(dr=...)`. `dr_releases.dr_format_version`
 records which version a release was exported with; a reader refuses versions it
 does not know. Design: `docs/design-data-releases.md` §4.3, plan §6 P4b.
@@ -9,76 +9,79 @@ does not know. Design: `docs/design-data-releases.md` §4.3, plan §6 P4b.
 ## Files
 
 ```
-dr/<tag>/exports/<stream>/<partition>.<sha16>.<claim8>.jsonl.gz
+dr/<tag>/exports/<stream>/<scope>.<sha16>.<claim8>.jsonl.gz
 ```
+
+on the private data bucket (OSN). One file per (stream, scope); the scope is a
+program slug, or a field-level component for the manifest. Each line is one JSON
+object; the file is gzip bytes (content type `application/gzip`, not
+`Content-Encoding`), hashed as stored. The same rows always give the same bytes.
 
 `<sha16>` is the first 16 hex digits of the file's sha256 and `<claim8>` the
 first 8 hex digits of the build's claim token: every build has its own key, so a
 rebuild never overwrites the file a reader was handed, and an export run that
-lost its build claim can only write its own key. The ledger records the key of
-the ready file; readers use the url they are given and never construct keys.
-A build that loses its claim after uploading deletes its own object at once.
-Other keys the ledger no longer names are deleted once their grace (2 hours,
-longer than a presigned url lives) has passed: a file a rebuild replaced is aged
-from the replacement (`dr_export_garbage`), never from its upload; an object the
-ledger never named (a build that died between its upload and its mark) from its
-upload. The collector runs at the end of an export run that finds every file
-ready and daily (`/api/cron/dr-export-gc`). Nothing else may be written under
+lost its build claim can only write its own key. The ledger (`dr_exports`)
+records the key of the ready file; readers use the url they are given and never
+construct keys. A build that loses its claim deletes its own upload; an export
+run that finds every file ready deletes the other keys under the prefix the
+ledger does not name (superseded builds). A release is only visible to readers
+once it is published, and a published release's ledger never changes, so no
+reader ever holds a url to a superseded file. Nothing else may be written under
 `dr/<tag>/exports/`. `campfire dr purge` (refused while a build claim is live)
-deletes the whole `dr/<tag>/exports/` prefix (never with `--local`,
-whose database is local but whose bucket is the shared one).
+deletes the whole prefix (never with `--local`, whose database is local but
+whose bucket is the shared one; `dr export --local` is refused for the same
+reason).
 
-on the private data bucket (OSN). One file per (stream, partition); each line is
-one JSON object; the file is gzip bytes (content type `application/gzip`, not
-`Content-Encoding`), hashed as stored. The keys are **not layout products**:
-never registered in `storage_objects`, never presignable through the storage
-routes. Readers obtain presigned urls from `/api/v1/dr/<tag>/partitions`, which
-returns only the partitions the caller holds, each with `sha256`, `size` and
-`rows` to verify against.
+The keys are **not layout products**: never registered in `storage_objects`,
+never presignable through the storage routes. Readers obtain presigned urls from
+`/api/v1/dr/<tag>/files`, which returns only the files the caller may read, each
+with `stream`, `scope`, `sha256`, `size` and `rows` to verify against. A client
+merges a stream's files into one table (one row per id; an object in several of
+the reader's programs appears in each program's file).
 
-`<partition>` in the key is the partition name when it is already key-safe
+`<scope>` in the key is the scope name when it is already key-safe
 (`[A-Za-z0-9._-]+`, every program slug); any other name (component names carry
 `/`, catalog names spaces) is sanitised to that alphabet **and suffixed with
 `-` plus the first 8 hex digits of its md5**, so names that sanitise alike
-(`CAT v1` / `CAT_v1`) still get distinct keys. The partitions route carries the
+(`CAT v1` / `CAT_v1`) still get distinct keys. The files route carries the
 real name alongside the url, so a reader never inverts the mapping.
 
-## Streams and partitions
+## Streams and scopes
 
-| stream | partition | rows |
+| stream | scope | rows |
 |---|---|---|
 | `objects` | program slug | every frozen object whose `programs` contains the slug |
 | `spectra` | program slug | frozen published spectra of that program |
 | `line_fits` | program slug | frozen line fits of that program's spectra |
 | `photometry` | program slug | frozen photometry rows whose object's `programs` contains the slug |
-| `members` | program slug | NIRSpec finals + sidecars of that program |
-| `members` | `nircam/<field>` | the published mosaics of the field component |
+| `manifest` | program slug | NIRSpec finals + sidecars of that program |
+| `manifest` | `nircam/<field>` | the published mosaics of the field component |
 
-P(z) sidecars are not members (they are key-only products the layout cannot
+P(z) sidecars are not in the manifest (they are key-only products the layout cannot
 archive; the `photometry` rows carry the catalog values).
 
-A partition is produced only when it has rows. Program partitions are
+A file is produced only when it has rows. Program files are
 visible to a viewer holding that program (the same `accessible_program_slugs()`
-scope as live); the field-level member partitions are visible to every
+scope as live); the field-level manifest files are visible to every
 account, as published field deployments are live. Share-link accounts get
 nothing (the `/api/v1` bearer routes refuse them).
 
 An object (or photometry row) that belongs to several programs appears in each
-of those programs' `objects` (`photometry`) partitions. The **aggregates on an
-objects row are scoped to the partition's program** (`n_targets`, `n_spectra`,
+of those programs' `objects` (`photometry`) files. The **aggregates on an
+objects row are scoped to the file's program** (`n_targets`, `n_spectra`,
 `gratings`, `observations`, `max_snr`, `max_exposure_time` count only that
 program's frozen spectra), exactly what the live scoped sync returns to a caller
 holding that one program. A reader holding several programs merges rows by `id`
 and recomputes the aggregates from the spectra it holds. Nothing in a program's
 file names another program or another program's spectra: `programs` and
-`evidence_programs` are `[<partition program>]`, `reviewed_spectrum_ids` keeps
+`evidence_programs` are `[<file program>]`, `reviewed_spectrum_ids` keeps
 that program's spectra only, and `z_source_spectrum_id` is null when the anchor
 spectrum belongs to another program (a reader holding several programs unions
 the arrays across its copies).
 
-Within a partition rows are ordered by the stream's key (`objects`: `object_id`
+Within a file rows are ordered by the stream's key (`objects`: `object_id`
 name; `spectra`: `spectrum_id`; `line_fits`: `spectrum_id`; `photometry`: `id`;
-`members`: `storage_key`), the order `dr_export_rows` pages in.
+`manifest`: `storage_key`), the order `dr_export_rows` pages in.
 
 ## Row shapes
 
@@ -90,9 +93,9 @@ Frozen-only fields are added; live-only operational fields (`updated_at`,
 ### objects
 
 `id` (the live `objects.id` at the freeze), `object_id` (the public name),
-`field`, `ra`, `dec`, `programs`, `evidence_programs` (the partition program),
+`field`, `ra`, `dec`, `programs`, `evidence_programs` (the file program),
 `observations`, `gratings`, `n_targets`, `n_spectra`,
-`max_snr`, `max_exposure_time` (the six scoped to the partition program),
+`max_snr`, `max_exposure_time` (the six scoped to the file program),
 `photo_z`, `photo_z_err_lo`, `photo_z_err_hi`, `has_photometry`,
 `z_source_spectrum_id` (the `spectra.id` whose auto fit anchors
 `redshift_auto`), `redshift_auto`, `redshift_inspected`, `redshift`,
@@ -123,11 +126,11 @@ active object), `object_db_id`, `grating`, `fits_path`, `file_hash`,
 ### photometry
 
 `id` (live `object_photometry.id`), `object_id` (live `objects.id`),
-`programs` (`[<partition program>]`, as on the objects stream), `field`, `catalog_name`, `catalog_id`,
+`programs` (`[<file program>]`, as on the objects stream), `field`, `catalog_name`, `catalog_id`,
 `ra`, `dec`, `match_distance_arcsec`, `photometry`, `photo_z`,
 `photo_z_err_lo`, `photo_z_err_hi`, `has_pz`.
 
-### members
+### manifest
 
 `storage_key` (the live key at the freeze), `component`, `program_slug`,
 `field`, `product_type`, `spectrum_id` (text key; null for field-level rows),
@@ -139,7 +142,7 @@ active object), `object_db_id`, `grating`, `fits_path`, `file_hash`,
 
 ## Ledger and lifecycle
 
-`dr_exports` holds one row per (tag, stream, partition): `storage_key`,
+`dr_exports` holds one row per (tag, stream, partition = scope): `storage_key`,
 `sha256` ("sha256:<hex>" of the gzip bytes), `size_bytes`, `rows`, `state`
 (`pending` | `building` | `ready` | `failed`), `built_at`, `error`. The builder
 is resumable: a run rebuilds only rows that are not `ready`.
@@ -147,10 +150,13 @@ is resumable: a run rebuilds only rows that are not `ready`.
 The release state is derived from the ledger and the member byte states after
 every write (`dr_derive_state`): `frozen` (nothing built) → `exporting` (files
 pending) → `exported` (every file ready) → `copying` (byte pass under way) →
-`ready` (every file ready **and** every member copied or stamped). The byte
-pass changes member rows (`archive_key`, `byte_state`, `stamped_hash`), so it
-invalidates the `members` partitions it touches (`dr_export_invalidate`) and
-the next `campfire dr export` rebuilds exactly those files; a release is
-published only from `ready`, so a reader of a published release always sees
-member files that carry the archive keys. The partitions route's `complete`
+`ready` (every file ready **and** every manifest entry copied or stamped). The
+normal order is freeze → archive (`campfire dr archive`, the byte pass) → export
+(`campfire dr build` runs the three), so the manifest files are built once,
+already carrying the archive keys. A byte pass run after an export changes
+manifest rows (`archive_key`, `byte_state`, `stamped_hash`), so it invalidates
+the `manifest` files it touches (`dr_export_invalidate`) and the next `campfire
+dr export` rebuilds exactly those; a release is published only from `ready`, so
+a reader of a published release always sees manifest files that carry the
+archive keys. The files route's `complete`
 flag is false while any file is pending.

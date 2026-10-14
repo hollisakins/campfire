@@ -320,58 +320,13 @@ def format_releases(report: dict) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# exports (P4b)
+# exports (P4b): readers
 # ---------------------------------------------------------------------------
 
-def export_release(session, tag: str, *, budget_seconds: float = 240.0, max_calls: int = 200,
-                   echo=None) -> dict:
-    """Loop ``POST /api/v1/dr/<tag>/export`` until every partition is ready.
-
-    *session* is an ``APISession`` (bearer: the admin's login). Each call
-    builds partitions for one time budget and reports what is left; the loop
-    stops when ``remaining`` is 0, when a call built nothing and failed or
-    skipped something (a partition that cannot be built, or another run
-    holding the claims; retrying would spin), or after *max_calls*. Returns
-    the last response plus the totals.
-    """
-    totals = {'built': 0, 'failed': 0, 'calls': 0}
-    last: dict = {}
-    for _ in range(max_calls):
-        # relative to the session's base url, which already ends in /api/v1
-        resp = session.post(f'/dr/{tag}/export', json={'budget_seconds': budget_seconds},
-                            timeout=budget_seconds + 60)
-        if resp.status_code != 200:
-            try:
-                detail = resp.json()
-            except ValueError:
-                detail = {'error': resp.text[:200]}
-            raise RuntimeError(f"export call failed ({resp.status_code}): "
-                               f"{detail.get('error_description') or detail.get('error')}")
-        last = resp.json()
-        totals['calls'] += 1
-        totals['built'] += len(last.get('built') or [])
-        totals['failed'] += len(last.get('failed') or [])
-        if echo is not None:
-            for b in last.get('built') or []:
-                echo(f"  built {b.get('stream')}/{b.get('partition')}: {_n(b.get('rows'))} rows, "
-                     f"{_n(b.get('size'))} B")
-            for f in last.get('failed') or []:
-                echo(f"  FAILED {f.get('stream')}/{f.get('partition')}: {f.get('error')}")
-            for s in last.get('skipped') or []:
-                echo(f"  skipped {s.get('stream')}/{s.get('partition')}: {s.get('reason')}")
-        remaining = int(last.get('remaining') or 0)
-        if remaining == 0:
-            break
-        if not last.get('built') and (last.get('failed') or last.get('skipped')):
-            # nothing buildable by this run: a broken partition, or another
-            # `dr export` holding the claims -- stop instead of spinning
-            break
-    return {**last, 'totals': totals}
-
-
-def fetch_partitions(session, tag: str) -> dict:
-    """``GET /api/v1/dr/<tag>/partitions`` for the caller."""
-    resp = session.get(f'/dr/{tag}/partitions', timeout=60)
+def fetch_files(session, tag: str) -> dict:
+    """``GET /api/v1/dr/<tag>/files`` for the caller (presigned urls of the
+    export files they may read; building them is ``campfire.dr_export``)."""
+    resp = session.get(f'/dr/{tag}/files', timeout=60)
     if resp.status_code == 404:
         raise RuntimeError(f"release {tag} is not available to you (unknown, or not published)")
     resp.raise_for_status()

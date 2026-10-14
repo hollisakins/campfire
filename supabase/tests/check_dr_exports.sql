@@ -54,7 +54,7 @@ BEGIN
   PERFORM set_config('request.jwt.claims', '{"role":"service_role"}', true);
   -- the seeded program with the most frozen spectra, and the seeded NIRCam field
   SELECT program_slug INTO prog FROM dr_spectra WHERE tag = 'DR-seed' GROUP BY 1 ORDER BY count(*) DESC, 1 LIMIT 1;
-  SELECT substr(component, 8) INTO fld FROM dr_members WHERE tag = 'DR-seed' AND component LIKE 'nircam/%' LIMIT 1;
+  SELECT substr(component, 8) INTO fld FROM dr_manifest WHERE tag = 'DR-seed' AND component LIKE 'nircam/%' LIMIT 1;
   IF prog IS NULL OR fld IS NULL THEN RAISE EXCEPTION 'seed: DR-seed lacks spectra (%) or a nircam component (%)', prog, fld; END IF;
 
   -- ------------------------------------------------------------------ 1.
@@ -62,8 +62,8 @@ BEGIN
   IF n <> 0 THEN RAISE EXCEPTION 'partitions with zero rows listed: %', n; END IF;
   SELECT count(*) INTO n FROM dr_export_partitions('DR-seed') p WHERE p.stream = 'spectra' AND p.partition = prog;
   IF n <> 1 THEN RAISE EXCEPTION 'spectra partition for % missing', prog; END IF;
-  SELECT p.storage_key INTO k FROM dr_export_partitions('DR-seed') p WHERE p.stream = 'members' AND p.partition = 'nircam/' || fld;
-  IF k <> dr_export_key('DR-seed', 'members', 'nircam/' || fld) OR k !~ ('^dr/DR-seed/exports/members/nircam_[A-Za-z0-9._-]+-[0-9a-f]{8}\.jsonl\.gz$') THEN
+  SELECT p.storage_key INTO k FROM dr_export_partitions('DR-seed') p WHERE p.stream = 'manifest' AND p.partition = 'nircam/' || fld;
+  IF k <> dr_export_key('DR-seed', 'manifest', 'nircam/' || fld) OR k !~ ('^dr/DR-seed/exports/manifest/nircam_[A-Za-z0-9._-]+-[0-9a-f]{8}\.jsonl\.gz$') THEN
     RAISE EXCEPTION 'unexpected member key %', k;
   END IF;
   -- key-safe names are used as is; others are sanitised + md5-suffixed, so
@@ -71,7 +71,7 @@ BEGIN
   IF dr_export_key('T', 'spectra', prog) <> 'dr/T/exports/spectra/' || prog || '.jsonl.gz' THEN
     RAISE EXCEPTION 'plain slug key altered: %', dr_export_key('T', 'spectra', prog);
   END IF;
-  IF dr_export_key('T', 'members', 'photometry/goods-n/CAT v1') = dr_export_key('T', 'members', 'photometry/goods-n/CAT_v1') THEN
+  IF dr_export_key('T', 'manifest', 'photometry/goods-n/CAT v1') = dr_export_key('T', 'manifest', 'photometry/goods-n/CAT_v1') THEN
     RAISE EXCEPTION 'export keys collide for names that sanitise alike';
   END IF;
   IF (SELECT p.n_rows FROM dr_export_partitions('DR-seed') p WHERE p.stream = 'spectra' AND p.partition = prog)
@@ -153,15 +153,15 @@ BEGIN
   IF bad <> 0 THEN RAISE EXCEPTION '% photometry rows leak another program''s membership', bad; END IF;
 
   -- members
-  SELECT count(*) INTO n FROM dr_export_rows('DR-seed', 'members', prog, NULL, 10000) r;
-  IF n <> (SELECT count(*) FROM dr_members WHERE tag = 'DR-seed' AND program_slug = prog) OR n = 0 THEN
-    RAISE EXCEPTION 'members partition for % has % rows', prog, n;
+  SELECT count(*) INTO n FROM dr_export_rows('DR-seed', 'manifest', prog, NULL, 10000) r;
+  IF n <> (SELECT count(*) FROM dr_manifest WHERE tag = 'DR-seed' AND program_slug = prog) OR n = 0 THEN
+    RAISE EXCEPTION 'manifest partition for % has % rows', prog, n;
   END IF;
-  SELECT count(*) INTO n FROM dr_export_rows('DR-seed', 'members', 'nircam/' || fld, NULL, 10000) r;
+  SELECT count(*) INTO n FROM dr_export_rows('DR-seed', 'manifest', 'nircam/' || fld, NULL, 10000) r;
   IF n <> (SELECT count(*) FROM nircam_images WHERE field = fld AND deploy_status = 'published') OR n = 0 THEN
     RAISE EXCEPTION 'nircam member partition has % rows', n;
   END IF;
-  RAISE NOTICE 'OK 2: partitions equal the live scoped sync (spectra, line fits, objects) and the frozen members';
+  RAISE NOTICE 'OK 2: partitions equal the live scoped sync (spectra, line fits, objects) and the frozen manifest';
 
   -- ------------------------------------------------------------------ 3.
   -- keyset paging with limit 7 covers the objects partition exactly once
@@ -235,34 +235,34 @@ BEGIN
   -- member copied the derived state is ready, and copying while members are
   -- half done (the byte pass in flight)
   PERFORM set_config('request.jwt.claims', '{"role":"service_role"}', true);
-  got := (dr_export_invalidate('DR-seed', 'members', prog))->>'invalidated';
-  IF got <> '1' OR (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'members' AND partition = prog) <> 'pending'
+  got := (dr_export_invalidate('DR-seed', 'manifest', prog))->>'invalidated';
+  IF got <> '1' OR (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'manifest' AND partition = prog) <> 'pending'
      OR (SELECT state FROM dr_releases WHERE tag = 'DR-seed') <> 'exporting' THEN
     RAISE EXCEPTION 'invalidate did not reset the partition (got %, state %)', got, (SELECT state FROM dr_releases WHERE tag = 'DR-seed');
   END IF;
   -- invalidated WHILE building: the builder's ready mark is refused (Codex on #601)
-  PERFORM dr_export_mark('DR-seed', 'members', prog, 'building');
-  PERFORM dr_export_invalidate('DR-seed', 'members', prog);
-  IF (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'members' AND partition = prog) <> 'pending' THEN
+  PERFORM dr_export_mark('DR-seed', 'manifest', prog, 'building');
+  PERFORM dr_export_invalidate('DR-seed', 'manifest', prog);
+  IF (SELECT state FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'manifest' AND partition = prog) <> 'pending' THEN
     RAISE EXCEPTION 'invalidate should reset a building file';
   END IF;
   BEGIN
-    PERFORM dr_export_mark('DR-seed', 'members', prog, 'ready', 'sha256:' || repeat('b', 64), 1, 1);
+    PERFORM dr_export_mark('DR-seed', 'manifest', prog, 'ready', 'sha256:' || repeat('b', 64), 1, 1);
     RAISE EXCEPTION 'a file invalidated mid-build was marked ready';
   EXCEPTION WHEN OTHERS THEN
-    IF SQLERRM NOT LIKE 'export file members % was invalidated while it was being built%' THEN RAISE; END IF;
+    IF SQLERRM NOT LIKE 'export file manifest % was invalidated while it was being built%' THEN RAISE; END IF;
   END;
-  PERFORM dr_export_mark('DR-seed', 'members', prog, 'building');
-  IF (dr_export_mark('DR-seed', 'members', prog, 'ready', 'sha256:' || repeat('b', 64), 1, 1))->>'state' <> 'exported' THEN
+  PERFORM dr_export_mark('DR-seed', 'manifest', prog, 'building');
+  IF (dr_export_mark('DR-seed', 'manifest', prog, 'ready', 'sha256:' || repeat('b', 64), 1, 1))->>'state' <> 'exported' THEN
     RAISE EXCEPTION 'rebuild should return to exported';
   END IF;
-  UPDATE dr_members SET byte_state = 'copied', archive_key = 'archive/x/' || storage_key WHERE tag = 'DR-seed' AND program_slug = prog;
+  UPDATE dr_manifest SET byte_state = 'copied', archive_key = 'archive/x/' || storage_key WHERE tag = 'DR-seed' AND program_slug = prog;
   IF dr_derive_state('DR-seed') <> 'copying' THEN RAISE EXCEPTION 'half-copied members should derive copying, got %', dr_derive_state('DR-seed'); END IF;
-  UPDATE dr_members SET byte_state = 'copied', archive_key = 'archive/x/' || storage_key WHERE tag = 'DR-seed';
+  UPDATE dr_manifest SET byte_state = 'copied', archive_key = 'archive/x/' || storage_key WHERE tag = 'DR-seed';
   IF dr_derive_state('DR-seed') <> 'ready' THEN RAISE EXCEPTION 'all exported + all copied should derive ready, got %', dr_derive_state('DR-seed'); END IF;
   -- a re-run of begin on a ready release is allowed and keeps it ready
   IF (dr_export_begin('DR-seed'))->>'state' <> 'ready' THEN RAISE EXCEPTION 'begin on ready should keep ready'; END IF;
-  UPDATE dr_members SET byte_state = 'pending', archive_key = NULL WHERE tag = 'DR-seed';
+  UPDATE dr_manifest SET byte_state = 'pending', archive_key = NULL WHERE tag = 'DR-seed';
   IF dr_derive_state('DR-seed') <> 'exported' THEN RAISE EXCEPTION 'reverting members should derive exported'; END IF;
   IF (SELECT rows FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'spectra' AND partition = prog) <> 45
      OR (SELECT error FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'spectra' AND partition = prog) IS NOT NULL THEN
@@ -337,8 +337,7 @@ BEGIN
        <> 'dr/T/exports/spectra/pub.0123456789abcdef.a1b2c3d4.jsonl.gz' THEN
       RAISE EXCEPTION 'content key format drifted from the builder''s';
     END IF;
-    -- a rebuild records the file it replaces as garbage, with when (Codex on #600)
-    DELETE FROM dr_export_garbage WHERE tag = 'DR-seed';
+    -- a rebuild names its own file (the replaced one is the export run's sweep's)
     PERFORM dr_export_invalidate('DR-seed', 'objects', prog);
     c1 := (dr_export_mark('DR-seed', 'objects', prog, 'building'))->>'claim';
     -- a purge waits for a live build claim (its upload would outlive the prefix delete)
@@ -349,12 +348,9 @@ BEGIN
       IF SQLERRM NOT LIKE 'release DR-seed is being exported%' THEN RAISE; END IF;
     END;
     PERFORM dr_export_mark('DR-seed', 'objects', prog, 'ready', 'sha256:' || repeat('d', 64), 1, 1, NULL, c1);
-    IF (SELECT array_agg(storage_key) FROM dr_export_garbage WHERE tag = 'DR-seed')
-       IS DISTINCT FROM ARRAY[dr_export_content_key(dr_export_key('DR-seed', 'objects', prog), 'sha256:' || repeat('c', 64), c2::uuid)] THEN
-      RAISE EXCEPTION 'the superseded file should be garbage: %', (SELECT array_agg(storage_key) FROM dr_export_garbage WHERE tag = 'DR-seed');
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM dr_export_garbage WHERE tag = 'DR-seed' AND superseded_at > now() - interval '1 minute') THEN
-      RAISE EXCEPTION 'superseded_at should be the replacement time';
+    IF (SELECT storage_key FROM dr_exports WHERE tag = 'DR-seed' AND stream = 'objects' AND partition = prog)
+       <> dr_export_content_key(dr_export_key('DR-seed', 'objects', prog), 'sha256:' || repeat('d', 64), c1::uuid) THEN
+      RAISE EXCEPTION 'a rebuild should name its own build key';
     END IF;
     PERFORM dr_export_invalidate('DR-seed', 'objects', prog);
     c1 := (dr_export_mark('DR-seed', 'objects', prog, 'building'))->>'claim';

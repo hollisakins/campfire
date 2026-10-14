@@ -7,18 +7,19 @@ import { getBucketNameForBackend, getS3ClientForBackend } from '@/lib/storage';
 import {
   fetchLedger,
   fetchRelease,
-  openComponentPartitions,
-  partitionVisible,
+  fileVisible,
+  openComponentScopes,
   releaseVisible,
 } from '@/lib/server/dr-exports';
 
 /**
- * GET /api/v1/dr/<tag>/partitions   (bearer; `campfire pull --dr`)
+ * GET /api/v1/dr/<tag>/files   (bearer; `campfire pull --dr`)
  *
- * The export partitions of a data release this caller holds, with presigned
- * urls: program partitions within the caller's accessible programs, field-level
- * member partitions (nircam/<field>, photometry/<field>/<catalog>) for every
- * account. A release is visible once published, or in any state to admins
+ * The export files of a data release this caller may read, with presigned
+ * urls: per-program files within the caller's accessible programs, and the
+ * field-level manifest files (nircam/<field>, photometry/<field>/<catalog>)
+ * for every account. A client merges the files of one stream into one table
+ * (P5). A release is visible once published, or in any state to admins
  * (the shadow run). Link accounts are refused by authenticateApiRequest.
  *
  * Response:
@@ -26,7 +27,7 @@ import {
  *   tag, state, format_version, components, counts, frozen_at, published_at,
  *   doi, notes, known_issues,
  *   complete: boolean,            // every ledger file is ready
- *   partitions: [{ stream, partition, sha256, size, rows, url }]
+ *   files: [{ stream, scope, sha256, size, rows, url }]   // scope: program slug or component
  * }
  */
 
@@ -53,19 +54,19 @@ export async function GET(request: NextRequest, context: { params: Promise<{ tag
     }
 
     const accessible = new Set(principal.access.accessibleSlugs);
-    const open = openComponentPartitions(release.components);
+    const open = openComponentScopes(release.components);
     const ledger = await fetchLedger(supabase, tag);
     const complete = ledger.length > 0 && ledger.every((r) => r.state === 'ready');
     const held = ledger.filter(
-      (r) => r.state === 'ready' && r.storage_key && partitionVisible(r.stream, r.partition, accessible, open),
+      (r) => r.state === 'ready' && r.storage_key && fileVisible(r.stream, r.partition, accessible, open),
     );
 
     const client = getS3ClientForBackend('osn');
     const bucket = getBucketNameForBackend('osn');
-    const partitions = await Promise.all(
+    const files = await Promise.all(
       held.map(async (r) => ({
         stream: r.stream,
-        partition: r.partition,
+        scope: r.partition,
         sha256: r.sha256,
         size: r.size_bytes,
         rows: r.rows,
@@ -90,12 +91,12 @@ export async function GET(request: NextRequest, context: { params: Promise<{ tag
         notes: release.notes,
         known_issues: release.known_issues,
         complete,
-        partitions,
+        files,
       },
       { headers: noStore },
     );
   } catch (error) {
-    console.error(`Error in GET /api/v1/dr/${tag}/partitions:`, error);
+    console.error(`Error in GET /api/v1/dr/${tag}/files:`, error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

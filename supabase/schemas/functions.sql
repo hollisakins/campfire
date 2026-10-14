@@ -9386,7 +9386,6 @@ BEGIN
   DELETE FROM dr_spectra    WHERE tag = p_tag; GET DIAGNOSTICS n_spectra = ROW_COUNT;
   DELETE FROM dr_objects    WHERE tag = p_tag; GET DIAGNOSTICS n_objects = ROW_COUNT;
   DELETE FROM dr_exports    WHERE tag = p_tag; GET DIAGNOSTICS n_exports = ROW_COUNT;
-  DELETE FROM dr_export_garbage WHERE tag = p_tag;  -- `campfire dr purge` deletes the prefix itself
   DELETE FROM dr_releases   WHERE tag = p_tag;
   INSERT INTO deploy_events (actor, action, affected_count, metadata)
   VALUES (auth.uid(), 'delete', n_spectra::int,
@@ -9413,12 +9412,12 @@ GRANT EXECUTE ON FUNCTION public.dr_purge_release(text) TO authenticated, servic
 -- docs/dr-format-v1.md)
 -- =============================================================================
 -- One gzip JSONL file per (stream, partition) under dr/<tag>/exports/ on the
--- data bucket, built from the frozen tables by the admin route
--- /api/v1/dr/<tag>/export (looped by `campfire dr export`) and handed out per
--- viewer by /api/v1/dr/<tag>/partitions. The partition is the program slug for
--- the five program-scoped streams (objects, spectra, line_fits, photometry,
--- members) and the component name (nircam/<field>, photometry/<field>/<cat>)
--- for the field-level member rows, so a presigned url never carries a row
+-- data bucket, built from the frozen tables by `campfire dr export` (on the
+-- admin's machine, python/campfire/dr_export.py) and handed out per viewer by
+-- /api/v1/dr/<tag>/files. The partition (a file's scope) is the program slug
+-- for the five program-scoped streams (objects, spectra, line_fits, photometry,
+-- manifest) and the component name (nircam/<field>, photometry/<field>/<cat>)
+-- for the field-level manifest rows, so a presigned url never carries a row
 -- the viewer could not read through RLS. Objects / photometry rows of a
 -- mixed-program object appear in each of their programs' partitions, with the
 -- aggregates of the objects row scoped to that partition's program (what the
@@ -9506,8 +9505,8 @@ BEGIN
     SELECT 'photometry', p, count(*)
     FROM dr_photometry ph, unnest(ph.programs) AS p WHERE ph.tag = p_tag GROUP BY p
     UNION ALL
-    SELECT 'members', COALESCE(m.program_slug, m.component), count(*)
-    FROM dr_members m WHERE m.tag = p_tag GROUP BY COALESCE(m.program_slug, m.component)
+    SELECT 'manifest', COALESCE(m.program_slug, m.component), count(*)
+    FROM dr_manifest m WHERE m.tag = p_tag GROUP BY COALESCE(m.program_slug, m.component)
   )
   SELECT c.stream, c.partition, dr_export_key(p_tag, c.stream, c.partition), c.n
   FROM counts c
@@ -9654,7 +9653,7 @@ BEGIN
     ORDER BY ph.photometry_id
     LIMIT p_limit;
 
-  ELSIF p_stream = 'members' THEN
+  ELSIF p_stream = 'manifest' THEN
     RETURN QUERY
     SELECT m.storage_key,
            jsonb_build_object(
@@ -9664,14 +9663,14 @@ BEGIN
              'content_hash', m.content_hash, 'science_hash', m.science_hash,
              'size_bytes', m.size_bytes, 'archive_key', m.archive_key,
              'byte_state', m.byte_state, 'stamped_hash', m.stamped_hash)
-    FROM dr_members m
+    FROM dr_manifest m
     WHERE m.tag = p_tag AND COALESCE(m.program_slug, m.component) = p_partition
       AND (p_after IS NULL OR m.storage_key > p_after)
     ORDER BY m.storage_key
     LIMIT p_limit;
 
   ELSE
-    RAISE EXCEPTION 'unknown export stream % (objects, spectra, line_fits, photometry, members)', p_stream;
+    RAISE EXCEPTION 'unknown export stream % (objects, spectra, line_fits, photometry, manifest)', p_stream;
   END IF;
 END;
 $$;
@@ -9710,7 +9709,7 @@ BEGIN
   SELECT count(*), count(*) FILTER (WHERE byte_state IN ('pending', 'failed')),
          count(*) FILTER (WHERE byte_state IN ('copied', 'stamped'))
     INTO n_members, n_members_open, n_members_done
-  FROM dr_members WHERE tag = p_tag;
+  FROM dr_manifest WHERE tag = p_tag;
   v_new := CASE
     WHEN n_ledger > 0 AND n_ledger_open = 0 AND n_members_open = 0 THEN 'ready'
     WHEN n_members_done > 0 AND n_members_open > 0 THEN 'copying'
@@ -9755,7 +9754,7 @@ BEGIN
              WHERE c.value LIKE '%/%'
                AND (EXISTS (SELECT 1 FROM dr_spectra s WHERE s.tag = p_tag AND s.program_slug = c.value)
                     OR EXISTS (SELECT 1 FROM dr_objects o WHERE o.tag = p_tag AND c.value = ANY (o.programs))
-                    OR EXISTS (SELECT 1 FROM dr_members m WHERE m.tag = p_tag AND m.program_slug = c.value))) THEN
+                    OR EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.program_slug = c.value))) THEN
     RAISE EXCEPTION 'release % has a program slug equal to one of its component names; rename the program', p_tag;
   END IF;
   INSERT INTO dr_exports (tag, stream, partition, storage_key, state)
@@ -9858,16 +9857,6 @@ BEGIN
       END IF;
       RAISE EXCEPTION 'export file % % of % is no longer claimed by this run; rebuild it', p_stream, p_partition, p_tag;
     END IF;
-    -- A ready mark that replaces a previously built file records the old key
-    -- as garbage, with when: readers may hold presigned urls for it, so the
-    -- collector keeps it for longer than they live (Codex on #600).
-    IF p_state = 'ready' AND e.storage_key IS DISTINCT FROM dr_export_key(p_tag, p_stream, p_partition)
-       AND e.storage_key IS DISTINCT FROM dr_export_content_key(dr_export_key(p_tag, p_stream, p_partition), p_sha256,
-                                                                COALESCE(p_claim, e.claim_token))
-       AND e.storage_key IS NOT NULL THEN
-      INSERT INTO dr_export_garbage (tag, storage_key) VALUES (p_tag, e.storage_key)
-      ON CONFLICT (tag, storage_key) DO NOTHING;
-    END IF;
     UPDATE dr_exports
        SET state = p_state,
            -- a ready file lives under its build's key (content hash + claim);
@@ -9922,7 +9911,7 @@ REVOKE ALL ON FUNCTION public.dr_export_status(text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_export_status(text) TO authenticated, service_role;
 
 -- Send ready export files back to pending so the next `dr export` rebuilds
--- them: the byte pass (P4c) calls it for the `members` partitions it changes
+-- them: the byte pass (P4c) calls it for the `manifest` partitions it changes
 -- (archive_key / byte_state / stamped_hash are part of the member rows, so a
 -- file built before the pass would keep pointing readers at the mutable live
 -- keys). p_stream NULL invalidates every stream; p_partition NULL every

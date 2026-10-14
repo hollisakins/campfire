@@ -310,15 +310,15 @@ def test_status_shows_a_freeze_in_progress_and_manifest_by_type():
     assert 'freezing since 2026-10-13 20:00 UTC' in format_release(row)
     report = {'generated_at': None, 'spectra_by_version': {}, 'leases': [], 'releases': [row]}
     assert any('DR-t: freezing since' in l for l in format_releases(report))
-    frozen = {**FROZEN, 'counts': {**FROZEN['counts'], 'members_by_type': {'nirspec_spec': 163, 'zfit': 160}}}
-    assert 'members: 163 nirspec_spec · 160 zfit' in format_release(frozen)
+    frozen = {**FROZEN, 'counts': {**FROZEN['counts'], 'manifest_by_type': {'nirspec_spec': 163, 'zfit': 160}}}
+    assert 'manifest: 163 nirspec_spec · 160 zfit' in format_release(frozen)
 
 
 # ---------------------------------------------------------------------------
-# export loop (P4b)
+# export files for readers (P4b); the builder is tested in test_dr_export.py
 # ---------------------------------------------------------------------------
 
-from campfire.dr import export_release, fetch_partitions  # noqa: E402
+from campfire.dr import fetch_files  # noqa: E402
 
 
 class _HttpResp:
@@ -340,101 +340,24 @@ class _FakeSession:
         self.answers = list(answers)
         self.calls = []
 
-    def post(self, path, json=None, timeout=None):
-        self.calls.append(('POST', path, json))
-        return self.answers.pop(0)
-
     def get(self, path, timeout=None):
         self.calls.append(('GET', path, None))
         return self.answers.pop(0)
 
 
-def test_export_release_loops_until_nothing_remains():
-    s = _FakeSession([
-        _HttpResp(200, {'state': 'exporting', 'built': [{'stream': 'objects', 'partition': 'p', 'rows': 3, 'size': 99}],
-                        'failed': [], 'remaining': 1, 'incomplete': True}),
-        _HttpResp(200, {'state': 'exported', 'built': [{'stream': 'spectra', 'partition': 'p', 'rows': 5, 'size': 10}],
-                        'failed': [], 'remaining': 0, 'incomplete': False}),
-    ])
-    echoed = []
-    out = export_release(s, 'DR-t', budget_seconds=30, echo=echoed.append)
-    assert out['state'] == 'exported' and out['totals'] == {'built': 2, 'failed': 0, 'calls': 2}
-    assert [c[1] for c in s.calls] == ['/dr/DR-t/export'] * 2
-    assert s.calls[0][2] == {'budget_seconds': 30}
-    # paths are relative to the session's base url, which already ends in
-    # /api/v1 (Codex on #600: the old '/api/v1/dr/...' doubled it)
-    from campfire.api.session import DEFAULT_BASE_URL
-    assert DEFAULT_BASE_URL + s.calls[0][1] == 'https://campfire.hollisakins.com/api/v1/dr/DR-t/export'
-    assert echoed == ['  built objects/p: 3 rows, 99 B', '  built spectra/p: 5 rows, 10 B']
-
-
-def test_export_release_stops_when_only_failures_remain():
-    s = _FakeSession([
-        _HttpResp(200, {'state': 'exporting', 'built': [], 'failed': [{'stream': 'objects', 'partition': 'p', 'error': 'boom'}],
-                        'remaining': 1, 'incomplete': False}),
-    ])
-    out = export_release(s, 'DR-t')
-    assert out['totals'] == {'built': 0, 'failed': 1, 'calls': 1} and out['remaining'] == 1
-
-
-def test_export_release_raises_on_http_error():
-    s = _FakeSession([_HttpResp(409, {'error': 'invalid_state', 'error_description': 'release is published'})])
-    with pytest.raises(RuntimeError, match='release is published'):
-        export_release(s, 'DR-t')
-
-
-def test_export_release_stops_when_another_run_holds_the_claims():
-    # Codex on #600: claims are atomic; a call that only skips must not spin
-    s = _FakeSession([
-        _HttpResp(200, {'state': 'exporting', 'built': [], 'failed': [],
-                        'skipped': [{'stream': 'objects', 'partition': 'p', 'reason': 'being built by another run'}],
-                        'remaining': 1}),
-        _HttpResp(200, {'state': 'exported', 'built': [], 'failed': [], 'remaining': 0}),
-    ])
-    echoed = []
-    out = export_release(s, 'DR-t', echo=echoed.append)
-    assert out['totals']['calls'] == 1 and out['remaining'] == 1
-    assert any('skipped objects/p' in e for e in echoed)
-
-
-def test_fetch_partitions_404_is_a_clear_error():
+def test_fetch_files_404_is_a_clear_error():
     s = _FakeSession([_HttpResp(404, {'error': 'not_found'})])
     with pytest.raises(RuntimeError, match='not published'):
-        fetch_partitions(s, 'DR-t')
-    s = _FakeSession([_HttpResp(200, {'tag': 'DR-t', 'partitions': []})])
-    assert fetch_partitions(s, 'DR-t')['tag'] == 'DR-t'
-    assert s.calls[-1][1] == '/dr/DR-t/partitions'
+        fetch_files(s, 'DR-t')
+    s = _FakeSession([_HttpResp(200, {'tag': 'DR-t', 'files': []})])
+    assert fetch_files(s, 'DR-t')['tag'] == 'DR-t'
+    # relative to the session's base url, which already ends in /api/v1
+    assert s.calls[-1][1] == '/dr/DR-t/files'
 
 
-def test_cli_export(monkeypatch):
-    s = _FakeSession([
-        _HttpResp(200, {'state': 'exported', 'built': [{'stream': 'objects', 'partition': 'p', 'rows': 1, 'size': 2}],
-                        'failed': [], 'remaining': 0}),
-    ])
-    monkeypatch.setattr(main_cli, '_require_auth', lambda base_url: s)
-    res = CliRunner().invoke(main_cli.cli, ['dr', 'export', '--tag', 'DR-t', '--budget', '5'])
-    assert res.exit_code == 0, res.output
-    assert 'DR-t: exported · built 1 file(s) in 1 call(s) · 0 failed · 0 remaining' in res.output
-    s2 = _FakeSession([_HttpResp(200, {'state': 'exporting', 'built': [], 'failed': [{'stream': 'x', 'partition': 'y', 'error': 'e'}], 'remaining': 1})])
-    monkeypatch.setattr(main_cli, '_require_auth', lambda base_url: s2)
-    res = CliRunner().invoke(main_cli.cli, ['dr', 'export', '--tag', 'DR-t'])
-    assert res.exit_code == 1 and 'FAILED x/y: e' in res.output
-
-
-def test_cli_export_json_stdout_is_pure_json(monkeypatch):
-    s = _FakeSession([
-        _HttpResp(200, {'state': 'exported', 'built': [{'stream': 'objects', 'partition': 'p', 'rows': 1, 'size': 2}],
-                        'failed': [], 'remaining': 0}),
-    ])
-    monkeypatch.setattr(main_cli, '_require_auth', lambda base_url: s)
-    try:
-        runner = CliRunner(mix_stderr=False)
-    except TypeError:  # click >= 8.2 always separates the streams
-        runner = CliRunner()
-    res = runner.invoke(main_cli.cli, ['dr', 'export', '--tag', 'DR-t', '--json'])
-    assert res.exit_code == 0, res.output
-    assert json.loads(res.stdout)['state'] == 'exported'
-    assert 'Exporting DR-t' in res.stderr
+def test_cli_export_refuses_local():
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'export', '--tag', 'DR-t', '--local'])
+    assert res.exit_code == 2 and 'shared one' in res.output
 
 
 def test_cli_local_purge_never_touches_the_shared_bucket(monkeypatch):

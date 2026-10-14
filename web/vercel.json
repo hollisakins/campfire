@@ -4,10 +4,6 @@
     {
       "path": "/api/cron/sync-snapshot",
       "schedule": "0 5 * * *"
-    },
-    {
-      "path": "/api/cron/dr-export-gc",
-      "schedule": "30 5 * * *"
     }
   ]
 }
