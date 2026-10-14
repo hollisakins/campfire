@@ -1523,6 +1523,117 @@ def dr_export(tag, as_json, local):
         sys.exit(1)
 
 
+@dr_group.command(name="archive")
+@click.option("--tag", required=True, metavar="TAG", help="Release tag whose member bytes to archive")
+@click.option("--obs", default=None, metavar="OBS", help="Only the NIRSpec members of one observation (the staged first run)")
+@click.option("--field", default=None, metavar="FIELD", help="Only the NIRCam mosaic members of one field")
+@click.option("--workers", type=int, default=8, show_default=True, help="Parallel transfers")
+@click.option("--limit", type=int, default=None, help="Process at most N members this run")
+@click.option("--retry-failed", is_flag=True, help="Take up members a previous run marked failed")
+@click.option("--dry-run", is_flag=True, help="Report what each pending member would need; touch nothing")
+@click.option("--status", "status_only", is_flag=True, help="Only print the byte-pass progress")
+@click.option("--json", "as_json", is_flag=True, help="Print the report as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321)")
+def dr_archive(tag, obs, field, workers, limit, retry_failed, dry_run, status_only, as_json, local):
+    """Archive the files of a frozen release (P4c): its manifest, under archive/.
+
+    Every file is first verified against the hash recorded at the freeze.
+    NIRSpec FITS finals are stamped with CMPFRDR = TAG in the primary header
+    (science hash unchanged, verified) and uploaded to archive/<sha256>/<relpath>;
+    sidecars and mosaics are archived unstamped. A file another release already
+    archived is reused, so an unchanged FITS keeps the stamp of the first
+    release that archived it. Resumable: re-run until nothing is pending; a file
+    whose frozen bytes are gone is marked failed with the reason. One run per
+    release at a time: a second is refused while the first holds the release
+    (a run that died frees it after 10 minutes), and purge waits too. Needs OSN
+    credentials (CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml) and an admin
+    login. (`campfire archive gc` is the unrelated retention tool.)
+    """
+    import json as _json
+
+    from campfire_layout import Scope, key_prefix
+    from campfire_layout.keys import KeyScheme
+
+    config, sb = _dr_client(local, what="`campfire dr archive`")
+    # --json: stdout carries the JSON document alone; progress goes to stderr
+    say = (lambda m: click.echo(m, err=True)) if as_json else click.echo
+    from campfire.deploy.dr_bytes import fetch_summary, format_report, format_summary, run_byte_pass
+
+    if obs and field:
+        say("✗ Pass --obs or --field, not both.")
+        sys.exit(2)
+    prefix = None
+    if obs:
+        prefix = key_prefix('nirspec_spec', Scope(obs=obs), scheme=KeyScheme.CANONICAL) + '/'
+    elif field:
+        prefix = key_prefix('nircam_mosaic', Scope(field=field, filt='x'), scheme=KeyScheme.CANONICAL).rsplit('/', 1)[0] + '/'
+
+    if status_only:
+        try:
+            summary = fetch_summary(sb, tag)
+        except Exception as e:  # noqa: BLE001
+            say(f"✗ {getattr(e, 'message', None) or e}")
+            sys.exit(1)
+        click.echo(_json.dumps(summary, indent=2, sort_keys=True) if as_json else format_summary(summary))
+        return
+
+    s3 = bucket = None
+    if local and not dry_run:
+        # a local registry with the shared bucket: every archive object written
+        # would be unregistered in production (Codex on #601)
+        say("✗ `campfire dr archive --local` is refused without --dry-run: the bucket is the shared one.")
+        sys.exit(2)
+    if not dry_run:
+        # Members live on OSN (the same bucket as the exports)
+        s3, bucket = _dr_osn_s3(config, max_pool_connections=max(workers, 10))
+        if s3 is None:
+            say("✗ `campfire dr archive` needs OSN credentials for the data bucket "
+                "(CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml): " + bucket)
+            sys.exit(2)
+
+    model = getattr(getattr(s3, 'meta', None), 'service_model', None)
+    if model is not None:
+        # every archive write is a conditional PUT (If-None-Match); a botocore
+        # that predates S3 conditional writes rejects the parameter outright
+        if 'IfNoneMatch' not in model.operation_model('PutObject').input_shape.members:
+            say("✗ this boto3/botocore cannot send If-None-Match on PutObject; upgrade it "
+                "(pip install -U boto3)")
+            sys.exit(2)
+    scope = f" under {prefix}" if prefix else ""
+    say(f"{'Planning' if dry_run else 'Archiving'} the member bytes of {tag}{scope} …")
+    try:
+        report = run_byte_pass(sb, s3, bucket, tag, workers=workers, limit=limit,
+                               include_failed=retry_failed, prefix=prefix, dry_run=dry_run,
+                               log=say)
+    except Exception as e:  # noqa: BLE001 - one line, not a traceback
+        say(f"✗ {getattr(e, 'message', None) or e}")
+        sys.exit(1)
+    # Failures stored by THIS or an EARLIER run: without --retry-failed the
+    # earlier ones are not even fetched, so the report alone can look clean
+    # while the release can never become ready (Codex on #601).
+    stored_failed = None
+    summary_unknown = False
+    if not dry_run:
+        try:
+            summary = fetch_summary(sb, tag)
+            stored_failed = int(((summary.get('by_state') or {}).get('failed') or {}).get('count') or 0)
+        except Exception as e:  # noqa: BLE001
+            # unknown is not clean: earlier failures may remain (Codex on #601)
+            summary_unknown = True
+            say(f"✗ could not read the byte-pass summary ({getattr(e, 'message', None) or e}); "
+                f"run `campfire dr archive --tag {tag} --status` to check for failed members")
+    if as_json:
+        click.echo(_json.dumps({**report.as_dict(), 'stored_failed': stored_failed},
+                               indent=2, sort_keys=True, default=str))
+    else:
+        click.echo(format_report(report))
+        if stored_failed:
+            click.echo(f"✗ {stored_failed:,} member(s) of {tag} are marked failed "
+                       f"(`campfire dr archive --tag {tag} --status` lists them; rerun with --retry-failed)")
+    if not dry_run and (report.by_state.get('failed') or stored_failed or summary_unknown):
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Archive (admin)
 # ---------------------------------------------------------------------------

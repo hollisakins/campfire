@@ -1574,6 +1574,11 @@ CREATE TABLE IF NOT EXISTS "public"."dr_releases" (
     "doi" "text",
     "notes" "text",
     "known_issues" "text",
+    -- The one `campfire dr archive` run allowed per release (P4c): its claim and
+    -- the last time it was refreshed (dr_archive_claim / dr_bytes_mark); a claim
+    -- not refreshed for 10 minutes is dead and may be taken over.
+    "archive_claim" "uuid",
+    "archive_claimed_at" timestamp with time zone,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "dr_releases_pkey" PRIMARY KEY ("tag"),
     CONSTRAINT "dr_releases_tag_check" CHECK (("tag" ~ '^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$'::"text")),
