@@ -557,6 +557,8 @@ BEGIN
 END;
 $function$;
 
+CREATE INDEX idx_dr_objects_tag_name ON public.dr_objects USING btree (TAG, name);
+
 COMMENT ON FUNCTION "public"."dr_export_begin"(text) IS 'Seed the export ledger of an unpublished data release from dr_export_partitions (idempotent: existing ledger rows are kept) and derive the release state (dr_derive_state). Admin or service_role.';
 
 COMMENT ON FUNCTION "public"."dr_export_invalidate"(text, text, text) IS 'Send ready export files of a data release back to pending (a stream, a partition, or everything) so `dr export` rebuilds them; the byte pass uses it for the member partitions it changes. Admin or service_role.';
