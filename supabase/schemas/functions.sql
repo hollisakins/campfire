@@ -10392,6 +10392,19 @@ BEGIN
   -- Either the removal sees `published` and refuses, or this sees the lease
   -- (Codex on #602).
   PERFORM pg_advisory_xact_lock(hashtext('campfire.dr_freeze'));
+  -- Lock the covered scopes' lease rows BEFORE classifying them: a resuming
+  -- removal's heartbeat (which does not take the advisory lock) would
+  -- otherwise refresh a lease between the live check below and the stale
+  -- bump, and keep deleting after the publish. With the row locked its
+  -- heartbeat waits, then re-checks its version against the bumped row and
+  -- fails (Codex on #602).
+  PERFORM 1 FROM deploy_scope_state d
+   WHERE d.in_progress_since IS NOT NULL
+     AND ((d.scope_type = 'observation'
+           AND d.scope_key IN (SELECT DISTINCT s.observation FROM dr_spectra s WHERE s.tag = p_tag))
+       OR (d.scope_type = 'field'
+           AND d.scope_key IN (SELECT DISTINCT m.field FROM dr_members m WHERE m.tag = p_tag AND m.field IS NOT NULL)))
+     FOR UPDATE;
   -- only leases on scopes this release covers matter: an unrelated upload
   -- elsewhere cannot touch what the release names (Codex on #602)
   IF EXISTS (SELECT 1 FROM deploy_scope_state d

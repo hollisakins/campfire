@@ -131,6 +131,7 @@ def _remove_env(monkeypatch, client):
     monkeypatch.setattr(rm, 'refresh_filter_options', lambda sb: None)
     monkeypatch.setattr(rm, 'refresh_programs_overview', lambda sb: None)
     monkeypatch.setattr(rm, 'refresh_observations_overview', lambda sb: None)
+    monkeypatch.setattr(rm.time, 'sleep', lambda s: None)   # the heartbeat retry
     return rm, deleted
 
 
@@ -227,10 +228,17 @@ def test_remove_refused_without_a_lease(monkeypatch, capsys):
 
 
 def _lease_client(heartbeats, *, claim=None):
+    # 'err' makes the heartbeat RPC raise (the wrapper's None: unknown)
     beats = iter(heartbeats)
+
+    def beat(params):
+        v = next(beats)
+        if v == 'err':
+            raise RuntimeError('connection reset')
+        return v
     return _client(begin_deploy_scope={'version': 3},
                    dr_observation_references=[{**REFS[1]}],
-                   heartbeat_deploy_scope=lambda p: next(beats),
+                   heartbeat_deploy_scope=beat,
                    claim_deploy_scope=claim or {'claimed': True, 'conflict': False},
                    release_deploy_scope=True)
 
@@ -457,7 +465,7 @@ def test_interactive_remove_reads_the_version_before_prompting(monkeypatch):
     c, order = _ordered_client([{**REFS[1]}])
     rm, deleted = _remove_env(monkeypatch, c)
     scope = {'version': 2}
-    monkeypatch.setattr(rm, 'get_deploy_scope_version', lambda *a, **k: scope['version'])
+    monkeypatch.setattr(rm, '_read_scope_version', lambda *a, **k: scope['version'])
 
     def prompt(text):
         scope['version'] = 3                 # the writer finished while the prompt was open
@@ -469,3 +477,54 @@ def test_interactive_remove_reads_the_version_before_prompting(monkeypatch):
     with pytest.raises(rm.RemovalRefused, match='redeployed after the confirmation'):
         rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=False, skip_rebuild=True)
     assert not deleted
+
+
+
+# Fable review of #602
+
+def test_one_failed_heartbeat_is_retried(monkeypatch):
+    rm, deleted = _remove_env(monkeypatch, _lease_client(['err', True, True]))
+    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert deleted == ['spectra batch 1', 'targets batch 1']
+
+
+def test_an_unconfirmable_lease_says_so(monkeypatch):
+    rm, deleted = _remove_env(monkeypatch, _lease_client(['err', 'err']))
+    with pytest.raises(rm.RemovalLeaseLost, match='could not be confirmed') as exc:
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert 'Re-run `campfire deploy remove --obs obs1`' in str(exc.value) and not deleted
+
+
+def test_a_rerun_finishes_a_removal_that_stopped_before_the_bucket(monkeypatch):
+    # rows gone, prefixes still there: the rerun deletes them instead of
+    # reporting "No data to remove"
+    rm, deleted = _remove_env(monkeypatch, _lease_client([True, True, True]))
+    monkeypatch.setattr(rm, '_fetch_targets', lambda sb, o: [])
+    monkeypatch.setattr(rm, '_count_spectra', lambda sb, ids: 0)
+    wiped = []
+    monkeypatch.setattr(rm, '_delete_r2_prefixes', lambda config, obs, check=None: wiped.append(obs) or {'x': 2})
+    rm.remove_observation('obs1', {}, supabase_only=False, auto_approve=True, skip_rebuild=True)
+    assert wiped == ['obs1']
+    # supabase-only keeps the old answer
+    rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
+    assert wiped == ['obs1']
+
+
+def test_a_failed_version_read_refuses_with_that_reason(monkeypatch, capsys):
+    def broken(params):
+        raise RuntimeError('network down')
+    c, order = _ordered_client([{**REFS[1]}])
+    c.rpc_handlers['get_deploy_scope_version'] = broken
+    rm, deleted = _remove_env(monkeypatch, c)
+    monkeypatch.setattr('builtins.input', lambda prompt: 'y')
+    with pytest.raises(rm.RemovalRefused, match='could not read its deploy-scope version'):
+        rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=False, skip_rebuild=True)
+    assert not deleted and 'begin' not in order
+
+
+def test_publish_warns_when_live_moved_on(monkeypatch):
+    diff = {'counts': {'spectrum_gone': 3, 'spectrum_unpublished': 0, 'spectrum_science_changed': 1}}
+    _patch(monkeypatch, _client(dr_diff=diff, dr_publish=ROW))
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'publish', TAG, '--yes'])
+    assert res.exit_code == 0, res.output
+    assert 'Live has moved on since' in res.output and '3 spectrum gone' in res.output

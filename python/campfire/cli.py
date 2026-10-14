@@ -1651,9 +1651,23 @@ def dr_publish(tag, doi, known_issues, yes, as_json, local):
     """
     import json as _json
 
-    from .dr import format_release, publish_release
+    from .dr import fetch_diff, format_release, publish_release
 
     config, sb = _dr_client(local, what="`campfire dr publish`")
+    # A ready release no longer pins its observations (its bytes are archived),
+    # so live may have moved on since the freeze. Say so before publishing
+    # (Fable review of #602); `campfire dr diff` has the details.
+    try:
+        counts = (fetch_diff(sb, tag, limit=0) or {}).get('counts') or {}
+    except Exception:  # noqa: BLE001 - a warning only; dr_publish decides
+        counts = {}
+    moved = {k: int(counts.get(k) or 0) for k in
+             ('spectrum_gone', 'spectrum_unpublished', 'spectrum_science_changed')}
+    if any(moved.values()):
+        click.echo(f"⚠  Live has moved on since {tag} was frozen: " +
+                   ', '.join(f"{v:,} {k.replace('_', ' ')}" for k, v in moved.items() if v) +
+                   f" (`campfire dr diff {tag}`). The release still publishes its frozen rows.",
+                   err=as_json)
     if not yes and not click.confirm(f"Publish {tag} to every reader of its programs?", default=False):
         click.echo("Aborted.")
         sys.exit(1)
