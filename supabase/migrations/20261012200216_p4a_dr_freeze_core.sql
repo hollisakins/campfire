@@ -382,6 +382,9 @@ BEGIN
   END IF;
   -- One freeze at a time: two jobs would contend for the freeze lock and the
   -- loser would fail and retry on every pg_cron tick until the first is done.
+  -- Enqueues are serialized (a lock of their own, held to commit), so two
+  -- concurrent requests cannot both pass this check (Codex on #599).
+  PERFORM pg_advisory_xact_lock(hashtext('campfire.dr_enqueue_freeze'));
   IF EXISTS (SELECT 1 FROM dr_releases o WHERE o.tag <> p_tag AND o.state = 'freezing'
               AND o.freeze_started_at > now() - interval '1 hour') THEN
     RAISE EXCEPTION 'another release is freezing (%); wait for it (campfire dr status)',

@@ -665,13 +665,16 @@ def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, v
                   f"{', '.join('#'+str(d) for d in dep_ids)})")
             return
         def flip_all():
-            return sum(1 for dep_id in dep_ids
-                       if set_deployment_status(sb, dep_id, to_status, actor=actor) is not None)
+            # re-read under the lease: a field deploy that finished since the
+            # preview above added a deployment this flip must include (Codex on #599)
+            current = get_field_deployment_ids(sb, field)
+            return current, sum(1 for dep_id in current
+                                if set_deployment_status(sb, dep_id, to_status, actor=actor) is not None)
         # One RPC per deployment, so the field lease keeps a data-release
         # freeze from landing between them and capturing a half-published
         # field (an observation's flip is a single RPC and needs none).
-        n_ok = _under_scope_lease(config, 'field', field, False, flip_all)
-        print(f"  {verb}ed field {field}: {n_ok}/{len(dep_ids)} deployment(s) -> {to_status}")
+        current, n_ok = _under_scope_lease(config, 'field', field, False, flip_all)
+        print(f"  {verb}ed field {field}: {n_ok}/{len(current)} deployment(s) -> {to_status}")
         return
     for obs_name in obs:
         dep_id = get_latest_deployment_id(sb, obs_name)
