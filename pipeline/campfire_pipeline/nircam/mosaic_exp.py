@@ -324,7 +324,8 @@ def backfill_mosaic_exp(filter_dir, mosaic_name, *, overwrite=False):
                 xposure = np.asarray(hdul['HDRTAB'].data['XPOSURE'], dtype=np.float64)
                 exptime, nexp, nused = exp_from_context(hdul['CON'], out_shape, xposure)
                 planes, src = (exptime, nexp), 'context'
-        break
+        if planes is not None:
+            break
     if planes is None:
         src = 'footprint'
         paths = [os.path.join(filter_dir, os.path.basename(i['filename'])) for i in inputs]

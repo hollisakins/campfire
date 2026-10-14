@@ -219,3 +219,20 @@ def test_backfill_prefers_real_context(tmp_path):
     assert n[0, 0] == 2 and t[0, 0] == 400
     assert n[0, 40] == 1 and t[0, 40] == 300
     assert n[0, 47] == 0 and t[0, 47] == 0
+
+
+def test_backfill_falls_through_placeholder_i2d_to_aux(tmp_path):
+    """An i2d written with write_context=false next to an _aux that kept the
+    real CON: the _aux context wins over footprints."""
+    con = np.zeros((40, 50), np.int32)
+    con[:, :30] = 0b11
+    name = _fake_mosaic(tmp_path, con)
+    with fits.open(tmp_path / f'{name}_aux.fits') as h:
+        hdrtab = h['HDRTAB'].copy()
+    fits.HDUList([fits.PrimaryHDU(),
+                  fits.ImageHDU(np.zeros((1, 1, 1), np.int32), name='CON'), hdrtab]
+                 ).writeto(tmp_path / f'{name}_i2d.fits')
+    mx.backfill_mosaic_exp(str(tmp_path), name)
+    with fits.open(tmp_path / f'{name}_exp.fits') as h:
+        assert h['NEXP'].header['EXPSRC'] == 'context'
+        assert h['NEXP'].data[0, 0] == 2 and h['NEXP'].data[0, 40] == 0
