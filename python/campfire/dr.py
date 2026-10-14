@@ -317,3 +317,17 @@ def format_releases(report: dict) -> list[str]:
             if r.get('error'):
                 lines.append(f"  {r.get('tag')}: {r.get('error')}")
     return lines
+
+
+# ---------------------------------------------------------------------------
+# exports (P4b): readers
+# ---------------------------------------------------------------------------
+
+def fetch_files(session, tag: str) -> dict:
+    """``GET /api/v1/dr/<tag>/files`` for the caller (presigned urls of the
+    export files they may read; building them is ``campfire.dr_export``)."""
+    resp = session.get(f'/dr/{tag}/files', timeout=60)
+    if resp.status_code == 404:
+        raise RuntimeError(f"release {tag} is not available to you (unknown, or not published)")
+    resp.raise_for_status()
+    return resp.json()

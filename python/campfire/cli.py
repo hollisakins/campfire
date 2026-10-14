@@ -1271,7 +1271,7 @@ def verify(obs_filter, cloud, deep, as_json, local):
 
 @cli.group(name="dr")
 def dr_group():
-    """Data-release tooling (admin): readiness, freeze, purge."""
+    """Data-release tooling (admin): readiness, freeze, export, purge."""
 
 
 @dr_group.command(name="status")
@@ -1404,20 +1404,61 @@ def dr_freeze(tag, nirspec, fields, photometry, notes, inline, no_wait, poll, ti
         sys.exit(0)
 
 
+def _dr_osn_s3(config, *, max_pool_connections: int = 10):
+    """(s3 client, bucket) for the OSN data bucket the data releases live on,
+    or (None, reason). The [r2_osn] block (CAMPFIRE_S3_OSN_*), else a data
+    block that itself points at OSN."""
+    from campfire.deploy.backend import make_s3_client, resolve_backend
+    errors = []
+    for purpose in ('osn', 'data'):
+        try:
+            cand = resolve_backend(config, purpose)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{purpose}: {e}")
+            continue
+        if cand.backend == 'osn':
+            return make_s3_client(cand, max_pool_connections=max_pool_connections), cand.bucket
+        errors.append(f"{purpose}: resolves to {cand.backend}, not OSN")
+    return None, '; '.join(errors)
+
+
 @dr_group.command(name="purge")
 @click.argument("tag")
 @click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
+@click.option("--keep-exports", is_flag=True,
+              help="Delete the rows only, leaving the export files under dr/TAG/exports/ (no OSN credentials needed)")
 @click.option("--local", is_flag=True, help="Against local Supabase")
-def dr_purge(tag, yes, local):
+def dr_purge(tag, yes, keep_exports, local):
     """Delete an UNPUBLISHED release and all its frozen rows.
 
     The clean-up after a rehearsal freeze or a failed attempt. Published
-    (or withdrawn) tags are never purged; archive bytes already copied for
-    the tag stay (dedup by hash; retention is `campfire archive gc`).
+    (or withdrawn) tags are never purged. The release's export files
+    (dr/TAG/exports/ on the OSN data bucket) are deleted with it, which needs
+    OSN credentials (CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml);
+    --keep-exports skips that. With --local the files are never touched: the
+    local database redirects Supabase only, so the bucket is still the shared
+    one and the same tag may be a production release. Archive bytes already copied for the tag stay
+    (dedup by hash; retention is `campfire archive gc`).
     """
     from .dr import purge_release
 
     config, sb = _dr_client(local, what="`campfire dr purge`")
+    s3 = bucket = None
+    if local and not keep_exports:
+        # --local redirects the database only; the object-store config is the
+        # shared one, so a local purge must never delete a (possibly
+        # production) release's exports (Codex on #600)
+        click.echo(f"  --local: the export files under dr/{tag}/exports/ are left alone "
+                   f"(the bucket is the shared one)")
+        keep_exports = True
+    if not keep_exports:
+        # resolved BEFORE the rows go, so a missing credential never strands
+        # the files of a purged tag (nothing would name them afterwards)
+        s3, bucket = _dr_osn_s3(config)
+        if s3 is None:
+            click.echo(f"✗ Deleting the export files of {tag} needs OSN credentials ({bucket}); "
+                       f"pass --keep-exports to purge the rows only.")
+            sys.exit(2)
     if not yes:
         click.confirm(f"Delete release {tag} and every frozen row under it?", abort=True)
     try:
@@ -1429,6 +1470,57 @@ def dr_purge(tag, yes, local):
     deleted = result.get('deleted') or {}
     parts = [f"{int(v):,} {k}" for k, v in deleted.items() if v]
     click.echo(f"Purged {tag} (was {result.get('state_before')}): " + (' · '.join(parts) or 'no rows'))
+    if s3 is not None:
+        # only after the purge succeeded: a refused purge (published tag) keeps its files
+        from campfire.deploy.tiles import delete_r2_prefix
+        try:
+            n = delete_r2_prefix(s3, bucket, f"dr/{tag}/exports/")
+        except Exception as e:  # noqa: BLE001
+            click.echo(f"✗ The rows are gone, but deleting dr/{tag}/exports/ failed: {e}")
+            sys.exit(1)
+        click.echo(f"  deleted {n:,} export file(s) under dr/{tag}/exports/")
+
+
+@dr_group.command(name="export")
+@click.option("--tag", required=True, metavar="TAG", help="Release tag to export")
+@click.option("--json", "as_json", is_flag=True, help="Print the run report as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (refused: the bucket is the shared one)")
+def dr_export(tag, as_json, local):
+    """Build the export files of a frozen release (P4b).
+
+    Writes one gzip JSONL file per (stream, program or component) under
+    dr/TAG/exports/ on the OSN data bucket, from the frozen rows, here on this
+    machine (OSN credentials: CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml).
+    The dr_exports ledger makes it resumable: a rerun builds only the files
+    that are not ready. Needs `campfire login` as an admin.
+    """
+    import json as _json
+
+    from .dr_export import format_export_report, run_export
+
+    say = (lambda m: click.echo(m, err=True)) if as_json else click.echo
+    if local:
+        # a local ledger with the shared bucket: the end-of-run sweep would
+        # treat a production tag's files as superseded
+        say("✗ `campfire dr export --local` is refused: the bucket is the shared one.")
+        sys.exit(2)
+    config, sb = _dr_client(False, what="`campfire dr export`")
+    s3, bucket = _dr_osn_s3(config)
+    if s3 is None:
+        say(f"✗ `campfire dr export` needs OSN credentials for the data bucket ({bucket}).")
+        sys.exit(2)
+    say(f"Exporting {tag} …")
+    try:
+        report = run_export(sb, s3, bucket, tag, log=say)
+    except Exception as e:  # noqa: BLE001 - one line, not a traceback
+        say(f"✗ {getattr(e, 'message', None) or e}")
+        sys.exit(1)
+    if as_json:
+        click.echo(_json.dumps(report.as_dict(), indent=2, sort_keys=True, default=str))
+    else:
+        click.echo(format_export_report(report))
+    if report.failed or report.remaining > 0:
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
