@@ -65,11 +65,11 @@ def test_gc_candidates_pages_on_id(monkeypatch):
 def test_gc_report_totals_bytes_at_rest_by_field():
     rows = [_row(1, days_ago=400), _row(6, days_ago=800, stored=400, field='egs')]
     rep = gc_report(rows, older_than_days=365, now=NOW)
-    assert rep['dry_run'] is True and rep['dr_membership_checked'] is False
+    assert rep['dry_run'] is True and rep['dr_manifesthip_checked'] is False
     assert rep['candidates'] == 2 and rep['bytes_at_rest'] == 1400
     assert rep['by_field'] == {'cosmos': {'objects': 1, 'bytes': 1000}, 'egs': {'objects': 1, 'bytes': 400}}
     text = format_gc_report(rep)
-    assert 'dry run' in text and 'Nothing is collected' in text and 'dr_members lands with P4' in text
+    assert 'dry run' in text and 'Nothing is collected' in text and 'dr_manifest lands with P4' in text
     assert 'Candidates: 2 object(s)' in text and 'cosmos' in text and 'egs' in text
 
 

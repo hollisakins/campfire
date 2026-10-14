@@ -80,7 +80,7 @@ A parsed key or relpath carries a `root` (`ParsedKey.root` / TS `ParsedKey.root`
 |---|---|---|---|---|
 | `live` | today's keys and relpaths | `parse_key`, `parse_relpath` | yes (`storage_key`) | yes |
 | `archive` | `archive/<sha256 hex>/<relpath>` — the content-addressed store every published NIRSpec final / sidecar / mosaic is retained in | `parse_key` | itself (`archive_key`, `key_for_parsed`) | **never** (written once, server-side) |
-| `dr` | `dr/<tag>/products/<relpath>` — a release's local tree | `parse_relpath` | **none** (its bytes come from `archive/` via `dr_members`) | n/a |
+| `dr` | `dr/<tag>/products/<relpath>` — a release's local tree | `parse_relpath` | **none** (its bytes come from `archive/` via `dr_manifest`) | n/a |
 
 Rules the goldens pin (`archive_keys`, `archive_rejected_keys`, `dr_relpaths`,
 `dr_rejected_relpaths`, `foreign_root_keys`): a rebuild always goes through

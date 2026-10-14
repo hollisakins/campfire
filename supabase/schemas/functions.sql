@@ -8882,7 +8882,7 @@ DECLARE
   r dr_releases%ROWTYPE;
   comp record;
   v_t0 timestamptz := clock_timestamp();
-  v_n_spectra bigint; v_n_objects bigint; v_n_lines bigint; v_n_phot bigint; v_n_members bigint;
+  v_n_spectra bigint; v_n_objects bigint; v_n_lines bigint; v_n_phot bigint; v_n_manifest bigint;
   v_xmin bigint;
   v_missing text;
   v_err text;
@@ -8924,7 +8924,7 @@ BEGIN
     SELECT * INTO comp FROM dr_parse_components(r.components);
 
     -- Partial rows of a previous attempt under this tag.
-    DELETE FROM dr_members    WHERE tag = p_tag;
+    DELETE FROM dr_manifest    WHERE tag = p_tag;
     DELETE FROM dr_line_fits  WHERE tag = p_tag;
     DELETE FROM dr_photometry WHERE tag = p_tag;
     DELETE FROM dr_spectra    WHERE tag = p_tag;
@@ -9090,7 +9090,7 @@ BEGIN
       RETURNING 1
     ),
     ins_members AS (
-      INSERT INTO dr_members (tag, storage_key, component, program_slug, field, product_type,
+      INSERT INTO dr_manifest (tag, storage_key, component, program_slug, field, product_type,
                               spectrum_id, backend, bucket, content_hash, science_hash, size_bytes,
                               registry_id)
       -- NIRSpec finals + the sidecars registered with a spectrum_id, joined
@@ -9157,7 +9157,7 @@ BEGIN
            (SELECT count(*) FROM ins_lines), (SELECT count(*) FROM ins_phot),
            (SELECT count(*) FROM ins_members),
            pg_snapshot_xmin(pg_current_snapshot())::text::bigint
-      INTO v_n_spectra, v_n_objects, v_n_lines, v_n_phot, v_n_members, v_xmin;
+      INTO v_n_spectra, v_n_objects, v_n_lines, v_n_phot, v_n_manifest, v_xmin;
 
     -- Every published mosaic of a selected field must have become a member: a
     -- mosaic without an active registry row would otherwise be dropped with no
@@ -9166,7 +9166,7 @@ BEGIN
     SELECT string_agg(ni.file_path, ', ' ORDER BY ni.file_path) INTO v_missing
     FROM nircam_images ni
     WHERE ni.deploy_status = 'published' AND ni.field = ANY (comp.fields)
-      AND NOT EXISTS (SELECT 1 FROM dr_members m WHERE m.tag = p_tag AND m.storage_key = ni.file_path);
+      AND NOT EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.storage_key = ni.file_path);
     IF v_missing IS NOT NULL THEN
       RAISE EXCEPTION 'published mosaics without an active registry row of their deployment (finish or redo the field deploy, or leave the field out): %',
         left(v_missing, 1500);
@@ -9177,7 +9177,7 @@ BEGIN
     SELECT string_agg(d.spectrum_id, ', ' ORDER BY d.spectrum_id) INTO v_missing
     FROM dr_spectra d
     WHERE d.tag = p_tag
-      AND NOT EXISTS (SELECT 1 FROM dr_members m
+      AND NOT EXISTS (SELECT 1 FROM dr_manifest m
                       WHERE m.tag = p_tag AND m.spectrum_id = d.spectrum_id AND m.product_type = 'nirspec_spec'
                         -- the SAME bytes the catalog row describes: a --supabase-only
                         -- redeploy leaves the old registry row active (Codex on #599)
@@ -9212,12 +9212,12 @@ BEGIN
            snapshot_xmin = v_xmin,
            counts = jsonb_build_object(
              'spectra', v_n_spectra, 'objects', v_n_objects, 'line_fits', v_n_lines,
-             'photometry', v_n_phot, 'members', v_n_members,
+             'photometry', v_n_phot, 'manifest', v_n_manifest,
              -- per product type, so a shortfall (e.g. sidecars whose registry
              -- row did not match the key) shows at freeze time, not in the
              -- byte pass
-             'members_by_type', (SELECT COALESCE(jsonb_object_agg(t.product_type, t.n), '{}'::jsonb)
-                                 FROM (SELECT m.product_type, count(*) AS n FROM dr_members m
+             'manifest_by_type', (SELECT COALESCE(jsonb_object_agg(t.product_type, t.n), '{}'::jsonb)
+                                 FROM (SELECT m.product_type, count(*) AS n FROM dr_manifest m
                                        WHERE m.tag = p_tag GROUP BY m.product_type) t),
              'nircam_fields', to_jsonb(comp.fields), 'photometry_components', to_jsonb(comp.photometry)),
            error = NULL,
@@ -9229,7 +9229,7 @@ BEGIN
     VALUES (COALESCE(auth.uid(), r.freeze_requested_by, r.created_by), 'freeze', v_n_spectra::int,
             jsonb_build_object('dr_tag', p_tag, 'components', r.components,
                                'counts', jsonb_build_object('spectra', v_n_spectra, 'objects', v_n_objects,
-                                 'line_fits', v_n_lines, 'photometry', v_n_phot, 'members', v_n_members),
+                                 'line_fits', v_n_lines, 'photometry', v_n_phot, 'manifest', v_n_manifest),
                                'duration_ms', (extract(epoch FROM clock_timestamp() - v_t0) * 1000)::int));
   EXCEPTION WHEN query_canceled OR OTHERS THEN
     -- query_canceled is listed explicitly: OTHERS does not include it, and a
@@ -9369,7 +9369,7 @@ BEGIN
     RAISE EXCEPTION 'release % is freezing (started %); wait for it to finish or fail', p_tag, r.freeze_started_at;
   END IF;
   PERFORM dr_cron_unschedule(p_tag);
-  DELETE FROM dr_members    WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
+  DELETE FROM dr_manifest    WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
   DELETE FROM dr_line_fits  WHERE tag = p_tag; GET DIAGNOSTICS n_lines = ROW_COUNT;
   DELETE FROM dr_photometry WHERE tag = p_tag; GET DIAGNOSTICS n_phot = ROW_COUNT;
   DELETE FROM dr_spectra    WHERE tag = p_tag; GET DIAGNOSTICS n_spectra = ROW_COUNT;
@@ -9380,11 +9380,11 @@ BEGIN
   VALUES (auth.uid(), 'delete', n_spectra::int,
           jsonb_build_object('dr_tag', p_tag, 'purge', true, 'state_before', r.state,
                              'rows', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
-                               'line_fits', n_lines, 'photometry', n_phot, 'members', n_members,
+                               'line_fits', n_lines, 'photometry', n_phot, 'manifest', n_members,
                                'exports', n_exports)));
   RETURN jsonb_build_object('tag', p_tag, 'state_before', r.state,
                             'deleted', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
-                              'line_fits', n_lines, 'photometry', n_phot, 'members', n_members,
+                              'line_fits', n_lines, 'photometry', n_phot, 'manifest', n_members,
                               'exports', n_exports));
 END;
 $$;

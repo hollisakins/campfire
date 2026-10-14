@@ -1537,7 +1537,7 @@ ALTER TABLE "public"."sync_deletions" OWNER TO "postgres";
 -- Data releases (P4a, docs/design-data-releases.md §4.3, impl plan §6)
 -- =============================================================================
 -- A DR is an immutable freeze of the published catalog: frozen tables (here),
--- per-partition exports (dr_exports, P4b) and archive bytes (dr_members.
+-- per-partition exports (dr_exports, P4b) and archive bytes (dr_manifest.
 -- byte_state, P4c). The frozen tables carry NO foreign keys to live rows (live
 -- rebuilds hard-delete objects, and line fits cascade) and denormalize
 -- program_slug / programs / field for row-local RLS. Written by dr_freeze_job
@@ -1564,7 +1564,7 @@ CREATE TABLE IF NOT EXISTS "public"."dr_releases" (
     "freeze_duration_ms" integer,
     -- xmin of the freeze statement's snapshot (pg_current_snapshot()).
     "snapshot_xmin" bigint,
-    -- {spectra, objects, line_fits, photometry, members, ...} written by the freeze.
+    -- {spectra, objects, line_fits, photometry, manifest, manifest_by_type, ...} written by the freeze.
     "counts" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
     "error" "text",
     "published_at" timestamp with time zone,
@@ -1662,10 +1662,10 @@ ALTER TABLE "public"."dr_objects" OWNER TO "postgres";
 
 COMMENT ON TABLE "public"."dr_objects" IS 'Frozen objects of a data release: catalog aggregates, inspection state (redshift, quality, inspector, review state) and the auto-redshift source spectrum, all evaluated in the freeze snapshot. object_id is the live objects.id at the time, name the public object_id string.';
 
--- dr_members: every storage object the DR references (finals + sidecars per
+-- dr_manifest: every storage object the DR references (finals + sidecars per
 -- spectrum, published mosaics per NIRCam field; P(z) sidecars are key-only and
 -- stay live, D-P4-5) with the byte-pass state the P4c pass advances.
-CREATE TABLE IF NOT EXISTS "public"."dr_members" (
+CREATE TABLE IF NOT EXISTS "public"."dr_manifest" (
     "tag" "text" NOT NULL,
     "storage_key" "text" NOT NULL,
     -- nirspec | nircam/<field> | photometry/<field>/<catalog_name>
@@ -1687,13 +1687,13 @@ CREATE TABLE IF NOT EXISTS "public"."dr_members" (
     "stamped_hash" "text",
     "byte_error" "text",
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "dr_members_pkey" PRIMARY KEY ("tag", "storage_key"),
-    CONSTRAINT "dr_members_byte_state_check" CHECK (("byte_state" = ANY (ARRAY['pending'::"text", 'copied'::"text", 'stamped'::"text", 'failed'::"text"])))
+    CONSTRAINT "dr_manifest_pkey" PRIMARY KEY ("tag", "storage_key"),
+    CONSTRAINT "dr_manifest_byte_state_check" CHECK (("byte_state" = ANY (ARRAY['pending'::"text", 'copied'::"text", 'stamped'::"text", 'failed'::"text"])))
 );
 
-ALTER TABLE "public"."dr_members" OWNER TO "postgres";
+ALTER TABLE "public"."dr_manifest" OWNER TO "postgres";
 
-COMMENT ON TABLE "public"."dr_members" IS 'Storage objects referenced by a data release (one row per live key at the freeze) and the archive copy the byte pass (P4c) makes for each: archive_key, byte_state pending → copied/stamped, stamped_hash. Program-scoped rows carry program_slug; field-level rows (mosaics) carry field.';
+COMMENT ON TABLE "public"."dr_manifest" IS 'Storage objects referenced by a data release (one row per live key at the freeze) and the archive copy the byte pass (P4c) makes for each: archive_key, byte_state pending → copied/stamped, stamped_hash. Program-scoped rows carry program_slug; field-level rows (mosaics) carry field.';
 
 -- dr_line_fits: spectrum_line_fits of the frozen spectra, with the staleness
 -- flags evaluated in the same snapshot.
@@ -3147,10 +3147,10 @@ REVOKE ALL ON TABLE "public"."dr_objects" FROM "anon";
 REVOKE ALL ON TABLE "public"."dr_objects" FROM "authenticated";
 GRANT SELECT ON TABLE "public"."dr_objects" TO "authenticated";
 GRANT ALL ON TABLE "public"."dr_objects" TO "service_role";
-REVOKE ALL ON TABLE "public"."dr_members" FROM "anon";
-REVOKE ALL ON TABLE "public"."dr_members" FROM "authenticated";
-GRANT SELECT ON TABLE "public"."dr_members" TO "authenticated";
-GRANT ALL ON TABLE "public"."dr_members" TO "service_role";
+REVOKE ALL ON TABLE "public"."dr_manifest" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_manifest" FROM "authenticated";
+GRANT SELECT ON TABLE "public"."dr_manifest" TO "authenticated";
+GRANT ALL ON TABLE "public"."dr_manifest" TO "service_role";
 REVOKE ALL ON TABLE "public"."dr_line_fits" FROM "anon";
 REVOKE ALL ON TABLE "public"."dr_line_fits" FROM "authenticated";
 GRANT SELECT ON TABLE "public"."dr_line_fits" TO "authenticated";

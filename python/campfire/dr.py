@@ -272,12 +272,13 @@ def format_release(row: dict) -> str:
     if comps:
         lines.append(f"  components: {', '.join(str(c) for c in comps)}")
     if counts:
-        parts = [f"{_n(counts.get(k))} {k}" for k in ('spectra', 'objects', 'line_fits', 'photometry', 'members')
+        label = {'manifest': 'manifest files'}
+        parts = [f"{_n(counts.get(k))} {label.get(k, k)}" for k in ('spectra', 'objects', 'line_fits', 'photometry', 'manifest')
                  if counts.get(k) is not None]
         lines.append('  frozen: ' + ' · '.join(parts))
-        by_type = counts.get('members_by_type') or {}
+        by_type = counts.get('manifest_by_type') or {}
         if by_type:
-            lines.append('  members: ' + ' · '.join(f"{_n(v)} {k}" for k, v in sorted(by_type.items())))
+            lines.append('  manifest: ' + ' · '.join(f"{_n(v)} {k}" for k, v in sorted(by_type.items())))
     if row.get('state') == 'freezing' and row.get('freeze_started_at'):
         # a freeze that never lands (the pg_cron job did not run) is visible as such
         lines.append(f"  freezing since {_when(row.get('freeze_started_at'))}")
@@ -306,9 +307,9 @@ def format_releases(report: dict) -> list[str]:
             counts = r.get('counts') or {}
             rows.append([str(r.get('tag')), str(r.get('state')),
                          _n(counts.get('spectra'), '-'), _n(counts.get('objects'), '-'),
-                         _n(counts.get('members'), '-'),
+                         _n(counts.get('manifest'), '-'),
                          _when(r.get('frozen_at')), _when(r.get('published_at'))])
-        lines.extend(_table(rows, ['tag', 'state', 'spectra', 'objects', 'members', 'frozen', 'published'],
+        lines.extend(_table(rows, ['tag', 'state', 'spectra', 'objects', 'files', 'frozen', 'published'],
                             right={2, 3, 4}))
         for r in releases:
             if r.get('state') == 'freezing' and r.get('freeze_started_at'):

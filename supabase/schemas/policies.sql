@@ -1812,7 +1812,7 @@ CREATE POLICY "admin_manage_share_links"
 ALTER TABLE dr_releases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_spectra ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_objects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dr_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_manifest ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_line_fits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_photometry ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_exports ENABLE ROW LEVEL SECURITY;
@@ -1853,9 +1853,9 @@ CREATE POLICY "select_dr_objects"
 -- Program-scoped rows (NIRSpec finals and sidecars) by program_slug;
 -- field-level rows (mosaics, P(z) sidecars; program_slug IS NULL) are visible
 -- to every authenticated account, as published field deployments are live.
-DROP POLICY IF EXISTS "select_dr_members" ON dr_members;
-CREATE POLICY "select_dr_members"
-  ON dr_members FOR SELECT TO authenticated
+DROP POLICY IF EXISTS "select_dr_manifest" ON dr_manifest;
+CREATE POLICY "select_dr_manifest"
+  ON dr_manifest FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
     AND tag = ANY((SELECT public.dr_visible_tags())::text[])

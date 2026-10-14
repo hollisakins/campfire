@@ -9,7 +9,7 @@ collected (design §4.2), so this module refuses to even list them.
 Collection is a status flip, not a delete: a collected row keeps its hash, size
 and date (``status = 'collected'``, ``collected_at``) so a manifest resolves to
 "existed, collected on <date>". The real collection lands with P4, because it
-must skip every object a published DR references (``dr_members``); until then
+must skip every object a published DR references (``dr_manifest``); until then
 this module is a dry run only -- it lists what the window would select and how
 many bytes at rest that is, and changes nothing.
 
@@ -44,7 +44,7 @@ def gc_candidates(client, *, older_than_days: int = DEFAULT_RETENTION_DAYS,
     archive never needs one unbounded request. Always the full set: the
     report's totals must describe everything the window selects, so any
     display cap is applied by :func:`gc_report` (``max_rows``), never here.
-    DR membership is NOT checked here (``dr_members`` arrives with P4); the
+    DR membership is NOT checked here (``dr_manifest`` arrives with P4); the
     report says so.
     """
     types = tuple(product_types)
@@ -105,7 +105,7 @@ def gc_report(rows: list[dict], *, older_than_days: int, now: Optional[datetime]
         'dry_run': True,
         'older_than_days': older_than_days,
         'product_types': list(COLLECTABLE_PRODUCT_TYPES),
-        'dr_membership_checked': False,
+        'dr_manifesthip_checked': False,
         'candidates': len(rows),
         'bytes_at_rest': total,
         'by_field': by_field,
@@ -129,7 +129,7 @@ def format_gc_report(report: dict, *, max_rows: int = 20) -> str:
     lines = [
         f"Archive gc (dry run)  window: mosaics archived more than {report['older_than_days']} day(s) ago",
         "  Nothing is collected by this command. DR membership is not checked yet "
-        "(dr_members lands with P4); NIRSpec products are never collected.",
+        "(dr_manifest lands with P4); NIRSpec products are never collected.",
         f"  Candidates: {report['candidates']:,} object(s), "
         f"{format_size(int(report['bytes_at_rest']))} at rest",
     ]

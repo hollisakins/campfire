@@ -93,7 +93,7 @@ class _FakeClient:
 
 
 FROZEN = {'tag': 'DR-t', 'state': 'frozen', 'components': ['nirspec'],
-          'counts': {'spectra': 163, 'objects': 101, 'line_fits': 19, 'photometry': 0, 'members': 489},
+          'counts': {'spectra': 163, 'objects': 101, 'line_fits': 19, 'photometry': 0, 'manifest': 489},
           'error': None, 'frozen_at': '2026-10-12T19:54:12+00:00', 'freeze_duration_ms': 20}
 
 
@@ -152,7 +152,7 @@ def test_format_release_block():
     text = format_release(FROZEN)
     assert text.splitlines()[0] == 'DR-t: frozen'
     assert 'components: nirspec' in text
-    assert 'frozen: 163 spectra · 101 objects · 19 line_fits · 0 photometry · 489 members' in text
+    assert 'frozen: 163 spectra · 101 objects · 19 line_fits · 0 photometry · 489 manifest files' in text
     assert 'frozen at 2026-10-12 19:54 UTC in 0.0 s' in text
     assert 'error' not in text
     assert 'error: boom' in format_release({**FROZEN, 'state': 'failed', 'error': 'boom'})
@@ -265,11 +265,11 @@ def test_cli_freeze_json_stdout_is_pure_json(monkeypatch):
     assert 'Freeze of DR-t' in res.stderr
 
 
-def test_status_shows_a_freeze_in_progress_and_members_by_type():
+def test_status_shows_a_freeze_in_progress_and_manifest_by_type():
     # Fable review of #599: a freeze that never lands must be visible as such
     row = {'tag': 'DR-t', 'state': 'freezing', 'freeze_started_at': '2026-10-13T20:00:00+00:00', 'counts': {}}
     assert 'freezing since 2026-10-13 20:00 UTC' in format_release(row)
     report = {'generated_at': None, 'spectra_by_version': {}, 'leases': [], 'releases': [row]}
     assert any('DR-t: freezing since' in l for l in format_releases(report))
-    frozen = {**FROZEN, 'counts': {**FROZEN['counts'], 'members_by_type': {'nirspec_spec': 163, 'zfit': 160}}}
-    assert 'members: 163 nirspec_spec · 160 zfit' in format_release(frozen)
+    frozen = {**FROZEN, 'counts': {**FROZEN['counts'], 'manifest_by_type': {'nirspec_spec': 163, 'zfit': 160}}}
+    assert 'manifest: 163 nirspec_spec · 160 zfit' in format_release(frozen)

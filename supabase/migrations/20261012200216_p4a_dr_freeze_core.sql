@@ -64,7 +64,7 @@ ALTER TABLE "public"."dr_line_fits"
 
 REVOKE ALL ON TABLE "public"."dr_line_fits" FROM "anon";
 
-CREATE TABLE "public"."dr_members" (
+CREATE TABLE "public"."dr_manifest" (
   "tag"          text                     NOT NULL,
   "storage_key"  text                     NOT NULL,
   "component"    text                     NOT NULL,
@@ -83,14 +83,14 @@ CREATE TABLE "public"."dr_members" (
   "stamped_hash" text,
   "byte_error"   text,
   "updated_at"   timestamp with time zone NOT NULL DEFAULT now(),
-  CONSTRAINT "dr_members_byte_state_check" CHECK ((byte_state = ANY (ARRAY['pending'::text, 'copied'::text, 'stamped'::text, 'failed'::text]))),
-  CONSTRAINT "dr_members_pkey" PRIMARY KEY (TAG, storage_key)
+  CONSTRAINT "dr_manifest_byte_state_check" CHECK ((byte_state = ANY (ARRAY['pending'::text, 'copied'::text, 'stamped'::text, 'failed'::text]))),
+  CONSTRAINT "dr_manifest_pkey" PRIMARY KEY (TAG, storage_key)
 );
 
-ALTER TABLE "public"."dr_members"
+ALTER TABLE "public"."dr_manifest"
   ENABLE ROW LEVEL SECURITY;
 
-REVOKE ALL ON TABLE "public"."dr_members" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_manifest" FROM "anon";
 
 CREATE TABLE "public"."dr_objects" (
   "tag"                  text                     NOT NULL,
@@ -449,7 +449,7 @@ DECLARE
   r dr_releases%ROWTYPE;
   comp record;
   v_t0 timestamptz := clock_timestamp();
-  v_n_spectra bigint; v_n_objects bigint; v_n_lines bigint; v_n_phot bigint; v_n_members bigint;
+  v_n_spectra bigint; v_n_objects bigint; v_n_lines bigint; v_n_phot bigint; v_n_manifest bigint;
   v_xmin bigint;
   v_missing text;
   v_err text;
@@ -491,7 +491,7 @@ BEGIN
     SELECT * INTO comp FROM dr_parse_components(r.components);
 
     -- Partial rows of a previous attempt under this tag.
-    DELETE FROM dr_members    WHERE tag = p_tag;
+    DELETE FROM dr_manifest    WHERE tag = p_tag;
     DELETE FROM dr_line_fits  WHERE tag = p_tag;
     DELETE FROM dr_photometry WHERE tag = p_tag;
     DELETE FROM dr_spectra    WHERE tag = p_tag;
@@ -657,7 +657,7 @@ BEGIN
       RETURNING 1
     ),
     ins_members AS (
-      INSERT INTO dr_members (tag, storage_key, component, program_slug, field, product_type,
+      INSERT INTO dr_manifest (tag, storage_key, component, program_slug, field, product_type,
                               spectrum_id, backend, bucket, content_hash, science_hash, size_bytes,
                               registry_id)
       -- NIRSpec finals + the sidecars registered with a spectrum_id, joined
@@ -724,7 +724,7 @@ BEGIN
            (SELECT count(*) FROM ins_lines), (SELECT count(*) FROM ins_phot),
            (SELECT count(*) FROM ins_members),
            pg_snapshot_xmin(pg_current_snapshot())::text::bigint
-      INTO v_n_spectra, v_n_objects, v_n_lines, v_n_phot, v_n_members, v_xmin;
+      INTO v_n_spectra, v_n_objects, v_n_lines, v_n_phot, v_n_manifest, v_xmin;
 
     -- Every published mosaic of a selected field must have become a member: a
     -- mosaic without an active registry row would otherwise be dropped with no
@@ -733,7 +733,7 @@ BEGIN
     SELECT string_agg(ni.file_path, ', ' ORDER BY ni.file_path) INTO v_missing
     FROM nircam_images ni
     WHERE ni.deploy_status = 'published' AND ni.field = ANY (comp.fields)
-      AND NOT EXISTS (SELECT 1 FROM dr_members m WHERE m.tag = p_tag AND m.storage_key = ni.file_path);
+      AND NOT EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.storage_key = ni.file_path);
     IF v_missing IS NOT NULL THEN
       RAISE EXCEPTION 'published mosaics without an active registry row of their deployment (finish or redo the field deploy, or leave the field out): %',
         left(v_missing, 1500);
@@ -744,7 +744,7 @@ BEGIN
     SELECT string_agg(d.spectrum_id, ', ' ORDER BY d.spectrum_id) INTO v_missing
     FROM dr_spectra d
     WHERE d.tag = p_tag
-      AND NOT EXISTS (SELECT 1 FROM dr_members m
+      AND NOT EXISTS (SELECT 1 FROM dr_manifest m
                       WHERE m.tag = p_tag AND m.spectrum_id = d.spectrum_id AND m.product_type = 'nirspec_spec'
                         -- the SAME bytes the catalog row describes: a --supabase-only
                         -- redeploy leaves the old registry row active (Codex on #599)
@@ -779,12 +779,12 @@ BEGIN
            snapshot_xmin = v_xmin,
            counts = jsonb_build_object(
              'spectra', v_n_spectra, 'objects', v_n_objects, 'line_fits', v_n_lines,
-             'photometry', v_n_phot, 'members', v_n_members,
+             'photometry', v_n_phot, 'manifest', v_n_manifest,
              -- per product type, so a shortfall (e.g. sidecars whose registry
              -- row did not match the key) shows at freeze time, not in the
              -- byte pass
-             'members_by_type', (SELECT COALESCE(jsonb_object_agg(t.product_type, t.n), '{}'::jsonb)
-                                 FROM (SELECT m.product_type, count(*) AS n FROM dr_members m
+             'manifest_by_type', (SELECT COALESCE(jsonb_object_agg(t.product_type, t.n), '{}'::jsonb)
+                                 FROM (SELECT m.product_type, count(*) AS n FROM dr_manifest m
                                        WHERE m.tag = p_tag GROUP BY m.product_type) t),
              'nircam_fields', to_jsonb(comp.fields), 'photometry_components', to_jsonb(comp.photometry)),
            error = NULL,
@@ -796,7 +796,7 @@ BEGIN
     VALUES (COALESCE(auth.uid(), r.freeze_requested_by, r.created_by), 'freeze', v_n_spectra::int,
             jsonb_build_object('dr_tag', p_tag, 'components', r.components,
                                'counts', jsonb_build_object('spectra', v_n_spectra, 'objects', v_n_objects,
-                                 'line_fits', v_n_lines, 'photometry', v_n_phot, 'members', v_n_members),
+                                 'line_fits', v_n_lines, 'photometry', v_n_phot, 'manifest', v_n_manifest),
                                'duration_ms', (extract(epoch FROM clock_timestamp() - v_t0) * 1000)::int));
   EXCEPTION WHEN query_canceled OR OTHERS THEN
     -- query_canceled is listed explicitly: OTHERS does not include it, and a
@@ -893,7 +893,7 @@ BEGIN
     RAISE EXCEPTION 'release % is freezing (started %); wait for it to finish or fail', p_tag, r.freeze_started_at;
   END IF;
   PERFORM dr_cron_unschedule(p_tag);
-  DELETE FROM dr_members    WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
+  DELETE FROM dr_manifest    WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
   DELETE FROM dr_line_fits  WHERE tag = p_tag; GET DIAGNOSTICS n_lines = ROW_COUNT;
   DELETE FROM dr_photometry WHERE tag = p_tag; GET DIAGNOSTICS n_phot = ROW_COUNT;
   DELETE FROM dr_spectra    WHERE tag = p_tag; GET DIAGNOSTICS n_spectra = ROW_COUNT;
@@ -904,11 +904,11 @@ BEGIN
   VALUES (auth.uid(), 'delete', n_spectra::int,
           jsonb_build_object('dr_tag', p_tag, 'purge', true, 'state_before', r.state,
                              'rows', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
-                               'line_fits', n_lines, 'photometry', n_phot, 'members', n_members,
+                               'line_fits', n_lines, 'photometry', n_phot, 'manifest', n_members,
                                'exports', n_exports)));
   RETURN jsonb_build_object('tag', p_tag, 'state_before', r.state,
                             'deleted', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
-                              'line_fits', n_lines, 'photometry', n_phot, 'members', n_members,
+                              'line_fits', n_lines, 'photometry', n_phot, 'manifest', n_members,
                               'exports', n_exports));
 END;
 $function$;
@@ -1155,15 +1155,15 @@ REVOKE ALL ON FUNCTION "public"."dr_visible_tags"() FROM PUBLIC, "anon";
 
 CREATE INDEX idx_dr_line_fits_tag_program ON public.dr_line_fits USING btree (TAG, program_slug);
 
-CREATE INDEX idx_dr_members_science_hash ON public.dr_members USING btree (science_hash)
+CREATE INDEX idx_dr_manifest_science_hash ON public.dr_manifest USING btree (science_hash)
   WHERE (science_hash IS NOT NULL);
 
-CREATE INDEX idx_dr_members_spectrum ON public.dr_members USING btree (spectrum_id)
+CREATE INDEX idx_dr_manifest_spectrum ON public.dr_manifest USING btree (spectrum_id)
   WHERE (spectrum_id IS NOT NULL);
 
-CREATE INDEX idx_dr_members_tag_component ON public.dr_members USING btree (TAG, component);
+CREATE INDEX idx_dr_manifest_tag_component ON public.dr_manifest USING btree (TAG, component);
 
-CREATE INDEX idx_dr_members_tag_pending ON public.dr_members USING btree (TAG, storage_key)
+CREATE INDEX idx_dr_manifest_tag_pending ON public.dr_manifest USING btree (TAG, storage_key)
   WHERE (byte_state = 'pending'::text);
 
 CREATE INDEX idx_dr_objects_programs ON public.dr_objects USING gin (programs);
@@ -1192,7 +1192,7 @@ CREATE POLICY "select_dr_line_fits" ON "public"."dr_line_fits"
     ((( SELECT (NOT public.is_link_account())) AND (TAG = ANY (( SELECT public.dr_visible_tags() AS dr_visible_tags)::text[])) AND (program_slug = ANY (( SELECT
     public.accessible_program_slugs() AS accessible_program_slugs)::text[]))));
 
-CREATE POLICY "select_dr_members" ON "public"."dr_members"
+CREATE POLICY "select_dr_manifest" ON "public"."dr_manifest"
   FOR SELECT
   TO "authenticated"
   USING
@@ -1239,7 +1239,7 @@ COMMENT ON TABLE "public"."dr_exports" IS 'Export ledger of a data release (P4b)
 
 COMMENT ON TABLE "public"."dr_line_fits" IS 'Frozen emission-line fits of a data release (spectrum_id = the live spectra.id at the freeze) with stale_redshift / stale_spectrum computed inside the freeze snapshot, so "reviewed against this DR" is a real statement.';
 
-COMMENT ON TABLE "public"."dr_members" IS 'Storage objects referenced by a data release (one row per live key at the freeze) and the archive copy the byte pass (P4c) makes for each: archive_key, byte_state pending → copied/stamped, stamped_hash. Program-scoped rows carry program_slug; field-level rows (mosaics) carry field.';
+COMMENT ON TABLE "public"."dr_manifest" IS 'Storage objects referenced by a data release (one row per live key at the freeze) and the archive copy the byte pass (P4c) makes for each: archive_key, byte_state pending → copied/stamped, stamped_hash. Program-scoped rows carry program_slug; field-level rows (mosaics) carry field.';
 
 COMMENT ON TABLE "public"."dr_objects" IS 'Frozen objects of a data release: catalog aggregates, inspection state (redshift, quality, inspector, review state) and the auto-redshift source spectrum, all evaluated in the freeze snapshot. object_id is the live objects.id at the time, name the public object_id string.';
 
@@ -1321,15 +1321,15 @@ GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON
 
 GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."dr_line_fits" TO "service_role";
 
-REVOKE ALL ON TABLE "public"."dr_members" FROM "authenticated";
+REVOKE ALL ON TABLE "public"."dr_manifest" FROM "authenticated";
 
-GRANT SELECT ON TABLE "public"."dr_members" TO "authenticated";
+GRANT SELECT ON TABLE "public"."dr_manifest" TO "authenticated";
 
-REVOKE ALL ON TABLE "public"."dr_members" FROM "postgres";
+REVOKE ALL ON TABLE "public"."dr_manifest" FROM "postgres";
 
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."dr_members" TO "postgres";
+GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."dr_manifest" TO "postgres";
 
-GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."dr_members" TO "service_role";
+GRANT DELETE, INSERT, MAINTAIN, REFERENCES, SELECT, TRIGGER, TRUNCATE, UPDATE ON TABLE "public"."dr_manifest" TO "service_role";
 
 REVOKE ALL ON TABLE "public"."dr_objects" FROM "authenticated";
 

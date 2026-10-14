@@ -1357,7 +1357,7 @@ def _dr_client(local: bool, *, what: str):
 def dr_freeze(tag, nirspec, fields, photometry, notes, inline, no_wait, poll, timeout, as_json, local):
     """Freeze a data release: frozen tables from the published catalog.
 
-    Writes dr_spectra / dr_objects / dr_members / dr_line_fits /
+    Writes dr_spectra / dr_objects / dr_manifest / dr_line_fits /
     dr_photometry for TAG in one snapshot (P4a). Refused while a deploy
     lease is live or TAG is already published; re-freezing an unpublished
     tag rewrites it. Nothing is visible to non-admins until `dr publish`.

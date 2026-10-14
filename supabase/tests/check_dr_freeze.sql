@@ -275,8 +275,8 @@ BEGIN
     RAISE EXCEPTION 'release row incomplete: %', to_jsonb(r);
   END IF;
   IF r.notes <> 'rehearsal' THEN RAISE EXCEPTION 'notes not stored'; END IF;
-  IF (SELECT sum(v::int) FROM jsonb_each_text(r.counts->'members_by_type') AS t(k, v)) <> (r.counts->>'members')::int THEN
-    RAISE EXCEPTION 'members_by_type should add up to members: %', r.counts;
+  IF (SELECT sum(v::int) FROM jsonb_each_text(r.counts->'manifest_by_type') AS t(k, v)) <> (r.counts->>'manifest')::int THEN
+    RAISE EXCEPTION 'manifest_by_type should add up to members: %', r.counts;
   END IF;
 
   -- spectra: the 5 published ones of active objects + the inactive object's
@@ -366,31 +366,31 @@ BEGIN
   END IF;
 
   -- members: 6 spectra x 5 products (zfit + lines via the key rule) + 2 mosaics
-  SELECT count(*) INTO n FROM dr_members WHERE tag = 'DR-zzz' AND component = 'nirspec' AND storage_key LIKE 'data/products/nirspec/zzz_dr_%';
+  SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz' AND component = 'nirspec' AND storage_key LIKE 'data/products/nirspec/zzz_dr_%';
   IF n <> 30 THEN RAISE EXCEPTION 'expected 30 nirspec members, got %', n; END IF;
-  SELECT count(*) INTO n FROM dr_members WHERE tag = 'DR-zzz' AND product_type IN ('zfit', 'nirspec_lines_json') AND spectrum_id IS NULL;
+  SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz' AND product_type IN ('zfit', 'nirspec_lines_json') AND spectrum_id IS NULL;
   IF n <> 0 THEN RAISE EXCEPTION 'key-derived sidecar members should carry the spectrum_id'; END IF;
-  IF EXISTS (SELECT 1 FROM dr_members WHERE tag = 'DR-zzz' AND storage_key LIKE '%/old_%') THEN
+  IF EXISTS (SELECT 1 FROM dr_manifest WHERE tag = 'DR-zzz' AND storage_key LIKE '%/old_%') THEN
     RAISE EXCEPTION 'superseded registry row became a member';
   END IF;
   -- every member is an OSN data-bucket row; the R2 twin never wins
-  IF EXISTS (SELECT 1 FROM dr_members WHERE tag = 'DR-zzz' AND (backend <> 'osn' OR bucket <> 'data' OR content_hash LIKE 'etag:%')) THEN
+  IF EXISTS (SELECT 1 FROM dr_manifest WHERE tag = 'DR-zzz' AND (backend <> 'osn' OR bucket <> 'data' OR content_hash LIKE 'etag:%')) THEN
     RAISE EXCEPTION 'a non-OSN registry row became a member';
   END IF;
-  IF EXISTS (SELECT 1 FROM dr_members m JOIN spectra s ON s.spectrum_id = m.spectrum_id WHERE m.tag = 'DR-zzz' AND s.deploy_status <> 'published') THEN
+  IF EXISTS (SELECT 1 FROM dr_manifest m JOIN spectra s ON s.spectrum_id = m.spectrum_id WHERE m.tag = 'DR-zzz' AND s.deploy_status <> 'published') THEN
     RAISE EXCEPTION 'member of an unpublished spectrum';
   END IF;
-  SELECT count(*) INTO n FROM dr_members WHERE tag = 'DR-zzz' AND component = 'nircam/zzz_drf';
+  SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz' AND component = 'nircam/zzz_drf';
   IF n <> 2 THEN RAISE EXCEPTION 'expected 2 mosaic members (published only), got %', n; END IF;
   -- P(z) sidecars are key-only products the layout cannot archive: never members (D-P4-5)
-  SELECT count(*) INTO n FROM dr_members WHERE tag = 'DR-zzz' AND component LIKE 'photometry/%';
+  SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz' AND component LIKE 'photometry/%';
   IF n <> 0 THEN RAISE EXCEPTION 'P(z) sidecars must not be members, got %', n; END IF;
-  IF EXISTS (SELECT 1 FROM dr_members WHERE tag = 'DR-zzz' AND byte_state <> 'pending') THEN
+  IF EXISTS (SELECT 1 FROM dr_manifest WHERE tag = 'DR-zzz' AND byte_state <> 'pending') THEN
     RAISE EXCEPTION 'members should start pending';
   END IF;
 
   -- counts + event
-  IF (r.counts->>'members')::int <> (SELECT count(*) FROM dr_members WHERE tag = 'DR-zzz')
+  IF (r.counts->>'manifest')::int <> (SELECT count(*) FROM dr_manifest WHERE tag = 'DR-zzz')
      OR (r.counts->>'spectra')::int <> (SELECT count(*) FROM dr_spectra WHERE tag = 'DR-zzz') THEN
     RAISE EXCEPTION 'counts do not match the rows: %', r.counts;
   END IF;
@@ -417,8 +417,8 @@ BEGIN
   IF got <> 'frozen' THEN RAISE EXCEPTION 're-freeze failed: %', got; END IF;
   SELECT counts INTO after FROM dr_releases WHERE tag = 'DR-zzz';
   IF before <> after THEN RAISE EXCEPTION 're-freeze changed the counts: % -> %', before, after; END IF;
-  SELECT count(*) INTO n FROM dr_members WHERE tag = 'DR-zzz';
-  IF n <> (after->>'members')::int THEN RAISE EXCEPTION 're-freeze left duplicates'; END IF;
+  SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz';
+  IF n <> (after->>'manifest')::int THEN RAISE EXCEPTION 're-freeze left duplicates'; END IF;
 
   -- a failing freeze: make the parse step raise by pointing the row at a
   -- component that no longer validates, then run the job directly.
@@ -452,7 +452,7 @@ BEGIN
        NOT LIKE 'published mosaics without an active registry row%zzz_drf_f150w_sci.fits%' THEN
     RAISE EXCEPTION 'unregistered mosaic should fail the freeze: % / %', got, (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-mos');
   END IF;
-  IF EXISTS (SELECT 1 FROM dr_members WHERE tag = 'DR-zzz-mos') THEN
+  IF EXISTS (SELECT 1 FROM dr_manifest WHERE tag = 'DR-zzz-mos') THEN
     RAISE EXCEPTION 'the failed freeze left members behind';
   END IF;
   DELETE FROM dr_releases WHERE tag = 'DR-zzz-mos';
@@ -572,7 +572,7 @@ DECLARE
     ['dr_releases',   $q$SELECT count(*)::text FROM dr_releases WHERE tag = 'DR-zzz'$q$],
     ['dr_spectra',    $q$SELECT count(*)::text FROM dr_spectra WHERE tag = 'DR-zzz' AND fits_path LIKE '/tmp/zzz_dr_%'$q$],
     ['dr_objects',    $q$SELECT count(*)::text FROM dr_objects WHERE tag = 'DR-zzz' AND name LIKE 'ZZZ-DR-%'$q$],
-    ['dr_members',    $q$SELECT count(*)::text FROM dr_members WHERE tag = 'DR-zzz' AND (storage_key LIKE 'data/products/nirspec/zzz_dr_%' OR storage_key LIKE 'data/products/nircam/zzz_drf/%')$q$],
+    ['dr_manifest',    $q$SELECT count(*)::text FROM dr_manifest WHERE tag = 'DR-zzz' AND (storage_key LIKE 'data/products/nirspec/zzz_dr_%' OR storage_key LIKE 'data/products/nircam/zzz_drf/%')$q$],
     ['dr_line_fits',  $q$SELECT count(*)::text FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id LIKE 'zzz-dr-t-%'$q$],
     ['dr_photometry', $q$SELECT count(*)::text FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1'$q$],
     ['dr_exports',    $q$SELECT count(*)::text FROM dr_exports WHERE tag = 'DR-zzz'$q$]
@@ -658,12 +658,12 @@ BEGIN
   UPDATE dr_releases SET state = 'frozen', published_at = NULL WHERE tag = 'DR-zzz';
   got := pg_temp.zzz_dr_as('authenticated', '00000000-0000-0000-0000-0000000000d3', $q$SELECT (public.dr_purge_release('DR-zzz'))::text$q$);
   IF got NOT LIKE 'ERR: Access denied%' THEN RAISE EXCEPTION 'non-admin purge should be refused, got %', got; END IF;
-  SELECT count(*) INTO n FROM dr_members WHERE tag = 'DR-zzz';
-  got := pg_temp.zzz_dr_as('authenticated', admin, $q$SELECT (public.dr_purge_release('DR-zzz'))->'deleted'->>'members'$q$);
+  SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz';
+  got := pg_temp.zzz_dr_as('authenticated', admin, $q$SELECT (public.dr_purge_release('DR-zzz'))->'deleted'->>'manifest'$q$);
   IF got <> n::text THEN RAISE EXCEPTION 'purge should report % members, got %', n, got; END IF;
   SELECT count(*) INTO n FROM (
     SELECT tag FROM dr_releases WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_spectra WHERE tag = 'DR-zzz'
-    UNION ALL SELECT tag FROM dr_objects WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_members WHERE tag = 'DR-zzz'
+    UNION ALL SELECT tag FROM dr_objects WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_manifest WHERE tag = 'DR-zzz'
     UNION ALL SELECT tag FROM dr_line_fits WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_photometry WHERE tag = 'DR-zzz'
     UNION ALL SELECT tag FROM dr_exports WHERE tag = 'DR-zzz') x;
   IF n <> 0 THEN RAISE EXCEPTION 'purge left % rows', n; END IF;
