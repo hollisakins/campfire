@@ -1576,6 +1576,11 @@ def dr_archive(tag, obs, field, workers, limit, retry_failed, dry_run, status_on
         return
 
     s3 = bucket = None
+    if local and not dry_run:
+        # a local registry with the shared bucket: every archive object written
+        # would be unregistered in production (Codex on #601)
+        say("✗ `campfire dr archive --local` is refused without --dry-run: the bucket is the shared one.")
+        sys.exit(2)
     if not dry_run:
         # Members live on OSN (the same bucket as the exports)
         s3, bucket = _dr_osn_s3(config, max_pool_connections=max(workers, 10))

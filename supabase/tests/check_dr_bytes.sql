@@ -374,6 +374,8 @@ BEGIN
   IF got NOT LIKE 'ERR:%' THEN RAISE EXCEPTION 'non-admin read the summary: %', got; END IF;
   got := pg_temp.zzz_as('authenticated', adm, $q$SELECT dr_bytes_summary('DR-seed')->>'state'$q$);
   IF got <> 'ready' THEN RAISE EXCEPTION 'admin summary: %', got; END IF;
+  got := pg_temp.zzz_try($q$SELECT dr_bytes_summary('DR-no-such-tag')$q$);
+  IF got NOT LIKE 'ERR: no release DR-no-such-tag%' THEN RAISE EXCEPTION 'summary of an unknown tag: %', got; END IF;
   IF has_function_privilege('anon', 'public.dr_bytes_mark(text, jsonb)', 'EXECUTE')
      OR has_function_privilege('anon', 'public.dr_bytes_pending(text, text, integer, boolean, text)', 'EXECUTE')
      OR has_function_privilege('anon', 'public.dr_bytes_summary(text)', 'EXECUTE') THEN

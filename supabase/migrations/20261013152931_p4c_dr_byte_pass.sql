@@ -294,6 +294,9 @@ DECLARE
   out jsonb;
 BEGIN
   PERFORM dr_require_admin();
+  IF NOT EXISTS (SELECT 1 FROM dr_releases r WHERE r.tag = p_tag) THEN
+    RAISE EXCEPTION 'no release %', p_tag;
+  END IF;
   SELECT jsonb_build_object(
     'tag', p_tag,
     'state', (SELECT state FROM dr_releases WHERE tag = p_tag),

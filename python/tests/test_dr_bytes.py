@@ -611,6 +611,20 @@ def test_cli_bytes_dry_run_with_obs_prefix(monkeypatch):
     assert not state['marks']
 
 
+def test_cli_archive_local_needs_dry_run(monkeypatch):
+    # Codex on #601: a local registry with the shared bucket would leave every
+    # archive object unregistered in production
+    from click.testing import CliRunner
+
+    import campfire.cli as main_cli
+    client, state = _fake_db([_row(JSON_KEY, b'{"x": 1}', product_type='spectrum_json')])
+    s3 = _s3()
+    _patch_cli(monkeypatch, client, s3=s3)
+    res = CliRunner().invoke(main_cli.cli, ['dr', 'archive', '--tag', TAG, '--local'])
+    assert res.exit_code == 2 and 'refused without --dry-run' in res.output
+    assert not state['calls'] and not state['marks']
+
+
 def test_cli_bytes_fails_while_earlier_failures_remain(monkeypatch):
     # Codex on #601: a rerun without --retry-failed fetches nothing, but the
     # stored failure still keeps the release from becoming ready
