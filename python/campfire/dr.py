@@ -395,6 +395,8 @@ def format_diff(diff: dict, *, samples: int = 5) -> str:
             extra = ''
             if 'frozen' in item or 'live' in item:
                 extra = f": {item.get('frozen')} → {item.get('live')}"
+                if item.get('compared') == 'file_hash':
+                    extra += ' (file hash)'
             lines.append(f"            {ident}{extra}")
     return '\n'.join(lines)
 

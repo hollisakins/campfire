@@ -548,3 +548,10 @@ def test_publish_warns_when_live_moved_on(monkeypatch):
     res = CliRunner().invoke(main_cli.cli, ['dr', 'publish', TAG, '--yes'])
     assert res.exit_code == 0, res.output
     assert 'Live has moved on since' in res.output and '3 spectrum gone' in res.output
+
+
+def test_format_diff_names_a_file_hash_comparison():
+    diff = {'tag': TAG, 'state': 'ready', 'counts': {'spectrum_science_changed': 1},
+            'samples': {'spectrum_science_changed': [
+                {'spectrum_id': 'obs_1_prism', 'frozen': 'sha256:a', 'live': 'sha256:b', 'compared': 'file_hash'}]}}
+    assert 'obs_1_prism: sha256:a → sha256:b (file hash)' in dr.format_diff(diff)

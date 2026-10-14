@@ -239,6 +239,17 @@ BEGIN
   IF EXISTS (SELECT 1 FROM jsonb_array_elements(after->'samples'->'object_renamed') e WHERE (e->>'object_id')::int = o4.object_id) THEN
     RAISE EXCEPTION 'a deactivated object was reported as renamed';
   END IF;
+  -- a legacy row without a science hash is compared, and shown, by file hash (Codex on #602)
+  SELECT d.spectrum_id, d.file_hash INTO s FROM dr_spectra d JOIN spectra x ON x.spectrum_id = d.spectrum_id
+   WHERE d.tag = 'DR-seed' AND x.deploy_status = 'published' ORDER BY d.spectrum_id OFFSET 3 LIMIT 1;
+  UPDATE dr_spectra SET science_hash = NULL WHERE tag = 'DR-seed' AND spectrum_id = s.spectrum_id;
+  UPDATE spectra SET file_hash = 'sha256:' || repeat('7', 64) WHERE spectrum_id = s.spectrum_id;
+  after := dr_diff('DR-seed', 500);
+  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(after->'samples'->'spectrum_science_changed') e
+                 WHERE e->>'spectrum_id' = s.spectrum_id AND e->>'compared' = 'file_hash'
+                   AND e->>'frozen' IS NOT DISTINCT FROM s.file_hash AND e->>'live' = 'sha256:' || repeat('7', 64)) THEN
+    RAISE EXCEPTION 'file-hash comparison not shown: %', after->'samples'->'spectrum_science_changed';
+  END IF;
   RAISE NOTICE 'OK 3: diff (every kind, capped samples)';
 END $$;
 

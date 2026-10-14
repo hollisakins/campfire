@@ -10517,8 +10517,14 @@ BEGIN
              WHEN (d.science_hash IS NULL OR s.science_hash IS NULL)
                   AND d.file_hash IS DISTINCT FROM s.file_hash THEN 'spectrum_science_changed'
            END AS kind,
-           jsonb_build_object('frozen', d.science_hash, 'live', s.science_hash,
-                              'live_status', s.deploy_status) AS detail
+           -- the hashes the comparison above used: the file hash when either
+           -- side has no science hash (Codex on #602)
+           CASE WHEN d.science_hash IS NOT NULL AND s.science_hash IS NOT NULL
+                THEN jsonb_build_object('frozen', d.science_hash, 'live', s.science_hash,
+                                        'live_status', s.deploy_status)
+                ELSE jsonb_build_object('frozen', d.file_hash, 'live', s.file_hash,
+                                        'compared', 'file_hash', 'live_status', s.deploy_status)
+           END AS detail
     FROM dr_spectra d
     LEFT JOIN spectra s ON s.spectrum_id = d.spectrum_id
     WHERE d.tag = p_tag
