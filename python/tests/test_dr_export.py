@@ -169,3 +169,20 @@ def test_the_sweep_waits_while_any_file_is_being_built():
     s3 = _s3(**{ledger[0]['storage_key']: b'x', inflight: b'y'})
     assert X.sweep_superseded(_db(ledger), s3, BUCKET, TAG) == 0
     assert s3.exists(BUCKET, inflight)
+
+
+def test_a_failure_repaired_by_another_run_leaves_nothing_remaining(monkeypatch):
+    # another exporter rebuilds the failed file just before this run reconciles
+    ledger = [_entry('objects', 'pub')]
+    db, s3 = _db(ledger, rows=ROWS, fail_rows=('objects/pub',)), _s3()
+    real, calls = X.fetch_ledger, []
+
+    def fetch(client, tag):
+        calls.append(1)
+        if len(calls) == 2:
+            ledger[0]['state'] = 'ready'
+        return real(client, tag)
+    monkeypatch.setattr(X, 'fetch_ledger', fetch)
+    rep = X.run_export(db, s3, BUCKET, TAG, log=lambda *_: None)
+    assert rep.failed == [] and rep.remaining == 0 and rep.state == 'exported'
+    assert 'built by another run' in rep.skipped[0]['reason']

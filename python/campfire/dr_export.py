@@ -191,10 +191,8 @@ def run_export(client, s3, bucket: str, tag: str, *, log: Callable[[str], None] 
             if i % 10 == 0 or i == len(todo):
                 log(f"  {i}/{len(todo)}: {len(report.built)} built, {len(report.failed)} failed, "
                     f"{len(report.skipped)} skipped")
-    status = _rpc(client, 'dr_export_status', {'p_tag': tag}) or {}
-    report.state = status.get('state', report.state)
-    report.remaining = int(status.get('remaining') or 0)
-    # a failure another run repaired since is not a failure of the release
+    # a failure another run repaired since is not a failure of the release; the
+    # status is read after this, so it reflects the same repairs (Codex on #600)
     if report.failed:
         try:
             ready = {(r['stream'], r['partition']) for r in fetch_ledger(client, tag) if r.get('state') == 'ready'}
@@ -205,6 +203,9 @@ def run_export(client, s3, bucket: str, tag: str, *, log: Callable[[str], None] 
                 report.failed.remove(f)
                 report.skipped.append({'stream': f['stream'], 'scope': f['scope'],
                                        'reason': f"built by another run after: {f['error']}"})
+    status = _rpc(client, 'dr_export_status', {'p_tag': tag}) or {}
+    report.state = status.get('state', report.state)
+    report.remaining = int(status.get('remaining') or 0)
     if report.remaining == 0:
         report.swept = sweep_superseded(client, s3, bucket, tag)
     return report
