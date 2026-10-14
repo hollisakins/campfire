@@ -47,13 +47,17 @@ END $$;
 -- Every member archived (synthetic archive keys) and every export file ready.
 CREATE FUNCTION pg_temp.zzz_make_ready(p_tag text) RETURNS text
 LANGUAGE plpgsql AS $$
+DECLARE
+  c uuid;
 BEGIN
   PERFORM dr_export_begin(p_tag);
+  c := dr_archive_claim(p_tag);          -- as one archive run
   PERFORM dr_bytes_mark(p_tag, (
     SELECT jsonb_agg(jsonb_build_object('storage_key', m.storage_key, 'content_hash', m.content_hash, 'state', 'copied',
                                         'archive_key', 'archive/' || md5(m.storage_key) || md5(m.storage_key) || '/' || substr(m.storage_key, 6),
                                         'registry', jsonb_build_object('content_type', 'application/octet-stream')))
-    FROM dr_manifest m WHERE m.tag = p_tag AND m.byte_state NOT IN ('copied', 'stamped')));
+    FROM dr_manifest m WHERE m.tag = p_tag AND m.byte_state NOT IN ('copied', 'stamped')), c);
+  PERFORM dr_archive_release(p_tag, c);
   PERFORM dr_export_mark(p_tag, e.stream, e.partition, 'building') FROM dr_exports e
    WHERE e.tag = p_tag AND e.state <> 'ready';
   PERFORM dr_export_mark(p_tag, e.stream, e.partition, 'ready', 'sha256:' || repeat('a', 64), 1, 1)
