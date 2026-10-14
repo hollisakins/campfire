@@ -656,17 +656,17 @@ def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, v
         # subset re-deploy spreads a field's objects across deployments, so flipping
         # only the newest would partially publish (or leave part of a revoked field
         # public). set_deployment_status per deployment also flips its nircam_images.
-        dep_ids = get_field_deployment_ids(sb, field)
-        if not dep_ids:
-            print(f"  field {field}: no deployment found, skipping")
-            return
         if dry_run:
+            dep_ids = get_field_deployment_ids(sb, field)
+            if not dep_ids:
+                print(f"  field {field}: no deployment found, skipping")
+                return
             print(f"  [dry-run] {verb} field {field} ({len(dep_ids)} deployment(s): "
                   f"{', '.join('#'+str(d) for d in dep_ids)})")
             return
         def flip_all():
-            # re-read under the lease: a field deploy that finished since the
-            # preview above added a deployment this flip must include (Codex on #599)
+            # resolved under the lease, so a field deploy that finished just before
+            # (even the field's first) is included (Codex on #599)
             current = get_field_deployment_ids(sb, field)
             return current, sum(1 for dep_id in current
                                 if set_deployment_status(sb, dep_id, to_status, actor=actor) is not None)
@@ -674,6 +674,9 @@ def _lifecycle_transition(ctx, config_path, obs, dry_run, local, *, to_status, v
         # freeze from landing between them and capturing a half-published
         # field (an observation's flip is a single RPC and needs none).
         current, n_ok = _under_scope_lease(config, 'field', field, False, flip_all)
+        if not current:
+            print(f"  field {field}: no deployment found, skipping")
+            return
         print(f"  {verb}ed field {field}: {n_ok}/{len(current)} deployment(s) -> {to_status}")
         return
     for obs_name in obs:

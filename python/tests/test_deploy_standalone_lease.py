@@ -126,6 +126,28 @@ def test_field_lifecycle_flips_under_the_field_lease(patched, monkeypatch):
     assert order == ['begin', 'flip7', 'flip8', 'claim']
 
 
+def test_field_lifecycle_resolves_deployments_under_the_lease(patched, monkeypatch):
+    # a field whose first deployment lands while the command starts: the lookup
+    # happens only once the lease is held, never before it (Codex on #599)
+    c, order = _client({'version': 3})
+    patched(c)
+    calls = []
+
+    def ids(client, field):
+        calls.append(list(order))
+        return [9]
+    monkeypatch.setattr(dcli, 'load_config', lambda path, **kw: {})
+    monkeypatch.setattr(dcli, 'get_supabase_client', lambda config: c)
+    monkeypatch.setattr(dcli, 'get_user_id_from_token', lambda config: 'user-1')
+    monkeypatch.setattr(dcli, 'get_field_deployment_ids', ids)
+    monkeypatch.setattr(dcli, 'set_deployment_status',
+                        lambda client, dep, status, actor=None: order.append(f'flip{dep}') or {})
+    ctx = type('Ctx', (), {'obj': {}})()
+    dcli._lifecycle_transition(ctx, None, (), False, False,
+                               to_status='revoked', verb='Revoke', field='cosmos')
+    assert calls == [['begin']] and order == ['begin', 'flip9', 'claim']
+
+
 def test_interactive_objects_edit_confirms_before_leasing(patched, monkeypatch):
     c, order = _client({'version': 1})
     patched(c)

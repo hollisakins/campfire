@@ -105,7 +105,7 @@ def gc_report(rows: list[dict], *, older_than_days: int, now: Optional[datetime]
         'dry_run': True,
         'older_than_days': older_than_days,
         'product_types': list(COLLECTABLE_PRODUCT_TYPES),
-        'dr_manifesthip_checked': False,
+        'dr_membership_checked': False,
         'candidates': len(rows),
         'bytes_at_rest': total,
         'by_field': by_field,
