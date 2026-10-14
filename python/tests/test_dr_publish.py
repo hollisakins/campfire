@@ -168,7 +168,8 @@ def test_remove_fails_closed_when_the_check_cannot_run(monkeypatch, capsys):
 
 def test_remove_proceeds_when_nothing_blocks(monkeypatch):
     refs = [{**REFS[1]}]
-    rm, deleted = _remove_env(monkeypatch, _client(dr_observation_references=refs, heartbeat_deploy_scope=True))
+    rm, deleted = _remove_env(monkeypatch, _client(dr_observation_references=refs, heartbeat_deploy_scope=True,
+                                                   claim_deploy_scope={'claimed': True, 'conflict': False}))
     rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
     assert deleted
 
@@ -187,7 +188,7 @@ def _ordered_client(refs, *, begin=None):
     c = _client(begin_deploy_scope=rec('begin', begin or {'version': 3}),
                 get_deploy_scope_version=2,
                 dr_observation_references=rec('refs', refs),
-                claim_deploy_scope=rec('claim', True),
+                claim_deploy_scope=rec('claim', {'claimed': True, 'conflict': False}),
                 release_deploy_scope=rec('release', True),
                 heartbeat_deploy_scope=rec('heartbeat', True))
     return c, order
@@ -332,7 +333,8 @@ def test_remove_reports_an_indeterminate_claim(monkeypatch):
 
 def test_remove_inspection_refusal_raises(monkeypatch):
     # Codex on #602: the inspected-targets refusal is a refusal too
-    rm, deleted = _remove_env(monkeypatch, _client(dr_observation_references=[], heartbeat_deploy_scope=True))
+    rm, deleted = _remove_env(monkeypatch, _client(dr_observation_references=[], heartbeat_deploy_scope=True,
+                                                   claim_deploy_scope={'claimed': True, 'conflict': False}))
     monkeypatch.setattr(rm, '_is_inspected', lambda t: True)
     with pytest.raises(rm.RemovalRefused, match='user inspection data'):
         rm.remove_observation('obs1', {}, supabase_only=True, auto_approve=True, skip_rebuild=True)
@@ -555,3 +557,12 @@ def test_format_diff_names_a_file_hash_comparison():
             'samples': {'spectrum_science_changed': [
                 {'spectrum_id': 'obs_1_prism', 'frozen': 'sha256:a', 'live': 'sha256:b', 'compared': 'file_hash'}]}}
     assert 'obs_1_prism: sha256:a → sha256:b (file hash)' in dr.format_diff(diff)
+
+
+def test_an_unexpected_claim_response_is_flagged():
+    # Codex on #602: a null payload is not a confirmed claim; deploy remove
+    # treats the error as indeterminate, the advisory deploy path ignores it
+    from campfire.deploy.supabase import claim_deploy_scope
+    from tests.fakes import FakePostgrest
+    res = claim_deploy_scope(FakePostgrest(rpc_handlers={'claim_deploy_scope': None}), 'observation', 'obs', 3)
+    assert res['conflict'] is False and 'unexpected claim response' in res['error']
