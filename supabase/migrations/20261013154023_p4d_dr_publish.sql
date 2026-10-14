@@ -127,7 +127,7 @@ BEGIN
   ),
   mem AS (
     SELECT m.tag, count(*) AS n, count(*) FILTER (WHERE m.byte_state NOT IN ('copied', 'stamped')) AS open
-    FROM dr_members m
+    FROM dr_manifest m
     JOIN sp ON sp.tag = m.tag AND sp.spectrum_id = m.spectrum_id
     GROUP BY m.tag
   )
@@ -185,7 +185,7 @@ BEGIN
      AND ((d.scope_type = 'observation'
            AND d.scope_key IN (SELECT DISTINCT s.observation FROM dr_spectra s WHERE s.tag = p_tag))
        OR (d.scope_type = 'field'
-           AND d.scope_key IN (SELECT DISTINCT m.field FROM dr_members m WHERE m.tag = p_tag AND m.field IS NOT NULL)))
+           AND d.scope_key IN (SELECT DISTINCT m.field FROM dr_manifest m WHERE m.tag = p_tag AND m.field IS NOT NULL)))
      FOR UPDATE;
   -- only leases on scopes this release covers matter: an unrelated upload
   -- elsewhere cannot touch what the release names (Codex on #602)
@@ -195,7 +195,7 @@ BEGIN
                 AND ((d.scope_type = 'observation'
                       AND d.scope_key IN (SELECT DISTINCT s.observation FROM dr_spectra s WHERE s.tag = p_tag))
                   OR (d.scope_type = 'field'
-                      AND d.scope_key IN (SELECT DISTINCT m.field FROM dr_members m WHERE m.tag = p_tag AND m.field IS NOT NULL)
+                      AND d.scope_key IN (SELECT DISTINCT m.field FROM dr_manifest m WHERE m.tag = p_tag AND m.field IS NOT NULL)
                          ))) THEN
     RAISE EXCEPTION 'a deploy or removal is in progress on a scope % covers (live deploy lease); publish it when that has finished', p_tag;
   END IF;
@@ -210,7 +210,7 @@ BEGIN
      AND ((d.scope_type = 'observation'
            AND d.scope_key IN (SELECT DISTINCT s.observation FROM dr_spectra s WHERE s.tag = p_tag))
        OR (d.scope_type = 'field'
-           AND d.scope_key IN (SELECT DISTINCT m.field FROM dr_members m WHERE m.tag = p_tag AND m.field IS NOT NULL)));
+           AND d.scope_key IN (SELECT DISTINCT m.field FROM dr_manifest m WHERE m.tag = p_tag AND m.field IS NOT NULL)));
   IF r.state <> 'withdrawn' THEN
     v_state := dr_derive_state(p_tag);
     IF v_state IS DISTINCT FROM 'ready' THEN

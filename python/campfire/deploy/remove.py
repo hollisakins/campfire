@@ -355,7 +355,7 @@ def _release_blockers_refuse(sb, obs_name: str) -> bool:
         print()
         print("  REFUSED: " + format_references(obs_name, refs).replace('\n', '\n  '))
         print("  A published release is withdrawn with `campfire dr withdraw`; an unpublished one "
-              "finishes `campfire dr bytes` or is purged with `campfire dr purge`.")
+              "finishes `campfire dr archive` or is purged with `campfire dr purge`.")
         return True
     return False
 

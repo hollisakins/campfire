@@ -418,3 +418,52 @@ def removal_blockers(client, observation: str) -> list[dict]:
     release still needs.
     """
     return [r for r in observation_references(client, observation) if r.get('blocks')]
+
+
+# ---------------------------------------------------------------------------
+# the lifecycle: what to run next
+# ---------------------------------------------------------------------------
+
+def next_step_hint(tag: str, state: str | None, *, archive_open: int = 0, archive_failed: int = 0,
+                   exports_total: int = 0, exports_remaining: int = 0) -> str:
+    """The next command for a release, from its state and its archive / export
+    progress. The order is freeze -> archive -> export -> publish."""
+    if state is None:
+        return f"Next: `campfire dr freeze --tag {tag} --nirspec ...` (or `campfire dr build --tag {tag} --nirspec ...`)."
+    if state == 'freezing':
+        return f"{tag} is freezing; `campfire dr status` shows when it lands."
+    if state == 'failed':
+        return (f"The freeze of {tag} failed (the error is shown above): fix it and re-run "
+                f"`campfire dr freeze --tag {tag} ...`, or `campfire dr purge {tag}`.")
+    if state == 'published':
+        return f"{tag} is published. (`campfire dr withdraw {tag} --reason ...` hides it again.)"
+    if state == 'withdrawn':
+        return f"{tag} is withdrawn; `campfire dr publish {tag}` publishes it again."
+    if archive_failed:
+        return (f"{archive_failed:,} manifest file(s) of {tag} failed to archive: "
+                f"`campfire dr archive --tag {tag} --status` lists them; fix the cause and re-run "
+                f"`campfire dr archive --tag {tag} --retry-failed`.")
+    if archive_open:
+        return f"Next: `campfire dr archive --tag {tag}` (or `campfire dr build --tag {tag}`, which also exports)."
+    if exports_total == 0 or exports_remaining:
+        return f"Next: `campfire dr export --tag {tag}` (or `campfire dr build --tag {tag}`)."
+    if state == 'ready':
+        return f"Next: review `campfire dr diff {tag}`, then `campfire dr publish {tag} --doi ...`."
+    return f"`campfire dr status` shows where {tag} stands."
+
+
+def fetch_next_step(client, tag: str) -> str | None:
+    """``next_step_hint`` for TAG, read from the database; None when the
+    progress cannot be read (a hint never fails a command)."""
+    try:
+        row = fetch_release(client, tag)
+        if row is None:
+            return next_step_hint(tag, None)
+        by = (client.rpc('dr_bytes_summary', {'p_tag': tag}).execute().data or {}).get('by_state') or {}
+        n = lambda k: int((by.get(k) or {}).get('count') or 0)  # noqa: E731
+        ledger = (client.table('dr_exports').select('state').eq('tag', tag).execute().data) or []
+        return next_step_hint(tag, row.get('state'), archive_open=n('pending'), archive_failed=n('failed'),
+                              exports_total=len(ledger),
+                              exports_remaining=sum(1 for r in ledger if r.get('state') != 'ready'))
+    except Exception:  # noqa: BLE001
+        return None
