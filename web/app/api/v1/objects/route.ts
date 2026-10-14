@@ -77,7 +77,7 @@ export async function GET(request: NextRequest) {
       radiusDegrees = convertRadiusToDegrees(parseFloat(radius), 'arcsec');
     }
 
-    const listIds = await resolveListIds(supabase, parseCSV(searchParams.get('lists')));
+    const listIds = await resolveListIds(supabase, parseCSV(searchParams.get('lists')), userId);
 
     const inspectedOnlyParam = searchParams.get('inspected_only');
     const inspectedOnly = inspectedOnlyParam
@@ -176,7 +176,23 @@ export async function GET(request: NextRequest) {
       ...bandFilterRpcParams(searchParams),
     };
 
-    const { data, error } = await supabase.rpc('get_filtered_objects_paginated', rpcParams);
+    // p_viewer_id scopes each object's `lists` to what this key's user may see:
+    // the service-role client bypasses the RLS that does so in the portal.
+    let { data, error } = await supabase.rpc('get_filtered_objects_paginated', {
+      ...rpcParams,
+      p_viewer_id: userId,
+    });
+
+    // Deploy window: the Vercel build and the Supabase migration land
+    // independently on merge. Against an RPC that does not know p_viewer_id yet
+    // (PostgREST: no matching function), retry without it. That RPC does not
+    // scope `lists` at all, so its lists are dropped below (fail closed).
+    let listsUnscoped = false;
+    if (error && error.code === 'PGRST202') {
+      console.warn('v1/objects: RPC without p_viewer_id; retrying without it, lists withheld');
+      ({ data, error } = await supabase.rpc('get_filtered_objects_paginated', rpcParams));
+      listsUnscoped = true;
+    }
 
     if (error) {
       console.error('Error fetching objects:', error);
@@ -207,7 +223,11 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ data: result.targets || [], pagination }, { headers });
+    const objects: Record<string, unknown>[] = result.targets || [];
+    return NextResponse.json(
+      { data: listsUnscoped ? objects.map(o => ({ ...o, lists: [] })) : objects, pagination },
+      { headers },
+    );
   } catch (error) {
     console.error('Error in API /v1/objects:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

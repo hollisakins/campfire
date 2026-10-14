@@ -17,19 +17,36 @@ export function parseIntCSV(value: string | null): number[] | null {
 }
 
 /**
- * Resolve a list of object-list slugs to DB IDs. Returns null if no slugs were
- * supplied (meaning: don't filter by list); returns [] if none match.
+ * Resolve a list of object-list slugs to DB IDs, keeping only the lists
+ * `viewerId` may see. Returns null if no slugs were supplied (meaning: don't
+ * filter by list); returns [] if none match.
+ *
+ * The bearer routes pass the service-role client, and the list RPCs then test
+ * membership without RLS too, so an unscoped lookup would let any API key
+ * filter by (and so enumerate) the members of someone else's private list.
+ * The test mirrors viewable_list_ids() (supabase/schemas/functions.sql) for an
+ * explicit user: owner, public_read / public_edit, or a share. A list the
+ * viewer can't see resolves like an unknown slug. A failed shares lookup
+ * fails closed (owned and public lists only).
  */
 export async function resolveListIds(
   supabase: SupabaseClient,
   slugs: string[] | null,
+  viewerId: string,
 ): Promise<number[] | null> {
   if (!slugs || slugs.length === 0) return null;
-  const { data } = await supabase
-    .from('object_lists')
-    .select('id')
-    .in('slug', slugs);
-  return (data ?? []).map((r: { id: number }) => r.id);
+  const [lists, shares] = await Promise.all([
+    supabase.from('object_lists').select('id, created_by, visibility').in('slug', slugs),
+    supabase.from('object_list_shares').select('list_id').eq('user_id', viewerId),
+  ]);
+  const shared = new Set((shares.data ?? []).map((r: { list_id: number }) => r.list_id));
+  return ((lists.data ?? []) as { id: number; created_by: string | null; visibility: string }[])
+    .filter(l =>
+      l.created_by === viewerId
+      || l.visibility === 'public_read'
+      || l.visibility === 'public_edit'
+      || shared.has(l.id))
+    .map(l => l.id);
 }
 
 /**

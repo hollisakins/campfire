@@ -2614,7 +2614,11 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   -- (UNIQUE, so the ORDER BY tail is a total order).
   p_after_sort_text TEXT DEFAULT NULL,
   p_after_sort_num DOUBLE PRECISION DEFAULT NULL,
-  p_after_tiebreak TEXT[] DEFAULT NULL
+  p_after_tiebreak TEXT[] DEFAULT NULL,
+  -- Whose lists the 'lists' field may show when the service role calls
+  -- (/api/v1/objects, which bypasses RLS). Ignored under a user JWT, where RLS
+  -- on object_lists decides. NULL under the service role shows public lists only.
+  p_viewer_id UUID DEFAULT NULL
 )
 RETURNS TABLE(
   targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER,
@@ -3163,7 +3167,18 @@ BEGIN
           )
           FROM object_list_members olm
           JOIN object_lists ol ON ol.id = olm.list_id
-          WHERE olm.object_id = fo.id),
+          WHERE olm.object_id = fo.id
+            -- Under a user JWT RLS on object_lists is the gate (select_lists:
+            -- owner / public / shared, every list for admins). The service-role
+            -- client (/api/v1/objects) bypasses RLS, so there the lists are
+            -- those p_viewer_id can see: viewable_list_ids() for an explicit
+            -- user, as in get_objects_for_sync. Role test as in
+            -- object_band_values.
+            AND (COALESCE((SELECT auth.role()), '') <> 'service_role'
+                 OR ol.created_by = p_viewer_id
+                 OR ol.visibility IN ('public_read', 'public_edit')
+                 OR ol.id IN (SELECT list_id FROM object_list_shares
+                              WHERE user_id = p_viewer_id))),
           '[]'::jsonb
         )
       ) AS obj_json
@@ -10671,7 +10686,7 @@ REVOKE ALL ON FUNCTION public.get_download_stats(p_days integer) FROM PUBLIC, an
 REVOKE ALL ON FUNCTION public.get_field_object_markers(p_field text, p_include_unpublished boolean, p_cursor text, p_page_size integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_field_shutters(p_field text, p_cursor integer, p_page_size integer, p_ra_min double precision, p_ra_max double precision, p_dec_min double precision, p_dec_max double precision) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_filtered_object_ids(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_filtered_objects_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_filtered_objects_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[], p_viewer_id uuid) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_filtered_spectra_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_dq_flags_include_any integer, p_dq_flags_include_all integer, p_dq_flags_exclude integer, p_list_ids integer[], p_list_ids_mode text, p_search text, p_inspected_only boolean, p_needs_review boolean, p_has_photometry boolean, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_thumbnails boolean, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[]) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_lifecycle_status() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_line_fits_for_sync(p_program_slugs text[], p_updated_since timestamp with time zone, p_limit integer, p_include_unpublished boolean, p_include_counts boolean, p_after_id integer) FROM PUBLIC, anon;
