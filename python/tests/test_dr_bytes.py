@@ -716,9 +716,11 @@ def test_existing_gzipped_archive_of_another_size_heals():
     row = _row(MOSAIC_KEY, logical, product_type='nircam_mosaic', source_stored_size=len(gzip.compress(logical)),
                component='nircam/cosmos', program_slug=None)
     target = B._copy_target(row)
-    o = B.process_member(row, tag=TAG, s3=_s3(**{target: gzip.compress(logical, compresslevel=1) + b''}),
-                         bucket=BUCKET)
+    existing = gzip.compress(logical, compresslevel=1)
+    o = B.process_member(row, tag=TAG, s3=_s3(**{target: existing}), bucket=BUCKET)
     assert (o.state, o.action) == ('copied', 'heal')
+    # the registry row describes the object that is there, not the live one (Codex on #601)
+    assert o.registry['stored_size_bytes'] == len(existing)
 
 
 def test_a_source_replaced_between_head_and_get_is_drift(monkeypatch):

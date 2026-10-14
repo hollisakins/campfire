@@ -75,10 +75,19 @@ class StampError(ValueError):
 # The header stamp
 # ---------------------------------------------------------------------------
 
-@functools.lru_cache(maxsize=64)
+_STAMP_CARD_LOCK = threading.Lock()
+
+
 def _stamp_card(tag: str) -> bytes:
-    # cached: one card per tag, built once (warnings.catch_warnings is not
-    # thread-safe and the pass stamps from a thread pool)
+    # one card per tag, built once under a lock: warnings.catch_warnings is not
+    # thread-safe and the pass stamps from a thread pool (lru_cache alone does
+    # not coalesce concurrent first calls; Codex on #601)
+    with _STAMP_CARD_LOCK:
+        return _stamp_card_cached(tag)
+
+
+@functools.lru_cache(maxsize=64)
+def _stamp_card_cached(tag: str) -> bytes:
     import warnings
 
     from astropy.io import fits
@@ -400,6 +409,10 @@ def _copy_member(row: dict, *, s3, bucket: str) -> Outcome:
         if (stored is not None and not _stored_compressed(row['storage_key'])
                 and int(existing.get('ContentLength', -1)) != int(stored)):
             return Outcome(key, 'failed', 'error', error=f'{target} exists with a different size')
+        if _stored_compressed(row['storage_key']) and existing.get('ContentLength') is not None:
+            # register what is actually there (the live object may have been
+            # recompressed to another size since; Codex on #601)
+            reg = {**reg, 'stored_size_bytes': int(existing['ContentLength'])}
         return Outcome(key, 'copied', 'heal', archive_key=target, registry=reg)
     head = _head(s3, bucket, src)
     if head is None:
