@@ -14,6 +14,8 @@ Usage:
 
 import argparse
 import concurrent.futures
+import csv
+import io
 import random
 import sys
 import threading
@@ -26,6 +28,18 @@ from tqdm import tqdm
 from campfire_layout import Scope, raw_dir as layout_raw_dir, raw_path
 
 BASE_URL = "https://mast.stsci.edu/search/jwst/api/v0.1"
+CAOM_TAP_URL = "https://mast.stsci.edu/vo-tap/api/v0.1/caom/sync"
+# CAOM "mast:JWST/product/..." URIs download through the MAST download
+# service; the Search API's /retrieve_product only understands its own
+# "<fileset>/<filename>" names and hangs on a mast: URI.
+MAST_DOWNLOAD_URL = "https://mast.stsci.edu/api/v0.1/Download/file"
+
+# Row cap sent with every TAP query. The service appends an OVERFLOW status
+# to every response whether or not it truncated, so the only reliable
+# truncation signal is a result that reaches the cap we asked for.
+TAP_MAXREC = 500_000
+
+BACKENDS = ("tap", "search")
 
 
 class MastTransientError(RuntimeError):
@@ -35,6 +49,15 @@ class MastTransientError(RuntimeError):
     stopped timing out, or an empty ``200`` for filesets that exist), never
     for programming errors — so callers can present it as a re-run hint
     without swallowing unrelated ``RuntimeError``s.
+    """
+
+
+class MastQueryError(RuntimeError):
+    """A MAST query answered, but not with a usable result.
+
+    Raised for conditions a plain re-run will not fix (a TAP error status, a
+    result that reached the row cap), so the CLI can print the message and a
+    hint rather than a traceback.
     """
 
 
@@ -344,6 +367,204 @@ def list_products_batched(filesets, batch_size=25, token=None, workers=4,
     return all_products
 
 
+# ---------------------------------------------------------------------------
+# CAOM TAP backend
+#
+# MAST's CAOM catalog, queried in ADQL through its TAP service, answers in one
+# request what the JWST Search API needs a /search plus batched /list_products
+# for: every uncal artifact of a program with its URI, size and checksum, and
+# the per-detector instrument keywords (EXP_TYPE, FILTER, PUPIL, EXPTIME).
+# Each detector of an exposure is its own CAOM observation, so the filter
+# comes straight from that detector's FILTER/PUPIL rather than being inferred
+# from the fileset's opticalElements. Metadata is public, so no token is sent;
+# the download itself still goes through /retrieve_product with the token.
+# ---------------------------------------------------------------------------
+
+_TAP_SELECT = (
+    "a.productfilename, a.datauri, a.contentlength, a.contentchecksum, "
+    "o.observationid, o.inskeywords, o.trgposra, o.trgposdec, "
+    "p.posboundsstcs, p.timmin"
+)
+
+_INSTRUMENT_INSNAME = {"NIRCAM": "NIRCAM", "NIRSPEC": "NIRSPEC"}
+
+
+def _tap_query(adql, max_retries=5, timeout=300):
+    """Run one ADQL query against the CAOM TAP sync endpoint.
+
+    Returns the rows as a list of dicts (CSV columns, string values). Retries
+    429 / 5xx and network errors with jittered exponential backoff; raises
+    ``MastQueryError`` when the service rejects the query or the result
+    reaches ``TAP_MAXREC`` (it would be silently truncated otherwise).
+    """
+    params = {
+        "REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "csv",
+        "MAXREC": str(TAP_MAXREC), "QUERY": adql,
+    }
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(CAOM_TAP_URL, params=params, timeout=timeout)
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt + 1 == max_retries:
+                raise
+            time.sleep(float(2 ** attempt) + random.uniform(0, 1))
+            continue
+        if resp.status_code == 429 or 500 <= resp.status_code < 600:
+            if attempt + 1 == max_retries:
+                _raise_for_status_verbose(resp, context="CAOM TAP query")
+            time.sleep(float(2 ** attempt) + random.uniform(0, 1))
+            continue
+        _raise_for_status_verbose(resp, context="CAOM TAP query")
+        # A rejected query comes back as a VOTable error document even
+        # when CSV was requested.
+        if "csv" not in resp.headers.get("content-type", ""):
+            body = (resp.text or "").strip()[:500]
+            raise MastQueryError(f"CAOM TAP query failed: {body}")
+        rows = list(csv.DictReader(io.StringIO(resp.text)))
+        if len(rows) >= TAP_MAXREC:
+            raise MastQueryError(
+                f"CAOM TAP query returned {len(rows)} rows, the row cap — the "
+                f"result is truncated. Narrow it with --obs-id, or use "
+                f"--backend search."
+            )
+        return rows
+    return []  # unreachable; loop above always returns or raises
+
+
+def _parse_inskeywords(s):
+    """Parse a CAOM ``inskeywords`` string (``"K1=v1 | K2=v2 | ..."``)."""
+    out = {}
+    for item in (s or "").split(" | "):
+        key, sep, value = item.partition("=")
+        if sep:
+            out[key.strip()] = value.strip()
+    return out
+
+
+def _mjd_to_iso(mjd):
+    """MJD (string or float) → ISO timestamp, or ``""`` if unparseable."""
+    try:
+        from astropy.time import Time
+        return Time(float(mjd), format="mjd").isot
+    except (TypeError, ValueError):
+        return ""
+
+
+def _float_or_none(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _tap_fileset(row, kw):
+    """Build the Search-API-shaped fileset dict the manifest writer reads."""
+    obsid = row["observationid"]
+    parts = obsid.split("_")
+    s_region = (row.get("posboundsstcs") or "").strip()
+    # CAOM writes "POLYGON ra1 dec1 ..."; every S_REGION reader in the
+    # pipeline expects the frame token "POLYGON ICRS ra1 dec1 ...".
+    if s_region.startswith("POLYGON ") and not s_region.startswith("POLYGON ICRS"):
+        s_region = "POLYGON ICRS " + s_region[len("POLYGON "):]
+    return {
+        "fileSetName": "_".join(parts[:-1]) if len(parts) > 1 else obsid,
+        "observtn": str(int(obsid[7:10])) if len(obsid) >= 10 else "",
+        "exposure": str(int(parts[2])) if len(parts) > 2 and parts[2].isdigit() else "",
+        "targ_ra": _float_or_none(row.get("trgposra")),
+        "targ_dec": _float_or_none(row.get("trgposdec")),
+        "s_region": s_region,
+        "date_obs": _mjd_to_iso(row.get("timmin")),
+        "duration": _float_or_none(kw.get("EXPTIME")),
+    }
+
+
+def search_products_tap(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
+                        obs_ids=None):
+    """Find a program's uncal (and NIRSpec MSA) files through CAOM TAP.
+
+    Returns ``(uncal_files, aux_files)`` in the shape ``filter_products``
+    returns: dicts with ``filename``, ``uri``, ``size`` and ``exp_type``.
+    Uncal dicts also carry the detector's raw ``filter`` (NIRCam: the
+    effective filter, a pupil-mounted bandpass winning over its wide
+    companion) and a ``_fileset`` dict for the manifest.
+    """
+    if exp_type and not exp_type.replace("_", "").isalnum():
+        raise ValueError(f"invalid exp_type {exp_type!r}")
+    pid = int(program_id)
+    prefixes = ([f"jw{pid:05d}{int(o):03d}" for o in obs_ids]
+                if obs_ids else [f"jw{pid:05d}"])
+
+    # ("_" is a LIKE wildcard; harmless here, filenames are checked exactly.)
+    file_clauses = ["a.productfilename LIKE '%_uncal.fits'"]
+    if instrument == "NIRSPEC":
+        file_clauses.append("a.productfilename LIKE '%_msa.fits'")
+    where = [
+        "o.collection = 'JWST'",
+        "(" + " OR ".join(f"o.observationid LIKE '{p}%'" for p in prefixes) + ")",
+        f"o.insname LIKE '{_INSTRUMENT_INSNAME.get(instrument, instrument)}%'",
+        "(" + " OR ".join(file_clauses) + ")",
+    ]
+    if exp_type:
+        # Coarse server-side cut; the exact match is enforced per row below.
+        where.append(f"o.inskeywords LIKE '%EXP_TYPE={exp_type.upper()}%'")
+    adql = (
+        f"SELECT {_TAP_SELECT} FROM dbo.caomobservation o "
+        "JOIN dbo.caomplane p ON p.observationtid = o.observationtid "
+        "JOIN dbo.caomartifact a ON a.planetid = p.planetid "
+        "WHERE " + " AND ".join(where)
+    )
+
+    label = f" obs {','.join(str(o) for o in obs_ids)}" if obs_ids else ""
+    print(f"Querying MAST CAOM (TAP) for {instrument} {exp_type} uncal files "
+          f"in program {program_id}{label}...")
+    t0 = time.time()
+    rows = _tap_query(adql)
+    print(f"  {len(rows)} artifact rows in {time.time() - t0:.1f}s")
+
+    sw_set = lw_set = set()
+    if instrument == "NIRCAM":
+        from campfire_pipeline.nircam.constants import SW_FILTERS, LW_FILTERS
+        sw_set, lw_set = set(SW_FILTERS), set(LW_FILTERS)
+
+    requested = exp_type.upper() if exp_type else None
+    uncal_files, aux_files = [], []
+    seen = set()
+    for row in rows:
+        filename = row["productfilename"]
+        if filename in seen:
+            continue
+        kw = _parse_inskeywords(row.get("inskeywords"))
+        row_exp = kw.get("EXP_TYPE", "").upper()
+        if requested and row_exp != requested:
+            continue
+        product = {
+            "filename": filename,
+            "uri": row["datauri"],
+            "size": int(row["contentlength"]),
+            "exp_type": row_exp,
+            "checksum": row.get("contentchecksum") or "",
+        }
+        if filename.endswith("_msa.fits"):
+            seen.add(filename)
+            aux_files.append(product)
+            continue
+        # Guide-star products (jw..._gs-acq1_..._uncal.fits) are attached
+        # to the science exposure's plane; only the detector's own uncal
+        # is named after its observation id.
+        if filename != f"{row['observationid']}_uncal.fits":
+            continue
+        seen.add(filename)
+        if instrument == "NIRCAM":
+            product["filter"] = _effective_filter(
+                kw.get("FILTER"), kw.get("PUPIL"), sw_set, lw_set) or None
+        product["_fileset"] = _tap_fileset(row, kw)
+        uncal_files.append(product)
+
+    uncal_files.sort(key=lambda f: f["filename"])
+    aux_files.sort(key=lambda f: f["filename"])
+    return uncal_files, aux_files
+
+
 def filter_products(products, instrument="NIRSPEC", exp_type=None):
     """Filter products to uncal FITS and instrument-specific auxiliary files.
 
@@ -409,10 +630,16 @@ def _download_one(file_info, token, pbar, pbar_lock):
     tmp_path = output_path.with_suffix(".tmp")
     headers = {"Authorization": f"token {token}"} if token else {}
 
+    uri = file_info["uri"]
+    if uri.startswith("mast:"):
+        url, params = MAST_DOWNLOAD_URL, {"uri": uri}
+    else:
+        url, params = f"{BASE_URL}/retrieve_product", {"product_name": uri}
+
     try:
         resp = requests.get(
-            f"{BASE_URL}/retrieve_product",
-            params={"product_name": file_info["uri"]},
+            url,
+            params=params,
             stream=True,
             headers=headers,
             timeout=60,
@@ -636,53 +863,12 @@ def _write_nircam_manifest(download_root, program_id, rows):
     print(f"  Manifest updated: {manifest_path} ({len(tbl)} rows)")
 
 
-def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
-                       download_dir="data", dry_run=False, obs_ids=None,
-                       filters=None, targets=None, radius=None,
-                       radius_units=None, token=None, workers=4):
-    """Download JWST level 1b data for a program.
+def _select_via_search(program_id, instrument, exp_type, obs_ids, filters,
+                       targets, radius, radius_units, token, workers):
+    """Select files through the JWST Search API (/search + /list_products).
 
-    Layout:
-      NIRSpec → ``{download_dir}/nirspec/{PID}/{filename}``
-      NIRCam  → ``{download_dir}/nircam/{PID}/{filter}/{filename}`` plus a
-                ``manifest.ecsv`` per PID directory.
-
-    Auxiliary metadata files (e.g. NIRSpec MSA metafiles) are downloaded
-    first, so reduction can begin while the larger uncal files are still
-    being fetched.
-
-    Parameters
-    ----------
-    program_id : int
-        JWST program ID.
-    instrument : str
-        Instrument name ('NIRSPEC' or 'NIRCAM').
-    exp_type : str
-        Exposure type (e.g. 'NRS_MSASPEC', 'NRC_IMAGE').
-    download_dir : str
-        Base download directory (the ``raw/`` root).
-    dry_run : bool
-        If True, list files without downloading.
-    obs_ids : iterable of int, optional
-        Restrict to these observation numbers.
-    filters : iterable of str, optional
-        Restrict to these filters (NIRCam only).
-    targets : iterable of str, optional
-        Restrict to filesets within a cone of one or more sky positions —
-        each entry is either a resolvable object name or a ``"RA Dec"``
-        string in decimal degrees.
-    radius : float, optional
-        Cone-search radius. Server default is 3, max is 30 arcminutes.
-    radius_units : str, optional
-        ``"arcminutes"`` (default) or ``"arcseconds"``.
-    token : str or None
-        MAST API token for accessing proprietary data.
-    workers : int
-        Number of parallel download streams (default 4).
+    Returns ``(uncal_files, aux_files)``, or ``None`` when no fileset matched.
     """
-    if token:
-        print("Using MAST API token for authentication.")
-
     # Step 1: Search for filesets
     filesets = search_filesets(
         program_id, instrument, exp_type,
@@ -692,7 +878,7 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     )
     if not filesets:
         print("No filesets found. Exiting.")
-        return
+        return None
 
     # Step 2: List products
     print()
@@ -704,21 +890,15 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
     uncal_files, aux_files = filter_products(products, instrument,
                                              exp_type=exp_type)
 
-    # Annotate every file with the program_id and (NIRCam) the parent fileset's
-    # filter, so the path computation has what it needs.
-    pid_str = str(int(program_id))
-    fileset_index = _build_fileset_index(filesets)
-    for f in uncal_files + aux_files:
-        f["program_id"] = pid_str
+    # Annotate every NIRCam uncal with the parent fileset's filter, so the
+    # path computation has what it needs.
     if instrument == "NIRCAM":
         from campfire_pipeline.nircam.constants import SW_FILTERS, LW_FILTERS
         sw_set = set(SW_FILTERS)
         lw_set = set(LW_FILTERS)
+        fileset_index = _build_fileset_index(filesets)
 
-        kept = []
-        requested = {x.lower() for x in filters} if filters else None
         unresolved = 0
-        dropped = 0
         for f in uncal_files:
             # NIRCam uncal filenames look like '{fileSetName}_{detector}_uncal.fits'
             # where fileSetName has no detector token. Walk back tokens until we
@@ -749,21 +929,108 @@ def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
                 effective = fs.get("filter") or ""
                 unresolved += 1
 
-            f["filter"] = effective.lower() if effective else None
+            f["filter"] = effective or None
             f["_fileset"] = fs
 
-            if requested is not None and (f["filter"] or "") not in requested:
-                dropped += 1
-                continue
-            kept.append(f)
-
-        if dropped:
-            print(f"  Dropped {dropped} uncal file(s) whose detector's actual "
-                  f"filter wasn't in --filters")
         if unresolved:
             print(f"  Warning: {unresolved} uncal file(s) had no resolvable "
                   f"filter from opticalElements; using fileset.filter as fallback")
-        uncal_files = kept
+
+    return uncal_files, aux_files
+
+
+def _keep_requested_filters(uncal_files, filters):
+    """Lowercase each NIRCam uncal's filter and drop those not in ``filters``."""
+    requested = {x.lower() for x in filters} if filters else None
+    kept = []
+    for f in uncal_files:
+        f["filter"] = f["filter"].lower() if f.get("filter") else None
+        if requested is not None and (f["filter"] or "") not in requested:
+            continue
+        kept.append(f)
+    dropped = len(uncal_files) - len(kept)
+    if dropped:
+        print(f"  Dropped {dropped} uncal file(s) whose detector's actual "
+              f"filter wasn't in --filters")
+    return kept
+
+
+def download_jwst_data(program_id, instrument="NIRSPEC", exp_type="NRS_MSASPEC",
+                       download_dir="data", dry_run=False, obs_ids=None,
+                       filters=None, targets=None, radius=None,
+                       radius_units=None, token=None, workers=4,
+                       backend="tap"):
+    """Download JWST level 1b data for a program.
+
+    Layout:
+      NIRSpec → ``{download_dir}/nirspec/{PID}/{filename}``
+      NIRCam  → ``{download_dir}/nircam/{PID}/{filter}/{filename}`` plus a
+                ``manifest.ecsv`` per PID directory.
+
+    Auxiliary metadata files (e.g. NIRSpec MSA metafiles) are downloaded
+    first, so reduction can begin while the larger uncal files are still
+    being fetched.
+
+    Parameters
+    ----------
+    program_id : int
+        JWST program ID.
+    instrument : str
+        Instrument name ('NIRSPEC' or 'NIRCAM').
+    exp_type : str
+        Exposure type (e.g. 'NRS_MSASPEC', 'NRC_IMAGE').
+    download_dir : str
+        Base download directory (the ``raw/`` root).
+    dry_run : bool
+        If True, list files without downloading.
+    obs_ids : iterable of int, optional
+        Restrict to these observation numbers.
+    filters : iterable of str, optional
+        Restrict to these filters (NIRCam only).
+    targets : iterable of str, optional
+        Restrict to filesets within a cone of one or more sky positions —
+        each entry is either a resolvable object name or a ``"RA Dec"``
+        string in decimal degrees. Cone searches always use the Search API.
+    radius : float, optional
+        Cone-search radius. Server default is 3, max is 30 arcminutes.
+    radius_units : str, optional
+        ``"arcminutes"`` (default) or ``"arcseconds"``.
+    token : str or None
+        MAST API token for accessing proprietary data.
+    workers : int
+        Number of parallel download streams (default 4).
+    backend : {'tap', 'search'}
+        How files are found: ``'tap'`` (default) queries MAST's CAOM catalog
+        in one ADQL request; ``'search'`` uses the JWST Search API's
+        /search + /list_products, which can take very long under load.
+    """
+    if backend not in BACKENDS:
+        raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+    if token:
+        print("Using MAST API token for authentication.")
+    if backend == "tap" and targets:
+        print("Cone search (--target) is only supported by the Search API; "
+              "using --backend search.")
+        backend = "search"
+
+    if backend == "tap":
+        uncal_files, aux_files = search_products_tap(
+            program_id, instrument, exp_type, obs_ids=obs_ids,
+        )
+    else:
+        selected = _select_via_search(
+            program_id, instrument, exp_type, obs_ids, filters,
+            targets, radius, radius_units, token, workers,
+        )
+        if selected is None:
+            return
+        uncal_files, aux_files = selected
+
+    pid_str = str(int(program_id))
+    for f in uncal_files + aux_files:
+        f["program_id"] = pid_str
+    if instrument == "NIRCAM":
+        uncal_files = _keep_requested_filters(uncal_files, filters)
 
     # Aux first so reduction can start while uncal files stream in.
     all_files = aux_files + uncal_files
