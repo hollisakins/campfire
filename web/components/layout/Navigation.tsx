@@ -8,6 +8,7 @@ import { LogOut, User, Shield, Sun, Moon, Monitor, ChevronDown, Github, Menu, X 
 import { Logo } from '@/components/brand/Logo';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
+import { drPagesInNav, drPagesMode } from '@/lib/dr-pages';
 
 type NavLink = { href: string; label: string; children?: { href: string; label: string }[] };
 
@@ -159,6 +160,14 @@ export const Navigation: React.FC = () => {
       ],
     },
     { href: '/map', label: 'Map' },
+    // Data releases (P6): behind NEXT_PUBLIC_DR_PAGES until the first real DR
+    ...(drPagesInNav(drPagesMode(), {
+      signedIn: !!user,
+      isAdmin: !!userProfile?.is_admin,
+      isLinkAccount,
+    })
+      ? [{ href: '/releases', label: 'Releases' }]
+      : []),
     { href: '/docs', label: 'Docs' },
   ];
 
