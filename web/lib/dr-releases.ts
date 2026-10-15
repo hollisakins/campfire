@@ -72,6 +72,8 @@ export function releaseCount(counts: Record<string, unknown> | null | undefined,
 
 interface ComponentFacts {
   files: number | null;
+  /** nircam_mosaic members only (P6b-3 adds expmaps, renders and plots to the component's files). */
+  mosaics: number | null;
   bytes: number | null;
   area_arcmin2: number | null;
 }
@@ -81,7 +83,13 @@ function componentFacts(counts: Record<string, unknown> | null | undefined, name
   const by = counts?.by_component;
   const entry = by && typeof by === 'object' ? (by as Record<string, unknown>)[name] : undefined;
   const rec = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {};
-  return { files: releaseCount(rec, 'files'), bytes: releaseCount(rec, 'bytes'), area_arcmin2: releaseCount(rec, 'area_arcmin2') };
+  const files = releaseCount(rec, 'files');
+  return {
+    files,
+    mosaics: releaseCount(rec, 'mosaics') ?? files,
+    bytes: releaseCount(rec, 'bytes'),
+    area_arcmin2: releaseCount(rec, 'area_arcmin2'),
+  };
 }
 
 function sumNullable(values: (number | null)[]): number | null {
@@ -115,7 +123,7 @@ export function releaseSummary(components: unknown, counts: Record<string, unkno
     .filter((c) => c.kind === 'nircam')
     .map((c) => {
       const facts = componentFacts(counts, c.raw);
-      return { field: c.raw.slice(7), mosaics: facts.files, bytes: facts.bytes, area_arcmin2: facts.area_arcmin2 };
+      return { field: c.raw.slice(7), mosaics: facts.mosaics, bytes: facts.bytes, area_arcmin2: facts.area_arcmin2 };
     })
     .sort((a, b) => a.field.localeCompare(b.field));
   const nircam = nircamFields.length > 0
