@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { rejectReleaseParam } from '@/lib/server/bearer-release';
 import { isColormapName, isStretchMode, type StretchMode, type ColormapName, type TrilogyParams } from '@fitsgl/core';
 import { createServiceClient } from '@/lib/supabase/server';
 import { isAdminUser, getLinkScope } from '@/lib/api-helpers';
@@ -60,6 +61,9 @@ const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
  * cutout GUI). Non-admins only reach published-backed pyramids.
  */
 export async function GET(request: NextRequest) {
+  // Live-only by contract (P6c-2): a `dr` parameter is refused, not ignored.
+  const dr400 = rejectReleaseParam(request.nextUrl.searchParams);
+  if (dr400) return dr400;
   const userId = await resolveRequestUser(request);
   if (!userId) {
     return NextResponse.json({ error: 'Invalid or missing credentials' }, { status: 401 });

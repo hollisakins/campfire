@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { rejectReleaseParam } from '@/lib/server/bearer-release';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createServiceClient } from '@/lib/supabase/service';
@@ -25,6 +26,9 @@ import { latestReadySnapshot } from '@/lib/server/sync-snapshot';
 const URL_TTL_SECONDS = 3600;
 
 export async function GET(request: NextRequest) {
+  // Live-only by contract (P6c-2): a `dr` parameter is refused, not ignored.
+  const dr400 = rejectReleaseParam(request.nextUrl.searchParams);
+  if (dr400) return dr400;
   const userId = await validateAuth(request);
   if (!userId) {
     return NextResponse.json({ error: 'Invalid or missing authentication' }, { status: 401 });

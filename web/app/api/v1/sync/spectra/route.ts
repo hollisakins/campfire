@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { rejectReleaseParam } from '@/lib/server/bearer-release';
 import { createServiceClient } from '@/lib/supabase/service';
 import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
@@ -27,6 +28,9 @@ import { resolveSnapshotExtras } from '@/lib/server/sync-snapshot';
 import { rejectLegacyOffset } from '@/lib/api-sync-pagination';
 
 export async function GET(request: NextRequest) {
+  // Live-only by contract (P6c-2): a `dr` parameter is refused, not ignored.
+  const dr400 = rejectReleaseParam(request.nextUrl.searchParams);
+  if (dr400) return dr400;
   const userId = await validateAuth(request);
 
   if (!userId) {

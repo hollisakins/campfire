@@ -4,6 +4,7 @@ import { authenticateApiRequest } from '@/lib/api-auth';
 import { assertBearerReleaseAccess } from '@/lib/server/bearer-release';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import { generateDownloadUrls } from '@/lib/r2';
+import { releaseDownloadUrls, resolveReleaseMembersAs } from '@/lib/server/dr-files';
 
 /**
  * GET /api/v1/observations/{obs_name}/manifest
@@ -12,6 +13,10 @@ import { generateDownloadUrls } from '@/lib/r2';
  * for all FITS files. Used by the CLI sync system.
  *
  * Signed URLs expire after 6 hours to allow time for slow connections.
+ *
+ * Under `dr=<tag>` (P6c-2) the list is the release's frozen spectra and every
+ * url is the member's ARCHIVED copy; a member the byte pass has not archived
+ * yet keeps its row with `download_url: null`. Never a live key.
  */
 export async function GET(
   request: NextRequest,
@@ -76,22 +81,41 @@ export async function GET(
     const targetIds = [...new Set(spectraList.map((s: { target_id: string }) => s.target_id))];
     const totalSizeBytes = spectraList.reduce((sum: number, s: { file_size: number | null }) => sum + (s.file_size || 0), 0);
 
-    // Lightweight query for program/field info (single row, indexed)
-    const { data: obsMeta } = await supabase
-      .from('targets')
-      .select('program_slug, field, programs(program_name)')
+    // Lightweight query for program/field info (single row, indexed).
+    // cat_targets: the live row, or the release's frozen row (views carry no
+    // FK metadata, so the program name is a second small read).
+    const { data: obsTarget } = await supabase
+      .from('cat_targets')
+      .select('program_slug, field')
       .eq('observation', obs_name)
       .in('program_slug', accessibleProgramSlugs)
       .limit(1)
-      .single();
+      .maybeSingle();
+    let programName: string | null = null;
+    if (obsTarget?.program_slug) {
+      const { data: prog } = await supabase
+        .from('programs')
+        .select('program_name')
+        .eq('slug', obsTarget.program_slug)
+        .maybeSingle();
+      programName = prog?.program_name ?? null;
+    }
 
     // Generate signed URLs (6-hour expiry = 21600 seconds). Batched so dual-read
     // resolves every backend in a single registry query (not one per spectrum).
+    // Under a release: the archived copies only, null for a pending member.
     const urlExpiresAt = new Date(Date.now() + 21600 * 1000).toISOString();
-    const signedUrls = await generateDownloadUrls(
-      spectraList.map((s: { fits_path: string }) => s.fits_path),
-      21600
-    );
+    const paths = spectraList.map((s: { fits_path: string }) => s.fits_path);
+    let signedUrls: (string | null)[];
+    if (release.tag) {
+      const members = await resolveReleaseMembersAs(supabase, release.tag, paths, {
+        accessible: accessibleProgramSlugs, isAdmin: includeUnpublished,
+      });
+      const urls = await releaseDownloadUrls(members, 21600);
+      signedUrls = paths.map((p: string) => urls.get(p) ?? null);
+    } else {
+      signedUrls = await generateDownloadUrls(paths, 21600);
+    }
 
     // Build response with download URLs
     const spectraWithUrls = spectraList.map(
@@ -128,7 +152,7 @@ export async function GET(
         target_ids: targetIds,
         target_count: targetIds.length,
         file_count: spectraList.length,
-        filter_snapshot: { observation: obs_name },
+        filter_snapshot: { observation: obs_name, ...(release.tag ? { dr: release.tag } : {}) },
         ip_address: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
           || request.headers.get('x-real-ip')
           || null,
@@ -139,13 +163,12 @@ export async function GET(
         (err) => console.error('Failed to track sync download:', err)
       );
 
-    const program = obsMeta?.programs as unknown as { program_name: string } | null;
-
     return NextResponse.json({
       observation: obs_name,
-      program_slug: obsMeta?.program_slug || null,
-      program_name: program?.program_name || null,
-      field: obsMeta?.field || null,
+      ...(release.tag ? { dr: release.tag } : {}),
+      program_slug: obsTarget?.program_slug || null,
+      program_name: programName,
+      field: obsTarget?.field || null,
       target_count: targetIds.length,
       spectrum_count: spectraList.length,
       total_size_bytes: totalSizeBytes,

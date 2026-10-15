@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { rejectReleaseParam } from '@/lib/server/bearer-release';
 import { createServiceClient } from '@/lib/supabase/server';
 import { isAdminUser, getLinkScope } from '@/lib/api-helpers';
 import { resolveFieldScienceSource, UnknownBandError } from '@/lib/cutout/source';
@@ -27,6 +28,9 @@ export const maxDuration = 60;
  * cutout GUI). Non-admins only reach published-backed pyramids.
  */
 export async function GET(request: NextRequest) {
+  // Live-only by contract (P6c-2): a `dr` parameter is refused, not ignored.
+  const dr400 = rejectReleaseParam(request.nextUrl.searchParams);
+  if (dr400) return dr400;
   const userId = await resolveRequestUser(request);
   if (!userId) {
     return NextResponse.json({ error: 'Invalid or missing credentials' }, { status: 401 });
