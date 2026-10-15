@@ -147,7 +147,8 @@ BEGIN
   IF bad <> 0 THEN RAISE EXCEPTION '% objects rows leak another program''s membership or spectra', bad; END IF;
   -- ...and the same for the photometry files
   SELECT count(*) INTO bad
-  FROM (SELECT DISTINCT unnest(programs) AS p FROM dr_photometry WHERE tag = 'DR-seed') pp
+  FROM (SELECT DISTINCT unnest(o.evidence_programs) AS p FROM dr_photometry ph
+        JOIN dr_objects o ON o.tag = ph.tag AND o.id = ph.object_id WHERE ph.tag = 'DR-seed') pp
   CROSS JOIN LATERAL dr_export_rows('DR-seed', 'photometry', pp.p, NULL, 10000) r
   WHERE r.row_json->'programs' <> jsonb_build_array(pp.p);
   IF bad <> 0 THEN RAISE EXCEPTION '% photometry rows leak another program''s membership', bad; END IF;

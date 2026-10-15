@@ -8,19 +8,22 @@
 --   2. the freeze writes every frozen table from the published rows only:
 --      draft and revoked spectra excluded (and their line fits / members),
 --      inactive objects excluded, objects without a published member
---      excluded, evidence_programs and z_source_spectrum_id correct for a
---      mixed object, line-fit staleness computed in-snapshot, members =
---      finals + sidecars (including the zfit / lines rows registered without
---      a spectrum_id), published mosaics only, P(z) sidecars of the
---      photometry field; counts and snapshot_xmin recorded; a deploy_events
---      row logged.
+--      excluded; the frozen rows are the live rows VERBATIM (P6b: every live
+--      column, by name) plus the extras: evidence_programs and
+--      z_source_spectrum_id correct for a mixed object, line-fit staleness
+--      computed in-snapshot; targets, line rows, photometry rows, mosaics,
+--      fields and the filter options frozen; the exports partition line fits
+--      by their spectrum's program; members = finals + sidecars (including
+--      the zfit / lines rows registered without a spectrum_id), published
+--      mosaics only, no P(z) sidecars; counts and snapshot_xmin recorded; a
+--      deploy_events row logged.
 --   3. idempotence: re-freezing converges (same rows, no duplicates); a
 --      failed attempt lands in state failed with the error text and the next
 --      attempt succeeds.
 --   4. RLS matrix over every dr_* table: anon denied; while the tag is frozen
 --      only admins see rows; once published a user without grants sees the
---      public rows, a grantee both, a link account nothing; dr_exports stays
---      admin-only.
+--      rows the LIVE policies would show them (objects by program overlap),
+--      a grantee both, a link account nothing; dr_exports stays admin-only.
 --   5. purge: refused for a published tag, allowed before, deletes everything.
 -- Run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/check_dr_freeze.sql
 -- Everything inside one rolled-back transaction.
@@ -292,53 +295,66 @@ BEGIN
   IF EXISTS (SELECT 1 FROM dr_spectra WHERE tag = 'DR-zzz' AND fits_path IN ('/tmp/zzz_dr_pub_g395m_spec.fits', '/tmp/zzz_dr_draft_prism_spec.fits')) THEN
     RAISE EXCEPTION 'revoked / draft spectrum frozen';
   END IF;
-  SELECT object_id INTO n FROM dr_spectra WHERE tag = 'DR-zzz' AND fits_path = '/tmp/zzz_dr_inact_prism_spec.fits';
-  IF n IS NOT NULL THEN RAISE EXCEPTION 'spectrum of an inactive object should carry object_id NULL'; END IF;
-  -- ...but keeps its target's field (Codex on #600)
-  IF (SELECT field FROM dr_spectra WHERE tag = 'DR-zzz' AND fits_path = '/tmp/zzz_dr_inact_prism_spec.fits') IS DISTINCT FROM 'zzz_drf' THEN
+  -- every frozen spectrum has its frozen target (the live join path), and
+  -- the inactive object's target points at an object that is NOT frozen
+  IF EXISTS (SELECT 1 FROM dr_spectra d WHERE d.tag = 'DR-zzz' AND d.fits_path LIKE '/tmp/zzz_dr_%'
+             AND NOT EXISTS (SELECT 1 FROM dr_targets t WHERE t.tag = d.tag AND t.target_id = d.target_id)) THEN
+    RAISE EXCEPTION 'a frozen spectrum has no frozen target';
+  END IF;
+  SELECT count(*) INTO n FROM dr_targets WHERE tag = 'DR-zzz' AND target_id LIKE 'zzz-dr-t-%';
+  IF n <> 5 THEN RAISE EXCEPTION 'expected 5 frozen targets (those with a published spectrum), got %', n; END IF;
+  SELECT t.object_id INTO n FROM dr_targets t WHERE t.tag = 'DR-zzz' AND t.target_id = 'zzz-dr-t-inact';
+  IF n IS NULL OR EXISTS (SELECT 1 FROM dr_objects o WHERE o.tag = 'DR-zzz' AND o.id = n) THEN
+    RAISE EXCEPTION 'the inactive object must not be frozen (target object_id %)', n;
+  END IF;
+  IF (SELECT t.field FROM dr_targets t WHERE t.tag = 'DR-zzz' AND t.target_id = 'zzz-dr-t-inact') IS DISTINCT FROM 'zzz_drf' THEN
     RAISE EXCEPTION 'objectless spectrum lost its target field';
   END IF;
-  IF EXISTS (SELECT 1 FROM dr_spectra WHERE tag = 'DR-zzz' AND fits_path LIKE '/tmp/zzz_dr_%' AND field IS NULL) THEN
-    RAISE EXCEPTION 'a frozen spectrum has no field';
+  -- the frozen spectrum is the live row, verbatim (every live column)
+  IF EXISTS (SELECT 1 FROM dr_spectra d JOIN spectra s ON s.id = d.id
+             WHERE d.tag = 'DR-zzz' AND d.fits_path LIKE '/tmp/zzz_dr_%' AND to_jsonb(d) - 'tag' <> to_jsonb(s)) THEN
+    RAISE EXCEPTION 'a frozen spectrum differs from its live row: %',
+      (SELECT to_jsonb(d) - 'tag' FROM dr_spectra d JOIN spectra s ON s.id = d.id
+       WHERE d.tag = 'DR-zzz' AND d.fits_path LIKE '/tmp/zzz_dr_%' AND to_jsonb(d) - 'tag' <> to_jsonb(s) LIMIT 1);
   END IF;
 
   -- objects: PUB, MIX, PRIV; not DRAFTONLY, not INACTIVE
-  SELECT count(*) INTO n FROM dr_objects WHERE tag = 'DR-zzz' AND name LIKE 'ZZZ-DR-%';
+  SELECT count(*) INTO n FROM dr_objects WHERE tag = 'DR-zzz' AND object_id LIKE 'ZZZ-DR-%';
   IF n <> 3 THEN RAISE EXCEPTION 'expected 3 frozen objects, got %', n; END IF;
-  IF EXISTS (SELECT 1 FROM dr_objects WHERE tag = 'DR-zzz' AND name IN ('ZZZ-DR-DRAFTONLY', 'ZZZ-DR-INACTIVE')) THEN
+  IF EXISTS (SELECT 1 FROM dr_objects WHERE tag = 'DR-zzz' AND object_id IN ('ZZZ-DR-DRAFTONLY', 'ZZZ-DR-INACTIVE')) THEN
     RAISE EXCEPTION 'draft-only or inactive object frozen';
   END IF;
   SELECT o.id INTO mix FROM objects o WHERE o.object_id = 'ZZZ-DR-MIX';
-  IF (SELECT evidence_programs FROM dr_objects WHERE tag = 'DR-zzz' AND object_id = mix) <> ARRAY['zzz_dr_priv', 'zzz_dr_pub'] THEN
-    RAISE EXCEPTION 'MIX evidence_programs wrong: %', (SELECT evidence_programs FROM dr_objects WHERE tag = 'DR-zzz' AND object_id = mix);
+  IF (SELECT evidence_programs FROM dr_objects WHERE tag = 'DR-zzz' AND id = mix) <> ARRAY['zzz_dr_priv', 'zzz_dr_pub'] THEN
+    RAISE EXCEPTION 'MIX evidence_programs wrong: %', (SELECT evidence_programs FROM dr_objects WHERE tag = 'DR-zzz' AND id = mix);
   END IF;
   SELECT s.id INTO g395m FROM spectra s WHERE s.fits_path = '/tmp/zzz_dr_mixq_g395m_spec.fits';
-  SELECT z_source_spectrum_id INTO z_src FROM dr_objects WHERE tag = 'DR-zzz' AND object_id = mix;
+  SELECT z_source_spectrum_id INTO z_src FROM dr_objects WHERE tag = 'DR-zzz' AND id = mix;
   IF z_src <> g395m THEN RAISE EXCEPTION 'MIX z_source should be the PRISM-consistent G395M (%), got %', g395m, z_src; END IF;
-  -- review_state mirrors the live flag in the snapshot (the P3 triggers
-  -- recompute it on the fixture inserts, so compare rather than assume)
-  IF ((SELECT review_state FROM dr_objects WHERE tag = 'DR-zzz' AND object_id = mix) ->> 'needs_review')::boolean
-     IS DISTINCT FROM (SELECT needs_review FROM objects WHERE id = mix)
-     OR NOT ((SELECT review_state FROM dr_objects WHERE tag = 'DR-zzz' AND object_id = mix) ? 'reviewed_spectrum_ids') THEN
-    RAISE EXCEPTION 'MIX review_state not frozen';
-  END IF;
-  IF (SELECT redshift_quality FROM dr_objects WHERE tag = 'DR-zzz' AND object_id = mix) <> 3
-     OR (SELECT redshift FROM dr_objects WHERE tag = 'DR-zzz' AND object_id = mix) <> 2.5 THEN
+  IF (SELECT redshift_quality FROM dr_objects WHERE tag = 'DR-zzz' AND id = mix) <> 3
+     OR (SELECT redshift FROM dr_objects WHERE tag = 'DR-zzz' AND id = mix) <> 2.5 THEN
     RAISE EXCEPTION 'MIX inspection state not frozen';
   END IF;
-  -- aggregates, programs and the auto redshift come from the PUBLISHED members
-  -- (Codex on #599): MIX has 3 published members in 2 programs; its auto
-  -- redshift is the PRISM-consistent G395M value, not the live column
-  IF (SELECT (n_spectra, n_targets, gratings, programs, redshift_auto::numeric(10,4)) FROM dr_objects WHERE tag = 'DR-zzz' AND object_id = mix)
-     IS DISTINCT FROM (3, 2, ARRAY['G140M', 'G395M', 'PRISM'], ARRAY['zzz_dr_priv', 'zzz_dr_pub'], 2.505::numeric(10,4)) THEN
-    RAISE EXCEPTION 'MIX frozen aggregates wrong: %', (SELECT to_jsonb(o) - 'review_state' FROM dr_objects o WHERE tag = 'DR-zzz' AND object_id = mix);
+  -- the frozen object is the live row VERBATIM (P6b): aggregates, programs,
+  -- photo-z fields, review flags and the auto redshift are the live values
+  -- (PUB's live row counts its revoked member; MIX's live redshift_auto is not
+  -- the in-snapshot anchor's: both are recorded, not corrected)
+  IF EXISTS (SELECT 1 FROM dr_objects d JOIN objects o ON o.id = d.id
+             WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' - 'evidence_programs' - 'z_source_spectrum_id' <> to_jsonb(o)) THEN
+    RAISE EXCEPTION 'a frozen object differs from its live row: %',
+      (SELECT to_jsonb(d) - 'tag' FROM dr_objects d JOIN objects o ON o.id = d.id
+       WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' - 'evidence_programs' - 'z_source_spectrum_id' <> to_jsonb(o) LIMIT 1);
   END IF;
   SELECT o.id INTO pub_id FROM objects o WHERE o.object_id = 'ZZZ-DR-PUB';
-  -- PUB's G395M member is revoked: one published spectrum, one grating; its
-  -- live row still counts two (the reconcile aggregates include every member)
-  IF (SELECT (n_spectra, gratings) FROM dr_objects WHERE tag = 'DR-zzz' AND object_id = pub_id)
-     IS DISTINCT FROM (1, ARRAY['PRISM']) THEN
-    RAISE EXCEPTION 'PUB frozen aggregates should count the published member only: %', (SELECT to_jsonb(o) - 'review_state' FROM dr_objects o WHERE tag = 'DR-zzz' AND object_id = pub_id);
+  IF (SELECT (n_spectra, gratings) FROM dr_objects WHERE tag = 'DR-zzz' AND id = pub_id)
+     IS DISTINCT FROM (SELECT (n_spectra, gratings) FROM objects WHERE id = pub_id) THEN
+    RAISE EXCEPTION 'PUB frozen aggregates are not the live ones';
+  END IF;
+  -- the live redshift_auto disagreeing with the in-snapshot anchor is counted
+  IF (r.counts->>'redshift_auto_mismatch')::int <> (
+       SELECT count(*) FROM dr_objects d WHERE d.tag = 'DR-zzz'
+         AND d.redshift_auto IS DISTINCT FROM (SELECT s.redshift_auto FROM spectra s WHERE s.id = d.z_source_spectrum_id)) THEN
+    RAISE EXCEPTION 'redshift_auto_mismatch count wrong: %', r.counts->>'redshift_auto_mismatch';
   END IF;
 
   -- line fits: PUB fresh, MIX stale both ways, revoked spectrum's fit absent
@@ -350,24 +366,68 @@ BEGIN
   IF NOT (SELECT stale_redshift AND stale_spectrum FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id = 'zzz-dr-t-mixp') THEN
     RAISE EXCEPTION 'MIX line fit should be stale on both axes';
   END IF;
-  -- the frozen fit carries its spectrum's program, not the fit's stale copy
-  IF (SELECT program_slug FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id = 'zzz-dr-t-pub') <> 'zzz_dr_pub' THEN
-    RAISE EXCEPTION 'frozen line fit kept a stale program: %',
-      (SELECT program_slug FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id = 'zzz-dr-t-pub');
+  -- the frozen fit is the live row verbatim (its stale program copy included);
+  -- the EXPORT partitions it by its spectrum's program (Codex on #599)
+  IF (SELECT program_slug FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id = 'zzz-dr-t-pub') <> 'zzz_dr_priv' THEN
+    RAISE EXCEPTION 'frozen line fit is not the live row';
+  END IF;
+  got := pg_temp.zzz_dr_as('authenticated', admin,
+    $q$SELECT string_agg(p.partition || ':' || p.n_rows, ',' ORDER BY p.partition) FROM public.dr_export_partitions('DR-zzz') p WHERE p.stream = 'line_fits' AND p.partition LIKE 'zzz_%'$q$);
+  IF got <> 'zzz_dr_pub:2' THEN RAISE EXCEPTION 'line_fits export partitions should follow the spectra, got %', got; END IF;
+  got := pg_temp.zzz_dr_as('authenticated', admin,
+    $q$SELECT string_agg(r.row_json->>'program_slug', ',') FROM public.dr_export_rows('DR-zzz', 'line_fits', 'zzz_dr_pub', NULL, 10) r$q$);
+  IF got <> 'zzz_dr_pub,zzz_dr_pub' THEN RAISE EXCEPTION 'exported fits should carry their spectrum program, got %', got; END IF;
+  -- the unnested lines follow their fits (the fixture's fits have none; the
+  -- seed's rows are frozen too, since DR-zzz spans the whole catalog)
+  IF (SELECT count(*) FROM dr_spectrum_lines WHERE tag = 'DR-zzz')
+     <> (SELECT count(*) FROM spectrum_lines l JOIN dr_line_fits f ON f.tag = 'DR-zzz' AND f.spectrum_id = l.spectrum_id) THEN
+    RAISE EXCEPTION 'frozen lines do not match the frozen fits';
   END IF;
 
-  -- photometry: MIX only, with the object's programs
+  -- photometry: the SELECTED catalog's row of MIX only (verbatim), its bands
+  -- with it; the object row keeps its live photo-z fields
   SELECT count(*) INTO n FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1';
-  IF n <> 1 OR (SELECT programs FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1') <> ARRAY['zzz_dr_priv', 'zzz_dr_pub'] THEN
+  IF n <> 1 OR (SELECT object_id FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1') <> mix
+     OR EXISTS (SELECT 1 FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name <> 'ZZZ CAT v1' AND field = 'zzz_drf') THEN
     RAISE EXCEPTION 'photometry freeze wrong (n=%)', n;
   END IF;
-  -- object photo-z fields follow the SELECTED catalog, not the live row
-  IF (SELECT (d.photo_z, d.has_photometry) FROM dr_objects d JOIN objects o ON o.id = d.object_id
-      WHERE d.tag = 'DR-zzz' AND o.object_id = 'ZZZ-DR-MIX') IS DISTINCT FROM (2.4::double precision, true)
-     OR (SELECT (d.photo_z, d.has_photometry) FROM dr_objects d JOIN objects o ON o.id = d.object_id
-         WHERE d.tag = 'DR-zzz' AND o.object_id = 'ZZZ-DR-PUB') IS DISTINCT FROM (NULL::double precision, false) THEN
-    RAISE EXCEPTION 'frozen photo-z fields wrong: %', (SELECT jsonb_agg(jsonb_build_object('o', o.object_id, 'z', d.photo_z, 'has', d.has_photometry))
-                                                        FROM dr_objects d JOIN objects o ON o.id = d.object_id WHERE d.tag = 'DR-zzz');
+  IF EXISTS (SELECT 1 FROM dr_photometry d JOIN object_photometry p ON p.id = d.id
+             WHERE d.tag = 'DR-zzz' AND d.catalog_name = 'ZZZ CAT v1' AND to_jsonb(d) - 'tag' <> to_jsonb(p)) THEN
+    RAISE EXCEPTION 'frozen photometry row differs from live';
+  END IF;
+  IF (SELECT count(*) FROM dr_photometry_bands b WHERE b.tag = 'DR-zzz'
+        AND b.photometry_id IN (SELECT id FROM dr_photometry WHERE tag = 'DR-zzz'))
+     <> (SELECT count(*) FROM object_photometry_bands b WHERE b.photometry_id IN (SELECT id FROM dr_photometry WHERE tag = 'DR-zzz')) THEN
+    RAISE EXCEPTION 'frozen bands do not match the frozen photometry rows';
+  END IF;
+  IF (SELECT (d.photo_z, d.has_photometry) FROM dr_objects d WHERE d.tag = 'DR-zzz' AND d.id = mix)
+       IS DISTINCT FROM (9.9::double precision, true) THEN
+    RAISE EXCEPTION 'frozen object photo-z fields are not the live ones';
+  END IF;
+
+  -- NIRCam: the published mosaics' rows, the field row, the filter options
+  SELECT count(*) INTO n FROM dr_nircam_images WHERE tag = 'DR-zzz' AND field = 'zzz_drf';
+  IF n <> 2 OR EXISTS (SELECT 1 FROM dr_nircam_images WHERE tag = 'DR-zzz' AND deploy_status <> 'published') THEN
+    RAISE EXCEPTION 'expected the 2 published mosaic rows, got %', n;
+  END IF;
+  IF EXISTS (SELECT 1 FROM dr_nircam_images d JOIN nircam_images ni ON ni.id = d.id WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' <> to_jsonb(ni)) THEN
+    RAISE EXCEPTION 'frozen mosaic row differs from live';
+  END IF;
+  -- the component field is frozen; the field without a frozen target or mosaic is not
+  IF NOT EXISTS (SELECT 1 FROM dr_fields WHERE tag = 'DR-zzz' AND name = 'zzz_drf')
+     OR EXISTS (SELECT 1 FROM dr_fields WHERE tag = 'DR-zzz' AND name = 'zzz_drf_nomosaic') THEN
+    RAISE EXCEPTION 'field rows wrong: %', (SELECT array_agg(name) FROM dr_fields WHERE tag = 'DR-zzz' AND name LIKE 'zzz_%');
+  END IF;
+  IF EXISTS (SELECT 1 FROM dr_fields d JOIN fields f ON f.name = d.name WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' <> to_jsonb(f)) THEN
+    RAISE EXCEPTION 'frozen field row differs from live';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM dr_filter_options o WHERE o.tag = 'DR-zzz'
+                   AND o.fields @> ARRAY['zzz_drf'] AND NOT (o.fields @> ARRAY['zzz_drf_nomosaic'])
+                   AND o.gratings @> ARRAY['G140M', 'G395M', 'PRISM']
+                   AND o.observations @> ARRAY['zzz_dr_obs_priv', 'zzz_dr_obs_pub']
+                   -- the draft-only target's observation is pub too, so it stays; sorted, distinct
+                   AND o.fields = (SELECT array_agg(DISTINCT t.field ORDER BY t.field) FROM dr_targets t WHERE t.tag = 'DR-zzz' AND t.has_published_spectrum)) THEN
+    RAISE EXCEPTION 'filter options wrong: %', (SELECT to_jsonb(o) FROM dr_filter_options o WHERE tag = 'DR-zzz');
   END IF;
 
   -- members: 6 spectra x 5 products (zfit + lines via the key rule) + 2 mosaics
@@ -575,37 +635,48 @@ DECLARE
   link    uuid := '00000000-0000-0000-0000-0000000000d4';
   surfaces text[][] := ARRAY[
     ['dr_releases',   $q$SELECT count(*)::text FROM dr_releases WHERE tag = 'DR-zzz'$q$],
-    ['dr_spectra',    $q$SELECT count(*)::text FROM dr_spectra WHERE tag = 'DR-zzz' AND fits_path LIKE '/tmp/zzz_dr_%'$q$],
-    ['dr_objects',    $q$SELECT count(*)::text FROM dr_objects WHERE tag = 'DR-zzz' AND name LIKE 'ZZZ-DR-%'$q$],
-    ['dr_manifest',    $q$SELECT count(*)::text FROM dr_manifest WHERE tag = 'DR-zzz' AND (storage_key LIKE 'data/products/nirspec/zzz_dr_%' OR storage_key LIKE 'data/products/nircam/zzz_drf/%')$q$],
-    ['dr_line_fits',  $q$SELECT count(*)::text FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id LIKE 'zzz-dr-t-%'$q$],
-    ['dr_photometry', $q$SELECT count(*)::text FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1'$q$],
-    ['dr_exports',    $q$SELECT count(*)::text FROM dr_exports WHERE tag = 'DR-zzz'$q$]
+    ['dr_spectra',       $q$SELECT count(*)::text FROM dr_spectra WHERE tag = 'DR-zzz' AND fits_path LIKE '/tmp/zzz_dr_%'$q$],
+    ['dr_targets',       $q$SELECT count(*)::text FROM dr_targets WHERE tag = 'DR-zzz' AND target_id LIKE 'zzz-dr-t-%'$q$],
+    ['dr_objects',       $q$SELECT count(*)::text FROM dr_objects WHERE tag = 'DR-zzz' AND object_id LIKE 'ZZZ-DR-%'$q$],
+    ['dr_manifest',      $q$SELECT count(*)::text FROM dr_manifest WHERE tag = 'DR-zzz' AND (storage_key LIKE 'data/products/nirspec/zzz_dr_%' OR storage_key LIKE 'data/products/nircam/zzz_drf/%')$q$],
+    ['dr_line_fits',     $q$SELECT count(*)::text FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id LIKE 'zzz-dr-t-%'$q$],
+    ['dr_photometry',    $q$SELECT count(*)::text FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1'$q$],
+    ['dr_nircam_images', $q$SELECT count(*)::text FROM dr_nircam_images WHERE tag = 'DR-zzz' AND field = 'zzz_drf'$q$],
+    ['dr_fields',        $q$SELECT count(*)::text FROM dr_fields WHERE tag = 'DR-zzz' AND name = 'zzz_drf'$q$],
+    ['dr_filter_options',$q$SELECT count(*)::text FROM dr_filter_options WHERE tag = 'DR-zzz'$q$],
+    ['dr_exports',       $q$SELECT count(*)::text FROM dr_exports WHERE tag = 'DR-zzz'$q$]
   ];
   -- frozen (unpublished): [anon, nogrant, grantee, link, admin]
   frozen_expected text[][] := ARRAY[
     ['ERR', '0', '0', '0', '1'],
     ['ERR', '0', '0', '0', '6'],
+    ['ERR', '0', '0', '0', '5'],
     ['ERR', '0', '0', '0', '3'],
     ['ERR', '0', '0', '0', '32'],
     ['ERR', '0', '0', '0', '2'],
     ['ERR', '0', '0', '0', '1'],
+    ['ERR', '0', '0', '0', '2'],
+    ['ERR', '0', '0', '0', '1'],
+    ['ERR', '0', '0', '0', '1'],
     ['ERR', '0', '0', '0', '1']
   ];
-  -- published: public program rows for nogrant; both for grantee; link nothing
-  -- spectra: pub 4 (pub prism, mixp prism, inactive-object prism... = pub,
-  -- mixp, inact = 3 public) -- see the counts asserted below.
+  -- published: what the LIVE policies would show (P6b): public-program rows
+  -- for nogrant; both for grantee; link nothing; admin everything
   pub_expected text[][] := ARRAY[
     ['ERR', '1', '1', '0', '1'],
-    ['ERR', '3', '6', '0', '6'],
-    -- objects: a reader must hold EVERY program of an object (its frozen
-    -- aggregates span them all; Codex on #599): nogrant sees PUB only, not MIX
-    ['ERR', '1', '3', '0', '3'],
+    ['ERR', '3', '6', '0', '6'],     -- spectra: pub, mixp, inact are public-program
+    ['ERR', '3', '5', '0', '5'],     -- targets: likewise
+    -- objects by program OVERLAP, as live: nogrant sees PUB and MIX (MIX has a
+    -- public member); the RPCs scope MIX's aggregates per viewer, as live
+    ['ERR', '2', '3', '0', '3'],
     -- members: 3 public spectra x 5 = 15 + 2 mosaics = 17 ; grantee all 32
     ['ERR', '17', '32', '0', '32'],
-    ['ERR', '2', '2', '0', '2'],   -- both fits are on public-program spectra
-    ['ERR', '0', '1', '0', '1'],   -- MIX photometry: same all-programs rule
-    ['ERR', '0', '0', '0', '1']    -- exports: admin only
+    ['ERR', '2', '2', '0', '2'],     -- fits: through their (public-program) spectra
+    ['ERR', '1', '1', '0', '1'],     -- MIX photometry: through the (overlap-visible) object
+    ['ERR', '2', '2', '0', '2'],     -- published mosaics: every non-link account
+    ['ERR', '1', '1', '0', '1'],     -- the field with a visible mosaic
+    ['ERR', '1', '1', '0', '1'],     -- filter options of a visible release
+    ['ERR', '0', '0', '0', '1']      -- exports: admin only
   ];
   i int; got text; who text; uid uuid; role text; j int;
   principals uuid[] := ARRAY[NULL, nogrant, grantee, link, admin];
@@ -644,7 +715,7 @@ BEGIN
   IF got NOT LIKE 'ERR:%' THEN RAISE EXCEPTION 'anon could call dr_enqueue_freeze'; END IF;
   got := pg_temp.zzz_dr_as('authenticated', nogrant, $q$SELECT public.dr_freeze_job('DR-zzz')::text$q$);
   IF got NOT LIKE 'ERR:%' THEN RAISE EXCEPTION 'authenticated could call dr_freeze_job'; END IF;
-  RAISE NOTICE 'OK 4: RLS matrix (frozen: admin only; published: program-scoped, link excluded; exports admin-only; no direct writes)';
+  RAISE NOTICE 'OK 4: RLS matrix (frozen: admin only; published: the live rules per table, link excluded; exports admin-only; no direct writes)';
 END $$;
 
 -- ---------------------------------------------------------------------------
@@ -670,6 +741,9 @@ BEGIN
     SELECT tag FROM dr_releases WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_spectra WHERE tag = 'DR-zzz'
     UNION ALL SELECT tag FROM dr_objects WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_manifest WHERE tag = 'DR-zzz'
     UNION ALL SELECT tag FROM dr_line_fits WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_photometry WHERE tag = 'DR-zzz'
+    UNION ALL SELECT tag FROM dr_targets WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_spectrum_lines WHERE tag = 'DR-zzz'
+    UNION ALL SELECT tag FROM dr_photometry_bands WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_nircam_images WHERE tag = 'DR-zzz'
+    UNION ALL SELECT tag FROM dr_fields WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_filter_options WHERE tag = 'DR-zzz'
     UNION ALL SELECT tag FROM dr_exports WHERE tag = 'DR-zzz') x;
   IF n <> 0 THEN RAISE EXCEPTION 'purge left % rows', n; END IF;
   IF (SELECT count(*) FROM deploy_events WHERE action = 'delete' AND metadata->>'dr_tag' = 'DR-zzz' AND (metadata->>'purge')::boolean) <> 1 THEN
