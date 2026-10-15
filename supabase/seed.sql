@@ -3621,7 +3621,11 @@ REFRESH MATERIALIZED VIEW public.mv_programs_overview;
 INSERT INTO public.dr_releases (tag, state, components, created_by, freeze_started_at, notes)
 SELECT 'DR-seed', 'freezing',
        (SELECT jsonb_agg(c) FROM (SELECT 'nirspec' AS c UNION ALL
-         SELECT DISTINCT 'nircam/' || field FROM public.nircam_images WHERE deploy_status = 'published') x),
+         SELECT DISTINCT 'nircam/' || field FROM public.nircam_images WHERE deploy_status = 'published' UNION ALL
+         -- every photometry catalog with a cross-match on a frozen object (P6b-2: band filters)
+         SELECT DISTINCT 'photometry/' || ph.field || '/' || ph.catalog_name
+         FROM public.object_photometry ph JOIN public.objects o ON o.id = ph.object_id
+         WHERE o.is_active AND o.has_published_spectrum) x),
        '11111111-1111-1111-1111-111111111111', now(), 'Seed fixture: the seeded catalog frozen as a published release.';
 SELECT public.dr_freeze_job('DR-seed');
 UPDATE public.dr_releases SET state = 'published', published_at = now(),
