@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
+import { requestDrTag } from '@/lib/dr/server';
 import { deriveSibling } from '@/lib/layout';
+import { releaseSidecarKey } from '@/lib/server/release-sidecar';
 import { streamSidecar } from '@/lib/server/sidecar-stream';
 
 /**
@@ -79,7 +81,7 @@ export async function GET(request: NextRequest) {
     // Access is the spectrum's: the sidecar is readable iff the spectrum row
     // is (program access, publish gate, share-link scope — all under RLS).
     const { data: spectrum, error: spectrumError } = await supabase
-      .from('spectra')
+      .from('cat_spectra')
       .select('id')
       .eq('fits_path', fitsPath)
       .single();
@@ -88,7 +90,13 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'File not found or access denied' }, { status: 404 });
     }
 
-    const linesJsonPath = deriveSibling(fitsPath, 'nirspec_lines_json');
+    const liveLinesPath = deriveSibling(fitsPath, 'nirspec_lines_json');
+    // Under a release: the archived copy, or a 404 for a member not archived yet (P6c-2).
+    const dr = await requestDrTag();
+    const linesJsonPath = dr ? await releaseSidecarKey(supabase, dr, liveLinesPath) : liveLinesPath;
+    if (!linesJsonPath) {
+      return NextResponse.json({ error: 'Line fit not available for this spectrum' }, { status: 404 });
+    }
     // Program-scoped, cookie-authenticated: browser-cacheable for a day, never
     // shared-cacheable (#497). A re-fit re-deploys under a new content hash;
     // the day-long private cache is the same trade-off /api/redshift-fit makes.

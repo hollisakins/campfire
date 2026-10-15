@@ -69,8 +69,6 @@ const CACHE = { 'Cache-Control': 'private, max-age=60', Vary: 'Cookie' };
  * scrolls into view and must not queue behind the page's mutations.
  */
 export async function GET(request: NextRequest) {
-  // Live fits + live staleness view; the release variant (cat_line_fits) is P6c-2.
-  if (await requestDrTag()) return Response.json({ error: 'Not found' }, { status: 404 });
   const principal = await getRequestPrincipal();
   if (!principal) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -82,15 +80,26 @@ export async function GET(request: NextRequest) {
   if (ids.length > MAX_IDS) return Response.json({ error: `At most ${MAX_IDS} spectra per request` }, { status: 400 });
 
   try {
+    // cat_line_fits: the live fits, or the release's frozen fits while one is
+    // browsed. Staleness is the live status view's call for the live catalog,
+    // and the flags the freeze computed in-snapshot (dr_line_fits.stale_*)
+    // for a release (P6c-2).
+    const dr = await requestDrTag();
     const [fitsRes, statusRes] = await Promise.all([
       principal.supabase
-        .from('spectrum_line_fits')
+        .from('cat_line_fits')
         .select('spectrum_id, target_id, grating, z_used, z_source, z_quality, z_fit, dv, sigma_v, kin_source, n_lines, n_detected, n_broad, fit_version, cfpipe_version, fitted_at, lines')
         .in('spectrum_id', ids),
-      principal.supabase
-        .from('spectrum_line_fits_status')
-        .select('spectrum_id, stale_redshift, stale_spectrum')
-        .in('spectrum_id', ids),
+      dr
+        ? principal.supabase
+            .from('dr_line_fits')
+            .select('spectrum_id, stale_redshift, stale_spectrum')
+            .eq('tag', dr)
+            .in('spectrum_id', ids)
+        : principal.supabase
+            .from('spectrum_line_fits_status')
+            .select('spectrum_id, stale_redshift, stale_spectrum')
+            .in('spectrum_id', ids),
     ]);
     if (fitsRes.error) {
       console.error('object lines error:', fitsRes.error);

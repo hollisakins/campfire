@@ -9,6 +9,7 @@ import { formatExposureTime } from './plotting-utils';
 import { DQ_FLAGS, decodeBitmask, encodeBitmask } from '@/lib/flags';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useDrTag } from '@/lib/dr/client';
+import { useFileAvailability } from './release-files';
 import type { Spectrum } from '@/lib/types';
 
 const DQ_OPTIONS: FilterOption[] = DQ_FLAGS.map(f => ({
@@ -41,8 +42,11 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
   cardId,
 }) => {
   const { user, userProfile } = useAuth();
-  // Release browsing (P6c-1): read-only, and the plot waits for P6c-2.
-  const readOnly = useDrTag() !== null;
+  // Release browsing: read-only; the plot and the download exist only for
+  // the members whose archived copies the release holds (P6c-2).
+  const drTag = useDrTag();
+  const readOnly = drTag !== null;
+  const files = useFileAvailability(spectrum.fits_path);
   const canEdit = !!(user && userProfile?.can_inspect) && !readOnly;
 
   // Local DQ bitmask: optimistic state mirrors the server, snapped back on failure.
@@ -93,13 +97,13 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
     setDownloading(true);
     setDownloadError(null);
     try {
-      await downloadSingleFile(spectrum.fits_path);
+      await downloadSingleFile(spectrum.fits_path, drTag);
     } catch (err) {
       setDownloadError(err instanceof Error ? err.message : 'Download failed');
     } finally {
       setDownloading(false);
     }
-  }, [spectrum.fits_path]);
+  }, [spectrum.fits_path, drTag]);
 
   const dqSelected = decodeBitmask(dqBitmask, DQ_FLAGS);
 
@@ -191,18 +195,20 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
               </span>
             </span>
 
-            <button
-              onClick={handleDownload}
-              disabled={downloading || readOnly}
-              className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium border border-border dark:border-border-strong rounded hover:bg-card-hover text-text-primary disabled:opacity-50"
-            >
-              {downloading ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Download className="w-3.5 h-3.5" />
-              )}
-              Download FITS
-            </button>
+            {files.download && (
+              <button
+                onClick={handleDownload}
+                disabled={downloading}
+                className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium border border-border dark:border-border-strong rounded hover:bg-card-hover text-text-primary disabled:opacity-50"
+              >
+                {downloading ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Download className="w-3.5 h-3.5" />
+                )}
+                Download FITS
+              </button>
+            )}
           </div>
 
           {(dqError || downloadError) && (
@@ -212,7 +218,7 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
             </div>
           )}
 
-          {!readOnly && (
+          {files.plot && (
             <SpectrumPlot
               bare
               fitsPath={spectrum.fits_path}

@@ -5,6 +5,7 @@ import { useQueries, type UseQueryResult, useQueryClient } from '@tanstack/react
 import { Loader2 } from 'lucide-react';
 import type { SpectrumData1D } from '@/app/api/spectrum/route';
 import { spectrum1dQueryOptions, useSpectrumCacheTrim } from '@/lib/hooks/useSpectrumJson';
+import { useDrTag } from '@/lib/dr/client';
 import { usePreferences } from '@/lib/contexts/PreferencesContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import {
@@ -76,8 +77,9 @@ export const MultiSpectrumViewer: React.FC<MultiSpectrumViewerProps> = ({
   // The 1-D sidecar only (perf T2-D2, #508): this viewer never draws the 2-D
   // S/N array, so it does not wait for it.
   const queryClient = useQueryClient();
+  const dr = useDrTag();
   const { loadedData, loading, loadingProgress } = useQueries({
-    queries: sources.map(s => ({ ...spectrum1dQueryOptions(queryClient, s.fitsPath), enabled: s.visible })),
+    queries: sources.map(s => ({ ...spectrum1dQueryOptions(queryClient, s.fitsPath, dr), enabled: s.visible })),
     combine: combineSpectrumQueries,
   });
   // Bound the shared cache as spectra land (idle entries beyond the cap go).
