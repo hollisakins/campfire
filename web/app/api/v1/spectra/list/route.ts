@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { validateAuth } from '@/lib/api-auth';
 import { bandFilterRpcParams, getAccessiblePrograms, invalidLineParam, isAdminUser, lineFilterRpcParams, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
 import { createServiceClient } from '@/lib/supabase/server';
+import { authenticateApiRequest } from '@/lib/api-auth';
+import { assertBearerReleaseAccess } from '@/lib/server/bearer-release';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 import {
   cursorFingerprint,
@@ -41,7 +42,8 @@ function parseFlagMode(
  * deprecated — same contract as /api/v1/objects (perf T2-F, #511).
  */
 export async function GET(request: NextRequest) {
-  const userId = await validateAuth(request);
+  const principal = await authenticateApiRequest(request);
+  const userId = principal?.userId ?? null;
 
   if (!userId) {
     return NextResponse.json({ error: 'Invalid or missing API key' }, { status: 401 });
@@ -58,7 +60,11 @@ export async function GET(request: NextRequest) {
     }
 
     const searchParams = request.nextUrl.searchParams;
-    const supabase = createServiceClient();
+    // `dr=<tag>`: browse a data release (P6c-2), gated against the caller's
+    // own visibility before the header is forwarded.
+    const release = await assertBearerReleaseAccess(request, principal!);
+    if (release.response) return release.response;
+    const supabase = createServiceClient({ dr: release.tag });
 
     // Unpublished (draft/revoked) spectra are admin-only and gated behind an
     // explicit opt-in: admins must pass include_unpublished=true to see drafts.

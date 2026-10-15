@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
-import { validateAuth } from '@/lib/api-auth';
+import { authenticateApiRequest } from '@/lib/api-auth';
+import { assertBearerReleaseAccess } from '@/lib/server/bearer-release';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import { streamSidecar } from '@/lib/server/sidecar-stream';
 import { deriveSibling } from '@/lib/layout';
+import { resolveReleaseMembersAs } from '@/lib/server/dr-files';
 
 export interface SpectrumData {
   wave: number[];
@@ -15,13 +17,6 @@ export interface SpectrumData {
   profile: number[];
   profile_fit: number[];
   profile_pix: number[];
-}
-
-/** PostgREST embeds a to-one join as an object, or an array depending on
- *  cardinality; read the program slug from either shape. */
-function embeddedProgramSlug(row: { targets?: { program_slug: string } | { program_slug: string }[] | null }): string | undefined {
-  const joined = row.targets;
-  return Array.isArray(joined) ? joined[0]?.program_slug : joined?.program_slug ?? undefined;
 }
 
 /**
@@ -38,7 +33,8 @@ function embeddedProgramSlug(row: { targets?: { program_slug: string } | { progr
  */
 export async function GET(request: NextRequest) {
   // Validate API key
-  const userId = await validateAuth(request);
+  const principal = await authenticateApiRequest(request);
+  const userId = principal?.userId ?? null;
 
   if (!userId) {
     return NextResponse.json(
@@ -49,7 +45,11 @@ export async function GET(request: NextRequest) {
 
   try {
     // Create Supabase client with service role
-    const supabase = createServiceClient();
+    // `dr=<tag>`: browse a data release (P6c-2), gated against the caller's
+    // own visibility before the header is forwarded.
+    const release = await assertBearerReleaseAccess(request, principal!);
+    if (release.response) return release.response;
+    const supabase = createServiceClient({ dr: release.tag });
 
     // Parse query parameters
     const searchParams = request.nextUrl.searchParams;
@@ -82,9 +82,11 @@ export async function GET(request: NextRequest) {
     // One lookup resolves the row, its fits_path and its program in either
     // branch — the embedded join replaces the two follow-up queries that
     // used to re-fetch what this row already carried (#497).
+    // cat_spectra: the live row, or the release's frozen row under `dr=`
+    // (views carry no FK metadata; the row's own program_slug is the scope).
     let rowQuery = supabase
-      .from('spectra')
-      .select('fits_path, targets!inner(program_slug)');
+      .from('cat_spectra')
+      .select('fits_path, program_slug');
     rowQuery = pathParam
       ? rowQuery.eq('fits_path', pathParam)
       : rowQuery.eq('spectrum_id', spectrumId!);
@@ -100,7 +102,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const programSlug = embeddedProgramSlug(spectrumRow);
+    const programSlug = spectrumRow.program_slug as string | null;
     if (!programSlug || !accessibleProgramSlugs.includes(programSlug)) {
       return NextResponse.json(
         { error: 'Access denied to this spectrum' },
@@ -110,8 +112,16 @@ export async function GET(request: NextRequest) {
 
     const fitsPath = spectrumRow.fits_path;
 
-    // Derive the spectrum-JSON sibling key via the shared layout contract
-    const jsonPath = deriveSibling(fitsPath, 'spectrum_json');
+    // Derive the spectrum-JSON sibling key via the shared layout contract.
+    // Under a release: the archived copy, or a 404 (P6c-2).
+    let jsonPath: string | null = deriveSibling(fitsPath, 'spectrum_json');
+    if (release.tag) {
+      const members = await resolveReleaseMembersAs(supabase, release.tag, [jsonPath], {
+        accessible: accessibleProgramSlugs, isAdmin,
+      });
+      jsonPath = members.get(jsonPath)?.archiveKey ?? null;
+      if (!jsonPath) return NextResponse.json({ error: 'Spectrum not found' }, { status: 404 });
+    }
 
     // Stream the sidecar through untouched (perf T2-D2, #508). Bearer
     // requests bypass Vercel's shared cache; `private` states the
