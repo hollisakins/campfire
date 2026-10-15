@@ -25,10 +25,15 @@ import {
 const RELEASE_COLUMNS =
   'tag, state, components, dr_format_version, counts, frozen_at, published_at, withdrawn_at, doi, notes, known_issues';
 
-export async function listReleases(supabase: SupabaseClient): Promise<DrReleaseRow[]> {
-  const { data, error } = await supabase
-    .from('dr_releases')
-    .select(RELEASE_COLUMNS)
+/**
+ * Releases visible to this client. The public pages pass `publishedOnly`
+ * so they read the same for admins and readers; the admin page lists every
+ * state RLS shows it.
+ */
+export async function listReleases(supabase: SupabaseClient, opts: { publishedOnly?: boolean } = {}): Promise<DrReleaseRow[]> {
+  let q = supabase.from('dr_releases').select(RELEASE_COLUMNS);
+  if (opts.publishedOnly) q = q.eq('state', 'published');
+  const { data, error } = await q
     .order('published_at', { ascending: false, nullsFirst: true })
     .order('frozen_at', { ascending: false, nullsFirst: true })
     .order('tag', { ascending: false });

@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { SignInLink } from '@/components/auth/SignInLink';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/contexts/AuthContext';
-import { Shield, KeyRound, Users, Loader2, AlertTriangle, FolderOpen, Activity, Telescope, Download, Camera, Database, GitBranch, LayoutDashboard, Link2 } from 'lucide-react';
+import { Shield, KeyRound, Users, Loader2, AlertTriangle, FolderOpen, Activity, Telescope, Download, Camera, Database, GitBranch, LayoutDashboard, Link2, Archive } from 'lucide-react';
 
 // Sections mirror the panel's three concerns (admin audit 2026-07-03, §3.A):
 // the reduction loop, access management, and usage analytics. Dashboard sits
@@ -28,6 +28,7 @@ const adminNavSections: {
       { href: '/admin/nirspec/nods', label: 'NIRSpec Nods', icon: Telescope },
       { href: '/admin/deployments', label: 'Deployments', icon: GitBranch },
       { href: '/admin/intermediate-products', label: 'Storage', icon: Database },
+      { href: '/admin/releases', label: 'Data Releases', icon: Archive },
     ],
   },
   {

@@ -1,12 +1,10 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ArrowLeft, Archive } from 'lucide-react';
+import { ArrowLeft, Archive, Camera, Telescope, Table2 } from 'lucide-react';
 import { SignInLink } from '@/components/auth/SignInLink';
-import { Badge } from '@/components/ui/Badge';
 import { CopyBlock } from '@/components/releases/CopyBlock';
-import { ReleaseStateBadge } from '@/components/releases/ReleaseStateBadge';
-import { formatBytes, parseReleaseComponents, releaseCitation, releaseCount } from '@/lib/dr-releases';
+import { formatBytes, releaseCitation, releaseSummary } from '@/lib/dr-releases';
 import { loadReleaseDetail, type ReleaseDetail } from '@/lib/server/dr-releases';
 import { formatUpdateDate } from '@/lib/updates/format';
 import { releasePagesPrincipal } from '../gate';
@@ -39,11 +37,13 @@ export default async function ReleasePage({ params }: Params) {
     );
   }
 
+  // RLS shows an unpublished tag to admins only (they review it here before
+  // publishing); everyone else gets the 404.
   const detail = await loadReleaseDetail(principal, tag);
   if (!detail) notFound();
   return (
     <Shell>
-      <ReleaseBody detail={detail} isAdmin={principal.access.isAdmin} />
+      <ReleaseBody detail={detail} />
     </Shell>
   );
 }
@@ -73,18 +73,42 @@ function Section({ title, children, aside }: { title: string; children: React.Re
   );
 }
 
-function ReleaseBody({ detail, isAdmin }: { detail: ReleaseDetail; isAdmin: boolean }) {
-  const { release: r, programs, files, exported, complete } = detail;
-  const counts = r.counts;
-  const stats: [string, number | null][] = [
-    ['Spectra', releaseCount(counts, 'spectra')],
-    ['Objects', releaseCount(counts, 'objects')],
-    ['Line fits', releaseCount(counts, 'line_fits')],
-    ['Photometry', releaseCount(counts, 'photometry')],
-    ['Files', releaseCount(counts, 'manifest')],
-  ];
+function Stat({ value, label }: { value: string; label: string }) {
+  return (
+    <div>
+      <div className="text-2xl font-bold tabular-nums text-text-primary">{value}</div>
+      <div className="text-xs font-medium uppercase tracking-wide text-text-secondary">{label}</div>
+    </div>
+  );
+}
+
+function InstrumentCard({ icon: Icon, title, stats, foot }: {
+  icon: React.ElementType;
+  title: string;
+  stats: { value: string; label: string }[];
+  foot?: string;
+}) {
+  return (
+    <div className="rounded-card border border-border bg-card p-5">
+      <div className="mb-4 flex items-center gap-2 text-text-primary">
+        <Icon className="h-5 w-5 text-primary" />
+        <h2 className="font-semibold">{title}</h2>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        {stats.map((s) => <Stat key={s.label} {...s} />)}
+      </div>
+      {foot && <div className="mt-3 text-sm text-text-tertiary">{foot}</div>}
+    </div>
+  );
+}
+
+const n = (v: number | null) => (v == null ? '—' : v.toLocaleString());
+const plural = (v: number | null, one: string, many: string) => (v === 1 ? one : many);
+
+function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
+  const { release: r, programs, files, exported } = detail;
+  const s = releaseSummary(r.components, r.counts);
   const cite = releaseCitation(r, SITE_URL);
-  const components = parseReleaseComponents(r.components);
   const published = r.state === 'published';
 
   return (
@@ -93,21 +117,21 @@ function ReleaseBody({ detail, isAdmin }: { detail: ReleaseDetail; isAdmin: bool
         <div className="flex flex-wrap items-center gap-3">
           <Archive className="h-7 w-7 text-primary" />
           <h1 className="font-mono text-3xl font-bold text-text-primary">{r.tag}</h1>
-          <ReleaseStateBadge state={r.state} />
+          {!published && (
+            <span className="rounded-full border border-warning/40 bg-warning/10 px-2.5 py-0.5 text-xs font-medium text-warning">
+              Preview · not published
+            </span>
+          )}
         </div>
-        <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-sm text-text-secondary">
-          {r.frozen_at && <Fact label="Frozen" value={formatUpdateDate(r.frozen_at)} />}
-          {r.published_at && <Fact label="Published" value={formatUpdateDate(r.published_at)} />}
-          {r.withdrawn_at && <Fact label="Withdrawn" value={formatUpdateDate(r.withdrawn_at)} />}
-          <Fact label="Format" value={`v${r.dr_format_version}`} />
-          {r.doi && <Fact label="DOI" value={r.doi} mono />}
-        </dl>
-        {!published && isAdmin && (
-          <p className="mt-3 rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs text-text-secondary">
-            Not published: only admins can see this release. It goes public with{' '}
-            <code className="font-mono">campfire dr publish {r.tag}</code> once it is ready.
-          </p>
-        )}
+        <div className="mt-2 flex flex-wrap gap-x-4 text-sm text-text-secondary">
+          {r.published_at ? (
+            <span>Published {formatUpdateDate(r.published_at)}</span>
+          ) : r.frozen_at ? (
+            <span>Frozen {formatUpdateDate(r.frozen_at)}</span>
+          ) : null}
+          {r.withdrawn_at && <span>Withdrawn {formatUpdateDate(r.withdrawn_at)}</span>}
+          {r.doi && <span className="font-mono">doi:{r.doi}</span>}
+        </div>
         {r.notes && <p className="mt-4 text-text-secondary">{r.notes}</p>}
         {r.known_issues && (
           <p className="mt-3 text-sm text-warning">
@@ -116,85 +140,108 @@ function ReleaseBody({ detail, isAdmin }: { detail: ReleaseDetail; isAdmin: bool
         )}
       </header>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        {stats.map(([label, value]) => (
-          <Badge key={label} label={label} value={value == null ? '—' : value.toLocaleString()} compact />
-        ))}
+      <div className="grid gap-4 sm:grid-cols-2">
+        {s.nirspec && (
+          <InstrumentCard
+            icon={Telescope}
+            title="NIRSpec"
+            stats={[
+              { value: n(s.nirspec.spectra), label: 'spectra' },
+              { value: n(s.nirspec.objects), label: 'objects' },
+              { value: n(s.nirspec.programs), label: plural(s.nirspec.programs, 'program', 'programs') },
+              { value: formatBytes(s.nirspec.bytes), label: 'data volume' },
+            ]}
+          />
+        )}
+        {s.nircam && (
+          <InstrumentCard
+            icon={Camera}
+            title="NIRCam"
+            stats={[
+              { value: n(s.nircam.fields.length), label: plural(s.nircam.fields.length, 'field', 'fields') },
+              { value: n(s.nircam.mosaics), label: plural(s.nircam.mosaics, 'mosaic', 'mosaics') },
+              { value: formatBytes(s.nircam.bytes), label: 'data volume' },
+            ]}
+            foot={s.nircam.fields.map((f) => f.field).join(' · ')}
+          />
+        )}
+        {s.photometry && (
+          <InstrumentCard
+            icon={Table2}
+            title="Photometry"
+            stats={[{ value: n(s.photometry.rows), label: 'matched objects' }]}
+            foot={s.photometry.catalogs.map((c) => `${c.field} · ${c.catalog}`).join(' · ')}
+          />
+        )}
       </div>
 
-      <Section title="Contents">
-        <ul className="flex flex-wrap gap-2">
-          {components.map((c) => (
-            <li key={c.raw} className="rounded-full border border-border px-3 py-1 text-sm text-text-secondary">
-              {c.label}
-            </li>
-          ))}
-        </ul>
-        <p className="mt-3 text-xs text-text-tertiary">
-          The published spectra, objects, line fits and photometry as they stood at the freeze;
-          drafts and revoked spectra are not included. Every file is copied once into the
-          content-addressed archive, so the bytes behind a release outlive later re-reductions.
-        </p>
-      </Section>
-
-      <Section title="By program" aside={<span className="text-xs text-text-tertiary">programs you can access</span>}>
-        {programs.length === 0 ? (
-          <p className="text-sm text-text-secondary">No spectra from programs you can access.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-xs uppercase tracking-wide text-text-tertiary">
-                <tr>
-                  <th className="py-2 pr-4 font-medium">Program</th>
-                  <th className="py-2 pr-4 text-right font-medium">Spectra</th>
-                  <th className="py-2 text-right font-medium">Objects</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {programs.map((p) => (
-                  <tr key={p.slug}>
-                    <td className="py-2 pr-4">
-                      <span className="font-mono text-text-primary">{p.slug}</span>
-                      {p.name && p.name !== p.slug && <span className="ml-2 text-text-tertiary">{p.name}</span>}
-                    </td>
-                    <td className="py-2 pr-4 text-right tabular-nums text-text-secondary">{p.spectra.toLocaleString()}</td>
-                    <td className="py-2 text-right tabular-nums text-text-secondary">{p.objects.toLocaleString()}</td>
+      {(programs.length > 0 || (s.nircam && s.nircam.fields.length > 0)) && (
+        <details className="group rounded-card border border-border bg-card">
+          <summary className="cursor-pointer select-none px-5 py-3 text-sm font-semibold uppercase tracking-wide text-text-tertiary">
+            Breakdown
+          </summary>
+          <div className="space-y-6 px-5 pb-5">
+            {programs.length > 0 && (
+              <table className="w-full text-sm">
+                <thead className="text-left text-xs uppercase tracking-wide text-text-tertiary">
+                  <tr>
+                    <th className="py-2 pr-4 font-medium">Program</th>
+                    <th className="py-2 pr-4 text-right font-medium">Spectra</th>
+                    <th className="py-2 text-right font-medium">Objects</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-            <p className="mt-2 text-xs text-text-tertiary">
-              An object observed by several programs counts under each.
-            </p>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {programs.map((p) => (
+                    <tr key={p.slug}>
+                      <td className="py-2 pr-4">
+                        <span className="font-mono text-text-primary">{p.slug}</span>
+                        {p.name && p.name !== p.slug && <span className="ml-2 text-text-tertiary">{p.name}</span>}
+                      </td>
+                      <td className="py-2 pr-4 text-right tabular-nums text-text-secondary">{p.spectra.toLocaleString()}</td>
+                      <td className="py-2 text-right tabular-nums text-text-secondary">{p.objects.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {s.nircam && s.nircam.fields.length > 0 && (
+              <table className="w-full text-sm">
+                <thead className="text-left text-xs uppercase tracking-wide text-text-tertiary">
+                  <tr>
+                    <th className="py-2 pr-4 font-medium">Field</th>
+                    <th className="py-2 pr-4 text-right font-medium">Mosaics</th>
+                    <th className="py-2 text-right font-medium">Volume</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {s.nircam.fields.map((f) => (
+                    <tr key={f.field}>
+                      <td className="py-2 pr-4 font-mono text-text-primary">{f.field}</td>
+                      <td className="py-2 pr-4 text-right tabular-nums text-text-secondary">{n(f.mosaics)}</td>
+                      <td className="py-2 text-right tabular-nums text-text-secondary">{formatBytes(f.bytes)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
-        )}
-      </Section>
+        </details>
+      )}
 
-      <Section
-        title="Export files"
-        aside={exported ? (
-          <span className={`text-xs ${complete ? 'text-success' : 'text-warning'}`}>
-            {complete ? 'complete' : 'partially built'}
-          </span>
-        ) : undefined}
-      >
+      <Section title="Download" aside={<span className="text-xs text-text-tertiary">schema v{r.dr_format_version}</span>}>
         {!exported ? (
-          <p className="text-sm text-text-secondary">
-            Not exported yet. The per-program tables (gzip JSONL, format v{r.dr_format_version})
-            appear here once <code className="font-mono">campfire dr export</code> has run.
-          </p>
+          <p className="text-sm text-text-secondary">Not available yet.</p>
         ) : files.length === 0 ? (
-          <p className="text-sm text-text-secondary">No export files for programs you can access.</p>
+          <p className="text-sm text-text-secondary">No files for your programs.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="text-left text-xs uppercase tracking-wide text-text-tertiary">
                 <tr>
-                  <th className="py-2 pr-4 font-medium">Stream</th>
+                  <th className="py-2 pr-4 font-medium">Table</th>
                   <th className="py-2 pr-4 font-medium">Scope</th>
                   <th className="py-2 pr-4 text-right font-medium">Rows</th>
-                  <th className="py-2 pr-4 text-right font-medium">Size</th>
-                  <th className="py-2 font-medium">sha256</th>
+                  <th className="py-2 text-right font-medium">Size</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -203,58 +250,31 @@ function ReleaseBody({ detail, isAdmin }: { detail: ReleaseDetail; isAdmin: bool
                     <td className="py-2 pr-4 text-text-primary">{f.stream}</td>
                     <td className="py-2 pr-4 font-mono text-text-secondary">{f.scope}</td>
                     <td className="py-2 pr-4 text-right tabular-nums text-text-secondary">{f.rows?.toLocaleString() ?? '—'}</td>
-                    <td className="py-2 pr-4 text-right tabular-nums text-text-secondary">{formatBytes(f.size)}</td>
-                    <td className="py-2 font-mono text-xs text-text-tertiary" title={f.sha256 ?? undefined}>
-                      {f.sha256 ? f.sha256.slice(0, 12) : '—'}
-                    </td>
+                    <td className="py-2 text-right tabular-nums text-text-secondary">{formatBytes(f.size)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-      </Section>
-
-      <Section title="Get the data">
-        <div className="space-y-3 text-sm text-text-secondary">
-          <p>
-            The files endpoint lists every export file you may read, with a one-hour download url
-            and its sha256, size and row count. Authenticate with an API key from{' '}
-            <Link href="/profile/api-keys" className="text-primary hover:underline">your profile</Link>.
-          </p>
+        <div className="mt-4 space-y-2">
           <CopyBlock
-            label="files request"
+            label="API"
             text={`curl -H "Authorization: Bearer $CAMPFIRE_API_KEY" \\\n  ${SITE_URL}/api/v1/dr/${r.tag}/files`}
           />
           <p className="text-xs text-text-tertiary">
-            Coming next: <code className="font-mono">campfire pull --dr {r.tag}</code> and{' '}
-            <code className="font-mono">Campfire(dr=&quot;{r.tag}&quot;)</code> in the Python client, which
-            merge each stream into one table and fetch the archived FITS by hash.
+            API keys: <Link href="/profile/api-keys" className="text-primary hover:underline">your profile</Link>.
+            Python client support (<code className="font-mono">campfire pull --dr {r.tag}</code>) coming soon.
           </p>
         </div>
       </Section>
 
-      <Section title="Cite this release">
+      <Section title="Cite" aside={!r.doi ? <span className="text-xs text-text-tertiary">DOI pending</span> : undefined}>
         <div className="space-y-3">
           <CopyBlock label="citation" text={cite.text} />
           <CopyBlock label="BibTeX" text={cite.bibtex} />
-          {!r.doi && (
-            <p className="text-xs text-text-tertiary">
-              No DOI yet: the release will be deposited with a DOI before it is announced. Until then,
-              cite the tag and link.
-            </p>
-          )}
         </div>
       </Section>
-    </div>
-  );
-}
-
-function Fact({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex gap-1.5">
-      <dt className="text-text-tertiary">{label}</dt>
-      <dd className={mono ? 'font-mono' : undefined}>{value}</dd>
     </div>
   );
 }

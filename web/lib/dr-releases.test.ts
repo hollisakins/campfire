@@ -1,21 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, parseReleaseComponents, releaseCitation, releaseCount, releaseStateBadge } from './dr-releases';
+import { formatBytes, parseReleaseComponents, releaseCitation, releaseCount, releaseNextStep, releaseStateBadge, releaseSummary } from './dr-releases';
 
 describe('releaseStateBadge', () => {
   it('labels the lifecycle', () => {
     expect(releaseStateBadge('published')).toEqual({ label: 'Published', tone: 'published' });
     expect(releaseStateBadge('withdrawn').tone).toBe('withdrawn');
     expect(releaseStateBadge('failed').tone).toBe('failed');
-    expect(releaseStateBadge('ready')).toEqual({ label: 'Ready · unpublished', tone: 'pending' });
-    expect(releaseStateBadge('frozen').label).toBe('Frozen · unpublished');
+    expect(releaseStateBadge('ready')).toEqual({ label: 'Ready', tone: 'pending' });
+    expect(releaseStateBadge('frozen').label).toBe('Frozen');
   });
 });
 
 describe('parseReleaseComponents', () => {
   it('names each component kind', () => {
     expect(parseReleaseComponents(['nirspec', 'nircam/cosmos', 'photometry/cosmos/COSMOS v1.2'])).toEqual([
-      { kind: 'nirspec', label: 'NIRSpec spectra', raw: 'nirspec' },
-      { kind: 'nircam', label: 'NIRCam mosaics · cosmos', raw: 'nircam/cosmos' },
+      { kind: 'nirspec', label: 'NIRSpec', raw: 'nirspec' },
+      { kind: 'nircam', label: 'NIRCam · cosmos', raw: 'nircam/cosmos' },
       { kind: 'photometry', label: 'Photometry · cosmos · COSMOS v1.2', raw: 'photometry/cosmos/COSMOS v1.2' },
     ]);
   });
@@ -58,5 +58,37 @@ describe('formatBytes', () => {
     expect(formatBytes(512)).toBe('512 B');
     expect(formatBytes(1_234_000)).toBe('1.2 MB');
     expect(formatBytes(null)).toBe('—');
+  });
+});
+
+describe('releaseNextStep', () => {
+  it('names the CLI step per state', () => {
+    expect(releaseNextStep('frozen', 'DR1')).toBe('campfire dr archive --tag DR1');
+    expect(releaseNextStep('ready', 'DR1')).toBe('campfire dr publish DR1');
+    expect(releaseNextStep('published', 'DR1')).toBeNull();
+  });
+});
+
+describe('releaseSummary', () => {
+  const counts = {
+    spectra: 163, objects: 101, nirspec_programs: 31, nirspec_fields: 14,
+    by_component: { nirspec: { files: 671, bytes: 235_222_115 }, 'nircam/a2744': { files: 8, bytes: 32_718_585_600 }, 'nircam/cosmos': { files: 2, bytes: 1000 } },
+  };
+  it('rolls components and counts up per instrument', () => {
+    const s = releaseSummary(['nirspec', 'nircam/cosmos', 'nircam/a2744'], counts);
+    expect(s.nirspec).toEqual({ spectra: 163, objects: 101, programs: 31, fields: 14, bytes: 235_222_115 });
+    expect(s.nircam?.fields.map((f) => f.field)).toEqual(['a2744', 'cosmos']);
+    expect(s.nircam?.mosaics).toBe(10);
+    expect(s.nircam?.bytes).toBe(32_718_586_600);
+    expect(s.photometry).toBeNull();
+  });
+  it('leaves out absent components and tolerates missing sizes', () => {
+    const s = releaseSummary(['nircam/a2744'], { spectra: 5 });
+    expect(s.nirspec).toBeNull();
+    expect(s.nircam).toEqual({ fields: [{ field: 'a2744', mosaics: null, bytes: null }], mosaics: null, bytes: null });
+  });
+  it('lists photometry catalogs', () => {
+    const s = releaseSummary(['nirspec', 'photometry/cosmos/COSMOS v1.2'], { photometry: 7 });
+    expect(s.photometry).toEqual({ catalogs: [{ field: 'cosmos', catalog: 'COSMOS v1.2' }], rows: 7 });
   });
 });

@@ -1,6 +1,6 @@
 /**
  * Display helpers for the data-release pages (P6a): state labels, the
- * component list, and the citation block. Pure; no directive, so the pages,
+ * component summary, and the citation block. Pure; no directive, so the pages,
  * the tests and later client components share them. The reads live in
  * `lib/server/dr-releases.ts`.
  */
@@ -12,7 +12,7 @@ export interface ReleaseCitationInput {
   frozen_at: string | null;
 }
 
-/** The release lifecycle (dr_releases.state) as a reader-facing label and tone. */
+/** The release lifecycle (dr_releases.state) as a label and tone (admin pages). */
 export function releaseStateBadge(state: string): { label: string; tone: 'published' | 'pending' | 'withdrawn' | 'failed' } {
   switch (state) {
     case 'published':
@@ -21,12 +21,26 @@ export function releaseStateBadge(state: string): { label: string; tone: 'publis
       return { label: 'Withdrawn', tone: 'withdrawn' };
     case 'failed':
       return { label: 'Failed', tone: 'failed' };
-    case 'draft':
-    case 'freezing':
-      return { label: state === 'draft' ? 'Draft' : 'Freezing', tone: 'pending' };
     default:
-      // frozen / exporting / exported / copying / ready: built, not yet public
-      return { label: `${state.charAt(0).toUpperCase()}${state.slice(1)} · unpublished`, tone: 'pending' };
+      // draft / freezing / frozen / exporting / exported / copying / ready
+      return { label: `${state.charAt(0).toUpperCase()}${state.slice(1)}`, tone: 'pending' };
+  }
+}
+
+/** The admin's next CLI step for a release in this state (null when none). */
+export function releaseNextStep(state: string, tag: string): string | null {
+  switch (state) {
+    case 'frozen':
+    case 'exported':
+      return `campfire dr archive --tag ${tag}`;
+    case 'copying':
+      return `campfire dr archive --tag ${tag} --status`;
+    case 'ready':
+      return `campfire dr publish ${tag}`;
+    case 'failed':
+      return `campfire dr purge ${tag}`;
+    default:
+      return null;
   }
 }
 
@@ -40,8 +54,8 @@ export interface ReleaseComponent {
 export function parseReleaseComponents(components: unknown): ReleaseComponent[] {
   const list = Array.isArray(components) ? components.filter((c): c is string => typeof c === 'string') : [];
   return list.map((raw) => {
-    if (raw === 'nirspec') return { kind: 'nirspec', label: 'NIRSpec spectra', raw };
-    if (raw.startsWith('nircam/')) return { kind: 'nircam', label: `NIRCam mosaics · ${raw.slice(7)}`, raw };
+    if (raw === 'nirspec') return { kind: 'nirspec', label: 'NIRSpec', raw };
+    if (raw.startsWith('nircam/')) return { kind: 'nircam', label: `NIRCam · ${raw.slice(7)}`, raw };
     if (raw.startsWith('photometry/')) {
       const [, field, ...catalog] = raw.split('/');
       return { kind: 'photometry', label: `Photometry · ${field} · ${catalog.join('/')}`, raw };
@@ -54,6 +68,70 @@ export function parseReleaseComponents(components: unknown): ReleaseComponent[] 
 export function releaseCount(counts: Record<string, unknown> | null | undefined, key: string): number | null {
   const v = counts?.[key];
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+interface ComponentFacts {
+  files: number | null;
+  bytes: number | null;
+}
+
+/** counts.by_component[name] (the freeze records files and bytes per component). */
+function componentFacts(counts: Record<string, unknown> | null | undefined, name: string): ComponentFacts {
+  const by = counts?.by_component;
+  const entry = by && typeof by === 'object' ? (by as Record<string, unknown>)[name] : undefined;
+  const rec = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {};
+  return { files: releaseCount(rec, 'files'), bytes: releaseCount(rec, 'bytes') };
+}
+
+function sumNullable(values: (number | null)[]): number | null {
+  const known = values.filter((v): v is number => v != null);
+  return known.length === 0 ? null : known.reduce((a, b) => a + b, 0);
+}
+
+export interface ReleaseSummary {
+  nirspec: { spectra: number | null; objects: number | null; programs: number | null; fields: number | null; bytes: number | null } | null;
+  nircam: { fields: { field: string; mosaics: number | null; bytes: number | null }[]; mosaics: number | null; bytes: number | null } | null;
+  photometry: { catalogs: { field: string; catalog: string }[]; rows: number | null } | null;
+}
+
+/**
+ * What a release contains, per instrument, from `components` and `counts`:
+ * the numbers the pages show as cards. A component the freeze did not record
+ * sizes for (pre-P6a releases) shows null bytes.
+ */
+export function releaseSummary(components: unknown, counts: Record<string, unknown> | null | undefined): ReleaseSummary {
+  const parsed = parseReleaseComponents(components);
+  const nirspec = parsed.some((c) => c.kind === 'nirspec')
+    ? {
+        spectra: releaseCount(counts, 'spectra'),
+        objects: releaseCount(counts, 'objects'),
+        programs: releaseCount(counts, 'nirspec_programs'),
+        fields: releaseCount(counts, 'nirspec_fields'),
+        bytes: componentFacts(counts, 'nirspec').bytes,
+      }
+    : null;
+  const nircamFields = parsed
+    .filter((c) => c.kind === 'nircam')
+    .map((c) => {
+      const facts = componentFacts(counts, c.raw);
+      return { field: c.raw.slice(7), mosaics: facts.files, bytes: facts.bytes };
+    })
+    .sort((a, b) => a.field.localeCompare(b.field));
+  const nircam = nircamFields.length > 0
+    ? {
+        fields: nircamFields,
+        mosaics: sumNullable(nircamFields.map((f) => f.mosaics)),
+        bytes: sumNullable(nircamFields.map((f) => f.bytes)),
+      }
+    : null;
+  const catalogs = parsed
+    .filter((c) => c.kind === 'photometry')
+    .map((c) => {
+      const [, field, ...catalog] = c.raw.split('/');
+      return { field, catalog: catalog.join('/') };
+    });
+  const photometry = catalogs.length > 0 ? { catalogs, rows: releaseCount(counts, 'photometry') } : null;
+  return { nirspec, nircam, photometry };
 }
 
 function releaseYear(r: ReleaseCitationInput): string {
@@ -69,7 +147,7 @@ function bibKey(tag: string): string {
 
 /**
  * Plain-text and BibTeX citations for a release. The DOI is a placeholder
- * until P7 deposits the release (the cite block says so).
+ * until P7 deposits the release.
  */
 export function releaseCitation(r: ReleaseCitationInput, siteUrl: string): { text: string; bibtex: string } {
   const year = releaseYear(r);
