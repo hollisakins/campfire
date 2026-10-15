@@ -1591,15 +1591,15 @@ COMMENT ON TABLE "public"."dr_releases" IS 'Data releases (P4a): one row per tag
 
 -- ---------------------------------------------------------------------------
 -- Frozen catalog tables (P6b, docs/design-data-releases-impl-plan.md §8 P6b).
--- Every table is `tag` + the live table's columns IN THE LIVE ORDER, same
--- names and types (generated columns become plain columns holding the
--- generated value; auth.users references become bare uuids; no foreign
--- keys), then the frozen-only extras. dr_freeze_job writes them as
--- `INSERT INTO dr_x SELECT p_tag, x.*, <extras>`, and
--- supabase/tests/check_dr_parity.sql fails CI when a live column is added
--- without its copy. Values are copied verbatim ("the catalog as it stood"),
--- so the catalog RPCs can read a release through the cat_* source views
--- (P6b-2) exactly as they read live.
+-- Every table is `tag` + the live table's columns, same names and types
+-- (generated columns become plain columns holding the generated value;
+-- auth.users references become bare uuids; no foreign keys), then the
+-- frozen-only extras. Column ORDER is irrelevant: dr_freeze_job copies by
+-- name (`INSERT INTO dr_x (tag, c1, c2, ...) SELECT p_tag, x.c1, x.c2, ...`),
+-- and supabase/tests/check_dr_parity.sql fails CI when a live column is added
+-- without its copy or without its place in that INSERT. Values are copied
+-- verbatim ("the catalog as it stood"), so the catalog RPCs can read a
+-- release through the cat_* source views (P6b-2) exactly as they read live.
 -- ---------------------------------------------------------------------------
 
 -- dr_spectra: spectra.* of the published members at the freeze.
@@ -1630,8 +1630,8 @@ CREATE TABLE IF NOT EXISTS "public"."dr_spectra" (
     "deploy_status" "text" NOT NULL,
     "program_slug" "text" NOT NULL,
     "observation" "text" NOT NULL,
-    -- generated on the live table; the value is copied
-    "spectrum_id" "text" NOT NULL,
+    -- generated on the live table; the value is copied (nullable, as live)
+    "spectrum_id" "text",
     "search_text" "text",
     CONSTRAINT "dr_spectra_pkey" PRIMARY KEY ("tag", "id"),
     CONSTRAINT "dr_spectra_tag_spectrum_id_key" UNIQUE ("tag", "spectrum_id")
@@ -1930,7 +1930,8 @@ COMMENT ON TABLE "public"."dr_fields" IS 'Frozen copy of fields (every live colu
 -- (the catalog's dropdowns in browsing mode).
 CREATE TABLE IF NOT EXISTS "public"."dr_filter_options" (
     "tag" "text" NOT NULL,
-    "id" integer NOT NULL,
+    -- the matview's columns, nullable as there
+    "id" integer,
     "fields" "text"[],
     "observations" "text"[],
     "gratings" "text"[],

@@ -13,6 +13,13 @@ SET statement_timeout = '60s';
 -- readable and the tables identical to the schema files). All four are empty
 -- in production: no release has been frozen (dr_releases is empty, 2026-10-15).
 
+-- Fail loud if that assumption no longer holds (the recreate would drop rows).
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM public.dr_releases) THEN
+    RAISE EXCEPTION 'P6b frozen-table migration expects no data releases (dr_releases is not empty)';
+  END IF;
+END $$;
+
 DROP TABLE "public"."dr_spectra";
 DROP TABLE "public"."dr_objects";
 DROP TABLE "public"."dr_line_fits";
@@ -20,15 +27,15 @@ DROP TABLE "public"."dr_photometry";
 
 -- ---------------------------------------------------------------------------
 -- Frozen catalog tables (P6b, docs/design-data-releases-impl-plan.md §8 P6b).
--- Every table is `tag` + the live table's columns IN THE LIVE ORDER, same
--- names and types (generated columns become plain columns holding the
--- generated value; auth.users references become bare uuids; no foreign
--- keys), then the frozen-only extras. dr_freeze_job writes them as
--- `INSERT INTO dr_x SELECT p_tag, x.*, <extras>`, and
--- supabase/tests/check_dr_parity.sql fails CI when a live column is added
--- without its copy. Values are copied verbatim ("the catalog as it stood"),
--- so the catalog RPCs can read a release through the cat_* source views
--- (P6b-2) exactly as they read live.
+-- Every table is `tag` + the live table's columns, same names and types
+-- (generated columns become plain columns holding the generated value;
+-- auth.users references become bare uuids; no foreign keys), then the
+-- frozen-only extras. Column ORDER is irrelevant: dr_freeze_job copies by
+-- name (`INSERT INTO dr_x (tag, c1, c2, ...) SELECT p_tag, x.c1, x.c2, ...`),
+-- and supabase/tests/check_dr_parity.sql fails CI when a live column is added
+-- without its copy or without its place in that INSERT. Values are copied
+-- verbatim ("the catalog as it stood"), so the catalog RPCs can read a
+-- release through the cat_* source views (P6b-2) exactly as they read live.
 -- ---------------------------------------------------------------------------
 
 -- dr_spectra: spectra.* of the published members at the freeze.
@@ -59,8 +66,8 @@ CREATE TABLE IF NOT EXISTS "public"."dr_spectra" (
     "deploy_status" "text" NOT NULL,
     "program_slug" "text" NOT NULL,
     "observation" "text" NOT NULL,
-    -- generated on the live table; the value is copied
-    "spectrum_id" "text" NOT NULL,
+    -- generated on the live table; the value is copied (nullable, as live)
+    "spectrum_id" "text",
     "search_text" "text",
     CONSTRAINT "dr_spectra_pkey" PRIMARY KEY ("tag", "id"),
     CONSTRAINT "dr_spectra_tag_spectrum_id_key" UNIQUE ("tag", "spectrum_id")
@@ -325,7 +332,8 @@ COMMENT ON TABLE "public"."dr_fields" IS 'Frozen copy of fields (every live colu
 -- (the catalog's dropdowns in browsing mode).
 CREATE TABLE IF NOT EXISTS "public"."dr_filter_options" (
     "tag" "text" NOT NULL,
-    "id" integer NOT NULL,
+    -- the matview's columns, nullable as there
+    "id" integer,
     "fields" "text"[],
     "observations" "text"[],
     "gratings" "text"[],
@@ -426,6 +434,17 @@ BEGIN
   -- deploy begins between here and the commit. A lease taken between the
   -- enqueue and this run (the pg_cron delay) fails the attempt cleanly.
   PERFORM pg_advisory_xact_lock(hashtext('campfire.dr_freeze'));
+
+  -- Two documented behaviours (P6b-1 validation), by design:
+  --  (a) a statement_timeout armed by the CALLER before this call (the
+  --      authenticated role's 8 s on the inline path) cancels the statement
+  --      regardless of this function's own SET; a cancel landing before the
+  --      protected block below leaves the row `freezing` (purge / re-enqueue
+  --      recovers it). The pg_cron path runs with the function's settings.
+  --  (b) a failed re-freeze of an already-frozen, unpublished tag rolls back
+  --      its own leading DELETEs with the rest of the block, so the previous
+  --      snapshot stays in place under a `failed` row until the next
+  --      re-freeze or purge.
 
   BEGIN
     IF EXISTS (SELECT 1 FROM deploy_scope_state d
@@ -1193,6 +1212,8 @@ BEGIN
 END;
 $$;
 
+COMMENT ON FUNCTION public.dr_freeze_job(text) IS 'Data-release freeze (P4a, full-row copies since P6b): rewrites the frozen tables of an UNPUBLISHED tag (dr_spectra, dr_targets, dr_objects, dr_line_fits, dr_spectrum_lines, dr_photometry, dr_photometry_bands, dr_nircam_images, dr_fields, dr_manifest; then dr_filter_options) in one statement (one snapshot) from the published live rows, then marks the row frozen with counts, snapshot xmin and duration; any error lands in state failed with the message. Runs as postgres from the one-shot pg_cron job dr_enqueue_freeze schedules, inline where pg_cron is absent, and from the seed. Idempotent per tag.';
+
 -- Frozen catalog tables (P6b): each mirrors the live indexes the catalog RPCs
 -- and the exports use, tag-prefixed, so browsing a release plans like live.
 -- dr_spectra
@@ -1397,17 +1418,20 @@ CREATE POLICY "select_dr_nircam_images"
     AND (deploy_status = 'published' OR (SELECT public.is_admin()))
   );
 
--- fields: accessible_fields_select (a field with a visible frozen mosaic)
+-- fields: accessible_fields_select (a field with a visible frozen mosaic, or
+-- an admin: a NIRSpec-only field frozen through its targets is admin-only,
+-- as live)
 DROP POLICY IF EXISTS "select_dr_fields" ON dr_fields;
 CREATE POLICY "select_dr_fields"
   ON dr_fields FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
     AND tag = ANY((SELECT public.dr_visible_tags())::text[])
-    AND EXISTS (
-      SELECT 1 FROM public.dr_nircam_images ni
-      WHERE ni.tag = dr_fields.tag AND ni.field = dr_fields.name AND ni.deploy_status = 'published'
-    )
+    AND (EXISTS (
+           SELECT 1 FROM public.dr_nircam_images ni
+           WHERE ni.tag = dr_fields.tag AND ni.field = dr_fields.name AND ni.deploy_status = 'published'
+         )
+         OR (SELECT public.is_admin()))
   );
 
 -- the dropdown options of a visible release

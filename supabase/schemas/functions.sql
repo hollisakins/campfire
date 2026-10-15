@@ -8932,6 +8932,17 @@ BEGIN
   -- enqueue and this run (the pg_cron delay) fails the attempt cleanly.
   PERFORM pg_advisory_xact_lock(hashtext('campfire.dr_freeze'));
 
+  -- Two documented behaviours (P6b-1 validation), by design:
+  --  (a) a statement_timeout armed by the CALLER before this call (the
+  --      authenticated role's 8 s on the inline path) cancels the statement
+  --      regardless of this function's own SET; a cancel landing before the
+  --      protected block below leaves the row `freezing` (purge / re-enqueue
+  --      recovers it). The pg_cron path runs with the function's settings.
+  --  (b) a failed re-freeze of an already-frozen, unpublished tag rolls back
+  --      its own leading DELETEs with the rest of the block, so the previous
+  --      snapshot stays in place under a `failed` row until the next
+  --      re-freeze or purge.
+
   BEGIN
     IF EXISTS (SELECT 1 FROM deploy_scope_state d
                 WHERE d.in_progress_since IS NOT NULL
@@ -9289,7 +9300,7 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_freeze_job(text) IS 'Data-release freeze (P4a): rewrites the six frozen tables of an UNPUBLISHED tag in one statement (one snapshot) from the published live rows, then marks the row frozen with counts, snapshot xmin and duration; any error lands in state failed with the message. Runs as postgres from the one-shot pg_cron job dr_enqueue_freeze schedules, inline where pg_cron is absent, and from the seed. Idempotent per tag.';
+COMMENT ON FUNCTION public.dr_freeze_job(text) IS 'Data-release freeze (P4a, full-row copies since P6b): rewrites the frozen tables of an UNPUBLISHED tag (dr_spectra, dr_targets, dr_objects, dr_line_fits, dr_spectrum_lines, dr_photometry, dr_photometry_bands, dr_nircam_images, dr_fields, dr_manifest; then dr_filter_options) in one statement (one snapshot) from the published live rows, then marks the row frozen with counts, snapshot xmin and duration; any error lands in state failed with the message. Runs as postgres from the one-shot pg_cron job dr_enqueue_freeze schedules, inline where pg_cron is absent, and from the seed. Idempotent per tag.';
 
 REVOKE ALL ON FUNCTION public.dr_freeze_job(text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.dr_freeze_job(text) TO service_role;

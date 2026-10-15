@@ -1944,17 +1944,20 @@ CREATE POLICY "select_dr_nircam_images"
     AND (deploy_status = 'published' OR (SELECT public.is_admin()))
   );
 
--- fields: accessible_fields_select (a field with a visible frozen mosaic)
+-- fields: accessible_fields_select (a field with a visible frozen mosaic, or
+-- an admin: a NIRSpec-only field frozen through its targets is admin-only,
+-- as live)
 DROP POLICY IF EXISTS "select_dr_fields" ON dr_fields;
 CREATE POLICY "select_dr_fields"
   ON dr_fields FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
     AND tag = ANY((SELECT public.dr_visible_tags())::text[])
-    AND EXISTS (
-      SELECT 1 FROM public.dr_nircam_images ni
-      WHERE ni.tag = dr_fields.tag AND ni.field = dr_fields.name AND ni.deploy_status = 'published'
-    )
+    AND (EXISTS (
+           SELECT 1 FROM public.dr_nircam_images ni
+           WHERE ni.tag = dr_fields.tag AND ni.field = dr_fields.name AND ni.deploy_status = 'published'
+         )
+         OR (SELECT public.is_admin()))
   );
 
 -- the dropdown options of a visible release

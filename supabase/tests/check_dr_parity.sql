@@ -53,6 +53,16 @@ BEGIN
     IF badtype IS NOT NULL THEN
       RAISE EXCEPTION 'parity: % column type(s) differ from %: %', frozen, live, badtype;
     END IF;
+    -- a frozen NOT NULL needs the live column NOT NULL (a nullable live
+    -- value would fail the copy); the frozen copy may be looser, never stricter
+    SELECT string_agg(f.attname, ', ') INTO badtype
+    FROM pg_attribute f JOIN pg_attribute l ON l.attname = f.attname
+    WHERE f.attrelid = ('public.' || frozen)::regclass AND l.attrelid = ('public.' || live)::regclass
+      AND f.attnum > 0 AND l.attnum > 0 AND NOT f.attisdropped AND NOT l.attisdropped
+      AND f.attnotnull AND NOT l.attnotnull;
+    IF badtype IS NOT NULL THEN
+      RAISE EXCEPTION 'parity: % has NOT NULL on column(s) nullable in %: %', frozen, live, badtype;
+    END IF;
     -- 2. ...and nothing else but tag + the documented extras
     SELECT string_agg(f.attname, ', ' ORDER BY f.attnum) INTO extra
     FROM pg_attribute f

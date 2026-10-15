@@ -69,16 +69,18 @@ INSERT INTO objects (object_id, field, ra, dec, programs, observations, has_publ
   ('ZZZ-DR-DRAFTONLY', 'zzz_drf', 170.03, 4.03, ARRAY['zzz_dr_pub'],               ARRAY['zzz_dr_obs_pub'],  false, true,  0, NULL, NULL, 1, false),
   ('ZZZ-DR-INACTIVE',  'zzz_drf', 170.04, 4.04, ARRAY['zzz_dr_pub'],               ARRAY['zzz_dr_obs_pub'],  true,  false, 0, NULL, NULL, 1, false);
 
+-- (the private target sits in the NIRSpec-only field zzz_drf_nomosaic: frozen
+-- through its target, visible to admins alone, as the live fields policy)
 INSERT INTO targets (target_id, field, ra, dec, program_slug, observation, object_id, has_published_spectrum)
-SELECT v.tid, 'zzz_drf', v.ra, 4.0, v.prog, v.obs, o.id, v.pub
+SELECT v.tid, v.fld, v.ra, 4.0, v.prog, v.obs, o.id, v.pub
 FROM (VALUES
-  ('zzz-dr-t-pub',   170.00, 'zzz_dr_pub',  'zzz_dr_obs_pub',  'ZZZ-DR-PUB',       true),
-  ('zzz-dr-t-mixp',  170.01, 'zzz_dr_pub',  'zzz_dr_obs_pub',  'ZZZ-DR-MIX',       true),
-  ('zzz-dr-t-mixq',  170.01, 'zzz_dr_priv', 'zzz_dr_obs_priv', 'ZZZ-DR-MIX',       true),
-  ('zzz-dr-t-priv',  170.02, 'zzz_dr_priv', 'zzz_dr_obs_priv', 'ZZZ-DR-PRIV',      true),
-  ('zzz-dr-t-draft', 170.03, 'zzz_dr_pub',  'zzz_dr_obs_pub',  'ZZZ-DR-DRAFTONLY', false),
-  ('zzz-dr-t-inact', 170.04, 'zzz_dr_pub',  'zzz_dr_obs_pub',  'ZZZ-DR-INACTIVE',  true)
-) AS v(tid, ra, prog, obs, oid, pub)
+  ('zzz-dr-t-pub',   'zzz_drf',          170.00, 'zzz_dr_pub',  'zzz_dr_obs_pub',  'ZZZ-DR-PUB',       true),
+  ('zzz-dr-t-mixp',  'zzz_drf',          170.01, 'zzz_dr_pub',  'zzz_dr_obs_pub',  'ZZZ-DR-MIX',       true),
+  ('zzz-dr-t-mixq',  'zzz_drf',          170.01, 'zzz_dr_priv', 'zzz_dr_obs_priv', 'ZZZ-DR-MIX',       true),
+  ('zzz-dr-t-priv',  'zzz_drf_nomosaic', 170.02, 'zzz_dr_priv', 'zzz_dr_obs_priv', 'ZZZ-DR-PRIV',      true),
+  ('zzz-dr-t-draft', 'zzz_drf',          170.03, 'zzz_dr_pub',  'zzz_dr_obs_pub',  'ZZZ-DR-DRAFTONLY', false),
+  ('zzz-dr-t-inact', 'zzz_drf',          170.04, 'zzz_dr_pub',  'zzz_dr_obs_pub',  'ZZZ-DR-INACTIVE',  true)
+) AS v(tid, fld, ra, prog, obs, oid, pub)
 JOIN objects o ON o.object_id = v.oid;
 
 -- Spectra. MIX: a PRISM (z=2.50, 1000 s) and a G395M whose auto agrees
@@ -152,7 +154,8 @@ UPDATE spectrum_line_fits f SET program_slug = 'zzz_dr_priv'
 
 -- Photometry: a row for MIX and one for the inactive object (excluded).
 INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z)
-SELECT o.id, 'zzz_drf', o.ra, o.dec, 'ZZZ CAT v1', o.object_id, '{"bands":{}}'::jsonb, 2.4
+SELECT o.id, 'zzz_drf', o.ra, o.dec, 'ZZZ CAT v1', o.object_id,
+       '{"flux_unit":"uJy","bands":{"f444w":{"flux":1.5,"flux_err":0.1,"wav":4.4},"f277w":{"flux":-0.2,"flux_err":0.3,"wav":2.77}}}'::jsonb, 2.4
 FROM objects o WHERE o.object_id IN ('ZZZ-DR-MIX', 'ZZZ-DR-INACTIVE');
 -- a newer cross-match of MIX from a catalog the release does NOT select, and the
 -- denormalized live object rows pointing at it / at nothing frozen (Codex on #599)
@@ -303,6 +306,10 @@ BEGIN
   END IF;
   SELECT count(*) INTO n FROM dr_targets WHERE tag = 'DR-zzz' AND target_id LIKE 'zzz-dr-t-%';
   IF n <> 5 THEN RAISE EXCEPTION 'expected 5 frozen targets (those with a published spectrum), got %', n; END IF;
+  IF EXISTS (SELECT 1 FROM dr_targets d JOIN targets t ON t.id = d.id WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' <> to_jsonb(t)) THEN
+    RAISE EXCEPTION 'a frozen target differs from its live row: %',
+      (SELECT to_jsonb(d) - 'tag' FROM dr_targets d JOIN targets t ON t.id = d.id WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' <> to_jsonb(t) LIMIT 1);
+  END IF;
   SELECT t.object_id INTO n FROM dr_targets t WHERE t.tag = 'DR-zzz' AND t.target_id = 'zzz-dr-t-inact';
   IF n IS NULL OR EXISTS (SELECT 1 FROM dr_objects o WHERE o.tag = 'DR-zzz' AND o.id = n) THEN
     RAISE EXCEPTION 'the inactive object must not be frozen (target object_id %)', n;
@@ -377,11 +384,24 @@ BEGIN
   got := pg_temp.zzz_dr_as('authenticated', admin,
     $q$SELECT string_agg(r.row_json->>'program_slug', ',') FROM public.dr_export_rows('DR-zzz', 'line_fits', 'zzz_dr_pub', NULL, 10) r$q$);
   IF got <> 'zzz_dr_pub,zzz_dr_pub' THEN RAISE EXCEPTION 'exported fits should carry their spectrum program, got %', got; END IF;
+  -- the frozen fit is the live row verbatim (minus the two in-snapshot flags)
+  IF EXISTS (SELECT 1 FROM dr_line_fits d JOIN spectrum_line_fits f ON f.spectrum_id = d.spectrum_id
+             WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' - 'stale_redshift' - 'stale_spectrum' <> to_jsonb(f)) THEN
+    RAISE EXCEPTION 'a frozen line fit differs from its live row';
+  END IF;
   -- the unnested lines follow their fits (the fixture's fits have none; the
-  -- seed's rows are frozen too, since DR-zzz spans the whole catalog)
+  -- seed's rows are frozen too, since DR-zzz spans the whole catalog) and are
+  -- the live rows verbatim
   IF (SELECT count(*) FROM dr_spectrum_lines WHERE tag = 'DR-zzz')
      <> (SELECT count(*) FROM spectrum_lines l JOIN dr_line_fits f ON f.tag = 'DR-zzz' AND f.spectrum_id = l.spectrum_id) THEN
     RAISE EXCEPTION 'frozen lines do not match the frozen fits';
+  END IF;
+  IF (SELECT count(*) FROM dr_spectrum_lines WHERE tag = 'DR-zzz') = 0 THEN
+    RAISE EXCEPTION 'fixture: expected the seed''s spectrum_lines to be frozen under DR-zzz';
+  END IF;
+  IF EXISTS (SELECT 1 FROM dr_spectrum_lines d JOIN spectrum_lines l ON l.spectrum_id = d.spectrum_id AND l.line = d.line
+             WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' <> to_jsonb(l)) THEN
+    RAISE EXCEPTION 'a frozen line row differs from its live row';
   END IF;
 
   -- photometry: the SELECTED catalog's row of MIX only (verbatim), its bands
@@ -395,10 +415,15 @@ BEGIN
              WHERE d.tag = 'DR-zzz' AND d.catalog_name = 'ZZZ CAT v1' AND to_jsonb(d) - 'tag' <> to_jsonb(p)) THEN
     RAISE EXCEPTION 'frozen photometry row differs from live';
   END IF;
-  IF (SELECT count(*) FROM dr_photometry_bands b WHERE b.tag = 'DR-zzz'
-        AND b.photometry_id IN (SELECT id FROM dr_photometry WHERE tag = 'DR-zzz'))
-     <> (SELECT count(*) FROM object_photometry_bands b WHERE b.photometry_id IN (SELECT id FROM dr_photometry WHERE tag = 'DR-zzz')) THEN
-    RAISE EXCEPTION 'frozen bands do not match the frozen photometry rows';
+  SELECT count(*) INTO n FROM dr_photometry_bands b WHERE b.tag = 'DR-zzz'
+     AND b.photometry_id IN (SELECT id FROM dr_photometry WHERE tag = 'DR-zzz');
+  IF n <> 2 OR n <> (SELECT count(*) FROM object_photometry_bands b WHERE b.photometry_id IN (SELECT id FROM dr_photometry WHERE tag = 'DR-zzz')) THEN
+    RAISE EXCEPTION 'frozen bands do not match the frozen photometry rows (n=%)', n;
+  END IF;
+  -- verbatim, including the generated snr / mag values
+  IF EXISTS (SELECT 1 FROM dr_photometry_bands d JOIN object_photometry_bands b ON b.photometry_id = d.photometry_id AND b.band = d.band
+             WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' <> to_jsonb(b)) THEN
+    RAISE EXCEPTION 'a frozen band row differs from its live row';
   END IF;
   IF (SELECT (d.photo_z, d.has_photometry) FROM dr_objects d WHERE d.tag = 'DR-zzz' AND d.id = mix)
        IS DISTINCT FROM (9.9::double precision, true) THEN
@@ -413,16 +438,16 @@ BEGIN
   IF EXISTS (SELECT 1 FROM dr_nircam_images d JOIN nircam_images ni ON ni.id = d.id WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' <> to_jsonb(ni)) THEN
     RAISE EXCEPTION 'frozen mosaic row differs from live';
   END IF;
-  -- the component field is frozen; the field without a frozen target or mosaic is not
+  -- the component field and the NIRSpec-only field of a frozen target are both frozen
   IF NOT EXISTS (SELECT 1 FROM dr_fields WHERE tag = 'DR-zzz' AND name = 'zzz_drf')
-     OR EXISTS (SELECT 1 FROM dr_fields WHERE tag = 'DR-zzz' AND name = 'zzz_drf_nomosaic') THEN
+     OR NOT EXISTS (SELECT 1 FROM dr_fields WHERE tag = 'DR-zzz' AND name = 'zzz_drf_nomosaic') THEN
     RAISE EXCEPTION 'field rows wrong: %', (SELECT array_agg(name) FROM dr_fields WHERE tag = 'DR-zzz' AND name LIKE 'zzz_%');
   END IF;
   IF EXISTS (SELECT 1 FROM dr_fields d JOIN fields f ON f.name = d.name WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' <> to_jsonb(f)) THEN
     RAISE EXCEPTION 'frozen field row differs from live';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM dr_filter_options o WHERE o.tag = 'DR-zzz'
-                   AND o.fields @> ARRAY['zzz_drf'] AND NOT (o.fields @> ARRAY['zzz_drf_nomosaic'])
+                   AND o.fields @> ARRAY['zzz_drf', 'zzz_drf_nomosaic']
                    AND o.gratings @> ARRAY['G140M', 'G395M', 'PRISM']
                    AND o.observations @> ARRAY['zzz_dr_obs_priv', 'zzz_dr_obs_pub']
                    -- the draft-only target's observation is pub too, so it stays; sorted, distinct
@@ -642,7 +667,7 @@ DECLARE
     ['dr_line_fits',     $q$SELECT count(*)::text FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id LIKE 'zzz-dr-t-%'$q$],
     ['dr_photometry',    $q$SELECT count(*)::text FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1'$q$],
     ['dr_nircam_images', $q$SELECT count(*)::text FROM dr_nircam_images WHERE tag = 'DR-zzz' AND field = 'zzz_drf'$q$],
-    ['dr_fields',        $q$SELECT count(*)::text FROM dr_fields WHERE tag = 'DR-zzz' AND name = 'zzz_drf'$q$],
+    ['dr_fields',        $q$SELECT count(*)::text FROM dr_fields WHERE tag = 'DR-zzz' AND name LIKE 'zzz_drf%'$q$],
     ['dr_filter_options',$q$SELECT count(*)::text FROM dr_filter_options WHERE tag = 'DR-zzz'$q$],
     ['dr_exports',       $q$SELECT count(*)::text FROM dr_exports WHERE tag = 'DR-zzz'$q$]
   ];
@@ -656,7 +681,7 @@ DECLARE
     ['ERR', '0', '0', '0', '2'],
     ['ERR', '0', '0', '0', '1'],
     ['ERR', '0', '0', '0', '2'],
-    ['ERR', '0', '0', '0', '1'],
+    ['ERR', '0', '0', '0', '2'],
     ['ERR', '0', '0', '0', '1'],
     ['ERR', '0', '0', '0', '1']
   ];
@@ -674,7 +699,7 @@ DECLARE
     ['ERR', '2', '2', '0', '2'],     -- fits: through their (public-program) spectra
     ['ERR', '1', '1', '0', '1'],     -- MIX photometry: through the (overlap-visible) object
     ['ERR', '2', '2', '0', '2'],     -- published mosaics: every non-link account
-    ['ERR', '1', '1', '0', '1'],     -- the field with a visible mosaic
+    ['ERR', '1', '1', '0', '2'],     -- the field with a visible mosaic; the NIRSpec-only field admin-only
     ['ERR', '1', '1', '0', '1'],     -- filter options of a visible release
     ['ERR', '0', '0', '0', '1']      -- exports: admin only
   ];
