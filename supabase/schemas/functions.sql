@@ -342,6 +342,27 @@ COMMENT ON FUNCTION public.dr_browse_tag() IS 'The data release the current requ
 REVOKE ALL ON FUNCTION public.dr_browse_tag() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_browse_tag() TO authenticated, service_role;
 
+-- The sync streams (get_*_for_sync, get_sync_deletions,
+-- get_storage_objects_for_sync) mirror the LIVE catalog into the clients'
+-- local index; some of them call the switched helpers (object_scoped_aggregates),
+-- so under a browsed release they would mix live rows with frozen aggregates.
+-- They refuse the header instead.
+CREATE OR REPLACE FUNCTION public.dr_assert_live()
+RETURNS void
+LANGUAGE plpgsql STABLE
+AS $$
+BEGIN
+  IF public.dr_browse_tag() IS NOT NULL THEN
+    RAISE EXCEPTION USING ERRCODE = 'PT400', MESSAGE = 'sync streams are live-only (X-Campfire-DR not allowed)';
+  END IF;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_assert_live() IS 'Raises PT400 when the request browses a data release (X-Campfire-DR). Called first by every sync stream: they mirror the live catalog only.';
+
+REVOKE ALL ON FUNCTION public.dr_assert_live() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_assert_live() TO authenticated, service_role;
+
 DROP VIEW IF EXISTS public.cat_objects;
 CREATE VIEW public.cat_objects
 WITH (security_invoker = true) AS
@@ -876,8 +897,16 @@ BEGIN
   IF v_tag !~ '^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$' THEN
     RAISE EXCEPTION USING ERRCODE = 'PT404', MESSAGE = 'unknown data release';
   END IF;
-  IF COALESCE(current_setting('request.jwt.claims', true), '')::json ->> 'role' = 'service_role' THEN
-    SELECT EXISTS (SELECT 1 FROM dr_releases r WHERE r.tag = v_tag) INTO v_ok;
+  IF COALESCE(NULLIF(current_setting('request.jwt.claims', true), '')::json ->> 'role', '') = 'service_role' THEN
+    -- the service role (the /api/v1 routes, scoped by p_program_slugs) may
+    -- browse any release that has frozen rows: not a draft, a running freeze
+    -- or a failed one
+    SELECT EXISTS (SELECT 1 FROM dr_releases r WHERE r.tag = v_tag
+                     AND r.state NOT IN ('draft', 'freezing', 'failed')) INTO v_ok;
+  ELSIF (SELECT public.is_link_account()) THEN
+    -- share links never browse releases (the frozen policies exclude them;
+    -- refusing here beats an empty catalog answered with 200s)
+    v_ok := false;
   ELSE
     v_ok := v_tag = ANY (public.dr_visible_tags());
   END IF;
@@ -888,7 +917,7 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_request_context() IS 'PostgREST pre-request hook: X-Campfire-DR selects the data release the request browses (validated, visible to the caller), stored transaction-locally in campfire.dr_tag for the cat_* views. No header, no effect.';
+COMMENT ON FUNCTION public.dr_request_context() IS 'PostgREST pre-request hook: X-Campfire-DR selects the data release the request browses, stored transaction-locally in campfire.dr_tag for the cat_* views. No header, no effect. Header name case-insensitive (PostgREST lower-cases request.headers), tag case-sensitive; duplicate headers fail closed (the merged value matches no tag). Readers: published tags only; admins: every state; link accounts: refused; anon: a published tag passes the hook but every grant denies; service role: any release past its freeze (not draft / freezing / failed). Anything else is PT404.';
 
 REVOKE ALL ON FUNCTION public.dr_request_context() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.dr_request_context() TO authenticator, anon, authenticated, service_role;
@@ -1513,6 +1542,11 @@ AS $$
            OR (SELECT public.link_sees_drafts()))
       AND ((SELECT NOT public.is_link_account())
            OR o.observations && ARRAY[(SELECT public.link_observation())]::text[])
+      -- (P6b-2) the frozen policies' extra conjuncts when a release is
+      -- browsed: no link accounts, and the tag visible to the caller
+      AND (public.dr_browse_tag() IS NULL
+           OR ((SELECT NOT public.is_link_account())
+               AND public.dr_browse_tag() = ANY ((SELECT public.dr_visible_tags())::text[])))
     ))
   GROUP BY p.object_id
   HAVING (p_mag_min IS NULL OR min(b.mag) >= p_mag_min)
@@ -1833,6 +1867,7 @@ SET plan_cache_mode = 'force_custom_plan'
 SET statement_timeout = '120s'
 AS $$
 BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
   RETURN QUERY
   -- matched is MATERIALIZED so the three aggregate CTEs below each see the
   -- same ~p_limit-row set without re-evaluating the WHERE/ORDER/LIMIT.
@@ -2145,6 +2180,7 @@ RETURNS TABLE(stream TEXT, row_ids BIGINT[])
 LANGUAGE sql STABLE
 SET search_path = public, pg_catalog
 AS $$
+  SELECT public.dr_assert_live();  -- live-only (P6b-2)
   SELECT d.stream, array_agg(DISTINCT d.row_id ORDER BY d.row_id)
   FROM public.sync_deletions d
   WHERE d.deleted_at > p_since
@@ -2199,6 +2235,7 @@ SET plan_cache_mode = 'force_custom_plan'
 SET statement_timeout = '120s'
 AS $$
 BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
   RETURN QUERY
   WITH matched AS MATERIALIZED (
     SELECT s.id, s.spectrum_id, s.target_id, o.object_id AS object_id,
@@ -2376,6 +2413,7 @@ SET plan_cache_mode = 'force_custom_plan'
 SET statement_timeout = '120s'
 AS $$
 BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
   RETURN QUERY
   WITH matched AS (
     SELECT op.id, o.object_id, op.field, op.catalog_name, op.catalog_id,
@@ -2483,6 +2521,7 @@ SET plan_cache_mode = 'force_custom_plan'
 SET statement_timeout = '120s'
 AS $$
 BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
   RETURN QUERY
   WITH matched AS (
     SELECT f.spectrum_id, f.target_id, f.grating, f.program_slug, f.observation,
@@ -2607,6 +2646,7 @@ RETURNS JSONB
 LANGUAGE plpgsql STABLE
 AS $$
 BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
   RETURN COALESCE(
     (SELECT jsonb_agg(jsonb_build_object(
       'id', ol.id,
@@ -5127,7 +5167,10 @@ DECLARE
   -- SECURITY DEFINER (admins; share links minted with include_drafts) keep
   -- the live aggregate; the published-only snapshot would drop their
   -- draft-only observations entirely.
-  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts();
+  -- (P6b-2) a browsed release never reads the matview: the live path
+  -- reads cat_spectra / cat_targets, which are the frozen rows then
+  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts()
+    OR public.dr_browse_tag() IS NOT NULL;
   -- What the live path may count, derived from the caller's authorization,
   -- never from the raw p_include_unpublished argument: a drafts link sees
   -- published + draft (policies: select_spectra_by_access /
@@ -5263,7 +5306,10 @@ DECLARE
   -- SECURITY DEFINER (admins; share links minted with include_drafts) keep
   -- the live aggregate; the published-only snapshot would drop their
   -- draft-only observations entirely.
-  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts();
+  -- (P6b-2) a browsed release never reads the matview: the live path
+  -- reads cat_spectra / cat_targets, which are the frozen rows then
+  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts()
+    OR public.dr_browse_tag() IS NOT NULL;
   -- What the live path may count, derived from the caller's authorization,
   -- never from the raw p_include_unpublished argument: a drafts link sees
   -- published + draft (policies: select_spectra_by_access /
@@ -5544,6 +5590,7 @@ SET plan_cache_mode = 'force_custom_plan'
 SET statement_timeout = '120s'
 AS $$
 BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
   RETURN QUERY
   -- `scoped` carries the full published-scope filter and feeds the count CTEs
   -- only (gated on p_include_counts, so it is skipped entirely on keyset pages
@@ -10054,7 +10101,7 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_purge_release(text) IS 'Delete an UNPUBLISHED data release and all its frozen rows (P4a; `campfire dr purge`). Admin or service_role. Refuses published / withdrawn tags and a freeze that is still running. Archive bytes already copied for the tag are left in place (dedup by hash; gc is the retention path).';
+COMMENT ON FUNCTION public.dr_purge_release(text) IS 'Delete an UNPUBLISHED data release and all its frozen rows (P4a; `campfire dr purge`). Admin JWT or service_role claims (dr_require_admin): a bare postgres superuser session is refused; from psql, set request.jwt.claims to {"role":"service_role"} first. Refuses published / withdrawn tags and a freeze that is still running. Archive bytes already copied for the tag are left in place (dedup by hash; gc is the retention path).';
 
 REVOKE ALL ON FUNCTION public.dr_purge_release(text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_purge_release(text) TO authenticated, service_role;

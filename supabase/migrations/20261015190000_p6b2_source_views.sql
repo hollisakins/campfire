@@ -3,6 +3,20 @@ SET statement_timeout = '60s';
 
 SET local check_function_bodies = off;
 
+CREATE OR REPLACE FUNCTION public.dr_assert_live()
+  RETURNS void
+  LANGUAGE plpgsql
+  STABLE
+  AS $function$
+BEGIN
+  IF public.dr_browse_tag() IS NOT NULL THEN
+    RAISE EXCEPTION USING ERRCODE = 'PT400', MESSAGE = 'sync streams are live-only (X-Campfire-DR not allowed)';
+  END IF;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION "public"."dr_assert_live"() FROM PUBLIC, "anon";
+
 CREATE OR REPLACE FUNCTION public.dr_browse_tag()
   RETURNS text
   LANGUAGE sql
@@ -30,8 +44,16 @@ BEGIN
   IF v_tag !~ '^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$' THEN
     RAISE EXCEPTION USING ERRCODE = 'PT404', MESSAGE = 'unknown data release';
   END IF;
-  IF COALESCE(current_setting('request.jwt.claims', true), '')::json ->> 'role' = 'service_role' THEN
-    SELECT EXISTS (SELECT 1 FROM dr_releases r WHERE r.tag = v_tag) INTO v_ok;
+  IF COALESCE(NULLIF(current_setting('request.jwt.claims', true), '')::json ->> 'role', '') = 'service_role' THEN
+    -- the service role (the /api/v1 routes, scoped by p_program_slugs) may
+    -- browse any release that has frozen rows: not a draft, a running freeze
+    -- or a failed one
+    SELECT EXISTS (SELECT 1 FROM dr_releases r WHERE r.tag = v_tag
+                     AND r.state NOT IN ('draft', 'freezing', 'failed')) INTO v_ok;
+  ELSIF (SELECT public.is_link_account()) THEN
+    -- share links never browse releases (the frozen policies exclude them;
+    -- refusing here beats an empty catalog answered with 200s)
+    v_ok := false;
   ELSE
     v_ok := v_tag = ANY (public.dr_visible_tags());
   END IF;
@@ -2393,6 +2415,169 @@ BEGIN
 END;
 $function$;
 
+CREATE OR REPLACE FUNCTION public.get_line_fits_for_sync (
+  p_program_slugs       text[],
+  p_updated_since       timestamp with time zone DEFAULT NULL::timestamp WITH time zone,
+  p_limit               integer                  DEFAULT 1000,
+  p_include_unpublished boolean                  DEFAULT false,
+  p_include_counts      boolean                  DEFAULT true,
+  p_after_id            integer                  DEFAULT NULL::integer
+)
+  RETURNS TABLE (
+    line_fit_records jsonb,
+    total_count      bigint
+  )
+  LANGUAGE plpgsql
+  STABLE
+  SET plan_cache_mode TO 'force_custom_plan'
+  SET statement_timeout TO '120s'
+  AS $function$
+BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
+  RETURN QUERY
+  WITH matched AS (
+    SELECT f.spectrum_id, f.target_id, f.grating, f.program_slug, f.observation,
+           s.spectrum_id AS spectrum_name, t.field, o.object_id AS current_object_id,
+           f.z_used, f.z_source, f.z_quality, f.object_id, f.object_version,
+           f.z_fit, f.z_fit_err, f.dv, f.dv_err, f.sigma_v, f.sigma_v_err, f.kin_source,
+           f.n_lines, f.n_detected, f.n_broad, f.chi2, f.dof, f.lines,
+           f.fit_version, f.cfpipe_version, f.f_lsf, f.spectrum_hash, f.fitted_at,
+           f.created_at, f.updated_at,
+           -- The record's sync timestamp: the latest of the fit row and the two
+           -- parent rows its staleness flags derive from, so the client's
+           -- incremental cursor (max local updated_at) advances past a
+           -- re-inspection or redeploy instead of re-sending the row forever.
+           GREATEST(f.updated_at, s.updated_at, o.updated_at) AS effective_updated_at,
+           -- staleness vs the live inspection state: the same two functions
+           -- the spectrum_line_fits_status view calls, so the mirrored record
+           -- and the ledger cannot disagree.
+           (o.id IS NOT NULL AND public.line_fit_stale_redshift(
+              o.version, o.redshift_quality, (o.redshift)::double precision,
+              f.object_version, f.z_quality, f.z_used)) AS stale_redshift,
+           public.line_fit_stale_spectrum(
+              s.file_hash, s.science_hash,
+              f.spectrum_hash, f.spectrum_science_hash) AS stale_spectrum
+    FROM spectrum_line_fits f
+    JOIN spectra s ON s.id = f.spectrum_id
+    LEFT JOIN targets t ON t.target_id = f.target_id
+    LEFT JOIN objects o ON o.id = t.object_id
+    WHERE f.program_slug = ANY(p_program_slugs)
+      -- Hide fits whose parent object was soft-deleted (same guard as
+      -- get_spectra_for_sync), so the line catalog never carries a row the
+      -- spectra / objects streams hide.
+      AND (o.id IS NULL OR o.is_active = true)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
+      -- Incremental: stale_redshift / stale_spectrum are derived from the
+      -- parent rows, so a re-inspected object or a redeployed spectrum must
+      -- re-send the fit even though the fit row itself did not change.
+      AND (p_updated_since IS NULL
+           OR f.updated_at > p_updated_since
+           OR s.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
+      AND (p_after_id IS NULL OR f.spectrum_id > p_after_id)
+    ORDER BY f.spectrum_id
+    LIMIT p_limit
+  ),
+  total AS (
+    SELECT COUNT(*) AS cnt
+    FROM spectrum_line_fits f
+    JOIN spectra s ON s.id = f.spectrum_id
+    LEFT JOIN targets t ON t.target_id = f.target_id
+    LEFT JOIN objects o ON o.id = t.object_id
+    WHERE p_include_counts
+      AND f.program_slug = ANY(p_program_slugs)
+      AND (o.id IS NULL OR o.is_active = true)
+      AND (p_include_unpublished OR s.deploy_status = 'published')
+      AND (p_updated_since IS NULL
+           OR f.updated_at > p_updated_since
+           OR s.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
+  )
+  SELECT
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'spectrum_id', m.spectrum_id,
+        'spectrum_name', m.spectrum_name,
+        'target_id', m.target_id,
+        'grating', m.grating,
+        'program_slug', m.program_slug,
+        'observation', m.observation,
+        'field', m.field,
+        'current_object_id', m.current_object_id,
+        'z_used', m.z_used,
+        'z_source', m.z_source,
+        'z_quality', m.z_quality,
+        'object_id', m.object_id,
+        'object_version', m.object_version,
+        'z_fit', m.z_fit,
+        'z_fit_err', m.z_fit_err,
+        'dv', m.dv,
+        'dv_err', m.dv_err,
+        'sigma_v', m.sigma_v,
+        'sigma_v_err', m.sigma_v_err,
+        'kin_source', m.kin_source,
+        'n_lines', m.n_lines,
+        'n_detected', m.n_detected,
+        'n_broad', m.n_broad,
+        'chi2', m.chi2,
+        'dof', m.dof,
+        'lines', m.lines,
+        'fit_version', m.fit_version,
+        'cfpipe_version', m.cfpipe_version,
+        'f_lsf', m.f_lsf,
+        'spectrum_hash', m.spectrum_hash,
+        'fitted_at', m.fitted_at,
+        'stale_redshift', m.stale_redshift,
+        'stale_spectrum', m.stale_spectrum,
+        'created_at', m.created_at,
+        'fit_updated_at', m.updated_at,
+        'updated_at', m.effective_updated_at
+      ) ORDER BY m.spectrum_id
+    ), '[]'::jsonb) AS line_fit_records,
+    (SELECT cnt FROM total) AS total_count
+  FROM matched m;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.get_lists_for_sync (
+  p_user_id             uuid    DEFAULT NULL::uuid,
+  p_include_unpublished boolean DEFAULT false
+)
+  RETURNS jsonb
+  LANGUAGE plpgsql
+  STABLE
+  AS $function$
+BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
+  RETURN COALESCE(
+    (SELECT jsonb_agg(jsonb_build_object(
+      'id', ol.id,
+      'slug', ol.slug,
+      'name', ol.name,
+      'description', ol.description,
+      'visibility', ol.visibility,
+      'is_system', ol.is_system,
+      'created_by', ol.created_by,
+      'created_at', ol.created_at,
+      'updated_at', ol.updated_at,
+      -- B1: count only members whose object has a published spectrum (unlinked
+      -- coordinate-keyed members, object_id IS NULL, still count). Fail-closed.
+      'member_count', (
+        SELECT COUNT(*) FROM object_list_members olm
+        LEFT JOIN objects o ON o.id = olm.object_id
+        WHERE olm.list_id = ol.id
+          AND (p_include_unpublished OR olm.object_id IS NULL OR o.has_published_spectrum)
+      )
+    ) ORDER BY ol.is_system DESC, ol.name)
+    FROM object_lists ol
+    WHERE ol.created_by = p_user_id
+       OR ol.visibility IN ('public_read', 'public_edit')
+       OR ol.id IN (SELECT list_id FROM object_list_shares WHERE user_id = p_user_id)),
+    '[]'::jsonb
+  );
+END;
+$function$;
+
 CREATE OR REPLACE FUNCTION public.get_nircam_field_summary (
   p_field text
 )
@@ -2485,6 +2670,266 @@ CREATE OR REPLACE FUNCTION public.get_nircam_fields()
   GROUP BY ni.field, f.display_name, f.center_ra, f.center_dec,
            f.coverage_area_arcmin2, f.coverage_area_deg2
   ORDER BY ni.field;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.get_objects_for_sync (
+  p_program_slugs        text[],
+  p_user_id              uuid                     DEFAULT NULL::uuid,
+  p_updated_since        timestamp with time zone DEFAULT NULL::timestamp WITH time zone,
+  p_limit                integer                  DEFAULT 1000,
+  p_include_counts       boolean                  DEFAULT true,
+  p_include_unpublished  boolean                  DEFAULT false,
+  p_after_object_id      text                     DEFAULT NULL::text,
+  p_filter_program_slugs text[]                   DEFAULT NULL::text[]
+)
+  RETURNS TABLE (
+    objects                jsonb,
+    total_count            bigint,
+    total_accessible_count bigint,
+    deleted_ids            integer[]
+  )
+  LANGUAGE plpgsql
+  STABLE
+  SET plan_cache_mode TO 'force_custom_plan'
+  SET statement_timeout TO '120s'
+  AS $function$
+BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
+  RETURN QUERY
+  -- matched is MATERIALIZED so the three aggregate CTEs below each see the
+  -- same ~p_limit-row set without re-evaluating the WHERE/ORDER/LIMIT.
+  WITH matched AS MATERIALIZED (
+    SELECT o.id, o.object_id, o.field, o.ra, o.dec,
+           o.n_targets, o.n_spectra, o.programs, o.gratings,
+           o.max_snr, o.max_exposure_time,
+           o.redshift, o.redshift_quality,
+           o.redshift_inspected, o.redshift_auto,
+           o.inspected_used_auto,
+           o.last_inspected_at, o.last_inspected_by,
+           o.last_data_change_at, o.staleness_reason, o.needs_review,
+           o.version, o.is_active,
+           o.has_photometry, o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi,
+           o.created_at, o.updated_at
+    FROM objects o
+    WHERE o.programs && p_program_slugs
+      -- Phase D: hide soft-deleted objects from sync. Reactivation rewrites
+      -- updated_at, so re-activated rows get re-synced naturally on next pull.
+      AND o.is_active = true
+      -- B1: drop objects with no published spectrum (fail-closed).
+      AND (p_include_unpublished OR o.has_published_spectrum)
+      AND (p_updated_since IS NULL OR o.updated_at > p_updated_since)
+      -- Keyset (#103): seek past the previous page's last object_id. object_id
+      -- is UNIQUE, so a strict > needs no (sort_col, id) tiebreaker. Any future
+      -- change to this ORDER BY must keep the ordering column UNIQUE (or switch
+      -- to a row-value cursor) or keyset will skip/duplicate rows.
+      AND (p_after_object_id IS NULL OR o.object_id > p_after_object_id)
+      AND (p_filter_program_slugs IS NULL
+           OR o.programs && p_filter_program_slugs
+           OR o.id IN (
+             SELECT olm.object_id
+             FROM object_list_members olm
+             JOIN object_lists ol ON ol.id = olm.list_id
+             WHERE ol.visibility NOT IN ('public_read', 'public_edit')
+               AND (ol.created_by = p_user_id
+                    OR ol.id IN (SELECT list_id FROM object_list_shares
+                                 WHERE user_id = p_user_id))))
+    ORDER BY o.object_id
+    LIMIT p_limit
+  ),
+  -- One pass over the page's members (#569 follow-up). Every target of every
+  -- page object, flagged with the two scopes the aggregates below need; the
+  -- spectra join rides on it. Replaces a per-row LATERAL
+  -- object_scoped_aggregates() call (~24 buffer probes per object, ~1.6 s per
+  -- 5000-row page on production) plus two separate targets x spectra scans.
+  page_members AS MATERIALIZED (
+    SELECT t.object_id, t.target_id, t.program_slug,
+           -- member_target_ids / spectra payload scope: accessible programs.
+           t.program_slug = ANY(p_program_slugs) AS in_programs,
+           -- object_scoped_aggregates' recompute scope (its CTE m): accessible
+           -- programs AND, B1, a target that contributes a published spectrum.
+           (t.program_slug = ANY(p_program_slugs)
+            AND (p_include_unpublished OR t.has_published_spectrum)) AS in_scope
+    FROM targets t
+    WHERE t.object_id IN (SELECT id FROM matched)
+  ),
+  member_spectra AS MATERIALIZED (
+    SELECT pm.object_id, pm.in_programs, pm.in_scope,
+           s.id, s.target_id, s.grating, s.signal_to_noise, s.exposure_time,
+           s.redshift_auto, s.dq_flags, s.deploy_status,
+           (p_include_unpublished OR s.deploy_status = 'published') AS visible
+    FROM page_members pm
+    JOIN spectra s ON s.target_id = pm.target_id
+  ),
+  member_targets_agg AS (
+    SELECT pm.object_id,
+           jsonb_agg(pm.target_id ORDER BY pm.target_id) AS target_ids
+    FROM page_members pm
+    WHERE pm.in_programs
+    GROUP BY pm.object_id
+  ),
+  -- Phase D: per-spectrum payload (per design doc) so the Python client
+  -- can render redshift_auto and dq_flags per grating without a second
+  -- round-trip.
+  spectra_agg AS (
+    SELECT ms.object_id,
+           jsonb_agg(jsonb_build_object(
+             'id', ms.id,
+             'target_id', ms.target_id,
+             'grating', ms.grating,
+             'signal_to_noise', ms.signal_to_noise,
+             'exposure_time', ms.exposure_time,
+             'redshift_auto', ms.redshift_auto,
+             'dq_flags', ms.dq_flags
+           ) ORDER BY ms.target_id, ms.grating) AS spectra
+    FROM member_spectra ms
+    WHERE ms.in_programs AND ms.visible
+    GROUP BY ms.object_id
+  ),
+  -- Set-based object_scoped_aggregates() for the page: the same fast path and
+  -- recompute, per object. Keep in step with that function.
+  scope_targets AS (
+    SELECT pm.object_id,
+           array_agg(DISTINCT pm.program_slug ORDER BY pm.program_slug) AS programs,
+           COUNT(*)::integer AS n_targets
+    FROM page_members pm
+    WHERE pm.in_scope
+    GROUP BY pm.object_id
+  ),
+  scope_spectra AS (
+    SELECT ms.object_id,
+           -- Fast-path probes, over ALL member spectra (any program): no
+           -- non-published spectrum, and a visible count matching stored
+           -- n_spectra. This RPC runs RLS-free, so the count probe is
+           -- trivially true here, as it is for the helper's RLS-free callers.
+           bool_or(ms.deploy_status <> 'published') AS has_unpublished,
+           COUNT(*)::integer AS n_all,
+           -- Recompute (the helper's CTE sp): visible spectra of in-scope targets.
+           array_agg(DISTINCT ms.grating ORDER BY ms.grating)
+             FILTER (WHERE ms.in_scope AND ms.visible AND ms.grating IS NOT NULL) AS gratings,
+           (COUNT(*) FILTER (WHERE ms.in_scope AND ms.visible))::integer AS n_spectra,
+           MAX(ms.signal_to_noise) FILTER (WHERE ms.in_scope AND ms.visible) AS max_snr,
+           MAX(ms.exposure_time) FILTER (WHERE ms.in_scope AND ms.visible) AS max_exposure_time
+    FROM member_spectra ms
+    GROUP BY ms.object_id
+  ),
+  scoped_aggs AS (
+    SELECT m.id AS object_id,
+           -- The helper's `stored` branch condition; a NULL (e.g. a NULL
+           -- stored n_spectra) falls through to the recompute, as there.
+           COALESCE(NOT p_include_unpublished
+                    AND m.programs <@ p_program_slugs
+                    AND NOT COALESCE(ss.has_unpublished, false)
+                    AND m.n_spectra = COALESCE(ss.n_all, 0), false) AS use_stored,
+           st.programs AS r_programs, st.n_targets AS r_n_targets,
+           ss.gratings AS r_gratings, ss.n_spectra AS r_n_spectra,
+           ss.max_snr AS r_max_snr, ss.max_exposure_time AS r_max_exposure_time
+    FROM matched m
+    LEFT JOIN scope_targets st ON st.object_id = m.id
+    LEFT JOIN scope_spectra ss ON ss.object_id = m.id
+  ),
+  lists_agg AS (
+    SELECT olm.object_id,
+           jsonb_agg(ol.slug ORDER BY ol.slug) AS list_slugs
+    FROM object_list_members olm
+    JOIN object_lists ol ON ol.id = olm.list_id
+    WHERE olm.object_id IN (SELECT id FROM matched)
+      AND (ol.created_by = p_user_id
+           OR ol.visibility IN ('public_read', 'public_edit')
+           OR ol.id IN (SELECT list_id FROM object_list_shares WHERE user_id = p_user_id))
+    GROUP BY olm.object_id
+  ),
+  -- Count CTEs are gated on p_include_counts; when FALSE the planner
+  -- collapses them to One-Time Filter: false and skips the scan.
+  total AS (
+    SELECT COUNT(*) AS cnt
+    FROM objects o
+    WHERE p_include_counts
+      AND o.programs && p_program_slugs
+      AND o.is_active = true
+      AND (p_include_unpublished OR o.has_published_spectrum)
+      AND (p_updated_since IS NULL OR o.updated_at > p_updated_since)
+  ),
+  accessible AS (
+    SELECT COUNT(*) AS cnt
+    FROM objects o
+    WHERE p_include_counts
+      AND o.programs && p_program_slugs
+      AND o.is_active = true
+      AND (p_include_unpublished OR o.has_published_spectrum)
+  ),
+  -- Tombstones: on the first incremental page (p_updated_since set, no
+  -- cursor), the ids of in-scope objects that changed since the cursor and are
+  -- no longer visible to this caller -- soft-deleted (is_active = false;
+  -- apply_object_reconciliation stamps updated_at) or, for non-admins, left without a
+  -- published spectrum (recompute_has_published_spectrum stamps updated_at on
+  -- the flip). The client deletes them locally, so an incremental sync no
+  -- longer leaves ghosts that force the next pull into a full resync. Only the
+  -- integer ids travel: nothing about an unpublished object is disclosed, and
+  -- an id the client never mirrored deletes nothing.
+  deleted AS (
+    SELECT COALESCE(array_agg(o.id ORDER BY o.id), '{}'::INTEGER[]) AS ids
+    FROM objects o
+    WHERE p_updated_since IS NOT NULL
+      AND p_after_object_id IS NULL
+      AND o.programs && p_program_slugs
+      AND o.updated_at > p_updated_since
+      AND NOT (o.is_active AND (p_include_unpublished OR o.has_published_spectrum))
+  )
+  SELECT
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'id', m.id,
+        'object_id', m.object_id,
+        'field', m.field,
+        'ra', m.ra,
+        'dec', m.dec,
+        -- Aggregates scoped to the caller's accessible programs so a sync that
+        -- pulls a mixed-program object doesn't leak proprietary member metadata
+        -- into the Python catalog. Same semantics as object_scoped_aggregates(),
+        -- computed per page in scoped_aggs.
+        'n_targets', CASE WHEN sa.use_stored THEN m.n_targets ELSE COALESCE(sa.r_n_targets, 0) END,
+        'n_spectra', CASE WHEN sa.use_stored THEN m.n_spectra ELSE COALESCE(sa.r_n_spectra, 0) END,
+        'programs', CASE WHEN sa.use_stored THEN m.programs ELSE COALESCE(sa.r_programs, '{}') END,
+        'gratings', CASE WHEN sa.use_stored THEN m.gratings ELSE COALESCE(sa.r_gratings, '{}') END,
+        'max_snr', CASE WHEN sa.use_stored THEN m.max_snr ELSE sa.r_max_snr END,
+        'max_exposure_time', CASE WHEN sa.use_stored THEN m.max_exposure_time ELSE sa.r_max_exposure_time END,
+        'redshift', m.redshift,
+        'redshift_quality', m.redshift_quality,
+        'redshift_inspected', m.redshift_inspected,
+        'redshift_auto', m.redshift_auto,
+        'inspected_used_auto', m.inspected_used_auto,
+        'last_inspected_at', m.last_inspected_at,
+        'last_inspected_by', m.last_inspected_by,
+        'last_data_change_at', m.last_data_change_at,
+        'staleness_reason', m.staleness_reason,
+        'needs_review', m.needs_review,
+        'version', m.version,
+        'is_active', m.is_active,
+        'has_photometry', m.has_photometry,
+        'photo_z', m.photo_z,
+        'photo_z_err_lo', m.photo_z_err_lo,
+        'photo_z_err_hi', m.photo_z_err_hi,
+        'created_at', m.created_at,
+        'updated_at', m.updated_at,
+        'member_target_ids', COALESCE(mt.target_ids, '[]'::jsonb),
+        'spectra',           COALESCE(sp.spectra,    '[]'::jsonb),
+        'lists',             COALESCE(la.list_slugs, '[]'::jsonb)
+      )
+      -- Keyset (#103): the client uses the LAST element's object_id as the next
+      -- page's cursor, so the page array MUST be in object_id order. matched is
+      -- ORDER BY object_id, but the LEFT JOINs below can reorder it, so pin the
+      -- aggregate order explicitly.
+      ORDER BY m.object_id
+    ), '[]'::jsonb),
+    COALESCE((SELECT cnt FROM total), 0)::BIGINT,
+    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT,
+    (SELECT d.ids FROM deleted d)
+  FROM matched m
+  LEFT JOIN member_targets_agg mt ON mt.object_id = m.id
+  LEFT JOIN spectra_agg         sp ON sp.object_id = m.id
+  LEFT JOIN lists_agg           la ON la.object_id = m.id
+  JOIN scoped_aggs              sa ON sa.object_id = m.id;
+END;
 $function$;
 
 CREATE OR REPLACE FUNCTION public.get_objects_near (
@@ -2615,7 +3060,10 @@ DECLARE
   -- SECURITY DEFINER (admins; share links minted with include_drafts) keep
   -- the live aggregate; the published-only snapshot would drop their
   -- draft-only observations entirely.
-  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts();
+  -- (P6b-2) a browsed release never reads the matview: the live path
+  -- reads cat_spectra / cat_targets, which are the frozen rows then
+  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts()
+    OR public.dr_browse_tag() IS NOT NULL;
   -- What the live path may count, derived from the caller's authorization,
   -- never from the raw p_include_unpublished argument: a drafts link sees
   -- published + draft (policies: select_spectra_by_access /
@@ -2754,7 +3202,10 @@ DECLARE
   -- SECURITY DEFINER (admins; share links minted with include_drafts) keep
   -- the live aggregate; the published-only snapshot would drop their
   -- draft-only observations entirely.
-  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts();
+  -- (P6b-2) a browsed release never reads the matview: the live path
+  -- reads cat_spectra / cat_targets, which are the frozen rows then
+  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts()
+    OR public.dr_browse_tag() IS NOT NULL;
   -- What the live path may count, derived from the caller's authorization,
   -- never from the raw p_include_unpublished argument: a drafts link sees
   -- published + draft (policies: select_spectra_by_access /
@@ -2860,6 +3311,492 @@ BEGIN
 END;
 $function$;
 
+CREATE OR REPLACE FUNCTION public.get_photometry_for_sync (
+  p_program_slugs       text[],
+  p_updated_since       timestamp with time zone DEFAULT NULL::timestamp WITH time zone,
+  p_limit               integer                  DEFAULT 1000,
+  p_include_unpublished boolean                  DEFAULT false,
+  p_include_counts      boolean                  DEFAULT true,
+  p_after_id            integer                  DEFAULT NULL::integer
+)
+  RETURNS TABLE (
+    photometry_records jsonb,
+    total_count        bigint
+  )
+  LANGUAGE plpgsql
+  STABLE
+  SET plan_cache_mode TO 'force_custom_plan'
+  SET statement_timeout TO '120s'
+  AS $function$
+BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
+  RETURN QUERY
+  WITH matched AS (
+    SELECT op.id, o.object_id, op.field, op.catalog_name, op.catalog_id,
+           op.match_distance_arcsec, op.photometry, op.photo_z,
+           op.photo_z_err_lo, op.photo_z_err_hi, op.has_pz,
+           op.created_at,
+           -- Sync timestamp: the later of the row's own and its object's, so a
+           -- row re-sent because the object changed advances the client's
+           -- cursor (see get_spectra_for_sync).
+           GREATEST(op.updated_at, o.updated_at) AS updated_at
+    FROM object_photometry op
+    JOIN objects o ON o.id = op.object_id
+    WHERE o.programs && p_program_slugs
+      -- Soft-deleted objects are tombstoned by the objects stream (which
+      -- cascades to their photometry locally); their rows must not ride the
+      -- object-changed clause below back in.
+      AND o.is_active = true
+      -- B1: fail-closed publish gate (this RPC always bypasses RLS).
+      AND (p_include_unpublished OR o.has_published_spectrum)
+      -- Incremental: the row itself, or its object, changed since the cursor.
+      -- The object clause is the resurrection path: photometry deleted along
+      -- with a tombstoned object (un-published, or soft-deleted) comes back
+      -- when the object does -- both flips stamp objects.updated_at -- even
+      -- though the photometry row did not change. Mirrors get_line_fits_for_sync.
+      AND (p_updated_since IS NULL
+           OR op.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
+      -- Keyset (#103): op.id is the PK, so a strict > needs no tiebreaker.
+      AND (p_after_id IS NULL OR op.id > p_after_id)
+    ORDER BY op.id
+    LIMIT p_limit
+  ),
+  -- Count CTE gated on p_include_counts; when FALSE the planner collapses it to
+  -- One-Time Filter: false and skips the scan/join.
+  total AS (
+    SELECT COUNT(*) AS cnt
+    FROM object_photometry op
+    JOIN objects o ON o.id = op.object_id
+    WHERE p_include_counts
+      AND o.programs && p_program_slugs
+      AND o.is_active = true
+      AND (p_include_unpublished OR o.has_published_spectrum)
+      -- Incremental: the row itself, or its object, changed since the cursor.
+      -- The object clause is the resurrection path: photometry deleted along
+      -- with a tombstoned object (un-published, or soft-deleted) comes back
+      -- when the object does -- both flips stamp objects.updated_at -- even
+      -- though the photometry row did not change. Mirrors get_line_fits_for_sync.
+      AND (p_updated_since IS NULL
+           OR op.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
+  )
+  SELECT
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'id', m.id,
+        'object_id', m.object_id,
+        'field', m.field,
+        'catalog_name', m.catalog_name,
+        'catalog_id', m.catalog_id,
+        'match_distance_arcsec', m.match_distance_arcsec,
+        'photometry', m.photometry,
+        'photo_z', m.photo_z,
+        'photo_z_err_lo', m.photo_z_err_lo,
+        'photo_z_err_hi', m.photo_z_err_hi,
+        'has_pz', m.has_pz,
+        'created_at', m.created_at,
+        'updated_at', m.updated_at
+      )
+      -- Keyset (#103): page array must be id-ordered (client cursors on the
+      -- last element).
+      ORDER BY m.id
+    ), '[]'::jsonb),
+    COALESCE((SELECT cnt FROM total), 0)::BIGINT
+  FROM matched m;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.get_spectra_for_sync (
+  p_program_slugs       text[],
+  p_user_id             uuid                     DEFAULT NULL::uuid,
+  p_updated_since       timestamp with time zone DEFAULT NULL::timestamp WITH time zone,
+  p_limit               integer                  DEFAULT 1000,
+  p_include_counts      boolean                  DEFAULT true,
+  p_include_unpublished boolean                  DEFAULT false,
+  p_after_spectrum_id   text                     DEFAULT NULL::text
+)
+  RETURNS TABLE (
+    spectra                jsonb,
+    total_count            bigint,
+    total_accessible_count bigint,
+    deleted_ids            integer[]
+  )
+  LANGUAGE plpgsql
+  STABLE
+  SET plan_cache_mode TO 'force_custom_plan'
+  SET statement_timeout TO '120s'
+  AS $function$
+BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
+  RETURN QUERY
+  WITH matched AS MATERIALIZED (
+    SELECT s.id, s.spectrum_id, s.target_id, o.object_id AS object_id,
+           s.grating, s.fits_path, s.file_hash, s.science_hash, s.file_size,
+           s.signal_to_noise, s.exposure_time,
+           s.cfpipe_version, s.crds_context, s.jwst_version, s.date_obs, s.reduced_at,
+           s.redshift_auto, s.dq_flags,
+           -- program_slug / observation are the trigger-owned row-local copies
+           -- of the parent target's (perf T2-A, #504), so they read off the
+           -- spectra row; targets is joined only for field and the object link.
+           s.program_slug, s.observation, t.field,
+           s.created_at,
+           -- The row's sync timestamp is the later of its own and its
+           -- object's: a row re-sent because the object changed must advance
+           -- the client's cursor (MAX of mirrored updated_at) past that change,
+           -- or it would be re-sent on every incremental sync. Same pattern
+           -- as get_line_fits_for_sync's effective_updated_at.
+           GREATEST(s.updated_at, o.updated_at) AS updated_at
+    FROM spectra s
+    JOIN targets t ON t.target_id = s.target_id
+    LEFT JOIN objects o ON o.id = t.object_id
+    -- Program scope on the row-local column: the keyset walk down
+    -- idx_spectra_spectrum_id rejects out-of-scope rows without fetching the
+    -- target first (a user with a few programs used to pay a targets lookup
+    -- for every spectrum walked past).
+    WHERE s.program_slug = ANY(p_program_slugs)
+      AND (o.id IS NULL OR o.is_active = true)
+      -- B1: fail-closed publish gate (this RPC always bypasses RLS). Drafts
+      -- sync only for admins opting in; revoked never syncs -- it is the
+      -- soft-deleted state and is tombstoned below instead.
+      AND (s.deploy_status = 'published'
+           OR (p_include_unpublished AND s.deploy_status = 'draft'))
+      -- Incremental: the row itself, or its object, changed since the cursor.
+      -- The object clause is the resurrection path: a spectrum tombstoned as
+      -- a member of a soft-deleted object comes back when the object is
+      -- reactivated (which stamps objects.updated_at) even though the
+      -- spectrum row did not change. Mirrors get_line_fits_for_sync.
+      AND (p_updated_since IS NULL
+           OR s.updated_at > p_updated_since
+           OR o.updated_at > p_updated_since)
+      -- Keyset (#103): spectrum_id is UNIQUE (idx_spectra_spectrum_id), so a
+      -- strict > needs no tiebreaker; keep the ordering column UNIQUE.
+      AND (p_after_spectrum_id IS NULL OR s.spectrum_id > p_after_spectrum_id)
+    ORDER BY s.spectrum_id
+    LIMIT p_limit
+  ),
+  -- First-page counts, gated on p_include_counts (when FALSE the planner
+  -- collapses the CTE to One-Time Filter: false). One pass over spectra
+  -- yields both numbers: total_count (the incremental window) is a FILTER on
+  -- the scan that produces total_accessible_count, and the soft-deleted-
+  -- object exclusion is an anti-join against the (tiny, partial-indexed) set
+  -- of inactive objects. Previously two spectra x targets x objects hash
+  -- joins ran back to back on every first page.
+  counts AS (
+    SELECT COUNT(*) FILTER (WHERE p_updated_since IS NULL
+                              OR s.updated_at > p_updated_since
+                              -- same object clause as matched; the recently
+                              -- changed objects are a small hashed set
+                              OR s.target_id IN (
+                                SELECT t.target_id
+                                FROM targets t
+                                JOIN objects o ON o.id = t.object_id
+                                WHERE o.updated_at > p_updated_since)) AS total_cnt,
+           COUNT(*) AS accessible_cnt
+    FROM spectra s
+    WHERE p_include_counts
+      AND s.program_slug = ANY(p_program_slugs)
+      AND (s.deploy_status = 'published'
+           OR (p_include_unpublished AND s.deploy_status = 'draft'))
+      AND NOT EXISTS (
+        SELECT 1
+        FROM targets t
+        JOIN objects o ON o.id = t.object_id
+        WHERE t.target_id = s.target_id
+          AND o.is_active = false)
+  ),
+  -- Tombstones (see get_objects_for_sync): first incremental page only.
+  deleted AS (
+    SELECT COALESCE(array_agg(x.id ORDER BY x.id), '{}'::INTEGER[]) AS ids
+    FROM (
+      -- Un-published since the cursor: revoked for everyone, plus a draft an
+      -- admin's mirror may carry. set_spectra_deploy_status's write reaches
+      -- here because deploy_status is in bump_spectra_updated_at_trigger's
+      -- column list.
+      SELECT s.id
+      FROM spectra s
+      WHERE p_updated_since IS NOT NULL
+        AND p_after_spectrum_id IS NULL
+        AND s.program_slug = ANY(p_program_slugs)
+        AND s.updated_at > p_updated_since
+        AND NOT (s.deploy_status = 'published'
+                 OR (p_include_unpublished AND s.deploy_status = 'draft'))
+      UNION
+      -- Members of an object soft-deleted since the cursor: the spectrum row
+      -- itself did not change, so its own updated_at says nothing.
+      SELECT s.id
+      FROM spectra s
+      JOIN targets t ON t.target_id = s.target_id
+      JOIN objects o ON o.id = t.object_id
+      WHERE p_updated_since IS NOT NULL
+        AND p_after_spectrum_id IS NULL
+        AND s.program_slug = ANY(p_program_slugs)
+        AND o.is_active = false
+        AND o.updated_at > p_updated_since
+    ) x
+  )
+  SELECT
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'id', m.id,
+        'spectrum_id', m.spectrum_id,
+        'target_id', m.target_id,
+        'object_id', m.object_id,
+        'grating', m.grating,
+        'fits_path', m.fits_path,
+        'file_hash', m.file_hash,
+        'science_hash', m.science_hash,
+        'file_size', m.file_size,
+        'signal_to_noise', m.signal_to_noise,
+        'exposure_time', m.exposure_time,
+        'cfpipe_version', m.cfpipe_version,
+        'crds_context', m.crds_context,
+        'jwst_version', m.jwst_version,
+        'date_obs', m.date_obs,
+        'reduced_at', m.reduced_at,
+        'redshift_auto', m.redshift_auto,
+        'dq_flags', m.dq_flags,
+        'program_slug', m.program_slug,
+        'observation', m.observation,
+        'field', m.field,
+        'created_at', m.created_at,
+        'updated_at', m.updated_at
+      )
+      -- Keyset (#103): page array must be spectrum_id-ordered (client cursors on
+      -- the last element). matched has no post-ORDER joins, but pin it anyway.
+      ORDER BY m.spectrum_id
+    ), '[]'::jsonb),
+    COALESCE((SELECT c.total_cnt FROM counts c), 0)::BIGINT,
+    COALESCE((SELECT c.accessible_cnt FROM counts c), 0)::BIGINT,
+    (SELECT d.ids FROM deleted d)
+  FROM matched m;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.get_storage_objects_for_sync (
+  p_program_slugs       text[],
+  p_updated_since       timestamp with time zone DEFAULT NULL::timestamp WITH time zone,
+  p_limit               integer                  DEFAULT 1000,
+  p_include_counts      boolean                  DEFAULT true,
+  p_include_unpublished boolean                  DEFAULT false,
+  p_after_id            bigint                   DEFAULT NULL::bigint,
+  p_product_types       text[]                   DEFAULT NULL::text[],
+  p_observations        text[]                   DEFAULT NULL::text[],
+  p_fields              text[]                   DEFAULT NULL::text[]
+)
+  RETURNS TABLE (
+    objects                jsonb,
+    total_count            bigint,
+    total_accessible_count bigint,
+    deleted_ids            bigint[]
+  )
+  LANGUAGE plpgsql
+  STABLE
+  SET plan_cache_mode TO 'force_custom_plan'
+  SET statement_timeout TO '120s'
+  AS $function$
+BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
+  RETURN QUERY
+  -- `scoped` carries the full published-scope filter and feeds the count CTEs
+  -- only (gated on p_include_counts, so it is skipped entirely on keyset pages
+  -- 2+). `matched` re-states the SAME scope inline against the base table so its
+  -- keyset seek uses the PK index instead of reading a materialized full scan.
+  -- The two copies must stay in sync (same house pattern as get_objects_for_sync's
+  -- matched vs. total/accessible).
+  WITH scoped AS (
+    SELECT so.updated_at, so.spectrum_id
+    FROM storage_objects so
+    WHERE so.status = 'active'
+      AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
+      AND ((p_observations IS NULL AND p_fields IS NULL)
+           OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
+           OR so.field = ANY(COALESCE(p_fields, '{}'::TEXT[])))
+      AND (
+        p_include_unpublished
+        OR (so.spectrum_id IS NOT NULL AND EXISTS (
+              -- Row-local program_slug (perf T2-A, #504): no targets hop, and
+              -- idx_spectra_spectrum_id_scope answers it index-only.
+              SELECT 1 FROM spectra s
+              WHERE s.spectrum_id = so.spectrum_id
+                AND s.deploy_status = 'published'
+                AND s.program_slug = ANY(p_program_slugs)))
+        OR (so.spectrum_id IS NULL AND so.deployment_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM deployments d
+              LEFT JOIN observations o ON o.name = d.observation
+              WHERE d.id = so.deployment_id
+                AND d.status = 'published'
+                -- NIRCam field deploy (epic #261, N1): multi-program, public to all
+                -- when published. NIRSpec obs deploy stays program-scoped.
+                AND (d.field IS NOT NULL OR o.program_slug = ANY(p_program_slugs))))
+      )
+  ),
+  matched AS MATERIALIZED (
+    -- Explicit columns, not so.*: with the client's final product types this
+    -- is an index-only scan of idx_storage_objects_sync_finals, whose INCLUDE
+    -- list must cover everything read here.
+    SELECT so.id, so.backend, so.bucket, so.storage_key, so.content_hash,
+           so.sci_dq_hash, so.size_bytes, so.content_type, so.product_type,
+           so.instrument, so.status, so.observation, so.field, so.filter,
+           so.spectrum_id, so.exposure_ref, so.deployment_id, so.cfpipe_version,
+           so.created_at, so.updated_at
+    FROM storage_objects so
+    WHERE so.status = 'active'
+      AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
+      AND ((p_observations IS NULL AND p_fields IS NULL)
+           OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
+           OR so.field = ANY(COALESCE(p_fields, '{}'::TEXT[])))
+      AND (
+        p_include_unpublished
+        OR (so.spectrum_id IS NOT NULL AND EXISTS (
+              -- Row-local program_slug (perf T2-A, #504): no targets hop, and
+              -- idx_spectra_spectrum_id_scope answers it index-only.
+              SELECT 1 FROM spectra s
+              WHERE s.spectrum_id = so.spectrum_id
+                AND s.deploy_status = 'published'
+                AND s.program_slug = ANY(p_program_slugs)))
+        OR (so.spectrum_id IS NULL AND so.deployment_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM deployments d
+              LEFT JOIN observations o ON o.name = d.observation
+              WHERE d.id = so.deployment_id
+                AND d.status = 'published'
+                AND (d.field IS NOT NULL OR o.program_slug = ANY(p_program_slugs))))
+      )
+      -- Incremental: the row itself changed, or its spectrum did. The
+      -- spectrum clause is the resurrection path for non-admins: rows
+      -- tombstoned when their spectrum was un-published come back on
+      -- republish (which stamps spectra.updated_at) even though the registry
+      -- row did not change. A semi-join, not a per-row EXISTS: the recently
+      -- changed spectra are a small hashed set. Mirrors get_line_fits_for_sync.
+      AND (p_updated_since IS NULL
+           OR so.updated_at > p_updated_since
+           OR so.spectrum_id IN (SELECT s2.spectrum_id FROM spectra s2
+                                 WHERE s2.updated_at > p_updated_since))
+      -- Keyset (#103): id is the PK, so a strict > needs no tiebreaker.
+      AND (p_after_id IS NULL OR so.id > p_after_id)
+    ORDER BY so.id
+    LIMIT p_limit
+  ),
+  total AS (
+    SELECT COUNT(*) AS cnt FROM scoped
+    WHERE p_include_counts
+      AND (p_updated_since IS NULL
+           OR scoped.updated_at > p_updated_since
+           OR scoped.spectrum_id IN (SELECT s2.spectrum_id FROM spectra s2
+                                     WHERE s2.updated_at > p_updated_since))
+  ),
+  accessible AS (
+    SELECT COUNT(*) AS cnt FROM scoped
+    WHERE p_include_counts
+  ),
+  -- Tombstones (see get_objects_for_sync): first incremental page only. Rows
+  -- that left the active state, and active rows whose spectrum was
+  -- un-published (invisible to non-admins from now on; the spectrum's
+  -- updated_at moves on a deploy_status change). Program-scoped like the
+  -- sibling CTEs: a non-admin's tombstones are drawn from rows whose
+  -- observation (or spectrum) is in an accessible program, plus field-only
+  -- products, which the main scope shows to everyone when published. Only
+  -- integer ids travel, and an id the client never mirrored deletes nothing.
+  -- Hard deletes (deploy remove) still need a full sync to clear.
+  deleted AS (
+    SELECT COALESCE(array_agg(x.id ORDER BY x.id), '{}'::BIGINT[]) AS ids
+    FROM (
+      SELECT so.id
+      FROM storage_objects so
+      WHERE p_updated_since IS NOT NULL
+        AND p_after_id IS NULL
+        AND so.status <> 'active'
+        AND so.updated_at > p_updated_since
+        AND (p_include_unpublished
+             OR (so.observation IS NULL AND so.field IS NOT NULL)
+             OR EXISTS (SELECT 1 FROM observations ob
+                        WHERE ob.name = so.observation
+                          AND ob.program_slug = ANY(p_program_slugs)))
+        AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
+        AND ((p_observations IS NULL AND p_fields IS NULL)
+             OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
+             OR so.field = ANY(COALESCE(p_fields, '{}'::TEXT[])))
+      UNION
+      SELECT so.id
+      FROM storage_objects so
+      JOIN spectra s ON s.spectrum_id = so.spectrum_id
+      WHERE p_updated_since IS NOT NULL
+        AND p_after_id IS NULL
+        AND NOT p_include_unpublished
+        AND so.status = 'active'
+        AND s.program_slug = ANY(p_program_slugs)
+        AND s.deploy_status <> 'published'
+        AND s.updated_at > p_updated_since
+        AND (p_product_types IS NULL OR so.product_type = ANY(p_product_types))
+        AND ((p_observations IS NULL AND p_fields IS NULL)
+             OR so.observation = ANY(COALESCE(p_observations, '{}'::TEXT[]))
+             OR so.field = ANY(COALESCE(p_fields, '{}'::TEXT[])))
+    ) x
+  )
+  SELECT
+    COALESCE(jsonb_agg(
+      jsonb_build_object(
+        'id', m.id,
+        'backend', m.backend,
+        'bucket', m.bucket,
+        'storage_key', m.storage_key,
+        'content_hash', m.content_hash,
+        'sci_dq_hash', m.sci_dq_hash,
+        'size_bytes', m.size_bytes,
+        'content_type', m.content_type,
+        'product_type', m.product_type,
+        'instrument', m.instrument,
+        'status', m.status,
+        'observation', m.observation,
+        'field', m.field,
+        'filter', m.filter,
+        'spectrum_id', m.spectrum_id,
+        'exposure_ref', m.exposure_ref,
+        'deployment_id', m.deployment_id,
+        'cfpipe_version', m.cfpipe_version,
+        'created_at', m.created_at,
+        -- Sync timestamp: the later of the row's own and its spectrum's, so a
+        -- row re-sent because the spectrum changed advances the client's
+        -- cursor (see get_spectra_for_sync).
+        'updated_at', GREATEST(m.updated_at, s.updated_at)
+      )
+      -- Keyset (#103): page array must be id-ordered (client cursors on the
+      -- last element).
+      ORDER BY m.id
+    ), '[]'::jsonb),
+    COALESCE((SELECT cnt FROM total), 0)::BIGINT,
+    COALESCE((SELECT cnt FROM accessible), 0)::BIGINT,
+    (SELECT d.ids FROM deleted d)
+  FROM matched m
+  LEFT JOIN spectra s ON s.spectrum_id = m.spectrum_id;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.get_sync_deletions (
+  p_since timestamp with time zone
+)
+  RETURNS TABLE (
+    stream  text,
+    row_ids bigint[]
+  )
+  LANGUAGE sql
+  STABLE
+  SET search_path TO 'public', 'pg_catalog'
+  AS $function$
+  SELECT public.dr_assert_live();  -- live-only (P6b-2)
+  SELECT d.stream, array_agg(DISTINCT d.row_id ORDER BY d.row_id)
+  FROM public.sync_deletions d
+  WHERE d.deleted_at > p_since
+    AND NOT CASE d.stream
+      WHEN 'objects' THEN EXISTS (SELECT 1 FROM public.objects o WHERE o.id = d.row_id)
+      WHEN 'spectra' THEN EXISTS (SELECT 1 FROM public.spectra s WHERE s.id = d.row_id)
+      WHEN 'storage' THEN EXISTS (SELECT 1 FROM public.storage_objects so WHERE so.id = d.row_id)
+      WHEN 'photometry' THEN EXISTS (SELECT 1 FROM public.object_photometry p WHERE p.id = d.row_id)
+      WHEN 'line_fits' THEN EXISTS (SELECT 1 FROM public.spectrum_line_fits f WHERE f.spectrum_id = d.row_id)
+    END
+  GROUP BY d.stream;
+$function$;
+
 CREATE OR REPLACE FUNCTION public.object_band_values (
   p_band                text,
   p_mag_min             double precision,
@@ -2899,6 +3836,11 @@ CREATE OR REPLACE FUNCTION public.object_band_values (
            OR (SELECT public.link_sees_drafts()))
       AND ((SELECT NOT public.is_link_account())
            OR o.observations && ARRAY[(SELECT public.link_observation())]::text[])
+      -- (P6b-2) the frozen policies' extra conjuncts when a release is
+      -- browsed: no link accounts, and the tag visible to the caller
+      AND (public.dr_browse_tag() IS NULL
+           OR ((SELECT NOT public.is_link_account())
+               AND public.dr_browse_tag() = ANY ((SELECT public.dr_visible_tags())::text[])))
     ))
   GROUP BY p.object_id
   HAVING (p_mag_min IS NULL OR min(b.mag) >= p_mag_min)
@@ -3573,9 +4515,13 @@ CREATE INDEX idx_dr_spectra_tag_snr ON public.dr_spectra USING btree (TAG, signa
 
 CREATE INDEX idx_dr_targets_target_id_trgm ON public.dr_targets USING gin (target_id public.gin_trgm_ops);
 
+COMMENT ON FUNCTION "public"."dr_assert_live"() IS 'Raises PT400 when the request browses a data release (X-Campfire-DR). Called first by every sync stream: they mirror the live catalog only.';
+
 COMMENT ON FUNCTION "public"."dr_browse_tag"() IS 'The data release the current request browses (X-Campfire-DR, set by dr_request_context), or NULL for the live catalog. Transaction-local, so pooled connections never carry it over.';
 
-COMMENT ON FUNCTION "public"."dr_request_context"() IS 'PostgREST pre-request hook: X-Campfire-DR selects the data release the request browses (validated, visible to the caller), stored transaction-locally in campfire.dr_tag for the cat_* views. No header, no effect.';
+COMMENT ON FUNCTION "public"."dr_purge_release"(text) IS 'Delete an UNPUBLISHED data release and all its frozen rows (P4a; `campfire dr purge`). Admin JWT or service_role claims (dr_require_admin): a bare postgres superuser session is refused; from psql, set request.jwt.claims to {"role":"service_role"} first. Refuses published / withdrawn tags and a freeze that is still running. Archive bytes already copied for the tag are left in place (dedup by hash; gc is the retention path).';
+
+COMMENT ON FUNCTION "public"."dr_request_context"() IS 'PostgREST pre-request hook: X-Campfire-DR selects the data release the request browses, stored transaction-locally in campfire.dr_tag for the cat_* views. No header, no effect. Header name case-insensitive (PostgREST lower-cases request.headers), tag case-sensitive; duplicate headers fail closed (the merged value matches no tag). Readers: published tags only; admins: every state; link accounts: refused; anon: a published tag passes the hook but every grant denies; service role: any release past its freeze (not draft / freezing / failed). Anything else is PT404.';
 
 COMMENT ON VIEW "public"."cat_fields" IS 'Catalog source view: fields for the live catalog, dr_fields rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
 
@@ -3596,6 +4542,14 @@ COMMENT ON VIEW "public"."cat_spectra" IS 'Catalog source view: spectra for the 
 COMMENT ON VIEW "public"."cat_spectrum_lines" IS 'Catalog source view: spectrum_lines for the live catalog, dr_spectrum_lines rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
 
 COMMENT ON VIEW "public"."cat_targets" IS 'Catalog source view: targets for the live catalog, dr_targets rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+
+GRANT EXECUTE ON FUNCTION "public"."dr_assert_live"() TO "authenticated";
+
+REVOKE ALL ON FUNCTION "public"."dr_assert_live"() FROM "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_assert_live"() TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."dr_assert_live"() TO "service_role";
 
 GRANT EXECUTE ON FUNCTION "public"."dr_browse_tag"() TO "authenticated";
 
