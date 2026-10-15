@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { drRequestDecision, parseDrTag, withDr, withoutDr } from './tag';
+import { drRequestDecision, isRefusedWriteUnderRelease, isReleasePath, parseDrTag, withDr, withoutDr } from './tag';
 
 describe('parseDrTag', () => {
   it('accepts the database tag shape verbatim', () => {
@@ -37,12 +37,28 @@ describe('drRequestDecision (the one place ?dr= is parsed)', () => {
     expect(drRequestDecision('http://x/nirspec?dr=..%2Fx', 'admin')).toEqual({ kind: 'not-found' });
     expect(drRequestDecision('http://x/nirspec?dr=dr%20seed', 'admin')).toEqual({ kind: 'not-found' });
   });
-  it('strips the parameter from the live-only map', () => {
+  it('strips the parameter from every live-only surface', () => {
     expect(drRequestDecision('http://x/map?field=cosmos&dr=DR1&z=8', 'admin'))
       .toEqual({ kind: 'strip', location: '/map?field=cosmos&z=8' });
-    expect(drRequestDecision('http://x/map?dr=DR1', 'admin')).toEqual({ kind: 'strip', location: '/map' });
+    for (const p of ['/map', '/nirspec/tags', '/nirspec/tags/mine', '/inspect', '/profile', '/admin/releases', '/login', '/', '/docs', '/nircam/cosmos/cutouts', '/mapping', '/api/lists/membership', '/api/users/u1']) {
+      expect(drRequestDecision(`http://x${p}?dr=DR1`, 'admin').kind, p).toBe('strip');
+    }
     expect(drRequestDecision('http://x/map', 'admin')).toEqual({ kind: 'live' });
-    expect(drRequestDecision('http://x/mapping?dr=DR1', 'admin')).toEqual({ kind: 'release', tag: 'DR1' });
+  });
+  it('browses on the release-capable paths', () => {
+    for (const p of ['/nirspec', '/nirspec/objects/J1', '/nirspec/metadata', '/nircam', '/nircam/cosmos', '/releases/DR1', '/api/objects/near', '/api/objects/adjacent', '/api/spectrum/sidecars', '/api/filter-options', '/api/metadata/observations', '/api/download', '/api/line-fit', '/api/redshift-fit', '/api/shutters', '/api/photometry-pz', '/api/dr/x']) {
+      expect(drRequestDecision(`http://x${p}?dr=DR1`, 'admin'), p).toEqual({ kind: 'release', tag: 'DR1' });
+    }
+    expect(isReleasePath('/api/v1/objects')).toBe(false); // the bearer gate owns /api/v1; never stamped
+  });
+  it('refuses an API write under a release, before its handler', () => {
+    expect(drRequestDecision('http://x/api/objects/1/inspect?dr=DR1', 'admin', 'PATCH')).toEqual({ kind: 'read-only' });
+    expect(drRequestDecision('http://x/api/download?dr=DR1', 'admin', 'POST')).toEqual({ kind: 'read-only' });
+    expect(drRequestDecision('http://x/api/objects/near?dr=DR1', 'admin', 'GET')).toEqual({ kind: 'release', tag: 'DR1' });
+    expect(isRefusedWriteUnderRelease('/api/users/u1', 'PATCH')).toBe(true);
+    expect(isRefusedWriteUnderRelease('/api/admin/nircam/review', 'POST')).toBe(true);
+    expect(isRefusedWriteUnderRelease('/api/objects/near', 'HEAD')).toBe(false);
+    expect(isRefusedWriteUnderRelease('/nirspec', 'POST')).toBe(false); // server actions post to page URLs
   });
 });
 

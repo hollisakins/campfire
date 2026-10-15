@@ -7,8 +7,8 @@ vi.mock('@/lib/dr-pages', () => ({ drPagesMode: () => mode }));
 
 import { applyDrDecision } from './middleware';
 
-const req = (url: string, headers: Record<string, string> = {}) =>
-  new NextRequest(new URL(url, 'http://localhost:3000'), { headers });
+const req = (url: string, headers: Record<string, string> = {}, method = 'GET') =>
+  new NextRequest(new URL(url, 'http://localhost:3000'), { headers, method });
 
 describe('middleware: the release header (P6c-1)', () => {
   afterEach(() => { mode = 'admin'; });
@@ -44,9 +44,32 @@ describe('middleware: the release header (P6c-1)', () => {
     }
   });
 
-  it('redirects the map to the same URL without the parameter', () => {
+  it('redirects live-only surfaces to the same URL without the parameter', () => {
     const res = applyDrDecision(req('/map?field=cosmos&dr=DR-seed&z=8'));
     expect(res?.status).toBe(307);
     expect(res?.headers.get('location')).toBe('http://localhost:3000/map?field=cosmos&z=8');
+    for (const p of ['/nirspec/tags', '/inspect?start=J1', '/profile', '/admin', '/', '/nircam/cosmos/cutouts']) {
+      const r = applyDrDecision(req(p + (p.includes('?') ? '&' : '?') + 'dr=DR-seed'));
+      expect(r?.status, p).toBe(307);
+      expect(r?.headers.get('location'), p).not.toContain('dr=');
+    }
+  });
+
+  it('refuses API writes under a release with a 409, passes reads through', async () => {
+    const patch = applyDrDecision(req('/api/users/u1?dr=DR-seed', {}, 'PATCH'));
+    expect(patch?.status).toBe(409);
+    expect(await patch?.json()).toEqual({ error: 'read-only under a data release' });
+    const post = applyDrDecision(req('/api/admin/nircam/review?dr=DR-seed', {}, 'POST'));
+    expect(post?.status).toBe(409);
+    const r = req('/api/objects/near?ra=1&dec=2&radius=5&dr=DR-seed');
+    expect(applyDrDecision(r)).toBeNull();
+    expect(r.headers.get('x-campfire-dr')).toBe('DR-seed');
+  });
+
+  it('never stamps /api/v1 (the bearer gate owns it)', () => {
+    const r = req('/api/v1/objects?dr=DR-seed');
+    const res = applyDrDecision(r);
+    expect(res?.status).toBe(307);
+    expect(r.headers.get('x-campfire-dr')).toBeNull();
   });
 });

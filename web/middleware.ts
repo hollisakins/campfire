@@ -14,10 +14,13 @@
 // forget to strip); downstream re-verifies the token, which is ~0.1 ms.
 //
 // Release browsing: `?dr=` is parsed HERE and nowhere else
-// (lib/dr/tag.ts drRequestDecision). One well-formed tag is copied onto the
-// forwarded request as the `x-campfire-dr` header, which the server Supabase
-// clients pass to PostgREST; a repeated or malformed `dr` is a 404; the map
-// is live-only and is redirected to the same URL without the parameter; with
+// (lib/dr/tag.ts drRequestDecision). One well-formed tag on a release-capable
+// path is copied onto the forwarded request as the `x-campfire-dr` header,
+// which the server Supabase clients pass to PostgREST; a repeated or
+// malformed `dr` is a 404; a live-only path (map, tags, inspection, profile,
+// admin, auth, home, docs, cutouts) is redirected to the same URL without
+// the parameter; an `/api/*` write under a release is a 409 before its
+// handler; `/api/v1` is never stamped (the bearer gate owns it); with
 // NEXT_PUBLIC_DR_PAGES off the parameter is ignored. Any incoming
 // `x-campfire-dr` is dropped first: the header is derived from the URL,
 // never trusted from the client.
@@ -36,7 +39,7 @@ function hasSupabaseAuthCookie(request: NextRequest): boolean {
 /** The release part of middleware, separable for tests. */
 export function applyDrDecision(request: NextRequest): NextResponse | null {
   request.headers.delete(DR_HEADER);
-  const decision = drRequestDecision(request.nextUrl, drPagesMode());
+  const decision = drRequestDecision(request.nextUrl, drPagesMode(), request.method);
   switch (decision.kind) {
     case 'release':
       request.headers.set(DR_HEADER, decision.tag);
@@ -45,6 +48,8 @@ export function applyDrDecision(request: NextRequest): NextResponse | null {
       return NextResponse.redirect(new URL(decision.location, request.nextUrl), 307);
     case 'not-found':
       return NextResponse.rewrite(new URL('/not-found', request.nextUrl), { status: 404 });
+    case 'read-only':
+      return NextResponse.json({ error: 'read-only under a data release' }, { status: 409 });
     default:
       return null;
   }

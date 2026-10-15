@@ -17,8 +17,45 @@ export const DR_TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
 export const DR_PARAM = 'dr';
 export const DR_HEADER = 'x-campfire-dr';
 
-/** Paths that never browse a release (the FitsGL map is live-only by decision). */
-const LIVE_ONLY_PATHS = ['/map'];
+/**
+ * Where a release can be browsed (P6c-1). Everything else is live-only — the
+ * FitsGL map, tags/lists, inspection, profile, admin, auth, home, docs, the
+ * cutout tool — and a `?dr=` there is redirected away. `/api/v1` is not
+ * listed: the bearer routes own their own gate (P6c-2) and middleware never
+ * stamps them.
+ */
+const RELEASE_PATHS = [
+  '/nirspec', '/nircam', '/releases',
+  '/api/objects', '/api/spectrum', '/api/filter-options', '/api/metadata', '/api/download',
+  '/api/line-fit', '/api/redshift-fit', '/api/shutters', '/api/photometry-pz', '/api/dr',
+];
+const LIVE_ONLY_UNDER_RELEASE_PATHS = ['/nirspec/tags', '/nircam/*/cutouts'];
+
+function matches(pathname: string, prefix: string): boolean {
+  if (prefix.includes('*')) {
+    const re = new RegExp('^' + prefix.split('*').map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^/]+') + '(/|$)');
+    return re.test(pathname);
+  }
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
+/** Can this path browse a release? */
+export function isReleasePath(pathname: string): boolean {
+  if (LIVE_ONLY_UNDER_RELEASE_PATHS.some((p) => matches(pathname, p))) return false;
+  return RELEASE_PATHS.some((p) => matches(pathname, p));
+}
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Under a release, an `/api/*` request that is not a read is refused before
+ * its handler (P6c-1: reads are GET route handlers per AGENTS.md; writes are
+ * everything else). Server actions post to page URLs, not `/api`, and keep
+ * their own `assertLiveRequest()` guards.
+ */
+export function isRefusedWriteUnderRelease(pathname: string, method: string): boolean {
+  return pathname.startsWith('/api/') && !SAFE_METHODS.has(method.toUpperCase());
+}
 
 /** A well-formed tag, or null for anything else (never lowercased). */
 export function parseDrTag(value: string | null | undefined): string | null {
@@ -30,27 +67,33 @@ export type DrRequestDecision =
   | { kind: 'live' }
   | { kind: 'release'; tag: string }
   | { kind: 'not-found' }
-  | { kind: 'strip'; location: string };
+  | { kind: 'strip'; location: string }
+  | { kind: 'read-only' };
 
 /**
- * What middleware does with a request URL:
+ * What middleware does with a request:
  *   - flag off, or no `dr` parameter → live;
- *   - a live-only path with `dr` → redirect to the same URL without it;
- *   - exactly one well-formed `dr` → that release;
- *   - anything else (repeated, empty, malformed) → 404.
+ *   - a write (`/api/*`, non-GET) with any `dr` → 409 read-only;
+ *   - a path that cannot browse a release → redirect to the same URL without it;
+ *   - a repeated, empty or malformed `dr` → 404;
+ *   - else → that release.
  */
-export function drRequestDecision(url: URL | string, mode: 'off' | 'admin' | 'all'): DrRequestDecision {
+export function drRequestDecision(url: URL | string, mode: 'off' | 'admin' | 'all', method = 'GET'): DrRequestDecision {
   const u = typeof url === 'string' ? new URL(url, 'http://local') : url;
   const all = u.searchParams.getAll(DR_PARAM);
   if (mode === 'off' || all.length === 0) return { kind: 'live' };
-  if (LIVE_ONLY_PATHS.some((p) => u.pathname === p || u.pathname.startsWith(`${p}/`))) {
+  // A write with any `dr` is refused outright: a 307 would be re-issued
+  // with its method and body against the live catalog.
+  if (isRefusedWriteUnderRelease(u.pathname, method)) return { kind: 'read-only' };
+  if (!isReleasePath(u.pathname)) {
     const stripped = new URL(u.toString());
     stripped.searchParams.delete(DR_PARAM);
     return { kind: 'strip', location: `${stripped.pathname}${stripped.search}${stripped.hash}` };
   }
   if (all.length !== 1) return { kind: 'not-found' };
   const tag = parseDrTag(all[0]);
-  return tag ? { kind: 'release', tag } : { kind: 'not-found' };
+  if (!tag) return { kind: 'not-found' };
+  return { kind: 'release', tag };
 }
 
 /**

@@ -1,15 +1,12 @@
 import type { Metadata } from 'next';
 import { Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
-import { Navigation } from '@/components/layout/Navigation';
 import { DrProvider } from '@/lib/dr/client';
-import { requestDrTag } from '@/lib/dr/server';
 import { AuthProvider } from '@/lib/contexts/AuthContext';
 import { ThemeProvider } from '@/lib/contexts/ThemeContext';
 import { PreferencesProvider } from '@/lib/contexts/PreferencesContext';
 import { QueryProvider } from '@/lib/providers/QueryProvider';
 import { ConditionalFooter } from '@/components/layout/ConditionalFooter';
-import { DrBanner } from '@/components/dr/DrBanner';
 import { Analytics } from '@vercel/analytics/next';
 
 // Direction 2 (Ember & Dusk): Inter for UI, JetBrains Mono for data/code.
@@ -47,14 +44,15 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-export default async function RootLayout({
+export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // The release this request browses (P6c-1): decided by middleware, read
-  // once here, provided to the whole client tree.
-  const drTag = await requestDrTag();
+  // The release mode (P6c-1) is provided by app/template.tsx, which re-runs
+  // on every navigation; a layout is rendered once per session and would go
+  // stale. The DrProvider here is only the live default for anything that
+  // renders outside the template (error boundaries).
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
@@ -62,13 +60,11 @@ export default async function RootLayout({
       </head>
       <body className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased min-h-screen flex flex-col bg-background text-text-primary`}>
         <QueryProvider>
-          <DrProvider tag={drTag}>
+          <DrProvider tag={null}>
           <AuthProvider>
             <ThemeProvider>
               <PreferencesProvider>
-                <Navigation drTag={drTag} />
-                <DrBanner />
-                <main className="flex-1">{children}</main>
+                {children}
                 <ConditionalFooter />
               </PreferencesProvider>
             </ThemeProvider>
