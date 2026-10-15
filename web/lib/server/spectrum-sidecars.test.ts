@@ -21,7 +21,15 @@ vi.mock('@/lib/r2', () => ({
   }),
 }));
 
-import { resolveSpectrumSidecars, dehydrateSidecarUrls } from './spectrum-sidecars';
+let releaseMembers: Record<string, { archiveKey: string; contentHash: string } | null> = {};
+vi.mock('@/lib/server/dr-files', () => ({
+  resolveReleaseMembers: async (_sb: unknown, _tag: string, keys: string[]) =>
+    new Map(keys.map((k) => [k, releaseMembers[k] ?? null])),
+  releaseFrontUrls: async (byKey: Map<string, { archiveKey: string } | null>) =>
+    new Map([...byKey].map(([k, m]) => [k, m ? `https://front.example/o/${m.archiveKey}?h=x` : null])),
+}));
+
+import { releaseSpectrumAvailable, resolveSpectrumSidecars, dehydrateSidecarUrls } from './spectrum-sidecars';
 import { spectrum1dSources, spectrumSidecarsKey } from '@/lib/spectrum-sidecars';
 
 const FITS_A = 'data/products/nirspec/obs_a/obj1_prism-clear_spec.fits';
@@ -39,6 +47,7 @@ beforeEach(() => {
   resolvedByKey = {};
   resolveCalls = [];
   resolveThrows = false;
+  releaseMembers = {};
 });
 
 describe('resolveSpectrumSidecars', () => {
@@ -151,3 +160,44 @@ describe('dehydrateSidecarUrls', () => {
     expect(state.queries[0].state.status).toBe('success');
   });
 });
+
+describe('resolveSpectrumSidecars under a release', () => {
+  const release = { supabase: {} as never, tag: 'DR-t' };
+  const arch = (k: string) => ({ archiveKey: `archive/${'a'.repeat(64)}/${k.replace(/^data\//, '')}`, contentHash: 'sha256:x' });
+
+  it('hands out the archived copies only, and reports a pending member as definitively absent', async () => {
+    releaseMembers[sib(FITS_A, '_spec.json')] = arch(sib(FITS_A, '_spec.json'));
+    releaseMembers[sib(FITS_A, '_spec_1d.json')] = arch(sib(FITS_A, '_spec_1d.json'));
+    // zfit pending, lines not a member
+    const out = await resolveSpectrumSidecars([FITS_A], release);
+    expect(resolveCalls).toHaveLength(0); // the live registry is never consulted
+    const u = out.get(FITS_A)!;
+    expect(u.spectrum).toContain('/o/archive/');
+    expect(u.spectrum_1d).toContain('/o/archive/');
+    expect(u.zfit).toBeNull();
+    expect(u.lines).toBeNull();
+    expect(u.has_1d).toBe(true);
+    expect(u.has_zfit).toBe(false);
+    expect(u.has_lines).toBe(false);
+    expect(releaseSpectrumAvailable(u)).toBe(true);
+  });
+
+  it('never falls back to the live file for a spectrum the release holds unarchived', async () => {
+    resolvedByKey[sib(FITS_B, '_spec.json')] = registered(sib(FITS_B, '_spec.json'));
+    const out = await resolveSpectrumSidecars([FITS_B], release);
+    const u = out.get(FITS_B)!;
+    expect(u.spectrum).toBeNull();
+    expect(u.has_1d).toBe(false);
+    expect(releaseSpectrumAvailable(u)).toBe(false);
+    expect(resolveCalls).toHaveLength(0);
+  });
+
+  it('keys the hydration state on the release tag', () => {
+    const sidecars = new Map([[FITS_A, { ...NO, spectrum: 'https://f/o/x' }]]);
+    const state = dehydrateSidecarUrls(sidecars, 'DR-t');
+    expect(state.queries[0].queryKey).toEqual(['spectrum-sidecars', FITS_A, 'DR-t']);
+    const live = dehydrateSidecarUrls(sidecars);
+    expect(live.queries[0].queryKey).toEqual(['spectrum-sidecars', FITS_A]);
+  });
+});
+const NO = { front: true, spectrum: null, spectrum_1d: null, zfit: null, lines: null, has_1d: null, has_zfit: null, has_lines: null };
