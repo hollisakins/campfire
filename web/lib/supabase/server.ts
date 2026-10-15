@@ -5,6 +5,7 @@ import { createServerClient } from '@supabase/ssr';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { notFound } from 'next/navigation';
+import { checkBrowseTag } from '@/lib/dr/confirm';
 import { requestDrTag } from '@/lib/dr/server';
 import { DR_HEADER } from '@/lib/dr/tag';
 
@@ -14,24 +15,16 @@ export { createServiceClient } from './service';
 
 /**
  * Confirm the database is browsing the release this request asked for
- * (P6c-1 rule: a release request never falls back to live silently). One
- * round trip per request and tag (request-memoized): `dr_browse_tag()` must
- * echo the tag the pre-request hook set from the header. A `PT404` is the
- * hook refusing the tag (unknown, or not visible to this caller) and a
- * `42501` is an anonymous caller (no EXECUTE on the function; anonymous
- * never browses a release): both are the page's 404. Anything else — the
- * hook not registered, a stale PostgREST config, an error — is a 500,
- * never a live render.
+ * (P6c-1 rule: a release request never falls back to live silently). The
+ * check itself lives in lib/dr/confirm (shared with the bearer routes'
+ * service client); here its outcome is the page's: a refused tag or an
+ * anonymous caller is the 404, anything else is a 500.
  */
 export async function confirmBrowseTag(supabase: SupabaseClient, tag: string): Promise<void> {
-  const { data, error } = await supabase.rpc('dr_browse_tag');
-  if (error) {
-    if (error.code === 'PT404' || error.code === '42501') notFound();
-    throw new Error(`data release ${tag}: ${error.message}`);
-  }
-  if (data !== tag) {
-    throw new Error(`data release ${tag}: the database answered ${JSON.stringify(data)} (pre-request hook not active?)`);
-  }
+  const check = await checkBrowseTag(supabase, tag);
+  if (check.ok) return;
+  if (check.kind === 'not-found') notFound();
+  throw new Error(check.message);
 }
 
 // Per request: the tags already confirmed (React cache() is request-scoped
