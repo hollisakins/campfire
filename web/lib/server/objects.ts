@@ -68,7 +68,7 @@ const loadObjectRow = cache(async (objectId: string): Promise<ObjectRowResult> =
   // and the object row in parallel.
   const [accessibleSlugs, { data: row, error }] = await Promise.all([
     getAccessContext(user.id).then(a => a.accessibleSlugs),
-    supabase.from('objects').select('*').eq('object_id', objectId).single(),
+    supabase.from('cat_objects').select('*').eq('object_id', objectId).single(),
   ]);
 
   if (error || !row) {
@@ -132,32 +132,53 @@ export async function loadObjectHeader(objectId: string): Promise<{
     // → wire → RSC payload for every spectrum, and nothing on this page
     // renders them (#500).
     const { supabase } = await getRequestIdentity();
-    const { data: members, error: membersError } = await supabase
-      .from('targets')
-      .select(`
-        *,
-        programs:program_slug (program_name),
-        spectra (id, spectrum_id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status)
-      `)
+    // cat_targets / cat_spectra: the live tables, or the release's frozen
+    // rows while one is browsed (P6c-1). Views carry no FK metadata for
+    // PostgREST's embedding, so the two reads are explicit: members, then
+    // their spectra and program names in parallel.
+    const { data: memberRows, error: membersError } = await supabase
+      .from('cat_targets')
+      .select('*')
       .eq('object_id', row.id)
       .in('program_slug', accessibleSlugs);
 
     if (membersError) return { object: null, error: membersError.message, isAuthenticated: true };
+    const targetIds = (memberRows || []).map((m: { target_id: string }) => m.target_id);
+    const slugs = [...new Set((memberRows || []).map((m: { program_slug: string }) => m.program_slug))];
+    const [{ data: spectraRows, error: spectraError }, { data: programRows }] = await Promise.all([
+      targetIds.length === 0
+        ? Promise.resolve({ data: [], error: null })
+        : supabase
+            .from('cat_spectra')
+            .select('id, spectrum_id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status')
+            .in('target_id', targetIds),
+      slugs.length === 0
+        ? Promise.resolve({ data: [] as { slug: string; program_name: string | null }[] })
+        : supabase.from('programs').select('slug, program_name').in('slug', slugs),
+    ]);
+    if (spectraError) return { object: null, error: spectraError.message, isAuthenticated: true };
+    const spectraByTarget = new Map<string, Spectrum[]>();
+    for (const s of (spectraRows || []) as Spectrum[]) {
+      const list = spectraByTarget.get(s.target_id) ?? [];
+      list.push(s);
+      spectraByTarget.set(s.target_id, list);
+    }
+    const programName = new Map((programRows || []).map((p: { slug: string; program_name: string | null }) => [p.slug, p.program_name]));
 
     // Member targets are stateless provenance — inspection lives on the parent object.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const memberTargets: ObjectMemberTarget[] = (members || []).map((m: any) => ({
+    const memberTargets: ObjectMemberTarget[] = (memberRows || []).map((m: any) => ({
       id: m.id,
       target_id: m.target_id,
       program_slug: m.program_slug,
-      program_name: m.programs?.program_name || m.program_slug,
+      program_name: programName.get(m.program_slug) || m.program_slug,
       observation: m.observation,
       ra: m.ra,
       dec: m.dec,
       redshift_auto: m.redshift_auto,
       max_snr: m.max_snr,
       max_exposure_time: m.max_exposure_time,
-      spectra: (m.spectra || []) as Spectrum[],
+      spectra: spectraByTarget.get(m.target_id) ?? [],
     })).sort((a: ObjectMemberTarget, b: ObjectMemberTarget) => (b.max_snr || 0) - (a.max_snr || 0));
 
     const object: ObjectHeader = {
@@ -207,7 +228,7 @@ export async function loadObjectPhotometry(objectDbId: number): Promise<ObjectPh
   try {
     const { supabase } = await getRequestIdentity();
     const { data, error } = await supabase
-      .from('object_photometry')
+      .from('cat_photometry')
       .select('catalog_name, catalog_id, match_distance_arcsec, photometry, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz')
       .eq('object_id', objectDbId)
       .order('updated_at', { ascending: false })

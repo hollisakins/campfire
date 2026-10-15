@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { fetchJson } from '@/lib/fetch-json';
+import { useDrTag } from '@/lib/dr/client';
 import type { ObjectLinesResponse } from '@/app/api/objects/lines/route';
 
 export type { ObjectLineFit, ObjectLineRecord, ObjectLinesResponse } from '@/app/api/objects/lines/route';
@@ -28,15 +29,16 @@ function chunk<T>(items: T[], size: number): T[][] {
  * merged here. `data` is undefined until every batch has resolved.
  */
 export function useObjectLinesQuery(spectrumIds: number[], enabled = true) {
+  const dr = useDrTag();
   const batches = useMemo(
     () => chunk([...new Set(spectrumIds)].sort((a, b) => a - b), LINES_REQUEST_BATCH).map((ids) => ids.join(',')),
     [spectrumIds],
   );
   const queries = useQueries({
     queries: batches.map((key) => ({
-      queryKey: ['objectLines', key],
+      queryKey: ['objectLines', key, dr ?? 'live'],
       queryFn: ({ signal }: { signal?: AbortSignal }) =>
-        fetchJson<ObjectLinesResponse>(`/api/objects/lines?spectra=${key}`, { signal }),
+        fetchJson<ObjectLinesResponse>(`/api/objects/lines?spectra=${key}`, { signal, dr }),
       enabled: enabled && key.length > 0,
       staleTime: LINES_STALE_MS,
     })),

@@ -6,6 +6,7 @@ import { getSpectra } from '@/lib/actions/spectra';
 import type { FilterOptions, PaginatedSpectraResult } from '@/lib/actions/spectra';
 import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
+import { useDrTag } from '@/lib/dr/client';
 
 /** True when any filter differs from its default (arrays non-empty, scalars set). */
 function hasActiveFilters(filters: Partial<FilterOptions>): boolean {
@@ -43,6 +44,10 @@ function scheduleIdleWork(callback: () => void): () => void {
 export function useSpectraQuery(params: UseSpectraQueryParams) {
   const { filters, page, pageSize, sortColumn, sortDirection, viewMode = 'objects', enabled = true } = params;
   const queryClient = useQueryClient();
+  // The release being browsed (P6c-1): the action posts to the page URL, so
+  // middleware stamps the release header itself; the keys carry the tag so
+  // live and release pages never share a cache entry.
+  const dr = useDrTag() ?? 'live';
 
   // The exact total is a second full pass over the filter inside the RPC
   // (#501), and it only depends on the filters + view, not on page or sort.
@@ -50,7 +55,7 @@ export function useSpectraQuery(params: UseSpectraQueryParams) {
   // it back into later pages / re-sorts (which then run without the count).
   const fetchPage = useCallback(
     async (p: number): Promise<PaginatedSpectraResult> => {
-      const countKey = ['spectra-count', { filters, viewMode }] as const;
+      const countKey = ['spectra-count', { filters, viewMode, dr }] as const;
       const known = queryClient.getQueryData<number>(countKey);
       const result = await getSpectra(filters, p, pageSize, sortColumn, sortDirection, viewMode, {
         includeCount: known === undefined,
@@ -73,11 +78,11 @@ export function useSpectraQuery(params: UseSpectraQueryParams) {
       }
       return result;
     },
-    [filters, pageSize, sortColumn, sortDirection, viewMode, queryClient],
+    [filters, pageSize, sortColumn, sortDirection, viewMode, queryClient, dr],
   );
 
   const query = useQuery<PaginatedSpectraResult>({
-    queryKey: ['spectra', { filters, page, pageSize, sortColumn, sortDirection, viewMode }],
+    queryKey: ['spectra', { filters, page, pageSize, sortColumn, sortDirection, viewMode, dr }],
     queryFn: () => fetchPage(page),
     enabled,
     placeholderData: keepPreviousData,
@@ -103,7 +108,7 @@ export function useSpectraQuery(params: UseSpectraQueryParams) {
       // Prefetch next page
       if (page < totalPages) {
         queryClient.prefetchQuery({
-          queryKey: ['spectra', { filters, page: page + 1, pageSize, sortColumn, sortDirection, viewMode }],
+          queryKey: ['spectra', { filters, page: page + 1, pageSize, sortColumn, sortDirection, viewMode, dr }],
           queryFn: () => fetchPage(page + 1),
           staleTime: 30 * 1000, // Consider fresh for 30 seconds
         });
@@ -112,7 +117,7 @@ export function useSpectraQuery(params: UseSpectraQueryParams) {
       // Prefetch previous page
       if (page > 1) {
         queryClient.prefetchQuery({
-          queryKey: ['spectra', { filters, page: page - 1, pageSize, sortColumn, sortDirection, viewMode }],
+          queryKey: ['spectra', { filters, page: page - 1, pageSize, sortColumn, sortDirection, viewMode, dr }],
           queryFn: () => fetchPage(page - 1),
           staleTime: 30 * 1000,
         });
@@ -120,7 +125,7 @@ export function useSpectraQuery(params: UseSpectraQueryParams) {
     });
 
     return cancelIdle;
-  }, [query.data, query.isFetching, page, pageSize, filters, filtersActive, sortColumn, sortDirection, viewMode, enabled, queryClient, fetchPage]);
+  }, [query.data, query.isFetching, page, pageSize, filters, filtersActive, sortColumn, sortDirection, viewMode, enabled, queryClient, fetchPage, dr]);
 
   return query;
 }

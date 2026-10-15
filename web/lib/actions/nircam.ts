@@ -69,8 +69,10 @@ export async function getNircamImages(field?: string): Promise<NircamImagesResul
   try {
     const { data, error } = await paginateQuery<NircamImage>(
       () => {
+        // cat_nircam_images: live rows, or the release's frozen mosaics
+        // while one is browsed (P6c-1)
         let q = supabase
-          .from('nircam_images')
+          .from('cat_nircam_images')
           .select('*');
         if (field) q = q.eq('field', field);
         return q
