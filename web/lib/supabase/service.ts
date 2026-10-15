@@ -9,12 +9,24 @@
 // context, including modules that middleware may pull in.
 
 import { createClient as createSupabaseClient, type SupabaseClient } from '@supabase/supabase-js';
+import { DR_HEADER } from '@/lib/dr/tag';
+
+export interface ServiceClientOptions {
+  /**
+   * Browse this data release (P6c-2): every call carries `x-campfire-dr`.
+   * The database's pre-request hook trusts the service role with any
+   * post-freeze tag, so the caller owns the authorization: a bearer route
+   * passes ONLY the tag `assertBearerReleaseAccess` (lib/server/bearer-release.ts)
+   * returned for the caller.
+   */
+  dr?: string | null;
+}
 
 /**
  * Create a Supabase client with the service role key for privileged
  * server-side operations. Bypasses RLS: callers own the authorization.
  */
-export const createServiceClient = (): SupabaseClient => {
+export const createServiceClient = (options: ServiceClientOptions = {}): SupabaseClient => {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
@@ -23,6 +35,7 @@ export const createServiceClient = (): SupabaseClient => {
   }
 
   return createSupabaseClient(supabaseUrl, serviceRoleKey, {
+    ...(options.dr ? { global: { headers: { [DR_HEADER]: options.dr } } } : {}),
     auth: {
       autoRefreshToken: false,
       persistSession: false,
