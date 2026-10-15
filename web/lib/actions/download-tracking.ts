@@ -1,6 +1,7 @@
 'use server';
 
 import { createServiceClient } from '@/lib/supabase/server';
+import { assertLiveRequest } from '@/lib/dr/server';
 import { headers } from 'next/headers';
 
 export type DownloadType = 'fits_single' | 'fits_object' | 'fits_batch' | 'fits_zip' | 'csv' | 'sed_plot';
@@ -21,6 +22,7 @@ export interface TrackDownloadParams {
  */
 export async function trackDownload(params: TrackDownloadParams): Promise<void> {
   try {
+    await assertLiveRequest();
     const supabase = createServiceClient();
     const headersList = await headers();
 

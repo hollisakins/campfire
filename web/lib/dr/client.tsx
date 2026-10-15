@@ -2,18 +2,23 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
-import { DR_PARAM, parseDrTag, withDr } from './tag';
+import { withDr } from './tag';
 
 /**
- * The release the page is browsing (`?dr=<tag>`), or null for the live
- * catalog. Client components read it here; server components use
- * `drTagFromSearchParams` / `requestDrTag`. Callers must sit under a
- * Suspense boundary (useSearchParams).
+ * The release being browsed, as the SERVER decided it (P6c-1): the root
+ * layout reads the header middleware stamped from `?dr=` and provides it
+ * here. Client code never derives the mode from the URL, so the banner,
+ * the read-only switches, the query keys and the links all agree with the
+ * data the server actually read. Null = the live catalog.
  */
+const DrContext = React.createContext<string | null>(null);
+
+export function DrProvider({ tag, children }: { tag: string | null; children: React.ReactNode }) {
+  return <DrContext.Provider value={tag}>{children}</DrContext.Provider>;
+}
+
 export function useDrTag(): string | null {
-  const sp = useSearchParams();
-  return parseDrTag(sp?.get(DR_PARAM));
+  return React.useContext(DrContext);
 }
 
 /** `href => href carrying the current release`. */

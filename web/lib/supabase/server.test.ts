@@ -1,13 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 
-// The module imports next/headers and next/navigation; neither is needed for
-// the confirmation itself, so both are stubbed.
-vi.mock('next/headers', () => ({ cookies: async () => ({ getAll: () => [], set: () => {} }) }));
+let drTag: string | null = null;
+const calls: string[] = [];
 const notFound = vi.fn(() => { throw new Error('NEXT_NOT_FOUND'); });
+vi.mock('next/headers', () => ({ cookies: async () => ({ getAll: () => [], set: () => {} }) }));
 vi.mock('next/navigation', () => ({ notFound: () => notFound() }));
-vi.mock('@/lib/dr/server', () => ({ requestDrTag: async () => null }));
+vi.mock('@/lib/dr/server', () => ({ requestDrTag: async () => drTag }));
+vi.mock('@supabase/ssr', () => ({
+  createServerClient: (_url: string, _key: string, opts: { global?: { headers?: Record<string, string> } }) => ({
+    headers: opts.global?.headers ?? {},
+    rpc: async (name: string) => { calls.push(`rpc:${name}`); return { data: drTag, error: null }; },
+    from: (t: string) => { calls.push(`from:${t}`); return {}; },
+  }),
+}));
 
-import { confirmBrowseTag } from './server';
+import { confirmBrowseTag, createClient } from './server';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 function clientAnswering(result: { data?: unknown; error?: { code?: string; message: string } | null }) {
@@ -36,5 +43,24 @@ describe('confirmBrowseTag (a release request never falls back to live)', () => 
   it('throws on any other error', async () => {
     const c = clientAnswering({ error: { message: 'boom' } });
     await expect(confirmBrowseTag(c, 'DR-seed')).rejects.toThrow('boom');
+  });
+});
+
+describe('createClient under a release', () => {
+  it('sends the header and confirms the mode before the client is handed out', async () => {
+    drTag = 'DR-seed';
+    calls.length = 0;
+    const c = (await createClient()) as unknown as { headers: Record<string, string>; from: (t: string) => unknown };
+    expect(c.headers['x-campfire-dr']).toBe('DR-seed');
+    expect(calls).toEqual(['rpc:dr_browse_tag']);
+    c.from('cat_objects');
+    expect(calls).toEqual(['rpc:dr_browse_tag', 'from:cat_objects']);
+  });
+  it('sends no header and makes no confirmation call live', async () => {
+    drTag = null;
+    calls.length = 0;
+    const c = (await createClient()) as unknown as { headers: Record<string, string> };
+    expect(c.headers['x-campfire-dr']).toBeUndefined();
+    expect(calls).toEqual([]);
   });
 });

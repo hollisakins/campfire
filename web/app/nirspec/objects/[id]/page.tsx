@@ -15,7 +15,7 @@ import { dehydrateSidecarUrls, resolveSpectrumSidecars } from '@/lib/server/spec
 import { spectrum1dSources } from '@/lib/spectrum-sidecars';
 import { getAssetVersions, assetVersionFor } from '@/lib/asset-version';
 import { parseSortingFromURL } from '@/lib/utils/url-params';
-import { drTagFromSearchParams } from '@/lib/dr/tag';
+import { requestDrTag } from '@/lib/dr/server';
 
 interface ObjectDetailPageProps {
   params: Promise<{ id: string }>;
@@ -153,7 +153,7 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
   //
   // Under a release (P6c-1) the files are not resolved: the archived copies
   // come through dr_manifest in P6c-2, and the plots stay off until then.
-  const drTag = drTagFromSearchParams(searchParamsObj);
+  const drTag = await requestDrTag();
   const fitsPaths = drTag ? [] : object.member_targets.flatMap(m => m.spectra.map(s => s.fits_path));
   const sidecars = await resolveSpectrumSidecars(fitsPaths);
   for (const fitsPath of fitsPaths.slice(0, PRELOAD_1D_MAX)) {

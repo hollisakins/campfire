@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { readOnlyResponse } from '@/lib/dr/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { sendInspectionRequestNotification } from '@/lib/email/resend';
 
@@ -41,6 +42,8 @@ export async function GET() {
  * Body: { message?: string }
  */
 export async function POST(request: NextRequest) {
+  const readOnly = await readOnlyResponse();
+  if (readOnly) return readOnly;
   const { user, supabase } = await getRequestIdentity();
 
   if (!user) {

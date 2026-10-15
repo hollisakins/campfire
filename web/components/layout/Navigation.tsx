@@ -125,9 +125,8 @@ const SharedViewNav: React.FC<{
 );
 
 /**
- * `drTag`: the release being browsed (P6c-1), supplied by NavigationDr under
- * a Suspense boundary so this always-mounted component never reads
- * useSearchParams itself (static pages would bail out of prerendering).
+ * `drTag`: the release being browsed (P6c-1), as the server decided it
+ * (root layout), so the catalog links carry it from the first render.
  */
 export const Navigation: React.FC<{ drTag?: string | null }> = ({ drTag = null }) => {
   const pathname = usePathname();

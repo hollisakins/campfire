@@ -4,17 +4,19 @@ import React, { Suspense } from 'react';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { Archive } from 'lucide-react';
-import { DR_PARAM, parseDrTag, withoutDr } from '@/lib/dr/tag';
+import { useDrTag } from '@/lib/dr/client';
+import { withoutDr } from '@/lib/dr/tag';
 
 /**
  * The release-mode strip under the navigation (P6c-1): the tag, a link to
- * its release page and the way back to the live catalog. Renders nothing
- * while browsing live. Pure function of the URL, so it needs no data.
+ * its release page and the way back to the live catalog. The MODE comes from
+ * the provider (the server's decision); only the "Live catalog" href reads
+ * the location, to keep the page's other parameters.
  */
 export function DrBannerContent() {
+  const tag = useDrTag();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const tag = parseDrTag(searchParams?.get(DR_PARAM));
   if (!tag) return null;
   const qs = searchParams?.toString() ?? '';
   const liveHref = withoutDr(`${pathname}${qs ? `?${qs}` : ''}`);

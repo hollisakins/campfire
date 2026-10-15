@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { drHeaderFor, drTagFromSearchParams, drTagFromUrl, parseDrTag, withDr, withoutDr } from './tag';
+import { drRequestDecision, parseDrTag, withDr, withoutDr } from './tag';
 
 describe('parseDrTag', () => {
   it('accepts the database tag shape verbatim', () => {
@@ -13,9 +13,36 @@ describe('parseDrTag', () => {
     expect(parseDrTag('-DR')).toBeNull();
     expect(parseDrTag('DR 1')).toBeNull();
     expect(parseDrTag('DR/1')).toBeNull();
+    expect(parseDrTag('../x')).toBeNull();
     expect(parseDrTag('a'.repeat(65))).toBeNull();
     expect(parseDrTag(null)).toBeNull();
     expect(parseDrTag(undefined)).toBeNull();
+  });
+});
+
+describe('drRequestDecision (the one place ?dr= is parsed)', () => {
+  it('is live without the parameter, and whenever the flag is off', () => {
+    expect(drRequestDecision('http://x/nirspec', 'admin')).toEqual({ kind: 'live' });
+    expect(drRequestDecision('http://x/nirspec?dr=DR1', 'off')).toEqual({ kind: 'live' });
+    expect(drRequestDecision('http://x/nirspec?dr=../x', 'off')).toEqual({ kind: 'live' });
+  });
+  it('selects exactly one well-formed tag', () => {
+    expect(drRequestDecision('http://x/nirspec?dr=DR-seed&page=2', 'admin')).toEqual({ kind: 'release', tag: 'DR-seed' });
+    expect(drRequestDecision('http://x/nirspec?dr=DR-seed', 'all')).toEqual({ kind: 'release', tag: 'DR-seed' });
+  });
+  it('fails closed on a repeated, empty or malformed parameter', () => {
+    expect(drRequestDecision('http://x/nirspec?dr=A1&dr=A1', 'admin')).toEqual({ kind: 'not-found' });
+    expect(drRequestDecision('http://x/nirspec?dr=A1&dr=B1', 'admin')).toEqual({ kind: 'not-found' });
+    expect(drRequestDecision('http://x/nirspec?dr=', 'admin')).toEqual({ kind: 'not-found' });
+    expect(drRequestDecision('http://x/nirspec?dr=..%2Fx', 'admin')).toEqual({ kind: 'not-found' });
+    expect(drRequestDecision('http://x/nirspec?dr=dr%20seed', 'admin')).toEqual({ kind: 'not-found' });
+  });
+  it('strips the parameter from the live-only map', () => {
+    expect(drRequestDecision('http://x/map?field=cosmos&dr=DR1&z=8', 'admin'))
+      .toEqual({ kind: 'strip', location: '/map?field=cosmos&z=8' });
+    expect(drRequestDecision('http://x/map?dr=DR1', 'admin')).toEqual({ kind: 'strip', location: '/map' });
+    expect(drRequestDecision('http://x/map', 'admin')).toEqual({ kind: 'live' });
+    expect(drRequestDecision('http://x/mapping?dr=DR1', 'admin')).toEqual({ kind: 'release', tag: 'DR1' });
   });
 });
 
@@ -48,26 +75,5 @@ describe('withoutDr', () => {
     expect(withoutDr('/nirspec?view=objects&dr=DR1&page=2#x')).toBe('/nirspec?view=objects&page=2#x');
     expect(withoutDr('/nirspec?dr=DR1')).toBe('/nirspec');
     expect(withoutDr('/nirspec')).toBe('/nirspec');
-  });
-});
-
-describe('drTagFromUrl / drTagFromSearchParams / drHeaderFor', () => {
-  it('reads the parameter from a URL', () => {
-    expect(drTagFromUrl('http://x/nirspec?dr=DR-seed')).toBe('DR-seed');
-    expect(drTagFromUrl(new URL('http://x/nirspec?dr=bad%20tag'))).toBeNull();
-    expect(drTagFromUrl('http://x/nirspec')).toBeNull();
-  });
-  it('reads a page searchParams record, refusing a repeated value', () => {
-    expect(drTagFromSearchParams({ dr: 'DR1' })).toBe('DR1');
-    expect(drTagFromSearchParams({ dr: ['DR1', 'DR2'] })).toBeNull();
-    expect(drTagFromSearchParams(new URLSearchParams('dr=DR1'))).toBe('DR1');
-    expect(drTagFromSearchParams(new URLSearchParams('dr=DR1&dr=DR2'))).toBeNull();
-    expect(drTagFromSearchParams(null)).toBeNull();
-  });
-  it('stamps nothing while the pages flag is off', () => {
-    const url = new URL('http://x/nirspec?dr=DR1');
-    expect(drHeaderFor(url, 'off')).toBeNull();
-    expect(drHeaderFor(url, 'admin')).toBe('DR1');
-    expect(drHeaderFor(url, 'all')).toBe('DR1');
   });
 });

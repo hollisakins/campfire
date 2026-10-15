@@ -8,6 +8,7 @@ import { getPlotColors } from './plotting-utils';
 import { PhotometryTable } from './PhotometryTable';
 import { useInView } from '@/lib/hooks/useInView';
 import { fetchJson } from '@/lib/fetch-json';
+import { useDrTag } from '@/lib/dr/client';
 import type { ObjectPhotometry } from '@/lib/types';
 import { LazyPlot as Plot } from '@/components/plot/LazyPlot';
 
@@ -60,11 +61,13 @@ export const PhotometrySED: React.FC<PhotometrySEDProps> = ({
   // P(z) is optional, and the panel simply does not appear.
   const containerRef = useRef<HTMLDivElement>(null);
   const inView = useInView(containerRef);
+  const readOnly = useDrTag() !== null;
   const pzQuery = useQuery({
     queryKey: ['photometry-pz', objectId],
     queryFn: ({ signal }) =>
       fetchJson<PzSidecarData>(`/api/photometry-pz?object_id=${encodeURIComponent(objectId)}`, { signal }),
-    enabled: photometry.has_pz && inView,
+    // the P(z) sidecar is a live file; the archived copy comes in P6c-2
+    enabled: photometry.has_pz && inView && !readOnly,
     staleTime: 24 * 60 * 60 * 1000,
   });
   const pzData = pzQuery.data ?? null;

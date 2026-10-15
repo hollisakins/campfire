@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { readOnlyResponse } from '@/lib/dr/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
 
 /**
@@ -20,6 +21,8 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const readOnly = await readOnlyResponse();
+  if (readOnly) return readOnly;
   const { id } = await params;
   const spectrumId = parseInt(id, 10);
 

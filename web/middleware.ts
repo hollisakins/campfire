@@ -13,16 +13,18 @@
 // is NOT attached to the request here (no trusted header to forge or to
 // forget to strip); downstream re-verifies the token, which is ~0.1 ms.
 //
-// Release browsing: a `?dr=<tag>` URL (pages, their server actions, the GET
-// routes the pages call) is copied onto the forwarded request as the
-// `x-campfire-dr` header, which the server Supabase clients pass to
-// PostgREST (lib/supabase/server.ts). Any incoming `x-campfire-dr` is
-// dropped first: the header is derived from the URL, never trusted from the
-// client. With NEXT_PUBLIC_DR_PAGES off the parameter is ignored entirely.
+// Release browsing: `?dr=` is parsed HERE and nowhere else
+// (lib/dr/tag.ts drRequestDecision). One well-formed tag is copied onto the
+// forwarded request as the `x-campfire-dr` header, which the server Supabase
+// clients pass to PostgREST; a repeated or malformed `dr` is a 404; the map
+// is live-only and is redirected to the same URL without the parameter; with
+// NEXT_PUBLIC_DR_PAGES off the parameter is ignored. Any incoming
+// `x-campfire-dr` is dropped first: the header is derived from the URL,
+// never trusted from the client.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
-import { DR_HEADER, drHeaderFor } from '@/lib/dr/tag';
+import { DR_HEADER, drRequestDecision } from '@/lib/dr/tag';
 import { drPagesMode } from '@/lib/dr-pages';
 
 function hasSupabaseAuthCookie(request: NextRequest): boolean {
@@ -31,10 +33,26 @@ function hasSupabaseAuthCookie(request: NextRequest): boolean {
     .some(c => c.name.startsWith('sb-') && c.name.includes('-auth-token'));
 }
 
-export async function middleware(request: NextRequest) {
+/** The release part of middleware, separable for tests. */
+export function applyDrDecision(request: NextRequest): NextResponse | null {
   request.headers.delete(DR_HEADER);
-  const tag = drHeaderFor(request.nextUrl, drPagesMode());
-  if (tag) request.headers.set(DR_HEADER, tag);
+  const decision = drRequestDecision(request.nextUrl, drPagesMode());
+  switch (decision.kind) {
+    case 'release':
+      request.headers.set(DR_HEADER, decision.tag);
+      return null;
+    case 'strip':
+      return NextResponse.redirect(new URL(decision.location, request.nextUrl), 307);
+    case 'not-found':
+      return NextResponse.rewrite(new URL('/not-found', request.nextUrl), { status: 404 });
+    default:
+      return null;
+  }
+}
+
+export async function middleware(request: NextRequest) {
+  const early = applyDrDecision(request);
+  if (early) return early;
 
   if (!hasSupabaseAuthCookie(request)) return NextResponse.next({ request });
 

@@ -1,6 +1,8 @@
 import 'server-only';
 
 import { cache } from 'react';
+import { unstable_rethrow } from 'next/navigation';
+import { requestDrTag } from '@/lib/dr/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { getAccessContext } from '@/lib/auth/access-context';
 import { createServiceClient } from '@/lib/supabase/service';
@@ -209,6 +211,7 @@ export async function loadObjectHeader(objectId: string): Promise<{
     };
     return { object, isAuthenticated: true };
   } catch (err) {
+    unstable_rethrow(err); // notFound() / redirect() from the release gate pass through
     console.error('Unexpected error fetching object:', err);
     return { object: null, error: 'An unexpected error occurred', isAuthenticated: true };
   }
@@ -250,6 +253,7 @@ export async function loadObjectPhotometry(objectDbId: number): Promise<ObjectPh
       has_pz: data.has_pz ?? false,
     };
   } catch (err) {
+    unstable_rethrow(err);
     console.error('Unexpected error fetching object photometry:', err);
     return null;
   }
@@ -266,7 +270,8 @@ export async function loadObjectPhotometryOf(objectId: string): Promise<ObjectPh
     const r = await loadObjectRow(objectId);
     if (r.status !== 'ok' || !r.row.has_photometry) return null;
     return loadObjectPhotometry(r.row.id);
-  } catch {
+  } catch (err) {
+    unstable_rethrow(err);
     return null;
   }
 }
@@ -291,6 +296,9 @@ export async function loadObjectMetadata(objectId: string): Promise<ObjectMetada
       return { object_id: r.row.object_id, redshift: r.row.redshift, field: r.row.field };
     }
 
+    // Under a release there is no live fallback: a frozen row the viewer
+    // cannot see is simply not there (P6c-1).
+    if (await requestDrTag()) return null;
     const supabase = createServiceClient();
     const { data, error } = await supabase
       .from('objects')
@@ -300,7 +308,8 @@ export async function loadObjectMetadata(objectId: string): Promise<ObjectMetada
       .single();
     if (error || !data) return null;
     return { object_id: data.object_id, redshift: data.redshift, field: data.field };
-  } catch {
+  } catch (err) {
+    unstable_rethrow(err);
     return null;
   }
 }

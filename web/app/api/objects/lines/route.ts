@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { getRequestPrincipal } from '@/lib/auth/identity';
+import { requestDrTag } from '@/lib/dr/server';
 
 /** One catalog line's record in a fit (spectrum_line_fits.lines[<name>]). */
 export interface ObjectLineRecord {
@@ -68,6 +69,8 @@ const CACHE = { 'Cache-Control': 'private, max-age=60', Vary: 'Cookie' };
  * scrolls into view and must not queue behind the page's mutations.
  */
 export async function GET(request: NextRequest) {
+  // Live fits + live staleness view; the release variant (cat_line_fits) is P6c-2.
+  if (await requestDrTag()) return Response.json({ error: 'Not found' }, { status: 404 });
   const principal = await getRequestPrincipal();
   if (!principal) return Response.json({ error: 'Unauthorized' }, { status: 401 });
 

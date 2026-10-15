@@ -9,23 +9,12 @@
 // context, including modules that middleware may pull in.
 
 import { createClient as createSupabaseClient, type SupabaseClient } from '@supabase/supabase-js';
-import { DR_HEADER } from '@/lib/dr/tag';
-
-export interface ServiceClientOptions {
-  /**
-   * Browse this data release (P6c): every call carries `x-campfire-dr`. The
-   * caller owns the authorization — the hook trusts the service role with any
-   * frozen tag — so a bearer route must gate a caller-supplied tag against
-   * the caller's own visibility before passing it here (plan §8 P6c rules).
-   */
-  dr?: string | null;
-}
 
 /**
  * Create a Supabase client with the service role key for privileged
  * server-side operations. Bypasses RLS: callers own the authorization.
  */
-export const createServiceClient = (options: ServiceClientOptions = {}): SupabaseClient => {
+export const createServiceClient = (): SupabaseClient => {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
@@ -38,6 +27,5 @@ export const createServiceClient = (options: ServiceClientOptions = {}): Supabas
       autoRefreshToken: false,
       persistSession: false,
     },
-    ...(options.dr ? { global: { headers: { [DR_HEADER]: options.dr } } } : {}),
   });
 };

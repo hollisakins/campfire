@@ -361,7 +361,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
 
           {/* Field overview: metadata + exposure-map browser */}
           <div className="bg-card border border-border rounded-xl p-5 mb-7">
-            <div className="grid gap-6 md:grid-cols-[2fr_3fr]">
+            <div className={readOnly ? '' : 'grid gap-6 md:grid-cols-[2fr_3fr]'}>
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-text-tertiary mb-3">
                   Field overview
@@ -448,9 +448,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
                 </div>
               </div>
 
-              {readOnly ? (
-                <div className="min-h-[200px] rounded-lg bg-surface-2" aria-hidden />
-              ) : (
+              {!readOnly && (
                 <ExpmapBrowser
                   filters={summary.filters}
                   expmapPlots={fieldImages.expmapPlots}

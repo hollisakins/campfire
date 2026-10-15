@@ -1,6 +1,7 @@
 'use server';
 
 import { createHash, randomBytes } from 'crypto';
+import { assertLiveRequest } from '@/lib/dr/server';
 import { invalidateAccessContext } from '@/lib/auth/access-context';
 import { requireAdmin as requireAdminIdentity } from '@/lib/auth/identity';
 import { createServiceClient } from '@/lib/supabase/server';
@@ -116,6 +117,7 @@ export interface MintShareLinkResult {
  */
 export async function mintShareLink(params: MintShareLinkParams): Promise<MintShareLinkResult> {
   try {
+    await assertLiveRequest();
     const { userId } = await requireAdmin();
 
     const observation = params.observation?.trim() || null;
@@ -206,6 +208,7 @@ export async function mintShareLink(params: MintShareLinkParams): Promise<MintSh
  */
 export async function revokeShareLink(token: string): Promise<{ error?: string }> {
   try {
+    await assertLiveRequest();
     await requireAdmin();
     const service = createServiceClient();
 

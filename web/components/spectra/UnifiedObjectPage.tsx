@@ -335,6 +335,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
           </div>
 
           {/* === Section 1: Spectrum Comparison === */}
+          {!readOnly && (
           <section className="mb-8">
             <div className="flex flex-wrap gap-5 items-center mb-4">
               <h2 className="text-lg font-semibold text-text-primary">
@@ -403,18 +404,15 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
               {/* Keyed on the object: the page stays mounted across object
                   navigation, and without a remount the viewer's uirevision
                   would carry one object's zoom onto the next object's plot. */}
-              {readOnly ? (
-                <div className="h-[320px] bg-card" aria-hidden />
-              ) : (
-                <MultiSpectrumViewer
-                  key={object.id}
-                  sources={sources}
-                  grating={selectedGrating}
-                  redshift={object.redshift}
-                />
-              )}
+              <MultiSpectrumViewer
+                key={object.id}
+                sources={sources}
+                grating={selectedGrating}
+                redshift={object.redshift}
+              />
             </div>
           </section>
+          )}
 
           {/* === Section 2: Spectra Detail Cards === */}
           <section className="mb-8">

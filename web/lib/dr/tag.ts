@@ -1,11 +1,14 @@
 /**
  * The data-release browsing mode (P6c-1, docs/design-data-releases-impl-plan.md §8).
  *
- * A release is selected by `?dr=<tag>` on the page URL. The tag travels
- * verbatim (tags are case-sensitive): middleware copies it onto the request
- * as the `x-campfire-dr` header, the server Supabase clients forward that
- * header to PostgREST, and the database's pre-request hook selects the
- * frozen rows for the transaction. No directive: both sides import this.
+ * A release is selected by `?dr=<tag>` on the page URL. The parameter is
+ * parsed in exactly ONE place — middleware (`drRequestDecision`) — which
+ * stamps the tag onto the request as the `x-campfire-dr` header. Everything
+ * downstream (server pages, the Supabase clients, the client-side provider)
+ * reads that header; nothing re-derives the mode from the URL. A `dr`
+ * parameter that is not one valid tag is a 404 while the pages flag is on,
+ * and ignored entirely while it is off. Tags travel verbatim (case-sensitive).
+ * No directive: both sides import this.
  */
 
 /** Same shape the database accepts (dr_request_context). */
@@ -14,10 +17,40 @@ export const DR_TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
 export const DR_PARAM = 'dr';
 export const DR_HEADER = 'x-campfire-dr';
 
+/** Paths that never browse a release (the FitsGL map is live-only by decision). */
+const LIVE_ONLY_PATHS = ['/map'];
+
 /** A well-formed tag, or null for anything else (never lowercased). */
 export function parseDrTag(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null;
   return DR_TAG_RE.test(value) ? value : null;
+}
+
+export type DrRequestDecision =
+  | { kind: 'live' }
+  | { kind: 'release'; tag: string }
+  | { kind: 'not-found' }
+  | { kind: 'strip'; location: string };
+
+/**
+ * What middleware does with a request URL:
+ *   - flag off, or no `dr` parameter → live;
+ *   - a live-only path with `dr` → redirect to the same URL without it;
+ *   - exactly one well-formed `dr` → that release;
+ *   - anything else (repeated, empty, malformed) → 404.
+ */
+export function drRequestDecision(url: URL | string, mode: 'off' | 'admin' | 'all'): DrRequestDecision {
+  const u = typeof url === 'string' ? new URL(url, 'http://local') : url;
+  const all = u.searchParams.getAll(DR_PARAM);
+  if (mode === 'off' || all.length === 0) return { kind: 'live' };
+  if (LIVE_ONLY_PATHS.some((p) => u.pathname === p || u.pathname.startsWith(`${p}/`))) {
+    const stripped = new URL(u.toString());
+    stripped.searchParams.delete(DR_PARAM);
+    return { kind: 'strip', location: `${stripped.pathname}${stripped.search}${stripped.hash}` };
+  }
+  if (all.length !== 1) return { kind: 'not-found' };
+  const tag = parseDrTag(all[0]);
+  return tag ? { kind: 'release', tag } : { kind: 'not-found' };
 }
 
 /**
@@ -38,7 +71,7 @@ export function withDr(href: string, tag: string | null | undefined): string {
   return `${path}${qs ? `?${qs}` : ''}${hash}`;
 }
 
-/** `href` without any `?dr=` (the "Live catalog" link). */
+/** `href` without any `?dr=` (the "Live catalog" link, the map links). */
 export function withoutDr(href: string): string {
   const hashAt = href.indexOf('#');
   const hash = hashAt >= 0 ? href.slice(hashAt) : '';
@@ -50,36 +83,4 @@ export function withoutDr(href: string): string {
   params.delete(DR_PARAM);
   const qs = params.toString();
   return `${path}${qs ? `?${qs}` : ''}${hash}`;
-}
-
-/** The tag a request URL selects, if any (what middleware stamps). */
-export function drTagFromUrl(url: URL | string): string | null {
-  const u = typeof url === 'string' ? new URL(url, 'http://local') : url;
-  return parseDrTag(u.searchParams.get(DR_PARAM));
-}
-
-/**
- * The tag from a page's `searchParams` (Next hands a record whose values may
- * be arrays; a repeated `dr` is treated as none).
- */
-export function drTagFromSearchParams(
-  searchParams: Record<string, string | string[] | undefined> | URLSearchParams | null | undefined,
-): string | null {
-  if (!searchParams) return null;
-  if (searchParams instanceof URLSearchParams) {
-    const all = searchParams.getAll(DR_PARAM);
-    return all.length === 1 ? parseDrTag(all[0]) : null;
-  }
-  const v = searchParams[DR_PARAM];
-  return typeof v === 'string' ? parseDrTag(v) : null;
-}
-
-/**
- * The header value middleware stamps for a request URL: the tag when the
- * pages flag is on (`admin` / `all`), null when the flag is off (the
- * parameter is then ignored everywhere) or no valid tag is present.
- */
-export function drHeaderFor(url: URL | string, mode: 'off' | 'admin' | 'all'): string | null {
-  if (mode === 'off') return null;
-  return drTagFromUrl(url);
 }

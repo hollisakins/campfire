@@ -212,9 +212,7 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
             </div>
           )}
 
-          {readOnly ? (
-            <div className="h-[280px] bg-card" aria-hidden />
-          ) : (
+          {!readOnly && (
             <SpectrumPlot
               bare
               fitsPath={spectrum.fits_path}

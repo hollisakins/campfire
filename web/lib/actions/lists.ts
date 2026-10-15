@@ -1,6 +1,7 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
+import { requestDrTag } from '@/lib/dr/server';
 import { getAccessContext } from '@/lib/auth/access-context';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { fetchMyShareRoles } from '@/lib/server/lists';
@@ -101,12 +102,15 @@ export async function getAvailableLists(): Promise<{
  * Add an object to a list. Uses upsert with (list_id, ra, dec) as the conflict key
  * to handle the case where a coordinate-only entry already exists (e.g., from migration).
  */
+const READ_ONLY = { error: 'read-only under a data release' } as const;
+
 export async function addObjectToList(
   listId: number,
   objectId: number,
   ra: number,
   dec: number,
 ): Promise<{ error?: string }> {
+  if (await requestDrTag()) return READ_ONLY;
   const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
@@ -140,6 +144,7 @@ export async function removeObjectFromList(
   listId: number,
   objectId: number,
 ): Promise<{ error?: string }> {
+  if (await requestDrTag()) return READ_ONLY;
   const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
@@ -221,6 +226,7 @@ export async function createList(
   color?: string | null,
   slug?: string,
 ): Promise<{ list?: ObjectList; error?: string }> {
+  if (await requestDrTag()) return READ_ONLY;
   const { user, supabase } = await getRequestIdentity();
   if (!user) {
     return { error: 'Not authenticated' };
@@ -316,6 +322,7 @@ export async function createList(
  * Delete a user list (cannot delete system lists).
  */
 export async function deleteList(listId: number): Promise<{ error?: string }> {
+  if (await requestDrTag()) return READ_ONLY;
   const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
@@ -347,6 +354,7 @@ export async function updateList(
   listId: number,
   updates: { name?: string; slug?: string; description?: string; visibility?: 'private' | 'public_read' | 'public_edit'; icon?: string | null; color?: string | null },
 ): Promise<{ error?: string }> {
+  if (await requestDrTag()) return READ_ONLY;
   const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
@@ -681,6 +689,7 @@ export async function addListShare(
   granteeUserId: string,
   role: ListShareRole,
 ): Promise<{ error?: string }> {
+  if (await requestDrTag()) return READ_ONLY;
   const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
@@ -720,6 +729,7 @@ export async function updateListShare(
   shareId: number,
   role: ListShareRole,
 ): Promise<{ error?: string }> {
+  if (await requestDrTag()) return READ_ONLY;
   const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
@@ -744,6 +754,7 @@ export async function updateListShare(
  * Leave a tag that was shared with the current user (delete own share).
  */
 export async function leaveSharedList(listId: number): Promise<{ error?: string }> {
+  if (await requestDrTag()) return READ_ONLY;
   const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 
@@ -769,6 +780,7 @@ export async function leaveSharedList(listId: number): Promise<{ error?: string 
  * remove their own share (leave the tag).
  */
 export async function removeListShare(shareId: number): Promise<{ error?: string }> {
+  if (await requestDrTag()) return READ_ONLY;
   const { user, supabase } = await getRequestIdentity();
   if (!user) return { error: 'Not authenticated' };
 

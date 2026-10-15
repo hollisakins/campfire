@@ -20,7 +20,8 @@ export function useAdjacentObjectsQuery(objectId: string, filterStr: string, ena
     queryFn: ({ signal }) =>
       fetchJson<AdjacentObjectsResponse>(
         `/api/objects/adjacent?id=${encodeURIComponent(objectId)}${filterStr ? `&${filterStr}` : ''}`,
-        { signal, dr },
+        // `filterStr` is the page's own parameter string and already carries ?dr=
+        { signal, dr: filterStr.includes('dr=') ? null : dr },
       ),
     enabled,
     staleTime: 60 * 1000,
