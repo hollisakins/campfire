@@ -55,6 +55,7 @@ vi.mock('@/lib/server/cdn-front', () => ({
 
 import {
   listReleaseMembers,
+  listReleaseMembersIn,
   releaseDownloadUrls,
   releaseFrontUrls,
   resolveReleaseMembers,
@@ -170,3 +171,18 @@ describe('releaseFrontUrls / releaseDownloadUrls', () => {
     expect(urls.get(CANON_JSON)).toBeNull();
   });
 });
+
+describe('listReleaseMembersIn', () => {
+  it('lists the archived members of several components in one query, by product type', async () => {
+    const lay = (field: string, state: string) => member(`data/products/nircam/${field}/${field}_layout.png`, {
+      product_type: 'nircam_layout', component: `nircam/${field}`, program_slug: null, byte_state: state,
+      archive_key: state === 'copied' ? `archive/${'d'.repeat(64)}/products/nircam/${field}/${field}_layout.png` : null,
+    });
+    manifest = [lay('a2744', 'copied'), lay('cosmos', 'pending'), lay('egs', 'copied'),
+      member('data/products/nircam/a2744/f444w/x_thumb.png', { product_type: 'nircam_mosaic_thumbnail', component: 'nircam/a2744', program_slug: null, byte_state: 'copied', archive_key: 'archive/ee/t.png' })];
+    const out = await listReleaseMembersIn(viewer, 'DR-t', { components: ['nircam/a2744', 'nircam/cosmos'], productTypes: ['nircam_layout'] });
+    expect(out.map((m) => m.component)).toEqual(['nircam/a2744']);
+    expect(await listReleaseMembersIn(viewer, 'DR-t', { components: [] })).toEqual([]);
+  });
+});
+

@@ -192,6 +192,29 @@ export async function listReleaseMembers(
 }
 
 /**
+ * The archived members of several components at once (the /nircam landing
+ * grid: every `nircam/<field>` layout in one query). Viewer-scoped.
+ */
+export async function listReleaseMembersIn(
+  supabase: SupabaseClient,
+  tag: string,
+  opts: { components: readonly string[]; productTypes?: readonly string[] },
+): Promise<ReleaseMember[]> {
+  if (opts.components.length === 0) return [];
+  let q = supabase
+    .from('dr_manifest')
+    .select(MANIFEST_COLUMNS)
+    .eq('tag', tag)
+    .in('component', [...opts.components])
+    .in('byte_state', [...ARCHIVED_STATES])
+    .order('storage_key');
+  if (opts.productTypes && opts.productTypes.length > 0) q = q.in('product_type', [...opts.productTypes]);
+  const { data, error } = await q;
+  if (error) throw new Error(`dr_manifest listing failed: ${error.message}`);
+  return ((data ?? []) as ManifestRow[]).map(toMember).filter((m): m is ReleaseMember => m !== null);
+}
+
+/**
  * The archived copies as resolved objects for the delivery front: content
  * identity and registration time from the archive registry rows (`root =
  * 'archive'`, written by the byte pass), read with the service client the way

@@ -6,7 +6,7 @@ import { createClient } from '@/lib/supabase/server';
 import { paginateQuery } from '@/lib/supabase/paginate';
 import { generateDownloadUrls } from '@/lib/r2';
 import { parseKey } from '@/lib/layout';
-import { listReleaseMembers, releaseDownloadUrls, type ReleaseMember } from '@/lib/server/dr-files';
+import { listReleaseMembers, listReleaseMembersIn, releaseDownloadUrls, type ReleaseMember } from '@/lib/server/dr-files';
 import { thumbnailBase, quicklookBase } from '@/lib/nircam-product-keys';
 import type {
   NircamImage, NircamExpmap, NircamFieldCard, NircamFieldSummary,
@@ -290,27 +290,45 @@ export async function getNircamFields(): Promise<NircamFieldsResult> {
 
     // Presign the layout plots in one dual-read batch; a failed presign just
     // leaves that card's preview null (the card renders a placeholder).
-    // Under a release get_nircam_fields answers the manifest's archive key
-    // (P6b-2), or the live key while the layout is not archived yet: only an
-    // archive key is ever presigned there (P6c-2: never a live file).
     const dr = await requestDrTag();
-    const keys = rows
-      .map((r) => r.layout_key)
-      .filter((k): k is string => !!k && (!dr || k.startsWith('archive/')));
-    const urlByKey = new Map<string, string>();
-    if (keys.length > 0) {
+    let fields: NircamFieldCard[];
+    if (dr) {
+      // Under a release the card's layout is the release's ARCHIVED layout
+      // member of that field — decided on the manifest row's state, never on
+      // the RPC's layout_key (which is the live key while the member is
+      // pending). No archived layout: no preview (P6c-2: never a live file).
+      const layoutByField = new Map<string, ReleaseMember>();
       try {
-        const urls = await generateDownloadUrls(keys, IMG_PRESIGN_TTL_SECONDS);
-        keys.forEach((k, i) => urlByKey.set(k, urls[i]));
+        const members = await listReleaseMembersIn(supabase, dr, {
+          components: rows.map((r) => `nircam/${r.field}`), productTypes: ['nircam_layout'],
+        });
+        for (const m of members) layoutByField.set(m.component.slice('nircam/'.length), m);
       } catch (err) {
-        console.error('Error presigning NIRCam layout plots:', err);
+        console.error('Error listing the release layouts:', err);
       }
+      const byKey = new Map<string, ReleaseMember | null>([...layoutByField.values()].map((m) => [m.storageKey, m]));
+      const urlByKey = await releaseDownloadUrls(byKey, IMG_PRESIGN_TTL_SECONDS);
+      fields = rows.map(({ layout_key: _lk, ...r }) => {
+        void _lk;
+        const m = layoutByField.get(r.field);
+        return { ...r, layout_url: m ? urlByKey.get(m.storageKey) ?? null : null };
+      });
+    } else {
+      const keys = rows.map((r) => r.layout_key).filter((k): k is string => !!k);
+      const urlByKey = new Map<string, string>();
+      if (keys.length > 0) {
+        try {
+          const urls = await generateDownloadUrls(keys, IMG_PRESIGN_TTL_SECONDS);
+          keys.forEach((k, i) => urlByKey.set(k, urls[i]));
+        } catch (err) {
+          console.error('Error presigning NIRCam layout plots:', err);
+        }
+      }
+      fields = rows.map(({ layout_key, ...r }) => ({
+        ...r,
+        layout_url: layout_key ? urlByKey.get(layout_key) ?? null : null,
+      }));
     }
-
-    const fields: NircamFieldCard[] = rows.map(({ layout_key, ...r }) => ({
-      ...r,
-      layout_url: layout_key ? urlByKey.get(layout_key) ?? null : null,
-    }));
 
     return { fields, isAuthenticated: true };
   } catch (err) {

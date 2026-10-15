@@ -201,3 +201,19 @@ describe('resolveSpectrumSidecars under a release', () => {
   });
 });
 const NO = { front: true, spectrum: null, spectrum_1d: null, zfit: null, lines: null, has_1d: null, has_zfit: null, has_lines: null };
+
+describe('releaseSpectrumAvailable', () => {
+  const base = { front: false, spectrum: null, spectrum_1d: null, zfit: null, lines: null, has_1d: false, has_zfit: false, has_lines: false };
+  it('plots an archived member whose full JSON exists even with the front off and no 1-D sidecar', () => {
+    expect(releaseSpectrumAvailable({ ...base, has_spectrum: true })).toBe(true);
+    expect(releaseSpectrumAvailable({ ...base, has_spectrum: false })).toBe(false);
+    expect(releaseSpectrumAvailable(undefined)).toBe(false);
+  });
+  it('reports has_spectrum from the release manifest', async () => {
+    releaseMembers = { [sib(FITS_A, '_spec.json')]: { archiveKey: 'archive/aa/x.json', contentHash: 'h' } };
+    const out = await resolveSpectrumSidecars([FITS_A, FITS_B], { supabase: {} as never, tag: 'DR-t' });
+    expect(out.get(FITS_A)?.has_spectrum).toBe(true);
+    expect(out.get(FITS_B)?.has_spectrum).toBe(false);
+  });
+});
+

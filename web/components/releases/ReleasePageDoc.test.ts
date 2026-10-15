@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 
-import { pageAssetHref } from './ReleasePageDoc';
+import { imageSource, pageAssetHref } from './ReleasePageDoc';
 import { pageAssetName } from '@/lib/server/dr-releases';
 
 describe('page document assets', () => {
@@ -17,3 +17,18 @@ describe('page document assets', () => {
     expect(pageAssetName('data/products/nircam/f/f_layout.png')).toBe('');
   });
 });
+
+describe('page document image sources', () => {
+  const assets = new Set(['nz.png']);
+  it('allows page assets and absolute https only', () => {
+    expect(imageSource('DR-t', 'nz.png', assets)).toBe('/api/dr/page-asset?tag=DR-t&name=nz.png');
+    expect(imageSource('DR-t', './nz.png', assets)).toBe('/api/dr/page-asset?tag=DR-t&name=nz.png');
+    expect(imageSource('DR-t', 'https://example.org/fig.png', assets)).toBe('https://example.org/fig.png');
+  });
+  it('drops site-relative, protocol-relative, http, data and unknown sources', () => {
+    for (const src of ['/api/download?path=x', '//evil.example/p.png', 'http://example.org/fig.png', 'data:image/png;base64,AAAA', 'other.png', 'javascript:alert(1)']) {
+      expect(imageSource('DR-t', src, assets), src).toBeNull();
+    }
+  });
+});
+

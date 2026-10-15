@@ -92,6 +92,7 @@ export async function resolveSpectrumSidecars(
       spectrum_1d: urls.get(json1dKey) ?? null,
       zfit: urls.get(zfitKey) ?? null,
       lines: urls.get(linesKey) ?? null,
+      has_spectrum: json?.contentHash ? true : null,
       has_1d: presence(json1d),
       has_zfit: presence(zfit),
       has_lines: presence(lines),
@@ -121,6 +122,7 @@ async function resolveReleaseSidecars(
         spectrum_1d: available(json1dKey) ? urls.get(json1dKey) ?? null : null,
         zfit: available(zfitKey) ? urls.get(zfitKey) ?? null : null,
         lines: available(linesKey) ? urls.get(linesKey) ?? null : null,
+        has_spectrum: available(jsonKey),
         has_1d: available(json1dKey),
         has_zfit: available(zfitKey),
         has_lines: available(linesKey),
@@ -130,7 +132,7 @@ async function resolveReleaseSidecars(
     console.error('spectrum sidecars: release manifest resolve failed', err);
     // Nothing is handed out: a release never falls back to live files.
     for (const p of keysByPath.keys()) {
-      out.set(p, { front, spectrum: null, spectrum_1d: null, zfit: null, lines: null, has_1d: false, has_zfit: false, has_lines: false });
+      out.set(p, { front, spectrum: null, spectrum_1d: null, zfit: null, lines: null, has_spectrum: false, has_1d: false, has_zfit: false, has_lines: false });
     }
   }
   return out;
@@ -140,7 +142,10 @@ async function resolveReleaseSidecars(
  * the page omits the plot of a member whose copy is not archived yet. */
 export function releaseSpectrumAvailable(urls: SpectrumSidecarUrls | undefined): boolean {
   if (!urls) return false;
-  return urls.spectrum !== null || urls.spectrum_1d !== null || urls.has_1d === true;
+  // The archived full JSON is what plots; with the front off its url is null,
+  // so the presence flag decides (an archived member without a 1-D sidecar
+  // still plots through the streaming route).
+  return urls.has_spectrum === true || urls.spectrum !== null || urls.spectrum_1d !== null || urls.has_1d === true;
 }
 
 /**

@@ -26,6 +26,10 @@ export interface SpectrumSidecarUrls {
   spectrum_1d: string | null;
   zfit: string | null;
   lines: string | null;
+  /** Whether the spectrum's own (full) JSON is a registered object: under a
+   *  release, whether its archived copy exists (the plot's payload when the
+   *  1-D sidecar is absent or the front is off). Optional for older callers. */
+  has_spectrum?: boolean | null;
   has_1d: boolean | null;
   has_zfit: boolean | null;
   has_lines: boolean | null;

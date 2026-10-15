@@ -15,8 +15,19 @@ export function pageAssetHref(tag: string, src: string): string | null {
   return `/api/dr/page-asset?tag=${encodeURIComponent(tag)}&name=${encodeURIComponent(name)}`;
 }
 
-function isExternal(src: string): boolean {
-  return /^(https?:)?\/\//i.test(src) || src.startsWith('/');
+/** Links may go anywhere react-markdown's url transform allows; images are
+ * stricter: a page asset (bare name or `./name`) or an absolute `https:` url.
+ * Protocol-relative, site-relative (`/api/...` would be fetched with the
+ * viewer's cookies), `http:` and `data:` sources are dropped. */
+export function imageSource(tag: string, src: string, assets: ReadonlySet<string>): string | null {
+  if (/^https:\/\//i.test(src)) return src;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('/')) return null;
+  const name = src.replace(/^\.\//, '');
+  return assets.has(name) ? pageAssetHref(tag, name) : null;
+}
+
+function isExternal(href: string): boolean {
+  return /^(https?:)?\/\//i.test(href);
 }
 
 export function ReleasePageDoc({ tag, markdown, assets }: { tag: string; markdown: string; assets: ReadonlySet<string> }) {
@@ -24,7 +35,7 @@ export function ReleasePageDoc({ tag, markdown, assets }: { tag: string; markdow
     img: ({ src, alt }) => {
       const s = typeof src === 'string' ? src : '';
       if (!s) return null;
-      const href = isExternal(s) ? s : assets.has(s.replace(/^\.\//, '')) ? pageAssetHref(tag, s) : null;
+      const href = imageSource(tag, s, assets);
       if (!href) return null;
       // eslint-disable-next-line @next/next/no-img-element
       return <img src={href} alt={alt ?? ''} className="max-w-full rounded-lg border border-border" loading="lazy" />;
