@@ -21,7 +21,6 @@ import {
   getNircamFieldSummary,
   getNircamFieldImages,
   type NircamFieldImagesResult,
-  type NircamExpmapsResult,
 } from '@/lib/actions/nircam';
 import { getFitsglDatasets } from '@/lib/actions/map';
 import type {
@@ -103,9 +102,9 @@ interface NircamFieldPageContentProps {
 
 export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
   const { user, loading: authLoading } = useAuth();
-  // Release browsing (P6c-1): the summary and the mosaic list come from the
-  // frozen rows; the images, exposure maps, map bridge, cutouts and the
-  // download script are live-only until P6c-2 resolves archived copies.
+  // Release browsing: the summary and the mosaic list come from the frozen
+  // rows; images, exposure maps and downloads are the release's archived
+  // copies (P6c-2); the map bridge, cutouts and the download script are live-only.
   const drTag = useDrTag();
   const readOnly = drTag !== null;
 
@@ -139,13 +138,12 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
       setFilters(DEFAULT_NIRCAM_FILTERS);
 
       try {
-      const noImages: NircamFieldImagesResult = { layoutUrl: null, expmapPlots: {}, thumbnails: {}, quicklooks: {} };
       const [summaryRes, imagesRes, expmapsRes, imagesUrlsRes, fieldsRes, fitsglDatasets] =
         await Promise.all([
           getNircamFieldSummary(field),
           getNircamImages(field),
-          readOnly ? Promise.resolve<NircamExpmapsResult>({ expmaps: [], isAuthenticated: true }) : getNircamExpmaps(field),
-          readOnly ? Promise.resolve(noImages) : getNircamFieldImages(field),
+          getNircamExpmaps(field),
+          getNircamFieldImages(field),
           getNircamFields(),
           readOnly ? Promise.resolve([]) : getFitsglDatasets(field).catch(() => []),
         ]);
@@ -361,7 +359,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
 
           {/* Field overview: metadata + exposure-map browser */}
           <div className="bg-card border border-border rounded-xl p-5 mb-7">
-            <div className={readOnly ? '' : 'grid gap-6 md:grid-cols-[2fr_3fr]'}>
+            <div className={readOnly && Object.keys(fieldImages.expmapPlots).length === 0 ? '' : 'grid gap-6 md:grid-cols-[2fr_3fr]'}>
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-text-tertiary mb-3">
                   Field overview
@@ -448,7 +446,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
                 </div>
               </div>
 
-              {!readOnly && (
+              {(!readOnly || Object.keys(fieldImages.expmapPlots).length > 0) && (
                 <ExpmapBrowser
                   filters={summary.filters}
                   expmapPlots={fieldImages.expmapPlots}
@@ -497,6 +495,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
           ) : (
             <NircamTable
               products={products}
+              downloadable={fieldImages.downloadable ?? null}
               filters={filters}
               thumbnails={fieldImages.thumbnails}
               quicklooks={fieldImages.quicklooks}

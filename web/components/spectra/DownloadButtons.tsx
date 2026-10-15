@@ -6,6 +6,7 @@ import { Download, Loader2 } from 'lucide-react';
 import type { Spectrum } from '@/lib/types';
 import { generateObjectFitsDownloadUrls } from '@/lib/actions/download';
 import { downloadFilesAsZip } from '@/lib/utils/zip-download';
+import { withDrParam } from '@/lib/fetch-json';
 
 interface DownloadButtonsProps {
   spectra: Spectrum[];
@@ -94,8 +95,10 @@ export const DownloadButtons: React.FC<DownloadButtonsProps> = ({ spectra, targe
 /**
  * Download a single FITS file
  */
-export async function downloadSingleFile(fitsPath: string): Promise<void> {
-  const response = await fetch(`/api/download?path=${encodeURIComponent(fitsPath)}`);
+export async function downloadSingleFile(fitsPath: string, dr: string | null = null): Promise<void> {
+  // Under a release the route hands out the archived copy; the request must
+  // name the release (P6c-2).
+  const response = await fetch(withDrParam(`/api/download?path=${encodeURIComponent(fitsPath)}`, dr));
 
   if (!response.ok) {
     const data = await response.json();

@@ -115,7 +115,7 @@ describe('generateNircamMosaicDownloadUrls', () => {
     // ...and no single query got near the URL limit.
     expect(queries.length).toBeGreaterThan(1);
     expect(Math.max(...queries.map((q) => q.keys.length))).toBeLessThanOrEqual(50);
-    expect(queries.every((q) => q.table === 'nircam_images' && q.column === 'file_path')).toBe(true);
+    expect(queries.every((q) => q.table === 'cat_nircam_images' && q.column === 'file_path')).toBe(true);
   });
 
   it('presigns only the paths the caller may see', async () => {

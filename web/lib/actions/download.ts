@@ -16,10 +16,27 @@ import type { FlagDef } from '@/lib/flags';
 import { generateDownloadUrls } from '@/lib/r2';
 import { hmacBase64Url } from '@/lib/server/worker-token';
 import { authorizeKeysInChunks } from '@/lib/server/authorized-keys';
+import { releaseDownloadUrls, resolveReleaseMembers } from '@/lib/server/dr-files';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 // Live files are not handed out under a release (P6c-1; the archived copies come in P6c-2).
-const READ_ONLY_MSG = 'read-only under a data release';
-const READ_ONLY_FILES = { files: null, zipFilename: null } as const;
+/**
+ * Presigned urls for `keys` (one per key, aligned): the live keys on their
+ * home backends, or — under a release (P6c-2) — the release's archived copies
+ * of those members, with keys the release does not hold archived dropped.
+ * Returns the kept keys with their urls.
+ */
+async function presignForRequest(
+  supabase: SupabaseClient,
+  dr: string | null,
+  keys: string[],
+  opts: { attachment?: boolean } = {},
+): Promise<{ keys: string[]; urls: string[] }> {
+  if (!dr) return { keys, urls: await generateDownloadUrls(keys, PRESIGN_TTL_SECONDS, opts) };
+  const byKey = await releaseDownloadUrls(await resolveReleaseMembers(supabase, dr, keys), PRESIGN_TTL_SECONDS, opts);
+  const kept = keys.filter((k) => byKey.get(k));
+  return { keys: kept, urls: kept.map((k) => byKey.get(k) as string) };
+}
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_DOWNLOAD_URL || 'http://localhost:8787';
 const JWT_SECRET = process.env.WORKER_JWT_SECRET;
@@ -545,7 +562,6 @@ export async function generateFitsDownloadUrl(
   zipFilename: string | null;
   error: string | null;
 }> {
-  if (await requestDrTag()) return { ...READ_ONLY_FILES, error: READ_ONLY_MSG };
   try {
     if (!JWT_SECRET) {
       return { files: null, zipFilename: null, error: 'Server configuration error: JWT secret not set' };
@@ -553,6 +569,7 @@ export async function generateFitsDownloadUrl(
 
     // Get user for tracking
     const { user, supabase } = await getRequestIdentity();
+    const dr = await requestDrTag();
 
     let keys: string[];
     let downloadTargetIds: string[];
@@ -592,7 +609,7 @@ export async function generateFitsDownloadUrl(
       const TARGET_CHUNK = 100;
       for (let i = 0; i < memberTargetIds.length; i += TARGET_CHUNK) {
         const { data, error: queryError } = await supabase
-          .from('spectra')
+          .from('cat_spectra')
           .select('fits_path, target_id')
           .eq('deploy_status', 'published')
           .in('target_id', memberTargetIds.slice(i, i + TARGET_CHUNK));
@@ -652,15 +669,20 @@ export async function generateFitsDownloadUrl(
       downloadTargetIds = [...new Set(result.spectra.map(s => s.target_id))];
     }
 
-    const filenames = keys.map(k => k.split('/').pop() || k);
-
     if (keys.length === 0) {
       return { files: null, zipFilename: null, error: 'No FITS files found for selected objects' };
     }
 
-    // Presign each key against its home backend (dual-read), then HMAC-sign the
-    // presigned URL so the proxy only fetches URLs we authorized.
-    const urls = await generateDownloadUrls(keys, PRESIGN_TTL_SECONDS);
+    // Presign each key against its home backend (dual-read) — under a release
+    // the archived copies — then HMAC-sign the presigned URL so the proxy only
+    // fetches URLs we authorized.
+    const signed = await presignForRequest(supabase, dr, keys);
+    keys = signed.keys;
+    const urls = signed.urls;
+    const filenames = keys.map(k => k.split('/').pop() || k);
+    if (keys.length === 0) {
+      return { files: null, zipFilename: null, error: 'No FITS files found for selected objects' };
+    }
     const files: DownloadFile[] = await Promise.all(
       urls.map(async (signedUrl, i) => {
         const sig = await hmacBase64Url(signedUrl, JWT_SECRET);
@@ -713,7 +735,6 @@ export async function generateObjectFitsDownloadUrls(
   zipFilename: string | null;
   error: string | null;
 }> {
-  if (await requestDrTag()) return { ...READ_ONLY_FILES, error: READ_ONLY_MSG };
   try {
     if (!JWT_SECRET) {
       return { files: null, zipFilename: null, error: 'Server configuration error: JWT secret not set' };
@@ -738,6 +759,7 @@ export async function generateObjectFitsDownloadUrls(
     if (!user) {
       return { files: null, zipFilename: null, error: 'Not authenticated' };
     }
+    const dr = await requestDrTag();
 
     // Re-derive the authorized key set under the caller's RLS session. Never
     // presign a client-supplied path the DB won't return for this user. Pull
@@ -746,12 +768,12 @@ export async function generateObjectFitsDownloadUrls(
     // Chunked so the `.in()` list never overflows the PostgREST request URL
     // (500 paths in one query is ~32 KB of URL).
     const rows: { fits_path: string; target_id: string }[] = [];
-    const { keys, error: queryError } = await authorizeKeysInChunks(
+    const { keys: authorized, error: queryError } = await authorizeKeysInChunks(
       fitsPaths,
       'fits_path',
       async (chunk) => {
         const res = await supabase
-          .from('spectra')
+          .from('cat_spectra')
           .select('fits_path, target_id')
           .in('fits_path', chunk);
         if (res.data) rows.push(...res.data);
@@ -764,15 +786,15 @@ export async function generateObjectFitsDownloadUrls(
       return { files: null, zipFilename: null, error: 'Failed to authorize download' };
     }
 
+    // Presign each authorized key against its home backend (dual-read) —
+    // under a release the archived copies — then HMAC-sign the presigned URL
+    // so the proxy only fetches URLs we authorized.
+    const { keys, urls } = await presignForRequest(supabase, dr, authorized);
     if (keys.length === 0) {
       return { files: null, zipFilename: null, error: 'No FITS files found or access denied' };
     }
 
     const filenames = keys.map((k) => k.split('/').pop() || k);
-
-    // Presign each authorized key against its home backend (dual-read), then
-    // HMAC-sign the presigned URL so the proxy only fetches URLs we authorized.
-    const urls = await generateDownloadUrls(keys, PRESIGN_TTL_SECONDS);
     const files: DownloadFile[] = await Promise.all(
       urls.map(async (signedUrl, i) => {
         const sig = await hmacBase64Url(signedUrl, JWT_SECRET);
@@ -818,7 +840,6 @@ export async function generateObjectFitsDownloadUrls(
 export async function generateNircamMosaicDownloadUrls(
   filePaths: string[]
 ): Promise<{ urls: Record<string, string>; error: string | null }> {
-  if (await requestDrTag()) return { urls: {}, error: READ_ONLY_MSG };
   try {
     if (!JWT_SECRET) {
       return { urls: {}, error: 'Server configuration error: JWT secret not set' };
@@ -840,10 +861,12 @@ export async function generateNircamMosaicDownloadUrls(
     // whole-field mosaic selection overflows the gateway's URL limit in one
     // query (see authorizeKeysInChunks).
     const supabase = await createClient();
-    const { keys: authorizedKeys, error: queryError } = await authorizeKeysInChunks(
+    const dr = await requestDrTag();
+    // cat_nircam_images: the live table, or the release's frozen mosaics.
+    const { keys: authorized, error: queryError } = await authorizeKeysInChunks(
       filePaths,
       'file_path',
-      (chunk) => supabase.from('nircam_images').select('file_path').in('file_path', chunk),
+      (chunk) => supabase.from('cat_nircam_images').select('file_path').in('file_path', chunk),
     );
 
     if (queryError) {
@@ -851,17 +874,16 @@ export async function generateNircamMosaicDownloadUrls(
       return { urls: {}, error: 'Failed to authorize download' };
     }
 
-    if (authorizedKeys.length === 0) {
+    if (authorized.length === 0) {
       return { urls: {}, error: null };
     }
 
     // Presign each authorized key against its home backend (dual-read) with an
     // attachment-filename override (these URLs are browser-NAVIGATED, so the
-    // filename must ride Content-Disposition), then HMAC-sign the presigned URL
-    // so the proxy only fetches URLs we authorized.
-    const signed = await generateDownloadUrls(authorizedKeys, PRESIGN_TTL_SECONDS, {
-      attachment: true,
-    });
+    // filename must ride Content-Disposition) — under a release the archived
+    // copies — then HMAC-sign the presigned URL so the proxy only fetches
+    // URLs we authorized.
+    const { keys: authorizedKeys, urls: signed } = await presignForRequest(supabase, dr, authorized, { attachment: true });
     const urls: Record<string, string> = {};
     await Promise.all(
       authorizedKeys.map(async (key, i) => {
@@ -892,7 +914,6 @@ export async function generateNircamMosaicDownloadUrls(
 export async function generateNircamExpmapDownloadUrls(
   storageKeys: string[]
 ): Promise<{ urls: Record<string, string>; error: string | null }> {
-  if (await requestDrTag()) return { urls: {}, error: READ_ONLY_MSG };
   try {
     if (!JWT_SECRET) {
       return { urls: {}, error: 'Server configuration error: JWT secret not set' };
@@ -909,30 +930,42 @@ export async function generateNircamExpmapDownloadUrls(
 
     // Chunked for the same reason as the mosaic path above.
     const supabase = await createClient();
-    const { keys: authorizedKeys, error: queryError } = await authorizeKeysInChunks(
-      storageKeys,
-      'storage_key',
-      (chunk) => supabase
-        .from('storage_objects')
-        .select('storage_key')
-        .eq('product_type', 'nircam_expmap')
-        .eq('status', 'active')
-        .in('storage_key', chunk),
-    );
-
-    if (queryError) {
-      console.error('Error authorizing NIRCam expmap download:', queryError);
-      return { urls: {}, error: 'Failed to authorize download' };
+    const dr = await requestDrTag();
+    let authorizedKeys: string[];
+    let signed: string[];
+    if (dr) {
+      // Under a release the manifest IS the authorization (RLS: a visible
+      // tag's field-level rows), and the bytes are the archived copies.
+      const members = await resolveReleaseMembers(supabase, dr, storageKeys);
+      for (const [k, m] of members) if (m && m.productType !== 'nircam_expmap') members.set(k, null);
+      const byKey = await releaseDownloadUrls(members, PRESIGN_TTL_SECONDS, { attachment: true });
+      authorizedKeys = storageKeys.filter((k) => byKey.get(k));
+      signed = authorizedKeys.map((k) => byKey.get(k) as string);
+    } else {
+      const res = await authorizeKeysInChunks(
+        storageKeys,
+        'storage_key',
+        (chunk) => supabase
+          .from('storage_objects')
+          .select('storage_key')
+          .eq('product_type', 'nircam_expmap')
+          .eq('status', 'active')
+          .in('storage_key', chunk),
+      );
+      if (res.error) {
+        console.error('Error authorizing NIRCam expmap download:', res.error);
+        return { urls: {}, error: 'Failed to authorize download' };
+      }
+      authorizedKeys = res.keys;
+      // Attachment presign: browser-navigated URLs, filename via Content-Disposition.
+      signed = authorizedKeys.length > 0
+        ? await generateDownloadUrls(authorizedKeys, PRESIGN_TTL_SECONDS, { attachment: true })
+        : [];
     }
 
     if (authorizedKeys.length === 0) {
       return { urls: {}, error: null };
     }
-
-    // Attachment presign: browser-navigated URLs, filename via Content-Disposition.
-    const signed = await generateDownloadUrls(authorizedKeys, PRESIGN_TTL_SECONDS, {
-      attachment: true,
-    });
     const urls: Record<string, string> = {};
     await Promise.all(
       authorizedKeys.map(async (key, i) => {

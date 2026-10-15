@@ -5,6 +5,8 @@ import { requestDrTag } from '@/lib/dr/server';
 import { createClient } from '@/lib/supabase/server';
 import { paginateQuery } from '@/lib/supabase/paginate';
 import { generateDownloadUrls } from '@/lib/r2';
+import { parseKey } from '@/lib/layout';
+import { listReleaseMembers, releaseDownloadUrls, type ReleaseMember } from '@/lib/server/dr-files';
 import { thumbnailBase, quicklookBase } from '@/lib/nircam-product-keys';
 import type {
   NircamImage, NircamExpmap, NircamFieldCard, NircamFieldSummary,
@@ -49,7 +51,22 @@ export interface NircamFieldImagesResult {
   thumbnails: Record<string, string>;
   /** mosaic base key -> presigned GET for the large popup quick-look. */
   quicklooks: Record<string, string>;
+  /** Under a release (P6c-2): the live keys of the field's FITS products
+   *  (mosaics, expmaps) whose archived copies the release holds — the rows
+   *  the table may offer for download. Null for the live catalog (all). */
+  downloadable?: string[] | null;
   error?: string;
+}
+
+/** The release's archived members of one field's products, by live key. */
+async function releaseFieldMembers(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  tag: string,
+  field: string,
+  productTypes: readonly string[],
+): Promise<Map<string, ReleaseMember | null>> {
+  const members = await listReleaseMembers(supabase, tag, { component: `nircam/${field}`, productTypes });
+  return new Map(members.map((m) => [m.storageKey, m]));
 }
 
 /**
@@ -178,6 +195,25 @@ export async function getNircamExpmaps(field?: string): Promise<NircamExpmapsRes
   }
 
   try {
+    // Under a release (P6c-2) the expmaps are the release's archived members
+    // of the field (the manifest, under RLS, is the authorization); a field
+    // is required because the manifest is per component.
+    const dr = await requestDrTag();
+    if (dr) {
+      if (!field) return { expmaps: [], isAuthenticated: true };
+      const members = await listReleaseMembers(supabase, dr, { component: `nircam/${field}`, productTypes: ['nircam_expmap'] });
+      const { data: fieldRow } = await supabase.from('cat_fields').select('name, expmap_pixel_scale_arcsec').eq('name', field).maybeSingle();
+      const scale = formatPixelScale(fieldRow?.expmap_pixel_scale_arcsec);
+      const expmaps: NircamExpmap[] = [];
+      for (const m of members) {
+        let filt: string | undefined;
+        try { filt = parseKey(m.storageKey).scope.filt as string | undefined; } catch { filt = undefined; }
+        if (!filt) continue;
+        expmaps.push({ field, filter: filt, storage_key: m.storageKey, file_size: m.sizeBytes ?? undefined, pixel_scale: scale });
+      }
+      return { expmaps, isAuthenticated: true };
+    }
+
     const { data, error } = await paginateQuery<{
       field: string; filter: string | null; storage_key: string;
       size_bytes: number | null;
@@ -205,7 +241,7 @@ export async function getNircamExpmaps(field?: string): Promise<NircamExpmapsRes
     // where deploy lifts it out of <field>_layout.json. One value per field —
     // expmap builds a single shared WCS across all of a field's filters. A failure
     // here is non-fatal: the rows still render, just without a Scale.
-    let scaleQuery = supabase.from('fields').select('name, expmap_pixel_scale_arcsec');
+    let scaleQuery = supabase.from('cat_fields').select('name, expmap_pixel_scale_arcsec');
     if (field) scaleQuery = scaleQuery.eq('name', field);
     const { data: fieldRows } = await scaleQuery;
     const scaleByField = new Map(
@@ -254,8 +290,13 @@ export async function getNircamFields(): Promise<NircamFieldsResult> {
 
     // Presign the layout plots in one dual-read batch; a failed presign just
     // leaves that card's preview null (the card renders a placeholder).
-    // Under a release the layout PNGs come from the archive in P6c-2; no presign yet.
-    const keys = (await requestDrTag()) ? [] : rows.map((r) => r.layout_key).filter(Boolean) as string[];
+    // Under a release get_nircam_fields answers the manifest's archive key
+    // (P6b-2), or the live key while the layout is not archived yet: only an
+    // archive key is ever presigned there (P6c-2: never a live file).
+    const dr = await requestDrTag();
+    const keys = rows
+      .map((r) => r.layout_key)
+      .filter((k): k is string => !!k && (!dr || k.startsWith('archive/')));
     const urlByKey = new Map<string, string>();
     if (keys.length > 0) {
       try {
@@ -354,6 +395,37 @@ export async function getNircamFieldImages(field: string): Promise<NircamFieldIm
   if (!user) return empty;
 
   try {
+    // Under a release (P6c-2): the field's archived members, presigned on
+    // their archive keys; `downloadable` tells the table which FITS rows the
+    // release holds archived.
+    const dr = await requestDrTag();
+    if (dr) {
+      const byKey = await releaseFieldMembers(supabase, dr, field, [
+        'nircam_layout', 'nircam_expmap_plot', 'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook',
+        'nircam_mosaic', 'nircam_expmap',
+      ]);
+      const images = new Map([...byKey].filter(([, m]) => m && !['nircam_mosaic', 'nircam_expmap'].includes(m.productType)));
+      const urlByKey = await releaseDownloadUrls(images, IMG_PRESIGN_TTL_SECONDS);
+      const result: NircamFieldImagesResult = {
+        layoutUrl: null, expmapPlots: {}, thumbnails: {}, quicklooks: {},
+        downloadable: [...byKey.values()]
+          .filter((m): m is ReleaseMember => !!m && ['nircam_mosaic', 'nircam_expmap'].includes(m.productType))
+          .map((m) => m.storageKey),
+      };
+      for (const [key, m] of images) {
+        const url = urlByKey.get(key);
+        if (!url || !m) continue;
+        if (m.productType === 'nircam_layout') result.layoutUrl = url;
+        else if (m.productType === 'nircam_expmap_plot') {
+          let filt: string | undefined;
+          try { filt = parseKey(key).scope.filt as string | undefined; } catch { filt = undefined; }
+          if (filt) result.expmapPlots[filt] = url;
+        } else if (m.productType === 'nircam_mosaic_thumbnail') result.thumbnails[thumbnailBase(key)] = url;
+        else if (m.productType === 'nircam_mosaic_quicklook') result.quicklooks[quicklookBase(key)] = url;
+      }
+      return result;
+    }
+
     const { data, error } = await paginateQuery<{
       storage_key: string; product_type: string; filter: string | null;
     }>(

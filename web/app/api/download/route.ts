@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { readOnlyResponse } from '@/lib/dr/server';
+import { requestDrTag } from '@/lib/dr/server';
 import { getRequestIdentity, getRequestPrincipal } from '@/lib/auth/identity';
 import { linkMayDownload } from '@/lib/auth/access-context';
 import { generateDownloadUrl, generateDownloadUrls } from '@/lib/r2';
+import { releaseDownloadUrls, resolveReleaseMembers } from '@/lib/server/dr-files';
 import { trackDownload, extractTargetIdFromFitsPath } from '@/lib/actions/download-tracking';
 
 /**
@@ -29,9 +30,10 @@ async function refuseIfLinkWithoutDownloads(): Promise<NextResponse | null> {
  * Requires authentication.
  */
 export async function GET(request: NextRequest) {
-  const readOnly = await readOnlyResponse();
-  if (readOnly) return readOnly;
   const { user, supabase } = await getRequestIdentity();
+  // Under a release (P6c-2) the bytes are the archived copy of the member;
+  // a member not archived yet is a 404, never the live file.
+  const dr = await requestDrTag();
 
   if (!user) {
     return NextResponse.json(
@@ -57,15 +59,11 @@ export async function GET(request: NextRequest) {
   try {
     // Verify user has access to this file by checking if the spectrum exists
     // and belongs to a program the user has access to
+    // cat_spectra: the live row, or the release's frozen row (the views carry
+    // no FK metadata, so the program is not embedded; RLS already scoped it).
     const { data: spectrum, error: spectrumError } = await supabase
-      .from('spectra')
-      .select(`
-        id,
-        target_id,
-        targets!inner (
-          program_slug
-        )
-      `)
+      .from('cat_spectra')
+      .select('id, target_id')
       .eq('fits_path', fitsPath)
       .single();
 
@@ -77,7 +75,17 @@ export async function GET(request: NextRequest) {
     }
 
     // Generate signed URL (expires in 1 hour)
-    const signedUrl = await generateDownloadUrl(fitsPath, 3600);
+    let signedUrl: string;
+    if (dr) {
+      const urls = await releaseDownloadUrls(await resolveReleaseMembers(supabase, dr, [fitsPath]), 3600);
+      const archived = urls.get(fitsPath);
+      if (!archived) {
+        return NextResponse.json({ error: 'File not found or access denied' }, { status: 404 });
+      }
+      signedUrl = archived;
+    } else {
+      signedUrl = await generateDownloadUrl(fitsPath, 3600);
+    }
 
     // Track download (fire-and-forget)
     const targetId = await extractTargetIdFromFitsPath(fitsPath);
@@ -106,9 +114,8 @@ export async function GET(request: NextRequest) {
  * Body: { paths: string[] }
  */
 export async function POST(request: NextRequest) {
-  const readOnly = await readOnlyResponse();
-  if (readOnly) return readOnly;
   const { user, supabase } = await getRequestIdentity();
+  const dr = await requestDrTag();
 
   if (!user) {
     return NextResponse.json(
@@ -141,7 +148,7 @@ export async function POST(request: NextRequest) {
 
     // Verify user has access to all files
     const { data: spectra, error: spectraError } = await supabase
-      .from('spectra')
+      .from('cat_spectra')
       .select('fits_path')
       .in('fits_path', paths);
 
@@ -166,10 +173,22 @@ export async function POST(request: NextRequest) {
     // Generate signed URLs for all files. Batched so dual-read resolves every
     // backend in a single registry query (not one per file).
     const urls: Record<string, string> = {};
-    const signedUrls = await generateDownloadUrls(paths, 3600);
-    paths.forEach((path: string, i: number) => {
-      urls[path] = signedUrls[i];
-    });
+    if (dr) {
+      // The release's archived copies; members not archived yet are omitted.
+      const archived = await releaseDownloadUrls(await resolveReleaseMembers(supabase, dr, paths), 3600);
+      for (const path of paths as string[]) {
+        const u = archived.get(path);
+        if (u) urls[path] = u;
+      }
+      if (Object.keys(urls).length === 0) {
+        return NextResponse.json({ error: 'File not found or access denied' }, { status: 404 });
+      }
+    } else {
+      const signedUrls = await generateDownloadUrls(paths, 3600);
+      paths.forEach((path: string, i: number) => {
+        urls[path] = signedUrls[i];
+      });
+    }
 
     // Track batch download (fire-and-forget)
     const targetIdPromises = paths.map(extractTargetIdFromFitsPath);
@@ -183,7 +202,7 @@ export async function POST(request: NextRequest) {
       downloadType,
       targetIds: uniqueTargetIds,
       targetCount: uniqueTargetIds.length,
-      fileCount: paths.length,
+      fileCount: Object.keys(urls).length,
     });
 
     return NextResponse.json({ urls });
