@@ -2,10 +2,11 @@
 -- Data-release page document (P6b-3, D-P6-3), on DR-seed.
 -- =============================================================================
 --   1. dr_page_set is admin-only; refused before the freeze landed; validates
---      the assets (name, key under dr/<tag>/page/, sha256, size, count,
---      duplicates); the happy path sets page_md, writes manifest rows of
---      component 'page' that enter as copied (archive_key = storage_key),
---      logs page_dr; a second call replaces the rows;
+--      the assets (name, content-addressed key dr/<tag>/page/<sha16>/<name>,
+--      sha256, size, count, duplicates); the happy path sets page_md, writes
+--      manifest rows of component 'page' that enter as copied (archive_key =
+--      storage_key), logs page_dr; a second call replaces the rows and
+--      returns the retired keys (removed_keys), the CLI's deletion authority;
 --   2. the page is invisible to the export and byte machinery: no 'page'
 --      export partition, no pending bytes, the derived state unchanged;
 --   3. a re-freeze keeps the page rows and the markdown; a purge deletes them;
@@ -48,9 +49,9 @@ END $$;
 CREATE FUNCTION pg_temp.zzz_assets(p_tag text) RETURNS jsonb
 LANGUAGE sql AS $$
   SELECT jsonb_build_array(
-    jsonb_build_object('name', 'nz.png', 'storage_key', 'dr/' || p_tag || '/page/nz.png',
+    jsonb_build_object('name', 'nz.png', 'storage_key', 'dr/' || p_tag || '/page/' || repeat('1', 16) || '/nz.png',
                        'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 1234, 'backend', 'osn', 'bucket', 'data'),
-    jsonb_build_object('name', 'depth_f444w.pdf', 'storage_key', 'dr/' || p_tag || '/page/depth_f444w.pdf',
+    jsonb_build_object('name', 'depth_f444w.pdf', 'storage_key', 'dr/' || p_tag || '/page/' || repeat('2', 16) || '/depth_f444w.pdf',
                        'content_hash', 'sha256:' || repeat('2', 64), 'size_bytes', 56789, 'backend', 'osn', 'bucket', 'data'))
 $$;
 GRANT EXECUTE ON FUNCTION pg_temp.zzz_assets(text) TO authenticated;
@@ -105,25 +106,29 @@ BEGIN
   IF got NOT LIKE 'ERR:%array%' THEN RAISE EXCEPTION 'non-array assets: %', got; END IF;
   got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', '../x.png', 'storage_key', 'dr/DR-seed/page/../x.png', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 10)))$q$);
   IF got NOT LIKE 'ERR:%bad page asset name%' THEN RAISE EXCEPTION 'bad name: %', got; END IF;
-  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'README.md', 'storage_key', 'dr/DR-seed/page/README.md', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 10)))$q$);
+  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'README.md', 'storage_key', 'dr/DR-seed/page/' || repeat('1', 16) || '/README.md', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 10)))$q$);
   IF got NOT LIKE 'ERR:%README.md is the page markdown%' THEN RAISE EXCEPTION 'README.md asset: %', got; END IF;
   got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array('x.png'))$q$);
   IF got NOT LIKE 'ERR:%must be an object%' THEN RAISE EXCEPTION 'non-object element: %', got; END IF;
-  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'x.png', 'storage_key', 'dr/DR-seed/page/x.png', 'content_hash', 'sha256:' || repeat('1', 64))))$q$);
+  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'x.png', 'storage_key', 'dr/DR-seed/page/' || repeat('1', 16) || '/x.png', 'content_hash', 'sha256:' || repeat('1', 64))))$q$);
   IF got NOT LIKE 'ERR:%numeric size_bytes%' THEN RAISE EXCEPTION 'missing size: %', got; END IF;
   got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', repeat('x', 1048577), '[]'::jsonb)$q$);
   IF got NOT LIKE 'ERR:%exceeds 1 MB%' THEN RAISE EXCEPTION 'big markdown: %', got; END IF;
-  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'x.png', 'storage_key', 'dr/DR-other/page/x.png', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 10)))$q$);
+  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'x.png', 'storage_key', 'dr/DR-other/page/' || repeat('1', 16) || '/x.png', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 10)))$q$);
   IF got NOT LIKE 'ERR:%must live at%' THEN RAISE EXCEPTION 'wrong prefix: %', got; END IF;
-  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'x.png', 'storage_key', 'dr/DR-seed/page/x.png', 'content_hash', 'etag:abc', 'size_bytes', 10)))$q$);
+  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'x.png', 'storage_key', 'dr/DR-seed/page/' || repeat('9', 16) || '/x.png', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 10)))$q$);
+  IF got NOT LIKE 'ERR:%must live at dr/DR-seed/page/1111111111111111/x.png%' THEN RAISE EXCEPTION 'wrong hash segment: %', got; END IF;
+  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'x.png', 'storage_key', 'dr/DR-seed/page/x.png', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 10)))$q$);
+  IF got NOT LIKE 'ERR:%must live at%' THEN RAISE EXCEPTION 'key without the hash segment: %', got; END IF;
+  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'x.png', 'storage_key', 'dr/DR-seed/page/abc/x.png', 'content_hash', 'etag:abc', 'size_bytes', 10)))$q$);
   IF got NOT LIKE 'ERR:%sha256%' THEN RAISE EXCEPTION 'bad hash: %', got; END IF;
-  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'x.png', 'storage_key', 'dr/DR-seed/page/x.png', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 30000000)))$q$);
+  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'x.png', 'storage_key', 'dr/DR-seed/page/' || repeat('1', 16) || '/x.png', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 30000000)))$q$);
   IF got NOT LIKE 'ERR:%25 MB%' THEN RAISE EXCEPTION 'too big: %', got; END IF;
-  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'x.png', 'storage_key', 'dr/DR-seed/page/x.png', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 10, 'bucket', 'tiles')))$q$);
+  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', jsonb_build_array(jsonb_build_object('name', 'x.png', 'storage_key', 'dr/DR-seed/page/' || repeat('1', 16) || '/x.png', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 10, 'bucket', 'tiles')))$q$);
   IF got NOT LIKE 'ERR:%osn/data%' THEN RAISE EXCEPTION 'wrong bucket: %', got; END IF;
   got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', pg_temp.zzz_assets('DR-seed') || pg_temp.zzz_assets('DR-seed'))$q$);
   IF got NOT LIKE 'ERR:%duplicate%' THEN RAISE EXCEPTION 'duplicates: %', got; END IF;
-  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', (SELECT jsonb_agg(jsonb_build_object('name', 'f' || i || '.png', 'storage_key', 'dr/DR-seed/page/f' || i || '.png', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 10)) FROM generate_series(1, 51) i))$q$);
+  got := pg_temp.zzz_try($q$SELECT dr_page_set('DR-seed', '# x', (SELECT jsonb_agg(jsonb_build_object('name', 'f' || i || '.png', 'storage_key', 'dr/DR-seed/page/' || repeat('1', 16) || '/f' || i || '.png', 'content_hash', 'sha256:' || repeat('1', 64), 'size_bytes', 10)) FROM generate_series(1, 51) i))$q$);
   IF got NOT LIKE 'ERR:%at most 50%' THEN RAISE EXCEPTION 'too many: %', got; END IF;
   IF EXISTS (SELECT 1 FROM dr_manifest WHERE tag = 'DR-seed' AND component = 'page') THEN
     RAISE EXCEPTION 'a refused call must leave no page rows';
@@ -139,25 +144,34 @@ BEGIN
   got := pg_temp.zzz_as('authenticated', adm, $q$SELECT (dr_page_set('DR-seed', E'# DR-seed\n\nTwo figures.', pg_temp.zzz_assets('DR-seed')))::text$q$);
   IF got LIKE 'ERR:%' THEN RAISE EXCEPTION 'happy path failed: %', got; END IF;
   res := got::jsonb;
-  IF (res->>'assets')::int <> 2 OR res->>'state' <> 'frozen' THEN RAISE EXCEPTION 'summary: %', res; END IF;
+  IF (res->>'assets')::int <> 2 OR res->>'state' <> 'frozen' OR res->'removed_keys' <> '[]'::jsonb THEN RAISE EXCEPTION 'summary: %', res; END IF;
   IF (SELECT page_md FROM dr_releases WHERE tag = 'DR-seed') NOT LIKE '# DR-seed%' THEN RAISE EXCEPTION 'page_md not set'; END IF;
   SELECT count(*) INTO n FROM dr_manifest
    WHERE tag = 'DR-seed' AND component = 'page' AND product_type = 'dr_page_asset' AND program_slug IS NULL
      AND field IS NULL AND spectrum_id IS NULL AND byte_state = 'copied' AND archive_key = storage_key
-     AND backend = 'osn' AND bucket = 'data' AND storage_key LIKE 'dr/DR-seed/page/%';
-  IF n <> 2 THEN RAISE EXCEPTION 'expected 2 copied page rows, got %', n; END IF;
+     AND backend = 'osn' AND bucket = 'data' AND storage_key ~ '^dr/DR-seed/page/[0-9a-f]{16}/[^/]+$';
+  IF n <> 2 THEN RAISE EXCEPTION 'expected 2 copied content-addressed page rows, got %', n; END IF;
   SELECT count(*) INTO n_events FROM deploy_events WHERE action = 'page_dr' AND metadata->>'dr_tag' = 'DR-seed';
   IF n_events <> 2 THEN RAISE EXCEPTION 'expected two page_dr events (failed-state set + this one), got %', n_events; END IF;
 
-  -- a second call replaces the rows
-  PERFORM dr_page_set('DR-seed', '# v2', jsonb_build_array(pg_temp.zzz_assets('DR-seed')->0));
+  -- a second call replaces the rows and returns exactly the retired keys
+  res := dr_page_set('DR-seed', '# v2', jsonb_build_array(pg_temp.zzz_assets('DR-seed')->0));
   SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-seed' AND component = 'page';
   IF n <> 1 OR (SELECT page_md FROM dr_releases WHERE tag = 'DR-seed') <> '# v2' THEN
     RAISE EXCEPTION 're-set should replace the page rows (got % rows)', n;
   END IF;
-  PERFORM dr_page_set('DR-seed', '# v3', '[]'::jsonb);
+  IF res->'removed_keys' <> jsonb_build_array('dr/DR-seed/page/' || repeat('2', 16) || '/depth_f444w.pdf') THEN
+    RAISE EXCEPTION 'removed_keys should name the retired pdf only: %', res->'removed_keys';
+  END IF;
+  -- the same set again retires nothing
+  res := dr_page_set('DR-seed', '# v2b', jsonb_build_array(pg_temp.zzz_assets('DR-seed')->0));
+  IF res->'removed_keys' <> '[]'::jsonb THEN RAISE EXCEPTION 'an unchanged set must retire nothing: %', res; END IF;
+  res := dr_page_set('DR-seed', '# v3', '[]'::jsonb);
   IF EXISTS (SELECT 1 FROM dr_manifest WHERE tag = 'DR-seed' AND component = 'page') THEN
     RAISE EXCEPTION 'an empty asset list should clear the page rows';
+  END IF;
+  IF res->'removed_keys' <> jsonb_build_array('dr/DR-seed/page/' || repeat('1', 16) || '/nz.png') THEN
+    RAISE EXCEPTION 'clearing should retire the remaining key: %', res->'removed_keys';
   END IF;
   PERFORM dr_page_set('DR-seed', E'# DR-seed\n\nTwo figures.', pg_temp.zzz_assets('DR-seed'));
 

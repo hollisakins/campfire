@@ -1893,21 +1893,26 @@ def dr_page_group():
 @click.option("--local", is_flag=True,
               help="Against local Supabase (127.0.0.1:54321, or CAMPFIRE_LOCAL_SUPABASE_URL); the bucket stays the shared one")
 def dr_page_push(tag, directory, dry_run, as_json, local):
-    """Upload DIRECTORY's files under dr/TAG/page/ and set TAG's page.
+    """Upload DIRECTORY's files under dr/TAG/page/<sha16>/ and set TAG's page.
 
     DIRECTORY must hold README.md (the page markdown); every other regular
     file is a figure (no subdirectories; at most 50 files of 25 MB). Needs
     OSN credentials (CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml) and
-    `campfire login` as an admin. Refused for a published release. Each
-    file is uploaded once (If-None-Match); a file already there with the
-    same bytes is kept, a different one replaced; names a previous push
-    left under dr/TAG/page/ are deleted after the page is set.
+    `campfire login` as an admin. Refused for a published release. Keys are
+    content-addressed (the first 16 hex of each file's sha256), never
+    overwritten: a file already there with the same bytes is reused, a
+    different one fails the push; the keys the database retires are
+    deleted after the page is set. --local is refused without --dry-run:
+    the local database redirects Supabase only, the bucket is the shared one.
     """
     import json as _json
 
     from .dr_page import PageError, check_editable, push_page
 
     say = (lambda m: click.echo(m, err=True)) if as_json else click.echo
+    if local and not dry_run:
+        say("✗ --local refused without --dry-run (the bucket is the shared one)")
+        sys.exit(2)
     config, sb = _dr_client(local, what="`campfire dr page push`")
     s3 = bucket = None
     try:
@@ -1932,12 +1937,12 @@ def dr_page_push(tag, directory, dry_run, as_json, local):
         click.echo("Dry run: nothing uploaded or set.")
     else:
         ups = result.get('uploads') or {}
-        summary = ', '.join(f"{n} {k}" for k in ('uploaded', 'kept', 'replaced')
+        summary = ', '.join(f"{n} {k}" for k in ('uploaded', 'reused')
                             if (n := sum(1 for v in ups.values() if v == k)))
         click.echo(f"Set the page of {tag}: {result.get('markdown_bytes', 0):,} bytes of markdown, "
                    f"{result.get('assets', 0)} asset(s)" + (f" ({summary})" if summary else ''))
-        if result.get('swept'):
-            click.echo(f"  deleted {len(result['swept'])} stale file(s) under dr/{tag}/page/")
+        if result.get('deleted'):
+            click.echo(f"  deleted {len(result['deleted'])} retired file(s) under dr/{tag}/page/")
 
 
 @dr_page_group.command(name="show")

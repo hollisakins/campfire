@@ -152,9 +152,9 @@ Field-level components also carry the field's exposure maps, their renders, the
 layout plot and the mosaic thumbnails / quick-looks (product types
 `nircam_expmap`, `nircam_expmap_plot`, `nircam_layout`, `nircam_mosaic_thumbnail`,
 `nircam_mosaic_quicklook`; P6b-3). The release page document's figures
-(`dr_manifest` component `page`, product type `dr_page_asset`, under
-`dr/<tag>/page/`) are not exported: they belong to the release page, not the
-catalog.
+(`dr_manifest` component `page`, product type `dr_page_asset`, content-addressed
+under `dr/<tag>/page/<first 16 hex of the sha256>/<name>`, never overwritten) are
+not exported: they belong to the release page, not the catalog.
 
 ## Ledger and lifecycle
 

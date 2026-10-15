@@ -2,21 +2,24 @@
 
 A directory holding ``README.md`` (the markdown shown on ``/releases/<tag>``)
 plus its figures is pushed with ``campfire dr page push <tag> <dir>``: the
-files go to the OSN data bucket under ``dr/<tag>/page/<name>`` (the release's
-immutable prefix, the same credentials ``dr export`` uses) and
+files go to the OSN data bucket under the release's immutable prefix and
 ``dr_page_set`` records the markdown on the release row and the figures as
 manifest rows of component ``page``. The page is authored while the release
 is unpublished and frozen with it; the database refuses a published tag, and
 the CLI checks the row before uploading anything.
 
-Integrity of the uploads: every asset is read once, hashed, and those same
-bytes are PUT with ``If-None-Match: *``. A 412 means a previous push left an
-object there: it is kept when its size and hash match the plan, otherwise
-(the release still being editable) it is deleted and PUT again. After the
-page is set, names under the prefix that are not in the new asset set are
-deleted (a previous push's leftovers), so the prefix always equals the
-manifest. If the database refuses after the uploads, the keys left behind
-are listed so the operator can see what the prefix holds.
+Keys are **content-addressed**: ``dr/<tag>/page/<sha16>/<name>``, where
+``<sha16>`` is the first 16 hex characters of the asset's sha256, computed
+from the bytes that are uploaded. No key is ever overwritten or
+deleted-then-replaced: a changed figure gets a new key, so nothing ever
+writes a key a published release holds. Every PUT is conditional
+(``If-None-Match: *``); on 412 the object there is read back and hashed:
+the same bytes are reused, different bytes fail the push (a collision on the
+prefix with different content is a corruption signal, never something to
+overwrite). Deletion authority comes from the database: ``dr_page_set``
+returns ``removed_keys``, the keys of the page rows it retired, and the CLI
+deletes exactly those after the call succeeds. Orphans (uploaded, then the
+call refused) are never referenced and are swept only by ``dr purge``.
 """
 from __future__ import annotations
 
@@ -48,8 +51,12 @@ class PageAsset:
     content_type: str
     data: bytes = field(repr=False, default=b'')
 
+    @property
+    def sha16(self) -> str:
+        return self.content_hash[len('sha256:'):][:16]
+
     def storage_key(self, tag: str) -> str:
-        return page_key(tag, self.name)
+        return page_key(tag, self.content_hash, self.name)
 
 
 @dataclass
@@ -62,8 +69,18 @@ def page_prefix(tag: str) -> str:
     return f"dr/{tag}/page/"
 
 
-def page_key(tag: str, name: str) -> str:
-    return page_prefix(tag) + name
+def page_key(tag: str, content_hash: str, name: str) -> str:
+    """``dr/<tag>/page/<sha16>/<name>`` for a ``sha256:<hex>`` content hash."""
+    if not re.match(r'^sha256:[0-9a-f]{64}$', content_hash or ''):
+        raise PageError(f"page asset {name} needs a sha256 content hash, got {content_hash!r}")
+    return f"{page_prefix(tag)}{content_hash[7:23]}/{name}"
+
+
+def asset_name(tag: str, storage_key: str) -> str:
+    """The asset name of a page key (``<sha16>/<name>`` after the prefix)."""
+    prefix = page_prefix(tag)
+    rest = storage_key[len(prefix):] if storage_key.startswith(prefix) else storage_key
+    return rest.split('/', 1)[1] if '/' in rest else rest
 
 
 def collect_page_dir(directory: str | os.PathLike) -> PageDocument:
@@ -128,9 +145,8 @@ def fetch_page(client, tag: str) -> dict | None:
     assets = (client.table('dr_manifest')
               .select('storage_key,content_hash,size_bytes,updated_at')
               .eq('tag', tag).eq('component', 'page').order('storage_key').execute().data) or []
-    prefix = page_prefix(tag)
     for a in assets:
-        a['name'] = a['storage_key'][len(prefix):] if a['storage_key'].startswith(prefix) else a['storage_key']
+        a['name'] = asset_name(tag, a['storage_key'])
     return {'tag': rows[0]['tag'], 'state': rows[0].get('state'), 'page_md': rows[0].get('page_md'), 'assets': assets}
 
 
@@ -141,46 +157,20 @@ def _status_code(exc: Exception) -> int | None:
     return code(exc)
 
 
-def _head(s3, bucket: str, key: str) -> dict | None:
-    try:
-        return s3.head_object(Bucket=bucket, Key=key)
-    except Exception as e:  # noqa: BLE001 - botocore ClientError and friends
-        if _status_code(e) == 404:
-            return None
-        raise
+def _object_sha256(s3, bucket: str, key: str) -> str:
+    """``sha256:<hex>`` of the object's bytes (page assets are ≤ 25 MB)."""
+    body = s3.get_object(Bucket=bucket, Key=key)['Body']
+    h = hashlib.sha256()
+    for chunk in iter(lambda: body.read(1 << 20), b''):
+        h.update(chunk)
+    return 'sha256:' + h.hexdigest()
 
 
-def _same_object(head: dict | None, asset: PageAsset) -> bool:
-    """Whether the object already there is the one planned: same size and,
-    when the store reports a plain MD5 ETag, the same MD5 (OSN gives an
-    MD5 ETag for single-part PUTs; a multipart ETag carries a '-' and is
-    not comparable, so the size alone decides then)."""
-    if head is None or int(head.get('ContentLength', -1)) != asset.size_bytes:
-        return False
-    etag = (head.get('ETag') or '').strip('"')
-    if etag and '-' not in etag:
-        return etag.lower() == hashlib.md5(asset.data).hexdigest()
-    return True
-
-
-def list_prefix(s3, bucket: str, prefix: str) -> list[str]:
-    keys: list[str] = []
-    token = None
-    while True:
-        kw = {'Bucket': bucket, 'Prefix': prefix}
-        if token:
-            kw['ContinuationToken'] = token
-        resp = s3.list_objects_v2(**kw)
-        keys.extend(o['Key'] for o in resp.get('Contents') or [])
-        if not resp.get('IsTruncated'):
-            return keys
-        token = resp.get('NextContinuationToken')
-
-
-def _put_asset(client, s3, bucket: str, tag: str, asset: PageAsset, log) -> str:
-    """PUT one asset under If-None-Match; returns 'uploaded' | 'kept' |
-    'replaced'. A 412 with a different object is replaced only after the
-    release is re-checked as editable."""
+def _put_asset(s3, bucket: str, tag: str, asset: PageAsset, log) -> str:
+    """PUT one asset under If-None-Match; returns 'uploaded' | 'reused'. A 412
+    is an object already under that content-addressed key: read back and
+    hashed, the same bytes are reused; different bytes fail the push (never
+    overwritten, never deleted)."""
     key = asset.storage_key(tag)
     try:
         s3.put_object(Bucket=bucket, Key=key, Body=asset.data, ContentType=asset.content_type, IfNoneMatch='*')
@@ -188,24 +178,20 @@ def _put_asset(client, s3, bucket: str, tag: str, asset: PageAsset, log) -> str:
     except Exception as e:  # noqa: BLE001
         if _status_code(e) != 412:
             raise
-    head = _head(s3, bucket, key)
-    if _same_object(head, asset):
-        log(f"  {key}: already there (same bytes), kept")
-        return 'kept'
-    # something else is under that name: only an editable release may replace it
-    check_editable(client, tag)
-    s3.delete_object(Bucket=bucket, Key=key)
-    s3.put_object(Bucket=bucket, Key=key, Body=asset.data, ContentType=asset.content_type, IfNoneMatch='*')
-    log(f"  {key}: replaced a different object left by an earlier push")
-    return 'replaced'
+    found = _object_sha256(s3, bucket, key)
+    if found == asset.content_hash:
+        log(f"  {key}: already there (same bytes), reused")
+        return 'reused'
+    raise PageError(f"{key} already holds different bytes ({found}) than {asset.name} ({asset.content_hash}); "
+                    f"a content-addressed key with other content is a corruption signal and is never overwritten")
 
 
 def push_page(client, s3, bucket: str, tag: str, directory: str | os.PathLike, *,
               dry_run: bool = False, log=None) -> dict:
     """Upload the directory's assets and set the page. Returns the
-    ``dr_page_set`` summary (or the plan under ``dry_run``), with
-    ``uploads`` (per asset: uploaded / kept / replaced) and ``swept`` (stale
-    keys deleted after the set)."""
+    ``dr_page_set`` summary (or the plan under ``dry_run``) with ``uploads``
+    (per asset: uploaded / reused) and ``deleted`` (the ``removed_keys`` the
+    database retired, deleted from the bucket after the call)."""
     say = log or (lambda m: None)
     doc = collect_page_dir(directory)
     state = check_editable(client, tag)
@@ -213,11 +199,11 @@ def push_page(client, s3, bucket: str, tag: str, directory: str | os.PathLike, *
              'size_bytes': a.size_bytes, 'content_type': a.content_type} for a in doc.assets]
     say(f"{tag} ({state}): {len(doc.markdown.encode('utf-8')):,} bytes of markdown, {len(plan)} asset(s)")
     for a in plan:
-        say(f"  {a['storage_key']}  {a['size_bytes']:,} B  {a['content_hash'][:19]}…")
+        say(f"  {a['storage_key']}  {a['size_bytes']:,} B")
     if dry_run:
         return {'tag': tag, 'state': state, 'dry_run': True, 'markdown_bytes': len(doc.markdown.encode('utf-8')),
                 'assets': plan}
-    uploads = {a.name: _put_asset(client, s3, bucket, tag, a, say) for a in doc.assets}
+    uploads = {a.name: _put_asset(s3, bucket, tag, a, say) for a in doc.assets}
     payload = [{'name': a['name'], 'storage_key': a['storage_key'], 'content_hash': a['content_hash'],
                 'size_bytes': a['size_bytes'], 'backend': 'osn', 'bucket': 'data'} for a in plan]
     try:
@@ -225,21 +211,20 @@ def push_page(client, s3, bucket: str, tag: str, directory: str | os.PathLike, *
     except Exception as e:  # noqa: BLE001
         left = sorted(a['storage_key'] for a in plan)
         msg = getattr(e, 'message', None) or str(e)
-        raise PageError(f"dr_page_set refused after the uploads: {msg}. Left under {page_prefix(tag)}: "
-                        + (', '.join(left) if left else 'nothing')) from e
+        raise PageError(f"dr_page_set refused after the uploads: {msg}. The uploaded keys stay under "
+                        f"{page_prefix(tag)} as unreferenced content-addressed objects (swept only by `dr purge`): "
+                        + (', '.join(left) if left else 'none')) from e
     data = resp.data
     if not isinstance(data, dict):
         raise RuntimeError(f"dr_page_set returned an unexpected payload: {data!r}")
-    # sweep names a previous push left under the prefix (the release is
-    # unpublished: dr_page_set just accepted it)
-    wanted = {a['storage_key'] for a in plan}
-    stale = [k for k in list_prefix(s3, bucket, page_prefix(tag)) if k not in wanted]
-    for k in stale:
+    # exactly the keys the database retired in its transaction, nothing else
+    removed = [k for k in (data.get('removed_keys') or []) if isinstance(k, str) and k.startswith(page_prefix(tag))]
+    for k in removed:
         s3.delete_object(Bucket=bucket, Key=k)
-        say(f"  deleted stale {k}")
+        say(f"  deleted retired {k}")
     data = dict(data)
     data['uploads'] = uploads
-    data['swept'] = stale
+    data['deleted'] = removed
     return data
 
 

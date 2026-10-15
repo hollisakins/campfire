@@ -661,6 +661,7 @@ DECLARE
   v_asset jsonb;
   v_name text; v_key text; v_hash text; v_size bigint;
   v_prefix text;
+  v_removed text[];
   n_assets int := 0;
 BEGIN
   PERFORM dr_require_admin();
@@ -702,11 +703,15 @@ BEGIN
     IF v_name = 'README.md' THEN
       RAISE EXCEPTION 'README.md is the page markdown itself, never an asset';
     END IF;
-    IF v_key IS DISTINCT FROM (v_prefix || v_name) THEN
-      RAISE EXCEPTION 'page asset % must live at %, not %', v_name, v_prefix || v_name, coalesce(v_key, '(null)');
-    END IF;
     IF v_hash IS NULL OR v_hash !~ '^sha256:[0-9a-f]{64}$' THEN
       RAISE EXCEPTION 'page asset % needs a sha256 content hash', v_name;
+    END IF;
+    -- content-addressed: dr/<tag>/page/<first 16 hex of the sha256>/<name>, so
+    -- a changed figure gets a new key and no key is ever overwritten or
+    -- deleted-then-replaced (a published release's keys are never written)
+    IF v_key IS DISTINCT FROM (v_prefix || left(substr(v_hash, 8), 16) || '/' || v_name) THEN
+      RAISE EXCEPTION 'page asset % must live at %, not %', v_name,
+        v_prefix || left(substr(v_hash, 8), 16) || '/' || v_name, coalesce(v_key, '(null)');
     END IF;
     IF v_size IS NULL OR v_size < 1 OR v_size > 26214400 THEN
       RAISE EXCEPTION 'page asset % must be between 1 byte and 25 MB (got %)', v_name, coalesce(v_size::text, 'null');
@@ -719,6 +724,13 @@ BEGIN
     RAISE EXCEPTION 'duplicate page asset names';
   END IF;
 
+  -- the keys this call retires: the deletion authority for the object store
+  -- (the CLI deletes exactly these after the call succeeds, never a prefix
+  -- listing, so concurrent pushes each remove only what their own call did)
+  SELECT COALESCE(array_agg(m.storage_key ORDER BY m.storage_key), '{}'::text[]) INTO v_removed
+  FROM dr_manifest m
+  WHERE m.tag = p_tag AND m.component = 'page'
+    AND m.storage_key <> ALL (ARRAY(SELECT x->>'storage_key' FROM jsonb_array_elements(p_assets) x));
   DELETE FROM dr_manifest WHERE tag = p_tag AND component = 'page';
   INSERT INTO dr_manifest (tag, storage_key, component, program_slug, field, product_type, spectrum_id,
                            backend, bucket, content_hash, science_hash, size_bytes, registry_id,
@@ -732,8 +744,10 @@ BEGIN
   UPDATE dr_releases SET page_md = p_markdown, updated_at = now() WHERE tag = p_tag;
   INSERT INTO deploy_events (actor, action, affected_count, metadata)
   VALUES (auth.uid(), 'page_dr', n_assets,
-          jsonb_build_object('dr_tag', p_tag, 'markdown_bytes', octet_length(p_markdown), 'assets', n_assets));
-  RETURN jsonb_build_object('tag', p_tag, 'state', r.state, 'markdown_bytes', octet_length(p_markdown), 'assets', n_assets);
+          jsonb_build_object('dr_tag', p_tag, 'markdown_bytes', octet_length(p_markdown), 'assets', n_assets,
+                             'removed', coalesce(array_length(v_removed, 1), 0)));
+  RETURN jsonb_build_object('tag', p_tag, 'state', r.state, 'markdown_bytes', octet_length(p_markdown), 'assets', n_assets,
+                            'removed_keys', to_jsonb(v_removed));
 END;
 $function$;
 
@@ -781,7 +795,7 @@ ALTER TABLE "public"."deploy_events"
     ((action = ANY (ARRAY['upload'::text, 'publish'::text, 'revoke'::text, 'recover'::text, 'supersede'::text, 'delete'::text, 'config_sync'::text, 'archive'::text,
     'collect'::text, 'freeze'::text, 'publish_dr'::text, 'withdraw_dr'::text, 'page_dr'::text])));
 
-COMMENT ON FUNCTION "public"."dr_page_set"(text, text, jsonb) IS 'Set a data release''s page document (P6b-3): the markdown shown on /releases/<tag> and its figures as dr_manifest rows of component ''page'' (already uploaded under dr/<tag>/page/, so they enter as copied). Admin only; refused once the release is published or withdrawn, or before its freeze has landed.';
+COMMENT ON FUNCTION "public"."dr_page_set"(text, text, jsonb) IS 'Set a data release''s page document (P6b-3): the markdown shown on /releases/<tag> and its figures as dr_manifest rows of component ''page''. Assets are content-addressed, dr/<tag>/page/<first 16 hex of the sha256>/<name>, already uploaded (never overwritten), so they enter as copied. Returns {tag, state, markdown_bytes, assets, removed_keys}: removed_keys are the previous page rows'' keys this call retired, the only keys the CLI may delete. Admin only; refused once the release is published or withdrawn, or before its freeze has landed.';
 
 GRANT EXECUTE ON FUNCTION "public"."dr_page_set"(text, text, jsonb) TO "authenticated";
 
