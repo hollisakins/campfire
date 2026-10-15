@@ -1420,7 +1420,7 @@ CREATE TABLE IF NOT EXISTS "public"."deploy_events" (
     "host" "text",
     "metadata" "jsonb",
     "occurred_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text", 'config_sync'::"text", 'archive'::"text", 'collect'::"text", 'freeze'::"text", 'publish_dr'::"text", 'withdraw_dr'::"text"])))
+    CONSTRAINT "deploy_events_action_check" CHECK (("action" = ANY (ARRAY['upload'::"text", 'publish'::"text", 'revoke'::"text", 'recover'::"text", 'supersede'::"text", 'delete'::"text", 'config_sync'::"text", 'archive'::"text", 'collect'::"text", 'freeze'::"text", 'publish_dr'::"text", 'withdraw_dr'::"text", 'page_dr'::"text"])))
 );
 
 
@@ -1579,6 +1579,10 @@ CREATE TABLE IF NOT EXISTS "public"."dr_releases" (
     -- not refreshed for 10 minutes is dead and may be taken over.
     "archive_claim" "uuid",
     "archive_claimed_at" timestamp with time zone,
+    -- The release page document (P6b-3, D-P6-3): markdown shown on
+    -- /releases/<tag>, set by dr_page_set before publication; its figures are
+    -- dr_manifest rows of component 'page' under dr/<tag>/page/.
+    "page_md" "text",
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "dr_releases_pkey" PRIMARY KEY ("tag"),
     CONSTRAINT "dr_releases_tag_check" CHECK (("tag" ~ '^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$'::"text")),
