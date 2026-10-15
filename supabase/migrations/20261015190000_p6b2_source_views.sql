@@ -2617,11 +2617,19 @@ CREATE OR REPLACE FUNCTION public.get_nircam_field_summary (
     COUNT(*)::bigint                       AS n_files,
     COALESCE(SUM(ni.file_size), 0)::bigint AS total_bytes,
     MAX(ni.created_at)                     AS last_updated,
-    (SELECT so.storage_key FROM storage_objects so
-       WHERE so.product_type = 'nircam_layout'
-         AND so.field = ni.field
-         AND so.status = 'active'
-       LIMIT 1)                            AS layout_key
+    CASE WHEN public.dr_browse_tag() IS NULL THEN
+      (SELECT so.storage_key FROM storage_objects so
+         WHERE so.product_type = 'nircam_layout'
+           AND so.field = ni.field
+           AND so.status = 'active'
+         LIMIT 1)
+    ELSE
+      (SELECT COALESCE(m.archive_key, m.storage_key) FROM public.dr_manifest m
+         WHERE m.tag = public.dr_browse_tag()
+           AND m.component = 'nircam/' || ni.field
+           AND m.product_type = 'nircam_layout'
+         ORDER BY m.storage_key LIMIT 1)
+    END                                    AS layout_key
   FROM public.cat_nircam_images ni
   LEFT JOIN public.cat_fields f ON f.name = ni.field
   WHERE ni.field = p_field
@@ -2660,11 +2668,22 @@ CREATE OR REPLACE FUNCTION public.get_nircam_fields()
     COUNT(*)::bigint                    AS n_files,
     COALESCE(SUM(ni.file_size), 0)::bigint AS total_bytes,
     MAX(ni.created_at)                  AS last_updated,
-    (SELECT so.storage_key FROM storage_objects so
-       WHERE so.product_type = 'nircam_layout'
-         AND so.field = ni.field
-         AND so.status = 'active'
-       LIMIT 1)                         AS layout_key
+    -- the layout plot: live from the registry; under a browsed release
+    -- (P6b-2) from the release's manifest (archived copy when stamped; NULL
+    -- until the freeze lists field products, P6b-3), never the live key
+    CASE WHEN public.dr_browse_tag() IS NULL THEN
+      (SELECT so.storage_key FROM storage_objects so
+         WHERE so.product_type = 'nircam_layout'
+           AND so.field = ni.field
+           AND so.status = 'active'
+         LIMIT 1)
+    ELSE
+      (SELECT COALESCE(m.archive_key, m.storage_key) FROM public.dr_manifest m
+         WHERE m.tag = public.dr_browse_tag()
+           AND m.component = 'nircam/' || ni.field
+           AND m.product_type = 'nircam_layout'
+         ORDER BY m.storage_key LIMIT 1)
+    END                                 AS layout_key
   FROM public.cat_nircam_images ni
   LEFT JOIN public.cat_fields f ON f.name = ni.field
   GROUP BY ni.field, f.display_name, f.center_ra, f.center_dec,
@@ -3127,15 +3146,22 @@ BEGIN
   SELECT s.observation, s.program_slug, s.program_name, s.field,
     s.target_count, s.spectrum_count, s.total_size_bytes,
     o.pointings,
-    full_dep.crds_context,
-    full_dep.cfpipe_version, full_dep.jwst_version,
-    full_dep.reduced_at, full_dep.deployed_at,
+    COALESCE(full_dep.crds_context, frozen_dep.crds_context),
+    COALESCE(full_dep.cfpipe_version, frozen_dep.cfpipe_version),
+    COALESCE(full_dep.jwst_version, frozen_dep.jwst_version),
+    COALESCE(full_dep.reduced_at, frozen_dep.reduced_at), full_dep.deployed_at,
     CASE WHEN v_link THEN NULL ELSE full_dep.deployed_by_username END,
     CASE WHEN v_link THEN NULL ELSE full_dep.deployed_by_full_name END,
     COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
     patches.last_patch_at
   FROM stats s
   LEFT JOIN observations o ON o.name = s.observation
+  -- Provenance: live, the newest full deployment. Under a browsed release
+  -- (P6b-2) deployments is live-only (a later deploy would label frozen
+  -- spectra with its versions), so the versions come from the release's own
+  -- spectra of the observation: the most common non-null value of each
+  -- field, the latest reduced_at; there is no frozen deployments record, so
+  -- deployed_at, the deployer and the patch counts are NULL / 0 then.
   LEFT JOIN LATERAL (
     SELECT d.crds_context, d.cfpipe_version, d.jwst_version,
            d.reduced_at, d.deployed_at,
@@ -3143,15 +3169,32 @@ BEGIN
            up.full_name AS deployed_by_full_name
     FROM public.deployments d
     LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
-    WHERE d.observation = s.observation AND d.source_ids_filter IS NULL
+    WHERE public.dr_browse_tag() IS NULL
+      AND d.observation = s.observation AND d.source_ids_filter IS NULL
       AND d.status = ANY(v_statuses)
     ORDER BY d.deployed_at DESC
     LIMIT 1
   ) full_dep ON true
   LEFT JOIN LATERAL (
+    SELECT
+      (SELECT x.crds_context FROM public.cat_spectra x
+         WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses) AND x.crds_context IS NOT NULL
+         GROUP BY x.crds_context ORDER BY count(*) DESC, x.crds_context LIMIT 1) AS crds_context,
+      (SELECT x.cfpipe_version FROM public.cat_spectra x
+         WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses) AND x.cfpipe_version IS NOT NULL
+         GROUP BY x.cfpipe_version ORDER BY count(*) DESC, x.cfpipe_version LIMIT 1) AS cfpipe_version,
+      (SELECT x.jwst_version FROM public.cat_spectra x
+         WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses) AND x.jwst_version IS NOT NULL
+         GROUP BY x.jwst_version ORDER BY count(*) DESC, x.jwst_version LIMIT 1) AS jwst_version,
+      (SELECT max(x.reduced_at) FROM public.cat_spectra x
+         WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses)) AS reduced_at
+    WHERE public.dr_browse_tag() IS NOT NULL
+  ) frozen_dep ON true
+  LEFT JOIN LATERAL (
     SELECT COUNT(*)::integer AS n_patches, MAX(d.deployed_at) AS last_patch_at
     FROM public.deployments d
-    WHERE d.observation = s.observation
+    WHERE public.dr_browse_tag() IS NULL
+      AND d.observation = s.observation
       AND d.source_ids_filter IS NOT NULL
       AND d.status = ANY(v_statuses)
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
@@ -3275,9 +3318,10 @@ BEGIN
     COALESCE(s.target_count, 0)::bigint AS target_count,
     COALESCE(s.spectrum_count, 0)::bigint AS spectrum_count,
     COALESCE(s.total_size_bytes, 0)::bigint AS total_size_bytes,
-    full_dep.crds_context,
-    full_dep.cfpipe_version, full_dep.jwst_version,
-    full_dep.reduced_at, full_dep.deployed_at,
+    COALESCE(full_dep.crds_context, frozen_dep.crds_context),
+    COALESCE(full_dep.cfpipe_version, frozen_dep.cfpipe_version),
+    COALESCE(full_dep.jwst_version, frozen_dep.jwst_version),
+    COALESCE(full_dep.reduced_at, frozen_dep.reduced_at), full_dep.deployed_at,
     CASE WHEN v_link THEN NULL ELSE full_dep.deployed_by_username END,
     CASE WHEN v_link THEN NULL ELSE full_dep.deployed_by_full_name END,
     COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
@@ -3285,6 +3329,10 @@ BEGIN
   FROM public.observations o
   JOIN public.programs p ON p.slug = o.program_slug
   LEFT JOIN stats s ON s.observation = o.name AND s.program_slug = o.program_slug
+  -- Provenance as in get_observation_stats: the newest full deployment live;
+  -- under a browsed release (P6b-2) the release's own spectra (deployments
+  -- is live-only; no frozen record, so deployed_at / deployer / patches are
+  -- NULL / 0 then).
   LEFT JOIN LATERAL (
     SELECT d.crds_context, d.cfpipe_version, d.jwst_version,
            d.reduced_at, d.deployed_at,
@@ -3292,21 +3340,42 @@ BEGIN
            up.full_name AS deployed_by_full_name
     FROM public.deployments d
     LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
-    WHERE d.observation = o.name AND d.source_ids_filter IS NULL
+    WHERE public.dr_browse_tag() IS NULL
+      AND d.observation = o.name AND d.source_ids_filter IS NULL
       AND d.status = ANY(v_statuses)
     ORDER BY d.deployed_at DESC
     LIMIT 1
   ) full_dep ON true
   LEFT JOIN LATERAL (
+    SELECT
+      (SELECT x.crds_context FROM public.cat_spectra x
+         WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses) AND x.crds_context IS NOT NULL
+         GROUP BY x.crds_context ORDER BY count(*) DESC, x.crds_context LIMIT 1) AS crds_context,
+      (SELECT x.cfpipe_version FROM public.cat_spectra x
+         WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses) AND x.cfpipe_version IS NOT NULL
+         GROUP BY x.cfpipe_version ORDER BY count(*) DESC, x.cfpipe_version LIMIT 1) AS cfpipe_version,
+      (SELECT x.jwst_version FROM public.cat_spectra x
+         WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses) AND x.jwst_version IS NOT NULL
+         GROUP BY x.jwst_version ORDER BY count(*) DESC, x.jwst_version LIMIT 1) AS jwst_version,
+      (SELECT max(x.reduced_at) FROM public.cat_spectra x
+         WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses)) AS reduced_at
+    WHERE public.dr_browse_tag() IS NOT NULL
+  ) frozen_dep ON true
+  LEFT JOIN LATERAL (
     SELECT COUNT(*)::integer AS n_patches, MAX(d.deployed_at) AS last_patch_at
     FROM public.deployments d
-    WHERE d.observation = o.name
+    WHERE public.dr_browse_tag() IS NULL
+      AND d.observation = o.name
       AND d.source_ids_filter IS NOT NULL
       AND d.status = ANY(v_statuses)
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
   ) patches ON true
   WHERE o.program_slug = ANY(v_slugs)
     AND (NOT v_link OR o.name = (SELECT public.link_observation()))
+    -- (P6b-2) a browsed release lists only the observations it holds spectra
+    -- of: observations is live-only (members with no frozen rows, and
+    -- observations created after the freeze, would show with zero counts)
+    AND (public.dr_browse_tag() IS NULL OR s.observation IS NOT NULL)
   ORDER BY o.program_slug, o.name;
 END;
 $function$;

@@ -14,7 +14,10 @@
 -- edit visible in the matview must NOT show in DR mode); the sync streams
 -- refuse the header; the three principals are made to differ (one program
 -- with frozen rows goes private and the viewer loses its grant), so the
--- per-principal comparisons are not one comparison three times.
+-- per-principal comparisons are not one comparison three times; and three
+-- live-only tables must not leak into a release: a later deployment's
+-- versions, an observation added after the freeze, the live layout key
+-- (each edited live inside a savepoint, rolled back before the comparisons).
 -- Run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/check_dr_browse.sql
 \set ON_ERROR_STOP on
 BEGIN;
@@ -171,6 +174,102 @@ BEGIN
   RAISE NOTICE 'OK principals: program % private, viewer@ without its grant; admin / user / viewer scopes differ; viewer sees fewer objects and spectra', prog;
 END $$;
 
+-- 4. provenance under a release comes from the frozen spectra, never from a
+--    later live deployment (deployments is live-only)
+SAVEPOINT provenance;
+DO $$
+DECLARE
+  usr uuid := (SELECT id FROM auth.users WHERE email = 'user@campfire.dev');
+  adm uuid := (SELECT id FROM auth.users WHERE email = 'admin@campfire.dev');
+  obs text := (SELECT s.observation FROM dr_spectra s WHERE s.tag = 'DR-seed' GROUP BY s.observation ORDER BY count(*) DESC, s.observation LIMIT 1);
+  exp_cf text := (SELECT s.cfpipe_version FROM dr_spectra s WHERE s.tag = 'DR-seed' AND s.observation = obs AND s.cfpipe_version IS NOT NULL
+                  GROUP BY s.cfpipe_version ORDER BY count(*) DESC, s.cfpipe_version LIMIT 1);
+  q_stats text; q_ov text; got text;
+BEGIN
+  INSERT INTO deployments (observation, deployed_by, deployed_at, cfpipe_version, jwst_version, crds_context,
+                           n_targets, n_spectra, n_new_targets, force_overwrite, source_ids_filter, supabase_only, status, published_at)
+  VALUES (obs, adm, now(), 'zzz-cfpipe-9.9.9', 'zzz-jwst-9', 'jwst_9999.pmap', 0, 0, 0, false, NULL, true, 'published', now());
+  q_stats := format('SELECT (SELECT r.cfpipe_version FROM public.get_observation_stats((SELECT public.accessible_program_slugs()), false) r WHERE r.observation = %L)', obs);
+  q_ov := format('SELECT (SELECT r.cfpipe_version FROM public.get_observations_overview((SELECT public.accessible_program_slugs()), false) r WHERE r.observation = %L)', obs);
+  -- live (the admin's live path) reports the new deployment
+  got := pg_temp.zzz_browse_as(adm, NULL, q_stats);
+  IF got IS DISTINCT FROM 'zzz-cfpipe-9.9.9' THEN RAISE EXCEPTION 'live get_observation_stats should report the new deployment, got %', got; END IF;
+  -- the release reports its own spectra's version, for a reader and an admin
+  got := pg_temp.zzz_browse_as(usr, 'DR-seed', q_stats);
+  IF got IS DISTINCT FROM exp_cf OR got = 'zzz-cfpipe-9.9.9' THEN
+    RAISE EXCEPTION 'get_observation_stats under DR-seed labels frozen spectra with a later deployment: % (frozen spectra: %)', got, exp_cf;
+  END IF;
+  got := pg_temp.zzz_browse_as(adm, 'DR-seed', q_stats);
+  IF got IS DISTINCT FROM exp_cf OR got = 'zzz-cfpipe-9.9.9' THEN
+    RAISE EXCEPTION 'get_observation_stats under DR-seed (admin) labels frozen spectra with a later deployment: %', got;
+  END IF;
+  got := pg_temp.zzz_browse_as(usr, 'DR-seed', q_ov);
+  IF got IS DISTINCT FROM exp_cf OR got = 'zzz-cfpipe-9.9.9' THEN
+    RAISE EXCEPTION 'get_observations_overview under DR-seed labels frozen spectra with a later deployment: %', got;
+  END IF;
+  -- no frozen deployments record: deployed_at is NULL under the release
+  got := pg_temp.zzz_browse_as(usr, 'DR-seed', format('SELECT (SELECT r.deployed_at::text FROM public.get_observation_stats((SELECT public.accessible_program_slugs()), false) r WHERE r.observation = %L)', obs));
+  IF got IS NOT NULL AND got <> '<null>' THEN RAISE EXCEPTION 'deployed_at under DR-seed should be NULL, got %', got; END IF;
+  RAISE NOTICE 'OK provenance: a later live deployment of % does not relabel the release (frozen %)', obs, exp_cf;
+END $$;
+ROLLBACK TO SAVEPOINT provenance;
+
+-- 5. an observation created after the freeze (or one without frozen
+--    spectra) is not listed under the release
+SAVEPOINT newobs;
+DO $$
+DECLARE
+  usr uuid := (SELECT id FROM auth.users WHERE email = 'user@campfire.dev');
+  adm uuid := (SELECT id FROM auth.users WHERE email = 'admin@campfire.dev');
+  prog text := (SELECT s.program_slug FROM dr_spectra s WHERE s.tag = 'DR-seed' GROUP BY s.program_slug ORDER BY count(*) DESC, s.program_slug LIMIT 1);
+  fld text := (SELECT t.field FROM dr_targets t WHERE t.tag = 'DR-seed' LIMIT 1);
+  q text := 'SELECT (SELECT count(*) FROM public.get_observations_overview((SELECT public.accessible_program_slugs()), false) r WHERE r.observation = ''zzz_dr_newobs'')::text';
+  got text;
+BEGIN
+  INSERT INTO observations (name, program_slug, jwst_program_id, field, file_globs, gratings)
+  VALUES ('zzz_dr_newobs', prog, 9999, fld, ARRAY['zzz*'], '{}');
+  got := pg_temp.zzz_browse_as(adm, NULL, q);
+  IF got <> '1' THEN RAISE EXCEPTION 'live overview should list the new observation, got %', got; END IF;
+  got := pg_temp.zzz_browse_as(usr, 'DR-seed', q);
+  IF got <> '0' THEN RAISE EXCEPTION 'get_observations_overview under DR-seed lists an observation the release has no spectra of (reader): %', got; END IF;
+  got := pg_temp.zzz_browse_as(adm, 'DR-seed', q);
+  IF got <> '0' THEN RAISE EXCEPTION 'get_observations_overview under DR-seed lists an observation the release has no spectra of (admin): %', got; END IF;
+  RAISE NOTICE 'OK observations: a post-freeze observation is listed live, not under DR-seed';
+END $$;
+ROLLBACK TO SAVEPOINT newobs;
+
+-- 6. the NIRCam field readers never hand out the live layout key under a
+--    release (the manifest's archived copy, or NULL before P6b-3 lists it)
+SAVEPOINT layout;
+DO $$
+DECLARE
+  usr uuid := (SELECT id FROM auth.users WHERE email = 'user@campfire.dev');
+  adm uuid := (SELECT id FROM auth.users WHERE email = 'admin@campfire.dev');
+  fld text := (SELECT ni.field FROM dr_nircam_images ni WHERE ni.tag = 'DR-seed' LIMIT 1);
+  k text := 'data/products/nircam/zzz/layout/zzz_layout_live.png';
+  q1 text; q2 text; got text;
+BEGIN
+  IF EXISTS (SELECT 1 FROM storage_objects so WHERE so.product_type = 'nircam_layout' AND so.field = fld AND so.status = 'active') THEN
+    RAISE EXCEPTION 'the seed carries an active layout for %; adapt this case', fld;
+  END IF;
+  INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, size_bytes, content_type, product_type, instrument, status, field)
+  VALUES ('osn', 'data', k, 'sha256:zzz-layout', 10, 'image/png', 'nircam_layout', 'nircam', 'active', fld);
+  q1 := format('SELECT (SELECT r.layout_key FROM public.get_nircam_fields() r WHERE r.field = %L)', fld);
+  q2 := format('SELECT (SELECT r.layout_key FROM public.get_nircam_field_summary(%L) r)', fld);
+  got := pg_temp.zzz_browse_as(adm, NULL, q1);
+  IF got IS DISTINCT FROM k THEN RAISE EXCEPTION 'live get_nircam_fields should hand out the new layout key, got %', got; END IF;
+  got := pg_temp.zzz_browse_as(adm, NULL, q2);
+  IF got IS DISTINCT FROM k THEN RAISE EXCEPTION 'live get_nircam_field_summary should hand out the new layout key, got %', got; END IF;
+  got := pg_temp.zzz_browse_as(usr, 'DR-seed', q1);
+  IF got = k THEN RAISE EXCEPTION 'get_nircam_fields under DR-seed hands out the LIVE layout key'; END IF;
+  got := pg_temp.zzz_browse_as(adm, 'DR-seed', q1);
+  IF got = k THEN RAISE EXCEPTION 'get_nircam_fields under DR-seed (admin) hands out the LIVE layout key'; END IF;
+  got := pg_temp.zzz_browse_as(usr, 'DR-seed', q2);
+  IF got = k THEN RAISE EXCEPTION 'get_nircam_field_summary under DR-seed hands out the LIVE layout key'; END IF;
+  RAISE NOTICE 'OK layout: the live layout key of % is served live and never under DR-seed (manifest: %)', fld, coalesce(got, 'none archived yet');
+END $$;
+ROLLBACK TO SAVEPOINT layout;
+
 -- ---------------------------------------------------------- equivalence
 DO $$
 DECLARE
@@ -255,9 +354,20 @@ BEGIN
   PERFORM pg_temp.zzz_same('observation manifest', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observation_manifest(%L, %s, false) r)::text', obs, aps));
   PERFORM pg_temp.zzz_same('database overview', 'SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_database_overview(false) r)::text', ARRAY['n_targets']);
   -- live: readers get the matview (refreshed above), admins the live path;
-  -- under DR-seed everyone takes the cat_* path
-  PERFORM pg_temp.zzz_same('observation stats', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observation_stats(%s, false) r)::text', aps));
-  PERFORM pg_temp.zzz_same('observations overview', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observations_overview(%s, false) r)::text', aps));
+  -- under DR-seed everyone takes the cat_* path. The provenance columns are
+  -- by design not comparable: live they describe the newest deployment,
+  -- under a release the release's own spectra (no frozen deployments
+  -- record: deployed_at, deployer and patch counts are NULL / 0); case 4
+  -- above pins the release-side rule. Counts, pointings and gratings must
+  -- agree.
+  PERFORM pg_temp.zzz_same('observation stats', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observation_stats(%s, false) r)::text', aps),
+                           ARRAY['crds_context','cfpipe_version','jwst_version','reduced_at','deployed_at','deployed_by_username','deployed_by_full_name','n_patches_since_full','last_patch_at']);
+  -- (live lists every observation of the programs, with zero counts for
+  -- those without published spectra; a release lists only the observations
+  -- it holds spectra of, case 5 above, so the comparison keeps the rows
+  -- with spectra on both sides)
+  PERFORM pg_temp.zzz_same('observations overview', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observations_overview(%s, false) r WHERE r.spectrum_count > 0)::text', aps),
+                           ARRAY['crds_context','cfpipe_version','jwst_version','reduced_at','deployed_at','deployed_by_username','deployed_by_full_name','n_patches_since_full','last_patch_at']);
 END $$;
 
 -- an unpublished tag is invisible to a reader through the views too: the
