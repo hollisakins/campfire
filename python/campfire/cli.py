@@ -1890,27 +1890,35 @@ def dr_page_group():
 @click.argument("directory", type=click.Path(exists=True, file_okay=False))
 @click.option("--dry-run", is_flag=True, help="List what would be uploaded and set; write nothing")
 @click.option("--json", "as_json", is_flag=True, help="Print the result as JSON")
-def dr_page_push(tag, directory, dry_run, as_json):
+@click.option("--local", is_flag=True,
+              help="Against local Supabase (127.0.0.1:54321, or CAMPFIRE_LOCAL_SUPABASE_URL); the bucket stays the shared one")
+def dr_page_push(tag, directory, dry_run, as_json, local):
     """Upload DIRECTORY's files under dr/TAG/page/ and set TAG's page.
 
     DIRECTORY must hold README.md (the page markdown); every other regular
     file is a figure (no subdirectories; at most 50 files of 25 MB). Needs
     OSN credentials (CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml) and
-    `campfire login` as an admin. Refused for a published release.
+    `campfire login` as an admin. Refused for a published release. Each
+    file is uploaded once (If-None-Match); a file already there with the
+    same bytes is kept, a different one replaced; names a previous push
+    left under dr/TAG/page/ are deleted after the page is set.
     """
     import json as _json
 
-    from .dr_page import PageError, push_page
+    from .dr_page import PageError, check_editable, push_page
 
     say = (lambda m: click.echo(m, err=True)) if as_json else click.echo
-    config, sb = _dr_client(False, what="`campfire dr page push`")
+    config, sb = _dr_client(local, what="`campfire dr page push`")
     s3 = bucket = None
-    if not dry_run:
-        s3, bucket = _dr_osn_s3(config)
-        if s3 is None:
-            say(f"✗ `campfire dr page push` needs OSN credentials for the data bucket ({bucket}).")
-            sys.exit(2)
     try:
+        # the release first: the operator sees the real reason before the
+        # credentials check (review on P6b-3)
+        check_editable(sb, tag)
+        if not dry_run:
+            s3, bucket = _dr_osn_s3(config)
+            if s3 is None:
+                say(f"✗ `campfire dr page push` needs OSN credentials for the data bucket ({bucket}).")
+                sys.exit(2)
         result = push_page(sb, s3, bucket, tag, directory, dry_run=dry_run, log=say)
     except PageError as e:
         say(f"✗ {e}")
@@ -1923,14 +1931,19 @@ def dr_page_push(tag, directory, dry_run, as_json):
     elif dry_run:
         click.echo("Dry run: nothing uploaded or set.")
     else:
+        ups = result.get('uploads') or {}
+        summary = ', '.join(f"{n} {k}" for k in ('uploaded', 'kept', 'replaced')
+                            if (n := sum(1 for v in ups.values() if v == k)))
         click.echo(f"Set the page of {tag}: {result.get('markdown_bytes', 0):,} bytes of markdown, "
-                   f"{result.get('assets', 0)} asset(s)")
+                   f"{result.get('assets', 0)} asset(s)" + (f" ({summary})" if summary else ''))
+        if result.get('swept'):
+            click.echo(f"  deleted {len(result['swept'])} stale file(s) under dr/{tag}/page/")
 
 
 @dr_page_group.command(name="show")
 @click.argument("tag")
 @click.option("--json", "as_json", is_flag=True, help="Print the page as JSON")
-@click.option("--local", is_flag=True, help="Against local Supabase")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321, or CAMPFIRE_LOCAL_SUPABASE_URL)")
 def dr_page_show(tag, as_json, local):
     """Print TAG's page markdown and its registered figures."""
     import json as _json
