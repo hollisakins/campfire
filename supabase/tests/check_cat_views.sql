@@ -77,19 +77,45 @@ BEGIN
   IF bad IS NOT NULL THEN
     RAISE EXCEPTION 'cat views: VOLATILE function(s) read a cat_* view: %', bad;
   END IF;
-  -- the switched RPCs read no live catalog table as a FROM/JOIN target
+  -- the switched RPCs read no live catalog table as a FROM / JOIN / FROM ONLY
+  -- / comma-join target, quoted or not (comment false positives accepted)
   FOREACH fn IN ARRAY switched LOOP
     SELECT count(*) INTO n FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = fn;
     IF n = 0 THEN RAISE EXCEPTION 'cat views: switched function % does not exist', fn; END IF;
     IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = fn
-               AND p.prosrc ~* '\m(from|join)\s+(public\.)?(objects|spectra|targets|spectrum_line_fits|spectrum_lines|object_photometry|object_photometry_bands|nircam_images|fields|mv_filter_options|spectrum_line_fits_status)\M') THEN
+               AND (p.prosrc ~* '\m(from|join)\s+(only\s+)?("?public"?\.)?"?(objects|spectra|targets|spectrum_line_fits|spectrum_lines|object_photometry|object_photometry_bands|nircam_images|fields|mv_filter_options|spectrum_line_fits_status)"?\M'
+                    OR p.prosrc ~* ',\s*("?public"?\.)?"?(objects|spectra|targets|spectrum_line_fits|spectrum_lines|object_photometry|object_photometry_bands|nircam_images|fields|mv_filter_options|spectrum_line_fits_status)"?\s+\w')) THEN
       RAISE EXCEPTION 'cat views: % still reads a live catalog table directly', fn;
     END IF;
     IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = fn AND p.provolatile = 'v') THEN
       RAISE EXCEPTION 'cat views: % is VOLATILE', fn;
     END IF;
   END LOOP;
-  RAISE NOTICE 'OK 2: no writer reads a cat_* view; % switched RPCs read no live catalog table', array_length(switched, 1);
+  -- nothing outside the switched set and dr_* calls a switched RPC: a caller
+  -- that reads live rows would otherwise mix them with frozen aggregates
+  -- under the header. Allowed: the sync streams, which assert live first.
+  SELECT string_agg(p.proname || ' -> ' || c.fn, ', ') INTO bad
+  FROM pg_proc p
+  CROSS JOIN LATERAL unnest(switched) AS c(fn)
+  WHERE p.pronamespace = 'public'::regnamespace
+    AND NOT (p.proname = ANY (switched)) AND p.proname NOT LIKE 'dr\_%'
+    AND p.proname NOT IN ('get_objects_for_sync')
+    AND substring(p.prosrc FROM position('$' IN p.prosrc)) ~ ('\m' || c.fn || '\s*\(')
+    AND p.prosrc ~ ('\m' || c.fn || '\s*\(');
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'cat views: function(s) outside the switched set call a switched RPC: %', bad;
+  END IF;
+  -- ...and every sync stream asserts live before anything else
+  SELECT string_agg(p.proname, ', ') INTO bad
+  FROM pg_proc p
+  WHERE p.pronamespace = 'public'::regnamespace
+    AND p.proname IN ('get_objects_for_sync','get_sync_deletions','get_spectra_for_sync','get_photometry_for_sync',
+                      'get_line_fits_for_sync','get_lists_for_sync','get_storage_objects_for_sync')
+    AND p.prosrc !~ '\mdr_assert_live\s*\(';
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'cat views: sync stream(s) without dr_assert_live(): %', bad;
+  END IF;
+  RAISE NOTICE 'OK 2: no writer reads a cat_* view; % switched RPCs read no live catalog table; no outside caller; sync streams assert live', array_length(switched, 1);
 END $$;
 
 -- ------------------------------------------------------------------ 3
@@ -116,8 +142,17 @@ INSERT INTO auth.users (id, email) VALUES
 INSERT INTO user_profiles (user_id, username, full_name, is_admin, is_link_account, can_comment, can_inspect) VALUES
   ('00000000-0000-0000-0000-0000000000c1', 'zzz-cat-admin', 'ZZZ Cat Admin', true,  false, true, true),
   ('00000000-0000-0000-0000-0000000000c2', 'zzz-cat-user',  'ZZZ Cat User',  false, false, true, false);
-INSERT INTO dr_releases (tag, state, components, created_by, freeze_started_at)
-VALUES ('DR-zzz-unpub', 'frozen', '["nirspec"]'::jsonb, '00000000-0000-0000-0000-0000000000c1', now());
+INSERT INTO auth.users (id, email) VALUES ('00000000-0000-0000-0000-0000000000c3', 'zzz-cat-link@test.invalid');
+INSERT INTO user_profiles (user_id, username, full_name, is_admin, is_link_account, can_comment, can_inspect) VALUES
+  ('00000000-0000-0000-0000-0000000000c3', 'zzz-cat-link', 'ZZZ Cat Link', false, true, false, false);
+INSERT INTO share_links (token, label, observation, link_user_id, link_password, include_drafts, allow_download, created_by)
+VALUES ('zzz_cat_tok', 'cat link', (SELECT t.observation FROM targets t WHERE t.has_published_spectrum LIMIT 1),
+        '00000000-0000-0000-0000-0000000000c3', 'x', false, true, '00000000-0000-0000-0000-0000000000c1');
+INSERT INTO dr_releases (tag, state, components, created_by, freeze_started_at) VALUES
+  ('DR-zzz-unpub',    'frozen',   '["nirspec"]'::jsonb, '00000000-0000-0000-0000-0000000000c1', now()),
+  ('DR-zzz-draft',    'draft',    '["nirspec"]'::jsonb, '00000000-0000-0000-0000-0000000000c1', NULL),
+  ('DR-zzz-freezing', 'freezing', '["nirspec"]'::jsonb, '00000000-0000-0000-0000-0000000000c1', now()),
+  ('DR-zzz-failed',   'failed',   '["nirspec"]'::jsonb, '00000000-0000-0000-0000-0000000000c1', now());
 
 -- run the hook as a principal with a header, inside a savepoint so an
 -- expected failure does not end the transaction; returns the sqlstate or the
@@ -172,6 +207,20 @@ BEGIN
   IF got <> 'SET:DR-zzz-unpub' THEN RAISE EXCEPTION 'service role + any existing tag should select it, got %', got; END IF;
   got := pg_temp.zzz_hook('service_role', NULL, 'DR-nope');
   IF got <> 'PT404' THEN RAISE EXCEPTION 'service role + unknown tag should be PT404, got %', got; END IF;
-  RAISE NOTICE 'OK 4: dr_request_context (no-op without header; PT404 on malformed/unknown/invisible; reader published only; admin and service role wider)';
+  -- the service role is limited to releases past their freeze
+  got := pg_temp.zzz_hook('service_role', NULL, 'DR-zzz-draft');
+  IF got <> 'PT404' THEN RAISE EXCEPTION 'service role + draft tag should be PT404, got %', got; END IF;
+  got := pg_temp.zzz_hook('service_role', NULL, 'DR-zzz-freezing');
+  IF got <> 'PT404' THEN RAISE EXCEPTION 'service role + freezing tag should be PT404, got %', got; END IF;
+  got := pg_temp.zzz_hook('service_role', NULL, 'DR-zzz-failed');
+  IF got <> 'PT404' THEN RAISE EXCEPTION 'service role + failed tag should be PT404, got %', got; END IF;
+  -- link accounts never browse a release, published or not
+  got := pg_temp.zzz_hook('authenticated', '00000000-0000-0000-0000-0000000000c3', 'DR-seed');
+  IF got <> 'PT404' THEN RAISE EXCEPTION 'link account + published tag should be PT404, got %', got; END IF;
+  got := pg_temp.zzz_hook('authenticated', '00000000-0000-0000-0000-0000000000c3', 'DR-zzz-unpub');
+  IF got <> 'PT404' THEN RAISE EXCEPTION 'link account + unpublished tag should be PT404, got %', got; END IF;
+  got := pg_temp.zzz_hook('authenticated', '00000000-0000-0000-0000-0000000000c3', NULL);
+  IF got <> 'SET:' THEN RAISE EXCEPTION 'link account without header should be a no-op, got %', got; END IF;
+  RAISE NOTICE 'OK 4: dr_request_context (no-op without header; PT404 on malformed/unknown/invisible; reader published only; link refused; admin every state; service role post-freeze states)';
 END $$;
 ROLLBACK;

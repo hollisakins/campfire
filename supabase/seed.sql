@@ -3618,6 +3618,11 @@ REFRESH MATERIALIZED VIEW public.mv_programs_overview;
 -- 13. Data release fixture (P4a): DR-seed, frozen by the real freeze
 -- ============================================
 
+-- objects.search_text is trigger-maintained on the live site; the sampled
+-- rows arrive without it, so fill it before the freeze copies the rows
+-- (the browsing-mode harness searches it on both sides)
+SELECT public.recompute_object_search_text();
+
 INSERT INTO public.dr_releases (tag, state, components, created_by, freeze_started_at, notes)
 SELECT 'DR-seed', 'freezing',
        (SELECT jsonb_agg(c) FROM (SELECT 'nirspec' AS c UNION ALL

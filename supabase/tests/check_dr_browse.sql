@@ -9,10 +9,17 @@
 -- (claims + SET LOCAL ROLE authenticated), and the two jsonb texts must be
 -- identical. Known, accepted difference: counts of targets without a
 -- published spectrum (get_database_overview.n_targets) -- a release holds the
--- targets of its spectra only.
+-- targets of its spectra only. Before the comparisons: the observation
+-- overview readers must not serve the live matview under a release (a live
+-- edit visible in the matview must NOT show in DR mode); the sync streams
+-- refuse the header; the three principals are made to differ (one program
+-- with frozen rows goes private and the viewer loses its grant), so the
+-- per-principal comparisons are not one comparison three times.
 -- Run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/check_dr_browse.sql
 \set ON_ERROR_STOP on
 BEGIN;
+-- the readers' path of the observation overviews; the seed does not refresh it
+REFRESH MATERIALIZED VIEW public.mv_observations_overview;
 
 CREATE FUNCTION pg_temp.zzz_browse_as(p_uid uuid, p_tag text, p_sql text) RETURNS text
 LANGUAGE plpgsql AS $$
@@ -36,10 +43,10 @@ GRANT EXECUTE ON FUNCTION pg_temp.zzz_browse_as(uuid, text, text) TO authenticat
 
 -- compare live vs DR-seed for every principal; `p_strip` removes keys that
 -- legitimately differ before comparing (a jsonb path list)
-CREATE FUNCTION pg_temp.zzz_same(p_label text, p_sql text, p_strip text[] DEFAULT '{}', p_allow_empty boolean DEFAULT false) RETURNS void
+CREATE FUNCTION pg_temp.zzz_same(p_label text, p_sql text, p_strip text[] DEFAULT '{}', p_assert text DEFAULT NULL) RETURNS void
 LANGUAGE plpgsql AS $$
 DECLARE
-  who record; live text; frozen text; k text; lj jsonb; fj jsonb;
+  who record; live text; frozen text; k text; lj jsonb; fj jsonb; ok boolean;
 BEGIN
   FOR who IN SELECT u.id, u.email FROM auth.users u
              WHERE u.email IN ('admin@campfire.dev', 'user@campfire.dev', 'viewer@campfire.dev') ORDER BY u.email LOOP
@@ -48,8 +55,15 @@ BEGIN
     IF live LIKE 'ERR:%' OR frozen LIKE 'ERR:%' THEN
       RAISE EXCEPTION '% as %: live=% frozen=%', p_label, who.email, left(live, 300), left(frozen, 300);
     END IF;
-    IF live = '<null>' AND frozen = '<null>' AND NOT p_allow_empty THEN
+    IF live = '<null>' AND frozen = '<null>' THEN
       RAISE EXCEPTION '% as %: both sides empty (the argument set exercises nothing)', p_label, who.email;
+    END IF;
+    -- the admin's live result must satisfy the case's own non-vacuity test
+    IF p_assert IS NOT NULL AND who.email = 'admin@campfire.dev' THEN
+      EXECUTE 'SELECT ' || p_assert INTO ok USING live::jsonb;
+      IF NOT coalesce(ok, false) THEN
+        RAISE EXCEPTION '% as admin: the result does not satisfy "%": %', p_label, p_assert, left(live, 400);
+      END IF;
     END IF;
     IF array_length(p_strip, 1) > 0 AND live <> '<null>' AND frozen <> '<null>' THEN
       lj := live::jsonb; fj := frozen::jsonb;
@@ -71,6 +85,93 @@ BEGIN
   RAISE NOTICE 'OK %: identical live / DR-seed for admin, user, viewer', p_label;
 END $$;
 
+-- ---------------------------------------------------------------- readers
+-- 1. the observation overviews never serve the live matview under a release:
+--    bump one published spectrum's size live, refresh the matview, and the
+--    reader's DR-mode total must still be the frozen one (savepoint: the
+--    bump is undone before the comparisons)
+SAVEPOINT live_edit;
+DO $$
+DECLARE
+  usr uuid := (SELECT id FROM auth.users WHERE email = 'user@campfire.dev');
+  obs text := (SELECT s.observation FROM dr_spectra s WHERE s.tag = 'DR-seed' GROUP BY s.observation ORDER BY count(*) DESC, s.observation LIMIT 1);
+  frozen_total bigint := (SELECT sum(s.file_size) FROM dr_spectra s WHERE s.tag = 'DR-seed' AND s.observation = obs);
+  got text; live_total bigint;
+BEGIN
+  UPDATE spectra SET file_size = file_size + 1000000
+   WHERE id = (SELECT s.id FROM spectra s WHERE s.observation = obs AND s.deploy_status = 'published' ORDER BY s.id LIMIT 1);
+  REFRESH MATERIALIZED VIEW public.mv_observations_overview;
+  SELECT sum(s.file_size) INTO live_total FROM spectra s WHERE s.observation = obs AND s.deploy_status = 'published';
+  IF live_total = frozen_total THEN RAISE EXCEPTION 'the live edit did not change the total for %', obs; END IF;
+  got := pg_temp.zzz_browse_as(usr, 'DR-seed',
+    format('SELECT (SELECT r.total_size_bytes::text FROM public.get_observation_stats((SELECT public.accessible_program_slugs()), false) r WHERE r.observation = %L)', obs));
+  IF got IS DISTINCT FROM frozen_total::text THEN
+    RAISE EXCEPTION 'get_observation_stats served live data under DR-seed for a reader: % (frozen %, live %)', got, frozen_total, live_total;
+  END IF;
+  got := pg_temp.zzz_browse_as(usr, 'DR-seed',
+    format('SELECT (SELECT r.total_size_bytes::text FROM public.get_observations_overview((SELECT public.accessible_program_slugs()), false) r WHERE r.observation = %L)', obs));
+  IF got IS DISTINCT FROM frozen_total::text THEN
+    RAISE EXCEPTION 'get_observations_overview served live data under DR-seed for a reader: % (frozen %, live %)', got, frozen_total, live_total;
+  END IF;
+  -- and live mode still serves the edit (the matview path)
+  got := pg_temp.zzz_browse_as(usr, NULL,
+    format('SELECT (SELECT r.total_size_bytes::text FROM public.get_observation_stats((SELECT public.accessible_program_slugs()), false) r WHERE r.observation = %L)', obs));
+  IF got IS DISTINCT FROM live_total::text THEN
+    RAISE EXCEPTION 'get_observation_stats live mode did not serve the live total: % (live %)', got, live_total;
+  END IF;
+  RAISE NOTICE 'OK readers: observation overviews serve frozen numbers under DR-seed, live numbers live (observation %)', obs;
+END $$;
+ROLLBACK TO SAVEPOINT live_edit;
+
+-- 2. the sync streams refuse the header
+DO $$
+DECLARE usr uuid := (SELECT id FROM auth.users WHERE email = 'user@campfire.dev'); got text;
+BEGIN
+  got := pg_temp.zzz_browse_as(usr, 'DR-seed', 'SELECT (SELECT count(*) FROM public.get_objects_for_sync((SELECT public.accessible_program_slugs()), NULL, NULL, 10))::text');
+  IF got NOT LIKE 'ERR:%live-only%' THEN RAISE EXCEPTION 'get_objects_for_sync under DR-seed should raise live-only, got %', left(got, 200); END IF;
+  got := pg_temp.zzz_browse_as(usr, 'DR-seed', 'SELECT (SELECT count(*) FROM public.get_spectra_for_sync((SELECT public.accessible_program_slugs()), NULL, NULL, 10))::text');
+  IF got NOT LIKE 'ERR:%live-only%' THEN RAISE EXCEPTION 'get_spectra_for_sync under DR-seed should raise live-only, got %', left(got, 200); END IF;
+  got := pg_temp.zzz_browse_as(usr, NULL, 'SELECT (SELECT count(*) FROM public.get_objects_for_sync((SELECT public.accessible_program_slugs()), NULL, NULL, 10))::text');
+  IF got LIKE 'ERR:%' THEN RAISE EXCEPTION 'get_objects_for_sync live should work, got %', left(got, 200); END IF;
+  RAISE NOTICE 'OK sync: get_objects_for_sync / get_spectra_for_sync refuse X-Campfire-DR and work live (get_sync_deletions is service_role-only; check_cat_views asserts its guard)';
+END $$;
+
+-- 3. make the principals differ: one program with frozen spectra that both
+--    user@ and viewer@ hold by grant goes private, and viewer@ loses the grant
+DO $$
+DECLARE
+  usr uuid := (SELECT id FROM auth.users WHERE email = 'user@campfire.dev');
+  vwr uuid := (SELECT id FROM auth.users WHERE email = 'viewer@campfire.dev');
+  adm uuid := (SELECT id FROM auth.users WHERE email = 'admin@campfire.dev');
+  prog text; a text; u text; v text; nu int; nv int;
+BEGIN
+  SELECT s.program_slug INTO prog
+  FROM dr_spectra s
+  WHERE s.tag = 'DR-seed'
+    AND EXISTS (SELECT 1 FROM user_program_access g WHERE g.user_id = usr AND g.program_slug = s.program_slug)
+    AND EXISTS (SELECT 1 FROM user_program_access g WHERE g.user_id = vwr AND g.program_slug = s.program_slug)
+  GROUP BY s.program_slug ORDER BY count(*) DESC, s.program_slug LIMIT 1;
+  IF prog IS NULL THEN RAISE EXCEPTION 'no frozen program is granted to both user@ and viewer@'; END IF;
+  UPDATE programs SET is_public = false WHERE slug = prog;
+  DELETE FROM user_program_access WHERE user_id = vwr AND program_slug = prog;
+  a := pg_temp.zzz_browse_as(adm, NULL, 'SELECT (SELECT public.accessible_program_slugs())::text');
+  u := pg_temp.zzz_browse_as(usr, NULL, 'SELECT (SELECT public.accessible_program_slugs())::text');
+  v := pg_temp.zzz_browse_as(vwr, NULL, 'SELECT (SELECT public.accessible_program_slugs())::text');
+  -- admin and user may legitimately coincide (the one private program is
+  -- granted to user@); viewer@ must have lost exactly that program
+  IF u = v OR NOT (prog = ANY (a::text[])) OR NOT (prog = ANY (u::text[])) OR prog = ANY (v::text[]) THEN
+    RAISE EXCEPTION 'principals still collapse on %: admin %, user %, viewer %', prog, left(a, 80), left(u, 80), left(v, 80);
+  END IF;
+  nu := (pg_temp.zzz_browse_as(usr, 'DR-seed', 'SELECT (SELECT r.total_count::text FROM public.get_filtered_objects_paginated(p_program_slugs => (SELECT public.accessible_program_slugs()), p_page_size => 1) r)'))::int;
+  nv := (pg_temp.zzz_browse_as(vwr, 'DR-seed', 'SELECT (SELECT r.total_count::text FROM public.get_filtered_objects_paginated(p_program_slugs => (SELECT public.accessible_program_slugs()), p_page_size => 1) r)'))::int;
+  IF NOT (nv < nu) THEN RAISE EXCEPTION 'viewer should see fewer objects than user under DR-seed: viewer %, user %', nv, nu; END IF;
+  nu := (pg_temp.zzz_browse_as(usr, 'DR-seed', 'SELECT (SELECT r.total_count::text FROM public.get_filtered_spectra_paginated(p_program_slugs => (SELECT public.accessible_program_slugs()), p_page_size => 1) r)'))::int;
+  nv := (pg_temp.zzz_browse_as(vwr, 'DR-seed', 'SELECT (SELECT r.total_count::text FROM public.get_filtered_spectra_paginated(p_program_slugs => (SELECT public.accessible_program_slugs()), p_page_size => 1) r)'))::int;
+  IF NOT (nv < nu) THEN RAISE EXCEPTION 'viewer should see fewer spectra than user under DR-seed: viewer %, user %', nv, nu; END IF;
+  RAISE NOTICE 'OK principals: program % private, viewer@ without its grant; admin / user / viewer scopes differ; viewer sees fewer objects and spectra', prog;
+END $$;
+
+-- ---------------------------------------------------------- equivalence
 DO $$
 DECLARE
   aps text := '(SELECT public.accessible_program_slugs())';
@@ -78,11 +179,21 @@ DECLARE
   line text := (SELECT l.line FROM spectrum_lines l GROUP BY l.line ORDER BY count(*) DESC, l.line LIMIT 1);
   band text := (SELECT b.band FROM object_photometry_bands b GROUP BY b.band ORDER BY count(*) DESC, b.band LIMIT 1);
   obj record := (SELECT o FROM objects o WHERE o.has_published_spectrum AND o.is_active ORDER BY o.object_id OFFSET 3 LIMIT 1);
+  -- an object with a measured line, so the line-S/N case returns a value
+  fit_oid int; fit_line text;
+  -- spectra.search_text is target_id + the file stem, not the object name
+  srch_spec text := (SELECT left(s.target_id, 8) FROM spectra s WHERE s.deploy_status = 'published' ORDER BY s.id LIMIT 1);
   fld text := (SELECT o.field FROM objects o WHERE o.has_published_spectrum AND o.is_active GROUP BY o.field ORDER BY count(*) DESC, o.field LIMIT 1);
   obs text := (SELECT t.observation FROM targets t WHERE t.has_published_spectrum GROUP BY t.observation ORDER BY count(*) DESC, t.observation LIMIT 1);
   q text;
 BEGIN
-  IF grat IS NULL OR line IS NULL OR band IS NULL OR obj IS NULL OR fld IS NULL OR obs IS NULL THEN
+  SELECT t.object_id, l.line INTO fit_oid, fit_line
+  FROM spectrum_lines l
+  JOIN spectra s ON s.id = l.spectrum_id
+  JOIN targets t ON t.target_id = s.target_id
+  WHERE t.object_id IS NOT NULL AND l.snr IS NOT NULL AND s.deploy_status = 'published'
+  ORDER BY l.snr DESC, l.spectrum_id, l.line LIMIT 1;
+  IF grat IS NULL OR line IS NULL OR band IS NULL OR obj IS NULL OR fld IS NULL OR obs IS NULL OR fit_oid IS NULL THEN
     RAISE EXCEPTION 'seed lacks a grating/line/band/object/field/observation to exercise (% % % % % %)', grat, line, band, obj.object_id, fld, obs;
   END IF;
   RAISE NOTICE 'arguments: grating % line % band % object % field % observation %', grat, line, band, obj.object_id, fld, obs;
@@ -94,7 +205,8 @@ BEGIN
   PERFORM pg_temp.zzz_same('objects line filter', format(q, format(', p_line => %L, p_line_snr_min => 3, p_line_include_stale => true', line)));
   PERFORM pg_temp.zzz_same('objects band filter', format(q, format(', p_band => %L, p_band_mag_max => 40', band)));
   PERFORM pg_temp.zzz_same('objects band sort', format(q, format(', p_band => %L, p_sort_column => ''band_mag'', p_sort_direction => ''asc''', band)));
-  PERFORM pg_temp.zzz_same('objects text search', format(q, format(', p_search => %L', left(obj.object_id, 6))));
+  PERFORM pg_temp.zzz_same('objects text search', format(q, format(', p_search => %L', left(obj.object_id, 6))),
+                           '{}', '($1->0->>''total_count'')::int > 0');
   PERFORM pg_temp.zzz_same('objects sorted by redshift', format(q, ', p_sort_column => ''redshift'', p_sort_direction => ''desc'''));
   PERFORM pg_temp.zzz_same('objects page 2', format(q, ', p_page => 2'));
   PERFORM pg_temp.zzz_same('objects field + quality', format(q, format(', p_fields => ARRAY[%L], p_redshift_quality => ARRAY[3,4]', fld)));
@@ -108,7 +220,8 @@ BEGIN
   PERFORM pg_temp.zzz_same('spectra grating filter', format(q, format(', p_gratings => ARRAY[%L]', grat)));
   PERFORM pg_temp.zzz_same('spectra line filter', format(q, format(', p_line => %L, p_line_snr_min => 3, p_line_include_stale => true', line)));
   PERFORM pg_temp.zzz_same('spectra band filter', format(q, format(', p_band => %L, p_band_snr_min => 1', band)));
-  PERFORM pg_temp.zzz_same('spectra text search', format(q, format(', p_search => %L', left(obj.object_id, 6))));
+  PERFORM pg_temp.zzz_same('spectra text search', format(q, format(', p_search => %L', srch_spec)),
+                           '{}', '($1->0->>''total_count'')::int > 0');
   PERFORM pg_temp.zzz_same('spectra sorted by snr', format(q, ', p_sort_column => ''signal_to_noise'', p_sort_direction => ''desc'''));
   PERFORM pg_temp.zzz_same('spectra page 2', format(q, ', p_page => 2'));
   PERFORM pg_temp.zzz_same('spectra dq filter', format(q, ', p_dq_flags_exclude => 1'));
@@ -125,7 +238,8 @@ BEGIN
   PERFORM pg_temp.zzz_same('observation helper', format('SELECT (SELECT jsonb_agg(x ORDER BY x) FROM public.objects_matching_observation_filter(ARRAY[%L], %s, false) x)::text', obs, aps));
   PERFORM pg_temp.zzz_same('line helper (objects)', format('SELECT (SELECT jsonb_agg(x ORDER BY x) FROM public.objects_matching_line_filter(%L, 3, NULL, true, %s, false) x)::text', line, aps));
   PERFORM pg_temp.zzz_same('line helper (spectra)', format('SELECT (SELECT jsonb_agg(x ORDER BY x) FROM public.spectra_matching_line_filter(%L, 3, NULL, true) x)::text', line));
-  PERFORM pg_temp.zzz_same('line snr', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.object_line_snr(%s, %L, true, %s, false) r)::text', obj.id, line, aps));
+  PERFORM pg_temp.zzz_same('line snr', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.object_line_snr(%s, %L, true, %s, false) r)::text', fit_oid, fit_line, aps),
+                           '{}', 'jsonb_typeof($1->0) = ''number''');
   PERFORM pg_temp.zzz_same('band values', format('SELECT (SELECT jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text) FROM public.object_band_values(%L, NULL, 40, NULL, NULL, %s, false) r)::text', band, aps));
   PERFORM pg_temp.zzz_same('band helper', format('SELECT (SELECT jsonb_agg(x ORDER BY x) FROM public.objects_matching_band_filter(%L, NULL, 40, NULL, NULL, %s, false) x)::text', band, aps));
 
@@ -140,11 +254,10 @@ BEGIN
   PERFORM pg_temp.zzz_same('csv spectra', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_csv_export_spectra(p_program_slugs => %s, p_page_size => 50) r)::text', aps));
   PERFORM pg_temp.zzz_same('observation manifest', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observation_manifest(%L, %s, false) r)::text', obs, aps));
   PERFORM pg_temp.zzz_same('database overview', 'SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_database_overview(false) r)::text', ARRAY['n_targets']);
-  -- readers get these from mv_observations_overview (live-only by
-  -- construction, and not refreshed by the seed, hence empty for them); the
-  -- live path that reads cat_spectra / cat_targets is the admin's
-  PERFORM pg_temp.zzz_same('observation stats', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observation_stats(%s, false) r)::text', aps), '{}', true);
-  PERFORM pg_temp.zzz_same('observations overview', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observations_overview(%s, false) r)::text', aps), '{}', true);
+  -- live: readers get the matview (refreshed above), admins the live path;
+  -- under DR-seed everyone takes the cat_* path
+  PERFORM pg_temp.zzz_same('observation stats', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observation_stats(%s, false) r)::text', aps));
+  PERFORM pg_temp.zzz_same('observations overview', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observations_overview(%s, false) r)::text', aps));
 END $$;
 
 -- an unpublished tag is invisible to a reader through the views too: the

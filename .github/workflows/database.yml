@@ -126,6 +126,15 @@ jobs:
             psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$f"
           done
 
+      - name: Pre-request hook end-to-end (X-Campfire-DR through PostgREST)
+        # The SQL guards cannot see whether PostgREST actually runs
+        # dr_request_context (a role setting, registered by a hand-authored
+        # migration): call the Data API with and without the header.
+        run: |
+          api=$(supabase status --output-format json | python3 -c 'import sys,json; print(json.load(sys.stdin)["env"]["API_URL"])')
+          anon=$(supabase status --output-format json | python3 -c 'import sys,json; print(json.load(sys.stdin)["env"]["ANON_KEY"])')
+          bash supabase/tests/hook_e2e.sh "$api" "$anon"
+
       - name: Python SQL harnesses
         env:
           CAMPFIRE_LOCAL_DB_URL: ${{ steps.db.outputs.url }}
