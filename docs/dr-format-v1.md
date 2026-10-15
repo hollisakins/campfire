@@ -97,8 +97,12 @@ Frozen-only fields are added; live-only operational fields (`updated_at`,
 `observations`, `gratings`, `n_targets`, `n_spectra`,
 `max_snr`, `max_exposure_time` (the six scoped to the file program),
 `photo_z`, `photo_z_err_lo`, `photo_z_err_hi`, `has_photometry`,
-`z_source_spectrum_id` (the `spectra.id` the `compute_object_redshift_auto`
-rule picks among the file program's spectra in the freeze snapshot),
+`z_source_spectrum_id` (the object's **global** redshift anchor: the `spectra.id`
+the `compute_object_redshift_auto` rule picks among *all* the object's published
+member spectra in the freeze snapshot, whichever program they belong to; it is
+written only in the partition of the program that owns that spectrum and is
+`null` in the object's other partitions, so a `null` means "the anchor is a
+spectrum of another program", not "no anchor"),
 `redshift_auto`, `redshift_inspected`, `redshift`, `redshift_quality`,
 `inspected_used_auto`, `last_inspected_at`, `last_inspected_by`, `version`,
 `is_active` (always true), `needs_review`, `reviewed_spectrum_ids` (the file
