@@ -255,12 +255,13 @@ def test_cli_purge(monkeypatch):
     res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t', '--yes'])
     assert res.exit_code == 0, res.output
     assert 'Purged DR-t (was frozen): 163 spectra · 101 objects' in res.output
-    # the export files go too, after the rows (Codex on #600)
-    assert swept == [('s3', 'campfire-data', 'dr/DR-t/exports/', 1)]
+    # the export files go too, after the rows (Codex on #600), then the page document's (P6b-3)
+    assert swept == [('s3', 'campfire-data', 'dr/DR-t/exports/', 1), ('s3', 'campfire-data', 'dr/DR-t/page/', 1)]
     assert 'deleted 4 export file(s) under dr/DR-t/exports/' in res.output
+    assert 'deleted 4 page file(s) under dr/DR-t/page/' in res.output
     res = CliRunner().invoke(main_cli.cli, ['dr', 'purge', 'DR-t'], input='n\n')
     assert res.exit_code == 1 and c.rpc_calls.count(('dr_purge_release', {'p_tag': 'DR-t'})) == 1
-    assert len(swept) == 1
+    assert len(swept) == 2            # the declined run swept nothing more
 
 
 def test_cli_purge_without_osn_credentials_refuses_before_the_rows(monkeypatch):
