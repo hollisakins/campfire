@@ -822,3 +822,22 @@ CREATE INDEX IF NOT EXISTS idx_dr_photometry_bands_tag_band_snr
 -- dr_nircam_images
 CREATE INDEX IF NOT EXISTS idx_dr_nircam_images_tag_field
     ON public.dr_nircam_images USING btree (tag, field);
+-- P6b-2: the remaining live twins the catalog RPCs sort or filter on
+-- (idx_spectra_grating / _snr / _exposure_time / _dq_flags,
+-- idx_objects_redshift_quality, idx_targets_target_id_trgm), plus a tag-less
+-- observation index for dr_observation_references (deploy remove walks every
+-- release for one observation).
+CREATE INDEX IF NOT EXISTS idx_dr_objects_tag_redshift_quality
+    ON public.dr_objects USING btree (tag, redshift_quality);
+CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_grating
+    ON public.dr_spectra USING btree (tag, grating);
+CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_snr
+    ON public.dr_spectra USING btree (tag, signal_to_noise DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_exposure_time
+    ON public.dr_spectra USING btree (tag, exposure_time DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_dq_flags
+    ON public.dr_spectra USING btree (tag, dq_flags) WHERE (dq_flags <> 0);
+CREATE INDEX IF NOT EXISTS idx_dr_spectra_observation
+    ON public.dr_spectra USING btree (observation);
+CREATE INDEX IF NOT EXISTS idx_dr_targets_target_id_trgm
+    ON public.dr_targets USING gin (target_id public.gin_trgm_ops);
