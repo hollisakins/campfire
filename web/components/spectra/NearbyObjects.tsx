@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useRef } from 'react';
-import Link from 'next/link';
+import { DrLink } from '@/lib/dr/client';
 import { useNearbyObjectsQuery } from '@/lib/hooks/useNearbyObjectsQuery';
 import { useInView } from '@/lib/hooks/useInView';
 import { QUALITY_LABELS } from '@/lib/types';
@@ -131,12 +131,12 @@ export const NearbyObjects: React.FC<NearbyObjectsProps> = ({
                     className="border-b border-border hover:bg-card-hover transition-colors"
                   >
                     <td className="py-3 px-4">
-                      <Link
+                      <DrLink
                         href={`/nirspec/objects/${encodeURIComponent(obj.object_id)}`}
                         className="text-sm font-mono text-primary hover:underline"
                       >
                         {obj.object_id}
-                      </Link>
+                      </DrLink>
                     </td>
                     <td className="py-3 px-4">
                       <span className="text-sm font-mono text-text-primary">

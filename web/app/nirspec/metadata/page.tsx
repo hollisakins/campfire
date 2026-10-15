@@ -21,6 +21,8 @@ import {
 } from '@/lib/hooks/useProgramsQuery';
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import { useDrTag } from '@/lib/dr/client';
+import { DR_PARAM, withDr } from '@/lib/dr/tag';
 import {
   isWithinRecency,
   metadataFiltersToURLParams,
@@ -128,8 +130,11 @@ function MetadataPageContent() {
   const searchParams = useSearchParams();
   const { user, loading: authLoading } = useAuth();
   const enabled = !authLoading && !!user;
+  // Release browsing (P6c-1): the programs overview is a live matview, so
+  // only the observations tab (a switched RPC) is offered under a release.
+  const drTag = useDrTag();
 
-  const programsQ = useProgramsOverviewQuery(enabled);
+  const programsQ = useProgramsOverviewQuery(enabled && !drTag);
   const observationsQ = useObservationsOverviewQuery(enabled);
   const overviewQ = useDatabaseOverviewQuery(enabled);
 
@@ -158,10 +163,11 @@ function MetadataPageContent() {
   // Sync filter state to URL.
   useEffect(() => {
     const params = metadataFiltersToURLParams(debouncedFilters);
+    if (drTag) params.set(DR_PARAM, drTag);
     const qs = params.toString();
     const next = qs ? `${pathname}?${qs}` : pathname;
     router.replace(next, { scroll: false });
-  }, [debouncedFilters, pathname, router]);
+  }, [debouncedFilters, pathname, router, drTag]);
 
   const setTab = (tab: MetadataTab) => setFilters((prev) => ({ ...prev, tab }));
 
@@ -182,7 +188,7 @@ function MetadataPageContent() {
         <Breadcrumbs
           items={[
             { label: 'CAMPFIRE', href: '/' },
-            { label: 'NIRSpec', href: '/nirspec' },
+            { label: 'NIRSpec', href: withDr('/nirspec', drTag) },
             { label: 'Metadata' },
           ]}
           className="mb-6"
@@ -214,7 +220,7 @@ function MetadataPageContent() {
       <Breadcrumbs
         items={[
           { label: 'CAMPFIRE', href: '/' },
-          { label: 'NIRSpec', href: '/nirspec' },
+          { label: 'NIRSpec', href: withDr('/nirspec', drTag) },
           { label: 'Metadata' },
         ]}
         className="mb-6"
@@ -270,11 +276,13 @@ function MetadataPageContent() {
 
       {error && !loading && <ErrorState message={error} className="mb-4" />}
 
-      <Tabs value={filters.tab} onValueChange={(v) => setTab(v as MetadataTab)}>
+      <Tabs value={drTag ? 'observations' : filters.tab} onValueChange={(v) => setTab(v as MetadataTab)}>
         <TabsList className="mb-4">
-          <TabsTrigger value="programs">
-            Programs ({programs.length.toLocaleString()})
-          </TabsTrigger>
+          {!drTag && (
+            <TabsTrigger value="programs">
+              Programs ({programs.length.toLocaleString()})
+            </TabsTrigger>
+          )}
           <TabsTrigger value="observations">
             Observations ({observations.length.toLocaleString()})
           </TabsTrigger>
@@ -320,6 +328,7 @@ function MetadataPageContent() {
 const ObservationsBulkActions: React.FC<{ filtered: ObservationOverview[] }> = ({
   filtered,
 }) => {
+  const drTag = useDrTag();
   const hasPointings = filtered.some((o) => (o.pointings?.length ?? 0) > 0);
   const downloadCsv = () => {
     const rows = flattenPointings(filtered);
@@ -353,7 +362,7 @@ const ObservationsBulkActions: React.FC<{ filtered: ObservationOverview[] }> = (
         DS9
       </button>
       <Link
-        href={buildSpectraViewerUrl(filtered)}
+        href={withDr(buildSpectraViewerUrl(filtered), drTag)}
         className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
         title="View matching spectra"
       >

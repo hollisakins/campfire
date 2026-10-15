@@ -8,6 +8,7 @@ import { downloadSingleFile } from './DownloadButtons';
 import { formatExposureTime } from './plotting-utils';
 import { DQ_FLAGS, decodeBitmask, encodeBitmask } from '@/lib/flags';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import { useDrTag } from '@/lib/dr/client';
 import type { Spectrum } from '@/lib/types';
 
 const DQ_OPTIONS: FilterOption[] = DQ_FLAGS.map(f => ({
@@ -40,7 +41,9 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
   cardId,
 }) => {
   const { user, userProfile } = useAuth();
-  const canEdit = !!(user && userProfile?.can_inspect);
+  // Release browsing (P6c-1): read-only, and the plot waits for P6c-2.
+  const readOnly = useDrTag() !== null;
+  const canEdit = !!(user && userProfile?.can_inspect) && !readOnly;
 
   // Local DQ bitmask: optimistic state mirrors the server, snapped back on failure.
   const [dqBitmask, setDqBitmask] = useState<number>(spectrum.dq_flags ?? 0);
@@ -190,7 +193,7 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
 
             <button
               onClick={handleDownload}
-              disabled={downloading}
+              disabled={downloading || readOnly}
               className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium border border-border dark:border-border-strong rounded hover:bg-card-hover text-text-primary disabled:opacity-50"
             >
               {downloading ? (
@@ -209,13 +212,17 @@ export const SpectrumDetailCard: React.FC<SpectrumDetailCardProps> = ({
             </div>
           )}
 
-          <SpectrumPlot
-            bare
-            fitsPath={spectrum.fits_path}
-            grating={spectrum.grating}
-            spectrumId={spectrum.id}
-            initialRedshift={objectRedshift}
-          />
+          {readOnly ? (
+            <div className="h-[280px] bg-card" aria-hidden />
+          ) : (
+            <SpectrumPlot
+              bare
+              fitsPath={spectrum.fits_path}
+              grating={spectrum.grating}
+              spectrumId={spectrum.id}
+              initialRedshift={objectRedshift}
+            />
+          )}
         </div>
       )}
     </div>

@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ChevronDown, Search } from 'lucide-react';
 import type { NircamFieldCard } from '@/lib/types';
+import { useWithDr } from '@/lib/dr/client';
 
 // Compact volume label for the dropdown sublines (e.g. "743.6 GB").
 const formatVolume = (bytes: number): string => {
@@ -36,6 +37,7 @@ export const FieldSelectorDropdown: React.FC<FieldSelectorDropdownProps> = ({
   className = '',
 }) => {
   const router = useRouter();
+  const withDr = useWithDr();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
@@ -75,7 +77,7 @@ export const FieldSelectorDropdown: React.FC<FieldSelectorDropdownProps> = ({
 
   const choose = (field: string) => {
     setOpen(false);
-    if (field !== current) router.push(linkTo(field));
+    if (field !== current) router.push(withDr(linkTo(field)));
   };
 
   return (

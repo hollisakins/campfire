@@ -21,6 +21,8 @@ import {
 import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { useSpectraQuery } from '@/lib/hooks/useSpectraQuery';
 import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
+import { useDrTag } from '@/lib/dr/client';
+import { DR_PARAM } from '@/lib/dr/tag';
 
 // Inner component that uses useSearchParams (must be wrapped in Suspense)
 function SpectraPageContent() {
@@ -28,6 +30,13 @@ function SpectraPageContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  // Release browsing (P6c-1): `?dr=` is not a filter, so it rides beside the
+  // filter params on the URL the page writes and on the links it hands out.
+  const drTag = useDrTag();
+  const withTag = (params: URLSearchParams) => {
+    if (drTag) params.set(DR_PARAM, drTag);
+    return params;
+  };
 
   // useTransition for non-blocking state updates
   const [isPending, startTransition] = useTransition();
@@ -98,14 +107,15 @@ function SpectraPageContent() {
   // Update URL when debounced filters, pagination, or sorting change
   // Using debouncedFilters prevents URL updates on every keystroke, improving performance
   useEffect(() => {
-    const params = filtersToURLParams(debouncedFilters, page, pageSize, sortColumn, sortDirection, viewMode);
+    const params = withTag(filtersToURLParams(debouncedFilters, page, pageSize, sortColumn, sortDirection, viewMode));
     const newSearch = params.toString();
     const currentSearch = searchParams.toString();
 
     if (newSearch !== currentSearch) {
       router.replace(`${pathname}${newSearch ? `?${newSearch}` : ''}`, { scroll: false });
     }
-  }, [debouncedFilters, page, pageSize, sortColumn, sortDirection, viewMode, pathname, router, searchParams]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedFilters, page, pageSize, sortColumn, sortDirection, viewMode, pathname, router, searchParams, drTag]);
 
   // Handle filter changes with useTransition for non-blocking updates
   const handleFilterChange = (newFilters: AdvancedFilterOptions) => {
@@ -207,7 +217,7 @@ function SpectraPageContent() {
             Browse and filter the CAMPFIRE spectroscopic catalog
           </p>
         </div>
-        <PinnedObjectsBucket />
+        {!drTag && <PinnedObjectsBucket />}
       </div>
 
       {/* Filter Bar */}
@@ -244,7 +254,7 @@ function SpectraPageContent() {
           hasCoordinateSearch={filters.coordinate_search !== null}
           activeLine={filters.line}
           activeBand={filters.band}
-          currentFilterParams={filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection, viewMode)}
+          currentFilterParams={withTag(filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection, viewMode))}
           loading={loading}
           error={error}
           filters={filters}

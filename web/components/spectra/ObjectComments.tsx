@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/Card';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useInView } from '@/lib/hooks/useInView';
+import { useDrTag } from '@/lib/dr/client';
 import type { CommentWithUser } from '@/lib/types';
 import { MessageSquare, Send } from 'lucide-react';
 
@@ -29,7 +30,8 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
   const { user, userProfile, loading: authLoading } = useAuth();
   const supabase = createClient();
   const queryClient = useQueryClient();
-  const canEdit = user && userProfile?.can_comment;
+  const readOnly = useDrTag() !== null;
+  const canEdit = user && userProfile?.can_comment && !readOnly;
 
   const [newComment, setNewComment] = useState('');
   const [selectedTargetId, setSelectedTargetId] = useState<string>(
@@ -201,7 +203,7 @@ export const ObjectComments: React.FC<ObjectCommentsProps> = ({ objectDbId, memb
         </form>
       )}
 
-      {!user && (
+      {!user && !readOnly && (
         <div className="mb-4 p-4 bg-card border border-border rounded-lg text-center">
           <p className="text-sm text-text-secondary">Sign in to add comments</p>
         </div>
