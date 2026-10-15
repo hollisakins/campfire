@@ -153,6 +153,10 @@ cfpipe download --program 6585 --instrument nirspec
 cfpipe download --program 1727 --instrument nircam
 cfpipe download --program 1727 --instrument nircam --filters f444w --filters f150w
 cfpipe download --program 1727 --instrument nircam --obs-id 1 --obs-id 2
+
+# Files are found through MAST's CAOM TAP catalog (one query, seconds). The
+# JWST Search API path is kept as a fallback; --target always uses it.
+cfpipe download --program 1727 --instrument nircam --backend search
 ```
 
 Direct instrument entry points are also available: `campfire-nirspec`, `campfire-nircam`.

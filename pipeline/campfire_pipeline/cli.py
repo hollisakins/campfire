@@ -167,8 +167,14 @@ INSTRUMENT_DEFAULTS = {
               help='MAST API token for proprietary data. Falls back to $MAST_API_TOKEN env var.')
 @click.option('--processes', '-p', type=int, default=4, show_default=True,
               help='Number of parallel download streams.')
+@click.option('--backend', type=click.Choice(['tap', 'search'],
+              case_sensitive=False), default='tap', show_default=True,
+              help='How files are found: "tap" queries the MAST CAOM catalog '
+                   'in one request; "search" uses the JWST Search API '
+                   '(/search + /list_products), which can take very long '
+                   'under load. --target always uses "search".')
 def download(program, instrument, obs_ids, filters, targets, radius, radius_units,
-             exp_type, download_dir, dry_run, token, processes):
+             exp_type, download_dir, dry_run, token, processes, backend):
     """Download raw JWST data from MAST.
 
     NIRSpec layout: $CAMPFIRE_ROOT/raw/nirspec/{PID}/{filename}
@@ -180,7 +186,7 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
     """
     import requests
     from campfire_pipeline.common.query import (
-        MastTransientError, download_jwst_data,
+        MastQueryError, MastTransientError, download_jwst_data,
     )
 
     instrument_upper = instrument.upper()
@@ -230,6 +236,7 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
             radius_units=radius_units_full if targets else None,
             token=token,
             workers=processes,
+            backend=backend.lower(),
         )
     except requests.HTTPError as e:
         msg = f"MAST API error: {e}"
@@ -248,6 +255,8 @@ def download(program, instrument, obs_ids, filters, targets, radius, radius_unit
         # a bare `except RuntimeError`: every other RuntimeError raised
         # anywhere under download_jwst_data is a real bug and keeps its
         # traceback.
+        raise click.ClickException(str(e))
+    except MastQueryError as e:
         raise click.ClickException(str(e))
     except KeyboardInterrupt:
         click.echo("\n\nInterrupted. Re-run to resume (existing files will be skipped).")

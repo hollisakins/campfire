@@ -33,6 +33,16 @@ Release procedure: edit the `## Unreleased` section below, then run
   touch `pipeline/` or `layout/` (informational until its CI runtime is known) and the
   layout golden fixture on every client change; `[tool.pytest.ini_options] testpaths =
   ["tests"]` so a bare `pytest` no longer collects `experiments/` and `scripts/`.
+- **`cfpipe download` finds files through MAST's CAOM TAP service by default.** One
+  ADQL query returns every uncal (and NIRSpec MSA) file of a program or observation,
+  with its URI, size, md5 and the detector's own `EXP_TYPE` / `FILTER` / `PUPIL`, in
+  seconds. The JWST Search API's `/search` + batched `/list_products` took 53 s and
+  then timed out at 600 s for program 9263 obs 1. Files are downloaded from MAST's
+  `Download/file` endpoint (first byte in 0.1 s vs ~30 s from `/retrieve_product`).
+  Each NIRCam detector's filter now comes from its own keywords, and exposures of
+  another `EXP_TYPE` (e.g. WFSS grism detectors in a fileset that also has imaging)
+  are no longer downloaded and then purged. `--backend search` keeps the old path;
+  `--target` cone searches always use it.
 
 ### Algorithm
 - **`resample` now writes a per-tile exposure map, `<mosaic>_exp.fits`, next to
