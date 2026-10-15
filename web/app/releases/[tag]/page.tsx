@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ArrowLeft, Archive, Camera, Telescope, Table2 } from 'lucide-react';
+import { ArrowLeft, Archive, Camera, Telescope } from 'lucide-react';
 import { SignInLink } from '@/components/auth/SignInLink';
 import { CopyBlock } from '@/components/releases/CopyBlock';
 import { formatBytes, releaseCitation, releaseSummary } from '@/lib/dr-releases';
@@ -106,7 +106,7 @@ const n = (v: number | null) => (v == null ? '—' : v.toLocaleString());
 const plural = (v: number | null, one: string, many: string) => (v === 1 ? one : many);
 
 function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
-  const { release: r, programs, files, exported } = detail;
+  const { release: r, files, exported } = detail;
   const s = releaseSummary(r.components, r.counts);
   const cite = releaseCitation(r, SITE_URL);
   const published = r.state === 'published';
@@ -151,6 +151,7 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
               { value: n(s.nirspec.programs), label: plural(s.nirspec.programs, 'program', 'programs') },
               { value: formatBytes(s.nirspec.bytes), label: 'data volume' },
             ]}
+            foot={s.photometry ? `photometry: ${s.photometry.catalogs.map((c) => c.catalog).join(' · ')}` : undefined}
           />
         )}
         {s.nircam && (
@@ -165,68 +166,7 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
             foot={s.nircam.fields.map((f) => f.field).join(' · ')}
           />
         )}
-        {s.photometry && (
-          <InstrumentCard
-            icon={Table2}
-            title="Photometry"
-            stats={[{ value: n(s.photometry.rows), label: 'matched objects' }]}
-            foot={s.photometry.catalogs.map((c) => `${c.field} · ${c.catalog}`).join(' · ')}
-          />
-        )}
       </div>
-
-      {(programs.length > 0 || (s.nircam && s.nircam.fields.length > 0)) && (
-        <details className="group rounded-card border border-border bg-card">
-          <summary className="cursor-pointer select-none px-5 py-3 text-sm font-semibold uppercase tracking-wide text-text-tertiary">
-            Breakdown
-          </summary>
-          <div className="space-y-6 px-5 pb-5">
-            {programs.length > 0 && (
-              <table className="w-full text-sm">
-                <thead className="text-left text-xs uppercase tracking-wide text-text-tertiary">
-                  <tr>
-                    <th className="py-2 pr-4 font-medium">Program</th>
-                    <th className="py-2 pr-4 text-right font-medium">Spectra</th>
-                    <th className="py-2 text-right font-medium">Objects</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {programs.map((p) => (
-                    <tr key={p.slug}>
-                      <td className="py-2 pr-4">
-                        <span className="font-mono text-text-primary">{p.slug}</span>
-                        {p.name && p.name !== p.slug && <span className="ml-2 text-text-tertiary">{p.name}</span>}
-                      </td>
-                      <td className="py-2 pr-4 text-right tabular-nums text-text-secondary">{p.spectra.toLocaleString()}</td>
-                      <td className="py-2 text-right tabular-nums text-text-secondary">{p.objects.toLocaleString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-            {s.nircam && s.nircam.fields.length > 0 && (
-              <table className="w-full text-sm">
-                <thead className="text-left text-xs uppercase tracking-wide text-text-tertiary">
-                  <tr>
-                    <th className="py-2 pr-4 font-medium">Field</th>
-                    <th className="py-2 pr-4 text-right font-medium">Mosaics</th>
-                    <th className="py-2 text-right font-medium">Volume</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {s.nircam.fields.map((f) => (
-                    <tr key={f.field}>
-                      <td className="py-2 pr-4 font-mono text-text-primary">{f.field}</td>
-                      <td className="py-2 pr-4 text-right tabular-nums text-text-secondary">{n(f.mosaics)}</td>
-                      <td className="py-2 text-right tabular-nums text-text-secondary">{formatBytes(f.bytes)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </details>
-      )}
 
       <Section title="Download" aside={<span className="text-xs text-text-tertiary">schema v{r.dr_format_version}</span>}>
         {!exported ? (
