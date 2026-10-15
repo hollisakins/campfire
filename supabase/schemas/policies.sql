@@ -1811,10 +1811,16 @@ CREATE POLICY "admin_manage_share_links"
 
 ALTER TABLE dr_releases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_spectra ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_targets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_objects ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_manifest ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_line_fits ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_spectrum_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_photometry ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_photometry_bands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_nircam_images ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_fields ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_filter_options ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_exports ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "select_dr_releases" ON dr_releases;
@@ -1825,7 +1831,14 @@ CREATE POLICY "select_dr_releases"
     AND tag = ANY((SELECT public.dr_visible_tags())::text[])
   );
 
--- Row-local program_slug, like select_spectra_by_access.
+-- Frozen catalog tables (P6b): each policy is the LIVE table's SELECT
+-- predicate verbatim (so a release reads through the cat_* views exactly as
+-- live does, and the RPCs scope aggregates per viewer the same way), plus
+-- "no link accounts" and "the tag is visible" (published to everyone,
+-- every state to admins; dr_visible_tags). Parent lookups stay within the
+-- same tag.
+
+-- spectra: select_spectra_by_access
 DROP POLICY IF EXISTS "select_dr_spectra" ON dr_spectra;
 CREATE POLICY "select_dr_spectra"
   ON dr_spectra FOR SELECT TO authenticated
@@ -1833,26 +1846,35 @@ CREATE POLICY "select_dr_spectra"
     (SELECT NOT public.is_link_account())
     AND tag = ANY((SELECT public.dr_visible_tags())::text[])
     AND program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+    AND (deploy_status = 'published' OR (SELECT public.is_admin()))
   );
 
--- Array-overlap on the frozen programs, like select_objects_by_access.
+-- targets: select_targets_by_access
+DROP POLICY IF EXISTS "select_dr_targets" ON dr_targets;
+CREATE POLICY "select_dr_targets"
+  ON dr_targets FOR SELECT TO authenticated
+  USING (
+    (SELECT NOT public.is_link_account())
+    AND tag = ANY((SELECT public.dr_visible_tags())::text[])
+    AND program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+    AND (has_published_spectrum OR (SELECT public.is_admin()))
+  );
+
+-- objects: select_objects_by_access (array overlap: a reader holding any of
+-- the object's programs sees the row; the RPCs scope the aggregates)
 DROP POLICY IF EXISTS "select_dr_objects" ON dr_objects;
 CREATE POLICY "select_dr_objects"
   ON dr_objects FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
     AND tag = ANY((SELECT public.dr_visible_tags())::text[])
-    -- every program of the object: a frozen row's aggregates (and its
-    -- programs / observations arrays) span all its programs, so a reader
-    -- holding only some of them would learn the others' names and counts.
-    -- Partial-access readers get the object with aggregates scoped to their
-    -- program from the export partitions instead (Codex on #599).
-    AND programs <@ (SELECT public.accessible_program_slugs())
+    AND programs && (SELECT public.accessible_program_slugs())
+    AND (has_published_spectrum OR (SELECT public.is_admin()))
   );
 
 -- Program-scoped rows (NIRSpec finals and sidecars) by program_slug;
--- field-level rows (mosaics, P(z) sidecars; program_slug IS NULL) are visible
--- to every authenticated account, as published field deployments are live.
+-- field-level rows (mosaics; program_slug IS NULL) are visible to every
+-- authenticated account, as published field deployments are live.
 DROP POLICY IF EXISTS "select_dr_manifest" ON dr_manifest;
 CREATE POLICY "select_dr_manifest"
   ON dr_manifest FOR SELECT TO authenticated
@@ -1863,23 +1885,85 @@ CREATE POLICY "select_dr_manifest"
          OR program_slug = ANY((SELECT public.accessible_program_slugs())::text[]))
   );
 
+-- spectrum_line_fits: select_spectrum_line_fits_by_spectrum (the frozen parent)
 DROP POLICY IF EXISTS "select_dr_line_fits" ON dr_line_fits;
 CREATE POLICY "select_dr_line_fits"
   ON dr_line_fits FOR SELECT TO authenticated
   USING (
-    (SELECT NOT public.is_link_account())
-    AND tag = ANY((SELECT public.dr_visible_tags())::text[])
-    AND program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+    EXISTS (
+      SELECT 1 FROM public.dr_spectra s
+      WHERE s.tag = dr_line_fits.tag AND s.id = dr_line_fits.spectrum_id
+    )
   );
 
+-- spectrum_lines: select_spectrum_lines_by_spectrum
+DROP POLICY IF EXISTS "select_dr_spectrum_lines" ON dr_spectrum_lines;
+CREATE POLICY "select_dr_spectrum_lines"
+  ON dr_spectrum_lines FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.dr_spectra s
+      WHERE s.tag = dr_spectrum_lines.tag AND s.id = dr_spectrum_lines.spectrum_id
+    )
+  );
+
+-- object_photometry: select_object_photometry_by_access (through the frozen object)
 DROP POLICY IF EXISTS "select_dr_photometry" ON dr_photometry;
 CREATE POLICY "select_dr_photometry"
   ON dr_photometry FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
     AND tag = ANY((SELECT public.dr_visible_tags())::text[])
-    -- the row carries its object's programs array: same rule as dr_objects
-    AND programs <@ (SELECT public.accessible_program_slugs())
+    AND object_id IS NOT NULL AND EXISTS (
+      SELECT 1 FROM public.dr_objects o
+      WHERE o.tag = dr_photometry.tag AND o.id = dr_photometry.object_id
+        AND o.programs && (SELECT public.accessible_program_slugs())
+        AND (o.has_published_spectrum OR (SELECT public.is_admin()))
+    )
+  );
+
+-- object_photometry_bands: select_object_photometry_bands_by_parent
+DROP POLICY IF EXISTS "select_dr_photometry_bands" ON dr_photometry_bands;
+CREATE POLICY "select_dr_photometry_bands"
+  ON dr_photometry_bands FOR SELECT TO authenticated
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.dr_photometry p
+      WHERE p.tag = dr_photometry_bands.tag AND p.id = dr_photometry_bands.photometry_id
+    )
+  );
+
+-- nircam_images: authenticated_select_nircam (no link accounts here, so the
+-- non-link branch alone)
+DROP POLICY IF EXISTS "select_dr_nircam_images" ON dr_nircam_images;
+CREATE POLICY "select_dr_nircam_images"
+  ON dr_nircam_images FOR SELECT TO authenticated
+  USING (
+    (SELECT NOT public.is_link_account())
+    AND tag = ANY((SELECT public.dr_visible_tags())::text[])
+    AND (deploy_status = 'published' OR (SELECT public.is_admin()))
+  );
+
+-- fields: accessible_fields_select (a field with a visible frozen mosaic)
+DROP POLICY IF EXISTS "select_dr_fields" ON dr_fields;
+CREATE POLICY "select_dr_fields"
+  ON dr_fields FOR SELECT TO authenticated
+  USING (
+    (SELECT NOT public.is_link_account())
+    AND tag = ANY((SELECT public.dr_visible_tags())::text[])
+    AND EXISTS (
+      SELECT 1 FROM public.dr_nircam_images ni
+      WHERE ni.tag = dr_fields.tag AND ni.field = dr_fields.name AND ni.deploy_status = 'published'
+    )
+  );
+
+-- the dropdown options of a visible release
+DROP POLICY IF EXISTS "select_dr_filter_options" ON dr_filter_options;
+CREATE POLICY "select_dr_filter_options"
+  ON dr_filter_options FOR SELECT TO authenticated
+  USING (
+    (SELECT NOT public.is_link_account())
+    AND tag = ANY((SELECT public.dr_visible_tags())::text[])
   );
 
 -- The export ledger is operational state; readers never see storage keys

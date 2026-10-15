@@ -97,11 +97,16 @@ Frozen-only fields are added; live-only operational fields (`updated_at`,
 `observations`, `gratings`, `n_targets`, `n_spectra`,
 `max_snr`, `max_exposure_time` (the six scoped to the file program),
 `photo_z`, `photo_z_err_lo`, `photo_z_err_hi`, `has_photometry`,
-`z_source_spectrum_id` (the `spectra.id` whose auto fit anchors
-`redshift_auto`), `redshift_auto`, `redshift_inspected`, `redshift`,
-`redshift_quality`, `inspected_used_auto`, `last_inspected_at`,
-`last_inspected_by`, `version`, `is_active` (always true), `needs_review`,
-`reviewed_spectrum_ids` (the review state at the freeze).
+`z_source_spectrum_id` (the `spectra.id` the `compute_object_redshift_auto`
+rule picks among the file program's spectra in the freeze snapshot),
+`redshift_auto`, `redshift_inspected`, `redshift`, `redshift_quality`,
+`inspected_used_auto`, `last_inspected_at`, `last_inspected_by`, `version`,
+`is_active` (always true), `needs_review`, `reviewed_spectrum_ids` (the file
+program's spectra among the review state at the freeze). Apart from the six
+scoped aggregates and the two program arrays, every value is the live
+`objects` row as it stood at the freeze (the frozen tables are verbatim copies
+since P6b): `photo_z*` / `has_photometry` are the live cross-match fields,
+`redshift_auto` the live column, whichever catalogs or spectra produced them.
 
 ### spectra
 

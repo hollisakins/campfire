@@ -1589,83 +1589,145 @@ ALTER TABLE "public"."dr_releases" OWNER TO "postgres";
 
 COMMENT ON TABLE "public"."dr_releases" IS 'Data releases (P4a): one row per tag with the freeze/export/byte-pass state machine, provenance (who, when, snapshot xmin, counts) and the publication fields. Readable by authenticated non-link accounts once published, by admins always; written only through the dr_* RPCs.';
 
--- dr_spectra: the published spectra rows at the freeze (nirspec component).
+-- ---------------------------------------------------------------------------
+-- Frozen catalog tables (P6b, docs/design-data-releases-impl-plan.md §8 P6b).
+-- Every table is `tag` + the live table's columns IN THE LIVE ORDER, same
+-- names and types (generated columns become plain columns holding the
+-- generated value; auth.users references become bare uuids; no foreign
+-- keys), then the frozen-only extras. dr_freeze_job writes them as
+-- `INSERT INTO dr_x SELECT p_tag, x.*, <extras>`, and
+-- supabase/tests/check_dr_parity.sql fails CI when a live column is added
+-- without its copy. Values are copied verbatim ("the catalog as it stood"),
+-- so the catalog RPCs can read a release through the cat_* source views
+-- (P6b-2) exactly as they read live.
+-- ---------------------------------------------------------------------------
+
+-- dr_spectra: spectra.* of the published members at the freeze.
 CREATE TABLE IF NOT EXISTS "public"."dr_spectra" (
     "tag" "text" NOT NULL,
-    "spectrum_id" "text" NOT NULL,
     "id" integer NOT NULL,
-    "program_slug" "text" NOT NULL,
-    "observation" "text" NOT NULL,
     "grating" "text" NOT NULL,
-    "target_id" "text" NOT NULL,
-    -- the target's field, frozen here: a spectrum whose target has no active
-    -- object has no dr_objects row to take it from (Codex on #600)
-    "field" "text",
-    "object_id" integer,
     "fits_path" "text" NOT NULL,
+    "signal_to_noise" double precision,
+    "created_at" timestamp without time zone,
+    "updated_at" timestamp with time zone NOT NULL,
+    "target_id" "text" NOT NULL,
+    "thumbnail_svg_fnu" "text",
+    "thumbnail_svg_flambda" "text",
     "file_hash" "text",
     "science_hash" "text",
     "file_size" bigint,
     "exposure_time" double precision,
-    "signal_to_noise" double precision,
-    "cfpipe_version" "text",
     "crds_context" "text",
     "jwst_version" "text",
+    "cfpipe_version" "text",
     "date_obs" "text",
     "reduced_at" timestamp with time zone,
     "redshift_auto" double precision,
     "chi2_min" double precision,
     "confidence" double precision,
-    "dq_flags" integer DEFAULT 0 NOT NULL,
-    CONSTRAINT "dr_spectra_pkey" PRIMARY KEY ("tag", "spectrum_id")
+    "dq_flags" integer NOT NULL,
+    "deploy_status" "text" NOT NULL,
+    "program_slug" "text" NOT NULL,
+    "observation" "text" NOT NULL,
+    -- generated on the live table; the value is copied
+    "spectrum_id" "text" NOT NULL,
+    "search_text" "text",
+    CONSTRAINT "dr_spectra_pkey" PRIMARY KEY ("tag", "id"),
+    CONSTRAINT "dr_spectra_tag_spectrum_id_key" UNIQUE ("tag", "spectrum_id")
 );
 
 ALTER TABLE "public"."dr_spectra" OWNER TO "postgres";
+-- same read pattern as the live table: the two SVG thumbnails go out of line
+ALTER TABLE "public"."dr_spectra" SET (toast_tuple_target = 1024);
 
-COMMENT ON TABLE "public"."dr_spectra" IS 'Frozen spectra rows of a data release (published members at the freeze). id is the live spectra.id at the time; object_id the live objects.id. Row-local program_slug for RLS.';
+COMMENT ON TABLE "public"."dr_spectra" IS 'Frozen copy of spectra (every live column, verbatim) for the published members of a data release at the freeze. id is the live spectra.id at the time. Joins to dr_targets on (tag, target_id), like the live tables.';
 
--- dr_objects: the objects with at least one published member at the freeze,
--- with the inspection state and aggregates as they stood in the same snapshot.
-CREATE TABLE IF NOT EXISTS "public"."dr_objects" (
+-- dr_targets: targets.* of the targets with at least one frozen spectrum.
+CREATE TABLE IF NOT EXISTS "public"."dr_targets" (
     "tag" "text" NOT NULL,
-    "object_id" integer NOT NULL,
-    "name" "text" NOT NULL,
+    "id" integer NOT NULL,
+    "target_id" "text" NOT NULL,
     "field" "text" NOT NULL,
     "ra" double precision NOT NULL,
     "dec" double precision NOT NULL,
-    "programs" "text"[] DEFAULT '{}'::"text"[] NOT NULL,
-    -- Programs of the published member spectra (what "all evidence public"
-    -- is derived from at read time).
-    "evidence_programs" "text"[] DEFAULT '{}'::"text"[] NOT NULL,
-    "observations" "text"[] DEFAULT '{}'::"text"[] NOT NULL,
-    "gratings" "text"[] DEFAULT '{}'::"text"[] NOT NULL,
-    "n_targets" integer DEFAULT 0 NOT NULL,
-    "n_spectra" integer DEFAULT 0 NOT NULL,
+    "redshift_auto" double precision,
+    "redshift_quality" integer,
+    "spectral_features" integer,
+    "dq_flags" integer,
+    "created_at" timestamp without time zone,
+    "updated_at" timestamp without time zone,
+    "redshift_inspected" numeric(10,6),
+    "last_inspected_at" timestamp with time zone,
+    "last_inspected_by" "uuid",
+    "max_snr" double precision,
+    -- generated on the live table; the value is copied
+    "redshift" numeric(10,6),
+    "max_exposure_time" double precision,
+    "program_slug" "text" NOT NULL,
+    "observation" "text" NOT NULL,
+    "object_id" integer,
+    "has_published_spectrum" boolean NOT NULL,
+    CONSTRAINT "dr_targets_pkey" PRIMARY KEY ("tag", "id"),
+    CONSTRAINT "dr_targets_tag_target_id_key" UNIQUE ("tag", "target_id")
+);
+
+ALTER TABLE "public"."dr_targets" OWNER TO "postgres";
+
+COMMENT ON TABLE "public"."dr_targets" IS 'Frozen copy of targets (every live column, verbatim) for the targets of a data release''s frozen spectra. object_id is the live objects.id at the time (NULL or an unfrozen inactive object is possible, as live).';
+
+-- dr_objects: objects.* of the active objects with at least one frozen
+-- spectrum, plus the frozen-only extras the exports need.
+CREATE TABLE IF NOT EXISTS "public"."dr_objects" (
+    "tag" "text" NOT NULL,
+    "id" integer NOT NULL,
+    "object_id" "text" NOT NULL,
+    "field" "text" NOT NULL,
+    "ra" double precision NOT NULL,
+    "dec" double precision NOT NULL,
+    "created_at" timestamp with time zone,
+    "n_targets" integer NOT NULL,
+    "n_spectra" integer NOT NULL,
+    "programs" "text"[] NOT NULL,
+    "gratings" "text"[] NOT NULL,
+    "observations" "text"[] NOT NULL,
     "max_snr" double precision,
     "max_exposure_time" double precision,
     "photo_z" double precision,
     "photo_z_err_lo" double precision,
     "photo_z_err_hi" double precision,
-    "has_photometry" boolean DEFAULT false NOT NULL,
-    -- The published member whose auto fit anchors redshift_auto (the
-    -- compute_object_redshift_auto rule evaluated in the snapshot).
-    "z_source_spectrum_id" integer,
+    "has_photometry" boolean NOT NULL,
+    "updated_at" timestamp with time zone,
     "redshift_auto" double precision,
     "redshift_inspected" numeric(10,6),
+    "redshift_quality" integer NOT NULL,
+    "inspected_used_auto" boolean NOT NULL,
+    -- generated on the live table; the value is copied
     "redshift" numeric(10,6),
-    "redshift_quality" integer DEFAULT 0 NOT NULL,
-    "inspected_used_auto" boolean DEFAULT false NOT NULL,
     "last_inspected_at" timestamp with time zone,
     "last_inspected_by" "uuid",
-    "version" integer DEFAULT 1 NOT NULL,
-    -- {needs_review, reviewed_spectrum_ids} at the freeze.
-    "review_state" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
-    CONSTRAINT "dr_objects_pkey" PRIMARY KEY ("tag", "object_id")
+    "last_data_change_at" timestamp with time zone,
+    "staleness_reason" "text",
+    "reviewed_spectrum_ids" integer[],
+    "needs_review" boolean NOT NULL,
+    "version" integer NOT NULL,
+    "is_active" boolean NOT NULL,
+    "has_published_spectrum" boolean NOT NULL,
+    "search_text" "text",
+    -- frozen-only: the programs of the published members (what the export
+    -- partitions on; the live `programs` array can name a program whose only
+    -- member of this object is a draft) and the published member whose auto
+    -- fit anchors the compute_object_redshift_auto rule in the snapshot.
+    "evidence_programs" "text"[] DEFAULT '{}'::"text"[] NOT NULL,
+    "z_source_spectrum_id" integer,
+    CONSTRAINT "dr_objects_pkey" PRIMARY KEY ("tag", "id"),
+    CONSTRAINT "dr_objects_tag_object_id_key" UNIQUE ("tag", "object_id")
 );
 
 ALTER TABLE "public"."dr_objects" OWNER TO "postgres";
 
-COMMENT ON TABLE "public"."dr_objects" IS 'Frozen objects of a data release: catalog aggregates, inspection state (redshift, quality, inspector, review state) and the auto-redshift source spectrum, all evaluated in the freeze snapshot. object_id is the live objects.id at the time, name the public object_id string.';
+COMMENT ON TABLE "public"."dr_objects" IS 'Frozen copy of objects (every live column, verbatim) for the active objects of a data release with a published member at the freeze, plus evidence_programs and z_source_spectrum_id. id is the live objects.id at the time, object_id the public name.';
+
 
 -- dr_manifest: every storage object the DR references (finals + sidecars per
 -- spectrum, published mosaics per NIRCam field; P(z) sidecars are key-only and
@@ -1700,8 +1762,8 @@ ALTER TABLE "public"."dr_manifest" OWNER TO "postgres";
 
 COMMENT ON TABLE "public"."dr_manifest" IS 'Storage objects referenced by a data release (one row per live key at the freeze) and the archive copy the byte pass (P4c) makes for each: archive_key, byte_state pending → copied/stamped, stamped_hash. Program-scoped rows carry program_slug; field-level rows (mosaics) carry field.';
 
--- dr_line_fits: spectrum_line_fits of the frozen spectra, with the staleness
--- flags evaluated in the same snapshot.
+-- dr_line_fits: spectrum_line_fits.* of the frozen spectra, plus the
+-- staleness flags evaluated in the same snapshot.
 CREATE TABLE IF NOT EXISTS "public"."dr_line_fits" (
     "tag" "text" NOT NULL,
     "spectrum_id" integer NOT NULL,
@@ -1709,11 +1771,11 @@ CREATE TABLE IF NOT EXISTS "public"."dr_line_fits" (
     "grating" "text" NOT NULL,
     "program_slug" "text" NOT NULL,
     "observation" "text" NOT NULL,
-    "object_id" "text",
-    "object_version" integer,
     "z_used" double precision NOT NULL,
     "z_source" "text" NOT NULL,
     "z_quality" integer NOT NULL,
+    "object_id" "text",
+    "object_version" integer,
     "z_fit" double precision,
     "z_fit_err" double precision,
     "dv" double precision,
@@ -1721,18 +1783,21 @@ CREATE TABLE IF NOT EXISTS "public"."dr_line_fits" (
     "sigma_v" double precision,
     "sigma_v_err" double precision,
     "kin_source" "text",
-    "n_lines" integer DEFAULT 0 NOT NULL,
-    "n_detected" integer DEFAULT 0 NOT NULL,
-    "n_broad" integer DEFAULT 0 NOT NULL,
+    "n_lines" integer NOT NULL,
+    "n_detected" integer NOT NULL,
+    "n_broad" integer NOT NULL,
     "chi2" double precision,
     "dof" integer,
-    "lines" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "lines" "jsonb" NOT NULL,
     "fit_version" "text" NOT NULL,
     "cfpipe_version" "text",
     "f_lsf" double precision,
     "spectrum_hash" "text",
     "spectrum_science_hash" "text",
     "fitted_at" timestamp with time zone,
+    "created_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL,
+    -- frozen-only: the spectrum_line_fits_status predicates in the snapshot
     "stale_redshift" boolean DEFAULT false NOT NULL,
     "stale_spectrum" boolean DEFAULT false NOT NULL,
     CONSTRAINT "dr_line_fits_pkey" PRIMARY KEY ("tag", "spectrum_id")
@@ -1740,33 +1805,143 @@ CREATE TABLE IF NOT EXISTS "public"."dr_line_fits" (
 
 ALTER TABLE "public"."dr_line_fits" OWNER TO "postgres";
 
-COMMENT ON TABLE "public"."dr_line_fits" IS 'Frozen emission-line fits of a data release (spectrum_id = the live spectra.id at the freeze) with stale_redshift / stale_spectrum computed inside the freeze snapshot, so "reviewed against this DR" is a real statement.';
+COMMENT ON TABLE "public"."dr_line_fits" IS 'Frozen copy of spectrum_line_fits (every live column, verbatim) for the fits of a data release''s frozen spectra, with stale_redshift / stale_spectrum computed inside the freeze snapshot. spectrum_id = the live spectra.id at the freeze.';
 
--- dr_photometry: the cross-match rows of a photometry/<field>/<catalog>
--- component for objects in the release.
+-- dr_spectrum_lines: spectrum_lines.* of the frozen fits (the line filter's table).
+CREATE TABLE IF NOT EXISTS "public"."dr_spectrum_lines" (
+    "tag" "text" NOT NULL,
+    "spectrum_id" integer NOT NULL,
+    "line" "text" NOT NULL,
+    "component" "text" NOT NULL,
+    "wave_rest" double precision,
+    "flux" double precision,
+    "flux_err" double precision,
+    "snr" double precision,
+    "ew_rest" double precision,
+    "ew_rest_err" double precision,
+    "flags" integer NOT NULL,
+    "blend_into" "text",
+    CONSTRAINT "dr_spectrum_lines_pkey" PRIMARY KEY ("tag", "spectrum_id", "line")
+);
+
+ALTER TABLE "public"."dr_spectrum_lines" OWNER TO "postgres";
+
+COMMENT ON TABLE "public"."dr_spectrum_lines" IS 'Frozen copy of spectrum_lines (the unnested line fits the catalog filters on) for the fits of a data release.';
+
+-- dr_photometry: object_photometry.* of the frozen objects in the selected
+-- photometry/<field>/<catalog> components.
 CREATE TABLE IF NOT EXISTS "public"."dr_photometry" (
     "tag" "text" NOT NULL,
-    "photometry_id" integer NOT NULL,
-    "object_id" integer NOT NULL,
-    -- The object's programs at the freeze (RLS scope).
-    "programs" "text"[] DEFAULT '{}'::"text"[] NOT NULL,
+    "id" integer NOT NULL,
+    "object_id" integer,
     "field" "text" NOT NULL,
-    "catalog_name" "text" NOT NULL,
-    "catalog_id" "text",
     "ra" double precision NOT NULL,
     "dec" double precision NOT NULL,
+    "catalog_name" "text" NOT NULL,
+    "catalog_id" "text",
     "match_distance_arcsec" double precision,
-    "photometry" "jsonb" NOT NULL,
+    "photometry" jsonb NOT NULL,
     "photo_z" double precision,
     "photo_z_err_lo" double precision,
     "photo_z_err_hi" double precision,
-    "has_pz" boolean DEFAULT false NOT NULL,
-    CONSTRAINT "dr_photometry_pkey" PRIMARY KEY ("tag", "photometry_id")
+    "has_pz" boolean NOT NULL,
+    "created_at" timestamp with time zone,
+    "updated_at" timestamp with time zone,
+    CONSTRAINT "dr_photometry_pkey" PRIMARY KEY ("tag", "id")
 );
 
 ALTER TABLE "public"."dr_photometry" OWNER TO "postgres";
 
-COMMENT ON TABLE "public"."dr_photometry" IS 'Frozen photometry cross-match rows of a data release (photometry/<field>/<catalog> components), scoped by the object''s programs at the freeze.';
+COMMENT ON TABLE "public"."dr_photometry" IS 'Frozen copy of object_photometry (every live column, verbatim) for the frozen objects of a data release in its photometry/<field>/<catalog> components. Access scope is the frozen object''s, like live.';
+
+-- dr_photometry_bands: object_photometry_bands.* of the frozen photometry rows
+-- (the band filter's table; snr / mag are the generated values, copied).
+CREATE TABLE IF NOT EXISTS "public"."dr_photometry_bands" (
+    "tag" "text" NOT NULL,
+    "photometry_id" integer NOT NULL,
+    "band" "text" NOT NULL,
+    "flux" double precision,
+    "flux_err" double precision,
+    "wav" double precision,
+    "snr" double precision,
+    "mag" double precision,
+    CONSTRAINT "dr_photometry_bands_pkey" PRIMARY KEY ("tag", "photometry_id", "band")
+);
+
+ALTER TABLE "public"."dr_photometry_bands" OWNER TO "postgres";
+
+COMMENT ON TABLE "public"."dr_photometry_bands" IS 'Frozen copy of object_photometry_bands (the unnested photometry the catalog filters on) for the frozen photometry rows of a data release.';
+
+-- dr_nircam_images: nircam_images.* of the published mosaics of the release's
+-- NIRCam field components (the files themselves are dr_manifest rows).
+CREATE TABLE IF NOT EXISTS "public"."dr_nircam_images" (
+    "tag" "text" NOT NULL,
+    "id" integer NOT NULL,
+    "field" "text" NOT NULL,
+    "tile" "text" NOT NULL,
+    "filter" "text" NOT NULL,
+    "pixel_scale" "text" NOT NULL,
+    "extension" "text" NOT NULL,
+    "epoch" "text" NOT NULL,
+    "file_path" "text" NOT NULL,
+    "created_at" timestamp without time zone,
+    "file_size" bigint,
+    "deploy_status" "text" NOT NULL,
+    "deployment_id" integer,
+    CONSTRAINT "dr_nircam_images_pkey" PRIMARY KEY ("tag", "id")
+);
+
+ALTER TABLE "public"."dr_nircam_images" OWNER TO "postgres";
+
+COMMENT ON TABLE "public"."dr_nircam_images" IS 'Frozen copy of nircam_images (every live column, verbatim) for the published mosaics of a data release''s NIRCam field components at the freeze.';
+
+-- dr_fields: fields.* of the release's NIRCam components and of the fields its
+-- frozen targets belong to (what the field pages read).
+CREATE TABLE IF NOT EXISTS "public"."dr_fields" (
+    "tag" "text" NOT NULL,
+    "name" "text" NOT NULL,
+    "display_name" "text",
+    "filters" "text"[] NOT NULL,
+    "tiles" "text"[] NOT NULL,
+    "fiducial_tiles" "text"[] NOT NULL,
+    "epochs" "text"[] NOT NULL,
+    "programs" "text"[] NOT NULL,
+    "jwst_program_ids" integer[] NOT NULL,
+    "file_globs" "text"[] NOT NULL,
+    "center_ra" double precision,
+    "center_dec" double precision,
+    "config" "jsonb",
+    "coverage_area_arcmin2" double precision,
+    "coverage_area_deg2" double precision,
+    "expmap_pixel_scale_arcsec" double precision,
+    "latest_deployment_id" integer,
+    "created_at" timestamp with time zone,
+    "config_hash" "text",
+    "config_updated_at" timestamp with time zone,
+    "retired_at" timestamp with time zone,
+    CONSTRAINT "dr_fields_pkey" PRIMARY KEY ("tag", "name")
+);
+
+ALTER TABLE "public"."dr_fields" OWNER TO "postgres";
+
+COMMENT ON TABLE "public"."dr_fields" IS 'Frozen copy of fields (every live column, verbatim) for a data release''s NIRCam field components and the fields of its frozen targets.';
+
+-- dr_filter_options: the mv_filter_options row computed over the frozen rows
+-- (the catalog's dropdowns in browsing mode).
+CREATE TABLE IF NOT EXISTS "public"."dr_filter_options" (
+    "tag" "text" NOT NULL,
+    "id" integer NOT NULL,
+    "fields" "text"[],
+    "observations" "text"[],
+    "gratings" "text"[],
+    "photometry_bands" "text"[],
+    CONSTRAINT "dr_filter_options_pkey" PRIMARY KEY ("tag")
+);
+
+ALTER TABLE "public"."dr_filter_options" OWNER TO "postgres";
+
+COMMENT ON TABLE "public"."dr_filter_options" IS 'The mv_filter_options row (fields, observations, gratings, photometry bands) computed over a data release''s frozen rows at the freeze.';
+
 
 -- dr_exports: the resumable export ledger (P4b): one row per (stream,
 -- partition) file under dr/<tag>/exports/ on the data bucket.
@@ -3170,6 +3345,30 @@ REVOKE ALL ON TABLE "public"."dr_photometry" FROM "anon";
 REVOKE ALL ON TABLE "public"."dr_photometry" FROM "authenticated";
 GRANT SELECT ON TABLE "public"."dr_photometry" TO "authenticated";
 GRANT ALL ON TABLE "public"."dr_photometry" TO "service_role";
+REVOKE ALL ON TABLE "public"."dr_targets" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_targets" FROM "authenticated";
+GRANT SELECT ON TABLE "public"."dr_targets" TO "authenticated";
+GRANT ALL ON TABLE "public"."dr_targets" TO "service_role";
+REVOKE ALL ON TABLE "public"."dr_spectrum_lines" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_spectrum_lines" FROM "authenticated";
+GRANT SELECT ON TABLE "public"."dr_spectrum_lines" TO "authenticated";
+GRANT ALL ON TABLE "public"."dr_spectrum_lines" TO "service_role";
+REVOKE ALL ON TABLE "public"."dr_photometry_bands" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_photometry_bands" FROM "authenticated";
+GRANT SELECT ON TABLE "public"."dr_photometry_bands" TO "authenticated";
+GRANT ALL ON TABLE "public"."dr_photometry_bands" TO "service_role";
+REVOKE ALL ON TABLE "public"."dr_nircam_images" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_nircam_images" FROM "authenticated";
+GRANT SELECT ON TABLE "public"."dr_nircam_images" TO "authenticated";
+GRANT ALL ON TABLE "public"."dr_nircam_images" TO "service_role";
+REVOKE ALL ON TABLE "public"."dr_fields" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_fields" FROM "authenticated";
+GRANT SELECT ON TABLE "public"."dr_fields" TO "authenticated";
+GRANT ALL ON TABLE "public"."dr_fields" TO "service_role";
+REVOKE ALL ON TABLE "public"."dr_filter_options" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_filter_options" FROM "authenticated";
+GRANT SELECT ON TABLE "public"."dr_filter_options" TO "authenticated";
+GRANT ALL ON TABLE "public"."dr_filter_options" TO "service_role";
 REVOKE ALL ON TABLE "public"."dr_exports" FROM "anon";
 REVOKE ALL ON TABLE "public"."dr_exports" FROM "authenticated";
 GRANT SELECT ON TABLE "public"."dr_exports" TO "authenticated";
