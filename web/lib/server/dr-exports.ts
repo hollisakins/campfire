@@ -48,6 +48,8 @@ export interface DrReleaseRow {
   doi: string | null;
   notes: string | null;
   known_issues: string | null;
+  /** The release page document (P6b-3), when the row was read with it. */
+  page_md?: string | null;
 }
 
 /** A field-level component name (nircam/<field>, photometry/<field>/<catalog>). */

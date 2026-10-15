@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation';
 import { ArrowLeft, Archive, Camera, Telescope } from 'lucide-react';
 import { SignInLink } from '@/components/auth/SignInLink';
 import { CopyBlock } from '@/components/releases/CopyBlock';
+import { ReleasePageDoc } from '@/components/releases/ReleasePageDoc';
 import { formatArea, formatBytes, releaseCitation, releaseSummary } from '@/lib/dr-releases';
 import { loadReleaseDetail, type ReleaseDetail } from '@/lib/server/dr-releases';
 import { formatUpdateDate } from '@/lib/updates/format';
@@ -86,7 +87,7 @@ function InstrumentCard({ icon: Icon, title, stats, foot, href }: {
   icon: React.ElementType;
   title: string;
   stats: { value: string; label: string }[];
-  foot?: string;
+  foot?: React.ReactNode;
   /** Browse this part of the release (P6c-1). */
   href?: string;
 }) {
@@ -99,14 +100,19 @@ function InstrumentCard({ icon: Icon, title, stats, foot, href }: {
       <div className="grid grid-cols-2 gap-4">
         {stats.map((s) => <Stat key={s.label} {...s} />)}
       </div>
-      {foot && <div className="mt-3 text-sm text-text-tertiary">{foot}</div>}
+      {foot && <div className="mt-3 flex flex-wrap gap-x-3 text-sm text-text-tertiary">{foot}</div>}
     </>
   );
   const cls = 'block rounded-card border border-border bg-card p-5';
-  return href ? (
+  // A card whose footer carries its own links is a plain box with a title
+  // link (nested anchors are invalid); the NIRSpec card stays one link.
+  const nested = Array.isArray(foot);
+  return href && !nested ? (
     <Link href={href} className={`${cls} transition-colors hover:bg-card-hover`}>{body}</Link>
   ) : (
-    <div className={cls}>{body}</div>
+    <div className={cls}>
+      {href ? <Link href={href} className="block">{body}</Link> : body}
+    </div>
   );
 }
 
@@ -114,7 +120,8 @@ const n = (v: number | null) => (v == null ? '—' : v.toLocaleString());
 const plural = (v: number | null, one: string, many: string) => (v === 1 ? one : many);
 
 function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
-  const { release: r, files, exported } = detail;
+  const { release: r, files, exported, pageAssets } = detail;
+  const browse = (href: string) => `${href}${href.includes('?') ? '&' : '?'}dr=${encodeURIComponent(r.tag)}`;
   const s = releaseSummary(r.components, r.counts);
   const cite = releaseCitation(r, SITE_URL);
   const published = r.state === 'published';
@@ -148,6 +155,10 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
         )}
       </header>
 
+      {r.page_md && (
+        <ReleasePageDoc tag={r.tag} markdown={r.page_md} assets={new Set(pageAssets.map((a) => a.name))} />
+      )}
+
       <div className="grid gap-4 sm:grid-cols-2">
         {s.nirspec && (
           <InstrumentCard
@@ -173,10 +184,14 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
               { value: n(s.nircam.mosaics), label: plural(s.nircam.mosaics, 'mosaic', 'mosaics') },
               { value: formatBytes(s.nircam.bytes), label: 'data volume' },
             ]}
-            foot={s.nircam.fields.map((f) => f.field).join(' · ')}
+            foot={s.nircam.fields.map((f) => (
+              <Link key={f.field} href={browse(`/nircam/${encodeURIComponent(f.field)}`)} className="hover:underline">
+                {f.field}
+              </Link>
+            ))}
             href={s.nircam.fields.length === 1
-              ? `/nircam/${encodeURIComponent(s.nircam.fields[0].field)}?dr=${encodeURIComponent(r.tag)}`
-              : `/nircam?dr=${encodeURIComponent(r.tag)}`}
+              ? browse(`/nircam/${encodeURIComponent(s.nircam.fields[0].field)}`)
+              : browse('/nircam')}
           />
         )}
       </div>
