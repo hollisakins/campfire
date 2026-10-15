@@ -9875,6 +9875,13 @@ BEGIN
         AND so.backend = 'osn' AND so.bucket = 'data'
         AND so.product_type IN ('nircam_expmap', 'nircam_expmap_plot', 'nircam_layout',
                                 'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook')
+        -- the live storage gate shows field-level rows through their
+        -- deployment's status: a --draft redeploy registers active rows under
+        -- its draft deployment, and those must not be frozen into the open
+        -- nircam/<field> partition (P6b-3 review)
+        AND so.deployment_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM deployments d
+                    WHERE d.id = so.deployment_id AND d.field = so.field AND d.status = 'published')
       -- (P(z) sidecars are not members: photometry_pz is a key-only product the
       -- layout cannot archive; the frozen dr_photometry rows carry the catalog
       -- values, the sidecars stay live-only -- plan amendment D-P4-5.)
@@ -9921,7 +9928,7 @@ BEGIN
       RAISE EXCEPTION 'published mosaics without an active registry row of their deployment (finish or redo the field deploy, or leave the field out): %',
         left(v_missing, 1500);
     END IF;
-    -- Likewise every active field product of a selected field (same predicate
+    -- Likewise every published-deployment field product of a selected field (same predicate
     -- as the insert; guards a future edit of either side, not a data state).
     SELECT string_agg(so.storage_key, ', ' ORDER BY so.storage_key) INTO v_missing
     FROM storage_objects so
@@ -9929,6 +9936,9 @@ BEGIN
       AND so.backend = 'osn' AND so.bucket = 'data'
       AND so.product_type IN ('nircam_expmap', 'nircam_expmap_plot', 'nircam_layout',
                               'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook')
+      AND so.deployment_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM deployments d
+                  WHERE d.id = so.deployment_id AND d.field = so.field AND d.status = 'published')
       AND NOT EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.storage_key = so.storage_key);
     IF v_missing IS NOT NULL THEN
       RAISE EXCEPTION 'active field products that did not become members: %', left(v_missing, 1500);
@@ -9993,7 +10003,9 @@ BEGIN
              -- count and byte volume, the numbers the /releases pages show
              -- (P6a) without aggregating the manifest at read time
              'by_component', (SELECT COALESCE(jsonb_object_agg(t.component,
-                                       jsonb_build_object('files', t.n, 'bytes', t.b, 'mosaics', t.n_mosaics)
+                                       jsonb_build_object('files', t.n, 'bytes', t.b)
+                                       -- nircam/<field>: how many of the files are the mosaics themselves
+                                       || CASE WHEN t.component LIKE 'nircam/%' THEN jsonb_build_object('mosaics', t.n_mosaics) ELSE '{}'::jsonb END
                                        -- nircam/<field>: the field's deploy-time sky coverage
                                        || COALESCE((SELECT jsonb_build_object('area_arcmin2', f.coverage_area_arcmin2)
                                                     FROM fields f
@@ -10577,6 +10589,12 @@ BEGIN
                     OR EXISTS (SELECT 1 FROM dr_objects o WHERE o.tag = p_tag AND c.value = ANY (o.evidence_programs))
                     OR EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.program_slug = c.value))) THEN
     RAISE EXCEPTION 'release % has a program slug equal to one of its component names; rename the program', p_tag;
+  END IF;
+  -- likewise 'page', the release page document's manifest component (P6b-3)
+  IF EXISTS (SELECT 1 FROM dr_spectra s WHERE s.tag = p_tag AND s.program_slug = 'page')
+     OR EXISTS (SELECT 1 FROM dr_objects o WHERE o.tag = p_tag AND 'page' = ANY (o.evidence_programs))
+     OR EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.program_slug = 'page') THEN
+    RAISE EXCEPTION 'release % has a program slug equal to ''page'' (the page document''s component); rename the program', p_tag;
   END IF;
   INSERT INTO dr_exports (tag, stream, partition, storage_key, state)
   SELECT p_tag, p.stream, p.partition, p.storage_key, 'pending'
@@ -11496,10 +11514,19 @@ BEGIN
 
   -- validate every asset before touching the manifest
   FOR v_asset IN SELECT * FROM jsonb_array_elements(p_assets) LOOP
+    IF jsonb_typeof(v_asset) <> 'object' THEN
+      RAISE EXCEPTION 'every page asset must be an object {name, storage_key, content_hash, size_bytes}, got %', left(v_asset::text, 80);
+    END IF;
     v_name := v_asset->>'name'; v_key := v_asset->>'storage_key'; v_hash := v_asset->>'content_hash';
+    IF v_asset->'size_bytes' IS NULL OR jsonb_typeof(v_asset->'size_bytes') <> 'number' THEN
+      RAISE EXCEPTION 'page asset % needs a numeric size_bytes', coalesce(v_name, '(null)');
+    END IF;
     v_size := (v_asset->>'size_bytes')::bigint;
     IF v_name IS NULL OR v_name !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' THEN
       RAISE EXCEPTION 'bad page asset name %', coalesce(v_name, '(null)');
+    END IF;
+    IF v_name = 'README.md' THEN
+      RAISE EXCEPTION 'README.md is the page markdown itself, never an asset';
     END IF;
     IF v_key IS DISTINCT FROM (v_prefix || v_name) THEN
       RAISE EXCEPTION 'page asset % must live at %, not %', v_name, v_prefix || v_name, coalesce(v_key, '(null)');
