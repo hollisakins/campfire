@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, parseReleaseComponents, releaseCitation, releaseCount, releaseNextStep, releaseStateBadge, releaseSummary } from './dr-releases';
+import { formatArea, formatBytes, parseReleaseComponents, releaseCitation, releaseCount, releaseNextStep, releaseStateBadge, releaseSummary } from './dr-releases';
 
 describe('releaseStateBadge', () => {
   it('labels the lifecycle', () => {
@@ -72,7 +72,7 @@ describe('releaseNextStep', () => {
 describe('releaseSummary', () => {
   const counts = {
     spectra: 163, objects: 101, nirspec_programs: 31, nirspec_fields: 14,
-    by_component: { nirspec: { files: 671, bytes: 235_222_115 }, 'nircam/a2744': { files: 8, bytes: 32_718_585_600 }, 'nircam/cosmos': { files: 2, bytes: 1000 } },
+    by_component: { nirspec: { files: 671, bytes: 235_222_115 }, 'nircam/a2744': { files: 8, bytes: 32_718_585_600, area_arcmin2: 148.4 }, 'nircam/cosmos': { files: 2, bytes: 1000 } },
   };
   it('rolls components and counts up per instrument', () => {
     const s = releaseSummary(['nirspec', 'nircam/cosmos', 'nircam/a2744'], counts);
@@ -80,15 +80,24 @@ describe('releaseSummary', () => {
     expect(s.nircam?.fields.map((f) => f.field)).toEqual(['a2744', 'cosmos']);
     expect(s.nircam?.mosaics).toBe(10);
     expect(s.nircam?.bytes).toBe(32_718_586_600);
+    expect(s.nircam?.area_arcmin2).toBe(148.4);
     expect(s.photometry).toBeNull();
   });
   it('leaves out absent components and tolerates missing sizes', () => {
     const s = releaseSummary(['nircam/a2744'], { spectra: 5 });
     expect(s.nirspec).toBeNull();
-    expect(s.nircam).toEqual({ fields: [{ field: 'a2744', mosaics: null, bytes: null }], mosaics: null, bytes: null });
+    expect(s.nircam).toEqual({ fields: [{ field: 'a2744', mosaics: null, bytes: null, area_arcmin2: null }], mosaics: null, bytes: null, area_arcmin2: null });
   });
   it('lists photometry catalogs', () => {
     const s = releaseSummary(['nirspec', 'photometry/cosmos/COSMOS v1.2'], { photometry: 7 });
     expect(s.photometry).toEqual({ catalogs: [{ field: 'cosmos', catalog: 'COSMOS v1.2' }], rows: 7 });
+  });
+});
+
+describe('formatArea', () => {
+  it('switches units like the NIRCam pages', () => {
+    expect(formatArea(148.36)).toBe('148 arcmin²');
+    expect(formatArea(1959.5)).toBe('0.54 deg²');
+    expect(formatArea(null)).toBe('—');
   });
 });

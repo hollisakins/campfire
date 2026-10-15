@@ -9238,7 +9238,13 @@ BEGIN
              -- per component (nirspec | nircam/<field> | photometry/...): file
              -- count and byte volume, the numbers the /releases pages show
              -- (P6a) without aggregating the manifest at read time
-             'by_component', (SELECT COALESCE(jsonb_object_agg(t.component, jsonb_build_object('files', t.n, 'bytes', t.b)), '{}'::jsonb)
+             'by_component', (SELECT COALESCE(jsonb_object_agg(t.component,
+                                       jsonb_build_object('files', t.n, 'bytes', t.b)
+                                       -- nircam/<field>: the field's deploy-time sky coverage
+                                       || COALESCE((SELECT jsonb_build_object('area_arcmin2', f.coverage_area_arcmin2)
+                                                    FROM fields f
+                                                    WHERE t.component = 'nircam/' || f.name AND f.coverage_area_arcmin2 IS NOT NULL),
+                                                   '{}'::jsonb)), '{}'::jsonb)
                               FROM (SELECT m.component, count(*) AS n, COALESCE(sum(m.size_bytes), 0) AS b
                                     FROM dr_manifest m WHERE m.tag = p_tag GROUP BY m.component) t),
              'nirspec_programs', (SELECT count(DISTINCT s.program_slug) FROM dr_spectra s WHERE s.tag = p_tag),

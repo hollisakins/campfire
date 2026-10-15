@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation';
 import { ArrowLeft, Archive, Camera, Telescope } from 'lucide-react';
 import { SignInLink } from '@/components/auth/SignInLink';
 import { CopyBlock } from '@/components/releases/CopyBlock';
-import { formatBytes, releaseCitation, releaseSummary } from '@/lib/dr-releases';
+import { formatArea, formatBytes, releaseCitation, releaseSummary } from '@/lib/dr-releases';
 import { loadReleaseDetail, type ReleaseDetail } from '@/lib/server/dr-releases';
 import { formatUpdateDate } from '@/lib/updates/format';
 import { releasePagesPrincipal } from '../gate';
@@ -160,6 +160,7 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
             title="NIRCam"
             stats={[
               { value: n(s.nircam.fields.length), label: plural(s.nircam.fields.length, 'field', 'fields') },
+              { value: formatArea(s.nircam.area_arcmin2), label: 'sky area' },
               { value: n(s.nircam.mosaics), label: plural(s.nircam.mosaics, 'mosaic', 'mosaics') },
               { value: formatBytes(s.nircam.bytes), label: 'data volume' },
             ]}

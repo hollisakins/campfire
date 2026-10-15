@@ -73,6 +73,7 @@ export function releaseCount(counts: Record<string, unknown> | null | undefined,
 interface ComponentFacts {
   files: number | null;
   bytes: number | null;
+  area_arcmin2: number | null;
 }
 
 /** counts.by_component[name] (the freeze records files and bytes per component). */
@@ -80,7 +81,7 @@ function componentFacts(counts: Record<string, unknown> | null | undefined, name
   const by = counts?.by_component;
   const entry = by && typeof by === 'object' ? (by as Record<string, unknown>)[name] : undefined;
   const rec = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {};
-  return { files: releaseCount(rec, 'files'), bytes: releaseCount(rec, 'bytes') };
+  return { files: releaseCount(rec, 'files'), bytes: releaseCount(rec, 'bytes'), area_arcmin2: releaseCount(rec, 'area_arcmin2') };
 }
 
 function sumNullable(values: (number | null)[]): number | null {
@@ -90,7 +91,7 @@ function sumNullable(values: (number | null)[]): number | null {
 
 export interface ReleaseSummary {
   nirspec: { spectra: number | null; objects: number | null; programs: number | null; fields: number | null; bytes: number | null } | null;
-  nircam: { fields: { field: string; mosaics: number | null; bytes: number | null }[]; mosaics: number | null; bytes: number | null } | null;
+  nircam: { fields: { field: string; mosaics: number | null; bytes: number | null; area_arcmin2: number | null }[]; mosaics: number | null; bytes: number | null; area_arcmin2: number | null } | null;
   photometry: { catalogs: { field: string; catalog: string }[]; rows: number | null } | null;
 }
 
@@ -114,7 +115,7 @@ export function releaseSummary(components: unknown, counts: Record<string, unkno
     .filter((c) => c.kind === 'nircam')
     .map((c) => {
       const facts = componentFacts(counts, c.raw);
-      return { field: c.raw.slice(7), mosaics: facts.files, bytes: facts.bytes };
+      return { field: c.raw.slice(7), mosaics: facts.files, bytes: facts.bytes, area_arcmin2: facts.area_arcmin2 };
     })
     .sort((a, b) => a.field.localeCompare(b.field));
   const nircam = nircamFields.length > 0
@@ -122,6 +123,7 @@ export function releaseSummary(components: unknown, counts: Record<string, unkno
         fields: nircamFields,
         mosaics: sumNullable(nircamFields.map((f) => f.mosaics)),
         bytes: sumNullable(nircamFields.map((f) => f.bytes)),
+        area_arcmin2: sumNullable(nircamFields.map((f) => f.area_arcmin2)),
       }
     : null;
   const catalogs = parsed
@@ -179,4 +181,11 @@ export function formatBytes(n: number | null | undefined): string {
     i += 1;
   }
   return `${i === 0 ? v : v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
+}
+
+/** Sky area as the NIRCam pages show it: deg² when it reads naturally, arcmin² for small fields. */
+export function formatArea(arcmin2: number | null | undefined): string {
+  if (arcmin2 == null || !Number.isFinite(arcmin2)) return '—';
+  const deg2 = arcmin2 / 3600;
+  return deg2 >= 0.05 ? `${deg2.toFixed(2)} deg²` : `${Math.round(arcmin2)} arcmin²`;
 }
