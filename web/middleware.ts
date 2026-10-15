@@ -1,4 +1,5 @@
-// Session refresh middleware (perf T2-B, #505; decision D-B).
+// Session refresh middleware (perf T2-B, #505; decision D-B), plus the
+// data-release request header (P6c-1).
 //
 // The one job: keep the Supabase session cookie fresh so that everything
 // downstream — server components (which cannot write cookies), server
@@ -11,9 +12,18 @@
 // cookies onto both the forwarded request and the response. Identity itself
 // is NOT attached to the request here (no trusted header to forge or to
 // forget to strip); downstream re-verifies the token, which is ~0.1 ms.
+//
+// Release browsing: a `?dr=<tag>` URL (pages, their server actions, the GET
+// routes the pages call) is copied onto the forwarded request as the
+// `x-campfire-dr` header, which the server Supabase clients pass to
+// PostgREST (lib/supabase/server.ts). Any incoming `x-campfire-dr` is
+// dropped first: the header is derived from the URL, never trusted from the
+// client. With NEXT_PUBLIC_DR_PAGES off the parameter is ignored entirely.
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
+import { DR_HEADER, drHeaderFor } from '@/lib/dr/tag';
+import { drPagesMode } from '@/lib/dr-pages';
 
 function hasSupabaseAuthCookie(request: NextRequest): boolean {
   return request.cookies
@@ -22,7 +32,11 @@ function hasSupabaseAuthCookie(request: NextRequest): boolean {
 }
 
 export async function middleware(request: NextRequest) {
-  if (!hasSupabaseAuthCookie(request)) return NextResponse.next();
+  request.headers.delete(DR_HEADER);
+  const tag = drHeaderFor(request.nextUrl, drPagesMode());
+  if (tag) request.headers.set(DR_HEADER, tag);
+
+  if (!hasSupabaseAuthCookie(request)) return NextResponse.next({ request });
 
   let response = NextResponse.next({ request });
 

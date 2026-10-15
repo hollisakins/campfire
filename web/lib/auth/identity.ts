@@ -21,8 +21,11 @@
 // that. Never derive privileges from anything on RequestUser except `id`.
 
 import { cache } from 'react';
+import { notFound } from 'next/navigation';
 import type { SupabaseClient, User } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/server';
+import { requestDrTag } from '@/lib/dr/server';
+import { drPagesAccess, drPagesMode } from '@/lib/dr-pages';
 import { verifySupabaseJwt, type SupabaseClaims, type VerifyFailure } from './supabase-jwt';
 import { getAccessContext, type AccessContext } from './access-context';
 
@@ -87,7 +90,10 @@ function warnFallback(reason: VerifyFailure): void {
  */
 export const getRequestIdentity = cache(async (): Promise<RequestIdentity> => {
   const supabase = await createClient();
+  return drGate(await resolveIdentity(supabase));
+});
 
+async function resolveIdentity(supabase: SupabaseClient): Promise<RequestIdentity> {
   // Local cookie parse. Refreshes through GoTrue only when the token is
   // inside the expiry margin (middleware.ts has usually done this already);
   // the `user` object on this session is intentionally never read — it is
@@ -103,7 +109,26 @@ export const getRequestIdentity = cache(async (): Promise<RequestIdentity> => {
   warnFallback(verified.reason);
   const { data: { user } } = await supabase.auth.getUser();
   return { user: user ? userFromGoTrue(user) : null, supabase };
-});
+}
+
+/**
+ * Release browsing is gated like the /releases pages (NEXT_PUBLIC_DR_PAGES,
+ * lib/dr-pages.ts): a viewer the flag does not admit gets the 404, never
+ * live data under a `?dr=` URL (P6c-1 rule). The client itself already
+ * confirmed the database is in release mode (lib/supabase/server.ts).
+ */
+async function drGate(identity: RequestIdentity): Promise<RequestIdentity> {
+  const tag = await requestDrTag();
+  if (!tag) return identity;
+  const access = identity.user ? await getAccessContext(identity.user.id) : null;
+  const verdict = drPagesAccess(drPagesMode(), {
+    signedIn: identity.user !== null,
+    isAdmin: access?.isAdmin ?? false,
+    isLinkAccount: access?.isLinkAccount ?? false,
+  });
+  if (verdict !== 'show') notFound();
+  return identity;
+}
 
 /** Identity plus the memoized access context, for callers that need both. */
 export interface RequestPrincipal extends RequestIdentity {

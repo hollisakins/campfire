@@ -1,5 +1,6 @@
 import { getAssetVersions, clientAssetVersion } from '@/lib/asset-version';
 import { AssetVersionProvider } from '@/lib/contexts/AssetVersionContext';
+import { assertReleaseViewer } from '@/lib/dr/gate';
 
 /**
  * NIRSpec section layout: resolves the per-field imaging asset versions once
@@ -11,6 +12,8 @@ import { AssetVersionProvider } from '@/lib/contexts/AssetVersionContext';
  * server-only.
  */
 export default async function NirspecLayout({ children }: { children: React.ReactNode }) {
+  // `?dr=`: 404 for an unknown release or a viewer the flag does not admit (P6c-1).
+  await assertReleaseViewer();
   const versions = await getAssetVersions();
   return <AssetVersionProvider version={clientAssetVersion(versions)}>{children}</AssetVersionProvider>;
 }
