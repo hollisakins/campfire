@@ -5537,20 +5537,24 @@ BEGIN
     ORDER BY d.deployed_at DESC
     LIMIT 1
   ) full_dep ON true
+  -- Gated per column with CASE, not with a WHERE on this FROM-less lateral:
+  -- the planner pulls such a WHERE up into a join filter, so the four
+  -- correlated subqueries ran for every observation live as well (a full
+  -- spectra scan each; the 20 s admin overview of 2026-10-16). CASE only
+  -- evaluates a subplan when its arm is taken.
   LEFT JOIN LATERAL (
     SELECT
-      (SELECT x.crds_context FROM public.cat_spectra x
+      CASE WHEN public.dr_browse_tag() IS NOT NULL THEN (SELECT x.crds_context FROM public.cat_spectra x
          WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses) AND x.crds_context IS NOT NULL
-         GROUP BY x.crds_context ORDER BY count(*) DESC, x.crds_context LIMIT 1) AS crds_context,
-      (SELECT x.cfpipe_version FROM public.cat_spectra x
+         GROUP BY x.crds_context ORDER BY count(*) DESC, x.crds_context LIMIT 1) END AS crds_context,
+      CASE WHEN public.dr_browse_tag() IS NOT NULL THEN (SELECT x.cfpipe_version FROM public.cat_spectra x
          WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses) AND x.cfpipe_version IS NOT NULL
-         GROUP BY x.cfpipe_version ORDER BY count(*) DESC, x.cfpipe_version LIMIT 1) AS cfpipe_version,
-      (SELECT x.jwst_version FROM public.cat_spectra x
+         GROUP BY x.cfpipe_version ORDER BY count(*) DESC, x.cfpipe_version LIMIT 1) END AS cfpipe_version,
+      CASE WHEN public.dr_browse_tag() IS NOT NULL THEN (SELECT x.jwst_version FROM public.cat_spectra x
          WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses) AND x.jwst_version IS NOT NULL
-         GROUP BY x.jwst_version ORDER BY count(*) DESC, x.jwst_version LIMIT 1) AS jwst_version,
-      (SELECT max(x.reduced_at) FROM public.cat_spectra x
-         WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses)) AS reduced_at
-    WHERE public.dr_browse_tag() IS NOT NULL
+         GROUP BY x.jwst_version ORDER BY count(*) DESC, x.jwst_version LIMIT 1) END AS jwst_version,
+      CASE WHEN public.dr_browse_tag() IS NOT NULL THEN (SELECT max(x.reduced_at) FROM public.cat_spectra x
+         WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses)) END AS reduced_at
   ) frozen_dep ON true
   LEFT JOIN LATERAL (
     SELECT COUNT(*)::integer AS n_patches, MAX(d.deployed_at) AS last_patch_at
@@ -5705,20 +5709,24 @@ BEGIN
     ORDER BY d.deployed_at DESC
     LIMIT 1
   ) full_dep ON true
+  -- Gated per column with CASE, not with a WHERE on this FROM-less lateral:
+  -- the planner pulls such a WHERE up into a join filter, so the four
+  -- correlated subqueries ran for every observation live as well (a full
+  -- spectra scan each; the 20 s admin overview of 2026-10-16). CASE only
+  -- evaluates a subplan when its arm is taken.
   LEFT JOIN LATERAL (
     SELECT
-      (SELECT x.crds_context FROM public.cat_spectra x
+      CASE WHEN public.dr_browse_tag() IS NOT NULL THEN (SELECT x.crds_context FROM public.cat_spectra x
          WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses) AND x.crds_context IS NOT NULL
-         GROUP BY x.crds_context ORDER BY count(*) DESC, x.crds_context LIMIT 1) AS crds_context,
-      (SELECT x.cfpipe_version FROM public.cat_spectra x
+         GROUP BY x.crds_context ORDER BY count(*) DESC, x.crds_context LIMIT 1) END AS crds_context,
+      CASE WHEN public.dr_browse_tag() IS NOT NULL THEN (SELECT x.cfpipe_version FROM public.cat_spectra x
          WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses) AND x.cfpipe_version IS NOT NULL
-         GROUP BY x.cfpipe_version ORDER BY count(*) DESC, x.cfpipe_version LIMIT 1) AS cfpipe_version,
-      (SELECT x.jwst_version FROM public.cat_spectra x
+         GROUP BY x.cfpipe_version ORDER BY count(*) DESC, x.cfpipe_version LIMIT 1) END AS cfpipe_version,
+      CASE WHEN public.dr_browse_tag() IS NOT NULL THEN (SELECT x.jwst_version FROM public.cat_spectra x
          WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses) AND x.jwst_version IS NOT NULL
-         GROUP BY x.jwst_version ORDER BY count(*) DESC, x.jwst_version LIMIT 1) AS jwst_version,
-      (SELECT max(x.reduced_at) FROM public.cat_spectra x
-         WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses)) AS reduced_at
-    WHERE public.dr_browse_tag() IS NOT NULL
+         GROUP BY x.jwst_version ORDER BY count(*) DESC, x.jwst_version LIMIT 1) END AS jwst_version,
+      CASE WHEN public.dr_browse_tag() IS NOT NULL THEN (SELECT max(x.reduced_at) FROM public.cat_spectra x
+         WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses)) END AS reduced_at
   ) frozen_dep ON true
   LEFT JOIN LATERAL (
     SELECT COUNT(*)::integer AS n_patches, MAX(d.deployed_at) AS last_patch_at
