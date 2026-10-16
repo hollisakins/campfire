@@ -114,7 +114,7 @@ const n = (v: number | null) => (v == null ? '—' : v.toLocaleString());
 const plural = (v: number | null, one: string, many: string) => (v === 1 ? one : many);
 
 function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
-  const { release: r, files, exported } = detail;
+  const { release: r, files, complete } = detail;
   const s = releaseSummary(r.components, r.counts);
   const cite = releaseCitation(r, SITE_URL);
   const published = r.state === 'published';
@@ -181,8 +181,8 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
         )}
       </div>
 
-      <Section title="Download" aside={<span className="text-xs text-text-tertiary">schema v{r.dr_format_version}</span>}>
-        {!exported ? (
+      <Section title="Download">
+        {!complete ? (
           <p className="text-sm text-text-secondary">Not available yet.</p>
         ) : files.length === 0 ? (
           <p className="text-sm text-text-secondary">No files for your programs.</p>
@@ -210,19 +210,15 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
             </table>
           </div>
         )}
-        <div className="mt-4 space-y-2">
-          <CopyBlock
-            label="API"
-            text={`curl -H "Authorization: Bearer $CAMPFIRE_API_KEY" \\\n  ${SITE_URL}/api/v1/dr/${r.tag}/files`}
-          />
-          <p className="text-xs text-text-tertiary">
-            API keys: <Link href="/profile/api-keys" className="text-primary hover:underline">your profile</Link>.
-            Python client support (<code className="font-mono">campfire pull --dr {r.tag}</code>) coming soon.
-          </p>
-        </div>
+        <details className="mt-4 text-sm">
+          <summary className="cursor-pointer text-text-secondary">API</summary>
+          <div className="mt-2">
+            <CopyBlock label="endpoint" text={`${SITE_URL}/api/v1/dr/${encodeURIComponent(r.tag)}/files`} />
+          </div>
+        </details>
       </Section>
 
-      <Section title="Cite" aside={!r.doi ? <span className="text-xs text-text-tertiary">DOI pending</span> : undefined}>
+      <Section title="Cite">
         <div className="space-y-3">
           <CopyBlock label="citation" text={cite.text} />
           <CopyBlock label="BibTeX" text={cite.bibtex} />
