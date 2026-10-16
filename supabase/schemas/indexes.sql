@@ -754,23 +754,49 @@ CREATE INDEX IF NOT EXISTS idx_share_links_field
 -- Data releases (P4a)
 -- =============================================================================
 
--- Per-program partition scans (exports, RLS) and the object join.
+-- Frozen catalog tables (P6b): each mirrors the live indexes the catalog RPCs
+-- and the exports use, tag-prefixed, so browsing a release plans like live.
+-- dr_spectra
 CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_program
     ON public.dr_spectra USING btree (tag, program_slug);
-CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_object
-    ON public.dr_spectra USING btree (tag, object_id);
+CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_observation
+    ON public.dr_spectra USING btree (tag, observation);
+CREATE INDEX IF NOT EXISTS idx_dr_spectra_tag_target
+    ON public.dr_spectra USING btree (tag, target_id, grating);
+CREATE INDEX IF NOT EXISTS idx_dr_spectra_search_text_trgm
+    ON public.dr_spectra USING gin (search_text public.gin_trgm_ops);
 -- "which DRs is this spectrum in" (provenance line, identify).
 CREATE INDEX IF NOT EXISTS idx_dr_spectra_spectrum
     ON public.dr_spectra USING btree (spectrum_id);
+-- dr_targets
+CREATE INDEX IF NOT EXISTS idx_dr_targets_tag_object
+    ON public.dr_targets USING btree (tag, object_id);
+CREATE INDEX IF NOT EXISTS idx_dr_targets_tag_program_observation
+    ON public.dr_targets USING btree (tag, program_slug, observation);
+CREATE INDEX IF NOT EXISTS idx_dr_targets_tag_field_observation
+    ON public.dr_targets USING btree (tag, field, observation);
+CREATE INDEX IF NOT EXISTS idx_dr_targets_tag_coords
+    ON public.dr_targets USING btree (tag, ra, dec);
+-- dr_objects
 CREATE INDEX IF NOT EXISTS idx_dr_objects_tag_field
     ON public.dr_objects USING btree (tag, field);
+CREATE INDEX IF NOT EXISTS idx_dr_objects_tag_coords
+    ON public.dr_objects USING btree (tag, ra, dec);
+CREATE INDEX IF NOT EXISTS idx_dr_objects_tag_redshift
+    ON public.dr_objects USING btree (tag, redshift);
+CREATE INDEX IF NOT EXISTS idx_dr_objects_tag_needs_review
+    ON public.dr_objects USING btree (tag, id) WHERE needs_review;
 CREATE INDEX IF NOT EXISTS idx_dr_objects_programs
     ON public.dr_objects USING gin (programs);
--- the objects export pages in name order (dr_export_rows' keyset cursor);
--- the other streams page on their primary keys
-CREATE INDEX IF NOT EXISTS idx_dr_objects_tag_name
-    ON public.dr_objects USING btree (tag, name);
--- The byte pass walks pending (and, on a retry, failed) rows per tag; dedup looks up by science hash.
+CREATE INDEX IF NOT EXISTS idx_dr_objects_evidence_programs
+    ON public.dr_objects USING gin (evidence_programs);
+CREATE INDEX IF NOT EXISTS idx_dr_objects_gratings
+    ON public.dr_objects USING gin (gratings);
+CREATE INDEX IF NOT EXISTS idx_dr_objects_observations
+    ON public.dr_objects USING gin (observations);
+CREATE INDEX IF NOT EXISTS idx_dr_objects_search_text_trgm
+    ON public.dr_objects USING gin (search_text public.gin_trgm_ops);
+-- dr_manifest: the byte pass walks pending (and, on a retry, failed) rows per tag; dedup looks up by science hash.
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_tag_pending
     ON public.dr_manifest USING btree (tag, storage_key) WHERE (byte_state = ANY (ARRAY['pending'::text, 'failed'::text]));
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_tag_component
@@ -779,9 +805,20 @@ CREATE INDEX IF NOT EXISTS idx_dr_manifest_science_hash
     ON public.dr_manifest USING btree (science_hash) WHERE (science_hash IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_spectrum
     ON public.dr_manifest USING btree (spectrum_id) WHERE (spectrum_id IS NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_dr_line_fits_tag_program
-    ON public.dr_line_fits USING btree (tag, program_slug);
+-- dr_line_fits / dr_spectrum_lines
+CREATE INDEX IF NOT EXISTS idx_dr_line_fits_tag_target
+    ON public.dr_line_fits USING btree (tag, target_id);
+CREATE INDEX IF NOT EXISTS idx_dr_spectrum_lines_tag_line_snr
+    ON public.dr_spectrum_lines USING btree (tag, line, snr DESC);
+-- dr_photometry / dr_photometry_bands
 CREATE INDEX IF NOT EXISTS idx_dr_photometry_tag_object
     ON public.dr_photometry USING btree (tag, object_id);
 CREATE INDEX IF NOT EXISTS idx_dr_photometry_tag_field_catalog
     ON public.dr_photometry USING btree (tag, field, catalog_name);
+CREATE INDEX IF NOT EXISTS idx_dr_photometry_bands_tag_band_mag
+    ON public.dr_photometry_bands USING btree (tag, band, mag);
+CREATE INDEX IF NOT EXISTS idx_dr_photometry_bands_tag_band_snr
+    ON public.dr_photometry_bands USING btree (tag, band, snr DESC);
+-- dr_nircam_images
+CREATE INDEX IF NOT EXISTS idx_dr_nircam_images_tag_field
+    ON public.dr_nircam_images USING btree (tag, field);

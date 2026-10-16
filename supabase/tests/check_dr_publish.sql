@@ -209,15 +209,16 @@ BEGIN
   SELECT d.spectrum_id INTO drop_sid FROM dr_spectra d WHERE d.tag = 'DR-seed' ORDER BY d.spectrum_id OFFSET 2 LIMIT 1;
   DELETE FROM dr_spectra WHERE tag = 'DR-seed' AND spectrum_id = drop_sid;     -- live now has one the release lacks
 
-  SELECT d.object_id INTO o FROM dr_objects d JOIN objects x ON x.id = d.object_id AND x.is_active
-   WHERE d.tag = 'DR-seed' AND x.redshift IS NOT DISTINCT FROM d.redshift ORDER BY d.object_id LIMIT 1;
-  SELECT d.object_id INTO o2 FROM dr_objects d JOIN objects x ON x.id = d.object_id AND x.is_active
-   WHERE d.tag = 'DR-seed' AND x.redshift IS NOT DISTINCT FROM d.redshift ORDER BY d.object_id OFFSET 1 LIMIT 1;
-  SELECT d.object_id INTO o3 FROM dr_objects d JOIN objects x ON x.id = d.object_id AND x.is_active
-   WHERE d.tag = 'DR-seed' AND NOT COALESCE(x.needs_review, false) AND NOT COALESCE((d.review_state->>'needs_review')::boolean, false)
-   ORDER BY d.object_id OFFSET 2 LIMIT 1;
-  SELECT d.object_id INTO o4 FROM dr_objects d JOIN objects x ON x.id = d.object_id AND x.is_active
-   WHERE d.tag = 'DR-seed' ORDER BY d.object_id DESC LIMIT 1;
+  -- (d.id is the live objects.id at the freeze; d.object_id the name)
+  SELECT d.id AS object_id INTO o FROM dr_objects d JOIN objects x ON x.id = d.id AND x.is_active
+   WHERE d.tag = 'DR-seed' AND x.redshift IS NOT DISTINCT FROM d.redshift ORDER BY d.id LIMIT 1;
+  SELECT d.id AS object_id INTO o2 FROM dr_objects d JOIN objects x ON x.id = d.id AND x.is_active
+   WHERE d.tag = 'DR-seed' AND x.redshift IS NOT DISTINCT FROM d.redshift ORDER BY d.id OFFSET 1 LIMIT 1;
+  SELECT d.id AS object_id INTO o3 FROM dr_objects d JOIN objects x ON x.id = d.id AND x.is_active
+   WHERE d.tag = 'DR-seed' AND NOT COALESCE(x.needs_review, false) AND NOT d.needs_review
+   ORDER BY d.id OFFSET 2 LIMIT 1;
+  SELECT d.id AS object_id INTO o4 FROM dr_objects d JOIN objects x ON x.id = d.id AND x.is_active
+   WHERE d.tag = 'DR-seed' ORDER BY d.id DESC LIMIT 1;
   -- the triggers on objects are not what is under test here
   SET LOCAL session_replication_role = replica;
   UPDATE objects SET object_id = object_id || '-renamed', redshift_quality = COALESCE(redshift_quality, 0) + 1 WHERE id = o.object_id;

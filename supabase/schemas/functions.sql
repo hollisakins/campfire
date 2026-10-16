@@ -8898,6 +8898,8 @@ DECLARE
   comp record;
   v_t0 timestamptz := clock_timestamp();
   v_n_spectra bigint; v_n_objects bigint; v_n_lines bigint; v_n_phot bigint; v_n_manifest bigint;
+  v_n_targets bigint; v_n_slines bigint; v_n_bands bigint; v_n_nircam bigint; v_n_fields bigint;
+  v_mismatch bigint;
   v_xmin bigint;
   v_missing text;
   v_err text;
@@ -8930,6 +8932,17 @@ BEGIN
   -- enqueue and this run (the pg_cron delay) fails the attempt cleanly.
   PERFORM pg_advisory_xact_lock(hashtext('campfire.dr_freeze'));
 
+  -- Two documented behaviours (P6b-1 validation), by design:
+  --  (a) a statement_timeout armed by the CALLER before this call (the
+  --      authenticated role's 8 s on the inline path) cancels the statement
+  --      regardless of this function's own SET; a cancel landing before the
+  --      protected block below leaves the row `freezing` (purge / re-enqueue
+  --      recovers it). The pg_cron path runs with the function's settings.
+  --  (b) a failed re-freeze of an already-frozen, unpublished tag rolls back
+  --      its own leading DELETEs with the rest of the block, so the previous
+  --      snapshot stays in place under a `failed` row until the next
+  --      re-freeze or purge.
+
   BEGIN
     IF EXISTS (SELECT 1 FROM deploy_scope_state d
                 WHERE d.in_progress_since IS NOT NULL
@@ -8939,23 +8952,32 @@ BEGIN
     SELECT * INTO comp FROM dr_parse_components(r.components);
 
     -- Partial rows of a previous attempt under this tag.
-    DELETE FROM dr_manifest    WHERE tag = p_tag;
-    DELETE FROM dr_line_fits  WHERE tag = p_tag;
-    DELETE FROM dr_photometry WHERE tag = p_tag;
-    DELETE FROM dr_spectra    WHERE tag = p_tag;
-    DELETE FROM dr_objects    WHERE tag = p_tag;
-    DELETE FROM dr_exports    WHERE tag = p_tag;
+    DELETE FROM dr_manifest         WHERE tag = p_tag;
+    DELETE FROM dr_spectrum_lines   WHERE tag = p_tag;
+    DELETE FROM dr_line_fits        WHERE tag = p_tag;
+    DELETE FROM dr_photometry_bands WHERE tag = p_tag;
+    DELETE FROM dr_photometry       WHERE tag = p_tag;
+    DELETE FROM dr_spectra          WHERE tag = p_tag;
+    DELETE FROM dr_targets          WHERE tag = p_tag;
+    DELETE FROM dr_objects          WHERE tag = p_tag;
+    DELETE FROM dr_nircam_images    WHERE tag = p_tag;
+    DELETE FROM dr_fields           WHERE tag = p_tag;
+    DELETE FROM dr_filter_options   WHERE tag = p_tag;
+    DELETE FROM dr_exports          WHERE tag = p_tag;
 
-    -- ONE statement: every sub-statement sees the same snapshot.
+    -- ONE statement: every sub-statement sees the same snapshot. Every
+    -- frozen catalog table is `tag` + the live row verbatim (P6b), copied
+    -- column BY NAME (never `x.*`: the physical column order of a live table
+    -- is whatever its migrations left, and two same-typed columns swapped
+    -- would copy silently); check_dr_parity.sql keeps the three lists -- the
+    -- live table, the frozen table and these INSERTs -- in step.
     WITH
     pub AS MATERIALIZED (
       -- Published spectra (nirspec component) with the active object they
       -- roll up to (NULL while a target has no active object).
-      SELECT s.id, s.spectrum_id, s.program_slug, s.observation, s.grating, s.target_id,
-             t.field AS target_field, o.id AS obj_id, s.fits_path, s.file_hash, s.science_hash, s.file_size,
-             s.exposure_time, s.signal_to_noise, s.cfpipe_version, s.crds_context,
-             s.jwst_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min,
-             s.confidence, s.dq_flags,
+      SELECT s.id, s.spectrum_id, s.program_slug, s.observation, s.target_id,
+             t.field AS target_field, o.id AS obj_id, s.file_hash, s.science_hash,
+             s.exposure_time, s.redshift_auto,
              CASE s.grating
                WHEN 'PRISM' THEN 0 WHEN 'G395M' THEN 1 WHEN 'G395H' THEN 2
                WHEN 'G235M' THEN 3 WHEN 'G235H' THEN 4 WHEN 'G140M' THEN 5
@@ -8966,11 +8988,15 @@ BEGIN
       WHERE comp.nirspec AND s.deploy_status = 'published'
     ),
     ev AS (
-      -- Evidence programs per object: the programs of its published members.
+      -- Evidence programs per object: the programs of its published members
+      -- (what the exports partition on; the live `programs` array may name a
+      -- program whose only member here is a draft).
       SELECT p.obj_id, array_agg(DISTINCT p.program_slug ORDER BY p.program_slug) AS programs
       FROM pub p WHERE p.obj_id IS NOT NULL GROUP BY p.obj_id
     ),
-    -- Auto-redshift source: the compute_object_redshift_auto rule, set-based.
+    -- Auto-redshift source: the compute_object_redshift_auto rule, set-based,
+    -- for the export's z_source_spectrum_id (the row itself keeps the live
+    -- redshift_auto verbatim; disagreements are counted, not corrected).
     m AS (
       SELECT p.obj_id, p.id, p.redshift_auto AS z, p.exposure_time, p.prio
       FROM pub p WHERE p.obj_id IS NOT NULL AND p.redshift_auto IS NOT NULL
@@ -8993,115 +9019,85 @@ BEGIN
       SELECT b.obj_id, COALESCE(rf.id, b.id) AS id, COALESCE(rf.z, b.z) AS z
       FROM base b LEFT JOIN refined rf ON rf.obj_id = b.obj_id
     ),
-    agg AS (
-      -- Aggregates over the PUBLISHED members only (the live objects row counts
-      -- draft / revoked members too and would make the frozen row inconsistent
-      -- with the released spectra).
-      SELECT p.obj_id, count(DISTINCT p.target_id) AS n_targets, count(*) AS n_spectra,
-             array_agg(DISTINCT p.grating ORDER BY p.grating) AS gratings,
-             array_agg(DISTINCT p.observation ORDER BY p.observation) AS observations,
-             max(p.signal_to_noise) AS max_snr, max(p.exposure_time) AS max_exposure_time
-      FROM pub p WHERE p.obj_id IS NOT NULL GROUP BY p.obj_id
-    ),
-    phz AS (
-      -- photo-z from the SELECTED catalogs only, with the live rule (the newest
-      -- cross-match, sync_photometry_to_objects); none selected -> NULL / false,
-      -- so dr_objects never advertises photometry dr_photometry does not carry
-      SELECT DISTINCT ON (ph.object_id) ph.object_id, ph.photo_z, ph.photo_z_err_lo, ph.photo_z_err_hi
-      FROM object_photometry ph
-      WHERE ph.object_id IS NOT NULL
-        AND (ph.field || '/' || ph.catalog_name) = ANY (comp.photometry)
-      ORDER BY ph.object_id, ph.updated_at DESC
-    ),
-    objs AS MATERIALIZED (
-      SELECT o.id, o.object_id, o.field, o.ra, o.dec,
-             -- the frozen access scope IS the evidence: programs of the
-             -- published members (a program whose only member is a draft has
-             -- nothing in the release)
-             ev.programs AS programs, ev.programs AS evidence_programs,
-             agg.observations, agg.gratings, agg.n_targets::int AS n_targets, agg.n_spectra::int AS n_spectra,
-             agg.max_snr, agg.max_exposure_time,
-             phz.photo_z, phz.photo_z_err_lo, phz.photo_z_err_hi, (phz.object_id IS NOT NULL) AS has_photometry,
-             zsrc.id AS z_source_spectrum_id,
-             -- the auto redshift of the published anchor spectrum (the live
-             -- value may come from an excluded member)
-             zsrc.z AS redshift_auto,
-             o.redshift_inspected,
-             (CASE WHEN o.redshift_quality = 1 THEN NULL
-                   ELSE COALESCE(o.redshift_inspected::double precision, zsrc.z) END)::numeric(10,6) AS redshift,
-             o.redshift_quality, o.inspected_used_auto, o.last_inspected_at, o.last_inspected_by,
-             o.version, o.needs_review, o.reviewed_spectrum_ids
-      FROM objects o
-      JOIN ev ON ev.obj_id = o.id
-      JOIN agg ON agg.obj_id = o.id
-      LEFT JOIN zsrc ON zsrc.obj_id = o.id
-      LEFT JOIN phz ON phz.object_id = o.id
+    mism AS (
+      SELECT count(*) AS n
+      FROM objects o JOIN ev ON ev.obj_id = o.id LEFT JOIN zsrc ON zsrc.obj_id = o.id
+      WHERE o.redshift_auto IS DISTINCT FROM zsrc.z
     ),
     ins_spectra AS (
-      INSERT INTO dr_spectra (tag, spectrum_id, id, program_slug, observation, grating, target_id,
-                              field, object_id, fits_path, file_hash, science_hash, file_size, exposure_time,
-                              signal_to_noise, cfpipe_version, crds_context, jwst_version, date_obs,
-                              reduced_at, redshift_auto, chi2_min, confidence, dq_flags)
-      SELECT p_tag, p.spectrum_id, p.id, p.program_slug, p.observation, p.grating, p.target_id,
-             p.target_field, p.obj_id, p.fits_path, p.file_hash, p.science_hash, p.file_size, p.exposure_time,
-             p.signal_to_noise, p.cfpipe_version, p.crds_context, p.jwst_version, p.date_obs,
-             p.reduced_at, p.redshift_auto, p.chi2_min, p.confidence, p.dq_flags
-      FROM pub p
+      INSERT INTO dr_spectra (tag, id, grating, fits_path, signal_to_noise, created_at, updated_at, target_id, thumbnail_svg_fnu, thumbnail_svg_flambda, file_hash, science_hash, file_size, exposure_time, crds_context, jwst_version, cfpipe_version, date_obs, reduced_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status, program_slug, observation, spectrum_id, search_text)
+      SELECT p_tag, s.id, s.grating, s.fits_path, s.signal_to_noise, s.created_at, s.updated_at, s.target_id, s.thumbnail_svg_fnu, s.thumbnail_svg_flambda, s.file_hash, s.science_hash, s.file_size, s.exposure_time, s.crds_context, s.jwst_version, s.cfpipe_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min, s.confidence, s.dq_flags, s.deploy_status, s.program_slug, s.observation, s.spectrum_id, s.search_text
+      FROM spectra s JOIN pub p ON p.id = s.id
+      RETURNING 1
+    ),
+    ins_targets AS (
+      INSERT INTO dr_targets (tag, id, target_id, field, ra, dec, redshift_auto, redshift_quality, spectral_features, dq_flags, created_at, updated_at, redshift_inspected, last_inspected_at, last_inspected_by, max_snr, redshift, max_exposure_time, program_slug, observation, object_id, has_published_spectrum)
+      SELECT p_tag, t.id, t.target_id, t.field, t.ra, t.dec, t.redshift_auto, t.redshift_quality, t.spectral_features, t.dq_flags, t.created_at, t.updated_at, t.redshift_inspected, t.last_inspected_at, t.last_inspected_by, t.max_snr, t.redshift, t.max_exposure_time, t.program_slug, t.observation, t.object_id, t.has_published_spectrum
+      FROM targets t
+      WHERE EXISTS (SELECT 1 FROM pub p WHERE p.target_id = t.target_id)
       RETURNING 1
     ),
     ins_objects AS (
-      INSERT INTO dr_objects (tag, object_id, name, field, ra, dec, programs, evidence_programs,
-                              observations, gratings, n_targets, n_spectra, max_snr, max_exposure_time,
-                              photo_z, photo_z_err_lo, photo_z_err_hi, has_photometry,
-                              z_source_spectrum_id, redshift_auto, redshift_inspected, redshift,
-                              redshift_quality, inspected_used_auto, last_inspected_at,
-                              last_inspected_by, version, review_state)
-      SELECT p_tag, o.id, o.object_id, o.field, o.ra, o.dec, o.programs, o.evidence_programs,
-             o.observations, o.gratings, o.n_targets, o.n_spectra, o.max_snr, o.max_exposure_time,
-             o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi, o.has_photometry,
-             o.z_source_spectrum_id, o.redshift_auto, o.redshift_inspected, o.redshift,
-             o.redshift_quality, o.inspected_used_auto, o.last_inspected_at,
-             o.last_inspected_by, o.version,
-             jsonb_build_object('needs_review', o.needs_review,
-                                'reviewed_spectrum_ids', o.reviewed_spectrum_ids)
-      FROM objs o
+      -- the active objects with a published member; verbatim row + extras
+      INSERT INTO dr_objects (tag, id, object_id, field, ra, dec, created_at, n_targets, n_spectra, programs, gratings, observations, max_snr, max_exposure_time, photo_z, photo_z_err_lo, photo_z_err_hi, has_photometry, updated_at, redshift_auto, redshift_inspected, redshift_quality, inspected_used_auto, redshift, last_inspected_at, last_inspected_by, last_data_change_at, staleness_reason, reviewed_spectrum_ids, needs_review, version, is_active, has_published_spectrum, search_text, evidence_programs, z_source_spectrum_id)
+      SELECT p_tag, o.id, o.object_id, o.field, o.ra, o.dec, o.created_at, o.n_targets, o.n_spectra, o.programs, o.gratings, o.observations, o.max_snr, o.max_exposure_time, o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi, o.has_photometry, o.updated_at, o.redshift_auto, o.redshift_inspected, o.redshift_quality, o.inspected_used_auto, o.redshift, o.last_inspected_at, o.last_inspected_by, o.last_data_change_at, o.staleness_reason, o.reviewed_spectrum_ids, o.needs_review, o.version, o.is_active, o.has_published_spectrum, o.search_text,
+             ev.programs, zsrc.id
+      FROM objects o
+      JOIN ev ON ev.obj_id = o.id
+      LEFT JOIN zsrc ON zsrc.obj_id = o.id
       RETURNING 1
     ),
     ins_lines AS (
-      INSERT INTO dr_line_fits (tag, spectrum_id, target_id, grating, program_slug, observation,
-                                object_id, object_version, z_used, z_source, z_quality, z_fit,
-                                z_fit_err, dv, dv_err, sigma_v, sigma_v_err, kin_source, n_lines,
-                                n_detected, n_broad, chi2, dof, lines, fit_version, cfpipe_version,
-                                f_lsf, spectrum_hash, spectrum_science_hash, fitted_at,
-                                stale_redshift, stale_spectrum)
-      -- target / grating / program / observation from the JOINED (frozen)
-      -- spectrum, not the fit's own denormalized copies: those can be stale
-      -- after a metadata correction, and dr_line_fits authorizes on
-      -- program_slug, like the live policy authorizes through spectra (Codex on #599)
-      SELECT p_tag, f.spectrum_id, p.target_id, p.grating, p.program_slug, p.observation,
-             f.object_id, f.object_version, f.z_used, f.z_source, f.z_quality, f.z_fit,
-             f.z_fit_err, f.dv, f.dv_err, f.sigma_v, f.sigma_v_err, f.kin_source, f.n_lines,
-             f.n_detected, f.n_broad, f.chi2, f.dof, f.lines, f.fit_version, f.cfpipe_version,
-             f.f_lsf, f.spectrum_hash, f.spectrum_science_hash, f.fitted_at,
+      INSERT INTO dr_line_fits (tag, spectrum_id, target_id, grating, program_slug, observation, z_used, z_source, z_quality, object_id, object_version, z_fit, z_fit_err, dv, dv_err, sigma_v, sigma_v_err, kin_source, n_lines, n_detected, n_broad, chi2, dof, lines, fit_version, cfpipe_version, f_lsf, spectrum_hash, spectrum_science_hash, fitted_at, created_at, updated_at, stale_redshift, stale_spectrum)
+      SELECT p_tag, f.spectrum_id, f.target_id, f.grating, f.program_slug, f.observation, f.z_used, f.z_source, f.z_quality, f.object_id, f.object_version, f.z_fit, f.z_fit_err, f.dv, f.dv_err, f.sigma_v, f.sigma_v_err, f.kin_source, f.n_lines, f.n_detected, f.n_broad, f.chi2, f.dof, f.lines, f.fit_version, f.cfpipe_version, f.f_lsf, f.spectrum_hash, f.spectrum_science_hash, f.fitted_at, f.created_at, f.updated_at,
              -- the spectrum_line_fits_status predicates, in this snapshot
              (o.id IS NOT NULL AND line_fit_stale_redshift(o.version, o.redshift_quality,
                  o.redshift::double precision, f.object_version, f.z_quality, f.z_used)),
              line_fit_stale_spectrum(p.file_hash, p.science_hash, f.spectrum_hash, f.spectrum_science_hash)
       FROM spectrum_line_fits f
       JOIN pub p ON p.id = f.spectrum_id
-      LEFT JOIN objs o ON o.id = p.obj_id
+      LEFT JOIN objects o ON o.id = p.obj_id
       RETURNING 1
     ),
-    ins_phot AS (
-      INSERT INTO dr_photometry (tag, photometry_id, object_id, programs, field, catalog_name,
-                                 catalog_id, ra, dec, match_distance_arcsec, photometry, photo_z,
-                                 photo_z_err_lo, photo_z_err_hi, has_pz)
-      SELECT p_tag, ph.id, ph.object_id, o.programs, ph.field, ph.catalog_name, ph.catalog_id,
-             ph.ra, ph.dec, ph.match_distance_arcsec, ph.photometry, ph.photo_z,
-             ph.photo_z_err_lo, ph.photo_z_err_hi, ph.has_pz
+    ins_slines AS (
+      INSERT INTO dr_spectrum_lines (tag, spectrum_id, line, component, wave_rest, flux, flux_err, snr, ew_rest, ew_rest_err, flags, blend_into)
+      SELECT p_tag, l.spectrum_id, l.line, l.component, l.wave_rest, l.flux, l.flux_err, l.snr, l.ew_rest, l.ew_rest_err, l.flags, l.blend_into
+      FROM spectrum_lines l JOIN pub p ON p.id = l.spectrum_id
+      RETURNING 1
+    ),
+    phot AS MATERIALIZED (
+      -- cross-match rows of the frozen objects in the SELECTED catalogs
+      SELECT ph.id
       FROM object_photometry ph
-      JOIN objs o ON o.id = ph.object_id
+      JOIN ev ON ev.obj_id = ph.object_id
       WHERE (ph.field || '/' || ph.catalog_name) = ANY (comp.photometry)
+    ),
+    ins_phot AS (
+      INSERT INTO dr_photometry (tag, id, object_id, field, ra, dec, catalog_name, catalog_id, match_distance_arcsec, photometry, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz, created_at, updated_at)
+      SELECT p_tag, ph.id, ph.object_id, ph.field, ph.ra, ph.dec, ph.catalog_name, ph.catalog_id, ph.match_distance_arcsec, ph.photometry, ph.photo_z, ph.photo_z_err_lo, ph.photo_z_err_hi, ph.has_pz, ph.created_at, ph.updated_at
+      FROM object_photometry ph JOIN phot ON phot.id = ph.id
+      RETURNING 1
+    ),
+    ins_bands AS (
+      INSERT INTO dr_photometry_bands (tag, photometry_id, band, flux, flux_err, wav, snr, mag)
+      SELECT p_tag, b.photometry_id, b.band, b.flux, b.flux_err, b.wav, b.snr, b.mag
+      FROM object_photometry_bands b JOIN phot ON phot.id = b.photometry_id
+      RETURNING 1
+    ),
+    ins_nircam AS (
+      INSERT INTO dr_nircam_images (tag, id, field, tile, filter, pixel_scale, extension, epoch, file_path, created_at, file_size, deploy_status, deployment_id)
+      SELECT p_tag, ni.id, ni.field, ni.tile, ni.filter, ni.pixel_scale, ni.extension, ni.epoch, ni.file_path, ni.created_at, ni.file_size, ni.deploy_status, ni.deployment_id
+      FROM nircam_images ni
+      WHERE ni.deploy_status = 'published' AND ni.field = ANY (comp.fields)
+      RETURNING 1
+    ),
+    ins_fields AS (
+      -- the NIRCam components and the fields of the frozen targets
+      INSERT INTO dr_fields (tag, name, display_name, filters, tiles, fiducial_tiles, epochs, programs, jwst_program_ids, file_globs, center_ra, center_dec, config, coverage_area_arcmin2, coverage_area_deg2, expmap_pixel_scale_arcsec, latest_deployment_id, created_at, config_hash, config_updated_at, retired_at)
+      SELECT p_tag, f.name, f.display_name, f.filters, f.tiles, f.fiducial_tiles, f.epochs, f.programs, f.jwst_program_ids, f.file_globs, f.center_ra, f.center_dec, f.config, f.coverage_area_arcmin2, f.coverage_area_deg2, f.expmap_pixel_scale_arcsec, f.latest_deployment_id, f.created_at, f.config_hash, f.config_updated_at, f.retired_at
+      FROM fields f
+      WHERE f.name = ANY (comp.fields)
+         OR EXISTS (SELECT 1 FROM pub p WHERE p.target_field = f.name)
       RETURNING 1
     ),
     ins_members AS (
@@ -9171,8 +9167,30 @@ BEGIN
     SELECT (SELECT count(*) FROM ins_spectra), (SELECT count(*) FROM ins_objects),
            (SELECT count(*) FROM ins_lines), (SELECT count(*) FROM ins_phot),
            (SELECT count(*) FROM ins_members),
+           (SELECT count(*) FROM ins_targets), (SELECT count(*) FROM ins_slines),
+           (SELECT count(*) FROM ins_bands), (SELECT count(*) FROM ins_nircam),
+           (SELECT count(*) FROM ins_fields), (SELECT n FROM mism),
            pg_snapshot_xmin(pg_current_snapshot())::text::bigint
-      INTO v_n_spectra, v_n_objects, v_n_lines, v_n_phot, v_n_manifest, v_xmin;
+      INTO v_n_spectra, v_n_objects, v_n_lines, v_n_phot, v_n_manifest,
+           v_n_targets, v_n_slines, v_n_bands, v_n_nircam, v_n_fields, v_mismatch, v_xmin;
+
+    -- The dropdown options of the release: the mv_filter_options query over
+    -- the frozen rows (same transaction; reads the frozen tables only).
+    INSERT INTO dr_filter_options (tag, id, fields, observations, gratings, photometry_bands)
+    SELECT p_tag, 1,
+      ARRAY(SELECT DISTINCT t.field FROM dr_targets t
+            WHERE t.tag = p_tag AND t.has_published_spectrum ORDER BY t.field),
+      ARRAY(SELECT DISTINCT t.observation FROM dr_targets t
+            WHERE t.tag = p_tag AND t.observation IS NOT NULL AND t.has_published_spectrum ORDER BY t.observation),
+      ARRAY(SELECT DISTINCT sp.grating FROM dr_spectra sp
+            WHERE sp.tag = p_tag AND sp.deploy_status = 'published' ORDER BY sp.grating),
+      ARRAY(SELECT b.band
+            FROM dr_photometry_bands b
+            JOIN dr_photometry ph ON ph.tag = b.tag AND ph.id = b.photometry_id
+            JOIN dr_objects o ON o.tag = ph.tag AND o.id = ph.object_id
+            WHERE b.tag = p_tag AND o.has_published_spectrum AND o.is_active
+            GROUP BY b.band
+            ORDER BY min(b.wav) NULLS LAST, b.band);
 
     -- Every published mosaic of a selected field must have become a member: a
     -- mosaic without an active registry row would otherwise be dropped with no
@@ -9228,6 +9246,11 @@ BEGIN
            counts = jsonb_build_object(
              'spectra', v_n_spectra, 'objects', v_n_objects, 'line_fits', v_n_lines,
              'photometry', v_n_phot, 'manifest', v_n_manifest,
+             'targets', v_n_targets, 'spectrum_lines', v_n_slines, 'photometry_bands', v_n_bands,
+             'nircam_images', v_n_nircam, 'fields', v_n_fields,
+             -- objects whose live redshift_auto is not the in-snapshot anchor's
+             -- value (informational; the row keeps the live value)
+             'redshift_auto_mismatch', v_mismatch,
              -- per product type, so a shortfall (e.g. sidecars whose registry
              -- row did not match the key) shows at freeze time, not in the
              -- byte pass
@@ -9248,7 +9271,9 @@ BEGIN
                               FROM (SELECT m.component, count(*) AS n, COALESCE(sum(m.size_bytes), 0) AS b
                                     FROM dr_manifest m WHERE m.tag = p_tag GROUP BY m.component) t),
              'nirspec_programs', (SELECT count(DISTINCT s.program_slug) FROM dr_spectra s WHERE s.tag = p_tag),
-             'nirspec_fields', (SELECT count(DISTINCT s.field) FROM dr_spectra s WHERE s.tag = p_tag AND s.field IS NOT NULL)),
+             'nirspec_fields', (SELECT count(DISTINCT t.field) FROM dr_spectra s
+                                JOIN dr_targets t ON t.tag = s.tag AND t.target_id = s.target_id
+                                WHERE s.tag = p_tag)),
            error = NULL,
            updated_at = now()
      WHERE tag = p_tag;
@@ -9275,7 +9300,7 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_freeze_job(text) IS 'Data-release freeze (P4a): rewrites the six frozen tables of an UNPUBLISHED tag in one statement (one snapshot) from the published live rows, then marks the row frozen with counts, snapshot xmin and duration; any error lands in state failed with the message. Runs as postgres from the one-shot pg_cron job dr_enqueue_freeze schedules, inline where pg_cron is absent, and from the seed. Idempotent per tag.';
+COMMENT ON FUNCTION public.dr_freeze_job(text) IS 'Data-release freeze (P4a, full-row copies since P6b): rewrites the frozen tables of an UNPUBLISHED tag (dr_spectra, dr_targets, dr_objects, dr_line_fits, dr_spectrum_lines, dr_photometry, dr_photometry_bands, dr_nircam_images, dr_fields, dr_manifest; then dr_filter_options) in one statement (one snapshot) from the published live rows, then marks the row frozen with counts, snapshot xmin and duration; any error lands in state failed with the message. Runs as postgres from the one-shot pg_cron job dr_enqueue_freeze schedules, inline where pg_cron is absent, and from the seed. Idempotent per tag.';
 
 REVOKE ALL ON FUNCTION public.dr_freeze_job(text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.dr_freeze_job(text) TO service_role;
@@ -9388,6 +9413,7 @@ AS $$
 DECLARE
   r dr_releases%ROWTYPE;
   n_members bigint; n_lines bigint; n_phot bigint; n_spectra bigint; n_objects bigint; n_exports bigint;
+  n_targets bigint; n_slines bigint; n_bands bigint; n_nircam bigint; n_fields bigint;
 BEGIN
   PERFORM dr_require_admin();
   SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
@@ -9413,22 +9439,32 @@ BEGIN
     RAISE EXCEPTION 'release % is being archived (a claim is live); wait for `campfire dr archive` to finish', p_tag;
   END IF;
   PERFORM dr_cron_unschedule(p_tag);
-  DELETE FROM dr_manifest    WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
-  DELETE FROM dr_line_fits  WHERE tag = p_tag; GET DIAGNOSTICS n_lines = ROW_COUNT;
-  DELETE FROM dr_photometry WHERE tag = p_tag; GET DIAGNOSTICS n_phot = ROW_COUNT;
-  DELETE FROM dr_spectra    WHERE tag = p_tag; GET DIAGNOSTICS n_spectra = ROW_COUNT;
-  DELETE FROM dr_objects    WHERE tag = p_tag; GET DIAGNOSTICS n_objects = ROW_COUNT;
-  DELETE FROM dr_exports    WHERE tag = p_tag; GET DIAGNOSTICS n_exports = ROW_COUNT;
-  DELETE FROM dr_releases   WHERE tag = p_tag;
+  DELETE FROM dr_manifest         WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
+  DELETE FROM dr_spectrum_lines   WHERE tag = p_tag; GET DIAGNOSTICS n_slines = ROW_COUNT;
+  DELETE FROM dr_line_fits        WHERE tag = p_tag; GET DIAGNOSTICS n_lines = ROW_COUNT;
+  DELETE FROM dr_photometry_bands WHERE tag = p_tag; GET DIAGNOSTICS n_bands = ROW_COUNT;
+  DELETE FROM dr_photometry       WHERE tag = p_tag; GET DIAGNOSTICS n_phot = ROW_COUNT;
+  DELETE FROM dr_spectra          WHERE tag = p_tag; GET DIAGNOSTICS n_spectra = ROW_COUNT;
+  DELETE FROM dr_targets          WHERE tag = p_tag; GET DIAGNOSTICS n_targets = ROW_COUNT;
+  DELETE FROM dr_objects          WHERE tag = p_tag; GET DIAGNOSTICS n_objects = ROW_COUNT;
+  DELETE FROM dr_nircam_images    WHERE tag = p_tag; GET DIAGNOSTICS n_nircam = ROW_COUNT;
+  DELETE FROM dr_fields           WHERE tag = p_tag; GET DIAGNOSTICS n_fields = ROW_COUNT;
+  DELETE FROM dr_filter_options   WHERE tag = p_tag;
+  DELETE FROM dr_exports          WHERE tag = p_tag; GET DIAGNOSTICS n_exports = ROW_COUNT;
+  DELETE FROM dr_releases         WHERE tag = p_tag;
   INSERT INTO deploy_events (actor, action, affected_count, metadata)
   VALUES (auth.uid(), 'delete', n_spectra::int,
           jsonb_build_object('dr_tag', p_tag, 'purge', true, 'state_before', r.state,
                              'rows', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
                                'line_fits', n_lines, 'photometry', n_phot, 'manifest', n_members,
+                               'targets', n_targets, 'spectrum_lines', n_slines, 'photometry_bands', n_bands,
+                               'nircam_images', n_nircam, 'fields', n_fields,
                                'exports', n_exports)));
   RETURN jsonb_build_object('tag', p_tag, 'state_before', r.state,
                             'deleted', jsonb_build_object('spectra', n_spectra, 'objects', n_objects,
                               'line_fits', n_lines, 'photometry', n_phot, 'manifest', n_members,
+                              'targets', n_targets, 'spectrum_lines', n_slines, 'photometry_bands', n_bands,
+                              'nircam_images', n_nircam, 'fields', n_fields,
                               'exports', n_exports));
 END;
 $$;
@@ -9528,15 +9564,22 @@ BEGIN
   PERFORM dr_require_admin();
   RETURN QUERY
   WITH counts AS (
+    -- objects and photometry partition on the frozen object's EVIDENCE
+    -- programs (the programs of its published members); line fits on their
+    -- frozen spectrum's program, not the fit's own denormalized copy
     SELECT 'objects'::text AS stream, p AS partition, count(*) AS n
-    FROM dr_objects o, unnest(o.programs) AS p WHERE o.tag = p_tag GROUP BY p
+    FROM dr_objects o, unnest(o.evidence_programs) AS p WHERE o.tag = p_tag GROUP BY p
     UNION ALL
     SELECT 'spectra', s.program_slug, count(*) FROM dr_spectra s WHERE s.tag = p_tag GROUP BY s.program_slug
     UNION ALL
-    SELECT 'line_fits', f.program_slug, count(*) FROM dr_line_fits f WHERE f.tag = p_tag GROUP BY f.program_slug
+    SELECT 'line_fits', s.program_slug, count(*)
+    FROM dr_line_fits f JOIN dr_spectra s ON s.tag = f.tag AND s.id = f.spectrum_id
+    WHERE f.tag = p_tag GROUP BY s.program_slug
     UNION ALL
     SELECT 'photometry', p, count(*)
-    FROM dr_photometry ph, unnest(ph.programs) AS p WHERE ph.tag = p_tag GROUP BY p
+    FROM dr_photometry ph
+    JOIN dr_objects o ON o.tag = ph.tag AND o.id = ph.object_id, unnest(o.evidence_programs) AS p
+    WHERE ph.tag = p_tag GROUP BY p
     UNION ALL
     SELECT 'manifest', COALESCE(m.program_slug, m.component), count(*)
     FROM dr_manifest m WHERE m.tag = p_tag GROUP BY COALESCE(m.program_slug, m.component)
@@ -9573,9 +9616,9 @@ BEGIN
 
   IF p_stream = 'objects' THEN
     RETURN QUERY
-    SELECT o.name,
+    SELECT o.object_id,
            jsonb_build_object(
-             'id', o.object_id, 'object_id', o.name, 'field', o.field, 'ra', o.ra, 'dec', o.dec,
+             'id', o.id, 'object_id', o.object_id, 'field', o.field, 'ra', o.ra, 'dec', o.dec,
              -- program membership scoped to THIS partition: the file is handed
              -- to any holder of p_partition, who must not learn which other
              -- (possibly proprietary) programs share the object (Codex on #600)
@@ -9590,26 +9633,29 @@ BEGIN
              'has_photometry', o.has_photometry,
              -- the anchor spectrum's id only when it is one of this program's
              'z_source_spectrum_id', CASE WHEN EXISTS (
-                 -- anchored on the object (idx_dr_spectra_tag_object): the
-                 -- anchor is one of the object's spectra by construction
-                 SELECT 1 FROM dr_spectra zs WHERE zs.tag = o.tag AND zs.object_id = o.object_id
+                 -- the anchor is one of the object's spectra by construction;
+                 -- the object join goes through dr_targets, as live
+                 SELECT 1 FROM dr_spectra zs
+                 JOIN dr_targets zt ON zt.tag = zs.tag AND zt.target_id = zs.target_id
+                 WHERE zs.tag = o.tag AND zt.object_id = o.id
                    AND zs.id = o.z_source_spectrum_id AND zs.program_slug = p_partition) THEN o.z_source_spectrum_id END,
              'redshift_auto', o.redshift_auto, 'redshift_inspected', o.redshift_inspected,
              'redshift', o.redshift, 'redshift_quality', o.redshift_quality,
              'inspected_used_auto', o.inspected_used_auto,
              'last_inspected_at', o.last_inspected_at, 'last_inspected_by', o.last_inspected_by,
-             'version', o.version, 'is_active', true,
-             'needs_review', COALESCE((o.review_state->>'needs_review')::boolean, false),
+             'version', o.version, 'is_active', o.is_active,
+             'needs_review', o.needs_review,
              -- only this program's spectra among the signed-off set
-             -- (a JSON null / absent set is passed through as it is)
+             -- (a NULL set is passed through as a JSON null)
              'reviewed_spectrum_ids', CASE
-               WHEN jsonb_typeof(o.review_state->'reviewed_spectrum_ids') = 'array' THEN (
-                 SELECT COALESCE(jsonb_agg(v ORDER BY v::text), '[]'::jsonb)
-                 FROM jsonb_array_elements(o.review_state->'reviewed_spectrum_ids') v
+               WHEN o.reviewed_spectrum_ids IS NOT NULL THEN (
+                 SELECT COALESCE(jsonb_agg(to_jsonb(v) ORDER BY v::text), '[]'::jsonb)
+                 FROM unnest(o.reviewed_spectrum_ids) v
                  WHERE EXISTS (SELECT 1 FROM dr_spectra rs
-                               WHERE rs.tag = o.tag AND rs.object_id = o.object_id AND rs.program_slug = p_partition
-                                 AND (rs.id::text = v #>> '{}' OR rs.spectrum_id = v #>> '{}')))
-               ELSE o.review_state->'reviewed_spectrum_ids' END)
+                               JOIN dr_targets rt ON rt.tag = rs.tag AND rt.target_id = rs.target_id
+                               WHERE rs.tag = o.tag AND rt.object_id = o.id AND rs.program_slug = p_partition
+                                 AND rs.id = v))
+               ELSE NULL::jsonb END)
     FROM dr_objects o
     LEFT JOIN LATERAL (
       SELECT count(*) AS n_spectra, count(DISTINCT s.target_id) AS n_targets,
@@ -9617,11 +9663,12 @@ BEGIN
              array_agg(DISTINCT s.observation ORDER BY s.observation) AS observations,
              max(s.signal_to_noise) AS max_snr, max(s.exposure_time) AS max_exposure_time
       FROM dr_spectra s
-      WHERE s.tag = o.tag AND s.object_id = o.object_id AND s.program_slug = p_partition
+      JOIN dr_targets t ON t.tag = s.tag AND t.target_id = s.target_id
+      WHERE s.tag = o.tag AND t.object_id = o.id AND s.program_slug = p_partition
     ) agg ON true
-    WHERE o.tag = p_tag AND p_partition = ANY (o.programs)
-      AND (p_after IS NULL OR o.name > p_after)
-    ORDER BY o.name
+    WHERE o.tag = p_tag AND p_partition = ANY (o.evidence_programs)
+      AND (p_after IS NULL OR o.object_id > p_after)
+    ORDER BY o.object_id
     LIMIT p_limit;
 
   ELSIF p_stream = 'spectra' THEN
@@ -9629,7 +9676,7 @@ BEGIN
     SELECT s.spectrum_id,
            jsonb_build_object(
              'id', s.id, 'spectrum_id', s.spectrum_id, 'target_id', s.target_id,
-             'object_id', o.name, 'object_db_id', s.object_id,
+             'object_id', o.object_id, 'object_db_id', o.id,
              'grating', s.grating, 'fits_path', s.fits_path,
              'file_hash', s.file_hash, 'science_hash', s.science_hash, 'file_size', s.file_size,
              'signal_to_noise', s.signal_to_noise, 'exposure_time', s.exposure_time,
@@ -9637,10 +9684,11 @@ BEGIN
              'jwst_version', s.jwst_version, 'date_obs', s.date_obs, 'reduced_at', s.reduced_at,
              'redshift_auto', s.redshift_auto, 'chi2_min', s.chi2_min, 'confidence', s.confidence,
              'dq_flags', s.dq_flags, 'program_slug', s.program_slug, 'observation', s.observation,
-             -- the frozen target field: an objectless spectrum has no object row
-             'field', COALESCE(s.field, o.field))
+             -- the frozen target's field: an objectless spectrum has no object row
+             'field', COALESCE(t.field, o.field))
     FROM dr_spectra s
-    LEFT JOIN dr_objects o ON o.tag = s.tag AND o.object_id = s.object_id
+    LEFT JOIN dr_targets t ON t.tag = s.tag AND t.target_id = s.target_id
+    LEFT JOIN dr_objects o ON o.tag = s.tag AND o.id = t.object_id
     WHERE s.tag = p_tag AND s.program_slug = p_partition
       AND (p_after IS NULL OR s.spectrum_id > p_after)
     ORDER BY s.spectrum_id
@@ -9651,8 +9699,10 @@ BEGIN
     SELECT f.spectrum_id::text,
            jsonb_build_object(
              'spectrum_id', f.spectrum_id, 'spectrum_name', s.spectrum_id,
-             'target_id', f.target_id, 'grating', f.grating,
-             'program_slug', f.program_slug, 'observation', f.observation,
+             -- target / grating / program / observation of the FROZEN spectrum,
+             -- not the fit's denormalized copies (stale after a correction)
+             'target_id', s.target_id, 'grating', s.grating,
+             'program_slug', s.program_slug, 'observation', s.observation,
              'object_id', f.object_id, 'object_version', f.object_version,
              'z_used', f.z_used, 'z_source', f.z_source, 'z_quality', f.z_quality,
              'z_fit', f.z_fit, 'z_fit_err', f.z_fit_err, 'dv', f.dv, 'dv_err', f.dv_err,
@@ -9663,27 +9713,28 @@ BEGIN
              'spectrum_hash', f.spectrum_hash, 'spectrum_science_hash', f.spectrum_science_hash,
              'fitted_at', f.fitted_at, 'stale_redshift', f.stale_redshift, 'stale_spectrum', f.stale_spectrum)
     FROM dr_line_fits f
-    LEFT JOIN dr_spectra s ON s.tag = f.tag AND s.id = f.spectrum_id
-    WHERE f.tag = p_tag AND f.program_slug = p_partition
+    JOIN dr_spectra s ON s.tag = f.tag AND s.id = f.spectrum_id
+    WHERE f.tag = p_tag AND s.program_slug = p_partition
       AND (p_after IS NULL OR f.spectrum_id > p_after::integer)
     ORDER BY f.spectrum_id
     LIMIT p_limit;
 
   ELSIF p_stream = 'photometry' THEN
     RETURN QUERY
-    SELECT ph.photometry_id::text,
+    SELECT ph.id::text,
            jsonb_build_object(
              -- scoped to this partition, as in the objects stream: the file
              -- must not reveal the object's other programs (Codex on #600)
-             'id', ph.photometry_id, 'object_id', ph.object_id, 'programs', ARRAY[p_partition],
+             'id', ph.id, 'object_id', ph.object_id, 'programs', ARRAY[p_partition],
              'field', ph.field, 'catalog_name', ph.catalog_name, 'catalog_id', ph.catalog_id,
              'ra', ph.ra, 'dec', ph.dec, 'match_distance_arcsec', ph.match_distance_arcsec,
              'photometry', ph.photometry, 'photo_z', ph.photo_z,
              'photo_z_err_lo', ph.photo_z_err_lo, 'photo_z_err_hi', ph.photo_z_err_hi, 'has_pz', ph.has_pz)
     FROM dr_photometry ph
-    WHERE ph.tag = p_tag AND p_partition = ANY (ph.programs)
-      AND (p_after IS NULL OR ph.photometry_id > p_after::integer)
-    ORDER BY ph.photometry_id
+    JOIN dr_objects o ON o.tag = ph.tag AND o.id = ph.object_id
+    WHERE ph.tag = p_tag AND p_partition = ANY (o.evidence_programs)
+      AND (p_after IS NULL OR ph.id > p_after::integer)
+    ORDER BY ph.id
     LIMIT p_limit;
 
   ELSIF p_stream = 'manifest' THEN
@@ -9786,7 +9837,7 @@ BEGIN
   IF EXISTS (SELECT 1 FROM jsonb_array_elements_text(r.components) c
              WHERE c.value LIKE '%/%'
                AND (EXISTS (SELECT 1 FROM dr_spectra s WHERE s.tag = p_tag AND s.program_slug = c.value)
-                    OR EXISTS (SELECT 1 FROM dr_objects o WHERE o.tag = p_tag AND c.value = ANY (o.programs))
+                    OR EXISTS (SELECT 1 FROM dr_objects o WHERE o.tag = p_tag AND c.value = ANY (o.evidence_programs))
                     OR EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.program_slug = c.value))) THEN
     RAISE EXCEPTION 'release % has a program slug equal to one of its component names; rename the program', p_tag;
   END IF;
@@ -10567,24 +10618,25 @@ BEGIN
       AND NOT EXISTS (SELECT 1 FROM dr_spectra d WHERE d.tag = p_tag AND d.spectrum_id = s.spectrum_id)
   ),
   ob AS (
-    SELECT d.object_id, d.name, k.kind, k.detail
+    -- d.id is the live objects.id at the freeze; d.object_id the frozen name
+    SELECT d.id AS object_id, d.object_id AS name, k.kind, k.detail
     FROM dr_objects d
-    LEFT JOIN objects o ON o.id = d.object_id
+    LEFT JOIN objects o ON o.id = d.id
     CROSS JOIN LATERAL (VALUES
       (CASE WHEN o.id IS NULL OR NOT o.is_active THEN 'object_gone' END,
        jsonb_build_object('live_active', o.is_active)),
-      (CASE WHEN o.is_active AND o.object_id IS DISTINCT FROM d.name THEN 'object_renamed' END,
-       jsonb_build_object('frozen', d.name, 'live', o.object_id)),
+      (CASE WHEN o.is_active AND o.object_id IS DISTINCT FROM d.object_id THEN 'object_renamed' END,
+       jsonb_build_object('frozen', d.object_id, 'live', o.object_id)),
       (CASE WHEN o.is_active AND (o.redshift IS NULL) <> (d.redshift IS NULL)
              OR o.is_active AND abs(o.redshift - d.redshift) > 1e-6 THEN 'object_redshift_changed' END,
        jsonb_build_object('frozen', d.redshift, 'live', o.redshift)),
       (CASE WHEN o.is_active AND o.redshift_quality IS DISTINCT FROM d.redshift_quality THEN 'object_quality_changed' END,
        jsonb_build_object('frozen', d.redshift_quality, 'live', o.redshift_quality)),
       (CASE WHEN o.is_active AND COALESCE(o.needs_review, false)
-                 AND NOT COALESCE((d.review_state->>'needs_review')::boolean, false) THEN 'review_raised' END,
+                 AND NOT d.needs_review THEN 'review_raised' END,
        jsonb_build_object('live_reviewed', o.reviewed_spectrum_ids)),
       (CASE WHEN o.is_active AND NOT COALESCE(o.needs_review, false)
-                 AND COALESCE((d.review_state->>'needs_review')::boolean, false) THEN 'review_cleared' END,
+                 AND d.needs_review THEN 'review_cleared' END,
        '{}'::jsonb)
     ) AS k(kind, detail)
     WHERE d.tag = p_tag AND k.kind IS NOT NULL
