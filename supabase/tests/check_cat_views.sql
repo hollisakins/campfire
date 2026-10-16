@@ -224,3 +224,44 @@ BEGIN
   RAISE NOTICE 'OK 4: dr_request_context (no-op without header; PT404 on malformed/unknown/invisible; reader published only; link refused; admin every state; service role post-freeze states)';
 END $$;
 ROLLBACK;
+
+-- ------------------------------------------------------------------ 5
+-- plan shape (the 2026-10-16 production regression): every cat_* view must
+-- flatten into an Append of plain scans — no Subquery Scan, which a join
+-- cannot parameterize — and the arm not selected must be gated off (never
+-- executed), live and under a tag alike.
+BEGIN;
+DO $$
+DECLARE
+  pairs text[][] := ARRAY[
+    ['objects','dr_objects','cat_objects'], ['targets','dr_targets','cat_targets'],
+    ['spectra','dr_spectra','cat_spectra'], ['spectrum_line_fits','dr_line_fits','cat_line_fits'],
+    ['spectrum_lines','dr_spectrum_lines','cat_spectrum_lines'], ['object_photometry','dr_photometry','cat_photometry'],
+    ['object_photometry_bands','dr_photometry_bands','cat_photometry_bands'], ['nircam_images','dr_nircam_images','cat_nircam_images'],
+    ['fields','dr_fields','cat_fields'], ['mv_filter_options','dr_filter_options','cat_filter_options']];
+  i int; live text; frz text; v text; line text; plan text; mode text;
+BEGIN
+  FOREACH mode IN ARRAY ARRAY['live', 'dr'] LOOP
+    PERFORM set_config('campfire.dr_tag', CASE WHEN mode = 'dr' THEN 'DR-seed' ELSE '' END, true);
+    FOR i IN 1 .. array_length(pairs, 1) LOOP
+      live := pairs[i][1]; frz := pairs[i][2]; v := pairs[i][3];
+      plan := '';
+      FOR line IN EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*) FROM public.%I', v) LOOP
+        plan := plan || line || E'\n';
+      END LOOP;
+      IF plan ~ 'Subquery Scan' THEN
+        RAISE EXCEPTION 'cat views: % is not flattened (% mode): a join through it cannot use an index%', v, mode, E'\n' || plan;
+      END IF;
+      -- the unselected arm must be gated off, not merely empty
+      IF mode = 'live' AND plan !~ ('on ' || frz || E'[^\\n]*\\(never executed\\)') THEN
+        RAISE EXCEPTION 'cat views: % scans % live%', v, frz, E'\n' || plan;
+      END IF;
+      IF mode = 'dr' AND plan !~ ('on ' || live || E'[^\\n]*\\(never executed\\)') THEN
+        RAISE EXCEPTION 'cat views: % scans % under a release%', v, live, E'\n' || plan;
+      END IF;
+    END LOOP;
+  END LOOP;
+  PERFORM set_config('campfire.dr_tag', '', true);
+  RAISE NOTICE 'OK 5: % cat_* views flatten to plain scans; the unselected arm is never executed, live and under a tag', array_length(pairs, 1);
+END $$;
+ROLLBACK;
