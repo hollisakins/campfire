@@ -278,6 +278,11 @@ BEGIN
   IF (SELECT sum(v::int) FROM jsonb_each_text(r.counts->'manifest_by_type') AS t(k, v)) <> (r.counts->>'manifest')::int THEN
     RAISE EXCEPTION 'manifest_by_type should add up to members: %', r.counts;
   END IF;
+  IF (SELECT sum((v->>'files')::int) FROM jsonb_each(r.counts->'by_component') AS t(k, v)) <> (r.counts->>'manifest')::int
+     OR (r.counts->'by_component'->'nirspec'->>'bytes')::bigint <> (SELECT sum(size_bytes) FROM dr_manifest WHERE tag = 'DR-zzz' AND component = 'nirspec')
+     OR (r.counts->>'nirspec_programs')::int <> (SELECT count(DISTINCT program_slug) FROM dr_spectra WHERE tag = 'DR-zzz') THEN
+    RAISE EXCEPTION 'by_component / nirspec_programs disagree with the frozen tables: %', r.counts;
+  END IF;
 
   -- spectra: the 5 published ones of active objects + the inactive object's
   -- published spectrum is NOT frozen (its object is inactive -> object_id NULL

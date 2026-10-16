@@ -9234,7 +9234,21 @@ BEGIN
              'manifest_by_type', (SELECT COALESCE(jsonb_object_agg(t.product_type, t.n), '{}'::jsonb)
                                  FROM (SELECT m.product_type, count(*) AS n FROM dr_manifest m
                                        WHERE m.tag = p_tag GROUP BY m.product_type) t),
-             'nircam_fields', to_jsonb(comp.fields), 'photometry_components', to_jsonb(comp.photometry)),
+             'nircam_fields', to_jsonb(comp.fields), 'photometry_components', to_jsonb(comp.photometry),
+             -- per component (nirspec | nircam/<field> | photometry/...): file
+             -- count and byte volume, the numbers the /releases pages show
+             -- (P6a) without aggregating the manifest at read time
+             'by_component', (SELECT COALESCE(jsonb_object_agg(t.component,
+                                       jsonb_build_object('files', t.n, 'bytes', t.b)
+                                       -- nircam/<field>: the field's deploy-time sky coverage
+                                       || COALESCE((SELECT jsonb_build_object('area_arcmin2', f.coverage_area_arcmin2)
+                                                    FROM fields f
+                                                    WHERE t.component = 'nircam/' || f.name AND f.coverage_area_arcmin2 IS NOT NULL),
+                                                   '{}'::jsonb)), '{}'::jsonb)
+                              FROM (SELECT m.component, count(*) AS n, COALESCE(sum(m.size_bytes), 0) AS b
+                                    FROM dr_manifest m WHERE m.tag = p_tag GROUP BY m.component) t),
+             'nirspec_programs', (SELECT count(DISTINCT s.program_slug) FROM dr_spectra s WHERE s.tag = p_tag),
+             'nirspec_fields', (SELECT count(DISTINCT s.field) FROM dr_spectra s WHERE s.tag = p_tag AND s.field IS NOT NULL)),
            error = NULL,
            updated_at = now()
      WHERE tag = p_tag;
