@@ -1467,7 +1467,7 @@ def _dr_osn_s3(config, *, max_pool_connections: int = 10):
 @click.argument("tag")
 @click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
 @click.option("--keep-exports", is_flag=True,
-              help="Delete the rows only, leaving the export files under dr/TAG/exports/ (no OSN credentials needed)")
+              help="Delete the rows only, leaving the files under dr/TAG/exports/ and dr/TAG/page/ (no OSN credentials needed)")
 @click.option("--local", is_flag=True, help="Against local Supabase")
 def dr_purge(tag, yes, keep_exports, local):
     """Delete an UNPUBLISHED release and all its frozen rows.
@@ -1520,6 +1520,13 @@ def dr_purge(tag, yes, keep_exports, local):
             click.echo(f"✗ The rows are gone, but deleting dr/{tag}/exports/ failed: {e}")
             sys.exit(1)
         click.echo(f"  deleted {n:,} export file(s) under dr/{tag}/exports/")
+        try:
+            n = delete_r2_prefix(s3, bucket, f"dr/{tag}/page/")
+        except Exception as e:  # noqa: BLE001
+            click.echo(f"✗ The rows are gone, but deleting dr/{tag}/page/ failed: {e}")
+            sys.exit(1)
+        if n:
+            click.echo(f"  deleted {n:,} page file(s) under dr/{tag}/page/")
 
 
 @dr_group.command(name="export")
@@ -1866,6 +1873,97 @@ def dr_diff(tag, against, limit, as_json, local):
         click.echo(f"✗ Could not diff {tag}: {getattr(e, 'message', None) or e}", err=as_json)
         sys.exit(1)
     click.echo(_json.dumps(diff, indent=2, sort_keys=True, default=str) if as_json else format_diff(diff))
+
+
+@dr_group.group(name="page")
+def dr_page_group():
+    """The release page document: markdown and figures shown on /releases/TAG.
+
+    Authored before publication from a directory holding README.md and its
+    figures (produced by the scripts under scripts/dr/); frozen with the
+    release once it is published.
+    """
+
+
+@dr_page_group.command(name="push")
+@click.argument("tag")
+@click.argument("directory", type=click.Path(exists=True, file_okay=False))
+@click.option("--dry-run", is_flag=True, help="List what would be uploaded and set; write nothing")
+@click.option("--json", "as_json", is_flag=True, help="Print the result as JSON")
+@click.option("--local", is_flag=True,
+              help="Against local Supabase (127.0.0.1:54321, or CAMPFIRE_LOCAL_SUPABASE_URL); the bucket stays the shared one")
+def dr_page_push(tag, directory, dry_run, as_json, local):
+    """Upload DIRECTORY's files under dr/TAG/page/<sha16>/ and set TAG's page.
+
+    DIRECTORY must hold README.md (the page markdown); every other regular
+    file is a figure (no subdirectories; at most 50 files of 25 MB). Needs
+    OSN credentials (CAMPFIRE_S3_OSN_* or [r2_osn] in deploy.toml) and
+    `campfire login` as an admin. Refused for a published release. Keys are
+    content-addressed (the first 16 hex of each file's sha256), never
+    overwritten: a file already there with the same bytes is reused, a
+    different one fails the push; the keys the database retires are
+    deleted after the page is set. --local is refused without --dry-run:
+    the local database redirects Supabase only, the bucket is the shared one.
+    """
+    import json as _json
+
+    from .dr_page import PageError, check_editable, push_page
+
+    say = (lambda m: click.echo(m, err=True)) if as_json else click.echo
+    if local and not dry_run:
+        say("✗ --local refused without --dry-run (the bucket is the shared one)")
+        sys.exit(2)
+    config, sb = _dr_client(local, what="`campfire dr page push`")
+    s3 = bucket = None
+    try:
+        # the release first: the operator sees the real reason before the
+        # credentials check (review on P6b-3)
+        check_editable(sb, tag)
+        if not dry_run:
+            s3, bucket = _dr_osn_s3(config)
+            if s3 is None:
+                say(f"✗ `campfire dr page push` needs OSN credentials for the data bucket ({bucket}).")
+                sys.exit(2)
+        result = push_page(sb, s3, bucket, tag, directory, dry_run=dry_run, log=say)
+    except PageError as e:
+        say(f"✗ {e}")
+        sys.exit(2)
+    except Exception as e:  # noqa: BLE001 - one line, not a traceback
+        say(f"✗ {getattr(e, 'message', None) or e}")
+        sys.exit(1)
+    if as_json:
+        click.echo(_json.dumps(result, indent=2, sort_keys=True, default=str))
+    elif dry_run:
+        click.echo("Dry run: nothing uploaded or set.")
+    else:
+        ups = result.get('uploads') or {}
+        summary = ', '.join(f"{n} {k}" for k in ('uploaded', 'reused')
+                            if (n := sum(1 for v in ups.values() if v == k)))
+        click.echo(f"Set the page of {tag}: {result.get('markdown_bytes', 0):,} bytes of markdown, "
+                   f"{result.get('assets', 0)} asset(s)" + (f" ({summary})" if summary else ''))
+        if result.get('deleted'):
+            click.echo(f"  deleted {len(result['deleted'])} retired file(s) under dr/{tag}/page/")
+
+
+@dr_page_group.command(name="show")
+@click.argument("tag")
+@click.option("--json", "as_json", is_flag=True, help="Print the page as JSON")
+@click.option("--local", is_flag=True, help="Against local Supabase (127.0.0.1:54321, or CAMPFIRE_LOCAL_SUPABASE_URL)")
+def dr_page_show(tag, as_json, local):
+    """Print TAG's page markdown and its registered figures."""
+    import json as _json
+
+    from .dr_page import fetch_page, format_page
+
+    config, sb = _dr_client(local, what="`campfire dr page show`")
+    page = fetch_page(sb, tag)
+    if page is None:
+        click.echo(f"✗ no release {tag} (or not visible to this account)")
+        sys.exit(1)
+    if as_json:
+        click.echo(_json.dumps(page, indent=2, sort_keys=True, default=str))
+    else:
+        click.echo(format_page(page))
 
 
 @dr_group.command(name="refs")

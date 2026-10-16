@@ -7861,7 +7861,7 @@ BEGIN
   END IF;
 
   IF p_action NOT IN ('upload', 'publish', 'revoke', 'recover', 'supersede', 'delete', 'config_sync',
-                      'archive', 'collect', 'freeze', 'publish_dr', 'withdraw_dr') THEN
+                      'archive', 'collect', 'freeze', 'publish_dr', 'withdraw_dr', 'page_dr') THEN
     RAISE EXCEPTION 'Invalid deploy_event action: %', p_action;
   END IF;
 
@@ -9915,8 +9915,10 @@ BEGIN
     END IF;
     SELECT * INTO comp FROM dr_parse_components(r.components);
 
-    -- Partial rows of a previous attempt under this tag.
-    DELETE FROM dr_manifest         WHERE tag = p_tag;
+    -- Partial rows of a previous attempt under this tag. The release page
+    -- document's assets (component 'page', written by dr_page_set, P6b-3) are
+    -- authored independently of the catalog freeze and survive a re-freeze.
+    DELETE FROM dr_manifest         WHERE tag = p_tag AND component <> 'page';
     DELETE FROM dr_spectrum_lines   WHERE tag = p_tag;
     DELETE FROM dr_line_fits        WHERE tag = p_tag;
     DELETE FROM dr_photometry_bands WHERE tag = p_tag;
@@ -10122,6 +10124,27 @@ BEGIN
         -- loudly instead (production: no published image or live mosaic row
         -- has a NULL deployment, 2026-10-13).
         AND so.deployment_id = ni.deployment_id
+      UNION ALL
+      -- Field-level NIRCam products of each component field (P6b-3): exposure
+      -- maps and their renders, the layout plot, mosaic thumbnails and
+      -- quick-looks -- what the field page shows besides the mosaics. Not tied
+      -- to a deployment row (they are registered per field by push/deploy), so
+      -- the active live registry rows are taken as they stand; archived by the
+      -- byte pass like the mosaics (server-side copy, no stamp).
+      SELECT p_tag, so.storage_key, 'nircam/' || so.field, NULL, so.field, so.product_type,
+             NULL, so.backend, so.bucket, so.content_hash, so.science_hash, so.size_bytes, so.id
+      FROM storage_objects so
+      WHERE so.field = ANY (comp.fields) AND so.root = 'live' AND so.status = 'active'
+        AND so.backend = 'osn' AND so.bucket = 'data'
+        AND so.product_type IN ('nircam_expmap', 'nircam_expmap_plot', 'nircam_layout',
+                                'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook')
+        -- the live storage gate shows field-level rows through their
+        -- deployment's status: a --draft redeploy registers active rows under
+        -- its draft deployment, and those must not be frozen into the open
+        -- nircam/<field> partition (P6b-3 review)
+        AND so.deployment_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM deployments d
+                    WHERE d.id = so.deployment_id AND d.field = so.field AND d.status = 'published')
       -- (P(z) sidecars are not members: photometry_pz is a key-only product the
       -- layout cannot archive; the frozen dr_photometry rows carry the catalog
       -- values, the sidecars stay live-only -- plan amendment D-P4-5.)
@@ -10167,6 +10190,21 @@ BEGIN
     IF v_missing IS NOT NULL THEN
       RAISE EXCEPTION 'published mosaics without an active registry row of their deployment (finish or redo the field deploy, or leave the field out): %',
         left(v_missing, 1500);
+    END IF;
+    -- Likewise every published-deployment field product of a selected field (same predicate
+    -- as the insert; guards a future edit of either side, not a data state).
+    SELECT string_agg(so.storage_key, ', ' ORDER BY so.storage_key) INTO v_missing
+    FROM storage_objects so
+    WHERE so.field = ANY (comp.fields) AND so.root = 'live' AND so.status = 'active'
+      AND so.backend = 'osn' AND so.bucket = 'data'
+      AND so.product_type IN ('nircam_expmap', 'nircam_expmap_plot', 'nircam_layout',
+                              'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook')
+      AND so.deployment_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM deployments d
+                  WHERE d.id = so.deployment_id AND d.field = so.field AND d.status = 'published')
+      AND NOT EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.storage_key = so.storage_key);
+    IF v_missing IS NOT NULL THEN
+      RAISE EXCEPTION 'active field products that did not become members: %', left(v_missing, 1500);
     END IF;
     -- Likewise every frozen spectrum needs its final FITS as a member (a
     -- --supabase-only deploy or registry drift would leave a catalogued
@@ -10218,22 +10256,27 @@ BEGIN
              -- per product type, so a shortfall (e.g. sidecars whose registry
              -- row did not match the key) shows at freeze time, not in the
              -- byte pass
+             -- (the release page document's assets, component 'page', are not
+             -- catalog members: left out of every manifest statistic)
              'manifest_by_type', (SELECT COALESCE(jsonb_object_agg(t.product_type, t.n), '{}'::jsonb)
                                  FROM (SELECT m.product_type, count(*) AS n FROM dr_manifest m
-                                       WHERE m.tag = p_tag GROUP BY m.product_type) t),
+                                       WHERE m.tag = p_tag AND m.component <> 'page' GROUP BY m.product_type) t),
              'nircam_fields', to_jsonb(comp.fields), 'photometry_components', to_jsonb(comp.photometry),
              -- per component (nirspec | nircam/<field> | photometry/...): file
              -- count and byte volume, the numbers the /releases pages show
              -- (P6a) without aggregating the manifest at read time
              'by_component', (SELECT COALESCE(jsonb_object_agg(t.component,
                                        jsonb_build_object('files', t.n, 'bytes', t.b)
+                                       -- nircam/<field>: how many of the files are the mosaics themselves
+                                       || CASE WHEN t.component LIKE 'nircam/%' THEN jsonb_build_object('mosaics', t.n_mosaics) ELSE '{}'::jsonb END
                                        -- nircam/<field>: the field's deploy-time sky coverage
                                        || COALESCE((SELECT jsonb_build_object('area_arcmin2', f.coverage_area_arcmin2)
                                                     FROM fields f
                                                     WHERE t.component = 'nircam/' || f.name AND f.coverage_area_arcmin2 IS NOT NULL),
                                                    '{}'::jsonb)), '{}'::jsonb)
-                              FROM (SELECT m.component, count(*) AS n, COALESCE(sum(m.size_bytes), 0) AS b
-                                    FROM dr_manifest m WHERE m.tag = p_tag GROUP BY m.component) t),
+                              FROM (SELECT m.component, count(*) AS n, COALESCE(sum(m.size_bytes), 0) AS b,
+                                           count(*) FILTER (WHERE m.product_type = 'nircam_mosaic') AS n_mosaics
+                                    FROM dr_manifest m WHERE m.tag = p_tag AND m.component <> 'page' GROUP BY m.component) t),
              'nirspec_programs', (SELECT count(DISTINCT s.program_slug) FROM dr_spectra s WHERE s.tag = p_tag),
              'nirspec_fields', (SELECT count(DISTINCT t.field) FROM dr_spectra s
                                 JOIN dr_targets t ON t.tag = s.tag AND t.target_id = s.target_id
@@ -10545,8 +10588,11 @@ BEGIN
     JOIN dr_objects o ON o.tag = ph.tag AND o.id = ph.object_id, unnest(o.evidence_programs) AS p
     WHERE ph.tag = p_tag GROUP BY p
     UNION ALL
+    -- the release page document (component 'page', P6b-3) is served by the
+    -- release page, not exported
     SELECT 'manifest', COALESCE(m.program_slug, m.component), count(*)
-    FROM dr_manifest m WHERE m.tag = p_tag GROUP BY COALESCE(m.program_slug, m.component)
+    FROM dr_manifest m WHERE m.tag = p_tag AND m.component <> 'page'
+    GROUP BY COALESCE(m.program_slug, m.component)
   )
   SELECT c.stream, c.partition, dr_export_key(p_tag, c.stream, c.partition), c.n
   FROM counts c
@@ -10754,10 +10800,12 @@ BEGIN
   END IF;
   SELECT count(*), count(*) FILTER (WHERE state <> 'ready') INTO n_ledger, n_ledger_open
   FROM dr_exports WHERE tag = p_tag;
+  -- the release page document's assets (component 'page', P6b-3) are not
+  -- archived by the byte pass and must not move the state machine
   SELECT count(*), count(*) FILTER (WHERE byte_state IN ('pending', 'failed')),
          count(*) FILTER (WHERE byte_state IN ('copied', 'stamped'))
     INTO n_members, n_members_open, n_members_done
-  FROM dr_manifest WHERE tag = p_tag;
+  FROM dr_manifest WHERE tag = p_tag AND component <> 'page';
   v_new := CASE
     WHEN n_ledger > 0 AND n_ledger_open = 0 AND n_members_open = 0 THEN 'ready'
     WHEN n_members_done > 0 AND n_members_open > 0 THEN 'copying'
@@ -10804,6 +10852,12 @@ BEGIN
                     OR EXISTS (SELECT 1 FROM dr_objects o WHERE o.tag = p_tag AND c.value = ANY (o.evidence_programs))
                     OR EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.program_slug = c.value))) THEN
     RAISE EXCEPTION 'release % has a program slug equal to one of its component names; rename the program', p_tag;
+  END IF;
+  -- likewise 'page', the release page document's manifest component (P6b-3)
+  IF EXISTS (SELECT 1 FROM dr_spectra s WHERE s.tag = p_tag AND s.program_slug = 'page')
+     OR EXISTS (SELECT 1 FROM dr_objects o WHERE o.tag = p_tag AND 'page' = ANY (o.evidence_programs))
+     OR EXISTS (SELECT 1 FROM dr_manifest m WHERE m.tag = p_tag AND m.program_slug = 'page') THEN
+    RAISE EXCEPTION 'release % has a program slug equal to ''page'' (the page document''s component); rename the program', p_tag;
   END IF;
   INSERT INTO dr_exports (tag, stream, partition, storage_key, state)
   SELECT p_tag, p.stream, p.partition, p.storage_key, 'pending'
@@ -11373,13 +11427,14 @@ BEGIN
     'manifest', count(*),
     'by_state', (SELECT COALESCE(jsonb_object_agg(s.byte_state, jsonb_build_object('count', s.n, 'bytes', s.b)), '{}'::jsonb)
                  FROM (SELECT byte_state, count(*) AS n, COALESCE(sum(size_bytes), 0) AS b
-                       FROM dr_manifest WHERE tag = p_tag GROUP BY byte_state) s),
+                       FROM dr_manifest WHERE tag = p_tag AND component <> 'page' GROUP BY byte_state) s),
     'pending_bytes', COALESCE(sum(size_bytes) FILTER (WHERE byte_state IN ('pending', 'failed')), 0),
     'failed_sample', (SELECT COALESCE(jsonb_agg(jsonb_build_object('storage_key', f.storage_key, 'error', f.byte_error)), '[]'::jsonb)
                       FROM (SELECT storage_key, byte_error FROM dr_manifest
                             WHERE tag = p_tag AND byte_state = 'failed' ORDER BY storage_key LIMIT 10) f))
   INTO out
-  FROM dr_manifest WHERE tag = p_tag;
+  -- the page document's assets (component 'page') are outside the byte pass
+  FROM dr_manifest WHERE tag = p_tag AND component <> 'page';
   RETURN out;
 END;
 $$;
@@ -11673,6 +11728,128 @@ REVOKE ALL ON FUNCTION public.dr_observation_references(text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_observation_references(text) TO authenticated, service_role;
 
 
+-- =============================================================================
+-- Data releases: the release page document (P6b-3, D-P6-3)
+-- =============================================================================
+--   dr_page_set(tag, markdown, assets)
+--       stores the markdown shown on /releases/<tag> and registers its figures
+--       (already uploaded by `campfire dr page push` under
+--       dr/<tag>/page/<sha16>/<name>, content-addressed by the asset's sha256)
+--       as dr_manifest rows of component 'page'. The page is authored while
+--       the release is unpublished and frozen with it: refused once published
+--       or withdrawn. No page key is ever overwritten: a changed figure gets a
+--       new key, and the keys a call retires come back as removed_keys (the
+--       CLI deletes exactly those). Page assets live under the immutable
+--       dr/<tag>/ prefix, so they enter the manifest already 'copied'
+--       (archive_key = storage_key) and the byte pass never touches them;
+--       dr_freeze_job keeps them across a re-freeze; dr_purge_release deletes
+--       them with the tag.
+CREATE OR REPLACE FUNCTION public.dr_page_set(p_tag text, p_markdown text, p_assets jsonb DEFAULT '[]'::jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  r dr_releases%ROWTYPE;
+  v_asset jsonb;
+  v_name text; v_key text; v_hash text; v_size bigint;
+  v_prefix text;
+  v_removed text[];
+  n_assets int := 0;
+BEGIN
+  PERFORM dr_require_admin();
+  SELECT * INTO r FROM dr_releases WHERE tag = p_tag FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'no release %', p_tag; END IF;
+  IF r.state IN ('published', 'withdrawn') THEN
+    RAISE EXCEPTION 'release % is %; its page is frozen with it (withdraw does not reopen it)', p_tag, r.state;
+  END IF;
+  IF r.state IN ('draft', 'freezing') THEN
+    RAISE EXCEPTION 'release % is %; set its page once the freeze has landed', p_tag, r.state;
+  END IF;
+  IF p_markdown IS NULL OR length(p_markdown) = 0 THEN
+    RAISE EXCEPTION 'the page markdown is empty';
+  END IF;
+  IF octet_length(p_markdown) > 1048576 THEN
+    RAISE EXCEPTION 'the page markdown exceeds 1 MB';
+  END IF;
+  IF p_assets IS NULL OR jsonb_typeof(p_assets) <> 'array' THEN
+    RAISE EXCEPTION 'p_assets must be a JSON array';
+  END IF;
+  IF jsonb_array_length(p_assets) > 50 THEN
+    RAISE EXCEPTION 'at most 50 page assets (got %)', jsonb_array_length(p_assets);
+  END IF;
+  v_prefix := 'dr/' || p_tag || '/page/';
+
+  -- validate every asset before touching the manifest
+  FOR v_asset IN SELECT * FROM jsonb_array_elements(p_assets) LOOP
+    IF jsonb_typeof(v_asset) <> 'object' THEN
+      RAISE EXCEPTION 'every page asset must be an object {name, storage_key, content_hash, size_bytes}, got %', left(v_asset::text, 80);
+    END IF;
+    v_name := v_asset->>'name'; v_key := v_asset->>'storage_key'; v_hash := v_asset->>'content_hash';
+    IF v_asset->'size_bytes' IS NULL OR jsonb_typeof(v_asset->'size_bytes') <> 'number' THEN
+      RAISE EXCEPTION 'page asset % needs a numeric size_bytes', coalesce(v_name, '(null)');
+    END IF;
+    v_size := (v_asset->>'size_bytes')::bigint;
+    IF v_name IS NULL OR v_name !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' THEN
+      RAISE EXCEPTION 'bad page asset name %', coalesce(v_name, '(null)');
+    END IF;
+    IF v_name = 'README.md' THEN
+      RAISE EXCEPTION 'README.md is the page markdown itself, never an asset';
+    END IF;
+    IF v_hash IS NULL OR v_hash !~ '^sha256:[0-9a-f]{64}$' THEN
+      RAISE EXCEPTION 'page asset % needs a sha256 content hash', v_name;
+    END IF;
+    -- content-addressed: dr/<tag>/page/<first 16 hex of the sha256>/<name>, so
+    -- a changed figure gets a new key and no key is ever overwritten or
+    -- deleted-then-replaced (a published release's keys are never written)
+    IF v_key IS DISTINCT FROM (v_prefix || left(substr(v_hash, 8), 16) || '/' || v_name) THEN
+      RAISE EXCEPTION 'page asset % must live at %, not %', v_name,
+        v_prefix || left(substr(v_hash, 8), 16) || '/' || v_name, coalesce(v_key, '(null)');
+    END IF;
+    IF v_size IS NULL OR v_size < 1 OR v_size > 26214400 THEN
+      RAISE EXCEPTION 'page asset % must be between 1 byte and 25 MB (got %)', v_name, coalesce(v_size::text, 'null');
+    END IF;
+    IF coalesce(v_asset->>'backend', 'osn') <> 'osn' OR coalesce(v_asset->>'bucket', 'data') <> 'data' THEN
+      RAISE EXCEPTION 'page asset % must live on osn/data', v_name;
+    END IF;
+  END LOOP;
+  IF (SELECT count(DISTINCT x->>'name') FROM jsonb_array_elements(p_assets) x) <> jsonb_array_length(p_assets) THEN
+    RAISE EXCEPTION 'duplicate page asset names';
+  END IF;
+
+  -- the keys this call retires: the deletion authority for the object store
+  -- (the CLI deletes exactly these after the call succeeds, never a prefix
+  -- listing, so concurrent pushes each remove only what their own call did)
+  SELECT COALESCE(array_agg(m.storage_key ORDER BY m.storage_key), '{}'::text[]) INTO v_removed
+  FROM dr_manifest m
+  WHERE m.tag = p_tag AND m.component = 'page'
+    AND m.storage_key <> ALL (ARRAY(SELECT x->>'storage_key' FROM jsonb_array_elements(p_assets) x));
+  DELETE FROM dr_manifest WHERE tag = p_tag AND component = 'page';
+  INSERT INTO dr_manifest (tag, storage_key, component, program_slug, field, product_type, spectrum_id,
+                           backend, bucket, content_hash, science_hash, size_bytes, registry_id,
+                           archive_key, byte_state, stamped_hash, byte_error, updated_at)
+  SELECT p_tag, x->>'storage_key', 'page', NULL, NULL, 'dr_page_asset', NULL,
+         'osn', 'data', x->>'content_hash', NULL, (x->>'size_bytes')::bigint, NULL,
+         x->>'storage_key', 'copied', NULL, NULL, now()
+  FROM jsonb_array_elements(p_assets) x;
+  GET DIAGNOSTICS n_assets = ROW_COUNT;
+
+  UPDATE dr_releases SET page_md = p_markdown, updated_at = now() WHERE tag = p_tag;
+  INSERT INTO deploy_events (actor, action, affected_count, metadata)
+  VALUES (auth.uid(), 'page_dr', n_assets,
+          jsonb_build_object('dr_tag', p_tag, 'markdown_bytes', octet_length(p_markdown), 'assets', n_assets,
+                             'removed', coalesce(array_length(v_removed, 1), 0)));
+  RETURN jsonb_build_object('tag', p_tag, 'state', r.state, 'markdown_bytes', octet_length(p_markdown), 'assets', n_assets,
+                            'removed_keys', to_jsonb(v_removed));
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_page_set(text, text, jsonb) IS 'Set a data release''s page document (P6b-3): the markdown shown on /releases/<tag> and its figures as dr_manifest rows of component ''page''. Assets are content-addressed, dr/<tag>/page/<first 16 hex of the sha256>/<name>, already uploaded (never overwritten), so they enter as copied. Returns {tag, state, markdown_bytes, assets, removed_keys}: removed_keys are the previous page rows'' keys this call retired, the only keys the CLI may delete. Admin only; refused once the release is published or withdrawn, or before its freeze has landed.';
+
+REVOKE ALL ON FUNCTION public.dr_page_set(text, text, jsonb) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_page_set(text, text, jsonb) TO authenticated, service_role;
+
+
 -- ===========================================================================
 -- Privilege hardening (P-1): no PUBLIC / anon EXECUTE on any function
 -- Postgres grants EXECUTE to PUBLIC on every new function, and the schema's
@@ -11799,6 +11976,7 @@ REVOKE ALL ON FUNCTION public.dr_publish(p_tag text, p_doi text, p_known_issues 
 REVOKE ALL ON FUNCTION public.dr_withdraw(p_tag text, p_reason text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_diff(p_tag text, p_limit integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_observation_references(p_observation text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.dr_page_set(p_tag text, p_markdown text, p_assets jsonb) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_derive_state(p_tag text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_invalidate(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.dr_export_key(p_tag text, p_stream text, p_partition text) FROM PUBLIC, anon;

@@ -176,6 +176,24 @@ INSERT INTO nircam_images (field, tile, filter, pixel_scale, extension, epoch, f
 INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, size_bytes, content_type, product_type, instrument, status, field, filter, deployment_id)
 SELECT 'osn', 'data', ni.file_path, 'sha256:' || md5(ni.file_path) || md5(ni.filter), 5000, 'application/fits', 'nircam_mosaic', 'nircam', 'active', ni.field, ni.filter, 990101
 FROM nircam_images ni WHERE ni.field = 'zzz_drf';
+-- Field-level products (P6b-3): the active rows of the field's PUBLISHED
+-- deployment become members (expmap, layout, thumbnail, quick-look); rows of
+-- a draft or revoked deployment, with no deployment, revoked rows, and a
+-- product of a field outside the release do not (the live storage gate shows
+-- field-level rows through deployments.status; a --draft redeploy registers
+-- active rows under its draft deployment).
+INSERT INTO deployments (id, field, status) VALUES (990102, 'zzz_drf', 'draft'), (990103, 'zzz_drf', 'revoked');
+INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, size_bytes, content_type, product_type, instrument, status, field, filter, deployment_id) VALUES
+  ('osn', 'data', 'data/products/nircam/zzz_drf/f444w/expmap_zzz_drf_f444w.fits', 'sha256:' || repeat('e1', 32), 700, 'application/fits', 'nircam_expmap', 'nircam', 'active', 'zzz_drf', 'f444w', 990101),
+  ('osn', 'data', 'data/products/nircam/zzz_drf/zzz_drf_layout.png', 'sha256:' || repeat('e2', 32), 300, 'image/png', 'nircam_layout', 'nircam', 'active', 'zzz_drf', NULL, 990101),
+  ('osn', 'data', 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_thumb.png', 'sha256:' || repeat('e5', 32), 100, 'image/png', 'nircam_mosaic_thumbnail', 'nircam', 'active', 'zzz_drf', 'f444w', 990101),
+  ('osn', 'data', 'data/products/nircam/zzz_drf/f444w/zzz_drf_f444w_quicklook.png', 'sha256:' || repeat('e6', 32), 400, 'image/png', 'nircam_mosaic_quicklook', 'nircam', 'active', 'zzz_drf', 'f444w', 990101),
+  -- not members:
+  ('osn', 'data', 'data/products/nircam/zzz_drf/f444w/expmap_zzz_drf_f444w.png', 'sha256:' || repeat('e3', 32), 200, 'image/png', 'nircam_expmap_plot', 'nircam', 'revoked', 'zzz_drf', 'f444w', 990101),
+  ('osn', 'data', 'data/products/nircam/zzz_drf/f277w/zzz_drf_f277w_thumb.png', 'sha256:' || repeat('e7', 32), 100, 'image/png', 'nircam_mosaic_thumbnail', 'nircam', 'active', 'zzz_drf', 'f277w', 990102),
+  ('osn', 'data', 'data/products/nircam/zzz_drf/f277w/zzz_drf_f277w_quicklook.png', 'sha256:' || repeat('e8', 32), 400, 'image/png', 'nircam_mosaic_quicklook', 'nircam', 'active', 'zzz_drf', 'f277w', 990103),
+  ('osn', 'data', 'data/products/nircam/zzz_drf/f277w/expmap_zzz_drf_f277w.fits', 'sha256:' || repeat('e9', 32), 700, 'application/fits', 'nircam_expmap', 'nircam', 'active', 'zzz_drf', 'f277w', NULL),
+  ('osn', 'data', 'data/products/nircam/zzz_drf_nomosaic/zzz_drf_nomosaic_layout.png', 'sha256:' || repeat('e4', 32), 300, 'image/png', 'nircam_layout', 'nircam', 'active', 'zzz_drf_nomosaic', NULL, 990101);
 
 -- A helper that runs SQL as a principal (claims + SET LOCAL ROLE).
 CREATE FUNCTION pg_temp.zzz_dr_as(p_role text, p_uid uuid, p_sql text) RETURNS text
@@ -470,8 +488,26 @@ BEGIN
   IF EXISTS (SELECT 1 FROM dr_manifest m JOIN spectra s ON s.spectrum_id = m.spectrum_id WHERE m.tag = 'DR-zzz' AND s.deploy_status <> 'published') THEN
     RAISE EXCEPTION 'member of an unpublished spectrum';
   END IF;
-  SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz' AND component = 'nircam/zzz_drf';
+  SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz' AND component = 'nircam/zzz_drf' AND product_type = 'nircam_mosaic';
   IF n <> 2 THEN RAISE EXCEPTION 'expected 2 mosaic members (published only), got %', n; END IF;
+  -- field products (P6b-3): the active expmap + layout, keyed by field, no
+  -- program, pending like the mosaics; the revoked render and the other
+  -- field's layout are not members
+  SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz' AND component = 'nircam/zzz_drf'
+    AND product_type IN ('nircam_expmap', 'nircam_layout', 'nircam_mosaic_thumbnail', 'nircam_mosaic_quicklook')
+    AND program_slug IS NULL AND field = 'zzz_drf' AND spectrum_id IS NULL AND (storage_key LIKE '%f444w%' OR storage_key LIKE '%zzz_drf_layout.png');
+  IF n <> 4 THEN RAISE EXCEPTION 'expected the published deployment''s expmap, layout, thumbnail and quick-look as members, got %', n; END IF;
+  SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz' AND component = 'nircam/zzz_drf' AND product_type <> 'nircam_mosaic';
+  IF n <> 4 THEN RAISE EXCEPTION 'field products of a draft / revoked / missing deployment, revoked rows or another field became members (% field products)', n; END IF;
+  IF EXISTS (SELECT 1 FROM dr_manifest WHERE tag = 'DR-zzz' AND (storage_key LIKE '%expmap_zzz_drf_f444w.png' OR storage_key LIKE '%zzz_drf_nomosaic_layout.png'
+             OR storage_key LIKE '%f277w%')) THEN
+    RAISE EXCEPTION 'a revoked, draft-deployment, revoked-deployment, undeployed or out-of-release field product became a member';
+  END IF;
+  IF (r.counts->'by_component'->'nircam/zzz_drf'->>'files')::int <> 6
+     OR (r.counts->'by_component'->'nircam/zzz_drf'->>'mosaics')::int <> 2
+     OR (r.counts->'by_component'->'nirspec') ? 'mosaics' THEN
+    RAISE EXCEPTION 'by_component should count 6 files and 2 mosaics for the field, and no mosaics key off nircam: %', r.counts->'by_component';
+  END IF;
   -- P(z) sidecars are key-only products the layout cannot archive: never members (D-P4-5)
   SELECT count(*) INTO n FROM dr_manifest WHERE tag = 'DR-zzz' AND component LIKE 'photometry/%';
   IF n <> 0 THEN RAISE EXCEPTION 'P(z) sidecars must not be members, got %', n; END IF;
@@ -677,7 +713,7 @@ DECLARE
     ['ERR', '0', '0', '0', '6'],
     ['ERR', '0', '0', '0', '5'],
     ['ERR', '0', '0', '0', '3'],
-    ['ERR', '0', '0', '0', '32'],
+    ['ERR', '0', '0', '0', '36'],
     ['ERR', '0', '0', '0', '2'],
     ['ERR', '0', '0', '0', '1'],
     ['ERR', '0', '0', '0', '2'],
@@ -694,8 +730,8 @@ DECLARE
     -- objects by program OVERLAP, as live: nogrant sees PUB and MIX (MIX has a
     -- public member); the RPCs scope MIX's aggregates per viewer, as live
     ['ERR', '2', '3', '0', '3'],
-    -- members: 3 public spectra x 5 = 15 + 2 mosaics = 17 ; grantee all 32
-    ['ERR', '17', '32', '0', '32'],
+    -- members: 3 public spectra x 5 = 15 + 2 mosaics + 4 field products = 21 ; grantee all 36
+    ['ERR', '21', '36', '0', '36'],
     ['ERR', '2', '2', '0', '2'],     -- fits: through their (public-program) spectra
     ['ERR', '1', '1', '0', '1'],     -- MIX photometry: through the (overlap-visible) object
     ['ERR', '2', '2', '0', '2'],     -- published mosaics: every non-link account

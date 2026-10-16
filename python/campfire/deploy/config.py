@@ -278,12 +278,17 @@ def load_config(
     base = _resolve_storage_sections(toml_config)
 
     if mode == 'local':
+        # A native stack (`supabase start --runtime native`) listens on a random
+        # port: CAMPFIRE_LOCAL_SUPABASE_URL (and, if the stack uses another
+        # key, CAMPFIRE_LOCAL_SUPABASE_SERVICE_ROLE_KEY) override the CLI's
+        # fixed 127.0.0.1:54321 / demo key.
+        local_url = os.environ.get('CAMPFIRE_LOCAL_SUPABASE_URL') or _LOCAL_SUPABASE_URL
         base['supabase'] = {
-            'url': _LOCAL_SUPABASE_URL,
-            'service_role_key': _LOCAL_SUPABASE_SERVICE_ROLE_KEY,
+            'url': local_url.rstrip('/'),
+            'service_role_key': os.environ.get('CAMPFIRE_LOCAL_SUPABASE_SERVICE_ROLE_KEY') or _LOCAL_SUPABASE_SERVICE_ROLE_KEY,
             '_auth_mode': 'local',
         }
-        print(f"  Using local Supabase at {_LOCAL_SUPABASE_URL}")
+        print(f"  Using local Supabase at {local_url}")
         return base
 
     if mode == 'service_role':
