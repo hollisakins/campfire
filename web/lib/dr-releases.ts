@@ -84,9 +84,10 @@ function componentFacts(counts: Record<string, unknown> | null | undefined, name
   return { files: releaseCount(rec, 'files'), bytes: releaseCount(rec, 'bytes'), area_arcmin2: releaseCount(rec, 'area_arcmin2') };
 }
 
-function sumNullable(values: (number | null)[]): number | null {
-  const known = values.filter((v): v is number => v != null);
-  return known.length === 0 ? null : known.reduce((a, b) => a + b, 0);
+/** The total, or null unless every field has the value: a partial sum would read as the release's total. */
+function sumComplete(values: (number | null)[]): number | null {
+  if (values.length === 0 || values.some((v) => v == null)) return null;
+  return values.reduce<number>((a, b) => a + (b as number), 0);
 }
 
 export interface ReleaseSummary {
@@ -121,9 +122,9 @@ export function releaseSummary(components: unknown, counts: Record<string, unkno
   const nircam = nircamFields.length > 0
     ? {
         fields: nircamFields,
-        mosaics: sumNullable(nircamFields.map((f) => f.mosaics)),
-        bytes: sumNullable(nircamFields.map((f) => f.bytes)),
-        area_arcmin2: sumNullable(nircamFields.map((f) => f.area_arcmin2)),
+        mosaics: sumComplete(nircamFields.map((f) => f.mosaics)),
+        bytes: sumComplete(nircamFields.map((f) => f.bytes)),
+        area_arcmin2: sumComplete(nircamFields.map((f) => f.area_arcmin2)),
       }
     : null;
   const catalogs = parsed
