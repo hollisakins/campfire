@@ -80,8 +80,17 @@ describe('releaseSummary', () => {
     expect(s.nircam?.fields.map((f) => f.field)).toEqual(['a2744', 'cosmos']);
     expect(s.nircam?.mosaics).toBe(10);
     expect(s.nircam?.bytes).toBe(32_718_586_600);
-    expect(s.nircam?.area_arcmin2).toBe(148.4);
+    // cosmos has no recorded area: the total is unknown, never the partial sum
+    expect(s.nircam?.area_arcmin2).toBeNull();
+    expect(s.nircam?.fields.find((f) => f.field === 'a2744')?.area_arcmin2).toBe(148.4);
     expect(s.photometry).toBeNull();
+  });
+  it('totals the sky area only when every field has one', () => {
+    const s = releaseSummary(['nircam/a2744', 'nircam/cosmos'], {
+      by_component: { 'nircam/a2744': { files: 8, bytes: 10, area_arcmin2: 148.4 }, 'nircam/cosmos': { files: 2, bytes: 5, area_arcmin2: 1.6 } },
+    });
+    expect(s.nircam?.area_arcmin2).toBeCloseTo(150);
+    expect(s.nircam?.mosaics).toBe(10);
   });
   it('leaves out absent components and tolerates missing sizes', () => {
     const s = releaseSummary(['nircam/a2744'], { spectra: 5 });
