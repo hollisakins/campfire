@@ -38,8 +38,18 @@ export async function GET(request: NextRequest) {
     if (release.response) return release.response;
     const supabase = createServiceClient({ dr: release.tag });
 
-    // Get accessible programs for this user
-    const accessibleProgramSlugs = await getAccessiblePrograms(userId);
+    // Get accessible programs for this user; under a release, only those the
+    // release holds spectra of (`programs` has no frozen counterpart, P6c-2).
+    let accessibleProgramSlugs = await getAccessiblePrograms(userId);
+    if (release.tag) {
+      const { data: held, error: heldError } = await supabase.rpc('cat_program_slugs');
+      if (heldError) {
+        console.error('Error fetching release programs:', heldError);
+        return NextResponse.json({ error: 'Failed to fetch programs' }, { status: 500 });
+      }
+      const inRelease = new Set<string>((held as string[] | null) ?? []);
+      accessibleProgramSlugs = accessibleProgramSlugs.filter((s) => inRelease.has(s));
+    }
 
     if (accessibleProgramSlugs.length === 0) {
       return NextResponse.json({

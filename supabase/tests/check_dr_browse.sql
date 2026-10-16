@@ -21,8 +21,9 @@
 -- Run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/check_dr_browse.sql
 \set ON_ERROR_STOP on
 BEGIN;
--- the readers' path of the observation overviews; the seed does not refresh it
+-- the readers' path of the observation and program overviews; the seed does not refresh them
 REFRESH MATERIALIZED VIEW public.mv_observations_overview;
+REFRESH MATERIALIZED VIEW public.mv_programs_overview;
 
 CREATE FUNCTION pg_temp.zzz_browse_as(p_uid uuid, p_tag text, p_sql text) RETURNS text
 LANGUAGE plpgsql AS $$
@@ -173,6 +174,9 @@ BEGIN
   IF NOT (nv < nu) THEN RAISE EXCEPTION 'viewer should see fewer spectra than user under DR-seed: viewer %, user %', nv, nu; END IF;
   RAISE NOTICE 'OK principals: program % private, viewer@ without its grant; admin / user / viewer scopes differ; viewer sees fewer objects and spectra', prog;
 END $$;
+-- the programs overview's live path is the matview, so it must see the flip
+-- (under a release the row comes from the live programs table)
+REFRESH MATERIALIZED VIEW public.mv_programs_overview;
 
 -- 4. provenance under a release comes from the frozen spectra, never from a
 --    later live deployment (deployments is live-only)
@@ -368,6 +372,18 @@ BEGIN
   -- with spectra on both sides)
   PERFORM pg_temp.zzz_same('observations overview', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observations_overview(%s, false) r WHERE r.spectrum_count > 0)::text', aps),
                            ARRAY['crds_context','cfpipe_version','jwst_version','reduced_at','deployed_at','deployed_by_username','deployed_by_full_name','n_patches_since_full','last_patch_at']);
+  -- programs overview (P6c-2): live is the matview (every program; every
+  -- target counted, with or without a published spectrum), under a release
+  -- the programs with frozen targets. Compared on the caller's programs with
+  -- published spectra on both sides. By design not comparable: target_count,
+  -- fields and observations (live: every target of the program, the
+  -- n_targets difference above; release: the targets of its spectra),
+  -- n_observations (live: the program's config rows; release: the
+  -- observations it holds) and last_reduced_at (deployment vs frozen
+  -- spectrum). Identity, gratings and PIDs must agree.
+  PERFORM pg_temp.zzz_same('programs overview', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_programs_overview() r WHERE r.slug IN (SELECT unnest(%s)) AND COALESCE(array_length(r.gratings, 1), 0) > 0)::text', aps),
+                           ARRAY['target_count','fields','observations','n_observations','last_reduced_at']);
+  PERFORM pg_temp.zzz_same('program slugs', 'SELECT to_jsonb(public.cat_program_slugs())::text');
 END $$;
 
 -- an unpublished tag is invisible to a reader through the views too: the
