@@ -90,6 +90,14 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = fn AND p.provolatile = 'v') THEN
       RAISE EXCEPTION 'cat views: % is VOLATILE', fn;
     END IF;
+    -- a FROM-less LATERAL gated only by the tag test is pulled up into a join
+    -- filter, so its correlated subqueries run for every outer row in both
+    -- modes (the 20 s admin overview of 2026-10-16); gate per column with
+    -- CASE WHEN public.dr_browse_tag() ... THEN (subquery) END instead
+    IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = fn
+               AND p.prosrc ~ '\n\s*WHERE\s+public\.dr_browse_tag\(\)\s+IS\s+(NOT\s+)?NULL\s*\)\s*\w+\s+ON\s+true') THEN
+      RAISE EXCEPTION 'cat views: % gates a FROM-less lateral with a WHERE on the browse tag (pulled up into a join filter; use CASE per column)', fn;
+    END IF;
   END LOOP;
   -- nothing outside the switched set and dr_* calls a switched RPC: a caller
   -- that reads live rows would otherwise mix them with frozen aggregates
