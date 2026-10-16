@@ -171,14 +171,21 @@ function MetadataPageContent() {
 
   const setTab = (tab: MetadataTab) => setFilters((prev) => ({ ...prev, tab }));
 
+  // Recency is relative to now, a live notion; under a release (a fixed
+  // snapshot) it is not offered and a value carried in the URL is ignored.
+  const effectiveFilters = useMemo(
+    () => (drTag && debouncedFilters.recency_days !== null ? { ...debouncedFilters, recency_days: null } : debouncedFilters),
+    [debouncedFilters, drTag]
+  );
+
   const filteredPrograms = useMemo(
-    () => applyProgramFilters(programs, debouncedFilters),
-    [programs, debouncedFilters]
+    () => applyProgramFilters(programs, effectiveFilters),
+    [programs, effectiveFilters]
   );
 
   const filteredObservations = useMemo(
-    () => applyObservationFilters(observations, debouncedFilters),
-    [observations, debouncedFilters]
+    () => applyObservationFilters(observations, effectiveFilters),
+    [observations, effectiveFilters]
   );
 
   // Auth gate

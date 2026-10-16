@@ -127,6 +127,38 @@ BEGIN
 END $$;
 ROLLBACK TO SAVEPOINT live_edit;
 
+-- 1b. nor does the programs overview (P6c-2): move one live target to another
+--     program and refresh its matview; the reader's DR-seed count for the
+--     program must still be the frozen one, the live count the moved one
+SAVEPOINT live_edit_programs;
+DO $$
+DECLARE
+  usr uuid := (SELECT id FROM auth.users WHERE email = 'user@campfire.dev');
+  prog text := (SELECT t.program_slug FROM dr_targets t WHERE t.tag = 'DR-seed' GROUP BY t.program_slug ORDER BY count(*) DESC, t.program_slug LIMIT 1);
+  other text := (SELECT p.slug FROM programs p WHERE p.slug <> prog ORDER BY p.slug LIMIT 1);
+  frozen_n bigint := (SELECT count(DISTINCT t.target_id) FROM dr_targets t WHERE t.tag = 'DR-seed' AND t.program_slug = prog);
+  live_before bigint := (SELECT count(DISTINCT t.target_id) FROM targets t WHERE t.program_slug = prog);
+  got text; live_after bigint;
+BEGIN
+  UPDATE targets SET program_slug = other
+   WHERE id = (SELECT t.id FROM targets t WHERE t.program_slug = prog ORDER BY t.id LIMIT 1);
+  REFRESH MATERIALIZED VIEW public.mv_programs_overview;
+  SELECT count(DISTINCT t.target_id) INTO live_after FROM targets t WHERE t.program_slug = prog;
+  IF live_after = live_before THEN RAISE EXCEPTION 'the live edit did not change the target count of %', prog; END IF;
+  got := pg_temp.zzz_browse_as(usr, 'DR-seed',
+    format('SELECT (SELECT r.target_count::text FROM public.get_programs_overview() r WHERE r.slug = %L)', prog));
+  IF got IS DISTINCT FROM frozen_n::text THEN
+    RAISE EXCEPTION 'get_programs_overview served live data under DR-seed for a reader: % (frozen %, live %)', got, frozen_n, live_after;
+  END IF;
+  got := pg_temp.zzz_browse_as(usr, NULL,
+    format('SELECT (SELECT r.target_count::text FROM public.get_programs_overview() r WHERE r.slug = %L)', prog));
+  IF got IS DISTINCT FROM live_after::text THEN
+    RAISE EXCEPTION 'get_programs_overview live mode did not serve the live count: % (live %)', got, live_after;
+  END IF;
+  RAISE NOTICE 'OK readers: the programs overview serves frozen counts under DR-seed, live counts live (program %)', prog;
+END $$;
+ROLLBACK TO SAVEPOINT live_edit_programs;
+
 -- 2. the sync streams refuse the header
 DO $$
 DECLARE usr uuid := (SELECT id FROM auth.users WHERE email = 'user@campfire.dev'); got text;
