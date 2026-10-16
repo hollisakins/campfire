@@ -318,10 +318,17 @@ GRANT EXECUTE ON FUNCTION public.fitsgl_dataset_is_public(text, text[], text[], 
 -- X-Campfire-DR header and sets the transaction-local `campfire.dr_tag`;
 -- dr_browse_tag() reads it back. Each cat_* view returns the live table when
 -- no release is selected and the selected tag's frozen rows (P6b-1 full-row
--- copies, same column names and types) otherwise. The branch test is a
--- STABLE function of a setting, so the planner evaluates it once per
--- statement (a One-Time Filter) and never scans the other branch. The views
--- are security_invoker: the live tables' RLS applies on one side, the frozen
+-- copies, same column names and types) otherwise. The switch is a qual on
+-- an outer subquery over a WHERE-less UNION ALL, not a WHERE on each arm:
+-- the planner only flattens UNION ALL arms that carry no quals
+-- (is_safe_append_member), and an unflattened arm is a Subquery Scan that a
+-- join cannot parameterize, so every RPC join through the view became a
+-- hash join over the whole visible table (seconds per request in production,
+-- 2026-10-16). With the arms flattened the outer qual is pushed into each arm:
+-- a pseudo-constant (One-Time Filter) that keeps the other arm from being
+-- scanned, plus the tag index condition on the frozen arm, and joins keep
+-- their parameterized index lookups. check_cat_views.sql §5 pins this. The
+-- views are security_invoker: the live tables' RLS applies on one side, the frozen
 -- tables' (the same predicates plus tag visibility) on the other. The
 -- read-only catalog RPCs read these views; writers, sync streams, deploy and
 -- auth helpers keep reading the live tables and ignore the setting.
@@ -399,46 +406,86 @@ WITH (security_invoker = true) AS
          has_published_spectrum,
          reviewed_spectrum_ids,
          needs_review
-  FROM public.objects
-  WHERE public.dr_browse_tag() IS NULL
-  UNION ALL
-  SELECT id,
-         object_id,
-         field,
-         ra,
-         dec,
-         created_at,
-         n_targets,
-         n_spectra,
-         programs,
-         gratings,
-         max_snr,
-         max_exposure_time,
-         updated_at,
-         observations,
-         has_photometry,
-         photo_z,
-         photo_z_err_hi,
-         photo_z_err_lo,
-         redshift_auto,
-         redshift_inspected,
-         redshift_quality,
-         redshift,
-         last_inspected_at,
-         last_inspected_by,
-         last_data_change_at,
-         staleness_reason,
-         version,
-         is_active,
-         inspected_used_auto,
-         search_text,
-         has_published_spectrum,
-         reviewed_spectrum_ids,
-         needs_review
-  FROM public.dr_objects
-  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
-  -- live request never scans the frozen table (tag = f() alone would)
-  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+  FROM (
+    SELECT 'live'::text AS cat_src,
+           ''::text AS cat_tag,
+           id,
+           object_id,
+           field,
+           ra,
+           dec,
+           created_at,
+           n_targets,
+           n_spectra,
+           programs,
+           gratings,
+           max_snr,
+           max_exposure_time,
+           updated_at,
+           observations,
+           has_photometry,
+           photo_z,
+           photo_z_err_hi,
+           photo_z_err_lo,
+           redshift_auto,
+           redshift_inspected,
+           redshift_quality,
+           redshift,
+           last_inspected_at,
+           last_inspected_by,
+           last_data_change_at,
+           staleness_reason,
+           version,
+           is_active,
+           inspected_used_auto,
+           search_text,
+           has_published_spectrum,
+           reviewed_spectrum_ids,
+           needs_review
+    FROM public.objects
+    UNION ALL
+    SELECT 'dr'::text AS cat_src,
+           tag AS cat_tag,
+           id,
+           object_id,
+           field,
+           ra,
+           dec,
+           created_at,
+           n_targets,
+           n_spectra,
+           programs,
+           gratings,
+           max_snr,
+           max_exposure_time,
+           updated_at,
+           observations,
+           has_photometry,
+           photo_z,
+           photo_z_err_hi,
+           photo_z_err_lo,
+           redshift_auto,
+           redshift_inspected,
+           redshift_quality,
+           redshift,
+           last_inspected_at,
+           last_inspected_by,
+           last_data_change_at,
+           staleness_reason,
+           version,
+           is_active,
+           inspected_used_auto,
+           search_text,
+           has_published_spectrum,
+           reviewed_spectrum_ids,
+           needs_review
+    FROM public.dr_objects
+  ) u
+  -- the switch is a qual on the outer subquery, never on an arm (see the
+  -- note above); pushed into each arm, cat_src gates it as a One-Time
+  -- Filter and cat_tag is the frozen arm's index condition
+  WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
+    AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
 COMMENT ON VIEW public.cat_objects IS 'Catalog source view: objects for the live catalog, dr_objects rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
 REVOKE ALL ON TABLE public.cat_objects FROM PUBLIC, anon, authenticated, service_role;
@@ -468,34 +515,62 @@ WITH (security_invoker = true) AS
          observation,
          object_id,
          has_published_spectrum
-  FROM public.targets
-  WHERE public.dr_browse_tag() IS NULL
-  UNION ALL
-  SELECT id,
-         target_id,
-         field,
-         ra,
-         dec,
-         redshift_auto,
-         redshift_quality,
-         spectral_features,
-         dq_flags,
-         created_at,
-         updated_at,
-         redshift_inspected,
-         last_inspected_at,
-         last_inspected_by,
-         max_snr,
-         redshift,
-         max_exposure_time,
-         program_slug,
-         observation,
-         object_id,
-         has_published_spectrum
-  FROM public.dr_targets
-  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
-  -- live request never scans the frozen table (tag = f() alone would)
-  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+  FROM (
+    SELECT 'live'::text AS cat_src,
+           ''::text AS cat_tag,
+           id,
+           target_id,
+           field,
+           ra,
+           dec,
+           redshift_auto,
+           redshift_quality,
+           spectral_features,
+           dq_flags,
+           created_at,
+           updated_at,
+           redshift_inspected,
+           last_inspected_at,
+           last_inspected_by,
+           max_snr,
+           redshift,
+           max_exposure_time,
+           program_slug,
+           observation,
+           object_id,
+           has_published_spectrum
+    FROM public.targets
+    UNION ALL
+    SELECT 'dr'::text AS cat_src,
+           tag AS cat_tag,
+           id,
+           target_id,
+           field,
+           ra,
+           dec,
+           redshift_auto,
+           redshift_quality,
+           spectral_features,
+           dq_flags,
+           created_at,
+           updated_at,
+           redshift_inspected,
+           last_inspected_at,
+           last_inspected_by,
+           max_snr,
+           redshift,
+           max_exposure_time,
+           program_slug,
+           observation,
+           object_id,
+           has_published_spectrum
+    FROM public.dr_targets
+  ) u
+  -- the switch is a qual on the outer subquery, never on an arm (see the
+  -- note above); pushed into each arm, cat_src gates it as a One-Time
+  -- Filter and cat_tag is the frozen arm's index condition
+  WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
+    AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
 COMMENT ON VIEW public.cat_targets IS 'Catalog source view: targets for the live catalog, dr_targets rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
 REVOKE ALL ON TABLE public.cat_targets FROM PUBLIC, anon, authenticated, service_role;
@@ -531,40 +606,74 @@ WITH (security_invoker = true) AS
          chi2_min,
          confidence,
          science_hash
-  FROM public.spectra
-  WHERE public.dr_browse_tag() IS NULL
-  UNION ALL
-  SELECT id,
-         grating,
-         fits_path,
-         signal_to_noise,
-         created_at,
-         target_id,
-         thumbnail_svg_fnu,
-         thumbnail_svg_flambda,
-         file_hash,
-         file_size,
-         exposure_time,
-         crds_context,
-         jwst_version,
-         cfpipe_version,
-         date_obs,
-         dq_flags,
-         redshift_auto,
-         spectrum_id,
-         updated_at,
-         search_text,
-         reduced_at,
-         deploy_status,
-         program_slug,
-         observation,
-         chi2_min,
-         confidence,
-         science_hash
-  FROM public.dr_spectra
-  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
-  -- live request never scans the frozen table (tag = f() alone would)
-  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+  FROM (
+    SELECT 'live'::text AS cat_src,
+           ''::text AS cat_tag,
+           id,
+           grating,
+           fits_path,
+           signal_to_noise,
+           created_at,
+           target_id,
+           thumbnail_svg_fnu,
+           thumbnail_svg_flambda,
+           file_hash,
+           file_size,
+           exposure_time,
+           crds_context,
+           jwst_version,
+           cfpipe_version,
+           date_obs,
+           dq_flags,
+           redshift_auto,
+           spectrum_id,
+           updated_at,
+           search_text,
+           reduced_at,
+           deploy_status,
+           program_slug,
+           observation,
+           chi2_min,
+           confidence,
+           science_hash
+    FROM public.spectra
+    UNION ALL
+    SELECT 'dr'::text AS cat_src,
+           tag AS cat_tag,
+           id,
+           grating,
+           fits_path,
+           signal_to_noise,
+           created_at,
+           target_id,
+           thumbnail_svg_fnu,
+           thumbnail_svg_flambda,
+           file_hash,
+           file_size,
+           exposure_time,
+           crds_context,
+           jwst_version,
+           cfpipe_version,
+           date_obs,
+           dq_flags,
+           redshift_auto,
+           spectrum_id,
+           updated_at,
+           search_text,
+           reduced_at,
+           deploy_status,
+           program_slug,
+           observation,
+           chi2_min,
+           confidence,
+           science_hash
+    FROM public.dr_spectra
+  ) u
+  -- the switch is a qual on the outer subquery, never on an arm (see the
+  -- note above); pushed into each arm, cat_src gates it as a One-Time
+  -- Filter and cat_tag is the frozen arm's index condition
+  WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
+    AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
 COMMENT ON VIEW public.cat_spectra IS 'Catalog source view: spectra for the live catalog, dr_spectra rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
 REVOKE ALL ON TABLE public.cat_spectra FROM PUBLIC, anon, authenticated, service_role;
@@ -604,44 +713,82 @@ WITH (security_invoker = true) AS
          created_at,
          updated_at,
          spectrum_science_hash
-  FROM public.spectrum_line_fits
-  WHERE public.dr_browse_tag() IS NULL
-  UNION ALL
-  SELECT spectrum_id,
-         target_id,
-         grating,
-         program_slug,
-         observation,
-         z_used,
-         z_source,
-         z_quality,
-         object_id,
-         object_version,
-         z_fit,
-         z_fit_err,
-         dv,
-         dv_err,
-         sigma_v,
-         sigma_v_err,
-         kin_source,
-         n_lines,
-         n_detected,
-         n_broad,
-         chi2,
-         dof,
-         lines,
-         fit_version,
-         cfpipe_version,
-         f_lsf,
-         spectrum_hash,
-         fitted_at,
-         created_at,
-         updated_at,
-         spectrum_science_hash
-  FROM public.dr_line_fits
-  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
-  -- live request never scans the frozen table (tag = f() alone would)
-  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+  FROM (
+    SELECT 'live'::text AS cat_src,
+           ''::text AS cat_tag,
+           spectrum_id,
+           target_id,
+           grating,
+           program_slug,
+           observation,
+           z_used,
+           z_source,
+           z_quality,
+           object_id,
+           object_version,
+           z_fit,
+           z_fit_err,
+           dv,
+           dv_err,
+           sigma_v,
+           sigma_v_err,
+           kin_source,
+           n_lines,
+           n_detected,
+           n_broad,
+           chi2,
+           dof,
+           lines,
+           fit_version,
+           cfpipe_version,
+           f_lsf,
+           spectrum_hash,
+           fitted_at,
+           created_at,
+           updated_at,
+           spectrum_science_hash
+    FROM public.spectrum_line_fits
+    UNION ALL
+    SELECT 'dr'::text AS cat_src,
+           tag AS cat_tag,
+           spectrum_id,
+           target_id,
+           grating,
+           program_slug,
+           observation,
+           z_used,
+           z_source,
+           z_quality,
+           object_id,
+           object_version,
+           z_fit,
+           z_fit_err,
+           dv,
+           dv_err,
+           sigma_v,
+           sigma_v_err,
+           kin_source,
+           n_lines,
+           n_detected,
+           n_broad,
+           chi2,
+           dof,
+           lines,
+           fit_version,
+           cfpipe_version,
+           f_lsf,
+           spectrum_hash,
+           fitted_at,
+           created_at,
+           updated_at,
+           spectrum_science_hash
+    FROM public.dr_line_fits
+  ) u
+  -- the switch is a qual on the outer subquery, never on an arm (see the
+  -- note above); pushed into each arm, cat_src gates it as a One-Time
+  -- Filter and cat_tag is the frozen arm's index condition
+  WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
+    AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
 COMMENT ON VIEW public.cat_line_fits IS 'Catalog source view: spectrum_line_fits for the live catalog, dr_line_fits rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
 REVOKE ALL ON TABLE public.cat_line_fits FROM PUBLIC, anon, authenticated, service_role;
@@ -661,24 +808,42 @@ WITH (security_invoker = true) AS
          ew_rest_err,
          flags,
          blend_into
-  FROM public.spectrum_lines
-  WHERE public.dr_browse_tag() IS NULL
-  UNION ALL
-  SELECT spectrum_id,
-         line,
-         component,
-         wave_rest,
-         flux,
-         flux_err,
-         snr,
-         ew_rest,
-         ew_rest_err,
-         flags,
-         blend_into
-  FROM public.dr_spectrum_lines
-  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
-  -- live request never scans the frozen table (tag = f() alone would)
-  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+  FROM (
+    SELECT 'live'::text AS cat_src,
+           ''::text AS cat_tag,
+           spectrum_id,
+           line,
+           component,
+           wave_rest,
+           flux,
+           flux_err,
+           snr,
+           ew_rest,
+           ew_rest_err,
+           flags,
+           blend_into
+    FROM public.spectrum_lines
+    UNION ALL
+    SELECT 'dr'::text AS cat_src,
+           tag AS cat_tag,
+           spectrum_id,
+           line,
+           component,
+           wave_rest,
+           flux,
+           flux_err,
+           snr,
+           ew_rest,
+           ew_rest_err,
+           flags,
+           blend_into
+    FROM public.dr_spectrum_lines
+  ) u
+  -- the switch is a qual on the outer subquery, never on an arm (see the
+  -- note above); pushed into each arm, cat_src gates it as a One-Time
+  -- Filter and cat_tag is the frozen arm's index condition
+  WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
+    AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
 COMMENT ON VIEW public.cat_spectrum_lines IS 'Catalog source view: spectrum_lines for the live catalog, dr_spectrum_lines rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
 REVOKE ALL ON TABLE public.cat_spectrum_lines FROM PUBLIC, anon, authenticated, service_role;
@@ -702,28 +867,50 @@ WITH (security_invoker = true) AS
          has_pz,
          created_at,
          updated_at
-  FROM public.object_photometry
-  WHERE public.dr_browse_tag() IS NULL
-  UNION ALL
-  SELECT id,
-         object_id,
-         field,
-         ra,
-         dec,
-         catalog_name,
-         catalog_id,
-         match_distance_arcsec,
-         photometry,
-         photo_z,
-         photo_z_err_lo,
-         photo_z_err_hi,
-         has_pz,
-         created_at,
-         updated_at
-  FROM public.dr_photometry
-  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
-  -- live request never scans the frozen table (tag = f() alone would)
-  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+  FROM (
+    SELECT 'live'::text AS cat_src,
+           ''::text AS cat_tag,
+           id,
+           object_id,
+           field,
+           ra,
+           dec,
+           catalog_name,
+           catalog_id,
+           match_distance_arcsec,
+           photometry,
+           photo_z,
+           photo_z_err_lo,
+           photo_z_err_hi,
+           has_pz,
+           created_at,
+           updated_at
+    FROM public.object_photometry
+    UNION ALL
+    SELECT 'dr'::text AS cat_src,
+           tag AS cat_tag,
+           id,
+           object_id,
+           field,
+           ra,
+           dec,
+           catalog_name,
+           catalog_id,
+           match_distance_arcsec,
+           photometry,
+           photo_z,
+           photo_z_err_lo,
+           photo_z_err_hi,
+           has_pz,
+           created_at,
+           updated_at
+    FROM public.dr_photometry
+  ) u
+  -- the switch is a qual on the outer subquery, never on an arm (see the
+  -- note above); pushed into each arm, cat_src gates it as a One-Time
+  -- Filter and cat_tag is the frozen arm's index condition
+  WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
+    AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
 COMMENT ON VIEW public.cat_photometry IS 'Catalog source view: object_photometry for the live catalog, dr_photometry rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
 REVOKE ALL ON TABLE public.cat_photometry FROM PUBLIC, anon, authenticated, service_role;
@@ -739,20 +926,34 @@ WITH (security_invoker = true) AS
          wav,
          snr,
          mag
-  FROM public.object_photometry_bands
-  WHERE public.dr_browse_tag() IS NULL
-  UNION ALL
-  SELECT photometry_id,
-         band,
-         flux,
-         flux_err,
-         wav,
-         snr,
-         mag
-  FROM public.dr_photometry_bands
-  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
-  -- live request never scans the frozen table (tag = f() alone would)
-  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+  FROM (
+    SELECT 'live'::text AS cat_src,
+           ''::text AS cat_tag,
+           photometry_id,
+           band,
+           flux,
+           flux_err,
+           wav,
+           snr,
+           mag
+    FROM public.object_photometry_bands
+    UNION ALL
+    SELECT 'dr'::text AS cat_src,
+           tag AS cat_tag,
+           photometry_id,
+           band,
+           flux,
+           flux_err,
+           wav,
+           snr,
+           mag
+    FROM public.dr_photometry_bands
+  ) u
+  -- the switch is a qual on the outer subquery, never on an arm (see the
+  -- note above); pushed into each arm, cat_src gates it as a One-Time
+  -- Filter and cat_tag is the frozen arm's index condition
+  WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
+    AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
 COMMENT ON VIEW public.cat_photometry_bands IS 'Catalog source view: object_photometry_bands for the live catalog, dr_photometry_bands rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
 REVOKE ALL ON TABLE public.cat_photometry_bands FROM PUBLIC, anon, authenticated, service_role;
@@ -773,25 +974,44 @@ WITH (security_invoker = true) AS
          deploy_status,
          deployment_id,
          epoch
-  FROM public.nircam_images
-  WHERE public.dr_browse_tag() IS NULL
-  UNION ALL
-  SELECT id,
-         field,
-         tile,
-         filter,
-         pixel_scale,
-         extension,
-         file_path,
-         created_at,
-         file_size,
-         deploy_status,
-         deployment_id,
-         epoch
-  FROM public.dr_nircam_images
-  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
-  -- live request never scans the frozen table (tag = f() alone would)
-  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+  FROM (
+    SELECT 'live'::text AS cat_src,
+           ''::text AS cat_tag,
+           id,
+           field,
+           tile,
+           filter,
+           pixel_scale,
+           extension,
+           file_path,
+           created_at,
+           file_size,
+           deploy_status,
+           deployment_id,
+           epoch
+    FROM public.nircam_images
+    UNION ALL
+    SELECT 'dr'::text AS cat_src,
+           tag AS cat_tag,
+           id,
+           field,
+           tile,
+           filter,
+           pixel_scale,
+           extension,
+           file_path,
+           created_at,
+           file_size,
+           deploy_status,
+           deployment_id,
+           epoch
+    FROM public.dr_nircam_images
+  ) u
+  -- the switch is a qual on the outer subquery, never on an arm (see the
+  -- note above); pushed into each arm, cat_src gates it as a One-Time
+  -- Filter and cat_tag is the frozen arm's index condition
+  WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
+    AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
 COMMENT ON VIEW public.cat_nircam_images IS 'Catalog source view: nircam_images for the live catalog, dr_nircam_images rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
 REVOKE ALL ON TABLE public.cat_nircam_images FROM PUBLIC, anon, authenticated, service_role;
@@ -820,33 +1040,60 @@ WITH (security_invoker = true) AS
          config_hash,
          config_updated_at,
          retired_at
-  FROM public.fields
-  WHERE public.dr_browse_tag() IS NULL
-  UNION ALL
-  SELECT name,
-         display_name,
-         filters,
-         tiles,
-         fiducial_tiles,
-         epochs,
-         programs,
-         jwst_program_ids,
-         file_globs,
-         center_ra,
-         center_dec,
-         config,
-         coverage_area_arcmin2,
-         coverage_area_deg2,
-         latest_deployment_id,
-         created_at,
-         expmap_pixel_scale_arcsec,
-         config_hash,
-         config_updated_at,
-         retired_at
-  FROM public.dr_fields
-  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
-  -- live request never scans the frozen table (tag = f() alone would)
-  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+  FROM (
+    SELECT 'live'::text AS cat_src,
+           ''::text AS cat_tag,
+           name,
+           display_name,
+           filters,
+           tiles,
+           fiducial_tiles,
+           epochs,
+           programs,
+           jwst_program_ids,
+           file_globs,
+           center_ra,
+           center_dec,
+           config,
+           coverage_area_arcmin2,
+           coverage_area_deg2,
+           latest_deployment_id,
+           created_at,
+           expmap_pixel_scale_arcsec,
+           config_hash,
+           config_updated_at,
+           retired_at
+    FROM public.fields
+    UNION ALL
+    SELECT 'dr'::text AS cat_src,
+           tag AS cat_tag,
+           name,
+           display_name,
+           filters,
+           tiles,
+           fiducial_tiles,
+           epochs,
+           programs,
+           jwst_program_ids,
+           file_globs,
+           center_ra,
+           center_dec,
+           config,
+           coverage_area_arcmin2,
+           coverage_area_deg2,
+           latest_deployment_id,
+           created_at,
+           expmap_pixel_scale_arcsec,
+           config_hash,
+           config_updated_at,
+           retired_at
+    FROM public.dr_fields
+  ) u
+  -- the switch is a qual on the outer subquery, never on an arm (see the
+  -- note above); pushed into each arm, cat_src gates it as a One-Time
+  -- Filter and cat_tag is the frozen arm's index condition
+  WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
+    AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
 COMMENT ON VIEW public.cat_fields IS 'Catalog source view: fields for the live catalog, dr_fields rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
 REVOKE ALL ON TABLE public.cat_fields FROM PUBLIC, anon, authenticated, service_role;
@@ -857,14 +1104,22 @@ DROP VIEW IF EXISTS public.cat_filter_options;
 CREATE VIEW public.cat_filter_options
 WITH (security_invoker = true) AS
   SELECT id, fields, observations, gratings, photometry_bands
-  FROM public.mv_filter_options
-  WHERE public.dr_browse_tag() IS NULL
-  UNION ALL
-  SELECT id, fields, observations, gratings, photometry_bands
-  FROM public.dr_filter_options
-  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
-  -- live request never scans the frozen table (tag = f() alone would)
-  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+  FROM (
+    SELECT 'live'::text AS cat_src,
+           ''::text AS cat_tag,
+           id, fields, observations, gratings, photometry_bands
+    FROM public.mv_filter_options
+    UNION ALL
+    SELECT 'dr'::text AS cat_src,
+           tag AS cat_tag,
+           id, fields, observations, gratings, photometry_bands
+    FROM public.dr_filter_options
+  ) u
+  -- the switch is a qual on the outer subquery, never on an arm (see the
+  -- note above); pushed into each arm, cat_src gates it as a One-Time
+  -- Filter and cat_tag is the frozen arm's index condition
+  WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
+    AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
 COMMENT ON VIEW public.cat_filter_options IS 'Catalog source view: mv_filter_options for the live catalog, the browsed release''s dr_filter_options row otherwise.';
 REVOKE ALL ON TABLE public.cat_filter_options FROM PUBLIC, anon, authenticated, service_role;
