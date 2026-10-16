@@ -91,7 +91,7 @@ function InstrumentCard({ icon: Icon, title, stats, foot, href }: {
   /** Browse this part of the release (P6c-1). */
   href?: string;
 }) {
-  const body = (
+  const head = (
     <>
       <div className="mb-4 flex items-center gap-2 text-text-primary">
         <Icon className="h-5 w-5 text-primary" />
@@ -100,18 +100,21 @@ function InstrumentCard({ icon: Icon, title, stats, foot, href }: {
       <div className="grid grid-cols-2 gap-4">
         {stats.map((s) => <Stat key={s.label} {...s} />)}
       </div>
-      {foot && <div className="mt-3 flex flex-wrap gap-x-3 text-sm text-text-tertiary">{foot}</div>}
     </>
   );
+  const footer = foot ? <div className="mt-3 flex flex-wrap gap-x-3 text-sm text-text-tertiary">{foot}</div> : null;
   const cls = 'block rounded-card border border-border bg-card p-5';
-  // A card whose footer carries its own links is a plain box with a title
-  // link (nested anchors are invalid); the NIRSpec card stays one link.
+  // A footer that carries its own links (the NIRCam field list) stays outside
+  // the card's link — nested anchors are invalid HTML — so only the header and
+  // stats link; a card with a plain footer is one link.
   const nested = Array.isArray(foot);
-  return href && !nested ? (
-    <Link href={href} className={`${cls} transition-colors hover:bg-card-hover`}>{body}</Link>
-  ) : (
+  if (href && !nested) {
+    return <Link href={href} className={`${cls} transition-colors hover:bg-card-hover`}>{head}{footer}</Link>;
+  }
+  return (
     <div className={cls}>
-      {href ? <Link href={href} className="block">{body}</Link> : body}
+      {href ? <Link href={href} className="block">{head}</Link> : head}
+      {footer}
     </div>
   );
 }
@@ -120,7 +123,7 @@ const n = (v: number | null) => (v == null ? '—' : v.toLocaleString());
 const plural = (v: number | null, one: string, many: string) => (v === 1 ? one : many);
 
 function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
-  const { release: r, files, exported, pageAssets } = detail;
+  const { release: r, files, complete, pageAssets } = detail;
   const browse = (href: string) => `${href}${href.includes('?') ? '&' : '?'}dr=${encodeURIComponent(r.tag)}`;
   const s = releaseSummary(r.components, r.counts);
   const cite = releaseCitation(r, SITE_URL);
@@ -196,8 +199,8 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
         )}
       </div>
 
-      <Section title="Download" aside={<span className="text-xs text-text-tertiary">schema v{r.dr_format_version}</span>}>
-        {!exported ? (
+      <Section title="Download">
+        {!complete ? (
           <p className="text-sm text-text-secondary">Not available yet.</p>
         ) : files.length === 0 ? (
           <p className="text-sm text-text-secondary">No files for your programs.</p>
@@ -225,19 +228,15 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
             </table>
           </div>
         )}
-        <div className="mt-4 space-y-2">
-          <CopyBlock
-            label="API"
-            text={`curl -H "Authorization: Bearer $CAMPFIRE_API_KEY" \\\n  ${SITE_URL}/api/v1/dr/${r.tag}/files`}
-          />
-          <p className="text-xs text-text-tertiary">
-            API keys: <Link href="/profile/api-keys" className="text-primary hover:underline">your profile</Link>.
-            Python client support (<code className="font-mono">campfire pull --dr {r.tag}</code>) coming soon.
-          </p>
-        </div>
+        <details className="mt-4 text-sm">
+          <summary className="cursor-pointer text-text-secondary">API</summary>
+          <div className="mt-2">
+            <CopyBlock label="endpoint" text={`${SITE_URL}/api/v1/dr/${encodeURIComponent(r.tag)}/files`} />
+          </div>
+        </details>
       </Section>
 
-      <Section title="Cite" aside={!r.doi ? <span className="text-xs text-text-tertiary">DOI pending</span> : undefined}>
+      <Section title="Cite">
         <div className="space-y-3">
           <CopyBlock label="citation" text={cite.text} />
           <CopyBlock label="BibTeX" text={cite.bibtex} />
