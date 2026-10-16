@@ -13,6 +13,7 @@ import {
   ColumnDef,
 } from '@tanstack/react-table';
 import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { useDrTag } from '@/lib/dr/client';
 import type { NircamProductRow } from '@/lib/types';
 import type { NircamFilterOptions } from './NircamFilterBar';
 import { Card } from '@/components/ui/Card';
@@ -100,6 +101,8 @@ const compareTiles = (a: string | null, b: string | null): number => {
 // Text-glyph action per the design (↓ FITS), not an icon button.
 const DownloadCell: React.FC<{ row: NircamProductRow }> = ({ row }) => {
   const [busy, setBusy] = useState(false);
+  // Live files are not handed out under a release (P6c-1).
+  const readOnly = useDrTag() !== null;
 
   const handleDownload = async () => {
     if (busy) return;
@@ -125,6 +128,7 @@ const DownloadCell: React.FC<{ row: NircamProductRow }> = ({ row }) => {
     }
   };
 
+  if (readOnly) return null;
   return (
     <button
       type="button"

@@ -1,6 +1,7 @@
 'use server';
 
 import { getRequestIdentity } from '@/lib/auth/identity';
+import { requestDrTag } from '@/lib/dr/server';
 import { createClient } from '@/lib/supabase/server';
 import { paginateQuery } from '@/lib/supabase/paginate';
 import { generateDownloadUrls } from '@/lib/r2';
@@ -69,8 +70,10 @@ export async function getNircamImages(field?: string): Promise<NircamImagesResul
   try {
     const { data, error } = await paginateQuery<NircamImage>(
       () => {
+        // cat_nircam_images: live rows, or the release's frozen mosaics
+        // while one is browsed (P6c-1)
         let q = supabase
-          .from('nircam_images')
+          .from('cat_nircam_images')
           .select('*');
         if (field) q = q.eq('field', field);
         return q
@@ -251,7 +254,8 @@ export async function getNircamFields(): Promise<NircamFieldsResult> {
 
     // Presign the layout plots in one dual-read batch; a failed presign just
     // leaves that card's preview null (the card renders a placeholder).
-    const keys = rows.map((r) => r.layout_key).filter(Boolean) as string[];
+    // Under a release the layout PNGs come from the archive in P6c-2; no presign yet.
+    const keys = (await requestDrTag()) ? [] : rows.map((r) => r.layout_key).filter(Boolean) as string[];
     const urlByKey = new Map<string, string>();
     if (keys.length > 0) {
       try {
@@ -308,6 +312,9 @@ export async function getNircamFieldSummary(field: string): Promise<NircamFieldS
     let provenance = { cfpipe_version: null as string | null,
                        jwst_version: null as string | null,
                        crds_context: null as string | null };
+    // Under a release the deployments log is live-only; the frozen summary
+    // carries no provenance until P6c-2.
+    if (await requestDrTag()) return { summary: { ...base, ...provenance }, isAuthenticated: true };
     try {
       const { data: dep } = await supabase
         .from('deployments')

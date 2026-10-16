@@ -8,6 +8,7 @@ import { getNircamFields } from '@/lib/actions/nircam';
 import type { NircamFieldCard as FieldCard } from '@/lib/types';
 import { LogIn, Loader2, ImageIcon } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import { useDrTag } from '@/lib/dr/client';
 
 const formatVolume = (bytes: number): string => {
   if (!bytes) return '0 B';
@@ -19,6 +20,7 @@ const formatVolume = (bytes: number): string => {
 
 export default function NircamLandingPage() {
   const { user, loading: authLoading } = useAuth();
+  const drTag = useDrTag();
 
   const [fields, setFields] = useState<FieldCard[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,7 +43,8 @@ export default function NircamLandingPage() {
     } finally {
       setLoading(false);
     }
-  }, [authLoading]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, drTag]);
 
   useEffect(() => {
     fetchData();

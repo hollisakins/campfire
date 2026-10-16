@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { readOnlyResponse } from '@/lib/dr/server';
 import { getAccessContext } from '@/lib/auth/access-context';
 import { getRequestIdentity } from '@/lib/auth/identity';
 
@@ -23,6 +24,8 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const readOnly = await readOnlyResponse();
+  if (readOnly) return readOnly;
   const { id } = await params;
   const objectDbId = parseInt(id, 10);
 

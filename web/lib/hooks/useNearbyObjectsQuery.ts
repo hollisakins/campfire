@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '@/lib/fetch-json';
+import { useDrTag } from '@/lib/dr/client';
 import type { NearbyObjectsResponse } from '@/app/api/objects/near/route';
 
 export type { NearbyObject } from '@/app/api/objects/near/route';
@@ -25,13 +26,14 @@ export function useNearbyObjectsQuery(params: {
   enabled?: boolean;
 }) {
   const { ra, dec, radiusArcsec, limit, exclude, enabled = true } = params;
+  const dr = useDrTag();
   return useQuery<NearbyObjectsResponse>({
-    queryKey: ['nearbyObjects', ra, dec, radiusArcsec, limit, exclude ?? ''],
+    queryKey: ['nearbyObjects', ra, dec, radiusArcsec, limit, exclude ?? '', dr ?? 'live'],
     queryFn: ({ signal }) =>
       fetchJson<NearbyObjectsResponse>(
         `/api/objects/near?ra=${ra}&dec=${dec}&radius=${radiusArcsec}&limit=${limit}`
           + (exclude ? `&exclude=${encodeURIComponent(exclude)}` : ''),
-        { signal },
+        { signal, dr },
       ),
     enabled,
     staleTime: NEARBY_STALE_MS,

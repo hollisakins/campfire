@@ -1,6 +1,8 @@
 import 'server-only';
 
 import { cache } from 'react';
+import { unstable_rethrow } from 'next/navigation';
+import { requestDrTag } from '@/lib/dr/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { getAccessContext } from '@/lib/auth/access-context';
 import { createServiceClient } from '@/lib/supabase/service';
@@ -68,7 +70,7 @@ const loadObjectRow = cache(async (objectId: string): Promise<ObjectRowResult> =
   // and the object row in parallel.
   const [accessibleSlugs, { data: row, error }] = await Promise.all([
     getAccessContext(user.id).then(a => a.accessibleSlugs),
-    supabase.from('objects').select('*').eq('object_id', objectId).single(),
+    supabase.from('cat_objects').select('*').eq('object_id', objectId).single(),
   ]);
 
   if (error || !row) {
@@ -132,32 +134,53 @@ export async function loadObjectHeader(objectId: string): Promise<{
     // → wire → RSC payload for every spectrum, and nothing on this page
     // renders them (#500).
     const { supabase } = await getRequestIdentity();
-    const { data: members, error: membersError } = await supabase
-      .from('targets')
-      .select(`
-        *,
-        programs:program_slug (program_name),
-        spectra (id, spectrum_id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status)
-      `)
+    // cat_targets / cat_spectra: the live tables, or the release's frozen
+    // rows while one is browsed (P6c-1). Views carry no FK metadata for
+    // PostgREST's embedding, so the two reads are explicit: members, then
+    // their spectra and program names in parallel.
+    const { data: memberRows, error: membersError } = await supabase
+      .from('cat_targets')
+      .select('*')
       .eq('object_id', row.id)
       .in('program_slug', accessibleSlugs);
 
     if (membersError) return { object: null, error: membersError.message, isAuthenticated: true };
+    const targetIds = (memberRows || []).map((m: { target_id: string }) => m.target_id);
+    const slugs = [...new Set((memberRows || []).map((m: { program_slug: string }) => m.program_slug))];
+    const [{ data: spectraRows, error: spectraError }, { data: programRows }] = await Promise.all([
+      targetIds.length === 0
+        ? Promise.resolve({ data: [], error: null })
+        : supabase
+            .from('cat_spectra')
+            .select('id, spectrum_id, target_id, grating, fits_path, cfpipe_version, signal_to_noise, exposure_time, created_at, updated_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status')
+            .in('target_id', targetIds),
+      slugs.length === 0
+        ? Promise.resolve({ data: [] as { slug: string; program_name: string | null }[] })
+        : supabase.from('programs').select('slug, program_name').in('slug', slugs),
+    ]);
+    if (spectraError) return { object: null, error: spectraError.message, isAuthenticated: true };
+    const spectraByTarget = new Map<string, Spectrum[]>();
+    for (const s of (spectraRows || []) as Spectrum[]) {
+      const list = spectraByTarget.get(s.target_id) ?? [];
+      list.push(s);
+      spectraByTarget.set(s.target_id, list);
+    }
+    const programName = new Map((programRows || []).map((p: { slug: string; program_name: string | null }) => [p.slug, p.program_name]));
 
     // Member targets are stateless provenance — inspection lives on the parent object.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const memberTargets: ObjectMemberTarget[] = (members || []).map((m: any) => ({
+    const memberTargets: ObjectMemberTarget[] = (memberRows || []).map((m: any) => ({
       id: m.id,
       target_id: m.target_id,
       program_slug: m.program_slug,
-      program_name: m.programs?.program_name || m.program_slug,
+      program_name: programName.get(m.program_slug) || m.program_slug,
       observation: m.observation,
       ra: m.ra,
       dec: m.dec,
       redshift_auto: m.redshift_auto,
       max_snr: m.max_snr,
       max_exposure_time: m.max_exposure_time,
-      spectra: (m.spectra || []) as Spectrum[],
+      spectra: spectraByTarget.get(m.target_id) ?? [],
     })).sort((a: ObjectMemberTarget, b: ObjectMemberTarget) => (b.max_snr || 0) - (a.max_snr || 0));
 
     const object: ObjectHeader = {
@@ -188,6 +211,7 @@ export async function loadObjectHeader(objectId: string): Promise<{
     };
     return { object, isAuthenticated: true };
   } catch (err) {
+    unstable_rethrow(err); // notFound() / redirect() from the release gate pass through
     console.error('Unexpected error fetching object:', err);
     return { object: null, error: 'An unexpected error occurred', isAuthenticated: true };
   }
@@ -207,7 +231,7 @@ export async function loadObjectPhotometry(objectDbId: number): Promise<ObjectPh
   try {
     const { supabase } = await getRequestIdentity();
     const { data, error } = await supabase
-      .from('object_photometry')
+      .from('cat_photometry')
       .select('catalog_name, catalog_id, match_distance_arcsec, photometry, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz')
       .eq('object_id', objectDbId)
       .order('updated_at', { ascending: false })
@@ -229,6 +253,7 @@ export async function loadObjectPhotometry(objectDbId: number): Promise<ObjectPh
       has_pz: data.has_pz ?? false,
     };
   } catch (err) {
+    unstable_rethrow(err);
     console.error('Unexpected error fetching object photometry:', err);
     return null;
   }
@@ -245,7 +270,8 @@ export async function loadObjectPhotometryOf(objectId: string): Promise<ObjectPh
     const r = await loadObjectRow(objectId);
     if (r.status !== 'ok' || !r.row.has_photometry) return null;
     return loadObjectPhotometry(r.row.id);
-  } catch {
+  } catch (err) {
+    unstable_rethrow(err);
     return null;
   }
 }
@@ -270,6 +296,9 @@ export async function loadObjectMetadata(objectId: string): Promise<ObjectMetada
       return { object_id: r.row.object_id, redshift: r.row.redshift, field: r.row.field };
     }
 
+    // Under a release there is no live fallback: a frozen row the viewer
+    // cannot see is simply not there (P6c-1).
+    if (await requestDrTag()) return null;
     const supabase = createServiceClient();
     const { data, error } = await supabase
       .from('objects')
@@ -279,7 +308,8 @@ export async function loadObjectMetadata(objectId: string): Promise<ObjectMetada
       .single();
     if (error || !data) return null;
     return { object_id: data.object_id, redshift: data.redshift, field: data.field };
-  } catch {
+  } catch (err) {
+    unstable_rethrow(err);
     return null;
   }
 }

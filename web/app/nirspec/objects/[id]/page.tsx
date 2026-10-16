@@ -15,6 +15,7 @@ import { dehydrateSidecarUrls, resolveSpectrumSidecars } from '@/lib/server/spec
 import { spectrum1dSources } from '@/lib/spectrum-sidecars';
 import { getAssetVersions, assetVersionFor } from '@/lib/asset-version';
 import { parseSortingFromURL } from '@/lib/utils/url-params';
+import { requestDrTag } from '@/lib/dr/server';
 
 interface ObjectDetailPageProps {
   params: Promise<{ id: string }>;
@@ -149,7 +150,11 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
   // default mode and credentials (cors, same-origin) so the browser pairs
   // the preload with the client's fetch of the same url; an as=fetch preload
   // without it is a no-cors request nothing matches.
-  const fitsPaths = object.member_targets.flatMap(m => m.spectra.map(s => s.fits_path));
+  //
+  // Under a release (P6c-1) the files are not resolved: the archived copies
+  // come through dr_manifest in P6c-2, and the plots stay off until then.
+  const drTag = await requestDrTag();
+  const fitsPaths = drTag ? [] : object.member_targets.flatMap(m => m.spectra.map(s => s.fits_path));
   const sidecars = await resolveSpectrumSidecars(fitsPaths);
   for (const fitsPath of fitsPaths.slice(0, PRELOAD_1D_MAX)) {
     const { front, route } = spectrum1dSources(sidecars.get(fitsPath), fitsPath);
@@ -158,7 +163,7 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <PlotlyPreload />
+      {!drTag && <PlotlyPreload />}
 
       {/* Breadcrumbs + Navigation */}
       <div className="flex items-center justify-between mb-6">

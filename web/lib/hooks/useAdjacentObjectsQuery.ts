@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '@/lib/fetch-json';
+import { useDrTag } from '@/lib/dr/client';
 import type { AdjacentObjectsResponse } from '@/app/api/objects/adjacent/route';
 
 /**
@@ -13,12 +14,14 @@ import type { AdjacentObjectsResponse } from '@/app/api/objects/adjacent/route';
  * the user moves on before it lands.
  */
 export function useAdjacentObjectsQuery(objectId: string, filterStr: string, enabled = true) {
+  const dr = useDrTag();
   return useQuery<AdjacentObjectsResponse>({
-    queryKey: ['adjacentObjects', objectId, filterStr],
+    queryKey: ['adjacentObjects', objectId, filterStr, dr ?? 'live'],
     queryFn: ({ signal }) =>
       fetchJson<AdjacentObjectsResponse>(
         `/api/objects/adjacent?id=${encodeURIComponent(objectId)}${filterStr ? `&${filterStr}` : ''}`,
-        { signal },
+        // `filterStr` is the page's own parameter string and already carries ?dr=
+        { signal, dr: filterStr.includes('dr=') ? null : dr },
       ),
     enabled,
     staleTime: 60 * 1000,

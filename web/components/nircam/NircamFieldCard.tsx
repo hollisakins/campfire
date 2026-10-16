@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import Link from 'next/link';
+import { DrLink } from '@/lib/dr/client';
 import { ImageIcon } from 'lucide-react';
 import type { NircamFieldCard as FieldCard } from '@/lib/types';
 
@@ -43,7 +43,7 @@ export const NircamFieldCard: React.FC<NircamFieldCardProps> = ({ card }) => {
   const showImg = card.layout_url && !imgFailed;
 
   return (
-    <Link
+    <DrLink
       href={`/nircam/${encodeURIComponent(card.field)}`}
       className="group block bg-card border border-border rounded-xl overflow-hidden transition-all hover:border-border-strong hover:-translate-y-0.5"
     >
@@ -98,6 +98,6 @@ export const NircamFieldCard: React.FC<NircamFieldCardProps> = ({ card }) => {
           </span>
         </div>
       </div>
-    </Link>
+    </DrLink>
   );
 };

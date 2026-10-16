@@ -9,6 +9,7 @@ import { Logo } from '@/components/brand/Logo';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useTheme } from '@/lib/contexts/ThemeContext';
 import { drPagesInNav, drPagesMode } from '@/lib/dr-pages';
+import { withDr } from '@/lib/dr/tag';
 
 type NavLink = { href: string; label: string; children?: { href: string; label: string }[] };
 
@@ -123,7 +124,11 @@ const SharedViewNav: React.FC<{
   </nav>
 );
 
-export const Navigation: React.FC = () => {
+/**
+ * `drTag`: the release being browsed (P6c-1), as the server decided it
+ * (root layout), so the catalog links carry it from the first render.
+ */
+export const Navigation: React.FC<{ drTag?: string | null }> = ({ drTag = null }) => {
   const pathname = usePathname();
   const router = useRouter();
   const { user, userProfile, signOut, isLinkAccount } = useAuth();
@@ -149,14 +154,16 @@ export const Navigation: React.FC = () => {
     return pathname.startsWith(path);
   };
 
+  // Release browsing (P6c-1): the catalog entries keep `?dr=`; Home, Map,
+  // Tags, Releases and Docs are live-only and drop it.
   const navLinks: NavLink[] = [
     { href: '/', label: 'Home' },
-    { href: '/nircam', label: 'NIRCam' },
+    { href: withDr('/nircam', drTag), label: 'NIRCam' },
     {
-      href: '/nirspec', label: 'NIRSpec', children: [
-        { href: '/nirspec', label: 'Catalog' },
+      href: withDr('/nirspec', drTag), label: 'NIRSpec', children: [
+        { href: withDr('/nirspec', drTag), label: 'Catalog' },
         { href: '/nirspec/tags', label: 'Tags' },
-        { href: '/nirspec/metadata', label: 'Metadata' },
+        { href: withDr('/nirspec/metadata', drTag), label: 'Metadata' },
       ],
     },
     { href: '/map', label: 'Map' },

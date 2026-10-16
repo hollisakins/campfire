@@ -1,6 +1,7 @@
 'use server';
 
 import { getSpectra } from './spectra';
+import { requestDrTag } from '@/lib/dr/server';
 import { getAccessContext } from '@/lib/auth/access-context';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import type { SortColumn, SortDirection, ViewMode } from './spectra-types';
@@ -15,6 +16,10 @@ import type { FlagDef } from '@/lib/flags';
 import { generateDownloadUrls } from '@/lib/r2';
 import { hmacBase64Url } from '@/lib/server/worker-token';
 import { authorizeKeysInChunks } from '@/lib/server/authorized-keys';
+
+// Live files are not handed out under a release (P6c-1; the archived copies come in P6c-2).
+const READ_ONLY_MSG = 'read-only under a data release';
+const READ_ONLY_FILES = { files: null, zipFilename: null } as const;
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_DOWNLOAD_URL || 'http://localhost:8787';
 const JWT_SECRET = process.env.WORKER_JWT_SECRET;
@@ -540,6 +545,7 @@ export async function generateFitsDownloadUrl(
   zipFilename: string | null;
   error: string | null;
 }> {
+  if (await requestDrTag()) return { ...READ_ONLY_FILES, error: READ_ONLY_MSG };
   try {
     if (!JWT_SECRET) {
       return { files: null, zipFilename: null, error: 'Server configuration error: JWT secret not set' };
@@ -707,6 +713,7 @@ export async function generateObjectFitsDownloadUrls(
   zipFilename: string | null;
   error: string | null;
 }> {
+  if (await requestDrTag()) return { ...READ_ONLY_FILES, error: READ_ONLY_MSG };
   try {
     if (!JWT_SECRET) {
       return { files: null, zipFilename: null, error: 'Server configuration error: JWT secret not set' };
@@ -811,6 +818,7 @@ export async function generateObjectFitsDownloadUrls(
 export async function generateNircamMosaicDownloadUrls(
   filePaths: string[]
 ): Promise<{ urls: Record<string, string>; error: string | null }> {
+  if (await requestDrTag()) return { urls: {}, error: READ_ONLY_MSG };
   try {
     if (!JWT_SECRET) {
       return { urls: {}, error: 'Server configuration error: JWT secret not set' };
@@ -884,6 +892,7 @@ export async function generateNircamMosaicDownloadUrls(
 export async function generateNircamExpmapDownloadUrls(
   storageKeys: string[]
 ): Promise<{ urls: Record<string, string>; error: string | null }> {
+  if (await requestDrTag()) return { urls: {}, error: READ_ONLY_MSG };
   try {
     if (!JWT_SECRET) {
       return { urls: {}, error: 'Server configuration error: JWT secret not set' };

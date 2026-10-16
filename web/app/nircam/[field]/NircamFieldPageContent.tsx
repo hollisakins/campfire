@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
+import { DrLink, useDrTag } from '@/lib/dr/client';
 import { SignInLink } from '@/components/auth/SignInLink';
 import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { NircamTable } from '@/components/nircam/NircamTable';
@@ -20,6 +21,7 @@ import {
   getNircamFieldSummary,
   getNircamFieldImages,
   type NircamFieldImagesResult,
+  type NircamExpmapsResult,
 } from '@/lib/actions/nircam';
 import { getFitsglDatasets } from '@/lib/actions/map';
 import type {
@@ -101,6 +103,11 @@ interface NircamFieldPageContentProps {
 
 export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
   const { user, loading: authLoading } = useAuth();
+  // Release browsing (P6c-1): the summary and the mosaic list come from the
+  // frozen rows; the images, exposure maps, map bridge, cutouts and the
+  // download script are live-only until P6c-2 resolves archived copies.
+  const drTag = useDrTag();
+  const readOnly = drTag !== null;
 
   const [summary, setSummary] = useState<NircamFieldSummary | null>(null);
   const [allFields, setAllFields] = useState<NircamFieldCard[]>([]);
@@ -132,14 +139,15 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
       setFilters(DEFAULT_NIRCAM_FILTERS);
 
       try {
+      const noImages: NircamFieldImagesResult = { layoutUrl: null, expmapPlots: {}, thumbnails: {}, quicklooks: {} };
       const [summaryRes, imagesRes, expmapsRes, imagesUrlsRes, fieldsRes, fitsglDatasets] =
         await Promise.all([
           getNircamFieldSummary(field),
           getNircamImages(field),
-          getNircamExpmaps(field),
-          getNircamFieldImages(field),
+          readOnly ? Promise.resolve<NircamExpmapsResult>({ expmaps: [], isAuthenticated: true }) : getNircamExpmaps(field),
+          readOnly ? Promise.resolve(noImages) : getNircamFieldImages(field),
           getNircamFields(),
-          getFitsglDatasets(field).catch(() => []),
+          readOnly ? Promise.resolve([]) : getFitsglDatasets(field).catch(() => []),
         ]);
       if (stale) return;
 
@@ -206,7 +214,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
     return () => {
       stale = true;
     };
-  }, [authLoading, field, user]);
+  }, [authLoading, field, user, readOnly]);
 
   const handleSelectionChange = useCallback((selected: NircamProductRow[]) => {
     setSelectedProducts(selected);
@@ -243,7 +251,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
         <Breadcrumbs
           items={[
             { label: 'CAMPFIRE', href: '/' },
-            { label: 'NIRCam', href: '/nircam' },
+            { label: 'NIRCam', href: readOnly ? `/nircam?dr=${encodeURIComponent(drTag as string)}` : '/nircam' },
             { label: field.toUpperCase() },
           ]}
           className="mb-6"
@@ -279,7 +287,7 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
       <Breadcrumbs
         items={[
           { label: 'CAMPFIRE', href: '/' },
-          { label: 'NIRCam', href: '/nircam' },
+          { label: 'NIRCam', href: readOnly ? `/nircam?dr=${encodeURIComponent(drTag as string)}` : '/nircam' },
           { label: displayName },
         ]}
         className="mb-6"
@@ -312,12 +320,12 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
           <p className="text-text-secondary">
             No NIRCam data available for “{field}”.
           </p>
-          <Link
+          <DrLink
             href="/nircam"
             className="inline-block mt-3 text-sm text-primary hover:text-primary-hover hover:underline"
           >
             ← All fields
-          </Link>
+          </DrLink>
         </div>
       )}
 
@@ -329,29 +337,31 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
               {displayName} NIRCam Imaging
             </h1>
             <div className="flex-1" />
-            <div className="flex items-center gap-2">
-              {hasCutouts && (
+            {!readOnly && (
+              <div className="flex items-center gap-2">
+                {hasCutouts && (
+                  <Link
+                    href={`/nircam/${encodeURIComponent(field)}/cutouts`}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-surface-2 border border-border-strong text-text-primary rounded-lg text-sm font-medium hover:bg-card-hover transition-colors"
+                  >
+                    <Scissors className="w-3.5 h-3.5" />
+                    Cutouts
+                  </Link>
+                )}
                 <Link
-                  href={`/nircam/${encodeURIComponent(field)}/cutouts`}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-surface-2 border border-border-strong text-text-primary rounded-lg text-sm font-medium hover:bg-card-hover transition-colors"
+                  href={`/map?field=${encodeURIComponent(field)}`}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors"
                 >
-                  <Scissors className="w-3.5 h-3.5" />
-                  Cutouts
+                  Open field in Map
+                  <ExternalLink className="w-3.5 h-3.5" />
                 </Link>
-              )}
-              <Link
-                href={`/map?field=${encodeURIComponent(field)}`}
-                className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-medium hover:bg-primary-hover transition-colors"
-              >
-                Open field in Map
-                <ExternalLink className="w-3.5 h-3.5" />
-              </Link>
-            </div>
+              </div>
+            )}
           </div>
 
           {/* Field overview: metadata + exposure-map browser */}
           <div className="bg-card border border-border rounded-xl p-5 mb-7">
-            <div className="grid gap-6 md:grid-cols-[2fr_3fr]">
+            <div className={readOnly ? '' : 'grid gap-6 md:grid-cols-[2fr_3fr]'}>
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-text-tertiary mb-3">
                   Field overview
@@ -438,10 +448,12 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
                 </div>
               </div>
 
-              <ExpmapBrowser
-                filters={summary.filters}
-                expmapPlots={fieldImages.expmapPlots}
-              />
+              {!readOnly && (
+                <ExpmapBrowser
+                  filters={summary.filters}
+                  expmapPlots={fieldImages.expmapPlots}
+                />
+              )}
             </div>
           </div>
 
@@ -471,9 +483,11 @@ export function NircamFieldPageContent({ field }: NircamFieldPageContentProps) {
             </span>
           </div>
 
-          <div className="mb-4">
-            <CurlScriptGenerator selectedImages={selectedProducts} />
-          </div>
+          {!readOnly && (
+            <div className="mb-4">
+              <CurlScriptGenerator selectedImages={selectedProducts} />
+            </div>
+          )}
 
           {products.length === 0 ? (
             <div className="text-center py-16 bg-card border border-border rounded-lg">

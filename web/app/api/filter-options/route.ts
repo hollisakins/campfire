@@ -66,7 +66,9 @@ export async function GET() {
     // new column here is the same trade, so leave the star alone.
     const [{ data: obsData }, { data: filterData, error: filterError }] = await Promise.all([
       supabase.from('observations').select('program_slug, jwst_program_id'),
-      supabase.from('mv_filter_options').select('*').single(),
+      // cat_filter_options: the live matview, or the release's frozen copy
+      // while a release is being browsed (P6b-2 / P6c-1).
+      supabase.from('cat_filter_options').select('*').single(),
     ]);
 
     const pidsBySlug: Record<string, number[]> = {};

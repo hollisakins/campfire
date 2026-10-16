@@ -1,7 +1,6 @@
 'use client';
 
 import React, { Suspense, use, useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import type { ObjectHeader, ObjectMemberTarget, ObjectPhotometry, Spectrum } from '@/lib/types';
 import { MEMBER_COLORS, GRATINGS } from '@/lib/types';
@@ -24,6 +23,8 @@ import { ObjectComments } from './ObjectComments';
 import { NearbyObjects } from './NearbyObjects';
 import { StalenessBadge } from './StalenessBadge';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import { useDrTag, DrLink } from '@/lib/dr/client';
+import { withDr } from '@/lib/dr/tag';
 
 interface UnifiedObjectPageProps {
   object: ObjectHeader;
@@ -41,6 +42,11 @@ function buildInitialVisibility(members: ObjectMemberTarget[]): Record<number, b
 
 export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, photometry }) => {
   const { userProfile } = useAuth();
+  // Release browsing (P6c-1): the page is read-only and its file-driven
+  // parts (plots, downloads, fits, lines) stay off until P6c-2 resolves the
+  // archived copies.
+  const drTag = useDrTag();
+  const readOnly = drTag !== null;
   // Local override so the "Mark as reviewed" action in the StalenessBadge can
   // hide the badge without a full refetch (the server clears needs_review on
   // that sign-off). Reset on object change (see navigation effect below).
@@ -283,7 +289,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
                 needsReview={!reviewedLocally && object.needs_review}
                 objectId={object.id}
                 version={inspection.version}
-                canMarkReviewed={!!userProfile?.can_inspect}
+                canMarkReviewed={!readOnly && !!userProfile?.can_inspect}
                 onReviewed={() => setReviewedLocally(true)}
               />
               {!object.is_active && (
@@ -294,12 +300,12 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
             </div>
             <div className="flex items-center gap-2 text-sm text-text-secondary mb-3">
               <span>Field:</span>
-              <Link
+              <DrLink
                 href={`/nirspec?view=objects&fields=${object.field}`}
                 className="inline-flex items-center hover:bg-card-hover px-2 py-1 rounded transition-colors text-text-primary"
               >
                 {object.field}
-              </Link>
+              </DrLink>
               <span>&middot;</span>
               <span>
                 {object.n_spectra === 1 ? '1 spectrum' : `${object.n_spectra} spectra`}
@@ -319,16 +325,17 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
                 numGratings={object.gratings.length}
               />
               <div className="flex gap-4">
-                <DownloadButtons spectra={allMemberSpectra} targetId={object.object_id} />
+                {!readOnly && <DownloadButtons spectra={allMemberSpectra} targetId={object.object_id} />}
                 <CopyLinkButton
                   targetId={object.object_id}
-                  url={`/nirspec/objects/${encodeURIComponent(object.object_id)}`}
+                  url={withDr(`/nirspec/objects/${encodeURIComponent(object.object_id)}`, drTag)}
                 />
               </div>
             </div>
           </div>
 
           {/* === Section 1: Spectrum Comparison === */}
+          {!readOnly && (
           <section className="mb-8">
             <div className="flex flex-wrap gap-5 items-center mb-4">
               <h2 className="text-lg font-semibold text-text-primary">
@@ -405,6 +412,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
               />
             </div>
           </section>
+          )}
 
           {/* === Section 2: Spectra Detail Cards === */}
           <section className="mb-8">
@@ -421,17 +429,21 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
           </section>
 
           {/* === Section 3: Redshift Fits === */}
-          <section className="mb-8">
-            <RedshiftFitSummary
-              spectra={allMemberSpectra}
-              redshift_auto={object.redshift_auto}
-            />
-          </section>
+          {!readOnly && (
+            <section className="mb-8">
+              <RedshiftFitSummary
+                spectra={allMemberSpectra}
+                redshift_auto={object.redshift_auto}
+              />
+            </section>
+          )}
 
           {/* === Section 3b: Emission lines (fetched in view) === */}
-          <section className="mb-8">
-            <EmissionLinesSection spectra={allMemberSpectra} />
-          </section>
+          {!readOnly && (
+            <section className="mb-8">
+              <EmissionLinesSection spectra={allMemberSpectra} />
+            </section>
+          )}
 
           {/* === Section 4: Photometry & SED === */}
           {object.has_photometry && (
@@ -461,12 +473,14 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
         </div>
       </div>
 
-      <FloatingInspectionPanel
-        objectId={object.id}
-        ra={object.ra}
-        dec={object.dec}
-        inspection={inspection}
-      />
+      {!readOnly && (
+        <FloatingInspectionPanel
+          objectId={object.id}
+          ra={object.ra}
+          dec={object.dec}
+          inspection={inspection}
+        />
+      )}
     </div>
   );
 };

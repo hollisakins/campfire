@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { fetchJson } from '@/lib/fetch-json';
+import { useDrTag } from '@/lib/dr/client';
 import type { FilterOptionsResult } from '@/app/api/filter-options/route';
 
 export type { FilterOptionsResult } from '@/app/api/filter-options/route';
@@ -13,9 +14,10 @@ export type { FilterOptionsResult } from '@/app/api/filter-options/route';
  * pass `enabled` only once auth has resolved to a user.
  */
 export function useFilterOptionsQuery(enabled: boolean = true) {
+  const dr = useDrTag();
   return useQuery<FilterOptionsResult>({
-    queryKey: ['filterOptions'],
-    queryFn: ({ signal }) => fetchJson<FilterOptionsResult>('/api/filter-options', { signal }),
+    queryKey: ['filterOptions', dr ?? 'live'],
+    queryFn: ({ signal }) => fetchJson<FilterOptionsResult>('/api/filter-options', { signal, dr }),
     staleTime: 10 * 60 * 1000,  // 10 minutes - filter options rarely change
     enabled,
   });

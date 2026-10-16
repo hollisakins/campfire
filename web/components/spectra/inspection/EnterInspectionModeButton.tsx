@@ -4,6 +4,7 @@ import React from 'react';
 import Link from 'next/link';
 import { Maximize2 } from 'lucide-react';
 import { useAuth } from '@/lib/contexts/AuthContext';
+import { useDrTag } from '@/lib/dr/client';
 
 interface EnterInspectionModeButtonProps {
   targetId: string;
@@ -12,7 +13,8 @@ interface EnterInspectionModeButtonProps {
 
 export const EnterInspectionModeButton: React.FC<EnterInspectionModeButtonProps> = ({ targetId, filterStr }) => {
   const { user, userProfile } = useAuth();
-  const canInspect = user && userProfile?.can_inspect;
+  const readOnly = useDrTag() !== null;
+  const canInspect = user && userProfile?.can_inspect && !readOnly;
 
   if (!canInspect) return null;
 

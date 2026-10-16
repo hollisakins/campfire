@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { readOnlyResponse } from '@/lib/dr/server';
 import { getRequestIdentity, getRequestPrincipal } from '@/lib/auth/identity';
 import { linkMayDownload } from '@/lib/auth/access-context';
 import { generateDownloadUrl, generateDownloadUrls } from '@/lib/r2';
@@ -28,6 +29,8 @@ async function refuseIfLinkWithoutDownloads(): Promise<NextResponse | null> {
  * Requires authentication.
  */
 export async function GET(request: NextRequest) {
+  const readOnly = await readOnlyResponse();
+  if (readOnly) return readOnly;
   const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
@@ -103,6 +106,8 @@ export async function GET(request: NextRequest) {
  * Body: { paths: string[] }
  */
 export async function POST(request: NextRequest) {
+  const readOnly = await readOnlyResponse();
+  if (readOnly) return readOnly;
   const { user, supabase } = await getRequestIdentity();
 
   if (!user) {

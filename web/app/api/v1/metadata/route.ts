@@ -62,7 +62,7 @@ export async function GET(request: NextRequest) {
     // Fetch fields, observations, and gratings from materialized view
     // This is much more efficient than querying the spectra table directly
     const { data: filterData, error: filterError } = await supabase
-      .from('mv_filter_options')
+      .from('cat_filter_options')
       .select('fields, observations, gratings')
       .single();
 

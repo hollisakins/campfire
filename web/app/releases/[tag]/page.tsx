@@ -82,14 +82,16 @@ function Stat({ value, label }: { value: string; label: string }) {
   );
 }
 
-function InstrumentCard({ icon: Icon, title, stats, foot }: {
+function InstrumentCard({ icon: Icon, title, stats, foot, href }: {
   icon: React.ElementType;
   title: string;
   stats: { value: string; label: string }[];
   foot?: string;
+  /** Browse this part of the release (P6c-1). */
+  href?: string;
 }) {
-  return (
-    <div className="rounded-card border border-border bg-card p-5">
+  const body = (
+    <>
       <div className="mb-4 flex items-center gap-2 text-text-primary">
         <Icon className="h-5 w-5 text-primary" />
         <h2 className="font-semibold">{title}</h2>
@@ -98,7 +100,13 @@ function InstrumentCard({ icon: Icon, title, stats, foot }: {
         {stats.map((s) => <Stat key={s.label} {...s} />)}
       </div>
       {foot && <div className="mt-3 text-sm text-text-tertiary">{foot}</div>}
-    </div>
+    </>
+  );
+  const cls = 'block rounded-card border border-border bg-card p-5';
+  return href ? (
+    <Link href={href} className={`${cls} transition-colors hover:bg-card-hover`}>{body}</Link>
+  ) : (
+    <div className={cls}>{body}</div>
   );
 }
 
@@ -152,6 +160,7 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
               { value: formatBytes(s.nirspec.bytes), label: 'data volume' },
             ]}
             foot={s.photometry ? `photometry: ${s.photometry.catalogs.map((c) => c.catalog).join(' · ')}` : undefined}
+            href={`/nirspec?dr=${encodeURIComponent(r.tag)}`}
           />
         )}
         {s.nircam && (
@@ -165,6 +174,9 @@ function ReleaseBody({ detail }: { detail: ReleaseDetail }) {
               { value: formatBytes(s.nircam.bytes), label: 'data volume' },
             ]}
             foot={s.nircam.fields.map((f) => f.field).join(' · ')}
+            href={s.nircam.fields.length === 1
+              ? `/nircam/${encodeURIComponent(s.nircam.fields[0].field)}?dr=${encodeURIComponent(r.tag)}`
+              : `/nircam?dr=${encodeURIComponent(r.tag)}`}
           />
         )}
       </div>

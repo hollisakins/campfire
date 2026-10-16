@@ -28,6 +28,7 @@ import { Card } from '@/components/ui/Card';
 import { TablePagination } from '@/components/ui/TablePagination';
 import { formatDistance } from '@/lib/utils/coordinate-parser';
 import { setNavCache } from '@/lib/navigation-cache';
+import { useDrTag } from '@/lib/dr/client';
 import {
   ColumnVisibilityDropdown,
   useColumnVisibility,
@@ -276,7 +277,10 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
   activeBand = null,
 }) => {
   const { user, userProfile } = useAuth();
-  const canInspect = !!(user && userProfile?.can_inspect);
+  // Release browsing (P6c-1): pins, inspection and bulk downloads are live-only.
+  const drTag = useDrTag();
+  const readOnly = drTag !== null;
+  const canInspect = !!(user && userProfile?.can_inspect) && !readOnly;
   const isSpectraMode = viewMode === 'spectra';
   const isObjectsMode = viewMode === 'objects';
 
@@ -409,20 +413,20 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
       // Only the id + route are stored (no metadata snapshot): preferences
       // are readable by all authenticated users, so cached catalog fields
       // would leak proprietary-program data past the targets/objects RLS.
-      {
+      ...(readOnly ? [] : [{
         id: 'pin',
         size: 40,
         minSize: 40,
         maxSize: 40,
         header: () => <span className="sr-only">Pin</span>,
-        cell: ({ row }) => {
+        cell: ({ row }: { row: { original: SpectrumTarget } }) => {
           const o = row.original;
           const pinId = isObjectsMode ? o.target_id : (o.parent_object_id ?? o.target_id);
           const route = isObjectsMode || o.parent_object_id ? 'objects' as const : 'targets' as const;
           return <PinButton pin={{ target_id: pinId, route }} />;
         },
         enableSorting: false,
-      },
+      } satisfies ColumnDef<SpectrumTarget>]),
       {
         id: 'rgb_thumbnail',
         size: 56,
@@ -970,7 +974,9 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
         enableSorting: false,
       } satisfies ColumnDef<SpectrumTarget>] : []),
     ],
-    [hasCoordinateSearch, currentFilterParams, isSpectraMode, isObjectsMode, activeLine, activeBand]
+    // readOnly (P6c-1) toggles the pin column; the rest were already omitted upstream
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hasCoordinateSearch, currentFilterParams, isSpectraMode, isObjectsMode, activeLine, activeBand, readOnly]
   );
 
   // Convert column visibility state to TanStack Table format.
@@ -1091,7 +1097,7 @@ export const SpectraTable: React.FC<SpectraTableProps> = ({
               Inspect
             </Link>
           )}
-          {filters && (
+          {filters && !readOnly && (
             <DownloadDropdown
               totalCount={total}
               filters={filters}

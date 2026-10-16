@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { readOnlyResponse } from '@/lib/dr/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { USERNAME_REGEX } from '@/lib/utils/username';
 
@@ -141,6 +142,8 @@ export async function GET() {
  * Update the current user's profile.
  */
 export async function PATCH(request: NextRequest) {
+  const readOnly = await readOnlyResponse();
+  if (readOnly) return readOnly;
   const { user, supabase } = await getRequestIdentity();
 
   if (!user) {
