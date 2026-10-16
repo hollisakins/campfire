@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
+import { requestDrTag } from '@/lib/dr/server';
 import { deriveSibling } from '@/lib/layout';
+import { releaseSidecarKey } from '@/lib/server/release-sidecar';
 import { streamSidecar } from '@/lib/server/sidecar-stream';
 
 // Non-finite values in the deploy-side FITS arrays are serialized as JSON
@@ -47,7 +49,7 @@ export async function GET(request: NextRequest) {
   try {
     // Verify user has access to this file
     const { data: spectrum, error: spectrumError } = await supabase
-      .from('spectra')
+      .from('cat_spectra')
       .select('id')
       .eq('fits_path', fitsPath)
       .single();
@@ -62,7 +64,13 @@ export async function GET(request: NextRequest) {
     // Derive the zfit-JSON sibling key via the shared layout contract and
     // stream it through untouched (perf T2-D2, #508) — the fallback path when
     // the delivery front is not configured; see /api/spectrum/sidecars.
-    const zfitJsonPath = deriveSibling(fitsPath, 'zfit');
+    const liveZfitPath = deriveSibling(fitsPath, 'zfit');
+    // Under a release: the archived copy, or a 404 for a member not archived yet (P6c-2).
+    const dr = await requestDrTag();
+    const zfitJsonPath = dr ? await releaseSidecarKey(supabase, dr, liveZfitPath) : liveZfitPath;
+    if (!zfitJsonPath) {
+      return NextResponse.json({ error: 'Redshift fit data not available for this spectrum' }, { status: 404 });
+    }
     // Program-scoped, cookie-authenticated: browser-cacheable for a day, never
     // shared-cacheable — Vercel's edge serves `public` responses to any caller
     // of the same URL, cookie or not (#497).

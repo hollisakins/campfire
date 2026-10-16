@@ -66,10 +66,12 @@ describe('middleware: the release header (P6c-1)', () => {
     expect(r.headers.get('x-campfire-dr')).toBe('DR-seed');
   });
 
-  it('never stamps /api/v1 (the bearer gate owns it)', () => {
-    const r = req('/api/v1/objects?dr=DR-seed');
-    const res = applyDrDecision(r);
-    expect(res?.status).toBe(307);
-    expect(r.headers.get('x-campfire-dr')).toBeNull();
+  it('leaves /api/v1 alone: no stamp, no rewrite, no redirect (the bearer gate owns it)', () => {
+    for (const [u, m] of [['/api/v1/objects?dr=DR-seed', 'GET'], ['/api/v1/objects?dr=A&dr=A', 'GET'],
+      ['/api/v1/sync/objects?dr=..%2Fx', 'GET'], ['/api/v1/deploy/presign?dr=DR-seed', 'POST']] as const) {
+      const r = req(u, {}, m);
+      expect(applyDrDecision(r), u).toBeNull();
+      expect(r.headers.get('x-campfire-dr'), u).toBeNull();
+    }
   });
 });

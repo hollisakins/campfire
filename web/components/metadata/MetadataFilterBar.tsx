@@ -2,6 +2,7 @@
 
 import React, { useMemo } from 'react';
 import { FilterChip, type FilterOption } from '@/components/ui/FilterChip';
+import { useDrTag } from '@/lib/dr/client';
 import type {
   MetadataFilters,
   MetadataTab,
@@ -43,6 +44,7 @@ export const MetadataFilterBar: React.FC<MetadataFilterBarProps> = ({
   observations,
   rightSlot,
 }) => {
+  const drTag = useDrTag();
   // Derive option lists from the data being filtered.
   const cycleOptions: FilterOption[] = useMemo(
     () =>
@@ -191,15 +193,19 @@ export const MetadataFilterBar: React.FC<MetadataFilterBarProps> = ({
         selected={filters.gratings}
         onChange={(s) => update({ gratings: s.map(String) })}
       />
-      <FilterChip
-        label="Recency"
-        options={RECENCY_OPTIONS}
-        selected={filters.recency_days === null ? [] : [filters.recency_days]}
-        onChange={(s) =>
-          update({ recency_days: s.length === 0 ? null : Number(s[0]) })
-        }
-        multiSelect={false}
-      />
+      {/* "Reduced in the last N days" is relative to now: a live notion. A
+          release is a fixed snapshot, so the chip is omitted there. */}
+      {!drTag && (
+        <FilterChip
+          label="Recency"
+          options={RECENCY_OPTIONS}
+          selected={filters.recency_days === null ? [] : [filters.recency_days]}
+          onChange={(s) =>
+            update({ recency_days: s.length === 0 ? null : Number(s[0]) })
+          }
+          multiSelect={false}
+        />
+      )}
 
       {rightSlot && <div className="ml-auto flex items-center gap-2">{rightSlot}</div>}
     </div>

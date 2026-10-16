@@ -8,7 +8,10 @@ import { NextRequest } from 'next/server';
 vi.mock('server-only', () => ({}));
 
 const USER = 'user-uuid';
-vi.mock('@/lib/api-auth', () => ({ validateAuth: async () => USER }));
+vi.mock('@/lib/api-auth', () => ({
+  authenticateApiRequest: async () => ({ userId: USER, method: 'api_key', access: { isAdmin: false, isLinkAccount: false, accessibleSlugs: ['pub'] } }),
+}));
+vi.mock('@/lib/server/bearer-release', () => ({ assertBearerReleaseAccess: async () => ({ tag: null }) }));
 vi.mock('@/lib/api-helpers', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api-helpers')>('@/lib/api-helpers');
   return {

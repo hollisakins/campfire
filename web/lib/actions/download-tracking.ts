@@ -1,7 +1,7 @@
 'use server';
 
 import { createServiceClient } from '@/lib/supabase/server';
-import { assertLiveRequest } from '@/lib/dr/server';
+import { requestDrTag } from '@/lib/dr/server';
 import { headers } from 'next/headers';
 
 export type DownloadType = 'fits_single' | 'fits_object' | 'fits_batch' | 'fits_zip' | 'csv' | 'sed_plot';
@@ -22,9 +22,14 @@ export interface TrackDownloadParams {
  */
 export async function trackDownload(params: TrackDownloadParams): Promise<void> {
   try {
-    await assertLiveRequest();
     const supabase = createServiceClient();
     const headersList = await headers();
+    // A download under a data release (P6c-2) records the release it came
+    // from, in the snapshot column (no schema change for the log).
+    const release = await requestDrTag();
+    const snapshot = release
+      ? { ...(params.filterSnapshot ?? {}), dr: release }
+      : params.filterSnapshot || null;
 
     // Extract IP and user agent from request headers
     const ipAddress = headersList.get('x-forwarded-for')?.split(',')[0]?.trim()
@@ -40,7 +45,7 @@ export async function trackDownload(params: TrackDownloadParams): Promise<void> 
         target_ids: params.targetIds || null,
         target_count: params.targetCount ?? params.targetIds?.length ?? null,
         file_count: params.fileCount ?? null,
-        filter_snapshot: params.filterSnapshot || null,
+        filter_snapshot: snapshot,
         ip_address: ipAddress,
         user_agent: userAgent,
       });

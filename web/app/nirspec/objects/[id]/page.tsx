@@ -11,11 +11,14 @@ import { ObjectNavigation } from '@/components/spectra/ObjectNavigation';
 import { UnifiedObjectPage } from '@/components/spectra/UnifiedObjectPage';
 import { PlotlyPreload } from '@/components/plot/PlotlyPreload';
 import { loadObjectHeader, loadObjectMetadata, loadObjectPhotometry } from '@/lib/server/objects';
-import { dehydrateSidecarUrls, resolveSpectrumSidecars } from '@/lib/server/spectrum-sidecars';
+import { dehydrateSidecarUrls, releaseSpectrumAvailable, resolveSpectrumSidecars } from '@/lib/server/spectrum-sidecars';
+import { resolveReleaseMembers } from '@/lib/server/dr-files';
 import { spectrum1dSources } from '@/lib/spectrum-sidecars';
 import { getAssetVersions, assetVersionFor } from '@/lib/asset-version';
 import { parseSortingFromURL } from '@/lib/utils/url-params';
 import { requestDrTag } from '@/lib/dr/server';
+import { getRequestIdentity } from '@/lib/auth/identity';
+import type { ReleaseFiles } from '@/components/spectra/release-files';
 
 interface ObjectDetailPageProps {
   params: Promise<{ id: string }>;
@@ -151,19 +154,36 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
   // the preload with the client's fetch of the same url; an as=fetch preload
   // without it is a no-cors request nothing matches.
   //
-  // Under a release (P6c-1) the files are not resolved: the archived copies
-  // come through dr_manifest in P6c-2, and the plots stay off until then.
+  // Under a release (P6c-2) the files are the release's archived copies,
+  // resolved through dr_manifest with the viewer's client: a member not
+  // archived yet has no plot and no download.
   const drTag = await requestDrTag();
-  const fitsPaths = drTag ? [] : object.member_targets.flatMap(m => m.spectra.map(s => s.fits_path));
-  const sidecars = await resolveSpectrumSidecars(fitsPaths);
-  for (const fitsPath of fitsPaths.slice(0, PRELOAD_1D_MAX)) {
-    const { front, route } = spectrum1dSources(sidecars.get(fitsPath), fitsPath);
+  const allFitsPaths = object.member_targets.flatMap(m => m.spectra.map(s => s.fits_path));
+  let releaseFiles: ReleaseFiles | null = null;
+  let sidecars;
+  if (drTag) {
+    const { supabase } = await getRequestIdentity();
+    const [resolved, fits] = await Promise.all([
+      resolveSpectrumSidecars(allFitsPaths, { supabase, tag: drTag }),
+      resolveReleaseMembers(supabase, drTag, allFitsPaths).catch(() => new Map<string, null>()),
+    ]);
+    sidecars = resolved;
+    releaseFiles = {
+      plottable: allFitsPaths.filter(p => releaseSpectrumAvailable(resolved.get(p))),
+      downloadable: allFitsPaths.filter(p => fits.get(p) != null),
+    };
+  } else {
+    sidecars = await resolveSpectrumSidecars(allFitsPaths);
+  }
+  const preloadPaths = releaseFiles ? releaseFiles.plottable : allFitsPaths;
+  for (const fitsPath of preloadPaths.slice(0, PRELOAD_1D_MAX)) {
+    const { front, route } = spectrum1dSources(sidecars.get(fitsPath), fitsPath, drTag);
     preload(front ?? route, { as: 'fetch', crossOrigin: 'anonymous' });
   }
 
   return (
     <div className="container mx-auto px-4 py-8">
-      {!drTag && <PlotlyPreload />}
+      {preloadPaths.length > 0 && <PlotlyPreload />}
 
       {/* Breadcrumbs + Navigation */}
       <div className="flex items-center justify-between mb-6">
@@ -194,8 +214,8 @@ export default async function ObjectDetailPage({ params, searchParams }: ObjectD
       {/* Header + cutout + sidebar + panel (all client-managed). The
           hydration boundary hands the resolved sidecar urls to every
           spectrum query in the tree. */}
-      <HydrationBoundary state={dehydrateSidecarUrls(sidecars)}>
-        <UnifiedObjectPage object={object} photometry={photometry} />
+      <HydrationBoundary state={dehydrateSidecarUrls(sidecars, drTag)}>
+        <UnifiedObjectPage object={object} photometry={photometry} releaseFiles={releaseFiles} />
       </HydrationBoundary>
     </div>
   );

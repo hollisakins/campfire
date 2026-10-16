@@ -25,6 +25,7 @@ import { StalenessBadge } from './StalenessBadge';
 import { useAuth } from '@/lib/contexts/AuthContext';
 import { useDrTag, DrLink } from '@/lib/dr/client';
 import { withDr } from '@/lib/dr/tag';
+import { ReleaseFilesProvider, type ReleaseFiles } from './release-files';
 
 interface UnifiedObjectPageProps {
   object: ObjectHeader;
@@ -32,6 +33,9 @@ interface UnifiedObjectPageProps {
    *  renders the header without waiting for it. Settles to null when the
    *  object has no photometry row; never rejects. */
   photometry: Promise<ObjectPhotometry | null>;
+  /** Under a release (P6c-2): which member files the release holds
+   *  archived. Null for the live catalog. */
+  releaseFiles?: ReleaseFiles | null;
 }
 
 function buildInitialVisibility(members: ObjectMemberTarget[]): Record<number, boolean> {
@@ -40,13 +44,14 @@ function buildInitialVisibility(members: ObjectMemberTarget[]): Record<number, b
   return v;
 }
 
-export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, photometry }) => {
+export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, photometry, releaseFiles = null }) => {
   const { userProfile } = useAuth();
-  // Release browsing (P6c-1): the page is read-only and its file-driven
-  // parts (plots, downloads, fits, lines) stay off until P6c-2 resolves the
-  // archived copies.
+  // Release browsing (P6c-1/2): the page is read-only; its file-driven parts
+  // show for the members whose archived copies the release holds.
   const drTag = useDrTag();
   const readOnly = drTag !== null;
+  const plottable = useMemo(() => (readOnly ? new Set(releaseFiles?.plottable ?? []) : null), [readOnly, releaseFiles]);
+  const downloadable = useMemo(() => (readOnly ? new Set(releaseFiles?.downloadable ?? []) : null), [readOnly, releaseFiles]);
   // Local override so the "Mark as reviewed" action in the StalenessBadge can
   // hide the badge without a full refetch (the server clears needs_review on
   // that sign-off). Reset on object change (see navigation effect below).
@@ -170,6 +175,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
       m.spectra
         .map((s, i) => ({ s, i }))
         .filter(({ s }) => !selectedGrating || s.grating === selectedGrating)
+        .filter(({ s }) => !plottable || plottable.has(s.fits_path))
         .map(({ s, i }) => ({
           fitsPath: s.fits_path,
           label: selectedGrating ? m.target_id : `${m.target_id} (${s.grating})`,
@@ -177,7 +183,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
           visible: spectrumVisibility[s.id] ?? true,
         }))
     ),
-    [filteredMembers, spectrumVisibility, selectedGrating, colors]
+    [filteredMembers, spectrumVisibility, selectedGrating, colors, plottable]
   );
 
   // Section 3 — flat list of all member spectra for object-level redshift fit summary.
@@ -190,6 +196,12 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
       ),
     [object.member_targets]
   );
+  // The release's archived FITS of this object (every spectrum, live).
+  const downloadableSpectra = useMemo(
+    () => (downloadable ? allMemberSpectra.filter(s => downloadable.has(s.fits_path)) : allMemberSpectra),
+    [allMemberSpectra, downloadable]
+  );
+  const anyPlottable = plottable ? plottable.size > 0 : true;
 
   // Section 6 — exclude object's own member targets from nearby search.
   const excludeTargetIds = useMemo(
@@ -243,6 +255,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
   }, [object.member_targets, spectrumVisibility, colors]);
 
   return (
+    <ReleaseFilesProvider value={releaseFiles}>
     <div>
       <div className="flex flex-col lg:flex-row gap-6 pb-24">
         {/* Cutout (+ members control panel on desktop). ONE mount: the cutout
@@ -325,7 +338,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
                 numGratings={object.gratings.length}
               />
               <div className="flex gap-4">
-                {!readOnly && <DownloadButtons spectra={allMemberSpectra} targetId={object.object_id} />}
+                {downloadableSpectra.length > 0 && <DownloadButtons spectra={downloadableSpectra} targetId={object.object_id} />}
                 <CopyLinkButton
                   targetId={object.object_id}
                   url={withDr(`/nirspec/objects/${encodeURIComponent(object.object_id)}`, drTag)}
@@ -335,7 +348,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
           </div>
 
           {/* === Section 1: Spectrum Comparison === */}
-          {!readOnly && (
+          {anyPlottable && (
           <section className="mb-8">
             <div className="flex flex-wrap gap-5 items-center mb-4">
               <h2 className="text-lg font-semibold text-text-primary">
@@ -428,22 +441,19 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
             />
           </section>
 
-          {/* === Section 3: Redshift Fits === */}
-          {!readOnly && (
-            <section className="mb-8">
-              <RedshiftFitSummary
-                spectra={allMemberSpectra}
-                redshift_auto={object.redshift_auto}
-              />
-            </section>
-          )}
+          {/* === Section 3: Redshift Fits (catalog scalars; the zfit sidecar
+              only where the row lacks them — under a release, the archived copy) === */}
+          <section className="mb-8">
+            <RedshiftFitSummary
+              spectra={allMemberSpectra}
+              redshift_auto={object.redshift_auto}
+            />
+          </section>
 
           {/* === Section 3b: Emission lines (fetched in view) === */}
-          {!readOnly && (
-            <section className="mb-8">
-              <EmissionLinesSection spectra={allMemberSpectra} />
-            </section>
-          )}
+          <section className="mb-8">
+            <EmissionLinesSection spectra={allMemberSpectra} />
+          </section>
 
           {/* === Section 4: Photometry & SED === */}
           {object.has_photometry && (
@@ -482,6 +492,7 @@ export const UnifiedObjectPage: React.FC<UnifiedObjectPageProps> = ({ object, ph
         />
       )}
     </div>
+    </ReleaseFilesProvider>
   );
 };
 

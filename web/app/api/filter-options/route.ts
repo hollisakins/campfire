@@ -1,4 +1,5 @@
 import { getRequestPrincipal } from '@/lib/auth/identity';
+import { requestDrTag } from '@/lib/dr/server';
 import type { Program } from '@/lib/types';
 
 export interface FilterOptionsResult {
@@ -46,7 +47,18 @@ export async function GET() {
 
     // Filter to the accessible set. The old form (is_public OR explicit
     // grant) was wrong for link accounts, whose scoped program is neither.
-    const accessible = new Set(access.accessibleSlugs);
+    let accessible = new Set(access.accessibleSlugs);
+    // Under a release, only the programs it holds spectra of: `programs`
+    // itself has no frozen counterpart (P6c-2).
+    if (await requestDrTag()) {
+      const { data: held, error: heldError } = await supabase.rpc('cat_program_slugs');
+      if (heldError) {
+        console.error('Error fetching release programs:', heldError);
+        return Response.json({ ...EMPTY, error: heldError.message } satisfies FilterOptionsResult, { headers: NO_STORE });
+      }
+      const inRelease = new Set<string>((held as string[] | null) ?? []);
+      accessible = new Set([...accessible].filter((s) => inRelease.has(s)));
+    }
     const accessiblePrograms = (allPrograms || []).filter((p) => accessible.has(p.slug));
     if (accessiblePrograms.length === 0) {
       return Response.json(EMPTY, { headers: NO_STORE });

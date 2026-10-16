@@ -93,3 +93,13 @@ describe('withoutDr', () => {
     expect(withoutDr('/nirspec')).toBe('/nirspec');
   });
 });
+
+describe('drRequestDecision and /api/v1', () => {
+  it('is always live there, whatever the parameter or method', () => {
+    expect(drRequestDecision('/api/v1/objects?dr=DR-seed', 'admin')).toEqual({ kind: 'live' });
+    expect(drRequestDecision('/api/v1/objects?dr=A&dr=B', 'all')).toEqual({ kind: 'live' });
+    expect(drRequestDecision('/api/v1/deploy/presign?dr=DR-seed', 'admin', 'POST')).toEqual({ kind: 'live' });
+    expect(drRequestDecision('/api/v10/x?dr=DR-seed', 'admin').kind).not.toBe('live');
+  });
+});
+

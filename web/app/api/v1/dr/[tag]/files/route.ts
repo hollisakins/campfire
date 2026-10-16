@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { rejectReleaseParam } from '@/lib/server/bearer-release';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { authenticateApiRequest } from '@/lib/api-auth';
@@ -35,6 +36,9 @@ const URL_TTL_SECONDS = 3600;
 const TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
 
 export async function GET(request: NextRequest, context: { params: Promise<{ tag: string }> }) {
+  // Live-only by contract (P6c-2): a `dr` parameter is refused, not ignored.
+  const dr400 = rejectReleaseParam(request.nextUrl.searchParams);
+  if (dr400) return dr400;
   const principal = await authenticateApiRequest(request);
   if (!principal) {
     return NextResponse.json({ error: 'Invalid or missing authentication' }, { status: 401 });

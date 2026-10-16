@@ -21,8 +21,9 @@
 -- Run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/check_dr_browse.sql
 \set ON_ERROR_STOP on
 BEGIN;
--- the readers' path of the observation overviews; the seed does not refresh it
+-- the readers' path of the observation and program overviews; the seed does not refresh them
 REFRESH MATERIALIZED VIEW public.mv_observations_overview;
+REFRESH MATERIALIZED VIEW public.mv_programs_overview;
 
 CREATE FUNCTION pg_temp.zzz_browse_as(p_uid uuid, p_tag text, p_sql text) RETURNS text
 LANGUAGE plpgsql AS $$
@@ -126,6 +127,38 @@ BEGIN
 END $$;
 ROLLBACK TO SAVEPOINT live_edit;
 
+-- 1b. nor does the programs overview (P6c-2): move one live target to another
+--     program and refresh its matview; the reader's DR-seed count for the
+--     program must still be the frozen one, the live count the moved one
+SAVEPOINT live_edit_programs;
+DO $$
+DECLARE
+  usr uuid := (SELECT id FROM auth.users WHERE email = 'user@campfire.dev');
+  prog text := (SELECT t.program_slug FROM dr_targets t WHERE t.tag = 'DR-seed' GROUP BY t.program_slug ORDER BY count(*) DESC, t.program_slug LIMIT 1);
+  other text := (SELECT p.slug FROM programs p WHERE p.slug <> prog ORDER BY p.slug LIMIT 1);
+  frozen_n bigint := (SELECT count(DISTINCT t.target_id) FROM dr_targets t WHERE t.tag = 'DR-seed' AND t.program_slug = prog);
+  live_before bigint := (SELECT count(DISTINCT t.target_id) FROM targets t WHERE t.program_slug = prog);
+  got text; live_after bigint;
+BEGIN
+  UPDATE targets SET program_slug = other
+   WHERE id = (SELECT t.id FROM targets t WHERE t.program_slug = prog ORDER BY t.id LIMIT 1);
+  REFRESH MATERIALIZED VIEW public.mv_programs_overview;
+  SELECT count(DISTINCT t.target_id) INTO live_after FROM targets t WHERE t.program_slug = prog;
+  IF live_after = live_before THEN RAISE EXCEPTION 'the live edit did not change the target count of %', prog; END IF;
+  got := pg_temp.zzz_browse_as(usr, 'DR-seed',
+    format('SELECT (SELECT r.target_count::text FROM public.get_programs_overview() r WHERE r.slug = %L)', prog));
+  IF got IS DISTINCT FROM frozen_n::text THEN
+    RAISE EXCEPTION 'get_programs_overview served live data under DR-seed for a reader: % (frozen %, live %)', got, frozen_n, live_after;
+  END IF;
+  got := pg_temp.zzz_browse_as(usr, NULL,
+    format('SELECT (SELECT r.target_count::text FROM public.get_programs_overview() r WHERE r.slug = %L)', prog));
+  IF got IS DISTINCT FROM live_after::text THEN
+    RAISE EXCEPTION 'get_programs_overview live mode did not serve the live count: % (live %)', got, live_after;
+  END IF;
+  RAISE NOTICE 'OK readers: the programs overview serves frozen counts under DR-seed, live counts live (program %)', prog;
+END $$;
+ROLLBACK TO SAVEPOINT live_edit_programs;
+
 -- 2. the sync streams refuse the header
 DO $$
 DECLARE usr uuid := (SELECT id FROM auth.users WHERE email = 'user@campfire.dev'); got text;
@@ -173,6 +206,9 @@ BEGIN
   IF NOT (nv < nu) THEN RAISE EXCEPTION 'viewer should see fewer spectra than user under DR-seed: viewer %, user %', nv, nu; END IF;
   RAISE NOTICE 'OK principals: program % private, viewer@ without its grant; admin / user / viewer scopes differ; viewer sees fewer objects and spectra', prog;
 END $$;
+-- the programs overview's live path is the matview, so it must see the flip
+-- (under a release the row comes from the live programs table)
+REFRESH MATERIALIZED VIEW public.mv_programs_overview;
 
 -- 4. provenance under a release comes from the frozen spectra, never from a
 --    later live deployment (deployments is live-only)
@@ -368,6 +404,18 @@ BEGIN
   -- with spectra on both sides)
   PERFORM pg_temp.zzz_same('observations overview', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_observations_overview(%s, false) r WHERE r.spectrum_count > 0)::text', aps),
                            ARRAY['crds_context','cfpipe_version','jwst_version','reduced_at','deployed_at','deployed_by_username','deployed_by_full_name','n_patches_since_full','last_patch_at']);
+  -- programs overview (P6c-2): live is the matview (every program; every
+  -- target counted, with or without a published spectrum), under a release
+  -- the programs with frozen targets. Compared on the caller's programs with
+  -- published spectra on both sides. By design not comparable: target_count,
+  -- fields and observations (live: every target of the program, the
+  -- n_targets difference above; release: the targets of its spectra),
+  -- n_observations (live: the program's config rows; release: the
+  -- observations it holds) and last_reduced_at (deployment vs frozen
+  -- spectrum). Identity, gratings and PIDs must agree.
+  PERFORM pg_temp.zzz_same('programs overview', format('SELECT (SELECT jsonb_agg(to_jsonb(r)) FROM public.get_programs_overview() r WHERE r.slug IN (SELECT unnest(%s)) AND COALESCE(array_length(r.gratings, 1), 0) > 0)::text', aps),
+                           ARRAY['target_count','fields','observations','n_observations','last_reduced_at']);
+  PERFORM pg_temp.zzz_same('program slugs', 'SELECT to_jsonb(public.cat_program_slugs())::text');
 END $$;
 
 -- an unpublished tag is invisible to a reader through the views too: the

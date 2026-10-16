@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { rejectReleaseParam } from '@/lib/server/bearer-release';
 import { isAdminUser } from '@/lib/api-helpers';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -59,6 +60,9 @@ const PRESIGN_EXPIRY_SECONDS = 3600; // 1 hour
  * }
  */
 export async function POST(request: NextRequest) {
+  // Live-only by contract (P6c-2): a `dr` parameter is refused, not ignored.
+  const dr400 = rejectReleaseParam(request.nextUrl.searchParams);
+  if (dr400) return dr400;
   try {
     // Authenticate
     const userId = await validateAuth(request);

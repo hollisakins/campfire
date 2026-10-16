@@ -72,6 +72,7 @@ export type DrRequestDecision =
 
 /**
  * What middleware does with a request:
+ *   - anything under `/api/v1` → live, untouched (the bearer gate owns `dr`);
  *   - flag off, or no `dr` parameter → live;
  *   - a write (`/api/*`, non-GET) with any `dr` → 409 read-only;
  *   - a path that cannot browse a release → redirect to the same URL without it;
@@ -80,6 +81,9 @@ export type DrRequestDecision =
  */
 export function drRequestDecision(url: URL | string, mode: 'off' | 'admin' | 'all', method = 'GET'): DrRequestDecision {
   const u = typeof url === 'string' ? new URL(url, 'http://local') : url;
+  // The bearer API owns its own gate and answers JSON errors itself:
+  // middleware neither stamps nor rewrites anything under /api/v1 (P6c-2).
+  if (u.pathname === '/api/v1' || u.pathname.startsWith('/api/v1/')) return { kind: 'live' };
   const all = u.searchParams.getAll(DR_PARAM);
   if (mode === 'off' || all.length === 0) return { kind: 'live' };
   // A write with any `dr` is refused outright: a 307 would be re-issued

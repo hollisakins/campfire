@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
-import { validateAuth } from '@/lib/api-auth';
+import { authenticateApiRequest } from '@/lib/api-auth';
+import { assertBearerReleaseAccess } from '@/lib/server/bearer-release';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 
 /**
@@ -12,7 +13,8 @@ import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
  * Returns observation name, program info, object/spectrum counts, and total file size.
  */
 export async function GET(request: NextRequest) {
-  const userId = await validateAuth(request);
+  const principal = await authenticateApiRequest(request);
+  const userId = principal?.userId ?? null;
 
   if (!userId) {
     return NextResponse.json(
@@ -28,7 +30,11 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ observations: [] });
     }
 
-    const supabase = createServiceClient();
+    // `dr=<tag>`: browse a data release (P6c-2), gated against the caller's
+    // own visibility before the header is forwarded.
+    const release = await assertBearerReleaseAccess(request, principal!);
+    if (release.response) return release.response;
+    const supabase = createServiceClient({ dr: release.tag });
 
     // Unpublished spectra only count toward observation stats for admins who
     // explicitly opt in. Fail-closed otherwise; no-op in B1.

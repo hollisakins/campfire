@@ -3,6 +3,7 @@ import 'server-only';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { RequestPrincipal } from '@/lib/auth/identity';
 import { createServiceClient } from '@/lib/supabase/service';
+import { listReleaseMembers } from '@/lib/server/dr-files';
 import {
   fetchLedger,
   fileVisible,
@@ -22,7 +23,7 @@ import {
  */
 
 const RELEASE_COLUMNS =
-  'tag, state, components, dr_format_version, counts, frozen_at, published_at, withdrawn_at, doi, notes, known_issues';
+  'tag, state, components, dr_format_version, counts, frozen_at, published_at, withdrawn_at, doi, notes, known_issues, page_md';
 
 /**
  * Releases visible to this client. The public pages pass `publishedOnly`
@@ -58,9 +59,16 @@ export interface ReleaseFile {
   sha256: string | null;
 }
 
+/** A figure of the release page document (dr/<tag>/page/<sha16>/<name>). */
+export interface ReleasePageAsset {
+  name: string;
+}
+
 export interface ReleaseDetail {
   release: DrReleaseRow;
   files: ReleaseFile[];
+  /** The page document's assets the viewer may fetch (component `page`, archived). */
+  pageAssets: ReleasePageAsset[];
   /** Ledger rows exist (the release was exported). */
   exported: boolean;
   /** Every ledger file is ready. */
@@ -85,11 +93,21 @@ export async function loadReleaseDetail(principal: RequestPrincipal, tag: string
   if (!release) return null;
 
   const accessible = new Set(principal.access.accessibleSlugs);
-  const ledger = await fetchLedger(createServiceClient(), tag);
+  const [ledger, pageMembers] = await Promise.all([
+    fetchLedger(createServiceClient(), tag),
+    listReleaseMembers(principal.supabase, tag, { component: 'page' }).catch(() => []),
+  ]);
   return {
     release,
+    pageAssets: pageMembers.map((m) => ({ name: pageAssetName(m.storageKey) })).filter((a) => a.name),
     files: visibleFiles(ledger, accessible, release.components),
     exported: ledger.length > 0,
     complete: ledger.length > 0 && ledger.every((r) => r.state === 'ready'),
   };
+}
+
+/** `dr/<tag>/page/<sha16>/<name>` → `<name>` (empty for any other shape). */
+export function pageAssetName(storageKey: string): string {
+  const m = /^dr\/[^/]+\/page\/[0-9a-f]{16}\/([^/]+)$/.exec(storageKey);
+  return m ? m[1] : '';
 }

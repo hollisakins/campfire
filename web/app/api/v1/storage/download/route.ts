@@ -4,6 +4,8 @@ import { authenticateStorageDownloadRequest } from '@/lib/api-auth';
 import { linkMayDownload } from '@/lib/auth/access-context';
 import { generateDownloadUrl } from '@/lib/r2';
 import { isKnownKey } from '@/lib/layout';
+import { assertBearerReleaseAccess } from '@/lib/server/bearer-release';
+import { releaseDownloadUrls, resolveReleaseMembersAs } from '@/lib/server/dr-files';
 
 // Long enough that one multi-GB mosaic on a slow link finishes before the
 // signature it started under lapses (the store checks the signature when the
@@ -74,6 +76,27 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // `dr=<tag>` (P6c-2): the release's archived copy of the key, authorized
+    // through the manifest under the caller's program scope. A link account
+    // (download token) never browses a release.
+    const release = await assertBearerReleaseAccess(request, principal);
+    if (release.response) return release.response;
+    if (release.tag) {
+      const members = await resolveReleaseMembersAs(createServiceClient(), release.tag, [key], {
+        accessible: principal.access.accessibleSlugs, isAdmin: principal.access.isAdmin,
+      });
+      const urls = await releaseDownloadUrls(members, URL_TTL_SECONDS);
+      const archived = urls.get(key);
+      if (!archived) {
+        return NextResponse.json({ error: 'Not found or not accessible' }, { status: 404 });
+      }
+      const headers = { 'Cache-Control': 'no-store' };
+      if (request.nextUrl.searchParams.get('redirect') === 'false') {
+        return NextResponse.json({ url: archived, expires_in: URL_TTL_SECONDS }, { headers });
+      }
+      return NextResponse.redirect(archived, { status: 302, headers });
+    }
+
     const supabase = createServiceClient();
     const { data: allowedRows, error } = linkScope
       ? await supabase.rpc('filter_link_storage_keys', {

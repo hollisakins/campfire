@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
-import { validateAuth } from '@/lib/api-auth';
+import { authenticateApiRequest } from '@/lib/api-auth';
+import { assertBearerReleaseAccess } from '@/lib/server/bearer-release';
 import { getAccessiblePrograms } from '@/lib/api-helpers';
 
 /**
@@ -19,7 +20,8 @@ import { getAccessiblePrograms } from '@/lib/api-helpers';
  */
 export async function GET(request: NextRequest) {
   // Validate authentication (API key or JWT)
-  const userId = await validateAuth(request);
+  const principal = await authenticateApiRequest(request);
+  const userId = principal?.userId ?? null;
 
   if (!userId) {
     return NextResponse.json(
@@ -30,10 +32,24 @@ export async function GET(request: NextRequest) {
 
   try {
     // Create Supabase client with service role
-    const supabase = createServiceClient();
+    // `dr=<tag>`: browse a data release (P6c-2), gated against the caller's
+    // own visibility before the header is forwarded.
+    const release = await assertBearerReleaseAccess(request, principal!);
+    if (release.response) return release.response;
+    const supabase = createServiceClient({ dr: release.tag });
 
-    // Get accessible programs for this user
-    const accessibleProgramSlugs = await getAccessiblePrograms(userId);
+    // Get accessible programs for this user; under a release, only those the
+    // release holds spectra of (`programs` has no frozen counterpart, P6c-2).
+    let accessibleProgramSlugs = await getAccessiblePrograms(userId);
+    if (release.tag) {
+      const { data: held, error: heldError } = await supabase.rpc('cat_program_slugs');
+      if (heldError) {
+        console.error('Error fetching release programs:', heldError);
+        return NextResponse.json({ error: 'Failed to fetch programs' }, { status: 500 });
+      }
+      const inRelease = new Set<string>((held as string[] | null) ?? []);
+      accessibleProgramSlugs = accessibleProgramSlugs.filter((s) => inRelease.has(s));
+    }
 
     if (accessibleProgramSlugs.length === 0) {
       return NextResponse.json({

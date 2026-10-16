@@ -21,6 +21,7 @@ import type { RedshiftFitData } from '@/app/api/redshift-fit/route';
 import type { LineFitData } from '@/app/api/line-fit/route';
 import {
   NO_FRONT,
+  sidecarRouteUrl,
   spectrum1dSources,
   spectrumSidecarsKey,
   spectrumJsonKey,
@@ -30,6 +31,13 @@ import {
   type SpectrumSidecarUrls,
 } from '@/lib/spectrum-sidecars';
 import { fetchJson } from '@/lib/fetch-json';
+import { useDrTag } from '@/lib/dr/client';
+
+// Under a data release (P6c-2) every fetch names the release: the resolve
+// and the streaming routes answer with the release's archived copies, and the
+// cache keys carry the tag so live and release entries never mix. `dr` is
+// null for the live catalog; the hooks read it from the DrProvider.
+type Dr = string | null | undefined;
 
 // Sidecars only change on a re-deploy, and the routes already let the browser
 // keep them for a day; 30 min is long enough for a whole inspection session.
@@ -52,14 +60,14 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
   return fallback;
 }
 
-export function fetchSidecarUrls(fitsPath: string): Promise<SpectrumSidecarUrls> {
-  return fetchJson<SpectrumSidecarUrls>(`/api/spectrum/sidecars?path=${encodeURIComponent(fitsPath)}`);
+export function fetchSidecarUrls(fitsPath: string, dr?: Dr): Promise<SpectrumSidecarUrls> {
+  return fetchJson<SpectrumSidecarUrls>(`/api/spectrum/sidecars?path=${encodeURIComponent(fitsPath)}`, { dr });
 }
 
-export function spectrumSidecarsQueryOptions(fitsPath: string) {
+export function spectrumSidecarsQueryOptions(fitsPath: string, dr?: Dr) {
   return {
-    queryKey: spectrumSidecarsKey(fitsPath),
-    queryFn: () => fetchSidecarUrls(fitsPath),
+    queryKey: spectrumSidecarsKey(fitsPath, dr),
+    queryFn: () => fetchSidecarUrls(fitsPath, dr),
     staleTime: URLS_STALE_MS,
     gcTime: URLS_STALE_MS,
     // A failed resolve degrades to the streaming routes (sidecarUrls), which
@@ -73,9 +81,9 @@ export function spectrumSidecarsQueryOptions(fitsPath: string) {
  * shared by every sidecar query of the same path. A failed resolve is not a
  * failed spectrum: it answers as "front off", and the streaming routes (which
  * run their own access check) decide. */
-async function sidecarUrls(client: QueryClient, fitsPath: string): Promise<SpectrumSidecarUrls> {
+async function sidecarUrls(client: QueryClient, fitsPath: string, dr?: Dr): Promise<SpectrumSidecarUrls> {
   try {
-    return await client.fetchQuery(spectrumSidecarsQueryOptions(fitsPath));
+    return await client.fetchQuery(spectrumSidecarsQueryOptions(fitsPath, dr));
   } catch (err) {
     console.warn('sidecar resolve failed; falling back to the streaming routes', err);
     return NO_FRONT;
@@ -108,11 +116,11 @@ async function fetchSidecar(frontUrl: string | null, routeUrl: string, fallback:
   return fetchJsonFrom(routeUrl, fallback);
 }
 
-export async function fetchSpectrumJson(client: QueryClient, fitsPath: string): Promise<SpectrumData> {
-  const urls = await sidecarUrls(client, fitsPath);
+export async function fetchSpectrumJson(client: QueryClient, fitsPath: string, dr?: Dr): Promise<SpectrumData> {
+  const urls = await sidecarUrls(client, fitsPath, dr);
   const res = await fetchSidecar(
     urls.front ? urls.spectrum : null,
-    `/api/spectrum?path=${encodeURIComponent(fitsPath)}`,
+    sidecarRouteUrl(`/api/spectrum?path=${encodeURIComponent(fitsPath)}`, dr),
     'Failed to load spectrum',
   );
   return res.json();
@@ -121,11 +129,11 @@ export async function fetchSpectrumJson(client: QueryClient, fitsPath: string): 
 /** The 1-D payload. A spectrum deployed before the sidecar existed answers
  * with its full JSON (a superset), so this never fails where the full one
  * would succeed. */
-export async function fetchSpectrum1d(client: QueryClient, fitsPath: string): Promise<SpectrumData1D> {
-  const urls = await sidecarUrls(client, fitsPath);
+export async function fetchSpectrum1d(client: QueryClient, fitsPath: string, dr?: Dr): Promise<SpectrumData1D> {
+  const urls = await sidecarUrls(client, fitsPath, dr);
   // The same url the object page preloads from its HTML head, so the
   // browser serves this fetch from the preload instead of a second request.
-  const { front, route } = spectrum1dSources(urls, fitsPath);
+  const { front, route } = spectrum1dSources(urls, fitsPath, dr);
   const res = await fetchSidecar(front, route, 'Failed to load spectrum');
   return res.json();
 }
@@ -133,8 +141,8 @@ export async function fetchSpectrum1d(client: QueryClient, fitsPath: string): Pr
 /** `null` when no fit exists for the spectrum — the resolve's definitive
  * `has_zfit: false` (no round trip), else the route's 404; throws on other
  * failures. A null front url alone is never read as absence. */
-export async function fetchRedshiftFit(client: QueryClient, fitsPath: string): Promise<RedshiftFitData | null> {
-  const urls = await sidecarUrls(client, fitsPath);
+export async function fetchRedshiftFit(client: QueryClient, fitsPath: string, dr?: Dr): Promise<RedshiftFitData | null> {
+  const urls = await sidecarUrls(client, fitsPath, dr);
   if (urls.has_zfit === false) return null;
   if (urls.front && urls.zfit) {
     try {
@@ -145,7 +153,7 @@ export async function fetchRedshiftFit(client: QueryClient, fitsPath: string): P
       console.warn('zfit front fetch failed; falling back to /api/redshift-fit', err);
     }
   }
-  const res = await fetch(`/api/redshift-fit?path=${encodeURIComponent(fitsPath)}`);
+  const res = await fetch(sidecarRouteUrl(`/api/redshift-fit?path=${encodeURIComponent(fitsPath)}`, dr));
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Failed to load redshift fit (${res.status})`);
   return res.json();
@@ -155,8 +163,8 @@ export async function fetchRedshiftFit(client: QueryClient, fitsPath: string): P
  * spectrum grid, line summary). `null` when the spectrum has no line fit —
  * the resolve's definitive `has_lines: false`, else the route's 404; throws
  * on other failures. Same contract as fetchRedshiftFit. */
-export async function fetchLineFit(client: QueryClient, fitsPath: string): Promise<LineFitData | null> {
-  const urls = await sidecarUrls(client, fitsPath);
+export async function fetchLineFit(client: QueryClient, fitsPath: string, dr?: Dr): Promise<LineFitData | null> {
+  const urls = await sidecarUrls(client, fitsPath, dr);
   if (urls.has_lines === false) return null;
   if (urls.front && urls.lines) {
     try {
@@ -167,43 +175,43 @@ export async function fetchLineFit(client: QueryClient, fitsPath: string): Promi
       console.warn('line-fit front fetch failed; falling back to /api/line-fit', err);
     }
   }
-  const res = await fetch(`/api/line-fit?path=${encodeURIComponent(fitsPath)}`);
+  const res = await fetch(sidecarRouteUrl(`/api/line-fit?path=${encodeURIComponent(fitsPath)}`, dr));
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Failed to load line fit (${res.status})`);
   return res.json();
 }
 
-export function spectrumJsonQueryOptions(client: QueryClient, fitsPath: string) {
+export function spectrumJsonQueryOptions(client: QueryClient, fitsPath: string, dr?: Dr) {
   return {
-    queryKey: spectrumJsonKey(fitsPath),
-    queryFn: () => fetchSpectrumJson(client, fitsPath),
+    queryKey: spectrumJsonKey(fitsPath, dr),
+    queryFn: () => fetchSpectrumJson(client, fitsPath, dr),
     staleTime: SIDECAR_STALE_MS,
     gcTime: SIDECAR_GC_MS,
   };
 }
 
-export function spectrum1dQueryOptions(client: QueryClient, fitsPath: string) {
+export function spectrum1dQueryOptions(client: QueryClient, fitsPath: string, dr?: Dr) {
   return {
-    queryKey: spectrum1dKey(fitsPath),
-    queryFn: () => fetchSpectrum1d(client, fitsPath),
+    queryKey: spectrum1dKey(fitsPath, dr),
+    queryFn: () => fetchSpectrum1d(client, fitsPath, dr),
     staleTime: SIDECAR_STALE_MS,
     gcTime: SIDECAR_GC_MS,
   };
 }
 
-export function redshiftFitQueryOptions(client: QueryClient, fitsPath: string) {
+export function redshiftFitQueryOptions(client: QueryClient, fitsPath: string, dr?: Dr) {
   return {
-    queryKey: redshiftFitKey(fitsPath),
-    queryFn: () => fetchRedshiftFit(client, fitsPath),
+    queryKey: redshiftFitKey(fitsPath, dr),
+    queryFn: () => fetchRedshiftFit(client, fitsPath, dr),
     staleTime: SIDECAR_STALE_MS,
     gcTime: SIDECAR_GC_MS,
   };
 }
 
-export function lineFitQueryOptions(client: QueryClient, fitsPath: string) {
+export function lineFitQueryOptions(client: QueryClient, fitsPath: string, dr?: Dr) {
   return {
-    queryKey: lineFitKey(fitsPath),
-    queryFn: () => fetchLineFit(client, fitsPath),
+    queryKey: lineFitKey(fitsPath, dr),
+    queryFn: () => fetchLineFit(client, fitsPath, dr),
     staleTime: SIDECAR_STALE_MS,
     gcTime: SIDECAR_GC_MS,
   };
@@ -220,7 +228,8 @@ export function useSpectrumCacheTrim(trigger: unknown): void {
 /** The full spectrum JSON (1-D + 2-D S/N). */
 export function useSpectrumJson(fitsPath: string, enabled = true) {
   const client = useQueryClient();
-  const query = useQuery({ ...spectrumJsonQueryOptions(client, fitsPath), enabled });
+  const dr = useDrTag();
+  const query = useQuery({ ...spectrumJsonQueryOptions(client, fitsPath, dr), enabled });
   useSpectrumCacheTrim(query.data);
   return query;
 }
@@ -230,30 +239,34 @@ export function useSpectrumJson(fitsPath: string, enabled = true) {
  * only landing that would bound the cache. */
 export function useSpectrum1d(fitsPath: string, enabled = true) {
   const client = useQueryClient();
-  const query = useQuery({ ...spectrum1dQueryOptions(client, fitsPath), enabled });
+  const dr = useDrTag();
+  const query = useQuery({ ...spectrum1dQueryOptions(client, fitsPath, dr), enabled });
   useSpectrumCacheTrim(query.data);
   return query;
 }
 
 export function useRedshiftFit(fitsPath: string, enabled = true) {
   const client = useQueryClient();
-  return useQuery({ ...redshiftFitQueryOptions(client, fitsPath), enabled });
+  const dr = useDrTag();
+  return useQuery({ ...redshiftFitQueryOptions(client, fitsPath, dr), enabled });
 }
 
 /** The emission-line fit sidecar; fetched only while `enabled` (the plot's
  * "Lines" toggle), never prefetched — most spectra have no line fit yet. */
 export function useLineFit(fitsPath: string, enabled = true) {
   const client = useQueryClient();
-  return useQuery({ ...lineFitQueryOptions(client, fitsPath), enabled });
+  const dr = useDrTag();
+  return useQuery({ ...lineFitQueryOptions(client, fitsPath, dr), enabled });
 }
 
 /** One fit query per path, in order; `enabled[i]` false skips a fetch (the
  * row already carries the scalars the caller needs). */
 export function useRedshiftFits(fitsPaths: string[], enabled?: boolean[]) {
   const client = useQueryClient();
+  const dr = useDrTag();
   return useQueries({
     queries: fitsPaths.map((p, i) => ({
-      ...redshiftFitQueryOptions(client, p),
+      ...redshiftFitQueryOptions(client, p, dr),
       enabled: enabled ? enabled[i] : true,
     })),
   });
@@ -295,8 +308,10 @@ export function trimSpectrumCache(queryClient: QueryClient): void {
     .filter(([p]) => !busy.has(p))
     .sort((a, b) => b[1] - a[1]);
   for (const [fitsPath] of idle.slice(MAX_CACHED_SPECTRA)) {
+    // Live and release entries of the path go together (prefix match on
+    // ['<kind>', path] covers both key shapes).
     for (const key of [spectrumJsonKey(fitsPath), spectrum1dKey(fitsPath), redshiftFitKey(fitsPath), lineFitKey(fitsPath), spectrumSidecarsKey(fitsPath)]) {
-      queryClient.removeQueries({ queryKey: key, exact: true });
+      queryClient.removeQueries({ queryKey: key });
     }
   }
 }
@@ -340,5 +355,6 @@ export function fullPayloadIsSeparate(urls: SpectrumSidecarUrls | null | undefin
 
 /** The resolved sidecar urls as a query (shared with every sidecar fetch). */
 export function useSpectrumSidecarUrls(fitsPath: string, enabled = true) {
-  return useQuery({ ...spectrumSidecarsQueryOptions(fitsPath), enabled });
+  const dr = useDrTag();
+  return useQuery({ ...spectrumSidecarsQueryOptions(fitsPath, dr), enabled });
 }

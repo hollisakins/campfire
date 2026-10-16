@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
+import { requestDrTag } from '@/lib/dr/server';
 import { resolveSpectrumSidecars } from '@/lib/server/spectrum-sidecars';
 
 // The response shape lives in lib/spectrum-sidecars (shared with the object
@@ -36,8 +37,10 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // cat_spectra: the live row, or the release's frozen row while one is
+    // browsed (the client carries the release header; P6c-2).
     const { data: spectrum, error } = await supabase
-      .from('spectra')
+      .from('cat_spectra')
       .select('id')
       .eq('fits_path', fitsPath)
       .single();
@@ -47,9 +50,11 @@ export async function GET(request: NextRequest) {
 
     // Front urls are stable for at least one 6 h presign window; the answer
     // may sit in the browser cache for an hour — with Vary: Cookie, since
-    // sign-out does not clear the HTTP cache (D-C).
+    // sign-out does not clear the HTTP cache (D-C). The url carries `dr`
+    // under a release, so the two modes never share a cache entry.
     const headers = { 'Cache-Control': 'private, max-age=3600', Vary: 'Cookie' };
-    const sidecars = await resolveSpectrumSidecars([fitsPath]);
+    const dr = await requestDrTag();
+    const sidecars = await resolveSpectrumSidecars([fitsPath], dr ? { supabase, tag: dr } : null);
     return NextResponse.json(sidecars.get(fitsPath), { headers });
   } catch (err) {
     console.error('Error resolving spectrum sidecars:', err);

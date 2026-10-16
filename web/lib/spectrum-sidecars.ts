@@ -26,6 +26,10 @@ export interface SpectrumSidecarUrls {
   spectrum_1d: string | null;
   zfit: string | null;
   lines: string | null;
+  /** Whether the spectrum's own (full) JSON is a registered object: under a
+   *  release, whether its archived copy exists (the plot's payload when the
+   *  1-D sidecar is absent or the front is off). Optional for older callers. */
+  has_spectrum?: boolean | null;
   has_1d: boolean | null;
   has_zfit: boolean | null;
   has_lines: boolean | null;
@@ -38,12 +42,26 @@ export const NO_FRONT: SpectrumSidecarUrls = {
 };
 
 // TanStack keys, keyed on the FITS path — what is fetched, never the viewer
-// (the QueryClient is cleared on sign-out).
-export const spectrumSidecarsKey = (fitsPath: string) => ['spectrum-sidecars', fitsPath] as const;
-export const spectrumJsonKey = (fitsPath: string) => ['spectrum-json', fitsPath] as const;
-export const spectrum1dKey = (fitsPath: string) => ['spectrum-1d', fitsPath] as const;
-export const redshiftFitKey = (fitsPath: string) => ['redshift-fit', fitsPath] as const;
-export const lineFitKey = (fitsPath: string) => ['line-fit', fitsPath] as const;
+// (the QueryClient is cleared on sign-out). Under a data release (P6c-2) the
+// release tag is part of the key: the same path resolves to the release's
+// archived copy, not the live file, so the two must never share an entry.
+type SidecarKey<P extends string> = readonly [P, string] | readonly [P, string, string];
+function keyed<P extends string>(prefix: P, fitsPath: string, dr?: string | null): SidecarKey<P> {
+  return dr ? ([prefix, fitsPath, dr] as const) : ([prefix, fitsPath] as const);
+}
+export const spectrumSidecarsKey = (fitsPath: string, dr?: string | null) => keyed('spectrum-sidecars', fitsPath, dr);
+export const spectrumJsonKey = (fitsPath: string, dr?: string | null) => keyed('spectrum-json', fitsPath, dr);
+export const spectrum1dKey = (fitsPath: string, dr?: string | null) => keyed('spectrum-1d', fitsPath, dr);
+export const redshiftFitKey = (fitsPath: string, dr?: string | null) => keyed('redshift-fit', fitsPath, dr);
+export const lineFitKey = (fitsPath: string, dr?: string | null) => keyed('line-fit', fitsPath, dr);
+
+/** `url` with `dr=<tag>` appended (no-op without a tag). Same rule as
+ * lib/fetch-json's withDrParam; duplicated here so this module stays free
+ * of client-only imports for the server render. */
+export function sidecarRouteUrl(url: string, dr?: string | null): string {
+  if (!dr) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}dr=${encodeURIComponent(dr)}`;
+}
 
 /**
  * Where the 1-D payload comes from. `front`: the front url when the front is
@@ -58,10 +76,11 @@ export const lineFitKey = (fitsPath: string) => ['line-fit', fitsPath] as const;
 export function spectrum1dSources(
   urls: SpectrumSidecarUrls | null | undefined,
   fitsPath: string,
+  dr?: string | null,
 ): { front: string | null; route: string } {
   const u = urls ?? NO_FRONT;
   return {
     front: u.front ? (u.spectrum_1d ?? u.spectrum) : null,
-    route: `/api/spectrum?path=${encodeURIComponent(fitsPath)}&include=1d`,
+    route: sidecarRouteUrl(`/api/spectrum?path=${encodeURIComponent(fitsPath)}&include=1d`, dr),
   };
 }

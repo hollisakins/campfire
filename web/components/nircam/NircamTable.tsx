@@ -35,6 +35,9 @@ interface NircamTableProps {
   quicklooks: Record<string, string>;
   /** Filters covered by a FitsGL dataset — enables the per-row map View. */
   viewableFilters: Set<string>;
+  /** Under a release (P6c-2): the live keys whose archived copies the
+   *  release holds, the only rows offered for download. Null = live (all). */
+  downloadable?: string[] | null;
   onSelectionChange?: (selected: NircamProductRow[]) => void;
 }
 
@@ -99,10 +102,12 @@ const compareTiles = (a: string | null, b: string | null): number => {
 // Per-row FITS download: authorizes + presigns the key server-side (routed by
 // product kind), then navigates the browser to the credential-free proxy URL.
 // Text-glyph action per the design (↓ FITS), not an icon button.
-const DownloadCell: React.FC<{ row: NircamProductRow }> = ({ row }) => {
+const DownloadCell: React.FC<{ row: NircamProductRow; downloadable: string[] | null }> = ({ row, downloadable }) => {
   const [busy, setBusy] = useState(false);
-  // Live files are not handed out under a release (P6c-1).
+  // Under a release only members the release holds archived are offered;
+  // the actions then hand out the archived copies (P6c-2).
   const readOnly = useDrTag() !== null;
+  const offered = !readOnly || (downloadable?.includes(row.file_path) ?? false);
 
   const handleDownload = async () => {
     if (busy) return;
@@ -128,7 +133,7 @@ const DownloadCell: React.FC<{ row: NircamProductRow }> = ({ row }) => {
     }
   };
 
-  if (readOnly) return null;
+  if (!offered) return null;
   return (
     <button
       type="button"
@@ -149,7 +154,7 @@ export const NircamTable: React.FC<NircamTableProps> = ({
   thumbnails,
   quicklooks,
   viewableFilters,
-  onSelectionChange,
+  onSelectionChange, downloadable,
 }) => {
   const [sorting, setSorting] = useState<SortingState>([
     { id: 'filter', desc: false },
@@ -366,13 +371,13 @@ export const NircamTable: React.FC<NircamTableProps> = ({
                   <span>View</span>
                 </Link>
               )}
-              <DownloadCell row={p} />
+              <DownloadCell row={p} downloadable={downloadable ?? null} />
             </div>
           );
         },
       },
     ],
-    [thumbnails, quicklooks, viewableFilters, hasNamedEpochs]
+    [thumbnails, quicklooks, viewableFilters, hasNamedEpochs, downloadable]
   );
 
   const table = useReactTable({

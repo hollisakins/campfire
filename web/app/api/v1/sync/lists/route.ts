@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { rejectReleaseParam } from '@/lib/server/bearer-release';
 import { createServiceClient } from '@/lib/supabase/service';
 import { validateAuth } from '@/lib/api-auth';
 import { isAdminUser } from '@/lib/api-helpers';
@@ -11,6 +12,9 @@ import { isAdminUser } from '@/lib/api-helpers';
  * returns a single JSONB array with member counts.
  */
 export async function GET(request: NextRequest) {
+  // Live-only by contract (P6c-2): a `dr` parameter is refused, not ignored.
+  const dr400 = rejectReleaseParam(request.nextUrl.searchParams);
+  if (dr400) return dr400;
   const userId = await validateAuth(request);
 
   if (!userId) {

@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
-import { validateAuth } from '@/lib/api-auth';
+import { authenticateApiRequest } from '@/lib/api-auth';
+import { assertBearerReleaseAccess } from '@/lib/server/bearer-release';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import { streamSidecar } from '@/lib/server/sidecar-stream';
 import { deriveSibling } from '@/lib/layout';
+import { resolveReleaseMembersAs } from '@/lib/server/dr-files';
 
 // Non-finite values in the deploy-side FITS arrays are serialized as JSON
 // null (see python/campfire/deploy/generate.py); scalars are null when the
@@ -30,10 +32,13 @@ export interface RedshiftFitData {
  * - grating: Grating type (e.g., PRISM, G395M)
  * OR
  * - path: Direct FITS path (from query results)
+ * - dr: browse a data release (P6c-2): the frozen spectrum's ARCHIVED zfit
+ *   copy, or a 404 while the member is not archived; never the live file.
  */
 export async function GET(request: NextRequest) {
   // Validate API key
-  const userId = await validateAuth(request);
+  const principal = await authenticateApiRequest(request);
+  const userId = principal?.userId ?? null;
 
   if (!userId) {
     return NextResponse.json(
@@ -43,8 +48,11 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Create Supabase client with service role
-    const supabase = createServiceClient();
+    // `dr=<tag>`: gated against the caller's own visibility before the
+    // header is forwarded.
+    const release = await assertBearerReleaseAccess(request, principal!);
+    if (release.response) return release.response;
+    const supabase = createServiceClient({ dr: release.tag });
 
     // Get accessible programs for this user
     const accessibleProgramSlugs = await getAccessiblePrograms(userId);
@@ -71,7 +79,7 @@ export async function GET(request: NextRequest) {
     if (targetId && grating && !fitsPath) {
       // First verify the target exists and user has access
       const { data: targetData, error: targetError } = await supabase
-        .from('targets')
+        .from('cat_targets')
         .select('program_slug')
         .eq('target_id', targetId)
         .single();
@@ -92,7 +100,7 @@ export async function GET(request: NextRequest) {
 
       // Look up the spectrum
       let spectrumLookup = supabase
-        .from('spectra')
+        .from('cat_spectra')
         .select('fits_path')
         .eq('target_id', targetId)
         .eq('grating', grating);
@@ -120,8 +128,8 @@ export async function GET(request: NextRequest) {
 
     // Verify user has access to this file via the spectra table
     let spectrumQuery = supabase
-      .from('spectra')
-      .select('id, target_id')
+      .from('cat_spectra')
+      .select('id, target_id, program_slug')
       .eq('fits_path', fitsPath);
     if (!isAdmin) {
       spectrumQuery = spectrumQuery.eq('deploy_status', 'published');
@@ -135,22 +143,29 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Verify access to the target's program
-    const { data: targetData } = await supabase
-      .from('targets')
-      .select('program_slug')
-      .eq('target_id', spectrum.target_id)
-      .single();
-
-    if (!targetData || !accessibleProgramSlugs.includes(targetData.program_slug)) {
+    // Verify access to the spectrum's program (the row's own scope)
+    if (!spectrum.program_slug || !accessibleProgramSlugs.includes(spectrum.program_slug)) {
       return NextResponse.json(
         { error: 'Access denied' },
         { status: 403 }
       );
     }
 
-    // Derive the zfit-JSON sibling key via the shared layout contract
-    const zfitJsonPath = deriveSibling(fitsPath, 'zfit');
+    // Derive the zfit-JSON sibling key via the shared layout contract.
+    // Under a release: the archived copy, or a 404 (P6c-2).
+    let zfitJsonPath: string | null = deriveSibling(fitsPath, 'zfit');
+    if (release.tag) {
+      const members = await resolveReleaseMembersAs(supabase, release.tag, [zfitJsonPath], {
+        accessible: accessibleProgramSlugs, isAdmin,
+      });
+      zfitJsonPath = members.get(zfitJsonPath)?.archiveKey ?? null;
+      if (!zfitJsonPath) {
+        return NextResponse.json(
+          { error: 'Redshift fit data not available for this spectrum' },
+          { status: 404 }
+        );
+      }
+    }
 
     // Stream the sidecar through untouched (perf T2-D2, #508).
     const sidecar = await streamSidecar(zfitJsonPath, 'private, max-age=86400, stale-while-revalidate=3600', 'Authorization');

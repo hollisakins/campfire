@@ -5314,8 +5314,17 @@ GRANT EXECUTE ON FUNCTION public.get_csv_export_objects TO authenticated;
 
 
 -- =============================================================================
--- get_programs_overview (reads from mv_programs_overview)
+-- get_programs_overview (reads from mv_programs_overview; under a browsed
+-- data release, the frozen rows — P6c-2)
 -- =============================================================================
+-- Live: the matview, every program (the web filters by access). Under a
+-- release (dr_browse_tag() set) the same columns are aggregated over
+-- cat_targets / cat_spectra — the frozen rows RLS shows this caller — for the
+-- programs the release holds targets of. Program metadata (programs) and the
+-- JWST PIDs (observations) are the live config rows, as in
+-- get_observations_overview; last_reduced_at is the release's newest spectrum
+-- (no deployment record is frozen). Both WHERE clauses are one-time filters,
+-- so the live call never touches the frozen tables.
 
 DROP FUNCTION IF EXISTS public.get_programs_overview();
 
@@ -5325,14 +5334,71 @@ RETURNS TABLE(
   is_public boolean, cycle integer, target_count bigint,
   gratings text[], fields text[], observations text[], jwst_pids integer[],
   n_observations bigint, last_reduced_at timestamptz
-) LANGUAGE sql STABLE AS $$
+) LANGUAGE sql STABLE
+SET search_path = public
+AS $$
   SELECT mv.slug, mv.program_name, mv.pi_name, mv.description, mv.is_public, mv.cycle,
     mv.target_count, mv.gratings, mv.fields, mv.observations, mv.jwst_pids,
     mv.n_observations, mv.last_reduced_at
-  FROM public.mv_programs_overview mv ORDER BY mv.program_name;
+  FROM public.mv_programs_overview mv
+  WHERE public.dr_browse_tag() IS NULL
+  UNION ALL
+  SELECT p.slug, p.program_name, p.pi_name, p.description, p.is_public, p.cycle,
+    st.target_count,
+    COALESCE(st.gratings, ARRAY[]::text[]),
+    COALESCE(st.fields, ARRAY[]::text[]),
+    COALESCE(st.observations, ARRAY[]::text[]),
+    COALESCE(pids.jwst_pids, ARRAY[]::integer[]),
+    COALESCE(pids.n_observations, 0)::bigint,
+    st.last_reduced_at
+  FROM public.programs p
+  JOIN (
+    SELECT t.program_slug,
+      COUNT(DISTINCT t.target_id)::bigint AS target_count,
+      ARRAY_AGG(DISTINCT s.grating ORDER BY s.grating) FILTER (WHERE s.grating IS NOT NULL) AS gratings,
+      ARRAY_AGG(DISTINCT t.field ORDER BY t.field) AS fields,
+      ARRAY_AGG(DISTINCT t.observation ORDER BY t.observation) AS observations,
+      MAX(s.reduced_at) AS last_reduced_at
+    FROM public.cat_targets t
+    LEFT JOIN public.cat_spectra s ON s.target_id = t.target_id AND s.deploy_status = 'published'
+    GROUP BY t.program_slug
+  ) st ON st.program_slug = p.slug
+  LEFT JOIN (
+    SELECT o.program_slug,
+      ARRAY_AGG(DISTINCT o.jwst_program_id ORDER BY o.jwst_program_id) AS jwst_pids,
+      COUNT(*)::bigint AS n_observations
+    FROM public.observations o
+    WHERE o.name IN (SELECT t2.observation FROM public.cat_targets t2)
+    GROUP BY o.program_slug
+  ) pids ON pids.program_slug = p.slug
+  WHERE public.dr_browse_tag() IS NOT NULL
+  ORDER BY program_name;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.get_programs_overview TO authenticated;
+
+
+-- =============================================================================
+-- cat_program_slugs (P6c-2)
+-- =============================================================================
+-- The programs with a published spectrum visible to the caller: live, or the
+-- browsed release's. `programs` itself has no frozen counterpart, so under a
+-- release the program pickers (/api/filter-options, /api/v1/metadata)
+-- intersect the viewer's accessible programs with this; the service role gets
+-- every program of the release (its caller scopes by access).
+CREATE OR REPLACE FUNCTION public.cat_program_slugs()
+RETURNS text[]
+LANGUAGE sql STABLE
+SET search_path = public
+AS $$
+  SELECT COALESCE(ARRAY(
+    SELECT DISTINCT s.program_slug FROM public.cat_spectra s
+    WHERE s.deploy_status = 'published'
+    ORDER BY s.program_slug), '{}'::text[]);
+$$;
+
+REVOKE ALL ON FUNCTION public.cat_program_slugs() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.cat_program_slugs() TO authenticated, service_role;
 
 
 -- =============================================================================

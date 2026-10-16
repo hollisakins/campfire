@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
-import { validateAuth } from '@/lib/api-auth';
 import { getAccessiblePrograms, isAdminUser } from '@/lib/api-helpers';
 import { generateDownloadUrls } from '@/lib/r2';
 import { isKnownKey } from '@/lib/layout';
+import { authenticateApiRequest } from '@/lib/api-auth';
+import { assertBearerReleaseAccess } from '@/lib/server/bearer-release';
+import { releaseDownloadUrls, resolveReleaseMembersAs } from '@/lib/server/dr-files';
 
 const MAX_KEYS = 200;
 const URL_TTL_SECONDS = 21600; // 6 hours, matches the observation manifest
@@ -23,7 +25,8 @@ const URL_TTL_SECONDS = 21600; // 6 hours, matches the observation manifest
  * the whole batch.
  */
 export async function POST(request: NextRequest) {
-  const userId = await validateAuth(request);
+  const principal = await authenticateApiRequest(request);
+  const userId = principal?.userId ?? null;
 
   if (!userId) {
     return NextResponse.json(
@@ -61,6 +64,24 @@ export async function POST(request: NextRequest) {
     const admin = await isAdminUser(userId);
 
     const supabase = createServiceClient();
+
+    // `dr=<tag>` (P6c-2): the release's archived copies, authorized through
+    // the manifest under the caller's program scope; members the release does
+    // not hold archived are omitted like unauthorized keys.
+    const release = await assertBearerReleaseAccess(request, principal!);
+    if (release.response) return release.response;
+    if (release.tag) {
+      const members = await resolveReleaseMembersAs(supabase, release.tag, requested, {
+        accessible: accessibleProgramSlugs, isAdmin: admin,
+      });
+      const byKey = await releaseDownloadUrls(members, URL_TTL_SECONDS);
+      const urls: Record<string, string> = {};
+      for (const key of requested) {
+        const u = byKey.get(key);
+        if (u) urls[key] = u;
+      }
+      return NextResponse.json({ urls });
+    }
 
     // Authorize each key against the caller's scope (admins → all active rows).
     const { data: allowedRows, error } = await supabase.rpc('filter_accessible_storage_keys', {

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
+import { requestDrTag } from '@/lib/dr/server';
 import { deriveSibling } from '@/lib/layout';
+import { releaseSidecarKey } from '@/lib/server/release-sidecar';
 import { streamSidecar } from '@/lib/server/sidecar-stream';
 
 /** The 1-D sidecar (`<stem>_spec_1d.json`, perf T2-D2 #508): everything the
@@ -62,9 +64,10 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // Verify user has access to this file
+    // Verify user has access to this file (cat_spectra: live, or the
+    // release's frozen row while one is browsed).
     const { data: spectrum, error: spectrumError } = await supabase
-      .from('spectra')
+      .from('cat_spectra')
       .select('id')
       .eq('fits_path', fitsPath)
       .single();
@@ -76,16 +79,31 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    // Under a release the bytes are the release's archived copies (P6c-2):
+    // a member not archived yet is a 404, never the live file.
+    const dr = await requestDrTag();
+    const keyFor = async (kind: 'spectrum_1d_json' | 'spectrum_json') => {
+      const live = deriveSibling(fitsPath, kind);
+      return dr ? releaseSidecarKey(supabase, dr, live) : live;
+    };
+
     if (oneD) {
-      const sidecar = await streamSidecar(deriveSibling(fitsPath, 'spectrum_1d_json'), CACHE_CONTROL);
-      if (sidecar.status === 'ok') return sidecar.response;
-      if (sidecar.status === 'error') {
-        console.error('Failed to fetch 1-D spectrum JSON:', sidecar.upstreamStatus);
+      const key1d = await keyFor('spectrum_1d_json');
+      if (key1d) {
+        const sidecar = await streamSidecar(key1d, CACHE_CONTROL);
+        if (sidecar.status === 'ok') return sidecar.response;
+        if (sidecar.status === 'error') {
+          console.error('Failed to fetch 1-D spectrum JSON:', sidecar.upstreamStatus);
+        }
       }
       // Missing (pre-#508 deploy): the full JSON is a superset.
     }
 
-    const full = await streamSidecar(deriveSibling(fitsPath, 'spectrum_json'), CACHE_CONTROL);
+    const fullKey = await keyFor('spectrum_json');
+    if (!fullKey) {
+      return NextResponse.json({ error: 'File not found or access denied' }, { status: 404 });
+    }
+    const full = await streamSidecar(fullKey, CACHE_CONTROL);
     if (full.status === 'ok') return full.response;
     console.error('Failed to fetch spectrum JSON:', full.upstreamStatus);
     return NextResponse.json(

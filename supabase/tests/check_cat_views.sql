@@ -36,7 +36,7 @@ DECLARE
     'objects_matching_observation_filter','objects_matching_line_filter','spectra_matching_line_filter',
     'object_line_snr','object_band_values','objects_matching_band_filter','get_nircam_fields',
     'get_nircam_field_summary','get_observation_manifest','get_database_overview',
-    'get_observation_stats','get_observations_overview'];
+    'get_observation_stats','get_observations_overview','get_programs_overview','cat_program_slugs'];
   live text; v text; bad text; i int; fn text; n int;
 BEGIN
   FOR i IN 1 .. array_length(pairs, 1) LOOP
