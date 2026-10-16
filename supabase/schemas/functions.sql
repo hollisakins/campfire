@@ -309,6 +309,620 @@ GRANT EXECUTE ON FUNCTION public.fitsgl_dataset_is_public(text, text[], text[], 
 -- table (LEFT JOIN) supplies display_name / center / coverage_area, and
 -- storage_objects supplies the deployed layout-plot key for the card preview.
 
+-- =============================================================================
+-- Catalog source views + the data-release browsing context (P6b-2,
+-- docs/design-data-releases-impl-plan.md §8 P6b-2, D-P6-2)
+-- =============================================================================
+-- A request may browse a data release instead of the live catalog. The
+-- PostgREST pre-request hook (dr_request_context, below) reads the
+-- X-Campfire-DR header and sets the transaction-local `campfire.dr_tag`;
+-- dr_browse_tag() reads it back. Each cat_* view returns the live table when
+-- no release is selected and the selected tag's frozen rows (P6b-1 full-row
+-- copies, same column names and types) otherwise. The branch test is a
+-- STABLE function of a setting, so the planner evaluates it once per
+-- statement (a One-Time Filter) and never scans the other branch. The views
+-- are security_invoker: the live tables' RLS applies on one side, the frozen
+-- tables' (the same predicates plus tag visibility) on the other. The
+-- read-only catalog RPCs read these views; writers, sync streams, deploy and
+-- auth helpers keep reading the live tables and ignore the setting.
+--
+-- They live in this file, before the RPCs that read them, because SQL-language
+-- functions are validated at CREATE time and views.sql is applied after
+-- functions.sql (config.toml schema_paths).
+
+CREATE OR REPLACE FUNCTION public.dr_browse_tag()
+RETURNS text
+LANGUAGE sql STABLE
+AS $$
+  SELECT NULLIF(current_setting('campfire.dr_tag', true), '');
+$$;
+
+COMMENT ON FUNCTION public.dr_browse_tag() IS 'The data release the current request browses (X-Campfire-DR, set by dr_request_context), or NULL for the live catalog. Transaction-local, so pooled connections never carry it over.';
+
+REVOKE ALL ON FUNCTION public.dr_browse_tag() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_browse_tag() TO authenticated, service_role;
+
+-- The sync streams (get_*_for_sync, get_sync_deletions,
+-- get_storage_objects_for_sync) mirror the LIVE catalog into the clients'
+-- local index; some of them call the switched helpers (object_scoped_aggregates),
+-- so under a browsed release they would mix live rows with frozen aggregates.
+-- They refuse the header instead.
+CREATE OR REPLACE FUNCTION public.dr_assert_live()
+RETURNS void
+LANGUAGE plpgsql STABLE
+AS $$
+BEGIN
+  IF public.dr_browse_tag() IS NOT NULL THEN
+    RAISE EXCEPTION USING ERRCODE = 'PT400', MESSAGE = 'sync streams are live-only (X-Campfire-DR not allowed)';
+  END IF;
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_assert_live() IS 'Raises PT400 when the request browses a data release (X-Campfire-DR). Called first by every sync stream: they mirror the live catalog only.';
+
+REVOKE ALL ON FUNCTION public.dr_assert_live() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.dr_assert_live() TO authenticated, service_role;
+
+DROP VIEW IF EXISTS public.cat_objects;
+CREATE VIEW public.cat_objects
+WITH (security_invoker = true) AS
+  SELECT id,
+         object_id,
+         field,
+         ra,
+         dec,
+         created_at,
+         n_targets,
+         n_spectra,
+         programs,
+         gratings,
+         max_snr,
+         max_exposure_time,
+         updated_at,
+         observations,
+         has_photometry,
+         photo_z,
+         photo_z_err_hi,
+         photo_z_err_lo,
+         redshift_auto,
+         redshift_inspected,
+         redshift_quality,
+         redshift,
+         last_inspected_at,
+         last_inspected_by,
+         last_data_change_at,
+         staleness_reason,
+         version,
+         is_active,
+         inspected_used_auto,
+         search_text,
+         has_published_spectrum,
+         reviewed_spectrum_ids,
+         needs_review
+  FROM public.objects
+  WHERE public.dr_browse_tag() IS NULL
+  UNION ALL
+  SELECT id,
+         object_id,
+         field,
+         ra,
+         dec,
+         created_at,
+         n_targets,
+         n_spectra,
+         programs,
+         gratings,
+         max_snr,
+         max_exposure_time,
+         updated_at,
+         observations,
+         has_photometry,
+         photo_z,
+         photo_z_err_hi,
+         photo_z_err_lo,
+         redshift_auto,
+         redshift_inspected,
+         redshift_quality,
+         redshift,
+         last_inspected_at,
+         last_inspected_by,
+         last_data_change_at,
+         staleness_reason,
+         version,
+         is_active,
+         inspected_used_auto,
+         search_text,
+         has_published_spectrum,
+         reviewed_spectrum_ids,
+         needs_review
+  FROM public.dr_objects
+  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
+  -- live request never scans the frozen table (tag = f() alone would)
+  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+
+COMMENT ON VIEW public.cat_objects IS 'Catalog source view: objects for the live catalog, dr_objects rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_objects FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_objects TO authenticated, service_role;
+
+DROP VIEW IF EXISTS public.cat_targets;
+CREATE VIEW public.cat_targets
+WITH (security_invoker = true) AS
+  SELECT id,
+         target_id,
+         field,
+         ra,
+         dec,
+         redshift_auto,
+         redshift_quality,
+         spectral_features,
+         dq_flags,
+         created_at,
+         updated_at,
+         redshift_inspected,
+         last_inspected_at,
+         last_inspected_by,
+         max_snr,
+         redshift,
+         max_exposure_time,
+         program_slug,
+         observation,
+         object_id,
+         has_published_spectrum
+  FROM public.targets
+  WHERE public.dr_browse_tag() IS NULL
+  UNION ALL
+  SELECT id,
+         target_id,
+         field,
+         ra,
+         dec,
+         redshift_auto,
+         redshift_quality,
+         spectral_features,
+         dq_flags,
+         created_at,
+         updated_at,
+         redshift_inspected,
+         last_inspected_at,
+         last_inspected_by,
+         max_snr,
+         redshift,
+         max_exposure_time,
+         program_slug,
+         observation,
+         object_id,
+         has_published_spectrum
+  FROM public.dr_targets
+  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
+  -- live request never scans the frozen table (tag = f() alone would)
+  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+
+COMMENT ON VIEW public.cat_targets IS 'Catalog source view: targets for the live catalog, dr_targets rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_targets FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_targets TO authenticated, service_role;
+
+DROP VIEW IF EXISTS public.cat_spectra;
+CREATE VIEW public.cat_spectra
+WITH (security_invoker = true) AS
+  SELECT id,
+         grating,
+         fits_path,
+         signal_to_noise,
+         created_at,
+         target_id,
+         thumbnail_svg_fnu,
+         thumbnail_svg_flambda,
+         file_hash,
+         file_size,
+         exposure_time,
+         crds_context,
+         jwst_version,
+         cfpipe_version,
+         date_obs,
+         dq_flags,
+         redshift_auto,
+         spectrum_id,
+         updated_at,
+         search_text,
+         reduced_at,
+         deploy_status,
+         program_slug,
+         observation,
+         chi2_min,
+         confidence,
+         science_hash
+  FROM public.spectra
+  WHERE public.dr_browse_tag() IS NULL
+  UNION ALL
+  SELECT id,
+         grating,
+         fits_path,
+         signal_to_noise,
+         created_at,
+         target_id,
+         thumbnail_svg_fnu,
+         thumbnail_svg_flambda,
+         file_hash,
+         file_size,
+         exposure_time,
+         crds_context,
+         jwst_version,
+         cfpipe_version,
+         date_obs,
+         dq_flags,
+         redshift_auto,
+         spectrum_id,
+         updated_at,
+         search_text,
+         reduced_at,
+         deploy_status,
+         program_slug,
+         observation,
+         chi2_min,
+         confidence,
+         science_hash
+  FROM public.dr_spectra
+  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
+  -- live request never scans the frozen table (tag = f() alone would)
+  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+
+COMMENT ON VIEW public.cat_spectra IS 'Catalog source view: spectra for the live catalog, dr_spectra rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_spectra FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_spectra TO authenticated, service_role;
+
+DROP VIEW IF EXISTS public.cat_line_fits;
+CREATE VIEW public.cat_line_fits
+WITH (security_invoker = true) AS
+  SELECT spectrum_id,
+         target_id,
+         grating,
+         program_slug,
+         observation,
+         z_used,
+         z_source,
+         z_quality,
+         object_id,
+         object_version,
+         z_fit,
+         z_fit_err,
+         dv,
+         dv_err,
+         sigma_v,
+         sigma_v_err,
+         kin_source,
+         n_lines,
+         n_detected,
+         n_broad,
+         chi2,
+         dof,
+         lines,
+         fit_version,
+         cfpipe_version,
+         f_lsf,
+         spectrum_hash,
+         fitted_at,
+         created_at,
+         updated_at,
+         spectrum_science_hash
+  FROM public.spectrum_line_fits
+  WHERE public.dr_browse_tag() IS NULL
+  UNION ALL
+  SELECT spectrum_id,
+         target_id,
+         grating,
+         program_slug,
+         observation,
+         z_used,
+         z_source,
+         z_quality,
+         object_id,
+         object_version,
+         z_fit,
+         z_fit_err,
+         dv,
+         dv_err,
+         sigma_v,
+         sigma_v_err,
+         kin_source,
+         n_lines,
+         n_detected,
+         n_broad,
+         chi2,
+         dof,
+         lines,
+         fit_version,
+         cfpipe_version,
+         f_lsf,
+         spectrum_hash,
+         fitted_at,
+         created_at,
+         updated_at,
+         spectrum_science_hash
+  FROM public.dr_line_fits
+  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
+  -- live request never scans the frozen table (tag = f() alone would)
+  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+
+COMMENT ON VIEW public.cat_line_fits IS 'Catalog source view: spectrum_line_fits for the live catalog, dr_line_fits rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_line_fits FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_line_fits TO authenticated, service_role;
+
+DROP VIEW IF EXISTS public.cat_spectrum_lines;
+CREATE VIEW public.cat_spectrum_lines
+WITH (security_invoker = true) AS
+  SELECT spectrum_id,
+         line,
+         component,
+         wave_rest,
+         flux,
+         flux_err,
+         snr,
+         ew_rest,
+         ew_rest_err,
+         flags,
+         blend_into
+  FROM public.spectrum_lines
+  WHERE public.dr_browse_tag() IS NULL
+  UNION ALL
+  SELECT spectrum_id,
+         line,
+         component,
+         wave_rest,
+         flux,
+         flux_err,
+         snr,
+         ew_rest,
+         ew_rest_err,
+         flags,
+         blend_into
+  FROM public.dr_spectrum_lines
+  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
+  -- live request never scans the frozen table (tag = f() alone would)
+  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+
+COMMENT ON VIEW public.cat_spectrum_lines IS 'Catalog source view: spectrum_lines for the live catalog, dr_spectrum_lines rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_spectrum_lines FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_spectrum_lines TO authenticated, service_role;
+
+DROP VIEW IF EXISTS public.cat_photometry;
+CREATE VIEW public.cat_photometry
+WITH (security_invoker = true) AS
+  SELECT id,
+         object_id,
+         field,
+         ra,
+         dec,
+         catalog_name,
+         catalog_id,
+         match_distance_arcsec,
+         photometry,
+         photo_z,
+         photo_z_err_lo,
+         photo_z_err_hi,
+         has_pz,
+         created_at,
+         updated_at
+  FROM public.object_photometry
+  WHERE public.dr_browse_tag() IS NULL
+  UNION ALL
+  SELECT id,
+         object_id,
+         field,
+         ra,
+         dec,
+         catalog_name,
+         catalog_id,
+         match_distance_arcsec,
+         photometry,
+         photo_z,
+         photo_z_err_lo,
+         photo_z_err_hi,
+         has_pz,
+         created_at,
+         updated_at
+  FROM public.dr_photometry
+  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
+  -- live request never scans the frozen table (tag = f() alone would)
+  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+
+COMMENT ON VIEW public.cat_photometry IS 'Catalog source view: object_photometry for the live catalog, dr_photometry rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_photometry FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_photometry TO authenticated, service_role;
+
+DROP VIEW IF EXISTS public.cat_photometry_bands;
+CREATE VIEW public.cat_photometry_bands
+WITH (security_invoker = true) AS
+  SELECT photometry_id,
+         band,
+         flux,
+         flux_err,
+         wav,
+         snr,
+         mag
+  FROM public.object_photometry_bands
+  WHERE public.dr_browse_tag() IS NULL
+  UNION ALL
+  SELECT photometry_id,
+         band,
+         flux,
+         flux_err,
+         wav,
+         snr,
+         mag
+  FROM public.dr_photometry_bands
+  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
+  -- live request never scans the frozen table (tag = f() alone would)
+  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+
+COMMENT ON VIEW public.cat_photometry_bands IS 'Catalog source view: object_photometry_bands for the live catalog, dr_photometry_bands rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_photometry_bands FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_photometry_bands TO authenticated, service_role;
+
+DROP VIEW IF EXISTS public.cat_nircam_images;
+CREATE VIEW public.cat_nircam_images
+WITH (security_invoker = true) AS
+  SELECT id,
+         field,
+         tile,
+         filter,
+         pixel_scale,
+         extension,
+         file_path,
+         created_at,
+         file_size,
+         deploy_status,
+         deployment_id,
+         epoch
+  FROM public.nircam_images
+  WHERE public.dr_browse_tag() IS NULL
+  UNION ALL
+  SELECT id,
+         field,
+         tile,
+         filter,
+         pixel_scale,
+         extension,
+         file_path,
+         created_at,
+         file_size,
+         deploy_status,
+         deployment_id,
+         epoch
+  FROM public.dr_nircam_images
+  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
+  -- live request never scans the frozen table (tag = f() alone would)
+  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+
+COMMENT ON VIEW public.cat_nircam_images IS 'Catalog source view: nircam_images for the live catalog, dr_nircam_images rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_nircam_images FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_nircam_images TO authenticated, service_role;
+
+DROP VIEW IF EXISTS public.cat_fields;
+CREATE VIEW public.cat_fields
+WITH (security_invoker = true) AS
+  SELECT name,
+         display_name,
+         filters,
+         tiles,
+         fiducial_tiles,
+         epochs,
+         programs,
+         jwst_program_ids,
+         file_globs,
+         center_ra,
+         center_dec,
+         config,
+         coverage_area_arcmin2,
+         coverage_area_deg2,
+         latest_deployment_id,
+         created_at,
+         expmap_pixel_scale_arcsec,
+         config_hash,
+         config_updated_at,
+         retired_at
+  FROM public.fields
+  WHERE public.dr_browse_tag() IS NULL
+  UNION ALL
+  SELECT name,
+         display_name,
+         filters,
+         tiles,
+         fiducial_tiles,
+         epochs,
+         programs,
+         jwst_program_ids,
+         file_globs,
+         center_ra,
+         center_dec,
+         config,
+         coverage_area_arcmin2,
+         coverage_area_deg2,
+         latest_deployment_id,
+         created_at,
+         expmap_pixel_scale_arcsec,
+         config_hash,
+         config_updated_at,
+         retired_at
+  FROM public.dr_fields
+  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
+  -- live request never scans the frozen table (tag = f() alone would)
+  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+
+COMMENT ON VIEW public.cat_fields IS 'Catalog source view: fields for the live catalog, dr_fields rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_fields FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_fields TO authenticated, service_role;
+
+-- the dropdown options: the live matview or the release's frozen row
+DROP VIEW IF EXISTS public.cat_filter_options;
+CREATE VIEW public.cat_filter_options
+WITH (security_invoker = true) AS
+  SELECT id, fields, observations, gratings, photometry_bands
+  FROM public.mv_filter_options
+  WHERE public.dr_browse_tag() IS NULL
+  UNION ALL
+  SELECT id, fields, observations, gratings, photometry_bands
+  FROM public.dr_filter_options
+  -- the pseudo-constant test first: it becomes a One-Time Filter, so the
+  -- live request never scans the frozen table (tag = f() alone would)
+  WHERE public.dr_browse_tag() IS NOT NULL AND tag = public.dr_browse_tag();
+
+COMMENT ON VIEW public.cat_filter_options IS 'Catalog source view: mv_filter_options for the live catalog, the browsed release''s dr_filter_options row otherwise.';
+REVOKE ALL ON TABLE public.cat_filter_options FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_filter_options TO authenticated, service_role;
+
+-- ---------------------------------------------------------------------------
+-- dr_request_context: the PostgREST pre-request hook (pgrst.db_pre_request on
+-- the authenticator role, registered by a hand-authored migration; plain
+-- PostgREST, so a self-hosted stack honours it the same way). Runs once per
+-- Data API request as the request role, after the JWT claims and headers are
+-- set. Without the X-Campfire-DR header it does nothing. With it, the tag
+-- must look like a tag and be visible to the caller (dr_visible_tags:
+-- published for readers, every state for admins; the service role may browse
+-- any existing tag), otherwise the request fails with PT404; then the tag is
+-- set transaction-locally for the cat_* views.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.dr_request_context()
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_tag text;
+  v_ok boolean;
+BEGIN
+  v_tag := NULLIF(current_setting('request.headers', true), '')::json ->> 'x-campfire-dr';
+  IF v_tag IS NULL OR v_tag = '' THEN
+    RETURN;
+  END IF;
+  IF v_tag !~ '^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$' THEN
+    RAISE EXCEPTION USING ERRCODE = 'PT404', MESSAGE = 'unknown data release';
+  END IF;
+  IF COALESCE(NULLIF(current_setting('request.jwt.claims', true), '')::json ->> 'role', '') = 'service_role' THEN
+    -- the service role (the /api/v1 routes, scoped by p_program_slugs) may
+    -- browse any release that has frozen rows: not a draft, a running freeze
+    -- or a failed one
+    SELECT EXISTS (SELECT 1 FROM dr_releases r WHERE r.tag = v_tag
+                     AND r.state NOT IN ('draft', 'freezing', 'failed')) INTO v_ok;
+  ELSIF (SELECT public.is_link_account()) THEN
+    -- share links never browse releases (the frozen policies exclude them;
+    -- refusing here beats an empty catalog answered with 200s)
+    v_ok := false;
+  ELSE
+    v_ok := v_tag = ANY (public.dr_visible_tags());
+  END IF;
+  IF NOT v_ok THEN
+    RAISE EXCEPTION USING ERRCODE = 'PT404', MESSAGE = 'unknown data release';
+  END IF;
+  PERFORM set_config('campfire.dr_tag', v_tag, true);
+END;
+$$;
+
+COMMENT ON FUNCTION public.dr_request_context() IS 'PostgREST pre-request hook: X-Campfire-DR selects the data release the request browses, stored transaction-locally in campfire.dr_tag for the cat_* views. No header, no effect. Header name case-insensitive (PostgREST lower-cases request.headers), tag case-sensitive; duplicate headers fail closed (the merged value matches no tag). Readers: published tags only; admins: every state; link accounts: refused; anon: a published tag passes the hook but every grant denies; service role: any release past its freeze (not draft / freezing / failed). Anything else is PT404.';
+
+REVOKE ALL ON FUNCTION public.dr_request_context() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.dr_request_context() TO authenticator, anon, authenticated, service_role;
+
+
 -- Landing grid: one row per field the caller can see any mosaic of.
 CREATE OR REPLACE FUNCTION public.get_nircam_fields()
 RETURNS TABLE(
@@ -340,13 +954,24 @@ AS $$
     COUNT(*)::bigint                    AS n_files,
     COALESCE(SUM(ni.file_size), 0)::bigint AS total_bytes,
     MAX(ni.created_at)                  AS last_updated,
-    (SELECT so.storage_key FROM storage_objects so
-       WHERE so.product_type = 'nircam_layout'
-         AND so.field = ni.field
-         AND so.status = 'active'
-       LIMIT 1)                         AS layout_key
-  FROM nircam_images ni
-  LEFT JOIN fields f ON f.name = ni.field
+    -- the layout plot: live from the registry; under a browsed release
+    -- (P6b-2) from the release's manifest (archived copy when stamped; NULL
+    -- until the freeze lists field products, P6b-3), never the live key
+    CASE WHEN public.dr_browse_tag() IS NULL THEN
+      (SELECT so.storage_key FROM storage_objects so
+         WHERE so.product_type = 'nircam_layout'
+           AND so.field = ni.field
+           AND so.status = 'active'
+         LIMIT 1)
+    ELSE
+      (SELECT COALESCE(m.archive_key, m.storage_key) FROM public.dr_manifest m
+         WHERE m.tag = public.dr_browse_tag()
+           AND m.component = 'nircam/' || ni.field
+           AND m.product_type = 'nircam_layout'
+         ORDER BY m.storage_key LIMIT 1)
+    END                                 AS layout_key
+  FROM public.cat_nircam_images ni
+  LEFT JOIN public.cat_fields f ON f.name = ni.field
   GROUP BY ni.field, f.display_name, f.center_ra, f.center_dec,
            f.coverage_area_arcmin2, f.coverage_area_deg2
   ORDER BY ni.field;
@@ -392,13 +1017,21 @@ AS $$
     COUNT(*)::bigint                       AS n_files,
     COALESCE(SUM(ni.file_size), 0)::bigint AS total_bytes,
     MAX(ni.created_at)                     AS last_updated,
-    (SELECT so.storage_key FROM storage_objects so
-       WHERE so.product_type = 'nircam_layout'
-         AND so.field = ni.field
-         AND so.status = 'active'
-       LIMIT 1)                            AS layout_key
-  FROM nircam_images ni
-  LEFT JOIN fields f ON f.name = ni.field
+    CASE WHEN public.dr_browse_tag() IS NULL THEN
+      (SELECT so.storage_key FROM storage_objects so
+         WHERE so.product_type = 'nircam_layout'
+           AND so.field = ni.field
+           AND so.status = 'active'
+         LIMIT 1)
+    ELSE
+      (SELECT COALESCE(m.archive_key, m.storage_key) FROM public.dr_manifest m
+         WHERE m.tag = public.dr_browse_tag()
+           AND m.component = 'nircam/' || ni.field
+           AND m.product_type = 'nircam_layout'
+         ORDER BY m.storage_key LIMIT 1)
+    END                                    AS layout_key
+  FROM public.cat_nircam_images ni
+  LEFT JOIN public.cat_fields f ON f.name = ni.field
   WHERE ni.field = p_field
   GROUP BY ni.field, f.display_name, f.center_ra, f.center_dec,
            f.coverage_area_arcmin2, f.coverage_area_deg2;
@@ -506,27 +1139,27 @@ AS $$
   WITH stored AS MATERIALIZED (
     SELECT o.programs, o.gratings, o.observations,
            o.n_targets, o.n_spectra, o.max_snr, o.max_exposure_time
-    FROM objects o
+    FROM public.cat_objects o
     WHERE o.id = p_object_id
       AND NOT p_include_unpublished
       AND o.programs <@ p_program_slugs
       AND NOT EXISTS (
         SELECT 1
-        FROM targets t
-        JOIN spectra s ON s.target_id = t.target_id
+        FROM public.cat_targets t
+        JOIN public.cat_spectra s ON s.target_id = t.target_id
         WHERE t.object_id = p_object_id
           AND s.deploy_status <> 'published'
       )
       AND o.n_spectra = (
         SELECT COUNT(*)::integer
-        FROM targets t
-        JOIN spectra s ON s.target_id = t.target_id
+        FROM public.cat_targets t
+        JOIN public.cat_spectra s ON s.target_id = t.target_id
         WHERE t.object_id = p_object_id
       )
   ),
   m AS (
     SELECT t.target_id, t.program_slug, t.observation
-    FROM targets t
+    FROM public.cat_targets t
     WHERE t.object_id = p_object_id
       AND t.program_slug = ANY(p_program_slugs)
       -- B1: only count targets that contribute a published spectrum so
@@ -535,7 +1168,7 @@ AS $$
   ),
   sp AS (
     SELECT s.grating, s.signal_to_noise, s.exposure_time
-    FROM spectra s
+    FROM public.cat_spectra s
     WHERE s.target_id IN (SELECT target_id FROM m)
       AND (p_include_unpublished OR s.deploy_status = 'published')
   )
@@ -615,8 +1248,8 @@ BEGIN
   IF p_gratings_mode = 'all' THEN
     RETURN QUERY
     SELECT t.object_id
-    FROM targets t
-    JOIN spectra s ON s.target_id = t.target_id
+    FROM public.cat_targets t
+    JOIN public.cat_spectra s ON s.target_id = t.target_id
     WHERE t.object_id IS NOT NULL
       AND t.program_slug = ANY(p_program_slugs)
       AND (p_include_unpublished OR s.deploy_status = 'published')
@@ -627,8 +1260,8 @@ BEGIN
     -- 'any' and 'none' need the same set (callers negate for 'none').
     RETURN QUERY
     SELECT DISTINCT t.object_id
-    FROM targets t
-    JOIN spectra s ON s.target_id = t.target_id
+    FROM public.cat_targets t
+    JOIN public.cat_spectra s ON s.target_id = t.target_id
     WHERE t.object_id IS NOT NULL
       AND t.program_slug = ANY(p_program_slugs)
       AND (p_include_unpublished OR s.deploy_status = 'published')
@@ -734,11 +1367,11 @@ RETURNS SETOF INTEGER
 LANGUAGE sql STABLE
 AS $$
   SELECT t.object_id
-  FROM public.spectrum_lines l
-  JOIN public.spectrum_line_fits f ON f.spectrum_id = l.spectrum_id
-  JOIN public.spectra s ON s.id = l.spectrum_id
-  JOIN public.targets t ON t.target_id = s.target_id
-  JOIN public.objects o ON o.id = t.object_id
+  FROM public.cat_spectrum_lines l
+  JOIN public.cat_line_fits f ON f.spectrum_id = l.spectrum_id
+  JOIN public.cat_spectra s ON s.id = l.spectrum_id
+  JOIN public.cat_targets t ON t.target_id = s.target_id
+  JOIN public.cat_objects o ON o.id = t.object_id
   WHERE l.line = p_line
     AND l.snr IS NOT NULL
     AND f.program_slug = ANY(p_program_slugs)
@@ -769,11 +1402,11 @@ RETURNS SETOF INTEGER
 LANGUAGE sql STABLE
 AS $$
   SELECT l.spectrum_id
-  FROM public.spectrum_lines l
-  JOIN public.spectrum_line_fits f ON f.spectrum_id = l.spectrum_id
-  JOIN public.spectra s ON s.id = l.spectrum_id
-  LEFT JOIN public.targets t ON t.target_id = s.target_id
-  LEFT JOIN public.objects o ON o.id = t.object_id
+  FROM public.cat_spectrum_lines l
+  JOIN public.cat_line_fits f ON f.spectrum_id = l.spectrum_id
+  JOIN public.cat_spectra s ON s.id = l.spectrum_id
+  LEFT JOIN public.cat_targets t ON t.target_id = s.target_id
+  LEFT JOIN public.cat_objects o ON o.id = t.object_id
   WHERE l.line = p_line
     AND l.snr IS NOT NULL
     AND (p_snr_min IS NULL OR l.snr >= p_snr_min)
@@ -804,11 +1437,11 @@ RETURNS DOUBLE PRECISION
 LANGUAGE sql STABLE
 AS $$
   SELECT max(l.snr)
-  FROM public.targets t
-  JOIN public.spectra s ON s.target_id = t.target_id
-  JOIN public.spectrum_lines l ON l.spectrum_id = s.id AND l.line = p_line
-  JOIN public.spectrum_line_fits f ON f.spectrum_id = s.id
-  JOIN public.objects o ON o.id = t.object_id
+  FROM public.cat_targets t
+  JOIN public.cat_spectra s ON s.target_id = t.target_id
+  JOIN public.cat_spectrum_lines l ON l.spectrum_id = s.id AND l.line = p_line
+  JOIN public.cat_line_fits f ON f.spectrum_id = s.id
+  JOIN public.cat_objects o ON o.id = t.object_id
   WHERE t.object_id = p_object_id
     AND f.program_slug = ANY(p_program_slugs)
     AND (p_include_unpublished OR s.deploy_status = 'published')
@@ -910,9 +1543,9 @@ SET search_path = public
 ROWS 20000
 AS $$
   SELECT p.object_id, min(b.mag), max(b.snr)
-  FROM public.object_photometry_bands b
-  JOIN public.object_photometry p ON p.id = b.photometry_id
-  JOIN public.objects o ON o.id = p.object_id
+  FROM public.cat_photometry_bands b
+  JOIN public.cat_photometry p ON p.id = b.photometry_id
+  JOIN public.cat_objects o ON o.id = p.object_id
   WHERE p_band IS NOT NULL
     AND b.band = p_band
     -- Gate 1: the caller's access-checked scope (what the RPCs apply themselves).
@@ -928,6 +1561,11 @@ AS $$
            OR (SELECT public.link_sees_drafts()))
       AND ((SELECT NOT public.is_link_account())
            OR o.observations && ARRAY[(SELECT public.link_observation())]::text[])
+      -- (P6b-2) the frozen policies' extra conjuncts when a release is
+      -- browsed: no link accounts, and the tag visible to the caller
+      AND (public.dr_browse_tag() IS NULL
+           OR ((SELECT NOT public.is_link_account())
+               AND public.dr_browse_tag() = ANY ((SELECT public.dr_visible_tags())::text[])))
     ))
   GROUP BY p.object_id
   HAVING (p_mag_min IS NULL OR min(b.mag) >= p_mag_min)
@@ -1017,7 +1655,7 @@ AS $$
 BEGIN
   RETURN QUERY
   SELECT DISTINCT t.object_id
-  FROM targets t
+  FROM public.cat_targets t
   WHERE t.object_id IS NOT NULL
     AND t.program_slug = ANY(p_program_slugs)
     AND (p_include_unpublished OR t.has_published_spectrum)
@@ -1248,6 +1886,7 @@ SET plan_cache_mode = 'force_custom_plan'
 SET statement_timeout = '120s'
 AS $$
 BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
   RETURN QUERY
   -- matched is MATERIALIZED so the three aggregate CTEs below each see the
   -- same ~p_limit-row set without re-evaluating the WHERE/ORDER/LIMIT.
@@ -1560,6 +2199,7 @@ RETURNS TABLE(stream TEXT, row_ids BIGINT[])
 LANGUAGE sql STABLE
 SET search_path = public, pg_catalog
 AS $$
+  SELECT public.dr_assert_live();  -- live-only (P6b-2)
   SELECT d.stream, array_agg(DISTINCT d.row_id ORDER BY d.row_id)
   FROM public.sync_deletions d
   WHERE d.deleted_at > p_since
@@ -1614,6 +2254,7 @@ SET plan_cache_mode = 'force_custom_plan'
 SET statement_timeout = '120s'
 AS $$
 BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
   RETURN QUERY
   WITH matched AS MATERIALIZED (
     SELECT s.id, s.spectrum_id, s.target_id, o.object_id AS object_id,
@@ -1791,6 +2432,7 @@ SET plan_cache_mode = 'force_custom_plan'
 SET statement_timeout = '120s'
 AS $$
 BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
   RETURN QUERY
   WITH matched AS (
     SELECT op.id, o.object_id, op.field, op.catalog_name, op.catalog_id,
@@ -1898,6 +2540,7 @@ SET plan_cache_mode = 'force_custom_plan'
 SET statement_timeout = '120s'
 AS $$
 BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
   RETURN QUERY
   WITH matched AS (
     SELECT f.spectrum_id, f.target_id, f.grating, f.program_slug, f.observation,
@@ -2022,6 +2665,7 @@ RETURNS JSONB
 LANGUAGE plpgsql STABLE
 AS $$
 BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
   RETURN COALESCE(
     (SELECT jsonb_agg(jsonb_build_object(
       'id', ol.id,
@@ -2301,7 +2945,7 @@ BEGIN
       s.file_size,
       -- the spectrum's S/N in the filtered line (sort key + 'Line S/N' column)
       CASE WHEN p_line IS NOT NULL THEN
-        (SELECT __l.snr FROM public.spectrum_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
+        (SELECT __l.snr FROM public.cat_spectrum_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
       END AS line_snr,
       -- the parent object's magnitude and S/N in the filtered band (sort keys
       -- + 'Mag' / 'Band S/N' columns). Object-level: photometry belongs to the
@@ -2317,9 +2961,9 @@ BEGIN
           )))
         ELSE NULL
       END AS distance
-    FROM targets t
-    JOIN spectra s ON s.target_id = t.target_id
-    LEFT JOIN objects o ON o.id = t.object_id
+    FROM public.cat_targets t
+    JOIN public.cat_spectra s ON s.target_id = t.target_id
+    LEFT JOIN public.cat_objects o ON o.id = t.object_id
     -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
     LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = t.object_id
     WHERE
@@ -2356,7 +3000,7 @@ BEGIN
             SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
         )))
       )
-      AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
+      AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.cat_spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -2540,7 +3184,7 @@ BEGIN
   LEFT JOIN programs pr ON pr.slug = r.program_slug
   -- Thumbnails only for the page, only when asked (constant-false join
   -- condition otherwise, which the planner drops).
-  LEFT JOIN spectra sth ON p_include_thumbnails AND sth.id = r.spectrum_pk
+  LEFT JOIN public.cat_spectra sth ON p_include_thumbnails AND sth.id = r.spectrum_pk
   -- Drop the has_more overflow row.
   WHERE r.row_num <= p_page_size;
 END;
@@ -2749,7 +3393,7 @@ BEGIN
   -- caller doesn't already know the total for this filter set (#501).
   IF p_include_count THEN
     SELECT COUNT(*) INTO v_total_count
-    FROM objects o
+    FROM public.cat_objects o
     WHERE
       -- Access control: object must have at least one accessible program
       o.programs && v_filtered_program_slugs
@@ -2790,7 +3434,7 @@ BEGIN
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
       AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
-      AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
+      AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.cat_objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -2855,7 +3499,7 @@ BEGIN
             )
           UNION
           SELECT t.object_id FROM comments c
-          JOIN targets t ON t.id = c.target_id
+          JOIN public.cat_targets t ON t.id = c.target_id
           WHERE c.target_id IS NOT NULL
             AND c.is_deleted = false
             AND c.content ILIKE '%' || p_comment_search || '%'
@@ -2915,7 +3559,7 @@ BEGIN
           )))
         ELSE NULL
       END AS distance
-    FROM objects o
+    FROM public.cat_objects o
     -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
     LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = o.id
     WHERE
@@ -2956,7 +3600,7 @@ BEGIN
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
       AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
-      AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
+      AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.cat_objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -3016,7 +3660,7 @@ BEGIN
             )
           UNION
           SELECT t.object_id FROM comments c
-          JOIN targets t ON t.id = c.target_id
+          JOIN public.cat_targets t ON t.id = c.target_id
           WHERE c.target_id IS NOT NULL
             AND c.is_deleted = false
             AND c.content ILIKE '%' || p_comment_search || '%'
@@ -3143,9 +3787,9 @@ BEGIN
               'program_slug', t.program_slug,
               'observation', t.observation,
               'redshift_auto', t.redshift_auto
-            )
+            ) ORDER BY t.target_id
           )
-          FROM targets t
+          FROM public.cat_targets t
           WHERE t.object_id = fo.id
             AND t.program_slug = ANY(p_program_slugs)
             -- Same publication gate as object_scoped_aggregates: the RPC is
@@ -3365,7 +4009,7 @@ BEGIN
 
   RETURN QUERY
   SELECT o.object_id
-  FROM objects o
+  FROM public.cat_objects o
   -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
   LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = o.id
   WHERE
@@ -3406,7 +4050,7 @@ BEGIN
     AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
     AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
     AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
-    AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
+    AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.cat_objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
     AND (
       p_inspected_only IS NULL
       OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
@@ -3463,7 +4107,7 @@ BEGIN
           )
         UNION
         SELECT t.object_id FROM comments c
-        JOIN targets t ON t.id = c.target_id
+        JOIN public.cat_targets t ON t.id = c.target_id
         WHERE c.target_id IS NOT NULL
           AND c.is_deleted = false
           AND c.content ILIKE '%' || p_comment_search || '%'
@@ -3730,7 +4374,7 @@ BEGIN
           )))
         ELSE NULL
       END AS sort_num
-    FROM objects o
+    FROM public.cat_objects o
     -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
     LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = o.id
     WHERE
@@ -3771,7 +4415,7 @@ BEGIN
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
       AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
-      AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
+      AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.cat_objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL
         OR (p_inspected_only = TRUE AND o.redshift_quality > 0)
         OR (p_inspected_only = FALSE AND o.redshift_quality = 0))
@@ -3827,7 +4471,7 @@ BEGIN
             )
           UNION
           SELECT t.object_id FROM comments c
-          JOIN targets t ON t.id = c.target_id
+          JOIN public.cat_targets t ON t.id = c.target_id
           WHERE c.target_id IS NOT NULL
             AND c.is_deleted = false
             AND c.content ILIKE '%' || p_comment_search || '%'
@@ -4017,13 +4661,13 @@ BEGIN
       COALESCE(s.dq_flags, 0) AS dq_flags,
       vl.lists,
       CASE WHEN p_line IS NOT NULL THEN
-        (SELECT __l.snr FROM public.spectrum_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
+        (SELECT __l.snr FROM public.cat_spectrum_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
       END AS line_snr,
       bv.mag AS band_mag,
       bv.snr AS band_snr
-    FROM targets t
-    JOIN spectra s ON s.target_id = t.target_id
-    LEFT JOIN objects o ON o.id = t.object_id
+    FROM public.cat_targets t
+    JOIN public.cat_spectra s ON s.target_id = t.target_id
+    LEFT JOIN public.cat_objects o ON o.id = t.object_id
     LEFT JOIN visible_lists vl ON vl.object_id = t.object_id
     -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
     LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = t.object_id
@@ -4057,7 +4701,7 @@ BEGIN
             SELECT olm.object_id FROM object_list_members olm WHERE olm.list_id = ANY(p_list_ids) AND olm.object_id IS NOT NULL
         )))
       )
-      AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
+      AND (p_search IS NULL OR s.id IN (SELECT __s.id FROM public.cat_spectra __s WHERE __s.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND COALESCE(o.redshift_quality, 0) = 0))
       AND (p_needs_review IS NULL
         -- P3: the maintained badge flag (docs/design-needs-review.md), indexed
@@ -4268,7 +4912,7 @@ BEGIN
         2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(o.dec - p_coord_dec) / 2), 2) + COS(RADIANS(p_coord_dec)) * COS(RADIANS(o.dec)) * POWER(SIN(RADIANS(o.ra - p_coord_ra) / 2), 2))))
       ELSE NULL END AS distance,
       o.has_photometry, o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi
-    FROM objects o
+    FROM public.cat_objects o
     WHERE o.programs && v_filtered_program_slugs
       AND (p_after_object_id IS NULL OR o.object_id > p_after_object_id)
       AND o.is_active = true
@@ -4297,7 +4941,7 @@ BEGIN
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
       AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
-      AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
+      AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.cat_objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (p_inspected_only IS NULL OR (p_inspected_only = TRUE AND o.redshift_quality > 0) OR (p_inspected_only = FALSE AND o.redshift_quality = 0))
       AND (p_needs_review IS NULL
         -- P3: the maintained badge flag (docs/design-needs-review.md), indexed
@@ -4347,7 +4991,7 @@ BEGIN
             )
           UNION
           SELECT t.object_id FROM comments c
-          JOIN targets t ON t.id = c.target_id
+          JOIN public.cat_targets t ON t.id = c.target_id
           WHERE c.target_id IS NOT NULL
             AND c.is_deleted = false
             AND c.content ILIKE '%' || p_comment_search || '%'
@@ -4364,7 +5008,7 @@ BEGIN
   -- aggregated targets / list memberships for the entire catalog on every page.
   member_targets AS (
     SELECT t.object_id, string_agg(t.target_id, ';' ORDER BY t.target_id) AS member_target_ids
-    FROM targets t
+    FROM public.cat_targets t
     WHERE t.object_id IN (SELECT po.id FROM page_objects po)
       AND t.program_slug = ANY(v_filtered_program_slugs)
     GROUP BY t.object_id
@@ -4404,7 +5048,7 @@ BEGIN
   LEFT JOIN user_profiles up ON up.user_id = po.last_inspected_by
   LEFT JOIN LATERAL public.object_scoped_aggregates(po.id, v_filtered_program_slugs, p_include_unpublished) sa ON true
   LEFT JOIN LATERAL (
-    SELECT op.photometry FROM object_photometry op
+    SELECT op.photometry FROM public.cat_photometry op
     WHERE op.object_id = po.id ORDER BY op.updated_at DESC LIMIT 1
   ) phot ON true
   ORDER BY po.object_id ASC;
@@ -4542,7 +5186,10 @@ DECLARE
   -- SECURITY DEFINER (admins; share links minted with include_drafts) keep
   -- the live aggregate; the published-only snapshot would drop their
   -- draft-only observations entirely.
-  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts();
+  -- (P6b-2) a browsed release never reads the matview: the live path
+  -- reads cat_spectra / cat_targets, which are the frozen rows then
+  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts()
+    OR public.dr_browse_tag() IS NOT NULL;
   -- What the live path may count, derived from the caller's authorization,
   -- never from the raw p_include_unpublished argument: a drafts link sees
   -- published + draft (policies: select_spectra_by_access /
@@ -4587,9 +5234,9 @@ BEGIN
       COUNT(DISTINCT t.target_id) AS target_count,
       COUNT(s.id) AS spectrum_count,
       COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes
-    FROM targets t
+    FROM public.cat_targets t
     JOIN programs p ON p.slug = t.program_slug
-    LEFT JOIN spectra s ON s.target_id = t.target_id
+    LEFT JOIN public.cat_spectra s ON s.target_id = t.target_id
       -- Only the statuses this caller is authorized for.
       AND s.deploy_status = ANY(v_statuses)
     WHERE t.program_slug = ANY(v_slugs)
@@ -4599,22 +5246,29 @@ BEGIN
       -- in the authorized statuses is not counted unless the caller opted
       -- into unpublished data, where every target appears as before.
       AND (v_unpublished OR EXISTS (
-        SELECT 1 FROM spectra sx
+        SELECT 1 FROM public.cat_spectra sx
         WHERE sx.target_id = t.target_id AND sx.deploy_status = ANY(v_statuses)))
     GROUP BY t.observation, t.program_slug, p.program_name, t.field
   )
   SELECT s.observation, s.program_slug, s.program_name, s.field,
     s.target_count, s.spectrum_count, s.total_size_bytes,
     o.pointings,
-    full_dep.crds_context,
-    full_dep.cfpipe_version, full_dep.jwst_version,
-    full_dep.reduced_at, full_dep.deployed_at,
+    COALESCE(full_dep.crds_context, frozen_dep.crds_context),
+    COALESCE(full_dep.cfpipe_version, frozen_dep.cfpipe_version),
+    COALESCE(full_dep.jwst_version, frozen_dep.jwst_version),
+    COALESCE(full_dep.reduced_at, frozen_dep.reduced_at), full_dep.deployed_at,
     CASE WHEN v_link THEN NULL ELSE full_dep.deployed_by_username END,
     CASE WHEN v_link THEN NULL ELSE full_dep.deployed_by_full_name END,
     COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
     patches.last_patch_at
   FROM stats s
   LEFT JOIN observations o ON o.name = s.observation
+  -- Provenance: live, the newest full deployment. Under a browsed release
+  -- (P6b-2) deployments is live-only (a later deploy would label frozen
+  -- spectra with its versions), so the versions come from the release's own
+  -- spectra of the observation: the most common non-null value of each
+  -- field, the latest reduced_at; there is no frozen deployments record, so
+  -- deployed_at, the deployer and the patch counts are NULL / 0 then.
   LEFT JOIN LATERAL (
     SELECT d.crds_context, d.cfpipe_version, d.jwst_version,
            d.reduced_at, d.deployed_at,
@@ -4622,15 +5276,32 @@ BEGIN
            up.full_name AS deployed_by_full_name
     FROM public.deployments d
     LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
-    WHERE d.observation = s.observation AND d.source_ids_filter IS NULL
+    WHERE public.dr_browse_tag() IS NULL
+      AND d.observation = s.observation AND d.source_ids_filter IS NULL
       AND d.status = ANY(v_statuses)
     ORDER BY d.deployed_at DESC
     LIMIT 1
   ) full_dep ON true
   LEFT JOIN LATERAL (
+    SELECT
+      (SELECT x.crds_context FROM public.cat_spectra x
+         WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses) AND x.crds_context IS NOT NULL
+         GROUP BY x.crds_context ORDER BY count(*) DESC, x.crds_context LIMIT 1) AS crds_context,
+      (SELECT x.cfpipe_version FROM public.cat_spectra x
+         WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses) AND x.cfpipe_version IS NOT NULL
+         GROUP BY x.cfpipe_version ORDER BY count(*) DESC, x.cfpipe_version LIMIT 1) AS cfpipe_version,
+      (SELECT x.jwst_version FROM public.cat_spectra x
+         WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses) AND x.jwst_version IS NOT NULL
+         GROUP BY x.jwst_version ORDER BY count(*) DESC, x.jwst_version LIMIT 1) AS jwst_version,
+      (SELECT max(x.reduced_at) FROM public.cat_spectra x
+         WHERE x.observation = s.observation AND x.deploy_status = ANY(v_statuses)) AS reduced_at
+    WHERE public.dr_browse_tag() IS NOT NULL
+  ) frozen_dep ON true
+  LEFT JOIN LATERAL (
     SELECT COUNT(*)::integer AS n_patches, MAX(d.deployed_at) AS last_patch_at
     FROM public.deployments d
-    WHERE d.observation = s.observation
+    WHERE public.dr_browse_tag() IS NULL
+      AND d.observation = s.observation
       AND d.source_ids_filter IS NOT NULL
       AND d.status = ANY(v_statuses)
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
@@ -4678,7 +5349,10 @@ DECLARE
   -- SECURITY DEFINER (admins; share links minted with include_drafts) keep
   -- the live aggregate; the published-only snapshot would drop their
   -- draft-only observations entirely.
-  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts();
+  -- (P6b-2) a browsed release never reads the matview: the live path
+  -- reads cat_spectra / cat_targets, which are the frozen rows then
+  v_live boolean := v_unpublished OR public.is_admin() OR public.link_sees_drafts()
+    OR public.dr_browse_tag() IS NOT NULL;
   -- What the live path may count, derived from the caller's authorization,
   -- never from the raw p_include_unpublished argument: a drafts link sees
   -- published + draft (policies: select_spectra_by_access /
@@ -4720,8 +5394,8 @@ BEGIN
       COALESCE(SUM(s.file_size), 0)::bigint AS total_size_bytes,
       ARRAY_AGG(DISTINCT s.grating ORDER BY s.grating)
         FILTER (WHERE s.grating IS NOT NULL) AS gratings
-    FROM public.targets t
-    LEFT JOIN public.spectra s ON s.target_id = t.target_id
+    FROM public.cat_targets t
+    LEFT JOIN public.cat_spectra s ON s.target_id = t.target_id
       -- Only the statuses this caller is authorized for.
       AND s.deploy_status = ANY(v_statuses)
     WHERE t.program_slug = ANY(v_slugs)
@@ -4729,7 +5403,7 @@ BEGIN
       -- Targets count on the same terms as their spectra (see
       -- get_observation_stats).
       AND (v_unpublished OR EXISTS (
-        SELECT 1 FROM public.spectra sx
+        SELECT 1 FROM public.cat_spectra sx
         WHERE sx.target_id = t.target_id AND sx.deploy_status = ANY(v_statuses)))
     GROUP BY t.observation, t.program_slug
   )
@@ -4748,9 +5422,10 @@ BEGIN
     COALESCE(s.target_count, 0)::bigint AS target_count,
     COALESCE(s.spectrum_count, 0)::bigint AS spectrum_count,
     COALESCE(s.total_size_bytes, 0)::bigint AS total_size_bytes,
-    full_dep.crds_context,
-    full_dep.cfpipe_version, full_dep.jwst_version,
-    full_dep.reduced_at, full_dep.deployed_at,
+    COALESCE(full_dep.crds_context, frozen_dep.crds_context),
+    COALESCE(full_dep.cfpipe_version, frozen_dep.cfpipe_version),
+    COALESCE(full_dep.jwst_version, frozen_dep.jwst_version),
+    COALESCE(full_dep.reduced_at, frozen_dep.reduced_at), full_dep.deployed_at,
     CASE WHEN v_link THEN NULL ELSE full_dep.deployed_by_username END,
     CASE WHEN v_link THEN NULL ELSE full_dep.deployed_by_full_name END,
     COALESCE(patches.n_patches, 0)::integer AS n_patches_since_full,
@@ -4758,6 +5433,10 @@ BEGIN
   FROM public.observations o
   JOIN public.programs p ON p.slug = o.program_slug
   LEFT JOIN stats s ON s.observation = o.name AND s.program_slug = o.program_slug
+  -- Provenance as in get_observation_stats: the newest full deployment live;
+  -- under a browsed release (P6b-2) the release's own spectra (deployments
+  -- is live-only; no frozen record, so deployed_at / deployer / patches are
+  -- NULL / 0 then).
   LEFT JOIN LATERAL (
     SELECT d.crds_context, d.cfpipe_version, d.jwst_version,
            d.reduced_at, d.deployed_at,
@@ -4765,21 +5444,42 @@ BEGIN
            up.full_name AS deployed_by_full_name
     FROM public.deployments d
     LEFT JOIN public.user_profiles up ON up.user_id = d.deployed_by
-    WHERE d.observation = o.name AND d.source_ids_filter IS NULL
+    WHERE public.dr_browse_tag() IS NULL
+      AND d.observation = o.name AND d.source_ids_filter IS NULL
       AND d.status = ANY(v_statuses)
     ORDER BY d.deployed_at DESC
     LIMIT 1
   ) full_dep ON true
   LEFT JOIN LATERAL (
+    SELECT
+      (SELECT x.crds_context FROM public.cat_spectra x
+         WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses) AND x.crds_context IS NOT NULL
+         GROUP BY x.crds_context ORDER BY count(*) DESC, x.crds_context LIMIT 1) AS crds_context,
+      (SELECT x.cfpipe_version FROM public.cat_spectra x
+         WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses) AND x.cfpipe_version IS NOT NULL
+         GROUP BY x.cfpipe_version ORDER BY count(*) DESC, x.cfpipe_version LIMIT 1) AS cfpipe_version,
+      (SELECT x.jwst_version FROM public.cat_spectra x
+         WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses) AND x.jwst_version IS NOT NULL
+         GROUP BY x.jwst_version ORDER BY count(*) DESC, x.jwst_version LIMIT 1) AS jwst_version,
+      (SELECT max(x.reduced_at) FROM public.cat_spectra x
+         WHERE x.observation = o.name AND x.deploy_status = ANY(v_statuses)) AS reduced_at
+    WHERE public.dr_browse_tag() IS NOT NULL
+  ) frozen_dep ON true
+  LEFT JOIN LATERAL (
     SELECT COUNT(*)::integer AS n_patches, MAX(d.deployed_at) AS last_patch_at
     FROM public.deployments d
-    WHERE d.observation = o.name
+    WHERE public.dr_browse_tag() IS NULL
+      AND d.observation = o.name
       AND d.source_ids_filter IS NOT NULL
       AND d.status = ANY(v_statuses)
       AND (full_dep.deployed_at IS NULL OR d.deployed_at > full_dep.deployed_at)
   ) patches ON true
   WHERE o.program_slug = ANY(v_slugs)
     AND (NOT v_link OR o.name = (SELECT public.link_observation()))
+    -- (P6b-2) a browsed release lists only the observations it holds spectra
+    -- of: observations is live-only (members with no frozen rows, and
+    -- observations created after the freeze, would show with zero counts)
+    AND (public.dr_browse_tag() IS NULL OR s.observation IS NOT NULL)
   ORDER BY o.program_slug, o.name;
 END;
 $$;
@@ -4862,11 +5562,11 @@ RETURNS TABLE(
     (SELECT COALESCE(SUM(jsonb_array_length(pointings)), 0)::bigint
        FROM public.observations
        WHERE pointings IS NOT NULL) AS n_pointings,
-    (SELECT COUNT(*)::bigint FROM public.targets) AS n_targets,
+    (SELECT COUNT(*)::bigint FROM public.cat_targets) AS n_targets,
     -- B1: gate spectra count/size on publish status (no alias param available).
-    (SELECT COUNT(*)::bigint FROM public.spectra
+    (SELECT COUNT(*)::bigint FROM public.cat_spectra
        WHERE p_include_unpublished OR deploy_status = 'published') AS n_spectra,
-    (SELECT COALESCE(SUM(file_size), 0)::bigint FROM public.spectra
+    (SELECT COALESCE(SUM(file_size), 0)::bigint FROM public.cat_spectra
        WHERE p_include_unpublished OR deploy_status = 'published') AS total_size_bytes,
     (SELECT deployed_at FROM latest) AS latest_deployed_at,
     (SELECT cfpipe_version FROM latest) AS latest_cfpipe_version;
@@ -4890,8 +5590,8 @@ BEGIN
   RETURN QUERY
   SELECT s.id, s.spectrum_id, s.target_id, s.grating, s.fits_path, s.file_hash, s.file_size,
          s.signal_to_noise, s.cfpipe_version
-  FROM spectra s
-  JOIN targets t ON t.target_id = s.target_id
+  FROM public.cat_spectra s
+  JOIN public.cat_targets t ON t.target_id = s.target_id
   WHERE t.observation = p_obs_name AND t.program_slug = ANY(p_program_slugs)
     -- B1: fail-closed; admin sync passes p_include_unpublished => true.
     AND (p_include_unpublished OR s.deploy_status = 'published')
@@ -4959,6 +5659,7 @@ SET plan_cache_mode = 'force_custom_plan'
 SET statement_timeout = '120s'
 AS $$
 BEGIN
+  PERFORM public.dr_assert_live();  -- live-only (P6b-2)
   RETURN QUERY
   -- `scoped` carries the full published-scope filter and feeds the count CTEs
   -- only (gated on p_include_counts, so it is skipped entirely on keyset pages
@@ -5399,7 +6100,7 @@ LANGUAGE sql STABLE AS $$
              COS(RADIANS(p_dec)) * COS(RADIANS(o.dec)) *
              POWER(SIN(RADIANS(o.ra - p_ra) / 2), 2)
            ))) AS distance
-    FROM objects o
+    FROM public.cat_objects o
     WHERE o.programs && p_program_slugs
       AND o.is_active = true
       AND (p_include_unpublished OR o.has_published_spectrum)
@@ -5476,7 +6177,7 @@ AS $$
   ),
   page AS (
     SELECT o.id, o.object_id, o.ra, o.dec, o.redshift, o.redshift_quality, o.field
-    FROM public.objects o
+    FROM public.cat_objects o
     CROSS JOIN acc
     WHERE o.field = p_field
       AND o.is_active
@@ -5486,7 +6187,7 @@ AS $$
       -- published spectrum unless the admin opts in). Applied BEFORE the
       -- LIMIT so a page is never short for a reason other than exhaustion.
       AND EXISTS (
-        SELECT 1 FROM public.targets t
+        SELECT 1 FROM public.cat_targets t
         WHERE t.object_id = o.id
           AND t.program_slug = ANY(acc.slugs)
           AND (p_include_unpublished OR t.has_published_spectrum)
@@ -5522,15 +6223,15 @@ AS $$
     SELECT array_agg(t.target_id ORDER BY t.target_id)                AS member_target_ids,
            array_agg(DISTINCT t.program_slug ORDER BY t.program_slug) AS programs,
            COUNT(*)::int                                              AS n_targets
-    FROM public.targets t
+    FROM public.cat_targets t
     WHERE t.object_id = p.id
       AND t.program_slug = ANY(acc.slugs)
       AND (p_include_unpublished OR t.has_published_spectrum)
   ) mt ON true
   LEFT JOIN LATERAL (
     SELECT COUNT(*)::int AS n_spectra
-    FROM public.spectra s
-    JOIN public.targets t ON t.target_id = s.target_id
+    FROM public.cat_spectra s
+    JOIN public.cat_targets t ON t.target_id = s.target_id
     WHERE t.object_id = p.id
       AND t.program_slug = ANY(acc.slugs)
       AND (p_include_unpublished OR s.deploy_status = 'published')
@@ -9469,7 +10170,7 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_purge_release(text) IS 'Delete an UNPUBLISHED data release and all its frozen rows (P4a; `campfire dr purge`). Admin or service_role. Refuses published / withdrawn tags and a freeze that is still running. Archive bytes already copied for the tag are left in place (dedup by hash; gc is the retention path).';
+COMMENT ON FUNCTION public.dr_purge_release(text) IS 'Delete an UNPUBLISHED data release and all its frozen rows (P4a; `campfire dr purge`). Admin JWT or service_role claims (dr_require_admin): a bare postgres superuser session is refused; from psql, set request.jwt.claims to {"role":"service_role"} first. Refuses published / withdrawn tags and a freeze that is still running. Archive bytes already copied for the tag are left in place (dedup by hash; gc is the retention path).';
 
 REVOKE ALL ON FUNCTION public.dr_purge_release(text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.dr_purge_release(text) TO authenticated, service_role;

@@ -50,6 +50,13 @@ BEGIN
   JOIN pg_namespace ns ON ns.oid = p.pronamespace
   JOIN pg_roles r ON r.oid = p.proowner
   WHERE ns.nspname = 'public' AND r.rolname = 'postgres'
+    -- dr_request_context is PostgREST's pre-request hook (P6b-2): it runs as
+    -- the request role on EVERY Data API request, anonymous ones included, so
+    -- anon must be able to execute it or every anon request fails. It reads
+    -- nothing for the caller: with the X-Campfire-DR header it checks the tag
+    -- against dr_visible_tags() and either sets a transaction-local setting
+    -- or raises PT404; without the header it returns (check_cat_views.sql).
+    AND p.proname <> 'dr_request_context'
     AND (has_function_privilege('anon', p.oid, 'EXECUTE')
          OR EXISTS (SELECT 1 FROM unnest(p.proacl) a WHERE a::text LIKE '=X/%'));
   IF n > 0 THEN

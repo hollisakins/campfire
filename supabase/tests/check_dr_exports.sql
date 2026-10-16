@@ -78,9 +78,15 @@ BEGIN
      <> (SELECT count(*) FROM dr_spectra WHERE tag = 'DR-seed' AND program_slug = prog) THEN
     RAISE EXCEPTION 'spectra partition row count wrong';
   END IF;
-  -- streams the seed has no rows for produce no partition (photometry has no component in DR-seed)
+  -- DR-seed carries every photometry catalog with a frozen cross-match
+  -- (seed.sql §13, P6b-2), so the photometry stream has partitions: one per
+  -- program of the frozen photometry rows' objects, each with rows
   SELECT count(*) INTO n FROM dr_export_partitions('DR-seed') p WHERE p.stream = 'photometry';
-  IF n <> 0 THEN RAISE EXCEPTION 'photometry partitions without a photometry component: %', n; END IF;
+  IF n = 0 OR n <> (SELECT count(DISTINCT e) FROM dr_photometry ph
+                    JOIN dr_objects o ON o.tag = ph.tag AND o.id = ph.object_id
+                    CROSS JOIN LATERAL unnest(o.evidence_programs) e WHERE ph.tag = 'DR-seed') THEN
+    RAISE EXCEPTION 'photometry partitions do not match the frozen rows'' programs: %', n;
+  END IF;
   RAISE NOTICE 'OK 1: partitions (program %, field %)', prog, fld;
 
   -- ------------------------------------------------------------------ 2.
