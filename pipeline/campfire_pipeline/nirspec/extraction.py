@@ -131,6 +131,9 @@ def extract_with_profile(profile, data, error, mask=None, ivw=False):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', category=RuntimeWarning)
         if ivw:
+            # The weighted fit returns the amplitude of the profile, which is the flux
+            # only when the profile sums to 1 (a boxcar fallback sums to its width).
+            profile = profile / np.nansum(profile, axis=0)
             fnu = np.nansum(profile*data/variance,axis=0)/np.nansum(profile**2/variance, axis=0)
             fnu_err = np.sqrt(np.nansum(profile, axis=0)/np.nansum(profile**2/variance,axis=0))
         else:

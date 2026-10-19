@@ -35,6 +35,14 @@ Release procedure: edit the `## Unreleased` section below, then run
   ["tests"]` so a bare `pytest` no longer collects `experiments/` and `scripts/`.
 
 ### Algorithm
+- **Optimal extraction's 3-px boxcar fallback reported a third of the flux.** When the
+  optimal profile is judged corrupted (`CMPFROPT = 'boxcar-3px'`), stage 3 extracts with an
+  unnormalised 3-px boxcar, and the inverse-variance formula in `extract_with_profile`
+  returns the profile's amplitude, i.e. the flux per row: `fnu` was about 1/3 of the source
+  flux and the S/N understated by about √3 (16 % of the local products that record
+  `CMPFROPT`; median `fnu / fnu_3px` 0.40). `extract_with_profile` now normalises the
+  profile when weighting, which leaves normalised (true optimal) profiles unchanged.
+  Affected products need stage 3 rerun and redeploying.
 - **`resample` now writes a per-tile exposure map, `<mosaic>_exp.fits`, next to
   the split `_sci/_err/_wht`.** It is the full-resolution, per-tile member of the
   `exp` family; the field-wide `expmap_<field>_<filter>.fits` is the coarse member.
