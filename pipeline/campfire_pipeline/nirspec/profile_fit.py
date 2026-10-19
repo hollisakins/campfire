@@ -598,7 +598,9 @@ def _qvec(result):
 def model_frame(result, k, unit=False, applied_pathloss=True):
     """Model of exposure k's nod difference on its canonical cutout.
 
-    unit : spectrum fixed to 1 (the profile per unit flux) instead of the fit.
+    unit : the profile per unit reported flux instead of the fitted model: the true
+        spectrum is set to 1 / main_shutter_factor, so a profile-weighted fit of
+        the data with this frame returns the reported flux directly.
     applied_pathloss : divide by the path loss stage 2b re-applied, so the frame is
         in the units of the live canonical SCI.
     """
@@ -612,11 +614,16 @@ def model_frame(result, k, unit=False, applied_pathloss=True):
         m &= np.isfinite(M.exps[j].y) & np.isfinite(M.exps[j].wav)
     out = np.full(e.y.shape, np.nan)
     terms = [(k, 1.0)] + [(j, -1.0 / len(e.partners)) for j in (e.partners or [])]
+    if unit:
+        f = main_shutter_factor(result, result.lam)
+        true_spec = np.where(f > 0, 1.0 / np.maximum(f, 1e-6), 0.0)
+    else:
+        true_spec = np.nan_to_num(result.flux)
     val = np.zeros(m.sum())
     for j, w in terms:
         x = M.exps[j]
         lam = x.wav[m]
-        spec = 1.0 if unit else np.interp(lam, result.lam, np.nan_to_num(result.flux), left=0.0, right=0.0)
+        spec = np.interp(lam, result.lam, true_spec, left=0.0, right=0.0)
         val += w * spec * M.throughput(p, eoff, j, lam, x.dy[m]) * M.image(p, eoff, j, x.y[m], lam, x.dy[m])
     out[m] = val
     if applied_pathloss:
@@ -672,12 +679,12 @@ FIT_VERSION = '1'
 
 def run_single_source(product_name, workspace_dir, groups, bkg_overrides, science,
                       crf_path, chromatic=True, priors=None):
-    """Fit one source and write ``{product_name}_pf.fits``: the fitted spectrum
-    (FIT), and the drizzled profile per unit flux (PROFILE) and fitted model (MODEL)
-    on the stage-3 s2d grid."""
+    """Fit one source and write ``{product_name}_pf.fits``: the fitted shape (header)
+    and the drizzled 2D profile per unit reported flux (PROF2D) on the stage-3 s2d
+    grid. The profile is not normalised: weighting the s2d with it returns the
+    reported flux (main-shutter light on the point-source path-loss calibration)."""
     import os
     from astropy.io import fits
-    from astropy.table import Table
     from campfire_pipeline.common.io import log
 
     exps = load_source(groups, bkg_overrides=bkg_overrides, science=science)
@@ -687,13 +694,7 @@ def run_single_source(product_name, workspace_dir, groups, bkg_overrides, scienc
         f"width {p['width']:.3f}, drift {p['drift']:+.3f}/oct, width change {p['width_change']:+.3f}/oct, "
         f"chi2/dof {R.chi2_red:.3f}")
     prof = drizzle_frames(R, crf_path, unit=True)
-    model = drizzle_frames(R, crf_path, unit=False)
 
-    tab = Table()
-    tab['wave'] = R.lam
-    tab['flux'] = R.flux * 1e12
-    tab['flux_err'] = R.flux_err * 1e12
-    tab['main_factor'] = main_shutter_factor(R, R.lam)
     hdr = fits.Header()
     hdr['PFVER'] = (FIT_VERSION, 'Profile-fit model version')
     hdr['PFCHROM'] = (bool(chromatic), 'Centre and width vary with wavelength')
@@ -710,12 +711,9 @@ def run_single_source(product_name, workspace_dir, groups, bkg_overrides, scienc
         hdr[f'PFOFF{k}'] = (float(o), f'Pointing offset {e.name[:31]}')
     out = fits.HDUList([
         fits.PrimaryHDU(header=hdr),
-        fits.BinTableHDU(tab, name='FIT'),
-        fits.ImageHDU(np.asarray(prof.data, float), name='PROFILE'),
-        fits.ImageHDU(np.asarray(model.data, float) * 1e12, name='MODEL'),
+        fits.ImageHDU(np.asarray(prof.data, float) / 1e12, name='PROF2D'),
     ])
     path = os.path.join(workspace_dir, f'{product_name}_pf.fits')
     out.writeto(path, overwrite=True)
     prof.close()
-    model.close()
     return path

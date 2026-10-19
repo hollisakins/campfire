@@ -70,10 +70,11 @@ Release procedure: edit the `## Unreleased` section below, then run
   shutters, with the nod partners' negative images and Gaussian priors on the shape (so a
   faint source falls back to a compact source at its planned position). The model is
   drizzled through Spec3's own outlier-flagged frames, so it gets the data's weights and
-  masks, and `_spec.fits` gains `fnu_pf`/`fnu_pf_err`/`flam_pf*` (main-shutter light on the
-  point-source path-loss calibration), `fnu_pf_total`, `fnu_pf_fit`(`_err`) (the joint fit
-  on native pixels), a `PF_MODEL` s2d, a `PF_FIT` table and `PF*` header keys; `1d` combine
-  carries `fnu_pf`. Uses stage 2b's own background-partner rule (now
+  masks. The fitted shape only sets the extraction weights: `_spec.fits` gains `PROF2D`, the
+  drizzled 2D profile per unit reported flux (not normalised per column, so it carries the
+  aperture and path-loss correction), and `fnu_pf`/`fnu_pf_err`/`flam_pf*`, the s2d extracted
+  with those weights on the optimal-extraction rows (main-shutter light on the point-source
+  path-loss calibration, as for `fnu`), plus `PF*` header keys; `1d` combine carries `fnu_pf`. Uses stage 2b's own background-partner rule (now
   `stage2.nod_background_partners`), the applied path-loss type per exposure, and jwst's slit
   bounds for the open shutters. PRISM-calibrated PSF; prototype status (issue to follow).
   The nod-difference variance accounts for the subtracted frames, which jwst's

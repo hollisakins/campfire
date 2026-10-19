@@ -608,7 +608,7 @@ def opt_ext_single_source(
     spec = fits.HDUList(hdus=[primary, spec1d, sci, err, wav, wht, prof1d, exp] + pf_hdus)
     spec.writeto(out_filename, overwrite=True)
     if pf_hdus and os.path.exists(pf_file):
-        os.remove(pf_file)   # its contents now live in the _spec.fits (PF_MODEL, PF_FIT, fnu_pf*)
+        os.remove(pf_file)   # its contents now live in the _spec.fits (PROF2D, PF* keys, fnu_pf)
 
 
     if plot_optext:
@@ -628,51 +628,42 @@ def opt_ext_single_source(
     x1d.close()
 
 def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave):
-    """Extraction with the drizzled profile-fit model, and the fitted spectrum on the
-    s2d wavelength grid.
+    """Extraction of the s2d with the profile-fit 2D profile.
 
-    The drizzled profile (per unit true flux) is used as optimal weights on the same
-    aperture rows as the standard optimal profile; dividing by its in-aperture sum
-    gives the true flux, and the main-shutter factor turns that into the reported
-    flux (main-shutter light on the point-source path-loss calibration).
+    PROF2D is the drizzled source model per unit reported flux (uJy, against the s2d
+    SCI in MJy): it is not normalised per column, so its in-aperture sum carries
+    the aperture and path-loss correction. The weighted fit of the data on the
+    aperture rows, sum(P D / V) / sum(P^2 / V), is the reported flux directly:
+    main-shutter light on the point-source path-loss calibration, as for ``fnu``.
     """
-    from astropy.table import Table
     with fits.open(pf_file) as h:
-        P = np.asarray(h['PROFILE'].data, float)
-        model = np.asarray(h['MODEL'].data, float)
-        fit = Table(h['FIT'].data)
+        P = np.asarray(h['PROF2D'].data, float)
         header = h['PRIMARY'].header.copy()
     if P.shape != s2d_sci.shape:
         log(f"{os.path.basename(pf_file)}: profile {P.shape} does not match the s2d {s2d_sci.shape}; skipping")
         return None
     x = np.arange(P.shape[0] + 1)
     in_ap = (x[:-1] > ap_start) & (x[1:] <= ap_stop)
-    Pa = np.where(in_ap[:, None] & np.isfinite(P), P, 0.0)
+    Pa = np.where(in_ap[:, None] & np.isfinite(P), P * 1e12, 0.0)   # per uJy, against s2d_sci in uJy units
     norm = Pa.sum(axis=0)
     good = norm > 1e-3 * np.nanmax(norm)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', category=RuntimeWarning)
         amp, amp_err = extract_with_profile(np.where(good, Pa / np.where(good, norm, 1.0), 0.0),
                                             s2d_sci.copy(), s2d_err.copy(), mask=s2d_mask, ivw=True)
-    total = np.where(good, amp / np.where(good, norm, 1.0), np.nan)
-    total_err = np.where(good, amp_err / np.where(good, norm, 1.0), np.nan)
-    ok = np.isfinite(fit['flux']) & np.isfinite(fit['main_factor'])
-    factor = np.interp(wave, fit['wave'][ok], fit['main_factor'][ok], left=np.nan, right=np.nan)
-    fit_flux = np.interp(wave, fit['wave'][ok], fit['flux'][ok], left=np.nan, right=np.nan)
-    fit_err = np.interp(wave, fit['wave'][ok], fit['flux_err'][ok], left=np.nan, right=np.nan)
+    flux = np.where(good, amp / np.where(good, norm, 1.0), np.nan)
+    flux_err = np.where(good, amp_err / np.where(good, norm, 1.0), np.nan)
     columns = {
-        'fnu_pf': (total * factor, 'Profile-fit flux: main-shutter light, point-source path-loss calibration'),
-        'fnu_pf_err': (total_err * factor, 'Profile-fit flux error'),
-        'fnu_pf_total': (total, 'Profile-fit total flux of the source model'),
-        'fnu_pf_fit': (fit_flux * factor, 'Profile-fit flux from the joint fit on native pixels (check)'),
-        'fnu_pf_fit_err': (fit_err * factor, 'Error of fnu_pf_fit'),
+        'fnu_pf': (flux, 'Profile-fit extracted flux (PROF2D weights), fnu units'),
+        'fnu_pf_err': (flux_err, 'Profile-fit extracted flux error, fnu units'),
     }
     keep = fits.Header()
     for key in header:
         if key.startswith('PF'):
             keep[key] = (header[key], header.comments[key])
-    hdus = [fits.ImageHDU(model, name='PF_MODEL'), fits.BinTableHDU(fit, name='PF_FIT')]
-    return dict(columns=columns, header=keep, hdus=hdus)
+    prof = fits.ImageHDU(P, name='PROF2D')
+    prof.header['BUNIT'] = ('MJy / uJy', 'SCI per unit reported flux; not normalised per column')
+    return dict(columns=columns, header=keep, hdus=[prof])
 
 
 def combine_per_eg_spectra(
