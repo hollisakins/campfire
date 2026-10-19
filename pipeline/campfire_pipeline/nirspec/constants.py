@@ -29,6 +29,13 @@ GRATINGS = [k.upper() for k in GRATING_LIMITS]
 # dimensions from the data.
 MSA_SHUTTER_SIZE_ARCSEC = (0.22, 0.46)
 
+# MSA slitlet geometry in jwst's slit_frame units (y = 1 per open-shutter height,
+# measured from the source shutter centre; jwst assign_wcs/nirspec.py). A slit's
+# jwst slit_ymin / slit_ymax sit MSA_SLIT_MARGIN beyond its outermost shutter
+# centres; shutter centres are MSA_SLIT_PITCH apart.
+MSA_SLIT_PITCH = 1.15    # slit_frame units per shutter pitch
+MSA_SLIT_MARGIN = 1.05   # 0.55 (half open area) + 0.50 (padding beyond outer shutters)
+
 # NIRSpec fixed-slit apertures (SIAF nominal open sizes), one rectangle each.
 FIXED_SLIT_SIZE_ARCSEC = {
     "S200A1": (0.20, 3.20),

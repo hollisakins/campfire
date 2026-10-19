@@ -58,6 +58,11 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
     plot_profiles = stage_config.get('plot_profiles', True)
     plot_optext = stage_config.get('plot_optext', True)
     combine_method = stage_config.get('combine_method', '2d')
+    profile_fit = bool(stage_config.get('profile_fit', False))
+    cleanup_crfs = s3_kwargs['cleanup_crfs']
+    if profile_fit:
+        # the profile fit drizzles its model through Spec3's crf; it cleans up after itself
+        s3_kwargs['cleanup_crfs'] = False
 
     if not obs.directories_setup:
         obs.setup_workspace_directory(data_dir, products_dir, overwrite=False)
@@ -73,6 +78,7 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
         return
 
     files = Observation.group_files(files)
+    files_all = files   # every exposure, incl. those only used as nod backgrounds
 
     # Keep only canonicals whose live SCI is background-subtracted. CFP_BKG holds
     # a timestamp for subtracted nods and a 'skipped:nods=N' / 'excluded:override'
@@ -96,6 +102,7 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
 
     tasks = []
     phase2_tasks = []
+    pf_tasks = []
 
     for source_id in np.unique(files['source_id']):
         files1 = files[files['source_id'] == source_id]
@@ -115,6 +122,8 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
                     continue
 
                 tasks.append((list(target_files['name']), obs.workspace_dir, product_name, source_id))
+                if profile_fit:
+                    pf_tasks.append(_profile_fit_task(obs, files_all, target_files, product_name, source_id))
 
             elif combine_method == '1d':
                 if len(target_files) == 0:
@@ -131,6 +140,8 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
                     if len(eg_files) == 0:
                         continue
                     tasks.append((list(eg_files['name']), obs.workspace_dir, final_product_name, source_id))
+                    if profile_fit:
+                        pf_tasks.append(_profile_fit_task(obs, files_all, eg_files, final_product_name, source_id))
                 else:
                     # Multiple exposure groups: per-group extraction then 1D combine
                     for eg in exp_groups:
@@ -141,6 +152,8 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
                         if os.path.exists(os.path.join(obs.workspace_dir, product_name + "_spec.fits")) and not overwrite:
                             continue
                         tasks.append((list(eg_files['name']), obs.workspace_dir, product_name, source_id))
+                        if profile_fit:
+                            pf_tasks.append(_profile_fit_task(obs, files_all, eg_files, product_name, source_id))
 
                     if os.path.exists(os.path.join(obs.workspace_dir, final_product_name + "_spec.fits")) and not overwrite:
                         continue
@@ -166,6 +179,17 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
         use_starmap=True,
         **s3_kwargs,
     )
+
+    if pf_tasks:
+        log(f"Profile fit: {len(pf_tasks)} sources")
+        dispatch(
+            run_profile_fit_single_source,
+            pf_tasks,
+            n_processes=n_processes,
+            use_starmap=True,
+            chromatic=bool(stage_config.get('profile_fit_chromatic', True)),
+            cleanup_crfs=cleanup_crfs,
+        )
 
     optext_tasks = [(task[2], task[1]) for task in tasks]
     dispatch(
@@ -211,7 +235,7 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
                 continue
             for eg_spec in per_eg_spec_files:
                 eg_base = eg_spec.replace('_spec.fits', '')
-                for suffix in ['_spec.fits', '_s2d.fits', '_x1d.fits', '_prof.pdf', '_spec.pdf']:
+                for suffix in ['_spec.fits', '_s2d.fits', '_x1d.fits', '_prof.pdf', '_spec.pdf', '_pf.fits']:
                     path = os.path.join(workspace_dir, eg_base + suffix)
                     if os.path.exists(path):
                         os.remove(path)
@@ -330,23 +354,63 @@ def run_stage3_single_source(
                 os.remove(asn_file)
 
         if cleanup_crfs:
-            for cal_file in cal_files:
-                crf_file = cal_file.replace('.fits', '_a3001_crf.fits')  # e.g. jw07076019001_03101_00003_nrs1_10059_a3001_crf
-                if os.path.exists(crf_file):
-                    os.remove(crf_file)
+            _cleanup_spec3_intermediates(cal_files, product_name)
 
-            # Spec3Pipeline also drops per-source intermediates that carry the
-            # product_name prefix: {product_name}_*_crf.fits and the calibrated
-            # {product_name}_s{source_id:09d}_cal.fits. Clean both. NOTE: NOT
-            # dead code — these are product_name-prefixed, distinct from the bare
-            # canonical jw..._nrs[12]_<src>.fits inputs, so it never deletes a
-            # canonical. (Removing the _cal glob left 4 stray Spec3 _cal.fits per
-            # obs — caught by the #225 end-to-end cfpipe golden run.)
-            stray = (glob.glob(f'{product_name}_*_crf.fits')
-                     + glob.glob(f'{product_name}_*_cal.fits'))
-            for file in stray:
-                os.remove(file)
+        os.chdir(prev_cwd)
 
+
+def _cleanup_spec3_intermediates(cal_files, product_name):
+    """Remove Spec3's per-exposure and per-source intermediates (run in the workspace)."""
+    for cal_file in cal_files:
+        crf_file = cal_file.replace('.fits', '_a3001_crf.fits')  # e.g. jw07076019001_03101_00003_nrs1_10059_a3001_crf
+        if os.path.exists(crf_file):
+            os.remove(crf_file)
+
+    # Spec3Pipeline also drops per-source intermediates that carry the
+    # product_name prefix: {product_name}_*_crf.fits and the calibrated
+    # {product_name}_s{source_id:09d}_cal.fits. Clean both. NOTE: NOT
+    # dead code — these are product_name-prefixed, distinct from the bare
+    # canonical jw..._nrs[12]_<src>.fits inputs, so it never deletes a
+    # canonical. (Removing the _cal glob left 4 stray Spec3 _cal.fits per
+    # obs — caught by the #225 end-to-end cfpipe golden run.)
+    stray = (glob.glob(f'{product_name}_*_crf.fits')
+             + glob.glob(f'{product_name}_*_cal.fits'))
+    for file in stray:
+        os.remove(file)
+
+
+def _profile_fit_task(obs, files_all, target_files, product_name, source_id):
+    """Arguments for one source's profile fit: every exposure of the background
+    groups its science exposures came from (partners included), each group's nod
+    overrides, and the names stage 3 combines."""
+    groups, overrides = [], []
+    for bg in np.unique(target_files['bkg_group']):
+        g = files_all[files_all['bkg_group'] == bg]
+        groups.append(list(g['path']))
+        ov = obs.bkg_overrides.get(g['root'][0])
+        overrides.append(ov.get(str(source_id)) if ov is not None else None)
+    return (product_name, obs.workspace_dir, groups, overrides, list(target_files['name']), source_id)
+
+
+def run_profile_fit_single_source(product_name, workspace_dir, groups, overrides, science,
+                                  source_id, chromatic=True, cleanup_crfs=True):
+    """Profile fit for one source after Spec3 (needs Spec3's crf). A failure is
+    logged and leaves the standard products untouched."""
+    from campfire_pipeline.nirspec import profile_fit as PF
+
+    prev_cwd = os.getcwd()
+    os.chdir(workspace_dir)
+    try:
+        crf = f'{product_name}_s{source_id:09d}_crf.fits'
+        if not os.path.exists(crf):
+            log(f"{product_name}: no Spec3 crf ({crf}); skipping profile fit")
+            return
+        PF.run_single_source(product_name, workspace_dir, groups, overrides, set(science), crf, chromatic=chromatic)
+    except Exception as e:
+        log(f"{product_name}: profile fit failed ({type(e).__name__}: {e}); standard extraction only")
+    finally:
+        if cleanup_crfs:
+            _cleanup_spec3_intermediates(list(science), product_name)
         os.chdir(prev_cwd)
 
 def opt_ext_single_source(
@@ -482,6 +546,23 @@ def opt_ext_single_source(
     # indices = np.where(fnu_3px_err!=0)[0]
     # spec1d = spec1d[indices[0]:indices[-1] + 1]
 
+    # Profile-fit extraction ([nirspec.stage3].profile_fit): present only when the
+    # profile fit ran for this product.
+    pf_hdus = []
+    pf_file = os.path.join(workspace_dir, f'{product_name}_pf.fits')
+    if os.path.exists(pf_file):
+        pf = _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, x1d_start, x1d_stop, wave)
+        if pf is not None:
+            for name, (data, desc) in pf['columns'].items():
+                spec1d.add_column(Column(name=name, data=data, description=desc, unit='uJy'))
+            spec1d.add_column(Column(name='flam_pf', data=fnu_to_flam(pf['columns']['fnu_pf'][0], wave=wave),
+                                     description='Profile-fit flux, flam units', unit='erg / (s cm2 Angstrom)'))
+            spec1d.add_column(Column(name='flam_pf_err', data=fnu_to_flam(pf['columns']['fnu_pf_err'][0], wave=wave),
+                                     description='Profile-fit flux error, flam units', unit='erg / (s cm2 Angstrom)'))
+            for key in pf['header']:
+                primary.header[key] = (pf['header'][key], pf['header'].comments[key])
+            pf_hdus = pf['hdus']
+
     spec1d = table_to_hdu(spec1d)
     spec1d.name = 'SPEC1D'
 
@@ -524,8 +605,10 @@ def opt_ext_single_source(
     exp = s2d['EXPOSURES']
 
 
-    spec = fits.HDUList(hdus=[primary, spec1d, sci, err, wav, wht, prof1d, exp])
+    spec = fits.HDUList(hdus=[primary, spec1d, sci, err, wav, wht, prof1d, exp] + pf_hdus)
     spec.writeto(out_filename, overwrite=True)
+    if pf_hdus and os.path.exists(pf_file):
+        os.remove(pf_file)   # its contents now live in the _spec.fits (PF_MODEL, PF_FIT, fnu_pf*)
 
 
     if plot_optext:
@@ -543,6 +626,54 @@ def opt_ext_single_source(
 
     s2d.close()
     x1d.close()
+
+def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave):
+    """Extraction with the drizzled profile-fit model, and the fitted spectrum on the
+    s2d wavelength grid.
+
+    The drizzled profile (per unit true flux) is used as optimal weights on the same
+    aperture rows as the standard optimal profile; dividing by its in-aperture sum
+    gives the true flux, and the main-shutter factor turns that into the reported
+    flux (main-shutter light on the point-source path-loss calibration).
+    """
+    from astropy.table import Table
+    with fits.open(pf_file) as h:
+        P = np.asarray(h['PROFILE'].data, float)
+        model = np.asarray(h['MODEL'].data, float)
+        fit = Table(h['FIT'].data)
+        header = h['PRIMARY'].header.copy()
+    if P.shape != s2d_sci.shape:
+        log(f"{os.path.basename(pf_file)}: profile {P.shape} does not match the s2d {s2d_sci.shape}; skipping")
+        return None
+    x = np.arange(P.shape[0] + 1)
+    in_ap = (x[:-1] > ap_start) & (x[1:] <= ap_stop)
+    Pa = np.where(in_ap[:, None] & np.isfinite(P), P, 0.0)
+    norm = Pa.sum(axis=0)
+    good = norm > 1e-3 * np.nanmax(norm)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', category=RuntimeWarning)
+        amp, amp_err = extract_with_profile(np.where(good, Pa / np.where(good, norm, 1.0), 0.0),
+                                            s2d_sci.copy(), s2d_err.copy(), mask=s2d_mask, ivw=True)
+    total = np.where(good, amp / np.where(good, norm, 1.0), np.nan)
+    total_err = np.where(good, amp_err / np.where(good, norm, 1.0), np.nan)
+    ok = np.isfinite(fit['flux']) & np.isfinite(fit['main_factor'])
+    factor = np.interp(wave, fit['wave'][ok], fit['main_factor'][ok], left=np.nan, right=np.nan)
+    fit_flux = np.interp(wave, fit['wave'][ok], fit['flux'][ok], left=np.nan, right=np.nan)
+    fit_err = np.interp(wave, fit['wave'][ok], fit['flux_err'][ok], left=np.nan, right=np.nan)
+    columns = {
+        'fnu_pf': (total * factor, 'Profile-fit flux: main-shutter light, point-source path-loss calibration'),
+        'fnu_pf_err': (total_err * factor, 'Profile-fit flux error'),
+        'fnu_pf_total': (total, 'Profile-fit total flux of the source model'),
+        'fnu_pf_fit': (fit_flux * factor, 'Profile-fit flux from the joint fit on native pixels (check)'),
+        'fnu_pf_fit_err': (fit_err * factor, 'Error of fnu_pf_fit'),
+    }
+    keep = fits.Header()
+    for key in header:
+        if key.startswith('PF'):
+            keep[key] = (header[key], header.comments[key])
+    hdus = [fits.ImageHDU(model, name='PF_MODEL'), fits.BinTableHDU(fit, name='PF_FIT')]
+    return dict(columns=columns, header=keep, hdus=hdus)
+
 
 def combine_per_eg_spectra(
     per_eg_spec_files,
@@ -578,6 +709,12 @@ def combine_per_eg_spectra(
         '4px': ('fnu_4px', 'fnu_4px_err'),
         '5px': ('fnu_5px', 'fnu_5px_err'),
     }
+
+    def _has_pf(spec_file):
+        with fits.open(os.path.join(workspace_dir, spec_file)) as h:
+            return 'fnu_pf' in h['SPEC1D'].columns.names
+    if per_eg_spec_files and all(_has_pf(f) for f in per_eg_spec_files):
+        extraction_cols['pf'] = ('fnu_pf', 'fnu_pf_err')
 
     per_eg_data = {key: {'wavelengths': [], 'fluxes': [], 'errors': []} for key in extraction_cols}
     exposure_times = []
@@ -709,6 +846,13 @@ def combine_per_eg_spectra(
         spec1d.add_column(Column(name=f'fnu_{size}_err', data=fnu_box_err, description=f'1D-combined {size} boxcar flux error', unit='uJy'))
         spec1d.add_column(Column(name=f'flam_{size}', data=fnu_to_flam(fnu_box, common_wave), description=f'1D-combined {size} boxcar flux, flam', unit='erg / (s cm2 Angstrom)'))
         spec1d.add_column(Column(name=f'flam_{size}_err', data=fnu_to_flam(fnu_box_err, common_wave), description=f'1D-combined {size} boxcar flux error, flam', unit='erg / (s cm2 Angstrom)'))
+
+    if 'pf' in combined:
+        fnu_pf, fnu_pf_err, _ = combined['pf']
+        spec1d.add_column(Column(name='fnu_pf', data=fnu_pf, description='1D-combined profile-fit flux', unit='uJy'))
+        spec1d.add_column(Column(name='fnu_pf_err', data=fnu_pf_err, description='1D-combined profile-fit flux error', unit='uJy'))
+        spec1d.add_column(Column(name='flam_pf', data=fnu_to_flam(fnu_pf, common_wave), description='1D-combined profile-fit flux, flam', unit='erg / (s cm2 Angstrom)'))
+        spec1d.add_column(Column(name='flam_pf_err', data=fnu_to_flam(fnu_pf_err, common_wave), description='1D-combined profile-fit flux error, flam', unit='erg / (s cm2 Angstrom)'))
 
     spec1d.add_column(Column(name='n_combined', data=n_opt, description='Number of spectra combined per pixel'))
 

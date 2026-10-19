@@ -19,10 +19,11 @@ import toml
 from astropy.io import fits
 
 from campfire_pipeline.common.io import log
-
 # JWST NIRSpec MSA slit geometry constants (from assign_wcs/nirspec.py)
-_MSA_MARGIN = 1.05   # 0.55 (half open area) + 0.50 (padding beyond outer shutters)
-_MSA_PITCH = 1.15    # slit_frame units per shutter pitch
+from campfire_pipeline.nirspec.constants import (
+    MSA_SLIT_MARGIN as _MSA_MARGIN,
+    MSA_SLIT_PITCH as _MSA_PITCH,
+)
 
 
 def _contiguous_slitlet_length(shutsta):

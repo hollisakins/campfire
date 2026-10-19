@@ -1094,6 +1094,33 @@ def unpad_model(model, padding_info):
     new_model.slits[0].dq = unpadded_dq
     return new_model
 
+def _nod_number(cal_file):
+    """Exposure number of a canonical file name (jw..._03101_<00002>_nrs1_<sid>.fits -> 2)."""
+    return int(os.path.basename(cal_file).split('_')[2])
+
+
+def nod_background_partners(cal_files, bkg_overrides=None):
+    """Which exposures stage 2b subtracts as the background of each exposure.
+
+    Default: every other exposure of the background group. A per-source override
+    (``nodded_background_overrides.toml``: ``{nod: [nods to use]}``) replaces that
+    list for the nods it names; an empty list excludes the nod from the science
+    combination (returned as ``None``). Shared with the profile-fit extraction,
+    which must model exactly the frames that were subtracted.
+
+    Returns a list, one entry per file: partner indices into ``cal_files``, or None.
+    """
+    nods = [_nod_number(f) for f in cal_files]
+    out = []
+    for i in range(len(cal_files)):
+        partners = [j for j in range(len(cal_files)) if j != i]
+        if bkg_overrides is not None and str(nods[i]) in bkg_overrides:
+            nods_to_use = bkg_overrides[str(nods[i])]
+            partners = None if len(nods_to_use) == 0 else [j for j, n in enumerate(nods) if n in nods_to_use]
+        out.append(partners)
+    return out
+
+
 def run_stage2b_single_slitlet(
         cal_files: List,
         workspace_dir: str,
@@ -1166,29 +1193,23 @@ def run_stage2b_single_slitlet(
             # print(shapes)
             # assert 1==2
 
+            partners = nod_background_partners(cal_files, bkg_overrides)
             for i in range(len(cal_files)):
                 science = models[i][0]
+                overridden = (bkg_overrides is not None
+                              and str(_nod_number(cal_files[i])) in bkg_overrides)
 
-
-                bkg = [mod[0] for j,mod in enumerate(models) if j != i]
-                nods = [int(os.path.basename(cal_file).split('_')[2]) for cal_file in cal_files]
-                bkg_nods = [n for j, n in enumerate(nods) if j != i]
-                overridden = False
-
-                if bkg_overrides is not None:
-                    if str(nods[i]) in bkg_overrides:
-                        nods_to_use = bkg_overrides[str(nods[i])]
-                        if len(nods_to_use) == 0:
-                            log(f'{os.path.basename(cal_files[i])}: Override empty for nod {nods[i]}, excluding nod from science combination')
-                            # Canonical stays calibrated; mark it excluded for stage3.
-                            header_updates = cfp.format(keyset=cfp.NIRSPEC, CFP_BKG='excluded:override')
-                            header_updates.update(C.bkg_nods_cards([], overridden=True))
-                            C.append_extras(cal_files[i], header_updates=header_updates)
-                            continue
-                        log(f'{os.path.basename(cal_files[i])}: Only using nods {nods_to_use} for bkg subtraction for nod {nods[i]}')
-                        bkg = [b[0] for n,b in zip(nods,models) if n in nods_to_use]
-                        bkg_nods = [n for n in nods if n in nods_to_use]
-                        overridden = True
+                if partners[i] is None:
+                    log(f'{os.path.basename(cal_files[i])}: Override empty for nod {_nod_number(cal_files[i])}, excluding nod from science combination')
+                    # Canonical stays calibrated; mark it excluded for stage3.
+                    header_updates = cfp.format(keyset=cfp.NIRSPEC, CFP_BKG='excluded:override')
+                    header_updates.update(C.bkg_nods_cards([], overridden=True))
+                    C.append_extras(cal_files[i], header_updates=header_updates)
+                    continue
+                if overridden:
+                    log(f'{os.path.basename(cal_files[i])}: Only using nods {bkg_overrides[str(_nod_number(cal_files[i]))]} for bkg subtraction for nod {_nod_number(cal_files[i])}')
+                bkg = [models[j][0] for j in partners[i]]
+                bkg_nods = [_nod_number(cal_files[j]) for j in partners[i]]
 
                 bkgsub = bkg_subtract.call(science, bkg)
 

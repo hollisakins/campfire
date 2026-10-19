@@ -62,6 +62,23 @@ Release procedure: edit the `## Unreleased` section below, then run
   `bkg_nods` / `bkg_override` (`N/A` for canonicals from before this change). Additive
   output columns; no pixel values change. Motivated by a pull that wiped the local
   override files: the products carried no record of which overrides had been applied.
+- **Opt-in forward-model ("profile fit") NIRSpec extraction, `[nirspec.stage3].profile_fit`
+  (default `false`, so default products are unchanged).** `nirspec/profile_fit.py` fits one
+  true spectrum per source jointly to every nod difference, each exposure seen through its
+  own path loss and slitlet: a Gaussian galaxy along the slit (centre and width, optionally
+  linear in log wavelength) convolved with the star-measured PSF, clipped by the open
+  shutters, with the nod partners' negative images and Gaussian priors on the shape (so a
+  faint source falls back to a compact source at its planned position). The model is
+  drizzled through Spec3's own outlier-flagged frames, so it gets the data's weights and
+  masks, and `_spec.fits` gains `fnu_pf`/`fnu_pf_err`/`flam_pf*` (main-shutter light on the
+  point-source path-loss calibration), `fnu_pf_total`, `fnu_pf_fit`(`_err`) (the joint fit
+  on native pixels), a `PF_MODEL` s2d, a `PF_FIT` table and `PF*` header keys; `1d` combine
+  carries `fnu_pf`. Uses stage 2b's own background-partner rule (now
+  `stage2.nod_background_partners`), the applied path-loss type per exposure, and jwst's slit
+  bounds for the open shutters. PRISM-calibrated PSF; prototype status (issue to follow).
+  The nod-difference variance accounts for the subtracted frames, which jwst's
+  `subtract_images` does not propagate (so the standard `fnu_err` is ~20 % low for three
+  nods; not changed here).
 - **`resample` now writes a per-tile exposure map, `<mosaic>_exp.fits`, next to
   the split `_sci/_err/_wht`.** It is the full-resolution, per-tile member of the
   `exp` family; the field-wide `expmap_<field>_<filter>.fits` is the coarse member.
