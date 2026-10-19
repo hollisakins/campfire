@@ -32,6 +32,14 @@ Release procedure: edit the `## Unreleased` section below, then run
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
   in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.
+- **`nirspec/trace_overlap.py`: per-exposure trace maps of every open slitlet (not yet
+  wired into a stage).** jwst `assign_wcs` with the full MSA metafile plus jwst
+  `msaflagopen`'s failed-open shutters give, for one exposure, which traces light each
+  detector pixel (`TraceMap`: count / index / slit-frame y / wavelength images, a table of
+  shared pixels and a slit lookup table), cached as FITS per exposure. Per-source lookups
+  return the other sources' source-shutter light on a source's trace in each nod difference
+  (added in its own nod, subtracted from partners) and measure its signal. Adds
+  `MSA_SLIT_PITCH` / `MSA_SLIT_MARGIN` to `nirspec/constants.py`. No product changes.
 - **Tests run in CI.** `.github/workflows/python.yml` runs `pipeline/tests` on PRs that
   touch `pipeline/` or `layout/` (informational until its CI runtime is known) and the
   layout golden fixture on every client change; `[tool.pytest.ini_options] testpaths =
