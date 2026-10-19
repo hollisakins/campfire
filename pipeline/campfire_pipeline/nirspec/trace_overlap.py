@@ -57,23 +57,29 @@ def open_shutter_centres(shutter_state, ymin, ymax, pitch=MSA_SLIT_PITCH, margin
 # ---------------------------------------------------------------------------
 # Building: jwst WCS for every open slitlet of the configuration
 # ---------------------------------------------------------------------------
-def full_mask_model(rate_file, workdir, msa_file=None, msa_metadata_id=None, dither_position=None):
+def full_mask_model(rate_file, workdir, msa_file=None, msa_metadata_id=None, dither_position=None,
+                    return_staged=False):
     """jwst model of one exposure with a WCS for every open slitlet of its configuration.
 
     ``rate_file`` is copied into ``workdir`` (the original is never modified). It is
     the exposure itself, or a template: any rate file with the same detector,
     disperser and filter, pointed at ``msa_file`` / ``msa_metadata_id`` /
     ``dither_position``. Slitlets keep their relative geometry with a template
-    because all traces move together with the grating wheel tilt."""
+    because all traces move together with the grating wheel tilt (measured: a
+    template moves no trace on the detector and shifts all wavelengths alike by
+    ~12 A in G395M). ``return_staged`` also returns the files copied here."""
     from stdatamodels.jwst import datamodels
     from jwst.assign_wcs import AssignWcsStep
 
     os.makedirs(workdir, exist_ok=True)
+    staged = []
     path = os.path.join(workdir, os.path.basename(rate_file))
     if not os.path.exists(path):
         shutil.copy(rate_file, path)
+        staged.append(path)
     if msa_file is not None and not os.path.exists(os.path.join(workdir, os.path.basename(msa_file))):
         shutil.copy(msa_file, workdir)
+        staged.append(os.path.join(workdir, os.path.basename(msa_file)))
     model = datamodels.open(path)
     if msa_file is not None:
         model.meta.instrument.msa_metadata_file = os.path.basename(msa_file)
@@ -88,7 +94,7 @@ def full_mask_model(rate_file, workdir, msa_file=None, msa_metadata_id=None, dit
     finally:
         os.chdir(cwd)
     model.close()
-    return out
+    return (out, staged) if return_staged else out
 
 
 def _slit_pixels(model, wcs):
@@ -177,7 +183,8 @@ class TraceMap:
               failed_open=True, pad=LIGHT_PAD):
         from astropy.table import Table
 
-        model = full_mask_model(rate_file, workdir, msa_file, msa_metadata_id, dither_position)
+        model, staged = full_mask_model(rate_file, workdir, msa_file, msa_metadata_id, dither_position,
+                                        return_staged=True)
         shape = model.data.shape[-2:]
         traces = list(_slitlet_traces(model))
         if failed_open:
@@ -188,6 +195,9 @@ class TraceMap:
                     MSAMETFL=m.instrument.msa_metadata_file, MSAMETID=int(m.instrument.msa_metadata_id),
                     PATT_NUM=int(m.dither.position_number), LITPAD=pad, FAILOPEN=bool(failed_open))
         model.close()
+        for f in staged:                                 # the copies made for assign_wcs; the map is all we keep
+            if os.path.exists(f):
+                os.remove(f)
         return cls.from_traces(traces, shape, pad=pad, meta=meta)
 
     @classmethod
