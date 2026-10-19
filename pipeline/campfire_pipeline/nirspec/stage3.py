@@ -284,6 +284,10 @@ def run_stage3_single_source(
         exposures['dither_number'] = [hdr['PATT_NUM'] for hdr in hdrs0]
         exposures['exptime'] = [hdr['EFFEXPTM'] for hdr in hdrs0]
         exposures['stuck_shutter_list'] = [hdr['STKSHTRS'] if 'STKSHTRS' in hdr else 'N/A' for hdr in hdrs0]
+        # Background nods stage 2b subtracted, and whether an override chose them
+        # ('N/A' for canonicals written before stage 2b recorded them).
+        exposures['bkg_nods'] = [str(hdr.get('BKGNODS', 'N/A')) for hdr in hdrs0]
+        exposures['bkg_override'] = [str(hdr['BKGOVR']) if 'BKGOVR' in hdr else 'N/A' for hdr in hdrs0]
         hdrs1 = [fits.getheader(cal_file,ext=1) for cal_file in cal_files]
         # Fixed-slit cal products omit the MSA-only SHUTSTA shutter state and the
         # slit-level SRCRA/SRCDEC (the latter come from the MSA source catalog);

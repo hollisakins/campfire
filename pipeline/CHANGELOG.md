@@ -45,6 +45,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--target` cone searches always use it.
 
 ### Algorithm
+- **Products record which nods were subtracted as background.** Stage 2b stamps each
+  canonical spectrum-exposure with `BKGNODS` (the nod numbers subtracted, or `excluded`)
+  and `BKGOVR` (whether a nodded-background override chose them), cleared again by
+  `restore_pre_bkgsub`; stage 3 copies them into the `_spec.fits` `EXPOSURES` table as
+  `bkg_nods` / `bkg_override` (`N/A` for canonicals from before this change). Additive
+  output columns; no pixel values change. Motivated by a pull that wiped the local
+  override files: the products carried no record of which overrides had been applied.
 - **`resample` now writes a per-tile exposure map, `<mosaic>_exp.fits`, next to
   the split `_sci/_err/_wht`.** It is the full-resolution, per-tile member of the
   `exp` family; the field-wide `expmap_<field>_<filter>.fits` is the coarse member.

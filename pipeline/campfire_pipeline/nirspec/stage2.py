@@ -1171,19 +1171,24 @@ def run_stage2b_single_slitlet(
 
 
                 bkg = [mod[0] for j,mod in enumerate(models) if j != i]
+                nods = [int(os.path.basename(cal_file).split('_')[2]) for cal_file in cal_files]
+                bkg_nods = [n for j, n in enumerate(nods) if j != i]
+                overridden = False
 
                 if bkg_overrides is not None:
-                    nods = [int(os.path.basename(cal_file).split('_')[2]) for cal_file in cal_files]
                     if str(nods[i]) in bkg_overrides:
                         nods_to_use = bkg_overrides[str(nods[i])]
                         if len(nods_to_use) == 0:
                             log(f'{os.path.basename(cal_files[i])}: Override empty for nod {nods[i]}, excluding nod from science combination')
                             # Canonical stays calibrated; mark it excluded for stage3.
-                            C.append_extras(cal_files[i], header_updates=cfp.format(
-                                keyset=cfp.NIRSPEC, CFP_BKG='excluded:override'))
+                            header_updates = cfp.format(keyset=cfp.NIRSPEC, CFP_BKG='excluded:override')
+                            header_updates.update(C.bkg_nods_cards([], overridden=True))
+                            C.append_extras(cal_files[i], header_updates=header_updates)
                             continue
                         log(f'{os.path.basename(cal_files[i])}: Only using nods {nods_to_use} for bkg subtraction for nod {nods[i]}')
                         bkg = [b[0] for n,b in zip(nods,models) if n in nods_to_use]
+                        bkg_nods = [n for n in nods if n in nods_to_use]
+                        overridden = True
 
                 bkgsub = bkg_subtract.call(science, bkg)
 
@@ -1215,6 +1220,7 @@ def run_stage2b_single_slitlet(
                 # cache the rectified view as S2D_BKGSUB_*, stamp CFP_BKG/CFP_S2D.
                 extras = C.make_prefixed_hdus(pre_arrays[i], C.PRE_BKGSUB_PREFIX)
                 header_updates = cfp.format(keyset=cfp.NIRSPEC, CFP_BKG=None)
+                header_updates.update(C.bkg_nods_cards(bkg_nods, overridden=overridden))
                 if rectify:
                     resampled = result.copy()
                     resampled = pixel_replace.call(resampled)
