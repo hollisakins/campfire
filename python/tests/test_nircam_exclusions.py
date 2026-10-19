@@ -60,15 +60,15 @@ def test_pull_exclusions_empty_still_writes(monkeypatch, tmp_path):
     assert doc['excluded'] == {}
 
 
-def test_pull_exclusions_overwrites_no_merge(monkeypatch, tmp_path):
+def test_pull_exclusions_keeps_local(monkeypatch, tmp_path):
     (tmp_path / 'exposures.json').write_text(
-        json.dumps({'version': 1, 'excluded': {'f444w': ['stale_root']}}))
+        json.dumps({'version': 1, 'excluded': {'f444w': ['local_root']}}))
     _patch_client(monkeypatch, [{'field': 'cosmos', 'filter': 'f200w',
                                  'filename': 'new_root', 'review_status': 'excluded'}])
     _patch_dirs(monkeypatch, tmp_path)
     nx.pull_exclusions('cosmos', config={})
     doc = json.loads((tmp_path / 'exposures.json').read_text())
-    assert doc['excluded'] == {'f200w': ['new_root']}  # full replace, no merge
+    assert doc['excluded'] == {'f200w': ['new_root'], 'f444w': ['local_root']}  # union, local never removed
 
 
 def test_pull_exclusions_dry_run_writes_nothing(monkeypatch, tmp_path):
@@ -107,3 +107,15 @@ def test_redeploy_preserves_inspection_state():
     # pipeline-derived columns ARE refreshed
     assert update['stage'] == 'outlier'
     assert update['png_path'].endswith('root1_preview.png')
+
+
+def test_pull_exclusions_keeps_unreadable_local_file(monkeypatch, tmp_path, capsys):
+    """A malformed hand-edited exposures.json is kept as it is; the pull does not abort."""
+    bad = '{"excluded": {"f444w": ["local_root"]'           # truncated JSON
+    (tmp_path / 'exposures.json').write_text(bad)
+    _patch_client(monkeypatch, [{'field': 'cosmos', 'filter': 'f200w',
+                                 'filename': 'new_root', 'review_status': 'excluded'}])
+    _patch_dirs(monkeypatch, tmp_path)
+    nx.pull_exclusions('cosmos', config={})
+    assert (tmp_path / 'exposures.json').read_text() == bad
+    assert 'cannot read it' in capsys.readouterr().out

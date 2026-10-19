@@ -176,6 +176,21 @@ def make_prefixed_hdus(arrays, prefix, slit_extver=1):
     return hdus
 
 
+BKG_NODS_CARDS = ('BKGNODS', 'BKGOVR')
+
+
+def bkg_nods_cards(nods, overridden):
+    """Header cards recording which nods stage 2b subtracted as background.
+
+    ``BKGNODS`` is the comma-separated nod (exposure) numbers, or ``excluded`` when
+    an empty override dropped this nod; ``BKGOVR`` says whether a
+    nodded-background override chose them. Stage 3 copies both into the
+    ``EXPOSURES`` table, so the background choice is recorded in every product."""
+    value = ','.join(str(int(n)) for n in nods) if nods else 'excluded'
+    return {'BKGNODS': (value, 'nods subtracted as background (stage 2b)'),
+            'BKGOVR': (bool(overridden), 'background nods set by an override')}
+
+
 def save_canonical(model, path, extra_hdus=None, header_updates=None,
                    preserve_existing_custom=True):
     """Save a jwst ``MultiSlitModel`` as the canonical file, re-attaching the
@@ -276,7 +291,7 @@ def restore_pre_bkgsub(path, slit_extver=1):
             name = (out[i].name or '').upper()
             if name.startswith(PRE_BKGSUB_PREFIX) or name.startswith(S2D_BKGSUB_PREFIX):
                 del out[i]
-        for card in ('CFP_BKG', 'CFP_S2D'):
+        for card in ('CFP_BKG', 'CFP_S2D') + BKG_NODS_CARDS:
             if card in out[0].header:
                 del out[0].header[card]
         out.writeto(tmp, overwrite=True)

@@ -170,7 +170,7 @@ def test_restore_pre_bkgsub_round_trip(tmp_path):
     p = _slit_fits(tmp_path / 'c.fits', sci=bkgsub_sci,
                    extras=pre_hdus + [fits.ImageHDU(bkgsub_sci, name='S2D_BKGSUB_SCI'),
                                       fits.ImageHDU(cal_sci, name='S2D_SCI')],
-                   CFP_BKG='t', CFP_S2D='t', CFP_CAL='t')
+                   CFP_BKG='t', CFP_S2D='t', CFP_CAL='t', BKGNODS='1,3', BKGOVR=True)
     assert C.has_pre_bkgsub(p)
     C.restore_pre_bkgsub(p)
     with fits.open(p) as hdul:
@@ -181,6 +181,7 @@ def test_restore_pre_bkgsub_round_trip(tmp_path):
         assert 'S2D_SCI' in names                             # un-bkgsub view kept
         assert 'CFP_BKG' not in hdul[0].header and 'CFP_S2D' not in hdul[0].header
         assert 'CFP_CAL' in hdul[0].header                    # cal state card kept
+        assert 'BKGNODS' not in hdul[0].header and 'BKGOVR' not in hdul[0].header
 
 
 def test_restore_pre_bkgsub_raises_without_revert(tmp_path):
@@ -264,3 +265,13 @@ def test_bkgsub_group_done_rectify_aware(tmp_path):
         p = mk(f'term{i}.fits', CFP_BKG=marker)
         assert _bkgsub_group_done(p, rectify=True) is True
         assert _bkgsub_group_done(p, rectify=False) is True
+
+
+# --- background-nod provenance cards -----------------------------------------
+
+def test_bkg_nods_cards():
+    assert C.bkg_nods_cards([2, 3], overridden=False) == {
+        'BKGNODS': ('2,3', 'nods subtracted as background (stage 2b)'),
+        'BKGOVR': (False, 'background nods set by an override')}
+    assert C.bkg_nods_cards([1], overridden=True)['BKGNODS'][0] == '1'
+    assert C.bkg_nods_cards([], overridden=True)['BKGNODS'][0] == 'excluded'

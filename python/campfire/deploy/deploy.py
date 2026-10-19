@@ -880,6 +880,10 @@ def deploy_observation(
             n_rate = upsert_rate_exposures(
                 sb, build_rate_exposure_records(rate_files, observation=obs_name, scope=scope))
             print(f"  Upserted {n_rate} rate-exposure triage rows")
+        # Local review config (background overrides, hand/web stuck shutters) is
+        # pushed to nirspec_source_review so a later pull can never lose it.
+        from campfire.deploy.nirspec_flags import push_review_flags
+        push_review_flags(sb, obs_name)
         # Nods-renderer grid rows: one per (obs, exposure_root, nod, detector,
         # source); exposure_files is already source-filtered (grid is per-source).
         if exposure_files:

@@ -8,6 +8,8 @@ container. The full DB SELECT → file write runs live against local Supabase in
 import toml
 
 from campfire.deploy.nirspec_flags import (
+    merge_pulled_bkg_overrides,
+    read_bkg_overrides,
     merge_pulled_stuck_shutters,
     _serialize_bkg_overrides,
 )
@@ -69,13 +71,13 @@ def test_merge_web_overlays_auto():
     assert stats["web"] == 1
 
 
-def test_merge_web_dropped_when_absent_from_db():
-    # A prior web entry the DB no longer flags is dropped (reversibility).
+def test_merge_web_kept_when_absent_from_db():
+    # A prior web entry the DB no longer flags is kept: a pull never deletes local config.
     existing = {("r", "1"): ([2], "web")}
     db_web = {}
     data, prov, stats = merge_pulled_stuck_shutters(existing, db_web)
-    assert "r" not in data
-    assert stats["web_dropped"] == 1
+    assert data["r"]["1"] == [2] and prov[("r", "1")] == "web"
+    assert stats["web_kept"] == 1
 
 
 def test_merge_hand_and_auto_retained_when_absent_from_db():
@@ -136,3 +138,85 @@ def test_provenance_roundtrip_through_pipeline(tmp_path):
     assert tagged2[("r", "1")][1] == "hand"
     assert tagged2[("r", "2")][1] == "web"
     assert tagged2[("r", "4")] == ([2], "auto")
+
+
+# ---------------------------------------------------------------------------
+# bkg-override pull: local-first merge
+# ---------------------------------------------------------------------------
+
+def test_bkg_merge_keeps_local_and_adds_db():
+    local = {"jw1_03101": {"100": {"3": [1]}}}
+    db = {"jw1_03101": {"100": {"3": [2]}, "200": {"1": [3]}}, "jw1_05101": {"100": {"2": []}}}
+    merged, stats = merge_pulled_bkg_overrides(local, db)
+    assert merged["jw1_03101"]["100"] == {"3": [1]}          # local wins the conflict
+    assert merged["jw1_03101"]["200"] == {"1": [3]}          # DB adds a missing source
+    assert merged["jw1_05101"]["100"] == {"2": []}           # and a missing root; empty list kept
+    assert stats["added"] == 2 and stats["conflict"] == 1 and stats["local"] == 1
+
+
+def test_bkg_merge_empty_db_never_removes_local():
+    """The failure this guards against: an empty DB used to wipe every local override."""
+    local = {"jw1_03101": {"100": {"3": [1]}, "101": {"2": [4], "4": [3]}}}
+    merged, stats = merge_pulled_bkg_overrides(local, {})
+    assert merged == local and stats["added"] == 0
+
+
+def test_pull_bkg_overrides_never_clobbers(monkeypatch, tmp_path):
+    import campfire.deploy.nirspec_flags as nf
+    f = tmp_path / "nodded_background_overrides.toml"
+    hand = "# my notes\n[jw1_03101]\n    100 = {3 = [1]}\n"
+    f.write_text(hand)
+    monkeypatch.setattr(nf, "_ref_dir", lambda obs: tmp_path)
+
+    class _Q:
+        def __init__(self, rows): self.rows = rows
+        def __getattr__(self, name): return lambda *a, **k: self
+        @property
+        def not_(self): return self
+        def execute(self):
+            return type("R", (), {"data": self.rows})()
+
+    class _C:
+        def __init__(self, rows): self.rows = rows
+        def table(self, name): return _Q(self.rows)
+
+    monkeypatch.setattr(nf, "get_supabase_client", lambda config: _C([]))
+    nf.pull_bkg_overrides("obs", config={})
+    assert f.read_text() == hand                               # nothing to add: file untouched
+
+    rows = [{"exposure_root": "jw1_03101", "source_id": 200, "bkg_overrides": {"1": [3]}}]
+    monkeypatch.setattr(nf, "get_supabase_client", lambda config: _C(rows))
+    nf.pull_bkg_overrides("obs", config={})
+    got = read_bkg_overrides(f)
+    assert got == {"jw1_03101": {"100": {"3": [1]}, "200": {"1": [3]}}}
+    assert (tmp_path / "nodded_background_overrides.toml.prev").read_text() == hand
+
+
+def test_plan_review_push_local_wins_never_deletes():
+    from campfire.deploy.nirspec_flags import plan_review_push
+    local = {("r", "1"): {"3": [1]}, ("r", "2"): {"2": [4]}, ("r", "3"): {"1": []}}
+    db = {("r", "1"): {"3": [1]}, ("r", "2"): {"2": [3]}, ("r", "9"): {"1": [2]}}
+    rows = plan_review_push(local, db, "bkg_overrides")
+    assert rows == [{"exposure_root": "r", "source_id": 2, "bkg_overrides": {"2": [4]}},
+                    {"exposure_root": "r", "source_id": 3, "bkg_overrides": {"1": []}}]
+
+
+def test_pull_bkg_overrides_keeps_unreadable_local_file(monkeypatch, tmp_path, capsys):
+    import campfire.deploy.nirspec_flags as nf
+    f = tmp_path / "nodded_background_overrides.toml"
+    bad = "[jw1_03101]\n    100 = {3 = [1]\n"                # unterminated inline table
+    f.write_text(bad)
+    monkeypatch.setattr(nf, "_ref_dir", lambda obs: tmp_path)
+
+    class _Q:
+        def __getattr__(self, name): return lambda *a, **k: self
+        @property
+        def not_(self): return self
+        def execute(self):
+            return type("R", (), {"data": [{"exposure_root": "jw1_03101", "source_id": 200,
+                                            "bkg_overrides": {"1": [3]}}]})()
+
+    monkeypatch.setattr(nf, "get_supabase_client", lambda config: type("C", (), {"table": lambda self, n: _Q()})())
+    nf.pull_bkg_overrides("obs", config={})
+    assert f.read_text() == bad
+    assert "cannot read it" in capsys.readouterr().out

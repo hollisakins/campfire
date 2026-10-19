@@ -9,8 +9,9 @@ bridges that state to the pipeline ``combine`` step (epic #261, N6).
     ``$CAMPFIRE_ROOT/reference/nircam/<field>/exposures.json``. The pipeline
     ``Field.setup_workspace`` reads that file and drops the listed rootnames from
     ``get_exposure_files`` / ``get_uncal_files`` — so they leave both combine and
-    outlier detection. The list is rewritten in full every pull, so un-excluding
-    an exposure in the portal re-includes it on the next combine (reversible).
+    outlier detection. Local-first: the pull adds the DB's exclusions to the ones
+    already in the file and never removes a local one, so un-excluding an exposure
+    in the portal also needs it removed from the local file.
 """
 
 import json
@@ -26,9 +27,9 @@ def _utcnow_iso():
 def pull_exclusions(field, config, dry_run=False):
     """Materialize ``review_status='excluded'`` rows → ``exposures.json``.
 
-    Always writes (even with zero exclusions) so un-excluding the last exposure
-    yields an empty list rather than a stale file that combine keeps honoring.
-    Full overwrite, no merge → total reversibility.
+    Local-first: the result is the union of the local file's exclusions and the
+    DB's; a local exclusion is never removed (``local_first``). Writes only when the
+    DB adds an exclusion or no file exists.
     """
     from campfire.deploy.nircam import _resolve_nircam_dirs
     from campfire.deploy.supabase import get_supabase_client
@@ -47,6 +48,19 @@ def pull_exclusions(field, config, dry_run=False):
     by_filter = {}
     for row in rows:
         by_filter.setdefault(row['filter'], set()).add(row['filename'])
+    local = {}
+    if out_path.exists():
+        try:
+            local = {f: set(v) for f, v in (json.loads(out_path.read_text()).get('excluded') or {}).items()}
+        except (ValueError, AttributeError, TypeError) as e:
+            # Unreadable local file: keep it as it is (local-first) and carry on.
+            print(f"Field: {field}")
+            print(f"  kept local {out_path} unchanged: cannot read it ({e}); "
+                  f"{sum(len(v) for v in by_filter.values())} DB exclusion(s) not merged")
+            return
+    added = sum(len(v - local.get(f, set())) for f, v in by_filter.items())
+    for f, v in local.items():
+        by_filter.setdefault(f, set()).update(v)
     excluded = {f: sorted(v) for f, v in sorted(by_filter.items())}
     n = sum(len(v) for v in excluded.values())
 
@@ -59,7 +73,10 @@ def pull_exclusions(field, config, dry_run=False):
     }
 
     print(f"Field: {field}")
-    print(f"Excluded exposures: {n} across {len(excluded)} filter(s)")
+    print(f"Excluded exposures: {n} across {len(excluded)} filter(s); {added} added from the DB, "
+          f"{sum(len(v) for v in local.values())} local kept")
+    if out_path.exists() and added == 0:
+        return
     if dry_run:
         print(f"  would write {out_path}")
         return

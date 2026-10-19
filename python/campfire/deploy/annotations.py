@@ -7,9 +7,11 @@ a scope — they are the annotation half of ``campfire pull`` (admin-only; the
 storage engine handles the products half).
 
 Unlike products, annotations are KB-scale DB rows with no content-hash
-tracking: regeneration is unconditional and cheap. Overwrite safety lives in
-the materializers themselves (e.g. stuck-shutters merges hand > web > auto),
-not in a diff layer.
+tracking. The files are local configuration too (hand-edited as well as pulled),
+so every materializer is local-first (``local_first``): a pull creates what is
+missing and never overwrites or deletes a local file or entry; a local entry
+that disagrees with the DB is kept and reported. Local config reaches the DB on
+deploy (``nirspec_flags.push_review_flags``).
 """
 
 from __future__ import annotations
