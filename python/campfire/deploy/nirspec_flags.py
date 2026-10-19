@@ -286,7 +286,14 @@ def pull_bkg_overrides(obs, config, dry_run=False):
             str(nod): [int(n) for n in nods] for nod, nods in overrides.items()
         }
 
-    local = read_bkg_overrides(bkg_file)
+    try:
+        local = read_bkg_overrides(bkg_file)
+    except (ValueError, TypeError, AttributeError) as e:
+        # Unreadable local file: keep it as it is (local-first) and carry on.
+        print(f"Observation: {obs}")
+        print(f"  kept local {bkg_file} unchanged: cannot read it ({e}); "
+              f"{sum(len(t) for t in db.values())} DB override(s) not merged")
+        return
     merged, stats = merge_pulled_bkg_overrides(local, db)
 
     print(f"Observation: {obs}")

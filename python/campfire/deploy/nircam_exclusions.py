@@ -50,7 +50,14 @@ def pull_exclusions(field, config, dry_run=False):
         by_filter.setdefault(row['filter'], set()).add(row['filename'])
     local = {}
     if out_path.exists():
-        local = {f: set(v) for f, v in (json.loads(out_path.read_text()).get('excluded') or {}).items()}
+        try:
+            local = {f: set(v) for f, v in (json.loads(out_path.read_text()).get('excluded') or {}).items()}
+        except (ValueError, AttributeError, TypeError) as e:
+            # Unreadable local file: keep it as it is (local-first) and carry on.
+            print(f"Field: {field}")
+            print(f"  kept local {out_path} unchanged: cannot read it ({e}); "
+                  f"{sum(len(v) for v in by_filter.values())} DB exclusion(s) not merged")
+            return
     added = sum(len(v - local.get(f, set())) for f, v in by_filter.items())
     for f, v in local.items():
         by_filter.setdefault(f, set()).update(v)

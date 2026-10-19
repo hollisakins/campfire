@@ -107,3 +107,15 @@ def test_redeploy_preserves_inspection_state():
     # pipeline-derived columns ARE refreshed
     assert update['stage'] == 'outlier'
     assert update['png_path'].endswith('root1_preview.png')
+
+
+def test_pull_exclusions_keeps_unreadable_local_file(monkeypatch, tmp_path, capsys):
+    """A malformed hand-edited exposures.json is kept as it is; the pull does not abort."""
+    bad = '{"excluded": {"f444w": ["local_root"]'           # truncated JSON
+    (tmp_path / 'exposures.json').write_text(bad)
+    _patch_client(monkeypatch, [{'field': 'cosmos', 'filter': 'f200w',
+                                 'filename': 'new_root', 'review_status': 'excluded'}])
+    _patch_dirs(monkeypatch, tmp_path)
+    nx.pull_exclusions('cosmos', config={})
+    assert (tmp_path / 'exposures.json').read_text() == bad
+    assert 'cannot read it' in capsys.readouterr().out

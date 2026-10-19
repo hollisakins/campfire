@@ -199,3 +199,24 @@ def test_plan_review_push_local_wins_never_deletes():
     rows = plan_review_push(local, db, "bkg_overrides")
     assert rows == [{"exposure_root": "r", "source_id": 2, "bkg_overrides": {"2": [4]}},
                     {"exposure_root": "r", "source_id": 3, "bkg_overrides": {"1": []}}]
+
+
+def test_pull_bkg_overrides_keeps_unreadable_local_file(monkeypatch, tmp_path, capsys):
+    import campfire.deploy.nirspec_flags as nf
+    f = tmp_path / "nodded_background_overrides.toml"
+    bad = "[jw1_03101]\n    100 = {3 = [1]\n"                # unterminated inline table
+    f.write_text(bad)
+    monkeypatch.setattr(nf, "_ref_dir", lambda obs: tmp_path)
+
+    class _Q:
+        def __getattr__(self, name): return lambda *a, **k: self
+        @property
+        def not_(self): return self
+        def execute(self):
+            return type("R", (), {"data": [{"exposure_root": "jw1_03101", "source_id": 200,
+                                            "bkg_overrides": {"1": [3]}}]})()
+
+    monkeypatch.setattr(nf, "get_supabase_client", lambda config: type("C", (), {"table": lambda self, n: _Q()})())
+    nf.pull_bkg_overrides("obs", config={})
+    assert f.read_text() == bad
+    assert "cannot read it" in capsys.readouterr().out
