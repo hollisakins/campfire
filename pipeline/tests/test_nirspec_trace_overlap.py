@@ -57,11 +57,10 @@ def test_map_counts_and_shared_table():
     m = _maps()[0]
     assert m.count.max() == 2
     shared = m.count == 2
-    assert np.all(m.index[shared] == TO.SHARED)
-    assert np.all(np.isnan(m.ys[shared]))
-    # every shared pixel is listed once per trace
-    assert len(m.shared) == 2 * shared.sum()
-    assert set(np.unique(m.shared['index'])) == {0, 1}
+    # a shared pixel carries both traces, one per layer
+    assert m.index.shape[0] == 2
+    assert set(np.unique(m.index[:, shared])) == {0, 1}
+    assert np.all(m.index[1][~shared] == TO.NONE)
     # only the contaminant's columns are shared
     cols = np.nonzero(shared.any(axis=0))[0]
     assert cols.min() >= 50
@@ -73,14 +72,13 @@ def test_write_read_roundtrip(tmp_path):
     p = tmp_path / 'x_tracemap.fits'
     m.write(str(p))
     r = TO.TraceMap.read(str(p))
-    assert np.array_equal(r.count, m.count) and np.array_equal(r.index, m.index)
-    assert np.allclose(np.nan_to_num(r.ys), np.nan_to_num(m.ys))
-    assert len(r.shared) == len(m.shared) and list(r.slits['source_id']) == [1, 2]
+    assert np.array_equal(r.index, m.index) and np.array_equal(r.flag, m.flag)
+    assert list(r.slits['source_id']) == [1, 2]
 
 
 def test_traces_in_returns_every_trace_on_a_region():
     m = _maps()[0]
-    iy, ix, idx, ys, lam = m.traces_in(60, 10, 20, 10)       # region inside the overlap
+    iy, ix, idx, flag = m.traces_in(60, 10, 20, 10)       # region inside the overlap
     both = set(zip(iy[idx == 0], ix[idx == 0])) & set(zip(iy[idx == 1], ix[idx == 1]))
     assert len(both) > 0
     assert iy.min() >= 0 and ix.min() >= 0 and iy.max() < 10 and ix.max() < 20
@@ -93,8 +91,8 @@ def test_nod_contamination_signs_and_shutters():
     for r in recs:
         assert r.sign == (1 if r.exposure == r.from_exposure else -1)
         assert r.ix.min() >= 50                                # only where the traces overlap
-        # the contaminant's source shutter in nod j lights the target at a slit position offset by -8 rows
-        assert np.all(np.abs(r.target_ys - r.target_ys.mean()) < TO.OPEN_HALF + TO.LIGHT_PAD + 1e-6)
+        # only the contaminant's source-shutter pixels count (its other shutters carry sky, which cancels)
+        assert r.iy.size <= 2 * (TO.OPEN_HALF + TO.LIGHT_PAD) / DY * (NX - 50) + NX
     own = [r for r in recs if r.sign > 0]
     assert len(own) == 3
     # its own-nod light sits 8 rows below the target's source shutter: outside the target's shutter

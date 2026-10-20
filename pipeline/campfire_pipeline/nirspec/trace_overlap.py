@@ -36,8 +36,9 @@ from campfire_pipeline.nirspec.constants import MSA_SLIT_MARGIN, MSA_SLIT_PITCH
 
 OPEN_HALF = 0.5      # half-height of a shutter's open area, slit_frame units
 LIGHT_PAD = 0.25     # PSF spill beyond the open area (~1 detector row), slit_frame units
-NONE, SHARED = -1, -2
-MAP_VERSION = '1'
+NONE = -1
+IN_SOURCE = 1        # flag bit: the pixel is in the trace's source shutter (light a nod difference keeps)
+MAP_VERSION = '3'
 
 
 def open_shutter_centres(shutter_state, ymin, ymax, pitch=MSA_SLIT_PITCH, margin=MSA_SLIT_MARGIN):
@@ -166,17 +167,22 @@ def _failed_open_traces(model):
 class TraceMap:
     """Which open slitlets (and failed-open shutters) illuminate each detector pixel of one exposure.
 
-    ``count`` is the number of traces lighting a pixel (an open shutter's area padded
-    by ``pad`` for the PSF); where exactly one does, ``index`` / ``ys`` / ``lam`` give
-    that trace (``slits`` row), its slit-frame y and wavelength. Shared pixels have
-    ``index == SHARED`` and every trace on them is listed in ``shared``."""
+    A trace lights the pixels within an open shutter's area padded by ``pad`` for the
+    PSF. ``index[l]`` is the l-th trace (``slits`` row, ``NONE`` past the last) on each
+    pixel and ``flag[l]`` whether the pixel is in that trace's source shutter
+    (``IN_SOURCE``); at most a handful of traces share a pixel (6 in a crowded G395M
+    mask), so the layers beyond the first are nearly empty and compress away. A
+    trace's slit position and wavelength at a pixel are not stored: they are in that
+    source's own cutout (WCS and WAVELENGTH), which covers its whole slitlet."""
     slits: object                 # astropy Table, one row per trace
-    count: np.ndarray             # uint8 (ny, nx)
-    index: np.ndarray             # int16 (ny, nx): slits row, NONE or SHARED
-    ys: np.ndarray                # float32 (ny, nx)
-    lam: np.ndarray               # float32 (ny, nx), um
-    shared: object                # astropy Table: pix, index, ys, lam
+    index: np.ndarray             # int16 (nlayer, ny, nx): slits row or NONE
+    flag: np.ndarray              # uint8 (nlayer, ny, nx): IN_SOURCE bit
     meta: dict = field(default_factory=dict)
+
+    @property
+    def count(self):
+        """Number of traces lighting each pixel."""
+        return (self.index >= 0).sum(axis=0).astype(np.uint8)
 
     @classmethod
     def build(cls, rate_file, workdir, msa_file=None, msa_metadata_id=None, dither_position=None,
@@ -207,29 +213,27 @@ class TraceMap:
         from astropy.table import Table
 
         ny, nx = shape
-        recs, pix, idx, ys, lam = [], [], [], [], []
+        recs, pix, idx, flg = [], [], [], []
         for i, (rec, centres, (p, y, l)) in enumerate(traces):
-            near = np.min(np.abs(np.asarray(y)[:, None] - np.asarray(centres)[None, :]), axis=1) < OPEN_HALF + pad
+            y = np.asarray(y)
+            near = np.min(np.abs(y[:, None] - np.asarray(centres)[None, :]), axis=1) < OPEN_HALF + pad
+            src = np.abs(y) < OPEN_HALF + pad          # slit frame is centred on the source shutter
             recs.append(rec)
-            pix.append(np.asarray(p, np.int64)[near]); ys.append(np.asarray(y)[near]); lam.append(np.asarray(l)[near])
+            pix.append(np.asarray(p, np.int64)[near])
+            flg.append(np.where(src[near], IN_SOURCE, 0).astype(np.uint8))
             idx.append(np.full(near.sum(), i, np.int16))
-        pix, idx = np.concatenate(pix), np.concatenate(idx)
-        ys, lam = np.concatenate(ys).astype(np.float32), np.concatenate(lam).astype(np.float32)
-        count = np.bincount(pix, minlength=ny * nx)
-        single = count[pix] == 1
-        index = np.full(ny * nx, NONE, np.int16)
-        index[count > 1] = SHARED
-        index[pix[single]] = idx[single]
-        ys_img = np.full(ny * nx, np.nan, np.float32)
-        lam_img = np.full(ny * nx, np.nan, np.float32)
-        ys_img[pix[single]] = ys[single]
-        lam_img[pix[single]] = lam[single]
-        order = np.argsort(pix[~single], kind='stable')
-        shared = Table(dict(pix=pix[~single][order].astype(np.int32), index=idx[~single][order],
-                            ys=ys[~single][order], lam=lam[~single][order]))
-        return cls(slits=Table(recs), count=np.minimum(count, 255).astype(np.uint8).reshape(ny, nx),
-                   index=index.reshape(ny, nx), ys=ys_img.reshape(ny, nx), lam=lam_img.reshape(ny, nx),
-                   shared=shared, meta=dict(meta or {}))
+        pix, idx, flg = np.concatenate(pix), np.concatenate(idx), np.concatenate(flg)
+        order = np.lexsort((idx, pix))
+        pix, idx, flg = pix[order], idx[order], flg[order]
+        first = np.r_[0, np.flatnonzero(np.diff(pix)) + 1]          # layer = rank of the trace on its pixel
+        layer = np.arange(pix.size) - np.repeat(first, np.diff(np.r_[first, pix.size]))
+        nl = int(layer.max()) + 1 if pix.size else 1
+        index = np.full((nl, ny * nx), NONE, np.int16)
+        flag = np.zeros((nl, ny * nx), np.uint8)
+        index[layer, pix] = idx
+        flag[layer, pix] = flg
+        return cls(slits=Table(recs), index=index.reshape(nl, ny, nx), flag=flag.reshape(nl, ny, nx),
+                   meta=dict(meta or {}))
 
     # -- persistence -------------------------------------------------------
     def write(self, path):
@@ -239,12 +243,8 @@ class TraceMap:
             hdr[k] = v
         hdus = fits.HDUList([
             fits.PrimaryHDU(header=hdr),
-            fits.CompImageHDU(self.count, name='COUNT'),
-            fits.CompImageHDU(self.index, name='INDEX'),
-            # lossless: float tiles quantised by default (RICE) would round them
-            fits.CompImageHDU(self.ys, name='YS', compression_type='GZIP_2', quantize_level=0.0),
-            fits.CompImageHDU(self.lam, name='LAM', compression_type='GZIP_2', quantize_level=0.0),
-            fits.BinTableHDU(self.shared, name='SHARED'),
+            fits.CompImageHDU(self.index, name='INDEX', compression_type='GZIP_2'),
+            fits.CompImageHDU(self.flag, name='FLAG', compression_type='GZIP_2'),
             fits.BinTableHDU(self.slits, name='SLITS'),
         ])
         hdus.writeto(path, overwrite=True)
@@ -256,36 +256,29 @@ class TraceMap:
         with fits.open(path) as h:
             meta = {k: h[0].header[k] for k in ('MAPVER', 'EXPOSURE', 'DETECTOR', 'GRATING', 'FILTER', 'MSAMETFL',
                                                 'MSAMETID', 'PATT_NUM', 'LITPAD', 'FAILOPEN') if k in h[0].header}
-            return cls(slits=Table(h['SLITS'].data), count=np.asarray(h['COUNT'].data),
-                       index=np.asarray(h['INDEX'].data), ys=np.asarray(h['YS'].data),
-                       lam=np.asarray(h['LAM'].data), shared=Table(h['SHARED'].data), meta=meta)
+            return cls(slits=Table(h['SLITS'].data), index=np.asarray(h['INDEX'].data),
+                       flag=np.asarray(h['FLAG'].data), meta=meta)
 
     # -- lookups -----------------------------------------------------------
     def traces_in(self, x0, y0, nx, ny):
         """Every (pixel, trace) pair in a detector region (0-based corner, size).
 
-        Returns flat arrays ``iy, ix`` (region coordinates), ``index`` (slits row),
-        ``ys`` and ``lam`` (that trace's slit-frame y and wavelength)."""
-        NY, NX = self.count.shape
+        Returns flat arrays ``iy, ix`` (region coordinates), ``index`` (slits row)
+        and ``flag`` (``IN_SOURCE``: in that trace's source shutter)."""
+        NY, NX = self.index.shape[1:]
         ya, xa = slice(max(y0, 0), min(y0 + ny, NY)), slice(max(x0, 0), min(x0 + nx, NX))
-        idx = self.index[ya, xa]
-        jy, jx = np.nonzero(idx >= 0)
-        out = [(jy + ya.start - y0, jx + xa.start - x0, idx[jy, jx], self.ys[ya, xa][jy, jx], self.lam[ya, xa][jy, jx])]
-        if len(self.shared):
-            p = np.asarray(self.shared['pix'])
-            py, px = p // NX, p % NX
-            sel = (py >= ya.start) & (py < ya.stop) & (px >= xa.start) & (px < xa.stop)
-            out.append((py[sel] - y0, px[sel] - x0, np.asarray(self.shared['index'])[sel],
-                        np.asarray(self.shared['ys'])[sel], np.asarray(self.shared['lam'])[sel]))
-        return tuple(np.concatenate(a) for a in zip(*out))
+        idx, flg = self.index[:, ya, xa], self.flag[:, ya, xa]
+        l, jy, jx = np.nonzero(idx >= 0)
+        return jy + ya.start - y0, jx + xa.start - x0, idx[l, jy, jx], flg[l, jy, jx]
 
     def rows_of(self, source_id, kind='slitlet'):
         s = self.slits
         return np.nonzero((np.asarray(s['source_id']) == source_id) & (np.asarray(s['kind']) == kind))[0]
 
-    def source_shutter(self, ys, pad=LIGHT_PAD):
+    @staticmethod
+    def source_shutter(flag):
         """Pixels of a trace in its source shutter (the light a nod subtraction keeps)."""
-        return np.abs(ys) < OPEN_HALF + pad
+        return (np.asarray(flag) & IN_SOURCE) > 0
 
 
 def trace_map_path(cache_dir, exposure_name):
@@ -320,19 +313,17 @@ class Shared:
     kind: str
     iy: np.ndarray = field(repr=False)        # cutout pixels (region coordinates)
     ix: np.ndarray = field(repr=False)
-    target_ys: np.ndarray = field(repr=False)
-    target_lam: np.ndarray = field(repr=False)
-    other_lam: np.ndarray = field(repr=False)
+    target_src: np.ndarray = field(repr=False)   # pixel is in the target's source shutter
 
     @property
     def n_cols(self):
         return int(np.unique(self.ix).size)
 
-    def in_target_shutter(self, pad=LIGHT_PAD):
-        return np.abs(self.target_ys) < OPEN_HALF + pad
+    def in_target_shutter(self):
+        return self.target_src
 
 
-def nod_contamination(maps, source_id, region, partners=None, pad=LIGHT_PAD):
+def nod_contamination(maps, source_id, region, partners=None):
     """Other sources' light in each nod difference of ``source_id``.
 
     ``maps`` are the trace maps of the nods of one configuration and detector, in
@@ -348,14 +339,14 @@ def nod_contamination(maps, source_id, region, partners=None, pad=LIGHT_PAD):
     lut = [m.traces_in(*region) for m in maps]
     out = []
     for k in range(n):
-        iy, ix, idx, ys, lam = lut[k]
+        iy, ix, idx, flg = lut[k]
         own = np.isin(idx, maps[k].rows_of(source_id))
         if not own.any():
             continue
         t_key = iy[own].astype(np.int64) * 100000 + ix[own]
-        t_ys, t_lam = ys[own], lam[own]
+        t_src = maps[k].source_shutter(flg[own])
         for j in [k] + list(partners[k] or []):
-            jy, jx, jidx, jys, jlam = lut[j]
+            jy, jx, jidx, jflg = lut[j]
             slits = maps[j].slits
             for r in np.unique(jidx):
                 rec = slits[int(r)]
@@ -363,7 +354,7 @@ def nod_contamination(maps, source_id, region, partners=None, pad=LIGHT_PAD):
                     continue
                 sel = jidx == r
                 if rec['kind'] == 'slitlet':
-                    sel &= maps[j].source_shutter(jys, pad)
+                    sel &= maps[j].source_shutter(jflg)
                 if not sel.any():
                     continue
                 key = jy[sel].astype(np.int64) * 100000 + jx[sel]
@@ -373,7 +364,7 @@ def nod_contamination(maps, source_id, region, partners=None, pad=LIGHT_PAD):
                 out.append(Shared(exposure=k, from_exposure=j, sign=1 if j == k else -1,
                                   name=str(rec['name']), source_id=int(rec['source_id']), kind=str(rec['kind']),
                                   iy=(common // 100000).astype(int), ix=(common % 100000).astype(int),
-                                  target_ys=t_ys[it], target_lam=t_lam[it], other_lam=jlam[sel][ic]))
+                                  target_src=t_src[it]))
     return out
 
 
