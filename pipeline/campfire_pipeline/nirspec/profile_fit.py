@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.sparse as sp
+from scipy.sparse.linalg import splu
 from scipy.optimize import least_squares
 from scipy.special import ndtr
 
@@ -81,7 +82,7 @@ CENTRE_LAW = {
     'Q4_NRS1': dict(D=np.array([+0.0149, +0.0075, +0.0002, -0.0087, -0.0220, -0.0339, -0.0484])),
 }
 
-_GLX, _GLW = np.polynomial.legendre.leggauss(8)
+_GLX, _GLW = np.polynomial.legendre.leggauss(4)   # pixel integral, < 1e-4 of the peak
 W_FLOOR = 0.003
 
 
@@ -218,6 +219,8 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0):
     partners = nod_background_partners(cal_files, bkg_overrides)
     exps = []
     for f, m, s, part in zip(cal_files, models, slits, partners):
+        if part is not None and 'COMPLETE' not in str(m.meta.cal_step.bkg_subtract).upper():
+            raise ValueError(f'profile fit: {f} is not background-subtracted (stage 2b has not run on it)')
         ny, nx = s.data.shape
         yy, xx = np.mgrid[:ny, :nx]
         _, ys, _ = s.meta.wcs.get_transform('detector', 'slit_frame')(xx, yy)
@@ -412,6 +415,21 @@ class ProfileModel:
         for (a, b), (k, m) in zip(offs, self.pix_masks):
             for _ in range(1 + len(self.exps[k].partners)):
                 next(it)['rows'] = np.arange(a, b)
+        # each exposure's image is needed at the same detector pixels by every set it
+        # appears in (as the source term or a partner), so it is evaluated once per
+        # exposure on the union of those pixels and looked up per term
+        union = {}
+        for k, m in self.pix_masks:
+            for j in [k] + list(self.exps[k].partners):
+                union[j] = union.get(j, np.zeros(m.shape, bool)) | m
+        self.image_pix = {}
+        for j, U in union.items():
+            e = self.exps[j]
+            pos = np.full(U.shape, -1)
+            pos[U] = np.arange(U.sum())
+            self.image_pix[j] = dict(y=e.y[U], lam=e.wav[U], dy=e.dy[U], pos=pos)
+        for T, mask in zip(self.terms, [m for k, m in self.pix_masks for _ in range(1 + len(self.exps[k].partners))]):
+            T['upos'] = self.image_pix[T['j']]['pos'][mask]
         # along-dispersion throughput per exposure: jwst point-source path loss along
         # the trace, as a function of wavelength
         self.pl_curve = []
@@ -492,8 +510,10 @@ class ProfileModel:
     def design(self, p, eoff):
         """Sparse (npix x ngrid) matrix A with model = A @ f."""
         rows, cols, vals = [], [], []
+        G = {j: self.throughput(p, eoff, j, q['lam'], q['dy']) * self.image(p, eoff, j, q['y'], q['lam'], q['dy'])
+             for j, q in self.image_pix.items()}
         for T in self.terms:
-            g = T['w'] * self.throughput(p, eoff, T['j'], T['lam'], T['dy']) * self.image(p, eoff, T['j'], T['y'], T['lam'], T['dy'])
+            g = T['w'] * G[T['j']][T['upos']]
             g = np.where(T['inside'], g, 0.0)
             rows += [T['rows'], T['rows']]
             cols += [T['idx'], T['idx'] + 1]
@@ -501,25 +521,25 @@ class ProfileModel:
         return sp.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
                              shape=(self.npix, self.lam_grid.size))
 
-    def solve(self, p, eoff):
-        """Weighted least squares for the spectrum at fixed shape."""
+    def solve(self, p, eoff, covariance=False):
+        """Weighted least squares for the spectrum at fixed shape. The normal matrix is
+        banded (each pixel touches a few neighbouring grid points), so it is solved
+        sparse; the dense covariance is formed only on request."""
         A = self.design(p, eoff)
         wgt = np.where(self.use, 1.0 / self.pix['v'], 0.0)
-        AtW = A.T.multiply(wgt)
-        N = (AtW @ A).toarray()
+        AtW = A.T.multiply(wgt).tocsr()
+        N = (AtW @ A).tocsc()
         b = AtW @ self.pix['d']
-        diag = np.diag(N).copy()
+        diag = N.diagonal()
         good = diag > 1e-3 * np.median(diag[diag > 0])
+        gi = np.flatnonzero(good)
+        Ng = N[gi][:, gi] + sp.identity(gi.size, format='csc') * 1e-9 * np.median(diag[good])
         f = np.zeros(diag.size)
-        cov = np.full((diag.size, diag.size), np.nan)
-        Ng = N[np.ix_(good, good)] + np.eye(good.sum()) * 1e-9 * np.median(diag[good])
-        try:
-            L = np.linalg.cholesky(Ng)
-            f[good] = np.linalg.solve(L.T, np.linalg.solve(L, b[good]))
-            Li = np.linalg.solve(L, np.eye(good.sum()))
-            cov[np.ix_(good, good)] = Li.T @ Li
-        except np.linalg.LinAlgError:
-            f[good] = np.linalg.lstsq(Ng, b[good], rcond=None)[0]
+        f[good] = splu(Ng).solve(b[good])
+        cov = None
+        if covariance:
+            cov = np.full((diag.size, diag.size), np.nan)
+            cov[np.ix_(good, good)] = np.linalg.inv(Ng.toarray())
         return f, cov, good, A
 
     def residuals(self, q):
@@ -562,7 +582,8 @@ def fit(exps, chromatic=True, priors=None, clip=5.0, n_clip=2, grid=None):
     lo, hi = M.bounds()
     q = np.clip(M.start(), lo + 1e-6, hi - 1e-6)
     for it in range(n_clip + 1):
-        res = least_squares(M.residuals, q, bounds=(lo, hi), x_scale='jac')
+        # 1e-5: shape changes far below its uncertainty, at a fifth of the evaluations of the default 1e-8
+        res = least_squares(M.residuals, q, bounds=(lo, hi), x_scale='jac', ftol=1e-5, xtol=1e-5, gtol=1e-5)
         q = res.x
         if it == n_clip:
             break
@@ -574,7 +595,7 @@ def fit(exps, chromatic=True, priors=None, clip=5.0, n_clip=2, grid=None):
             break
         M.use = new
     p, eoff = M.unpack(q)
-    f, cov, good, A = M.solve(p, eoff)
+    f, cov, good, A = M.solve(p, eoff, covariance=True)
     r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
     chi2 = float(np.sum(r[M.use] ** 2))
     n_eff = float(np.sum(M.dof_weight()[M.use]))
