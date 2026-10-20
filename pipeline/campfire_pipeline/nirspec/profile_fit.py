@@ -177,6 +177,7 @@ class Exposure:
     use_data: bool = True          # fitted (a stage-3 science member)
     cutout: tuple = None           # (row0, col0, ny, nx) of the canonical cutout in the common frame
     path: str = ''
+    origin: tuple = None           # (ystart, xstart) of the common frame on the detector, 1-based like jwst
 
     @property
     def dy(self):
@@ -248,7 +249,7 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0):
             pl_applied=_place(pl, s, y0, x0, shape), pl_point=_place(np.asarray(s.pathloss_point, float), s, y0, x0, shape),
             src_y=float(s.source_ypos), open_k=open_shutters(s.shutter_state, s.slit_ymin, s.slit_ymax),
             partners=part, use_data=(part is not None) and (science is None or name in science),
-            cutout=(s.ystart - y0, s.xstart - x0, ny, nx), path=str(f)))
+            cutout=(s.ystart - y0, s.xstart - x0, ny, nx), path=str(f), origin=(y0, x0)))
     for m in models:
         m.close()
     return exps
@@ -616,8 +617,9 @@ def _qvec(result):
     return np.array(p), result.eoff
 
 
-def model_frame(result, k, unit=False, applied_pathloss=True):
-    """Model of exposure k's nod difference on its canonical cutout.
+def model_frame(result, k, unit=False, applied_pathloss=True, common=False):
+    """Model of exposure k's nod difference on its canonical cutout (on the source's
+    common frame with ``common``).
 
     unit : the profile per unit reported flux instead of the fitted model: the true
         spectrum is set to 1 / main_shutter_factor, so a profile-weighted fit of
@@ -649,7 +651,7 @@ def model_frame(result, k, unit=False, applied_pathloss=True):
     out[m] = val
     if applied_pathloss:
         out = out / e.pl_applied
-    return out[sl]
+    return out if common else out[sl]
 
 
 def main_shutter_factor(result, lam):
