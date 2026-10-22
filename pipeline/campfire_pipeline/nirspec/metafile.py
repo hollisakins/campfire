@@ -112,7 +112,7 @@ class MetaFile:
         src_pos = {}
         for row in self.source_table:
             sid = int(row['source_id'])
-            if sid > 0:
+            if sid >= 0:
                 src_pos[sid] = (float(row['ra']), float(row['dec']))
 
         drop_ids = set()
@@ -127,7 +127,7 @@ class MetaFile:
             slitlet_sources = defaultdict(set)
             for row in meta_rows:
                 sid = int(row['source_id'])
-                if sid > 0:
+                if sid >= 0:
                     slitlet_sources[int(row['slitlet_id'])].add(sid)
 
             for sids in slitlet_sources.values():
@@ -165,7 +165,7 @@ class MetaFile:
     @property
     def unique_source_ids(self):
         ids = np.unique(self.shutter_table['source_id'][self.shutter_table['msa_metadata_id'] == self.msametid])
-        ids = ids[ids > 0]
+        ids = ids[ids >= 0]
 
         drop = self._duplicate_source_ids()
         if drop:
