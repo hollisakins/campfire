@@ -173,3 +173,75 @@ def test_main_shutter_factor_is_one_for_centred_point_like_source():
     R = _truth_result(exps, dict(centre=0.0, drift=0.0, width=PF.W_FLOOR, width_change=0.0), [0, 0, 0], 1.0)
     f = PF.main_shutter_factor(R, np.array([1.0, 2.0, 4.0]))
     assert np.allclose(f, 1.0, atol=0.03)
+
+
+# ---------------------------------------------------------------------------
+# frames without the source (SRCFLUX = F)
+# ---------------------------------------------------------------------------
+def _frames_from_truth(exps, R):
+    """Each exposure's positive frame (source light only), evaluated directly with the
+    image model and the throughput, independently of the nod bookkeeping: zero for a
+    frame that does not contain the source."""
+    M = R.model
+    p = np.array([R.params['centre'], R.params['drift'], np.log(R.params['width']), R.params['width_change']])
+    out = []
+    for j, e in enumerate(exps):
+        F = np.zeros(e.y.shape)
+        if e.has_source:
+            spec = np.interp(e.wav, R.lam, R.flux)
+            F = spec * M.throughput(p, R.eoff, j, e.wav, e.dy) * M.image(p, R.eoff, j, e.y, e.wav, e.dy)
+        out.append(F)
+    return out
+
+
+def _placeholder_set():
+    """Three nods of a 2-shutter-like set where nod 3 does not contain the source: its
+    slit frame is jwst's placeholder, centred on a shutter shared with nod 2."""
+    exps = _exposures(src_y=0.05)
+    ph = exps[2]
+    ph.y = exps[1].y.copy()
+    ph.open_k = exps[1].open_k
+    ph.src_y = 0.0
+    ph.has_source = False
+    ph.use_data = False          # stage 3 drops SRCFLUX = F nods from the science set
+    return exps
+
+
+def test_partner_without_source_contributes_nothing():
+    """Regression (review blocker 1): a partner frame that does not contain the source
+    must not put a negative copy of the source on the other nods' differences."""
+    exps = _placeholder_set()
+    truth = dict(centre=0.05, drift=0.0, width=0.15, width_change=0.0)
+    R = _truth_result(exps, truth, [0, 0, 0], 100.0)
+    frames = _frames_from_truth(exps, R)
+    assert np.all(frames[2] == 0)
+    for k in (0, 1):
+        expect = frames[k] - np.mean([frames[j] for j in exps[k].partners], axis=0)
+        got = PF.model_frame(R, k, applied_pathloss=False)
+        inside = np.ones(got.shape, bool)
+        for j, _ in PF.term_weights(exps, k):          # the model spectrum is zero off its grid
+            inside &= (exps[j].wav > R.lam[0]) & (exps[j].wav < R.lam[-1])
+        scale = np.nanmax(np.abs(expect))
+        assert np.nanmax(np.abs(got - expect)[inside]) < 1e-6 * scale
+    assert PF.term_weights(exps, 0) == [(0, 1.0), (1, -0.5)]
+    assert PF.term_weights(exps, 2) == [(0, -0.5), (1, -0.5)]
+
+
+def test_fit_recovers_flux_when_a_partner_lacks_the_source():
+    exps = _placeholder_set()
+    truth = dict(centre=0.05, drift=0.0, width=0.15, width_change=0.0)
+    R = _truth_result(exps, truth, [0, 0, 0], 100.0)
+    frames = _frames_from_truth(exps, R)
+    rng = np.random.default_rng(11)
+    noise = [rng.normal(size=(NY, NX)) for _ in exps]
+    for k, e in enumerate(exps):
+        e.diff = frames[k] + noise[k] - np.mean([frames[j] + noise[j] for j in e.partners], axis=0)
+        e.var = np.ones((NY, NX))
+    F = PF.fit(exps, chromatic=False)
+    good = np.isfinite(F.flux) & (F.lam > 1.0) & (F.lam < 4.8)
+    assert abs(np.median(F.flux[good] / (100.0 * _spectrum(F.lam[good]))) - 1) < 0.02
+    assert F.chi2_red < 1.2
+    # the old behaviour (the placeholder frame treated as containing the source) cannot fit these data
+    exps[2].has_source = True
+    B = PF.fit(exps, chromatic=False)
+    assert B.chi2_red > 2 * F.chi2_red

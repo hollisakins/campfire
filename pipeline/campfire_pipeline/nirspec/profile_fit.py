@@ -158,6 +158,12 @@ class Exposure:
     propagate the subtracted frames' variance, ``jwst.background.subtract_images``;
     the model adds the partners' share, ``ProfileModel.diff_variance``). ``pl_applied`` is the correction stage 2b re-applied (point or
     uniform, per exposure), ``pl_point`` jwst's point-source path loss.
+
+    ``has_source`` is False for a frame that does not contain the source (stage 2a's
+    ``SRCFLUX = F``: jwst found the source outside the slitlet in that nod and wrote a
+    placeholder slit frame centred on a shutter the source is not in). Such a frame
+    still enters other nods' differences as a background partner, but it adds no
+    source light to them: its terms in the model are zero.
     """
     name: str
     group: int
@@ -178,6 +184,7 @@ class Exposure:
     cutout: tuple = None           # (row0, col0, ny, nx) of the canonical cutout in the common frame
     path: str = ''
     origin: tuple = None           # (ystart, xstart) of the common frame on the detector, 1-based like jwst
+    has_source: bool = True        # the source is in this frame (SRCFLUX != F)
 
     @property
     def dy(self):
@@ -211,15 +218,17 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0):
 
     science : set of file names that stage 3 combines (default: all with a partner list).
     """
+    from astropy.io import fits
     from jwst.datamodels import MultiSlitModel
     from campfire_pipeline.nirspec.stage2 import nod_background_partners
 
     models = [MultiSlitModel(f) for f in cal_files]
+    srcflux = [str(fits.getheader(f).get('SRCFLUX', 'T')).strip().upper() != 'F' for f in cal_files]
     slits = [m.slits[0] for m in models]
     y0, x0, shape = _common_frame(slits)
     partners = nod_background_partners(cal_files, bkg_overrides)
     exps = []
-    for f, m, s, part in zip(cal_files, models, slits, partners):
+    for f, m, s, part, has_src in zip(cal_files, models, slits, partners, srcflux):
         if part is not None and 'COMPLETE' not in str(m.meta.cal_step.bkg_subtract).upper():
             raise ValueError(f'profile fit: {f} is not background-subtracted (stage 2b has not run on it)')
         ny, nx = s.data.shape
@@ -249,7 +258,8 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0):
             pl_applied=_place(pl, s, y0, x0, shape), pl_point=_place(np.asarray(s.pathloss_point, float), s, y0, x0, shape),
             src_y=float(s.source_ypos), open_k=open_shutters(s.shutter_state, s.slit_ymin, s.slit_ymax),
             partners=part, use_data=(part is not None) and (science is None or name in science),
-            cutout=(s.ystart - y0, s.xstart - x0, ny, nx), path=str(f), origin=(y0, x0)))
+            cutout=(s.ystart - y0, s.xstart - x0, ny, nx), path=str(f), origin=(y0, x0),
+            has_source=bool(has_src)))
     for m in models:
         m.close()
     return exps
@@ -304,6 +314,18 @@ class FitResult:
         return self.chi2 / max(self.npix - self.nfree, 1)
 
 
+def term_weights(exps, k):
+    """(exposure, weight) of the terms of exposure k's nod difference: +1 for k's own
+    frame and -1/n for each of its n subtracted partners, leaving out frames that do
+    not contain the source (``Exposure.has_source``). Those were subtracted, so the
+    others' weights are unchanged, but they put no source light on the difference."""
+    e = exps[k]
+    parts = list(e.partners or [])
+    out = [(k, 1.0)] if e.has_source else []
+    out += [(j, -1.0 / len(parts)) for j in parts if exps[j].has_source]
+    return out
+
+
 class ProfileModel:
     """Pixel table, spectrum grid and the linear model for a set of exposures."""
 
@@ -311,7 +333,8 @@ class ProfileModel:
         self.exps = exps
         self.chromatic = chromatic
         self.priors = priors or Priors()
-        self.c_prior = float(np.mean([e.src_y for e in exps if e.use_data]))
+        self.c_prior = float(np.mean([e.src_y for e in exps if e.use_data and e.has_source]
+                                     or [e.src_y for e in exps if e.use_data]))
         self._build_pixels()
         self.lam_grid = self._grid() if grid is None else np.asarray(grid, float)
         lam = self.pix['lam']
@@ -323,12 +346,12 @@ class ProfileModel:
     # -- pixels --------------------------------------------------------------
     def _terms(self, k, mask):
         """(exposure, y, lam, dy, sign/weight) for the source term and each partner term
-        of exposure k's pixels selected by mask."""
-        e = self.exps[k]
-        out = [(k, e.y[mask], e.wav[mask], e.dy[mask], 1.0)]
-        for j in e.partners:
+        of exposure k's pixels selected by mask (frames without the source omitted,
+        ``term_weights``)."""
+        out = []
+        for j, w in term_weights(self.exps, k):
             p = self.exps[j]
-            out.append((j, p.y[mask], p.wav[mask], p.dy[mask], -1.0 / len(e.partners)))
+            out.append((j, p.y[mask], p.wav[mask], p.dy[mask], w))
         return out
 
     def _region(self, e):
@@ -381,7 +404,8 @@ class ProfileModel:
         exposure on each detector, merged across detectors."""
         lams = []
         for det in sorted({e.detector for e in self.exps if e.use_data}):
-            e = next(x for x in self.exps if x.use_data and x.detector == det)
+            cand = [x for x in self.exps if x.use_data and x.detector == det]
+            e = next((x for x in cand if x.has_source), cand[0])
             yy = np.where(np.isfinite(e.y), e.y, np.inf)
             r = np.argmin(np.abs(yy - e.src_y), axis=0)
             lam = e.wav[r, np.arange(e.wav.shape[1])]
@@ -401,35 +425,30 @@ class ProfileModel:
         Everything that does not depend on the shape parameters."""
         self.terms = []
         g = self.lam_grid
+        n = 0
+        term_masks = []
         for k, m in self.pix_masks:
+            rows = np.arange(n, n + int(m.sum()))      # term rows map onto the pixel table in order
+            n += int(m.sum())
             for (j, y, lam, dy, w) in self._terms(k, m):
                 idx = np.clip(np.searchsorted(g, lam) - 1, 0, g.size - 2)
                 t = np.clip((lam - g[idx]) / (g[idx + 1] - g[idx]), 0.0, 1.0)
                 inside = (lam >= g[0]) & (lam <= g[-1])
-                self.terms.append(dict(k=k, j=j, y=y, lam=lam, dy=dy, w=w, idx=idx, t=t, inside=inside))
-        # term rows map onto the pixel table in order
-        offs, n = [], 0
-        for k, m in self.pix_masks:
-            offs.append((n, n + int(m.sum())))
-            n += int(m.sum())
-        it = iter(self.terms)
-        for (a, b), (k, m) in zip(offs, self.pix_masks):
-            for _ in range(1 + len(self.exps[k].partners)):
-                next(it)['rows'] = np.arange(a, b)
+                self.terms.append(dict(k=k, j=j, y=y, lam=lam, dy=dy, w=w, idx=idx, t=t, inside=inside, rows=rows))
+                term_masks.append(m)
         # each exposure's image is needed at the same detector pixels by every set it
         # appears in (as the source term or a partner), so it is evaluated once per
         # exposure on the union of those pixels and looked up per term
         union = {}
-        for k, m in self.pix_masks:
-            for j in [k] + list(self.exps[k].partners):
-                union[j] = union.get(j, np.zeros(m.shape, bool)) | m
+        for T, m in zip(self.terms, term_masks):
+            union[T['j']] = union.get(T['j'], np.zeros(m.shape, bool)) | m
         self.image_pix = {}
         for j, U in union.items():
             e = self.exps[j]
             pos = np.full(U.shape, -1)
             pos[U] = np.arange(U.sum())
             self.image_pix[j] = dict(y=e.y[U], lam=e.wav[U], dy=e.dy[U], pos=pos)
-        for T, mask in zip(self.terms, [m for k, m in self.pix_masks for _ in range(1 + len(self.exps[k].partners))]):
+        for T, mask in zip(self.terms, term_masks):
             T['upos'] = self.image_pix[T['j']]['pos'][mask]
         # along-dispersion throughput per exposure: jwst point-source path loss along
         # the trace, as a function of wavelength
@@ -519,6 +538,8 @@ class ProfileModel:
             rows += [T['rows'], T['rows']]
             cols += [T['idx'], T['idx'] + 1]
             vals += [g * (1 - T['t']), g * T['t']]
+        if not vals:
+            return sp.csr_matrix((self.npix, self.lam_grid.size))
         return sp.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
                              shape=(self.npix, self.lam_grid.size))
 
@@ -636,7 +657,7 @@ def model_frame(result, k, unit=False, applied_pathloss=True, common=False):
     for j in e.partners or []:
         m &= np.isfinite(M.exps[j].y) & np.isfinite(M.exps[j].wav)
     out = np.full(e.y.shape, np.nan)
-    terms = [(k, 1.0)] + [(j, -1.0 / len(e.partners)) for j in (e.partners or [])]
+    terms = term_weights(M.exps, k)
     if unit:
         f = main_shutter_factor(result, result.lam)
         true_spec = np.where(f > 0, 1.0 / np.maximum(f, 1e-6), 0.0)
@@ -663,7 +684,8 @@ def main_shutter_factor(result, lam):
     measures. For a point source at its planned position it equals the true spectrum."""
     M = result.model
     p, eoff = _qvec(result)
-    sci = [i for i, e in enumerate(M.exps) if e.use_data]
+    sci = ([i for i, e in enumerate(M.exps) if e.use_data and e.has_source]
+           or [i for i, e in enumerate(M.exps) if e.use_data])
     out = 0.0
     for k in sci:
         dy = np.full_like(lam, np.nanmedian(M.exps[k].dy[M.exps[k].ok]))
