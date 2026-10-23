@@ -40,7 +40,8 @@ NONE = -1
 IN_SOURCE = 1        # flag bit: the pixel is in the trace's source shutter (light a nod difference keeps)
 BEYOND_RANGE = 2     # flag bit: past the long-wavelength end of jwst's nominal range (light, no calibration)
 BEYOND_ROWS = 8      # rows added above and below the bounding box where a trace is followed past its range
-MAP_VERSION = '4'
+BEYOND_MAX_WAVE = 5.6   # um: followed only up to the detector's long-wavelength cut-off (G395M light seen to ~5.5)
+MAP_VERSION = '5'
 
 
 def open_shutter_centres(shutter_state, ymin, ymax, pitch=MSA_SLIT_PITCH, margin=MSA_SLIT_MARGIN):
@@ -107,7 +108,9 @@ def _slit_pixels(model, wcs, beyond=False):
     detector edge. jwst's bounding box stops at the nominal wavelength range
     (``wavelengthrange``), but long-pass filters do not stop the light there; the
     trace's slit-frame y is still defined (the transform extrapolates), so the trace
-    is followed to the edge, ``BEYOND_ROWS`` rows wider for its curvature. Returns
+    is followed towards the edge, ``BEYOND_ROWS`` rows wider for its curvature, up to
+    ``BEYOND_MAX_WAVE`` of extrapolated wavelength (the detector sees nothing beyond;
+    following PRISM traces to the edge masked most of some traces). Returns
     (pixel index, y, wavelength, beyond flag)."""
     (x0, x1), (y0, y1) = wcs.bounding_box
     ny, nx = model.data.shape[-2:]
@@ -142,7 +145,10 @@ def _slit_pixels(model, wcs, beyond=False):
             yb = np.arange(max(int(np.ceil(y0)) - BEYOND_ROWS, 0), min(int(np.floor(y1)) + BEYOND_ROWS, ny - 1) + 1)
             out = at(xb, yb)
             if out is not None:
-                parts.append(out + (np.ones(out[0].size, bool),))
+                keep = out[2] <= BEYOND_MAX_WAVE
+                if keep.any():
+                    out = tuple(a[keep] for a in out)
+                    parts.append(out + (np.ones(out[0].size, bool),))
     return tuple(np.concatenate([p[i] for p in parts]) for i in range(4))
 
 

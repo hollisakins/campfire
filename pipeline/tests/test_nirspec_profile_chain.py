@@ -243,6 +243,9 @@ def test_chain_picks_own_when_significantly_better():
     assert C.shdis == 1
     C2 = PC.choose_shape(exps, _cfg(profile_fit_prism_mode='always'), is_prism=False, prism=prism)
     assert C2.shape == 'prism' and C2.reason == 'prism_always'
+    # below the own-vs-PRISM gate floor the PRISM shape is kept even when the own fit is better
+    C3 = PC.choose_shape(exps, _cfg(own_vs_prism_min_gate=10 * C.snr_det), is_prism=False, prism=prism)
+    assert C3.shape == 'prism' and C3.reason == 'prism_kept:gate'
 
 
 def test_chain_no_transfer_at_a_different_roll():

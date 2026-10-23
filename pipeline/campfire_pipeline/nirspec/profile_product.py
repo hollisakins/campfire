@@ -62,9 +62,14 @@ class Analysis:
 
 
 def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
-                    prism_product='', pass1_products=None, log=None):
+                    prism_product='', pass1_products=None, log=None, exps=None, pass1_for=None, maps=None,
+                    prism=None):
     """Load, predict and apply other slitlets' light, choose the shape, scan for a
-    same-slitlet neighbour. No files are written."""
+    same-slitlet neighbour. No files are written.
+
+    For tests: ``exps`` (preloaded exposures, modified in place), ``pass1_for``
+    (sid -> ``Pass1``), ``maps`` and ``prism`` (a ``PrismShape``) replace what is
+    otherwise read from the workspace."""
     from campfire_pipeline.nirspec import profile_fit as PF
     from campfire_pipeline.nirspec import profile_chain as PC
     from campfire_pipeline.nirspec import profile_contam as CT
@@ -73,19 +78,20 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
     log = log or (lambda *a: None)
     fl = stage_flags(stage_config)
     cfg = PC.ChainConfig.from_stage_config(stage_config)
-    exps = PF.load_source(groups, bkg_overrides=overrides, science=set(science))
+    if exps is None:
+        exps = PF.load_source(groups, bkg_overrides=overrides, science=set(science))
     P, clean, cstate = None, None, 'off'
     if fl['contam'] and cfg.shape != 'free':
-        maps = CT.maps_for_exposures(workspace_dir, exps)
+        maps = CT.maps_for_exposures(workspace_dir, exps) if maps is None else maps
         if not maps:
             cstate = 'no_maps'
         else:
             names = pass1_products or {}
-
-            def pass1_for(sid):
-                name = names.get(int(sid))
-                path = CT.pass1_path(workspace_dir, name) if name else None
-                return CT.Pass1.read(path) if path and os.path.exists(path) else None
+            if pass1_for is None:
+                def pass1_for(sid):
+                    name = names.get(int(sid))
+                    path = CT.pass1_path(workspace_dir, name) if name else None
+                    return CT.Pass1.read(path) if path and os.path.exists(path) else None
             P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=pass1_for(source_id),
                            pair_ratio=fl['pair_ratio'], failed_open=fl['failed_open'], beyond=fl['beyond'])
             saved = [(e.ok, e.diff) for e in exps]
@@ -98,8 +104,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
                     e.ok, e.diff = ok, d
                 log(f'contamination masking left {npix} pixels; undone')
                 cstate, clean = f'{cstate}_undone', None
-    prism = None
-    if not is_prism and prism_product:
+    if prism is None and not is_prism and prism_product:
         prism = CT.read_prism_shape(workspace_dir, prism_product)
     ratio = (lambda R: CT.contam_light_ratio(P, R, exps)) if P is not None and clean is not None else None
     C = PC.choose_shape(exps, cfg, is_prism, prism=prism, clean=clean, log=log, contam_ratio=ratio)
@@ -118,7 +123,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
             # the target's width is on its bound: extended or two-component; its
             # residuals read as a neighbour next to it (13113)
             S.suppress('target width on its bound')
-        if not is_prism and prism_product:
+        if not is_prism and prism_product and fl['scan_xdisp_tol'] >= 0:
             S.cross_check(read_scan(workspace_dir, prism_product), tol=fl['scan_xdisp_tol'])
     return Analysis(exps=exps, chain=C, prediction=P, clean=clean, contam_state=cstate, scan=S)
 

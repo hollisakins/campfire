@@ -268,7 +268,7 @@ def pass1_settings(stage_config):
                 shape=str(g('contam_pass1_shape', 'chain')).lower(),
                 failed_open=str(g('contam_failed_open', 'flag')).lower(),
                 beyond=str(g('contam_beyond_range', 'mask')).lower(),
-                gate_prism=float(g('gate_snr_prism', 10.0)), gate_grating=float(g('gate_snr_grating', 30.0)),
+                gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
                 gate_noise=str(g('gate_noise', 'mean_square')).lower())
 
 

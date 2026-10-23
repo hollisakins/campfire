@@ -42,15 +42,16 @@ class ChainConfig:
     chromatic: bool = True
     prism_transfer: bool = True
     prism_mode: str = 'unless_better'    # unless_better | always
-    gate_prism: float = 10.0
-    gate_grating: float = 30.0
+    gate_prism: float = 50.0             # own fit beats the default shape above these (test A injections,
+    gate_grating: float = 70.0           # mean-square gate statistic; 2026-10-23)
     own_vs_prism_dchi2: float = 25.0     # plus k ln(N_eff), k = shape parameters
+    own_vs_prism_min_gate: float = 100.0  # below: a grating keeps the PRISM shape (own fit not better there)
     priors: PF.Priors = field(default_factory=PF.Priors)
     bounds: PF.Bounds = field(default_factory=PF.Bounds)
     srcypos_tolerance: float = 0.05
     pa_tolerance: float = 1.0            # deg; PRISM shape transferred only at the same roll
-    agree_centre: float = 0.05           # own and PRISM shapes "agree" within these (then PRISM is kept)
-    agree_log_width: float = 0.2
+    agree_centre: float = 0.08           # own and PRISM shapes "agree" within these (then PRISM is kept)
+    agree_log_width: float = 0.3
     disagree_centre: float = 0.1         # PFSHDIS thresholds
     disagree_width_ratio: tuple = (0.6, 1.6)
     min_clean_fraction: float = 0.5      # contamination masking: below this no own fit
@@ -86,8 +87,11 @@ class ChainConfig:
             raise ValueError(f"contam_dominance must be 'light', 'pixels' or 'off', got {dom!r}")
         return cls(shape=shape, chromatic=bool(g('profile_fit_chromatic', True)),
                    prism_transfer=bool(g('profile_fit_prism_transfer', True)), prism_mode=mode,
-                   gate_prism=float(g('gate_snr_prism', 10.0)), gate_grating=float(g('gate_snr_grating', 30.0)),
-                   own_vs_prism_dchi2=float(g('own_vs_prism_dchi2', 25.0)), priors=priors, bounds=bounds,
+                   gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
+                   own_vs_prism_dchi2=float(g('own_vs_prism_dchi2', 25.0)),
+                   own_vs_prism_min_gate=float(g('own_vs_prism_min_gate', 100.0)),
+                   agree_centre=float(g('own_vs_prism_centre', 0.08)),
+                   agree_log_width=float(g('own_vs_prism_log_width', 0.3)), priors=priors, bounds=bounds,
                    srcypos_tolerance=float(g('srcypos_tolerance', 0.05)),
                    min_clean_fraction=float(g('contam_min_clean_fraction', 0.5)),
                    gate_noise=str(g('gate_noise', 'mean_square')).lower(), dominance=dom,
@@ -305,8 +309,10 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
             dlw = np.log(o['width'] / xshape['width'])
             differ = abs(dc) > cfg.agree_centre or abs(dlw) > cfg.agree_log_width
             better = chi2['prism'] - chi2['own'] > _threshold(cfg, M, cands['own'])
-            if better and differ:
+            if better and differ and snr >= cfg.own_vs_prism_min_gate:
                 choice, reason = 'own', 'own_better'
+            elif better and differ:
+                choice, reason = 'prism', 'prism_kept:gate'
             else:
                 choice, reason = 'prism', 'prism_kept' if differ else 'shapes_agree'
     else:
