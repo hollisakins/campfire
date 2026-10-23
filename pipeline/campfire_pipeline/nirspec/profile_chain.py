@@ -60,7 +60,7 @@ class ChainConfig:
     dominance: str = 'light'             # other sources dominate the trace -> no own fit: light | pixels | off
     dominance_max: float = 1.0           # light: their predicted light / the target's fitted light on the main shutter
     dominance_min_clean: float = 0.5     # pixels: main-shutter fraction below dominance_kappa x noise
-    dominance_apply: str = 'always'      # always | mask_only (only when contam_mode = mask) | flag (PFDOMIN only)
+    dominance_apply: str = 'mask_only'   # always | mask_only (only when contam_mode = mask) | flag (PFDOMIN only)
     contam_mode: str = 'hybrid'
 
     @classmethod
@@ -87,7 +87,7 @@ class ChainConfig:
         dom = str(g('contam_dominance', 'light')).lower()
         if dom not in ('light', 'pixels', 'off'):
             raise ValueError(f"contam_dominance must be 'light', 'pixels' or 'off', got {dom!r}")
-        dapply = str(g('contam_dominance_apply', 'always')).lower()
+        dapply = str(g('contam_dominance_apply', 'mask_only')).lower()
         if dapply not in ('always', 'mask_only', 'flag'):
             raise ValueError(f"contam_dominance_apply must be 'always', 'mask_only' or 'flag', got {dapply!r}")
         return cls(shape=shape, chromatic=bool(g('profile_fit_chromatic', True)),
