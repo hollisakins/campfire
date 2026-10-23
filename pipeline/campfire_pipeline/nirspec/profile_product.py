@@ -39,7 +39,7 @@ def stage_flags(sc):
         scan=bool(g('scan_neighbours', True)),
         scan_nbins=int(g('scan_nbins', 16)),
         scan_width=g('scan_width', None),
-        scan_dchi2=float(g('scan_dchi2', 100.0)),
+        scan_dchi2=float(g('scan_dchi2', 80.0)),
         scan_min_snr=float(g('scan_min_snr', 5.0)),
         scan_drop_frac=float(g('scan_drop_frac', 0.2)),
         scan_null_ratio=float(g('scan_null_ratio', 1.5)),

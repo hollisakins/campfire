@@ -142,7 +142,8 @@
                                              # (auto file, applied by stage 2b on its next run)
     scan_nbins = 16
     scan_noise = "mean_square"               # chi2 drops / reduced chi2 of target + neighbour ("none": raw)
-    scan_dchi2 = 100.0                       # detection threshold (provisional; null tails reach 50-60)
+    scan_dchi2 = 80.0                        # detection threshold on chi2 drop / noise scale (sign-randomised
+                                             # null, p14 PRISM: 0.23 % of 438 draws above 60-100, none above 120)
     scan_null_ratio = 1.5                    # and > this x the best negative-amplitude drop (provisional)
     scan_close = 0.9                         # brighter neighbour closer than this: unresolvable, no proposal
     scan_xdisp_tol = 0.2                     # PRISM and grating scans must agree on Delta within this (< 0: off)
