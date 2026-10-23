@@ -185,6 +185,7 @@ class Exposure:
     path: str = ''
     origin: tuple = None           # (ystart, xstart) of the common frame on the detector, 1-based like jwst
     has_source: bool = True        # the source is in this frame (SRCFLUX != F)
+    pa_v3: float = np.nan          # telescope roll [deg]
 
     @property
     def dy(self):
@@ -209,6 +210,15 @@ def _place(a, s, y0, x0, shape, fill=np.nan):
     return out
 
 
+def _pa_v3(path):
+    from astropy.io import fits
+    try:
+        v = fits.getheader(path, 1).get('PA_V3')
+        return float(v) if v is not None else np.nan
+    except (OSError, IndexError, ValueError, TypeError):
+        return np.nan
+
+
 def load_group(cal_files, bkg_overrides=None, science=None, group=0):
     """Exposures of one stage-2b background group, from the canonical files.
 
@@ -223,10 +233,13 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0):
     from campfire_pipeline.nirspec.stage2 import nod_background_partners
 
     models = [MultiSlitModel(f) for f in cal_files]
-    srcflux = [str(fits.getheader(f).get('SRCFLUX', 'T')).strip().upper() != 'F' for f in cal_files]
+    heads = [fits.getheader(f) for f in cal_files]
+    srcflux = [str(h.get('SRCFLUX', 'T')).strip().upper() != 'F' for h in heads]
     slits = [m.slits[0] for m in models]
     y0, x0, shape = _common_frame(slits)
-    partners = nod_background_partners(cal_files, bkg_overrides)
+    partners = partners_from_headers(cal_files, heads)
+    if partners is None:
+        partners = nod_background_partners(cal_files, bkg_overrides)
     exps = []
     for f, m, s, part, has_src in zip(cal_files, models, slits, partners, srcflux):
         if part is not None and 'COMPLETE' not in str(m.meta.cal_step.bkg_subtract).upper():
@@ -259,10 +272,35 @@ def load_group(cal_files, bkg_overrides=None, science=None, group=0):
             src_y=float(s.source_ypos), open_k=open_shutters(s.shutter_state, s.slit_ymin, s.slit_ymax),
             partners=part, use_data=(part is not None) and (science is None or name in science),
             cutout=(s.ystart - y0, s.xstart - x0, ny, nx), path=str(f), origin=(y0, x0),
-            has_source=bool(has_src)))
+            has_source=bool(has_src), pa_v3=_pa_v3(f)))
     for m in models:
         m.close()
     return exps
+
+
+def partners_from_headers(cal_files, heads):
+    """Partner lists as stage 2b recorded them (``BKGNODS``: the nods it subtracted, or
+    'excluded'), so the model follows what was actually subtracted whatever override
+    file (hand or automatic) chose them. None when any file of the group lacks the
+    card (written before stage 2b recorded it): then the override file decides."""
+    from campfire_pipeline.nirspec.stage2 import _nod_number
+    nods = [_nod_number(f) for f in cal_files]
+    out = []
+    for h in heads:
+        v = str(h.get('BKGNODS', '')).strip()
+        if not v or v.upper() == 'N/A':
+            return None
+        if v == 'excluded':
+            out.append(None)
+            continue
+        try:
+            want = [int(x) for x in v.split(',')]
+        except ValueError:
+            return None
+        if any(n not in nods for n in want):
+            return None
+        out.append([nods.index(n) for n in want])
+    return out
 
 
 def load_source(groups, bkg_overrides=None, science=None):
@@ -288,12 +326,29 @@ def load_source(groups, bkg_overrides=None, science=None):
 # ---------------------------------------------------------------------------
 @dataclass
 class Priors:
+    """Gaussian priors of the shape. The defaults are the original (V0) values; the
+    gated chain (``profile_chain``) passes the recalibrated ones from the config."""
     centre_sigma: float = 0.15        # centre vs the planned position (SRCYPOS), slit units
     drift_sigma: float = 0.05         # centre change per octave of wavelength
     width_median: float = 0.15        # galaxy Gaussian sigma, slit units (bright-galaxy population)
     width_log_sigma: float = 0.7      # natural-log scatter of the width prior
     width_change_sigma: float = 0.05  # width change per octave, slit units
     offset_sigma: float = 0.015       # per-exposure pointing offset (stars: median 0.01, 95 % < 0.02)
+
+
+@dataclass
+class Bounds:
+    """Hard limits of the shape fit (half-ranges; width: upper limit). Defaults are
+    the original (V0) values."""
+    centre: float = 0.6               # centre within +- this of the planned position
+    drift: float = 0.5                # per octave
+    width_max: float = 1.5
+    width_change: float = 0.4         # per octave
+    offset: float = 0.3               # per-exposure pointing offset
+
+
+# bit of each shape parameter in a bound-hit mask (header PFBOUND)
+BOUND_BITS = dict(centre=1, width=2, drift=4, width_change=8, offset=16)
 
 
 @dataclass
@@ -329,12 +384,14 @@ def term_weights(exps, k):
 class ProfileModel:
     """Pixel table, spectrum grid and the linear model for a set of exposures."""
 
-    def __init__(self, exps, chromatic=True, priors=None, grid=None):
+    def __init__(self, exps, chromatic=True, priors=None, grid=None, bounds=None, c_prior=None):
         self.exps = exps
         self.chromatic = chromatic
         self.priors = priors or Priors()
-        self.c_prior = float(np.mean([e.src_y for e in exps if e.use_data and e.has_source]
-                                     or [e.src_y for e in exps if e.use_data]))
+        self.bounds_cfg = bounds or Bounds()
+        self.c_prior, self.srcy_flag = planned_position(exps)
+        if c_prior is not None:
+            self.c_prior = float(c_prior)
         self._build_pixels()
         self.lam_grid = self._grid() if grid is None else np.asarray(grid, float)
         lam = self.pix['lam']
@@ -578,29 +635,77 @@ class ProfileModel:
         return np.concatenate([r, pri])
 
     def bounds(self):
-        c = self.c_prior
-        lo = [c - 0.6, -0.5, np.log(W_FLOOR), -0.4] if self.chromatic else [c - 0.6, np.log(W_FLOOR)]
-        hi = [c + 0.6, 0.5, np.log(1.5), 0.4] if self.chromatic else [c + 0.6, np.log(1.5)]
-        return np.array(lo + [-0.3] * self.n_eoff), np.array(hi + [0.3] * self.n_eoff)
+        c, B = self.c_prior, self.bounds_cfg
+        if self.chromatic:
+            lo = [c - B.centre, -B.drift, np.log(W_FLOOR), -B.width_change]
+            hi = [c + B.centre, B.drift, np.log(B.width_max), B.width_change]
+        else:
+            lo, hi = [c - B.centre, np.log(W_FLOOR)], [c + B.centre, np.log(B.width_max)]
+        return np.array(lo + [-B.offset] * self.n_eoff), np.array(hi + [B.offset] * self.n_eoff)
+
+    def param_names(self):
+        base = ['centre', 'drift', 'width', 'width_change'] if self.chromatic else ['centre', 'width']
+        return base + ['offset'] * self.n_eoff
+
+    def bound_hits(self, q, rtol=1e-3):
+        """Bitmask (``BOUND_BITS``) of the parameters that ended on a bound. The lower
+        width limit is the point-source floor, a legitimate answer, not a hit."""
+        lo, hi = self.bounds()
+        tol = rtol * (hi - lo)
+        bits = 0
+        for name, x, a, b, t in zip(self.param_names(), q, lo, hi, tol):
+            at_lo, at_hi = x <= a + t, x >= b - t
+            if name == 'width':
+                at_lo = False
+            if at_lo or at_hi:
+                bits |= BOUND_BITS[name]
+        return bits
+
+    def start_grid(self):
+        """Starting shapes: centres around the planned position, three widths."""
+        B = self.bounds_cfg
+        span = min(0.3, B.centre)
+        for c0 in self.c_prior + np.arange(-span, span + 0.01, 0.1):
+            for w in (0.03, 0.15, 0.4):
+                if w <= B.width_max:
+                    yield np.array([c0, 0.0, np.log(w), 0.0])
 
     def start(self):
         best = None
-        for c0 in self.c_prior + np.arange(-0.3, 0.31, 0.1):
-            for w in (0.03, 0.15, 0.4):
-                q = ([c0, 0.0, np.log(w), 0.0] if self.chromatic else [c0, np.log(w)]) + [0.0] * self.n_eoff
-                s = float(np.sum(self.residuals(np.array(q)) ** 2))
-                if best is None or s < best[0]:
-                    best = (s, np.array(q))
+        for p in self.start_grid():
+            q = (list(p) if self.chromatic else [p[0], p[2]]) + [0.0] * self.n_eoff
+            s = float(np.sum(self.residuals(np.array(q)) ** 2))
+            if best is None or s < best[0]:
+                best = (s, np.array(q))
         return best[1]
 
+    def chi2_at(self, p, eoff, use=None):
+        """Data chi2 (no prior terms) at a fixed shape, spectrum re-solved, on the
+        pixels ``use`` (default: the current outlier mask)."""
+        saved = self.use
+        if use is not None:
+            self.use = use
+        try:
+            f, _, _, A = self.solve(p, eoff)
+            r = (self.pix['d'] - A @ f) / np.sqrt(self.pix['v'])
+            return float(np.sum(r[self.use] ** 2))
+        finally:
+            self.use = saved
 
-def fit(exps, chromatic=True, priors=None, clip=5.0, n_clip=2, grid=None):
+
+def fit(exps, chromatic=True, priors=None, clip=5.0, n_clip=2, grid=None, bounds=None, model=None):
     """Fit the shape (with priors) and the shared spectrum of one source.
 
     Pixels deviating by more than ``clip`` sigma from the model are masked and the
-    fit repeated, ``n_clip`` times.
+    fit repeated, ``n_clip`` times. ``model``: reuse a ``ProfileModel`` of the same
+    exposures (its outlier mask is reset). The result's ``bound_bits`` records any
+    parameter that ended on a bound.
     """
-    M = ProfileModel(exps, chromatic=chromatic, priors=priors, grid=grid)
+    if model is not None:
+        M = model
+        M.use = np.ones(M.npix, bool)
+    else:
+        M = ProfileModel(exps, chromatic=chromatic, priors=priors, grid=grid, bounds=bounds)
     lo, hi = M.bounds()
     q = np.clip(M.start(), lo + 1e-6, hi - 1e-6)
     for it in range(n_clip + 1):
@@ -625,8 +730,177 @@ def fit(exps, chromatic=True, priors=None, clip=5.0, n_clip=2, grid=None):
     err = np.where(good, np.sqrt(np.abs(np.diag(cov))), np.nan)
     params = dict(centre=float(p[0]), drift=float(p[1]), width=float(np.exp(p[2])),
                   width_change=float(p[3]), pivot=M.pivot, centre_prior=M.c_prior)
-    return FitResult(params=params, eoff=eoff, lam=M.lam_grid, flux=flux, flux_err=err, chi2=chi2,
-                     npix=int(round(n_eff)), nfree=int(good.sum()) + len(q), chromatic=chromatic, model=M)
+    R = FitResult(params=params, eoff=eoff, lam=M.lam_grid, flux=flux, flux_err=err, chi2=chi2,
+                  npix=int(round(n_eff)), nfree=int(good.sum()) + len(q), chromatic=M.chromatic, model=M)
+    R.bound_bits = M.bound_hits(q)
+    R.use = M.use.copy()
+    return R
+
+
+def shape_vector(shape, c_prior, width_default):
+    """Shape vector (centre, drift, ln width, width change) from a dict with
+    ``centre_offset`` (from the planned position), ``drift``, ``width``, ``width_change``."""
+    q = dict(centre_offset=0.0, drift=0.0, width=width_default, width_change=0.0)
+    q.update(shape or {})
+    return np.array([c_prior + q['centre_offset'], q['drift'], np.log(max(q['width'], W_FLOOR)), q['width_change']])
+
+
+def fit_fixed(exps=None, shape=None, eoff=None, fit_eoff=False, clip=5.0, n_clip=2, model=None,
+              use=None, chromatic=True, priors=None, grid=None, bounds=None):
+    """Spectrum at a fixed shape: a linear solve.
+
+    shape : dict(centre_offset, drift, width, width_change) at this model's pivot; the
+        default is the default shape (star PSF x the prior median width at the planned
+        position, no chromatic terms).
+    fit_eoff : also fit the per-exposure pointing offsets (with their prior), so a
+        transferred shape is compared with the free fit on equal terms.
+    use : a fixed pixel mask (no clipping); otherwise ``n_clip`` rounds of clipping at
+        ``clip`` sigma.
+    The returned chi2 is the data chi2 only (no prior terms)."""
+    M = model if model is not None else ProfileModel(exps, chromatic=chromatic, priors=priors, grid=grid,
+                                                     bounds=bounds)
+    M.use = np.ones(M.npix, bool) if use is None else use.copy()
+    p = shape_vector(shape, M.c_prior, M.priors.width_median)
+    e = np.zeros(len(M.exps)) if eoff is None else np.asarray(eoff, float).copy()
+    nit = 0 if use is not None else n_clip
+    for it in range(nit + 1):
+        if fit_eoff and M.n_eoff > 0:
+            sig = M.priors.offset_sigma
+            B = M.bounds_cfg.offset
+
+            def res(x):
+                ee = np.concatenate([[0.0], x])
+                f, _, _, A = M.solve(p, ee)
+                r = np.where(M.use, (M.pix['d'] - A @ f) / np.sqrt(M.pix['v']), 0.0)
+                return np.concatenate([r, x / sig])
+            sol = least_squares(res, np.clip(e[1:], -B + 1e-6, B - 1e-6), bounds=(-B, B), x_scale='jac',
+                                ftol=1e-5, xtol=1e-5, gtol=1e-5)
+            e = np.concatenate([[0.0], sol.x])
+        if it == nit:
+            break
+        f, _, _, A = M.solve(p, e)
+        r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
+        new = np.abs(r) < clip
+        if np.array_equal(new, M.use):
+            break
+        M.use = new
+    f, cov, good, A = M.solve(p, e, covariance=True)
+    r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
+    chi2 = float(np.sum(r[M.use] ** 2))
+    n_eff = float(np.sum(M.dof_weight()[M.use]))
+    params = dict(centre=float(p[0]), drift=float(p[1]), width=float(np.exp(p[2])), width_change=float(p[3]),
+                  pivot=M.pivot, centre_prior=M.c_prior)
+    R = FitResult(params=params, eoff=e, lam=M.lam_grid, flux=np.where(good, f, np.nan),
+                  flux_err=np.where(good, np.sqrt(np.abs(np.diag(cov))), np.nan), chi2=chi2,
+                  npix=int(round(n_eff)), nfree=int(good.sum()) + (M.n_eoff if fit_eoff else 0),
+                  chromatic=True, model=M)
+    R.bound_bits = 0
+    R.use = M.use.copy()
+    return R
+
+
+def noise_scale(M, r):
+    """Calibration of the stated errors from the normalised residuals ``r`` of a fit:
+    the robust (MAD) variance over all fitted pixels, divided by the variance the
+    nod bookkeeping expects ((N-1)/N, ``ProfileModel.dof_weight``). The source
+    covers a minority of the fitted pixels, so a shape mismatch moves the median
+    absolute residual little, unlike the reduced chi2."""
+    rr = r[M.use]
+    if rr.size < 10:
+        return 1.0
+    mad = 1.4826 * np.median(np.abs(rr - np.median(rr)))
+    c = mad ** 2 / float(np.median(M.dof_weight()[M.use]))
+    return float(c) if np.isfinite(c) and c > 0 else 1.0
+
+
+def detection_snr(M, clip=5.0, n_clip=2):
+    """Integrated detection S/N of a source, the gate of the shape chain.
+
+    For each starting shape of the fit (``ProfileModel.start_grid``) the spectrum is
+    solved and its chi2 improvement over no source, dchi2 = f . (A^T W d), is
+    computed; the best is used, so compact or offset sources are not penalised by
+    the default template. dchi2 is divided by the noise scale ``noise_scale``
+    (robust, not the reduced chi2, which grows with shape mismatch for bright
+    sources), and the number of spectrum points is subtracted (its expectation for
+    no source):  snr_det = sqrt(max(dchi2 / c - n, 0)).
+
+    Outlier pixels are clipped first at the default shape. Returns
+    (snr_det, dict with dchi2, n, c, best shape vector)."""
+    M.use = np.ones(M.npix, bool)
+    p0 = shape_vector(None, M.c_prior, M.priors.width_median)
+    e0 = np.zeros(len(M.exps))
+    for _ in range(n_clip):
+        f, _, _, A = M.solve(p0, e0)
+        r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
+        new = np.abs(r) < clip
+        if np.array_equal(new, M.use):
+            break
+        M.use = new
+    best = None
+    wgt = None
+    for p in M.start_grid():
+        f, _, good, A = M.solve(p, e0)
+        wgt = np.where(M.use, 1.0 / M.pix['v'], 0.0)
+        b = A.T @ (wgt * M.pix['d'])
+        d = float(f[good] @ b[good])
+        if best is None or d > best[0]:
+            best = (d, p, int(good.sum()), A, f)
+    d, p, n, A, f = best
+    r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
+    c = noise_scale(M, r)
+    s2 = d / c - n
+    return float(np.sqrt(max(s2, 0.0))), dict(dchi2=d, n=n, c=c, shape=p)
+
+
+def planned_position(exps, tolerance=0.05):
+    """Planned slit position of the source (prior centre) and a flag.
+
+    The median SRCYPOS of the science exposures that contain the source. A value of
+    exactly 0.000 next to nonzero values is a metafile placeholder and is ignored
+    (flag 1); science values that still differ by more than ``tolerance`` give
+    flag 2 (genuine disagreement)."""
+    vals = [e.src_y for e in exps if e.use_data and e.has_source] or [e.src_y for e in exps if e.use_data] \
+        or [e.src_y for e in exps]
+    flag = 0
+    nonzero = [v for v in vals if v != 0.0]
+    if nonzero and len(nonzero) < len(vals):
+        vals, flag = nonzero, 1
+    if len(vals) > 1 and (max(vals) - min(vals)) > tolerance:
+        flag = 2
+    return float(np.median(vals)), flag
+
+
+def map_shape(src_params, pivot_target):
+    """A fitted shape (``FitResult.params``: absolute centre at its pivot) re-expressed
+    at another pivot, the centre as an offset from that fit's planned position (the
+    shape transferred from PRISM to a grating keeps its offset from plan)."""
+    s = src_params
+    dx = np.log2(pivot_target / s['pivot'])
+    return dict(centre_offset=s['centre'] - s['centre_prior'] + s['drift'] * dx, drift=s['drift'],
+                width=max(s['width'] + s['width_change'] * dx, W_FLOOR * 2), width_change=s['width_change'])
+
+
+def frame_image(result, j, spectrum=None, common=True):
+    """Exposure j's own frame: the source light alone (no partners subtracted), with
+    the path loss removed (the units of ``Exposure.diff``), on the source's common
+    frame (or exposure j's cutout). Zero where the frame does not contain the source,
+    NaN off the slitlet. ``spectrum`` replaces the fitted true spectrum (on
+    ``result.lam``), e.g. its errors."""
+    M = result.model
+    e = M.exps[j]
+    p, eoff = _qvec(result)
+    out = np.full(e.y.shape, np.nan)
+    m = np.isfinite(e.y) & np.isfinite(e.wav)
+    out[m] = 0.0
+    if e.has_source and m.any():
+        spec = np.nan_to_num(result.flux if spectrum is None else spectrum)
+        lam = e.wav[m]
+        s = np.interp(lam, result.lam, spec, left=0.0, right=0.0)
+        out[m] = s * M.throughput(p, eoff, j, lam, e.dy[m]) * M.image(p, eoff, j, e.y[m], lam, e.dy[m])
+    if common:
+        return out
+    r0, c0, ny, nx = e.cutout
+    return out[r0:r0 + ny, c0:c0 + nx]
 
 
 # ---------------------------------------------------------------------------
@@ -703,15 +977,23 @@ def drizzle_frames(result, crf_path, unit=False):
     re-running jwst's ResampleSpecStep gives the model the data's weights and masks
     (re-drizzling the unmodified file reproduces the data s2d exactly).
     """
+    by_name = {e.name: k for k, e in enumerate(result.model.exps)}
+    return drizzle_arrays(lambda name: model_frame(result, by_name[name], unit=unit), crf_path)
+
+
+def drizzle_arrays(frame_of, crf_path):
+    """Drizzle arbitrary per-exposure cutout arrays (``frame_of(file name)``, in the
+    live canonical units) through Spec3's crf, as the data were drizzled. A name
+    for which ``frame_of`` returns None gets zeros."""
     from jwst import datamodels
     from jwst.datamodels import SourceModelContainer
     from jwst.resample import ResampleSpecStep
 
-    by_name = {e.name: k for k, e in enumerate(result.model.exps)}
     with datamodels.open(crf_path) as m:
         for x in m.exposures:
-            k = by_name[x.meta.filename]
-            frame = model_frame(result, k, unit=unit)
+            frame = frame_of(x.meta.filename)
+            if frame is None:
+                frame = np.zeros(x.data.shape)
             if frame.shape != x.data.shape:
                 raise ValueError(f'profile fit: model frame {frame.shape} vs crf {x.data.shape} for {x.meta.filename}')
             x.data = np.nan_to_num(frame).astype(x.data.dtype)
