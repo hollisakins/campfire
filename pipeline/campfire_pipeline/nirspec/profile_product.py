@@ -9,9 +9,10 @@ Per product (one source, one disperser), after Spec3 has written its crf:
 3. choose the shape (``profile_chain``; for gratings the PRISM shape of the same
    source is read from the PRISM product of this run or an earlier one);
 4. scan for a same-slitlet neighbour on the residuals (``nod_scan``; ``scan_neighbours``);
-5. drizzle the chosen model per unit reported flux through the crf (``PROF2D``) and
-   the predicted other-source light (``CONTAM2D``), and write ``{product}_pf.fits``
-   with every decision in the primary header.
+5. drizzle the chosen model per unit reported flux through the crf (``PROF2D``), the
+   predicted other-source light (``CONTAM2D``) and its uncertainty (``CONTERR2D``),
+   and the pixels whose other-source light is not predicted (``UNMOD2D``), and write
+   ``{product}_pf.fits`` with every decision in the primary header.
 
 Stage 3 then extracts ``fnu_pf`` from the s2d with ``PROF2D`` (``stage3._profile_fit_columns``).
 """
@@ -46,6 +47,11 @@ def stage_flags(sc):
         scan_max_masked=float(g('scan_max_masked', 0.3)),
         scan_noise=str(g('scan_noise', 'mean_square')).lower(),
         scan_close=float(g('scan_close', 0.9)),
+        scan_close_rule=str(g('scan_close_rule', 'all')).lower(),
+        scan_gain_rule=bool(g('scan_gain_rule', False)),
+        scan_flag_dchi2=float(g('scan_flag_dchi2', 1500.0)),
+        scan_flag_dchi2_low=float(g('scan_flag_dchi2_low', 500.0)),
+        scan_flag_null_ratio=float(g('scan_flag_null_ratio', 5.0)),
         scan_xdisp_tol=float(g('scan_xdisp_tol', 0.2)),
     )
 
@@ -114,7 +120,9 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
     if fl['scan']:
         S = NS.run(C.result, nbins=fl['scan_nbins'], width=fl['scan_width'], dchi2_min=fl['scan_dchi2'],
                    min_snr=fl['scan_min_snr'], drop_frac=fl['scan_drop_frac'], null_ratio=fl['scan_null_ratio'],
-                   noise=fl['scan_noise'], close=fl['scan_close'])
+                   noise=fl['scan_noise'], close=fl['scan_close'], close_rule=fl['scan_close_rule'],
+                   gain_rule=fl['scan_gain_rule'], flag_dchi2=fl['scan_flag_dchi2'],
+                   flag_low=fl['scan_flag_dchi2_low'], flag_null_ratio=fl['scan_flag_null_ratio'])
         # residuals of a target dominated by other slitlets' light are not a same-slitlet
         # neighbour's signature (seen on 5215): report, do not propose
         if clean is not None and clean['masked'] > fl['scan_max_masked']:
@@ -139,6 +147,8 @@ def read_scan(workspace_dir, product):
                 h = fits.getheader(p)
             except OSError:
                 continue
+            if 'PFNBRD' in h:            # detection at the proposal level (PFNBR is the stricter flag)
+                return bool(h['PFNBRD']), float(h.get('PFNBRDEL', np.nan))
             if 'PFNBR' in h:
                 return bool(h['PFNBR']), float(h.get('PFNBRDEL', np.nan))
     return None
@@ -189,6 +199,21 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             h.header['BUNIT'] = ('MJy', 'Predicted other-source light, same units as SCI')
             hdus.append(h)
             c2d.close()
+            live = CT.live_frames(exps, P, what='dpred')
+            e2d = PF.drizzle_arrays(lambda name: live.get(name), crf)
+            h = fits.ImageHDU(np.asarray(e2d.data, float), name='CONTERR2D')
+            h.header['BUNIT'] = ('MJy', 'Uncertainty of CONTAM2D (systematic), as SCI')
+            hdus.append(h)
+            e2d.close()
+            um = CT.unmodelled_frames(exps, P, kappa=fl['kappa'])
+            if any(a.any() for a in um.values()):
+                u2d = PF.drizzle_arrays(lambda name: um.get(name), crf)
+                h = fits.ImageHDU(np.clip(np.nan_to_num(np.asarray(u2d.data, float)), 0.0, 1.0), name='UNMOD2D')
+                u2d.close()
+            else:
+                h = fits.ImageHDU(np.zeros(hdus[0].data.shape), name='UNMOD2D')
+            h.header['BUNIT'] = ('', 'Fraction of the data with other light not in CONTAM2D')
+            hdus.append(h)
 
         hdr = fits.Header()
         for k, v in C.header_cards().items():
@@ -224,9 +249,9 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         out.writeto(path, overwrite=True)
         return dict(product=product_name, source_id=int(source_id), shape=C.shape, reason=C.reason,
                     is_prism=bool(is_prism),
-                    scan=(None if S is None else dict(detected=S.detected, delta=S.delta, dchi2=S.dchi2,
-                                                      proposals=S.proposals, unresolved=S.unresolved,
-                                                      xdisp=S.xdisp)))
+                    scan=(None if S is None else dict(detected=S.detected, candidate=S.candidate, delta=S.delta,
+                                                      dchi2=S.dchi2, proposals=S.proposals,
+                                                      unresolved=S.unresolved, xdisp=S.xdisp)))
     except Exception as e:                       # noqa: BLE001
         import traceback
         log(f"{product_name}: profile fit failed ({type(e).__name__}: {e}); standard extraction only")

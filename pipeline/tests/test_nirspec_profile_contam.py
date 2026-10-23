@@ -274,14 +274,73 @@ def test_contam2d_fraction_recovers_injected_contaminant(tmp_path):
                  ).writeto(path)
     err = np.full((ny, nx), 0.01)
     out = S3._profile_fit_columns(str(path), sci_uJy.copy(), err, np.zeros((ny, nx), bool), 12, 18,
-                                  np.linspace(1, 5, nx), rows='aperture')
+                                  np.linspace(1, 5, nx), rows='aperture', contam_1d='report')
     c = out['columns']
     np.testing.assert_allclose(c['fnu_pf'][0], 10.0, rtol=1e-6)
     np.testing.assert_allclose(c['fnu_pf_contam'][0], 1.0, rtol=1e-6)
+    np.testing.assert_allclose(c['fnu_pf_dec'][0], 9.0, rtol=1e-6)
     assert out['header']['PFCONTAM'] == pytest.approx(0.1, rel=1e-6)
-    assert out['header']['PFROWS'] == 'aperture'
+    assert out['header']['PFROWS'] == 'aperture' and out['header']['PFC1D'] == 'reported'
     assert [h.name for h in out['hdus']] == ['PROF2D', 'CONTAM2D']
     m = S3._profile_fit_columns(str(path), sci_uJy.copy(), err, np.zeros((ny, nx), bool), 12, 18,
-                                np.linspace(1, 5, nx), rows='model')
+                                np.linspace(1, 5, nx), rows='model', contam_1d='report')
     np.testing.assert_allclose(m['columns']['fnu_pf'][0], 10.0, rtol=1e-6)
     np.testing.assert_allclose(m['columns']['fnu_pfa'][0], 10.0, rtol=1e-6)
+    # subtract (default): fnu_pf is the decontaminated flux, the extracted one is kept
+    s = S3._profile_fit_columns(str(path), sci_uJy.copy(), err, np.zeros((ny, nx), bool), 12, 18,
+                                np.linspace(1, 5, nx), rows='aperture')
+    np.testing.assert_allclose(s['columns']['fnu_pf'][0], 9.0, rtol=1e-6)
+    np.testing.assert_allclose(s['columns']['fnu_pf_raw'][0], 10.0, rtol=1e-6)
+    assert s['header']['PFC1D'] == 'subtracted' and s['header']['PFCONSIG'] > 1
+
+
+def test_unmodelled_columns_flagged(tmp_path):
+    """Columns where other light the prediction does not hold (UNMOD2D) reaches the
+    extraction rows: fnu_pf_contam is NaN there, pf_unmod says how much of the weight,
+    and PFCONTAM leaves them out."""
+    ny, nx = 30, 100
+    rows = np.arange(ny)[:, None]
+    prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
+    prof = prof / prof[:, :1].sum()
+    sci_uJy = 10.0 * prof
+    contam = 0.1 * sci_uJy / 1e12
+    unmod = np.zeros((ny, nx))
+    unmod[14:17, 80:] = 1.0                               # past 80: unpredicted light on the trace
+    path = tmp_path / 'x_pf.fits'
+    fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(prof / 1e12, name='PROF2D'), fits.ImageHDU(contam, name='CONTAM2D'),
+                  fits.ImageHDU(0.1 * contam, name='CONTERR2D'), fits.ImageHDU(unmod, name='UNMOD2D')]).writeto(path)
+    sci = sci_uJy.copy()
+    sci[:, 80:] += 5.0 * prof[:, 80:]                     # the unpredicted light is in the data
+    out = S3._profile_fit_columns(str(path), sci, np.full((ny, nx), 0.01), np.zeros((ny, nx), bool), 12, 18,
+                                  np.linspace(1, 5, nx), rows='aperture', contam_1d='report', unmod_max=0.05)
+    c = out['columns']
+    assert np.isnan(c['fnu_pf_contam'][0][80:]).all() and np.isfinite(c['fnu_pf_contam'][0][:80]).all()
+    assert (c['pf_unmod'][0][80:] > 0.5).all() and (c['pf_unmod'][0][:80] == 0).all()
+    assert out['header']['PFCONTAM'] == pytest.approx(0.1, rel=1e-6)
+    assert out['header']['PFUNMODF'] == pytest.approx(0.2)
+    np.testing.assert_allclose(c['fnu_pf_contam_err'][0][:80], 0.1, rtol=1e-6)
+    assert [h.name for h in out['hdus']] == ['PROF2D', 'CONTAM2D', 'CONTERR2D', 'UNMOD2D']
+
+
+def test_smooth_spectrum_keeps_coherent_lines():
+    """A contaminant's emission line resolved over a few samples survives the clipping
+    (it is light to predict); a single wild point does not."""
+    rng = np.random.default_rng(7)
+    n = 400
+    err = np.full(n, 0.1)
+    f = 1.0 + err * rng.normal(size=n)
+    f[200:203] += np.array([3.0, 6.0, 3.0])                  # a line over three samples
+    f[100] = 50.0                                            # one wild point
+    fs, es, clipped = CT.smooth_spectrum(f, err, n=31, keep_lines=True)
+    np.testing.assert_allclose(fs[200:203], f[200:203])
+    assert clipped[100] and not clipped[200:203].any() and abs(fs[100] - 1.0) < 0.1
+    fs0, _, c0 = CT.smooth_spectrum(f, err, n=31)
+    assert c0[200:203].all() and fs0[201] < 1.5             # without it the line is smeared out
+
+
+def test_smooth_points_from_resolution_elements():
+    assert CT.smooth_points(15) == 31 and CT.smooth_points(7.5) == 15 and CT.smooth_points(0) == 0
+    s = CT.pass1_settings({'contam_pass1_smooth_prism': 5, 'contam_pass1_smooth_grating': 15})
+    assert s['smooth_prism'] == 11 and s['smooth_grating'] == 31
+    s = CT.pass1_settings({'contam_pass1_smooth': 21})              # the round-2 knob overrides both
+    assert s['smooth_prism'] == s['smooth_grating'] == 21

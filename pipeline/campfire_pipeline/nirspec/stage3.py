@@ -196,6 +196,7 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
         version=version,
         profile_fit_rows=str(stage_config.get('profile_fit_rows', 'aperture')).lower(),
         profile_fit_model_rows_frac=float(stage_config.get('profile_fit_model_rows_frac', 0.02)),
+        profile_fit_contam=contam_1d_settings(stage_config),
     )
 
     # Phase 2: 1D combination (combine_method='1d' only)
@@ -474,10 +475,11 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     return results
 
 
-def _prism_scan_agrees(obs, r, results, tol):
+def _prism_xdisp(obs, r, results, tol):
     """A PRISM product's neighbour against the grating scans of the same source (this
-    run's results, else their ``_pf.fits`` headers): True when no grating product
-    exists, or one finds the neighbour within ``tol`` of the same Delta."""
+    run's results, else their ``_pf.fits`` headers): 'single' when no grating product
+    exists, 'none' when the PRISM scan found nothing, 'agree' when a grating scan finds
+    the neighbour within ``tol`` of the same Delta, else 'disagree'."""
     from campfire_pipeline.nirspec.profile_product import read_scan
     sid = r['source_id']
     others = [(g['scan'] or {}) for g in results if g['source_id'] == sid and not g.get('is_prism')]
@@ -490,9 +492,37 @@ def _prism_scan_agrees(obs, r, results, tol):
             if s is not None:
                 found.append(s)
     if not found:
-        return True
+        return 'single'
+    if not (r.get('scan') or {}).get('detected'):
+        return 'none'
     d = r['scan']['delta']
-    return any(det and np.isfinite(x) and abs(x - d) <= tol for det, x in found)
+    return 'agree' if any(det and np.isfinite(x) and abs(x - d) <= tol for det, x in found) else 'disagree'
+
+
+def _prism_scan_agrees(obs, r, results, tol):
+    """True when no grating product exists, or one finds the neighbour within ``tol``
+    of the same Delta (``_prism_xdisp``)."""
+    return _prism_xdisp(obs, r, results, tol) in ('single', 'agree')
+
+
+def _update_prism_scan_cards(obs, r, xdisp):
+    """Write the cross-disperser result into a PRISM product's ``_pf.fits``: the
+    grating ran after it. An agreeing grating scan makes the detection a candidate
+    (``PFNBR``)."""
+    path = os.path.join(obs.workspace_dir, f"{r['product']}_pf.fits")
+    if not os.path.exists(path):
+        return
+    with fits.open(path, mode='update') as h:
+        hd = h[0].header
+        if 'PFNBRX' not in hd:
+            return
+        hd['PFNBRX'] = xdisp
+        if xdisp == 'agree':
+            hd['PFNBR'] = 1
+            r['scan']['candidate'] = True
+        elif xdisp == 'disagree' and hd.get('PFNBRDRP'):
+            hd['PFNBRDRP'] = ''
+            hd['PFNBRSUP'] = 'grating scan disagrees'
 
 
 def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol=0.2):
@@ -513,8 +543,12 @@ def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol
         raise ValueError(f"scan_action must be 'report_only' or 'auto_override', got {action!r}")
     for r in results:
         s = r.get('scan') or {}
-        if r.get('is_prism') and s.get('detected') and s.get('proposals') and \
-                not _prism_scan_agrees(obs, r, results, xdisp_tol):
+        if not (r.get('is_prism') and s):
+            continue
+        xd = _prism_xdisp(obs, r, results, xdisp_tol) if xdisp_tol >= 0 else 'single'
+        if xd != 'single':
+            _update_prism_scan_cards(obs, r, xd)
+        if s.get('detected') and s.get('proposals') and xd == 'disagree':
             log(f"{r['product']}: neighbour proposals withheld (grating scan disagrees)")
             s['proposals'] = {}
     path = obs.auto_bkg_override_file if action == 'auto_override' else obs.proposed_bkg_override_file
@@ -584,6 +618,7 @@ def opt_ext_single_source(
       version = 'v0.1',
       profile_fit_rows = 'aperture',
       profile_fit_model_rows_frac = 0.02,
+      profile_fit_contam = None,
     ):
     """
     Runs an optimal extraction routine and saves an msaexp-style "_spec.fits" file (combining 2D and 1D) for a single object.
@@ -715,7 +750,8 @@ def opt_ext_single_source(
     pf_file = os.path.join(workspace_dir, f'{product_name}_pf.fits')
     if os.path.exists(pf_file):
         pf = _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, x1d_start, x1d_stop, wave,
-                                  rows=profile_fit_rows, model_rows_frac=profile_fit_model_rows_frac)
+                                  rows=profile_fit_rows, model_rows_frac=profile_fit_model_rows_frac,
+                                  **(profile_fit_contam or {}))
         if pf is not None:
             for name, (data, desc) in pf['columns'].items():
                 spec1d.add_column(Column(name=name, data=data, description=desc, unit='uJy'))
@@ -815,8 +851,18 @@ def model_rows_extraction(P, data, err, mask, frac=0.02):
     return flux, flux_err, sel
 
 
+CONTAM_1D = ('report', 'subtract')
+
+
+def contam_1d_settings(sc):
+    """The 1-D other-light knobs of ``[nirspec.stage3]`` (``_profile_fit_columns``)."""
+    return dict(contam_1d=str(sc.get('contam_1d', 'subtract')).lower(),
+                contam_1d_min_sigma=float(sc.get('contam_1d_min_sigma', 1.0)),
+                unmod_max=float(sc.get('contam_unmod_max', 0.05)))
+
+
 def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, rows='aperture',
-                         model_rows_frac=0.02):
+                         model_rows_frac=0.02, contam_1d='subtract', contam_1d_min_sigma=1.0, unmod_max=0.05):
     """Extraction of the s2d with the profile-fit 2D profile.
 
     PROF2D is the drizzled source model per unit reported flux (uJy, against the s2d
@@ -828,13 +874,24 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     ``rows``: which extraction is ``fnu_pf``: ``aperture`` (the x1d aperture rows)
     or ``model`` (every row where PROF2D is significant, including the negative nod
     copies; ``model_rows_extraction``). Both are written (``fnu_pfa``, ``fnu_pfm``).
-    With ``CONTAM2D`` the predicted other-source light is extracted with the same
-    weights (``fnu_pf_contam``; reported, not subtracted).
+
+    Other sources' light (``CONTAM2D``, its uncertainty ``CONTERR2D``, the pixels it
+    cannot predict ``UNMOD2D``) is extracted with the same weights: ``fnu_pf_contam``
+    (NaN in columns where more than ``unmod_max`` of the extraction weight sits on
+    unpredicted light, ``pf_unmod``), and ``fnu_pf_dec = fnu_pf - fnu_pf_contam``.
+    ``PFCONTAM`` / ``PFCONMAX`` / ``PFCONSIG`` leave the flagged columns out.
+    ``contam_1d``: 'report' keeps ``fnu_pf`` as extracted; 'subtract' makes
+    ``fnu_pf`` the subtracted spectrum (the extracted one kept as ``fnu_pf_raw``)
+    when the prediction in the integrated flux exceeds ``contam_1d_min_sigma`` times
+    its noise (``PFCONSIG``; ``PFC1D`` says which). ``fnu_pfa`` / ``fnu_pfm`` stay
+    as extracted.
     """
     with fits.open(pf_file) as h:
         P = np.asarray(h['PROF2D'].data, float)
         header = h['PRIMARY'].header.copy()
         C2D = np.asarray(h['CONTAM2D'].data, float) if 'CONTAM2D' in h else None
+        E2D = np.asarray(h['CONTERR2D'].data, float) if 'CONTERR2D' in h else None
+        U2D = np.asarray(h['UNMOD2D'].data, float) if 'UNMOD2D' in h else None
     if rows not in ('aperture', 'model'):
         raise ValueError(f"profile_fit_rows must be 'aperture' or 'model', got {rows!r}")
     if P.shape != s2d_sci.shape:
@@ -877,13 +934,24 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     prof.header['BUNIT'] = ('MJy / uJy', 'SCI per unit reported flux; not normalised per column')
     hdus.append(prof)
     if C2D is not None and C2D.shape == P.shape:
+        if contam_1d not in CONTAM_1D:
+            raise ValueError(f'contam_1d must be one of {CONTAM_1D}, got {contam_1d!r}')
         Cu = np.where(np.isfinite(C2D), C2D * 1e12, 0.0)          # uJy, as s2d_sci
+        Eu = np.where(np.isfinite(E2D), E2D * 1e12, 0.0) if E2D is not None and E2D.shape == P.shape else 0.0 * Cu
+        U = np.clip(np.nan_to_num(U2D), 0, 1) if U2D is not None and U2D.shape == P.shape else 0.0 * Cu
         V = s2d_err ** 2
         with np.errstate(invalid='ignore', divide='ignore'):
             w = np.where(weight_rows & np.isfinite(V) & (V > 0), Pm / np.where(V > 0, V, 1.0), 0.0)
-            den = np.sum(w * np.where(np.isfinite(Pm), Pm, 0.0), axis=0)
-            cflux = np.where(den > 0, np.sum(w * Cu, axis=0) / np.where(den > 0, den, 1.0), np.nan)
-            ok = np.isfinite(cflux) & np.isfinite(flux)
+            wp = w * np.where(np.isfinite(Pm), Pm, 0.0)
+            den = np.sum(wp, axis=0)
+            okd = den > 0
+            cflux = np.where(okd, np.sum(w * Cu, axis=0) / np.where(okd, den, 1.0), np.nan)
+            # systematic uncertainty of the prediction, extracted linearly (fully correlated)
+            cerr = np.where(okd, np.sum(np.abs(w) * Eu, axis=0) / np.where(okd, den, 1.0), np.nan)
+            # fraction of the extraction weight on pixels whose other light is not predicted
+            unmod = np.where(okd, np.sum(np.abs(wp) * U, axis=0) / np.where(okd, np.sum(np.abs(wp), axis=0), 1.0), np.nan)
+            flag = np.isfinite(unmod) & (unmod > unmod_max)
+            ok = np.isfinite(cflux) & np.isfinite(flux) & ~flag
             tot = np.nansum(flux[ok])
             keep['PFCONTAM'] = (float(np.nansum(cflux[ok]) / tot) if tot > 0 else -999.0,
                                 'Predicted other-source light / fnu_pf, integrated')
@@ -891,10 +959,40 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
             frac = np.abs(cflux[sn] / flux[sn])
             keep['PFCONMAX'] = (float(np.percentile(frac, 95)) if frac.size else -999.0,
                                 '95th pct of |contam/fnu_pf| where S/N > 3')
-        columns['fnu_pf_contam'] = (cflux, 'Predicted other-source flux in the fnu_pf extraction (not subtracted)')
+            # the prediction in units of the noise of the integrated (inverse-variance) flux
+            okn = ok & np.isfinite(flux_err) & (flux_err > 0)
+            ivar = 1.0 / flux_err[okn] ** 2
+            csig = float(abs(np.sum(cflux[okn] * ivar)) / np.sqrt(np.sum(ivar))) if okn.any() else 0.0
+            keep['PFCONSIG'] = (csig, 'Predicted other light / noise, integrated')
+            fin = np.isfinite(flux)
+            keep['PFUNMODF'] = (float(np.mean(flag[fin])) if fin.any() else 0.0,
+                                'Fraction of columns with unpredicted other light')
+            dec = flux - np.where(np.isfinite(cflux), cflux, 0.0)
+            dec_err = np.sqrt(flux_err ** 2 + np.where(np.isfinite(cerr), cerr, 0.0) ** 2)
+        sub = contam_1d == 'subtract' and csig > contam_1d_min_sigma
+        keep['PFC1D'] = ('subtracted' if sub else 'reported', 'fnu_pf: predicted other light subtracted?')
+        columns['fnu_pf_contam'] = (np.where(flag, np.nan, cflux),
+                                    'Predicted other-source flux in the fnu_pf extraction (NaN: not predictable)')
+        columns['fnu_pf_contam_err'] = (np.where(flag, np.nan, cerr), 'Its uncertainty (systematic)')
+        columns['pf_unmod'] = (unmod, 'Weight fraction on pixels with unpredicted other light')
+        columns['fnu_pf_dec'] = (dec, 'fnu_pf minus fnu_pf_contam (incomplete where pf_unmod > 0)')
+        columns['fnu_pf_dec_err'] = (dec_err, 'Its error (fnu_pf_err and the prediction uncertainty)')
+        if sub:
+            columns['fnu_pf_raw'] = (flux, 'Profile-fit flux before the other-light subtraction')
+            columns['fnu_pf_raw_err'] = (flux_err, 'Its error')
+            columns['fnu_pf'] = (dec, f'Profile-fit flux, predicted other light subtracted ({rows} rows)')
+            columns['fnu_pf_err'] = (dec_err, 'Profile-fit flux error incl. the prediction uncertainty')
         c = fits.ImageHDU(C2D, name='CONTAM2D')
         c.header['BUNIT'] = ('MJy', 'Predicted other-source light, as SCI')
         hdus.append(c)
+        if E2D is not None:
+            c = fits.ImageHDU(E2D, name='CONTERR2D')
+            c.header['BUNIT'] = ('MJy', 'Uncertainty of CONTAM2D, as SCI')
+            hdus.append(c)
+        if U2D is not None:
+            c = fits.ImageHDU(U2D, name='UNMOD2D')
+            c.header['BUNIT'] = ('', 'Fraction of the data with other light not in CONTAM2D')
+            hdus.append(c)
     return dict(columns=columns, header=keep, hdus=hdus)
 
 

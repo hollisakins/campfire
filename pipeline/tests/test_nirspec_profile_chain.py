@@ -299,14 +299,23 @@ def test_chain_dominance_rules_skip_own_fit():
     def ratio(R):
         seen.append(R)
         return 3.0
-    C = PC.choose_shape(exps, _cfg(), is_prism=True, clean=clean, contam_ratio=ratio)
+    always = dict(contam_dominance_apply='always')
+    C = PC.choose_shape(exps, _cfg(**always), is_prism=True, clean=clean, contam_ratio=ratio)
     assert C.shape == 'default' and C.reason == 'dominated:3.00' and C.dominance == 3.0
     assert seen and seen[0] is C.candidates['default']             # measured at the fallback shape
-    C = PC.choose_shape(exps, _cfg(), is_prism=True, clean=clean, contam_ratio=lambda R: 0.5)
+    C = PC.choose_shape(exps, _cfg(**always), is_prism=True, clean=clean, contam_ratio=lambda R: 0.5)
     assert C.shape == 'own'
-    C = PC.choose_shape(exps, _cfg(contam_dominance='pixels'), is_prism=True, clean=clean)
+    C = PC.choose_shape(exps, _cfg(contam_dominance='pixels', **always), is_prism=True, clean=clean)
     assert C.reason == 'dominated:0.30'
     C = PC.choose_shape(exps, _cfg(contam_dominance='off'), is_prism=True, clean=clean, contam_ratio=ratio)
+    assert C.shape == 'own'
+    # default (round 3): the rule applies only in mask mode; in hybrid mode it is a flag (PFDOMIN)
+    C = PC.choose_shape(exps, _cfg(), is_prism=True, clean=clean, contam_ratio=ratio)
+    assert C.shape == 'own' and C.dominance == 3.0
+    C = PC.choose_shape(exps, _cfg(contam_mode='mask'), is_prism=True, clean=clean, contam_ratio=ratio)
+    assert C.reason == 'dominated:3.00'
+    C = PC.choose_shape(exps, _cfg(contam_mode='mask', contam_dominance_apply='flag'), is_prism=True, clean=clean,
+                        contam_ratio=ratio)
     assert C.shape == 'own'
 
 

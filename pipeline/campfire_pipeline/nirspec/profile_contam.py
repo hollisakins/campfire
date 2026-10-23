@@ -6,6 +6,17 @@ Other slitlets of the MSA configuration disperse onto a source's trace
 (``trace_overlap``). Their light is predicted from a quick first-pass spectrum of
 every source and used to protect the source's shape fit:
 
+The order of work, per disperser of an observation (``stage3.run_profile_fit_phase``):
+
+1. **pass 1**: a quick spectrum of every source, its own trace's overlaps masked;
+2. **pass 1b**: only for the sources whose trace others cover (pass 1 marked them
+   unreliable): solved once more after subtracting the light of the contaminants
+   whose pass 1 is reliable. Pass 1b never feeds another pass 1b;
+3. **final**: every product's shape fit with the predicted light of the others
+   subtracted or masked (``predict`` + ``apply``), then the 1-D extraction.
+
+Nothing is iterated: each step reads only the output of the steps before it.
+
 * **Trace maps** (phase 0): one per exposure, cached under ``{workspace}/tracemaps``.
 * **Pass 1**: every source of the configuration gets a spectrum from a fixed shape
   (the default shape, or for a grating the PRISM shape of the same source when the
@@ -35,9 +46,12 @@ every source and used to protect the source's shape fit:
   prediction everywhere and drops the pixels where the prediction's own uncertainty
   exceeds ``kappa`` times the noise. Pixels whose light cannot be predicted
   (failed-open shutters, contaminants with no pass 1, no calibration) are dropped
-  in both modes. This only changes the shape fit; the product's ``fnu_pf`` is
-  extracted from the s2d unchanged, and the predicted light is reported beside it
-  (``CONTAM2D``, ``fnu_pf_contam``).
+  in both modes. This only changes the shape fit. The predicted light is drizzled
+  like the data (``CONTAM2D``) and extracted with the same weights as ``fnu_pf``
+  (``fnu_pf_contam``); the pixels whose foreign light is not in the prediction are
+  drizzled too (``UNMOD2D``), and the 1-D columns they reach are flagged
+  (``pf_unmod``). Whether ``fnu_pf`` itself has the prediction subtracted is the
+  ``contam_1d`` knob (``stage3._profile_fit_columns``).
 """
 
 import glob
@@ -52,7 +66,7 @@ from campfire_pipeline.nirspec import trace_overlap as TO
 
 MAPS_SUBDIR = 'tracemaps'
 PASS1_SUBDIR = 'pass1'
-PASS1_VERSION = '5'
+PASS1_VERSION = '6'
 MIN_EXPOSURE_PIXELS = 100  # per-exposure clean fractions only for exposures with this many main-shutter pixels
 DPRED_FLOOR = 0.1          # prediction uncertainty floor, fraction of the prediction (ASSUMED, to be measured)
 _NOD = re.compile(r'^(jw\d+_\d{5})_(\d{5})_(nrs[12])')
@@ -266,12 +280,37 @@ def default_msf(R):
     return PF.main_shutter_factor(R, R.lam)
 
 
+PIXELS_PER_RESEL = 2.0     # NIRSpec resolving power is quoted for a 2-pixel resolution element
+GUARD_REFS = ('stage3', 'boxcar_skip', 'box3', 'max')
+
+
+def smooth_points(resel):
+    """Running-mean length in spectrum-grid points (native pixel sampling) for a length
+    in resolution elements: odd, 0 for no smoothing."""
+    n = int(round(float(resel) * PIXELS_PER_RESEL))
+    return 0 if n <= 1 else n + (1 - n % 2)
+
+
 def pass1_settings(stage_config):
-    """The pass-1 knobs of ``[nirspec.stage3]`` (also the cache signature)."""
+    """The pass-1 knobs of ``[nirspec.stage3]`` (also the cache signature).
+
+    Smoothing length per disperser, in resolution elements
+    (``contam_pass1_smooth_prism`` / ``_grating``); ``contam_pass1_smooth`` (grid points)
+    overrides both when set (the round-2 knob)."""
     g = stage_config.get
+    legacy = g('contam_pass1_smooth', None)
+    if legacy is not None:
+        sm_p = sm_g = int(legacy)
+    else:
+        sm_p = smooth_points(g('contam_pass1_smooth_prism', 7.5))
+        sm_g = smooth_points(g('contam_pass1_smooth_grating', 15.0))
+    ref = str(g('contam_pass1_guard_ref', 'max')).lower()
+    if ref not in GUARD_REFS:
+        raise ValueError(f'contam_pass1_guard_ref must be one of {GUARD_REFS}, got {ref!r}')
     return dict(mode=str(g('contam_pass1', 'fixed')).lower(),
-                smooth=int(g('contam_pass1_smooth', 31)),
-                guard=float(g('contam_pass1_guard', 3.0)),
+                smooth_prism=sm_p, smooth_grating=sm_g,
+                lines=bool(g('contam_pass1_lines', True)),
+                guard=float(g('contam_pass1_guard', 3.0)), guard_ref=ref,
                 shape=str(g('contam_pass1_shape', 'chain')).lower(),
                 failed_open=str(g('contam_failed_open', 'flag')).lower(),
                 beyond=str(g('contam_beyond_range', 'mask')).lower(),
@@ -298,7 +337,7 @@ def _pass1_valid(out, groups, n_maps, sig):
     return None
 
 
-def smooth_spectrum(flux, err, n=31, clip=5.0, n_iter=3):
+def smooth_spectrum(flux, err, n=31, clip=5.0, n_iter=3, keep_lines=False, min_run=2):
     """Pass-1 spectrum for predicting light: outliers clipped, then a running mean.
 
     A point is clipped when it is more than ``clip`` sigma from the inverse-variance
@@ -308,9 +347,15 @@ def smooth_spectrum(flux, err, n=31, clip=5.0, n_iter=3):
     result is the inverse-variance running mean of the remaining points over ``n``
     grid points, its error the error of that mean. A full-resolution pass-1 solve
     is mostly noise for faint sources, and a few points of an ill-conditioned solve
-    can be wildly off; the prediction only needs the continuum level. Strong
-    emission lines of the contaminant are clipped too (smeared out of the
-    prediction). Returns (flux, err, clipped)."""
+    can be wildly off; the prediction only needs the continuum level.
+
+    ``keep_lines``: a contaminant's emission line is real light that a running mean
+    would smear out of the prediction. Clipped points that lie *above* the reference
+    in a run of at least ``min_run`` adjacent grid points (a line is resolved over
+    two or more samples; a wild point of the solve is usually alone) are put back at
+    full resolution, with one neighbour on each side, with their own errors (in
+    hybrid mode an uncertain line is then masked rather than subtracted).
+    Returns (flux, err, clipped); ``clipped`` excludes the restored points."""
     from scipy.ndimage import median_filter
 
     f = np.asarray(flux, float)
@@ -343,26 +388,71 @@ def smooth_spectrum(flux, err, n=31, clip=5.0, n_iter=3):
         es = np.where(sw > 0, 1.0 / np.sqrt(sw), np.nan)
     fs = np.where(np.isfinite(f), fs, np.nan)
     es = np.where(np.isfinite(f), es, np.nan)
-    return fs, es, ok & ~keep
+    clipped = ok & ~keep
+    if keep_lines and clipped.any():
+        with np.errstate(invalid='ignore'):
+            up = clipped & (f - fs > clip * e)
+        restore = np.zeros(f.size, bool)
+        i = 0
+        while i < f.size:
+            if up[i]:
+                j = i
+                while j + 1 < f.size and up[j + 1]:
+                    j += 1
+                if j - i + 1 >= min_run:
+                    restore[max(i - 1, 0):min(j + 2, f.size)] = True
+                i = j + 1
+            else:
+                i += 1
+        restore &= ok
+        fs = np.where(restore, f, fs)
+        es = np.where(restore, e, es)
+        clipped &= ~restore
+    return fs, es, clipped
 
 
-def stage3_p95(workspace, product):
-    """95th percentile of |flux| [uJy] of the source's standard stage-3 spectrum
-    (``_spec.fits`` fnu, else Spec3's ``_x1d.fits``), or None."""
+def _p95(f):
+    f = np.asarray(f, float)
+    f = f[np.isfinite(f)]
+    return float(np.percentile(np.abs(f), 95)) if f.size > 10 else None
+
+
+def stage3_p95(workspace, product, ref='stage3'):
+    """95th percentile of |flux| [uJy] of the source's standard stage-3 spectrum, the
+    pass-1 guard's reference, or None.
+
+    ref : 'stage3' the optimal extraction ``fnu`` (``_spec.fits``, else Spec3's
+        ``_x1d.fits``); when the optimal extraction fell back to a boxcar
+        (``CMPFROPT``) that ``fnu`` holds a fraction of the flux and a correct pass 1
+        reads as several times brighter;
+      'boxcar_skip' as 'stage3', but None (no guard) for a boxcar fallback;
+      'box3' the 3-pixel boxcar ``fnu_3px`` (same aperture for every product);
+      'max' the larger of the two (default)."""
     from astropy.io import fits
     spec = os.path.join(workspace, f'{product}_spec.fits')
     x1d = os.path.join(workspace, f'{product}_x1d.fits')
     try:
         if os.path.exists(spec):
-            f = np.asarray(fits.getdata(spec, 'SPEC1D')['fnu'], float)
+            with fits.open(spec) as h:
+                d = h['SPEC1D'].data
+                opt = _p95(d['fnu'])
+                box = _p95(d['fnu_3px']) if 'fnu_3px' in d.columns.names else None
+                boxcar = 'box' in str(h[0].header.get('CMPFROPT', '')).lower()
         elif os.path.exists(x1d):
-            f = np.asarray(fits.getdata(x1d, 'EXTRACT1D')['FLUX'], float) * 1e6      # Jy -> uJy
+            opt = _p95(np.asarray(fits.getdata(x1d, 'EXTRACT1D')['FLUX'], float) * 1e6)      # Jy -> uJy
+            box, boxcar = None, False
         else:
             return None
     except (KeyError, OSError, ValueError):
         return None
-    f = f[np.isfinite(f)]
-    return float(np.percentile(np.abs(f), 95)) if f.size > 10 else None
+    if ref == 'stage3':
+        return opt
+    if ref == 'boxcar_skip':
+        return None if boxcar else opt
+    if ref == 'box3':
+        return box if box is not None else opt
+    vals = [v for v in (opt, box) if v is not None]
+    return max(vals) if vals else None
 
 
 def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shape=None, second=False,
@@ -379,10 +469,13 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
     of its light (B's injection: 55-60 %).
 
     Spectrum: the fixed-shape solve on the masked data, then ``smooth_spectrum``
-    (``contam_pass1_smooth`` points; 0 = full resolution). Sanity guard: a spectrum
+    (``contam_pass1_smooth_prism`` / ``_grating`` resolution elements; coherent
+    emission lines kept with ``contam_pass1_lines``). Sanity guard: a spectrum
     whose 95th percentile of |flux| (as reported, uJy) exceeds ``contam_pass1_guard``
-    times that of the source's stage-3 spectrum (``stage3_ref``) is marked
-    unreliable (an ill-conditioned solve); it then only masks.
+    times that of the source's stage-3 spectrum (``stage3_ref``, chosen by
+    ``contam_pass1_guard_ref``, see ``stage3_p95``) is marked unreliable; it then
+    only masks. In the population the guard fires on sources whose trace others
+    cover (pass 1b): their pass 1 still holds part of the others' light.
 
     Returns a ``Pass1`` with extra attributes (clean, why, shape_src, snr_det,
     flux_raw, err_raw)."""
@@ -438,12 +531,16 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
             reliable, why = True, ''   # stage-3 spectra are not decontaminated either way; taken as they are
         else:
             src = 'solve(no_stage3)'
-    if src != 'stage3' and st['smooth'] > 1:
-        R.flux, R.flux_err, _ = smooth_spectrum(R.flux, R.flux_err, n=st['smooth'])
+    n_smooth = st['smooth_prism'] if is_prism else st['smooth_grating']
+    n_lines = 0
+    if src != 'stage3' and n_smooth > 1:
+        R.flux, R.flux_err, clipped = smooth_spectrum(R.flux, R.flux_err, n=n_smooth, keep_lines=st['lines'])
+        n_lines = int(np.sum(np.isfinite(raw) & (R.flux == raw)))
+    rep = np.abs(R.flux * PF.main_shutter_factor(R, R.lam)) * 1e12
+    rep = rep[np.isfinite(rep)]
+    rep_p95 = float(np.percentile(rep, 95)) if rep.size > 10 else np.nan
     if src != 'stage3' and st['guard'] > 0 and stage3_ref:
-        rep = np.abs(R.flux * PF.main_shutter_factor(R, R.lam)) * 1e12
-        rep = rep[np.isfinite(rep)]
-        if rep.size > 10 and np.percentile(rep, 95) > st['guard'] * stage3_ref:
+        if np.isfinite(rep_p95) and rep_p95 > st['guard'] * stage3_ref:
             reliable, why = False, 'guard'
     for e, ok, d in zip(exps, saved, saved_diff):
         e.ok, e.diff = ok, d
@@ -469,6 +566,7 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
     P1.clean = after / before if before else 0.0
     P1.why, P1.shape_src, P1.spec_src, P1.snr_det = why, shape_src, src, snr
     P1.flux_raw, P1.err_raw = raw, raw_err
+    P1.rep_p95, P1.ref_p95, P1.n_lines = rep_p95, (stage3_ref if stage3_ref else np.nan), n_lines
     P1.result = R
     return P1
 
@@ -495,7 +593,14 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
     out = pass1_path(workspace, product)
     try:
         st = pass1_settings(stage_config)
-        sig = _signature(st)
+        prism = None
+        if not is_prism and prism_product:
+            prism = read_prism_shape(workspace, prism_product)
+        # the PRISM shape a grating pass 1 is predicted with is part of its identity: a
+        # PRISM rerun that changes it invalidates the grating pass 1
+        pshape = 'none' if prism is None else (
+            f"{prism.shape}:" + ','.join(f'{k}={prism.params[k]:.4f}' for k in sorted(prism.params)))
+        sig = _signature(dict(st, prism_shape=pshape))
         keys = {exposure_key(f) for g in groups for f in g}
         n_maps = sum(os.path.exists(TO.trace_map_path(os.path.join(workspace, MAPS_SUBDIR), f'{k}_rate.fits'))
                      for k in keys)
@@ -507,9 +612,6 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
             return out
         exps = PF.load_source(groups, bkg_overrides=overrides, science=set(science))
         maps = maps_for_exposures(workspace, exps)
-        prism = None
-        if not is_prism and prism_product:
-            prism = read_prism_shape(workspace, prism_product)
         names = pass1_products or {}
 
         def reliable_for(csid):
@@ -528,12 +630,14 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
                     d = h['SPEC1D'].data
                     spec3 = (np.asarray(d['wave'], float), np.asarray(d['fnu'], float), np.asarray(d['fnu_err'], float))
         P1 = compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shape=prism, second=second,
-                           pass1_for=reliable_for, stage3_ref=stage3_p95(workspace, product), stage3_spec=spec3)
+                           pass1_for=reliable_for, stage3_ref=stage3_p95(workspace, product, st['guard_ref']),
+                           stage3_spec=spec3)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         arrays = dict(version=PASS1_VERSION, sig=sig, n_maps=n_maps, mode=st['mode'], sid=int(sid), lam=P1.lam,
                       flux=P1.flux, flux_err=P1.flux_err, flux_raw=P1.flux_raw, err_raw=P1.err_raw,
                       snr_det=P1.snr_det, shape_src=P1.shape_src, spec_src=P1.spec_src, reliable=P1.reliable,
-                      why=P1.why, round='2' if second else '1', clean=P1.clean,
+                      why=P1.why, round='2' if second else '1', clean=P1.clean, rep_p95=P1.rep_p95,
+                      ref_p95=P1.ref_p95, n_lines=P1.n_lines,
                       keys=np.array(sorted(P1.frames)), nosrc=np.array(sorted(P1.nosrc)))
         for key, fr in P1.frames.items():
             for name, v in fr.items():
@@ -571,6 +675,8 @@ class Pass1:
         P.shape_src = str(z['shape_src']) if 'shape_src' in z else ''
         P.flux_raw = z['flux_raw'] if 'flux_raw' in z else None
         P.err_raw = z['err_raw'] if 'err_raw' in z else None
+        P.rep_p95 = float(z['rep_p95']) if 'rep_p95' in z else np.nan
+        P.ref_p95 = float(z['ref_p95']) if 'ref_p95' in z else np.nan
         return P
 
 
@@ -879,15 +985,40 @@ def apply(exps, P, mode='hybrid', kappa=1.0, dominance_kappa=1.0):
                 failed_open=tot_fo / tot_b if tot_b else 0.0)
 
 
-def live_frames(exps, P):
+def live_frames(exps, P, what='pred'):
     """Predicted light per science exposure in the live canonical units (path loss
-    re-applied) on its cutout, keyed by file name, for drizzling (``CONTAM2D``)."""
+    re-applied) on its cutout, keyed by file name, for drizzling (``CONTAM2D``).
+    ``what = 'dpred'``: its uncertainty (``CONTERR2D``)."""
     out = {}
     for k, e in enumerate(exps):
         if not e.use_data or e.partners is None:
             continue
         r0, c0, ny, nx = e.cutout
         with np.errstate(invalid='ignore', divide='ignore'):
-            a = P.pred[k] / e.pl_applied
+            a = (P.dpred[k] if what == 'dpred' else P.pred[k]) / e.pl_applied
         out[e.name] = np.nan_to_num(a[r0:r0 + ny, c0:c0 + nx])
+    return out
+
+
+def unmodelled_frames(exps, P, kappa=1.0):
+    """Pixels per science exposure whose other-source light is not in the prediction,
+    as 0/1 on the live cutout, keyed by file name, for drizzling (``UNMOD2D``): the
+    unmodelled pixels (light past a contaminant's range, contaminants without a pass
+    1 or a pass-1 frame, no calibration) and the pixels where a contaminant whose pass
+    1 is unreliable puts more than ``kappa`` times the noise (its light is masked in
+    the shape fit, never subtracted). Failed-open shutters are not included: their
+    sky cancels in the nod difference."""
+    out = {}
+    for k, e in enumerate(exps):
+        if not e.use_data or e.partners is None:
+            continue
+        u = P.unmodelled[k].copy()
+        if P.failed_open is not None:
+            u &= ~P.failed_open[k] | (P.beyond[k] if P.beyond is not None else False)
+        if P.pred_unreliable is not None:
+            sig = diff_sigma(exps, k)
+            with np.errstate(invalid='ignore'):
+                u |= np.abs(P.pred_unreliable[k]) > kappa * sig
+        r0, c0, ny, nx = e.cutout
+        out[e.name] = u[r0:r0 + ny, c0:c0 + nx].astype(float)
     return out

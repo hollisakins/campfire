@@ -51,7 +51,28 @@ def test_scan_recovers_injected_neighbour_delta_and_partner():
     assert S.proposals == {ROOT: {'1': [3], '3': [2]}}
     assert not S.unresolved
     cards = S.header_cards()
-    assert cards['PFNBR'][0] == 1 and cards['PFNBRDRP'][0] == '03101:1>3;03101:3>2'
+    assert cards['PFNBRD'][0] == 1 and cards['PFNBRDRP'][0] == '03101:1>3;03101:3>2'
+    # the product flag needs the stricter level (default: never in this call)
+    assert cards['PFNBR'][0] == 0 and not S.candidate
+    S2 = NS.run(R, dchi2_min=60.0, flag_dchi2=0.5 * S.dchi2)
+    assert S2.candidate and S2.header_cards()['PFNBR'][0] == 1
+    assert not NS.run(R, dchi2_min=60.0, flag_dchi2=2 * S.dchi2).candidate
+
+
+def test_candidate_from_other_disperser_agreement():
+    S = NS.ScanResult(detected=True, delta=1.15, dchi2=120.0, proposals={ROOT: {'1': [3]}})
+    assert not S.candidate
+    S.cross_check((True, 1.10), tol=0.2)
+    assert S.candidate and S.header_cards()['PFNBR'][0] == 1
+
+
+def test_proposal_gain_and_cost():
+    # partner 2 puts 0.6 of the target's light on its rows, partner 3 none: dropping 2
+    # removes 0.3^2 of squared error; the cost is a third of the variance (1/snr^2)
+    g, c = NS.proposal_gain({2: 0.6, 3: 0.0}, [3], snr=10.0)
+    assert g == pytest.approx(0.09) and c == pytest.approx(1.0 / 300.0)
+    g, c = NS.proposal_gain({2: 0.25, 3: 0.2}, [3], snr=2.0)
+    assert g < c                                      # a faint target: not worth it
 
 
 def test_scan_two_nods_writes_no_override():
@@ -110,6 +131,20 @@ def test_brighter_close_neighbour_is_unresolvable():
     S = NS.run(R, dchi2_min=60.0, null_ratio=0.0)
     assert S.detected and abs(S.delta) < 0.9 and S.brightness > 1.0
     assert S.proposals == {} and 'unresolvable' in S.suppressed
+
+
+def test_close_fainter_neighbour_withheld():
+    """A fainter neighbour 0.75 slit units away: the round-2 rule ('brighter') proposed
+    for it; the default ('all') withholds it (its copies overlap the target's rows
+    under every partner choice)."""
+    exps = T._exposures(src_y=0.0)
+    _data(exps, 30.0, 15.0, 0.75, seed=2)
+    R = PF.fit_fixed(exps)
+    S = NS.run(R, dchi2_min=60.0, null_ratio=0.0)
+    assert S.detected and abs(S.delta) < 0.9 and S.brightness < 1.0
+    assert S.proposals == {} and 'too close' in S.suppressed
+    S = NS.run(R, dchi2_min=60.0, null_ratio=0.0, close_rule='brighter')
+    assert S.suppressed == ''
 
 
 def test_cross_check_withholds_disagreeing_proposals():

@@ -122,30 +122,47 @@
     contam_mode = "hybrid"                   # "hybrid" (subtract, mask where uncertain) | "mask"
     contam_pass1 = "fixed"                   # pass-1 spectra: "fixed" (fixed-shape solve) | "stage3"
                                              # (existing stage-3 fnu of each source)
-    contam_pass1_smooth = 31                 # pass-1 spectra: outliers clipped, then an n-point running mean (0: off)
+    contam_pass1_smooth_prism = 7.5          # pass-1 spectra: outliers clipped, then a running mean over this many
+    contam_pass1_smooth_grating = 15.0       # resolution elements (2 pixels each; 0: off). contam_pass1_smooth
+                                             # (grid points, both dispersers) overrides when set
+    contam_pass1_lines = true                # keep clipped positive runs of >= 2 samples (a contaminant's lines)
     contam_pass1_guard = 3.0                 # pass-1 p95 |flux| above this x the stage-3 p95: unreliable (0: off)
+    contam_pass1_guard_ref = "max"           # stage-3 reference: "stage3" (fnu) | "boxcar_skip" | "box3" (fnu_3px)
+                                             # | "max" (larger of fnu and fnu_3px: a boxcar-fallback fnu is low)
     contam_pass1_shape = "chain"             # "chain" (PRISM / own gated / default) | "default"
     contam_failed_open = "flag"              # failed-open shutters: "flag" | "mask"
     contam_beyond_range = "mask"             # other traces past their nominal range: "mask" | "ignore"
     contam_mask_kappa = 1.0                  # threshold in units of the per-pixel noise
     contam_min_clean_fraction = 0.5          # less main-shutter data left: no own fit
+    contam_min_clean_fraction_exposure = 0.3 # or less than this in any exposure
     contam_dominance = "light"               # other sources dominate the trace -> no own fit:
                                              # "light" | "pixels" | "off"
+    contam_dominance_apply = "mask_only"     # "always" | "mask_only" (only with contam_mode = "mask") | "flag"
     contam_dominance_max = 1.0               # light: their predicted light / the target's on the main shutter
     contam_dominance_kappa = 1.0             # pixels: predicted light above this x noise is "dirty"
     contam_dominance_min_clean = 0.5         # pixels: less clean main shutter than this
     contam_pair_ratio = 3.0                  # similar-brightness pair flag within 1/r..r
     contam_pair_min_frac = 0.3               # and the contaminant's light >= this x the target's in its extraction
+    contam_1d = "subtract"                   # fnu_pf: "subtract" the predicted other light (extracted flux kept
+                                             # as fnu_pf_raw) | "report" (fnu_pf as extracted; fnu_pf_dec beside it)
+    contam_1d_min_sigma = 1.0                # subtract only when the prediction exceeds this x the integrated noise
+    contam_unmod_max = 0.05                  # columns with more extraction weight on unpredicted other light are
+                                             # flagged (pf_unmod) and left out of fnu_pf_contam / PFCONTAM
     # Same-slitlet neighbour scan on the residuals
     scan_neighbours = true
     scan_action = "report_only"              # "report_only" (proposed file) | "auto_override"
                                              # (auto file, applied by stage 2b on its next run)
     scan_nbins = 16
     scan_noise = "mean_square"               # chi2 drops / reduced chi2 of target + neighbour ("none": raw)
-    scan_dchi2 = 80.0                        # detection threshold on chi2 drop / noise scale (sign-randomised
+    scan_dchi2 = 80.0                        # proposal threshold on chi2 drop / noise scale (sign-randomised
                                              # null, p14 PRISM: 0.23 % of 438 draws above 60-100, none above 120)
+    scan_flag_dchi2 = 1500.0                 # product flag PFNBR only above this (negative-amplitude statistic of
+    scan_flag_dchi2_low = 500.0              # p14 + p9: 1.4 % above), or above _low and _null_ratio x the negative
+    scan_flag_null_ratio = 5.0               # statistic (mirror rule 1.7-2.1 %), or the other disperser agrees
     scan_null_ratio = 1.5                    # and > this x the best negative-amplitude drop (provisional)
-    scan_close = 0.9                         # brighter neighbour closer than this: unresolvable, no proposal
+    scan_close = 0.9                         # neighbour closer than this: no proposal (copies overlap the target)
+    scan_close_rule = "all"                  # "all" | "brighter" (only brighter neighbours, round 2) | "off"
+    scan_gain_rule = false                   # also require modelled flux gain > the variance cost of the drop
     scan_xdisp_tol = 0.2                     # PRISM and grating scans must agree on Delta within this (< 0: off)
     scan_min_snr = 5.0
     scan_drop_frac = 0.2                     # partner dropped when it puts > this x the target's light on its rows
