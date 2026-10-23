@@ -749,6 +749,83 @@ def fit(exps, chromatic=True, priors=None, clip=5.0, n_clip=2, grid=None, bounds
     return R
 
 
+PARTIAL_FREE = {'width': ('width',), 'centre': ('centre',)}
+
+
+def fit_partial(exps=None, free=('width',), base=None, clip=5.0, n_clip=2, model=None, chromatic=True,
+                priors=None, grid=None, bounds=None):
+    """Own fit of some of the shape parameters, the others held at a fixed shape.
+
+    free : names among 'centre', 'drift', 'width', 'width_change' that are fitted (with
+        their priors); the per-exposure pointing offsets are always fitted.
+    base : dict(centre_offset, drift, width, width_change) of the held parameters
+        (``shape_vector``); default the default shape.
+    For an intermediate detection S/N, where a full own fit follows the noise: the
+    width alone (centre at the planned position) or the centre alone.
+    """
+    names = ['centre', 'drift', 'width', 'width_change']
+    if model is not None:
+        M = model
+        M.use = np.ones(M.npix, bool)
+    else:
+        M = ProfileModel(exps, chromatic=chromatic, priors=priors, grid=grid, bounds=bounds)
+    if not M.chromatic:
+        raise ValueError('fit_partial needs the chromatic model (four shape parameters)')
+    q0 = np.concatenate([shape_vector(base, M.c_prior, M.priors.width_median), np.zeros(M.n_eoff)])
+    sel = [names.index(n) for n in free] + list(range(4, 4 + M.n_eoff))
+    lo, hi = M.bounds()
+
+    def full(x):
+        q = q0.copy()
+        q[sel] = x
+        return q
+
+    def res(x):
+        return M.residuals(full(x))
+    starts = [{}]
+    if 'centre' in free:
+        starts = [dict(centre=M.c_prior + d) for d in (-0.2, -0.1, 0.0, 0.1, 0.2)]
+    if 'width' in free:
+        starts = [dict(s, width=np.log(w)) for s in starts for w in (0.03, 0.15, 0.4)]
+    best = None
+    for s in starts:
+        x = q0[sel].copy()
+        for nm, v in s.items():
+            x[sel.index(names.index(nm))] = v
+        c = float(np.sum(res(x) ** 2))
+        if best is None or c < best[0]:
+            best = (c, x)
+    x = np.clip(best[1], lo[sel] + 1e-6, hi[sel] - 1e-6)
+    for it in range(n_clip + 1):
+        # optimise x + 1: least_squares' xtol test is relative to |x|, which is ~0 for a centre
+        # at a planned position of 0 with zero offsets (it would stop at the start)
+        r_ = least_squares(lambda y: res(y - 1.0), x + 1.0, bounds=(lo[sel] + 1.0, hi[sel] + 1.0),
+                           x_scale='jac', ftol=1e-5, xtol=1e-5, gtol=1e-5)
+        x = r_.x - 1.0
+        if it == n_clip:
+            break
+        p, eoff = M.unpack(full(x))
+        f, _, _, A = M.solve(p, eoff)
+        r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
+        new = np.abs(r) < clip
+        if np.array_equal(new, M.use):
+            break
+        M.use = new
+    q = full(x)
+    p, eoff = M.unpack(q)
+    f, cov, good, A = M.solve(p, eoff, covariance=True)
+    r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
+    params = dict(centre=float(p[0]), drift=float(p[1]), width=float(np.exp(p[2])), width_change=float(p[3]),
+                  pivot=M.pivot, centre_prior=M.c_prior)
+    R = FitResult(params=params, eoff=eoff, lam=M.lam_grid, flux=np.where(good, f, np.nan),
+                  flux_err=np.where(good, np.sqrt(np.abs(np.diag(cov))), np.nan), chi2=float(np.sum(r[M.use] ** 2)),
+                  npix=int(round(float(np.sum(M.dof_weight()[M.use])))), nfree=int(good.sum()) + len(sel),
+                  chromatic=True, model=M)
+    R.bound_bits = M.bound_hits(q)
+    R.use = M.use.copy()
+    return R
+
+
 def shape_vector(shape, c_prior, width_default):
     """Shape vector (centre, drift, ln width, width change) from a dict with
     ``centre_offset`` (from the planned position), ``drift``, ``width``, ``width_change``."""

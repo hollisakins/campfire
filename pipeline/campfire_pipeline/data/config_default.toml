@@ -91,12 +91,23 @@
     profile_fit_rows = "aperture"            # fnu_pf rows: "aperture" | "model" (all significant
                                              # PROF2D rows incl. negative nod copies); both written
     profile_fit_model_rows_frac = 0.02       # "model" rows: |PROF2D| >= this x column max
-    # Detection S/N gate for the own fit. Above these the own fit beats the default shape in
-    # delivered S/N (test A injections, 2026-10-23; noise scale = clipped mean square of the
-    # residuals). Null on 16 blanks per disperser: PRISM max 9.9, G395M max 48.5.
-    gate_snr_prism = 50.0
+    # Detection S/N gate for the own fit (noise scale = clipped mean square of the residuals).
+    # Round-3 realistic-mix injections (2026-10-23): PRISM own fit unbiased (|bias| < 0.5 %) from
+    # gate 25 and ahead of the default shape in delivered S/N there; G395M own fit has outliers
+    # below 70. Null (real faint sources, own continuum removed): PRISM max 16 of 47, G395M max 26 of 126.
+    gate_snr_prism = 25.0
     gate_snr_grating = 70.0
     gate_noise = "mean_square"               # "mean_square" | "mad" (the gate before 2026-10-23)
+    # Default shape (below the gate, no PRISM shape): star PSF x a Gaussian of this width at the
+    # planned position. 0.15 (the prior median) reads ~5 % low on the population; 0.21 is unbiased
+    # on it but costs 6-8 % in noise-only S/N. Pointing offsets fitted (no S/N cost, ~1.5 % less bias).
+    default_shape_width = 0.15
+    default_fit_offsets = true
+    # Own fit of the width only between gate_partial_snr_* and the gate, products without a PRISM
+    # shape ("off" | "width" | "centre"). G395M 30-70: bias -5 % -> 0 at 1-2.5 % noise-only S/N.
+    profile_fit_partial = "off"
+    gate_partial_snr_prism = 25.0
+    gate_partial_snr_grating = 30.0
     own_vs_prism_dchi2 = 25.0                # grating own fit beats the PRISM shape by this + k ln(N)
     own_vs_prism_min_gate = 100.0            # and only above this gate (below it the PRISM shape is kept)
     own_vs_prism_centre = 0.08               # and only when the shapes differ by more than this in centre

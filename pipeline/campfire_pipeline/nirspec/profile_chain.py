@@ -14,8 +14,10 @@ which shape builds the extraction profile:
    chromatic terms (``profile_fit.map_shape``), keeping its offset from the planned
    position. Only when the PRISM product took its own shape and the two were taken
    at the same telescope roll.
-3. **default**: the star-measured PSF times a Gaussian of the prior median width at
-   the planned position.
+3. **default**: the star-measured PSF times a Gaussian of the prior median width (or
+   ``default_shape_width``) at the planned position, with the pointing offsets fitted
+   (``default_fit_offsets``). Optionally, between ``gate_partial_snr_*`` and the gate,
+   an own fit of the width (or centre) only (``profile_fit_partial``).
 
 Every candidate that runs is compared on the same pixels (a pixel is kept when any
 candidate's outlier clipping keeps it), with the spectrum re-solved and without
@@ -42,7 +44,7 @@ class ChainConfig:
     chromatic: bool = True
     prism_transfer: bool = True
     prism_mode: str = 'unless_better'    # unless_better | always
-    gate_prism: float = 50.0             # own fit beats the default shape above these (test A injections,
+    gate_prism: float = 25.0             # own fit above these (round-3 realistic-mix injections,
     gate_grating: float = 70.0           # mean-square gate statistic; 2026-10-23)
     own_vs_prism_dchi2: float = 25.0     # plus k ln(N_eff), k = shape parameters
     own_vs_prism_min_gate: float = 100.0  # below: a grating keeps the PRISM shape (own fit not better there)
@@ -62,6 +64,15 @@ class ChainConfig:
     dominance_min_clean: float = 0.5     # pixels: main-shutter fraction below dominance_kappa x noise
     dominance_apply: str = 'mask_only'   # always | mask_only (only when contam_mode = mask) | flag (PFDOMIN only)
     contam_mode: str = 'hybrid'
+    default_width: float = None          # width of the default shape (None: the prior median width)
+    default_fit_offsets: bool = True     # the default shape also fits the per-exposure pointing offsets
+    partial_fit: str = 'off'             # below the gate: off | width | centre (own fit of that parameter only)
+    gate_partial_prism: float = 25.0     # ... from these gates up
+    gate_partial_grating: float = 30.0
+
+    def default_shape(self):
+        """Shape dict of the default candidate for ``profile_fit.fit_fixed`` (None: the prior median width)."""
+        return None if self.default_width is None else dict(width=float(self.default_width))
 
     @classmethod
     def from_stage_config(cls, sc):
@@ -90,9 +101,13 @@ class ChainConfig:
         dapply = str(g('contam_dominance_apply', 'mask_only')).lower()
         if dapply not in ('always', 'mask_only', 'flag'):
             raise ValueError(f"contam_dominance_apply must be 'always', 'mask_only' or 'flag', got {dapply!r}")
+        partial = str(g('profile_fit_partial', 'off')).lower()
+        if partial not in ('off',) + tuple(PF.PARTIAL_FREE):
+            raise ValueError(f"profile_fit_partial must be 'off', 'width' or 'centre', got {partial!r}")
+        dwidth = g('default_shape_width', None)
         return cls(shape=shape, chromatic=bool(g('profile_fit_chromatic', True)),
                    prism_transfer=bool(g('profile_fit_prism_transfer', True)), prism_mode=mode,
-                   gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
+                   gate_prism=float(g('gate_snr_prism', 25.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
                    own_vs_prism_dchi2=float(g('own_vs_prism_dchi2', 25.0)),
                    own_vs_prism_min_gate=float(g('own_vs_prism_min_gate', 100.0)),
                    agree_centre=float(g('own_vs_prism_centre', 0.08)),
@@ -103,7 +118,11 @@ class ChainConfig:
                    gate_noise=str(g('gate_noise', 'mean_square')).lower(), dominance=dom,
                    dominance_max=float(g('contam_dominance_max', 1.0)),
                    dominance_min_clean=float(g('contam_dominance_min_clean', 0.5)),
-                   dominance_apply=dapply, contam_mode=str(g('contam_mode', 'hybrid')).lower())
+                   dominance_apply=dapply, contam_mode=str(g('contam_mode', 'hybrid')).lower(),
+                   default_width=(None if dwidth is None else float(dwidth)),
+                   default_fit_offsets=bool(g('default_fit_offsets', True)), partial_fit=partial,
+                   gate_partial_prism=float(g('gate_partial_snr_prism', 25.0)),
+                   gate_partial_grating=float(g('gate_partial_snr_grating', 30.0)))
 
 
 @dataclass
@@ -227,7 +246,7 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
     M = PF.ProfileModel(exps, chromatic=cfg.chromatic, priors=cfg.priors, bounds=cfg.bounds)
     snr, det = PF.detection_snr(M, scale=cfg.gate_noise)
     gate = cfg.gate_prism if is_prism else cfg.gate_grating
-    cands = {'default': PF.fit_fixed(model=M)}
+    cands = {'default': PF.fit_fixed(model=M, shape=cfg.default_shape(), fit_eoff=cfg.default_fit_offsets)}
     if cfg.shape == 'fixed':
         R = cands['default']
         return ChainResult(result=R, shape='default', chain='fixed', reason='fixed', snr_det=snr, gate=gate,
@@ -271,6 +290,17 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
         reason = f'dominated:{dom:.2f}'
     elif snr < gate:
         reason = 'below_gate'
+        gate_part = cfg.gate_partial_prism if is_prism else cfg.gate_partial_grating
+        if cfg.partial_fit != 'off' and 'prism' not in cands and snr >= gate_part:
+            # intermediate S/N: fit only one shape parameter (the PRISM shape, where there is
+            # one, is a better description than a partial own fit)
+            try:
+                cands['own'] = PF.fit_partial(exps, free=PF.PARTIAL_FREE[cfg.partial_fit],
+                                              base=cfg.default_shape(), model=M)
+                reason = f'gate_partial:{cfg.partial_fit}'
+            except Exception as e:                     # noqa: BLE001 - the chain falls back
+                log(f'partial own fit failed ({type(e).__name__}: {e})')
+                reason = 'fit_failed'
     else:
         try:
             cands['own'] = PF.fit(exps, model=M)
@@ -326,7 +356,7 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
             else:
                 choice, reason = 'prism', 'prism_kept' if differ else 'shapes_agree'
     else:
-        choice, reason = 'own', 'gate_passed'
+        choice, reason = 'own', (reason if reason and reason.startswith('gate_partial') else 'gate_passed')
     if reason is None:
         reason = 'gate_passed'
     if choice == 'prism' and (reason in ('below_gate', 'fit_failed') or reason.startswith(('masked', 'dominated'))):
