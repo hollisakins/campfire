@@ -44,7 +44,7 @@ def _pass1_of(R, sid):
 @pytest.fixture
 def stand_ins(monkeypatch):
     """Geometry: contaminant 2 lights every pixel of every nod; calibration 1 everywhere."""
-    def geometry(exps, sid, maps):
+    def geometry(exps, sid, maps, failed_open='flag', beyond='mask'):
         return CT.Geometry(mask=[np.ones(e.y.shape, bool) for e in exps],
                            sources=[{2: np.ones(e.y.shape, bool)} for e in exps],
                            unmodelled=[np.zeros(e.y.shape, bool) for e in exps])
@@ -127,6 +127,94 @@ def test_mask_threshold_and_clean_fraction():
     CT.apply(exps, P, mode='hybrid', kappa=1.0)
     np.testing.assert_allclose(exps[0].diff, before - pred[0])
     assert exps[0].ok[ms].all()                                   # dpred = 0.1 pred < 1 sigma everywhere
+
+
+def test_smooth_spectrum_clips_outliers_and_averages():
+    """Pass-1 spectra: isolated wild points (8649: 31082 uJy where the rest is ~0.1) and
+    a short group of them are clipped; the running mean recovers the continuum and
+    its error drops by ~sqrt(n)."""
+    rng = np.random.default_rng(5)
+    n = 600
+    truth = 1.0 + 0.3 * np.sin(np.linspace(0, 3, n))
+    err = np.full(n, 0.5)
+    f = truth + err * rng.normal(size=n)
+    f[100] = 3e4
+    f[300:304] = -500.0
+    f[450] = np.nan
+    fs, es, clipped = CT.smooth_spectrum(f, err, n=31)
+    assert clipped[100] and clipped[300:304].all() and clipped.sum() < 12
+    ok = np.isfinite(fs)
+    assert not ok[450] and ok.sum() == n - 1
+    assert np.max(np.abs(fs - truth)[ok][20:-20]) < 0.5
+    assert np.median(es[ok]) == pytest.approx(0.5 / np.sqrt(31), rel=0.1)
+    f0, e0, c0 = CT.smooth_spectrum(f, err, n=0)                 # 0: full resolution, as before
+    assert np.array_equal(f0, f, equal_nan=True) and not c0.any()
+
+
+def test_missing_frame_masks_instead_of_skipping(stand_ins):
+    """A contaminant whose pass 1 has no frame for an exposure that holds its light:
+    its pixels in the differences that use that exposure are unmodelled. A frame
+    absent because the contaminant is not in that exposure is no light, not missing."""
+    t_exps, _ = _source(1, 0.0, 10.0)
+    c_exps, Rc = _source(2, 0.3, 5.0)
+    P1 = _pass1_of(Rc, 2)
+    key = CT.exposure_key(t_exps[2].name)
+    del P1.frames[key]
+    P1.nosrc = set()
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+    assert all(P.unmodelled[k].all() for k in range(3)) and P.missing_frame == {2}
+    P1.nosrc = {key}                                       # the contaminant is not in that exposure
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+    assert not any(u.any() for u in P.unmodelled) and not P.missing_frame
+
+
+def test_failed_open_is_flag_only_by_default():
+    """Failed-open shutters: their sky cancels in the nod difference, so they are
+    recorded (flag) and not masked unless asked (``failed_open = 'mask'``)."""
+    from campfire_pipeline.nirspec import trace_overlap as TO
+
+    class E:
+        def __init__(self, k):
+            self.name = f'jw00000001001_03101_0000{k + 1}_nrs1_1.fits'
+            self.group, self.y, self.origin = 0, np.zeros((NY, NX)), (1, 1)
+            self.partners = [j for j in range(3) if j != k]
+    exps = [E(k) for k in range(3)]
+    shared = TO.Shared(exposure=0, from_exposure=0, sign=1, name='fo', source_id=0, kind='failed_open',
+                       iy=np.array([10, 11]), ix=np.array([5, 5]), target_src=np.array([True, True]))
+    orig = TO.nod_contamination
+    try:
+        TO.nod_contamination = lambda *a, **k: [shared]
+        mp = {CT.exposure_key(e.name): None for e in exps}
+        g = CT.geometry(exps, 1, mp)
+        assert g.failed_open[0][10, 5] and not g.unmodelled[0].any() and not g.mask[0].any()
+        g = CT.geometry(exps, 1, mp, failed_open='mask')
+        assert g.unmodelled[0][10, 5] and g.mask[0][10, 5]
+    finally:
+        TO.nod_contamination = orig
+
+
+def test_pair_flag_needs_light_in_the_extraction(stand_ins):
+    """Similar pass-1 brightness alone does not make a pair: the contaminant's light in
+    the target's extraction must reach ``min_frac`` of the target's own."""
+    t_exps, Rt = _source(1, 0.0, 10.0)
+    for e in t_exps:
+        e.var = np.ones(e.y.shape)
+    own = _pass1_of(Rt, 1)
+    for centre, expect in ((0.0, 1), (2.3, 0)):           # on the target's rows / two shutters away
+        c_exps, Rc = _source(2, centre, 10.0)
+        P1 = _pass1_of(Rc, 2)
+        P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.', own_pass1=own)
+        assert P.pair_candidates and P.pair_candidates[0][0] == 2
+        CT.pair_flag(P, Rt, t_exps, min_frac=0.3)
+        assert P.pair == expect, (centre, P.pair_frac)
+
+
+def test_contam_light_ratio_scales_with_contaminant():
+    t_exps, Rt = _source(1, 0.0, 10.0)
+    pred = [PF.model_frame(Rt, k, applied_pathloss=False, common=True) * 2.0 for k in range(3)]
+    P = CT.Prediction(pred=[np.nan_to_num(p) for p in pred], dpred=[np.zeros(e.y.shape) for e in t_exps],
+                      unmodelled=[np.zeros(e.y.shape, bool) for e in t_exps])
+    assert CT.contam_light_ratio(P, Rt, t_exps) == pytest.approx(2.0, rel=1e-6)
 
 
 def test_model_rows_extraction_uses_negative_copies():

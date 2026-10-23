@@ -469,22 +469,54 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
         log(f"Profile fit: {len(tasks)} {fg} products")
         results += [r for r in dispatch(run_product, tasks, n_processes=n_processes, use_starmap=True) or [] if r]
     if fl['scan']:
-        write_scan_proposals(obs, results, run_sids, str(stage_config.get('scan_action', 'report_only')).lower())
+        write_scan_proposals(obs, results, run_sids, str(stage_config.get('scan_action', 'report_only')).lower(),
+                             xdisp_tol=fl['scan_xdisp_tol'])
     return results
 
 
-def write_scan_proposals(obs, results, run_sids, action='report_only'):
+def _prism_scan_agrees(obs, r, results, tol):
+    """A PRISM product's neighbour against the grating scans of the same source (this
+    run's results, else their ``_pf.fits`` headers): True when no grating product
+    exists, or one finds the neighbour within ``tol`` of the same Delta."""
+    from campfire_pipeline.nirspec.profile_product import read_scan
+    sid = r['source_id']
+    others = [(g['scan'] or {}) for g in results if g['source_id'] == sid and not g.get('is_prism')]
+    found = [(bool(s.get('detected')), float(s.get('delta', np.nan))) for s in others if s]
+    if not others:
+        for p in glob.glob(os.path.join(obs.workspace_dir, f'{obs.name}_*_{sid}_pf.fits')):
+            if os.path.basename(p) == f"{r['product']}_pf.fits":
+                continue
+            s = read_scan(obs.workspace_dir, os.path.basename(p)[:-len('_pf.fits')])
+            if s is not None:
+                found.append(s)
+    if not found:
+        return True
+    d = r['scan']['delta']
+    return any(det and np.isfinite(x) and abs(x - d) <= tol for det, x in found)
+
+
+def write_scan_proposals(obs, results, run_sids, action='report_only', xdisp_tol=0.2):
     """Neighbour-scan proposals to the observation's reference directory.
 
     ``auto_override``: ``nodded_background_overrides_auto.toml``, which stage 2b
     applies on its next run (a hand override of the same nod wins);
     ``report_only``: ``nodded_background_overrides_proposed.toml`` (never applied).
-    Entries of the sources processed in this run are replaced; others are kept."""
+    Entries of the sources processed in this run are replaced; others are kept.
+    Where a source has both PRISM and grating products, proposals are written only
+    when both scans find the neighbour at the same Delta (``xdisp_tol``; the grating
+    product checks this itself, ``ScanResult.cross_check``; PRISM proposals are
+    checked here, when the grating scans are known)."""
     import toml
     from datetime import date
 
     if action not in ('report_only', 'auto_override'):
         raise ValueError(f"scan_action must be 'report_only' or 'auto_override', got {action!r}")
+    for r in results:
+        s = r.get('scan') or {}
+        if r.get('is_prism') and s.get('detected') and s.get('proposals') and \
+                not _prism_scan_agrees(obs, r, results, xdisp_tol):
+            log(f"{r['product']}: neighbour proposals withheld (grating scan disagrees)")
+            s['proposals'] = {}
     path = obs.auto_bkg_override_file if action == 'auto_override' else obs.proposed_bkg_override_file
     old = toml.load(path) if os.path.exists(path) else {}
     entries = {}

@@ -63,12 +63,32 @@ class ScanResult:
     dirty: dict = field(default_factory=dict)       # 'root:nod' -> {partner nod: fraction}
     error: str = ''
     suppressed: str = ''             # why proposals were withheld (e.g. other-slitlet light dominates)
+    noise: float = 1.0               # noise scale the chi2 drops were divided by
+    brightness: float = np.nan       # neighbour / target mean flux at the detection
+    xdisp: str = 'single'            # PRISM scan of the same source: single (none) / agree / disagree / none
 
     def suppress(self, why):
         """Keep the detection, withhold the partner proposals."""
         if self.proposals or self.unresolved:
-            self.suppressed = why
+            self.suppressed = self.suppressed or why
             self.proposals, self.unresolved = {}, []
+
+    def cross_check(self, other, tol=0.2):
+        """Compare with the scan of the same source in the other disperser
+        (``other`` = (detected, Delta) or None). A neighbour is a fixed point on the
+        sky, so both should find it at the same Delta; when they do not (or the
+        other finds nothing), the proposals are withheld."""
+        if other is None:
+            self.xdisp = 'single'
+            return
+        det, d = other
+        if not self.detected:
+            self.xdisp = 'none'
+        elif det and np.isfinite(d) and abs(d - self.delta) <= tol:
+            self.xdisp = 'agree'
+        else:
+            self.xdisp = 'disagree'
+            self.suppress('other disperser ' + (f'finds Delta {d:+.2f}' if det else 'finds none'))
 
     def header_cards(self):
         drp = ';'.join(f'{r[-5:]}:{n}>{",".join(str(x) for x in v)}'
@@ -76,8 +96,12 @@ class ScanResult:
         return {
             'PFNBR': (int(self.detected), 'Same-slitlet neighbour detected (nod scan)'),
             'PFNBRDEL': (float(self.delta) if np.isfinite(self.delta) else -999.0, 'Neighbour offset from target [slit units]'),
-            'PFNBRSIG': (float(self.dchi2), 'Neighbour chi2 drop (best, positive)'),
-            'PFNBRNUL': (float(self.dchi2_null), 'Best chi2 drop, negative amplitude (null)'),
+            'PFNBRSIG': (float(self.dchi2), 'Neighbour chi2 drop / noise scale (best, positive)'),
+            'PFNBRNUL': (float(self.dchi2_null), 'Same, negative amplitude (null)'),
+            'PFNBRC': (float(self.noise), 'Noise scale of the scan chi2'),
+            'PFNBRBRT': (float(self.brightness) if np.isfinite(self.brightness) else -999.0,
+                         'Neighbour / target mean flux'),
+            'PFNBRX': (self.xdisp, 'PRISM scan of this source: single/agree/disagree/none'),
             'PFNBRDRP': (drp[:68], 'Proposed partners root:nod>nods'),
             'PFNBRUNS': (len(self.unresolved), 'Contaminated nods with no clean partner'),
             'PFNBRSUP': (self.suppressed[:68], 'Proposals withheld because'),
@@ -119,9 +143,11 @@ def _neighbour_p(c, delta, width):
     return np.array([c + delta, 0.0, np.log(max(width, PF.W_FLOOR)), 0.0])
 
 
-def scan(R, nbins=16, width=None, step=0.05, refine=True):
+def scan(R, nbins=16, width=None, step=0.05, refine=True, info=None):
     """Delta scan on the residuals of a fitted target (``FitResult`` with its model).
-    Returns (deltas, dchi2_pos, dchi2_neg, amplitudes at each Delta)."""
+    Returns (deltas, dchi2_pos, dchi2_neg, amplitudes at each Delta). ``info`` (a
+    dict) receives the noise scales of the target fit's residuals and the target
+    spectrum."""
     M = R.model
     p, eoff = PF._qvec(R)
     use = R.use if getattr(R, 'use', None) is not None else np.ones(M.npix, bool)
@@ -133,6 +159,10 @@ def scan(R, nbins=16, width=None, step=0.05, refine=True):
         M.use = saved
     w = np.where(use, 1.0 / M.pix['v'], 0.0)
     r = M.pix['d'] - A @ f
+    if info is not None:
+        # chi2 of the target model on the fitted pixels and their independent values;
+        # the noise scale is taken after the best neighbour is added (run)
+        info.update(chi2=float(np.sum(w * r ** 2)), n_eff=float(np.sum(M.dof_weight()[use])), flux=f)
     Bm = _bins(M.lam_grid, nbins)
     width = M.priors.width_median if width is None else width
     c = M.c_prior
@@ -253,20 +283,41 @@ def propose(R, delta, amps, drop_frac=0.2, nbins=16, width=None):
     return props, unres, dirty
 
 
-def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, null_ratio=1.5):
+def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, null_ratio=1.5,
+        noise='mean_square', close=0.9):
     """Scan, detect, propose. Never raises (a failure is recorded in ``error``).
 
-    Detected when the best positive chi2 drop exceeds ``dchi2_min``, its S/N
-    ``min_snr``, and ``null_ratio`` times the best drop a *negative* neighbour gives
-    on the same data (structured residuals of a bright or extended target produce
-    both signs; a separate source produces mostly the positive one). The null
-    criterion needs three or more nods per group."""
+    The chi2 drops are divided by a noise scale (``noise = 'mean_square'``: the
+    reduced chi2 of the target + best neighbour + nuisance model on the fitted
+    pixels; 'none': not divided, as before 2026-10-23), so a bright target whose
+    residuals carry shape mismatch, or understated errors, do not read as a
+    neighbour. Detected when the best positive drop
+    exceeds ``dchi2_min``, its S/N ``min_snr``, and ``null_ratio`` times the best
+    drop a *negative* neighbour gives on the same data (structured residuals of a
+    bright or extended target produce both signs; a separate source produces mostly
+    the positive one). The null criterion needs three or more nods per group.
+
+    A neighbour brighter than the target closer than ``close`` slit units cannot be
+    separated from it by choosing partners (its copies land on the target's rows
+    whatever the choice): reported as unresolved, no proposal."""
     out = ScanResult()
     try:
-        grid, dpos, dneg, amps = scan(R, nbins=nbins, width=width)
+        info = {}
+        grid, dpos, dneg, amps = scan(R, nbins=nbins, width=width, info=info)
         out.curve = (grid, dpos, dneg)
         if grid.size == 0:
             return out
+        if noise == 'mean_square':
+            # reduced chi2 once the best neighbour (either sign) is in the model: the
+            # neighbour's own light does not inflate it, shape mismatch of a bright
+            # target and understated errors do
+            best = max(float(dpos.max()), float(dneg.max()))
+            c = (info['chi2'] - best) / max(info['n_eff'] - 3 * nbins, 1.0)
+            out.noise = float(c) if np.isfinite(c) and c > 0 else 1.0
+        elif noise != 'none':
+            raise ValueError(f"scan_noise must be 'mean_square' or 'none', got {noise!r}")
+        dpos, dneg = dpos / out.noise, dneg / out.noise
+        out.curve = (grid, dpos, dneg)
         i = int(np.argmax(dpos))
         out.dchi2, out.delta = float(dpos[i]), float(grid[i])
         out.dchi2_null = float(dneg.max())
@@ -277,8 +328,15 @@ def run(R, nbins=16, width=None, dchi2_min=60.0, min_snr=5.0, drop_frac=0.2, nul
         null_ok = out.dchi2 > null_ratio * out.dchi2_null if min(sizes) >= 3 else True
         out.detected = bool(out.dchi2 > dchi2_min and out.snr >= min_snr and null_ok)
         if out.detected:
+            M = R.model
+            nb = float(np.mean(np.clip(_bins(M.lam_grid, nbins) @ amps[i], 0, None)))
+            tg = float(np.nanmean(info['flux']))
+            out.brightness = nb / tg if tg > 0 else np.inf
             out.proposals, out.unresolved, out.dirty = propose(R, out.delta, amps[i], drop_frac=drop_frac,
                                                                nbins=nbins, width=width)
+            if abs(out.delta) < close and out.brightness > 1.0:
+                out.proposals = {}
+                out.suppressed = f'brighter neighbour at {out.delta:+.2f}: unresolvable'
     except Exception as e:                       # noqa: BLE001 - a failed scan must not fail the product
         out.error = f'{type(e).__name__}: {e}'
     return out

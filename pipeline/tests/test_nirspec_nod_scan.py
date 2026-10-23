@@ -83,6 +83,49 @@ def test_scan_ignores_faint_neighbour_on_bright_target():
     assert S.proposals == {}
 
 
+def test_scan_divides_by_noise_scale():
+    """Errors understated by 2x: the raw chi2 drops scale by 4; divided by the noise
+    scale of the target fit's residuals they are back to the correct ones."""
+    exps = T._exposures(src_y=0.0)
+    _data(exps, 30.0, 30.0, MSA_SLIT_PITCH, seed=3)
+    R = PF.fit(exps, chromatic=False)
+    out = {}
+    for f in (1.0, 0.5):
+        R.model.pix['v'] = R.model.pix['v'] * f ** 2      # same fit, errors understated by 1/f
+        out[f] = (NS.run(R, dchi2_min=60.0), NS.run(R, dchi2_min=60.0, noise='none'))
+    assert out[0.5][1].dchi2 == pytest.approx(4 * out[1.0][1].dchi2, rel=1e-6)
+    assert out[0.5][0].dchi2 == pytest.approx(out[1.0][0].dchi2, rel=1e-6)
+    assert out[0.5][0].noise == pytest.approx(4 * out[1.0][0].noise, rel=1e-6)
+    exps = T._exposures(src_y=0.0)
+    _data(exps, 30.0, 0.0, MSA_SLIT_PITCH, seed=3)                 # no neighbour: correct errors read ~1
+    assert 0.85 < NS.run(PF.fit(exps, chromatic=False), dchi2_min=60.0).noise < 1.15
+
+
+def test_brighter_close_neighbour_is_unresolvable():
+    """A neighbour brighter than the target 0.75 slit units away: detected, but no
+    partner choice separates it; no proposal."""
+    exps = T._exposures(src_y=0.0)
+    _data(exps, 10.0, 30.0, 0.75, seed=2)
+    R = PF.fit_fixed(exps)                     # the target at its planned position (default shape)
+    S = NS.run(R, dchi2_min=60.0, null_ratio=0.0)
+    assert S.detected and abs(S.delta) < 0.9 and S.brightness > 1.0
+    assert S.proposals == {} and 'unresolvable' in S.suppressed
+
+
+def test_cross_check_withholds_disagreeing_proposals():
+    S = NS.ScanResult(detected=True, delta=1.15, proposals={ROOT: {'1': [3]}})
+    S.cross_check((True, 1.20), tol=0.2)
+    assert S.xdisp == 'agree' and S.proposals
+    S.cross_check((True, 0.40), tol=0.2)
+    assert S.xdisp == 'disagree' and not S.proposals and 'other disperser' in S.suppressed
+    T2 = NS.ScanResult(detected=True, delta=1.15, proposals={ROOT: {'1': [3]}})
+    T2.cross_check((False, np.nan))
+    assert T2.xdisp == 'disagree' and not T2.proposals
+    U = NS.ScanResult(detected=True, delta=1.15, proposals={ROOT: {'1': [3]}})
+    U.cross_check(None)
+    assert U.xdisp == 'single' and U.proposals
+
+
 def _obs(tmp_path):
     o = Observation.__new__(Observation)
     o.name = 'test_obs'

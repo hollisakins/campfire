@@ -22,6 +22,9 @@ from dataclasses import dataclass
 import numpy as np
 
 
+MIN_FIT_PIXELS = 50     # fewer left after contamination masking: the masking is undone (flagged)
+
+
 def stage_flags(sc):
     g = sc.get
     return dict(
@@ -29,6 +32,10 @@ def stage_flags(sc):
         contam_mode=str(g('contam_mode', 'hybrid')).lower(),
         kappa=float(g('contam_mask_kappa', 1.0)),
         pair_ratio=float(g('contam_pair_ratio', 3.0)),
+        pair_min_frac=float(g('contam_pair_min_frac', 0.3)),
+        failed_open=str(g('contam_failed_open', 'flag')).lower(),
+        beyond=str(g('contam_beyond_range', 'mask')).lower(),
+        dominance_kappa=float(g('contam_dominance_kappa', 1.0)),
         scan=bool(g('scan_neighbours', True)),
         scan_nbins=int(g('scan_nbins', 16)),
         scan_width=g('scan_width', None),
@@ -37,6 +44,9 @@ def stage_flags(sc):
         scan_drop_frac=float(g('scan_drop_frac', 0.2)),
         scan_null_ratio=float(g('scan_null_ratio', 1.5)),
         scan_max_masked=float(g('scan_max_masked', 0.3)),
+        scan_noise=str(g('scan_noise', 'mean_square')).lower(),
+        scan_close=float(g('scan_close', 0.9)),
+        scan_xdisp_tol=float(g('scan_xdisp_tol', 0.2)),
     )
 
 
@@ -77,22 +87,56 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
                 path = CT.pass1_path(workspace_dir, name) if name else None
                 return CT.Pass1.read(path) if path and os.path.exists(path) else None
             P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=pass1_for(source_id),
-                           pair_ratio=fl['pair_ratio'])
-            clean = CT.apply(exps, P, mode=fl['contam_mode'], kappa=fl['kappa'])
+                           pair_ratio=fl['pair_ratio'], failed_open=fl['failed_open'], beyond=fl['beyond'])
+            saved = [(e.ok, e.diff) for e in exps]
+            clean = CT.apply(exps, P, mode=fl['contam_mode'], kappa=fl['kappa'], dominance_kappa=fl['dominance_kappa'])
             cstate = fl['contam_mode'] if P.have_maps else f"{fl['contam_mode']}_partial_maps"
+            npix = sum(int(m.sum()) for _, m in PF.fit_pixel_masks(exps))
+            if npix < MIN_FIT_PIXELS:
+                # masking left (almost) nothing to fit: fit the data as they are, flagged
+                for e, (ok, d) in zip(exps, saved):
+                    e.ok, e.diff = ok, d
+                log(f'contamination masking left {npix} pixels; undone')
+                cstate, clean = f'{cstate}_undone', None
     prism = None
     if not is_prism and prism_product:
         prism = CT.read_prism_shape(workspace_dir, prism_product)
-    C = PC.choose_shape(exps, cfg, is_prism, prism=prism, clean=clean, log=log)
+    ratio = (lambda R: CT.contam_light_ratio(P, R, exps)) if P is not None and clean is not None else None
+    C = PC.choose_shape(exps, cfg, is_prism, prism=prism, clean=clean, log=log, contam_ratio=ratio)
+    if P is not None:
+        CT.pair_flag(P, C.result, exps, min_frac=fl['pair_min_frac'])
     S = None
     if fl['scan']:
         S = NS.run(C.result, nbins=fl['scan_nbins'], width=fl['scan_width'], dchi2_min=fl['scan_dchi2'],
-                   min_snr=fl['scan_min_snr'], drop_frac=fl['scan_drop_frac'], null_ratio=fl['scan_null_ratio'])
+                   min_snr=fl['scan_min_snr'], drop_frac=fl['scan_drop_frac'], null_ratio=fl['scan_null_ratio'],
+                   noise=fl['scan_noise'], close=fl['scan_close'])
         # residuals of a target dominated by other slitlets' light are not a same-slitlet
         # neighbour's signature (seen on 5215): report, do not propose
         if clean is not None and clean['masked'] > fl['scan_max_masked']:
             S.suppress(f"other-slitlet light, masked {clean['masked']:.2f}")
+        elif (C.bound_bits & PF.BOUND_BITS['width']) or C.result.params['width'] >= 0.99 * cfg.bounds.width_max:
+            # the target's width is on its bound: extended or two-component; its
+            # residuals read as a neighbour next to it (13113)
+            S.suppress('target width on its bound')
+        if not is_prism and prism_product:
+            S.cross_check(read_scan(workspace_dir, prism_product), tol=fl['scan_xdisp_tol'])
     return Analysis(exps=exps, chain=C, prediction=P, clean=clean, contam_state=cstate, scan=S)
+
+
+def read_scan(workspace_dir, product):
+    """(detected, Delta) of a product's neighbour scan from its ``_pf.fits`` (this run) or
+    ``_spec.fits`` header, or None."""
+    from astropy.io import fits
+    for s in ('_pf.fits', '_spec.fits'):
+        p = os.path.join(workspace_dir, f'{product}{s}')
+        if os.path.exists(p):
+            try:
+                h = fits.getheader(p)
+            except OSError:
+                continue
+            if 'PFNBR' in h:
+                return bool(h['PFNBR']), float(h.get('PFNBRDEL', np.nan))
+    return None
 
 
 def run_product(product_name, workspace_dir, groups, overrides, science, source_id, stage_config,
@@ -148,16 +192,25 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             hdr[f'PFOFF{k}'] = (float(o), f'Pointing offset {e.name[:31]}')
         hdr['PFNEXP'] = (len(exps), 'Exposures in the model (incl. subtracted partners)')
         hdr['PFNSRCF'] = (int(sum(not e.has_source for e in exps)), 'Exposures without the source (SRCFLUX=F)')
-        hdr['PFCMODE'] = (cstate, 'Other-slitlet light: off/mask/hybrid/no_maps')
+        hdr['PFCMODE'] = (cstate, 'Other-slitlet light: off/mask/hybrid/no_maps/..._undone')
         if P is not None:
-            hdr['PFMASKF'] = (float(clean['masked']), 'Fraction of main-shutter pixels dropped')
+            def _v(x):
+                return float(x) if np.isfinite(x) else -999.0
+            hdr['PFMASKF'] = (float(clean['masked']) if clean else 0.0, 'Fraction of main-shutter pixels dropped')
+            hdr['PFCLEANP'] = (_v(clean['clean_pred']) if clean else -999.0,
+                               'Main-shutter fraction with other light < noise')
+            hdr['PFFOPEN'] = (_v(clean['failed_open']) if clean else -999.0,
+                              'Main-shutter fraction in failed-open shutters')
             hdr['PFNCONT'] = (len(P.contributors), 'Other sources predicted on the trace')
             hdr['PFCMISS'] = (len(P.missing), 'Of those, without a pass-1 spectrum (masked)')
             hdr['PFCUNREL'] = (len(P.unreliable), 'Of those, pass 1 not decontaminated (masked)')
+            hdr['PFCMFRM'] = (len(P.missing_frame), 'Of those, a pass-1 frame missing (masked)')
+            nb = sum(int(b.sum()) for b in (P.beyond or []))
+            hdr['PFCBEYND'] = (nb, 'Pixels lit by others past their range (masked)')
             hdr['PFPAIR'] = (int(P.pair), 'Similar-brightness contaminant on the trace')
             hdr['PFPAIRID'] = (int(P.pair_id), 'Its source id (-1: none)')
-            hdr['PFPAIRR'] = (float(P.pair_ratio) if np.isfinite(P.pair_ratio) else -999.0,
-                              'Its pass-1 flux / the target pass-1 flux')
+            hdr['PFPAIRR'] = (_v(P.pair_ratio), 'Its pass-1 flux / the target pass-1 flux')
+            hdr['PFPAIRF'] = (_v(P.pair_frac), 'Its light / target light in the extraction')
         if S is not None:
             for k, v in S.header_cards().items():
                 hdr[k] = v
@@ -165,8 +218,10 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         path = os.path.join(workspace_dir, f'{product_name}_pf.fits')
         out.writeto(path, overwrite=True)
         return dict(product=product_name, source_id=int(source_id), shape=C.shape, reason=C.reason,
+                    is_prism=bool(is_prism),
                     scan=(None if S is None else dict(detected=S.detected, delta=S.delta, dchi2=S.dchi2,
-                                                      proposals=S.proposals, unresolved=S.unresolved)))
+                                                      proposals=S.proposals, unresolved=S.unresolved,
+                                                      xdisp=S.xdisp)))
     except Exception as e:                       # noqa: BLE001
         import traceback
         log(f"{product_name}: profile fit failed ({type(e).__name__}: {e}); standard extraction only")
