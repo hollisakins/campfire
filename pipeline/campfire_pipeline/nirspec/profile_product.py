@@ -178,6 +178,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
                             prism_product=prism_product, pass1_products=pass1_products,
                             log=lambda m: log(f'{product_name}: {m}'))
         exps, C, P, clean, cstate, S = A.exps, A.chain, A.prediction, A.clean, A.contam_state, A.scan
+        fl = stage_flags(stage_config)
         R = C.result
         p = R.params
         log(f"{product_name}: shape {C.shape} ({C.reason}), gate {C.snr_det:.1f}/{C.gate:.0f}, "
