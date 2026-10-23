@@ -272,6 +272,9 @@ def test_bkgsub_group_done_rectify_aware(tmp_path):
 def test_bkg_nods_cards():
     assert C.bkg_nods_cards([2, 3], overridden=False) == {
         'BKGNODS': ('2,3', 'nods subtracted as background (stage 2b)'),
-        'BKGOVR': (False, 'background nods set by an override')}
+        'BKGOVR': (False, 'background nods set by an override'),
+        'BKGAUTO': (False, 'override from the neighbour scan (auto file)')}
     assert C.bkg_nods_cards([1], overridden=True)['BKGNODS'][0] == '1'
+    assert C.bkg_nods_cards([1], overridden=True, auto=True)['BKGAUTO'][0] is True
+    assert C.bkg_nods_cards([1], overridden=False, auto=True)['BKGAUTO'][0] is False
     assert C.bkg_nods_cards([], overridden=True)['BKGNODS'][0] == 'excluded'

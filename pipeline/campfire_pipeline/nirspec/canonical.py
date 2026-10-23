@@ -179,16 +179,18 @@ def make_prefixed_hdus(arrays, prefix, slit_extver=1):
 BKG_NODS_CARDS = ('BKGNODS', 'BKGOVR')
 
 
-def bkg_nods_cards(nods, overridden):
+def bkg_nods_cards(nods, overridden, auto=False):
     """Header cards recording which nods stage 2b subtracted as background.
 
     ``BKGNODS`` is the comma-separated nod (exposure) numbers, or ``excluded`` when
     an empty override dropped this nod; ``BKGOVR`` says whether a
-    nodded-background override chose them. Stage 3 copies both into the
-    ``EXPOSURES`` table, so the background choice is recorded in every product."""
+    nodded-background override chose them, ``BKGAUTO`` whether that override came
+    from the automatic file of stage 3's neighbour scan. Stage 3 copies them into
+    the ``EXPOSURES`` table, so the background choice is recorded in every product."""
     value = ','.join(str(int(n)) for n in nods) if nods else 'excluded'
     return {'BKGNODS': (value, 'nods subtracted as background (stage 2b)'),
-            'BKGOVR': (bool(overridden), 'background nods set by an override')}
+            'BKGOVR': (bool(overridden), 'background nods set by an override'),
+            'BKGAUTO': (bool(auto and overridden), 'override from the neighbour scan (auto file)')}
 
 
 def save_canonical(model, path, extra_hdus=None, header_updates=None,

@@ -424,6 +424,7 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
 
     # Build task list by iterating over bkg_groups
     tasks = []
+    effective, from_auto = obs.effective_bkg_overrides()
     for bg in np.unique(files['bkg_group']):
         bg_files = files[files['bkg_group'] == bg]
         source_id = bg_files['source_id'][0]
@@ -446,12 +447,15 @@ def run_stage2b(obs, stage_config, source_ids='all', overwrite=False,
             log(f'ID{source_id}: bkgsub products exist for {root}_*_{detector}_{source_id}, skipping (overwrite=False)')
             continue
 
-        bkg_overrides = obs.bkg_overrides.get(root)
+        # hand overrides, layered over the automatic ones of stage 3's neighbour scan
+        # (nodded_background_overrides_auto.toml, present only with scan_action = "auto_override")
+        bkg_overrides = effective.get(root)
         if bkg_overrides is not None:
             bkg_overrides = bkg_overrides.get(str(source_id))
+        auto_nods = sorted(from_auto.get((root, str(source_id)), set()))
 
         log(f'ID{source_id}: Running stage2b for bkg_group {bg} ({root}_{detector})')
-        tasks.append((list(bg_files['name']), obs.workspace_dir, bkg_overrides))
+        tasks.append((list(bg_files['name']), obs.workspace_dir, bkg_overrides, auto_nods))
 
     # Execute
     dispatch(
@@ -1125,6 +1129,7 @@ def run_stage2b_single_slitlet(
         cal_files: List,
         workspace_dir: str,
         bkg_overrides,
+        auto_nods=(),           # nods (str) whose override came from the automatic file
         rectify: bool = False, # whether to produce rectified (i.e., s2d) products as well
     ):
     # this function shouldn't be doing any file discovery!
@@ -1203,7 +1208,8 @@ def run_stage2b_single_slitlet(
                     log(f'{os.path.basename(cal_files[i])}: Override empty for nod {_nod_number(cal_files[i])}, excluding nod from science combination')
                     # Canonical stays calibrated; mark it excluded for stage3.
                     header_updates = cfp.format(keyset=cfp.NIRSPEC, CFP_BKG='excluded:override')
-                    header_updates.update(C.bkg_nods_cards([], overridden=True))
+                    header_updates.update(C.bkg_nods_cards([], overridden=True,
+                                                           auto=str(_nod_number(cal_files[i])) in set(auto_nods or ())))
                     C.append_extras(cal_files[i], header_updates=header_updates)
                     continue
                 if overridden:
@@ -1241,7 +1247,8 @@ def run_stage2b_single_slitlet(
                 # cache the rectified view as S2D_BKGSUB_*, stamp CFP_BKG/CFP_S2D.
                 extras = C.make_prefixed_hdus(pre_arrays[i], C.PRE_BKGSUB_PREFIX)
                 header_updates = cfp.format(keyset=cfp.NIRSPEC, CFP_BKG=None)
-                header_updates.update(C.bkg_nods_cards(bkg_nods, overridden=overridden))
+                header_updates.update(C.bkg_nods_cards(bkg_nods, overridden=overridden,
+                                                       auto=str(_nod_number(cal_files[i])) in set(auto_nods or ())))
                 if rectify:
                     resampled = result.copy()
                     resampled = pixel_replace.call(resampled)
