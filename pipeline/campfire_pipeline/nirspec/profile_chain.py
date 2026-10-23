@@ -60,6 +60,8 @@ class ChainConfig:
     dominance: str = 'light'             # other sources dominate the trace -> no own fit: light | pixels | off
     dominance_max: float = 1.0           # light: their predicted light / the target's fitted light on the main shutter
     dominance_min_clean: float = 0.5     # pixels: main-shutter fraction below dominance_kappa x noise
+    dominance_apply: str = 'always'      # always | mask_only (only when contam_mode = mask) | flag (PFDOMIN only)
+    contam_mode: str = 'hybrid'
 
     @classmethod
     def from_stage_config(cls, sc):
@@ -85,6 +87,9 @@ class ChainConfig:
         dom = str(g('contam_dominance', 'light')).lower()
         if dom not in ('light', 'pixels', 'off'):
             raise ValueError(f"contam_dominance must be 'light', 'pixels' or 'off', got {dom!r}")
+        dapply = str(g('contam_dominance_apply', 'always')).lower()
+        if dapply not in ('always', 'mask_only', 'flag'):
+            raise ValueError(f"contam_dominance_apply must be 'always', 'mask_only' or 'flag', got {dapply!r}")
         return cls(shape=shape, chromatic=bool(g('profile_fit_chromatic', True)),
                    prism_transfer=bool(g('profile_fit_prism_transfer', True)), prism_mode=mode,
                    gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
@@ -94,9 +99,11 @@ class ChainConfig:
                    agree_log_width=float(g('own_vs_prism_log_width', 0.3)), priors=priors, bounds=bounds,
                    srcypos_tolerance=float(g('srcypos_tolerance', 0.05)),
                    min_clean_fraction=float(g('contam_min_clean_fraction', 0.5)),
+                   min_clean_fraction_exposure=float(g('contam_min_clean_fraction_exposure', 0.3)),
                    gate_noise=str(g('gate_noise', 'mean_square')).lower(), dominance=dom,
                    dominance_max=float(g('contam_dominance_max', 1.0)),
-                   dominance_min_clean=float(g('contam_dominance_min_clean', 0.5)))
+                   dominance_min_clean=float(g('contam_dominance_min_clean', 0.5)),
+                   dominance_apply=dapply, contam_mode=str(g('contam_mode', 'hybrid')).lower())
 
 
 @dataclass
@@ -251,6 +258,9 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
     elif clean is not None and cfg.dominance == 'pixels' and 'clean_pred' in clean:
         dom = float(clean['clean_pred'])
         dominated = dom < cfg.dominance_min_clean
+    # applied only where the others' light is not subtracted (mask mode), or never (flag)
+    if cfg.dominance_apply == 'flag' or (cfg.dominance_apply == 'mask_only' and cfg.contam_mode != 'mask'):
+        dominated = False
 
     # own fit
     reason = None
