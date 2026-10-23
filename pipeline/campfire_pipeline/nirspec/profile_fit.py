@@ -369,6 +369,24 @@ class FitResult:
         return self.chi2 / max(self.npix - self.nfree, 1)
 
 
+def fit_pixel_masks(exps):
+    """(exposure index, pixel mask) of the pixels a fit uses: usable data inside an open
+    shutter (plus ``FIT_MARGIN``), covered by every subtracted frame."""
+    rows = []
+    for k, e in enumerate(exps):
+        if not e.use_data:
+            continue
+        m = np.zeros(e.y.shape, bool)
+        for lo, hi in open_intervals(e.open_k):
+            m |= (e.y > lo - FIT_MARGIN) & (e.y < hi + FIT_MARGIN)
+        m &= e.ok
+        for j in e.partners:      # every subtracted frame must cover the pixel
+            p = exps[j]
+            m &= np.isfinite(p.y) & np.isfinite(p.wav) & np.isfinite(p.pl_point) & np.isfinite(p.var) & (p.var > 0)
+        rows.append((k, m))
+    return rows
+
+
 def term_weights(exps, k):
     """(exposure, weight) of the terms of exposure k's nod difference: +1 for k's own
     frame and -1/n for each of its n subtracted partners, leaving out frames that do
@@ -418,15 +436,9 @@ class ProfileModel:
         return m
 
     def _build_pixels(self):
-        rows = []
-        for k, e in enumerate(self.exps):
-            if not e.use_data:
-                continue
-            m = e.ok & self._region(e)
-            for j in e.partners:      # every subtracted frame must cover the pixel
-                p = self.exps[j]
-                m &= np.isfinite(p.y) & np.isfinite(p.wav) & np.isfinite(p.pl_point) & np.isfinite(p.var) & (p.var > 0)
-            rows.append((k, m))
+        rows = fit_pixel_masks(self.exps)
+        if sum(int(m.sum()) for _, m in rows) == 0:
+            raise ValueError('profile fit: no usable pixels')
         self.pix_masks = rows
         d, v, e_idx, lam = [], [], [], []
         for k, m in rows:
@@ -813,19 +825,36 @@ def noise_scale(M, r):
     return float(c) if np.isfinite(c) and c > 0 else 1.0
 
 
-def detection_snr(M, clip=5.0, n_clip=2):
+def mean_square_scale(M, r, clip=5.0):
+    """Calibration of the stated errors from the normalised residuals ``r`` of a fit:
+    the mean square of the residuals within ``clip`` sigma, per independent value
+    (``ProfileModel.dof_weight``). Unlike the MAD (``noise_scale``) it includes the
+    noise's own tails: on blank sources the MAD reads 10-20 % below the mean square,
+    and dividing a chi2 by it inflates the detection S/N of nothing."""
+    u = np.isfinite(r) & (np.abs(r) < clip)
+    if u.sum() < 10:
+        return 1.0
+    c = float(np.sum(r[u] ** 2) / np.sum(M.dof_weight()[u]))
+    return c if np.isfinite(c) and c > 0 else 1.0
+
+
+def detection_snr(M, clip=5.0, n_clip=2, scale='mean_square'):
     """Integrated detection S/N of a source, the gate of the shape chain.
 
     For each starting shape of the fit (``ProfileModel.start_grid``) the spectrum is
     solved and its chi2 improvement over no source, dchi2 = f . (A^T W d), is
     computed; the best is used, so compact or offset sources are not penalised by
-    the default template. dchi2 is divided by the noise scale ``noise_scale``
-    (robust, not the reduced chi2, which grows with shape mismatch for bright
-    sources), and the number of spectrum points is subtracted (its expectation for
-    no source):  snr_det = sqrt(max(dchi2 / c - n, 0)).
+    the default template. dchi2 is divided by a noise scale c measured from the
+    residuals at that best shape, and the number of spectrum points is subtracted
+    (its expectation for no source):  snr_det = sqrt(max(dchi2 / c - n, 0)).
+
+    scale : 'mean_square' (default, ``mean_square_scale``: residuals within
+        ``clip`` sigma) or 'mad' (``noise_scale``, the statistic before
+        2026-10-23, which read 10-20 % low on blanks and put the null at the
+        thresholds).
 
     Outlier pixels are clipped first at the default shape. Returns
-    (snr_det, dict with dchi2, n, c, best shape vector)."""
+    (snr_det, dict with dchi2, n, c, c_mad, c_ms, best shape vector)."""
     M.use = np.ones(M.npix, bool)
     p0 = shape_vector(None, M.c_prior, M.priors.width_median)
     e0 = np.zeros(len(M.exps))
@@ -847,9 +876,13 @@ def detection_snr(M, clip=5.0, n_clip=2):
             best = (d, p, int(good.sum()), A, f)
     d, p, n, A, f = best
     r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
-    c = noise_scale(M, r)
+    c_mad = noise_scale(M, r)
+    c_ms = mean_square_scale(M, r, clip=clip)
+    if scale not in ('mean_square', 'mad'):
+        raise ValueError(f"gate_noise must be 'mean_square' or 'mad', got {scale!r}")
+    c = c_ms if scale == 'mean_square' else c_mad
     s2 = d / c - n
-    return float(np.sqrt(max(s2, 0.0))), dict(dchi2=d, n=n, c=c, shape=p)
+    return float(np.sqrt(max(s2, 0.0))), dict(dchi2=d, n=n, c=c, c_mad=c_mad, c_ms=c_ms, shape=p)
 
 
 def planned_position(exps, tolerance=0.05):

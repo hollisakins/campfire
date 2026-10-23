@@ -55,6 +55,10 @@ class ChainConfig:
     disagree_width_ratio: tuple = (0.6, 1.6)
     min_clean_fraction: float = 0.5      # contamination masking: below this no own fit
     min_clean_fraction_exposure: float = 0.3
+    gate_noise: str = 'mean_square'      # noise scale of the gate statistic: mean_square | mad
+    dominance: str = 'light'             # other sources dominate the trace -> no own fit: light | pixels | off
+    dominance_max: float = 1.0           # light: their predicted light / the target's fitted light on the main shutter
+    dominance_min_clean: float = 0.5     # pixels: main-shutter fraction below dominance_kappa x noise
 
     @classmethod
     def from_stage_config(cls, sc):
@@ -77,12 +81,18 @@ class ChainConfig:
             centre=float(g('bound_centre', 0.3)), drift=float(g('bound_drift', 0.3)),
             width_max=float(g('bound_width_max', 0.6)), width_change=float(g('bound_width_change', 0.3)),
             offset=float(g('bound_offset', 0.1)))
+        dom = str(g('contam_dominance', 'light')).lower()
+        if dom not in ('light', 'pixels', 'off'):
+            raise ValueError(f"contam_dominance must be 'light', 'pixels' or 'off', got {dom!r}")
         return cls(shape=shape, chromatic=bool(g('profile_fit_chromatic', True)),
                    prism_transfer=bool(g('profile_fit_prism_transfer', True)), prism_mode=mode,
                    gate_prism=float(g('gate_snr_prism', 10.0)), gate_grating=float(g('gate_snr_grating', 30.0)),
                    own_vs_prism_dchi2=float(g('own_vs_prism_dchi2', 25.0)), priors=priors, bounds=bounds,
                    srcypos_tolerance=float(g('srcypos_tolerance', 0.05)),
-                   min_clean_fraction=float(g('contam_min_clean_fraction', 0.5)))
+                   min_clean_fraction=float(g('contam_min_clean_fraction', 0.5)),
+                   gate_noise=str(g('gate_noise', 'mean_square')).lower(), dominance=dom,
+                   dominance_max=float(g('contam_dominance_max', 1.0)),
+                   dominance_min_clean=float(g('contam_dominance_min_clean', 0.5)))
 
 
 @dataclass
@@ -120,6 +130,7 @@ class ChainResult:
     transfer: str = 'none'          # used | none | no_prism | prism_not_own | pa_mismatch | off
     pa_v3: float = np.nan
     candidates: dict = field(default_factory=dict, repr=False)
+    dominance: float = np.nan       # other-source light / own light (light rule) or clean fraction (pixels rule)
 
     def header_cards(self):
         """Primary-header cards of the chain (written to ``_pf.fits``, copied to ``_spec.fits``)."""
@@ -131,7 +142,9 @@ class ChainResult:
             'PFREASON': (self.reason[:68], 'Why this shape'),
             'PFGATE': (_f(self.snr_det), 'Detection S/N (gate statistic)'),
             'PFGATETH': (_f(self.gate), 'Gate threshold'),
-            'PFGATEC': (_f(self.detection.get('c', np.nan)), 'Noise scale used by the gate (robust)'),
+            'PFGATEC': (_f(self.detection.get('c', np.nan)), 'Noise scale used by the gate'),
+            'PFGATEM': (_f(self.detection.get('c_mad', np.nan)), 'Noise scale from the MAD (old gate)'),
+            'PFDOMIN': (_f(self.dominance), 'Other-source dominance of the trace'),
             'PFCHI2D': (_f(self.chi2.get('default', np.nan)), 'chi2, default shape, common pixels'),
             'PFCHI2P': (_f(self.chi2.get('prism', np.nan)), 'chi2, PRISM shape, common pixels'),
             'PFCHI2O': (_f(self.chi2.get('own', np.nan)), 'chi2, own fit, common pixels'),
@@ -175,24 +188,33 @@ def _threshold(cfg, M, R):
     return cfg.own_vs_prism_dchi2 + k * np.log(max(R.npix, 2))
 
 
-def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None):
+def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_ratio=None):
     """Run the shape chain for one product. ``prism``: the ``PrismShape`` of the same
-    source (gratings), ``clean``: dict(overall, per_exposure) of the fraction of the
-    main-shutter pixels left by contamination masking (None: no masking)."""
+    source (gratings), ``clean``: dict(overall, per_exposure[, clean_pred]) of the
+    fraction of the main-shutter pixels left by contamination masking (None: no
+    masking), ``contam_ratio``: callable(FitResult) -> other sources' predicted light
+    over the target's fitted light on the main shutter (``profile_contam.contam_light_ratio``).
+
+    Other sources dominate the trace (``cfg.dominance``): 'light' when that ratio,
+    at the fallback shape, exceeds ``dominance_max``; 'pixels' when less than
+    ``dominance_min_clean`` of the main shutter has predicted light below the
+    noise threshold. Then no own fit is made (reason ``dominated:<value>``). The
+    masked-fraction rule stays: in hybrid mode it only sees the pixels the
+    subtraction could not handle, which a smoothed pass 1 makes few."""
     log = log or (lambda *a: None)
     srcy = PF.planned_position(exps, cfg.srcypos_tolerance)[1]
     pa = _exp_pa(exps)
 
     if cfg.shape == 'free':
         M = PF.ProfileModel(exps, chromatic=cfg.chromatic)            # V0: original priors and bounds
-        snr, det = PF.detection_snr(M)
+        snr, det = PF.detection_snr(M, scale=cfg.gate_noise)
         R = PF.fit(exps, model=M)
         return ChainResult(result=R, shape='own', chain='free', reason='free', snr_det=snr, detection=det,
                            chi2={'own': R.chi2}, npix_common=R.npix, bound_bits=R.bound_bits, srcy_flag=srcy,
                            pa_v3=pa, candidates={'own': R})
 
     M = PF.ProfileModel(exps, chromatic=cfg.chromatic, priors=cfg.priors, bounds=cfg.bounds)
-    snr, det = PF.detection_snr(M)
+    snr, det = PF.detection_snr(M, scale=cfg.gate_noise)
     gate = cfg.gate_prism if is_prism else cfg.gate_grating
     cands = {'default': PF.fit_fixed(model=M)}
     if cfg.shape == 'fixed':
@@ -217,11 +239,22 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None):
             cands['prism'] = PF.fit_fixed(model=M, shape=xshape, fit_eoff=True)
             transfer = 'used'
 
+    # do other sources dominate the trace?
+    dom, dominated = np.nan, False
+    if clean is not None and cfg.dominance == 'light' and contam_ratio is not None:
+        dom = float(contam_ratio(cands['prism'] if 'prism' in cands else cands['default']))
+        dominated = dom > cfg.dominance_max
+    elif clean is not None and cfg.dominance == 'pixels' and 'clean_pred' in clean:
+        dom = float(clean['clean_pred'])
+        dominated = dom < cfg.dominance_min_clean
+
     # own fit
     reason = None
     if clean is not None and (clean['overall'] < cfg.min_clean_fraction
                               or min(clean['per_exposure'] or [1.0]) < cfg.min_clean_fraction_exposure):
         reason = f"masked:{clean['overall']:.2f}"
+    elif dominated:
+        reason = f'dominated:{dom:.2f}'
     elif snr < gate:
         reason = 'below_gate'
     else:
@@ -280,11 +313,11 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None):
         choice, reason = 'own', 'gate_passed'
     if reason is None:
         reason = 'gate_passed'
-    if choice == 'prism' and (reason in ('below_gate', 'fit_failed') or reason.startswith('masked')):
+    if choice == 'prism' and (reason in ('below_gate', 'fit_failed') or reason.startswith(('masked', 'dominated'))):
         reason = f'{reason};prism'
     R = cands[choice]
     shape = 'own' if choice == 'own' else choice
     return ChainResult(result=R, shape=shape, chain='gated', reason=reason, snr_det=snr, gate=gate, detection=det,
                        chi2=chi2, npix_common=npix_common, bound_bits=bits, srcy_flag=srcy, shdis=shdis,
                        prism_product=prism.product if (prism is not None and transfer == 'used') else '',
-                       transfer=transfer, pa_v3=pa, candidates=cands)
+                       transfer=transfer, pa_v3=pa, candidates=cands, dominance=dom)

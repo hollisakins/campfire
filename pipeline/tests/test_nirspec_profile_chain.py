@@ -99,14 +99,37 @@ def test_detection_snr_does_not_penalise_offset_sources():
 
 def test_noise_scale_is_robust_to_shape_mismatch():
     """A bright source fitted with the wrong (default) shape: the reduced chi2 grows,
-    the robust noise scale stays ~1."""
+    the MAD noise scale (the old gate option) stays ~1."""
     exps = T._exposures()
     _fill(exps, dict(centre_offset=0.25, width=0.05), 200.0, seed=4)
     M = PF.ProfileModel(exps)
     R = PF.fit_fixed(model=M)
     assert R.chi2_red > 2.0
-    _, det = PF.detection_snr(M)
+    _, det = PF.detection_snr(M, scale='mad')
     assert det['c'] < 0.5 * R.chi2_red and det['c'] < 1.6
+    assert det['c'] == det['c_mad']
+
+
+def test_gate_mean_square_scale_counts_the_tails():
+    """Noise with heavier tails than a Gaussian (a t distribution, unit variance): the
+    MAD reads low, so dchi2 / c_mad inflates the detection S/N of nothing; the
+    clipped mean square stays near the true variance and the null stays low."""
+    rng = np.random.default_rng(11)
+    gates = {'mad': [], 'mean_square': []}
+    for seed in range(4):
+        exps = T._exposures()
+        _fill(exps, dict(width=0.15), 0.0, seed=seed)
+        nu = 4.0
+        M0 = PF.ProfileModel(exps)
+        for k, e in enumerate(exps):                # heavy-tailed differences with the stated variance
+            t = rng.standard_t(nu, size=e.diff.shape) / np.sqrt(nu / (nu - 2))
+            e.diff = t * np.sqrt(M0.diff_variance(k))
+        M = PF.ProfileModel(exps)
+        for sc in gates:
+            s, det = PF.detection_snr(M, scale=sc)
+            gates[sc].append(s)
+        assert det['c_mad'] < 0.9 * det['c_ms']
+    assert np.median(gates['mean_square']) < np.median(gates['mad'])
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +283,28 @@ def test_chain_masked_fraction_skips_own_fit():
     _fill(exps, dict(width=0.15), 40.0)
     C = PC.choose_shape(exps, _cfg(), is_prism=True, clean=dict(overall=0.3, per_exposure=[0.3, 0.3, 0.3]))
     assert C.shape == 'default' and C.reason.startswith('masked:0.30')
+
+
+def test_chain_dominance_rules_skip_own_fit():
+    """Other sources dominate the trace although hybrid masking kept most of it
+    (a well-predicted contaminant is subtracted, not masked): no own fit."""
+    exps = T._exposures()
+    _fill(exps, dict(width=0.15), 40.0)
+    clean = dict(overall=0.9, per_exposure=[0.9] * 3, clean_pred=0.3)
+    seen = []
+
+    def ratio(R):
+        seen.append(R)
+        return 3.0
+    C = PC.choose_shape(exps, _cfg(), is_prism=True, clean=clean, contam_ratio=ratio)
+    assert C.shape == 'default' and C.reason == 'dominated:3.00' and C.dominance == 3.0
+    assert seen and seen[0] is C.candidates['default']             # measured at the fallback shape
+    C = PC.choose_shape(exps, _cfg(), is_prism=True, clean=clean, contam_ratio=lambda R: 0.5)
+    assert C.shape == 'own'
+    C = PC.choose_shape(exps, _cfg(contam_dominance='pixels'), is_prism=True, clean=clean)
+    assert C.reason == 'dominated:0.30'
+    C = PC.choose_shape(exps, _cfg(contam_dominance='off'), is_prism=True, clean=clean, contam_ratio=ratio)
+    assert C.shape == 'own'
 
 
 def test_chain_free_and_fixed_modes():
