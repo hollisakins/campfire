@@ -62,6 +62,13 @@ class ScanResult:
     unresolved: list = field(default_factory=list)  # 'root:nod'
     dirty: dict = field(default_factory=dict)       # 'root:nod' -> {partner nod: fraction}
     error: str = ''
+    suppressed: str = ''             # why proposals were withheld (e.g. other-slitlet light dominates)
+
+    def suppress(self, why):
+        """Keep the detection, withhold the partner proposals."""
+        if self.proposals or self.unresolved:
+            self.suppressed = why
+            self.proposals, self.unresolved = {}, []
 
     def header_cards(self):
         drp = ';'.join(f'{r[-5:]}:{n}>{",".join(str(x) for x in v)}'
@@ -73,6 +80,7 @@ class ScanResult:
             'PFNBRNUL': (float(self.dchi2_null), 'Best chi2 drop, negative amplitude (null)'),
             'PFNBRDRP': (drp[:68], 'Proposed partners root:nod>nods'),
             'PFNBRUNS': (len(self.unresolved), 'Contaminated nods with no clean partner'),
+            'PFNBRSUP': (self.suppressed[:68], 'Proposals withheld because'),
         }
 
 

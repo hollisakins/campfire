@@ -121,3 +121,10 @@ def test_auto_override_toml_roundtrip(tmp_path):
     assert toml.load(tmp_path / 'nodded_background_overrides_proposed.toml')[ROOT]['7'] == {'1': [3], '3': [2]}
     with pytest.raises(ValueError):
         S3.write_scan_proposals(o, results, run_sids={7}, action='apply')
+
+
+def test_suppress_keeps_detection_withholds_proposals():
+    S = NS.ScanResult(detected=True, delta=1.15, dchi2=500.0, proposals={ROOT: {'1': [3]}}, unresolved=[f'{ROOT}:2'])
+    S.suppress('other-slitlet light, masked 0.57')
+    assert S.detected and S.proposals == {} and S.unresolved == []
+    assert S.header_cards()['PFNBRSUP'][0].startswith('other-slitlet')

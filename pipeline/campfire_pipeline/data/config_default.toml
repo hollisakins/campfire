@@ -127,6 +127,7 @@
     scan_null_ratio = 1.5                    # and > this x the best negative-amplitude drop (provisional)
     scan_min_snr = 5.0
     scan_drop_frac = 0.2                     # partner dropped when it puts > this x the target's light on its rows
+    scan_max_masked = 0.3                    # no proposals when contamination masking dropped more of the trace
 
 [nirspec.redshift_fitting]
     save_models = false

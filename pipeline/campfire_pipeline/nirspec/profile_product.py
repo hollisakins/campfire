@@ -36,6 +36,7 @@ def stage_flags(sc):
         scan_min_snr=float(g('scan_min_snr', 5.0)),
         scan_drop_frac=float(g('scan_drop_frac', 0.2)),
         scan_null_ratio=float(g('scan_null_ratio', 1.5)),
+        scan_max_masked=float(g('scan_max_masked', 0.3)),
     )
 
 
@@ -87,6 +88,10 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
     if fl['scan']:
         S = NS.run(C.result, nbins=fl['scan_nbins'], width=fl['scan_width'], dchi2_min=fl['scan_dchi2'],
                    min_snr=fl['scan_min_snr'], drop_frac=fl['scan_drop_frac'], null_ratio=fl['scan_null_ratio'])
+        # residuals of a target dominated by other slitlets' light are not a same-slitlet
+        # neighbour's signature (seen on 5215): report, do not propose
+        if clean is not None and clean['masked'] > fl['scan_max_masked']:
+            S.suppress(f"other-slitlet light, masked {clean['masked']:.2f}")
     return Analysis(exps=exps, chain=C, prediction=P, clean=clean, contam_state=cstate, scan=S)
 
 
