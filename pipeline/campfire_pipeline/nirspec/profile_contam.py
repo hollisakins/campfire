@@ -52,7 +52,8 @@ from campfire_pipeline.nirspec import trace_overlap as TO
 
 MAPS_SUBDIR = 'tracemaps'
 PASS1_SUBDIR = 'pass1'
-PASS1_VERSION = '4'
+PASS1_VERSION = '5'
+MIN_EXPOSURE_PIXELS = 100  # per-exposure clean fractions only for exposures with this many main-shutter pixels
 DPRED_FLOOR = 0.1          # prediction uncertainty floor, fraction of the prediction (ASSUMED, to be measured)
 _NOD = re.compile(r'^(jw\d+_\d{5})_(\d{5})_(nrs[12])')
 
@@ -156,13 +157,16 @@ class Geometry:
     (``sources``, within the contaminant's nominal wavelength range), pixels whose
     other-source light cannot be predicted (``unmodelled``: other traces past their
     nominal range; failed-open shutters too with ``failed_open = 'mask'``), and
-    pixels of failed-open shutters (``failed_open``)."""
+    pixels of failed-open shutters (``failed_open``). Pixels of other traces past their
+    nominal range are kept per source (``beyond_sources``): whether they are
+    unmodelled depends on how bright that source is (``predict``)."""
     mask: list
     sources: list
     unmodelled: list
     have_maps: bool = True
     failed_open: list = None
     beyond: list = None
+    beyond_sources: list = None
 
 
 def geometry(exps, sid, maps, failed_open='flag', beyond='mask'):
@@ -173,13 +177,14 @@ def geometry(exps, sid, maps, failed_open='flag', beyond='mask'):
         would be the only light left. 'mask' treats them as unmodelled (the
         behaviour before 2026-10-23).
     beyond : 'mask' (default): other traces past their nominal wavelength range are
-        unmodelled (their light is there, pass 1 has no spectrum for it). 'ignore':
-        those pixels are left out, as before 2026-10-23 (maps did not have them)."""
+        recorded per source (their light is there, pass 1 has no spectrum for it;
+        ``predict`` masks them for sources bright enough to matter). 'ignore': those
+        pixels are left out, as before 2026-10-23 (maps did not have them)."""
     n = len(exps)
     out = Geometry(mask=[np.zeros(e.y.shape, bool) for e in exps], sources=[{} for _ in exps],
                    unmodelled=[np.zeros(e.y.shape, bool) for e in exps],
                    failed_open=[np.zeros(e.y.shape, bool) for e in exps],
-                   beyond=[np.zeros(e.y.shape, bool) for e in exps])
+                   beyond=[np.zeros(e.y.shape, bool) for e in exps], beyond_sources=[{} for _ in exps])
     for g in sorted({e.group for e in exps}):
         ks = [k for k in range(n) if exps[k].group == g]
         try:
@@ -199,7 +204,9 @@ def geometry(exps, sid, maps, failed_open='flag', beyond='mask'):
                     r.iy, r.ix, bey = r.iy[~bey], r.ix[~bey], bey[~bey]
                 out.mask[k][r.iy, r.ix] = True
                 out.beyond[k][r.iy[bey], r.ix[bey]] = True
-                out.unmodelled[k][r.iy[bey], r.ix[bey]] = True
+                if bey.any():
+                    bp = out.beyond_sources[k].setdefault(r.source_id, np.zeros(exps[k].y.shape, bool))
+                    bp[r.iy[bey], r.ix[bey]] = True
                 if (~bey).any():
                     px = out.sources[k].setdefault(r.source_id, np.zeros(exps[k].y.shape, bool))
                     px[r.iy[~bey], r.ix[~bey]] = True
@@ -562,6 +569,8 @@ class Pass1:
                 nosrc={str(x) for x in z['nosrc']} if 'nosrc' in z else None)
         P.why = str(z['why']) if 'why' in z else ''
         P.shape_src = str(z['shape_src']) if 'shape_src' in z else ''
+        P.flux_raw = z['flux_raw'] if 'flux_raw' in z else None
+        P.err_raw = z['err_raw'] if 'err_raw' in z else None
         return P
 
 
@@ -616,6 +625,20 @@ def _place_sparse(fr, origin_t, shape_t):
     return ty, tx, ok
 
 
+def _red_end_detected(P1, n=50, snr=5.0):
+    """The pass-1 spectrum is detected over its reddest ``n`` points (integrated S/N of
+    the full-resolution solve when stored, else of the stored spectrum)."""
+    f = getattr(P1, 'flux_raw', None)
+    e = getattr(P1, 'err_raw', None)
+    if f is None or e is None:
+        f, e = P1.flux, P1.flux_err
+    ok = np.flatnonzero(np.isfinite(f) & np.isfinite(e) & (e > 0))
+    if ok.size < 5:
+        return True                                  # cannot tell: treat as bright
+    sel = ok[-n:]
+    return bool(np.sum(f[sel]) / np.sqrt(np.sum(e[sel] ** 2)) > snr)
+
+
 def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0, failed_open='flag',
             beyond='mask'):
     """Predicted other sources' light in each science nod difference of a target.
@@ -639,20 +662,25 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
         return cals[j]
 
     cache, missing, contrib, unreliable, missing_frame, by_source = {}, set(), {}, set(), set(), {}
+    if geo.beyond_sources is None:
+        geo.beyond_sources = [{} for _ in exps]
     for k in range(n):
         e = exps[k]
-        if not e.use_data or e.partners is None or not geo.sources[k]:
+        if not e.use_data or e.partners is None or not (geo.sources[k] or geo.beyond_sources[k]):
             continue
         sig = diff_sigma(exps, k)
         ms = main_shutter(e, c_plan) & e.ok
         terms = [(k, 1.0)] + [(j, -1.0 / len(e.partners)) for j in e.partners]
-        for csid, px in geo.sources[k].items():
+        none = np.zeros(e.y.shape, bool)
+        for csid in sorted(set(geo.sources[k]) | set(geo.beyond_sources[k])):
+            px = geo.sources[k].get(csid, none)
+            bp = geo.beyond_sources[k].get(csid, none)
             if csid not in cache:
                 cache[csid] = pass1_for(csid)
             P1 = cache[csid]
             if P1 is None:
                 missing.add(csid)
-                unmod[k] |= px
+                unmod[k] |= px | bp
                 continue
             if not P1.reliable:            # its pass 1 may carry the target's light: do not hand it back
                 unreliable.add(csid)
@@ -678,10 +706,21 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
                 covered[ty[ok], tx[ok]] = True
                 np.add.at(add, (ty[ok][good], tx[ok][good]), w * img[good] * conv[good])
                 np.add.at(dadd, (ty[ok][good], tx[ok][good]), abs(w) * fr['err'][ok][good].astype(float) * conv[good])
-            if P1.nosrc is not None and not any(exposure_key(exps[j].name) in P1.nosrc for j, _ in terms):
-                # mapped pixels of the contaminant its pass-1 frames do not reach (its cutout or its
-                # spectrum ends short of its nominal range): light there, no prediction
-                unmod[k] |= px & ~covered
+            # pixels with the contaminant's light but no prediction: past its nominal range, and
+            # mapped pixels its pass-1 frames do not reach (its cutout or its spectrum ends short
+            # of the range). Unmodelled when the contaminant is bright enough to matter: its
+            # predicted light reaches the noise somewhere on the target's cutout, or (no
+            # in-range overlap) its pass-1 spectrum is detected at its red end
+            with np.errstate(invalid='ignore', divide='ignore'):
+                bright = bool(np.nanmax(np.where(np.isfinite(sig), np.abs(add) / sig, 0.0)) >= 1.0)
+            if not bright and not px.any():
+                bright = _red_end_detected(P1)
+            if bright:
+                unmod[k] |= bp
+                if P1.nosrc is not None and not any(exposure_key(exps[j].name) in P1.nosrc for j, _ in terms):
+                    unmod[k] |= px & ~covered
+            if not px.any():
+                continue
             if not P1.reliable:
                 pred_u[k] += add           # an upper bound, for masking only
             else:
@@ -831,8 +870,9 @@ def apply(exps, P, mode='hybrid', kappa=1.0, dominance_kappa=1.0):
         tot_b += b
         tot_a += a
         tot_c += c
-        per.append(a / b if b else 1.0)
-        per_c.append(c / b if b else 1.0)
+        if b >= MIN_EXPOSURE_PIXELS:         # a sliver of trace on the other detector says nothing
+            per.append(a / b)
+            per_c.append(c / b)
     overall = tot_a / tot_b if tot_b else 1.0
     return dict(overall=overall, per_exposure=per, masked=1.0 - overall,
                 clean_pred=tot_c / tot_b if tot_b else 1.0, clean_pred_exposure=per_c,

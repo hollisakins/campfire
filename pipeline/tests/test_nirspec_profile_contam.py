@@ -168,6 +168,31 @@ def test_missing_frame_masks_instead_of_skipping(stand_ins):
     assert not any(u.any() for u in P.unmodelled) and not P.missing_frame
 
 
+def test_beyond_range_masked_only_for_bright_contaminants(monkeypatch):
+    """Pixels where a contaminant's trace runs past its nominal range are unmodelled
+    when that contaminant's predicted light reaches the noise on the target's cutout,
+    and left alone for a faint one (9334: faint contaminants' beyond-range blocks cost
+    it its own fit)."""
+    monkeypatch.setattr(CT, 'calibration', lambda e, rate_dir: np.ones(e.y.shape))
+    t_exps, _ = _source(1, 0.0, 10.0)
+    for e in t_exps:
+        e.var = np.ones(e.y.shape)
+    half = np.zeros(t_exps[0].y.shape, bool)
+    half[:, : NX // 2] = True
+
+    def geometry(exps, sid, maps, failed_open='flag', beyond='mask'):
+        return CT.Geometry(mask=[np.ones(e.y.shape, bool) for e in exps], sources=[{2: half.copy()} for e in exps],
+                           unmodelled=[np.zeros(e.y.shape, bool) for e in exps],
+                           beyond_sources=[{2: ~half} for e in exps])
+    monkeypatch.setattr(CT, 'geometry', geometry)
+    for scale, expect in ((50.0, True), (1e-4, False)):
+        c_exps, Rc = _source(2, 0.3, scale)
+        P1 = _pass1_of(Rc, 2)
+        P1.nosrc = set()
+        P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+        assert bool(P.unmodelled[0][:, NX // 2:].all()) == expect, scale
+
+
 def test_failed_open_is_flag_only_by_default():
     """Failed-open shutters: their sky cancels in the nod difference, so they are
     recorded (flag) and not masked unless asked (``failed_open = 'mask'``)."""

@@ -128,10 +128,11 @@ def test_beyond_range_pixels_are_flagged_and_unmodelled():
     g = CT.geometry(exps, 1, mp)
     for k in range(3):
         assert not g.sources[k][2][:, 80:].any()             # never predicted from pass 1 there
-        assert g.unmodelled[k][:, 80:].any() and not g.unmodelled[k][:, :80].any()
+        b = g.beyond_sources[k][2]                           # kept per source; predict() decides
+        assert b[:, 80:].any() and not b[:, :80].any()
         assert g.mask[k][:, 80:].any()
     old = CT.geometry(exps, 1, mp, beyond='ignore')          # as before: those pixels unknown
-    assert not any(u.any() for u in old.unmodelled) and not old.mask[0][:, 80:].any()
+    assert not any(b for b in old.beyond_sources) and not old.mask[0][:, 80:].any()
 
 
 def test_shared_signal_recovers_injected_light():
