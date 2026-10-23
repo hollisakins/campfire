@@ -210,7 +210,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             hdr['PFCMISS'] = (len(P.missing), 'Of those, without a pass-1 spectrum (masked)')
             hdr['PFCUNREL'] = (len(P.unreliable), 'Of those, pass 1 not decontaminated (masked)')
             hdr['PFCMFRM'] = (len(P.missing_frame), 'Of those, a pass-1 frame missing (masked)')
-            nb = sum(int(b.sum()) for b in (P.beyond or []))
+            nb = sum(int((b & u).sum()) for b, u in zip(P.beyond or [], P.unmodelled))
             hdr['PFCBEYND'] = (nb, 'Pixels lit by others past their range (masked)')
             hdr['PFPAIR'] = (int(P.pair), 'Similar-brightness contaminant on the trace')
             hdr['PFPAIRID'] = (int(P.pair_id), 'Its source id (-1: none)')
