@@ -857,12 +857,12 @@ CONTAM_1D = ('report', 'subtract')
 def contam_1d_settings(sc):
     """The 1-D other-light knobs of ``[nirspec.stage3]`` (``_profile_fit_columns``)."""
     return dict(contam_1d=str(sc.get('contam_1d', 'subtract')).lower(),
-                contam_1d_min_sigma=float(sc.get('contam_1d_min_sigma', 1.0)),
+                contam_1d_min_sigma=float(sc.get('contam_1d_min_sigma', 3.0)),
                 unmod_max=float(sc.get('contam_unmod_max', 0.05)))
 
 
 def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, rows='aperture',
-                         model_rows_frac=0.02, contam_1d='subtract', contam_1d_min_sigma=1.0, unmod_max=0.05):
+                         model_rows_frac=0.02, contam_1d='subtract', contam_1d_min_sigma=3.0, unmod_max=0.05):
     """Extraction of the s2d with the profile-fit 2D profile.
 
     PROF2D is the drizzled source model per unit reported flux (uJy, against the s2d
