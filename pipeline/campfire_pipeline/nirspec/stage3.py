@@ -181,15 +181,9 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
     )
 
     if pf_tasks:
-        log(f"Profile fit: {len(pf_tasks)} sources")
-        dispatch(
-            run_profile_fit_single_source,
-            pf_tasks,
-            n_processes=n_processes,
-            use_starmap=True,
-            chromatic=bool(stage_config.get('profile_fit_chromatic', True)),
-            cleanup_crfs=cleanup_crfs,
-        )
+        log(f"Profile fit: {len(pf_tasks)} products")
+        run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=n_processes, overwrite=overwrite,
+                              cleanup_crfs=cleanup_crfs)
 
     optext_tasks = [(task[2], task[1]) for task in tasks]
     dispatch(
@@ -200,6 +194,8 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
         plot_profiles=plot_profiles,
         plot_optext=plot_optext,
         version=version,
+        profile_fit_rows=str(stage_config.get('profile_fit_rows', 'aperture')).lower(),
+        profile_fit_model_rows_frac=float(stage_config.get('profile_fit_model_rows_frac', 0.02)),
     )
 
     # Phase 2: 1D combination (combine_method='1d' only)
@@ -312,6 +308,8 @@ def run_stage3_single_source(
         # ('N/A' for canonicals written before stage 2b recorded them).
         exposures['bkg_nods'] = [str(hdr.get('BKGNODS', 'N/A')) for hdr in hdrs0]
         exposures['bkg_override'] = [str(hdr['BKGOVR']) if 'BKGOVR' in hdr else 'N/A' for hdr in hdrs0]
+        # whether the nods came from the automatic (neighbour-scan) override file
+        exposures['bkg_auto'] = [str(hdr['BKGAUTO']) if 'BKGAUTO' in hdr else 'N/A' for hdr in hdrs0]
         hdrs1 = [fits.getheader(cal_file,ext=1) for cal_file in cal_files]
         # Fixed-slit cal products omit the MSA-only SHUTSTA shutter state and the
         # slit-level SRCRA/SRCDEC (the latter come from the MSA source catalog);
@@ -380,22 +378,153 @@ def _cleanup_spec3_intermediates(cal_files, product_name):
 
 
 def _profile_fit_task(obs, files_all, target_files, product_name, source_id):
-    """Arguments for one source's profile fit: every exposure of the background
+    """Arguments for one product's profile fit: every exposure of the background
     groups its science exposures came from (partners included), each group's nod
-    overrides, and the names stage 3 combines."""
+    overrides (hand and automatic; the canonicals' BKGNODS cards win when present),
+    the names stage 3 combines, and the disperser."""
     groups, overrides = [], []
+    eff = obs.effective_bkg_overrides()[0]
     for bg in np.unique(target_files['bkg_group']):
         g = files_all[files_all['bkg_group'] == bg]
         groups.append(list(g['path']))
-        ov = obs.bkg_overrides.get(g['root'][0])
+        ov = eff.get(g['root'][0])
         overrides.append(ov.get(str(source_id)) if ov is not None else None)
-    return (product_name, obs.workspace_dir, groups, overrides, list(target_files['name']), source_id)
+    return dict(product_name=product_name, workspace_dir=obs.workspace_dir, groups=groups, overrides=overrides,
+                science=list(target_files['name']), source_id=int(source_id),
+                filter_grating=str(target_files['filter_grating'][0]))
+
+
+def _science_files(files):
+    """Canonicals stage 3 combines: background-subtracted and containing the source."""
+    def _ok(path):
+        h = fits.getheader(path)
+        v = h.get('CFP_BKG')
+        return (bool(v) and not str(v).startswith(('skipped', 'excluded'))
+                and str(h.get('SRCFLUX', 'T')) == 'T')
+    return files[[_ok(f['path']) for f in files]]
+
+
+def _prism_fg(fgs):
+    return next((fg for fg in sorted(fgs) if str(fg).lower().startswith('prism')), None)
+
+
+def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=False, cleanup_crfs=True):
+    """Profile-fit extraction profiles of the products in ``pf_tasks`` (extraction v2).
+
+    Dispersers run PRISM first, so a grating can take the PRISM shape of the same
+    source. With ``contam_predict``: trace maps for every exposure of the
+    observation (cached), then per disperser the pass-1 spectra of every source of
+    the configuration (also the ones not being re-run: their light reaches the
+    re-run ones), then the products. The neighbour-scan proposals are written to
+    the observation's reference directory (``scan_action``)."""
+    from campfire_pipeline.common.parallel import dispatch
+    from campfire_pipeline.nirspec.observation import Observation
+    from campfire_pipeline.nirspec import profile_contam as CT
+    from campfire_pipeline.nirspec.profile_product import run_product, stage_flags
+
+    fl = stage_flags(stage_config)
+    shape = str(stage_config.get('profile_fit_shape', 'gated')).lower()
+    contam = fl['contam'] and shape != 'free'
+    by_fg = {}
+    for t in pf_tasks:
+        by_fg.setdefault(t['filter_grating'], []).append(t)
+    all_fg = set(by_fg)
+    sci_all = None
+    if contam:
+        every = Observation.group_files(obs.discover_files(ext='canonical', source_ids='all'))
+        sci_all = _science_files(every)
+        all_fg |= set(np.unique(every['filter_grating']))
+        mt = CT.map_tasks(obs.workspace_dir, list(every['path']), log=log)
+        if mt:
+            log(f"Profile fit: building {len(mt)} trace maps")
+            dispatch(CT.build_map, mt, n_processes=n_processes, use_starmap=True)
+    prism_fg = _prism_fg(all_fg)
+    order = sorted(by_fg, key=lambda fg: (0 if fg == prism_fg else 1, fg))
+    run_sids = {t['source_id'] for t in pf_tasks}
+    results = []
+    for fg in order:
+        is_prism = fg == prism_fg
+        pass1_products = {}
+        if contam:
+            sub = sci_all[sci_all['filter_grating'] == fg]
+            every_fg = every[every['filter_grating'] == fg]
+            p1 = []
+            for sid in np.unique(sub['source_id']):
+                tf = sub[sub['source_id'] == sid]
+                t = _profile_fit_task(obs, every_fg, tf, f"{obs.name}_{fg}_{sid}", sid)
+                prism_product = f"{obs.name}_{prism_fg}_{sid}" if (prism_fg and not is_prism) else ''
+                pass1_products[int(sid)] = t['product_name']
+                p1.append((t['product_name'], obs.workspace_dir, t['groups'], t['overrides'], t['science'],
+                           int(sid), is_prism, stage_config, prism_product, bool(overwrite and int(sid) in run_sids)))
+            log(f"Profile fit: pass 1 for {len(p1)} {fg} sources")
+            dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True)
+            # second round for the sources whose trace others cover (see profile_contam.run_pass1)
+            dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True,
+                     pass1_products=pass1_products, second=True)
+        tasks = []
+        for t in by_fg[fg]:
+            prism_product = f"{obs.name}_{prism_fg}_{t['source_id']}" if (prism_fg and not is_prism) else ''
+            tasks.append((t['product_name'], t['workspace_dir'], t['groups'], t['overrides'], t['science'],
+                          t['source_id'], stage_config, is_prism, prism_product, pass1_products, cleanup_crfs))
+        log(f"Profile fit: {len(tasks)} {fg} products")
+        results += [r for r in dispatch(run_product, tasks, n_processes=n_processes, use_starmap=True) or [] if r]
+    if fl['scan']:
+        write_scan_proposals(obs, results, run_sids, str(stage_config.get('scan_action', 'report_only')).lower())
+    return results
+
+
+def write_scan_proposals(obs, results, run_sids, action='report_only'):
+    """Neighbour-scan proposals to the observation's reference directory.
+
+    ``auto_override``: ``nodded_background_overrides_auto.toml``, which stage 2b
+    applies on its next run (a hand override of the same nod wins);
+    ``report_only``: ``nodded_background_overrides_proposed.toml`` (never applied).
+    Entries of the sources processed in this run are replaced; others are kept."""
+    import toml
+    from datetime import date
+
+    if action not in ('report_only', 'auto_override'):
+        raise ValueError(f"scan_action must be 'report_only' or 'auto_override', got {action!r}")
+    path = obs.auto_bkg_override_file if action == 'auto_override' else obs.proposed_bkg_override_file
+    old = toml.load(path) if os.path.exists(path) else {}
+    entries = {}
+    for root, d in old.items():
+        for sid, nods in d.items():
+            if int(sid) not in run_sids:
+                entries.setdefault(root, {})[str(sid)] = ({str(k): list(v) for k, v in nods.items()}, '')
+    for r in results:
+        s = r.get('scan') or {}
+        if not s.get('detected'):
+            continue
+        note = f"Delta={s['delta']:+.2f} dchi2={s['dchi2']:.0f} {date.today().isoformat()}"
+        if s.get('unresolved'):
+            note += f" unresolved={','.join(s['unresolved'])}"
+        for root, nods in s['proposals'].items():
+            entries.setdefault(root, {})[str(r['source_id'])] = (nods, note)
+    head = ('# automatic nodded-background overrides from the same-slitlet neighbour scan (cfpipe stage 3);\n'
+            '# stage 2b applies them on its next run; a hand override of the same nod wins\n'
+            if action == 'auto_override' else
+            '# proposed nodded-background overrides from the same-slitlet neighbour scan (cfpipe stage 3);\n'
+            '# report only: never applied. Copy an entry to nodded_background_overrides.toml to use it\n')
+    lines = [head.rstrip('\n')]
+    for root in sorted(entries):
+        lines.append(f'\n[{root}]')
+        for sid in sorted(entries[root], key=int):
+            nods, note = entries[root][sid]
+            body = ', '.join(f'{k} = [{", ".join(str(int(x)) for x in v)}]' for k, v in sorted(nods.items()))
+            lines.append(f'    {sid} = {{{body}}}' + (f'   # {note}' if note else ''))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+    log(f"Neighbour scan: {sum(len(v) for v in entries.values())} entries in {path}")
 
 
 def run_profile_fit_single_source(product_name, workspace_dir, groups, overrides, science,
                                   source_id, chromatic=True, cleanup_crfs=True):
-    """Profile fit for one source after Spec3 (needs Spec3's crf). A failure is
-    logged and leaves the standard products untouched."""
+    """Original (v1) profile fit for one source after Spec3 (needs Spec3's crf):
+    free shape, original priors. Kept for reference; stage 3 uses
+    ``run_profile_fit_phase``. A failure is logged and leaves the standard products
+    untouched."""
     from campfire_pipeline.nirspec import profile_fit as PF
 
     prev_cwd = os.getcwd()
@@ -421,6 +550,8 @@ def opt_ext_single_source(
       plot_optext = False,
       overwrite = False,
       version = 'v0.1',
+      profile_fit_rows = 'aperture',
+      profile_fit_model_rows_frac = 0.02,
     ):
     """
     Runs an optimal extraction routine and saves an msaexp-style "_spec.fits" file (combining 2D and 1D) for a single object.
@@ -551,7 +682,8 @@ def opt_ext_single_source(
     pf_hdus = []
     pf_file = os.path.join(workspace_dir, f'{product_name}_pf.fits')
     if os.path.exists(pf_file):
-        pf = _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, x1d_start, x1d_stop, wave)
+        pf = _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, x1d_start, x1d_stop, wave,
+                                  rows=profile_fit_rows, model_rows_frac=profile_fit_model_rows_frac)
         if pf is not None:
             for name, (data, desc) in pf['columns'].items():
                 spec1d.add_column(Column(name=name, data=data, description=desc, unit='uJy'))
@@ -627,7 +759,32 @@ def opt_ext_single_source(
     s2d.close()
     x1d.close()
 
-def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave):
+def model_rows_extraction(P, data, err, mask, frac=0.02):
+    """Weighted fit of the s2d with an unnormalised profile on every row where the
+    profile is significant, negative nod copies included:
+    flux = sum(P D / V) / sum(P^2 / V), error = 1 / sqrt(sum(P^2 / V)).
+
+    P is per unit reported flux (same units as data per flux unit), so no
+    normalisation enters; rows are those with |P| >= frac x the column's max |P|."""
+    V = err ** 2
+    with np.errstate(invalid='ignore', divide='ignore'):
+        amax = np.nanmax(np.abs(np.where(np.isfinite(P), P, np.nan)), axis=0)
+        sel = (np.isfinite(P) & np.isfinite(data) & np.isfinite(V) & (V > 0)
+               & (np.abs(P) >= frac * amax[None, :]) & (amax[None, :] > 0))
+        if mask is not None:
+            sel &= ~mask
+        Pw = np.where(sel, P, 0.0)
+        Vs = np.where(sel, V, 1.0)
+        num = np.sum(np.where(sel, Pw * data / Vs, 0.0), axis=0)
+        den = np.sum(np.where(sel, Pw ** 2 / Vs, 0.0), axis=0)
+        good = den > 0
+        flux = np.where(good, num / np.where(good, den, 1.0), np.nan)
+        flux_err = np.where(good, 1.0 / np.sqrt(np.where(good, den, 1.0)), np.nan)
+    return flux, flux_err, sel
+
+
+def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, rows='aperture',
+                         model_rows_frac=0.02):
     """Extraction of the s2d with the profile-fit 2D profile.
 
     PROF2D is the drizzled source model per unit reported flux (uJy, against the s2d
@@ -635,10 +792,19 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     the aperture and path-loss correction. The weighted fit of the data on the
     aperture rows, sum(P D / V) / sum(P^2 / V), is the reported flux directly:
     main-shutter light on the point-source path-loss calibration, as for ``fnu``.
+
+    ``rows``: which extraction is ``fnu_pf``: ``aperture`` (the x1d aperture rows)
+    or ``model`` (every row where PROF2D is significant, including the negative nod
+    copies; ``model_rows_extraction``). Both are written (``fnu_pfa``, ``fnu_pfm``).
+    With ``CONTAM2D`` the predicted other-source light is extracted with the same
+    weights (``fnu_pf_contam``; reported, not subtracted).
     """
     with fits.open(pf_file) as h:
         P = np.asarray(h['PROF2D'].data, float)
         header = h['PRIMARY'].header.copy()
+        C2D = np.asarray(h['CONTAM2D'].data, float) if 'CONTAM2D' in h else None
+    if rows not in ('aperture', 'model'):
+        raise ValueError(f"profile_fit_rows must be 'aperture' or 'model', got {rows!r}")
     if P.shape != s2d_sci.shape:
         log(f"{os.path.basename(pf_file)}: profile {P.shape} does not match the s2d {s2d_sci.shape}; skipping")
         return None
@@ -651,19 +817,53 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         warnings.simplefilter('ignore', category=RuntimeWarning)
         amp, amp_err = extract_with_profile(np.where(good, Pa / np.where(good, norm, 1.0), 0.0),
                                             s2d_sci.copy(), s2d_err.copy(), mask=s2d_mask, ivw=True)
-    flux = np.where(good, amp / np.where(good, norm, 1.0), np.nan)
-    flux_err = np.where(good, amp_err / np.where(good, norm, 1.0), np.nan)
+    flux_a = np.where(good, amp / np.where(good, norm, 1.0), np.nan)
+    flux_a_err = np.where(good, amp_err / np.where(good, norm, 1.0), np.nan)
+    Pm = np.where(np.isfinite(P), P * 1e12, np.nan)
+    flux_m, flux_m_err, sel_m = model_rows_extraction(Pm, s2d_sci, s2d_err, s2d_mask, frac=model_rows_frac)
+    if rows == 'model':
+        flux, flux_err = flux_m, flux_m_err
+        weight_rows = sel_m
+    else:
+        flux, flux_err = flux_a, flux_a_err
+        weight_rows = in_ap[:, None] & np.isfinite(P) & ~s2d_mask
     columns = {
-        'fnu_pf': (flux, 'Profile-fit extracted flux (PROF2D weights), fnu units'),
+        'fnu_pf': (flux, f'Profile-fit extracted flux (PROF2D weights, {rows} rows), fnu units'),
         'fnu_pf_err': (flux_err, 'Profile-fit extracted flux error, fnu units'),
+        'fnu_pfa': (flux_a, 'Profile-fit flux, aperture rows'),
+        'fnu_pfa_err': (flux_a_err, 'Profile-fit flux error, aperture rows'),
+        'fnu_pfm': (flux_m, 'Profile-fit flux, all significant PROF2D rows (incl. negative nod copies)'),
+        'fnu_pfm_err': (flux_m_err, 'Profile-fit flux error, all significant PROF2D rows'),
     }
     keep = fits.Header()
     for key in header:
         if key.startswith('PF'):
             keep[key] = (header[key], header.comments[key])
+    keep['PFROWS'] = (rows, 'Rows of fnu_pf: aperture / model')
+    hdus = []
     prof = fits.ImageHDU(P, name='PROF2D')
     prof.header['BUNIT'] = ('MJy / uJy', 'SCI per unit reported flux; not normalised per column')
-    return dict(columns=columns, header=keep, hdus=[prof])
+    hdus.append(prof)
+    if C2D is not None and C2D.shape == P.shape:
+        Cu = np.where(np.isfinite(C2D), C2D * 1e12, 0.0)          # uJy, as s2d_sci
+        V = s2d_err ** 2
+        with np.errstate(invalid='ignore', divide='ignore'):
+            w = np.where(weight_rows & np.isfinite(V) & (V > 0), Pm / np.where(V > 0, V, 1.0), 0.0)
+            den = np.sum(w * np.where(np.isfinite(Pm), Pm, 0.0), axis=0)
+            cflux = np.where(den > 0, np.sum(w * Cu, axis=0) / np.where(den > 0, den, 1.0), np.nan)
+            ok = np.isfinite(cflux) & np.isfinite(flux)
+            tot = np.nansum(flux[ok])
+            keep['PFCONTAM'] = (float(np.nansum(cflux[ok]) / tot) if tot > 0 else -999.0,
+                                'Predicted other-source light / fnu_pf, integrated')
+            sn = ok & (np.abs(flux) > 3 * flux_err)
+            frac = np.abs(cflux[sn] / flux[sn])
+            keep['PFCONMAX'] = (float(np.percentile(frac, 95)) if frac.size else -999.0,
+                                '95th pct of |contam/fnu_pf| where S/N > 3')
+        columns['fnu_pf_contam'] = (cflux, 'Predicted other-source flux in the fnu_pf extraction (not subtracted)')
+        c = fits.ImageHDU(C2D, name='CONTAM2D')
+        c.header['BUNIT'] = ('MJy', 'Predicted other-source light, as SCI')
+        hdus.append(c)
+    return dict(columns=columns, header=keep, hdus=hdus)
 
 
 def combine_per_eg_spectra(

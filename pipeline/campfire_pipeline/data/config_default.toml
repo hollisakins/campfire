@@ -81,6 +81,52 @@
     # extraction as fnu_pf* columns (nirspec/profile_fit.py). combine_method = "2d" only.
     profile_fit = false
     profile_fit_chromatic = true    # centre and width vary linearly with log wavelength
+    # --- extraction v2 prototype (nirspec/profile_chain.py, profile_contam.py, nod_scan.py) ---
+    # Shape of the extraction profile: "gated" (own fit above the detection gate, else the
+    # PRISM shape of the same source for gratings, else the default shape), "free" (the
+    # original v1 fit: free shape, original priors and bounds), "fixed" (default shape only).
+    profile_fit_shape = "gated"
+    profile_fit_prism_transfer = true        # gratings may take the PRISM shape
+    profile_fit_prism_mode = "unless_better" # "unless_better" | "always"
+    profile_fit_rows = "aperture"            # fnu_pf rows: "aperture" | "model" (all significant
+                                             # PROF2D rows incl. negative nod copies); both written
+    profile_fit_model_rows_frac = 0.02       # "model" rows: |PROF2D| >= this x column max
+    gate_snr_prism = 10.0                    # detection S/N gate for the own fit (provisional)
+    gate_snr_grating = 30.0
+    own_vs_prism_dchi2 = 25.0                # grating own fit beats the PRISM shape by this + k ln(N)
+    # Shape priors and bounds. PROVISIONAL: calibrated on two observations (ember_cosmos_p14,
+    # p9; PRISM V0 fits at S/N >= 100 after the SRCFLUX=F partner fix: centre std 0.082 / MAD
+    # 0.055, width median 0.157, ln width std 0.77 / MAD 0.51, drift std 0.030, width change
+    # std 0.042). Re-derive on more observations before release.
+    prior_centre_sigma = 0.08
+    prior_width_median = 0.15
+    prior_width_log_sigma = 0.6
+    prior_drift_sigma = 0.03
+    prior_width_change_sigma = 0.04
+    prior_offset_sigma = 0.015               # star-calibrated
+    bound_centre = 0.3                       # +- around the planned position
+    bound_width_max = 0.6
+    bound_drift = 0.3
+    bound_width_change = 0.3
+    bound_offset = 0.1
+    srcypos_tolerance = 0.05
+    # Other slitlets' light (trace maps + one-pass prediction from pass-1 spectra)
+    contam_predict = true
+    contam_mode = "hybrid"                   # "hybrid" (subtract, mask where uncertain) | "mask"
+    contam_pass1 = "fixed"                   # pass-1 spectra: "fixed" (fixed-shape solve) | "stage3"
+                                             # (existing stage-3 fnu of each source)
+    contam_mask_kappa = 1.0                  # threshold in units of the per-pixel noise
+    contam_min_clean_fraction = 0.5          # less main-shutter data left: no own fit
+    contam_pair_ratio = 3.0                  # similar-brightness pair flag within 1/r..r
+    # Same-slitlet neighbour scan on the residuals
+    scan_neighbours = true
+    scan_action = "report_only"              # "report_only" (proposed file) | "auto_override"
+                                             # (auto file, applied by stage 2b on its next run)
+    scan_nbins = 16
+    scan_dchi2 = 100.0                       # detection threshold (provisional; null tails reach 50-60)
+    scan_null_ratio = 1.5                    # and > this x the best negative-amplitude drop (provisional)
+    scan_min_snr = 5.0
+    scan_drop_frac = 0.2                     # partner dropped when it puts > this x the target's light on its rows
 
 [nirspec.redshift_fitting]
     save_models = false
