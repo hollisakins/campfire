@@ -52,7 +52,7 @@ from campfire_pipeline.nirspec import trace_overlap as TO
 
 MAPS_SUBDIR = 'tracemaps'
 PASS1_SUBDIR = 'pass1'
-PASS1_VERSION = '3'
+PASS1_VERSION = '4'
 DPRED_FLOOR = 0.1          # prediction uncertainty floor, fraction of the prediction (ASSUMED, to be measured)
 _NOD = re.compile(r'^(jw\d+_\d{5})_(\d{5})_(nrs[12])')
 
@@ -658,6 +658,7 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
                 unreliable.add(csid)
             add = np.zeros(e.y.shape)
             dadd = np.zeros(e.y.shape)
+            covered = np.zeros(e.y.shape, bool)
             for j, w in terms:
                 key = exposure_key(exps[j].name)
                 fr = P1.frames.get(key)
@@ -674,8 +675,13 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
                 img = fr['img'][ok].astype(float)
                 bad = ~good & (np.abs(img) > 0)
                 unmod[k][ty[ok][bad], tx[ok][bad]] = True
+                covered[ty[ok], tx[ok]] = True
                 np.add.at(add, (ty[ok][good], tx[ok][good]), w * img[good] * conv[good])
                 np.add.at(dadd, (ty[ok][good], tx[ok][good]), abs(w) * fr['err'][ok][good].astype(float) * conv[good])
+            if P1.nosrc is not None and not any(exposure_key(exps[j].name) in P1.nosrc for j, _ in terms):
+                # mapped pixels of the contaminant its pass-1 frames do not reach (its cutout or its
+                # spectrum ends short of its nominal range): light there, no prediction
+                unmod[k] |= px & ~covered
             if not P1.reliable:
                 pred_u[k] += add           # an upper bound, for masking only
             else:
