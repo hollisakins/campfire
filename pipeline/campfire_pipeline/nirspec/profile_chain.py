@@ -1,0 +1,290 @@
+"""
+Choice of the source shape for the profile-fit extraction (prototype, extraction v2).
+
+The profile fit (``profile_fit``) can fit a source's cross-dispersion shape freely,
+but at low S/N a free shape follows the noise, and in crowded masks it follows
+other sources' light. This module decides, per product (one source, one disperser),
+which shape builds the extraction profile:
+
+1. **own**: the source's own fit with recalibrated priors and tighter bounds, used
+   when the source is detected above a gate and the fit is sane (no parameter on a
+   bound, no disagreement among the planned positions).
+2. **prism**: for a grating, the shape fitted to the PRISM spectrum of the same
+   source in the same observation, mapped to the grating's wavelengths by its
+   chromatic terms (``profile_fit.map_shape``), keeping its offset from the planned
+   position. Only when the PRISM product took its own shape and the two were taken
+   at the same telescope roll.
+3. **default**: the star-measured PSF times a Gaussian of the prior median width at
+   the planned position.
+
+Every candidate that runs is compared on the same pixels (a pixel is kept when any
+candidate's outlier clipping keeps it), with the spectrum re-solved and without
+prior terms, so the choice can be redone offline from the header.
+
+The gate is the integrated detection S/N (``profile_fit.detection_snr``), computed
+before any candidate is fitted.
+"""
+
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from campfire_pipeline.nirspec import profile_fit as PF
+
+
+SHAPES = ('gated', 'free', 'fixed')
+PRISM_MODES = ('unless_better', 'always')
+
+
+@dataclass
+class ChainConfig:
+    shape: str = 'gated'                 # gated | free (V0: old priors and bounds, no gate) | fixed (default shape)
+    chromatic: bool = True
+    prism_transfer: bool = True
+    prism_mode: str = 'unless_better'    # unless_better | always
+    gate_prism: float = 10.0
+    gate_grating: float = 30.0
+    own_vs_prism_dchi2: float = 25.0     # plus k ln(N_eff), k = shape parameters
+    priors: PF.Priors = field(default_factory=PF.Priors)
+    bounds: PF.Bounds = field(default_factory=PF.Bounds)
+    srcypos_tolerance: float = 0.05
+    pa_tolerance: float = 1.0            # deg; PRISM shape transferred only at the same roll
+    agree_centre: float = 0.05           # own and PRISM shapes "agree" within these (then PRISM is kept)
+    agree_log_width: float = 0.2
+    disagree_centre: float = 0.1         # PFSHDIS thresholds
+    disagree_width_ratio: tuple = (0.6, 1.6)
+    min_clean_fraction: float = 0.5      # contamination masking: below this no own fit
+    min_clean_fraction_exposure: float = 0.3
+
+    @classmethod
+    def from_stage_config(cls, sc):
+        """From the merged ``[nirspec.stage3]`` configuration."""
+        g = sc.get
+        shape = str(g('profile_fit_shape', 'gated')).lower()
+        if shape not in SHAPES:
+            raise ValueError(f'profile_fit_shape must be one of {SHAPES}, got {shape!r}')
+        mode = str(g('profile_fit_prism_mode', 'unless_better')).lower()
+        if mode not in PRISM_MODES:
+            raise ValueError(f'profile_fit_prism_mode must be one of {PRISM_MODES}, got {mode!r}')
+        priors = PF.Priors(
+            centre_sigma=float(g('prior_centre_sigma', 0.08)),
+            drift_sigma=float(g('prior_drift_sigma', 0.03)),
+            width_median=float(g('prior_width_median', 0.15)),
+            width_log_sigma=float(g('prior_width_log_sigma', 0.6)),
+            width_change_sigma=float(g('prior_width_change_sigma', 0.04)),
+            offset_sigma=float(g('prior_offset_sigma', 0.015)))
+        bounds = PF.Bounds(
+            centre=float(g('bound_centre', 0.3)), drift=float(g('bound_drift', 0.3)),
+            width_max=float(g('bound_width_max', 0.6)), width_change=float(g('bound_width_change', 0.3)),
+            offset=float(g('bound_offset', 0.1)))
+        return cls(shape=shape, chromatic=bool(g('profile_fit_chromatic', True)),
+                   prism_transfer=bool(g('profile_fit_prism_transfer', True)), prism_mode=mode,
+                   gate_prism=float(g('gate_snr_prism', 10.0)), gate_grating=float(g('gate_snr_grating', 30.0)),
+                   own_vs_prism_dchi2=float(g('own_vs_prism_dchi2', 25.0)), priors=priors, bounds=bounds,
+                   srcypos_tolerance=float(g('srcypos_tolerance', 0.05)),
+                   min_clean_fraction=float(g('contam_min_clean_fraction', 0.5)))
+
+
+@dataclass
+class PrismShape:
+    """What a grating needs from the PRISM product of the same source."""
+    product: str
+    shape: str                      # PFSHAPE of the PRISM product
+    params: dict                    # centre, centre_prior, drift, width, width_change, pivot
+    pa_v3: float = np.nan
+
+    @classmethod
+    def from_header(cls, product, h):
+        if 'PFSHAPE' not in h:
+            return None
+        params = dict(centre=float(h['PFCEN']), centre_prior=float(h['PFCENPR']), drift=float(h['PFDRIFT']),
+                      width=float(h['PFWIDTH']), width_change=float(h['PFDWIDTH']), pivot=float(h['PFPIVOT']))
+        return cls(product=product, shape=str(h['PFSHAPE']), params=params, pa_v3=float(h.get('PFPAV3', np.nan)))
+
+
+@dataclass
+class ChainResult:
+    result: object                  # FitResult of the chosen shape (its model carries the exposures)
+    shape: str                      # own | prism | default
+    chain: str                      # gated | free | fixed
+    reason: str
+    snr_det: float = np.nan
+    gate: float = np.nan
+    detection: dict = field(default_factory=dict)
+    chi2: dict = field(default_factory=dict)        # candidate -> chi2 on the common pixels
+    npix_common: int = 0
+    bound_bits: int = 0
+    srcy_flag: int = 0
+    shdis: int = 0
+    prism_product: str = ''
+    transfer: str = 'none'          # used | none | no_prism | prism_not_own | pa_mismatch | off
+    pa_v3: float = np.nan
+    candidates: dict = field(default_factory=dict, repr=False)
+
+    def header_cards(self):
+        """Primary-header cards of the chain (written to ``_pf.fits``, copied to ``_spec.fits``)."""
+        p = self.result.params
+        c = {
+            'PFVER': ('2', 'Profile-fit model version'),
+            'PFSHAPE': (self.shape, 'Shape used: own / prism / default'),
+            'PFCHAIN': (self.chain, 'Shape chain: gated / free / fixed'),
+            'PFREASON': (self.reason[:68], 'Why this shape'),
+            'PFGATE': (_f(self.snr_det), 'Detection S/N (gate statistic)'),
+            'PFGATETH': (_f(self.gate), 'Gate threshold'),
+            'PFGATEC': (_f(self.detection.get('c', np.nan)), 'Noise scale used by the gate (robust)'),
+            'PFCHI2D': (_f(self.chi2.get('default', np.nan)), 'chi2, default shape, common pixels'),
+            'PFCHI2P': (_f(self.chi2.get('prism', np.nan)), 'chi2, PRISM shape, common pixels'),
+            'PFCHI2O': (_f(self.chi2.get('own', np.nan)), 'chi2, own fit, common pixels'),
+            'PFNPIXC': (int(self.npix_common), 'Independent pixels behind the chi2 values'),
+            'PFBOUND': (int(self.bound_bits), 'Own fit on a bound: 1 cen 2 wid 4 drift 8 dwid 16 off'),
+            'PFSRCY': (int(self.srcy_flag), 'SRCYPOS: 0 ok, 1 placeholder ignored, 2 disagree'),
+            'PFSHDIS': (int(self.shdis), 'PRISM and own grating shapes disagree'),
+            'PFPRISM': (self.prism_product[:68], 'PRISM product the shape came from'),
+            'PFXFER': (self.transfer, 'PRISM transfer: used/none/no_prism/...'),
+            'PFPAV3': (_f(self.pa_v3), 'PA_V3 of the science exposures [deg]'),
+            'PFCEN': (p['centre'], 'Source centre at the pivot [slit units]'),
+            'PFCENPR': (p['centre_prior'], 'Planned source position (prior centre)'),
+            'PFDRIFT': (p['drift'], 'Centre change per octave [slit units]'),
+            'PFWIDTH': (p['width'], 'Galaxy Gaussian sigma at the pivot [slit units]'),
+            'PFDWIDTH': (p['width_change'], 'Width change per octave [slit units]'),
+            'PFPIVOT': (p['pivot'], 'Pivot wavelength [um]'),
+            'PFCHROM': (bool(self.result.chromatic), 'Centre and width vary with wavelength'),
+            'PFCHI2': (float(self.result.chi2_red), 'Reduced chi2 of the chosen fit'),
+            'PFNPIX': (int(self.result.npix), 'Pixels in the fit'),
+        }
+        return c
+
+
+def _f(x):
+    x = float(x)
+    return x if np.isfinite(x) else -999.0
+
+
+def _exp_pa(exps):
+    v = [getattr(e, 'pa_v3', np.nan) for e in exps if e.use_data]
+    v = [x for x in v if np.isfinite(x)]
+    return float(np.median(v)) if v else np.nan
+
+
+def _bit_names(bits):
+    return ','.join(n for n, b in PF.BOUND_BITS.items() if bits & b) or 'none'
+
+
+def _threshold(cfg, M, R):
+    k = 4 if M.chromatic else 2
+    return cfg.own_vs_prism_dchi2 + k * np.log(max(R.npix, 2))
+
+
+def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None):
+    """Run the shape chain for one product. ``prism``: the ``PrismShape`` of the same
+    source (gratings), ``clean``: dict(overall, per_exposure) of the fraction of the
+    main-shutter pixels left by contamination masking (None: no masking)."""
+    log = log or (lambda *a: None)
+    srcy = PF.planned_position(exps, cfg.srcypos_tolerance)[1]
+    pa = _exp_pa(exps)
+
+    if cfg.shape == 'free':
+        M = PF.ProfileModel(exps, chromatic=cfg.chromatic)            # V0: original priors and bounds
+        snr, det = PF.detection_snr(M)
+        R = PF.fit(exps, model=M)
+        return ChainResult(result=R, shape='own', chain='free', reason='free', snr_det=snr, detection=det,
+                           chi2={'own': R.chi2}, npix_common=R.npix, bound_bits=R.bound_bits, srcy_flag=srcy,
+                           pa_v3=pa, candidates={'own': R})
+
+    M = PF.ProfileModel(exps, chromatic=cfg.chromatic, priors=cfg.priors, bounds=cfg.bounds)
+    snr, det = PF.detection_snr(M)
+    gate = cfg.gate_prism if is_prism else cfg.gate_grating
+    cands = {'default': PF.fit_fixed(model=M)}
+    if cfg.shape == 'fixed':
+        R = cands['default']
+        return ChainResult(result=R, shape='default', chain='fixed', reason='fixed', snr_det=snr, gate=gate,
+                           detection=det, chi2={'default': R.chi2}, npix_common=R.npix, srcy_flag=srcy, pa_v3=pa,
+                           candidates=cands)
+
+    # PRISM-transferred candidate (gratings)
+    transfer, xshape = 'none', None
+    if not is_prism:
+        if not cfg.prism_transfer:
+            transfer = 'off'
+        elif prism is None:
+            transfer = 'no_prism'
+        elif prism.shape != 'own':
+            transfer = 'prism_not_own'
+        elif np.isfinite(prism.pa_v3) and np.isfinite(pa) and abs(((prism.pa_v3 - pa) + 180) % 360 - 180) > cfg.pa_tolerance:
+            transfer = 'pa_mismatch'
+        else:
+            xshape = PF.map_shape(prism.params, M.pivot)
+            cands['prism'] = PF.fit_fixed(model=M, shape=xshape, fit_eoff=True)
+            transfer = 'used'
+
+    # own fit
+    reason = None
+    if clean is not None and (clean['overall'] < cfg.min_clean_fraction
+                              or min(clean['per_exposure'] or [1.0]) < cfg.min_clean_fraction_exposure):
+        reason = f"masked:{clean['overall']:.2f}"
+    elif snr < gate:
+        reason = 'below_gate'
+    else:
+        try:
+            cands['own'] = PF.fit(exps, model=M)
+        except Exception as e:                         # noqa: BLE001 - the chain falls back
+            log(f'own fit failed ({type(e).__name__}: {e})')
+            reason = 'fit_failed'
+
+    # common pixels: kept where any candidate's clipping keeps them
+    keep = np.zeros(M.npix, bool)
+    for R in cands.values():
+        keep |= R.use
+    chi2 = {}
+    for name, R in cands.items():
+        p, eoff = PF._qvec(R)
+        chi2[name] = M.chi2_at(p, eoff, keep)
+    npix_common = int(round(float(np.sum(M.dof_weight()[keep]))))
+    fallback = 'prism' if 'prism' in cands else 'default'
+
+    shdis = 0
+    if 'own' in cands and xshape is not None:
+        o = cands['own'].params
+        dc = (o['centre'] - o['centre_prior']) - xshape['centre_offset']
+        ratio = o['width'] / xshape['width']
+        lo, hi = cfg.disagree_width_ratio
+        shdis = int(abs(dc) > cfg.disagree_centre or not (lo <= ratio <= hi))
+
+    bits = cands['own'].bound_bits if 'own' in cands else 0
+    if 'own' not in cands:
+        choice = fallback
+    elif srcy == 2:
+        choice, reason = 'default', 'srcypos'
+    elif bits:
+        # the own fit ended on a bound: fall back only if the fallback describes the data
+        # about as well; a real large offset keeps its own fit (flagged)
+        R = cands['own']
+        if chi2[fallback] - chi2['own'] > _threshold(cfg, M, R):
+            choice, reason = 'own', f'bound_kept:{_bit_names(bits)}'
+        else:
+            choice, reason = fallback, f'bound:{_bit_names(bits)}'
+    elif 'prism' in cands:
+        if cfg.prism_mode == 'always':
+            choice, reason = 'prism', 'prism_always'
+        else:
+            o = cands['own'].params
+            dc = (o['centre'] - o['centre_prior']) - xshape['centre_offset']
+            dlw = np.log(o['width'] / xshape['width'])
+            differ = abs(dc) > cfg.agree_centre or abs(dlw) > cfg.agree_log_width
+            better = chi2['prism'] - chi2['own'] > _threshold(cfg, M, cands['own'])
+            if better and differ:
+                choice, reason = 'own', 'own_better'
+            else:
+                choice, reason = 'prism', 'prism_kept' if differ else 'shapes_agree'
+    else:
+        choice, reason = 'own', 'gate_passed'
+    if reason is None:
+        reason = 'gate_passed'
+    if choice == 'prism' and (reason in ('below_gate', 'fit_failed') or reason.startswith('masked')):
+        reason = f'{reason};prism'
+    R = cands[choice]
+    shape = 'own' if choice == 'own' else choice
+    return ChainResult(result=R, shape=shape, chain='gated', reason=reason, snr_det=snr, gate=gate, detection=det,
+                       chi2=chi2, npix_common=npix_common, bound_bits=bits, srcy_flag=srcy, shdis=shdis,
+                       prism_product=prism.product if (prism is not None and transfer == 'used') else '',
+                       transfer=transfer, pa_v3=pa, candidates=cands)
