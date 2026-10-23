@@ -38,7 +38,9 @@ OPEN_HALF = 0.5      # half-height of a shutter's open area, slit_frame units
 LIGHT_PAD = 0.25     # PSF spill beyond the open area (~1 detector row), slit_frame units
 NONE = -1
 IN_SOURCE = 1        # flag bit: the pixel is in the trace's source shutter (light a nod difference keeps)
-MAP_VERSION = '3'
+BEYOND_RANGE = 2     # flag bit: past the long-wavelength end of jwst's nominal range (light, no calibration)
+BEYOND_ROWS = 8      # rows added above and below the bounding box where a trace is followed past its range
+MAP_VERSION = '4'
 
 
 def open_shutter_centres(shutter_state, ymin, ymax, pitch=MSA_SLIT_PITCH, margin=MSA_SLIT_MARGIN):
@@ -98,23 +100,50 @@ def full_mask_model(rate_file, workdir, msa_file=None, msa_metadata_id=None, dit
     return (out, staged) if return_staged else out
 
 
-def _slit_pixels(model, wcs):
-    """Detector pixels inside a slit's bounding box, with their slit-frame y and wavelength [um]."""
+def _slit_pixels(model, wcs, beyond=False):
+    """Detector pixels inside a slit's bounding box, with their slit-frame y and wavelength [um].
+
+    ``beyond``: also the pixels past the long-wavelength end of the bounding box, to the
+    detector edge. jwst's bounding box stops at the nominal wavelength range
+    (``wavelengthrange``), but long-pass filters do not stop the light there; the
+    trace's slit-frame y is still defined (the transform extrapolates), so the trace
+    is followed to the edge, ``BEYOND_ROWS`` rows wider for its curvature. Returns
+    (pixel index, y, wavelength, beyond flag)."""
     (x0, x1), (y0, y1) = wcs.bounding_box
     ny, nx = model.data.shape[-2:]
-    xa = np.arange(max(int(np.ceil(x0)), 0), min(int(np.floor(x1)), nx - 1) + 1)
+    tr = wcs.get_transform('detector', 'slit_frame')
+
+    def at(xa, ya):
+        if xa.size == 0 or ya.size == 0:
+            return None
+        y, x = np.meshgrid(ya, xa, indexing='ij')
+        _, ys, lam = tr(x, y)
+        ok = np.isfinite(ys) & np.isfinite(lam)
+        if not ok.any():
+            return None
+        lam = lam[ok]
+        if np.nanmax(lam) < 1e-3:      # metres
+            lam = lam * 1e6
+        return (y[ok] * nx + x[ok]).astype(np.int64), ys[ok], lam
+
+    xi0, xi1 = max(int(np.ceil(x0)), 0), min(int(np.floor(x1)), nx - 1)
     ya = np.arange(max(int(np.ceil(y0)), 0), min(int(np.floor(y1)), ny - 1) + 1)
-    if xa.size == 0 or ya.size == 0:
+    inside = at(np.arange(xi0, xi1 + 1), ya)
+    if inside is None:
         return None
-    y, x = np.meshgrid(ya, xa, indexing='ij')
-    _, ys, lam = wcs.get_transform('detector', 'slit_frame')(x, y)
-    ok = np.isfinite(ys) & np.isfinite(lam)
-    if not ok.any():
-        return None
-    lam = lam[ok]
-    if np.nanmax(lam) < 1e-3:      # metres
-        lam = lam * 1e6
-    return (y[ok] * nx + x[ok]).astype(np.int64), ys[ok], lam
+    parts = [inside + (np.zeros(inside[0].size, bool),)]
+    if beyond:
+        # which end is red: the wavelength at the two ends of the lit columns
+        px = inside[0] % nx
+        lo_l = np.median(inside[2][px == px.min()])
+        hi_l = np.median(inside[2][px == px.max()])
+        if hi_l != lo_l:
+            xb = np.arange(px.max() + 1, nx) if hi_l > lo_l else np.arange(0, px.min())
+            yb = np.arange(max(int(np.ceil(y0)) - BEYOND_ROWS, 0), min(int(np.floor(y1)) + BEYOND_ROWS, ny - 1) + 1)
+            out = at(xb, yb)
+            if out is not None:
+                parts.append(out + (np.ones(out[0].size, bool),))
+    return tuple(np.concatenate([p[i] for p in parts]) for i in range(4))
 
 
 def _slit_record(slit, kind, centres):
@@ -129,7 +158,7 @@ def _slitlet_traces(model):
     from jwst.assign_wcs import nirspec
 
     for slit in model.meta.wcs.get_transform('gwa', 'slit_frame').slits:
-        px = _slit_pixels(model, nirspec.nrs_wcs_set_input(model, slit.name))
+        px = _slit_pixels(model, nirspec.nrs_wcs_set_input(model, slit.name), beyond=True)
         if px is not None:
             centres = open_shutter_centres(slit.shutter_state, slit.ymin, slit.ymax)
             yield _slit_record(slit, 'slitlet', centres), centres, px
@@ -155,7 +184,7 @@ def _failed_open_traces(model):
             w = nirspec.nrs_wcs_set_input(tmp, slit.name)
         except (ValueError, KeyError):
             continue
-        px = _slit_pixels(tmp, w)
+        px = _slit_pixels(tmp, w)            # one shutter, sky only: its light cancels (not followed past the range)
         if px is not None:
             rec = _slit_record(slit, 'failed_open', np.array([0.0]))
             rec['name'] = f'failed_open_q{slit.quadrant}_{slit.xcen}_{slit.ycen}'
@@ -208,19 +237,21 @@ class TraceMap:
 
     @classmethod
     def from_traces(cls, traces, shape, pad=LIGHT_PAD, meta=None):
-        """Assemble a map from ``(record, open shutter centres, (pix, ys, lam))`` per trace;
-        a trace lights the pixels within ``OPEN_HALF + pad`` of one of its open shutters."""
+        """Assemble a map from ``(record, open shutter centres, (pix, ys, lam[, beyond]))`` per
+        trace; a trace lights the pixels within ``OPEN_HALF + pad`` of one of its open
+        shutters. ``beyond`` marks pixels past the nominal wavelength range (``BEYOND_RANGE``)."""
         from astropy.table import Table
 
         ny, nx = shape
         recs, pix, idx, flg = [], [], [], []
-        for i, (rec, centres, (p, y, l)) in enumerate(traces):
-            y = np.asarray(y)
+        for i, (rec, centres, px) in enumerate(traces):
+            p, y = px[0], np.asarray(px[1])
+            bey = np.asarray(px[3], bool) if len(px) > 3 else np.zeros(y.size, bool)
             near = np.min(np.abs(y[:, None] - np.asarray(centres)[None, :]), axis=1) < OPEN_HALF + pad
             src = np.abs(y) < OPEN_HALF + pad          # slit frame is centred on the source shutter
             recs.append(rec)
             pix.append(np.asarray(p, np.int64)[near])
-            flg.append(np.where(src[near], IN_SOURCE, 0).astype(np.uint8))
+            flg.append((np.where(src[near], IN_SOURCE, 0) | np.where(bey[near], BEYOND_RANGE, 0)).astype(np.uint8))
             idx.append(np.full(near.sum(), i, np.int16))
         pix, idx, flg = np.concatenate(pix), np.concatenate(idx), np.concatenate(flg)
         order = np.lexsort((idx, pix))
@@ -280,10 +311,26 @@ class TraceMap:
         """Pixels of a trace in its source shutter (the light a nod subtraction keeps)."""
         return (np.asarray(flag) & IN_SOURCE) > 0
 
+    @staticmethod
+    def beyond_range(flag):
+        """Pixels of a trace past its nominal wavelength range (no source spectrum there)."""
+        return (np.asarray(flag) & BEYOND_RANGE) > 0
+
 
 def trace_map_path(cache_dir, exposure_name):
     root = os.path.basename(exposure_name).replace('_rate.fits', '').replace('.fits', '')
     return os.path.join(cache_dir, f'{root}_tracemap.fits')
+
+
+def map_is_current(path):
+    """A cached map exists and was built by this map version."""
+    from astropy.io import fits
+    if not os.path.exists(path):
+        return False
+    try:
+        return str(fits.getheader(path).get('MAPVER', '')) == MAP_VERSION
+    except OSError:
+        return False
 
 
 def get_trace_map(rate_file, cache_dir, workdir=None, exposure_name=None, **build_kw):
@@ -291,7 +338,7 @@ def get_trace_map(rate_file, cache_dir, workdir=None, exposure_name=None, **buil
 
     ``exposure_name`` names the cache file when ``rate_file`` is a template."""
     path = trace_map_path(cache_dir, exposure_name or rate_file)
-    if os.path.exists(path):
+    if map_is_current(path):
         return TraceMap.read(path)
     os.makedirs(cache_dir, exist_ok=True)
     tm = TraceMap.build(rate_file, workdir or os.path.join(cache_dir, 'work'), **build_kw)
@@ -314,6 +361,7 @@ class Shared:
     iy: np.ndarray = field(repr=False)        # cutout pixels (region coordinates)
     ix: np.ndarray = field(repr=False)
     target_src: np.ndarray = field(repr=False)   # pixel is in the target's source shutter
+    beyond: np.ndarray = field(repr=False, default=None)   # the other trace is past its nominal range there
 
     @property
     def n_cols(self):
@@ -364,7 +412,7 @@ def nod_contamination(maps, source_id, region, partners=None):
                 out.append(Shared(exposure=k, from_exposure=j, sign=1 if j == k else -1,
                                   name=str(rec['name']), source_id=int(rec['source_id']), kind=str(rec['kind']),
                                   iy=(common // 100000).astype(int), ix=(common % 100000).astype(int),
-                                  target_src=t_src[it]))
+                                  target_src=t_src[it], beyond=maps[j].beyond_range(jflg[sel][ic])))
     return out
 
 

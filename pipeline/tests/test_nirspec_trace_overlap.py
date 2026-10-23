@@ -101,6 +101,39 @@ def test_nod_contamination_signs_and_shutters():
     assert any(r.in_target_shutter().any() for r in recs if r.sign < 0)
 
 
+def test_beyond_range_pixels_are_flagged_and_unmodelled():
+    """A contaminant's trace continued past its nominal range (columns 80+) keeps its
+    pixels in the map with the BEYOND_RANGE flag; per source they are unmodelled
+    (masked for the shape fit), not attributed to the contaminant's pass 1."""
+    from campfire_pipeline.nirspec import profile_contam as CT
+    centres = [-MSA_SLIT_PITCH, 0.0, MSA_SLIT_PITCH]
+    maps = []
+    for shift in (0, 5, -5):
+        t = _trace(_rec('1', 1), 20 + shift, 6, 34, 0, NX, centres)
+        rec, cen, (p, y, l) = _trace(_rec('2', 2), 12 + shift, 0, 26, 50, NX, centres)
+        beyond = (p % NX) >= 80
+        maps.append(TO.TraceMap.from_traces([t, (rec, cen, (p, y, l, beyond))], (NY, NX)))
+    recs = TO.nod_contamination(maps, 1, (0, 0, NX, NY))
+    assert all(np.array_equal(r.beyond, r.ix >= 80) for r in recs)
+    assert any(r.beyond.any() for r in recs) and any((~r.beyond).any() for r in recs)
+
+    class E:                                    # the attributes geometry() reads
+        def __init__(self, k):
+            self.name = f'jw00000001001_03101_0000{k + 1}_nrs1_1.fits'
+            self.group, self.y = 0, np.zeros((NY, NX))
+            self.origin = (1, 1)
+            self.partners = [j for j in range(3) if j != k]
+    exps = [E(k) for k in range(3)]
+    mp = {CT.exposure_key(e.name): m for e, m in zip(exps, maps)}
+    g = CT.geometry(exps, 1, mp)
+    for k in range(3):
+        assert not g.sources[k][2][:, 80:].any()             # never predicted from pass 1 there
+        assert g.unmodelled[k][:, 80:].any() and not g.unmodelled[k][:, :80].any()
+        assert g.mask[k][:, 80:].any()
+    old = CT.geometry(exps, 1, mp, beyond='ignore')          # as before: those pixels unknown
+    assert not any(u.any() for u in old.unmodelled) and not old.mask[0][:, 80:].any()
+
+
 def test_shared_signal_recovers_injected_light():
     maps = _maps()
     recs = TO.nod_contamination(maps, 1, (0, 0, NX, NY))
