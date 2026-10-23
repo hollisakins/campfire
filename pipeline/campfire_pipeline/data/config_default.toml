@@ -91,9 +91,16 @@
     profile_fit_rows = "aperture"            # fnu_pf rows: "aperture" | "model" (all significant
                                              # PROF2D rows incl. negative nod copies); both written
     profile_fit_model_rows_frac = 0.02       # "model" rows: |PROF2D| >= this x column max
-    gate_snr_prism = 10.0                    # detection S/N gate for the own fit (provisional)
-    gate_snr_grating = 30.0
+    # Detection S/N gate for the own fit. Above these the own fit beats the default shape in
+    # delivered S/N (test A injections, 2026-10-23; noise scale = clipped mean square of the
+    # residuals). Null on 16 blanks per disperser: PRISM max 9.9, G395M max 48.5.
+    gate_snr_prism = 50.0
+    gate_snr_grating = 70.0
+    gate_noise = "mean_square"               # "mean_square" | "mad" (the gate before 2026-10-23)
     own_vs_prism_dchi2 = 25.0                # grating own fit beats the PRISM shape by this + k ln(N)
+    own_vs_prism_min_gate = 100.0            # and only above this gate (below it the PRISM shape is kept)
+    own_vs_prism_centre = 0.08               # and only when the shapes differ by more than this in centre
+    own_vs_prism_log_width = 0.3             # or this in ln width
     # Shape priors and bounds. PROVISIONAL: calibrated on two observations (ember_cosmos_p14,
     # p9; PRISM V0 fits at S/N >= 100 after the SRCFLUX=F partner fix: centre std 0.082 / MAD
     # 0.055, width median 0.157, ln width std 0.77 / MAD 0.51, drift std 0.030, width change
@@ -115,16 +122,30 @@
     contam_mode = "hybrid"                   # "hybrid" (subtract, mask where uncertain) | "mask"
     contam_pass1 = "fixed"                   # pass-1 spectra: "fixed" (fixed-shape solve) | "stage3"
                                              # (existing stage-3 fnu of each source)
+    contam_pass1_smooth = 31                 # pass-1 spectra: outliers clipped, then an n-point running mean (0: off)
+    contam_pass1_guard = 3.0                 # pass-1 p95 |flux| above this x the stage-3 p95: unreliable (0: off)
+    contam_pass1_shape = "chain"             # "chain" (PRISM / own gated / default) | "default"
+    contam_failed_open = "flag"              # failed-open shutters: "flag" | "mask"
+    contam_beyond_range = "mask"             # other traces past their nominal range: "mask" | "ignore"
     contam_mask_kappa = 1.0                  # threshold in units of the per-pixel noise
     contam_min_clean_fraction = 0.5          # less main-shutter data left: no own fit
+    contam_dominance = "light"               # other sources dominate the trace -> no own fit:
+                                             # "light" | "pixels" | "off"
+    contam_dominance_max = 1.0               # light: their predicted light / the target's on the main shutter
+    contam_dominance_kappa = 1.0             # pixels: predicted light above this x noise is "dirty"
+    contam_dominance_min_clean = 0.5         # pixels: less clean main shutter than this
     contam_pair_ratio = 3.0                  # similar-brightness pair flag within 1/r..r
+    contam_pair_min_frac = 0.3               # and the contaminant's light >= this x the target's in its extraction
     # Same-slitlet neighbour scan on the residuals
     scan_neighbours = true
     scan_action = "report_only"              # "report_only" (proposed file) | "auto_override"
                                              # (auto file, applied by stage 2b on its next run)
     scan_nbins = 16
+    scan_noise = "mean_square"               # chi2 drops / reduced chi2 of target + neighbour ("none": raw)
     scan_dchi2 = 100.0                       # detection threshold (provisional; null tails reach 50-60)
     scan_null_ratio = 1.5                    # and > this x the best negative-amplitude drop (provisional)
+    scan_close = 0.9                         # brighter neighbour closer than this: unresolvable, no proposal
+    scan_xdisp_tol = 0.2                     # PRISM and grating scans must agree on Delta within this (< 0: off)
     scan_min_snr = 5.0
     scan_drop_frac = 0.2                     # partner dropped when it puts > this x the target's light on its rows
     scan_max_masked = 0.3                    # no proposals when contamination masking dropped more of the trace
