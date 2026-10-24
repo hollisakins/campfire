@@ -164,6 +164,17 @@
                                              # (vs PRISM: helps above 3, neutral at 1-3; round 3)
     contam_unmod_max = 0.05                  # columns with more extraction weight on unpredicted other light are
                                              # flagged (pf_unmod) and left out of fnu_pf_contam / PFCONTAM
+    # Joint solve of strongly coupled overlap groups (prototype, profile_joint; off by default)
+    contam_joint = false                     # after the one-pass products: solve each group's spectra together
+                                             # (fixed one-pass shapes, full resolution) and redo its receivers
+    contam_joint_min_sigma = 10.0            # a pair is coupled when the contaminant's light in the target's
+    contam_joint_min_frac = 0.3              # spectrum is >= this x its integrated noise AND >= this x its light
+    contam_joint_max_members = 6             # larger groups: the weakest pairs stay on the one-pass path
+    contam_joint_smooth = 0.0                # second-difference prior on the other members (0: none)
+    contam_joint_degenerate = 0.9            # correlation below minus this: split not determined (pf_joint_flag 1)
+    contam_joint_sens_centre = 0.02          # typical shape error of the others for the shape-limited flag
+    contam_joint_sens_log_width = 0.1        # (pf_joint_flag 2, PFJSENS)
+    contam_joint_clip = 5.0
     # Same-slitlet neighbour scan on the residuals
     scan_neighbours = true
     scan_action = "report_only"              # "report_only" (proposed file) | "auto_override"

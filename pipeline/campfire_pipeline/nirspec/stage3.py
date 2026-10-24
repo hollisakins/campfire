@@ -423,7 +423,10 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     from campfire_pipeline.nirspec import profile_contam as CT
     from campfire_pipeline.nirspec.profile_product import run_product, stage_flags
 
+    from campfire_pipeline.nirspec import profile_joint as PJ
+
     fl = stage_flags(stage_config)
+    js = PJ.joint_settings(stage_config)
     shape = str(stage_config.get('profile_fit_shape', 'gated')).lower()
     contam = fl['contam'] and shape != 'free'
     by_fg = {}
@@ -462,16 +465,57 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
             # second round for the sources whose trace others cover (see profile_contam.run_pass1)
             dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True,
                      pass1_products=pass1_products, second=True)
+        joint = contam and js['enabled']
         tasks = []
         for t in by_fg[fg]:
             prism_product = f"{obs.name}_{prism_fg}_{t['source_id']}" if (prism_fg and not is_prism) else ''
             tasks.append((t['product_name'], t['workspace_dir'], t['groups'], t['overrides'], t['science'],
-                          t['source_id'], stage_config, is_prism, prism_product, pass1_products, cleanup_crfs))
+                          t['source_id'], stage_config, is_prism, prism_product, pass1_products,
+                          cleanup_crfs and not joint))      # the joint solve redoes products: keep their crfs
         log(f"Profile fit: {len(tasks)} {fg} products")
-        results += [r for r in dispatch(run_product, tasks, n_processes=n_processes, use_starmap=True) or [] if r]
+        res = [r for r in dispatch(run_product, tasks, n_processes=n_processes, use_starmap=True) or [] if r]
+        if joint:
+            res = _joint_phase(obs, fg, tasks, res, stage_config, pass1_products, js, n_processes, cleanup_crfs)
+        results += res
     if fl['scan']:
         write_scan_proposals(obs, results, run_sids, str(stage_config.get('scan_action', 'report_only')).lower(),
                              xdisp_tol=fl['scan_xdisp_tol'])
+    return results
+
+
+def _joint_phase(obs, fg, tasks, results, stage_config, pass1_products, js, n_processes, cleanup_crfs):
+    """Joint solve of the strongly coupled overlap groups of one disperser
+    (``contam_joint``, ``profile_joint``), after its one-pass products: groups from the
+    products' pair metrics, one joint solve per group, the members' products redone.
+    Returns the results with the members' one-pass summaries replaced."""
+    from campfire_pipeline.common.parallel import dispatch
+    from campfire_pipeline.nirspec import profile_joint as PJ
+
+    pairs = {int(r['source_id']): (r.get('pairs') or {}) for r in results}
+    by_sid = {int(t[5]): t for t in tasks}
+    groups = PJ.select_groups(pairs, set(by_sid), min_sigma=js['min_sigma'], min_frac=js['min_frac'],
+                              max_members=js['max_members'])
+    redo = [PJ.receivers(pairs, g, min_sigma=js['min_sigma'], min_frac=js['min_frac']) for g in groups]
+    log(f"Profile fit: {len(groups)} {fg} joint-solve groups "
+        f"({sum(len(g) for g in groups)} sources, sizes {sorted(len(g) for g in groups)}; "
+        f"{sum(len(r) for r in redo)} products redone)")
+    if groups:
+        gtasks = [([by_sid[s] for s in g], obs.workspace_dir, stage_config, pass1_products, r)
+                  for g, r in zip(groups, redo)]
+        redone = {}
+        for out in dispatch(PJ.run_group, gtasks, n_processes=n_processes, use_starmap=True) or []:
+            for r in out or []:
+                if r:
+                    redone[int(r['source_id'])] = r
+        results = [redone.get(int(r['source_id']), r) for r in results]
+    if cleanup_crfs:
+        prev = os.getcwd()
+        os.chdir(obs.workspace_dir)
+        try:
+            for t in tasks:
+                _cleanup_spec3_intermediates(list(t[4]), t[0])
+        finally:
+            os.chdir(prev)
     return results
 
 
@@ -892,6 +936,11 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         C2D = np.asarray(h['CONTAM2D'].data, float) if 'CONTAM2D' in h else None
         E2D = np.asarray(h['CONTERR2D'].data, float) if 'CONTERR2D' in h else None
         U2D = np.asarray(h['UNMOD2D'].data, float) if 'UNMOD2D' in h else None
+        JT = h['JOINT'].data if 'JOINT' in h else None
+        JT_hdu = None
+        if JT is not None:
+            JT_hdu = fits.BinTableHDU(data=h['JOINT'].data.copy(), header=h['JOINT'].header.copy(), name='JOINT')
+            JT = {n: np.asarray(JT[n], float) for n in ('lam', 'err', 'err_iso', 'corr', 'flag') if n in JT.names}
     if rows not in ('aperture', 'model'):
         raise ValueError(f"profile_fit_rows must be 'aperture' or 'model', got {rows!r}")
     if P.shape != s2d_sci.shape:
@@ -967,6 +1016,36 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
             fin = np.isfinite(flux)
             keep['PFUNMODF'] = (float(np.mean(flag[fin])) if fin.any() else 0.0,
                                 'Fraction of columns with unpredicted other light')
+            if JT is not None:
+                # joint solve: the other members' light was solved with this source's
+                # spectrum; its statistical uncertainty is the error inflation of the joint
+                # covariance over the isolated one, added to the systematic part (CONTERR2D)
+                jl = JT['lam']
+                jok = np.isfinite(jl) & np.isfinite(JT['err']) & np.isfinite(JT['err_iso']) & (JT['err_iso'] > 0)
+                if jok.sum() > 1:
+                    o = np.argsort(jl[jok])
+                    infl = np.interp(wave, jl[jok][o], (JT['err'][jok] / JT['err_iso'][jok])[o],
+                                     left=np.nan, right=np.nan)
+                    jc = np.isfinite(JT['corr']) & jok
+                    oc = np.argsort(jl[jc])
+                    jcorr = np.interp(wave, jl[jc][oc], JT['corr'][jc][oc], left=np.nan, right=np.nan) \
+                        if jc.sum() > 1 else np.full(wave.shape, np.nan)
+                else:
+                    infl, jcorr = np.full(wave.shape, np.nan), np.full(wave.shape, np.nan)
+                jstat = np.where(np.isfinite(infl), flux_err * np.sqrt(np.clip(infl ** 2 - 1.0, 0.0, None)), 0.0)
+                cerr = np.sqrt(np.where(np.isfinite(cerr), cerr, 0.0) ** 2 + jstat ** 2)
+                thr = float(header.get('PFJDEGT', 0.9))
+                jflag = (np.isfinite(jcorr) & (jcorr < -thr)).astype(np.int16)
+                if 'flag' in JT and jok.sum() > 1:
+                    # nearest spectrum point of the joint solve: 1 split not determined, 2 shape-limited
+                    jw = jl[jok][o]
+                    i = np.clip(np.searchsorted(jw, wave), 1, jw.size - 1)
+                    near = np.where(np.abs(wave - jw[i - 1]) < np.abs(wave - jw[i]), i - 1, i)
+                    jflag = np.where(np.isfinite(wave) & (wave >= jw[0]) & (wave <= jw[-1]),
+                                     JT['flag'][jok][o][near], 0).astype(np.int16)
+                columns['pf_joint_corr'] = (jcorr, 'Most negative correlation with a joint-solve member')
+                columns['pf_joint_infl'] = (infl, 'Joint-solve error inflation over the isolated error')
+                columns['pf_joint_flag'] = (jflag, 'Shared light: 1 split not determined, 2 shape-limited')
             dec = flux - np.where(np.isfinite(cflux), cflux, 0.0)
             dec_err = np.sqrt(flux_err ** 2 + np.where(np.isfinite(cerr), cerr, 0.0) ** 2)
         sub = contam_1d == 'subtract' and csig > contam_1d_min_sigma
@@ -993,6 +1072,8 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
             c = fits.ImageHDU(U2D, name='UNMOD2D')
             c.header['BUNIT'] = ('', 'Fraction of the data with other light not in CONTAM2D')
             hdus.append(c)
+        if JT_hdu is not None:
+            hdus.append(JT_hdu)
     return dict(columns=columns, header=keep, hdus=hdus)
 
 

@@ -67,28 +67,35 @@ class Analysis:
     clean: dict = None
     contam_state: str = 'off'
     scan: object = None               # nod_scan.ScanResult
+    pairs: dict = None                # contaminant sid -> profile_joint.pair_metrics entry (joint solve on)
 
 
 def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
                     prism_product='', pass1_products=None, log=None, exps=None, pass1_for=None, maps=None,
-                    prism=None):
+                    prism=None, joint=None):
     """Load, predict and apply other slitlets' light, choose the shape, scan for a
     same-slitlet neighbour. No files are written.
 
+    joint : a ``profile_joint.JointView``: the other members of the product's
+        joint-solve group are predicted from their joint spectra (subtracted, never
+        masked), every other source from its pass 1.
     For tests: ``exps`` (preloaded exposures, modified in place), ``pass1_for``
     (sid -> ``Pass1``), ``maps`` and ``prism`` (a ``PrismShape``) replace what is
     otherwise read from the workspace."""
+    import copy
     from campfire_pipeline.nirspec import profile_fit as PF
     from campfire_pipeline.nirspec import profile_chain as PC
     from campfire_pipeline.nirspec import profile_contam as CT
+    from campfire_pipeline.nirspec import profile_joint as PJ
     from campfire_pipeline.nirspec import nod_scan as NS
 
     log = log or (lambda *a: None)
     fl = stage_flags(stage_config)
+    js = PJ.joint_settings(stage_config)
     cfg = PC.ChainConfig.from_stage_config(stage_config)
     if exps is None:
         exps = PF.load_source(groups, bkg_overrides=overrides, science=set(science))
-    P, clean, cstate = None, None, 'off'
+    P, clean, cstate, exps0 = None, None, 'off', None
     if fl['contam'] and cfg.shape != 'free':
         maps = CT.maps_for_exposures(workspace_dir, exps) if maps is None else maps
         if not maps:
@@ -100,12 +107,19 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
                     name = names.get(int(sid))
                     path = CT.pass1_path(workspace_dir, name) if name else None
                     return CT.Pass1.read(path) if path and os.path.exists(path) else None
+            one_pass = pass1_for
+            if joint is not None:
+                def pass1_for(sid):
+                    return joint.pass1_of[int(sid)] if int(sid) in joint.pass1_of else one_pass(sid)
             st = CT.pass1_settings(stage_config)
             gap_cols = (st['smooth_prism'] if is_prism else st['smooth_grating']) if fl['gap_fill'] else 0
-            P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=pass1_for(source_id),
+            P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=one_pass(source_id),
                            pair_ratio=fl['pair_ratio'], failed_open=fl['failed_open'], beyond=fl['beyond'],
-                           echo=fl['echo'], gap_columns=gap_cols, gap_kappa=fl['kappa'])
+                           echo=fl['echo'], gap_columns=gap_cols, gap_kappa=fl['kappa'],
+                           keep_sources=js['enabled'] or joint is not None)
             saved = [(e.ok, e.diff) for e in exps]
+            if js['enabled'] or joint is not None:
+                exps0 = [copy.copy(e) for e in exps]          # the data before any handling (pair metrics)
             clean = CT.apply(exps, P, mode=fl['contam_mode'], kappa=fl['kappa'], dominance_kappa=fl['dominance_kappa'])
             cstate = fl['contam_mode'] if P.have_maps else f"{fl['contam_mode']}_partial_maps"
             npix = sum(int(m.sum()) for _, m in PF.fit_pixel_masks(exps))
@@ -119,7 +133,13 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
         prism = CT.read_prism_shape(workspace_dir, prism_product)
     ratio = (lambda R: CT.contam_light_ratio(P, R, exps)) if P is not None and clean is not None else None
     C = PC.choose_shape(exps, cfg, is_prism, prism=prism, clean=clean, log=log, contam_ratio=ratio)
+    pairs = None
     if P is not None:
+        if exps0 is not None:
+            try:
+                pairs = PJ.pair_metrics(exps0, C.result, P)
+            except Exception as e:                     # noqa: BLE001 - group selection only
+                log(f'pair metrics failed ({type(e).__name__}: {e})')
         CT.pair_flag(P, C.result, exps, min_frac=fl['pair_min_frac'])
     S = None
     if fl['scan']:
@@ -138,7 +158,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
             S.suppress('target width on its bound')
         if not is_prism and prism_product and fl['scan_xdisp_tol'] >= 0:
             S.cross_check(read_scan(workspace_dir, prism_product), tol=fl['scan_xdisp_tol'])
-    return Analysis(exps=exps, chain=C, prediction=P, clean=clean, contam_state=cstate, scan=S)
+    return Analysis(exps=exps, chain=C, prediction=P, clean=clean, contam_state=cstate, scan=S, pairs=pairs)
 
 
 def read_scan(workspace_dir, product):
@@ -160,12 +180,15 @@ def read_scan(workspace_dir, product):
 
 
 def run_product(product_name, workspace_dir, groups, overrides, science, source_id, stage_config,
-                is_prism, prism_product='', pass1_products=None, cleanup_crfs=True):
+                is_prism, prism_product='', pass1_products=None, cleanup_crfs=True, joint=None):
     """Build ``{product_name}_pf.fits``. Returns a dict summary (for the driver), or
     None when the profile fit could not run. A failure is logged and leaves the
     standard products untouched.
 
-    pass1_products : {source id: pass-1 product name} of the configuration (contamination)."""
+    pass1_products : {source id: pass-1 product name} of the configuration (contamination).
+    joint : ``profile_joint.JointView`` of the product's joint-solve group (the
+        product is redone after the group's joint solve; ``JOINT`` table and
+        ``PFJ*`` cards added)."""
     from astropy.io import fits
     from campfire_pipeline.common.io import log
     from campfire_pipeline.nirspec import profile_fit as PF
@@ -181,7 +204,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             return None
         A = analyse_product(workspace_dir, groups, overrides, science, source_id, stage_config, is_prism,
                             prism_product=prism_product, pass1_products=pass1_products,
-                            log=lambda m: log(f'{product_name}: {m}'))
+                            log=lambda m: log(f'{product_name}: {m}'), joint=joint)
         exps, C, P, clean, cstate, S = A.exps, A.chain, A.prediction, A.clean, A.contam_state, A.scan
         fl = stage_flags(stage_config)
         R = C.result
@@ -251,11 +274,20 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         if S is not None:
             for k, v in S.header_cards().items():
                 hdr[k] = v
+        from campfire_pipeline.nirspec import profile_joint as PJ
+        if joint is not None or PJ.joint_settings(stage_config)['enabled']:
+            hdr['PFJOINT'] = (0, 'Members of the joint-solve group (0: none)')
+        if joint is not None:
+            for k, v in joint.cards(R).items():
+                hdr[k] = v
+            hdus.append(joint.table())
+            log(f"{product_name}: joint solve with {joint.group}, shape {C.shape} after it "
+                f"(centre {hdr.get('PFJDCEN', -999):+.3f}, ln width {hdr.get('PFJDLW', -999):+.3f} vs the solve's)")
         out = fits.HDUList([fits.PrimaryHDU(header=hdr)] + hdus)
         path = os.path.join(workspace_dir, f'{product_name}_pf.fits')
         out.writeto(path, overwrite=True)
         return dict(product=product_name, source_id=int(source_id), shape=C.shape, reason=C.reason,
-                    is_prism=bool(is_prism),
+                    is_prism=bool(is_prism), pairs=A.pairs, joint=(list(joint.group) if joint is not None else None),
                     scan=(None if S is None else dict(detected=S.detected, candidate=S.candidate, delta=S.delta,
                                                       dchi2=S.dchi2, proposals=S.proposals,
                                                       unresolved=S.unresolved, xdisp=S.xdisp)))

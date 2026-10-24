@@ -756,6 +756,10 @@ class Prediction:
     beyond: list = None              # per exposure: pixels of other traces past their nominal range (unmodelled)
     missing_frame: set = field(default_factory=set)     # contaminants with a pass-1 frame missing (masked)
     echoed: set = field(default_factory=set)            # unreliable contaminants with the target's echo removed
+    dpred_joint: list = None         # per exposure: statistical uncertainty of the jointly solved light (report only)
+    pred_joint: list = None          # per exposure: the jointly solved part of ``pred``
+    joint: set = field(default_factory=set)             # contaminants whose light comes from the joint solve
+    excluded: set = field(default_factory=set)          # contaminants left out of pred (modelled elsewhere)
 
 
 def _place_sparse(fr, origin_t, shape_t):
@@ -966,11 +970,20 @@ def unpredictable_gap(gap, covered, add, sig, ncol, kappa=1.0):
 
 
 def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0, failed_open='flag',
-            beyond='mask', echo=True, gap_columns=31, gap_kappa=1.0):
+            beyond='mask', echo=True, gap_columns=31, gap_kappa=1.0, exclude=(), keep_sources=False):
     """Predicted other sources' light in each science nod difference of a target.
 
-    pass1_for : callable sid -> ``Pass1`` or None.
+    pass1_for : callable sid -> ``Pass1`` or None. A ``Pass1`` with ``joint = True``
+        holds a spectrum from the joint solve of an overlap group (``profile_joint``):
+        its light is subtracted and never masked (its statistical uncertainty goes to
+        ``dpred_joint``, for reporting only, without the ``DPRED_FLOOR``).
     own_pass1 : the target's own pass 1 (pair candidates; the echo correction).
+    exclude : contaminants whose light is modelled elsewhere (the other members of
+        the target's joint-solve group, while their light is being solved for): their
+        pixels that no spectrum can predict are still unmodelled (past their range,
+        gaps), but their light is not added.
+    keep_sources : keep every contaminant's predicted light per exposure in
+        ``by_source`` (default: only the pair candidates').
     echo : an unreliable contaminant solved over the target's pixels is predicted from
         its spectrum with the target's own light taken out (``echo_corrected``).
     gap_columns, gap_kappa : mapped pixels of a bright contaminant that its pass-1
@@ -984,8 +997,12 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
     n = len(exps)
     pred = [np.zeros(e.y.shape) for e in exps]
     dpred = [np.zeros(e.y.shape) for e in exps]
+    dpred_j = [np.zeros(e.y.shape) for e in exps]
+    pred_j = [np.zeros(e.y.shape) for e in exps]
     pred_u = [np.zeros(e.y.shape) for e in exps]
     unmod = [u.copy() for u in geo.unmodelled]
+    exclude = {int(x) for x in exclude}
+    joint = set()
     c_plan = PF.planned_position(exps)[0]
     cals = {}
 
@@ -1022,7 +1039,7 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
             bp = geo.beyond_sources[k].get(csid, none)
             if csid not in cache:
                 P1 = pass1_for(csid)
-                if (echo and own_ok and P1 is not None and not P1.reliable
+                if (echo and own_ok and P1 is not None and not P1.reliable and int(csid) not in exclude
                         and hasattr(P1, 'has_design') and P1.has_design()):
                     ks = [q for q in range(n) if exps[q].use_data and exps[q].partners is not None
                           and (csid in geo.sources[q] or csid in geo.beyond_sources[q])]
@@ -1091,7 +1108,17 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
                     unmod[k] |= gap
             if not px.any():
                 continue
-            if not P1.reliable:
+            if int(csid) in exclude:       # modelled elsewhere (joint solve): bookkeeping only
+                continue
+            if getattr(P1, 'joint', False):
+                pred_j[k] += add           # jointly solved: subtracted, never masked
+                dpred_j[k] += dadd
+                joint.add(csid)
+                with np.errstate(invalid='ignore', divide='ignore'):
+                    s = np.abs(add) / sig
+                v = float(np.nanmax(np.where(ms, s, np.nan))) if ms.any() else 0.0
+                contrib[csid] = max(contrib.get(csid, 0.0), v if np.isfinite(v) else 0.0)
+            elif not P1.reliable:
                 pred_u[k] += add           # an upper bound, for masking only
             else:
                 pred[k] += add
@@ -1104,10 +1131,12 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
             by_source[csid][k] = add if by_source[csid][k] is None else by_source[csid][k] + add
     for k in range(n):
         dpred[k] = np.maximum(dpred[k], DPRED_FLOOR * np.abs(pred[k]))
+        pred[k] = pred[k] + pred_j[k]
     out = Prediction(pred=pred, dpred=dpred, unmodelled=unmod, contributors=contrib, missing=missing,
                      unreliable=unreliable, pred_unreliable=pred_u, have_maps=geo.have_maps,
                      by_source=by_source, failed_open=geo.failed_open, beyond=geo.beyond,
-                     missing_frame=missing_frame, echoed=echoed)
+                     missing_frame=missing_frame, echoed=echoed, dpred_joint=dpred_j, joint=joint,
+                     excluded=exclude, pred_joint=pred_j)
     # similar-brightness pair candidates: a contaminant above the noise on the target's
     # main shutter whose pass-1 flux is within a factor pair_ratio of the target's. The
     # flag itself (``pair_flag``) also needs the contaminant's light to matter in the
@@ -1129,9 +1158,10 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
         out.pair_candidates.sort(key=lambda t: abs(np.log(t[1])))
         if out.pair_candidates:                      # provisional (ratio only) until pair_flag runs
             out.pair, out.pair_id, out.pair_ratio = 1, out.pair_candidates[0][0], out.pair_candidates[0][1]
-    for csid in list(by_source):                     # keep per-source light only where the pair flag needs it
-        if csid not in {c for c, _ in out.pair_candidates}:
-            del by_source[csid]
+    if not keep_sources:
+        for csid in list(by_source):                 # keep per-source light only where the pair flag needs it
+            if csid not in {c for c, _ in out.pair_candidates}:
+                del by_source[csid]
     return out
 
 
@@ -1222,13 +1252,16 @@ def apply(exps, P, mode='hybrid', kappa=1.0, dominance_kappa=1.0):
         b = int((e.ok & ms).sum())
         sig = diff_sigma(exps, k)
         drop = P.unmodelled[k].copy()
+        # jointly solved light (``profile_joint``) is subtracted in both modes, never masked
+        pj = P.pred_joint[k] if getattr(P, 'pred_joint', None) is not None else 0.0
         with np.errstate(invalid='ignore'):
             tot = np.abs(P.pred[k] + (P.pred_unreliable[k] if P.pred_unreliable is not None else 0.0))
             dirty = P.unmodelled[k] | (tot > dominance_kappa * sig)
             if P.pred_unreliable is not None:
                 drop |= np.abs(P.pred_unreliable[k]) > kappa * sig
             if mode == 'mask':
-                drop |= np.abs(P.pred[k]) > kappa * sig
+                e.diff = np.where(np.isfinite(pj), e.diff - pj, e.diff)
+                drop |= np.abs(P.pred[k] - pj) > kappa * sig
             else:
                 e.diff = np.where(np.isfinite(P.pred[k]), e.diff - P.pred[k], e.diff)
                 drop |= P.dpred[k] > kappa * sig
@@ -1252,14 +1285,21 @@ def apply(exps, P, mode='hybrid', kappa=1.0, dominance_kappa=1.0):
 def live_frames(exps, P, what='pred'):
     """Predicted light per science exposure in the live canonical units (path loss
     re-applied) on its cutout, keyed by file name, for drizzling (``CONTAM2D``).
-    ``what = 'dpred'``: its uncertainty (``CONTERR2D``)."""
+    ``what = 'dpred'``: its uncertainty (``CONTERR2D``; for jointly solved light only
+    the systematic part: its statistical uncertainty is in the joint solve's error
+    inflation, ``profile_joint``)."""
     out = {}
     for k, e in enumerate(exps):
         if not e.use_data or e.partners is None:
             continue
         r0, c0, ny, nx = e.cutout
+        v = P.pred[k]
+        if what == 'dpred':
+            v = P.dpred[k]
+            if getattr(P, 'pred_joint', None) is not None:
+                v = v + DPRED_FLOOR * np.abs(P.pred_joint[k])
         with np.errstate(invalid='ignore', divide='ignore'):
-            a = (P.dpred[k] if what == 'dpred' else P.pred[k]) / e.pl_applied
+            a = v / e.pl_applied
         out[e.name] = np.nan_to_num(a[r0:r0 + ny, c0:c0 + nx])
     return out
 
