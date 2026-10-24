@@ -222,3 +222,59 @@ def test_profile_fit_columns_joint_error_and_flag(tmp_path):
     assert (flag[wave > 4.05] == PJ.FLAG_DEGENERATE).all()
     assert (flag[wave < 3.15] == PJ.FLAG_SHAPE).all() and not flag[(wave > 3.25) & (wave < 3.95)].any()
     assert 'JOINT' in [h.name for h in out['hdus']]
+
+
+# ---------------------------------------------------------------------------
+# light past a contaminant's cutout (profile_extend)
+# ---------------------------------------------------------------------------
+def test_merge_sparse_extension_replaces_uncalibrated_pixels():
+    from campfire_pipeline.nirspec import profile_extend as PE
+    a = dict(origin=np.array([1, 1]), shape=np.array([2, 4]), idx=np.array([0, 1, 2, 3]),
+             img=np.array([1., 2., 3., 4.]), err=np.ones(4), cal=np.array([1., 1., np.nan, np.nan]))
+    b = dict(origin=np.array([1, 3]), shape=np.array([1, 4]), idx=np.array([0, 1, 2, 3]),
+             img=np.array([30., 40., 50., 60.]), err=np.ones(4), cal=np.ones(4), ext=np.ones(4, bool))
+    m = PE.merge_sparse(a, b)
+    assert tuple(m['origin']) == (1, 1) and tuple(m['shape']) == (1, 6)
+    det = {int(i): (float(v), bool(x)) for i, v, x in zip(m['idx'], m['img'], m['ext'])}
+    # columns 1-2 of a (calibrated) kept; 3-4 (no calibration) replaced by b; b's 5-6 added
+    assert det[0] == (1.0, False) and det[1] == (2.0, False)
+    assert det[2] == (30.0, True) and det[3] == (40.0, True) and det[5] == (60.0, True)
+
+
+def test_extension_pixels_are_predicted_not_masked(monkeypatch):
+    """Pixels where a bright contaminant's trace runs past its nominal range are masked
+    as unmodelled, unless its pass 1 extends there (``ext`` pixels, count-rate units):
+    then its light is predicted, converted with the target's calibration."""
+    t_exps, _ = _source(1, 0.0, 10.0)
+    for e in t_exps:
+        e.var = np.ones(e.y.shape)
+    c_exps, Rc = _source(2, 0.3, 50.0)
+    beyond = np.zeros(t_exps[0].y.shape, bool)
+    beyond[:, 120:] = True
+
+    def geometry(exps, sid, maps, failed_open='flag', beyond_=None, **kw):
+        return CT.Geometry(mask=[np.ones(e.y.shape, bool) for e in exps],
+                           sources=[{2: ~beyond} for e in exps], unmodelled=[np.zeros(e.y.shape, bool) for e in exps],
+                           beyond_sources=[{2: beyond.copy()} for e in exps])
+    monkeypatch.setattr(CT, 'geometry', lambda exps, sid, maps, failed_open='flag', beyond='mask': geometry(exps, sid, maps))
+    monkeypatch.setattr(CT, 'calibration', lambda e, rate_dir: np.full(e.y.shape, 2.0))   # target: 2 per rate unit
+    P1 = _pass1_of(Rc, 2)
+    P1.nosrc = set()
+    for fr in P1.frames.values():                        # in-range frames stop at column 120 ...
+        col = fr['idx'] % NX
+        x = col >= 120
+        fr['ext'] = x                                    # ... past it the light is in count-rate units
+        fr['cal'] = np.where(x, 1.0, 2.0)
+        fr['img'] = np.where(x, fr['img'] / 2.0, fr['img'])
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+    lit = beyond & (np.abs(np.nan_to_num(PF.frame_image(Rc, 0))) > 0)
+    assert not P.unmodelled[0][lit].any()
+    F = [PF.frame_image(Rc, j) for j in range(3)]
+    expect = np.nan_to_num(F[0] - 0.5 * (F[1] + F[2]))
+    np.testing.assert_allclose(P.pred[0][lit], expect[lit], rtol=1e-5, atol=1e-9)
+    for fr in P1.frames.values():                        # without the extension: masked
+        keep = ~fr['ext']
+        for n in ('idx', 'img', 'err', 'cal', 'ext'):
+            fr[n] = fr[n][keep]
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+    assert P.unmodelled[0][lit].all()

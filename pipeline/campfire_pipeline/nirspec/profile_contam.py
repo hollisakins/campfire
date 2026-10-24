@@ -318,7 +318,8 @@ def pass1_settings(stage_config):
                 failed_open=str(g('contam_failed_open', 'flag')).lower(),
                 beyond=str(g('contam_beyond_range', 'mask')).lower(),
                 gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
-                gate_noise=str(g('gate_noise', 'mean_square')).lower())
+                gate_noise=str(g('gate_noise', 'mean_square')).lower(),
+                extend=bool(g('contam_pass1_extend', False)))
 
 
 def _signature(s):
@@ -571,8 +572,20 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
             prof = PF.frame_image(R, j, spectrum=np.ones(R.lam.size))
             fr.update(prof=prof.ravel()[idx].astype(np.float32), plam=e.wav.ravel()[idx].astype(np.float32))
         frames[exposure_key(e.name)] = fr
+    ext = None
+    if st['extend'] and not is_prism and maps:
+        # the light past the cutouts' red end, in count-rate units (``profile_extend``)
+        from campfire_pipeline.nirspec import profile_extend as PE
+        try:
+            ext = PE.solve_extension(R, sid, maps, workspace, n_smooth=n_smooth, keep_lines=st['lines'])
+        except Exception:                        # noqa: BLE001 - no extension; its pixels stay unmodelled
+            ext = None
+        if ext is not None and ext['frames']:
+            frames = PE.merge_frames(frames, ext)
+            nosrc = [k for k in nosrc if k not in ext['frames']]
     P1 = Pass1(sid=int(sid), lam=R.lam, flux=R.flux, flux_err=R.flux_err, frames=frames, reliable=reliable,
                nosrc=set(nosrc))
+    P1.ext = ext
     P1.n_smooth, P1.keep_lines = (n_smooth if src != 'stage3' else 0), bool(st['lines'])
     P1.nband = nband if src == 'solve' else None
     P1.clean = after / before if before else 0.0
@@ -662,6 +675,9 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
                       keys=np.array(sorted(P1.frames)), nosrc=np.array(sorted(P1.nosrc)))
         if getattr(P1, 'nband', None) is not None:
             arrays['nband'] = P1.nband
+        if getattr(P1, 'ext', None) is not None:          # the spectrum past the cutouts, count-rate units
+            arrays.update(ext_lam=P1.ext['lam'], ext_flux=P1.ext['flux'], ext_err=P1.ext['err'],
+                          ext_raw=P1.ext['flux_raw'])
         for key, fr in P1.frames.items():
             for name, v in fr.items():
                 arrays[f'{key}__{name}'] = v
@@ -691,7 +707,7 @@ class Pass1:
         for key in z['keys']:
             key = str(key)
             frames[key] = {n: z[f'{key}__{n}'] for n in ('origin', 'shape', 'idx', 'img', 'err', 'cal')}
-            for n in ('prof', 'plam'):
+            for n in ('prof', 'plam', 'ext'):
                 if f'{key}__{n}' in z:
                     frames[key][n] = z[f'{key}__{n}']
         P = cls(sid=int(z['sid']), lam=z['lam'], flux=z['flux'], flux_err=z['flux_err'], frames=frames,
@@ -707,6 +723,8 @@ class Pass1:
         P.keep_lines = bool(z['keep_lines']) if 'keep_lines' in z else True
         P.round = str(z['round']) if 'round' in z else '1'
         P.nband = z['nband'] if 'nband' in z else None
+        P.ext = (dict(lam=z['ext_lam'], flux=z['ext_flux'], err=z['ext_err'], flux_raw=z['ext_raw'])
+                 if 'ext_lam' in z else None)
         return P
 
     def has_design(self):
@@ -921,8 +939,12 @@ def echo_corrected(P1, exps, ks, own_light, cal_of):
     for key, fr in P1.frames.items():
         lp = fr['plam'].astype(float)
         prof = fr['prof'].astype(float)
-        frames[key] = dict(fr, img=(prof * np.interp(lp, lam, fz, left=0.0, right=0.0)).astype(np.float32),
-                           err=(prof * np.interp(lp, lam, ez, left=0.0, right=0.0)).astype(np.float32))
+        img = prof * np.interp(lp, lam, fz, left=0.0, right=0.0)
+        err = prof * np.interp(lp, lam, ez, left=0.0, right=0.0)
+        if 'ext' in fr:                         # light past the cutout (``profile_extend``): no echo there
+            img = np.where(fr['ext'], fr['img'], img)
+            err = np.where(fr['ext'], fr['err'], err)
+        frames[key] = dict(fr, img=img.astype(np.float32), err=err.astype(np.float32))
     out = copy.copy(P1)
     out.frames, out.flux, out.flux_err, out.echo = frames, fs, es, echo
     return out
@@ -1055,6 +1077,9 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
                 unreliable.add(csid)
             add = np.zeros(e.y.shape)
             dadd = np.zeros(e.y.shape)
+            add_ext = np.zeros(e.y.shape)          # the part of ``add`` past the contaminant's cutout
+            dadd_ext = np.zeros(e.y.shape)
+            reached_ext = np.zeros(e.y.shape, bool)
             covered = np.zeros(e.y.shape, bool)
             nocal = np.zeros(e.y.shape, bool)
             badt = np.zeros(e.y.shape, bool)
@@ -1084,6 +1109,12 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
                 covered[ty[ok], tx[ok]] = True
                 np.add.at(add, (ty[ok][good], tx[ok][good]), w * img[good] * conv[good])
                 np.add.at(dadd, (ty[ok][good], tx[ok][good]), abs(w) * fr['err'][ok][good].astype(float) * conv[good])
+                if 'ext' in fr:
+                    xg = good & np.asarray(fr['ext'], bool)[ok]
+                    reached_ext[ty[ok][xg], tx[ok][xg]] = True
+                    np.add.at(add_ext, (ty[ok][xg], tx[ok][xg]), w * img[xg] * conv[xg])
+                    np.add.at(dadd_ext, (ty[ok][xg], tx[ok][xg]),
+                              abs(w) * fr['err'][ok][xg].astype(float) * conv[xg])
             # pixels whose predicted light is known: the continuity rule extrapolates from these
             # only (a covered pixel without calibration has no light in ``add``; read as zero it
             # would bound everything beyond it: 2976 on 5215 at 4.42-4.48 um, round 5)
@@ -1100,15 +1131,21 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
             if not bright and not px.any():
                 bright = _red_end_detected(P1)
             if bright:
-                unmod[k] |= bp
+                unmod[k] |= bp & ~reached_ext      # past its range: predicted where its pass 1 extends there
                 if P1.nosrc is not None and not any(exposure_key(exps[j].name) in P1.nosrc for j, _ in terms):
                     gap = px & ~covered
                     if gap.any() and gap_columns > 0:
                         gap = unpredictable_gap(gap, reached, add, sig, gap_columns, kappa=gap_kappa)
                     unmod[k] |= gap
-            if not px.any():
+            if not (px.any() or (bp & reached_ext).any()):
                 continue
-            if int(csid) in exclude:       # modelled elsewhere (joint solve): bookkeeping only
+            if int(csid) in exclude:       # modelled elsewhere (joint solve): only its light past its cutout
+                if add_ext.any():          # (not among the joint unknowns) is predicted, from pass 1
+                    if P1.reliable:
+                        pred[k] += add_ext
+                        dpred[k] += dadd_ext
+                    else:
+                        pred_u[k] += add_ext
                 continue
             if getattr(P1, 'joint', False):
                 pred_j[k] += add           # jointly solved: subtracted, never masked

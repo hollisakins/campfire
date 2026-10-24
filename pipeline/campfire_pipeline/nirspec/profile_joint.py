@@ -309,6 +309,16 @@ def setup_member(product, workspace, groups, overrides, science, sid, stage_conf
     m = Member(sid=int(sid), product=product, exps=exps, model=M, p=p, eoff=e, shape_src=src, params=params,
                workspace=workspace)
     m.prediction = P
+    # its light past its cutout (pass 1, ``profile_extend``) is not among the joint unknowns;
+    # it is added to the member's joint frames as pass 1 has it
+    from campfire_pipeline.nirspec import profile_extend as PE
+    own = pass1_for(sid)
+    m.ext_frames = {}
+    if own is not None:
+        for key, fr in own.frames.items():
+            x = PE.ext_part(fr)
+            if x is not None:
+                m.ext_frames[key] = x
     basis_frames(m)
     return m
 
@@ -460,6 +470,10 @@ class JointSolution:
             frames[key] = dict(origin=b['origin'], shape=np.array(prof.shape), idx=idx.astype(np.int64),
                                img=img.ravel()[idx], err=err.ravel()[idx], cal=b['cal'].ravel()[idx],
                                prof=prof.ravel()[idx], plam=plam.ravel()[idx])
+        from campfire_pipeline.nirspec import profile_extend as PE
+        for key, x in (getattr(m, 'ext_frames', None) or {}).items():       # past its cutout: pass 1's
+            frames[key] = PE.merge_sparse(frames[key], x) if key in frames else dict(x)
+            nosrc.discard(key)
         P1 = CT.Pass1(sid=m.sid, lam=lam, flux=self.flux[m.sid], flux_err=self.err[m.sid], frames=frames,
                       reliable=True, nosrc=nosrc)
         P1.joint, P1.why, P1.shape_src, P1.n_smooth = True, 'joint', m.shape_src, 0
