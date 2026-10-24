@@ -1,0 +1,347 @@
+# CAMPFIRE self-hosted stack: trimmed Supabase + the web portal + Caddy.
+#
+# Derived from supabase/supabase docker/docker-compose.yml (+ the Kong override)
+# at 2026-10-24, with the services CAMPFIRE does not use removed: realtime,
+# storage, imgproxy, edge functions, analytics/vector, supavisor. Runbook:
+# ops/README.md. Configuration: ops/.env (copy ops/.env.example).
+#
+# Layout on the VM (CAMPFIRE_DATA_ROOT, default /srv/campfire, the attached
+# volume):
+#   db/data          Postgres cluster
+#   db/config        pgsodium key etc. (the upstream `db-config` named volume)
+#   backups          pg_dump staging (ops/scripts/backup.sh)
+#   auth-templates   GoTrue email templates, served at https://$API_HOST/templates/
+#   certs            Cloudflare origin certificate + key for Caddy
+#
+# Only Caddy (80/443) listens on all interfaces. Postgres, Kong (Studio) and
+# the web server are published on 127.0.0.1 for psql, the SSH-tunnelled
+# dashboard and the host-side cron/health scripts.
+
+name: campfire
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+
+  db:
+    container_name: campfire-db
+    # Hosted project runs 17.6.1.025; stay at or above it so the restored dump
+    # never meets an older server. Upgrades: utils/upgrade-pg17.sh upstream.
+    image: supabase/postgres:17.6.1.136
+    restart: unless-stopped
+    logging: *default-logging
+    # Docker's default /dev/shm is 64 MB; parallel workers under a 6 GB
+    # shared_buffers need far more.
+    shm_size: 1gb
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Sets the service-role passwords from POSTGRES_PASSWORD on first init.
+      - ./volumes/db/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:Z
+      # app.settings.jwt_exp for the database.
+      - ./volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:Z
+      - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/db/data:/var/lib/postgresql/data:Z
+      - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/db/config:/etc/postgresql-custom
+      # Dumps written by backup.sh land here (pg_dump runs inside the container).
+      - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/backups:/backups
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    environment:
+      POSTGRES_HOST: /var/run/postgresql
+      PGPORT: 5432
+      POSTGRES_PORT: 5432
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      JWT_EXP: ${JWT_EXPIRY:-3600}
+    # The image's postgresql.conf already preloads pg_cron, pg_stat_statements,
+    # pgsodium, supautils …; the -c flags below size it for the VM (defaults
+    # assume an m3.medium, 8 vCPU / 30 GB) and keep pg_cron on the catalog
+    # database so the two scheduled jobs (nightly matview refresh, …) run.
+    command:
+      [
+        "postgres",
+        "-c", "config_file=/etc/postgresql/postgresql.conf",
+        "-c", "cron.database_name=${POSTGRES_DB:-postgres}",
+        "-c", "shared_buffers=${PG_SHARED_BUFFERS:-6GB}",
+        "-c", "effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-20GB}",
+        "-c", "work_mem=${PG_WORK_MEM:-32MB}",
+        "-c", "maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-1GB}",
+        "-c", "max_connections=${PG_MAX_CONNECTIONS:-120}",
+        "-c", "log_min_duration_statement=${PG_LOG_MIN_DURATION_MS:-1000}",
+        "-c", "log_min_messages=warning",
+      ]
+
+  # Kong: the Supabase API gateway (apikey → consumer check, Studio basic
+  # auth). Caddy forwards only /auth/v1 and /rest/v1 of the public API host
+  # here; the Studio catch-all is reachable solely via 127.0.0.1:8000.
+  kong:
+    container_name: campfire-kong
+    image: kong/kong:3.9.3
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      auth:
+        condition: service_healthy
+      rest:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${KONG_HTTP_PORT:-8000}:8000"
+    volumes:
+      - ./volumes/api/kong.yml:/home/kong/temp.yml:ro,z
+      - ./volumes/api/kong-entrypoint.sh:/home/kong/kong-entrypoint.sh:ro,z
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /usr/local/kong/kong.yml
+      KONG_ROUTER_FLAVOR: expressions
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_DNS_NOT_FOUND_TTL: 1
+      KONG_DNS_VALID_TTL: 5
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,request-termination,ip-restriction,post-function
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+      KONG_PROXY_ACCESS_LOG: /dev/stdout combined
+      # Caddy terminates TLS; Kong must trust its X-Forwarded-* headers.
+      KONG_TRUSTED_IPS: 0.0.0.0/0,::/0
+      KONG_REAL_IP_HEADER: X-Forwarded-For
+      KONG_REAL_IP_RECURSIVE: "on"
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      # Opaque sb_* keys are not used (legacy HS256 keys carried over from the
+      # hosted project); leaving these empty keeps the entrypoint on the
+      # pass-through branch.
+      SUPABASE_PUBLISHABLE_KEY: ""
+      SUPABASE_SECRET_KEY: ""
+      ANON_KEY_ASYMMETRIC: ""
+      SERVICE_ROLE_KEY_ASYMMETRIC: ""
+      DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+    entrypoint: ["/bin/sh", "/home/kong/kong-entrypoint.sh"]
+
+  auth:
+    container_name: campfire-auth
+    # Must be >= the hosted project's GoTrue at cutover so its auth-schema
+    # migrations only ever run forward (ops/README.md, cutover checklist).
+    image: supabase/gotrue:v2.197.0
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      timeout: 5s
+      interval: 5s
+      retries: 3
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-postgres}
+
+      GOTRUE_SITE_URL: ${SITE_URL}
+      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS}
+      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP:-false}
+
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: ${JWT_EXPIRY:-3600}
+      # Legacy symmetric HS256 key: the hosted project's secret, so existing
+      # anon/service keys, browser sessions and CLI refresh tokens stay valid.
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+      GOTRUE_JWT_ISSUER: ${API_EXTERNAL_URL}
+
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP:-true}
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+      GOTRUE_SMS_AUTOCONFIRM: "false"
+      GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM:-false}
+      # supabase/config.toml [auth] / [auth.email] parity
+      GOTRUE_MAILER_SECURE_EMAIL_CHANGE_ENABLED: "true"      # double_confirm_changes
+      GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION: "false"  # secure_password_change
+      GOTRUE_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED: "true"
+      GOTRUE_SECURITY_REFRESH_TOKEN_REUSE_INTERVAL: "10"
+      GOTRUE_PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH:-6}
+      GOTRUE_MAILER_OTP_LENGTH: "6"
+      GOTRUE_MAILER_OTP_EXP: "3600"
+      GOTRUE_SMTP_MAX_FREQUENCY: ${SMTP_MAX_FREQUENCY:-1s}
+      # [auth.rate_limit] (per hour unless noted; see .env.example)
+      GOTRUE_RATE_LIMIT_EMAIL_SENT: ${RATE_LIMIT_EMAIL_SENT:-30}
+      GOTRUE_RATE_LIMIT_SMS_SENT: ${RATE_LIMIT_SMS_SENT:-30}
+      GOTRUE_RATE_LIMIT_ANONYMOUS_USERS: ${RATE_LIMIT_ANONYMOUS_USERS:-30}
+      GOTRUE_RATE_LIMIT_TOKEN_REFRESH: ${RATE_LIMIT_TOKEN_REFRESH:-150}
+      GOTRUE_RATE_LIMIT_OTP: ${RATE_LIMIT_SIGN_IN_SIGN_UPS:-30}
+      GOTRUE_RATE_LIMIT_VERIFY: ${RATE_LIMIT_TOKEN_VERIFICATIONS:-30}
+
+      # Resend SMTP
+      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
+      GOTRUE_SMTP_HOST: ${SMTP_HOST:-smtp.resend.com}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT:-465}
+      GOTRUE_SMTP_USER: ${SMTP_USER:-resend}
+      GOTRUE_SMTP_PASS: ${SMTP_PASS}
+      GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-CAMPFIRE}
+      GOTRUE_MAILER_URLPATHS_INVITE: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_CONFIRMATION: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_RECOVERY: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: /auth/v1/verify
+      # Email templates exported from the hosted dashboard, served by Caddy
+      # from $CAMPFIRE_DATA_ROOT/auth-templates. Unset → GoTrue defaults.
+      GOTRUE_MAILER_TEMPLATES_INVITE: ${MAILER_TEMPLATES_INVITE:-}
+      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: ${MAILER_TEMPLATES_CONFIRMATION:-}
+      GOTRUE_MAILER_TEMPLATES_RECOVERY: ${MAILER_TEMPLATES_RECOVERY:-}
+      GOTRUE_MAILER_TEMPLATES_MAGIC_LINK: ${MAILER_TEMPLATES_MAGIC_LINK:-}
+      GOTRUE_MAILER_TEMPLATES_EMAIL_CHANGE: ${MAILER_TEMPLATES_EMAIL_CHANGE:-}
+      GOTRUE_MAILER_SUBJECTS_INVITE: ${MAILER_SUBJECTS_INVITE:-You have been invited}
+      GOTRUE_MAILER_SUBJECTS_CONFIRMATION: ${MAILER_SUBJECTS_CONFIRMATION:-Confirm your signup}
+      GOTRUE_MAILER_SUBJECTS_RECOVERY: ${MAILER_SUBJECTS_RECOVERY:-Reset your password}
+      GOTRUE_MAILER_SUBJECTS_MAGIC_LINK: ${MAILER_SUBJECTS_MAGIC_LINK:-Your magic link}
+      GOTRUE_MAILER_SUBJECTS_EMAIL_CHANGE: ${MAILER_SUBJECTS_EMAIL_CHANGE:-Confirm email change}
+
+  rest:
+    container_name: campfire-rest
+    image: postgrest/postgrest:v14.18
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "postgrest", "--ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-postgres}
+      PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS:-public,graphql_public}
+      # Copy the hosted value (Dashboard → Settings → API → Max rows) before
+      # cutover; a lower value silently truncates every list response.
+      PGRST_DB_MAX_ROWS: ${PGRST_DB_MAX_ROWS:-1000}
+      PGRST_DB_EXTRA_SEARCH_PATH: ${PGRST_DB_EXTRA_SEARCH_PATH:-public,extensions}
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_DB_POOL: ${PGRST_DB_POOL:-20}
+      PGRST_ADMIN_SERVER_PORT: 3001
+      PGRST_ADMIN_SERVER_HOST: localhost
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY:-3600}
+    command: ["postgrest"]
+
+  meta:
+    container_name: campfire-meta
+    image: supabase/postgres-meta:v0.100.0
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: db
+      PG_META_DB_PORT: 5432
+      PG_META_DB_NAME: ${POSTGRES_DB:-postgres}
+      PG_META_DB_USER: postgres
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      CRYPTO_KEY: ${PG_META_CRYPTO_KEY}
+
+  # Studio is reached through Kong's catch-all (basic auth) on 127.0.0.1:8000
+  # only: `ssh -L 8000:127.0.0.1:8000 <vm>` then http://localhost:8000.
+  studio:
+    container_name: campfire-studio
+    image: supabase/studio:2026.10.12-sha-3699278
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      meta:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://localhost:3000/api/platform/profile').then((r) => {if (r.status !== 200) throw new Error(r.status)})\""
+        ]
+      timeout: 10s
+      interval: 30s
+      retries: 3
+      start_period: 20s
+    environment:
+      HOSTNAME: "0.0.0.0"
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER_READ_WRITE: postgres
+      PG_META_CRYPTO_KEY: ${PG_META_CRYPTO_KEY}
+      PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS:-public,graphql_public}
+      PGRST_DB_MAX_ROWS: ${PGRST_DB_MAX_ROWS:-1000}
+      PGRST_DB_EXTRA_SEARCH_PATH: ${PGRST_DB_EXTRA_SEARCH_PATH:-public,extensions}
+      DEFAULT_ORGANIZATION_NAME: CAMPFIRE
+      DEFAULT_PROJECT_NAME: campfire
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      AUTH_JWT_SECRET: ${JWT_SECRET}
+      ENABLED_FEATURES_LOGS_ALL: "false"
+
+  web:
+    container_name: campfire-web
+    # Built by web/Dockerfile and pushed to GHCR by the deploy workflow (step 5).
+    # deploy.sh overrides WEB_TAG per release and persists it to .env.
+    image: ${WEB_IMAGE:-ghcr.io/hollisakins/campfire-web}:${WEB_TAG:-main}
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      kong:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    env_file:
+      # Server-only secrets (service role key, JWT secrets, S3/OSN, Resend, …).
+      # NEXT_PUBLIC_* values are baked into the image and ignored here.
+      - ./web.env
+
+  caddy:
+    container_name: campfire-caddy
+    image: caddy:2.10
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      web:
+        condition: service_started
+      kong:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      WEB_HOST: ${WEB_HOST}
+      API_HOST: ${API_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/certs:/certs:ro
+      - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/auth-templates:/srv/auth-templates:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,10 @@
+[Unit]
+Description=CAMPFIRE nightly database backup (03:30 UTC, before the 04:30 matview refresh)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

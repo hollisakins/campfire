@@ -1,0 +1,12 @@
+[Unit]
+Description=CAMPFIRE nightly database backup to OSN
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/campfire/repo/ops
+ExecStart=/srv/campfire/repo/ops/scripts/backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

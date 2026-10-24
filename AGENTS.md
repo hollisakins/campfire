@@ -219,6 +219,7 @@ cd web && npm run typecheck && npm test && npm run build && cd ..
 - **Storage**: Cloudflare R2 for FITS files
 - **Auth**: Supabase Auth with email/password
 - **CI/CD**: Supabase GitHub integration (branching + migration checks) + Vercel (preview deploys)
+- **Self-hosting (in progress)**: `ops/README.md` is the runbook for the Jetstream2 VM that will take over hosting and the database (trimmed Supabase compose + `web/Dockerfile` + Caddy, migration order, cutover checklist). Vercel and hosted Supabase stay live until that runbook's Phase 1 / Phase 2 cutovers happen.
 
 ### Storage plane (push / pull / verify)
 

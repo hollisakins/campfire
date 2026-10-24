@@ -1,0 +1,7 @@
+# Real configuration lives on the VM only.
+.env
+web.env
+*.env.local
+certs/
+volumes/db/data/
+volumes/db/config/

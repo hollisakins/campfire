@@ -1,6 +1,10 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
+  // Self-contained server bundle for the Docker image (web/Dockerfile,
+  // ops/README.md). Vercel ignores this setting and keeps building its own
+  // output, so it is safe while both deployments are live.
+  output: 'standalone',
   // Ensure the Updates markdown is bundled into the serverless functions for
   // these routes, which render dynamically once a gated update is published.
   outputFileTracingIncludes: {
