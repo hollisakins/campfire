@@ -896,10 +896,13 @@ def shape_dict(p, c_prior):
     return d
 
 
-TWO_GAUSS_STARTS = ((0.3, 3.0), (0.15, 1.8))     # (h, second width / core width) to start from
+# (h, second width / core width) to start from. One start at tol 1e-5 gives the same decisions as the offline
+# study's two starts at 1e-6 on all 79 p14 PRISM own fits within 0.3x of the threshold or above (reported flux
+# within 0.2 %), at 40 % of the cost (2.1 vs 5.3 s per fit).
+TWO_GAUSS_STARTS = ((0.3, 3.0),)
 
 
-def fit_two(R0, h_max=0.95, sigma_max=0.6, sigma_min=0.03, starts=TWO_GAUSS_STARTS, tol=1e-6):
+def fit_two(R0, h_max=0.95, sigma_max=0.6, sigma_min=0.03, starts=TWO_GAUSS_STARTS, tol=1e-5):
     """The two-Gaussian galaxy fitted on top of a finished single-Gaussian fit R0.
 
     The galaxy becomes (1 - h) G(sigma) + h G(r sigma) with one centre: h is constant
