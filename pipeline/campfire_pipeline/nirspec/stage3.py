@@ -954,6 +954,49 @@ def _contam_1d(C2D, E2D, U2D, Pm, weight_rows, V, flux, flux_err, unmod_max):
                 unmodf=unmodf)
 
 
+def _joint_inflation(JT, wave):
+    """The joint solve's error inflation (joint over isolated error) and most negative
+    correlation, from the JOINT table, at the 1-D wavelengths (NaN outside)."""
+    jl = JT['lam']
+    jok = np.isfinite(jl) & np.isfinite(JT['err']) & np.isfinite(JT['err_iso']) & (JT['err_iso'] > 0)
+    if jok.sum() <= 1:
+        return np.full(wave.shape, np.nan), np.full(wave.shape, np.nan)
+    o = np.argsort(jl[jok])
+    infl = np.interp(wave, jl[jok][o], (JT['err'][jok] / JT['err_iso'][jok])[o], left=np.nan, right=np.nan)
+    jc = np.isfinite(JT['corr']) & jok
+    oc = np.argsort(jl[jc])
+    jcorr = np.interp(wave, jl[jc][oc], JT['corr'][jc][oc], left=np.nan, right=np.nan) \
+        if jc.sum() > 1 else np.full(wave.shape, np.nan)
+    return infl, jcorr
+
+
+def _joint_stat(infl, flux_err):
+    """The statistical cost of the joint split, added to the joint result's other-light error."""
+    if infl is None:
+        return 0.0 * flux_err
+    with np.errstate(invalid='ignore'):
+        return np.where(np.isfinite(infl), flux_err * np.sqrt(np.clip(infl ** 2 - 1.0, 0.0, None)), 0.0)
+
+
+def _joint_noise_ratio(joint_set, onepass_set, infl, Pm, weight_rows, V, flux, flux_err, unmod_max, contam_1d,
+                       min_sigma):
+    """Integrated noise of the joint fnu_pf over the one-pass one (same columns): each as
+    fnu_pf would be with it (other light subtracted above ``min_sigma``, its systematic
+    error, and for the joint one the split's statistical cost, added)."""
+    def err_of(s, joint):
+        c = _contam_1d(s[0], s[1], s[2], Pm, weight_rows, V, flux, flux_err, unmod_max)
+        ce = np.where(np.isfinite(c['cerr']), c['cerr'], 0.0)
+        if joint:
+            ce = np.sqrt(ce ** 2 + _joint_stat(infl, flux_err) ** 2)
+        sub = contam_1d == 'subtract' and c['csig'] > min_sigma
+        return np.sqrt(flux_err ** 2 + ce ** 2) if sub else flux_err
+    eJ, eO = err_of(joint_set, True), err_of(onepass_set, False)
+    ok = np.isfinite(eJ) & np.isfinite(eO) & (eJ > 0) & (eO > 0)
+    if ok.sum() < 10:
+        return np.nan
+    return float(np.sqrt(np.sum(1 / eO[ok] ** 2) / np.sum(1 / eJ[ok] ** 2)))
+
+
 def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, rows='aperture',
                          model_rows_frac=0.02, contam_1d='subtract', contam_1d_min_sigma=3.0, unmod_max=0.05):
     """Extraction of the s2d with the profile-fit 2D profile.
@@ -1036,6 +1079,27 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         if key.startswith('PF'):
             keep[key] = (header[key], header.comments[key])
     keep['PFROWS'] = (rows, 'Rows of fnu_pf: aperture / model')
+    if (joint_use is not None and str(header.get('PFJGATE', '')).lower() == 'noise' and C2D is not None
+            and ALT.get('CONTAM2D') is not None and ALT['CONTAM2D'].shape == P.shape == C2D.shape):
+        # the noise gate (``profile_joint``): decided here, on the two extracted results
+        sets = {joint_use: (C2D, E2D, U2D), (not joint_use): (ALT['CONTAM2D'], ALT.get('CONTERR2D'),
+                                                              ALT.get('UNMOD2D'))}
+        infl = _joint_inflation(JT, wave)[0] if JT is not None else None
+        ratio = _joint_noise_ratio(sets[True], sets[False], infl, Pm, weight_rows, s2d_err ** 2, flux, flux_err,
+                                   unmod_max, contam_1d, contam_1d_min_sigma)
+        gmax = float(header.get('PFJGMAX', np.inf))
+        use = bool(np.isfinite(ratio) and ratio <= gmax)
+        why = (f'noise<={gmax:g}' if use else (f'noise>{gmax:g}' if np.isfinite(ratio) else 'noise_undefined'))
+        keep['PFJUSE'] = (use, header.comments['PFJUSE'] if 'PFJUSE' in header else 'fnu_pf is the joint result')
+        keep['PFJGVAL'] = (float(ratio) if np.isfinite(ratio) else -999.0,
+                           'Integrated noise of the joint fnu_pf / the one-pass one')
+        keep['PFJWHY'] = (why, 'Why the joint result is (not) delivered')
+        if use != joint_use:
+            (C2D, E2D, U2D) = sets[use]
+            c, e, u = sets[not use]
+            joint_use = use
+            alt_sfx = '_1P' if use else '_J'
+            ALT = {n: a for n, a in (('CONTAM2D', c), ('CONTERR2D', e), ('UNMOD2D', u)) if a is not None}
     hdus = []
     prof = fits.ImageHDU(P, name='PROF2D')
     prof.header['BUNIT'] = ('MJy / uJy', 'SCI per unit reported flux; not normalised per column')
@@ -1061,17 +1125,9 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
                 # covariance over the isolated one, added to the systematic part (CONTERR2D)
                 jl = JT['lam']
                 jok = np.isfinite(jl) & np.isfinite(JT['err']) & np.isfinite(JT['err_iso']) & (JT['err_iso'] > 0)
-                if jok.sum() > 1:
-                    o = np.argsort(jl[jok])
-                    infl = np.interp(wave, jl[jok][o], (JT['err'][jok] / JT['err_iso'][jok])[o],
-                                     left=np.nan, right=np.nan)
-                    jc = np.isfinite(JT['corr']) & jok
-                    oc = np.argsort(jl[jc])
-                    jcorr = np.interp(wave, jl[jc][oc], JT['corr'][jc][oc], left=np.nan, right=np.nan) \
-                        if jc.sum() > 1 else np.full(wave.shape, np.nan)
-                else:
-                    infl, jcorr = np.full(wave.shape, np.nan), np.full(wave.shape, np.nan)
-                jstat = np.where(np.isfinite(infl), flux_err * np.sqrt(np.clip(infl ** 2 - 1.0, 0.0, None)), 0.0)
+                o = np.argsort(jl[jok])
+                infl, jcorr = _joint_inflation(JT, wave)
+                jstat = _joint_stat(infl, flux_err)
                 # the inflation belongs to the joint result only: to fnu_pf when it is the
                 # joint one (PFJUSE true, or a product written before the gate), else to the
                 # undelivered joint alternative

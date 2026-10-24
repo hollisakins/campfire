@@ -398,6 +398,46 @@ def test_deliver_keeps_both_results(tmp_path, use):
     assert v.use and hdr_out['PFJUSE'] and hdr_out['PFJWHY'] == 'no_onepass_product'
 
 
+@pytest.mark.parametrize('joint_err,expect', [(0.0, True), (5.0, False)])
+def test_noise_gate_at_extraction(tmp_path, joint_err, expect):
+    """The 'noise' gate: the joint result is delivered when its integrated noise is at
+    most PFJGMAX times the one-pass result's; else fnu_pf is the one-pass result and the
+    joint other light moves to *_J."""
+    ny, nx = 30, 100
+    rows = np.arange(ny)[:, None]
+    prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
+    prof = prof / prof[:, :1].sum()
+    sci = 10.0 * prof
+    wave = np.linspace(3, 5, nx)
+    lam = np.linspace(2.9, 5.1, 300)
+    jt = fits.BinTableHDU.from_columns([
+        fits.Column(name='lam', format='D', array=lam), fits.Column(name='flux', format='D', array=np.ones(300)),
+        fits.Column(name='err', format='D', array=np.ones(300)), fits.Column(name='err_iso', format='D', array=np.ones(300)),
+        fits.Column(name='corr', format='D', array=np.full(300, -0.2)),
+        fits.Column(name='corr_sid', format='K', array=np.ones(300, int)),
+        fits.Column(name='flag', format='I', array=np.zeros(300, int))], name='JOINT')
+    h0 = fits.PrimaryHDU()
+    for k, v in (('PFJDEGT', 0.9), ('PFJUSE', True), ('PFJGATE', 'noise'), ('PFJGMAX', 1.75), ('PFJWHY', 'x')):
+        h0.header[k] = v
+    path = tmp_path / 'x_pf.fits'
+    fits.HDUList([h0, fits.ImageHDU(prof / 1e12, name='PROF2D'), fits.ImageHDU(1.0 * prof / 1e12, name='CONTAM2D'),
+                  fits.ImageHDU(joint_err * prof / 1e12, name='CONTERR2D'),
+                  fits.ImageHDU(3.0 * prof / 1e12, name='CONTAM2D_1P'),
+                  fits.ImageHDU(0.0 * prof, name='CONTERR2D_1P'), jt]).writeto(path)
+    err = np.full((ny, nx), 0.01)
+    out = S3._profile_fit_columns(str(path), sci, err, np.zeros((ny, nx), bool), 12, 18, wave,
+                                  rows='aperture', contam_1d='subtract', contam_1d_min_sigma=3.0)
+    c, hd = out['columns'], out['header']
+    raw = c['fnu_pf_raw'][0]
+    assert bool(hd['PFJUSE']) is expect and hd['PFJWHY'] == ('noise<=1.75' if expect else 'noise>1.75')
+    assert (hd['PFJGVAL'] <= 1.75) is expect
+    np.testing.assert_allclose(c['fnu_pf'][0], raw - (1.0 if expect else 3.0), rtol=1e-6)
+    np.testing.assert_allclose(c['fnu_pf_joint'][0], raw - 1.0, rtol=1e-6)
+    np.testing.assert_allclose(c['fnu_pf_onepass'][0], raw - 3.0, rtol=1e-6)
+    names = [x.name for x in out['hdus']]
+    assert ('CONTAM2D_1P' in names) is expect and ('CONTAM2D_J' in names) is (not expect)
+
+
 @pytest.mark.parametrize('use', [True, False])
 def test_profile_fit_columns_extract_both_results(tmp_path, use):
     """Stage 3 extracts the delivered result as fnu_pf and both as fnu_pf_joint /

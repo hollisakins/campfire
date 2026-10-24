@@ -69,8 +69,8 @@ def joint_settings(sc):
                 clip=float(g('contam_joint_clip', 5.0)),
                 refit=bool(g('contam_joint_refit', False)),
                 sens=(float(g('contam_joint_sens_centre', 0.02)), float(g('contam_joint_sens_log_width', 0.1))),
-                gate=str(g('contam_joint_gate', 'sensf')).lower(),
-                gate_max=float(g('contam_joint_gate_max', 0.3)))
+                gate=str(g('contam_joint_gate', 'noise')).lower(),
+                gate_max=float(g('contam_joint_gate_max', 2.0)))
 
 
 # ---------------------------------------------------------------------------
@@ -717,8 +717,14 @@ class JointView:
         if self.gate == 'off':
             self.use, self.gate_value, self.gate_why = True, np.nan, 'gate_off'
             return self.use
+        if self.gate == 'noise':
+            # decided at the extraction (stage3._profile_fit_columns), where both results'
+            # 1-D noise is known: the joint result is written as the primary one meanwhile
+            self.use, self.gate_value, self.gate_why = True, np.nan, 'noise_at_extraction'
+            return self.use
         if self.gate not in GATE_QUANTITIES:
-            raise ValueError(f'contam_joint_gate must be off or one of {sorted(GATE_QUANTITIES)}, got {gate!r}')
+            raise ValueError(f"contam_joint_gate must be off, noise or one of {sorted(GATE_QUANTITIES)}, "
+                             f"got {gate!r}")
         v = self.quantities()[self.gate]
         self.gate_value = float(v)
         if not np.isfinite(v):
@@ -831,7 +837,10 @@ def views(members, sols, degenerate=0.9, nwin=31, refit=False):
 FLAG_DEGENERATE = 1     # the split of the shared light is not determined by the data (correlation)
 FLAG_SHAPE = 2          # the split depends on the others' shapes more than the noise allows
 
-# per-product gate quantities (``JointView.quantities``):
+# per-product gate quantities. 'noise' (the default, ``contam_joint_gate``): the integrated
+# noise of the receiver's joint fnu_pf over its one-pass fnu_pf, decided at the extraction
+# (``stage3._joint_noise_ratio``) where both are known. The others (``JointView.quantities``),
+# decided here, were the candidates checked against PRISM (round 6):
 #   sensf  how far the product's integrated flux moves for a typical shape error of the
 #          other members, over that flux (PFJSENSF)
 #   sens   the same move in units of the integrated noise (PFJSENS)
