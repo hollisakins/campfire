@@ -164,7 +164,7 @@
                                              # (vs PRISM: helps above 3, neutral at 1-3; round 3)
     contam_unmod_max = 0.05                  # columns with more extraction weight on unpredicted other light are
                                              # flagged (pf_unmod) and left out of fnu_pf_contam / PFCONTAM
-    contam_pass1_extend = false              # gratings: pass 1 also fits each source's light past its cutout's
+    contam_pass1_extend = true               # gratings: pass 1 also fits each source's light past its cutout's
                                              # red end (count rate, no calibration; profile_extend), so it is
                                              # predicted on other traces instead of masked
     # Joint solve of strongly coupled overlap groups (prototype, profile_joint; off by default)

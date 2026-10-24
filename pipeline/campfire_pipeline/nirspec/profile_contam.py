@@ -319,7 +319,7 @@ def pass1_settings(stage_config):
                 beyond=str(g('contam_beyond_range', 'mask')).lower(),
                 gate_prism=float(g('gate_snr_prism', 50.0)), gate_grating=float(g('gate_snr_grating', 70.0)),
                 gate_noise=str(g('gate_noise', 'mean_square')).lower(),
-                extend=bool(g('contam_pass1_extend', False)))
+                extend=bool(g('contam_pass1_extend', True)))
 
 
 def _signature(s):
