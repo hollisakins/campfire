@@ -231,6 +231,36 @@ def test_transferred_halo_fits_a_grating_better_than_dropping_it():
     assert np.all(PF.main_shutter_factor(carry, lam) < PF.main_shutter_factor(drop, lam))
 
 
+def test_neighbour_scan_runs_on_a_two_gaussian_fit():
+    """Regression (round-7 run): the scan's nuisance shifts were four-entry vectors and failed on a
+    six-entry two-Gaussian shape."""
+    from campfire_pipeline.nirspec import nod_scan as NS
+    exps = T._exposures(src_y=0.05)
+    _fill(exps, CORE_HALO, 60.0, seed=2)
+    R0 = PF.fit(exps)
+    R2 = PF.fit_two(R0)
+    assert 'halo' in R2.params
+    S = NS.run(R2, nbins=8)
+    assert not S.error
+
+
+def test_joint_shape_sensitivity_with_a_two_gaussian_member(monkeypatch):
+    """Regression (round-7 run): the joint solve's shape-sensitivity shifts were four-entry vectors."""
+    from campfire_pipeline.nirspec import profile_contam as CT
+    import test_nirspec_profile_joint as TJ
+    monkeypatch.setattr(CT, 'calibration', lambda e, rate_dir: np.ones(e.y.shape))
+    e1, R1, e2, R2 = TJ._pair(scale1=50.0, scale2=5.0, noise=0.05)
+    m1, m2 = TJ._member(1, e1, -0.15), TJ._member(2, e2, 0.2)
+    m1.p = np.concatenate([m1.p, [0.3, 3.0]])
+    m1.params = dict(m1.params, halo=0.3, halo_ratio=3.0)
+    PJ.basis_frames(m1)
+    PJ.owned_pixels([m1, m2])
+    S = PJ.solve([m1, m2], sens=(0.02, 0.1))
+    assert np.isfinite(S.sens[2]).any()
+    R = PJ.fixed_result(m1.model, m1.p, m1.eoff)
+    assert R.params['halo'] == 0.3
+
+
 def test_pass1_settings_signature_only_when_on():
     from campfire_pipeline.nirspec import profile_contam as CT
     assert 'two_gauss' not in CT.pass1_settings({})

@@ -180,7 +180,7 @@ def scan(R, nbins=16, width=None, step=0.05, refine=True, info=None):
     fb = np.nan_to_num(f)[:, None] * Bm
     nuis = []
     for i, h in ((0, 0.02), (2, 0.1)):
-        dp = np.zeros(4)
+        dp = np.zeros(p.size)          # a two-Gaussian shape has six entries (h, r held)
         dp[i] = h
         Ap, Am = M.design(p + dp, eoff), M.design(p - dp, eoff)
         nuis.append(np.asarray((Ap - Am) @ fb) / (2 * h))

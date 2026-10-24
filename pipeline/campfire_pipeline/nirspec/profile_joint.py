@@ -537,7 +537,9 @@ def _shape_sensitivity(members, sens, use, dz, vz, gi, blocks, f, smooth, target
     w = np.where(use, 1.0 / vz, 0.0)
     for ci, c in enumerate(members):
         p0, b0 = c.p.copy(), c.basis
-        for dp in (np.array([sens[0], 0, 0, 0]), np.array([0, 0, sens[1], 0])):
+        for i, d in ((0, sens[0]), (2, sens[1])):         # centre, ln width (a two-Gaussian h, r held)
+            dp = np.zeros(p0.size)
+            dp[i] = d
             try:
                 c.p = p0 + dp
                 basis_frames(c)
