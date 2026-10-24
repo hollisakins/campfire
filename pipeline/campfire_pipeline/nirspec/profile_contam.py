@@ -310,16 +310,6 @@ def pass1_settings(stage_config):
     ref = str(g('contam_pass1_guard_ref', 'max')).lower()
     if ref not in GUARD_REFS:
         raise ValueError(f'contam_pass1_guard_ref must be one of {GUARD_REFS}, got {ref!r}')
-    out = _pass1_core_settings(g, sm_p, sm_g, ref)
-    if bool(g('profile_fit_two_gauss', False)):
-        # own-fit pass 1s may take the two-Gaussian galaxy: part of the cache identity (only when on, so
-        # the caches of runs without it stay valid)
-        out['two_gauss'] = (f"{float(g('two_gauss_dchi2', 25.0))},{float(g('two_gauss_dchi2_k', 2.0))},"
-                            f"{float(g('two_gauss_halo_max', 0.95))},{float(g('two_gauss_sigma_max', 0.6))}")
-    return out
-
-
-def _pass1_core_settings(g, sm_p, sm_g, ref):
     return dict(mode=str(g('contam_pass1', 'fixed')).lower(),
                 smooth_prism=sm_p, smooth_grating=sm_g,
                 lines=bool(g('contam_pass1_lines', True)),
@@ -526,12 +516,6 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
                 shape = dict(centre_offset=Ro.params['centre'] - Ro.params['centre_prior'], drift=Ro.params['drift'],
                              width=Ro.params['width'], width_change=Ro.params['width_change'])
                 shape_src = 'own'
-                if cfg.two_gauss:
-                    # the same two-Gaussian test as the product's own fit (``profile_chain``)
-                    out = cfg.try_two_gauss(Ro)
-                    if out is not None and out[1]:
-                        p2, _ = PF._qvec(out[0])
-                        shape, shape_src = PF.shape_dict(p2, M.c_prior), 'own2'
         except Exception:                        # noqa: BLE001 - default shape then
             pass
     R = PF.fit_fixed(model=M, shape=shape)

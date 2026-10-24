@@ -182,7 +182,8 @@ def _joint_fixed_chain(exps, cfg, joint, C_refit):
     from campfire_pipeline.nirspec import profile_joint as PJ
     M = PF.ProfileModel(exps, chromatic=True, priors=cfg.priors, bounds=cfg.bounds)
     p, e = PJ.shape_at(joint.params_in, joint.eoff_in, M)
-    R = PF.fit_fixed(model=M, shape=PF.shape_dict(p, M.c_prior), eoff=e)
+    R = PF.fit_fixed(model=M, shape=dict(centre_offset=float(p[0] - M.c_prior), drift=float(p[1]),
+                                         width=float(np.exp(p[2])), width_change=float(p[3])), eoff=e)
     C = dataclasses.replace(C_refit, result=R, shape=joint.shape_src or C_refit.shape, chain='joint',
                             reason='joint:solve_shape', bound_bits=0, candidates={'joint': R})
     C.refit = C_refit
