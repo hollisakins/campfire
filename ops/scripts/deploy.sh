@@ -89,9 +89,16 @@ if ! git -C "$REPO_DIR" merge-base --is-ancestor "$SHA" origin/main 2>/dev/null;
 fi
 git -C "$REPO_DIR" checkout -q --detach "$SHA"
 
-log "applying migrations"
-DB_URL="postgresql://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT}/${POSTGRES_DB}"
-( cd "$REPO_DIR" && npx -y "supabase@${SUPABASE_CLI_VERSION}" db push --db-url "$DB_URL" --yes )
+# Phase 1 (web on the hosted Supabase): migrations still land through the
+# Supabase GitHub integration, and the local db may not even be running, so
+# DEPLOY_MIGRATIONS=skip in .env turns this step off. Phase 2 sets it to local.
+if [[ "${DEPLOY_MIGRATIONS:-local}" == "skip" ]]; then
+  log "migrations: skipped (DEPLOY_MIGRATIONS=skip; the hosted project is the database)"
+else
+  log "applying migrations"
+  DB_URL="postgresql://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT}/${POSTGRES_DB}"
+  ( cd "$REPO_DIR" && npx -y "supabase@${SUPABASE_CLI_VERSION}" db push --db-url "$DB_URL" --yes )
+fi
 
 log "pulling web image :${SHA}"
 export WEB_TAG="$SHA"
