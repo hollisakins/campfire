@@ -133,7 +133,9 @@ repo_only=$(grep -cE '^ *`?[0-9]{14}`? *\| *\|' <<<"$ml" || true)
 db_only=$(grep -cE '^ *\| *`?[0-9]{14}' <<<"$ml" || true)
 files=$(ls -1 "$REPO_DIR"/supabase/migrations/*.sql | wc -l | tr -d ' ')
 echo "  applied on both: ${both}  repo-only: ${repo_only}  db-only: ${db_only}  repo files: ${files}"
-[[ "$both" == "$files" && "$repo_only" == 0 ]] || { echo "  FAIL: migration history differs from the repo (supabase migration repair --status applied <version>)"; fail=1; }
+# repo-only: deploy.sh would replay the chain; db-only: the checkout is behind
+# the database (deploying it could reintroduce what a newer migration changed).
+[[ "$both" == "$files" && "$repo_only" == 0 && "$db_only" == 0 ]] || { echo "  FAIL: migration history differs from the repo (repo-only → supabase migration repair --status applied <version>; db-only → check out the commit the hosted project was migrated to)"; fail=1; }
 
 echo "== SQL guards (BEGIN … ROLLBACK; guards that reference seed.sql's DR-seed release fail on production data)"
 # check_dr_freeze.sql freezes the entire catalog inside its transaction: on the
