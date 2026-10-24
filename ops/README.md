@@ -179,6 +179,9 @@ Prepare in the days before:
 - [ ] Hosted Postgres version (17.6.1.025 on 2026-10-24) ≤ the `db` image tag.
 - [ ] Rehearsal (step 4) done on a fresh dump, with timings written here:
       dump ____ min, restore ____ min, verification ____ min.
+      (2026-10-24 rehearsal, 2.2 GB / 183 users / 81,313 spectra: dump 70 s,
+      restore 2 min, verification 1 min; `scripts/restore-hosted.sh` ended with
+      the fingerprint identical to the hosted project.)
 - [ ] Updates page notice with the window; `dr status` shows no freeze and no deploy lease.
 
 The window (target under 1 h):
@@ -208,35 +211,61 @@ The window (target under 1 h):
    ('authenticator','supabase_auth_admin')` is 0 and stays 0 for a minute.
    Reverts with `alter role authenticator login; alter role supabase_auth_admin
    login;` (sessions reconnect on the next request).
-2. **Dump** with the CLI against the hosted connection string:
+2. **Dump** on the VM (the dump dir is under the mounted `backups/` volume):
    ```bash
-   supabase db dump --db-url "$OLD" -f roles.sql --role-only
-   supabase db dump --db-url "$OLD" -f schema.sql
-   supabase db dump --db-url "$OLD" -f data.sql --data-only --use-copy
-   pg_dump "$OLD" --schema=supabase_migrations --no-owner -f migrations_history.sql
+   ops/scripts/dump-hosted.sh "$OLD" /srv/campfire/backups/cutover-$(date +%F)
    ```
-   The CLI dump **excludes the `auth` schema DDL** (its rows are in `data.sql`)
-   and **excludes `supabase_migrations` entirely**; the fourth command is
-   therefore unconditional. `roles.sql` carries the
+   `$OLD` is the hosted connection string **through the IPv4 session pooler**
+   (`aws-1-<region>.pooler.supabase.com:5432`, user `postgres.<ref>`); the
+   direct `db.<ref>.supabase.co` host is IPv6-only and the VM has no IPv6.
+   The script runs the CLI dumps (`roles.sql`, `schema.sql`, `data.sql` as COPY)
+   plus `pg_dump --schema=supabase_migrations` (the CLI dump **excludes the
+   `auth` schema DDL** — its rows are in `data.sql` — and **excludes
+   `supabase_migrations` entirely**), writes `cron_jobs.sql` (the pg_cron jobs
+   are not dumped), `reference.txt` (row counts) and `fingerprint-hosted.txt`
+   (`ops/sql/fingerprint.sql`: grants, RLS, policies, triggers, indexes,
+   extensions, default privileges). It warns if `roles.sql` lacks the
    `ALTER ROLE authenticator SET pgrst.db_pre_request` setting the release
-   header hook depends on; check it is there.
-3. **Restore** into the VM, in this order:
+   header hook depends on.
+3. **Restore** into a **freshly initialised** cluster (see "First boot": the
+   init must have completed; the script refuses a database that already has
+   tables in `public`):
    ```bash
-   docker compose up -d db auth          # GoTrue creates/migrates the auth schema itself
-   docker compose logs auth | grep -i migrat   # wait until its migrations finish
-   psql "$NEW" -f roles.sql
-   psql "$NEW" -f schema.sql
-   psql "$NEW" -f migrations_history.sql
-   psql "$NEW" -v ON_ERROR_STOP=1 -c 'set session_replication_role = replica' -f data.sql
+   docker compose up -d db
+   ops/scripts/restore-hosted.sh /srv/campfire/backups/cutover-<date>
    ```
-   The `auth` container goes first because `schema.sql` has no `auth.*` tables:
-   loading `data.sql` before GoTrue has created them fails. Then
-   `supabase migration list --db-url "$NEW"` must list every file in
-   `supabase/migrations/` as applied; otherwise `deploy.sh` replays the whole
-   chain (`supabase migration repair --status applied <version>` fixes a gap).
-4. **Verify**: `select count(*)` on `spectra`, `objects`, `storage_objects`,
-   `auth.users` against the old numbers; `supabase/tests/check_*.sql` guards;
-   `select jobname from cron.job` shows the two jobs.
+   What it does, and the traps each step exists for (all hit in the 2026-10-24
+   rehearsal):
+   - starts `auth` first and waits for GoTrue, which creates and migrates the
+     `auth` schema itself (`schema.sql` has no `auth.*` DDL; loading `data.sql`
+     before GoTrue is done fails on a missing column);
+   - **clears the image's default privileges for `postgres` in `public`** before
+     loading the schema. pg_dump writes ACLs relative to the built-in defaults,
+     but the supabase/postgres image pre-sets `ALTER DEFAULT PRIVILEGES … GRANT
+     ALL … TO anon, authenticated, service_role`, so a plain restore handed
+     `anon` every table (490 grants; `share_links.link_password` readable by
+     `authenticated`). The dump re-creates the hosted default privileges at its
+     end, so the result is exact;
+   - loads `roles.sql`, `schema.sql`, `migrations_history.sql`, then `data.sql`
+     with triggers off (`session_replication_role = replica`) and the empty
+     `storage.*` blocks removed (no Storage service, the tables do not exist;
+     with them in, `ON_ERROR_STOP` aborts before the sequence resets at the end
+     of the file);
+   - `REFRESH`es the three materialized views (restored `WITH NO DATA`; the
+     nightly `refresh_all_matviews()` uses `CONCURRENTLY`, which needs a
+     populated view), re-creates the pg_cron jobs from `cron_jobs.sql`, `ANALYZE`.
+4. **Verify** (the same script continues; `--verify` re-runs this part alone):
+   row counts vs `reference.txt`; `supabase migration list` must show every
+   file in `supabase/migrations/` applied and nothing db-only (otherwise
+   `deploy.sh` replays the chain; `supabase migration repair --status applied
+   <version>` fixes a gap); the `supabase/tests/check_*.sql` guards — the six
+   that reference the seed's `DR-seed` release fail on production data and are
+   counted separately, `check_dr_freeze.sql` is skipped (it freezes the whole
+   catalog inside its transaction: instant on the seed, 40 min on 81k spectra),
+   every other guard must pass; the fingerprint must be
+   **identical** to `fingerprint-hosted.txt`. The script exits non-zero on any
+   failure. Spot checks by hand: `select jobname from cron.job` (two jobs),
+   `select matviewname, ispopulated from pg_matviews` (all true).
 5. **Bring up the stack**, rebuild the web image with
    `NEXT_PUBLIC_SUPABASE_URL=https://campfire-api.hollisakins.com` and the same
    anon key, `deploy.sh <sha>`. Update `web.env`: `SUPABASE_SERVICE_ROLE_KEY`,
@@ -314,3 +343,4 @@ host. Variable names only, never values.
 - 2026-10-24 — `.env`: `WEB_HOST`/`API_HOST`/`SITE_URL`/`API_EXTERNAL_URL`/`SUPABASE_PUBLIC_URL` → first-level hostnames; `WEB_TAG` = deployed sha; `DEPLOY_MIGRATIONS=skip` (Phase 1). `web.env` created from the Vercel production env + local creds; `WORKER_JWT_SECRET`/`CDN_FRONT_URL` left unset until the Phase 1 rotation.
 - 2026-10-24 — `docker-compose.yml`: `db/config` bind mount → `db-config` named volume (first `db` start failed: empty mount hid the image's include files).
 - 2026-10-24 — `volumes/db/roles.sql` guarded (init aborted on the absent `supabase_functions_admin`; cluster re-initialised twice during the rehearsal, `db/data.broken-init-*` kept aside on the volume until the rehearsal passes).
+- 2026-10-24 — restore rehearsal passed (third attempt): `scripts/dump-hosted.sh` + `scripts/restore-hosted.sh` + `sql/fingerprint.sql` replace the hand-run dump/restore commands in the cutover checklist. Found and fixed on the way: the image's default privileges leaking `anon` grants into the restore, the `storage.*` data blocks aborting the load before the sequence resets, matviews restored unpopulated, pg_cron jobs not dumped. The VM's `campfire-db` now holds a verified copy of the hosted database as of 2026-10-24 18:17 UTC (not live; Phase 2 redoes the restore from a fresh dump). The five `db/data.broken-init-*` directories (failed inits and the superseded rehearsal clusters, ~8 GB) can be deleted.
