@@ -460,3 +460,24 @@ def test_gap_masked_only_where_unpredictable(stand_ins):
     assert not P.unmodelled[0][gap].any()
     P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.', gap_columns=0)
     assert P.unmodelled[0][gap].all()
+
+
+def test_contaminant_pixels_without_calibration_bounded_by_continuity(stand_ins):
+    """8427 / 6723 on 5301: the contaminant's first pass-1 samples above its filter's
+    cut-on sit on pixels with no flat (its calibration NaN): judged by continuity like
+    the unreached pixels; a target pixel without calibration stays unmodelled."""
+    t_exps, _ = _source(1, 0.0, 10.0)
+    for e in t_exps:
+        e.var = np.ones(e.y.shape)
+        e.var[:, 30:70] = 1e8
+    c_exps, Rc = _source(2, 0.3, 50.0)
+    P1 = _pass1_of(Rc, 2)
+    for fr in P1.frames.values():
+        col = fr['idx'] % NX
+        fr['cal'] = np.where((col >= 48) & (col < 51), np.nan, fr['cal'])
+    blk = np.zeros(t_exps[0].y.shape, bool)
+    blk[:, 48:51] = True
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+    assert not P.unmodelled[0][blk].any()
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.', gap_columns=0)
+    assert P.unmodelled[0][blk & (np.abs(PF.frame_image(Rc, 0)) > 0)].all()

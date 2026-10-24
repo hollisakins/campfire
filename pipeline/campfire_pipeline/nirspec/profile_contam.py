@@ -1035,6 +1035,7 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
             add = np.zeros(e.y.shape)
             dadd = np.zeros(e.y.shape)
             covered = np.zeros(e.y.shape, bool)
+            nocal = np.zeros(e.y.shape, bool)
             for j, w in terms:
                 key = exposure_key(exps[j].name)
                 fr = P1.frames.get(key)
@@ -1050,10 +1051,18 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
                 good = np.isfinite(conv)
                 img = fr['img'][ok].astype(float)
                 bad = ~good & (np.abs(img) > 0)
+                if gap_columns > 0:
+                    # the contaminant's own pixel has no calibration (no flat at its filter's
+                    # cut-on): bounded by continuity below; the target's has none: unmodelled
+                    own = bad & np.isfinite(ct)
+                    nocal[ty[ok][own], tx[ok][own]] = True
+                    bad &= ~own
                 unmod[k][ty[ok][bad], tx[ok][bad]] = True
                 covered[ty[ok], tx[ok]] = True
                 np.add.at(add, (ty[ok][good], tx[ok][good]), w * img[good] * conv[good])
                 np.add.at(dadd, (ty[ok][good], tx[ok][good]), abs(w) * fr['err'][ok][good].astype(float) * conv[good])
+            if nocal.any():
+                unmod[k] |= unpredictable_gap(nocal, covered & ~nocal, add, sig, gap_columns, kappa=gap_kappa)
             # pixels with the contaminant's light but no prediction: past its nominal range, and
             # mapped pixels its pass-1 frames do not reach (its cutout or its spectrum ends short
             # of the range). Unmodelled when the contaminant is bright enough to matter: its
