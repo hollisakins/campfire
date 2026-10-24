@@ -297,3 +297,131 @@ def test_joint_product_keeps_the_solve_shape():
     assert C.shape == 'prism' and C.chain == 'joint' and C.refit is C0
     assert C.result.params['centre'] == pytest.approx(-0.1, abs=1e-9)
     assert C.result.params['width'] == pytest.approx(0.12, rel=1e-9)
+
+
+def test_step_timing_accumulates_and_reports():
+    from campfire_pipeline.nirspec import profile_timing as TM
+    TM.reset()
+    for _ in range(2):
+        with TM.step('a'):
+            sum(range(10000))
+    m = TM.start()
+    TM.stop('b', m)
+    s = TM.snapshot()
+    assert s['a'][2] == 2 and s['b'][2] == 1 and s['a'][0] >= 0
+    lines = []
+    TM.report('product x', log=lines.append)
+    assert lines[0].startswith('TIMING product x a=') and ' b=' in lines[0] and TM.snapshot() == {}
+    with TM.phase('p', log=lines.append):
+        pass
+    assert lines[1].startswith('TIMING-PHASE p wall=') and 'cpu=' in lines[1]
+
+
+# ---------------------------------------------------------------------------
+# the per-product gate
+# ---------------------------------------------------------------------------
+def test_gate_keeps_the_bright_member_and_rejects_the_faint_one(unit_cal):
+    """A faint member inside a bright one's profile moves by a large fraction of its own
+    flux for a small error of the bright one's shape (``sensf``): the gate gives it its
+    one-pass result; the bright member keeps its joint one. 'off' delivers every joint
+    result."""
+    e1, R1, e2, R2 = _pair(scale1=100.0, scale2=2.0, c1=0.0, c2=0.12, noise=0.05)
+    m1, m2 = _member(1, e1, 0.0), _member(2, e2, 0.12)
+    sols = PJ.solve_group([m1, m2], sens=(0.02, 0.1))
+    V = PJ.views([m1, m2], sols)
+    q1, q2 = V[1].quantities(), V[2].quantities()
+    assert q1['sensf'] < 0.01 < 0.1 < q2['sensf']
+    assert V[1].decide('sensf', 0.05) and not V[2].decide('sensf', 0.05)
+    assert V[2].gate_why == 'sensf>0.05' and V[2].gate_value == pytest.approx(q2['sensf'])
+    c = V[2].cards()
+    assert c['PFJUSE'][0] is False and c['PFJGATE'][0] == 'sensf' and c['PFJGMAX'][0] == 0.05
+    assert V[2].decide('off') and V[2].gate_why == 'gate_off'
+    with pytest.raises(ValueError, match='contam_joint_gate'):
+        V[2].decide('nonsense', 1.0)
+    V[2].solution.sens[2] = np.full(V[2].solution.lam[2].size, np.nan)    # not computed: fails the gate
+    assert not V[2].decide('sensf', 0.05) and V[2].gate_why == 'sensf_undefined'
+
+
+def _pf_hdus(level):
+    ny, nx = 6, 8
+    return [fits.ImageHDU(np.ones((ny, nx)), name='PROF2D'),
+            fits.ImageHDU(np.full((ny, nx), float(level)), name='CONTAM2D'),
+            fits.ImageHDU(np.full((ny, nx), 0.1 * level), name='CONTERR2D'),
+            fits.ImageHDU(np.zeros((ny, nx)), name='UNMOD2D')]
+
+
+def _joint_view_stub(use):
+    return PJ.JointView(sid=1, group=[1, 2], solution=None, pass1_of={}, use=use, gate='sensf', gate_max=0.3,
+                        gate_value=0.1 if use else 0.9, gate_why='x')
+
+
+@pytest.mark.parametrize('use', [True, False])
+def test_deliver_keeps_both_results(tmp_path, use):
+    """The receiver's product after the gate: the delivered result's other light is
+    CONTAM2D (the one stage 3 subtracts); the other result's is kept beside it (*_1P or
+    *_J), with the JOINT table and the PFJ cards either way."""
+    path = tmp_path / 'p_1_pf.fits'
+    h0 = fits.PrimaryHDU()
+    h0.header['PFSHAPE'] = 'own'
+    fits.HDUList([h0] + _pf_hdus(1.0)).writeto(path)                  # the one-pass product
+    hdr = fits.Header()
+    hdr['PFSHAPE'] = 'own'
+    hdr['PFJOINT'] = (2, 'members')
+    hdr['PFJUSE'] = (use, 'delivered')
+    hdr['PFJWHY'] = ('x', 'why')
+    jt = fits.BinTableHDU.from_columns([fits.Column(name='lam', format='D', array=np.arange(3.0))], name='JOINT')
+    hdr_out, hdus = PJ.deliver(str(path), hdr, _pf_hdus(2.0) + [jt], _joint_view_stub(use))
+    names = [h.name for h in hdus]
+    by = {h.name: h for h in hdus}
+    assert 'JOINT' in names and hdr_out['PFJOINT'] == 2 and hdr_out['PFJUSE'] == use
+    if use:
+        assert by['CONTAM2D'].data[0, 0] == 2.0 and by['CONTAM2D_1P'].data[0, 0] == 1.0
+        assert 'UNMOD2D_1P' in names and 'CONTAM2D_J' not in names
+    else:
+        assert by['CONTAM2D'].data[0, 0] == 1.0 and by['CONTAM2D_J'].data[0, 0] == 2.0
+        assert by['CONTERR2D_J'].data[0, 0] == pytest.approx(0.2) and 'CONTAM2D_1P' not in names
+    # no one-pass product: the joint result is delivered whatever the gate said
+    v = _joint_view_stub(False)
+    hdr_out, hdus = PJ.deliver(str(tmp_path / 'missing_pf.fits'), hdr.copy(), _pf_hdus(2.0), v)
+    assert v.use and hdr_out['PFJUSE'] and hdr_out['PFJWHY'] == 'no_onepass_product'
+
+
+@pytest.mark.parametrize('use', [True, False])
+def test_profile_fit_columns_extract_both_results(tmp_path, use):
+    """Stage 3 extracts the delivered result as fnu_pf and both as fnu_pf_joint /
+    fnu_pf_onepass; the joint error inflation goes only with the joint result."""
+    ny, nx = 30, 100
+    rows = np.arange(ny)[:, None]
+    prof = np.exp(-0.5 * ((rows - 15) / 1.2) ** 2) * np.ones((1, nx))
+    prof = prof / prof[:, :1].sum()
+    sci = 10.0 * prof
+    wave = np.linspace(3, 5, nx)
+    lam = np.linspace(2.9, 5.1, 300)
+    jt = fits.BinTableHDU.from_columns([
+        fits.Column(name='lam', format='D', array=lam), fits.Column(name='flux', format='D', array=np.ones(300)),
+        fits.Column(name='err', format='D', array=np.full(300, 2.0)),
+        fits.Column(name='err_iso', format='D', array=np.ones(300)),
+        fits.Column(name='corr', format='D', array=np.full(300, -0.2)),
+        fits.Column(name='corr_sid', format='K', array=np.ones(300, int)),
+        fits.Column(name='flag', format='I', array=np.zeros(300, int))], name='JOINT')
+    one, joint = 3.0 * prof / 1e12, 1.0 * prof / 1e12                    # other light, MJy
+    deliv, other, sfx = (joint, one, '_1P') if use else (one, joint, '_J')
+    h0 = fits.PrimaryHDU()
+    h0.header['PFJDEGT'] = 0.9
+    h0.header['PFJUSE'] = use
+    path = tmp_path / 'x_pf.fits'
+    fits.HDUList([h0, fits.ImageHDU(prof / 1e12, name='PROF2D'), fits.ImageHDU(deliv, name='CONTAM2D'),
+                  fits.ImageHDU(0.0 * prof, name='CONTERR2D'), fits.ImageHDU(other, name='CONTAM2D' + sfx),
+                  fits.ImageHDU(0.0 * prof, name='CONTERR2D' + sfx), jt]).writeto(path)
+    err = np.full((ny, nx), 0.01)
+    out = S3._profile_fit_columns(str(path), sci, err, np.zeros((ny, nx), bool), 12, 18, wave,
+                                  rows='aperture', contam_1d='subtract', contam_1d_min_sigma=3.0)
+    c = out['columns']
+    raw, raw_err = c['fnu_pf_raw'][0], c['fnu_pf_raw_err'][0]
+    np.testing.assert_allclose(c['fnu_pf_joint'][0], raw - 1.0, rtol=1e-6)
+    np.testing.assert_allclose(c['fnu_pf_onepass'][0], raw - 3.0, rtol=1e-6)
+    np.testing.assert_allclose(c['fnu_pf'][0], raw - (1.0 if use else 3.0), rtol=1e-6)
+    np.testing.assert_allclose(c['fnu_pf_joint_err'][0], 2.0 * raw_err, rtol=1e-6)        # inflation 2
+    np.testing.assert_allclose(c['fnu_pf_onepass_err'][0], raw_err, rtol=1e-6)
+    np.testing.assert_allclose(c['fnu_pf_err'][0], (2.0 if use else 1.0) * raw_err, rtol=1e-6)
+    assert 'CONTAM2D' + sfx in [h.name for h in out['hdus']] and 'pf_joint_infl' in c

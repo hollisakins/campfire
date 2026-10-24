@@ -68,7 +68,9 @@ def joint_settings(sc):
                 degenerate=float(g('contam_joint_degenerate', 0.9)),
                 clip=float(g('contam_joint_clip', 5.0)),
                 refit=bool(g('contam_joint_refit', False)),
-                sens=(float(g('contam_joint_sens_centre', 0.02)), float(g('contam_joint_sens_log_width', 0.1))))
+                sens=(float(g('contam_joint_sens_centre', 0.02)), float(g('contam_joint_sens_log_width', 0.1))),
+                gate=str(g('contam_joint_gate', 'sensf')).lower(),
+                gate_max=float(g('contam_joint_gate_max', 0.3)))
 
 
 # ---------------------------------------------------------------------------
@@ -564,8 +566,11 @@ def solve(members, clip=5.0, n_clip=2, smooth=0.0, target=None, sens=(0.02, 0.1)
     Pixels deviating by more than ``clip`` sigma are dropped and the solve repeated,
     ``n_clip`` times (outlier rejection only; the model is linear and solved once)."""
     import time
+    from campfire_pipeline.nirspec import profile_timing as TM
     t0 = time.time()
-    A, d, v = design(members)
+    with TM.step('joint_design'):
+        A, d, v = design(members)
+    t_mark = TM.start()
     n = A.shape[1]
     blocks = np.concatenate([np.full(m.model.lam_grid.size, i) for i, m in enumerate(members)])
     use = np.isfinite(d) & np.isfinite(v) & (v > 0)
@@ -607,6 +612,8 @@ def solve(members, clip=5.0, n_clip=2, smooth=0.0, target=None, sens=(0.02, 0.1)
             break
         use = new
     chi2 = float(np.sum(r[use] ** 2))
+    TM.stop('joint_lsq', t_mark)
+    t_mark = TM.start()
     dg, cmin, cblk = _inverse_pieces(lu, gi.size, blocks[gi])
     err_all = np.full(n, np.nan)
     err_all[gi] = np.sqrt(np.abs(dg))
@@ -623,10 +630,12 @@ def solve(members, clip=5.0, n_clip=2, smooth=0.0, target=None, sens=(0.02, 0.1)
         Nb = N[sel][:, sel] + sp.identity(sel.size, format='csc') * 1e-9 * np.median(diag[good])
         db, _, _ = _inverse_pieces(splu(Nb.tocsc()), sel.size, np.zeros(sel.size, int), want_corr=False)
         iso_all[sel] = np.sqrt(np.abs(db))
+    TM.stop('joint_covariance', t_mark)
     flux_all = np.where(good, f, np.nan)
     sens_all = np.full(n, np.nan)
     if sens is not None and len(members) > 1:
-        sens_all = _shape_sensitivity(members, sens, use, dz, vz, gi, blocks, f, smooth, target)
+        with TM.step('joint_sensitivity'):
+            sens_all = _shape_sensitivity(members, sens, use, dz, vz, gi, blocks, f, smooth, target)
     sol = JointSolution(members=members, lam={}, flux={}, err={}, err_iso={}, corr={}, corr_sid={},
                         npix=int(use.sum()), nclip=int((~use & np.isfinite(d)).sum()), chi2=chi2, smooth=smooth)
     for i, m in enumerate(members):
@@ -671,6 +680,44 @@ class JointView:
     refit: bool = False           # rerun the shape chain on the jointly subtracted data (else keep the solve's shape)
     degenerate: float = 0.9
     nwin: int = 31
+    use: bool = True              # the gate's decision: deliver the joint result (else the one-pass one)
+    gate: str = 'off'             # the gate quantity (``GATE_QUANTITIES``) or 'off'
+    gate_max: float = np.nan
+    gate_value: float = np.nan
+    gate_why: str = ''
+
+    def quantities(self):
+        """The candidate gate quantities of this member's joint result (``GATE_QUANTITIES``)."""
+        s = self.solution
+        corr, err, flux = s.corr[self.sid], s.err[self.sid], s.flux[self.sid]
+        infl = s.inflation(self.sid)
+        fin = np.isfinite(corr)
+        sens, sensf = _integrated(s.sens.get(self.sid), err, flux)
+        return dict(sensf=abs(sensf) if np.isfinite(sensf) else np.nan,
+                    sens=abs(sens) if np.isfinite(sens) else np.nan,
+                    fshape=float(np.mean((self.flags() & FLAG_SHAPE) > 0)) if flux.size else np.nan,
+                    cdeg=float(np.mean(corr[fin] < -self.degenerate)) if fin.any() else np.nan,
+                    infl=float(np.nanmedian(infl)) if np.isfinite(infl).any() else np.nan)
+
+    def decide(self, gate='off', gate_max=np.nan):
+        """The per-product gate: deliver the joint result when its gate quantity is at
+        most ``gate_max``; otherwise the one-pass result (``use`` False). An
+        undefined quantity (no shape sensitivity computed, no flux) fails the gate."""
+        self.gate, self.gate_max = str(gate).lower(), float(gate_max)
+        if self.gate == 'off':
+            self.use, self.gate_value, self.gate_why = True, np.nan, 'gate_off'
+            return self.use
+        if self.gate not in GATE_QUANTITIES:
+            raise ValueError(f'contam_joint_gate must be off or one of {sorted(GATE_QUANTITIES)}, got {gate!r}')
+        v = self.quantities()[self.gate]
+        self.gate_value = float(v)
+        if not np.isfinite(v):
+            self.use, self.gate_why = False, f'{self.gate}_undefined'
+        elif v <= self.gate_max:
+            self.use, self.gate_why = True, f'{self.gate}<={self.gate_max:g}'
+        else:
+            self.use, self.gate_why = False, f'{self.gate}>{self.gate_max:g}'
+        return self.use
 
     def flags(self):
         s = self.solution
@@ -720,6 +767,11 @@ class JointView:
                          'Same shift / the integrated flux'),
             'PFJNPIX': (int(s.npix), 'Pixels in the joint solve'),
             'PFJSEC': (_f(s.seconds), 'Joint solve time [s]'),
+            'PFJUSE': (bool(self.use), 'fnu_pf is the joint result (F: the one-pass one)'),
+            'PFJGATE': (self.gate, 'Gate quantity on the joint result (off: none)'),
+            'PFJGVAL': (_f(self.gate_value), 'Its value for this product'),
+            'PFJGMAX': (_f(self.gate_max), 'Joint result delivered when the value <= this'),
+            'PFJWHY': (self.gate_why[:68], 'Why the joint result is (not) delivered'),
         }
         if R is not None and self.params_in is not None:
             p = R.params
@@ -769,6 +821,15 @@ def views(members, sols, degenerate=0.9, nwin=31, refit=False):
 FLAG_DEGENERATE = 1     # the split of the shared light is not determined by the data (correlation)
 FLAG_SHAPE = 2          # the split depends on the others' shapes more than the noise allows
 
+# per-product gate quantities (``JointView.quantities``):
+#   sensf  how far the product's integrated flux moves for a typical shape error of the
+#          other members, over that flux (PFJSENSF)
+#   sens   the same move in units of the integrated noise (PFJSENS)
+#   fshape fraction of spectrum points flagged shape-limited (PFJFSHP)
+#   cdeg   fraction of points whose split is not determined, correlation < -degenerate (PFJCDEG)
+#   infl   median error inflation over the isolated error (PFJINFL)
+GATE_QUANTITIES = ('sensf', 'sens', 'fshape', 'cdeg', 'infl')
+
 
 def joint_flags(corr, err, sens, degenerate=0.9, nwin=31):
     """Per spectrum point: ``FLAG_DEGENERATE`` where the most negative correlation with a
@@ -796,6 +857,7 @@ def run_group(tasks, workspace, stage_config, pass1_products, redo=None, log=Non
     product failed). A failed joint solve leaves the one-pass products as they are."""
     from campfire_pipeline.common.io import log as _log
     from campfire_pipeline.nirspec.profile_product import run_product
+    from campfire_pipeline.nirspec import profile_timing as TM
 
     log = log or _log
     js = joint_settings(stage_config)
@@ -807,22 +869,80 @@ def run_group(tasks, workspace, stage_config, pass1_products, redo=None, log=Non
         return CT.Pass1.read(path) if path and os.path.exists(path) else None
     sids = [int(t[5]) for t in tasks]
     tag = ','.join(str(s) for s in sids)
+    TM.reset()
     try:
-        members = [setup_member(t[0], workspace, t[2], t[3], t[4], int(t[5]), stage_config, sids, pass1_for)
-                   for t in tasks]
-        sols = solve_group(members, clip=js['clip'], smooth=js['smooth'], sens=js['sens'])
+        with TM.step('joint_setup'):
+            members = [setup_member(t[0], workspace, t[2], t[3], t[4], int(t[5]), stage_config, sids, pass1_for)
+                       for t in tasks]
+        with TM.step('joint_solve'):
+            sols = solve_group(members, clip=js['clip'], smooth=js['smooth'], sens=js['sens'])
         s0 = sols[members[0].sid]
         log(f'joint solve {tag}: {s0.npix} pixels, {s0.nclip} clipped, {s0.seconds:.1f} s')
         st = CT.pass1_settings(stage_config)
         nwin = st['smooth_prism'] if tasks[0][7] else st['smooth_grating']
         V = views(members, sols, degenerate=js['degenerate'], nwin=nwin, refit=js['refit'])
+        for sid, v in V.items():
+            if redo is None or sid in redo:
+                v.decide(js['gate'], js['gate_max'])
+                log(f"joint solve {tag}: {sid} gets its {'joint' if v.use else 'one-pass'} result "
+                    f"({v.gate_why}, {v.gate} = {v.gate_value:.3g})")
     except Exception as e:                       # noqa: BLE001 - the one-pass products stand
         import traceback
         log(f'joint solve {tag} failed ({type(e).__name__}: {e}); one-pass products kept')
         log(traceback.format_exc()[-1500:])
+        TM.reset()
         return []
+    TM.report(f'joint_group {tag}', log=log)
     out = []
     for t in tasks:
         if redo is None or int(t[5]) in redo:
             out.append(run_product(*t, joint=V[int(t[5])]))
     return out
+
+
+ALT_EXTENSIONS = ('CONTAM2D', 'CONTERR2D', 'UNMOD2D')
+
+
+def deliver(path, hdr, hdus, view, log=None):
+    """The receiver's ``_pf.fits`` content after the gate (``JointView.decide``).
+
+    hdr, hdus : the product as redone from the joint solve (PFJ* cards, JOINT table).
+    path : the product's one-pass ``_pf.fits``, written before the joint phase.
+    Joint result delivered: the joint product, plus the one-pass other light as
+    ``CONTAM2D_1P`` / ``CONTERR2D_1P`` / ``UNMOD2D_1P``. Otherwise: the one-pass product
+    as it was, plus the PFJ* cards (PFJUSE false and why), the JOINT table and the
+    joint other light as ``*_J``. Either way stage 3 extracts both results
+    (``fnu_pf_joint``, ``fnu_pf_onepass``); ``fnu_pf`` is the delivered one. A missing
+    one-pass product: the joint one is delivered (PFJWHY says so).
+    Returns (header, hdus)."""
+    from astropy.io import fits
+    log = log or (lambda *a: None)
+    if not os.path.exists(path):
+        if not view.use:
+            log(f'{os.path.basename(path)}: no one-pass product to deliver; the joint result is kept')
+            view.use, view.gate_why = True, 'no_onepass_product'
+            hdr['PFJUSE'] = (True, hdr.comments['PFJUSE'])
+            hdr['PFJWHY'] = (view.gate_why, hdr.comments['PFJWHY'])
+        return hdr, hdus
+    with fits.open(path) as h:
+        one_hdr = h[0].header.copy()
+        one = [(x.name, np.array(x.data), x.header.copy()) for x in h[1:] if x.data is not None]
+    by_name = {x.name: x for x in hdus}
+    if view.use:
+        out = list(hdus)
+        for n, data, xh in one:
+            if n in ALT_EXTENSIONS:
+                e = fits.ImageHDU(data, header=xh, name=n + '_1P')
+                out.append(e)
+        return hdr, out
+    for k in hdr:
+        if k.startswith('PFJ'):
+            one_hdr[k] = (hdr[k], hdr.comments[k])
+    out = [fits.ImageHDU(data, header=xh, name=n) for n, data, xh in one if not n.endswith(('_1P', '_J'))
+           and n != 'JOINT']
+    for n in ALT_EXTENSIONS:
+        if n in by_name:
+            out.append(fits.ImageHDU(np.asarray(by_name[n].data), header=by_name[n].header.copy(), name=n + '_J'))
+    if 'JOINT' in by_name:
+        out.append(by_name['JOINT'])
+    return one_hdr, out

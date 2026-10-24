@@ -171,33 +171,38 @@ def run_stage3(obs, stage_config, config, source_ids='all', n_processes=1,
             else:
                 raise ValueError(f"Unknown combine_method '{combine_method}'. Must be '2d' or '1d'.")
 
+    from campfire_pipeline.nirspec import profile_timing as TM
+
     # Phase 1: Spec3Pipeline + optimal extraction
-    dispatch(
-        run_stage3_single_source,
-        tasks,
-        n_processes=n_processes,
-        use_starmap=True,
-        **s3_kwargs,
-    )
+    with TM.phase(f'spec3 {obs.name} ({len(tasks)} products)'):
+        dispatch(
+            run_stage3_single_source,
+            tasks,
+            n_processes=n_processes,
+            use_starmap=True,
+            **s3_kwargs,
+        )
 
     if pf_tasks:
         log(f"Profile fit: {len(pf_tasks)} products")
-        run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=n_processes, overwrite=overwrite,
-                              cleanup_crfs=cleanup_crfs)
+        with TM.phase(f'profile_fit {obs.name} (all)'):
+            run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=n_processes, overwrite=overwrite,
+                                  cleanup_crfs=cleanup_crfs)
 
     optext_tasks = [(task[2], task[1]) for task in tasks]
-    dispatch(
-        opt_ext_single_source,
-        optext_tasks,
-        n_processes=n_processes,
-        use_starmap=True,
-        plot_profiles=plot_profiles,
-        plot_optext=plot_optext,
-        version=version,
-        profile_fit_rows=str(stage_config.get('profile_fit_rows', 'aperture')).lower(),
-        profile_fit_model_rows_frac=float(stage_config.get('profile_fit_model_rows_frac', 0.02)),
-        profile_fit_contam=contam_1d_settings(stage_config),
-    )
+    with TM.phase(f'extraction {obs.name} ({len(optext_tasks)} products)'):
+        dispatch(
+            opt_ext_single_source,
+            optext_tasks,
+            n_processes=n_processes,
+            use_starmap=True,
+            plot_profiles=plot_profiles,
+            plot_optext=plot_optext,
+            version=version,
+            profile_fit_rows=str(stage_config.get('profile_fit_rows', 'aperture')).lower(),
+            profile_fit_model_rows_frac=float(stage_config.get('profile_fit_model_rows_frac', 0.02)),
+            profile_fit_contam=contam_1d_settings(stage_config),
+        )
 
     # Phase 2: 1D combination (combine_method='1d' only)
     if phase2_tasks:
@@ -424,6 +429,7 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
     from campfire_pipeline.nirspec.profile_product import run_product, stage_flags
 
     from campfire_pipeline.nirspec import profile_joint as PJ
+    from campfire_pipeline.nirspec import profile_timing as TM
 
     fl = stage_flags(stage_config)
     js = PJ.joint_settings(stage_config)
@@ -441,7 +447,8 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
         mt = CT.map_tasks(obs.workspace_dir, list(every['path']), log=log)
         if mt:
             log(f"Profile fit: building {len(mt)} trace maps")
-            dispatch(CT.build_map, mt, n_processes=n_processes, use_starmap=True)
+            with TM.phase(f'trace_maps ({len(mt)})'):
+                dispatch(CT.build_map, mt, n_processes=n_processes, use_starmap=True)
     prism_fg = _prism_fg(all_fg)
     order = sorted(by_fg, key=lambda fg: (0 if fg == prism_fg else 1, fg))
     run_sids = {t['source_id'] for t in pf_tasks}
@@ -461,10 +468,12 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                 p1.append((t['product_name'], obs.workspace_dir, t['groups'], t['overrides'], t['science'],
                            int(sid), is_prism, stage_config, prism_product, bool(overwrite and int(sid) in run_sids)))
             log(f"Profile fit: pass 1 for {len(p1)} {fg} sources")
-            dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True)
+            with TM.phase(f'pass1 {fg} ({len(p1)})'):
+                dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True)
             # second round for the sources whose trace others cover (see profile_contam.run_pass1)
-            dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True,
-                     pass1_products=pass1_products, second=True)
+            with TM.phase(f'pass1b {fg} ({len(p1)})'):
+                dispatch(CT.run_pass1, p1, n_processes=n_processes, use_starmap=True,
+                         pass1_products=pass1_products, second=True)
         joint = contam and js['enabled']
         tasks = []
         for t in by_fg[fg]:
@@ -473,9 +482,12 @@ def run_profile_fit_phase(obs, stage_config, pf_tasks, n_processes=1, overwrite=
                           t['source_id'], stage_config, is_prism, prism_product, pass1_products,
                           cleanup_crfs and not joint))      # the joint solve redoes products: keep their crfs
         log(f"Profile fit: {len(tasks)} {fg} products")
-        res = [r for r in dispatch(run_product, tasks, n_processes=n_processes, use_starmap=True) or [] if r]
+        with TM.phase(f'products {fg} ({len(tasks)})'):
+            res = [r for r in dispatch(run_product, tasks, n_processes=n_processes, use_starmap=True) or [] if r]
         if joint:
-            res = _joint_phase(obs, fg, tasks, res, stage_config, pass1_products, js, n_processes, cleanup_crfs)
+            with TM.phase(f'joint {fg}'):
+                res = _joint_phase(obs, fg, tasks, res, stage_config, pass1_products, js, n_processes,
+                                   cleanup_crfs)
         results += res
     if fl['scan']:
         write_scan_proposals(obs, results, run_sids, str(stage_config.get('scan_action', 'report_only')).lower(),
@@ -905,6 +917,43 @@ def contam_1d_settings(sc):
                 unmod_max=float(sc.get('contam_unmod_max', 0.05)))
 
 
+def _contam_1d(C2D, E2D, U2D, Pm, weight_rows, V, flux, flux_err, unmod_max):
+    """Other sources' light (CONTAM2D, its uncertainty CONTERR2D, the unpredicted pixels
+    UNMOD2D) extracted with the fnu_pf weights: per column the predicted flux ``cflux``,
+    its systematic error ``cerr``, the weight fraction on unpredicted light ``unmod`` and
+    its flag (> ``unmod_max``); integrated: ``contam`` (over fnu_pf), ``conmax`` (95th pct
+    of |contam / fnu_pf| at S/N > 3), ``csig`` (in units of the integrated noise) and
+    ``unmodf`` (flagged column fraction)."""
+    Cu = np.where(np.isfinite(C2D), C2D * 1e12, 0.0)          # uJy, as s2d_sci
+    Eu = np.where(np.isfinite(E2D), E2D * 1e12, 0.0) if E2D is not None and E2D.shape == Cu.shape else 0.0 * Cu
+    U = np.clip(np.nan_to_num(U2D), 0, 1) if U2D is not None and U2D.shape == Cu.shape else 0.0 * Cu
+    with np.errstate(invalid='ignore', divide='ignore'):
+        w = np.where(weight_rows & np.isfinite(V) & (V > 0), Pm / np.where(V > 0, V, 1.0), 0.0)
+        wp = w * np.where(np.isfinite(Pm), Pm, 0.0)
+        den = np.sum(wp, axis=0)
+        okd = den > 0
+        cflux = np.where(okd, np.sum(w * Cu, axis=0) / np.where(okd, den, 1.0), np.nan)
+        # systematic uncertainty of the prediction, extracted linearly (fully correlated)
+        cerr = np.where(okd, np.sum(np.abs(w) * Eu, axis=0) / np.where(okd, den, 1.0), np.nan)
+        # fraction of the extraction weight on pixels whose other light is not predicted
+        unmod = np.where(okd, np.sum(np.abs(wp) * U, axis=0) / np.where(okd, np.sum(np.abs(wp), axis=0), 1.0), np.nan)
+        flag = np.isfinite(unmod) & (unmod > unmod_max)
+        ok = np.isfinite(cflux) & np.isfinite(flux) & ~flag
+        tot = np.nansum(flux[ok])
+        contam = float(np.nansum(cflux[ok]) / tot) if tot > 0 else -999.0
+        sn = ok & (np.abs(flux) > 3 * flux_err)
+        frac = np.abs(cflux[sn] / flux[sn])
+        conmax = float(np.percentile(frac, 95)) if frac.size else -999.0
+        # the prediction in units of the noise of the integrated (inverse-variance) flux
+        okn = ok & np.isfinite(flux_err) & (flux_err > 0)
+        ivar = 1.0 / flux_err[okn] ** 2
+        csig = float(abs(np.sum(cflux[okn] * ivar)) / np.sqrt(np.sum(ivar))) if okn.any() else 0.0
+        fin = np.isfinite(flux)
+        unmodf = float(np.mean(flag[fin])) if fin.any() else 0.0
+    return dict(cflux=cflux, cerr=cerr, unmod=unmod, flag=flag, contam=contam, conmax=conmax, csig=csig,
+                unmodf=unmodf)
+
+
 def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop, wave, rows='aperture',
                          model_rows_frac=0.02, contam_1d='subtract', contam_1d_min_sigma=3.0, unmod_max=0.05):
     """Extraction of the s2d with the profile-fit 2D profile.
@@ -941,6 +990,15 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         if JT is not None:
             JT_hdu = fits.BinTableHDU(data=h['JOINT'].data.copy(), header=h['JOINT'].header.copy(), name='JOINT')
             JT = {n: np.asarray(JT[n], float) for n in ('lam', 'err', 'err_iso', 'corr', 'flag') if n in JT.names}
+        # joint-solve receivers carry the result that was not delivered (``profile_joint.deliver``):
+        # the one-pass other light (*_1P) when fnu_pf is the joint result, the joint one (*_J) else
+        joint_use = bool(header['PFJUSE']) if 'PFJUSE' in header else None
+        alt_sfx = None if joint_use is None else ('_1P' if joint_use else '_J')
+        ALT = {}
+        if alt_sfx is not None:
+            for n in ('CONTAM2D', 'CONTERR2D', 'UNMOD2D'):
+                if n + alt_sfx in h:
+                    ALT[n] = np.asarray(h[n + alt_sfx].data, float)
     if rows not in ('aperture', 'model'):
         raise ValueError(f"profile_fit_rows must be 'aperture' or 'model', got {rows!r}")
     if P.shape != s2d_sci.shape:
@@ -985,37 +1043,18 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
     if C2D is not None and C2D.shape == P.shape:
         if contam_1d not in CONTAM_1D:
             raise ValueError(f'contam_1d must be one of {CONTAM_1D}, got {contam_1d!r}')
-        Cu = np.where(np.isfinite(C2D), C2D * 1e12, 0.0)          # uJy, as s2d_sci
-        Eu = np.where(np.isfinite(E2D), E2D * 1e12, 0.0) if E2D is not None and E2D.shape == P.shape else 0.0 * Cu
-        U = np.clip(np.nan_to_num(U2D), 0, 1) if U2D is not None and U2D.shape == P.shape else 0.0 * Cu
         V = s2d_err ** 2
+        main = _contam_1d(C2D, E2D, U2D, Pm, weight_rows, V, flux, flux_err, unmod_max)
+        cflux, cerr, unmod, flag, csig = (main[k] for k in ('cflux', 'cerr', 'unmod', 'flag', 'csig'))
+        keep['PFCONTAM'] = (main['contam'], 'Predicted other-source light / fnu_pf, integrated')
+        keep['PFCONMAX'] = (main['conmax'], '95th pct of |contam/fnu_pf| where S/N > 3')
+        keep['PFCONSIG'] = (csig, 'Predicted other light / noise, integrated')
+        keep['PFUNMODF'] = (main['unmodf'], 'Fraction of columns with unpredicted other light')
+        alt = None
+        if ALT.get('CONTAM2D') is not None and ALT['CONTAM2D'].shape == P.shape:
+            alt = _contam_1d(ALT['CONTAM2D'], ALT.get('CONTERR2D'), ALT.get('UNMOD2D'), Pm, weight_rows, V, flux,
+                             flux_err, unmod_max)
         with np.errstate(invalid='ignore', divide='ignore'):
-            w = np.where(weight_rows & np.isfinite(V) & (V > 0), Pm / np.where(V > 0, V, 1.0), 0.0)
-            wp = w * np.where(np.isfinite(Pm), Pm, 0.0)
-            den = np.sum(wp, axis=0)
-            okd = den > 0
-            cflux = np.where(okd, np.sum(w * Cu, axis=0) / np.where(okd, den, 1.0), np.nan)
-            # systematic uncertainty of the prediction, extracted linearly (fully correlated)
-            cerr = np.where(okd, np.sum(np.abs(w) * Eu, axis=0) / np.where(okd, den, 1.0), np.nan)
-            # fraction of the extraction weight on pixels whose other light is not predicted
-            unmod = np.where(okd, np.sum(np.abs(wp) * U, axis=0) / np.where(okd, np.sum(np.abs(wp), axis=0), 1.0), np.nan)
-            flag = np.isfinite(unmod) & (unmod > unmod_max)
-            ok = np.isfinite(cflux) & np.isfinite(flux) & ~flag
-            tot = np.nansum(flux[ok])
-            keep['PFCONTAM'] = (float(np.nansum(cflux[ok]) / tot) if tot > 0 else -999.0,
-                                'Predicted other-source light / fnu_pf, integrated')
-            sn = ok & (np.abs(flux) > 3 * flux_err)
-            frac = np.abs(cflux[sn] / flux[sn])
-            keep['PFCONMAX'] = (float(np.percentile(frac, 95)) if frac.size else -999.0,
-                                '95th pct of |contam/fnu_pf| where S/N > 3')
-            # the prediction in units of the noise of the integrated (inverse-variance) flux
-            okn = ok & np.isfinite(flux_err) & (flux_err > 0)
-            ivar = 1.0 / flux_err[okn] ** 2
-            csig = float(abs(np.sum(cflux[okn] * ivar)) / np.sqrt(np.sum(ivar))) if okn.any() else 0.0
-            keep['PFCONSIG'] = (csig, 'Predicted other light / noise, integrated')
-            fin = np.isfinite(flux)
-            keep['PFUNMODF'] = (float(np.mean(flag[fin])) if fin.any() else 0.0,
-                                'Fraction of columns with unpredicted other light')
             if JT is not None:
                 # joint solve: the other members' light was solved with this source's
                 # spectrum; its statistical uncertainty is the error inflation of the joint
@@ -1033,7 +1072,13 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
                 else:
                     infl, jcorr = np.full(wave.shape, np.nan), np.full(wave.shape, np.nan)
                 jstat = np.where(np.isfinite(infl), flux_err * np.sqrt(np.clip(infl ** 2 - 1.0, 0.0, None)), 0.0)
-                cerr = np.sqrt(np.where(np.isfinite(cerr), cerr, 0.0) ** 2 + jstat ** 2)
+                # the inflation belongs to the joint result only: to fnu_pf when it is the
+                # joint one (PFJUSE true, or a product written before the gate), else to the
+                # undelivered joint alternative
+                if joint_use is None or joint_use:
+                    cerr = np.sqrt(np.where(np.isfinite(cerr), cerr, 0.0) ** 2 + jstat ** 2)
+                elif alt is not None:
+                    alt['cerr'] = np.sqrt(np.where(np.isfinite(alt['cerr']), alt['cerr'], 0.0) ** 2 + jstat ** 2)
                 thr = float(header.get('PFJDEGT', 0.9))
                 jflag = (np.isfinite(jcorr) & (jcorr < -thr)).astype(np.int16)
                 if 'flag' in JT and jok.sum() > 1:
@@ -1061,6 +1106,22 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
             columns['fnu_pf_raw_err'] = (flux_err, 'Its error')
             columns['fnu_pf'] = (dec, f'Profile-fit flux, predicted other light subtracted ({rows} rows)')
             columns['fnu_pf_err'] = (dec_err, 'Profile-fit flux error incl. the prediction uncertainty')
+        if joint_use is not None:
+            # both results of a joint-solve receiver, each as fnu_pf would be with it
+            def _final(cf, ce, s):
+                with np.errstate(invalid='ignore'):
+                    d = flux - np.where(np.isfinite(cf), cf, 0.0)
+                    de = np.sqrt(flux_err ** 2 + np.where(np.isfinite(ce), ce, 0.0) ** 2)
+                sb = contam_1d == 'subtract' and s > contam_1d_min_sigma
+                return (d, de) if sb else (flux, flux_err)
+            mine = _final(cflux, cerr, csig)
+            other = _final(alt['cflux'], alt['cerr'], alt['csig']) if alt is not None \
+                else (np.full(flux.shape, np.nan), np.full(flux.shape, np.nan))
+            j, o = (mine, other) if joint_use else (other, mine)
+            columns['fnu_pf_joint'] = (j[0], 'fnu_pf with the joint solve (delivered if PFJUSE)')
+            columns['fnu_pf_joint_err'] = (j[1], 'Its error')
+            columns['fnu_pf_onepass'] = (o[0], 'fnu_pf with the one-pass prediction (delivered unless PFJUSE)')
+            columns['fnu_pf_onepass_err'] = (o[1], 'Its error')
         c = fits.ImageHDU(C2D, name='CONTAM2D')
         c.header['BUNIT'] = ('MJy', 'Predicted other-source light, as SCI')
         hdus.append(c)
@@ -1071,6 +1132,11 @@ def _profile_fit_columns(pf_file, s2d_sci, s2d_err, s2d_mask, ap_start, ap_stop,
         if U2D is not None:
             c = fits.ImageHDU(U2D, name='UNMOD2D')
             c.header['BUNIT'] = ('', 'Fraction of the data with other light not in CONTAM2D')
+            hdus.append(c)
+        for n, a in ALT.items():
+            c = fits.ImageHDU(a, name=n + alt_sfx)
+            c.header['BUNIT'] = ('' if n == 'UNMOD2D' else 'MJy',
+                                 f"{n} of the {'one-pass' if alt_sfx == '_1P' else 'joint'} result (not delivered)")
             hdus.append(c)
         if JT_hdu is not None:
             hdus.append(JT_hdu)

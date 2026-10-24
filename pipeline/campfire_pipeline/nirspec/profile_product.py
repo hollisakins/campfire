@@ -88,14 +88,17 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
     from campfire_pipeline.nirspec import profile_contam as CT
     from campfire_pipeline.nirspec import profile_joint as PJ
     from campfire_pipeline.nirspec import nod_scan as NS
+    from campfire_pipeline.nirspec import profile_timing as TM
 
     log = log or (lambda *a: None)
     fl = stage_flags(stage_config)
     js = PJ.joint_settings(stage_config)
     cfg = PC.ChainConfig.from_stage_config(stage_config)
     if exps is None:
-        exps = PF.load_source(groups, bkg_overrides=overrides, science=set(science))
+        with TM.step('load'):
+            exps = PF.load_source(groups, bkg_overrides=overrides, science=set(science))
     P, clean, cstate, exps0 = None, None, 'off', None
+    t_mark = TM.start()
     if fl['contam'] and cfg.shape != 'free':
         maps = CT.maps_for_exposures(workspace_dir, exps) if maps is None else maps
         if not maps:
@@ -129,23 +132,28 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
                     e.ok, e.diff = ok, d
                 log(f'contamination masking left {npix} pixels; undone')
                 cstate, clean = f'{cstate}_undone', None
+    TM.stop('contam', t_mark)
     if prism is None and not is_prism and prism_product:
         prism = CT.read_prism_shape(workspace_dir, prism_product)
     ratio = (lambda R: CT.contam_light_ratio(P, R, exps)) if P is not None and clean is not None else None
-    C = PC.choose_shape(exps, cfg, is_prism, prism=prism, clean=clean, log=log, contam_ratio=ratio)
+    with TM.step('chain'):
+        C = PC.choose_shape(exps, cfg, is_prism, prism=prism, clean=clean, log=log, contam_ratio=ratio)
     if joint is not None and not joint.refit and joint.params_in is not None:
         # the profile keeps the shape the joint solve used (its spectra hold for that shape); the
         # chain's answer on the jointly subtracted data is kept for the record (PFJDCEN, PFJRSHP)
-        C = _joint_fixed_chain(exps, cfg, joint, C)
+        with TM.step('joint_fixed_chain'):
+            C = _joint_fixed_chain(exps, cfg, joint, C)
     pairs = None
     if P is not None:
         if exps0 is not None:
-            try:
-                pairs = PJ.pair_metrics(exps0, C.result, P)
-            except Exception as e:                     # noqa: BLE001 - group selection only
-                log(f'pair metrics failed ({type(e).__name__}: {e})')
+            with TM.step('pair_metrics'):
+                try:
+                    pairs = PJ.pair_metrics(exps0, C.result, P)
+                except Exception as e:                     # noqa: BLE001 - group selection only
+                    log(f'pair metrics failed ({type(e).__name__}: {e})')
         CT.pair_flag(P, C.result, exps, min_frac=fl['pair_min_frac'])
     S = None
+    t_mark = TM.start()
     if fl['scan']:
         S = NS.run(C.result, nbins=fl['scan_nbins'], width=fl['scan_width'], dchi2_min=fl['scan_dchi2'],
                    min_snr=fl['scan_min_snr'], drop_frac=fl['scan_drop_frac'], null_ratio=fl['scan_null_ratio'],
@@ -162,6 +170,7 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
             S.suppress('target width on its bound')
         if not is_prism and prism_product and fl['scan_xdisp_tol'] >= 0:
             S.cross_check(read_scan(workspace_dir, prism_product), tol=fl['scan_xdisp_tol'])
+    TM.stop('scan', t_mark)
     return Analysis(exps=exps, chain=C, prediction=P, clean=clean, contam_state=cstate, scan=S, pairs=pairs)
 
 
@@ -214,9 +223,12 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
     from campfire_pipeline.nirspec import profile_fit as PF
     from campfire_pipeline.nirspec import profile_contam as CT
     from campfire_pipeline.nirspec.stage3 import _cleanup_spec3_intermediates
+    from campfire_pipeline.nirspec import profile_timing as TM
 
     prev_cwd = os.getcwd()
     os.chdir(workspace_dir)
+    if joint is None:
+        TM.reset()
     try:
         crf = f'{product_name}_s{source_id:09d}_crf.fits'
         if not os.path.exists(crf):
@@ -238,6 +250,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
                 log(f'{product_name}: same-slitlet neighbour at Delta {S.delta:+.2f}, dchi2 {S.dchi2:.0f}, '
                     f'proposals {S.proposals}, unresolved {S.unresolved}')
 
+        t_mark = TM.start()
         prof = PF.drizzle_frames(R, crf, unit=True)
         hdus = [fits.ImageHDU(np.asarray(prof.data, float) / 1e12, name='PROF2D')]
         prof.close()
@@ -263,6 +276,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
                 h = fits.ImageHDU(np.zeros(hdus[0].data.shape), name='UNMOD2D')
             h.header['BUNIT'] = ('', 'Fraction of the data with other light not in CONTAM2D')
             hdus.append(h)
+        TM.stop('drizzle', t_mark)
 
         hdr = fits.Header()
         for k, v in C.header_cards().items():
@@ -306,11 +320,20 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             hdus.append(joint.table())
             log(f"{product_name}: joint solve with {joint.group}, shape {C.shape} after it "
                 f"(centre {hdr.get('PFJDCEN', -999):+.3f}, ln width {hdr.get('PFJDLW', -999):+.3f} vs the solve's)")
-        out = fits.HDUList([fits.PrimaryHDU(header=hdr)] + hdus)
         path = os.path.join(workspace_dir, f'{product_name}_pf.fits')
+        t_mark = TM.start()
+        if joint is not None:
+            from campfire_pipeline.nirspec import profile_joint as PJ
+            hdr, hdus = PJ.deliver(path, hdr, hdus, joint, log=lambda m: log(f'{product_name}: {m}'))
+            log(f"{product_name}: delivers its {'joint' if joint.use else 'one-pass'} result ({joint.gate_why})")
+        out = fits.HDUList([fits.PrimaryHDU(header=hdr)] + hdus)
         out.writeto(path, overwrite=True)
+        TM.stop('write', t_mark)
+        TM.report(f"{'joint_product' if joint is not None else 'product'} {product_name}",
+                  log=log)
         return dict(product=product_name, source_id=int(source_id), shape=C.shape, reason=C.reason,
                     is_prism=bool(is_prism), pairs=A.pairs, joint=(list(joint.group) if joint is not None else None),
+                    joint_use=(bool(joint.use) if joint is not None else None),
                     scan=(None if S is None else dict(detected=S.detected, candidate=S.candidate, delta=S.delta,
                                                       dchi2=S.dchi2, proposals=S.proposals,
                                                       unresolved=S.unresolved, xdisp=S.xdisp)))

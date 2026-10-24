@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from campfire_pipeline.nirspec import profile_fit as PF
+from campfire_pipeline.nirspec import profile_timing as TM
 
 
 SHAPES = ('gated', 'free', 'fixed')
@@ -246,7 +247,8 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
     M = PF.ProfileModel(exps, chromatic=cfg.chromatic, priors=cfg.priors, bounds=cfg.bounds)
     snr, det = PF.detection_snr(M, scale=cfg.gate_noise)
     gate = cfg.gate_prism if is_prism else cfg.gate_grating
-    cands = {'default': PF.fit_fixed(model=M, shape=cfg.default_shape(), fit_eoff=cfg.default_fit_offsets)}
+    with TM.step('chain_fixed'):
+        cands = {'default': PF.fit_fixed(model=M, shape=cfg.default_shape(), fit_eoff=cfg.default_fit_offsets)}
     if cfg.shape == 'fixed':
         R = cands['default']
         return ChainResult(result=R, shape='default', chain='fixed', reason='fixed', snr_det=snr, gate=gate,
@@ -266,7 +268,8 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
             transfer = 'pa_mismatch'
         else:
             xshape = PF.map_shape(prism.params, M.pivot)
-            cands['prism'] = PF.fit_fixed(model=M, shape=xshape, fit_eoff=True)
+            with TM.step('chain_fixed'):
+                cands['prism'] = PF.fit_fixed(model=M, shape=xshape, fit_eoff=True)
             transfer = 'used'
 
     # do other sources dominate the trace?
@@ -295,15 +298,17 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
             # intermediate S/N: fit only one shape parameter (the PRISM shape, where there is
             # one, is a better description than a partial own fit)
             try:
-                cands['own'] = PF.fit_partial(exps, free=PF.PARTIAL_FREE[cfg.partial_fit],
-                                              base=cfg.default_shape(), model=M)
+                with TM.step('chain_own'):
+                    cands['own'] = PF.fit_partial(exps, free=PF.PARTIAL_FREE[cfg.partial_fit],
+                                                  base=cfg.default_shape(), model=M)
                 reason = f'gate_partial:{cfg.partial_fit}'
             except Exception as e:                     # noqa: BLE001 - the chain falls back
                 log(f'partial own fit failed ({type(e).__name__}: {e})')
                 reason = 'fit_failed'
     else:
         try:
-            cands['own'] = PF.fit(exps, model=M)
+            with TM.step('chain_own'):
+                cands['own'] = PF.fit(exps, model=M)
         except Exception as e:                         # noqa: BLE001 - the chain falls back
             log(f'own fit failed ({type(e).__name__}: {e})')
             reason = 'fit_failed'

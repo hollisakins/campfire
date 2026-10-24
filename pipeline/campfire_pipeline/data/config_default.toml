@@ -180,6 +180,10 @@
     contam_joint_clip = 5.0
     contam_joint_refit = false               # true: the receivers' shape chain reruns on the jointly subtracted
                                              # data (moved 7420 by +0.18 in centre); false: the solve's shape
+    contam_joint_gate = "sensf"              # per receiver: deliver the joint result only when this quantity is
+    contam_joint_gate_max = 0.3              # <= the max, else the one-pass one (PFJUSE, PFJWHY; both kept as
+                                             # fnu_pf_joint / fnu_pf_onepass). "off": always the joint result.
+                                             # sensf | sens | fshape | cdeg | infl (profile_joint.GATE_QUANTITIES)
     # Same-slitlet neighbour scan on the residuals
     scan_neighbours = true
     scan_action = "report_only"              # "report_only" (proposed file) | "auto_override"
