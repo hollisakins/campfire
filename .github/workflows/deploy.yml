@@ -1,0 +1,99 @@
+name: Deploy (VM)
+
+# Step 5 of ops/README.md: on every push to main that can change what the VM
+# serves, build the web image on a GitHub-hosted runner, push it to GHCR tagged
+# with the commit sha, then ask the VM to deploy that sha over a deploy-only SSH
+# key. The key's forced command is ops/scripts/deploy.sh, which applies pending
+# migrations first, swaps the web container, gates on /api/health and rolls back
+# on failure. Nothing else can be run over that key.
+#
+# Secrets (repository): DEPLOY_SSH_KEY, DEPLOY_HOST, DEPLOY_USER, DEPLOY_KNOWN_HOSTS.
+# Variables (repository): DEPLOY_NEXT_PUBLIC_* — the values baked into the image
+# (public by definition; change them when the Supabase URL or app host moves).
+#
+# Manual runs (Actions → Deploy → Run workflow) take a sha for rollbacks; deploy.sh
+# refuses anything that is not a full sha on origin/main.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'supabase/migrations/**'
+      - 'ops/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Full 40-hex commit sha on main to deploy (rollback = an older one)'
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/campfire-web
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - id: sha
+        run: |
+          SHA="${{ inputs.sha || github.sha }}"
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "not a full sha: $SHA" >&2; exit 1; }
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: web
+          file: web/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.sha.outputs.sha }}
+            ${{ env.IMAGE }}:main
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ vars.DEPLOY_NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ vars.DEPLOY_NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_APP_URL=${{ vars.DEPLOY_NEXT_PUBLIC_APP_URL }}
+            NEXT_PUBLIC_WORKER_DOWNLOAD_URL=${{ vars.DEPLOY_NEXT_PUBLIC_WORKER_DOWNLOAD_URL }}
+            GIT_SHA=${{ steps.sha.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy over the forced-command key
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          SHA: ${{ needs.build.outputs.sha }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy; chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # The server ignores the command text itself (forced command) and
+          # hands it to deploy.sh as SSH_ORIGINAL_COMMAND = "deploy <sha>".
+          ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 \
+            "$USER@$HOST" "deploy $SHA"
