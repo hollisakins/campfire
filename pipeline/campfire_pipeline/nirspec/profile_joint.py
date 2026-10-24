@@ -82,7 +82,10 @@ def shape_at(params, eoff, M):
     dx = np.log2(M.pivot / float(params['pivot']))
     c = float(params['centre']) + float(params['drift']) * dx
     w = max(float(params['width']) + float(params['width_change']) * dx, PF.W_FLOOR)
-    p = np.array([c, float(params['drift']), np.log(w), float(params['width_change'])])
+    v = [c, float(params['drift']), np.log(w), float(params['width_change'])]
+    if params.get('halo', 0.0) > 0:      # two-Gaussian galaxy: h and the width ratio carry over unchanged
+        v += [float(params['halo']), float(params['halo_ratio'])]
+    p = np.array(v)
     e = np.zeros(len(M.exps))
     if eoff is not None:
         e[:min(len(eoff), e.size)] = np.asarray(eoff, float)[:e.size]
@@ -215,6 +218,8 @@ def read_shape(workspace, product):
             continue
         params = dict(centre=float(h['PFCEN']), drift=float(h['PFDRIFT']), width=float(h['PFWIDTH']),
                       width_change=float(h['PFDWIDTH']), pivot=float(h['PFPIVOT']), centre_prior=float(h['PFCENPR']))
+        from campfire_pipeline.nirspec.profile_chain import halo_from_header
+        params.update(halo_from_header(h))
         n = int(h.get('PFNEXP', 0))
         eoff = np.array([float(h.get(f'PFOFF{k}', 0.0)) for k in range(n)])
         return params, eoff, str(h.get('PFSHAPE', ''))
@@ -246,8 +251,7 @@ class Member:
 
 def fixed_result(M, p, eoff, flux=None, flux_err=None):
     """A ``FitResult`` of model M at a fixed shape (for frame images)."""
-    params = dict(centre=float(p[0]), drift=float(p[1]), width=float(np.exp(p[2])), width_change=float(p[3]),
-                  pivot=M.pivot, centre_prior=M.c_prior)
+    params = PF.shape_params(p, M)
     n = M.lam_grid.size
     R = PF.FitResult(params=params, eoff=np.asarray(eoff, float), lam=M.lam_grid,
                      flux=np.ones(n) if flux is None else flux,

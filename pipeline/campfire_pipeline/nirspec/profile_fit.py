@@ -19,6 +19,12 @@ along the slit (centre and width, each optionally linear in log2 wavelength)
 convolved with the star-measured pre-shutter PSF, clipped by the slitlet's open
 shutters, blurred by the post-shutter PSF and integrated over each pixel.
 
+Optionally the galaxy is two Gaussians with one centre, (1 - h) G(sigma) + h G(r sigma):
+a compact core and a broader second component holding a fraction h of the light,
+its width a fixed multiple r of the core's at every wavelength (``fit_two``). A
+shape carries them as ``halo`` (h) and ``halo_ratio`` (r); without them (or h = 0)
+every function below computes exactly the single Gaussian.
+
 tau_k is the along-dispersion throughput: the point-source path loss jwst computed
 for exposure k (``pathloss_point``, which covers a 3-shutter aperture centred on the
 source, MOS1X3) divided by the model's own cross-slit transmission of a point source
@@ -143,6 +149,16 @@ def _clipblur(y, o, s1, s2, intervals):
     core = np.exp(-0.5 * (y - o) ** 2 / S2) / (np.sqrt(2 * np.pi) * S)
     clip = sum(ndtr((hi - m) / sm) - ndtr((lo - m) / sm) for lo, hi in intervals)
     return core * clip
+
+
+def galaxy_components(p):
+    """The galaxy's Gaussians as (fraction of the light, width / core width), or None
+    for the single Gaussian. A shape vector of six entries (centre, drift, ln width,
+    width change, h, r) with h > 0 is the two-Gaussian galaxy (``fit_two``)."""
+    if len(p) > 4 and p[4] > 0:
+        h, r = float(p[4]), float(p[5])
+        return ((1.0 - h, 1.0), (h, r))
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +585,15 @@ class ProfileModel:
         w = self.width(p, lam)
         a, b, f = self._split(k, lam, dy)
         iv = open_intervals(self.exps[k].open_k)
-        comps = [(1 - f, np.sqrt(a ** 2 + w ** 2), b), (f, np.sqrt((PSF_K * a) ** 2 + w ** 2), PSF_K * b)]
+        gal = galaxy_components(p)
+        if gal is None:
+            comps = [(1 - f, np.sqrt(a ** 2 + w ** 2), b), (f, np.sqrt((PSF_K * a) ** 2 + w ** 2), PSF_K * b)]
+        else:
+            comps = []
+            for ag, sg in gal:
+                ws = sg * w
+                comps += [(ag * (1 - f), np.sqrt(a ** 2 + ws ** 2), b),
+                          (ag * f, np.sqrt((PSF_K * a) ** 2 + ws ** 2), PSF_K * b)]
         acc = 0.0
         for xi, wi in zip(_GLX, _GLW):
             yy = y + 0.5 * dy * xi
@@ -578,14 +602,23 @@ class ProfileModel:
 
     def transmission(self, p, eoff, k, lam, dy, width=None, aperture=REF_APERTURE, centre=None):
         """Cross-slit transmission (pre-shutter clipping) through an aperture of
-        shutters, for the fitted source (width=None) or a point source (width=0),
-        at the fitted centre or at a given slit position."""
+        shutters, for the fitted source (width=None, both galaxy components when it
+        has two) or a point source (width=0), at the fitted centre or at a given
+        slit position."""
         c = self.centre(p, eoff, k, lam) if centre is None else centre
         w = self.width(p, lam) if width is None else width
         a, _, f = self._split(k, lam, dy)
         iv = open_intervals(aperture)
-        return ((1 - f) * _transmitted(c, np.sqrt(a ** 2 + w ** 2), iv)
-                + f * _transmitted(c, np.sqrt((PSF_K * a) ** 2 + w ** 2), iv))
+        gal = galaxy_components(p) if width is None else None
+        if gal is None:
+            return ((1 - f) * _transmitted(c, np.sqrt(a ** 2 + w ** 2), iv)
+                    + f * _transmitted(c, np.sqrt((PSF_K * a) ** 2 + w ** 2), iv))
+        out = 0.0
+        for ag, sg in gal:
+            ws = sg * w
+            out = out + ag * ((1 - f) * _transmitted(c, np.sqrt(a ** 2 + ws ** 2), iv)
+                              + f * _transmitted(c, np.sqrt((PSF_K * a) ** 2 + ws ** 2), iv))
+        return out
 
     def throughput(self, p, eoff, k, lam, dy):
         """Along-dispersion throughput tau_k: jwst point-source path loss divided by
@@ -638,13 +671,19 @@ class ProfileModel:
         f, _, _, A = self.solve(p, eoff)
         r = (self.pix['d'] - A @ f) / np.sqrt(self.pix['v'])
         r = np.where(self.use, r, 0.0)
+        return np.concatenate([r, self.prior_terms(p, eoff)])
+
+    def prior_terms(self, p, eoff):
+        """Normalised prior residuals of the shape (centre, ln width; drift and width
+        change when chromatic) and of the pointing offsets. The second galaxy
+        component (``fit_two``) has none."""
         pr = self.priors
         pri = [(p[0] - self.c_prior) / pr.centre_sigma,
                (p[2] - np.log(pr.width_median)) / pr.width_log_sigma]
         if self.chromatic:
             pri += [p[1] / pr.drift_sigma, p[3] / pr.width_change_sigma]
         pri += list(eoff[1:] / pr.offset_sigma)
-        return np.concatenate([r, pri])
+        return pri
 
     def bounds(self):
         c, B = self.c_prior, self.bounds_cfg
@@ -828,10 +867,134 @@ def fit_partial(exps=None, free=('width',), base=None, clip=5.0, n_clip=2, model
 
 def shape_vector(shape, c_prior, width_default):
     """Shape vector (centre, drift, ln width, width change) from a dict with
-    ``centre_offset`` (from the planned position), ``drift``, ``width``, ``width_change``."""
+    ``centre_offset`` (from the planned position), ``drift``, ``width``, ``width_change``;
+    with ``halo`` > 0 (and ``halo_ratio``) also h and r of the two-Gaussian galaxy."""
     q = dict(centre_offset=0.0, drift=0.0, width=width_default, width_change=0.0)
     q.update(shape or {})
-    return np.array([c_prior + q['centre_offset'], q['drift'], np.log(max(q['width'], W_FLOOR)), q['width_change']])
+    v = [c_prior + q['centre_offset'], q['drift'], np.log(max(q['width'], W_FLOOR)), q['width_change']]
+    if q.get('halo', 0.0) > 0:
+        v += [float(q['halo']), float(q['halo_ratio'])]
+    return np.array(v)
+
+
+def shape_params(p, M):
+    """``FitResult.params`` of shape vector p on model M (with ``halo`` / ``halo_ratio``
+    only for a two-Gaussian galaxy)."""
+    d = dict(centre=float(p[0]), drift=float(p[1]), width=float(np.exp(p[2])), width_change=float(p[3]),
+             pivot=M.pivot, centre_prior=M.c_prior)
+    if galaxy_components(p) is not None:
+        d.update(halo=float(p[4]), halo_ratio=float(p[5]))
+    return d
+
+
+def shape_dict(p, c_prior):
+    """The ``shape_vector`` dict of shape vector p (centre as an offset from c_prior)."""
+    d = dict(centre_offset=float(p[0] - c_prior), drift=float(p[1]), width=float(np.exp(p[2])),
+             width_change=float(p[3]))
+    if galaxy_components(p) is not None:
+        d.update(halo=float(p[4]), halo_ratio=float(p[5]))
+    return d
+
+
+TWO_GAUSS_STARTS = ((0.3, 3.0), (0.15, 1.8))     # (h, second width / core width) to start from
+
+
+def fit_two(R0, h_max=0.95, sigma_max=0.6, sigma_min=0.03, starts=TWO_GAUSS_STARTS, tol=1e-6):
+    """The two-Gaussian galaxy fitted on top of a finished single-Gaussian fit R0.
+
+    The galaxy becomes (1 - h) G(sigma) + h G(r sigma) with one centre: h is constant
+    with wavelength, in [0, ``h_max``]; the second width is a fixed multiple r of the
+    core width, so both follow the same width law with wavelength, and it is at most
+    ``sigma_max`` slit units at the pivot (a broader component is nearly flat across
+    the shutters and cancels in the nod differences like sky: uncapped, it took
+    95-138 % more flux on two sources). Every other parameter (centre, drift, core
+    width, width change, pointing offsets) is refitted with its prior, from R0's
+    solution, on R0's pixels and outlier mask (no new clipping), so its chi2 compares
+    with R0's directly. Starts: h and r from ``starts`` (second width clipped to
+    [0.04, 0.9 ``sigma_max``]); the lower chi2 is kept.
+
+    Returns a ``FitResult`` whose params carry ``halo`` (h) and ``halo_ratio`` (r) when
+    h > 0. ``R0.model``'s outlier mask is left as it was."""
+    M = R0.model
+    if not M.chromatic:
+        raise ValueError('fit_two needs the chromatic model (four shape parameters)')
+    use = np.asarray(R0.use, bool).copy()
+    saved = M.use
+    p0, e0 = _qvec(R0)
+    p0 = p0[:4]
+    lo, hi = M.bounds()
+    lo = np.concatenate([lo[:4], [0.0, np.log(sigma_min)], lo[4:]])
+    hi = np.concatenate([hi[:4], [h_max, np.log(sigma_max)], hi[4:]])
+    d, sd = M.pix['d'], np.sqrt(M.pix['v'])
+
+    def vec(q):
+        return np.concatenate([q[:4], [q[4], np.exp(q[5]) / np.exp(q[2])]]), np.concatenate([[0.0], q[6:]])
+
+    def res(q):
+        p, eoff = vec(q)
+        f, _, _, A = M.solve(p, eoff)
+        r = np.where(M.use, (d - A @ f) / sd, 0.0)
+        return np.concatenate([r, M.prior_terms(p, eoff)])
+
+    def chi2(q):
+        p, eoff = vec(q)
+        f, _, _, A = M.solve(p, eoff)
+        return float(np.sum(((d - A @ f) / sd)[M.use] ** 2))
+    best = None
+    try:
+        M.use = use
+        for h0, k in starts:
+            s0 = float(np.clip(k * np.exp(p0[2]), 0.04, 0.9 * sigma_max))
+            q0 = np.clip(np.concatenate([p0, [h0, np.log(s0)], e0[1:]]), lo + 1e-6, hi - 1e-6)
+            # optimise q + 1 (least_squares' xtol is relative to |q|; centres and offsets sit near 0)
+            sol = least_squares(lambda x: res(x - 1.0), q0 + 1.0, bounds=(lo + 1.0, hi + 1.0), x_scale='jac',
+                                ftol=tol, xtol=tol, gtol=tol)
+            q = sol.x - 1.0
+            c = chi2(q)
+            if best is None or c < best[0]:
+                best = (c, q)
+        q = best[1]
+        p, eoff = vec(q)
+        f, cov, good, A = M.solve(p, eoff, covariance=True)
+        r = (d - A @ f) / sd
+        n_eff = float(np.sum(M.dof_weight()[M.use]))
+        R = FitResult(params=shape_params(p, M), eoff=eoff, lam=M.lam_grid, flux=np.where(good, f, np.nan),
+                      flux_err=np.where(good, np.sqrt(np.abs(np.diag(cov))), np.nan),
+                      chi2=float(np.sum(r[M.use] ** 2)), npix=int(round(n_eff)), nfree=int(good.sum()) + q.size,
+                      chromatic=True, model=M)
+        R.bound_bits = M.bound_hits(np.concatenate([q[:4], q[6:]]))
+        R.use = M.use.copy()
+        R.halo_fit = dict(h=float(q[4]), sigma2=float(np.exp(q[5])), ratio=float(p[5]),
+                          at_cap=bool(q[5] >= np.log(sigma_max) - 1e-3), at_hmax=bool(q[4] >= h_max - 1e-3))
+        return R
+    finally:
+        M.use = saved
+
+
+def two_gauss_test(R0, R2, dchi2_min=25.0, k=2.0):
+    """Adopt the two-Gaussian fit R2 over the single Gaussian R0 (same pixels)?
+
+    Yes when dchi2 / c > ``dchi2_min`` + k ln N_eff, with dchi2 = chi2(R0) - chi2(R2),
+    c = max(chi2(R0) / N_eff, 1) (the data's excess scatter, so a source whose noise
+    is underestimated needs a larger improvement) and N_eff the independent data
+    values (``ProfileModel.dof_weight``). k = 2: the fit adds two parameters.
+    Returns (adopt, dict(dchi2 = dchi2 / c, thr, c, nu))."""
+    M = R0.model
+    nu = float(np.sum(M.dof_weight()[np.asarray(R0.use, bool)]))
+    c = max(R0.chi2 / max(nu, 1.0), 1.0)
+    ds = (R0.chi2 - R2.chi2) / c
+    thr = float(dchi2_min + k * np.log(max(nu, 2.0)))
+    return bool(ds > thr), dict(dchi2=float(ds), thr=thr, c=float(c), nu=nu)
+
+
+def reported_flux_change(R0, R2):
+    """Integrated reported flux (true spectrum x ``main_shutter_factor``, summed over the
+    spectrum points both fits constrain) of R2 over R0's, minus 1."""
+    a = R0.flux * main_shutter_factor(R0, R0.lam)
+    b = R2.flux * main_shutter_factor(R2, R2.lam)
+    ok = np.isfinite(a) & np.isfinite(b)
+    s = float(np.sum(a[ok]))
+    return float(np.sum(b[ok]) / s - 1.0) if ok.any() and s != 0 else np.nan
 
 
 def fit_fixed(exps=None, shape=None, eoff=None, fit_eoff=False, clip=5.0, n_clip=2, model=None,
@@ -877,8 +1040,7 @@ def fit_fixed(exps=None, shape=None, eoff=None, fit_eoff=False, clip=5.0, n_clip
     r = (M.pix['d'] - A @ f) / np.sqrt(M.pix['v'])
     chi2 = float(np.sum(r[M.use] ** 2))
     n_eff = float(np.sum(M.dof_weight()[M.use]))
-    params = dict(centre=float(p[0]), drift=float(p[1]), width=float(np.exp(p[2])), width_change=float(p[3]),
-                  pivot=M.pivot, centre_prior=M.c_prior)
+    params = shape_params(p, M)
     R = FitResult(params=params, eoff=e, lam=M.lam_grid, flux=np.where(good, f, np.nan),
                   flux_err=np.where(good, np.sqrt(np.abs(np.diag(cov))), np.nan), chi2=chi2,
                   npix=int(round(n_eff)), nfree=int(good.sum()) + (M.n_eoff if fit_eoff else 0),
@@ -986,8 +1148,11 @@ def map_shape(src_params, pivot_target):
     shape transferred from PRISM to a grating keeps its offset from plan)."""
     s = src_params
     dx = np.log2(pivot_target / s['pivot'])
-    return dict(centre_offset=s['centre'] - s['centre_prior'] + s['drift'] * dx, drift=s['drift'],
-                width=max(s['width'] + s['width_change'] * dx, W_FLOOR * 2), width_change=s['width_change'])
+    out = dict(centre_offset=s['centre'] - s['centre_prior'] + s['drift'] * dx, drift=s['drift'],
+               width=max(s['width'] + s['width_change'] * dx, W_FLOOR * 2), width_change=s['width_change'])
+    if s.get('halo', 0.0) > 0:          # two-Gaussian galaxy: h and the width ratio carry over unchanged
+        out.update(halo=float(s['halo']), halo_ratio=float(s['halo_ratio']))
+    return out
 
 
 def frame_image(result, j, spectrum=None, common=True):
@@ -1017,8 +1182,10 @@ def frame_image(result, j, spectrum=None, common=True):
 # Products
 # ---------------------------------------------------------------------------
 def _qvec(result):
-    M = result.model
-    p = [result.params['centre'], result.params['drift'], np.log(result.params['width']), result.params['width_change']]
+    P = result.params
+    p = [P['centre'], P['drift'], np.log(P['width']), P['width_change']]
+    if P.get('halo', 0.0) > 0:
+        p += [P['halo'], P['halo_ratio']]
     return np.array(p), result.eoff
 
 

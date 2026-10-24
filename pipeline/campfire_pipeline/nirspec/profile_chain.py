@@ -25,6 +25,11 @@ prior terms, so the choice can be redone offline from the header.
 
 The gate is the integrated detection S/N (``profile_fit.detection_snr``), computed
 before any candidate is fitted.
+
+With ``profile_fit_two_gauss`` an own fit that is chosen is refitted with a
+two-Gaussian galaxy (``profile_fit.fit_two``) and that fit replaces it only when the
+data ask for it (``profile_fit.two_gauss_test``); otherwise the own fit is kept as it
+is. Its h and width ratio (PFHALO, PFHRATIO) travel with the shape.
 """
 
 from dataclasses import dataclass, field
@@ -70,6 +75,12 @@ class ChainConfig:
     partial_fit: str = 'off'             # below the gate: off | width | centre (own fit of that parameter only)
     gate_partial_prism: float = 25.0     # ... from these gates up
     gate_partial_grating: float = 30.0
+    two_gauss: bool = False              # own fits: try the two-Gaussian galaxy (profile_fit.fit_two)
+    two_gauss_dchi2: float = 25.0        # adopted when dchi2 / c > this + k ln N_eff
+    two_gauss_k: float = 2.0
+    two_gauss_halo_max: float = 0.95     # bound of h
+    two_gauss_sigma_max: float = 0.6     # bound of the second width at the pivot [slit units]
+    two_gauss_flux_flag: float = 0.10    # PF2GFLAG when adopting it changes the reported flux by more
 
     def default_shape(self):
         """Shape dict of the default candidate for ``profile_fit.fit_fixed`` (None: the prior median width)."""
@@ -123,7 +134,27 @@ class ChainConfig:
                    default_width=(None if dwidth is None else float(dwidth)),
                    default_fit_offsets=bool(g('default_fit_offsets', True)), partial_fit=partial,
                    gate_partial_prism=float(g('gate_partial_snr_prism', 25.0)),
-                   gate_partial_grating=float(g('gate_partial_snr_grating', 30.0)))
+                   gate_partial_grating=float(g('gate_partial_snr_grating', 30.0)),
+                   two_gauss=bool(g('profile_fit_two_gauss', False)),
+                   two_gauss_dchi2=float(g('two_gauss_dchi2', 25.0)),
+                   two_gauss_k=float(g('two_gauss_dchi2_k', 2.0)),
+                   two_gauss_halo_max=float(g('two_gauss_halo_max', 0.95)),
+                   two_gauss_sigma_max=float(g('two_gauss_sigma_max', 0.6)),
+                   two_gauss_flux_flag=float(g('two_gauss_flux_flag', 0.10)))
+
+    def try_two_gauss(self, R0):
+        """The two-Gaussian galaxy on top of own fit R0: (R2, adopt, stats) or None
+        when the fit fails. ``stats``: dchi2 (/ c), thr, c, nu, h, ratio, sigma2,
+        at_cap, dflux (reported flux of R2 over R0's, minus 1)."""
+        try:
+            R2 = PF.fit_two(R0, h_max=self.two_gauss_halo_max, sigma_max=self.two_gauss_sigma_max)
+        except Exception:                               # noqa: BLE001 - the single Gaussian stays
+            return None
+        adopt, st = PF.two_gauss_test(R0, R2, self.two_gauss_dchi2, self.two_gauss_k)
+        adopt = adopt and R2.params.get('halo', 0.0) > 0
+        st.update(h=R2.halo_fit['h'], ratio=R2.halo_fit['ratio'], sigma2=R2.halo_fit['sigma2'],
+                  at_cap=R2.halo_fit['at_cap'], dflux=PF.reported_flux_change(R0, R2))
+        return R2, adopt, st
 
 
 @dataclass
@@ -140,7 +171,24 @@ class PrismShape:
             return None
         params = dict(centre=float(h['PFCEN']), centre_prior=float(h['PFCENPR']), drift=float(h['PFDRIFT']),
                       width=float(h['PFWIDTH']), width_change=float(h['PFDWIDTH']), pivot=float(h['PFPIVOT']))
+        params.update(halo_from_header(h))
         return cls(product=product, shape=str(h['PFSHAPE']), params=params, pa_v3=float(h.get('PFPAV3', np.nan)))
+
+
+def halo_from_header(h):
+    """{halo, halo_ratio} of a two-Gaussian galaxy from a product header (PFHALO,
+    PFHRATIO), or {} for the single Gaussian."""
+    if float(h.get('PFHALO', 0.0)) > 0:
+        return dict(halo=float(h['PFHALO']), halo_ratio=float(h['PFHRATIO']))
+    return {}
+
+
+def halo_cards(params):
+    """PFHALO / PFHRATIO of a fitted shape with a two-Gaussian galaxy, else nothing."""
+    if params.get('halo', 0.0) > 0:
+        return {'PFHALO': (float(params['halo']), 'Second galaxy Gaussian: fraction of the light'),
+                'PFHRATIO': (float(params['halo_ratio']), 'Its width / the core width (PFWIDTH)')}
+    return {}
 
 
 @dataclass
@@ -162,6 +210,7 @@ class ChainResult:
     pa_v3: float = np.nan
     candidates: dict = field(default_factory=dict, repr=False)
     dominance: float = np.nan       # other-source light / own light (light rule) or clean fraction (pixels rule)
+    two: dict = field(default_factory=dict)   # the two-Gaussian test of the own fit (empty: not tried)
 
     def header_cards(self):
         """Primary-header cards of the chain (written to ``_pf.fits``, copied to ``_spec.fits``)."""
@@ -196,6 +245,20 @@ class ChainResult:
             'PFCHI2': (float(self.result.chi2_red), 'Reduced chi2 of the chosen fit'),
             'PFNPIX': (int(self.result.npix), 'Pixels in the fit'),
         }
+        c.update(halo_cards(p))
+        t = self.two
+        if t:
+            c.update({
+                'PF2G': (bool(t.get('adopt', False)), 'Two-Gaussian galaxy adopted'),
+                'PF2GDX2': (_f(t.get('dchi2', np.nan)), 'Its chi2 gain / c over the single Gaussian'),
+                'PF2GTHR': (_f(t.get('thr', np.nan)), 'Adopted above: dchi2 + k ln N_eff'),
+                'PF2GC': (_f(t.get('c', np.nan)), 'c = max(chi2 / N_eff, 1), single Gaussian'),
+                'PF2GH': (_f(t.get('h', np.nan)), 'Its second-Gaussian light fraction'),
+                'PF2GR': (_f(t.get('ratio', np.nan)), 'Its second / core width'),
+                'PF2GDF': (_f(t.get('dflux', np.nan)), 'Its reported flux / single Gaussian - 1'),
+                'PF2GFLAG': (bool(t.get('flag', False)), 'Adopted and |PF2GDF| > PF2GFTH'),
+                'PF2GFTH': (_f(t.get('flag_thr', np.nan)), 'Flux-change flag threshold'),
+            })
         return c
 
 
@@ -368,7 +431,21 @@ def choose_shape(exps, cfg, is_prism, prism=None, clean=None, log=None, contam_r
         reason = f'{reason};prism'
     R = cands[choice]
     shape = 'own' if choice == 'own' else choice
+    two = {}
+    if cfg.two_gauss and choice == 'own' and not reason.startswith('gate_partial'):
+        # the two-Gaussian galaxy, on top of the finished own fit; kept only when the data ask for it
+        with TM.step('chain_two'):
+            out = cfg.try_two_gauss(R)
+        if out is None:
+            two = dict(adopt=False, why='fit_failed')
+        else:
+            R2, adopt, two = out
+            two.update(adopt=adopt, flag_thr=cfg.two_gauss_flux_flag,
+                       flag=bool(adopt and np.isfinite(two['dflux']) and abs(two['dflux']) > cfg.two_gauss_flux_flag))
+            cands['own2'] = R2
+            if adopt:
+                R = R2
     return ChainResult(result=R, shape=shape, chain='gated', reason=reason, snr_det=snr, gate=gate, detection=det,
                        chi2=chi2, npix_common=npix_common, bound_bits=bits, srcy_flag=srcy, shdis=shdis,
                        prism_product=prism.product if (prism is not None and transfer == 'used') else '',
-                       transfer=transfer, pa_v3=pa, candidates=cands, dominance=dom)
+                       transfer=transfer, pa_v3=pa, candidates=cands, dominance=dom, two=two)

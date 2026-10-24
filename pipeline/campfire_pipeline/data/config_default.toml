@@ -112,6 +112,18 @@
     own_vs_prism_min_gate = 100.0            # and only above this gate (below it the PRISM shape is kept)
     own_vs_prism_centre = 0.08               # and only when the shapes differ by more than this in centre
     own_vs_prism_log_width = 0.3             # or this in ln width
+    # Two-Gaussian galaxy (profile_fit.fit_two): an own fit is refitted with the galaxy as
+    # (1 - h) G(sigma) + h G(r sigma), one centre, h constant in [0, two_gauss_halo_max], the second
+    # width a fixed multiple of the core width and <= two_gauss_sigma_max slit units at the pivot.
+    # Adopted when dchi2 / c > two_gauss_dchi2 + two_gauss_dchi2_k ln N_eff, c = max(chi2 / N_eff, 1)
+    # of the single Gaussian; otherwise the single-Gaussian result is kept unchanged. The shape (h, r:
+    # PFHALO, PFHRATIO) goes wherever the shape goes: PRISM -> grating transfer, pass 1, joint solve.
+    profile_fit_two_gauss = false
+    two_gauss_dchi2 = 25.0
+    two_gauss_dchi2_k = 2.0
+    two_gauss_halo_max = 0.95
+    two_gauss_sigma_max = 0.6
+    two_gauss_flux_flag = 0.10               # PF2GFLAG: adopted and the reported flux changed by more than this
     # Shape priors and bounds. PROVISIONAL: calibrated on two observations (ember_cosmos_p14,
     # p9; PRISM V0 fits at S/N >= 100 after the SRCFLUX=F partner fix: centre std 0.082 / MAD
     # 0.055, width median 0.157, ln width std 0.77 / MAD 0.51, drift std 0.030, width change
