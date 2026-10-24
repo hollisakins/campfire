@@ -278,3 +278,22 @@ def test_extension_pixels_are_predicted_not_masked(monkeypatch):
             fr[n] = fr[n][keep]
     P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
     assert P.unmodelled[0][lit].all()
+
+
+def test_joint_product_keeps_the_solve_shape():
+    """A receiver's profile keeps the shape its joint solve used; the chain's answer on the
+    jointly subtracted data is kept beside it."""
+    from campfire_pipeline.nirspec import profile_chain as PC
+    from campfire_pipeline.nirspec.profile_product import _joint_fixed_chain
+    exps = T._exposures(src_y=0.0)
+    T._inject(exps, dict(centre=0.05, drift=0.0, width=0.2, width_change=0.0), [0, 0, 0], 50.0, 0.5)
+    cfg = PC.ChainConfig()
+    C0 = PC.choose_shape(exps, cfg, True)
+    M = PF.ProfileModel(exps)
+    params = dict(centre=-0.1, drift=0.01, width=0.12, width_change=0.0, pivot=M.pivot, centre_prior=M.c_prior)
+    V = PJ.JointView(sid=1, group=[1, 2], solution=None, pass1_of={}, params_in=params,
+                     eoff_in=np.zeros(3), shape_src='prism')
+    C = _joint_fixed_chain(exps, cfg, V, C0)
+    assert C.shape == 'prism' and C.chain == 'joint' and C.refit is C0
+    assert C.result.params['centre'] == pytest.approx(-0.1, abs=1e-9)
+    assert C.result.params['width'] == pytest.approx(0.12, rel=1e-9)

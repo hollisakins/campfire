@@ -133,6 +133,10 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
         prism = CT.read_prism_shape(workspace_dir, prism_product)
     ratio = (lambda R: CT.contam_light_ratio(P, R, exps)) if P is not None and clean is not None else None
     C = PC.choose_shape(exps, cfg, is_prism, prism=prism, clean=clean, log=log, contam_ratio=ratio)
+    if joint is not None and not joint.refit and joint.params_in is not None:
+        # the profile keeps the shape the joint solve used (its spectra hold for that shape); the
+        # chain's answer on the jointly subtracted data is kept for the record (PFJDCEN, PFJRSHP)
+        C = _joint_fixed_chain(exps, cfg, joint, C)
     pairs = None
     if P is not None:
         if exps0 is not None:
@@ -159,6 +163,22 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
         if not is_prism and prism_product and fl['scan_xdisp_tol'] >= 0:
             S.cross_check(read_scan(workspace_dir, prism_product), tol=fl['scan_xdisp_tol'])
     return Analysis(exps=exps, chain=C, prediction=P, clean=clean, contam_state=cstate, scan=S, pairs=pairs)
+
+
+def _joint_fixed_chain(exps, cfg, joint, C_refit):
+    """A ``ChainResult`` at the joint solve's (one-pass) shape on the jointly subtracted data;
+    ``refit`` = the chain's own answer there."""
+    import dataclasses
+    from campfire_pipeline.nirspec import profile_fit as PF
+    from campfire_pipeline.nirspec import profile_joint as PJ
+    M = PF.ProfileModel(exps, chromatic=True, priors=cfg.priors, bounds=cfg.bounds)
+    p, e = PJ.shape_at(joint.params_in, joint.eoff_in, M)
+    R = PF.fit_fixed(model=M, shape=dict(centre_offset=float(p[0] - M.c_prior), drift=float(p[1]),
+                                         width=float(np.exp(p[2])), width_change=float(p[3])), eoff=e)
+    C = dataclasses.replace(C_refit, result=R, shape=joint.shape_src or C_refit.shape, chain='joint',
+                            reason='joint:solve_shape', bound_bits=0, candidates={'joint': R})
+    C.refit = C_refit
+    return C
 
 
 def read_scan(workspace_dir, product):
@@ -278,8 +298,11 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
         if joint is not None or PJ.joint_settings(stage_config)['enabled']:
             hdr['PFJOINT'] = (0, 'Members of the joint-solve group (0: none)')
         if joint is not None:
-            for k, v in joint.cards(R).items():
+            Cr = getattr(C, 'refit', C)
+            for k, v in joint.cards(Cr.result).items():
                 hdr[k] = v
+            hdr['PFJREFIT'] = (bool(joint.refit), 'Profile from the chain rerun (else the solve shape)')
+            hdr['PFJRSHP'] = (f'{Cr.shape}:{Cr.reason}'[:68], 'Chain answer on the jointly subtracted data')
             hdus.append(joint.table())
             log(f"{product_name}: joint solve with {joint.group}, shape {C.shape} after it "
                 f"(centre {hdr.get('PFJDCEN', -999):+.3f}, ln width {hdr.get('PFJDLW', -999):+.3f} vs the solve's)")

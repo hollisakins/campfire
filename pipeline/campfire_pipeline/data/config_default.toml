@@ -178,6 +178,8 @@
     contam_joint_sens_centre = 0.02          # typical shape error of the others for the shape-limited flag
     contam_joint_sens_log_width = 0.1        # (pf_joint_flag 2, PFJSENS)
     contam_joint_clip = 5.0
+    contam_joint_refit = false               # true: the receivers' shape chain reruns on the jointly subtracted
+                                             # data (moved 7420 by +0.18 in centre); false: the solve's shape
     # Same-slitlet neighbour scan on the residuals
     scan_neighbours = true
     scan_action = "report_only"              # "report_only" (proposed file) | "auto_override"

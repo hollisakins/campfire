@@ -67,6 +67,7 @@ def joint_settings(sc):
                 smooth=float(g('contam_joint_smooth', 0.0)),
                 degenerate=float(g('contam_joint_degenerate', 0.9)),
                 clip=float(g('contam_joint_clip', 5.0)),
+                refit=bool(g('contam_joint_refit', False)),
                 sens=(float(g('contam_joint_sens_centre', 0.02)), float(g('contam_joint_sens_log_width', 0.1))))
 
 
@@ -665,6 +666,9 @@ class JointView:
     solution: object              # JointSolution
     pass1_of: dict                # other member sid -> joint ``Pass1``
     params_in: dict = None        # the one-pass shape the joint solve used
+    eoff_in: np.ndarray = None    # its per-exposure pointing offsets
+    shape_src: str = ''           # own | prism | default (one-pass chain)
+    refit: bool = False           # rerun the shape chain on the jointly subtracted data (else keep the solve's shape)
     degenerate: float = 0.9
     nwin: int = 31
 
@@ -749,7 +753,7 @@ def _integrated(v, err, flux=None):
     return a / np.sqrt(np.sum(iv)), rel
 
 
-def views(members, sols, degenerate=0.9, nwin=31):
+def views(members, sols, degenerate=0.9, nwin=31, refit=False):
     """One ``JointView`` per member."""
     group = [m.sid for m in members]
     out = {}
@@ -757,7 +761,8 @@ def views(members, sols, degenerate=0.9, nwin=31):
         s = sols[m.sid]
         out[m.sid] = JointView(sid=m.sid, group=group, solution=s,
                                pass1_of={x.sid: s.pass1(x.sid) for x in members if x.sid != m.sid},
-                               params_in=m.params, degenerate=degenerate, nwin=nwin)
+                               params_in=m.params, degenerate=degenerate, nwin=nwin,
+                               eoff_in=np.asarray(m.eoff, float), shape_src=m.shape_src, refit=refit)
     return out
 
 
@@ -810,7 +815,7 @@ def run_group(tasks, workspace, stage_config, pass1_products, redo=None, log=Non
         log(f'joint solve {tag}: {s0.npix} pixels, {s0.nclip} clipped, {s0.seconds:.1f} s')
         st = CT.pass1_settings(stage_config)
         nwin = st['smooth_prism'] if tasks[0][7] else st['smooth_grating']
-        V = views(members, sols, degenerate=js['degenerate'], nwin=nwin)
+        V = views(members, sols, degenerate=js['degenerate'], nwin=nwin, refit=js['refit'])
     except Exception as e:                       # noqa: BLE001 - the one-pass products stand
         import traceback
         log(f'joint solve {tag} failed ({type(e).__name__}: {e}); one-pass products kept')
