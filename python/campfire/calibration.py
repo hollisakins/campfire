@@ -58,7 +58,8 @@ SVO_FILTER_MAP = {
     "f444w": "JWST/NIRCam.F444W",
     "f460m": "JWST/NIRCam.F460M",
     "f480m": "JWST/NIRCam.F480M",
-    "f770w": "JWST/NIRCam.F770W",
+    # JWST MIRI
+    "f770w": "JWST/MIRI.F770W",
     # HST ACS/WFC
     "f435w": "HST/ACS_WFC.F435W",
     "f606w": "HST/ACS_WFC.F606W",
@@ -88,7 +89,8 @@ SVO_FILTER_MAP = {
 
 SVO_BASE_URL = "http://svo2.cab.inta-csic.es/theory/fps/getdata.php"
 
-# Fallback band edges (microns) — used when SVO is unreachable.
+# Approximate band edges (microns), used only to pre-select bands that
+# overlap a spectrum; never as a transmission curve.
 _FILTER_EDGES = {
     "f070w": (0.624000, 0.781000),
     "f090w": (0.788550, 1.023550),
@@ -190,9 +192,16 @@ def _download_filter_curve(band: str) -> Optional[tuple]:
 def get_filter_curve(band: str) -> tuple:
     """Get a filter transmission curve (wavelength_um, transmission).
 
-    Checks the local cache first, downloads from SVO if needed, falls
-    back to a top-hat approximation using known band edges.
+    Checks the local cache first, then downloads from SVO. Raises if
+    neither works: there is no approximate fallback, because a made-up
+    curve silently biases every synthetic flux computed from it.
     """
+    if band not in SVO_FILTER_MAP:
+        raise ValueError(
+            f"Unknown band '{band}': not in SVO_FILTER_MAP. "
+            f"Available bands: {sorted(SVO_FILTER_MAP.keys())}"
+        )
+
     cache = _cache_dir() / f"{band}.npz"
 
     if cache.exists():
@@ -205,20 +214,10 @@ def get_filter_curve(band: str) -> tuple:
         np.savez_compressed(cache, wavelength=wave, transmission=trans)
         return wave, trans
 
-    if band in _FILTER_EDGES:
-        blue, red = _FILTER_EDGES[band]
-        warnings.warn(
-            f"Could not download filter curve for '{band}' from SVO. "
-            f"Using top-hat approximation ({blue:.3f}–{red:.3f} μm).",
-            stacklevel=2,
-        )
-        wave = np.array([blue - 0.001, blue, red, red + 0.001])
-        trans = np.array([0.0, 1.0, 1.0, 0.0])
-        return wave, trans
-
-    raise ValueError(
-        f"Unknown band '{band}': not in SVO_FILTER_MAP or _FILTER_EDGES. "
-        f"Available bands: {sorted(SVO_FILTER_MAP.keys())}"
+    raise RuntimeError(
+        f"No filter curve for '{band}' ({SVO_FILTER_MAP[band]}): not cached "
+        f"at {cache} and the SVO download failed. Populate the cache from a "
+        "machine that can reach SVO."
     )
 
 
