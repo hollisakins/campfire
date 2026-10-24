@@ -485,3 +485,26 @@ def test_contaminant_pixels_without_calibration_bounded_by_continuity(stand_ins)
     assert not P.unmodelled[0][blk].any()
     P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.', gap_columns=0)
     assert P.unmodelled[0][blk & (np.abs(PF.frame_image(Rc, 0)) > 0)].all()
+
+
+def test_continuity_ignores_covered_pixels_without_calibration(stand_ins):
+    """2976 on 5215: the contaminant's last columns carry no calibration (no light in the
+    prediction), and its mapped trace continues past them. Those columns must not
+    bound the gap beyond with zero light: the gap next to bright light stays masked."""
+    t_exps, _ = _source(1, 0.0, 10.0)
+    for e in t_exps:
+        e.var = np.full(e.y.shape, 1e-4)
+    c_exps, Rc = _source(2, 0.3, 50.0)
+    P1 = _pass1_of(Rc, 2)
+    P1.nosrc = set()
+    for fr in P1.frames.values():
+        col = fr['idx'] % NX
+        keep = col < 100                                       # its pass 1 stops at column 100 ...
+        for n in ('idx', 'img', 'err', 'cal'):
+            fr[n] = fr[n][keep]
+        col = fr['idx'] % NX
+        fr['cal'] = np.where(col >= 97, np.nan, fr['cal'])     # ... and its last 3 columns have no flat
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+    bright = np.abs(np.nan_to_num(PF.frame_image(Rc, 0)))[:, 95] > 0.05 * np.nanmax(np.abs(PF.frame_image(Rc, 0)))
+    assert bright.any()
+    assert P.unmodelled[0][bright, 100:110].all()

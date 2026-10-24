@@ -69,7 +69,7 @@ from campfire_pipeline.nirspec import trace_overlap as TO
 
 MAPS_SUBDIR = 'tracemaps'
 PASS1_SUBDIR = 'pass1'
-PASS1_VERSION = '7'
+PASS1_VERSION = '8'
 MIN_EXPOSURE_PIXELS = 100  # per-exposure clean fractions only for exposures with this many main-shutter pixels
 DPRED_FLOOR = 0.1          # prediction uncertainty floor, fraction of the prediction (ASSUMED, to be measured)
 _NOD = re.compile(r'^(jw\d+_\d{5})_(\d{5})_(nrs[12])')
@@ -1040,6 +1040,7 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
             dadd = np.zeros(e.y.shape)
             covered = np.zeros(e.y.shape, bool)
             nocal = np.zeros(e.y.shape, bool)
+            badt = np.zeros(e.y.shape, bool)
             for j, w in terms:
                 key = exposure_key(exps[j].name)
                 fr = P1.frames.get(key)
@@ -1062,11 +1063,16 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
                     nocal[ty[ok][own], tx[ok][own]] = True
                     bad &= ~own
                 unmod[k][ty[ok][bad], tx[ok][bad]] = True
+                badt[ty[ok][bad], tx[ok][bad]] = True
                 covered[ty[ok], tx[ok]] = True
                 np.add.at(add, (ty[ok][good], tx[ok][good]), w * img[good] * conv[good])
                 np.add.at(dadd, (ty[ok][good], tx[ok][good]), abs(w) * fr['err'][ok][good].astype(float) * conv[good])
+            # pixels whose predicted light is known: the continuity rule extrapolates from these
+            # only (a covered pixel without calibration has no light in ``add``; read as zero it
+            # would bound everything beyond it: 2976 on 5215 at 4.42-4.48 um, round 5)
+            reached = covered & ~nocal & ~badt
             if nocal.any():
-                unmod[k] |= unpredictable_gap(nocal, covered & ~nocal, add, sig, gap_columns, kappa=gap_kappa)
+                unmod[k] |= unpredictable_gap(nocal, reached, add, sig, gap_columns, kappa=gap_kappa)
             # pixels with the contaminant's light but no prediction: past its nominal range, and
             # mapped pixels its pass-1 frames do not reach (its cutout or its spectrum ends short
             # of the range). Unmodelled when the contaminant is bright enough to matter: its
@@ -1081,7 +1087,7 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
                 if P1.nosrc is not None and not any(exposure_key(exps[j].name) in P1.nosrc for j, _ in terms):
                     gap = px & ~covered
                     if gap.any() and gap_columns > 0:
-                        gap = unpredictable_gap(gap, covered, add, sig, gap_columns, kappa=gap_kappa)
+                        gap = unpredictable_gap(gap, reached, add, sig, gap_columns, kappa=gap_kappa)
                     unmod[k] |= gap
             if not px.any():
                 continue
