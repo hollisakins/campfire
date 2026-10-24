@@ -6,9 +6,10 @@
 # custom Caddy build; see the README before switching.
 #
 # Behind Cloudflare the connecting peer is always an edge node, so the
-# Cloudflare ranges are trusted proxies and {client_ip} / X-Forwarded-For
-# resolve to the visitor. Update the list from
-# https://www.cloudflare.com/ips/ if it ever changes.
+# Cloudflare ranges are trusted proxies and {client_ip} resolves to the
+# visitor (CF-Connecting-IP). Upstreams get X-Forwarded-For rewritten to that
+# single value. Update the list from https://www.cloudflare.com/ips/ if it
+# ever changes.
 
 {
 	servers {
@@ -27,6 +28,9 @@
 {$WEB_HOST} {
 	import common
 	reverse_proxy web:3000 {
+		# Overwrite, never append: the app reads the FIRST entry of
+		# X-Forwarded-For, and Cloudflare appends to whatever the client sent.
+		header_up X-Forwarded-For {client_ip}
 		header_up X-Real-IP {client_ip}
 		# Streaming routes (cutouts, FITS) may take up to 60 s.
 		transport http {
@@ -43,6 +47,7 @@
 	@api path /auth/v1/* /rest/v1/*
 	handle @api {
 		reverse_proxy kong:8000 {
+			header_up X-Forwarded-For {client_ip}
 			header_up X-Real-IP {client_ip}
 		}
 	}

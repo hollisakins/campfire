@@ -34,6 +34,9 @@ services:
     image: supabase/postgres:17.6.1.136
     restart: unless-stopped
     logging: *default-logging
+    # Docker's default /dev/shm is 64 MB; parallel workers under a 6 GB
+    # shared_buffers need far more.
+    shm_size: 1gb
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:

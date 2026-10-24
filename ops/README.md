@@ -70,8 +70,13 @@ Each step names an owner and the gate that closes it.
    checklist with measured timings (below, filled in).
 5. **Deploy workflow** (`.github/workflows/deploy.yml`, not yet written): on push
    to `main` build the image on a GitHub runner, push to GHCR `:<sha>`, SSH with a
-   forced-command deploy key, `scripts/deploy.sh <sha>`. Gate: a merge to main
-   lands on staging unattended. No self-hosted runner: the repo is public.
+   forced-command deploy key, `scripts/deploy.sh <sha>`. The key's
+   `authorized_keys` line is
+   `restrict,command="/srv/campfire/repo/ops/scripts/deploy.sh" ssh-ed25519 …`
+   (`restrict` disables forwarding, pty and agent); the script accepts only
+   `deploy <full 40-hex sha>` and only a sha already on `origin/main`. Gate: a
+   merge to main lands on staging unattended. No self-hosted runner: the repo
+   is public.
 6. **Phase 1, web cutover.** Cloudflare DNS: `campfire.hollisakins.com` → VM,
    web still on hosted Supabase. Vercel stays deployed as the rollback. Expect
    +20 ms per query (Indiana ↔ us-east-1) for the duration. Run one to two weeks.
@@ -84,12 +89,14 @@ Each step names an owner and the gate that closes it.
 ## First boot (step 3)
 
 ```bash
-# as the ubuntu user on the VM
-sudo mkdir -p /srv/campfire && sudo mount /dev/vdb /srv/campfire      # or bind-mount Exosphere's /media/volume/<name>
-echo '/dev/vdb /srv/campfire ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab
-sudo git clone https://github.com/hollisakins/campfire.git /srv/campfire/repo
-sudo chown -R ubuntu:ubuntu /srv/campfire/repo
-sudo /srv/campfire/repo/ops/scripts/bootstrap.sh
+# as the ubuntu user on the VM. Exosphere has already mounted the volume at
+# /media/volume/campfire-prod (device /dev/sdb); bootstrap.sh adopts that mount
+# by making /srv/campfire a symlink to it. Only on a box without the Exosphere
+# mount pass --volume-device /dev/sdb and it formats/mounts by UUID itself.
+sudo git clone https://github.com/hollisakins/campfire.git /tmp/campfire-repo
+sudo /tmp/campfire-repo/ops/scripts/bootstrap.sh            # creates /srv/campfire first
+sudo mv /tmp/campfire-repo /srv/campfire/repo && sudo chown -R ubuntu:ubuntu /srv/campfire/repo
+sudo /srv/campfire/repo/ops/scripts/bootstrap.sh            # second pass installs the timers
 # log out and in (docker group), then:
 cd /srv/campfire/repo/ops
 cp .env.example .env && chmod 600 .env          # fill every blank
@@ -136,11 +143,15 @@ Prepare in the days before:
 - [ ] Export from the hosted dashboard, by hand (none of it is in the repo):
       Auth → URL Configuration (site url, redirect list) → `.env`;
       Auth → Rate Limits → `RATE_LIMIT_*`; Auth → Email Templates → five HTML
-      files in `/srv/campfire/auth-templates/`; Auth → SMTP (Resend) → `SMTP_*`;
-      Settings → API → JWT secret → `JWT_SECRET`, anon + service keys, Max rows
-      → `PGRST_DB_MAX_ROWS`.
+      files in `/srv/campfire/auth-templates/`; Auth → SMTP (Resend,
+      `team@campfire.hollisakins.com`) → `SMTP_*`; Settings → API → JWT secret →
+      `JWT_SECRET`, anon + service keys, Max rows → `PGRST_DB_MAX_ROWS`.
+      **Every exported value lives in two places: the 1Password vault and the
+      VM's `ops/.env`.** The hosted project is deleted at decommission, so
+      1Password is the only copy that outlives it.
 - [ ] GoTrue version: hosted shows it at `https://<ref>.supabase.co/auth/v1/health`;
-      the `auth` image tag in `docker-compose.yml` must be ≥ it (migrations only run forward).
+      the `auth` image tag in `docker-compose.yml` must be ≥ it (migrations only
+      run forward). Record the hosted version in 1Password with the rest.
 - [ ] Hosted Postgres version (17.6.1.025 on 2026-10-24) ≤ the `db` image tag.
 - [ ] Rehearsal (step 4) done on a fresh dump, with timings written here:
       dump ____ min, restore ____ min, verification ____ min.
@@ -148,33 +159,48 @@ Prepare in the days before:
 
 The window (target under 1 h):
 
-1. **Freeze writes on the old database** so nothing written after the dump is lost:
+1. **Freeze writes on the old database** so nothing written after the dump is
+   lost. PostgREST logs in as `authenticator` and `SET ROLE`s per request, so
+   settings on `anon` / `authenticated` / `service_role` never apply; the
+   setting goes on the login role, and its pooled sessions (which never log in
+   again) are terminated so they reconnect and pick it up:
    ```sql
-   alter role authenticated set default_transaction_read_only = on;
-   alter role anon set default_transaction_read_only = on;
-   alter role service_role set default_transaction_read_only = on;
+   alter role authenticator set default_transaction_read_only = on;
+   select pg_terminate_backend(pid) from pg_stat_activity where usename = 'authenticator';
    ```
-   (reverts with `reset default_transaction_read_only`; sessions pick it up on reconnect.)
+   Every write through the API now fails with `read-only transaction`; reads
+   continue. GoTrue (`supabase_auth_admin`) is unaffected and still writes
+   sessions, refresh tokens and sign-ups: either disable sign-in for the window
+   (Dashboard → Auth → Providers → Email off) or accept that auth rows written
+   during the window are lost. Reverts with
+   `alter role authenticator reset default_transaction_read_only` plus the same
+   `pg_terminate_backend`.
 2. **Dump** with the CLI against the hosted connection string:
    ```bash
    supabase db dump --db-url "$OLD" -f roles.sql --role-only
    supabase db dump --db-url "$OLD" -f schema.sql
    supabase db dump --db-url "$OLD" -f data.sql --data-only --use-copy
+   pg_dump "$OLD" --schema=supabase_migrations --no-owner -f migrations_history.sql
    ```
-   `roles.sql` carries the `ALTER ROLE authenticator SET pgrst.db_pre_request`
-   setting the release header hook depends on; check it is there.
-3. **Restore** into the VM (`db` up, nothing else):
+   The CLI dump **excludes the `auth` schema DDL** (its rows are in `data.sql`)
+   and **excludes `supabase_migrations` entirely**; the fourth command is
+   therefore unconditional. `roles.sql` carries the
+   `ALTER ROLE authenticator SET pgrst.db_pre_request` setting the release
+   header hook depends on; check it is there.
+3. **Restore** into the VM, in this order:
    ```bash
+   docker compose up -d db auth          # GoTrue creates/migrates the auth schema itself
+   docker compose logs auth | grep -i migrat   # wait until its migrations finish
    psql "$NEW" -f roles.sql
    psql "$NEW" -f schema.sql
+   psql "$NEW" -f migrations_history.sql
    psql "$NEW" -v ON_ERROR_STOP=1 -c 'set session_replication_role = replica' -f data.sql
    ```
-   Then `supabase migration list --db-url "$NEW"`: the history table
-   `supabase_migrations.schema_migrations` must list every migration in
-   `supabase/migrations/`. If the dump left it out, recreate it from the old
-   database (`pg_dump -t supabase_migrations.schema_migrations`) or
-   `supabase migration repair --status applied <version>` per file. Without it
-   the first `deploy.sh` replays the whole chain.
+   The `auth` container goes first because `schema.sql` has no `auth.*` tables:
+   loading `data.sql` before GoTrue has created them fails. Then
+   `supabase migration list --db-url "$NEW"` must list every file in
+   `supabase/migrations/` as applied; otherwise `deploy.sh` replays the whole
+   chain (`supabase migration repair --status applied <version>` fixes a gap).
 4. **Verify**: `select count(*)` on `spectra`, `objects`, `storage_objects`,
    `auth.users` against the old numbers; `supabase/tests/check_*.sql` guards;
    `select jobname from cron.job` shows the two jobs.
@@ -188,18 +214,27 @@ The window (target under 1 h):
 7. **Pause** the hosted project (Dashboard → Settings → General → Pause).
    Delete it after two quiet weeks. Then cancel the subscriptions.
 
-Rollback at any point before step 7: `reset` the three roles on the old
-database and redeploy the previous image (built against the hosted URL).
+Rollback at any point before step 7: `reset` the `authenticator` role on the
+old database (and terminate its sessions) and redeploy the previous image
+(built against the hosted URL).
+
+**Known follow-up (not in Phase 0):** the web container's server-side Supabase
+calls go out through `NEXT_PUBLIC_SUPABASE_URL`, i.e. back in through
+Cloudflare, whose 100 s edge timeout is shorter than the 120 s
+`statement_timeout` the sync RPCs run under. A server-only internal URL
+(`http://kong:8000`) for `createServiceClient()` / the server clients removes
+the round trip and the timeout; until then the first page of a sync stream can
+524 under load.
 
 ## Rollback
 
 - **Web** (Phase 1): Cloudflare DNS `campfire.hollisakins.com` back to the
   Vercel CNAME. Vercel stays deployed until decommission.
 - **Database** (Phase 2): unpause the hosted project, `reset` the read-only
-  roles, redeploy the image built against the hosted URL. Writes made on the VM
+  setting on `authenticator`, redeploy the image built against the hosted URL. Writes made on the VM
   between cutover and rollback are lost; hence the two quiet weeks before deletion.
-- **A bad deploy**: `scripts/deploy.sh <previous sha>` (`deploys.log` has the
-  history; `deploy.sh` itself rolls back when `/api/health` fails).
+- **A bad deploy**: `scripts/deploy.sh <previous full sha>` (`deploys.log` has
+  the history; `deploy.sh` itself rolls back when `/api/health` fails).
 
 ## Day 2
 

@@ -51,7 +51,7 @@ systemctl list-timers 'campfire-*'        # backup / snapshot / restore-check
 journalctl -u campfire-backup -n 50
 cat /srv/campfire/backups/last-success
 df -h /srv/campfire
-scripts/deploy.sh <sha>                   # deploy or roll back
+scripts/deploy.sh <full 40-hex sha>       # deploy or roll back (sha must be on origin/main)
 ```
 
 Studio (dashboard): from your laptop `ssh -L 8000:127.0.0.1:8000 <vm>` then

@@ -10,8 +10,8 @@
 set -euo pipefail
 
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck disable=SC1090
-set -a; source "${OPS_DIR}/.env"; set +a
+# shellcheck source=lib.sh
+source "${OPS_DIR}/scripts/lib.sh"; load_env "${OPS_DIR}/.env"
 
 DATA_ROOT="${CAMPFIRE_DATA_ROOT:-/srv/campfire}"
 LOCAL_DIR="${DATA_ROOT}/backups"
@@ -41,10 +41,11 @@ for _ in $(seq 1 60); do
 done
 docker exec "$NAME" pg_isready -U postgres -h localhost >/dev/null
 
-# Pre-existing extensions/schemas in the image produce "already exists"
-# errors; those are expected, so the exit status is not trusted. The row
-# counts below are the verdict.
-docker exec "$NAME" pg_restore -U supabase_admin -d postgres --no-owner --role=postgres \
+# --clean --if-exists so the image's baseline auth/extension objects are
+# replaced rather than colliding (a collision on auth.users would report
+# users=0 as a false alarm). Extension "already exists" errors remain, so the
+# exit status is not trusted; the row counts below are the verdict.
+docker exec "$NAME" pg_restore -U supabase_admin -d postgres --clean --if-exists --no-owner --role=postgres \
   "/backups/$(basename "$DUMP")" >/tmp/restore-check.log 2>&1 || true
 
 SPECTRA="$(docker exec "$NAME" psql -U supabase_admin -d postgres -Atc 'select count(*) from public.spectra')"

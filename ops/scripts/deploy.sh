@@ -5,7 +5,7 @@
 #   ops/scripts/deploy.sh <git sha>
 #
 # Also usable as the forced command of a deploy-only SSH key
-# (authorized_keys: command="/srv/campfire/repo/ops/scripts/deploy.sh" ...),
+# (authorized_keys: restrict,command="/srv/campfire/repo/ops/scripts/deploy.sh" ...),
 # in which case the sha is taken from $SSH_ORIGINAL_COMMAND ("deploy <sha>").
 # The GitHub workflow that calls it is step 5 of ops/README.md.
 #
@@ -23,7 +23,7 @@ OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${OPS_DIR}/.env"
 [[ -f "$ENV_FILE" ]] || { echo "missing ${ENV_FILE}" >&2; exit 1; }
 # shellcheck disable=SC1090
-set -a; source "$ENV_FILE"; set +a
+source "${OPS_DIR}/scripts/lib.sh"; load_env "$ENV_FILE"
 
 SHA="${1:-}"
 if [[ -z "$SHA" && -n "${SSH_ORIGINAL_COMMAND:-}" ]]; then
@@ -32,7 +32,9 @@ if [[ -z "$SHA" && -n "${SSH_ORIGINAL_COMMAND:-}" ]]; then
   [[ "$verb" == "deploy" ]] || { echo "refused: ${SSH_ORIGINAL_COMMAND}" >&2; exit 2; }
   SHA="$arg"
 fi
-[[ "$SHA" =~ ^[0-9a-f]{7,40}$ ]] || { echo "usage: deploy.sh <git sha>" >&2; exit 2; }
+# Full 40-hex only: GHCR tags carry the full sha, and a short one from the CI
+# key is a sign something upstream is wrong.
+[[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "usage: deploy.sh <full 40-hex git sha>" >&2; exit 2; }
 
 REPO_DIR="${REPO_DIR:-/srv/campfire/repo}"
 WEB_PORT="${WEB_PORT:-3000}"
@@ -80,6 +82,11 @@ log "deploying ${SHA} (previous: ${PREV:-none})"
 
 log "checking out ${SHA} in ${REPO_DIR}"
 git -C "$REPO_DIR" fetch -q origin
+# Only commits already on main deploy: the CI key cannot ship a branch.
+if ! git -C "$REPO_DIR" merge-base --is-ancestor "$SHA" origin/main 2>/dev/null; then
+  echo "refused: ${SHA} is not on origin/main" >&2
+  exit 3
+fi
 git -C "$REPO_DIR" checkout -q --detach "$SHA"
 
 log "applying migrations"

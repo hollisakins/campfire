@@ -1,21 +1,31 @@
 #!/usr/bin/env bash
-# First-boot setup of a CAMPFIRE VM (Ubuntu 24.04). Idempotent: re-run freely.
+# First-boot setup of the CAMPFIRE VM (Ubuntu 24.04). Idempotent: re-run freely.
 #
-#   sudo ops/scripts/bootstrap.sh [--data-root /srv/campfire] [--repo-dir /srv/campfire/repo]
+#   sudo ops/scripts/bootstrap.sh [--volume-device /dev/sdb]
+#
+# Paths are fixed (the systemd units hard-code them): repo at
+# /srv/campfire/repo, data root at /srv/campfire.
 #
 # Installs Docker (compose plugin), Node 20 (the Supabase CLI via npx and
 # Claude Code), rclone and the psql client; turns on unattended security
-# upgrades; caps journald and the Docker json-file logs; prepares the data
-# root; installs the systemd timers. It changes nothing about the firewall:
-# the Jetstream2 security group owns 22/80/443.
+# upgrades; caps journald and the Docker json-file logs; mounts the data
+# volume; prepares the data root; installs the systemd timers. It changes
+# nothing about the firewall: the Jetstream2 security group owns 22/80/443.
+#
+# Data volume. Exosphere auto-mounts an attached volume at
+# /media/volume/<name> through its own unit. Rather than fight that, the data
+# root ADOPTS the existing mount: /srv/campfire becomes a symlink to it (Docker
+# resolves bind-mount paths through symlinks). Only when no such mount exists
+# and --volume-device is given does the script format (if blank) and mount the
+# device at /srv/campfire itself, by UUID, with nofail.
 set -euo pipefail
 
 DATA_ROOT=/srv/campfire
 REPO_DIR=/srv/campfire/repo
+VOLUME_DEVICE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --data-root) DATA_ROOT="$2"; shift 2 ;;
-    --repo-dir) REPO_DIR="$2"; shift 2 ;;
+    --volume-device) VOLUME_DEVICE="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -94,18 +104,57 @@ MaxRetentionSec=1month
 EOF
 systemctl restart systemd-journald
 
-log "data root ${DATA_ROOT}"
-if ! mountpoint -q "$DATA_ROOT"; then
-  echo "WARNING: ${DATA_ROOT} is not a mount point. Attach the volume and mount it there" >&2
-  echo "         (Exosphere mounts volumes under /media/volume/<name>; bind-mount or fstab it to ${DATA_ROOT})." >&2
+log "data volume -> ${DATA_ROOT}"
+if mountpoint -q "$DATA_ROOT" || { [[ -L "$DATA_ROOT" ]] && mountpoint -q "$(readlink -f "$DATA_ROOT")"; }; then
+  echo "${DATA_ROOT} already backed by a mount: $(findmnt -no SOURCE,TARGET "$(readlink -f "$DATA_ROOT")")"
+else
+  EXO_MOUNT="$(findmnt -rno TARGET | grep -m1 '^/media/volume/' || true)"
+  if [[ -n "$EXO_MOUNT" ]]; then
+    echo "adopting Exosphere mount ${EXO_MOUNT}"
+    if [[ -d "$DATA_ROOT" && ! -L "$DATA_ROOT" ]]; then
+      rmdir "$DATA_ROOT" 2>/dev/null || { echo "${DATA_ROOT} exists and is not empty; move it aside first" >&2; exit 1; }
+    fi
+    ln -sfn "$EXO_MOUNT" "$DATA_ROOT"
+  elif [[ -n "$VOLUME_DEVICE" ]]; then
+    [[ -b "$VOLUME_DEVICE" ]] || { echo "${VOLUME_DEVICE} is not a block device" >&2; exit 1; }
+    if ! blkid -s TYPE -o value "$VOLUME_DEVICE" >/dev/null 2>&1; then
+      echo "no filesystem on ${VOLUME_DEVICE}; creating ext4"
+      mkfs.ext4 -q -L campfire "$VOLUME_DEVICE"
+    fi
+    UUID="$(blkid -s UUID -o value "$VOLUME_DEVICE")"
+    install -d -m 0750 "$DATA_ROOT"
+    if ! grep -q "UUID=${UUID}" /etc/fstab; then
+      echo "UUID=${UUID} ${DATA_ROOT} ext4 defaults,nofail 0 2" >> /etc/fstab
+    fi
+    systemctl daemon-reload
+    mount "$DATA_ROOT"
+  else
+    echo "WARNING: no volume mounted under /media/volume and no --volume-device given;" >&2
+    echo "         ${DATA_ROOT} will live on the root disk until you re-run with --volume-device." >&2
+    install -d -m 0750 "$DATA_ROOT"
+  fi
 fi
-install -d -m 0750 "$DATA_ROOT"
+
+log "data root layout"
 for d in db/data db/config backups auth-templates certs; do
   install -d -m 0750 "$DATA_ROOT/$d"
 done
 # db/data and db/config are chowned by the supabase/postgres entrypoint on
 # first start (it runs as root, then drops to postgres).
-chown "$OPS_USER":"$OPS_USER" "$DATA_ROOT/backups" "$DATA_ROOT/auth-templates" "$DATA_ROOT/certs"
+chown "$OPS_USER":"$OPS_USER" "$DATA_ROOT/auth-templates" "$DATA_ROOT/certs"
+# backup.sh runs pg_dump INSIDE the db container, so the backups dir must be
+# writable by the image's postgres uid; the ops user keeps group access.
+PG_IMAGE="$(grep -m1 -oE 'supabase/postgres:[0-9.]+' "$REPO_DIR/ops/docker-compose.yml" 2>/dev/null || true)"
+if [[ -n "$PG_IMAGE" ]]; then
+  PG_UID="$(docker run --rm --entrypoint id "$PG_IMAGE" -u postgres 2>/dev/null || true)"
+fi
+if [[ -n "${PG_UID:-}" ]]; then
+  chown "$PG_UID":"$(id -g "$OPS_USER")" "$DATA_ROOT/backups"
+  chmod 2770 "$DATA_ROOT/backups"
+else
+  echo "could not resolve the postgres uid from ${PG_IMAGE:-the compose file}; backups/ left to ${OPS_USER}" >&2
+  chown "$OPS_USER":"$OPS_USER" "$DATA_ROOT/backups"
+fi
 
 log "systemd units"
 if [[ -d "$REPO_DIR/ops/systemd" ]]; then

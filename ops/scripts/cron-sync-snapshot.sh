@@ -9,8 +9,8 @@
 set -euo pipefail
 
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck disable=SC1090
-set -a; source "${OPS_DIR}/.env"; set +a
+# shellcheck source=lib.sh
+source "${OPS_DIR}/scripts/lib.sh"; load_env "${OPS_DIR}/.env"
 
 WEB_PORT="${WEB_PORT:-3000}"
 PING="${HEALTHCHECK_PING_URL_SNAPSHOT:-}"
