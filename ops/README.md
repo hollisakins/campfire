@@ -159,22 +159,31 @@ Prepare in the days before:
 
 The window (target under 1 h):
 
-1. **Freeze writes on the old database** so nothing written after the dump is
-   lost. PostgREST logs in as `authenticator` and `SET ROLE`s per request, so
-   settings on `anon` / `authenticated` / `service_role` never apply; the
-   setting goes on the login role, and its pooled sessions (which never log in
-   again) are terminated so they reconnect and pick it up:
+1. **Take the old API down** so nothing written after the dump is lost.
+   A `default_transaction_read_only` setting is *not* a freeze: PostgREST opens
+   every POST / PATCH / PUT / DELETE and every volatile RPC as an explicit
+   `READ WRITE` transaction, which overrides the role default. The only
+   enforceable gate is to stop the two roles the API logs in as, then kill
+   their pooled sessions (which never log in again on their own):
    ```sql
-   alter role authenticator set default_transaction_read_only = on;
-   select pg_terminate_backend(pid) from pg_stat_activity where usename = 'authenticator';
+   alter role authenticator nologin;         -- PostgREST
+   alter role supabase_auth_admin nologin;   -- GoTrue
+   select pg_terminate_backend(pid) from pg_stat_activity
+     where usename in ('authenticator', 'supabase_auth_admin');
    ```
-   Every write through the API now fails with `read-only transaction`; reads
-   continue. GoTrue (`supabase_auth_admin`) is unaffected and still writes
-   sessions, refresh tokens and sign-ups: either disable sign-in for the window
-   (Dashboard → Auth → Providers → Email off) or accept that auth rows written
-   during the window are lost. Reverts with
-   `alter role authenticator reset default_transaction_read_only` plus the same
-   `pg_terminate_backend`.
+   Reads stop too; the site shows errors for the window, which the Updates
+   notice announced. **Verify before dumping** with a real mutation that must
+   be rejected, for example with the service key against a scratch row:
+   ```bash
+   curl -s -X PATCH "$OLD_URL/rest/v1/user_profiles?id=eq.00000000-0000-0000-0000-000000000000" \
+     -H "apikey: $SERVICE_KEY" -H "Authorization: Bearer $SERVICE_KEY" \
+     -H "Content-Type: application/json" -d '{"display_name":"x"}'
+   # expect an auth/connection error from PostgREST, never 204
+   ```
+   Also confirm `select count(*) from pg_stat_activity where usename in
+   ('authenticator','supabase_auth_admin')` is 0 and stays 0 for a minute.
+   Reverts with `alter role authenticator login; alter role supabase_auth_admin
+   login;` (sessions reconnect on the next request).
 2. **Dump** with the CLI against the hosted connection string:
    ```bash
    supabase db dump --db-url "$OLD" -f roles.sql --role-only
@@ -214,9 +223,9 @@ The window (target under 1 h):
 7. **Pause** the hosted project (Dashboard → Settings → General → Pause).
    Delete it after two quiet weeks. Then cancel the subscriptions.
 
-Rollback at any point before step 7: `reset` the `authenticator` role on the
-old database (and terminate its sessions) and redeploy the previous image
-(built against the hosted URL).
+Rollback at any point before step 7: `alter role authenticator login;`
+`alter role supabase_auth_admin login;` on the old database and redeploy
+the previous image (built against the hosted URL).
 
 **Known follow-up (not in Phase 0):** the web container's server-side Supabase
 calls go out through `NEXT_PUBLIC_SUPABASE_URL`, i.e. back in through
@@ -230,9 +239,10 @@ the round trip and the timeout; until then the first page of a sync stream can
 
 - **Web** (Phase 1): Cloudflare DNS `campfire.hollisakins.com` back to the
   Vercel CNAME. Vercel stays deployed until decommission.
-- **Database** (Phase 2): unpause the hosted project, `reset` the read-only
-  setting on `authenticator`, redeploy the image built against the hosted URL. Writes made on the VM
-  between cutover and rollback are lost; hence the two quiet weeks before deletion.
+- **Database** (Phase 2): unpause the hosted project, restore `login` on
+  `authenticator` and `supabase_auth_admin`, redeploy the image built against
+  the hosted URL. Writes made on the VM between cutover and rollback are
+  lost; hence the two quiet weeks before deletion.
 - **A bad deploy**: `scripts/deploy.sh <previous full sha>` (`deploys.log` has
   the history; `deploy.sh` itself rolls back when `/api/health` fails).
 
