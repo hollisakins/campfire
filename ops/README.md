@@ -105,6 +105,13 @@ touch web.env && chmod 600 web.env              # block at the bottom of .env.ex
 # hostnames hollisakins.com, *.hollisakins.com):
 #   /srv/campfire/certs/origin.pem, origin.key   (chmod 600)
 docker compose up -d db && docker compose logs -f db        # wait for "database system is ready"
+# The health check passes even when the image's init aborted half-way. Verify
+# the init really completed before anything else touches the cluster:
+docker exec campfire-db psql -U postgres -d postgres -Atc \
+  "select count(*) from pg_namespace where nspname in ('vault','graphql','realtime')"   # must print 3
+docker exec campfire-db psql -U postgres -d postgres -Atc \
+  "select proowner::regrole from pg_proc where proname='uid' and pronamespace='auth'::regnamespace"  # supabase_auth_admin
+# Anything else: stop db, move db/data aside, fix the cause, start again.
 docker compose up -d
 docker compose ps
 curl -s http://127.0.0.1:3000/api/health
@@ -306,3 +313,4 @@ host. Variable names only, never values.
 - 2026-10-24 — scaffold (Phase 0 PR).
 - 2026-10-24 — `.env`: `WEB_HOST`/`API_HOST`/`SITE_URL`/`API_EXTERNAL_URL`/`SUPABASE_PUBLIC_URL` → first-level hostnames; `WEB_TAG` = deployed sha; `DEPLOY_MIGRATIONS=skip` (Phase 1). `web.env` created from the Vercel production env + local creds; `WORKER_JWT_SECRET`/`CDN_FRONT_URL` left unset until the Phase 1 rotation.
 - 2026-10-24 — `docker-compose.yml`: `db/config` bind mount → `db-config` named volume (first `db` start failed: empty mount hid the image's include files).
+- 2026-10-24 — `volumes/db/roles.sql` guarded (init aborted on the absent `supabase_functions_admin`; cluster re-initialised twice during the rehearsal, `db/data.broken-init-*` kept aside on the volume until the rehearsal passes).

@@ -80,6 +80,9 @@ persist_tag() {
 PREV="$(previous_tag)"
 log "deploying ${SHA} (previous: ${PREV:-none})"
 
+if [[ -n "${DEPLOY_STAGE2:-}" ]] && [[ "$(git -C "$REPO_DIR" rev-parse HEAD)" == "$SHA" ]]; then
+  log "stage 2: ${SHA} checked out, continuing with its deploy.sh"
+else
 log "checking out ${SHA} in ${REPO_DIR}"
 git -C "$REPO_DIR" fetch -q origin
 # Only commits already on main deploy: the CI key cannot ship a branch.
@@ -89,6 +92,17 @@ if ! git -C "$REPO_DIR" merge-base --is-ancestor "$SHA" origin/main 2>/dev/null;
 fi
 git -C "$REPO_DIR" checkout -q --detach "$SHA"
 
+# This file was just replaced underneath a running bash, which reads scripts
+# incrementally: the rest of the OLD script would run against the NEW
+# checkout (run 40123391014 applied migrations although the new version
+# skips them). Hand over to the checked-out script for everything after the
+# checkout; it skips the fetch/checkout because the sha is already in place.
+if [[ -z "${DEPLOY_STAGE2:-}" ]]; then
+  flock -u 9
+  DEPLOY_STAGE2=1 exec "$REPO_DIR/ops/scripts/deploy.sh" "$SHA"
+fi
+fi
+
 # Phase 1 (web on the hosted Supabase): migrations still land through the
 # Supabase GitHub integration, and the local db may not even be running, so
 # DEPLOY_MIGRATIONS=skip in .env turns this step off. Phase 2 sets it to local.
@@ -96,7 +110,8 @@ if [[ "${DEPLOY_MIGRATIONS:-local}" == "skip" ]]; then
   log "migrations: skipped (DEPLOY_MIGRATIONS=skip; the hosted project is the database)"
 else
   log "applying migrations"
-  DB_URL="postgresql://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT}/${POSTGRES_DB}"
+  # The container speaks plaintext on 127.0.0.1; the CLI insists on TLS otherwise.
+  DB_URL="postgresql://postgres:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable"
   ( cd "$REPO_DIR" && npx -y "supabase@${SUPABASE_CLI_VERSION}" db push --db-url "$DB_URL" --yes )
 fi
 
