@@ -1,0 +1,12 @@
+[Unit]
+Description=CAMPFIRE backup restore check (newest dump into a throwaway container)
+After=docker.service campfire-backup.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/campfire/repo/ops
+ExecStart=/srv/campfire/repo/ops/scripts/restore-check.sh
+TimeoutStartSec=1h
+Nice=15
+IOSchedulingClass=idle

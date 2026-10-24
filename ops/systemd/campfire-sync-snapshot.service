@@ -1,0 +1,10 @@
+[Unit]
+Description=CAMPFIRE sync catalog snapshot (/api/cron/sync-snapshot)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/campfire/repo/ops
+ExecStart=/srv/campfire/repo/ops/scripts/cron-sync-snapshot.sh
+TimeoutStartSec=20min

@@ -7,7 +7,6 @@ import { ThemeProvider } from '@/lib/contexts/ThemeContext';
 import { PreferencesProvider } from '@/lib/contexts/PreferencesContext';
 import { QueryProvider } from '@/lib/providers/QueryProvider';
 import { ConditionalFooter } from '@/components/layout/ConditionalFooter';
-import { Analytics } from '@vercel/analytics/next';
 
 // Direction 2 (Ember & Dusk): Inter for UI, JetBrains Mono for data/code.
 const inter = Inter({
@@ -71,7 +70,6 @@ export default function RootLayout({
           </AuthProvider>
           </DrProvider>
         </QueryProvider>
-        <Analytics />
       </body>
     </html>
   );
