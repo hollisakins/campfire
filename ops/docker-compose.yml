@@ -8,7 +8,6 @@
 # Layout on the VM (CAMPFIRE_DATA_ROOT, default /srv/campfire, the attached
 # volume):
 #   db/data          Postgres cluster
-#   db/config        pgsodium key etc. (the upstream `db-config` named volume)
 #   backups          pg_dump staging (ops/scripts/backup.sh)
 #   auth-templates   GoTrue email templates, served at https://$API_HOST/templates/
 #   certs            Cloudflare origin certificate + key for Caddy
@@ -45,7 +44,11 @@ services:
       # app.settings.jwt_exp for the database.
       - ./volumes/db/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:Z
       - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/db/data:/var/lib/postgresql/data:Z
-      - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/db/config:/etc/postgresql-custom
+      # Named volume on purpose: Docker seeds an empty named volume from the
+      # image (supautils.conf, wal-g.conf, conf.d/ that postgresql.conf
+      # includes); an empty bind mount hides them and the server refuses to
+      # start ("configuration file contains errors").
+      - db-config:/etc/postgresql-custom
       # Dumps written by backup.sh land here (pg_dump runs inside the container).
       - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/backups:/backups
     healthcheck:
@@ -343,5 +346,6 @@ services:
       - caddy-config:/config
 
 volumes:
+  db-config:
   caddy-data:
   caddy-config:

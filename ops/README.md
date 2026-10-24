@@ -142,6 +142,17 @@ cd /srv/campfire/repo && docker build -f web/Dockerfile \
 `NEXT_PUBLIC_*` values are baked at build. For step 3 (web on hosted Supabase)
 build with the hosted URL and anon key; Phase 2 is a rebuild with the new ones.
 
+## Phase 1 operating notes
+
+- `DEPLOY_MIGRATIONS=skip` in `.env` while the web runs against the hosted
+  project: `deploy.sh` swaps the image only; migrations keep landing through the
+  Supabase GitHub integration on merge. The first automatic deploy (run
+  40119771568) failed exactly here before the switch existed.
+- The GHCR package created by the workflow inherits the repository's public
+  visibility, so the VM pulls anonymously; no registry login on the host.
+- The web container's `WORKER_JWT_SECRET` / `CDN_FRONT_URL` stay unset until the
+  Phase 1 cutover rotates the Worker secret; sidecars stream directly meanwhile.
+
 ## Database cutover checklist (Phase 2)
 
 Prepare in the days before:
@@ -293,3 +304,5 @@ Dated, one line per change to `.env` / `web.env` / `docker-compose.yml` on the
 host. Variable names only, never values.
 
 - 2026-10-24 — scaffold (Phase 0 PR).
+- 2026-10-24 — `.env`: `WEB_HOST`/`API_HOST`/`SITE_URL`/`API_EXTERNAL_URL`/`SUPABASE_PUBLIC_URL` → first-level hostnames; `WEB_TAG` = deployed sha; `DEPLOY_MIGRATIONS=skip` (Phase 1). `web.env` created from the Vercel production env + local creds; `WORKER_JWT_SECRET`/`CDN_FRONT_URL` left unset until the Phase 1 rotation.
+- 2026-10-24 — `docker-compose.yml`: `db/config` bind mount → `db-config` named volume (first `db` start failed: empty mount hid the image's include files).
