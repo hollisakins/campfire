@@ -188,9 +188,16 @@ Preparation (no user impact; all reversible):
 4. Secrets. `WORKER_JWT_SECRET` and `JWT_SECRET` could not be read back from
    Vercel (sensitive variables are write-only), so:
    - `JWT_SECRET`: the VM's generated value is copied *into* Vercel so both sides
-     issue interchangeable API access tokens (1 h) — a CLI holding a token signed
-     by the other side gets one 401 and refreshes transparently (refresh tokens
-     are hashed in the database, not signed); API keys are hashed too.
+     issue interchangeable tokens. This is a **key change for Vercel**, with two
+     user-visible effects (the old value is unrecoverable, so they could only be
+     timed, not avoided; done 2026-10-24 22:44 UTC): (a) a CLI session holding a
+     1 h access token signed with the old key gets 401s until its *scheduled*
+     refresh (`APISession` refreshes on local expiry, not on a 401) — up to 55 min
+     — then recovers without a new login (refresh tokens are hashed, not signed;
+     API keys are hashed too); (b) bulk-download scripts generated before the
+     change embed a 30-day download token signed with the old key and are
+     invalid from that moment, with no refresh path: users regenerate them from
+     the site. Post an Updates notice saying so.
    - `WORKER_JWT_SECRET`: rotated. Order that keeps the mismatch window to
      seconds: new value into Vercel's production env → Vercel redeploy (the
      *operator* runs it; a production deploy is not something the ops session
