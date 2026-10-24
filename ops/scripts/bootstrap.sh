@@ -136,6 +136,12 @@ else
 fi
 
 log "data root layout"
+# The ops user must be able to traverse the data root itself (it holds the
+# repo checkout, and systemd units cd into it): root-owned, ops group, 0750.
+# Applied to the resolved path so the Exosphere-mount symlink case is covered.
+REAL_ROOT="$(readlink -f "$DATA_ROOT")"
+chown root:"$OPS_USER" "$REAL_ROOT"
+chmod 0750 "$REAL_ROOT"
 for d in db/data db/config backups auth-templates certs; do
   install -d -m 0750 "$DATA_ROOT/$d"
 done
