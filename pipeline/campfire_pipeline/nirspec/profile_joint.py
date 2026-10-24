@@ -312,18 +312,28 @@ def setup_member(product, workspace, groups, overrides, science, sid, stage_conf
     m = Member(sid=int(sid), product=product, exps=exps, model=M, p=p, eoff=e, shape_src=src, params=params,
                workspace=workspace)
     m.prediction = P
-    # its light past its cutout (pass 1, ``profile_extend``) is not among the joint unknowns;
-    # it is added to the member's joint frames as pass 1 has it
-    from campfire_pipeline.nirspec import profile_extend as PE
-    own = pass1_for(sid)
-    m.ext_frames = {}
-    if own is not None:
-        for key, fr in own.frames.items():
-            x = PE.ext_part(fr)
-            if x is not None:
-                m.ext_frames[key] = x
+    m.ext_frames = ext_frames(pass1_for(sid))
     basis_frames(m)
     return m
+
+
+def ext_frames(own):
+    """A member's light past its cutout (pass 1, ``profile_extend``): not among the joint
+    unknowns, it is added to the member's joint frames as pass 1 has it, but only when
+    that pass 1 is reliable. An unreliable pass 1 holds other sources' light, and so
+    does its extension (fitted on the same nod differences): the one-pass path masks
+    all of it, and so must the joint path (on 7420, 2426's extension put -1.6 sigma per
+    pixel of light that the data do not show; on 8198, 1736's put -3.5 sigma). Left
+    out, those pixels are lit past the member's range and masked as such."""
+    from campfire_pipeline.nirspec import profile_extend as PE
+    out = {}
+    if own is None or not bool(getattr(own, 'reliable', False)):
+        return out
+    for key, fr in own.frames.items():
+        x = PE.ext_part(fr)
+        if x is not None:
+            out[key] = x
+    return out
 
 
 # ---------------------------------------------------------------------------

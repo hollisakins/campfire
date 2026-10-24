@@ -241,6 +241,18 @@ def test_merge_sparse_extension_replaces_uncalibrated_pixels():
     assert det[2] == (30.0, True) and det[3] == (40.0, True) and det[5] == (60.0, True)
 
 
+def test_member_extension_only_from_a_reliable_pass1():
+    """A joint member's light past its cutout comes from its pass 1, and only when that
+    pass 1 is reliable: an unreliable pass 1's extension holds other light (7420, 8198)."""
+    fr = dict(origin=np.array([0, 0]), shape=np.array([2, 4]), idx=np.arange(4), img=np.ones(4), err=np.ones(4),
+              cal=np.ones(4), ext=np.array([False, False, True, True]))
+    P1 = CT.Pass1(sid=2, lam=np.arange(3.0), flux=np.ones(3), flux_err=np.ones(3), frames={'a': fr}, reliable=True)
+    x = PJ.ext_frames(P1)
+    assert set(x) == {'a'} and x['a']['idx'].tolist() == [2, 3]
+    P1.reliable = False
+    assert PJ.ext_frames(P1) == {} and PJ.ext_frames(None) == {}
+
+
 def test_extension_pixels_are_predicted_not_masked(monkeypatch):
     """Pixels where a bright contaminant's trace runs past its nominal range are masked
     as unmodelled, unless its pass 1 extends there (``ext`` pixels, count-rate units):
