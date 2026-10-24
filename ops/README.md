@@ -19,7 +19,7 @@ Cloudflare edge (DNS, TLS, static cache, rate limits)   hollisakins.com is alrea
         ▼
 Caddy :443 (ops/Caddyfile), routes by hostname
         ├── $WEB_HOST  campfire.hollisakins.com      → web  :3000  (Next.js, web/Dockerfile)
-        └── $API_HOST  api.campfire.hollisakins.com  → kong :8000
+        └── $API_HOST  campfire-api.hollisakins.com  → kong :8000
                                 /auth/v1 → auth (GoTrue)     ← browsers call these directly,
                                 /rest/v1 → rest (PostgREST)    exactly as they call *.supabase.co today
                                                    │
@@ -60,8 +60,8 @@ Each step names an owner and the gate that closes it.
    key, 200 GB volume attached. Horizon: application credential for the
    OpenStack CLI. Gate: SSH works.
 3. **Base system** (`scripts/bootstrap.sh`), stack up under the staging hostnames
-   `dev.campfire.hollisakins.com` (already an allowed origin on the download
-   Worker) and `api.campfire.hollisakins.com`, web still pointed at hosted
+   `campfire-staging.hollisakins.com` (already an allowed origin on the download
+   Worker) and `campfire-api.hollisakins.com`, web still pointed at hosted
    Supabase. Security group → 22 (your IPs) and 443 (Cloudflare ranges) only.
    Gate: staging renders against hosted Supabase.
 4. **Restore rehearsal.** Read-only dump of production into the VM Postgres,
@@ -89,20 +89,20 @@ Each step names an owner and the gate that closes it.
 ## First boot (step 3)
 
 ```bash
-# as the ubuntu user on the VM. Exosphere has already mounted the volume at
+# as the exouser user on the VM (the Jetstream2 image's login user). Exosphere has already mounted the volume at
 # /media/volume/campfire-prod (device /dev/sdb); bootstrap.sh adopts that mount
 # by making /srv/campfire a symlink to it. Only on a box without the Exosphere
 # mount pass --volume-device /dev/sdb and it formats/mounts by UUID itself.
 sudo git clone https://github.com/hollisakins/campfire.git /tmp/campfire-repo
 sudo /tmp/campfire-repo/ops/scripts/bootstrap.sh            # creates /srv/campfire first
-sudo mv /tmp/campfire-repo /srv/campfire/repo && sudo chown -R ubuntu:ubuntu /srv/campfire/repo
+sudo mv /tmp/campfire-repo /srv/campfire/repo && sudo chown -R exouser:exouser /srv/campfire/repo
 sudo /srv/campfire/repo/ops/scripts/bootstrap.sh            # second pass installs the timers
 # log out and in (docker group), then:
 cd /srv/campfire/repo/ops
 cp .env.example .env && chmod 600 .env          # fill every blank
 touch web.env && chmod 600 web.env              # block at the bottom of .env.example
 # Cloudflare origin certificate (dashboard → SSL/TLS → Origin Server, 15 years,
-# hostnames campfire.hollisakins.com, *.campfire.hollisakins.com):
+# hostnames hollisakins.com, *.hollisakins.com):
 #   /srv/campfire/certs/origin.pem, origin.key   (chmod 600)
 docker compose up -d db && docker compose logs -f db        # wait for "database system is ready"
 docker compose up -d
@@ -110,10 +110,16 @@ docker compose ps
 curl -s http://127.0.0.1:3000/api/health
 ```
 
+Hostnames are deliberately **first-level** (`campfire-<thing>.hollisakins.com`):
+the free Universal SSL edge certificate covers `hollisakins.com` and
+`*.hollisakins.com` only, so a proxied `x.campfire.hollisakins.com` fails the TLS
+handshake (alert 40) before reaching the VM. The origin certificate on the VM is
+issued for the same two names, so any first-level host works without reissuing.
+
 Cloudflare, via the API token (DNS Edit, Cache Rules, WAF, SSL): A records for
-`dev.campfire` and `api.campfire` → VM floating IP, proxied; SSL mode Full
+`campfire-staging` and `campfire-api` → VM floating IP, proxied; SSL mode Full
 (strict); a cache rule for `/_next/static/*`; the one free rate-limiting rule on
-`api.campfire.hollisakins.com/auth/v1/*`; "Normalize incoming URLs" rewriting
+`campfire-api.hollisakins.com/auth/v1/*`; "Normalize incoming URLs" rewriting
 off (it broke paths on the earlier proxy attempt).
 
 TLS alternative: Let's Encrypt via DNS challenge needs Caddy built with the
@@ -125,9 +131,9 @@ Web image: until step 5 exists, build it on the VM and tag it locally:
 
 ```bash
 cd /srv/campfire/repo && docker build -f web/Dockerfile \
-  --build-arg NEXT_PUBLIC_SUPABASE_URL=https://api.campfire.hollisakins.com \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=https://campfire-api.hollisakins.com \
   --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY="$ANON_KEY" \
-  --build-arg NEXT_PUBLIC_APP_URL=https://dev.campfire.hollisakins.com \
+  --build-arg NEXT_PUBLIC_APP_URL=https://campfire-staging.hollisakins.com \
   --build-arg NEXT_PUBLIC_WORKER_DOWNLOAD_URL=https://campfire-download.hollisakins.com \
   --build-arg GIT_SHA="$(git rev-parse HEAD)" \
   -t ghcr.io/hollisakins/campfire-web:"$(git rev-parse HEAD)" web/
@@ -214,7 +220,7 @@ The window (target under 1 h):
    `auth.users` against the old numbers; `supabase/tests/check_*.sql` guards;
    `select jobname from cron.job` shows the two jobs.
 5. **Bring up the stack**, rebuild the web image with
-   `NEXT_PUBLIC_SUPABASE_URL=https://api.campfire.hollisakins.com` and the same
+   `NEXT_PUBLIC_SUPABASE_URL=https://campfire-api.hollisakins.com` and the same
    anon key, `deploy.sh <sha>`. Update `web.env`: `SUPABASE_SERVICE_ROLE_KEY`,
    `SUPABASE_JWT_SECRET` unchanged (same secret), nothing else moves.
 6. **Smoke test**: sign in with a real account (existing cookies remain valid:

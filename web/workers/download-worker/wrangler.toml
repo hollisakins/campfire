@@ -23,7 +23,7 @@ routes = [
 
 # Environment variables (non-secret)
 [vars]
-ALLOWED_ORIGINS = "https://campfire.hollisakins.com,https://dev.campfire.hollisakins.com,http://localhost:3000"
+ALLOWED_ORIGINS = "https://campfire.hollisakins.com,https://campfire-staging.hollisakins.com,http://localhost:3000"
 # Object-store hosts the proxy is allowed to fetch (SSRF guard). Both backends
 # are included so the proxy is storage-agnostic: OSN holds migrated FITS, the R2
 # account host serves un-migrated / NIRCam objects. Subdomains match too, so R2
