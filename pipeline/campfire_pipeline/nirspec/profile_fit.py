@@ -1065,14 +1065,33 @@ def main_shutter_factor(result, lam):
 
     The true spectrum times this factor is the light in the main shutter on jwst's
     point-source path-loss calibration, which is what cfpipe's optimal extraction
-    measures. For a point source at its planned position it equals the true spectrum."""
+    measures. For a point source at its planned position it equals the true spectrum.
+
+    An exposure without usable pixels (``ok`` empty, e.g. everything masked) has no
+    row scale of its own; it is left out of the average (the others carry the
+    factor), and only if every exposure is empty the row scale comes from all its
+    pixels. Before, its NaN row scale made the whole factor NaN."""
     M = result.model
     p, eoff = _qvec(result)
+    lam = np.asarray(lam, float)
     sci = ([i for i, e in enumerate(M.exps) if e.use_data and e.has_source]
            or [i for i, e in enumerate(M.exps) if e.use_data])
+
+    def _row_scale(e, usable):
+        dy = np.asarray(e.dy, float)
+        sel = np.isfinite(dy) & (np.asarray(e.ok, bool) if usable else np.isfinite(dy))
+        return float(np.median(dy[sel])) if sel.any() else np.nan
+    dys = {k: _row_scale(M.exps[k], True) for k in sci}
+    keep = [k for k in sci if np.isfinite(dys[k])]
+    if not keep:
+        dys = {k: _row_scale(M.exps[k], False) for k in sci}
+        keep = [k for k in sci if np.isfinite(dys[k])]
+    if not keep:
+        return np.full(lam.shape, np.nan)
+    sci = keep
     out = 0.0
     for k in sci:
-        dy = np.full_like(lam, np.nanmedian(M.exps[k].dy[M.exps[k].ok]))
+        dy = np.full_like(lam, dys[k])
         tg = M.transmission(p, eoff, k, lam, dy, aperture=(0,))
         tp = M.transmission(p, eoff, k, lam, dy, width=0.0, aperture=(0,), centre=M.exps[k].src_y)
         out = out + tg / np.maximum(tp, 1e-6)

@@ -175,6 +175,22 @@ def test_main_shutter_factor_is_one_for_centred_point_like_source():
     assert np.allclose(f, 1.0, atol=0.03)
 
 
+def test_main_shutter_factor_ignores_an_exposure_without_usable_pixels():
+    """An exposure with every pixel masked used to make the factor NaN (its row scale
+    was the median of nothing), which switched off the pass-1 guard for that source."""
+    exps = _exposures(src_y=0.1)
+    R = _truth_result(exps, TRUTH, [0, 0, 0], 1.0)
+    lam = np.array([1.0, 2.0, 4.0])
+    f_all = PF.main_shutter_factor(R, lam)
+    exps[1].ok[:] = False
+    f = PF.main_shutter_factor(R, lam)
+    assert np.all(np.isfinite(f))
+    assert np.allclose(f, f_all, rtol=0.05)
+    for e in exps:                                   # nothing usable anywhere: still finite
+        e.ok[:] = False
+    assert np.all(np.isfinite(PF.main_shutter_factor(R, lam)))
+
+
 # ---------------------------------------------------------------------------
 # frames without the source (SRCFLUX = F)
 # ---------------------------------------------------------------------------
