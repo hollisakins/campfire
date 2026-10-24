@@ -160,6 +160,67 @@ build with the hosted URL and anon key; Phase 2 is a rebuild with the new ones.
 - The web container's `WORKER_JWT_SECRET` / `CDN_FRONT_URL` stay unset until the
   Phase 1 cutover rotates the Worker secret; sidecars stream directly meanwhile.
 
+## Web cutover (step 6) — preparation and flip
+
+`campfire.hollisakins.com` is a *proxied* Cloudflare record, so the flip and the
+rollback are both one record edit with no propagation wait. Prepared on
+2026-10-24; the flip itself is a separate, explicit go.
+
+Preparation (no user impact; all reversible):
+
+1. Caddy serves both hostnames: `WEB_HOST="campfire.hollisakins.com,
+   campfire-staging.hollisakins.com"` in `.env`, `docker compose up -d caddy`.
+   The admin API shows the match set:
+   `docker exec campfire-caddy wget -qO- http://127.0.0.1:2019/config/apps/http/servers/srv0/routes/0/match`.
+2. Pre-flight the production hostname against the VM origin **without touching
+   DNS**, from a laptop (TLS, Caddy routing and the app under the production Host
+   header; `-k` because the origin cert chains to Cloudflare's Origin CA):
+   ```bash
+   curl -sk --resolve campfire.hollisakins.com:443:149.165.174.96 https://campfire.hollisakins.com/api/health
+   ```
+3. Production URL baked into the image: GitHub variable
+   `DEPLOY_NEXT_PUBLIC_APP_URL=https://campfire.hollisakins.com`, then a manual
+   run of the Deploy workflow for the current main sha (it rebuilds). The
+   `NEXT_PUBLIC_*` values in `web.env` must say the same thing: the client bundle
+   inlines them at build time, the server reads them at runtime, and the two
+   disagreeing gives OG/canonical urls and auth redirects on one host and the
+   bundle on another. Then `deploy.sh <same sha>` recreates the container.
+4. Secrets. `WORKER_JWT_SECRET` and `JWT_SECRET` could not be read back from
+   Vercel (sensitive variables are write-only), so:
+   - `JWT_SECRET`: the VM's generated value is copied *into* Vercel so both sides
+     issue interchangeable tokens. This is a **key change for Vercel**, with two
+     user-visible effects (the old value is unrecoverable, so they could only be
+     timed, not avoided; done 2026-10-24 22:44 UTC): (a) a CLI session holding a
+     1 h access token signed with the old key gets 401s until its *scheduled*
+     refresh (`APISession` refreshes on local expiry, not on a 401) — up to 55 min
+     — then recovers without a new login (refresh tokens are hashed, not signed;
+     API keys are hashed too); (b) bulk-download scripts generated before the
+     change embed a 30-day download token signed with the old key and are
+     invalid from that moment, with no refresh path: users regenerate them from
+     the site. Post an Updates notice saying so.
+   - `WORKER_JWT_SECRET`: rotated. Order that keeps the mismatch window to
+     seconds: new value into Vercel's production env → Vercel redeploy (the
+     *operator* runs it; a production deploy is not something the ops session
+     triggers) → the same value onto the Worker (`PUT
+     /accounts/<id>/workers/scripts/campfire-download/secrets`, name `JWT_SECRET`)
+     → `WORKER_JWT_SECRET` + `CDN_FRONT_URL` into `web.env`, `deploy.sh <sha>`.
+     Verify `/api/spectrum/sidecars` on staging now returns
+     `campfire-download.hollisakins.com/o/...` urls instead of streaming.
+5. Cloudflare checked: Universal SSL covers the first-level name, origin cert
+   covers `*.hollisakins.com`, no WAF / rate-limit / cache rule touches the host,
+   the apex rewrite rule is scoped to apex + www. Worker `ALLOWED_ORIGINS`
+   already lists production and staging. Hosted Auth site url + redirect list
+   already name production. Vercel's daily snapshot cron keeps running against
+   the Vercel deployment in parallel with the VM timer until decommission
+   (duplicate builds; the builder keeps the newest three).
+
+The flip: change the `campfire.hollisakins.com` CNAME
+(`8de26addbf5c12e9.vercel-dns-017.com`, proxied) to a proxied `A 149.165.174.96`.
+Then: `/api/health` through the production name, sign in (cookies survive: same
+host, same `SUPABASE_JWT_SECRET`), an object page, a spectrum download, a small
+`campfire sync`, a password-reset email and its link, an OG image preview.
+Rollback at any time during the two quiet weeks: restore the CNAME.
+
 ## Database cutover checklist (Phase 2)
 
 Prepare in the days before:
@@ -343,4 +404,6 @@ host. Variable names only, never values.
 - 2026-10-24 — `.env`: `WEB_HOST`/`API_HOST`/`SITE_URL`/`API_EXTERNAL_URL`/`SUPABASE_PUBLIC_URL` → first-level hostnames; `WEB_TAG` = deployed sha; `DEPLOY_MIGRATIONS=skip` (Phase 1). `web.env` created from the Vercel production env + local creds; `WORKER_JWT_SECRET`/`CDN_FRONT_URL` left unset until the Phase 1 rotation.
 - 2026-10-24 — `docker-compose.yml`: `db/config` bind mount → `db-config` named volume (first `db` start failed: empty mount hid the image's include files).
 - 2026-10-24 — `volumes/db/roles.sql` guarded (init aborted on the absent `supabase_functions_admin`; cluster re-initialised twice during the rehearsal, `db/data.broken-init-*` kept aside on the volume until the rehearsal passes).
+- 2026-10-24 22:55 UTC — **step 6 flip**: `campfire.hollisakins.com` CNAME → proxied `A 149.165.174.96` (Cloudflare record `db80e4ad…`; the record comment carries the rollback target). Health, root, login, object page, API version and OG image answered 200 from the VM within the minute; Vercel (`campfire-jwst.vercel.app`) kept as the fallback.
+- 2026-10-24 — step 6 preparation: `.env` `WEB_HOST` → both hostnames (Caddy recreated); `web.env` `NEXT_PUBLIC_APP_URL` → production (image rebuilt with `DEPLOY_NEXT_PUBLIC_APP_URL` = production, run 40139323751, then `deploy.sh f723aa09`); Vercel production env: `JWT_SECRET` set to the VM's value, `WORKER_JWT_SECRET` rotated (new value also goes to the Worker and `web.env` with `CDN_FRONT_URL` once Vercel has redeployed).
 - 2026-10-24 — restore rehearsal passed (third attempt): `scripts/dump-hosted.sh` + `scripts/restore-hosted.sh` + `sql/fingerprint.sql` replace the hand-run dump/restore commands in the cutover checklist. Found and fixed on the way: the image's default privileges leaking `anon` grants into the restore, the `storage.*` data blocks aborting the load before the sequence resets, matviews restored unpopulated, pg_cron jobs not dumped. The VM's `campfire-db` now holds a verified copy of the hosted database as of 2026-10-24 18:17 UTC (not live; Phase 2 redoes the restore from a fresh dump). The five `db/data.broken-init-*` directories (failed inits and the superseded rehearsal clusters, ~8 GB) can be deleted.
