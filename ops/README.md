@@ -89,13 +89,13 @@ Each step names an owner and the gate that closes it.
 ## First boot (step 3)
 
 ```bash
-# as the ubuntu user on the VM. Exosphere has already mounted the volume at
+# as the exouser user on the VM (the Jetstream2 image's login user). Exosphere has already mounted the volume at
 # /media/volume/campfire-prod (device /dev/sdb); bootstrap.sh adopts that mount
 # by making /srv/campfire a symlink to it. Only on a box without the Exosphere
 # mount pass --volume-device /dev/sdb and it formats/mounts by UUID itself.
 sudo git clone https://github.com/hollisakins/campfire.git /tmp/campfire-repo
 sudo /tmp/campfire-repo/ops/scripts/bootstrap.sh            # creates /srv/campfire first
-sudo mv /tmp/campfire-repo /srv/campfire/repo && sudo chown -R ubuntu:ubuntu /srv/campfire/repo
+sudo mv /tmp/campfire-repo /srv/campfire/repo && sudo chown -R exouser:exouser /srv/campfire/repo
 sudo /srv/campfire/repo/ops/scripts/bootstrap.sh            # second pass installs the timers
 # log out and in (docker group), then:
 cd /srv/campfire/repo/ops

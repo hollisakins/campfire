@@ -34,7 +34,7 @@ if [[ $EUID -ne 0 ]]; then
   echo "run as root (sudo)" >&2
   exit 1
 fi
-OPS_USER="${SUDO_USER:-ubuntu}"
+OPS_USER="${SUDO_USER:-exouser}"
 export DEBIAN_FRONTEND=noninteractive
 
 log() { printf '\n==> %s\n' "$*"; }
