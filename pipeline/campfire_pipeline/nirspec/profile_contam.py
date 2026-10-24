@@ -583,6 +583,20 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
     return P1
 
 
+def first_round_reliable(workspace, name):
+    """The pass 1 a second round may subtract: a reliable first-round result, else None.
+
+    The second rounds run in parallel and rewrite their sources' files; one already
+    rewritten (71 of the p14 G395M sources come out of pass 1b reliable) must not feed
+    another, or pass 1b would feed pass 1b, depending on the order the workers finish
+    in."""
+    path = pass1_path(workspace, name) if name else None
+    if not path or not os.path.exists(path):
+        return None
+    P1 = Pass1.read(path)
+    return P1 if P1.reliable and getattr(P1, 'round', '1') == '1' else None
+
+
 def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, stage_config,
               prism_product=None, overwrite=False, pass1_products=None, second=False):
     """Pass-1 spectrum and per-exposure model frames of one source (see module doc and
@@ -627,12 +641,7 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
         names = pass1_products or {}
 
         def reliable_for(csid):
-            name = names.get(int(csid))
-            path = pass1_path(workspace, name) if name else None
-            if not path or not os.path.exists(path):
-                return None
-            P1 = Pass1.read(path)
-            return P1 if P1.reliable else None
+            return first_round_reliable(workspace, names.get(int(csid)))
         spec3 = None
         if st['mode'] == 'stage3':
             spec = os.path.join(workspace, f'{product}_spec.fits')

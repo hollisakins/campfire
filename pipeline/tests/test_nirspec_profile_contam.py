@@ -404,6 +404,21 @@ def test_echo_of_the_target_is_taken_out_of_an_unreliable_contaminant(stand_ins)
     assert not P0.echoed
 
 
+def test_second_round_reads_first_round_results_only(tmp_path):
+    """Pass 1b subtracts only first-round reliable results: a file another pass 1b has
+    already rewritten (reliable or not) is not used, whatever the finishing order."""
+    d = tmp_path / CT.PASS1_SUBDIR
+    d.mkdir()
+    lam = np.linspace(1, 2, 5)
+    for name, rnd, rel in (('a', '1', True), ('b', '2', True), ('c', '1', False)):
+        np.savez(d / f'{name}_pass1.npz', sid=1, lam=lam, flux=lam, flux_err=lam, keys=np.array([], dtype=str),
+                 nosrc=np.array([], dtype=str), reliable=rel, round=rnd)
+    assert CT.first_round_reliable(str(tmp_path), 'a') is not None
+    assert CT.first_round_reliable(str(tmp_path), 'b') is None
+    assert CT.first_round_reliable(str(tmp_path), 'c') is None
+    assert CT.first_round_reliable(str(tmp_path), 'zz') is None and CT.first_round_reliable(str(tmp_path), None) is None
+
+
 def test_unpredictable_gap_by_continuity():
     """Mapped contaminant pixels its pass 1 does not reach (8427's blue end, no flat
     field below ~2.88 um): bounded by its light on the nearest reached pixels of the
