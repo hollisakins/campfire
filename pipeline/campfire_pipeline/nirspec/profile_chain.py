@@ -153,7 +153,8 @@ class ChainConfig:
         adopt, st = PF.two_gauss_test(R0, R2, self.two_gauss_dchi2, self.two_gauss_k)
         adopt = adopt and R2.params.get('halo', 0.0) > 0
         st.update(h=R2.halo_fit['h'], ratio=R2.halo_fit['ratio'], sigma2=R2.halo_fit['sigma2'],
-                  at_cap=R2.halo_fit['at_cap'], dflux=PF.reported_flux_change(R0, R2))
+                  at_cap=R2.halo_fit['at_cap'], dflux=PF.reported_flux_change(R0, R2),
+                  x0=R0.chi2 / max(st['nu'], 1.0), x1=R2.chi2 / max(st['nu'], 1.0))
         return R2, adopt, st
 
 
@@ -253,6 +254,8 @@ class ChainResult:
                 'PF2GDX2': (_f(t.get('dchi2', np.nan)), 'Its chi2 gain / c over the single Gaussian'),
                 'PF2GTHR': (_f(t.get('thr', np.nan)), 'Adopted above: dchi2 + k ln N_eff'),
                 'PF2GC': (_f(t.get('c', np.nan)), 'c = max(chi2 / N_eff, 1), single Gaussian'),
+                'PF2GX0': (_f(t.get('x0', np.nan)), 'chi2 / N_eff, single Gaussian'),
+                'PF2GX1': (_f(t.get('x1', np.nan)), 'chi2 / N_eff, two Gaussians'),
                 'PF2GH': (_f(t.get('h', np.nan)), 'Its second-Gaussian light fraction'),
                 'PF2GR': (_f(t.get('ratio', np.nan)), 'Its second / core width'),
                 'PF2GDF': (_f(t.get('dflux', np.nan)), 'Its reported flux / single Gaussian - 1'),
