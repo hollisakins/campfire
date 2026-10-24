@@ -35,6 +35,11 @@ const themeScript = `
 `;
 
 export const metadata: Metadata = {
+  // Absolute urls for og:image & co. On Vercel, Next derived this from the
+  // platform's VERCEL_URL variables; the self-hosted container has none and
+  // Next then falls back to http://localhost:<port>, which is what the object
+  // pages emitted after the web cutover (ops/README.md, step 6).
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'),
   title: 'CAMPFIRE - JWST Spectroscopy Archive',
   description: 'COSMOS Archive of MultiPle-Field Internal Reductions & Extractions',
   // Nothing in CAMPFIRE is indexed (design-public-mirror.md §9). The
