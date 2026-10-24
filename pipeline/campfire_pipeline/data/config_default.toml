@@ -143,6 +143,10 @@
     contam_pass1_shape = "chain"             # "chain" (PRISM / own gated / default) | "default"
     contam_failed_open = "flag"              # failed-open shutters: "flag" | "mask"
     contam_beyond_range = "mask"             # other traces past their nominal range: "mask" | "ignore"
+    contam_echo = true                       # an unreliable contaminant solved over the target's pixels is
+                                             # predicted with the target's own light taken out of its pass 1
+    contam_gap_fill = true                   # mapped pixels a contaminant's pass 1 does not reach: masked only where
+                                             # its light, by continuity along the row, reaches the noise (false: all)
     contam_mask_kappa = 1.0                  # threshold in units of the per-pixel noise
     contam_min_clean_fraction = 0.5          # less main-shutter data left: no own fit
     contam_min_clean_fraction_exposure = 0.3 # or less than this in any exposure

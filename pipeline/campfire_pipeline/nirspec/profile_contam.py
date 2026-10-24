@@ -28,7 +28,10 @@ Nothing is iterated: each step reads only the output of the steps before it.
   marked unreliable, and solved once more after subtracting the contaminants whose
   own pass 1 is reliable (``run_pass1``). A contaminant whose pass 1 stays
   unreliable is never subtracted from a target; its prediction (an upper bound: it may
-  hold others' light) only masks the pixels where it exceeds the noise threshold. Alternative
+  hold others' light) only masks the pixels where it exceeds the noise threshold. Its
+  spectrum was solved over the target's pixels too, so the target's own light (its
+  lines included) is taken out of it first (``echo_corrected``), or the target would
+  mask its own emission. Alternative
   (``contam_pass1 = "stage3"``): the source's existing stage-3 optimal spectrum,
   converted to a true spectrum with the default shape's main-shutter factor.
   Pass 1 stores each exposure's model frame (the source's light alone, path loss
@@ -66,7 +69,7 @@ from campfire_pipeline.nirspec import trace_overlap as TO
 
 MAPS_SUBDIR = 'tracemaps'
 PASS1_SUBDIR = 'pass1'
-PASS1_VERSION = '6'
+PASS1_VERSION = '7'
 MIN_EXPOSURE_PIXELS = 100  # per-exposure clean fractions only for exposures with this many main-shutter pixels
 DPRED_FLOOR = 0.1          # prediction uncertainty floor, fraction of the prediction (ASSUMED, to be measured)
 _NOD = re.compile(r'^(jw\d+_\d{5})_(\d{5})_(nrs[12])')
@@ -516,6 +519,8 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
             pass
     R = PF.fit_fixed(model=M, shape=shape)
     raw, raw_err = R.flux.copy(), R.flux_err.copy()
+    solved_unmasked = why == 'covered'          # others' pixels are in the solve (``echo_corrected``)
+    nband = normal_band(R) if solved_unmasked else None
     src = 'solve'
     if st['mode'] == 'stage3':
         if stage3_spec is not None:
@@ -557,12 +562,19 @@ def compute_pass1(exps, sid, maps, workspace, is_prism, stage_config, prism_shap
             continue
         cal = calibration(e, workspace)
         idx = np.flatnonzero(good)
-        frames[exposure_key(e.name)] = dict(
-            origin=np.array(e.origin), shape=np.array(e.y.shape), idx=idx.astype(np.int32),
-            img=img.ravel()[idx].astype(np.float32), err=err.ravel()[idx].astype(np.float32),
-            cal=cal.ravel()[idx].astype(np.float32))
+        fr = dict(origin=np.array(e.origin), shape=np.array(e.y.shape), idx=idx.astype(np.int32),
+                  img=img.ravel()[idx].astype(np.float32), err=err.ravel()[idx].astype(np.float32),
+                  cal=cal.ravel()[idx].astype(np.float32))
+        if solved_unmasked and src == 'solve':
+            # the frame per unit spectrum and each pixel's wavelength: the solve's design,
+            # for removing a target's own light from this spectrum (``echo_corrected``)
+            prof = PF.frame_image(R, j, spectrum=np.ones(R.lam.size))
+            fr.update(prof=prof.ravel()[idx].astype(np.float32), plam=e.wav.ravel()[idx].astype(np.float32))
+        frames[exposure_key(e.name)] = fr
     P1 = Pass1(sid=int(sid), lam=R.lam, flux=R.flux, flux_err=R.flux_err, frames=frames, reliable=reliable,
                nosrc=set(nosrc))
+    P1.n_smooth, P1.keep_lines = (n_smooth if src != 'stage3' else 0), bool(st['lines'])
+    P1.nband = nband if src == 'solve' else None
     P1.clean = after / before if before else 0.0
     P1.why, P1.shape_src, P1.spec_src, P1.snr_det = why, shape_src, src, snr
     P1.flux_raw, P1.err_raw = raw, raw_err
@@ -637,8 +649,10 @@ def run_pass1(product, workspace, groups, overrides, science, sid, is_prism, sta
                       flux=P1.flux, flux_err=P1.flux_err, flux_raw=P1.flux_raw, err_raw=P1.err_raw,
                       snr_det=P1.snr_det, shape_src=P1.shape_src, spec_src=P1.spec_src, reliable=P1.reliable,
                       why=P1.why, round='2' if second else '1', clean=P1.clean, rep_p95=P1.rep_p95,
-                      ref_p95=P1.ref_p95, n_lines=P1.n_lines,
+                      ref_p95=P1.ref_p95, n_lines=P1.n_lines, n_smooth=P1.n_smooth, keep_lines=P1.keep_lines,
                       keys=np.array(sorted(P1.frames)), nosrc=np.array(sorted(P1.nosrc)))
+        if getattr(P1, 'nband', None) is not None:
+            arrays['nband'] = P1.nband
         for key, fr in P1.frames.items():
             for name, v in fr.items():
                 arrays[f'{key}__{name}'] = v
@@ -668,6 +682,9 @@ class Pass1:
         for key in z['keys']:
             key = str(key)
             frames[key] = {n: z[f'{key}__{n}'] for n in ('origin', 'shape', 'idx', 'img', 'err', 'cal')}
+            for n in ('prof', 'plam'):
+                if f'{key}__{n}' in z:
+                    frames[key][n] = z[f'{key}__{n}']
         P = cls(sid=int(z['sid']), lam=z['lam'], flux=z['flux'], flux_err=z['flux_err'], frames=frames,
                 reliable=bool(z['reliable']) if 'reliable' in z else True,
                 nosrc={str(x) for x in z['nosrc']} if 'nosrc' in z else None)
@@ -677,7 +694,17 @@ class Pass1:
         P.err_raw = z['err_raw'] if 'err_raw' in z else None
         P.rep_p95 = float(z['rep_p95']) if 'rep_p95' in z else np.nan
         P.ref_p95 = float(z['ref_p95']) if 'ref_p95' in z else np.nan
+        P.n_smooth = int(z['n_smooth']) if 'n_smooth' in z else 0
+        P.keep_lines = bool(z['keep_lines']) if 'keep_lines' in z else True
+        P.round = str(z['round']) if 'round' in z else '1'
+        P.nband = z['nband'] if 'nband' in z else None
         return P
+
+    def has_design(self):
+        """The frames carry the solve's design (``prof``, ``plam``): the source was solved
+        over other sources' pixels and its spectrum can be corrected for a target's echo."""
+        return bool(self.frames) and all('prof' in fr and 'plam' in fr for fr in self.frames.values()) \
+            and getattr(self, 'flux_raw', None) is not None and getattr(self, 'err_raw', None) is not None
 
 
 def read_prism_shape(workspace, prism_product):
@@ -719,6 +746,7 @@ class Prediction:
     failed_open: list = None         # per exposure: pixels of failed-open shutters (flag only by default)
     beyond: list = None              # per exposure: pixels of other traces past their nominal range (unmodelled)
     missing_frame: set = field(default_factory=set)     # contaminants with a pass-1 frame missing (masked)
+    echoed: set = field(default_factory=set)            # unreliable contaminants with the target's echo removed
 
 
 def _place_sparse(fr, origin_t, shape_t):
@@ -745,11 +773,201 @@ def _red_end_detected(P1, n=50, snr=5.0):
     return bool(np.sum(f[sel]) / np.sqrt(np.sum(e[sel] ** 2)) > snr)
 
 
+NBAND = 3      # stored diagonals of a pass-1 solve's normal matrix (main + 2 above; each pixel touches 2 grid points)
+
+
+def normal_band(R):
+    """The upper band of the normal matrix A^T W A of a fixed-shape solve (its shape,
+    offsets and clipped pixels), shape (NBAND, n grid): row d holds diagonal d,
+    left-aligned. ``echo_corrected`` solves with it."""
+    M = R.model
+    p, eoff = PF._qvec(R)
+    saved = M.use
+    try:
+        if getattr(R, 'use', None) is not None:
+            M.use = R.use
+        A = M.design(p, eoff)
+        w = np.where(M.use, 1.0 / M.pix['v'], 0.0)
+        N = (A.T.multiply(w).tocsr() @ A).tocsr()
+    finally:
+        M.use = saved
+    n = N.shape[0]
+    out = np.zeros((NBAND, n))
+    for d in range(NBAND):
+        out[d, :n - d] = N.diagonal(d)
+    return out
+
+
+def _solve_band(nband, b):
+    """N x = b for the stored band of a symmetric normal matrix; grid points without
+    weight get x = 0."""
+    from scipy.linalg import solveh_banded
+    n = b.size
+    diag = nband[0]
+    pos = diag[diag > 0]
+    if pos.size == 0:
+        return np.zeros(n)
+    good = diag > 1e-3 * np.median(pos)
+    ab = np.zeros((NBAND, n))                  # upper form: ab[u - d, d:] = diagonal d
+    u = NBAND - 1
+    for d in range(NBAND):
+        v = nband[d, :n - d].copy()
+        if d == 0:
+            v = np.where(good, v + 1e-9 * np.median(pos), 1.0)
+        else:
+            v = np.where(good[:n - d] & good[d:], v, 0.0)
+        ab[u - d, d:] = v
+    try:
+        x = solveh_banded(ab, np.where(good, b, 0.0))
+    except np.linalg.LinAlgError:
+        x = np.where(good, b / np.where(good, diag, 1.0), 0.0)
+    return np.where(good, x, 0.0)
+
+
+def _placed_light(exps, k, P1, cal_of):
+    """A pass 1's light in exposure k's nod difference of the target, target units."""
+    e = exps[k]
+    out = np.zeros(e.y.shape)
+    for j, w in [(k, 1.0)] + [(j, -1.0 / len(e.partners)) for j in e.partners]:
+        fr = P1.frames.get(exposure_key(exps[j].name))
+        if fr is None:
+            continue
+        ty, tx, ok = _place_sparse(fr, e.origin, e.y.shape)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            conv = cal_of(j)[ty[ok], tx[ok]] / fr['cal'][ok].astype(float)
+        good = np.isfinite(conv)
+        np.add.at(out, (ty[ok][good], tx[ok][good]), w * fr['img'][ok][good].astype(float) * conv[good])
+    return out
+
+
+def echo_corrected(P1, exps, ks, own_light, cal_of):
+    """A contaminant's pass 1 with the target's own light taken out.
+
+    A contaminant whose trace others cover is solved over their pixels
+    (``compute_pass1``, unreliable), the target's among them, so its spectrum holds part
+    of the target's light: at the wavelengths the contaminant has on the shared pixels,
+    the target's lines and continuum come back as the contaminant's. Predicted onto
+    the target, that part (the echo) lands exactly on the target's own light, and
+    the target masks its own lines as contamination (5301: 8427's pass 1 is 5301's
+    echo to within its noise).
+
+    The echo is the contaminant's fixed-shape solve applied to the target's light. The
+    target's light on its own nod differences comes from its own pass 1
+    (``own_light(k)``); the contaminant's design on those pixels from its frames per
+    unit spectrum (``prof``, ``plam``), converted to target units as the prediction is;
+    the normal matrix is taken diagonal, 1 / ``err_raw`` ** 2 (the solve's banded
+    coupling of neighbouring grid points is left out; the result is smoothed). The
+    echo is subtracted from the full-resolution spectrum, which is then smoothed as
+    pass 1 smoothed it (``n_smooth``, lines kept), and the frames are rebuilt. Linear,
+    no iteration. Where the target's own pass 1 holds the contaminant's light too (it
+    is covered as well) the echo also removes that share of the contaminant (second
+    order: product of the two absorbed fractions).
+
+    ks : the target's nod differences that hold the contaminant's light.
+    Returns a copy of ``P1`` (``echo`` = the subtracted full-resolution echo)."""
+    import copy
+    lam = np.asarray(P1.lam, float)
+    b = np.zeros(lam.size)
+    for k in ks:
+        e = exps[k]
+        L = own_light(k)
+        sig = diff_sigma(exps, k)
+        for j, w in [(k, 1.0)] + [(j, -1.0 / len(e.partners)) for j in e.partners]:
+            fr = P1.frames.get(exposure_key(exps[j].name))
+            if fr is None:
+                continue
+            ty, tx, ok = _place_sparse(fr, e.origin, e.y.shape)
+            ty, tx = ty[ok], tx[ok]
+            with np.errstate(divide='ignore', invalid='ignore'):
+                conv = cal_of(j)[ty, tx] / fr['cal'][ok].astype(float)
+                v = w * fr['prof'][ok].astype(float) * conv * L[ty, tx] / sig[ty, tx] ** 2
+            lp = fr['plam'][ok].astype(float)
+            use = np.isfinite(v) & e.ok[ty, tx] & (lp >= lam[0]) & (lp <= lam[-1])
+            if not use.any():
+                continue
+            v, lp = v[use], lp[use]
+            i = np.clip(np.searchsorted(lam, lp) - 1, 0, lam.size - 2)
+            t = np.clip((lp - lam[i]) / (lam[i + 1] - lam[i]), 0.0, 1.0)
+            np.add.at(b, i, v * (1 - t))
+            np.add.at(b, i + 1, v * t)
+    er = np.asarray(P1.err_raw, float)
+    nb = getattr(P1, 'nband', None)
+    if nb is not None and np.shape(nb) == (NBAND, lam.size):
+        echo = np.where(np.isfinite(er), _solve_band(np.asarray(nb, float), b), 0.0)
+    else:                                       # no band stored: diagonal (overestimates by ~1.4)
+        echo = np.where(np.isfinite(er), er ** 2 * b, 0.0)
+    f = np.asarray(P1.flux_raw, float) - echo
+    if getattr(P1, 'n_smooth', 0) and P1.n_smooth > 1:
+        fs, es, _ = smooth_spectrum(f, er, n=P1.n_smooth, keep_lines=getattr(P1, 'keep_lines', True))
+    else:
+        fs, es = f, er
+    keep = ~np.isfinite(fs) & np.isfinite(P1.flux)
+    fs, es = np.where(keep, P1.flux, fs), np.where(keep, P1.flux_err, es)
+    fz, ez = np.nan_to_num(fs), np.abs(np.nan_to_num(es))
+    frames = {}
+    for key, fr in P1.frames.items():
+        lp = fr['plam'].astype(float)
+        prof = fr['prof'].astype(float)
+        frames[key] = dict(fr, img=(prof * np.interp(lp, lam, fz, left=0.0, right=0.0)).astype(np.float32),
+                           err=(prof * np.interp(lp, lam, ez, left=0.0, right=0.0)).astype(np.float32))
+    out = copy.copy(P1)
+    out.frames, out.flux, out.flux_err, out.echo = frames, fs, es, echo
+    return out
+
+
+def unpredictable_gap(gap, covered, add, sig, ncol, kappa=1.0):
+    """Of a contaminant's mapped pixels its pass-1 frames do not reach (``gap``), those
+    whose light cannot be bounded by continuity.
+
+    A contaminant's pass 1 has no value where its own data are unusable: at the blue
+    end of G395M/F290LP its pixels below ~2.88 um carry no flat field (DQ
+    NO_FLAT_FIELD + DO_NOT_USE, the filter's cut-on), so its spectrum and frames stop
+    there while the trace maps (jwst's bounding box) continue a few columns further
+    (5301: 8427 masked 4.00-4.04 um of 5301's trace). Along a row the contaminant's
+    light changes slowly, so on each gap pixel it is taken from its predicted light on
+    the nearest reached pixels of the same row (linear between both sides, the
+    nearer side alone at an end) when one lies within ``ncol`` columns (the pass-1
+    smoothing length: the spectrum is only known to that resolution anyway). The pixel
+    is unpredictable when no reached pixel is that close (a spectrum or cutout
+    ending far short, 2976 on 5215) or when that light reaches ``kappa`` times the
+    target's noise (bright light is not extrapolated; the pixel stays masked).
+
+    Returns the unpredictable subset of ``gap``."""
+    out = np.zeros(gap.shape, bool)
+    for y in np.flatnonzero(gap.any(axis=1)):
+        xg = np.flatnonzero(gap[y])
+        xc = np.flatnonzero(covered[y] & np.isfinite(add[y]))
+        if xc.size == 0:
+            out[y, xg] = True
+            continue
+        i = np.searchsorted(xc, xg)
+        xl = np.where(i > 0, xc[np.maximum(i - 1, 0)], -10 ** 9)
+        xr = np.where(i < xc.size, xc[np.minimum(i, xc.size - 1)], 10 ** 9)
+        okl = (xg - xl) <= ncol
+        okr = (xr - xg) <= ncol
+        al = add[y, np.clip(xl, 0, gap.shape[1] - 1)]
+        ar = add[y, np.clip(xr, 0, gap.shape[1] - 1)]
+        with np.errstate(invalid='ignore', divide='ignore'):
+            t = (xg - xl) / np.maximum(xr - xl, 1)
+            est = np.where(okl & okr, al + t * (ar - al), np.where(okl, al, ar))
+            s = sig[y, xg]
+            bad = ~(okl | okr) | ~np.isfinite(s) | ~(np.abs(est) < kappa * s)
+        out[y, xg[bad]] = True
+    return out
+
+
 def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0, failed_open='flag',
-            beyond='mask'):
+            beyond='mask', echo=True, gap_columns=31, gap_kappa=1.0):
     """Predicted other sources' light in each science nod difference of a target.
 
     pass1_for : callable sid -> ``Pass1`` or None.
+    own_pass1 : the target's own pass 1 (pair candidates; the echo correction).
+    echo : an unreliable contaminant solved over the target's pixels is predicted from
+        its spectrum with the target's own light taken out (``echo_corrected``).
+    gap_columns, gap_kappa : mapped pixels of a bright contaminant that its pass-1
+        frames do not reach are unmodelled only where its light cannot be bounded by
+        continuity along the row (``unpredictable_gap``); 0 masks them all (the rule
+        before 2026-10-23).
     A contaminant whose pass 1 lacks a frame of an exposure that holds its light
     (the frame is neither empty nor without the source) cannot be predicted in the
     nod differences that use that exposure: its pixels there are unmodelled."""
@@ -767,7 +985,15 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
             cals[j] = calibration(exps[j], rate_dir)
         return cals[j]
 
+    own_L = {}
+
+    def own_light(k):
+        if k not in own_L:
+            own_L[k] = _placed_light(exps, k, own_pass1, cal_of)
+        return own_L[k]
+
     cache, missing, contrib, unreliable, missing_frame, by_source = {}, set(), {}, set(), set(), {}
+    echoed = set()
     if geo.beyond_sources is None:
         geo.beyond_sources = [{} for _ in exps]
     for k in range(n):
@@ -782,7 +1008,14 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
             px = geo.sources[k].get(csid, none)
             bp = geo.beyond_sources[k].get(csid, none)
             if csid not in cache:
-                cache[csid] = pass1_for(csid)
+                P1 = pass1_for(csid)
+                if (echo and P1 is not None and not P1.reliable and own_pass1 is not None
+                        and hasattr(P1, 'has_design') and P1.has_design()):
+                    ks = [q for q in range(n) if exps[q].use_data and exps[q].partners is not None
+                          and (csid in geo.sources[q] or csid in geo.beyond_sources[q])]
+                    P1 = echo_corrected(P1, exps, ks, own_light, cal_of)
+                    echoed.add(csid)
+                cache[csid] = P1
             P1 = cache[csid]
             if P1 is None:
                 missing.add(csid)
@@ -824,7 +1057,10 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
             if bright:
                 unmod[k] |= bp
                 if P1.nosrc is not None and not any(exposure_key(exps[j].name) in P1.nosrc for j, _ in terms):
-                    unmod[k] |= px & ~covered
+                    gap = px & ~covered
+                    if gap.any() and gap_columns > 0:
+                        gap = unpredictable_gap(gap, covered, add, sig, gap_columns, kappa=gap_kappa)
+                    unmod[k] |= gap
             if not px.any():
                 continue
             if not P1.reliable:
@@ -843,7 +1079,7 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
     out = Prediction(pred=pred, dpred=dpred, unmodelled=unmod, contributors=contrib, missing=missing,
                      unreliable=unreliable, pred_unreliable=pred_u, have_maps=geo.have_maps,
                      by_source=by_source, failed_open=geo.failed_open, beyond=geo.beyond,
-                     missing_frame=missing_frame)
+                     missing_frame=missing_frame, echoed=echoed)
     # similar-brightness pair candidates: a contaminant above the noise on the target's
     # main shutter whose pass-1 flux is within a factor pair_ratio of the target's. The
     # flag itself (``pair_flag``) also needs the contaminant's light to matter in the

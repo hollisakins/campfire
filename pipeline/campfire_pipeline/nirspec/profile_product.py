@@ -35,6 +35,8 @@ def stage_flags(sc):
         pair_ratio=float(g('contam_pair_ratio', 3.0)),
         pair_min_frac=float(g('contam_pair_min_frac', 0.3)),
         failed_open=str(g('contam_failed_open', 'flag')).lower(),
+        echo=bool(g('contam_echo', True)),
+        gap_fill=bool(g('contam_gap_fill', True)),
         beyond=str(g('contam_beyond_range', 'mask')).lower(),
         dominance_kappa=float(g('contam_dominance_kappa', 1.0)),
         scan=bool(g('scan_neighbours', True)),
@@ -98,8 +100,11 @@ def analyse_product(workspace_dir, groups, overrides, science, source_id, stage_
                     name = names.get(int(sid))
                     path = CT.pass1_path(workspace_dir, name) if name else None
                     return CT.Pass1.read(path) if path and os.path.exists(path) else None
+            st = CT.pass1_settings(stage_config)
+            gap_cols = (st['smooth_prism'] if is_prism else st['smooth_grating']) if fl['gap_fill'] else 0
             P = CT.predict(exps, source_id, maps, pass1_for, workspace_dir, own_pass1=pass1_for(source_id),
-                           pair_ratio=fl['pair_ratio'], failed_open=fl['failed_open'], beyond=fl['beyond'])
+                           pair_ratio=fl['pair_ratio'], failed_open=fl['failed_open'], beyond=fl['beyond'],
+                           echo=fl['echo'], gap_columns=gap_cols, gap_kappa=fl['kappa'])
             saved = [(e.ok, e.diff) for e in exps]
             clean = CT.apply(exps, P, mode=fl['contam_mode'], kappa=fl['kappa'], dominance_kappa=fl['dominance_kappa'])
             cstate = fl['contam_mode'] if P.have_maps else f"{fl['contam_mode']}_partial_maps"
@@ -236,6 +241,7 @@ def run_product(product_name, workspace_dir, groups, overrides, science, source_
             hdr['PFCMISS'] = (len(P.missing), 'Of those, without a pass-1 spectrum (masked)')
             hdr['PFCUNREL'] = (len(P.unreliable), 'Of those, pass 1 not decontaminated (masked)')
             hdr['PFCMFRM'] = (len(P.missing_frame), 'Of those, a pass-1 frame missing (masked)')
+            hdr['PFCECHO'] = (len(getattr(P, 'echoed', ()) or ()), 'Unreliable ones with the target echo removed')
             nb = sum(int((b & u).sum()) for b, u in zip(P.beyond or [], P.unmodelled))
             hdr['PFCBEYND'] = (nb, 'Pixels lit by others past their range (masked)')
             hdr['PFPAIR'] = (int(P.pair), 'Similar-brightness contaminant on the trace')

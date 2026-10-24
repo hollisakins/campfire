@@ -344,3 +344,104 @@ def test_smooth_points_from_resolution_elements():
     assert s['smooth_prism'] == 11 and s['smooth_grating'] == 31
     s = CT.pass1_settings({'contam_pass1_smooth': 21})              # the round-2 knob overrides both
     assert s['smooth_prism'] == s['smooth_grating'] == 21
+
+
+def _covered_pass1(t_exps, Rt, c_offset, c_scale=0.0):
+    """The pass 1 of a contaminant (sid 2, centre ``c_offset`` in the same slitlet) whose
+    trace the target covers: solved unmasked over data holding the target's light (and
+    its own, ``c_scale``), with the solve's design stored as ``compute_pass1`` does."""
+    import copy
+    exps = copy.deepcopy(t_exps)
+    shape = dict(centre_offset=c_offset, drift=0.0, width=0.1, width_change=0.0)
+    Rc_true = T._truth_result(exps, dict(centre=c_offset, drift=0.0, width=0.1, width_change=0.0), [0, 0, 0], c_scale)
+    for k, e in enumerate(exps):
+        e.diff = (PF.model_frame(Rt, k, applied_pathloss=False, common=True)
+                  + PF.model_frame(Rc_true, k, applied_pathloss=False, common=True))
+    M = PF.ProfileModel(exps, chromatic=True)
+    R = PF.fit_fixed(model=M, shape=shape, use=np.ones(M.npix, bool))
+    frames = {}
+    for j, e in enumerate(exps):
+        img = PF.frame_image(R, j)
+        prof = PF.frame_image(R, j, spectrum=np.ones(R.lam.size))
+        idx = np.flatnonzero(np.isfinite(img) & (np.abs(img) > 0))
+        frames[CT.exposure_key(e.name)] = dict(origin=np.array(e.origin), shape=np.array(e.y.shape), idx=idx,
+                                               img=img.ravel()[idx], err=0.05 * np.abs(img.ravel()[idx]),
+                                               cal=np.ones(idx.size), prof=prof.ravel()[idx],
+                                               plam=e.wav.ravel()[idx].astype(np.float32))
+    P1 = CT.Pass1(sid=2, lam=R.lam, flux=R.flux, flux_err=R.flux_err, frames=frames, reliable=False, nosrc=set())
+    P1.flux_raw, P1.err_raw = R.flux.copy(), R.flux_err.copy()
+    P1.nband, P1.n_smooth, P1.keep_lines = CT.normal_band(R), 0, True
+    return P1, Rc_true
+
+
+def test_echo_of_the_target_is_taken_out_of_an_unreliable_contaminant(stand_ins):
+    """5301 / 8427: a contaminant whose trace the target covers is solved over the
+    target's pixels; its pass 1 then holds the target's light, and predicted back it
+    lands on the target's own light (its lines masked as contamination). With the
+    echo taken out, a dark contaminant predicts nothing, and a real one its own light."""
+    t_exps, Rt = _source(1, 0.0, 10.0)
+    for e in t_exps:
+        e.var = np.full(e.y.shape, 1e-4)
+    own = _pass1_of(Rt, 1)
+    P1c, _ = _covered_pass1(t_exps, Rt, 0.3)
+    assert P1c.has_design()
+    assert np.nanmedian(np.abs(P1c.flux_raw)) > 0.05 * np.nanmedian(Rt.flux)     # the echo is there
+    kw = dict(own_pass1=own)
+    Pn = CT.predict(t_exps, 1, {'x': None}, lambda s: P1c if s == 2 else None, '.', echo=False, **kw)
+    Pe = CT.predict(t_exps, 1, {'x': None}, lambda s: P1c if s == 2 else None, '.', **kw)
+    assert Pe.echoed == {2} and not Pn.echoed and Pe.unreliable == {2}
+    big = max(np.nanmax(np.abs(p)) for p in Pn.pred_unreliable)
+    left = max(np.nanmax(np.abs(p)) for p in Pe.pred_unreliable)
+    assert left < 1e-3 * big
+    # a real contaminant keeps its light (the target's own pass 1 is clean here)
+    P1r, Rc = _covered_pass1(t_exps, Rt, 0.3, c_scale=2.0)
+    Pr = CT.predict(t_exps, 1, {'x': None}, lambda s: P1r if s == 2 else None, '.', **kw)
+    truth = [np.nan_to_num(sum(w * PF.frame_image(Rc, j) for j, w in PF.term_weights(t_exps, k))) for k in range(3)]
+    for k in range(3):
+        np.testing.assert_allclose(Pr.pred_unreliable[k], truth[k], atol=1e-3 * np.max(np.abs(truth[k])))
+    # without the target's own pass 1 nothing is corrected
+    P0 = CT.predict(t_exps, 1, {'x': None}, lambda s: P1c if s == 2 else None, '.')
+    assert not P0.echoed
+
+
+def test_unpredictable_gap_by_continuity():
+    """Mapped contaminant pixels its pass 1 does not reach (8427's blue end, no flat
+    field below ~2.88 um): bounded by its light on the nearest reached pixels of the
+    row within ncol columns; unpredictable when farther, or when that light is bright."""
+    ny, nx = 4, 100
+    sig = np.ones((ny, nx))
+    covered = np.zeros((ny, nx), bool)
+    covered[:, :40] = covered[:, 50:60] = True
+    add = np.zeros((ny, nx))
+    add[:, :40], add[:, 50:60] = 0.3, 0.5
+    gap = ~covered
+    out = CT.unpredictable_gap(gap, covered, add, sig, ncol=31)
+    assert not out[:, 40:50].any()                         # interpolated 0.3-0.5 sigma: faint
+    assert not out[:, 60:91].any() and out[:, 91:].all()   # extended 31 columns past the last reached one
+    out = CT.unpredictable_gap(gap, covered, 5 * add, sig, ncol=31)
+    assert out[:, 40:50].all()                             # bright: stays masked
+    assert CT.unpredictable_gap(gap, np.zeros((ny, nx), bool), add, sig, ncol=31)[gap].all()
+
+
+def test_gap_masked_only_where_unpredictable(stand_ins):
+    """In predict: a stretch of mapped pixels a bright contaminant's frames do not
+    reach is left alone when its light around it is below the noise
+    (``gap_columns`` > 0), and masked whole with the rule before (0)."""
+    t_exps, _ = _source(1, 0.0, 10.0)
+    for e in t_exps:
+        e.var = np.ones(e.y.shape)
+        e.var[:, 30:70] = 1e8                                # the light around the gap is far below the noise
+    c_exps, Rc = _source(2, 0.3, 50.0)                       # bright elsewhere
+    P1 = _pass1_of(Rc, 2)
+    P1.nosrc = set()
+    for fr in P1.frames.values():
+        col = fr['idx'] % NX
+        keep = (col < 45) | (col >= 55)                      # its pass 1 has no value there
+        for n in ('idx', 'img', 'err', 'cal'):
+            fr[n] = fr[n][keep]
+    gap = np.zeros(t_exps[0].y.shape, bool)
+    gap[:, 45:55] = True
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.')
+    assert not P.unmodelled[0][gap].any()
+    P = CT.predict(t_exps, 1, {'x': None}, lambda s: P1 if s == 2 else None, '.', gap_columns=0)
+    assert P.unmodelled[0][gap].all()
