@@ -402,6 +402,10 @@ def test_echo_of_the_target_is_taken_out_of_an_unreliable_contaminant(stand_ins)
     # without the target's own pass 1 nothing is corrected
     P0 = CT.predict(t_exps, 1, {'x': None}, lambda s: P1c if s == 2 else None, '.')
     assert not P0.echoed
+    # nor when the target's own pass 1 failed the sanity guard (its level is not its light)
+    own.why = 'guard'
+    P0 = CT.predict(t_exps, 1, {'x': None}, lambda s: P1c if s == 2 else None, '.', own_pass1=own)
+    assert not P0.echoed
 
 
 def test_second_round_reads_first_round_results_only(tmp_path):

@@ -995,6 +995,10 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
         return cals[j]
 
     own_L = {}
+    # the target's own pass 1 is its light for the echo; not when the sanity guard says its
+    # level is wrong (several times the stage-3 spectrum): the echo would be over-subtracted
+    # and the contaminant's prediction turn strongly negative (1736, 853847: masked 50-60 %)
+    own_ok = own_pass1 is not None and getattr(own_pass1, 'why', '') != 'guard'
 
     def own_light(k):
         if k not in own_L:
@@ -1018,7 +1022,7 @@ def predict(exps, sid, maps, pass1_for, rate_dir, own_pass1=None, pair_ratio=3.0
             bp = geo.beyond_sources[k].get(csid, none)
             if csid not in cache:
                 P1 = pass1_for(csid)
-                if (echo and P1 is not None and not P1.reliable and own_pass1 is not None
+                if (echo and own_ok and P1 is not None and not P1.reliable
                         and hasattr(P1, 'has_design') and P1.has_design()):
                     ks = [q for q in range(n) if exps[q].use_data and exps[q].partners is not None
                           and (csid in geo.sources[q] or csid in geo.beyond_sources[q])]
