@@ -146,11 +146,17 @@ for f in "$REPO_DIR"/supabase/tests/check_*.sql; do
     echo "  skip $(basename "$f") (whole-catalog freeze; not a restore check)"
   elif out="$(psql_db -v ON_ERROR_STOP=1 -q < "$f" 2>&1)"; then
     gpass=$((gpass + 1))
-  elif grep -q 'DR-seed' "$f"; then
-    seed_fail=$((seed_fail + 1))
   else
-    gfail=$((gfail + 1)); fail=1
-    echo "  FAIL $(basename "$f"): $(grep -m1 -iE 'error|exception' <<<"$out" | cut -c1-200)"
+    err="$(grep -m1 -E '^(psql:.*)?ERROR:' <<<"$out" | cut -c1-200)"
+    # Only the assertion that trips on the missing seed release is expected
+    # ("DR-seed lacks …", "no release DR-seed", "… got PT404" = tag not found).
+    # Any earlier assertion in the same file is a real failure.
+    if grep -q 'DR-seed' "$f" && grep -qE 'DR-seed|got PT404' <<<"$err"; then
+      seed_fail=$((seed_fail + 1)); echo "  seed $(basename "$f"): ${err}"
+    else
+      gfail=$((gfail + 1)); fail=1
+      echo "  FAIL $(basename "$f"): ${err:-$(tail -n1 <<<"$out" | cut -c1-200)}"
+    fi
   fi
 done
 echo "  ok ${gpass}, failed ${gfail}, seed-dependent (DR-seed) failures ${seed_fail}"
