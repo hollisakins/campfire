@@ -59,14 +59,11 @@ INSERT INTO public.deploy_events (actor, action, occurred_at, metadata)
 VALUES ('11111111-1111-1111-1111-111111111111', 'config_sync', now() - interval '14 hours',
         '{"kinds": ["observations", "fields"]}'::jsonb);
 
--- --- Deploy leases: one live, one with a dead heartbeat, one finished -------
-INSERT INTO public.deploy_scope_state (scope_type, scope_key, version, last_actor, last_deploy_at,
-                                       in_progress_since, in_progress_by, in_progress_host, heartbeat_at)
-SELECT 'observation', o.name, 3, '11111111-1111-1111-1111-111111111111', now() - interval '12 days',
-       now() - interval '18 minutes', '11111111-1111-1111-1111-111111111111', 'candide-node12', now() - interval '20 seconds'
-FROM (SELECT name FROM public.observations ORDER BY name LIMIT 1) o
-ON CONFLICT (scope_type, scope_key) DO NOTHING;
-
+-- --- Deploy leases: one stalled (heartbeat past deploy_lease_ttl), one finished
+-- No *live* lease: dr_freeze / dr_publish refuse while one exists, and the DR
+-- guards (check_dr_browse, check_dr_freeze, check_dr_page, check_dr_publish)
+-- freeze the seed. A stalled lease is ignored by them and still exercises the
+-- dashboard's "Deploy stalled" strip.
 INSERT INTO public.deploy_scope_state (scope_type, scope_key, version, last_actor, last_deploy_at,
                                        in_progress_since, in_progress_by, in_progress_host, heartbeat_at)
 SELECT 'field', f.name, 1, '11111111-1111-1111-1111-111111111111', now() - interval '40 days',
