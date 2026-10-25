@@ -16,7 +16,7 @@ import { NextRequest } from 'next/server';
  * Flow:
  * 1. Email contains: https://campfire.hollisakins.com/api/invite?token=...
  * 2. This route serves an interstitial page with an "Accept Invitation" button
- * 3. User clicks button → https://puyczxwyuzpnqvpachip.supabase.co/auth/v1/verify?token=...
+ * 3. User clicks button → $NEXT_PUBLIC_SUPABASE_URL/auth/v1/verify?token=... (the browser follows it, so the PUBLIC api url, never the internal one)
  * 4. Supabase validates and redirects back to: https://campfire.hollisakins.com/login#access_token=...
  * 5. LoginForm processes tokens and redirects to /welcome
  */
@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
   const redirectTo = searchParams.get('redirect_to') || `${appUrl}/login`;
 
   // Build Supabase verification URL
-  const supabaseUrl = new URL('https://puyczxwyuzpnqvpachip.supabase.co/auth/v1/verify');
+  const supabaseUrl = new URL('/auth/v1/verify', process.env.NEXT_PUBLIC_SUPABASE_URL!);
   supabaseUrl.searchParams.set('token', token);
   supabaseUrl.searchParams.set('type', type);
   supabaseUrl.searchParams.set('redirect_to', redirectTo);
