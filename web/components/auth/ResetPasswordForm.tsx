@@ -6,7 +6,17 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { createClient } from '@/lib/supabase/client';
+import { parseAuthLink, settleAuthLink, type LinkInvalidReason } from '@/lib/auth/auth-link';
 import { AlertCircle, CheckCircle, Loader2, Eye, EyeOff } from 'lucide-react';
+
+type LinkState = { status: 'pending' } | { status: 'ready' } | { status: 'invalid'; reason: LinkInvalidReason };
+
+const INVALID_COPY: Record<LinkInvalidReason, { title: string; body: string }> = {
+  expired: { title: 'Link expired', body: 'This link has already been used or has expired.' },
+  rejected: { title: 'Invalid link', body: 'This link is not valid.' },
+  wrong_type: { title: 'Invalid link', body: 'This link is not a password reset link.' },
+  missing: { title: 'Invalid link', body: 'This link is not valid.' },
+};
 
 export const ResetPasswordForm: React.FC = () => {
   const router = useRouter();
@@ -15,95 +25,31 @@ export const ResetPasswordForm: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [validatingToken, setValidatingToken] = useState(true);
-  const [hasValidToken, setHasValidToken] = useState(false);
+  const [link, setLink] = useState<LinkState>({ status: 'pending' });
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
-  // Check for valid reset token in URL (either code or hash-based)
+  // Acquire the recovery session from the auth client's events, not from a
+  // snapshot: the PKCE `?code=` exchange runs asynchronously inside the
+  // client (and strips `code` from the URL when it succeeds), so a one-off
+  // `getSession()` races it in both directions and misreports a valid,
+  // single-use link as expired (#641). The implicit `#access_token=` branch
+  // (recovery type required) and GoTrue's `error_code=otp_expired` landing
+  // are handled inside `settleAuthLink`.
   useEffect(() => {
-    const validateToken = async () => {
-      const supabase = createClient();
-
-      // Check if there's a code parameter (means we were redirected from Supabase after verification)
-      const urlParams = new URLSearchParams(window.location.search);
-      const code = urlParams.get('code');
-
-      if (code) {
-        // Supabase has already verified the token and should have set a session
-        // Just check if we have a valid session
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-
-        if (sessionError || !session) {
-          console.error('Session error:', sessionError);
-          setError('Invalid or expired reset link. Please request a new password reset.');
-          setValidatingToken(false);
-          return;
-        }
-
-        // Valid session exists
-        setHasValidToken(true);
-        setValidatingToken(false);
-
-        // Clear the code from URL for cleaner UX
-        window.history.replaceState(null, '', window.location.pathname);
-        return;
-      }
-
-      // Fall back to hash-based flow (legacy)
-      const hash = window.location.hash;
-
-      if (!hash || !hash.includes('access_token')) {
-        setError('Invalid or expired reset link. Please request a new password reset.');
-        setValidatingToken(false);
-        return;
-      }
-
-      try {
-        const hashParams = new URLSearchParams(hash.substring(1));
-        const accessToken = hashParams.get('access_token');
-        const refreshToken = hashParams.get('refresh_token');
-        const type = hashParams.get('type');
-
-        // Check if this is a recovery type (password reset)
-        if (type !== 'recovery') {
-          setError('This link is not for password reset. Please request a new password reset link.');
-          setValidatingToken(false);
-          return;
-        }
-
-        if (accessToken && refreshToken) {
-          // Set the session with the tokens
-          const { error: sessionError } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-          });
-
-          if (sessionError) {
-            console.error('Session error:', sessionError);
-            setError('Invalid or expired reset link. Please request a new password reset.');
-            setValidatingToken(false);
-            return;
-          }
-
-          // Valid token
-          setHasValidToken(true);
-          setValidatingToken(false);
-
-          // Clear the hash from URL for cleaner UX
+    const supabase = createClient();
+    return settleAuthLink(supabase.auth, parseAuthLink(window.location.href), {
+      expectType: 'recovery',
+      readHref: () => window.location.href,
+      onSettled: (outcome) => {
+        if (outcome.status === 'ready') {
+          setLink({ status: 'ready' });
           window.history.replaceState(null, '', window.location.pathname);
         } else {
-          setError('Invalid reset link. Please request a new password reset.');
-          setValidatingToken(false);
+          setLink(outcome);
         }
-      } catch (err) {
-        console.error('Error validating reset token:', err);
-        setError('Failed to validate reset link. Please try again.');
-        setValidatingToken(false);
-      }
-    };
-
-    validateToken();
+      },
+    });
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -170,29 +116,31 @@ export const ResetPasswordForm: React.FC = () => {
     }
   };
 
-  // Show loading state while validating token
-  if (validatingToken) {
+  // Pending: the client is still exchanging the link; never an error here.
+  if (link.status === 'pending') {
     return (
       <Card className="w-full max-w-md p-8">
         <div className="flex flex-col items-center justify-center py-8">
           <Loader2 className="w-12 h-12 animate-spin text-primary mb-4" />
-          <p className="text-text-secondary text-lg">Validating reset link...</p>
+          <p className="text-text-secondary text-lg">Checking link…</p>
         </div>
       </Card>
     );
   }
 
-  // Show error if token is invalid
-  if (!hasValidToken) {
+  // Invalid: the link was used, expired or refused. Re-clicking cannot work,
+  // so the primary action requests a new email.
+  if (link.status === 'invalid') {
+    const copy = INVALID_COPY[link.reason];
     return (
       <Card className="w-full max-w-md p-8">
         <h2 className="text-2xl font-bold text-text-primary mb-6 text-center">
-          Invalid Reset Link
+          {copy.title}
         </h2>
 
         <div className="mb-6 p-3 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-lg flex items-start gap-2">
           <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
+          <p className="text-sm text-red-800 dark:text-red-200">{copy.body}</p>
         </div>
 
         <div className="space-y-3">
@@ -201,7 +149,7 @@ export const ResetPasswordForm: React.FC = () => {
             className="w-full"
             onClick={() => router.push('/forgot-password')}
           >
-            Request New Reset Link
+            Request a new link
           </Button>
 
           <Button
@@ -209,7 +157,7 @@ export const ResetPasswordForm: React.FC = () => {
             className="w-full"
             onClick={() => router.push('/login')}
           >
-            Return to Sign In
+            Sign in
           </Button>
         </div>
       </Card>

@@ -7,6 +7,7 @@ import { Breadcrumbs } from '@/components/ui/Breadcrumbs';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { createClient } from '@/lib/supabase/client';
+import { parseAuthLink, settleAuthLink } from '@/lib/auth/auth-link';
 import { CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 
 export default function EmailChangedPage() {
@@ -16,40 +17,29 @@ export default function EmailChangedPage() {
   const [newEmail, setNewEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Same event-driven settlement as the password reset landing (#641): the
+  // `?code=` exchange runs inside the auth client, so the page waits for the
+  // session event (or exchanges the code itself once the client reports it
+  // did not) instead of reading a `getSession()` snapshot.
   useEffect(() => {
-    const verifyEmailChange = async () => {
-      // Check if there's a code parameter (from Supabase redirect)
-      const urlParams = new URLSearchParams(window.location.search);
-      const code = urlParams.get('code');
-
-      if (code) {
-        const supabase = createClient();
-
-        // Check if we have a valid session (Supabase should have set it)
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-
-        if (sessionError || !session) {
-          console.error('Session error:', sessionError);
-          setError('Invalid or expired email change link. Please try again.');
-          setLoading(false);
-          return;
+    const supabase = createClient();
+    return settleAuthLink(supabase.auth, parseAuthLink(window.location.href), {
+      readHref: () => window.location.href,
+      onSettled: (outcome) => {
+        if (outcome.status === 'ready') {
+          setSuccess(true);
+          setNewEmail(outcome.session.user.email || null);
+          window.history.replaceState(null, '', window.location.pathname);
+        } else {
+          setError(
+            outcome.reason === 'expired'
+              ? 'This link has already been used or has expired.'
+              : 'This link is not valid.',
+          );
         }
-
-        // Email change successful - session exists
-        setSuccess(true);
-        setNewEmail(session.user.email || null);
         setLoading(false);
-
-        // Clear the code from URL
-        window.history.replaceState(null, '', window.location.pathname);
-      } else {
-        // No code in URL - user navigated directly
-        setError('Invalid email change link. Please use the link from your email.');
-        setLoading(false);
-      }
-    };
-
-    verifyEmailChange();
+      },
+    });
   }, []);
 
   return (
