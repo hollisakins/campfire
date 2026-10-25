@@ -162,7 +162,11 @@ Files (applied in this order via `schema_paths` in `config.toml`):
 **Workflow for schema changes** (pg-delta engine, `[experimental.pgdelta]` in `config.toml`; see `supabase/README.md`):
 1. Edit the relevant file in `supabase/schemas/`
 2. Generate the migration from the schema files: `supabase db schema declarative sync -f <description> --no-apply` (compares `supabase/schemas/` against the migration chain in a shadow database; needs a running local stack, `supabase start`)
-3. Prepend the header every migration must start with: `SET lock_timeout = '5s'; SET statement_timeout = '60s';` (CI rejects new migrations without it)
+3. Prepend the header every migration must start with, one statement per line (CI reads the first two non-comment lines and rejects anything else):
+   ```sql
+   SET lock_timeout = '5s';
+   SET statement_timeout = '60s';
+   ```
 4. Apply locally and review: `supabase db reset` (migration chain + `seed.sql`), read the generated SQL
 5. Commit both the schema file change and the generated migration
 6. Open a PR — the `database` check rebuilds the stack, fails on any schema↔migration drift (`--strict-coverage`), runs the `supabase/tests/check_*.sql` guards and the Python SQL harnesses; Supabase also runs the migrations on a preview branch
