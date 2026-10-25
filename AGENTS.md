@@ -7,7 +7,7 @@ Shared guidance for AI coding agents working in this repository.
 Monorepo with several main components — see each directory's README for details:
 - **`layout/`** — `campfire-layout`: the single, zero-dependency authority for the directory/key contract (local paths, storage keys, key↔path bijection, tree lifecycle). Pure-python core depended on by both `pipeline/` and `python/`; mirrored in TypeScript at `web/lib/layout.ts`. **Install this first** (it's not on PyPI).
 - **`pipeline/`** — JWST data reduction (NIRSpec + NIRCam). Local-only, no cloud dependencies.
-- **`web/`** — Next.js web portal. Deployed on Vercel.
+- **`web/`** — Next.js web portal. Self-hosted on the Jetstream2 VM (`ops/`), deployed by `.github/workflows/deploy.yml` on merge to `main`.
 - **`python/`** — Unified Python package: API client, CLI, and deployment tools (including the `campfire deploy` CLI). Install with `pip install -e .` for full functionality — the base install carries the science stack (matplotlib, scipy, photutils, reproject, Pillow); interactive Plotly figures (`[plotting]`) and `specutils` are optional extras.
 - **`etc/`** — `campfire-etc`: the empirical NIRSpec/MSA exposure-time calculator and spectrum simulator fitted to the archive, with its MCP server. Deliberately **numpy-only** and independent of `campfire-layout` so `uvx` can install it straight from GitHub; the model builder is behind the `[build]` extra. See `etc/README.md`.
 
@@ -199,10 +199,10 @@ Test users: `admin@campfire.dev`, `user@campfire.dev`, `viewer@campfire.dev` (pa
 
 ### Git Workflow
 
-- **`main`** → production (auto-deploys via Vercel + Supabase migration push)
-- Feature/fix branches off `main` → preview deployments with branched Supabase instances, merge back to `main` via PR
-- On PR open: Supabase creates a preview branch (isolated DB + Auth), runs migrations, seeds from `supabase/seed.sql`, and injects credentials into the Vercel preview deployment
-- On PR merge to `main`: Supabase automatically runs new migrations against production
+- **`main`** → production: on merge, `.github/workflows/deploy.yml` builds the web image, pushes it to GHCR and the VM's `ops/scripts/deploy.sh` applies pending `supabase/migrations/` to the self-hosted database, swaps the image and gates on `/api/health` (rollback on failure)
+- Feature/fix branches off `main` → PR; CI's `web`, `python` and `database` checks (the `database` job rebuilds a local stack from the migration chain + seed and runs the SQL guards). There are no preview deployments or preview databases since the 2026-10-25 cutover.
+- On PR open: nothing is deployed; the `database` check is the only database gate.
+- On PR merge to `main`: `deploy.sh` on the VM applies the new migrations to the production database, then swaps the web image
 - A PR touching `pipeline/**` should, by the time it's opened, have one categorized entry (Calibration / Algorithm / Infrastructure) under `## Unreleased` in `pipeline/CHANGELOG.md` covering its pipeline changes — a PR-completeness check, not a gate on individual edits (see Pipeline Versioning & Releases → Workflow). Don't hold back an in-session pipeline change to avoid the entry; make the change and log it. PRs touching only `web/`, `python/`, or `supabase/` do not need a changelog entry.
 
 ### Build Verification
@@ -214,12 +214,12 @@ cd web && npm run typecheck && npm test && npm run build && cd ..
 
 ### Infrastructure
 
-- **Frontend**: Vercel (root dir: `web/`, framework: Next.js)
-- **Database**: Supabase PostgreSQL
+- **Frontend**: Next.js standalone container on the Jetstream2 VM behind Caddy and Cloudflare (`ops/`); the Vercel project is a decommissioning fallback only
+- **Database**: self-hosted Supabase (Postgres 17 + PostgREST + GoTrue + Kong) on the same VM, `ops/docker-compose.yml`; API at `campfire-api.hollisakins.com`
 - **Storage**: Cloudflare R2 for FITS files
 - **Auth**: Supabase Auth with email/password
-- **CI/CD**: Supabase GitHub integration (branching + migration checks) + Vercel (preview deploys)
-- **Self-hosting (in progress)**: `ops/README.md` is the runbook for the Jetstream2 VM that will take over hosting and the database (trimmed Supabase compose + `web/Dockerfile` + Caddy, migration order, cutover checklist). Vercel and hosted Supabase stay live until that runbook's Phase 1 / Phase 2 cutovers happen.
+- **CI/CD**: GitHub Actions (`web` / `python` / `database` checks on PRs; `deploy.yml` on merge to `main`). The Supabase GitHub integration and Vercel previews are retired.
+- **Self-hosting**: done 2026-10-25 (web on 2026-10-24, database on 2026-10-25). `ops/README.md` is the runbook: architecture, first boot, deploy, backups, the dump/restore scripts, the executed cutover checklist and the rollback paths.
 
 ### Storage plane (push / pull / verify)
 
@@ -279,7 +279,7 @@ run under a 120 s `statement_timeout` (service_role otherwise inherits
 authenticator's 8 s): the first page of every stream runs catalog-wide counts.
 
 **Sync catalog snapshot.** A first-time or `--full` sync does not page the streams out
-of Postgres. A Vercel cron (`web/vercel.json`, 05:00 UTC, `CRON_SECRET`) runs
+of Postgres. A systemd timer on the VM (`ops/systemd/campfire-sync-snapshot.timer`, 05:00 UTC, `CRON_SECRET`; formerly a Vercel cron) runs
 `/api/cron/sync-snapshot`, which walks the five streams once for the **public programs
 only** through the same `fetchSyncPage` the routes use (`web/lib/server/sync-streams.ts`).
 It writes one gzip JSONL file per stream to the private OSN bucket under
@@ -400,5 +400,5 @@ catalog, not a corrupt one.
 
 - Pipeline code is local-only, never deployed
 - Large files (FITS, raw data) are gitignored and stored in R2
-- Secrets are never committed — use Vercel env vars or gitignored config files
+- Secrets are never committed — they live in the VM's `ops/.env` / `ops/web.env` (and 1Password) or gitignored config files
 - Database schema definitions live in `supabase/schemas/` (source of truth); migrations in `supabase/migrations/` (deployment)
