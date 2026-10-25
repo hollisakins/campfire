@@ -406,8 +406,10 @@ The window (target under 1 h):
    nothing.
 
 Rollback at any point before the hosted project is deleted, **in this order**:
-switch its Data API back on; revert `SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL`
-in `web.env` to the hosted url and `SITE_URL` in `.env`; *then*
+switch its Data API back on and re-enable the Email provider if step 1
+disabled it (otherwise nobody can sign in or recover a password); revert
+`SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL` in `web.env` to the hosted url and
+`SITE_URL` in `.env`; *then*
 `deploy.sh <last sha built with the hosted url>` (1c6a4eaf at the 2026-10-25
 cutover). The env comes first because `deploy.sh` recreates the container with
 whatever `web.env` holds, and that image reads `SUPABASE_URL` at runtime — with
@@ -427,7 +429,8 @@ the round trip and the timeout; until then the first page of a sync stream can
 - **Web** (Phase 1): Cloudflare DNS `campfire.hollisakins.com` back to the
   Vercel CNAME. Vercel stays deployed until decommission.
 - **Database** (Phase 2): unpause the hosted project if paused, switch its
-  Data API back on, revert the three url lines in `web.env` / `.env` to the
+  Data API back on and re-enable the Email provider if the cutover disabled
+  it, revert the three url lines in `web.env` / `.env` to the
   hosted values **first**, then redeploy the last image built against the
   hosted URL (`deploy.sh 1c6a4eaf…`; it recreates the container with the env
   as it stands). Writes made on the VM between cutover and rollback are lost;
