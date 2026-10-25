@@ -180,11 +180,11 @@ Preparation (no user impact; all reversible):
    ```
 3. Production URL baked into the image: GitHub variable
    `DEPLOY_NEXT_PUBLIC_APP_URL=https://campfire.hollisakins.com`, then a manual
-   run of the Deploy workflow for the current main sha (it rebuilds). The
-   `NEXT_PUBLIC_*` values in `web.env` must say the same thing: the client bundle
-   inlines them at build time, the server reads them at runtime, and the two
-   disagreeing gives OG/canonical urls and auth redirects on one host and the
-   bundle on another. Then `deploy.sh <same sha>` recreates the container.
+   run of the Deploy workflow for the current main sha (it rebuilds). Next.js
+   inlines `NEXT_PUBLIC_*` at build time into the client **and** the server
+   bundles, so the values in `web.env` are documentation only — a change needs
+   a rebuild, never just a container recreate. Server-only runtime overrides
+   are the plain names (`SUPABASE_URL` for the server-side Supabase clients).
 4. Secrets. `WORKER_JWT_SECRET` and `JWT_SECRET` could not be read back from
    Vercel (sensitive variables are write-only), so:
    - `JWT_SECRET`: the VM's generated value is copied *into* Vercel so both sides
@@ -254,10 +254,12 @@ data, and the operator tests it as a real user.
    credentials), object page, spectrum download, `campfire sync` against the
    staging host, a password-reset email sent by the self-hosted GoTrue through
    Resend, admin pages, a comment. Then the server-side internal path: set
-   `NEXT_PUBLIC_SUPABASE_URL=http://kong:8000` in `web-staging.env` only
-   (server code reads it at runtime; the client bundle keeps the public URL it
-   was built with) and repeat — this removes Cloudflare's 100 s edge timeout
-   from the sync RPCs and is the intended Phase 2 configuration if it holds.
+   `SUPABASE_URL=http://kong:8000` in `web-staging.env` only and repeat. The
+   server-side clients prefer `SUPABASE_URL` (runtime, server-only) over
+   `NEXT_PUBLIC_SUPABASE_URL`; the latter is inlined at build time into **both**
+   the client and the server bundles, so changing it in an env file does
+   nothing. This removes Cloudflare's 100 s edge timeout from the sync RPCs and
+   is the intended Phase 2 configuration if it holds.
 6. Let one real merge land its migration on the copy: `DEPLOY_MIGRATIONS=local`
    is exercised by `deploy.sh` against the local database (production web is
    unaffected: in Phase 1 it still talks to the hosted project).
