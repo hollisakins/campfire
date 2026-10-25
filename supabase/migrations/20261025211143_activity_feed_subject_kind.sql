@@ -1,7 +1,8 @@
 -- Activity feed rows carry subject_kind ('target' | 'object' | 'spectrum') so the
 -- admin activity page can link each row to a route that resolves; object-parented comments join the feed.
 
-SET lock_timeout = '5s'; SET statement_timeout = '60s';
+SET lock_timeout = '5s';
+SET statement_timeout = '60s';
 
 SET local check_function_bodies = off;
 
