@@ -10,6 +10,7 @@
 
 import { createClient as createSupabaseClient, type SupabaseClient } from '@supabase/supabase-js';
 import { DR_HEADER } from '@/lib/dr/tag';
+import { serverSupabaseUrl } from '@/lib/supabase/url';
 
 export interface ServiceClientOptions {
   /**
@@ -27,7 +28,7 @@ export interface ServiceClientOptions {
  * server-side operations. Bypasses RLS: callers own the authorization.
  */
 export const createServiceClient = (options: ServiceClientOptions = {}): SupabaseClient => {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseUrl = serverSupabaseUrl();
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
   if (!serviceRoleKey) {

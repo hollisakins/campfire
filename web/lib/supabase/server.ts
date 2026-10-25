@@ -8,6 +8,7 @@ import { notFound } from 'next/navigation';
 import { checkBrowseTag } from '@/lib/dr/confirm';
 import { requestDrTag } from '@/lib/dr/server';
 import { DR_HEADER } from '@/lib/dr/tag';
+import { serverSupabaseUrl } from '@/lib/supabase/url';
 
 // The service-role client lives in ./service (no next/headers import) and is
 // re-exported here for the many existing call sites.
@@ -43,7 +44,7 @@ async function confirmOnce(supabase: SupabaseClient, tag: string): Promise<void>
 
 export const createClient = async () => {
   const cookieStore = await cookies();
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseUrl = serverSupabaseUrl();
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
   // Release browsing (P6c-1): the header middleware stamped from `?dr=`
   // rides on every PostgREST call of this client.
