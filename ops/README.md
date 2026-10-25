@@ -569,6 +569,14 @@ optional Resend domain verification.
   jq -c 'select(.status >= 500) | {ts, host: .request.host, uri: .request.uri, status}' access.log | tail
   jq -r '[.duration, .request.host, .request.uri] | @tsv' access.log | sort -rn | head
   ```
+- A Caddyfile change that arrived through `deploy.sh` (git writes a new file,
+  the container's bind mount still points at the old inode, and compose sees
+  nothing to recreate — `caddy reload` then reports "config is unchanged"):
+  `docker compose up -d --no-deps --force-recreate caddy` (a one-second
+  restart). Only an in-place edit of the mounted file can use the graceful
+  `docker exec campfire-caddy caddy reload --config /etc/caddy/Caddyfile
+  --adapter caddyfile`. Check what is running:
+  `docker exec campfire-caddy wget -qO- http://127.0.0.1:2019/config/ | jq`.
 - Restarting Caddy: `docker compose up -d --no-deps caddy`. A plain `up -d caddy`
   also starts Kong, PostgREST and GoTrue through `depends_on`, which in Phase 1
   must stay down (they would serve the API hostname over whatever copy the local
