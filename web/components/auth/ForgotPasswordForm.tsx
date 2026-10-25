@@ -32,7 +32,7 @@ export const ForgotPasswordForm: React.FC = () => {
       const supabase = createClient();
 
       // Note: The redirect URL is configured in the Supabase email template
-      // using: https://campfire.hollisakins.com/api/auth/password-reset?token={{ .TokenHash }}&type=recovery
+      // using: https://campfire-jwst.org/api/auth/password-reset?token={{ .TokenHash }}&type=recovery
       const { error: resetError } = await supabase.auth.resetPasswordForEmail(email);
 
       if (resetError) {

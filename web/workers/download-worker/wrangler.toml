@@ -7,23 +7,29 @@ compatibility_date = "2025-06-01"
 # token. JWT_SECRET stays a Worker secret and is preserved across deploys.
 account_id = "2d136e3d61aca8a4ae08a2ea760f6d23"
 
-# No R2 binding: the Worker fetches presigned URLs (R2 or OSN) that Vercel mints,
-# so it holds no object-store credentials and works for either backend. This is
-# also what keeps it on the free Workers plan — one subrequest, ~0 CPU per request.
+# No R2 binding: the Worker fetches presigned URLs (R2 or OSN) that the web
+# server mints, so it holds no object-store credentials and works for either
+# backend. This is also what keeps it on the free Workers plan — one subrequest,
+# ~0 CPU per request.
 
-# Custom domain (config-as-code): deploys assert the attachment, and Cloudflare
-# manages the DNS record + certificate for it. A FIRST-level subdomain of the
-# zone on purpose — the free Universal SSL wildcard (*.hollisakins.com) covers
-# it, where a deeper name (download.campfire.…) gets no certificate. The
-# workers.dev hostname keeps serving too, so older baked NEXT_PUBLIC_ builds
-# don't break.
+# Custom domains (config-as-code): deploys assert the attachments, and
+# Cloudflare manages the DNS record + certificate for each. download.campfire-jwst.org
+# is the current name (CDN_FRONT_URL / NEXT_PUBLIC_WORKER_DOWNLOAD_URL);
+# campfire-download.hollisakins.com keeps serving for the 30-day download tokens
+# minted before the domain move (ops/README.md, "Domain move") and for older
+# baked NEXT_PUBLIC_ builds — a first-level name there on purpose, because the
+# free Universal SSL wildcard (*.hollisakins.com) covers it where a deeper name
+# (download.campfire.…) gets no certificate. The CI token must have DNS edit on
+# both zones, or the deploy fails at the custom-domain step. The workers.dev
+# hostname keeps serving too.
 routes = [
+  { pattern = "download.campfire-jwst.org", custom_domain = true },
   { pattern = "campfire-download.hollisakins.com", custom_domain = true }
 ]
 
 # Environment variables (non-secret)
 [vars]
-ALLOWED_ORIGINS = "https://campfire.hollisakins.com,https://campfire-staging.hollisakins.com,http://localhost:3000"
+ALLOWED_ORIGINS = "https://campfire-jwst.org,https://staging.campfire-jwst.org,https://campfire.hollisakins.com,https://campfire-staging.hollisakins.com,http://localhost:3000"
 # Object-store hosts the proxy is allowed to fetch (SSRF guard). Both backends
 # are included so the proxy is storage-agnostic: OSN holds migrated FITS, the R2
 # account host serves un-migrated / NIRCam objects. Subdomains match too, so R2

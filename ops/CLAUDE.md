@@ -1,7 +1,7 @@
 # ops/ — Claude Code on the CAMPFIRE VM
 
 You are on the production host (Jetstream2, Ubuntu 24.04). Everything that
-serves `campfire.hollisakins.com` runs from this directory with Docker
+serves the CAMPFIRE portal and API hostnames (`.env`: WEB_HOST, API_HOST) runs from this directory with Docker
 Compose. Read `README.md` here first; the repo-wide `AGENTS.md` describes the
 application, not the host.
 
@@ -13,7 +13,7 @@ application, not the host.
 | `/srv/campfire/repo/ops/.env`, `web.env` | the only copies of the secrets; mode 600; never printed, never committed |
 | `/srv/campfire/db/data` | the Postgres cluster |
 | `/srv/campfire/backups` | nightly dumps, `last-success`, `last-restore-check` |
-| `/srv/campfire/certs` | Cloudflare origin certificate |
+| `/srv/campfire/certs` | Cloudflare origin certificates: `origin.*` primary zone, `alt.*` alternate zone (README, "Domain move") |
 | `/srv/campfire/auth-templates` | GoTrue email templates |
 | `ops/deploys.log` | one line per successful deploy |
 

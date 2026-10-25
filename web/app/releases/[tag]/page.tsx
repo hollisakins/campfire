@@ -13,7 +13,7 @@ import { releasePagesPrincipal } from '../gate';
 export const dynamic = 'force-dynamic';
 
 const TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/;
-const SITE_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://campfire.hollisakins.com';
+const SITE_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://campfire-jwst.org';
 
 type Params = { params: Promise<{ tag: string }> };
 

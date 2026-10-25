@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
     const userAgent = request.headers.get('user-agent') || undefined;
 
     // Determine the base URL for verification
-    const host = request.headers.get('host') || 'campfire.hollisakins.com';
+    const host = request.headers.get('host') || 'campfire-jwst.org';
     const protocol = host.includes('localhost') ? 'http' : 'https';
     const verificationUri = `${protocol}://${host}/cli-auth`;
 

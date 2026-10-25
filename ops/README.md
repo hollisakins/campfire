@@ -14,12 +14,14 @@ Jetstream2 allocation ever lapses, the same directory runs on any Ubuntu box.
 browser / campfire CLI
         │ https
         ▼
-Cloudflare edge (DNS, TLS, static cache, rate limits)   hollisakins.com is already proxied
-        │ https, security group admits 443 from Cloudflare ranges only
-        ▼
+Cloudflare edge (DNS, TLS, static cache, rate limits)   two proxied zones: campfire-jwst.org
+        │ https, security group admits 443 from Cloudflare ranges only   (primary) and hollisakins.com
+        ▼                                                                (the pre-move names, see "Domain move")
 Caddy :443 (ops/Caddyfile), routes by hostname
-        ├── $WEB_HOST  campfire.hollisakins.com      → web  :3000  (Next.js, web/Dockerfile)
-        └── $API_HOST  campfire-api.hollisakins.com  → kong :8000
+        ├── $WEB_HOST  campfire-jwst.org             → web  :3000  (Next.js, web/Dockerfile)
+        ├── $API_HOST  api.campfire-jwst.org         → kong :8000
+        ├── $ALT_WEB_HOST campfire.hollisakins.com   → 301 to $WEB_HOST; /api/v1/* served
+        └── $ALT_API_HOST campfire-api.hollisakins.com → kong :8000 (alias)
                                 /auth/v1 → auth (GoTrue)     ← browsers call these directly,
                                 /rest/v1 → rest (PostgREST)    exactly as they call *.supabase.co today
                                                    │
@@ -424,8 +426,123 @@ Cloudflare, whose 100 s edge timeout is shorter than the 120 s
 the round trip and the timeout; until then the first page of a sync stream can
 524 under load.
 
+## Domain move (Phase 3) — campfire-jwst.org
+
+The portal moves off the personal domain: Princeton's network classifies
+`hollisakins.com` as spyware, and a project should not live under a person's
+name anyway. Every old name keeps working as a redirect or an alias, so no
+announcement lead time is needed; the one visible effect is that everybody
+signs in once more (the session cookie is per host). Nothing verifies the JWT
+issuer (`web/lib/auth/supabase-jwt.ts` checks signature, `aud` and `role`), so
+changing `API_EXTERNAL_URL` only mints new tokens with the new `iss`.
+
+| Role | Until the move | From the move |
+|---|---|---|
+| Portal | `campfire.hollisakins.com` | `campfire-jwst.org` (old name → 301 for browsers; `/api/v1/*` keeps being served, because HTTP clients drop the bearer token on a cross-host redirect) |
+| Staging | `campfire-staging.hollisakins.com` | `staging.campfire-jwst.org` (old → 301) |
+| Supabase API | `campfire-api.hollisakins.com` | `api.campfire-jwst.org` (old stays a live **alias** for months: stored CLI refresh tokens, `CAMPFIRE_SUPABASE_URL` on laptops, `redirect_to` in old emails) |
+| Download Worker | `campfire-download.hollisakins.com` | `download.campfire-jwst.org` (old route stays until the 30-day tokens in generated scripts expire) |
+| Tiles (R2 custom domain) | `campfire-tiles.hollisakins.com` | `tiles.campfire-jwst.org` (stored in `map_layers.tile_base_url` / `fitsgl_datasets.fitsgl_json_url`: `ops/sql/domain-move.sql`) |
+| ETC server (Fly), mail From | `campfire-etc.hollisakins.com`, `team@campfire.hollisakins.com` | unchanged |
+
+**Prepared on 2026-10-25 (no production effect):** zone `campfire-jwst.org`
+active on Cloudflare (Registrar, same nameservers), proxied A records `@`,
+`api`, `staging` → the VM and `www` → `@`, TLS mode Full (strict), the
+`/auth/v1/` rate-limit rule copied for `api.campfire-jwst.org`, and a parking
+rule (ruleset `2959130212b842e083bcef971410f6f5`) that answers every request on
+the new zone with a **302** to the old portal — 302 on purpose: a cached 301
+would loop once the direction reverses. The repo side is the `ALT_*` hostname
+set in `Caddyfile` / `docker-compose.yml` / `.env.example` (inert at `*.invalid`
+until `.env` sets them), `ops/sql/domain-move.sql`, the Worker's second custom
+domain and origins in `wrangler.toml`, and the web fallbacks.
+
+**Operator steps before the window** (none changes what users see):
+
+- [ ] Cloudflare → `campfire-jwst.org` → SSL/TLS → Origin Server → Create
+      Certificate (RSA, hostnames `campfire-jwst.org` and `*.campfire-jwst.org`,
+      15 years). Save as `/srv/campfire/certs/jwst.pem` + `jwst.key`, mode 600,
+      owned by the ops user. The API token cannot do this (Origin CA uses a
+      separate user key).
+- [ ] Cloudflare → R2 → tiles bucket → Settings → Custom Domains → connect
+      `tiles.campfire-jwst.org` (the ops token has no R2 scope). Verify with any
+      tile url from `map_layers.tile_base_url` on the new host: 200 and
+      `content-type: image/png`.
+- [ ] The CI token behind `secrets.CLOUDFLARE_API_TOKEN` (download-worker.yml)
+      needs DNS edit on the new zone, or the Worker deploy that attaches
+      `download.campfire-jwst.org` fails at the custom-domain step. Do this
+      before merging the prep PR.
+- [ ] Early alias (optional, lets the API be tested on its new name): with the
+      prep PR deployed, `cp jwst.pem alt.pem; cp jwst.key alt.key` in
+      `/srv/campfire/certs`, set `ALT_API_HOST=api.campfire-jwst.org` in `.env`
+      (changelog line), `docker compose up -d --no-deps caddy`, then
+      `curl -s https://api.campfire-jwst.org/auth/v1/health`. Without this step
+      the first start of the new Caddyfile still needs `alt.pem`/`alt.key` to
+      exist: copy `origin.*` to `alt.*`.
+
+**The window** (target 40 min; the database is not involved):
+
+1. Certificates: `origin.*` must become the new zone's, `alt.*` the old one's.
+   In `/srv/campfire/certs`: `mv origin.pem old.pem; mv origin.key old.key;
+   cp jwst.pem origin.pem; cp jwst.key origin.key; mv old.pem alt.pem;
+   mv old.key alt.key` (so `alt.*` = `*.hollisakins.com` from here on; keep
+   `jwst.*` as the spare copy).
+2. `.env`: `WEB_HOST`, `WEB_STAGING_HOST`, `API_HOST` → the new names;
+   `ALT_WEB_HOST`, `ALT_WEB_STAGING_HOST`, `ALT_API_HOST` → the old ones;
+   `SITE_URL`, `API_EXTERNAL_URL`, `SUPABASE_PUBLIC_URL`, the five
+   `MAILER_TEMPLATES_*` → the new api/portal urls; `ADDITIONAL_REDIRECT_URLS` =
+   new list + old list (`.env.example` has the exact lines). `web.env`:
+   `CDN_FRONT_URL` → `https://download.campfire-jwst.org`,
+   `S3_TILES_PUBLIC_URL_BASE` → `https://tiles.campfire-jwst.org`, and the
+   three commented `NEXT_PUBLIC_*` reference lines. Changelog line.
+3. `docker compose up -d --no-deps caddy auth` (`web` is recreated by the
+   deploy in step 7 and reads `web.env` then).
+4. Cloudflare: delete the parking rule, `cf.sh DELETE
+   /zones/acb645a897f706e91975c8581b8f9dcb/rulesets/2959130212b842e083bcef971410f6f5`.
+5. Check from a laptop: `curl -sI https://campfire-jwst.org/api/health` → 200
+   (still the old image, talking to the old API alias — fine);
+   `curl -sI https://campfire.hollisakins.com/nirspec` → 301 to the new host;
+   `curl -s https://campfire.hollisakins.com/api/v1/version` → 200 with the
+   JSON body (served, not redirected);
+   `https://api.campfire-jwst.org/auth/v1/health` and
+   `https://campfire-api.hollisakins.com/auth/v1/health` → 200.
+6. Tiles: `docker exec -i campfire-db psql -U postgres -d postgres -v
+   old=https://campfire-tiles.hollisakins.com -v new=https://tiles.campfire-jwst.org
+   -f - < ops/sql/domain-move.sql` (prints the per-host counts; all rows on the
+   new host).
+7. Rebuild with the new public urls: `gh variable set
+   DEPLOY_NEXT_PUBLIC_SUPABASE_URL -b https://api.campfire-jwst.org`, the same
+   for `DEPLOY_NEXT_PUBLIC_APP_URL=https://campfire-jwst.org` and
+   `DEPLOY_NEXT_PUBLIC_WORKER_DOWNLOAD_URL=https://download.campfire-jwst.org`;
+   then merge the flip PR (Python client default url, docs urls, Updates entry)
+   — its push to `main` runs `deploy.yml`, which builds and deploys. Watch
+   `deploys.log`.
+8. Sign in again on the new host and smoke-test: object page with spectra,
+   the NIRCam map (tiles from the new host), a download (Worker url on the new
+   host), a password-reset email (link → `api.campfire-jwst.org/auth/v1/verify`
+   → portal), `campfire login` + `campfire sync` from a laptop, one admin
+   write. The access log shows the hosts in use:
+   `jq -r '.request.host' /srv/campfire/logs/caddy/access.log | sort | uniq -c`.
+9. Monitoring: the site check follows `WEB_HOST`; move the UptimeRobot monitor
+   to `https://campfire-jwst.org/api/health` by hand. Laptops that deploy tiles
+   or run in service-role mode: `CAMPFIRE_S3_TILES_PUBLIC_URL_BASE` and
+   `CAMPFIRE_SUPABASE_URL` → the new hosts.
+
+**Rollback** (any time; nothing is destroyed): steps 1–3 in reverse (`.env` /
+`web.env` back, certificates swapped back, `up -d --no-deps caddy auth`),
+`domain-move.sql` with `old` and `new` swapped, the three GitHub variables back
+and `deploy.sh <last sha built with the old urls>` (`deploys.log`). Re-creating
+the parking rule is optional; without it the new names serve the site directly.
+
+**Afterwards:** leave `campfire-api.hollisakins.com` aliased for at least three
+months and the old Worker route for at least 30 days; then drop the `ALT_API_HOST`
+line, the old route in `wrangler.toml`, and the `campfire-tiles` R2 custom
+domain. The redirects on `campfire.hollisakins.com` stay for as long as the
+domain exists. Moving the mail From to `team@campfire-jwst.org` is a separate,
+optional Resend domain verification.
+
 ## Rollback
 
+- **Domain move** (Phase 3): see the end of "Domain move" above.
 - **Web** (Phase 1): Cloudflare DNS `campfire.hollisakins.com` back to the
   Vercel CNAME. Vercel stays deployed until decommission.
 - **Database** (Phase 2): unpause the hosted project if paused, switch its
@@ -491,6 +608,7 @@ the round trip and the timeout; until then the first page of a sync stream can
 
 ## Changelog
 
+- 2026-10-25 — **Domain move prepared** (see "Domain move"): `campfire-jwst.org` zone, DNS, TLS mode, rate limit and the parking 302 on Cloudflare; `Caddyfile` / `docker-compose.yml` gain the `ALT_*` hostname blocks (inert until `.env` sets them; `certs/alt.pem`/`alt.key` must exist — copy of `origin.*` until the window); `ops/sql/domain-move.sql`; Worker gets `download.campfire-jwst.org` and the new origins. No `.env` change yet.
 - 2026-10-25 01:52–02:02 UTC — **Phase 2 cutover done.** Freeze = hosted Data API switch (NOLOGIN is impossible on hosted); `dump-hosted.sh` 57 s; cluster re-initialised; `restore-hosted.sh` RESTORE VERIFIED in 2 m 23 s (counts equal, 182/182, fingerprint identical); `.env` `SITE_URL` → production, kong/rest/auth up; `DEPLOY_NEXT_PUBLIC_SUPABASE_URL` → `campfire-api.hollisakins.com`, `web.env` `SUPABASE_URL=http://kong:8000` + `NEXT_PUBLIC_SUPABASE_URL` → api host; workflow run 40152730043 rebuilt and deployed 557483c4 at 02:02:23. Operator smoke test (sign-in, download, `campfire sync`, admin, a write) passed. Rollback image: 1c6a4eaf. Hosted project left running with the Data API off; the previous local cluster is `db/data.broken-init-0158` (rehearsal copy, disposable). Updates notice skipped by decision (few active users).
 - 2026-10-25 — dress rehearsal passed (see "Phase 2 dress rehearsal"); `.env` `DEPLOY_MIGRATIONS=local` from now on (applies pending migrations to the local database on every deploy; harmless in Phase 1, required in Phase 2); `web-staging.env` `SUPABASE_URL=http://kong:8000`.
 - 2026-10-25 — hosted Auth/API settings copied into `.env` from the dashboard: five email templates (versioned in `ops/auth-templates/`, portal links as `{{ .SiteURL }}`; copied to `/srv/campfire/auth-templates/`), `MAILER_SUBJECTS_*`, `SMTP_MAX_FREQUENCY=60s`, `PGRST_DB_MAX_ROWS=5000`, `ADDITIONAL_REDIRECT_URLS` = hosted list + staging + localhost, `SECURE_EMAIL_CHANGE=false`; the four `HEALTHCHECK_PING_URL*` set (healthchecks.io). `auth` and `rest` recreated. Still to flip at the Phase 2 window: `SITE_URL` → production.

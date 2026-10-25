@@ -79,7 +79,7 @@ export interface BuildScriptOptions {
 
 /**
  * Build the script for `rows` (the user's selection), downloading from the
- * CAMPFIRE deployment at `origin` (e.g. `https://campfire.hollisakins.com`).
+ * CAMPFIRE deployment at `origin` (e.g. `https://campfire-jwst.org`).
  * Empty when there is nothing to download.
  */
 export function buildNircamDownloadScript(

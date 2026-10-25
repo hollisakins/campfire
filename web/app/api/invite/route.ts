@@ -5,7 +5,7 @@ import { NextRequest } from 'next/server';
  *
  * Redirect proxy for Supabase invite emails.
  *
- * This allows invite emails to use campfire.hollisakins.com URLs instead of
+ * This allows invite emails to use campfire-jwst.org URLs instead of
  * the raw Supabase URL, improving email deliverability by matching the sending domain.
  *
  * Instead of an immediate 302 redirect, this serves an interstitial HTML page
@@ -14,10 +14,10 @@ import { NextRequest } from 'next/server';
  * before the user clicks the link.
  *
  * Flow:
- * 1. Email contains: https://campfire.hollisakins.com/api/invite?token=...
+ * 1. Email contains: https://campfire-jwst.org/api/invite?token=...
  * 2. This route serves an interstitial page with an "Accept Invitation" button
  * 3. User clicks button → $NEXT_PUBLIC_SUPABASE_URL/auth/v1/verify?token=... (the browser follows it, so the PUBLIC api url, never the internal one)
- * 4. Supabase validates and redirects back to: https://campfire.hollisakins.com/login#access_token=...
+ * 4. Supabase validates and redirects back to: https://campfire-jwst.org/login#access_token=...
  * 5. LoginForm processes tokens and redirects to /welcome
  */
 export async function GET(request: NextRequest) {
@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Build the redirect_to URL (where Supabase should send the user after verification)
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://campfire.hollisakins.com';
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://campfire-jwst.org';
   const redirectTo = searchParams.get('redirect_to') || `${appUrl}/login`;
 
   // Build Supabase verification URL

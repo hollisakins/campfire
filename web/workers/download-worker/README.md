@@ -116,7 +116,7 @@ token is the authorization.
 ```bash
 npm install
 wrangler dev        # local, http://localhost:8787
-wrangler deploy     # production, campfire-download.hollisakins.com
+wrangler deploy     # production, download.campfire-jwst.org
 wrangler tail       # logs
 npm test            # runs the unit tests via the web app's vitest
 ```
