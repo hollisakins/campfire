@@ -145,6 +145,9 @@ chmod 0750 "$REAL_ROOT"
 for d in db/data backups auth-templates certs logs/caddy; do
   install -d -m 0750 "$DATA_ROOT/$d"
 done
+# Caddy (root in its container) writes the access log here with mode 0640;
+# setgid + the ops group make it readable without sudo.
+chgrp "$OPS_USER" "$DATA_ROOT/logs/caddy"; chmod 2750 "$DATA_ROOT/logs/caddy"
 # db/data is chowned by the supabase/postgres entrypoint on
 # first start (it runs as root, then drops to postgres).
 chown "$OPS_USER":"$OPS_USER" "$DATA_ROOT/auth-templates" "$DATA_ROOT/certs"
