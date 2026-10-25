@@ -6846,11 +6846,16 @@ GRANT EXECUTE ON FUNCTION public.get_download_stats TO authenticated;
 -- Server-side replacement for the /api/admin/activity route's fetch-everything-
 -- then-sort-in-JS approach: UNION the two activity sources (comments +
 -- flag_audit_log), filter/sort/paginate in one scan, and return the page total
--- via a window count. Semantics mirror the route exactly:
---   * comments are joined to targets (inner — object-level comments are not
---     surfaced in the feed, matching the previous targets!inner embed);
+-- via a window count. Semantics mirror the route, with two 2026-08 fixes:
+--   * comments now LEFT JOIN targets/objects, so object-parented comments
+--     (comments.object_id) appear in the feed instead of being silently
+--     dropped by the old inner join;
 --   * inspection rows label their subject as target -> object -> spectrum
---     (spectra label = target_id/grating), degrading to '' if all FKs are NULL;
+--     (spectra label = target_id/grating), degrading to '' if all FKs are NULL,
+--     and every row now carries subject_kind ('target'|'object'|'spectrum')
+--     so the client can build a link that resolves — the old single
+--     /nirspec/targets/<display_id> href 404'd for object- and spectrum-scoped
+--     rows, i.e. essentially all post-Phase-D inspection activity;
 --   * the user filter matches rows whose user_id is in p_user_ids, plus (for
 --     inspections) NULL-user system rows when p_include_system. No user filter
 --     at all (empty p_user_ids, p_include_system=false) means everything.
@@ -6880,6 +6885,7 @@ RETURNS TABLE (
   new_value integer,
   user_full_name text,
   user_is_group_account boolean,
+  subject_kind text,
   total_count bigint
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER
@@ -6900,19 +6906,23 @@ BEGIN
     SELECT
       'comment-' || c.id AS id,
       'comment'::text AS type,
-      c.target_id AS target_db_id,
-      t.target_id AS target_display_id,
+      COALESCE(c.target_id, c.object_id, 0) AS target_db_id,
+      COALESCE(t.target_id, oc.object_id, '') AS target_display_id,
       c.user_id,
       c.created_at AS ts,
       c.content,
       c.edited_at,
       NULL::text AS field_name,
       NULL::integer AS old_value,
-      NULL::integer AS new_value
+      NULL::integer AS new_value,
+      CASE WHEN c.object_id IS NOT NULL THEN 'object'
+           WHEN c.target_id IS NOT NULL THEN 'target' END AS subject_kind
     FROM comments c
-    JOIN targets t ON t.id = c.target_id
+    LEFT JOIN targets t ON t.id = c.target_id
+    LEFT JOIN objects oc ON oc.id = c.object_id
     WHERE p_include_comments
       AND NOT c.is_deleted
+      AND (c.target_id IS NOT NULL OR c.object_id IS NOT NULL)
       AND (NOT v_has_user_filter
            OR c.user_id = ANY(COALESCE(p_user_ids, '{}'::uuid[])))
 
@@ -6934,7 +6944,10 @@ BEGIN
       NULL::timestamp without time zone,
       f.field_name,
       f.old_value,
-      f.new_value
+      f.new_value,
+      CASE WHEN f.target_id IS NOT NULL THEN 'target'
+           WHEN f.object_id IS NOT NULL THEN 'object'
+           WHEN f.spectrum_id IS NOT NULL THEN 'spectrum' END
     FROM flag_audit_log f
     LEFT JOIN targets t ON t.id = f.target_id
     LEFT JOIN objects o ON o.id = f.object_id
@@ -6959,6 +6972,7 @@ BEGIN
     feed.new_value,
     up.full_name,
     COALESCE(up.is_group_account, false),
+    feed.subject_kind,
     count(*) OVER ()
   FROM feed
   LEFT JOIN user_profiles up ON up.user_id = feed.user_id

@@ -101,7 +101,9 @@ const INSTRUMENT_OPTIONS = [
   { value: 'nirspec', label: 'NIRSpec' },
   { value: 'nircam', label: 'NIRCam' },
 ];
-const EVENT_ACTION_OPTIONS = ['upload', 'publish', 'revoke', 'recover', 'supersede', 'delete']
+// All seven values deploy_events_action_check permits — config_sync rows are
+// written by `campfire config push/retire` and were impossible to isolate here.
+const EVENT_ACTION_OPTIONS = ['upload', 'publish', 'revoke', 'recover', 'supersede', 'delete', 'config_sync']
   .map((a) => ({ value: a, label: a }));
 
 // ---------------------------------------------------------------------------

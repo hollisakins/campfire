@@ -10,6 +10,7 @@ import {
 import { getDeployments, getDeployEvents } from '@/lib/actions/deployments';
 import { getReductionProgress } from '@/lib/actions/nircam-exposures';
 import { getStorageBudget, type StorageBudget } from '@/lib/actions/storage-registry';
+import { fmtBytes, fmtWhen } from '@/lib/admin/format';
 
 // ---------------------------------------------------------------------------
 // The admin landing page (admin audit 2026-07-03, §3.A): stat tiles and
@@ -18,26 +19,6 @@ import { getStorageBudget, type StorageBudget } from '@/lib/actions/storage-regi
 // framework-migrated pages parse them). Replaces the old /admin → /admin/codes
 // redirect.
 // ---------------------------------------------------------------------------
-
-function fmtBytes(n: number): string {
-  let v = Number(n);
-  for (const u of ['B', 'KB', 'MB', 'GB', 'TB', 'PB']) {
-    if (Math.abs(v) < 1024 || u === 'PB') return u === 'B' ? `${v} B` : `${v.toFixed(1)} ${u}`;
-    v /= 1024;
-  }
-  return `${v} B`;
-}
-
-function fmtWhen(ts: string): string {
-  let iso = ts;
-  if (iso.includes(' ') && !iso.includes('T')) iso = iso.replace(' ', 'T');
-  if (iso.endsWith('+00')) iso = iso + ':00';
-  else if (!iso.endsWith('Z') && !iso.includes('+')) iso = iso + 'Z';
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? ts : d.toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
-}
 
 function StatTile({
   href, icon: Icon, label, value, accent, sub,
