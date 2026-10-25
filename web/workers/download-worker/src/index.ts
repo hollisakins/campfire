@@ -6,6 +6,7 @@
  *     (spectrum sidecars, NIRCam PNG/FITS, …): token-gated, Cache API-backed,
  *     Range-aware. See object.ts (perf T2-D1, #507).
  *   - `/proxy` — the per-file CORS proxy for the bulk FITS-ZIP download, below.
+ * plus `/health`, the probe the external uptime monitor reads.
  *
  * `/proxy` is a credential-free, per-file CORS proxy. Vercel authorizes a download (RLS),
  * presigns each file against whichever backend homes it (dual-read: R2 or OSN),
@@ -34,6 +35,10 @@ export interface Env {
 export default {
   async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname === '/health') {
+      return handleHealth(request, env);
+    }
 
     // Content-addressed product delivery (perf T2-D1, #507) — see object.ts.
     if (url.pathname.startsWith('/o/')) {
@@ -110,6 +115,27 @@ export default {
     }
   },
 };
+
+/**
+ * Uptime probe for the status page monitor. 200 when the Worker has what both
+ * endpoints need to serve (the shared secret and the fetch allowlist), 503
+ * naming what is missing otherwise. It never touches an object store: one
+ * request, no subrequest.
+ */
+function handleHealth(request: Request, env: Env): Response {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } });
+  }
+  const missing: string[] = [];
+  if (!env.JWT_SECRET) missing.push('JWT_SECRET');
+  if (!(env.ALLOWED_FETCH_HOSTS || '').trim()) missing.push('ALLOWED_FETCH_HOSTS');
+  const ok = missing.length === 0;
+  const body = request.method === 'HEAD' ? null : JSON.stringify(ok ? { ok } : { ok, missing });
+  return new Response(body, {
+    status: ok ? 200 : 503,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+  });
+}
 
 function handleCORS(request: Request, env: Env): Response {
   return new Response(null, {

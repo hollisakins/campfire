@@ -10,6 +10,10 @@ Cloudflare Worker with two credential-free endpoints:
   It lets the browser read FITS bytes from R2 **or** OSN so they can be zipped
   client-side.
 
+Plus **`/health`**, the probe the status page's uptime monitor reads: `200
+{"ok":true}` when `JWT_SECRET` and `ALLOWED_FETCH_HOSTS` are set, `503` naming
+the missing one otherwise. It never fetches upstream.
+
 ## Delivery front (`/o/`)
 
 ```
@@ -99,11 +103,12 @@ token is the authorization.
 
 ## Files
 
-- `src/index.ts` — request router + the `/proxy` handler
+- `src/index.ts` — request router + the `/proxy` and `/health` handlers
 - `src/object.ts` — the `/o/` delivery front
 - `src/guards.ts` — `isAllowedFetchUrl` host guard (both endpoints)
 - `src/auth.ts` — `verifyUrlSignature` (HMAC-SHA256, Web Crypto)
 - `src/proxy.test.ts` — unit tests for the host guard and signature verify
+- `src/health.test.ts` — unit tests for the health probe
 - `wrangler.toml` — configuration
 
 ## Develop / deploy
@@ -116,7 +121,7 @@ wrangler tail       # logs
 npm test            # runs the unit tests via the web app's vitest
 ```
 
-Tests live in `src/proxy.test.ts` and run under the web app's vitest (they are
+Tests live in `src/*.test.ts` and run under the web app's vitest (they are
 also picked up by `npm test` in `web/`, so CI covers them).
 
 Runs on the free Workers plan; no paid features are used.
