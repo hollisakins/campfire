@@ -1,6 +1,6 @@
 ---
 title: "CAMPFIRE is now campfire-jwst.org"
-date: 2026-10-26
+date: 2026-10-25
 category: client
 summary: "The portal and API have moved to campfire-jwst.org. Old links redirect; you will need to sign in again."
 ---
