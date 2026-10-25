@@ -74,7 +74,7 @@ def find_duplicates_in_msa(msa_file):
     src_pos = {}
     for row in sources:
         sid = int(row['source_id'])
-        if sid > 0:
+        if sid >= 0:
             src_pos[sid] = (float(row['ra']), float(row['dec']))
 
     pairs = []
@@ -83,7 +83,10 @@ def find_duplicates_in_msa(msa_file):
 
     for meta_id in np.unique(shutters['msa_metadata_id']):
         meta_rows = shutters[shutters['msa_metadata_id'] == meta_id]
-        meta_rows = meta_rows[meta_rows['source_id'] > 0]
+        # source_id 0 is also the empty-background-shutter value; a catalog
+        # source 0 only owns its background == 'N' rows (metafile._source_rows)
+        sid = meta_rows['source_id']
+        meta_rows = meta_rows[(sid > 0) | ((sid == 0) & (meta_rows['background'] == 'N'))]
 
         slitlet_sources = defaultdict(set)
         for row in meta_rows:

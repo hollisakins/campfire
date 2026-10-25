@@ -45,6 +45,13 @@ Release procedure: edit the `## Unreleased` section below, then run
   `--target` cone searches always use it.
 
 ### Algorithm
+- **A catalog source with MSA ID 0 is now reduced (#568).** Stage 2 skipped every
+  `source_id <= 0`, so a genuine source 0 (PID 2750's `2750_0`) was never extracted.
+  ID 0 is also the metafile's value for empty background shutters, so it now counts as
+  a source only on `background == 'N'` rows (`metafile._source_rows`): source 0 gets a
+  one-slitlet metafile, and observations without one gain no spurious source 0. Adds
+  new products; other sources' per-source metafiles are unchanged (checked on
+  `jw02750002001_01_msa.fits` and `jw01345062001_01_msa.fits`).
 - **Products record which nods were subtracted as background.** Stage 2b stamps each
   canonical spectrum-exposure with `BKGNODS` (the nod numbers subtracted, or `excluded`)
   and `BKGOVR` (whether a nodded-background override chose them), cleared again by
