@@ -394,10 +394,14 @@ The window (target under 1 h):
    mode point `CAMPFIRE_SUPABASE_URL` at the new API host; login mode needs
    nothing.
 
-Rollback at any point before the hosted project is deleted: switch its Data
-API back on, `deploy.sh <last sha built with the hosted url>` (1c6a4eaf at the
-2026-10-25 cutover), revert `SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL` in
-`web.env` and `SITE_URL` in `.env`. Writes made on the VM in between are lost.
+Rollback at any point before the hosted project is deleted, **in this order**:
+switch its Data API back on; revert `SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL`
+in `web.env` to the hosted url and `SITE_URL` in `.env`; *then*
+`deploy.sh <last sha built with the hosted url>` (1c6a4eaf at the 2026-10-25
+cutover). The env comes first because `deploy.sh` recreates the container with
+whatever `web.env` holds, and that image reads `SUPABASE_URL` at runtime — with
+`http://kong:8000` still in place it would keep talking to the VM database.
+Writes made on the VM in between are lost.
 
 **Known follow-up (not in Phase 0):** the web container's server-side Supabase
 calls go out through `NEXT_PUBLIC_SUPABASE_URL`, i.e. back in through
@@ -412,10 +416,11 @@ the round trip and the timeout; until then the first page of a sync stream can
 - **Web** (Phase 1): Cloudflare DNS `campfire.hollisakins.com` back to the
   Vercel CNAME. Vercel stays deployed until decommission.
 - **Database** (Phase 2): unpause the hosted project if paused, switch its
-  Data API back on, redeploy the last image built against the hosted URL
-  (`deploy.sh 1c6a4eaf…`), revert the three url lines in `web.env` / `.env`.
-  Writes made on the VM between cutover and rollback are lost; hence the two
-  quiet weeks before deletion.
+  Data API back on, revert the three url lines in `web.env` / `.env` to the
+  hosted values **first**, then redeploy the last image built against the
+  hosted URL (`deploy.sh 1c6a4eaf…`; it recreates the container with the env
+  as it stands). Writes made on the VM between cutover and rollback are lost;
+  hence the two quiet weeks before deletion.
 - **A bad deploy**: `scripts/deploy.sh <previous full sha>` (`deploys.log` has
   the history; `deploy.sh` itself rolls back when `/api/health` fails).
 
