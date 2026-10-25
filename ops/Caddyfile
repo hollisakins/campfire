@@ -20,10 +20,10 @@
 # The ALT_* hostnames are the same three roles in the alternate zone:
 # ALT_API_HOST is a live alias of API_HOST (same upstream, so stored CLI
 # refresh tokens and laptops with the old CAMPFIRE_SUPABASE_URL keep working),
-# ALT_WEB_HOST / ALT_WEB_STAGING_HOST redirect to the primary names (301, and
-# 308 for /api/v1/* so a POST from the Python client keeps its method and
-# body). docker-compose.yml defaults the ALT_* names to *.invalid, which makes
-# the blocks inert until .env sets them (README, "Domain move").
+# ALT_WEB_HOST / ALT_WEB_STAGING_HOST redirect browsers to the primary names
+# (301) and keep serving /api/v1/* for Python clients still on the old URL.
+# docker-compose.yml defaults the ALT_* names to *.invalid, which makes the
+# blocks inert until .env sets them (README, "Domain move").
 
 {
 	servers {
@@ -61,9 +61,8 @@
 	tls /certs/alt.pem /certs/alt.key
 }
 
-# Portal → a Next.js container. args[0] is the upstream (host:port).
-(portal) {
-	import common
+# Reverse proxy to a Next.js container. args[0] is the upstream (host:port).
+(proxy_web) {
 	reverse_proxy {args[0]} {
 		# Overwrite, never append: the app reads the FIRST entry of
 		# X-Forwarded-For, and Cloudflare appends to whatever the client sent.
@@ -74,6 +73,12 @@
 			response_header_timeout 120s
 		}
 	}
+}
+
+# Portal → a Next.js container. args[0] is the upstream (host:port).
+(portal) {
+	import common
+	import proxy_web {args[0]}
 }
 
 # Supabase API → Kong. Only the two paths supabase-js uses are exposed; the
@@ -100,16 +105,19 @@
 	}
 }
 
-# A retired portal hostname → the live one. args[0] is the target hostname.
-# /api/v1/* gets 308 (method and body preserved: the Python client POSTs its
-# device-flow login and deploy writes here), everything else a plain 301.
-# {uri} carries the path and the query string.
+# A retired portal hostname. args[0] is the live hostname, args[1] the Next.js
+# upstream. Browsers get a 301 ({uri} carries path and query). /api/v1/* is
+# SERVED, not redirected: the Python client follows redirects but, like every
+# HTTP library, drops the Authorization header when the host changes (a 308
+# keeps the method and body, not the bearer token), so an old-URL install
+# would get 401 on every authenticated call. Proxying keeps it working until
+# it is reinstalled with the new default URL.
 (portal_redirect) {
 	import common
 
 	@api path /api/v1/*
 	handle @api {
-		redir https://{args[0]}{uri} 308
+		import proxy_web {args[1]}
 	}
 
 	handle {
@@ -142,12 +150,12 @@
 
 {$ALT_WEB_HOST} {
 	import tls_alt
-	import portal_redirect {$WEB_HOST}
+	import portal_redirect {$WEB_HOST} web:3000
 }
 
 {$ALT_WEB_STAGING_HOST} {
 	import tls_alt
-	import portal_redirect {$WEB_STAGING_HOST}
+	import portal_redirect {$WEB_STAGING_HOST} {$WEB_STAGING_UPSTREAM:web:3000}
 }
 
 # Alias, not a redirect: supabase-js and the CLI send bearer tokens here and a

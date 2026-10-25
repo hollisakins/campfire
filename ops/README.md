@@ -20,7 +20,7 @@ Cloudflare edge (DNS, TLS, static cache, rate limits)   two proxied zones: campf
 Caddy :443 (ops/Caddyfile), routes by hostname
         ├── $WEB_HOST  campfire-jwst.org             → web  :3000  (Next.js, web/Dockerfile)
         ├── $API_HOST  api.campfire-jwst.org         → kong :8000
-        ├── $ALT_WEB_HOST campfire.hollisakins.com   → 301 to $WEB_HOST (308 for /api/v1/*)
+        ├── $ALT_WEB_HOST campfire.hollisakins.com   → 301 to $WEB_HOST; /api/v1/* served
         └── $ALT_API_HOST campfire-api.hollisakins.com → kong :8000 (alias)
                                 /auth/v1 → auth (GoTrue)     ← browsers call these directly,
                                 /rest/v1 → rest (PostgREST)    exactly as they call *.supabase.co today
@@ -438,7 +438,7 @@ changing `API_EXTERNAL_URL` only mints new tokens with the new `iss`.
 
 | Role | Until the move | From the move |
 |---|---|---|
-| Portal | `campfire.hollisakins.com` | `campfire-jwst.org` (old name → 301; `/api/v1/*` → 308 so Python-client POSTs survive) |
+| Portal | `campfire.hollisakins.com` | `campfire-jwst.org` (old name → 301 for browsers; `/api/v1/*` keeps being served, because HTTP clients drop the bearer token on a cross-host redirect) |
 | Staging | `campfire-staging.hollisakins.com` | `staging.campfire-jwst.org` (old → 301) |
 | Supabase API | `campfire-api.hollisakins.com` | `api.campfire-jwst.org` (old stays a live **alias** for months: stored CLI refresh tokens, `CAMPFIRE_SUPABASE_URL` on laptops, `redirect_to` in old emails) |
 | Download Worker | `campfire-download.hollisakins.com` | `download.campfire-jwst.org` (old route stays until the 30-day tokens in generated scripts expire) |
@@ -501,8 +501,9 @@ domain and origins in `wrangler.toml`, and the web fallbacks.
 5. Check from a laptop: `curl -sI https://campfire-jwst.org/api/health` → 200
    (still the old image, talking to the old API alias — fine);
    `curl -sI https://campfire.hollisakins.com/nirspec` → 301 to the new host;
-   `curl -sI -X POST https://campfire.hollisakins.com/api/v1/auth/device` →
-   308; `https://api.campfire-jwst.org/auth/v1/health` and
+   `curl -s https://campfire.hollisakins.com/api/v1/version` → 200 with the
+   JSON body (served, not redirected);
+   `https://api.campfire-jwst.org/auth/v1/health` and
    `https://campfire-api.hollisakins.com/auth/v1/health` → 200.
 6. Tiles: `docker exec -i campfire-db psql -U postgres -d postgres -v
    old=https://campfire-tiles.hollisakins.com -v new=https://tiles.campfire-jwst.org
