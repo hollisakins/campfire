@@ -198,8 +198,20 @@ matching object / spectrum set is materialized once per call by
 `objects_matching_line_filter` / `spectra_matching_line_filter` (viewer-visible programs,
 publication gate, and — unless `p_line_include_stale` — the same staleness rule as the
 ledger, `line_fit_stale_redshift`) and probed with `= ANY(...)` like the grating and
-observation sets; `object_line_snr` gives the object's best S/N for the sort key and the
-"Line S/N" column. The web sends the `p_line*` parameters only while a line is set, so the
+observation sets. On the objects side both the filter and the "Line S/N" column / `line_snr`
+sort key come from one function, `object_line_values(p_line, snr bounds, p_include_stale,
+p_program_slugs, p_include_unpublished)` → `(object_id, snr)` with `snr` = max over the
+object's visible spectra: `objects_matching_line_filter` is its id projection and each
+objects RPC `LEFT JOIN`s it once per statement (the photometry band filter's
+`object_band_values` pattern), so a row can never display an S/N outside the window that
+admitted it; `object_line_snr` is the single-object lookup over the same set. The function is
+**SECURITY DEFINER** with the same two gates as `object_band_values` (the caller's explicit
+slugs / unpublished opt-in, plus verbatim copies of the spectra and objects SELECT policies
+for every non-service-role caller; `supabase/tests/check_line_filter_scoping.sql`), and its
+plan is pinned — the line slice drives, every other table is a `LATERAL … LIMIT 1` unique-key
+lookup through the `cat_*` views — because the planner otherwise took the staleness predicate
+as a fit × object join and, lacking statistics through the UNION ALL views, chose a cartesian
+nested loop that timed out in production (#619; 37 s → 55 ms). The web sends the `p_line*` parameters only while a line is set, so the
 default lists keep working against a database that has not yet applied the migration. The
 picker (`web/lib/linelist.ts`, generated from `linelist.py` by `scripts/sync_linelist.py`
 with a CI drift check) offers the doublet totals and the stand-alone lines only: a

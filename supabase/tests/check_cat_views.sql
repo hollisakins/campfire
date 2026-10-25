@@ -34,7 +34,7 @@ DECLARE
     'get_adjacent_objects','get_objects_near','get_field_object_markers','get_csv_export_spectra',
     'get_csv_export_objects','object_scoped_aggregates','objects_matching_grating_filter',
     'objects_matching_observation_filter','objects_matching_line_filter','spectra_matching_line_filter',
-    'object_line_snr','object_band_values','objects_matching_band_filter','get_nircam_fields',
+    'object_line_snr','object_line_values','object_band_values','objects_matching_band_filter','get_nircam_fields',
     'get_nircam_field_summary','get_observation_manifest','get_database_overview',
     'get_observation_stats','get_observations_overview','get_programs_overview','cat_program_slugs'];
   live text; v text; bad text; i int; fn text; n int;

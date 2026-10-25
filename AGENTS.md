@@ -66,7 +66,10 @@ it to `meta/lines.csv` (wide) and `Campfire.query_lines()`; the
 `spectrum_lines` (the jsonb unnested by the `sync_spectrum_lines` trigger, indexed on
 `(line, snr)`): every RPC on the catalog filter contract takes `p_line` /
 `p_line_snr_min` / `p_line_snr_max` / `p_line_include_stale` and the `line_snr` sort,
-the web sends them only while a line is set (`buildFilterParams`), the picker offers
+the web sends them only while a line is set (`buildFilterParams`), the objects-side
+filter and `line_snr` column both come from `object_line_values` (SECURITY DEFINER with
+the two `object_band_values` gates, plan pinned with `LATERAL … LIMIT 1` lookups — #619;
+guarded by `check_line_filter_scoping.sql`), the picker offers
 doublet totals and stand-alone lines only (`web/lib/linelist.ts`, generated from
 `linelist.py` by `scripts/sync_linelist.py`; CI fails on drift), and the object page's
 Emission Lines section reads `/api/objects/lines`. Deploy also emits a `_lines.json`
