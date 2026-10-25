@@ -138,6 +138,14 @@
 	import portal web:3000
 }
 
+# www → apex. The zone has a proxied www CNAME and the origin certificate's
+# wildcard covers it; without this block Caddy answers www with an empty 200.
+www.{$WEB_HOST} {
+	import tls_primary
+	import common
+	redir https://{$WEB_HOST}{uri} 301
+}
+
 # Staging portal → the same container by default. docker-compose.staging.yml
 # points it at web-staging (a second image, e.g. one built against the
 # self-hosted API for the Phase 2 dress rehearsal).
