@@ -10,7 +10,7 @@ import { NextRequest } from 'next/server';
  *
  * Flow:
  * 1. Email contains: https://campfire.hollisakins.com/api/auth/email-change?token={{ .TokenHash }}&type=email_change
- * 2. This route redirects to: https://puyczxwyuzpnqvpachip.supabase.co/auth/v1/verify?token=...
+ * 2. This route redirects to: $NEXT_PUBLIC_SUPABASE_URL/auth/v1/verify?token=... (the browser follows it, so the PUBLIC api url, never the internal one)
  * 3. Supabase validates and redirects back to: https://campfire.hollisakins.com/profile/email-changed?code=...
  * 4. Confirmation page shows success message
  */
@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
   const redirectTo = `${appUrl}/profile/email-changed`;
 
   // Build Supabase verification URL
-  const supabaseUrl = new URL('https://puyczxwyuzpnqvpachip.supabase.co/auth/v1/verify');
+  const supabaseUrl = new URL('/auth/v1/verify', process.env.NEXT_PUBLIC_SUPABASE_URL!);
   supabaseUrl.searchParams.set('token', token);
   supabaseUrl.searchParams.set('type', type);
   supabaseUrl.searchParams.set('redirect_to', redirectTo);
