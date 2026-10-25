@@ -1,6 +1,6 @@
 # REST API
 
-For direct HTTP access without the Python client. All endpoints are under `https://campfire.hollisakins.com/api/v1/`.
+For direct HTTP access without the Python client. All endpoints are under `https://campfire-jwst.org/api/v1/`.
 
 ## Authentication
 
@@ -9,11 +9,11 @@ All requests require an `Authorization` header:
 ```bash
 # Using API key
 curl -H "Authorization: Bearer sk_your_api_key" \
-  https://campfire.hollisakins.com/api/v1/objects
+  https://campfire-jwst.org/api/v1/objects
 
 # Using JWT access token (from device flow)
 curl -H "Authorization: Bearer eyJ..." \
-  https://campfire.hollisakins.com/api/v1/objects
+  https://campfire-jwst.org/api/v1/objects
 ```
 
 ---
@@ -92,7 +92,7 @@ filters and sort* to get the next page. `next_cursor` is `null` on the last
 page, so a walk needs no total and no trailing empty request:
 
 ```bash
-URL="https://campfire.hollisakins.com/api/v1/objects?fields=cosmos&limit=1000"
+URL="https://campfire-jwst.org/api/v1/objects?fields=cosmos&limit=1000"
 CURSOR=""
 while :; do
   PAGE=$(curl -s -H "Authorization: Bearer $TOKEN" "$URL${CURSOR:+&cursor=$CURSOR}")
@@ -141,7 +141,7 @@ Download any product by its storage key — the primitive behind the NIRCam bulk
 ```bash
 curl -L -C - -o mosaic_sci.fits.gz \
   -H "Authorization: Bearer sk_your_api_key" \
-  "https://campfire.hollisakins.com/api/v1/storage/download?key=data%2Fproducts%2Fnircam%2Fcosmos%2Ff444w%2Fmosaic_..._sci.fits.gz"
+  "https://campfire-jwst.org/api/v1/storage/download?key=data%2Fproducts%2Fnircam%2Fcosmos%2Ff444w%2Fmosaic_..._sci.fits.gz"
 ```
 
 Keys you may not read, and keys that do not exist, both answer `404`. This is also the only endpoint that accepts the *download token* embedded in a generated NIRCam bulk-download script: a 30-day credential that can download what your account can download and nothing else (the script's `CAMPFIRE_API_KEY` override uses an ordinary API key instead). For bulk transfers prefer `campfire pull` (the CLI) — it plans against the local mirror and skips what you already have.
@@ -249,8 +249,8 @@ Initiate device flow authorization (for CLI).
 {
   "device_code": "...",
   "user_code": "WDJB-MJPQ",
-  "verification_uri": "https://campfire.hollisakins.com/cli-auth",
-  "verification_uri_complete": "https://campfire.hollisakins.com/cli-auth?code=WDJB-MJPQ",
+  "verification_uri": "https://campfire-jwst.org/cli-auth",
+  "verification_uri_complete": "https://campfire-jwst.org/cli-auth?code=WDJB-MJPQ",
   "expires_in": 900,
   "interval": 5
 }

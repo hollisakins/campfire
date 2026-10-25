@@ -19,7 +19,7 @@ from ..exceptions import AuthenticationError
 from .._version import __version__
 
 # Default API URL
-DEFAULT_BASE_URL = "https://campfire.hollisakins.com/api/v1"
+DEFAULT_BASE_URL = "https://campfire-jwst.org/api/v1"
 
 
 def resolve_base_url(base_url: Optional[str] = None) -> str:

@@ -37,7 +37,7 @@ class TokenManager:
 
     Examples
     --------
-    >>> manager = TokenManager("https://campfire.hollisakins.com/api/v1")
+    >>> manager = TokenManager("https://campfire-jwst.org/api/v1")
     >>> token = manager.get_valid_token()  # Auto-refreshes if needed
     """
 

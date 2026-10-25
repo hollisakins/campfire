@@ -22,7 +22,7 @@ def mock_api_session():
     """Mock APISession that bypasses credential loading."""
     with patch("campfire.client.APISession") as MockSession:
         session_instance = MockSession.return_value
-        session_instance.base_url = "https://campfire.hollisakins.com/api/v1"
+        session_instance.base_url = "https://campfire-jwst.org/api/v1"
         session_instance._auto_refresh = True
         session_instance._ensure_valid_token = Mock()
         session_instance._session = Mock()
@@ -33,7 +33,7 @@ def mock_api_session():
 class TestClientInitialization:
     @patch("campfire.client.APISession")
     def test_init_creates_api_session(self, MockSession):
-        MockSession.return_value.base_url = "https://campfire.hollisakins.com/api/v1"
+        MockSession.return_value.base_url = "https://campfire-jwst.org/api/v1"
         Campfire()
         MockSession.assert_called_once()
 
