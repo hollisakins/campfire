@@ -43,10 +43,16 @@ docker exec "$NAME" pg_isready -U postgres -h localhost >/dev/null
 
 # --clean --if-exists so the image's baseline auth/extension objects are
 # replaced rather than colliding (a collision on auth.users would report
-# users=0 as a false alarm). Extension "already exists" errors remain, so the
-# exit status is not trusted; the row counts below are the verdict.
-docker exec "$NAME" pg_restore -U supabase_admin -d postgres --clean --if-exists --no-owner --role=postgres \
-  "/backups/$(basename "$DUMP")" >/tmp/restore-check.log 2>&1 || true
+# users=0 as a false alarm). Restore as the superuser itself: with
+# --role=postgres every statement ran as `postgres`, which cannot create in
+# the image's `auth` schema ("permission denied for schema auth"), so the auth
+# tables were never created and the first run reported users=0 (2026-10-25).
+# Extension / event-trigger "already exists" and "must be owner" errors remain,
+# so the exit status is not trusted; the row counts below are the verdict.
+RESTORE_LOG="$(mktemp /tmp/restore-check.XXXXXX.log)"   # a fixed path collides between the root (systemd) and ops-user runs
+docker exec "$NAME" pg_restore -U supabase_admin -d postgres --clean --if-exists --no-owner \
+  "/backups/$(basename "$DUMP")" >"$RESTORE_LOG" 2>&1 || true
+echo "[restore-check] pg_restore log: ${RESTORE_LOG} ($(grep -c 'error' "$RESTORE_LOG" || true) error lines)"
 
 SPECTRA="$(docker exec "$NAME" psql -U supabase_admin -d postgres -Atc 'select count(*) from public.spectra')"
 OBJECTS="$(docker exec "$NAME" psql -U supabase_admin -d postgres -Atc 'select count(*) from public.objects')"
