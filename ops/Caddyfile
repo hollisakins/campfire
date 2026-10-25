@@ -91,6 +91,21 @@
 (api) {
 	import common
 
+	# Uptime monitors on free tiers probe with HEAD, which GoTrue answers 405.
+	# Forward a HEAD on the health path as a GET; Go drops the body of a HEAD
+	# response, so the monitor sees the 200 and nothing else changes.
+	@health {
+		method HEAD
+		path /auth/v1/health
+	}
+	handle @health {
+		reverse_proxy kong:8000 {
+			method GET
+			header_up X-Forwarded-For {client_ip}
+			header_up X-Real-IP {client_ip}
+		}
+	}
+
 	@api path /auth/v1/* /rest/v1/*
 	handle @api {
 		reverse_proxy kong:8000 {
