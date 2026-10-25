@@ -29,6 +29,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { DR_HEADER, drRequestDecision } from '@/lib/dr/tag';
 import { drPagesMode } from '@/lib/dr-pages';
+import { publicSupabaseCookieName, serverSupabaseUrl } from '@/lib/supabase/url';
 
 function hasSupabaseAuthCookie(request: NextRequest): boolean {
   return request.cookies
@@ -64,9 +65,11 @@ export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    serverSupabaseUrl(),
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      // Named after the public url the browser wrote it with (see url.ts).
+      cookieOptions: { name: publicSupabaseCookieName() },
       cookies: {
         getAll() {
           return request.cookies.getAll();
