@@ -11,8 +11,11 @@ import { NextRequest } from 'next/server';
  * Flow:
  * 1. Email contains: https://campfire-jwst.org/api/auth/password-reset?token={{ .TokenHash }}&type=recovery
  * 2. This route redirects to: $NEXT_PUBLIC_SUPABASE_URL/auth/v1/verify?token=... (the browser follows it, so the PUBLIC api url, never the internal one)
- * 3. Supabase validates and redirects back to: https://campfire-jwst.org/reset-password#access_token=...
- * 4. ResetPasswordForm processes tokens and allows user to set new password
+ * 3. Supabase validates and redirects back to: https://campfire-jwst.org/reset-password?code=...
+ *    (PKCE; the browser client exchanges the code), or #access_token=... for the implicit flow,
+ *    or ?error=access_denied&error_code=otp_expired when the single-use token was already used
+ * 4. ResetPasswordForm settles the link from the auth client's events (lib/auth/auth-link.ts)
+ *    and lets the user set a new password
  */
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
