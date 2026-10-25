@@ -271,12 +271,14 @@ data, and the operator tests it as a real user.
 
 Prepare in the days before:
 
-- [ ] Export from the hosted dashboard, by hand (none of it is in the repo):
-      Auth → URL Configuration (site url, redirect list) → `.env`;
-      Auth → Rate Limits → `RATE_LIMIT_*`; Auth → Email Templates → five HTML
-      files in `/srv/campfire/auth-templates/`; Auth → SMTP (Resend,
-      `team@campfire.hollisakins.com`) → `SMTP_*`; Settings → API → JWT secret →
-      `JWT_SECRET`, anon + service keys, Max rows → `PGRST_DB_MAX_ROWS`.
+- [x] Export from the hosted dashboard, by hand (done 2026-10-25; re-check for
+      drift the day before the window): Auth → URL Configuration (site url,
+      redirect list) → `.env`; Auth → Rate Limits → `RATE_LIMIT_*`,
+      `SMTP_MAX_FREQUENCY`; Auth → Email Templates → `ops/auth-templates/*.html`
+      (copied to `/srv/campfire/auth-templates/`) + `MAILER_SUBJECTS_*`; Auth →
+      Email provider → `SECURE_EMAIL_CHANGE`, `PASSWORD_MIN_LENGTH`; Auth → SMTP
+      (Resend, `team@campfire.hollisakins.com`) → `SMTP_*`; Settings → API → JWT
+      secret → `JWT_SECRET`, anon + service keys, Max rows → `PGRST_DB_MAX_ROWS`.
       **Every exported value lives in two places: the 1Password vault and the
       VM's `ops/.env`.** The hosted project is deleted at decommission, so
       1Password is the only copy that outlives it.

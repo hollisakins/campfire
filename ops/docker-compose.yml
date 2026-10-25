@@ -176,7 +176,9 @@ services:
       GOTRUE_SMS_AUTOCONFIRM: "false"
       GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM:-false}
       # supabase/config.toml [auth] / [auth.email] parity
-      GOTRUE_MAILER_SECURE_EMAIL_CHANGE_ENABLED: "true"      # double_confirm_changes
+      # Hosted project has "Secure email change" OFF (only the new address
+      # confirms); the upstream compose default is on.
+      GOTRUE_MAILER_SECURE_EMAIL_CHANGE_ENABLED: ${SECURE_EMAIL_CHANGE:-false}
       GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION: "false"  # secure_password_change
       GOTRUE_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED: "true"
       GOTRUE_SECURITY_REFRESH_TOKEN_REUSE_INTERVAL: "10"
