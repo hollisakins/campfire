@@ -1,0 +1,9 @@
+[Unit]
+Description=CAMPFIRE outside-in site check (public /api/health through Cloudflare)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/campfire/repo/ops
+ExecStart=/srv/campfire/repo/ops/scripts/site-check.sh
