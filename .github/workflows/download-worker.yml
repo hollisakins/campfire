@@ -69,6 +69,22 @@ jobs:
         with:
           fetch-depth: 1
 
+      # The locked wrangler (4.152) needs Node >= 22.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/workers/download-worker/package-lock.json
+
+      # wrangler-action uses an already-installed wrangler when it finds one;
+      # otherwise it runs `npm i wrangler@3.90.0` (its built-in default), which
+      # ignores the lockfile and conflicts with workers-types v5. Installing the
+      # locked devDependencies makes package-lock.json pick the deploy version.
+      - name: Install worker dependencies
+        run: npm ci --no-audit --no-fund
+        working-directory: web/workers/download-worker
+
       - name: Deploy to Cloudflare
         uses: cloudflare/wrangler-action@v3
         with:
