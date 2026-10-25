@@ -25,7 +25,7 @@ pip install -e ".[all]"
 ```
 
 To install straight from GitHub without cloning the repo, see
-[Getting Started](https://campfire.hollisakins.com/docs/api/getting-started).
+[Getting Started](https://campfire-jwst.org/docs/api/getting-started).
 
 ### Deploy machines (`campfire[deploy]`)
 
@@ -348,7 +348,7 @@ combined = calibrate_and_stack(prism, photometry=obj.photometry,
 combined.plot()
 ```
 
-See the [docs site](https://campfire.hollisakins.com/docs/api/python-client#calibration--stacking) for the full reference.
+See the [docs site](https://campfire-jwst.org/docs/api/python-client#calibration--stacking) for the full reference.
 
 ## Architecture
 
@@ -371,4 +371,4 @@ Campfire.get_shutters()  → cached shutter geometry JSON
 
 ## Full Documentation
 
-See the [CAMPFIRE docs](https://campfire.hollisakins.com/docs/api) for the complete reference.
+See the [CAMPFIRE docs](https://campfire-jwst.org/docs/api) for the complete reference.

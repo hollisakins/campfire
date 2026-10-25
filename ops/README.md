@@ -569,6 +569,14 @@ optional Resend domain verification.
   jq -c 'select(.status >= 500) | {ts, host: .request.host, uri: .request.uri, status}' access.log | tail
   jq -r '[.duration, .request.host, .request.uri] | @tsv' access.log | sort -rn | head
   ```
+- A Caddyfile change that arrived through `deploy.sh` (git writes a new file,
+  the container's bind mount still points at the old inode, and compose sees
+  nothing to recreate — `caddy reload` then reports "config is unchanged"):
+  `docker compose up -d --no-deps --force-recreate caddy` (a one-second
+  restart). Only an in-place edit of the mounted file can use the graceful
+  `docker exec campfire-caddy caddy reload --config /etc/caddy/Caddyfile
+  --adapter caddyfile`. Check what is running:
+  `docker exec campfire-caddy wget -qO- http://127.0.0.1:2019/config/ | jq`.
 - Restarting Caddy: `docker compose up -d --no-deps caddy`. A plain `up -d caddy`
   also starts Kong, PostgREST and GoTrue through `depends_on`, which in Phase 1
   must stay down (they would serve the API hostname over whatever copy the local
@@ -608,6 +616,8 @@ optional Resend domain verification.
 
 ## Changelog
 
+- 2026-10-25 ~20:30 UTC — **Domain move executed** (see "Domain move"): certificates swapped (`origin.*` = campfire-jwst.org, `alt.*` = hollisakins.com); `.env` `WEB_HOST`, `WEB_STAGING_HOST`, `API_HOST` → the campfire-jwst.org names, `ALT_WEB_HOST`, `ALT_WEB_STAGING_HOST`, `ALT_API_HOST` → the hollisakins.com names, `SITE_URL`, `API_EXTERNAL_URL`, `SUPABASE_PUBLIC_URL`, `MAILER_TEMPLATES_*` → new urls, `ADDITIONAL_REDIRECT_URLS` = new + old lists; `web.env` `CDN_FRONT_URL`, `S3_TILES_PUBLIC_URL_BASE`, `NEXT_PUBLIC_*` → new hosts; caddy + auth recreated; parking rule deleted; `domain-move.sql` run; `DEPLOY_NEXT_PUBLIC_*` variables → new hosts; this PR's merge rebuilt the image.
+- 2026-10-25 — `.env` `ALT_API_HOST` set (early alias: the Supabase API answers on `api.campfire-jwst.org` ahead of the flip); `certs/alt.pem`/`alt.key` = the new zone's origin certificate (`jwst.*` kept as the spare); caddy recreated with the `ALT_*` Caddyfile.
 - 2026-10-25 — **Domain move prepared** (see "Domain move"): `campfire-jwst.org` zone, DNS, TLS mode, rate limit and the parking 302 on Cloudflare; `Caddyfile` / `docker-compose.yml` gain the `ALT_*` hostname blocks (inert until `.env` sets them; `certs/alt.pem`/`alt.key` must exist — copy of `origin.*` until the window); `ops/sql/domain-move.sql`; Worker gets `download.campfire-jwst.org` and the new origins. No `.env` change yet.
 - 2026-10-25 01:52–02:02 UTC — **Phase 2 cutover done.** Freeze = hosted Data API switch (NOLOGIN is impossible on hosted); `dump-hosted.sh` 57 s; cluster re-initialised; `restore-hosted.sh` RESTORE VERIFIED in 2 m 23 s (counts equal, 182/182, fingerprint identical); `.env` `SITE_URL` → production, kong/rest/auth up; `DEPLOY_NEXT_PUBLIC_SUPABASE_URL` → `campfire-api.hollisakins.com`, `web.env` `SUPABASE_URL=http://kong:8000` + `NEXT_PUBLIC_SUPABASE_URL` → api host; workflow run 40152730043 rebuilt and deployed 557483c4 at 02:02:23. Operator smoke test (sign-in, download, `campfire sync`, admin, a write) passed. Rollback image: 1c6a4eaf. Hosted project left running with the Data API off; the previous local cluster is `db/data.broken-init-0158` (rehearsal copy, disposable). Updates notice skipped by decision (few active users).
 - 2026-10-25 — dress rehearsal passed (see "Phase 2 dress rehearsal"); `.env` `DEPLOY_MIGRATIONS=local` from now on (applies pending migrations to the local database on every deploy; harmless in Phase 1, required in Phase 2); `web-staging.env` `SUPABASE_URL=http://kong:8000`.

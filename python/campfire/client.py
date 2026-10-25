@@ -68,7 +68,7 @@ class Campfire:
     >>> spectra = cf.query_spectra(gratings=['PRISM'])
     """
 
-    DEFAULT_BASE_URL = "https://campfire.hollisakins.com/api/v1"
+    DEFAULT_BASE_URL = "https://campfire-jwst.org/api/v1"
 
     def __init__(
         self,

@@ -68,7 +68,7 @@ class DeviceFlowAuth:
 
     Examples
     --------
-    >>> flow = DeviceFlowAuth("https://campfire.hollisakins.com/api/v1")
+    >>> flow = DeviceFlowAuth("https://campfire-jwst.org/api/v1")
     >>> device = flow.initiate()
     >>> print(f"Enter code {device.user_code} at {device.verification_uri}")
     >>> tokens = flow.poll_for_token(device.device_code)
@@ -81,7 +81,7 @@ class DeviceFlowAuth:
         Parameters
         ----------
         base_url : str
-            Base URL for the CAMPFIRE API (e.g., "https://campfire.hollisakins.com/api/v1").
+            Base URL for the CAMPFIRE API (e.g., "https://campfire-jwst.org/api/v1").
         """
         self.base_url = base_url.rstrip("/")
         self.device_endpoint = f"{self.base_url}/auth/device"
