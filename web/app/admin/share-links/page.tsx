@@ -228,6 +228,11 @@ export default function ShareLinksPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Dashboard quick-action intent: /admin/share-links?new=1 opens the mint form.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('new')) setShowMint(true);
+  }, []);
+
   const revoke = async (link: ShareLinkRow) => {
     if (!confirm(`Revoke "${link.label}"? Anyone holding the URL loses access immediately.`)) return;
     setRevoking(link.token);

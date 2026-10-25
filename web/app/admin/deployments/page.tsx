@@ -101,8 +101,13 @@ const INSTRUMENT_OPTIONS = [
   { value: 'nirspec', label: 'NIRSpec' },
   { value: 'nircam', label: 'NIRCam' },
 ];
-const EVENT_ACTION_OPTIONS = ['upload', 'publish', 'revoke', 'recover', 'supersede', 'delete']
-  .map((a) => ({ value: a, label: a }));
+// Every value deploy_events_action_check permits. config_sync rows come from
+// `campfire config push/retire`; archive / collect / freeze / publish_dr /
+// withdraw_dr / page_dr from the data-release lifecycle.
+const EVENT_ACTION_OPTIONS = [
+  'upload', 'publish', 'revoke', 'recover', 'supersede', 'delete', 'config_sync',
+  'archive', 'collect', 'freeze', 'publish_dr', 'withdraw_dr', 'page_dr',
+].map((a) => ({ value: a, label: a }));
 
 // ---------------------------------------------------------------------------
 // Page
