@@ -281,7 +281,7 @@ ran as `--role=postgres` and reported `users=0` (#634). Known, not fixed:
 PKCE code exchange on an uncached page load (same code on production; small web
 fix after Phase 2). `web-staging` stays up on the internal path until the window.
 
-## Database cutover checklist (Phase 2)
+## Database cutover checklist (Phase 2) — executed 2026-10-25, kept as the rollback and re-run reference
 
 Prepare in the days before:
 
@@ -307,31 +307,22 @@ Prepare in the days before:
 
 The window (target under 1 h):
 
-1. **Take the old API down** so nothing written after the dump is lost.
-   A `default_transaction_read_only` setting is *not* a freeze: PostgREST opens
-   every POST / PATCH / PUT / DELETE and every volatile RPC as an explicit
-   `READ WRITE` transaction, which overrides the role default. The only
-   enforceable gate is to stop the two roles the API logs in as, then kill
-   their pooled sessions (which never log in again on their own):
-   ```sql
-   alter role authenticator nologin;         -- PostgREST
-   alter role supabase_auth_admin nologin;   -- GoTrue
-   select pg_terminate_backend(pid) from pg_stat_activity
-     where usename in ('authenticator', 'supabase_auth_admin');
-   ```
-   Reads stop too; the site shows errors for the window, which the Updates
-   notice announced. **Verify before dumping** with a real mutation that must
-   be rejected, for example with the service key against a scratch row:
+1. **Freeze writes** so nothing written after the dump is lost. On hosted
+   Supabase the obvious gate is unavailable: `alter role authenticator nologin`
+   fails with "reserved role, only superusers can modify it" (supautils), and a
+   `default_transaction_read_only` setting is overridden by PostgREST's explicit
+   `READ WRITE` transactions. What works is the dashboard switch: **Project
+   Settings → Data API → Enable Data API → off**. PostgREST then answers 503
+   (`PGRST002`) to every request, reads included; the site shows errors for the
+   window. GoTrue stays up, so a session refreshed during the window is not in
+   the dump and that user signs in again afterwards. **Verify before dumping**
+   with the service key against a scratch row (expect 503, never 204):
    ```bash
-   curl -s -X PATCH "$OLD_URL/rest/v1/user_profiles?id=eq.00000000-0000-0000-0000-000000000000" \
+   curl -s -o /dev/null -w '%{http_code}\n' -X PATCH "$OLD_URL/rest/v1/user_profiles?user_id=eq.00000000-0000-0000-0000-000000000000" \
      -H "apikey: $SERVICE_KEY" -H "Authorization: Bearer $SERVICE_KEY" \
      -H "Content-Type: application/json" -d '{"display_name":"x"}'
-   # expect an auth/connection error from PostgREST, never 204
    ```
-   Also confirm `select count(*) from pg_stat_activity where usename in
-   ('authenticator','supabase_auth_admin')` is 0 and stays 0 for a minute.
-   Reverts with `alter role authenticator login; alter role supabase_auth_admin
-   login;` (sessions reconnect on the next request).
+   Reverts by switching the Data API back on (seconds).
 2. **Dump** on the VM (the dump dir is under the mounted `backups/` volume):
    ```bash
    ops/scripts/dump-hosted.sh "$OLD" /srv/campfire/backups/cutover-$(date +%F)
@@ -394,12 +385,19 @@ The window (target under 1 h):
 6. **Smoke test**: sign in with a real account (existing cookies remain valid:
    same JWT secret), open an object page, `campfire sync` from a laptop, send
    a password reset to yourself (Resend path), check `/api/health`.
-7. **Pause** the hosted project (Dashboard → Settings → General → Pause).
-   Delete it after two quiet weeks. Then cancel the subscriptions.
+7. **Afterwards**: Dashboard → Integrations → GitHub → disconnect (merges must
+   no longer push migrations to the old project; `deploy.sh` owns them with
+   `DEPLOY_MIGRATIONS=local`). Leave the hosted project running with the Data
+   API off for a day or two as the fast rollback, then pause it (Dashboard →
+   Settings → General → Pause), delete it after two quiet weeks, then cancel
+   the Supabase and Vercel subscriptions. Laptops that deploy in service-role
+   mode point `CAMPFIRE_SUPABASE_URL` at the new API host; login mode needs
+   nothing.
 
-Rollback at any point before step 7: `alter role authenticator login;`
-`alter role supabase_auth_admin login;` on the old database and redeploy
-the previous image (built against the hosted URL).
+Rollback at any point before the hosted project is deleted: switch its Data
+API back on, `deploy.sh <last sha built with the hosted url>` (1c6a4eaf at the
+2026-10-25 cutover), revert `SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL` in
+`web.env` and `SITE_URL` in `.env`. Writes made on the VM in between are lost.
 
 **Known follow-up (not in Phase 0):** the web container's server-side Supabase
 calls go out through `NEXT_PUBLIC_SUPABASE_URL`, i.e. back in through
@@ -413,10 +411,11 @@ the round trip and the timeout; until then the first page of a sync stream can
 
 - **Web** (Phase 1): Cloudflare DNS `campfire.hollisakins.com` back to the
   Vercel CNAME. Vercel stays deployed until decommission.
-- **Database** (Phase 2): unpause the hosted project, restore `login` on
-  `authenticator` and `supabase_auth_admin`, redeploy the image built against
-  the hosted URL. Writes made on the VM between cutover and rollback are
-  lost; hence the two quiet weeks before deletion.
+- **Database** (Phase 2): unpause the hosted project if paused, switch its
+  Data API back on, redeploy the last image built against the hosted URL
+  (`deploy.sh 1c6a4eaf…`), revert the three url lines in `web.env` / `.env`.
+  Writes made on the VM between cutover and rollback are lost; hence the two
+  quiet weeks before deletion.
 - **A bad deploy**: `scripts/deploy.sh <previous full sha>` (`deploys.log` has
   the history; `deploy.sh` itself rolls back when `/api/health` fails).
 
@@ -473,6 +472,7 @@ the round trip and the timeout; until then the first page of a sync stream can
 
 ## Changelog
 
+- 2026-10-25 01:52–02:02 UTC — **Phase 2 cutover done.** Freeze = hosted Data API switch (NOLOGIN is impossible on hosted); `dump-hosted.sh` 57 s; cluster re-initialised; `restore-hosted.sh` RESTORE VERIFIED in 2 m 23 s (counts equal, 182/182, fingerprint identical); `.env` `SITE_URL` → production, kong/rest/auth up; `DEPLOY_NEXT_PUBLIC_SUPABASE_URL` → `campfire-api.hollisakins.com`, `web.env` `SUPABASE_URL=http://kong:8000` + `NEXT_PUBLIC_SUPABASE_URL` → api host; workflow run 40152730043 rebuilt and deployed 557483c4 at 02:02:23. Operator smoke test (sign-in, download, `campfire sync`, admin, a write) passed. Rollback image: 1c6a4eaf. Hosted project left running with the Data API off; the previous local cluster is `db/data.broken-init-0158` (rehearsal copy, disposable). Updates notice skipped by decision (few active users).
 - 2026-10-25 — dress rehearsal passed (see "Phase 2 dress rehearsal"); `.env` `DEPLOY_MIGRATIONS=local` from now on (applies pending migrations to the local database on every deploy; harmless in Phase 1, required in Phase 2); `web-staging.env` `SUPABASE_URL=http://kong:8000`.
 - 2026-10-25 — hosted Auth/API settings copied into `.env` from the dashboard: five email templates (versioned in `ops/auth-templates/`, portal links as `{{ .SiteURL }}`; copied to `/srv/campfire/auth-templates/`), `MAILER_SUBJECTS_*`, `SMTP_MAX_FREQUENCY=60s`, `PGRST_DB_MAX_ROWS=5000`, `ADDITIONAL_REDIRECT_URLS` = hosted list + staging + localhost, `SECURE_EMAIL_CHANGE=false`; the four `HEALTHCHECK_PING_URL*` set (healthchecks.io). `auth` and `rest` recreated. Still to flip at the Phase 2 window: `SITE_URL` → production.
 Dated, one line per change to `.env` / `web.env` / `docker-compose.yml` on the
