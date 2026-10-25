@@ -9,7 +9,7 @@
 // `<text>`: librsvg needs a system font for that, and the serverless host has
 // none, which is how the labels went missing in production.
 
-import sharp from 'sharp';
+import sharp, { type OverlayOptions } from 'sharp';
 import {
   parseWcs,
   skyToPix,
@@ -203,7 +203,7 @@ export async function renderFigurePng(src: FieldScienceSource, req: FigureReques
     : '';
   const SHUTTERS_ID = 'shutters';
 
-  const composites: sharp.OverlayOptions[] = [];
+  const composites: OverlayOptions[] = [];
   const overlays: string[] = [];
   const fontSize = Math.max(11, Math.round(size / 14));
   const subFontSize = Math.max(9, Math.round(fontSize * 0.75));
