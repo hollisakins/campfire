@@ -15,3 +15,20 @@
 export function serverSupabaseUrl(): string {
   return process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!;
 }
+
+/**
+ * The session cookie name, derived from the PUBLIC url the way supabase-js
+ * does by default (`sb-<first hostname label>-auth-token`). The browser client
+ * is built with the public url and writes that cookie; a server client created
+ * with the internal url would otherwise look for `sb-kong-auth-token`, find
+ * nothing, and treat every signed-in user as anonymous. Both server-side
+ * cookie clients pass this explicitly so the transport url never leaks into
+ * the cookie name.
+ */
+export function publicSupabaseCookieName(): string {
+  return supabaseCookieNameFor(process.env.NEXT_PUBLIC_SUPABASE_URL!);
+}
+
+export function supabaseCookieNameFor(url: string): string {
+  return `sb-${new URL(url).hostname.split('.')[0]}-auth-token`;
+}
