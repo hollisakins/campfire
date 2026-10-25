@@ -17,6 +17,21 @@ from astropy.table import Table
 DUPLICATE_SEPARATION_ARCSEC = 0.1
 
 
+def _source_rows(shutter_table, source_id=None):
+    """Mask of SHUTTER_INFO rows that hold a catalog source (or *source_id*).
+
+    ``source_id == 0`` is also what the metafile writes for empty background
+    shutters (jwst: "Background slits all have source_id=0 in the msa_file"),
+    so a catalog source 0 (e.g. PID 2750) only owns its ``background == 'N'``
+    rows.  Negative IDs are virtual sources and never match.
+    """
+    sid = shutter_table['source_id']
+    rows = (sid > 0) | ((sid == 0) & (shutter_table['background'] == 'N'))
+    if source_id is not None:
+        rows &= sid == source_id
+    return rows
+
+
 def _prune_detached_shutters(shutter_table, source_id):
     """Remove background shutters that are not contiguous with the source.
 
@@ -43,7 +58,7 @@ def _prune_detached_shutters(shutter_table, source_id):
 
     # Find which columns contain the source
     source_cols = set(np.unique(
-        shutter_table['shutter_column'][shutter_table['source_id'] == source_id]
+        shutter_table['shutter_column'][_source_rows(shutter_table, source_id)]
     ))
 
     # Split columns into contiguous groups (gap of 3+ starts a new group,
@@ -112,7 +127,7 @@ class MetaFile:
         src_pos = {}
         for row in self.source_table:
             sid = int(row['source_id'])
-            if sid > 0:
+            if sid >= 0:
                 src_pos[sid] = (float(row['ra']), float(row['dec']))
 
         drop_ids = set()
@@ -125,10 +140,8 @@ class MetaFile:
 
             # Group source_ids by slitlet
             slitlet_sources = defaultdict(set)
-            for row in meta_rows:
-                sid = int(row['source_id'])
-                if sid > 0:
-                    slitlet_sources[int(row['slitlet_id'])].add(sid)
+            for row in meta_rows[_source_rows(meta_rows)]:
+                slitlet_sources[int(row['slitlet_id'])].add(int(row['source_id']))
 
             for sids in slitlet_sources.values():
                 if len(sids) < 2:
@@ -164,8 +177,8 @@ class MetaFile:
 
     @property
     def unique_source_ids(self):
-        ids = np.unique(self.shutter_table['source_id'][self.shutter_table['msa_metadata_id'] == self.msametid])
-        ids = ids[ids > 0]
+        rows = self.shutter_table[self.shutter_table['msa_metadata_id'] == self.msametid]
+        ids = np.unique(rows['source_id'][_source_rows(rows)])
 
         drop = self._duplicate_source_ids()
         if drop:
@@ -194,7 +207,7 @@ class MetaFile:
         if 'fixed_slit' not in self.shutter_table.colnames:
             return False
         rows = self.shutter_table[
-            (self.shutter_table['source_id'] == source_id)
+            _source_rows(self.shutter_table, source_id)
             & (self.shutter_table['msa_metadata_id'] == self.msametid)
         ]
         return any(
@@ -212,7 +225,7 @@ class MetaFile:
         if 'fixed_slit' not in self.shutter_table.colnames:
             return ''
         rows = self.shutter_table[
-            (self.shutter_table['source_id'] == source_id)
+            _source_rows(self.shutter_table, source_id)
             & (self.shutter_table['msa_metadata_id'] == self.msametid)
         ]
         for v in rows['fixed_slit']:
@@ -233,7 +246,7 @@ class MetaFile:
         mf = copy(self)
         mf.hdul = deepcopy(self.hdul)
 
-        slits = np.unique(mf.shutter_table['slitlet_id'][mf.shutter_table['source_id'] == source_id])
+        slits = np.unique(mf.shutter_table['slitlet_id'][_source_rows(mf.shutter_table, source_id)])
         condition = np.logical_and.reduce((
             mf.shutter_table['msa_metadata_id'] == mf.msametid,
             np.isin(mf.shutter_table['slitlet_id'], slits)
