@@ -314,9 +314,20 @@ The window (target under 1 h):
    `READ WRITE` transactions. What works is the dashboard switch: **Project
    Settings → Data API → Enable Data API → off**. PostgREST then answers 503
    (`PGRST002`) to every request, reads included; the site shows errors for the
-   window. GoTrue stays up, so a session refreshed during the window is not in
-   the dump and that user signs in again afterwards. **Verify before dumping**
-   with the service key against a scratch row (expect 503, never 204):
+   window. GoTrue has no such switch and keeps accepting writes to `auth.*`
+   (sign-ins, token refreshes, and — via `supabase.auth.updateUser` from an
+   already signed-in browser — password changes), none of which reach the
+   restored database. Narrow that: **Authentication → Sign In / Providers →
+   Email → disable** for the window (no new sign-ins or recovery emails), and
+   before going live compare the hosted auth tables against the dump time:
+   ```sql
+   select count(*) from auth.users where updated_at > '<dump start utc>';
+   select count(*) from auth.audit_log_entries where created_at > '<dump start utc>';
+   ```
+   Anything non-zero is a user to contact (a password changed in the window is
+   back to its previous value on the new stack). At the 2026-10-25 cutover both
+   were 0. **Verify before dumping** with the service key against a scratch row
+   (expect 503, never 204):
    ```bash
    curl -s -o /dev/null -w '%{http_code}\n' -X PATCH "$OLD_URL/rest/v1/user_profiles?user_id=eq.00000000-0000-0000-0000-000000000000" \
      -H "apikey: $SERVICE_KEY" -H "Authorization: Bearer $SERVICE_KEY" \
