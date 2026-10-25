@@ -2,243 +2,185 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { LayoutDashboard, RotateCw } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
-import {
-  Camera, Database, GitBranch, HardDrive, LayoutDashboard, Telescope, History,
-} from 'lucide-react';
-import { getDeployments, getDeployEvents } from '@/lib/actions/deployments';
-import { getReductionProgress } from '@/lib/actions/nircam-exposures';
-import { getStorageBudget, type StorageBudget } from '@/lib/actions/storage-registry';
-import { fmtBytes, fmtWhen } from '@/lib/admin/format';
+import { fetchJson } from '@/lib/fetch-json';
+import type { AdminDashboardResponse } from '@/app/api/admin/dashboard/route';
+import { fmtAgo, fmtBytes, fmtCount, fmtWhen } from '@/lib/admin/format';
+import { InProgressStrip } from '@/components/admin/dashboard/InProgressStrip';
+import { DeployEventsPanel, RecentDeploymentsPanel } from '@/components/admin/dashboard/DeploymentsPanel';
+import { ReviewPanel } from '@/components/admin/dashboard/ReviewPanel';
+import { AccessPanel } from '@/components/admin/dashboard/AccessPanel';
+import { StoragePanel } from '@/components/admin/dashboard/StoragePanel';
+import { ReleasesPanel } from '@/components/admin/dashboard/ReleasesPanel';
+import { ActivityPanel } from '@/components/admin/dashboard/ActivityPanel';
 
 // ---------------------------------------------------------------------------
-// The admin landing page (admin audit 2026-07-03, §3.A): stat tiles and
-// "needs attention" queues over already-computable aggregates, each
-// deep-linking into the relevant section with pre-applied URL filters (the
-// framework-migrated pages parse them). Replaces the old /admin → /admin/codes
-// redirect.
+// The admin landing page: an operator overview with a fixed order.
+//   1. what is running now (deploy leases, releases mid-lifecycle),
+//   2. what was deployed recently,
+//   3. the review backlogs and the access queue,
+//   4. storage at rest and the data releases,
+//   5. the audit trail, with the archive's scale and provenance as a footer.
+// One GET carries every panel (/api/admin/dashboard); each panel owns its
+// loading / unavailable / empty state, so a failed aggregate never reads as 0.
 // ---------------------------------------------------------------------------
 
-function StatTile({
-  href, icon: Icon, label, value, accent, sub,
-}: {
-  href: string;
-  icon: React.ElementType;
-  label: string;
-  value: React.ReactNode;
-  accent?: boolean;
-  sub?: string;
-}) {
-  return (
-    <Link href={href} className="block group">
-      <Card className="p-4 h-full transition-colors group-hover:bg-card-hover">
-        <div className="flex items-center gap-2 text-text-secondary text-sm mb-1.5">
-          <Icon className="w-4 h-4" />
-          {label}
-        </div>
-        <div className={`text-2xl font-semibold tabular-nums ${accent ? 'text-yellow-600 dark:text-yellow-400' : 'text-text-primary'}`}>
-          {value}
-        </div>
-        {sub && <div className="text-xs text-text-secondary mt-1">{sub}</div>}
-      </Card>
-    </Link>
-  );
-}
+const QUERY_KEY = ['admin-dashboard'] as const;
 
 export default function AdminDashboardPage() {
-  const { data: progressResult } = useQuery({
-    queryKey: ['admin-nircam-progress'],
-    queryFn: getReductionProgress,
+  const queryClient = useQueryClient();
+  const q = useQuery({
+    queryKey: QUERY_KEY,
+    queryFn: ({ signal }) => fetchJson<AdminDashboardResponse>('/api/admin/dashboard', { signal }),
     staleTime: 30_000,
-  });
-  const { data: drafts } = useQuery({
-    queryKey: ['admin-dashboard-drafts'],
-    queryFn: () => getDeployments({ status: 'draft', pageSize: 1 }),
-    staleTime: 30_000,
-  });
-  const { data: budget } = useQuery({
-    queryKey: ['admin-storage-budget'],
-    queryFn: getStorageBudget,
-    staleTime: 60_000,
-  });
-  const { data: recentEvents } = useQuery({
-    queryKey: ['admin-dashboard-events'],
-    queryFn: () => getDeployEvents({ pageSize: 5 }),
-    staleTime: 30_000,
-  });
-  const { data: pendingRequests } = useQuery({
-    queryKey: ['admin-dashboard-inspection-requests'],
-    queryFn: async () => {
-      const res = await fetch('/api/admin/inspection-requests?status=pending');
-      if (!res.ok) return { requests: [] as unknown[] };
-      return (await res.json()) as { requests: unknown[] };
+    refetchOnWindowFocus: true,
+    // Poll while a deploy or a release job is running so the strip tracks it.
+    refetchInterval: (query) => {
+      const d = query.state.data;
+      const busy = (d?.summary?.leases.length ?? 0) > 0
+        || (d?.releases ?? []).some((r) => ['freezing', 'exporting', 'copying'].includes(r.state));
+      return busy ? 20_000 : false;
     },
-    staleTime: 30_000,
   });
 
-  const progress = progressResult?.progress ?? [];
-  const pendingReview = progress.reduce((s, r) => s + (r.pending_review ?? 0), 0);
-  const needsCorrection = progress.reduce((s, r) => s + (r.needs_correction ?? 0), 0);
-  // The view is detector-grain; roll up to field/filter for the queue table.
-  // Accumulate every row (so Total covers fully-reviewed detectors too), then
-  // keep only groups that still have pending work.
-  const attentionMap = new Map<string, { field: string; filter: string; pending: number; total: number }>();
-  for (const r of progress) {
-    const key = `${r.field}|${r.filter}`;
-    const acc = attentionMap.get(key) ?? { field: r.field, filter: r.filter, pending: 0, total: 0 };
-    acc.pending += r.pending_review ?? 0;
-    acc.total += r.total ?? 0;
-    attentionMap.set(key, acc);
-  }
-  const attention = Array.from(attentionMap.values()).filter((r) => r.pending > 0);
+  const data = q.data;
+  const loading = q.isPending;
+  // A transport-level failure (401, network) blanks every panel with the same message.
+  const transportError = q.error ? String(q.error instanceof Error ? q.error.message : q.error) : undefined;
+  const err = (section: keyof AdminDashboardResponse['errors']) => transportError ?? data?.errors[section];
+  const retry = () => queryClient.invalidateQueries({ queryKey: QUERY_KEY });
 
-  const budgetOk = budget && 'total_bytes' in budget;
-  const b = budgetOk ? (budget as StorageBudget) : null;
+  const summary = data?.summary ?? null;
+  const overview = data?.overview ?? null;
+  const updated = q.dataUpdatedAt
+    ? new Date(q.dataUpdatedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    : null;
 
   return (
-    <div>
-      <div className="flex items-center gap-2 mb-2">
-        <LayoutDashboard className="w-6 h-6 text-primary" />
-        <h1 className="text-2xl font-semibold text-text-primary">Dashboard</h1>
-      </div>
-      <p className="text-text-secondary text-sm mb-6">
-        Reduction-loop status at a glance. Every tile links into the relevant section with
-        the matching filter applied.
-      </p>
-
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-        <StatTile
-          href="/admin/nircam?review=pending"
-          icon={Camera}
-          label="Exposures pending review"
-          value={pendingReview}
-          accent={pendingReview > 0}
-        />
-        <StatTile
-          href="/admin/nircam?correction=needed"
-          icon={Camera}
-          label="Needs correction"
-          value={needsCorrection}
-          accent={needsCorrection > 0}
-        />
-        <StatTile
-          href="/admin/deployments?status=draft"
-          icon={GitBranch}
-          label="Draft deployments"
-          value={drafts?.total ?? '—'}
-          accent={(drafts?.total ?? 0) > 0}
-        />
-        <StatTile
-          href="/admin/inspection-requests"
-          icon={Telescope}
-          label="Pending access requests"
-          value={pendingRequests?.requests?.length ?? '—'}
-          accent={(pendingRequests?.requests?.length ?? 0) > 0}
-        />
-        <StatTile
-          href="/admin/intermediate-products"
-          icon={HardDrive}
-          label="Storage used"
-          value={b ? fmtBytes(b.total_bytes) : '—'}
-          sub={b ? `of ${fmtBytes(b.cap_bytes)} (${b.pct_used}%)` : undefined}
-        />
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <LayoutDashboard className="w-5 h-5 text-primary" />
+        <h1 className="text-xl font-semibold text-text-primary">Admin</h1>
+        <span className="ml-auto text-xs text-text-tertiary tabular-nums">
+          {updated ? `Updated ${updated}` : ''}
+        </span>
+        <button
+          onClick={retry}
+          title="Refresh"
+          aria-label="Refresh"
+          className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-border text-text-secondary hover:bg-card-hover hover:text-text-primary transition-colors"
+        >
+          <RotateCw className={`w-3.5 h-3.5 ${q.isFetching ? 'animate-spin' : ''}`} />
+        </button>
       </div>
 
-      {attention.length > 0 && (
-        <Card className="mb-8 overflow-hidden">
-          <div className="px-4 py-3 border-b border-border bg-surface-2 flex items-center gap-2">
-            <Camera className="w-4 h-4 text-text-secondary" />
-            <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
-              Needs attention — pending review by field / filter
-            </h2>
-          </div>
-          <table className="w-full text-sm">
-            <thead className="text-text-secondary text-left border-b border-border">
-              <tr>
-                <th className="px-4 py-2 font-medium">Field</th>
-                <th className="px-4 py-2 font-medium">Filter</th>
-                <th className="px-4 py-2 font-medium text-right">Pending</th>
-                <th className="px-4 py-2 font-medium text-right">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {attention.map((r) => (
-                <tr key={`${r.field}-${r.filter}`} className="border-t border-border hover:bg-card-hover/50">
-                  <td className="px-4 py-2 font-medium text-text-primary">{r.field}</td>
-                  <td className="px-4 py-2 text-text-primary">{r.filter}</td>
-                  <td className="px-4 py-2 text-right">
-                    <Link
-                      href={`/admin/nircam?field=${encodeURIComponent(r.field)}&filter=${encodeURIComponent(r.filter)}&review=pending`}
-                      className="text-yellow-600 dark:text-yellow-400 font-medium hover:underline"
-                    >
-                      {r.pending}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-2 text-right text-text-secondary tabular-nums">{r.total}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
+      {summary && (
+        <InProgressStrip leases={summary.leases} releases={data?.releases ?? []} />
       )}
 
-      <Card className="overflow-hidden">
-        <div className="px-4 py-3 border-b border-border bg-surface-2 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <History className="w-4 h-4 text-text-secondary" />
-            <h2 className="text-sm font-medium text-text-primary uppercase tracking-wider">
-              Recent deploy activity
-            </h2>
-          </div>
-          <Link href="/admin/deployments" className="text-xs text-primary hover:underline">
-            View all
-          </Link>
+      <RecentDeploymentsPanel
+        deployments={data?.deployments ?? null}
+        drafts={summary?.deployments.drafts ?? null}
+        loading={loading}
+        error={err('deployments')}
+        onRetry={retry}
+      />
+
+      <div className="grid grid-cols-12 gap-4 items-start">
+        <div className="col-span-12 xl:col-span-8">
+          <ReviewPanel review={summary?.review ?? null} loading={loading} error={err('summary')} onRetry={retry} />
         </div>
-        {(recentEvents?.events?.length ?? 0) === 0 ? (
-          <p className="p-4 text-sm text-text-secondary">No deploy events yet.</p>
+        <div className="col-span-12 xl:col-span-4">
+          <AccessPanel access={summary?.access ?? null} loading={loading} error={err('summary')} onRetry={retry} />
+        </div>
+
+        <div className="col-span-12 xl:col-span-4">
+          <StoragePanel budget={data?.budget ?? null} loading={loading} error={err('budget')} onRetry={retry} />
+        </div>
+        <div className="col-span-12 xl:col-span-8">
+          <ReleasesPanel releases={data?.releases ?? null} loading={loading} error={err('releases')} onRetry={retry} />
+        </div>
+
+        <div className="col-span-12 xl:col-span-7">
+          <DeployEventsPanel events={data?.events ?? null} loading={loading} error={err('events')} onRetry={retry} />
+        </div>
+        <div className="col-span-12 xl:col-span-5">
+          <ActivityPanel
+            rows={data?.activity ?? null}
+            counters={summary?.activity ?? null}
+            loading={loading}
+            error={err('activity')}
+            onRetry={retry}
+          />
+        </div>
+      </div>
+
+      <Card className="overflow-hidden">
+        {loading ? (
+          <div className="p-3"><div className="h-4 bg-surface-2 rounded animate-pulse" /></div>
         ) : (
-          <table className="w-full text-sm">
-            <tbody>
-              {recentEvents!.events.map((e) => (
-                <tr key={e.id} className="border-t border-border first:border-t-0">
-                  <td className="px-4 py-2 text-text-secondary whitespace-nowrap w-36">
-                    {fmtWhen(e.occurred_at)}
-                  </td>
-                  <td className="px-4 py-2 font-medium text-text-primary w-24">{e.action}</td>
-                  <td className="px-4 py-2 font-mono text-xs">
-                    {e.observation ?? e.field ?? '—'}
-                  </td>
-                  <td className="px-4 py-2 text-text-secondary text-right">
-                    {e.actor_name ?? '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="px-3 py-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+            {overview ? (
+              <>
+                {([
+                  ['Programs', overview.n_programs, '/admin/programs'],
+                  ['Observations', overview.n_observations, null],
+                  ['Pointings', overview.n_pointings, null],
+                  ['Targets', overview.n_targets, null],
+                  ['Spectra', overview.n_spectra, null],
+                ] as const).map(([label, value, href]) => {
+                  const cell = (
+                    <span className="whitespace-nowrap">
+                      <span className="tabular-nums font-medium text-text-primary">{fmtCount(value)}</span>
+                      <span className="text-text-tertiary ml-1.5 uppercase text-[10px] tracking-wider">{label}</span>
+                    </span>
+                  );
+                  return href
+                    ? <Link key={label} href={href} className="hover:opacity-80">{cell}</Link>
+                    : <React.Fragment key={label}>{cell}</React.Fragment>;
+                })}
+                <span className="whitespace-nowrap">
+                  <span className="tabular-nums font-medium text-text-primary">{fmtBytes(overview.total_size_bytes)}</span>
+                  <span className="text-text-tertiary ml-1.5 uppercase text-[10px] tracking-wider">Spectra</span>
+                </span>
+              </>
+            ) : (
+              <span className="text-text-tertiary">Archive overview unavailable</span>
+            )}
+
+            <span className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-text-tertiary">
+              {overview?.latest_cfpipe_version && (
+                <span className="font-mono">cfpipe {overview.latest_cfpipe_version}</span>
+              )}
+              {summary && (
+                <>
+                  <Link href="/admin/deployments" className={`hover:underline ${summary.deployments.missing_provenance > 0 ? 'text-warning' : ''}`}>
+                    {summary.deployments.missing_provenance > 0
+                      ? `${fmtCount(summary.deployments.missing_provenance)} without provenance`
+                      : 'Provenance complete'}
+                  </Link>
+                  {summary.deployments.unreleased_published > 0 && (
+                    <Link href="/admin/deployments" className="text-warning hover:underline">
+                      {fmtCount(summary.deployments.unreleased_published)} on unreleased builds
+                    </Link>
+                  )}
+                  <span>{fmtCount(summary.deployments.crds_contexts)} CRDS context{summary.deployments.crds_contexts === 1 ? '' : 's'}</span>
+                  <span
+                    className={summary.sync_snapshot?.status === 'failed' ? 'text-danger' : ''}
+                    title={summary.sync_snapshot ? fmtWhen(summary.sync_snapshot.completed_at ?? summary.sync_snapshot.started_at) : undefined}
+                  >
+                    {summary.sync_snapshot
+                      ? `Sync snapshot ${summary.sync_snapshot.status} · ${fmtAgo(summary.sync_snapshot.completed_at ?? summary.sync_snapshot.started_at)}`
+                      : 'No sync snapshot'}
+                  </span>
+                </>
+              )}
+            </span>
+          </div>
         )}
       </Card>
-
-      <div className="mt-8 grid grid-cols-2 gap-4">
-        <Link href="/admin/intermediate-products" className="block group">
-          <Card className="p-4 transition-colors group-hover:bg-card-hover flex items-center gap-3">
-            <Database className="w-5 h-5 text-text-secondary" />
-            <div>
-              <div className="text-sm font-medium text-text-primary">Storage registry</div>
-              <div className="text-xs text-text-secondary">Browse every registered object in the bucket</div>
-            </div>
-          </Card>
-        </Link>
-        <Link href="/admin/nircam" className="block group">
-          <Card className="p-4 transition-colors group-hover:bg-card-hover flex items-center gap-3">
-            <Camera className="w-5 h-5 text-text-secondary" />
-            <div>
-              <div className="text-sm font-medium text-text-primary">NIRCam reductions</div>
-              <div className="text-xs text-text-secondary">Per-field/filter progress + exposure review</div>
-            </div>
-          </Card>
-        </Link>
-      </div>
     </div>
   );
 }

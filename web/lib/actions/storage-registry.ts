@@ -145,6 +145,10 @@ export interface StorageBudget {
   total_bytes: number;
   cap_bytes: number;
   pct_used: number;
+  /** Registry bytes at rest (every status but collected); total_bytes = registry + tiles. */
+  registry_bytes?: number;
+  /** Map tiles (the one R2 exception), from map_layers. */
+  tile_bytes?: number;
   by_product_type: Record<string, number> | null;
   by_backend: Record<string, number> | null;
   /** Data releases P2: live pointers / retained archive copies / collected rows. */

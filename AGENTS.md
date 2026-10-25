@@ -193,6 +193,12 @@ Because `seed.sql` is applied automatically on preview branches, it must stay co
 with the current migration state. If a migration adds/removes/renames columns or tables,
 regenerate the seed file. Seed failures will show up as a failed Supabase check on the PR.
 
+`supabase/seed_admin_fixtures.sql` (second entry in `[db.seed] sql_paths`) is hand-maintained
+and derives from the rows `seed.sql` inserted: the NIRCam exposure-review queue, deploy
+events and leases, an inspection access request, a sync snapshot and a fresh burst of
+inspection activity, so `/admin` renders populated locally. A seed regeneration never
+touches it.
+
 Test users: `admin@campfire.dev`, `user@campfire.dev`, `viewer@campfire.dev` (password: `password123`)
 
 ## Deployment
