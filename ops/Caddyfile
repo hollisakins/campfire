@@ -1,7 +1,10 @@
 # CAMPFIRE reverse proxy (ops/README.md).
 #
-# TLS: Cloudflare origin certificate + key at $CAMPFIRE_DATA_ROOT/certs
-# (origin.pem / origin.key), Cloudflare in "Full (strict)" mode in front. The
+# TLS: Cloudflare origin certificates at $CAMPFIRE_DATA_ROOT/certs, Cloudflare
+# in "Full (strict)" mode in front. origin.pem/.key covers the primary zone
+# (the one WEB_HOST / API_HOST live in), alt.pem/.key the alternate zone (the
+# ALT_* hostnames). Caddy picks the certificate by SNI from everything loaded,
+# so each site block only has to load the certificate of its own zone. The
 # Let's Encrypt alternative (DNS challenge via the Cloudflare module) needs a
 # custom Caddy build; see the README before switching.
 #
@@ -14,6 +17,13 @@
 # Hostnames come from .env: WEB_HOST (production portal), WEB_STAGING_HOST
 # (staging portal; same container unless docker-compose.staging.yml is active,
 # which sets WEB_STAGING_UPSTREAM=web-staging:3000) and API_HOST (Supabase API).
+# The ALT_* hostnames are the same three roles in the alternate zone:
+# ALT_API_HOST is a live alias of API_HOST (same upstream, so stored CLI
+# refresh tokens and laptops with the old CAMPFIRE_SUPABASE_URL keep working),
+# ALT_WEB_HOST / ALT_WEB_STAGING_HOST redirect to the primary names (301, and
+# 308 for /api/v1/* so a POST from the Python client keeps its method and
+# body). docker-compose.yml defaults the ALT_* names to *.invalid, which makes
+# the blocks inert until .env sets them (README, "Domain move").
 
 {
 	servers {
@@ -23,13 +33,12 @@
 }
 
 (common) {
-	tls /certs/origin.pem /certs/origin.key
 	encode zstd gzip
 	header -Server
 	# Access log: one JSON line per request (ts, client ip, host, uri, status,
 	# duration, bytes) at $CAMPFIRE_DATA_ROOT/logs/caddy/access.log on the host.
 	# Kept seven days: the client IP is personal data, and a week covers any
-	# debugging that needs it. All three sites write to the same file.
+	# debugging that needs it. All sites write to the same file.
 	log {
 		output file /var/log/caddy/access.log {
 			# Group-readable: the log dir is root:<ops user> with setgid, so the
@@ -41,6 +50,15 @@
 		}
 		format json
 	}
+}
+
+# Certificate of the primary zone / of the alternate zone (see the header).
+(tls_primary) {
+	tls /certs/origin.pem /certs/origin.key
+}
+
+(tls_alt) {
+	tls /certs/alt.pem /certs/alt.key
 }
 
 # Portal → a Next.js container. args[0] is the upstream (host:port).
@@ -58,21 +76,9 @@
 	}
 }
 
-# Production portal → the deployed web container (deploy.sh swaps its image).
-{$WEB_HOST} {
-	import portal web:3000
-}
-
-# Staging portal → the same container by default. docker-compose.staging.yml
-# points it at web-staging (a second image, e.g. one built against the
-# self-hosted API for the Phase 2 dress rehearsal).
-{$WEB_STAGING_HOST} {
-	import portal {$WEB_STAGING_UPSTREAM:web:3000}
-}
-
 # Supabase API → Kong. Only the two paths supabase-js uses are exposed; the
 # Studio catch-all and /pg stay on 127.0.0.1:8000 (SSH tunnel).
-{$API_HOST} {
+(api) {
 	import common
 
 	@api path /auth/v1/* /rest/v1/*
@@ -92,4 +98,61 @@
 	handle {
 		respond 404
 	}
+}
+
+# A retired portal hostname → the live one. args[0] is the target hostname.
+# /api/v1/* gets 308 (method and body preserved: the Python client POSTs its
+# device-flow login and deploy writes here), everything else a plain 301.
+# {uri} carries the path and the query string.
+(portal_redirect) {
+	import common
+
+	@api path /api/v1/*
+	handle @api {
+		redir https://{args[0]}{uri} 308
+	}
+
+	handle {
+		redir https://{args[0]}{uri} 301
+	}
+}
+
+# ---- Primary zone ------------------------------------------------------------
+
+# Production portal → the deployed web container (deploy.sh swaps its image).
+{$WEB_HOST} {
+	import tls_primary
+	import portal web:3000
+}
+
+# Staging portal → the same container by default. docker-compose.staging.yml
+# points it at web-staging (a second image, e.g. one built against the
+# self-hosted API for the Phase 2 dress rehearsal).
+{$WEB_STAGING_HOST} {
+	import tls_primary
+	import portal {$WEB_STAGING_UPSTREAM:web:3000}
+}
+
+{$API_HOST} {
+	import tls_primary
+	import api
+}
+
+# ---- Alternate zone (inert while the ALT_* names are *.invalid) ---------------
+
+{$ALT_WEB_HOST} {
+	import tls_alt
+	import portal_redirect {$WEB_HOST}
+}
+
+{$ALT_WEB_STAGING_HOST} {
+	import tls_alt
+	import portal_redirect {$WEB_STAGING_HOST}
+}
+
+# Alias, not a redirect: supabase-js and the CLI send bearer tokens here and a
+# redirect would drop them; GoTrue redirect_to values on old emails point here.
+{$ALT_API_HOST} {
+	import tls_alt
+	import api
 }

@@ -341,6 +341,14 @@ services:
       # docker-compose.staging.yml overrides this with web-staging:3000.
       WEB_STAGING_UPSTREAM: ${WEB_STAGING_UPSTREAM:-web:3000}
       API_HOST: ${API_HOST}
+      # The same three roles in the alternate zone (README, "Domain move"):
+      # redirects for the portals, a live alias for the API. The *.invalid
+      # defaults keep the Caddyfile blocks inert (and the certificate at
+      # certs/alt.pem must exist either way: copy origin.pem/.key to alt.pem/.key
+      # before the first start with this file).
+      ALT_WEB_HOST: ${ALT_WEB_HOST:-alt-web.invalid}
+      ALT_WEB_STAGING_HOST: ${ALT_WEB_STAGING_HOST:-alt-staging.invalid}
+      ALT_API_HOST: ${ALT_API_HOST:-alt-api.invalid}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/certs:/certs:ro

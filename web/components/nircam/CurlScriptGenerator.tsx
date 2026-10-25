@@ -24,7 +24,7 @@ interface CurlScriptGeneratorProps {
 // then; the env fallback only covers the (never-shown) server render.
 function siteOrigin(): string {
   if (typeof window !== 'undefined') return window.location.origin;
-  return process.env.NEXT_PUBLIC_APP_URL || 'https://campfire.hollisakins.com';
+  return process.env.NEXT_PUBLIC_APP_URL || 'https://campfire-jwst.org';
 }
 
 // The credential the open panel minted, or why it could not.

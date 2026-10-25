@@ -8,7 +8,7 @@ This guide will walk you through deploying the CAMPFIRE download worker to Cloud
 - Wrangler CLI installed
 - FITS objects on R2 (`campfire`) and/or OSN — the Worker fetches presigned URLs,
   so it needs **no** bucket binding and holds no object-store credentials
-- Domain: `campfire-download.hollisakins.com` (custom domain pinned in
+- Domain: `download.campfire-jwst.org` (custom domain pinned in
   `wrangler.toml`; a first-level subdomain so the free Universal SSL wildcard
   covers it — deeper names like `download.campfire.…` get no certificate)
 - Free Workers plan is sufficient (one subrequest, ~0 CPU per request)
@@ -66,7 +66,7 @@ Add to `.env.local`:
 ```bash
 # Cloudflare Worker Configuration
 WORKER_JWT_SECRET=YOUR_SECRET_HERE
-NEXT_PUBLIC_WORKER_DOWNLOAD_URL=https://campfire-download.hollisakins.com
+NEXT_PUBLIC_WORKER_DOWNLOAD_URL=https://download.campfire-jwst.org
 ```
 
 **Important:** Use the SAME secret value from Step 2!
@@ -74,7 +74,7 @@ NEXT_PUBLIC_WORKER_DOWNLOAD_URL=https://campfire-download.hollisakins.com
 ## Step 5: Custom Domain
 
 Nothing manual: `wrangler.toml` pins the custom domain
-(`campfire-download.hollisakins.com`, `custom_domain = true`), so `wrangler
+(`download.campfire-jwst.org`, `custom_domain = true`), so `wrangler
 deploy` attaches it and Cloudflare manages the DNS record and certificate.
 Do NOT create a DNS record for it by hand — a manually-created record
 conflicts with the custom-domain attachment (an earlier manual `AAAA 100::`
@@ -111,19 +111,19 @@ You should see output like:
 Total Upload: XX.XX KiB / gzip: XX.XX KiB
 Uploaded campfire-download (X.XX sec)
 Published campfire-download (X.XX sec)
-  https://campfire-download.hollisakins.com
+  https://download.campfire-jwst.org
 Current Deployment ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
 ## Step 7b: Enable the Delivery Front in Vercel
 
 Once the deployed Worker carries `/o/` (perf T2-D1, #507), set
-`CDN_FRONT_URL=https://campfire-download.hollisakins.com` in the Vercel
+`CDN_FRONT_URL=https://download.campfire-jwst.org` in the Vercel
 project (all environments). Until it is set, the app streams product bytes
 through its own routes; the same `WORKER_JWT_SECRET` signs both endpoints.
 
 Smoke test after setting it: on an admin NIRCam exposure page, the Network
-tab shows `campfire-download.hollisakins.com/o/...` Range requests answering
+tab shows `download.campfire-jwst.org/o/...` Range requests answering
 `X-Cache: MISS` (both the header and the SCI block, since the partial answers
 are streamed through while the Worker fills the slot with its own full GET in
 the background), then `HIT` on reload once that fill has landed — a few
@@ -135,7 +135,7 @@ The Worker has no R2 binding — it proxies presigned URLs. Confirm it's up and
 rejecting unsigned requests:
 
 ```bash
-curl -i 'https://campfire-download.hollisakins.com/proxy'
+curl -i 'https://download.campfire-jwst.org/proxy'
 # expect: HTTP/1.1 400  Missing url or sig parameter
 ```
 
@@ -246,7 +246,7 @@ Changes take effect immediately (no need to restart).
 Before going to production:
 
 - [ ] JWT secret generated and set in both Next.js and Worker
-- [ ] Custom domain serving (`curl -i https://campfire-download.hollisakins.com/proxy` → 400)
+- [ ] Custom domain serving (`curl -i https://download.campfire-jwst.org/proxy` → 400)
 - [ ] Worker deployed successfully
 - [ ] Proxy smoke test passes (`GET /proxy` → 400) and `ALLOWED_FETCH_HOSTS` lists OSN + R2
 - [ ] Test download with small dataset (1-5 objects)

@@ -5,13 +5,13 @@ import { NextRequest } from 'next/server';
  *
  * Redirect proxy for Supabase email change confirmation emails.
  *
- * This allows email change confirmation emails to use campfire.hollisakins.com URLs
+ * This allows email change confirmation emails to use campfire-jwst.org URLs
  * instead of the raw Supabase URL, improving email deliverability and brand trust.
  *
  * Flow:
- * 1. Email contains: https://campfire.hollisakins.com/api/auth/email-change?token={{ .TokenHash }}&type=email_change
+ * 1. Email contains: https://campfire-jwst.org/api/auth/email-change?token={{ .TokenHash }}&type=email_change
  * 2. This route redirects to: $NEXT_PUBLIC_SUPABASE_URL/auth/v1/verify?token=... (the browser follows it, so the PUBLIC api url, never the internal one)
- * 3. Supabase validates and redirects back to: https://campfire.hollisakins.com/profile/email-changed?code=...
+ * 3. Supabase validates and redirects back to: https://campfire-jwst.org/profile/email-changed?code=...
  * 4. Confirmation page shows success message
  */
 export async function GET(request: NextRequest) {
@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Build the redirect_to URL (where Supabase should send the user after verification)
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://campfire.hollisakins.com';
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://campfire-jwst.org';
   const redirectTo = `${appUrl}/profile/email-changed`;
 
   // Build Supabase verification URL

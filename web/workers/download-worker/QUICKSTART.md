@@ -17,7 +17,7 @@ Edit `web/.env.local`:
 ```bash
 # Add these lines
 WORKER_JWT_SECRET=<paste_your_secret_here>
-NEXT_PUBLIC_WORKER_DOWNLOAD_URL=https://campfire-download.hollisakins.com
+NEXT_PUBLIC_WORKER_DOWNLOAD_URL=https://download.campfire-jwst.org
 ```
 
 ## 3. Set Worker Secret (1 minute)
@@ -36,7 +36,7 @@ npm install
 
 ## 5. Custom Domain (0 minutes)
 
-Nothing to do — `wrangler.toml` pins `campfire-download.hollisakins.com` as a
+Nothing to do — `wrangler.toml` pins `download.campfire-jwst.org` as a
 custom domain; deploying attaches it and Cloudflare manages DNS + certificate.
 Do not create a DNS record for it by hand.
 
