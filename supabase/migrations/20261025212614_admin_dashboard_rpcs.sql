@@ -1,7 +1,8 @@
 -- Admin dashboard RPCs: get_admin_dashboard (leases, review backlogs, access queue,
 -- provenance, sync snapshot, 7-day activity) and get_admin_recent_activity (LIMIT-only feed).
 
-SET lock_timeout = '5s'; SET statement_timeout = '60s';
+SET lock_timeout = '5s';
+SET statement_timeout = '60s';
 
 SET local check_function_bodies = off;
 
