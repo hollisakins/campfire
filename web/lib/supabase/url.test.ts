@@ -38,4 +38,9 @@ describe('cookie name', () => {
     process.env.SUPABASE_URL = 'http://kong:8000';
     expect(publicSupabaseCookieName()).toBe('sb-campfire-api-auth-token');
   });
+
+  it('is undefined (supabase-js default) when no public url is configured', () => {
+    delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    expect(publicSupabaseCookieName()).toBeUndefined();
+  });
 });

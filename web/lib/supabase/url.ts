@@ -25,8 +25,11 @@ export function serverSupabaseUrl(): string {
  * cookie clients pass this explicitly so the transport url never leaks into
  * the cookie name.
  */
-export function publicSupabaseCookieName(): string {
-  return supabaseCookieNameFor(process.env.NEXT_PUBLIC_SUPABASE_URL!);
+export function publicSupabaseCookieName(): string | undefined {
+  // Unset only in unit tests that mock the client; supabase-js then applies
+  // its own default (an undefined cookieOptions.name is ignored by @supabase/ssr).
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  return url ? supabaseCookieNameFor(url) : undefined;
 }
 
 export function supabaseCookieNameFor(url: string): string {
