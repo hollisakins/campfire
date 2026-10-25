@@ -267,6 +267,20 @@ data, and the operator tests it as a real user.
    -f docker-compose.staging.yml rm -sf web-staging`, then `up -d --no-deps caddy`.
    The cutover restores from a fresh dump into a re-initialised cluster.
 
+**Results (2026-10-25, 00:33–01:45 UTC):** steps 1–6 passed. Sign-in with real
+credentials, browsing, downloads, `campfire sync` and the password-reset email
+round trip (self-hosted GoTrue → Resend → staging) all worked; round 2 with
+`SUPABASE_URL=http://kong:8000` kept the session (the cookie is named after the
+public url, #631) and server renders stopped appearing on the API hostname in
+the access log. `deploy.sh` with `DEPLOY_MIGRATIONS=local` reported "Remote
+database is up to date" against the copy. Found and fixed on the way: the three
+auth-link routes hard-coded the hosted project's verify url (#635 — every reset,
+invite and email change would have broken after the cutover); `restore-check`
+ran as `--role=postgres` and reported `users=0` (#634). Known, not fixed:
+`ResetPasswordForm` snapshots the session right after load and can race the
+PKCE code exchange on an uncached page load (same code on production; small web
+fix after Phase 2). `web-staging` stays up on the internal path until the window.
+
 ## Database cutover checklist (Phase 2)
 
 Prepare in the days before:
@@ -459,6 +473,8 @@ the round trip and the timeout; until then the first page of a sync stream can
 
 ## Changelog
 
+- 2026-10-25 — dress rehearsal passed (see "Phase 2 dress rehearsal"); `.env` `DEPLOY_MIGRATIONS=local` from now on (applies pending migrations to the local database on every deploy; harmless in Phase 1, required in Phase 2); `web-staging.env` `SUPABASE_URL=http://kong:8000`.
+- 2026-10-25 — hosted Auth/API settings copied into `.env` from the dashboard: five email templates (versioned in `ops/auth-templates/`, portal links as `{{ .SiteURL }}`; copied to `/srv/campfire/auth-templates/`), `MAILER_SUBJECTS_*`, `SMTP_MAX_FREQUENCY=60s`, `PGRST_DB_MAX_ROWS=5000`, `ADDITIONAL_REDIRECT_URLS` = hosted list + staging + localhost, `SECURE_EMAIL_CHANGE=false`; the four `HEALTHCHECK_PING_URL*` set (healthchecks.io). `auth` and `rest` recreated. Still to flip at the Phase 2 window: `SITE_URL` → production.
 Dated, one line per change to `.env` / `web.env` / `docker-compose.yml` on the
 host. Variable names only, never values.
 
