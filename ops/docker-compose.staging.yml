@@ -1,0 +1,37 @@
+# Phase 2 dress rehearsal (ops/README.md): a SECOND web container, built against
+# the self-hosted Supabase API, served on the staging hostname while production
+# keeps running the deployed image against the hosted project.
+#
+#   cd ops
+#   docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d web-staging caddy
+#   docker compose -f docker-compose.yml -f docker-compose.staging.yml rm -sf web-staging   # when done
+#
+# The image is built on the VM (README, "Phase 2 dress rehearsal"); deploy.sh
+# never touches web-staging, so it does not follow main while the rehearsal runs.
+# COMPOSE_IGNORE_ORPHANS=true in .env keeps the base-file commands quiet about it.
+services:
+  web-staging:
+    container_name: campfire-web-staging
+    image: ${WEB_STAGING_IMAGE:-campfire-web:staging-selfhosted}
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    depends_on:
+      kong:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${WEB_STAGING_PORT:-3001}:3000"
+    env_file:
+      # web.env with the Supabase urls pointed at the self-hosted API and
+      # NEXT_PUBLIC_APP_URL at the staging hostname; everything else identical.
+      - ./web-staging.env
+
+  caddy:
+    environment:
+      WEB_STAGING_UPSTREAM: web-staging:3000
+    depends_on:
+      web-staging:
+        condition: service_started

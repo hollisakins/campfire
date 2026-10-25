@@ -221,6 +221,50 @@ host, same `SUPABASE_JWT_SECRET`), an object page, a spectrum download, a small
 `campfire sync`, a password-reset email and its link, an OG image preview.
 Rollback at any time during the two quiet weeks: restore the CNAME.
 
+## Phase 2 dress rehearsal — staging on the self-hosted stack
+
+Everything in the database cutover except the freeze, the fresh dump and the
+production image rebuild can be proven first, with production untouched:
+staging becomes the complete self-hosted stack on a restored copy of the real
+data, and the operator tests it as a real user.
+
+1. A verified restore in `campfire-db` (`scripts/restore-hosted.sh`), then
+   `docker compose up -d kong rest auth`. Check from a laptop with the anon key:
+   `https://$API_HOST/auth/v1/health` reports GoTrue's version; `/rest/v1/`
+   with the anon key is refused (anon holds no table grants, as on hosted).
+2. Build the staging image on the VM against the self-hosted API (the deployed
+   image keeps the hosted URL baked in, so production is unaffected):
+   ```bash
+   cd /srv/campfire/repo
+   docker build web -f web/Dockerfile -t campfire-web:staging-selfhosted \
+     --build-arg NEXT_PUBLIC_SUPABASE_URL=https://campfire-api.hollisakins.com \
+     --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=<ANON_KEY from .env> \
+     --build-arg NEXT_PUBLIC_APP_URL=https://campfire-staging.hollisakins.com \
+     --build-arg NEXT_PUBLIC_WORKER_DOWNLOAD_URL=https://campfire-download.hollisakins.com \
+     --build-arg GIT_SHA=$(git rev-parse HEAD)
+   ```
+3. `ops/web-staging.env` = `web.env` with `NEXT_PUBLIC_SUPABASE_URL` and
+   `SUPABASE_URL` pointed at `https://campfire-api.hollisakins.com` and
+   `NEXT_PUBLIC_APP_URL` at the staging hostname (mode 600, gitignored).
+4. `docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d web-staging caddy`
+   — Caddy now routes `WEB_STAGING_HOST` to `web-staging`; `deploy.sh` keeps
+   managing production alone.
+5. Test on staging as a real user: sign in with a real account (the password
+   hashes travel with the dump, so this exercises GoTrue against real
+   credentials), object page, spectrum download, `campfire sync` against the
+   staging host, a password-reset email sent by the self-hosted GoTrue through
+   Resend, admin pages, a comment. Then the server-side internal path: set
+   `NEXT_PUBLIC_SUPABASE_URL=http://kong:8000` in `web-staging.env` only
+   (server code reads it at runtime; the client bundle keeps the public URL it
+   was built with) and repeat — this removes Cloudflare's 100 s edge timeout
+   from the sync RPCs and is the intended Phase 2 configuration if it holds.
+6. Let one real merge land its migration on the copy: `DEPLOY_MIGRATIONS=local`
+   is exercised by `deploy.sh` against the local database (production web is
+   unaffected: in Phase 1 it still talks to the hosted project).
+7. Tear down when the window is scheduled: `docker compose -f docker-compose.yml
+   -f docker-compose.staging.yml rm -sf web-staging`, then `up -d --no-deps caddy`.
+   The cutover restores from a fresh dump into a re-initialised cluster.
+
 ## Database cutover checklist (Phase 2)
 
 Prepare in the days before:
@@ -366,6 +410,22 @@ the round trip and the timeout; until then the first page of a sync stream can
   `https://campfire.hollisakins.com/api/health`; heartbeat pings from the three
   timers (`HEALTHCHECK_PING_URL*`).
 - Logs: `docker compose logs -f --tail 200 <service>`; `journalctl -u campfire-backup`.
+- Request log: `/srv/campfire/logs/caddy/access.log`, one JSON line per request
+  for all three hostnames, rotated at 50 MB and kept 7 days. For example
+  requests per host in the last hour, 5xx responses, slowest routes:
+  ```bash
+  jq -r 'select(.ts > (now - 3600)) | .request.host' access.log | sort | uniq -c
+  jq -c 'select(.status >= 500) | {ts, host: .request.host, uri: .request.uri, status}' access.log | tail
+  jq -r '[.duration, .request.host, .request.uri] | @tsv' access.log | sort -rn | head
+  ```
+- Restarting Caddy: `docker compose up -d --no-deps caddy`. A plain `up -d caddy`
+  also starts Kong, PostgREST and GoTrue through `depends_on`, which in Phase 1
+  must stay down (they would serve the API hostname over whatever copy the local
+  database holds). The same applies to `up -d web`; `deploy.sh` already uses
+  `--no-deps`.
+- Outside-in check: `campfire-site-check.timer` fetches the public
+  `/api/health` through Cloudflare every 5 min and pings
+  `HEALTHCHECK_PING_URL_SITE`; healthchecks.io alerts when the pings stop.
 - psql: `docker exec -it campfire-db psql -U supabase_admin -d postgres`;
   slow queries in `pg_stat_statements`; statements over 1 s are logged
   (`PG_LOG_MIN_DURATION_MS`).
@@ -404,6 +464,7 @@ host. Variable names only, never values.
 - 2026-10-24 — `.env`: `WEB_HOST`/`API_HOST`/`SITE_URL`/`API_EXTERNAL_URL`/`SUPABASE_PUBLIC_URL` → first-level hostnames; `WEB_TAG` = deployed sha; `DEPLOY_MIGRATIONS=skip` (Phase 1). `web.env` created from the Vercel production env + local creds; `WORKER_JWT_SECRET`/`CDN_FRONT_URL` left unset until the Phase 1 rotation.
 - 2026-10-24 — `docker-compose.yml`: `db/config` bind mount → `db-config` named volume (first `db` start failed: empty mount hid the image's include files).
 - 2026-10-24 — `volumes/db/roles.sql` guarded (init aborted on the absent `supabase_functions_admin`; cluster re-initialised twice during the rehearsal, `db/data.broken-init-*` kept aside on the volume until the rehearsal passes).
+- 2026-10-24 — Phase 2 preparation: Caddy access log on (`logs/caddy/access.log`, 7 days); `WEB_HOST` back to production only, new `WEB_STAGING_HOST` + `COMPOSE_IGNORE_ORPHANS` in `.env`; `docker-compose.staging.yml` + `web-staging.env` for the dress rehearsal (staging web built against the self-hosted API); `campfire-site-check.timer` (`HEALTHCHECK_PING_URL_SITE`, unset until the healthchecks.io account exists); Kong/PostgREST/GoTrue started on the restored copy for the rehearsal. Found: `docker compose up -d caddy` starts the API containers through `depends_on` (use `--no-deps`).
 - 2026-10-24 22:55 UTC — **step 6 flip**: `campfire.hollisakins.com` CNAME → proxied `A 149.165.174.96` (Cloudflare record `db80e4ad…`; the record comment carries the rollback target). Health, root, login, object page, API version and OG image answered 200 from the VM within the minute; Vercel (`campfire-jwst.vercel.app`) kept as the fallback.
 - 2026-10-24 — step 6 preparation: `.env` `WEB_HOST` → both hostnames (Caddy recreated); `web.env` `NEXT_PUBLIC_APP_URL` → production (image rebuilt with `DEPLOY_NEXT_PUBLIC_APP_URL` = production, run 40139323751, then `deploy.sh f723aa09`); Vercel production env: `JWT_SECRET` set to the VM's value, `WORKER_JWT_SECRET` rotated (new value also goes to the Worker and `web.env` with `CDN_FRONT_URL` once Vercel has redeployed).
 - 2026-10-24 — restore rehearsal passed (third attempt): `scripts/dump-hosted.sh` + `scripts/restore-hosted.sh` + `sql/fingerprint.sql` replace the hand-run dump/restore commands in the cutover checklist. Found and fixed on the way: the image's default privileges leaking `anon` grants into the restore, the `storage.*` data blocks aborting the load before the sequence resets, matviews restored unpopulated, pg_cron jobs not dumped. The VM's `campfire-db` now holds a verified copy of the hosted database as of 2026-10-24 18:17 UTC (not live; Phase 2 redoes the restore from a fresh dump). The five `db/data.broken-init-*` directories (failed inits and the superseded rehearsal clusters, ~8 GB) can be deleted.

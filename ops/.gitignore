@@ -5,3 +5,4 @@ web.env
 certs/
 volumes/db/data/
 volumes/db/config/
+web-staging.env

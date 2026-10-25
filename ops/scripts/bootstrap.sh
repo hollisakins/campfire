@@ -142,7 +142,7 @@ log "data root layout"
 REAL_ROOT="$(readlink -f "$DATA_ROOT")"
 chown root:"$OPS_USER" "$REAL_ROOT"
 chmod 0750 "$REAL_ROOT"
-for d in db/data backups auth-templates certs; do
+for d in db/data backups auth-templates certs logs/caddy; do
   install -d -m 0750 "$DATA_ROOT/$d"
 done
 # db/data is chowned by the supabase/postgres entrypoint on
@@ -166,7 +166,7 @@ log "systemd units"
 if [[ -d "$REPO_DIR/ops/systemd" ]]; then
   install -m 0644 "$REPO_DIR"/ops/systemd/*.service "$REPO_DIR"/ops/systemd/*.timer /etc/systemd/system/
   systemctl daemon-reload
-  systemctl enable --now campfire-backup.timer campfire-sync-snapshot.timer campfire-restore-check.timer
+  systemctl enable --now campfire-backup.timer campfire-sync-snapshot.timer campfire-restore-check.timer campfire-site-check.timer
   systemctl list-timers 'campfire-*' --no-pager
 else
   echo "repo not found at ${REPO_DIR}; clone it there and re-run to install the timers" >&2

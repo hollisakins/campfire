@@ -337,11 +337,16 @@ services:
       - "443:443/udp"
     environment:
       WEB_HOST: ${WEB_HOST}
+      WEB_STAGING_HOST: ${WEB_STAGING_HOST}
+      # docker-compose.staging.yml overrides this with web-staging:3000.
+      WEB_STAGING_UPSTREAM: ${WEB_STAGING_UPSTREAM:-web:3000}
       API_HOST: ${API_HOST}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/certs:/certs:ro
       - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/auth-templates:/srv/auth-templates:ro
+      # Access log (Caddyfile `log`), readable from the host.
+      - ${CAMPFIRE_DATA_ROOT:-/srv/campfire}/logs/caddy:/var/log/caddy
       - caddy-data:/data
       - caddy-config:/config
 
