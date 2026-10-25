@@ -1595,21 +1595,183 @@ GRANT EXECUTE ON FUNCTION public.line_fit_stale_spectrum(TEXT, TEXT, TEXT, TEXT)
 GRANT EXECUTE ON FUNCTION public.line_fit_stale_spectrum(TEXT, TEXT, TEXT, TEXT) TO service_role;
 
 
--- objects_matching_line_filter: the viewer-visible objects whose BEST S/N in
--- catalog line p_line — the max over their visible member spectra, the same
--- value object_line_snr() reports and the list sorts on — lies in
--- [p_snr_min, p_snr_max] (NULL bound = open). Max semantics, like the objects
--- list's max_snr filter: a bound is tested against one number per object, so
--- a row can never show a "Line S/N" outside the range that admitted it.
--- Materialized ONCE per list call into an INTEGER[] (like the grating /
--- observation sets, #488 / #491) and probed with o.id = ANY(...). Same
--- invariants: only spectra in the viewer's accessible programs count (a
--- proprietary program's detection must not surface an object the viewer
--- sees through another program), and unpublished spectra count only for
--- admins asking for them. p_include_stale = false (the default) drops fits
--- whose inspected redshift has moved since the fit — the catalog's answer to
--- "CIII] detections" should not quote fluxes measured at a redshift nobody
--- believes any more.
+-- =============================================================================
+-- Emission-line catalog helpers (spectrum_lines)
+-- =============================================================================
+
+-- object_line_values: for catalog line p_line, one row per caller-visible
+-- object whose BEST S/N in that line — the max over its visible member
+-- spectra — lies in [p_snr_min, p_snr_max] (NULL bound = open): (object_id,
+-- snr), where snr is exactly the aggregate the window was tested against.
+-- ONE set, built by ONE scan per statement, that the catalog RPCs read twice:
+-- objects_matching_line_filter (below) is its id projection, materialized
+-- once per call into an INTEGER[] and probed with o.id = ANY(...) like the
+-- grating / observation sets (#488 / #491), and a `LEFT JOIN
+-- public.object_line_values(...) lv ON lv.object_id = o.id` supplies the
+-- 'Line S/N' column and the line_snr sort key as a hash join. The emission
+-- line analogue of object_band_values: same contract, same two gates.
+--
+-- Max semantics, like the objects list's max_snr filter: a bound is tested
+-- in HAVING against one number per object, so a row can never show a "Line
+-- S/N" outside the range that admitted it. No bound is pushed into WHERE on
+-- purpose (`snr >= lo` per row would be exact for max(snr), `snr <= hi`
+-- would not, and the line equality already narrows the scan to one line's
+-- slice, which is where the cost is). Only spectra in the viewer's accessible
+-- programs count (a proprietary program's detection must not surface an
+-- object the viewer sees through another program), and unpublished spectra
+-- count only for admins asking for them. p_include_stale = false (the
+-- default) drops fits whose inspected redshift has moved since the fit — the
+-- catalog's answer to "CIII] detections" should not quote fluxes measured at
+-- a redshift nobody believes any more.
+--
+-- Plan shape (#619). The first shipped version was a plain five-way join
+-- that timed out in production (37 s for CIII1908 at S/N >= 5: 4 048 line
+-- rows, 118 objects). Two planner traps, both independent of RLS:
+--   * line_fit_stale_redshift(o.*, f.*) is a join clause between the fit and
+--     the object with no equality key, and the planner took it as the FIRST
+--     join: every fit in the viewer's programs against every visible object
+--     (5 165 x 27 618 = 1.4e8 rows removed by join filter) before the line
+--     slice was even consulted.
+--   * joins THROUGH the cat_* UNION ALL views carry no column statistics (an
+--     Append has no pg_statistic), so the planner estimated lines x fits at
+--     87 500 rows (actual 1 052) and 1e9 for the whole chain, and chose merge
+--     joins over full scans of the spectra / targets / objects arms.
+-- So the shape is pinned instead of estimated: the line slice is the driver
+-- (one range scan on idx_spectrum_lines_line_snr), and every other table is
+-- reached through a LATERAL `... LIMIT 1` lookup on a key that is unique in
+-- both the live and the frozen arm (spectrum_line_fits.spectrum_id; the
+-- spectra primary key; targets.target_id; the objects primary key; the dr_*
+-- twins add the tag, which the view fixes), which the planner can neither
+-- flatten nor reorder: line -> fit -> spectrum -> target -> object, four index
+-- probes per line row (55 ms on the same data). The staleness test is
+-- evaluated on the joined row, once the object is known. Keep the LIMIT 1s:
+-- without them the LATERAL subqueries are pulled up into ordinary joins and
+-- both traps return.
+--
+-- SECURITY DEFINER, like object_band_values and for the same reason: read
+-- under RLS, every spectrum_lines and spectrum_line_fits row re-ran its
+-- policy (an EXISTS on the parent spectrum, planned as a hashed sub-plan that
+-- seq-scans all 81 k spectra once per statement), a 100 ms floor paid twice
+-- per list call (filter + values): 230 ms vs 55 ms for the same pinned shape.
+--
+-- Scope: TWO gates, because the RPCs reach this function under two identities.
+--   * p_program_slugs / p_include_unpublished — the caller's already
+--     access-checked slug array and the admin opt-in for unpublished spectra,
+--     what every catalog RPC already applies to its own objects predicate.
+--     This is THE gate for the /api/v1 bearer routes, which authorize the
+--     user in the web layer and call the RPCs through the service-role client
+--     with these arguments: under that JWT auth.uid() is NULL,
+--     accessible_program_slugs() is the public set and is_admin() is false,
+--     so a helper that recomputed visibility from the JWT would strip
+--     private-program detections from an authorized API user's filter.
+--   * The select_spectra_by_access and select_objects_by_access predicates
+--     (policies.sql), applied to every caller except the service role
+--     (auth.role() = 'service_role', the JWT role claim, the same test the
+--     deploy-side RPCs use): the web's cookie session, and a viewer calling
+--     the function directly over PostgREST. Defense in depth for the direct
+--     call: a viewer passing slugs they do not hold, or
+--     p_include_unpublished = true, still gets only the spectra and objects
+--     the policies would show them. Copied verbatim; keep them in step
+--     (supabase/tests/check_line_filter_scoping.sql guards both gates). The
+--     spectrum_lines / spectrum_line_fits policies are "iff the parent
+--     spectrum is visible", which the spectra copy IS; the targets policy is
+--     implied by it (program_slug and observation are copies of the target's
+--     columns, and a target with a visible published spectrum has
+--     has_published_spectrum, while the admin / draft-seeing-link cases pass
+--     both the same way). Keyed on the role claim, not on auth.uid() IS NULL:
+--     an `authenticated` request with no subject must still be policy-gated,
+--     and a direct database session (guards, migrations) is simply treated
+--     as a viewer.
+-- Either way the RPCs intersect the result with their own scoped object set,
+-- so this can narrow what a caller sees and never widen it. Set search_path
+-- is the usual SECURITY DEFINER hygiene.
+--
+-- p_line NULL yields no rows without touching the table: the RPCs join the
+-- function unconditionally and read NULL line_snr when no line filter is
+-- active.
+CREATE OR REPLACE FUNCTION public.object_line_values(
+  p_line TEXT,
+  p_snr_min DOUBLE PRECISION,
+  p_snr_max DOUBLE PRECISION,
+  p_include_stale BOOLEAN,
+  p_program_slugs TEXT[],
+  p_include_unpublished BOOLEAN DEFAULT false
+)
+RETURNS TABLE (object_id INTEGER, snr DOUBLE PRECISION)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+ROWS 2000
+AS $$
+  SELECT t.object_id, max(l.snr)
+  FROM public.cat_spectrum_lines l
+  -- unique-key lookups, pinned with LIMIT 1 (see the plan-shape note above)
+  CROSS JOIN LATERAL (
+    SELECT f.program_slug, f.object_version, f.z_quality, f.z_used
+    FROM public.cat_line_fits f WHERE f.spectrum_id = l.spectrum_id LIMIT 1
+  ) f
+  CROSS JOIN LATERAL (
+    SELECT s.target_id, s.program_slug, s.observation, s.deploy_status
+    FROM public.cat_spectra s WHERE s.id = l.spectrum_id LIMIT 1
+  ) s
+  CROSS JOIN LATERAL (
+    SELECT t.object_id
+    FROM public.cat_targets t WHERE t.target_id = s.target_id LIMIT 1
+  ) t
+  CROSS JOIN LATERAL (
+    SELECT o.version, o.redshift_quality, o.redshift, o.programs,
+           o.has_published_spectrum, o.observations
+    FROM public.cat_objects o WHERE o.id = t.object_id LIMIT 1
+  ) o
+  WHERE p_line IS NOT NULL
+    AND l.line = p_line
+    AND l.snr IS NOT NULL
+    -- Gate 1: the caller's access-checked scope (what the RPCs apply themselves).
+    AND f.program_slug = ANY(p_program_slugs)
+    AND (p_include_unpublished OR s.deploy_status = 'published')
+    AND (p_include_stale OR NOT public.line_fit_stale_redshift(
+           o.version, o.redshift_quality, (o.redshift)::double precision,
+           f.object_version, f.z_quality, f.z_used))
+    -- Gate 2a: verbatim select_spectra_by_access (policies.sql) for every
+    -- caller except the service role (the JWT role claim, the same test the
+    -- deploy-side RPCs use; NOT auth.uid() IS NULL, which an `authenticated`
+    -- request without a subject would also satisfy).
+    AND (COALESCE((SELECT auth.role()), '') = 'service_role' OR (
+      s.program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+      AND ((SELECT NOT public.is_link_account())
+           OR s.observation = (SELECT public.link_observation()))
+      AND (s.deploy_status = 'published' OR (SELECT public.is_admin())
+           OR (s.deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
+    ))
+    -- Gate 2b: verbatim select_objects_by_access (policies.sql), same callers.
+    -- A separate conjunct, not `svc OR (s... AND o...)`: a predicate naming
+    -- both s and o would be a join clause between them again.
+    AND (COALESCE((SELECT auth.role()), '') = 'service_role' OR (
+      o.programs && (SELECT public.accessible_program_slugs())
+      AND (o.has_published_spectrum OR (SELECT public.is_admin())
+           OR (SELECT public.link_sees_drafts()))
+      AND ((SELECT NOT public.is_link_account())
+           OR o.observations && ARRAY[(SELECT public.link_observation())]::text[])
+      -- (P6b-2) the frozen policies' extra conjuncts when a release is
+      -- browsed: no link accounts, and the tag visible to the caller
+      AND (public.dr_browse_tag() IS NULL
+           OR ((SELECT NOT public.is_link_account())
+               AND public.dr_browse_tag() = ANY ((SELECT public.dr_visible_tags())::text[])))
+    ))
+  GROUP BY t.object_id
+  HAVING (p_snr_min IS NULL OR max(l.snr) >= p_snr_min)
+     AND (p_snr_max IS NULL OR max(l.snr) <= p_snr_max);
+$$;
+
+GRANT EXECUTE ON FUNCTION public.object_line_values(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, BOOLEAN, TEXT[], BOOLEAN) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.object_line_values(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, BOOLEAN, TEXT[], BOOLEAN) TO service_role;
+
+
+-- objects_matching_line_filter: the id projection of object_line_values, the
+-- shape every catalog RPC materializes once per call into an INTEGER[] and
+-- probes with o.id = ANY(...). Only ever intersected with the caller's
+-- already access-scoped object set, so it can narrow what a viewer sees and
+-- never widen it; the gates inside object_line_values make a direct call
+-- equally safe. SECURITY INVOKER and a single SELECT, so it inlines.
 CREATE OR REPLACE FUNCTION public.objects_matching_line_filter(
   p_line TEXT,
   p_snr_min DOUBLE PRECISION,
@@ -1621,22 +1783,9 @@ CREATE OR REPLACE FUNCTION public.objects_matching_line_filter(
 RETURNS SETOF INTEGER
 LANGUAGE sql STABLE
 AS $$
-  SELECT t.object_id
-  FROM public.cat_spectrum_lines l
-  JOIN public.cat_line_fits f ON f.spectrum_id = l.spectrum_id
-  JOIN public.cat_spectra s ON s.id = l.spectrum_id
-  JOIN public.cat_targets t ON t.target_id = s.target_id
-  JOIN public.cat_objects o ON o.id = t.object_id
-  WHERE l.line = p_line
-    AND l.snr IS NOT NULL
-    AND f.program_slug = ANY(p_program_slugs)
-    AND (p_include_unpublished OR s.deploy_status = 'published')
-    AND (p_include_stale OR NOT public.line_fit_stale_redshift(
-           o.version, o.redshift_quality, (o.redshift)::double precision,
-           f.object_version, f.z_quality, f.z_used))
-  GROUP BY t.object_id
-  HAVING (p_snr_min IS NULL OR max(l.snr) >= p_snr_min)
-     AND (p_snr_max IS NULL OR max(l.snr) <= p_snr_max);
+  SELECT v.object_id
+  FROM public.object_line_values(p_line, p_snr_min, p_snr_max, p_include_stale,
+                                 p_program_slugs, p_include_unpublished) v;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.objects_matching_line_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, BOOLEAN, TEXT[], BOOLEAN) TO authenticated;
@@ -1675,12 +1824,12 @@ GRANT EXECUTE ON FUNCTION public.spectra_matching_line_filter(TEXT, DOUBLE PRECI
 GRANT EXECUTE ON FUNCTION public.spectra_matching_line_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, BOOLEAN) TO service_role;
 
 
--- object_line_snr: the object's S/N in catalog line p_line — the best of its
--- viewer-visible member spectra under the same program / publication /
--- staleness rules as objects_matching_line_filter, i.e. exactly the number
--- that filter tested — for the list's sort key and its "Line S/N" column.
--- Per candidate row (PK probes on spectrum_lines), evaluated only when a line
--- filter is active.
+-- object_line_snr: one object's S/N in catalog line p_line — exactly the
+-- value object_line_values reports for it (NULL when the object has no
+-- visible, non-stale measurement of the line). A single-object lookup for
+-- guards and ad-hoc queries: it scans the line's slice once per call, so the
+-- catalog RPCs no longer call it per candidate row — they LEFT JOIN
+-- object_line_values once per statement instead (#619).
 CREATE OR REPLACE FUNCTION public.object_line_snr(
   p_object_id INTEGER,
   p_line TEXT,
@@ -1691,18 +1840,10 @@ CREATE OR REPLACE FUNCTION public.object_line_snr(
 RETURNS DOUBLE PRECISION
 LANGUAGE sql STABLE
 AS $$
-  SELECT max(l.snr)
-  FROM public.cat_targets t
-  JOIN public.cat_spectra s ON s.target_id = t.target_id
-  JOIN public.cat_spectrum_lines l ON l.spectrum_id = s.id AND l.line = p_line
-  JOIN public.cat_line_fits f ON f.spectrum_id = s.id
-  JOIN public.cat_objects o ON o.id = t.object_id
-  WHERE t.object_id = p_object_id
-    AND f.program_slug = ANY(p_program_slugs)
-    AND (p_include_unpublished OR s.deploy_status = 'published')
-    AND (p_include_stale OR NOT public.line_fit_stale_redshift(
-           o.version, o.redshift_quality, (o.redshift)::double precision,
-           f.object_version, f.z_quality, f.z_used));
+  SELECT v.snr
+  FROM public.object_line_values(p_line, NULL, NULL, p_include_stale,
+                                 p_program_slugs, p_include_unpublished) v
+  WHERE v.object_id = p_object_id;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.object_line_snr(INTEGER, TEXT, BOOLEAN, TEXT[], BOOLEAN) TO authenticated;
@@ -3799,8 +3940,10 @@ BEGIN
       o.photo_z,
       o.has_photometry,
       o.created_at,
-      -- the object's best S/N in the filtered line (sort key + 'Line S/N' column)
-      CASE WHEN p_line IS NOT NULL THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END AS line_snr,
+      -- the object's best S/N in the filtered line (sort key + 'Line S/N'
+      -- column): the same aggregate the line filter tested, from the one
+      -- object_line_values scan joined below; NULL without a line filter
+      lv.snr AS line_snr,
       -- the object's magnitude and S/N in the filtered band (sort keys + the
       -- 'Mag' / 'Band S/N' columns); the same aggregates the band filter tested
       bv.mag AS band_mag,
@@ -3817,6 +3960,8 @@ BEGIN
     FROM public.cat_objects o
     -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
     LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = o.id
+    -- line values ('Line S/N' column + line_snr sort key): one caller-scoped scan per statement, hash-joined; NULLs when no line filter is active (#619)
+    LEFT JOIN public.object_line_values(p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) lv ON lv.object_id = o.id
     WHERE
       o.programs && v_filtered_program_slugs
       AND o.is_active = true
@@ -4267,6 +4412,8 @@ BEGIN
   FROM public.cat_objects o
   -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
   LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = o.id
+  -- line values ('Line S/N' column + line_snr sort key): one caller-scoped scan per statement, hash-joined; NULLs when no line filter is active (#619)
+  LEFT JOIN public.object_line_values(p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) lv ON lv.object_id = o.id
   WHERE
     o.programs && v_filtered_program_slugs
     AND o.is_active = true
@@ -4403,8 +4550,8 @@ BEGIN
     CASE WHEN p_sort_column = 'n_spectra' AND p_sort_direction = 'desc' THEN o.n_spectra END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'asc' THEN o.max_snr END ASC NULLS LAST,
     CASE WHEN p_sort_column = 'max_snr' AND p_sort_direction = 'desc' THEN o.max_snr END DESC NULLS LAST,
-    CASE WHEN p_sort_column = 'line_snr' AND p_sort_direction = 'asc' THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END ASC NULLS LAST,
-    CASE WHEN p_sort_column = 'line_snr' AND p_sort_direction = 'desc' THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END DESC NULLS LAST,
+    CASE WHEN p_sort_column = 'line_snr' AND p_sort_direction = 'asc' THEN lv.snr END ASC NULLS LAST,
+    CASE WHEN p_sort_column = 'line_snr' AND p_sort_direction = 'desc' THEN lv.snr END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'band_mag' AND p_sort_direction = 'asc' THEN bv.mag END ASC NULLS LAST,
     CASE WHEN p_sort_column = 'band_mag' AND p_sort_direction = 'desc' THEN bv.mag END DESC NULLS LAST,
     CASE WHEN p_sort_column = 'band_snr' AND p_sort_direction = 'asc' THEN bv.snr END ASC NULLS LAST,
@@ -4618,7 +4765,7 @@ BEGIN
         WHEN 'n_spectra' THEN o.n_spectra::DOUBLE PRECISION
         WHEN 'max_snr' THEN o.max_snr WHEN 'max_exposure_time' THEN o.max_exposure_time
         WHEN 'photo_z' THEN o.photo_z
-        WHEN 'line_snr' THEN public.object_line_snr(o.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished)
+        WHEN 'line_snr' THEN lv.snr
         WHEN 'band_mag' THEN bv.mag
         WHEN 'band_snr' THEN bv.snr
         WHEN 'distance' THEN
@@ -4632,6 +4779,8 @@ BEGIN
     FROM public.cat_objects o
     -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
     LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = o.id
+    -- line values ('Line S/N' column + line_snr sort key): one caller-scoped scan per statement, hash-joined; NULLs when no line filter is active (#619)
+    LEFT JOIN public.object_line_values(p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) lv ON lv.object_id = o.id
     WHERE
       o.programs && v_filtered_program_slugs
       AND o.is_active = true
@@ -5292,12 +5441,14 @@ BEGIN
     mt.member_target_ids, po.distance, vl.lists,
     po.has_photometry, po.photo_z, po.photo_z_err_lo, po.photo_z_err_hi,
     phot.photometry,
-    CASE WHEN p_line IS NOT NULL THEN public.object_line_snr(po.id, p_line, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) END AS line_snr,
+    lv.snr AS line_snr,
     bv.mag AS band_mag,
     bv.snr AS band_snr
   FROM page_objects po
   -- band values (Mag / Band S/N columns + sort keys): one caller-scoped scan per statement, hash-joined; NULLs when no band filter is active
   LEFT JOIN public.object_band_values(p_band, p_band_mag_min, p_band_mag_max, p_band_snr_min, p_band_snr_max, p_program_slugs, p_include_unpublished) bv ON bv.object_id = po.id
+  -- line values ('Line S/N' column + line_snr sort key): one caller-scoped scan per statement, hash-joined; NULLs when no line filter is active (#619)
+  LEFT JOIN public.object_line_values(p_line, p_line_snr_min, p_line_snr_max, COALESCE(p_line_include_stale, false), p_program_slugs, p_include_unpublished) lv ON lv.object_id = po.id
   LEFT JOIN member_targets mt ON mt.object_id = po.id
   LEFT JOIN visible_lists vl ON vl.object_id = po.id
   LEFT JOIN user_profiles up ON up.user_id = po.last_inspected_by
@@ -12245,6 +12396,7 @@ REVOKE ALL ON FUNCTION public.log_deploy_event(p_action text, p_actor uuid, p_de
 REVOKE ALL ON FUNCTION public.member_editable_list_ids() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.object_band_values(p_band text, p_mag_min double precision, p_mag_max double precision, p_snr_min double precision, p_snr_max double precision, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.object_line_snr(p_object_id integer, p_line text, p_include_stale boolean, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.object_line_values(p_line text, p_snr_min double precision, p_snr_max double precision, p_include_stale boolean, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.object_scoped_aggregates(p_object_id integer, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.objects_matching_band_filter(p_band text, p_mag_min double precision, p_mag_max double precision, p_snr_min double precision, p_snr_max double precision, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.objects_matching_grating_filter(p_gratings text[], p_gratings_mode text, p_program_slugs text[], p_include_unpublished boolean) FROM PUBLIC, anon;
