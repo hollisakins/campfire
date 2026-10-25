@@ -5,6 +5,11 @@ const nextConfig: NextConfig = {
   // ops/README.md). Vercel ignores this setting and keeps building its own
   // output, so it is safe while both deployments are live.
   output: 'standalone',
+  // Nothing uses Next's image optimizer (RGBImage passes `unoptimized`, other
+  // previews are plain <img>), so switch it off: /_next/image then answers
+  // 404 instead of fetching and decoding arbitrary same-origin images with
+  // sharp, which is the attack surface of several Next.js advisories.
+  images: { unoptimized: true },
   // Ensure the Updates markdown is bundled into the serverless functions for
   // these routes, which render dynamically once a gated update is published.
   outputFileTracingIncludes: {

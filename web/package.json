@@ -37,7 +37,7 @@
     "rehype-highlight": "^7.0.0",
     "remark-gfm": "^4.0.0",
     "resend": "^6.7.0",
-    "sharp": "^0.34.5"
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@types/node": "^22",
