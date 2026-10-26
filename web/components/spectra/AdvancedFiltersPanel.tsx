@@ -1,46 +1,87 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { X, Info, Check, ChevronDown } from 'lucide-react';
-import { InlineMultiFilter } from '@/components/ui/InlineMultiFilter';
-import { InlineRange } from '@/components/ui/InlineRange';
-import { parseCoordinates, convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
-import {
-  DQ_FLAGS,
-  REDSHIFT_QUALITY,
-} from '@/lib/flags';
-import type { AdvancedFilterOptions } from './SpectraFilterBar';
+/**
+ * The Advanced modal (Catalog Read Model phase 3b): every filter of the
+ * catalog as the familiar pills — the basic ones the filter bar also shows,
+ * kept in step since both edit the same state — plus the conditions zone,
+ * where the predicate tree's free nodes are edited. One centred dialog on
+ * the table page and the map.
+ */
+import React, { useEffect, useMemo, useState } from 'react';
+import { Check, Copy, X } from 'lucide-react';
+import { FilterChip, type FilterOption } from '@/components/ui/FilterChip';
+import { FilterChipWithMode } from '@/components/ui/FilterChipWithMode';
+import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
+import { CoordinateSearchChip } from '@/components/ui/CoordinateSearchChip';
+import { DQ_FLAGS, REDSHIFT_QUALITY } from '@/lib/flags';
 import { GRATINGS, type Program } from '@/lib/types';
 import type { ViewMode } from '@/lib/actions/spectra-types';
+import { DEFAULT_FILTERS, type FilterOptions } from '@/lib/actions/filter-params';
 import { OBSERVATION_COLORS } from '@/components/map/observation-colors';
 import { LINE_FILTER_OPTIONS } from '@/lib/linelist';
 import { getAvailableLists } from '@/lib/actions/lists';
+import { filterNodes, rootOf } from '@/lib/catalog-query/legacy';
+import { treeOf } from '@/lib/catalog-query/tree';
+import { fetchJson } from '@/lib/fetch-json';
+import type { CatalogQuerySqlResponse } from '@/app/api/catalog-query/sql/route';
+import { ConditionsEditor, type ConditionChoices } from './ConditionsEditor';
 
-interface FilterOption {
-  value: string | number;
-  label: string;
-  icon?: string;
-  color?: string;
-}
+export type AdvancedFilterOptions = FilterOptions;
 
 interface AdvancedFiltersPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  filters: AdvancedFilterOptions;
-  onFiltersChange: (filters: AdvancedFilterOptions) => void;
-  /** When true, show basic filters (programs, observation, quality, redshift) above advanced sections and hide position search */
-  showBasicFilters?: boolean;
-  /** Available programs for the program filter (required when showBasicFilters is true) */
+  filters: FilterOptions;
+  onFiltersChange: (filters: FilterOptions) => void;
   availablePrograms?: Program[];
-  /** Available observations for the observation filter (required when showBasicFilters is true) */
+  availableFields?: string[];
   availableObservations?: string[];
-  /** Photometry bands the band filter can offer, wavelength-ordered
-   *  (/api/filter-options). Empty hides the photometry-band section entirely —
-   *  band names are per-field catalog config, so there is no fixed list to
-   *  fall back on. */
+  /** Photometry bands the band filter can offer (/api/filter-options); none
+   *  hides the band pill, since band names are per-field catalog config. */
   availableBands?: string[];
-  /** Current view mode — controls filter labels and behavior */
   viewMode?: ViewMode;
+  /** The map has its own position tools: no position pill there. */
+  hidePosition?: boolean;
+  title?: string;
+}
+
+// Shortcut for "All inspected" quality values (everything except "Not Inspected")
+const INSPECTED_QUALITY_VALUES = [1, 2, 3, 4];
+
+/** The filters the modal owns beyond the filter bar's basics, for its badge. */
+export function advancedFilterCount(filters: FilterOptions): number {
+  return (
+    (filters.coordinate_search !== null ? 1 : 0) +
+    (filters.gratings?.length ?? 0) +
+    (filters.max_snr_min !== null || filters.max_snr_max !== null ? 1 : 0) +
+    (filters.max_exposure_time_min !== null || filters.max_exposure_time_max !== null ? 1 : 0) +
+    (filters.line ? 1 : 0) +
+    (filters.band ? 1 : 0) +
+    (filters.list_ids?.length ?? 0) +
+    (filters.dq_flags?.length ?? 0) +
+    (filters.conditions?.length ?? 0)
+  );
+}
+
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="px-5 py-3.5 border-b border-border last:border-b-0">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary mb-2">{label}</div>
+      <div className="flex flex-wrap items-center gap-2">{children}</div>
+    </div>
+  );
+}
+
+function TogglePill({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button type="button" onClick={() => onChange(!checked)}
+      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border transition-all duration-150 ${
+        checked ? 'bg-primary/10 border-primary text-primary' : 'bg-card border-border text-text-secondary hover:border-text-secondary dark:hover:border-border-strong hover:text-text-primary'
+      }`}>
+      {checked && <Check className="w-3.5 h-3.5" />}
+      {label}
+    </button>
+  );
 }
 
 export function AdvancedFiltersPanel({
@@ -48,711 +89,230 @@ export function AdvancedFiltersPanel({
   onClose,
   filters,
   onFiltersChange,
-  showBasicFilters = false,
   availablePrograms = [],
+  availableFields = [],
   availableObservations = [],
   availableBands = [],
   viewMode = 'objects',
+  hidePosition = false,
+  title = 'Advanced',
 }: AdvancedFiltersPanelProps) {
-  // Fetch available lists for the list filter
+  const root = rootOf(viewMode);
+  const isSpectra = viewMode === 'spectra';
+
+  // the viewer's tags, once per opening
   const [listOptions, setListOptions] = useState<FilterOption[]>([]);
   useEffect(() => {
     if (!isOpen) return;
     getAvailableLists().then(({ lists }) => {
-      setListOptions(lists.map(l => ({
-        value: l.id,
-        label: l.name,
-        color: l.color ?? undefined,
-        icon: l.icon ?? undefined,
-      })));
+      setListOptions(lists.map((l) => ({ value: l.id, label: l.name, color: l.color ?? undefined, icon: l.icon ?? undefined })));
     });
   }, [isOpen]);
 
-  // Local state for coordinate search form
-  const [coordInput, setCoordInput] = useState('');
-  const [radiusInput, setRadiusInput] = useState('1');
-  const [unitInput, setUnitInput] = useState<'degrees' | 'arcmin' | 'arcsec'>('arcmin');
-  const [validationError, setValidationError] = useState<string | null>(null);
-
-  // Sync local state with filter value
   useEffect(() => {
-    if (filters.coordinate_search) {
-      setCoordInput(`${filters.coordinate_search.ra.toFixed(6)} ${filters.coordinate_search.dec.toFixed(6)}`);
-      setRadiusInput(filters.coordinate_search.radius.toString());
-      setUnitInput(filters.coordinate_search.radius_unit);
-    } else {
-      setCoordInput('');
-      setRadiusInput('1');
-      setUnitInput('arcmin');
-    }
-  }, [filters.coordinate_search]);
-
-  // Validate coordinates on input change
-  useEffect(() => {
-    if (coordInput.trim() === '') {
-      setValidationError(null);
-      return;
-    }
-    const parsed = parseCoordinates(coordInput);
-    if (parsed === null) {
-      setValidationError('Invalid format. Use: "150.5 -2.3" or "10h02m30s -02d18m00s"');
-    } else {
-      setValidationError(null);
-    }
-  }, [coordInput]);
-
-  // Apply coordinate search
-  const handleApplyCoordSearch = () => {
-    if (coordInput.trim() === '') {
-      onFiltersChange({ ...filters, coordinate_search: null });
-      return;
-    }
-
-    const parsed = parseCoordinates(coordInput);
-    if (parsed === null) {
-      setValidationError('Invalid coordinate format');
-      return;
-    }
-
-    const radius = parseFloat(radiusInput);
-    if (isNaN(radius) || radius <= 0) {
-      setValidationError('Radius must be a positive number');
-      return;
-    }
-
-    // Validate max radius (1 degree)
-    const radiusDegrees = convertRadiusToDegrees(radius, unitInput);
-    if (radiusDegrees > 1) {
-      setValidationError('Maximum search radius is 1 degree');
-      return;
-    }
-
-    onFiltersChange({
-      ...filters,
-      coordinate_search: {
-        ra: parsed.ra,
-        dec: parsed.dec,
-        radius,
-        radius_unit: unitInput,
-      },
-    });
-  };
-
-  // Clear coordinate search
-  const handleClearCoordSearch = () => {
-    setCoordInput('');
-    setRadiusInput('1');
-    setUnitInput('arcmin');
-    setValidationError(null);
-    onFiltersChange({ ...filters, coordinate_search: null });
-  };
-
-  // Handle Enter key in inputs
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleApplyCoordSearch();
-    }
-  };
-
-  const isCoordSearchActive = filters.coordinate_search !== null;
-
-  // Close panel on escape key
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
-  }, [onClose]);
-
-  // Prevent body scroll when panel is open
-  useEffect(() => {
-    if (isOpen) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = '';
-    }
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    document.body.style.overflow = 'hidden';
     return () => {
+      document.removeEventListener('keydown', onKey);
       document.body.style.overflow = '';
     };
-  }, [isOpen]);
+  }, [isOpen, onClose]);
 
-  // Filter options
-  const gratingOptions: FilterOption[] = GRATINGS.map(g => ({ value: g, label: g }));
+  const update = <K extends keyof FilterOptions>(key: K, value: FilterOptions[K]) => onFiltersChange({ ...filters, [key]: value });
 
-  const dqFlagOptions: FilterOption[] = DQ_FLAGS.map(f => ({
-    value: f.value,
-    label: f.label,
-    icon: f.icon,
-    color: f.color,
+  const programOptions: FilterOption[] = useMemo(() => [...availablePrograms]
+    .sort((a, b) => (a.jwst_pids?.length ? Math.max(...a.jwst_pids) : 0) - (b.jwst_pids?.length ? Math.max(...b.jwst_pids) : 0))
+    .map((p) => ({ value: p.slug, label: p.program_name || p.slug })), [availablePrograms]);
+  const fieldOptions: FilterOption[] = useMemo(() => availableFields.map((f) => ({ value: f, label: f.toUpperCase() })), [availableFields]);
+  const observationOptions: FilterOption[] = useMemo(() => availableObservations.map((o, idx) => ({
+    value: o, label: o, color: OBSERVATION_COLORS[idx % OBSERVATION_COLORS.length],
+  })), [availableObservations]);
+  const qualityOptions: FilterOption[] = REDSHIFT_QUALITY.map((q) => ({ value: q.value, label: q.label, icon: q.icon, color: q.color }));
+  const gratingOptions: FilterOption[] = GRATINGS.map((g) => ({ value: g, label: g }));
+  const dqFlagOptions: FilterOption[] = DQ_FLAGS.map((f) => ({ value: f.value, label: f.label, icon: f.icon, color: f.color }));
+  const lineOptions: FilterOption[] = LINE_FILTER_OPTIONS.map((o) => ({
+    value: o.value,
+    label: `${o.label}  ${o.wave < 10000 ? o.wave.toFixed(0) : (o.wave / 1e4).toFixed(2) + ' µm'}`,
+    short: o.label,
   }));
+  const bandOptions: FilterOption[] = availableBands.map((b) => ({ value: b, label: b.toUpperCase() }));
 
-  // Count panel-only active filters
-  const basicFilterCount = showBasicFilters
-    ? (filters.programs?.length ?? 0) +
-      (filters.observations?.length ?? 0) +
-      (filters.redshift_quality?.length ?? 0) +
-      (filters.redshift_min !== null ? 1 : 0) +
-      (filters.redshift_max !== null ? 1 : 0)
-    : 0;
+  const choices: ConditionChoices = useMemo(() => ({
+    programs: programOptions.map((o) => ({ value: o.value, label: o.label })),
+    observations: observationOptions.map((o) => ({ value: o.value, label: o.label })),
+    fields: availableFields.map((f) => ({ value: f, label: f.toUpperCase() })),
+    bands: availableBands.map((b) => ({ value: b, label: b.toUpperCase() })),
+    lists: listOptions.map((o) => ({ value: o.value, label: o.label })),
+  }), [programOptions, observationOptions, availableFields, availableBands, listOptions]);
 
-  const panelFilterCount =
-    basicFilterCount +
-    (filters.coordinate_search !== null ? 1 : 0) +
-    (filters.gratings?.length ?? 0) +
-    (filters.max_snr_min !== null ? 1 : 0) +
-    (filters.max_snr_max !== null ? 1 : 0) +
-    (filters.max_exposure_time_min !== null ? 1 : 0) +
-    (filters.max_exposure_time_max !== null ? 1 : 0) +
-    (filters.line ? 1 : 0) +
-    (filters.band ? 1 : 0) +
-    (filters.list_ids?.length ?? 0) +
-    (filters.dq_flags?.length ?? 0);
+  const activeCount =
+    filters.programs.length + filters.fields.length + filters.observations.length + filters.redshift_quality.length +
+    (filters.redshift_min !== null || filters.redshift_max !== null ? 1 : 0) + (filters.needs_review ? 1 : 0) +
+    advancedFilterCount(filters);
 
-  // Collapsible section state for basic filters (collapsed by default, auto-expand if filter active)
-  const [programsExpanded, setProgramsExpanded] = useState(false);
-  const [observationsExpanded, setObservationsExpanded] = useState(false);
-
-  // Program, observation, and quality options for basic filters
-  const programOptions: FilterOption[] = availablePrograms.map((p) => ({
-    value: p.slug,
-    label: p.program_name || p.slug,
-  }));
-
-  const observationOptions: FilterOption[] = availableObservations.map((o, idx) => ({
-    value: o,
-    label: o,
-    color: OBSERVATION_COLORS[idx % OBSERVATION_COLORS.length],
-  }));
-
-  const qualityOptions: FilterOption[] = REDSHIFT_QUALITY.map((q) => ({
-    value: q.value,
-    label: q.label,
-    icon: q.icon,
-    color: q.color,
-  }));
-
-  const clearPanelFilters = () => {
-    const basicClear = showBasicFilters
-      ? {
-          programs: [] as string[],
-          observations: [] as string[],
-          redshift_quality: [] as number[],
-          redshift_min: null,
-          redshift_max: null,
-        }
-      : {};
-
-    onFiltersChange({
-      ...filters,
-      ...basicClear,
-      coordinate_search: null,
-      gratings: [],
-      gratings_mode: 'any',
-      max_snr_min: null,
-      max_snr_max: null,
-      max_exposure_time_min: null,
-      max_exposure_time_max: null,
-      line: null,
-      line_snr_min: null,
-      line_snr_max: null,
-      line_include_stale: false,
-      band: null,
-      band_mag_min: null,
-      band_mag_max: null,
-      band_snr_min: null,
-      band_snr_max: null,
-      list_ids: [],
-      list_ids_mode: 'any',
-      dq_flags: [],
-      dq_flags_mode: 'any',
-    });
+  // "Copy as SQL": the same compiler the queries run, for the whole state
+  const [copied, setCopied] = useState<'sql' | null>(null);
+  const [sqlError, setSqlError] = useState<string | null>(null);
+  const nodes = filterNodes(filters, root);
+  const copySql = async () => {
+    const tree = treeOf(nodes);
+    if (!tree) return;
+    setSqlError(null);
+    try {
+      const res = await fetchJson<CatalogQuerySqlResponse>(`/api/catalog-query/sql?root=${root}&q=${encodeURIComponent(JSON.stringify(tree))}`);
+      await navigator.clipboard.writeText(`SELECT r.*\nFROM public.${root} r\nWHERE ${res.sql};`);
+      setCopied('sql');
+      setTimeout(() => setCopied(null), 1500);
+    } catch (e) {
+      setSqlError(e instanceof Error ? e.message : 'Could not compile');
+    }
   };
+
+  const clearAll = () => onFiltersChange({ ...DEFAULT_FILTERS, search: filters.search, search_scope: filters.search_scope });
+
+  if (!isOpen) return null;
 
   return (
-    <div
-      className={`
-        fixed top-0 left-0 right-0 bottom-0 z-[10000] transition-all duration-300 ease-out
-        ${isOpen ? 'visible' : 'invisible pointer-events-none'}
-      `}
-      style={{ position: 'fixed' }}
-    >
-      {/* Backdrop */}
+    <div className="fixed inset-0 z-[10000]">
+      <div className="absolute inset-0 bg-slate-900/60 dark:bg-black/70" onClick={onClose} />
       <div
-        className={`
-          absolute top-0 left-0 right-0 bottom-0 bg-slate-900/60 dark:bg-black/70
-          transition-opacity duration-300
-          ${isOpen ? 'opacity-100' : 'opacity-0'}
-        `}
-        onClick={onClose}
-      />
-
-      {/* Panel */}
-      <div
-        className={`
-          absolute right-0 top-0 bottom-0 w-[420px] max-w-[90vw]
-          bg-background border-l border-border
-          shadow-2xl flex flex-col
-          transition-transform duration-300 ease-out
-          ${isOpen ? 'translate-x-0 pointer-events-auto' : 'translate-x-full'}
-        `}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(920px,94vw)] max-h-[88vh] flex flex-col bg-background border border-border rounded-2xl shadow-2xl overflow-hidden"
       >
-        {/* Panel Header */}
-        <div className="flex items-center justify-between p-4 border-b border-border bg-surface-2">
-          <div>
-            <h2 className="text-lg font-semibold text-text-primary">
-              {showBasicFilters ? 'Filters' : 'Advanced Filters'}
-            </h2>
-            <p className="text-xs text-text-secondary mt-0.5">
-              {showBasicFilters ? 'Filter objects shown on the map' : 'Multi-value filters and spectra properties'}
-            </p>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-surface-2">
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-semibold text-text-primary">{title}</h2>
+            {activeCount > 0 && (
+              <span className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-primary text-on-primary">{activeCount}</span>
+            )}
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-lg text-text-secondary hover:bg-card-hover hover:text-text-primary transition-colors"
-          >
+          <button onClick={onClose} className="p-2 rounded-lg text-text-secondary hover:bg-card-hover hover:text-text-primary transition-colors" aria-label="Close">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Panel Content */}
-        <div className="flex-1 overflow-y-auto">
-          {/* Basic Filters (shown on map page) */}
-          {showBasicFilters && (
-            <>
-              {/* Programs — collapsible */}
-              <div className="border-b border-border">
-                <button
-                  onClick={() => setProgramsExpanded(!programsExpanded)}
-                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary hover:bg-card-hover transition-colors"
-                >
-                  <span>
-                    Programs
-                    {(filters.programs?.length ?? 0) > 0 && (
-                      <span className="ml-1.5 text-[10px] font-bold text-primary">({filters.programs.length})</span>
-                    )}
-                  </span>
-                  <ChevronDown className={`w-4 h-4 transition-transform ${programsExpanded ? 'rotate-180' : ''}`} />
-                </button>
-                {programsExpanded && (
-                  <div className="px-4 pb-4">
-                    <InlineMultiFilter
-                      label=""
-                      options={programOptions}
-                      selected={filters.programs ?? []}
-                      onChange={(s) => onFiltersChange({ ...filters, programs: s as string[] })}
-                      mode="any"
-                      onModeChange={() => {}}
-                      hideModeSelector
-                    />
-                  </div>
-                )}
-              </div>
-
-              {/* Observations — collapsible */}
-              <div className="border-b border-border">
-                <button
-                  onClick={() => setObservationsExpanded(!observationsExpanded)}
-                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold uppercase tracking-wider text-text-secondary hover:bg-card-hover transition-colors"
-                >
-                  <span className="flex flex-col items-start">
-                    <span>
-                      Observations
-                      {(filters.observations?.length ?? 0) > 0 && (
-                        <span className="ml-1.5 text-[10px] font-bold text-primary">({filters.observations.length})</span>
-                      )}
-                    </span>
-                    <span className="text-[10px] font-normal normal-case tracking-normal text-text-tertiary">Filters objects and map shutters</span>
-                  </span>
-                  <ChevronDown className={`w-4 h-4 transition-transform ${observationsExpanded ? 'rotate-180' : ''}`} />
-                </button>
-                {observationsExpanded && (
-                  <div className="px-4 pb-4">
-                    <InlineMultiFilter
-                      label=""
-                      options={observationOptions}
-                      selected={filters.observations ?? []}
-                      onChange={(s) => onFiltersChange({ ...filters, observations: s as string[] })}
-                      mode="any"
-                      onModeChange={() => {}}
-                      hideModeSelector
-                    />
-                  </div>
-                )}
-              </div>
-
-              {/* Redshift Quality */}
-              <div className="p-4 border-b border-border">
-                <InlineMultiFilter
-                  label="Redshift Quality"
-                  options={qualityOptions}
-                  selected={filters.redshift_quality ?? []}
-                  onChange={(s) => onFiltersChange({ ...filters, redshift_quality: s as number[] })}
-                  mode="any"
-                  onModeChange={() => {}}
-                  hideModeSelector
-                />
-              </div>
-
-              {/* Redshift Range */}
-              <div className="p-4 border-b border-border">
-                <InlineRange
-                  label="Redshift"
-                  description="Filter by redshift range"
-                  min={filters.redshift_min ?? null}
-                  max={filters.redshift_max ?? null}
-                  onChange={(min, max) => onFiltersChange({ ...filters, redshift_min: min, redshift_max: max })}
-                  minBound={0}
-                  maxBound={15}
-                  step={0.1}
-                  precision={2}
-                />
-              </div>
-            </>
-          )}
-
-          {/* Position Search Section - Inline Form (hidden on map view) */}
-          {!showBasicFilters && (
-            <div className="p-4 border-b border-border">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-text-tertiary">
-                  Position Search
-                </h3>
-                {isCoordSearchActive && (
-                  <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Active</span>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-3">
-                {/* Coordinate input */}
-                <div>
-                  <label className="block text-xs text-text-secondary mb-1">
-                    Coordinates (RA Dec)
-                  </label>
-                  <input
-                    type="text"
-                    value={coordInput}
-                    onChange={(e) => setCoordInput(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder="150.5 -2.3  or  10h02m30s -02d18m00s"
-                    className={`w-full px-3 py-2 text-sm border rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono
-                      ${validationError ? 'border-red-500 dark:border-red-600' : 'border-border-strong'}
-                    `}
-                  />
-                  {validationError && (
-                    <p className="text-xs text-red-500 dark:text-red-400 mt-1">{validationError}</p>
-                  )}
-                </div>
-
-                {/* Radius input with units */}
-                <div>
-                  <label className="block text-xs text-text-secondary mb-1">
-                    Search radius (max 1 degree)
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="number"
-                      value={radiusInput}
-                      onChange={(e) => setRadiusInput(e.target.value)}
-                      onKeyDown={handleKeyDown}
-                      placeholder="1"
-                      min="0"
-                      step="0.1"
-                      className="w-24 px-3 py-2 text-sm border border-border-strong rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-                    />
-                    <select
-                      value={unitInput}
-                      onChange={(e) => setUnitInput(e.target.value as 'degrees' | 'arcmin' | 'arcsec')}
-                      className="flex-1 px-3 py-2 text-sm border border-border-strong rounded-md bg-background text-text-primary focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-                    >
-                      <option value="arcsec">arcseconds</option>
-                      <option value="arcmin">arcminutes</option>
-                      <option value="degrees">degrees</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Action buttons */}
-                <div className="flex gap-2 pt-1">
-                  <button
-                    onClick={handleClearCoordSearch}
-                    className="flex-1 px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary border border-border dark:border-border-strong rounded-md hover:bg-card-hover transition-colors"
-                  >
-                    Clear
-                  </button>
-                  <button
-                    onClick={handleApplyCoordSearch}
-                    disabled={validationError !== null && coordInput.trim() !== ''}
-                    className="flex-1 px-3 py-1.5 text-sm bg-primary text-on-primary rounded-md hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Apply
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Gratings Section */}
-          <div className="p-4 border-b border-border">
-            <InlineMultiFilter
-              label="Gratings"
-              options={gratingOptions}
-              selected={filters.gratings ?? []}
-              onChange={(s) => onFiltersChange({ ...filters, gratings: s as string[] })}
-              mode={filters.gratings_mode}
-              onModeChange={(m) => onFiltersChange({ ...filters, gratings_mode: m })}
-              hideModeSelector={viewMode === 'spectra'}
-            />
-            {viewMode === 'spectra' && (filters.gratings?.length ?? 0) > 0 && (
-              <p className="mt-2 text-xs text-text-secondary dark:text-text-tertiary">
-                Showing only rows with these gratings
-              </p>
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto pb-24">
+          <Section label="Catalog">
+            <FilterChip label="Program" options={programOptions} selected={filters.programs}
+              onChange={(s) => update('programs', s as string[])} searchable
+              footerLink={{ label: 'Browse all programs', href: '/nirspec/metadata' }} />
+            <FilterChip label="Field" options={fieldOptions} selected={filters.fields}
+              onChange={(s) => update('fields', s as string[])} searchable />
+            <FilterChip label="Observation" options={observationOptions} selected={filters.observations}
+              onChange={(s) => update('observations', s as string[])} searchable />
+            {listOptions.length > 0 && (
+              <FilterChipWithMode label="Tags" options={listOptions} selected={filters.list_ids}
+                onChange={(s) => update('list_ids', s as number[])}
+                mode={filters.list_ids_mode} onModeChange={(m) => update('list_ids_mode', m)} />
             )}
-          </div>
+          </Section>
 
-          {/* S/N and Exposure Time Section */}
-          <div className="p-4 border-b border-border">
-            <div className="flex items-start gap-2 mb-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
-              <Info className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
-              <div className="text-xs text-amber-700 dark:text-amber-300">
-                {viewMode === 'spectra' ? (
-                  <>These filter by each spectrum&apos;s individual values.</>
-                ) : (
-                  <>These filter by the target&apos;s best value across all gratings.</>
-                )}
-              </div>
-            </div>
+          <Section label="Redshift">
+            <RangeFilterChip label="Redshift" min={filters.redshift_min} max={filters.redshift_max}
+              onChange={(min, max) => onFiltersChange({ ...filters, redshift_min: min, redshift_max: max })}
+              minBound={0} maxBound={15} step={0.1} precision={2} />
+            <FilterChip label="Quality" options={qualityOptions} selected={filters.redshift_quality}
+              onChange={(s) => update('redshift_quality', s as number[])}
+              shortcut={{ label: 'All inspected', values: INSPECTED_QUALITY_VALUES }}
+              extraCheckbox={{
+                label: 'Needs review only',
+                checked: filters.needs_review === true,
+                onChange: (checked) => update('needs_review', checked ? true : null),
+              }} />
+            {!hidePosition && (
+              <CoordinateSearchChip value={filters.coordinate_search} onChange={(v) => update('coordinate_search', v)} />
+            )}
+          </Section>
 
-            <InlineRange
-              label={viewMode === 'spectra' ? 'S/N' : 'Max S/N'}
-              description={viewMode === 'spectra' ? 'Signal-to-noise ratio' : 'Highest signal-to-noise ratio across all gratings'}
-              min={filters.max_snr_min ?? null}
-              max={filters.max_snr_max ?? null}
+          <Section label="Spectra">
+            <FilterChipWithMode label="Gratings" options={gratingOptions} selected={filters.gratings}
+              onChange={(s) => update('gratings', s as string[])}
+              mode={filters.gratings_mode} onModeChange={(m) => update('gratings_mode', m)}
+              showModeToggle={!isSpectra} />
+            <RangeFilterChip label={isSpectra ? 'S/N' : 'Max S/N'} min={filters.max_snr_min} max={filters.max_snr_max}
               onChange={(min, max) => onFiltersChange({ ...filters, max_snr_min: min, max_snr_max: max })}
-              minBound={0}
-              maxBound={100000}
-              step={1}
-              precision={0}
-            />
+              minBound={0} maxBound={100000} step={1} precision={0}
+              quickRanges={[{ label: '≥ 3', min: 3, max: null }, { label: '≥ 5', min: 5, max: null }, { label: '≥ 10', min: 10, max: null }, { label: '≥ 20', min: 20, max: null }]} />
+            <RangeFilterChip label={isSpectra ? 'Exp. time (s)' : 'Max exp. time (s)'} min={filters.max_exposure_time_min} max={filters.max_exposure_time_max}
+              onChange={(min, max) => onFiltersChange({ ...filters, max_exposure_time_min: min, max_exposure_time_max: max })}
+              minBound={0} maxBound={50000} step={100} precision={0}
+              quickRanges={[{ label: '≥ 1000', min: 1000, max: null }, { label: '≥ 5000', min: 5000, max: null }, { label: '≥ 10000', min: 10000, max: null }]} />
+            {isSpectra && (
+              <FilterChipWithMode label="Quality flags" options={dqFlagOptions} selected={filters.dq_flags}
+                onChange={(s) => update('dq_flags', s as number[])}
+                mode={filters.dq_flags_mode} onModeChange={(m) => update('dq_flags_mode', m)} />
+            )}
+          </Section>
 
-            <div className="mt-4">
-              <InlineRange
-                label={viewMode === 'spectra' ? 'Exp. Time' : 'Max Exp. Time'}
-                description={viewMode === 'spectra' ? 'Exposure time (seconds)' : 'Longest exposure time across all gratings (seconds)'}
-                min={filters.max_exposure_time_min ?? null}
-                max={filters.max_exposure_time_max ?? null}
-                onChange={(min, max) => onFiltersChange({ ...filters, max_exposure_time_min: min, max_exposure_time_max: max })}
-                minBound={0}
-                maxBound={50000}
-                step={100}
-                precision={0}
-              />
-            </div>
-          </div>
-
-          {/* Emission line Section */}
-          <div className="p-4 border-b border-border">
-            <div className="flex items-start gap-2 mb-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
-              <Info className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
-              <div className="text-xs text-amber-700 dark:text-amber-300">
-                Emission-line fluxes measured at the inspected redshift. Close doublets
-                (CIII], [OII], [SII], …) are offered as totals so a cut means the same
-                thing on every grating.{' '}
-                {viewMode === 'spectra'
-                  ? 'Filters by each spectrum\u2019s own measurement.'
-                  : 'Filters by the object\u2019s best measurement across its spectra.'}
-              </div>
-            </div>
-
-            <label className="block text-sm font-medium text-text-primary mb-1" htmlFor="line-filter-select">
-              Emission line
-            </label>
-            <p className="text-xs text-text-secondary mb-2">Keep only rows with a measurement of this line</p>
-            <select
-              id="line-filter-select"
-              value={filters.line ?? ''}
-              onChange={(e) => {
-                const line = e.target.value || null;
-                onFiltersChange({
-                  ...filters,
-                  line,
-                  // the bounds and the stale toggle mean nothing without a line
-                  ...(line ? {} : { line_snr_min: null, line_snr_max: null, line_include_stale: false }),
-                });
-              }}
-              className="w-full px-3 py-2 text-sm rounded-lg border border-border bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
-            >
-              <option value="">Any (no line filter)</option>
-              {(['Doublet totals', 'Lines'] as const).map((group) => (
-                <optgroup key={group} label={group}>
-                  {LINE_FILTER_OPTIONS.filter((o) => o.group === group).map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label} ({o.wave < 10000 ? o.wave.toFixed(0) : (o.wave / 1e4).toFixed(2) + ' µm'})
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-
+          <Section label="Measurements">
+            <FilterChip label="Line" options={lineOptions} selected={filters.line ? [filters.line] : []} multiSelect={false} searchable
+              onChange={(s) => {
+                const line = (s[0] as string | undefined) ?? null;
+                onFiltersChange({ ...filters, line, ...(line ? {} : { line_snr_min: null, line_snr_max: null, line_include_stale: false }) });
+              }} />
             {filters.line && (
               <>
-                <div className="mt-4">
-                  <InlineRange
-                    label="Line S/N"
-                    description="Signal-to-noise of the line flux (3 = the pipeline's detection threshold)"
-                    min={filters.line_snr_min ?? null}
-                    max={filters.line_snr_max ?? null}
-                    onChange={(min, max) => onFiltersChange({ ...filters, line_snr_min: min, line_snr_max: max })}
-                    minBound={-10}
-                    maxBound={10000}
-                    step={0.5}
-                    precision={1}
-                  />
-                </div>
-                <label className="mt-3 flex items-center gap-2 text-sm text-text-primary cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={filters.line_include_stale}
-                    onChange={(e) => onFiltersChange({ ...filters, line_include_stale: e.target.checked })}
-                    className="rounded border-border"
-                  />
-                  <span>
-                    Include stale fits
-                    <span className="block text-xs text-text-secondary">
-                      Fits made at an inspected redshift that has since changed
-                    </span>
-                  </span>
-                </label>
+                <RangeFilterChip label="Line S/N" min={filters.line_snr_min} max={filters.line_snr_max}
+                  onChange={(min, max) => onFiltersChange({ ...filters, line_snr_min: min, line_snr_max: max })}
+                  minBound={-10} maxBound={10000} step={0.5} precision={1}
+                  quickRanges={[{ label: '≥ 3', min: 3, max: null }, { label: '≥ 5', min: 5, max: null }, { label: '≥ 10', min: 10, max: null }, { label: '< 3', min: null, max: 3 }]} />
+                <TogglePill label="Include stale fits" checked={filters.line_include_stale} onChange={(v) => update('line_include_stale', v)} />
               </>
             )}
-          </div>
+            {bandOptions.length > 0 && (
+              <FilterChip label="Band" options={bandOptions} selected={filters.band ? [filters.band] : []} multiSelect={false} searchable
+                onChange={(s) => {
+                  const band = (s[0] as string | undefined) ?? null;
+                  onFiltersChange({ ...filters, band, ...(band ? {} : { band_mag_min: null, band_mag_max: null, band_snr_min: null, band_snr_max: null }) });
+                }} />
+            )}
+            {filters.band && (
+              <>
+                <RangeFilterChip label="Mag (AB)" min={filters.band_mag_min} max={filters.band_mag_max}
+                  onChange={(min, max) => onFiltersChange({ ...filters, band_mag_min: min, band_mag_max: max })}
+                  minBound={0} maxBound={40} step={0.5} precision={2}
+                  quickRanges={[{ label: '< 24', min: null, max: 24 }, { label: '< 25', min: null, max: 25 }, { label: '< 26', min: null, max: 26 }, { label: '< 27', min: null, max: 27 }]} />
+                <RangeFilterChip label="Band S/N" min={filters.band_snr_min} max={filters.band_snr_max}
+                  onChange={(min, max) => onFiltersChange({ ...filters, band_snr_min: min, band_snr_max: max })}
+                  minBound={-100} maxBound={100000} step={0.5} precision={1}
+                  quickRanges={[{ label: '≥ 3', min: 3, max: null }, { label: '≥ 5', min: 5, max: null }, { label: '≥ 10', min: 10, max: null }]} />
+              </>
+            )}
+          </Section>
 
-          {/* Photometry band Section */}
-          {availableBands.length > 0 && (
-            <div className="p-4 border-b border-border">
-              <div className="flex items-start gap-2 mb-4 p-3 rounded-lg bg-sky-50 dark:bg-sky-900/20 border border-sky-200 dark:border-sky-800">
-                <Info className="w-4 h-4 text-sky-600 dark:text-sky-400 mt-0.5 flex-shrink-0" />
-                <div className="text-xs text-sky-700 dark:text-sky-300">
-                  Broadband photometry from the field&apos;s cross-matched catalog, as AB
-                  magnitude and S/N rather than flux and error separately. Photometry
-                  belongs to the sky position, so{' '}
-                  {viewMode === 'spectra'
-                    ? 'every grating of one object carries the same values.'
-                    : 'each object carries one value per band.'}
-                </div>
-              </div>
-
-              <label className="block text-sm font-medium text-text-primary mb-1" htmlFor="band-filter-select">
-                Photometry band
-              </label>
-              <p className="text-xs text-text-secondary mb-2">Keep only rows with a measurement in this band</p>
-              <select
-                id="band-filter-select"
-                value={filters.band ?? ''}
-                onChange={(e) => {
-                  const band = e.target.value || null;
-                  onFiltersChange({
-                    ...filters,
-                    band,
-                    // the windows mean nothing without a band
-                    ...(band
-                      ? {}
-                      : { band_mag_min: null, band_mag_max: null, band_snr_min: null, band_snr_max: null }),
-                  });
-                }}
-                className="w-full px-3 py-2 text-sm rounded-lg border border-border bg-surface text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
-              >
-                <option value="">Any (no band filter)</option>
-                {availableBands.map((b) => (
-                  <option key={b} value={b}>
-                    {b.toUpperCase()}
-                  </option>
-                ))}
-              </select>
-
-              {filters.band && (
-                <>
-                  <div className="mt-4">
-                    <InlineRange
-                      label="Magnitude (AB)"
-                      description="Magnitudes run backwards: the minimum is the BRIGHTEST admitted, the maximum the faintest. A non-detection has no magnitude and is excluded by any bound here — cut on S/N instead."
-                      min={filters.band_mag_min ?? null}
-                      max={filters.band_mag_max ?? null}
-                      onChange={(min, max) => onFiltersChange({ ...filters, band_mag_min: min, band_mag_max: max })}
-                      minBound={0}
-                      maxBound={40}
-                      step={0.5}
-                      precision={2}
-                    />
-                  </div>
-                  <div className="mt-4">
-                    <InlineRange
-                      label="Band S/N"
-                      description="Signal-to-noise of the band flux. Signed, so a non-detection can be negative."
-                      min={filters.band_snr_min ?? null}
-                      max={filters.band_snr_max ?? null}
-                      onChange={(min, max) => onFiltersChange({ ...filters, band_snr_min: min, band_snr_max: max })}
-                      minBound={-100}
-                      maxBound={100000}
-                      step={0.5}
-                      precision={1}
-                    />
-                  </div>
-                </>
-              )}
+          <div className="px-5 py-3.5">
+            <div className="flex items-baseline justify-between mb-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Conditions</div>
+              <div className="text-xs text-text-tertiary">Combined with the filters above</div>
             </div>
-          )}
-
-          {/* Tags Section */}
-          {listOptions.length > 0 && (
-            <div className="p-4 border-b border-border">
-              <InlineMultiFilter
-                label="Tags"
-                options={listOptions}
-                selected={filters.list_ids ?? []}
-                onChange={(s) => onFiltersChange({ ...filters, list_ids: s as number[] })}
-                mode={filters.list_ids_mode}
-                onModeChange={(m) => onFiltersChange({ ...filters, list_ids_mode: m })}
-              />
-            </div>
-          )}
-
-          {/* Data Quality Section */}
-          <div className="p-4">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-text-secondary dark:text-text-tertiary mb-4">
-              Data Quality
-            </h3>
-            <InlineMultiFilter
-              label="Quality Flags"
-              options={dqFlagOptions}
-              selected={filters.dq_flags ?? []}
-              onChange={(s) => onFiltersChange({ ...filters, dq_flags: s as number[] })}
-              mode={filters.dq_flags_mode}
-              onModeChange={(m) => onFiltersChange({ ...filters, dq_flags_mode: m })}
-            />
+            <ConditionsEditor root={root} conditions={filters.conditions} onChange={(c) => update('conditions', c)} choices={choices} />
           </div>
         </div>
 
-        {/* Panel Footer */}
-        <div className="p-4 border-t border-border bg-card">
-          <div className="flex gap-3">
-            <button
-              onClick={clearPanelFilters}
-              disabled={panelFilterCount === 0}
-              className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg border border-border text-text-secondary hover:bg-card-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
-            >
-              Clear Filters{panelFilterCount > 0 ? ` (${panelFilterCount})` : ''}
-            </button>
-            <button
-              onClick={onClose}
-              className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-hover shadow-sm hover:shadow transition-all duration-200"
-            >
-              Done
-            </button>
-          </div>
+        {/* Footer */}
+        <div className="flex items-center gap-2 px-5 py-3 border-t border-border bg-card">
+          <button onClick={clearAll} disabled={activeCount === 0}
+            className="px-3 py-2 text-sm font-medium rounded-lg border border-border text-text-secondary hover:bg-card-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+            Clear all
+          </button>
+          <button onClick={copySql} disabled={nodes.length === 0}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border border-border text-text-secondary hover:bg-card-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            title="The SQL this query compiles to">
+            {copied === 'sql' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+            {copied === 'sql' ? 'Copied' : 'Copy as SQL'}
+          </button>
+          {sqlError && <span className="text-xs text-red-500 truncate">{sqlError}</span>}
+          <div className="flex-1" />
+          <button onClick={onClose}
+            className="px-5 py-2 text-sm font-medium rounded-lg bg-primary text-on-primary hover:bg-primary-hover shadow-sm hover:shadow transition-all">
+            Done
+          </button>
         </div>
       </div>
     </div>

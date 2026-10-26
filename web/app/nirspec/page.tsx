@@ -22,6 +22,8 @@ import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { useSpectraQuery } from '@/lib/hooks/useSpectraQuery';
 import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
 import { useDrTag } from '@/lib/dr/client';
+import { activeBandOf, activeLineOf, distanceReferenceOf, rootOf } from '@/lib/catalog-query/legacy';
+import { rerootNodes } from '@/lib/catalog-query/tree';
 import { DR_PARAM } from '@/lib/dr/tag';
 
 // Inner component that uses useSearchParams (must be wrapped in Suspense)
@@ -154,6 +156,12 @@ function SpectraPageContent() {
   // Handle view mode change
   const handleViewModeChange = (newMode: ViewMode) => {
     startTransition(() => {
+      // free conditions are written against the view's root table: re-read
+      // them against the new one (a predicate on the old root becomes an
+      // exists over it)
+      if (filters.conditions.length > 0 && rootOf(newMode) !== rootOf(viewMode)) {
+        setFilters({ ...filters, conditions: rerootNodes(filters.conditions, rootOf(viewMode), rootOf(newMode)) });
+      }
       setViewMode(newMode);
       setPage(1);
       // Reset sort column if invalid for the new mode
@@ -251,9 +259,9 @@ function SpectraPageContent() {
           onSortChange={handleSortChange}
           viewMode={viewMode}
           onViewModeChange={handleViewModeChange}
-          hasCoordinateSearch={filters.coordinate_search !== null}
-          activeLine={filters.line}
-          activeBand={filters.band}
+          hasCoordinateSearch={distanceReferenceOf(filters, rootOf(viewMode)) !== null}
+          activeLine={activeLineOf(filters, rootOf(viewMode))}
+          activeBand={activeBandOf(filters, rootOf(viewMode))}
           currentFilterParams={withTag(filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection, viewMode))}
           loading={loading}
           error={error}

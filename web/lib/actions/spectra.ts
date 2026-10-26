@@ -7,6 +7,8 @@ import { getRequestIdentity } from '@/lib/auth/identity';
 import { paginateRpc } from '@/lib/supabase/paginate';
 import type { SpectrumTarget, Spectrum, ObjectDetail, PinnedObjectMetadata } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
+import { activeBandOf, activeLineOf, distanceReferenceOf, hasTreeConditions, rootOf } from '@/lib/catalog-query/legacy';
+import { filterTree, matchFilterIds, treeRejection } from '@/lib/server/catalog-query';
 import type { FilterOptions } from './filter-params';
 export type { FilterOptions, FilterMode } from './filter-params';
 
@@ -96,14 +98,50 @@ export async function getSpectra(
 
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
-    const rpcName = viewMode === 'spectra'
-      ? 'get_filtered_spectra_paginated'
-      : 'get_filtered_objects_paginated';
+    // The tree path (phase 3b): while the state carries free conditions the
+    // whole of it is one predicate tree, and the wrapper RPC feeds the legacy
+    // list RPC the ids. The pills' line / band / position then only drive
+    // the Line S/N, Mag and distance columns and sorts.
+    const treePath = hasTreeConditions(filters);
+    const root = rootOf(viewMode);
+    const rpcName = treePath
+      ? (viewMode === 'spectra' ? 'catalog_query_spectra' : 'catalog_query_objects')
+      : (viewMode === 'spectra' ? 'get_filtered_spectra_paginated' : 'get_filtered_objects_paginated');
 
     // Build final params for the chosen RPC
     // Objects RPC has a smaller parameter set (no bitmask flags, thumbnails)
     let callParams: Record<string, unknown>;
-    if (viewMode === 'objects') {
+    if (treePath) {
+      const reference = distanceReferenceOf(filters, root);
+      callParams = {
+        p_tree: filterTree(filters, root),
+        p_program_slugs: rpcParams.p_program_slugs,
+        p_search: rpcParams.p_search,
+        p_comment_search: rpcParams.p_comment_search,
+        p_comment_search_scope: rpcParams.p_comment_search_scope,
+        p_comment_user_id: rpcParams.p_comment_user_id,
+        p_sort_column: sortColumn,
+        p_sort_direction: sortDirection,
+        p_page: page,
+        p_page_size: pageSize,
+        p_include_count: includeCount,
+        p_viewer_id: user.id,
+        p_line: activeLineOf(filters, root),
+        p_line_snr_min: rpcParams.p_line_snr_min ?? null,
+        p_line_snr_max: rpcParams.p_line_snr_max ?? null,
+        // a line named by a condition rather than the pill admits stale fits
+        // unless the condition says otherwise, so its column shows them too
+        p_line_include_stale: rpcParams.p_line !== undefined ? rpcParams.p_line_include_stale : true,
+        p_band: activeBandOf(filters, root),
+        p_band_mag_min: rpcParams.p_band_mag_min ?? null,
+        p_band_mag_max: rpcParams.p_band_mag_max ?? null,
+        p_band_snr_min: rpcParams.p_band_snr_min ?? null,
+        p_band_snr_max: rpcParams.p_band_snr_max ?? null,
+        p_coord_ra: reference?.ra ?? null,
+        p_coord_dec: reference?.dec ?? null,
+        ...(viewMode === 'spectra' ? { p_include_thumbnails: true } : {}),
+      };
+    } else if (viewMode === 'objects') {
       callParams = {
         p_program_slugs: rpcParams.p_program_slugs,
         p_filter_programs: rpcParams.p_filter_programs,
@@ -175,7 +213,7 @@ export async function getSpectra(
         pageSize,
         totalPages: 0,
         isComplete: true,
-        error: error.message,
+        error: treeRejection(error) ?? error.message,
         isAuthenticated: true,
       };
     }
@@ -574,6 +612,14 @@ export async function getInspectionQueueIds(
     } = baseRpcParams;
     /* eslint-enable @typescript-eslint/no-unused-vars */
 
+    // free conditions (phase 3b): the tree once, its ids to the legacy RPC
+    let objectIds: number[] | null = null;
+    if (hasTreeConditions(filters)) {
+      const matched = await matchFilterIds(supabase, 'objects', filters, accessibleProgramSlugs, user.id);
+      if (matched.error) return { ids: [], error: matched.error };
+      objectIds = matched.ids;
+    }
+
     const { data: allRows, error: rpcError } = await paginateRpc<{ object_id: string }>(
       supabase,
       'get_filtered_object_ids',
@@ -582,6 +628,7 @@ export async function getInspectionQueueIds(
         p_redshift_quality: qualityFilter,
         p_sort_column: sortColumn,
         p_sort_direction: sortDirection,
+        p_object_ids: objectIds,
       },
     );
 

@@ -7,6 +7,8 @@ import type { AdvancedFilterOptions, SearchScope, FilterMode } from '@/component
 import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-types';
 import { VALID_SORT_COLUMNS, isValidSortColumn, defaultSortColumn } from '@/lib/actions/spectra-types';
 import { isFilterableLine } from '@/lib/linelist';
+import { encodeConditions, parseConditions } from '@/lib/catalog-query/tree';
+import { liftConditions, rootOf } from '@/lib/catalog-query/legacy';
 
 // Valid search scope values
 const VALID_SEARCH_SCOPES: SearchScope[] = ['target_id', 'my_comments', 'all_comments'];
@@ -18,7 +20,10 @@ const VALID_FILTER_MODES: FilterMode[] = ['any', 'all', 'none'];
 export const DEFAULT_PAGE_SIZE = 50;
 
 /**
- * Parse filter options from URL search parameters
+ * Parse filter options from URL search parameters. `q` carries the predicate
+ * tree's free conditions (phase 3b), read against the view's root; nodes
+ * that are one of the pills' own shapes land in that pill when it is empty,
+ * so a tree pasted from the API docs shows up in the familiar controls.
  */
 export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilterOptions {
   const parseArray = (key: string): string[] => {
@@ -67,7 +72,7 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     ? (scopeParam as SearchScope)
     : 'target_id';
 
-  return {
+  const filters: AdvancedFilterOptions = {
     programs: parseArray('programs'),
     fields: parseArray('fields'),
     gratings: parseArray('gratings'),
@@ -105,7 +110,12 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
     gratings_mode: parseMode('gratings_mode'),
     dq_flags_mode: parseMode('dq_flags_mode'),
     list_ids_mode: parseMode('tags_mode'),
+    conditions: [],
   };
+  // an unreadable q is dropped whole rather than half-applied
+  const root = rootOf(parseViewModeFromURL(searchParams));
+  const conditions = parseConditions(searchParams.get('q'), root);
+  return conditions ? liftConditions(conditions, filters, root) : filters;
 }
 
 /**
@@ -228,6 +238,10 @@ export function filtersToURLParams(
   }
   if (filters.list_ids.length > 0) {
     params.set('tags', filters.list_ids.join(','));
+  }
+  const q = encodeConditions(filters.conditions ?? []);
+  if (q) {
+    params.set('q', q);
   }
   if (filters.dq_flags.length > 0) {
     params.set('dq_flags', filters.dq_flags.join(','));

@@ -7,6 +7,8 @@ import { paginateRpc, paginateRpcKeyset, paginateQuery } from '@/lib/supabase/pa
 import type { WCSParams } from '@/lib/utils/wcs';
 import type { FilterOptions } from './filter-params';
 import { buildFilterParams } from './filter-params';
+import { hasTreeConditions } from '@/lib/catalog-query/legacy';
+import { matchFilterIds } from '@/lib/server/catalog-query';
 
 // ============================================
 // Types
@@ -316,8 +318,16 @@ export async function getFilteredObjectIds(
       p_comment_user_id: baseParams.p_comment_user_id,
     };
 
+    // free conditions (phase 3b): the tree once, its ids to the legacy RPC
+    let objectIds: number[] | null = null;
+    if (hasTreeConditions(filters)) {
+      const matched = await matchFilterIds(supabase, 'objects', filters, accessibleProgramSlugs, user.id);
+      if (matched.error) return { objectIds: [], error: matched.error };
+      objectIds = matched.ids;
+    }
+
     const { data: allRows, error: rpcError } = await paginateRpc<{ object_id: string }>(
-      supabase, 'get_filtered_object_ids', rpcParams,
+      supabase, 'get_filtered_object_ids', { ...rpcParams, p_object_ids: objectIds },
     );
 
     if (rpcError) {

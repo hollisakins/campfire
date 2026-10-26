@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation';
 import { X, Search, ChevronDown, SlidersHorizontal, Map } from 'lucide-react';
 import { FilterChip, FilterOption } from '@/components/ui/FilterChip';
 import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
-import { AdvancedFiltersPanel } from './AdvancedFiltersPanel';
+import { AdvancedFiltersPanel, advancedFilterCount } from './AdvancedFiltersPanel';
+import { rerootNodes } from '@/lib/catalog-query/tree';
 import { REDSHIFT_QUALITY } from '@/lib/flags';
 import { filtersToURLParams } from '@/lib/utils/url-params';
 import type { Program } from '@/lib/types';
@@ -153,18 +154,8 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     color: q.color,
   }));
 
-  // Count panel-only active filters
-  const panelFilterCount =
-    (filters.coordinate_search !== null ? 1 : 0) +
-    (filters.gratings?.length ?? 0) +
-    (filters.max_snr_min !== null ? 1 : 0) +
-    (filters.max_snr_max !== null ? 1 : 0) +
-    (filters.max_exposure_time_min !== null ? 1 : 0) +
-    (filters.max_exposure_time_max !== null ? 1 : 0) +
-    (filters.line ? 1 : 0) +
-    (filters.band ? 1 : 0) +
-    (filters.list_ids?.length ?? 0) +
-    (filters.dq_flags?.length ?? 0);
+  // Count the filters only the Advanced modal shows (its badge)
+  const panelFilterCount = advancedFilterCount(filters);
 
   // Check if any filters are active (including panel filters)
   const hasActiveFilters =
@@ -207,6 +198,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
       list_ids_mode: 'any',
       dq_flags: [],
       dq_flags_mode: 'any',
+      conditions: [],
     });
   };
 
@@ -361,7 +353,11 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         {/* Show on Map button */}
         <button
           onClick={() => {
-            const filterParams = filtersToURLParams(filters);
+            // the map queries objects: conditions written against spectra move over
+            const mapFilters = viewMode === 'spectra'
+              ? { ...filters, conditions: rerootNodes(filters.conditions, 'spectra', 'objects') }
+              : filters;
+            const filterParams = filtersToURLParams(mapFilters);
             // If exactly one field is selected, also set it as the map field param
             if (filters.fields.length === 1) {
               filterParams.set('field', filters.fields[0]);
@@ -397,6 +393,9 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         onClose={() => setPanelOpen(false)}
         filters={filters}
         onFiltersChange={onFiltersChange}
+        availablePrograms={availablePrograms}
+        availableFields={availableFields}
+        availableObservations={availableObservations}
         availableBands={availableBands}
         viewMode={viewMode}
       />

@@ -182,9 +182,13 @@ export const FilterChip: React.FC<FilterChipProps> = ({
 
   const activeCount = selected.length + (extraCheckbox?.checked ? 1 : 0);
   const isActive = activeCount > 0;
-  const displayText = isActive
-    ? `${label} (${activeCount})`
-    : label;
+  // a single-select chip names its pick; a multi-select counts them
+  const soleOption = !multiSelect && selected.length === 1 ? options.find((o) => o.value === selected[0]) : undefined;
+  const displayText = soleOption
+    ? `${label}: ${soleOption.short ?? soleOption.label}`
+    : isActive
+      ? `${label} (${activeCount})`
+      : label;
 
   return (
     <div
