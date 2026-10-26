@@ -55,8 +55,11 @@ DROP FUNCTION
   boolean, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[]);
 
 CREATE OR REPLACE FUNCTION public.catalog_match_ids (
-  p_root text,
-  p_tree jsonb
+  p_root                text,
+  p_tree                jsonb,
+  p_program_slugs       text[]  DEFAULT NULL::text[],
+  p_include_unpublished boolean DEFAULT false,
+  p_viewer_id           uuid    DEFAULT NULL::uuid
 )
   RETURNS integer[]
   LANGUAGE plpgsql
@@ -68,14 +71,14 @@ DECLARE
   v_pred text;
   v_ids integer[];
 BEGIN
-  v_pred := public.catalog_tree_sql(p_tree, p_root);
+  v_pred := public.catalog_tree_sql(p_tree, p_root, p_program_slugs, p_include_unpublished, p_viewer_id);
   v_from := CASE WHEN public.dr_browse_tag() IS NULL THEN 'public.' || p_root ELSE 'public.cat_' || p_root END;
   EXECUTE format('SELECT COALESCE(array_agg(r.id), ''{}''::integer[]) FROM %s r WHERE %s', v_from, v_pred) INTO v_ids;
   RETURN v_ids;
 END;
 $function$;
 
-REVOKE ALL ON FUNCTION "public"."catalog_match_ids"(text, jsonb) FROM PUBLIC, "anon";
+REVOKE ALL ON FUNCTION "public"."catalog_match_ids"(text, jsonb, text[], boolean, uuid) FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.catalog_query_array_literal (
   p_v         jsonb,
@@ -202,7 +205,8 @@ CREATE OR REPLACE FUNCTION public.catalog_query_node_sql (
   p_alias   text,
   p_catalog text,
   p_depth   integer,
-  p_idx     integer
+  p_idx     integer,
+  p_scope   jsonb   DEFAULT NULL::jsonb
 )
   RETURNS text
   LANGUAGE plpgsql
@@ -248,7 +252,7 @@ BEGIN
     END IF;
     FOR v_val IN SELECT jsonb_array_elements(child) LOOP
       i := i + 1;
-      parts := array_append(parts, public.catalog_query_node_sql(v_val, p_table, p_alias, p_catalog, p_depth + 1, i));
+      parts := array_append(parts, public.catalog_query_node_sql(v_val, p_table, p_alias, p_catalog, p_depth + 1, i, p_scope));
     END LOOP;
     RETURN '(' || array_to_string(parts, CASE WHEN p_node ? 'and' THEN ' AND ' ELSE ' OR ' END) || ')';
   END IF;
@@ -297,12 +301,12 @@ BEGIN
         RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: "where" is an array of nodes';
       END IF;
       IF jsonb_array_length(child) > 0 THEN
-        v_where := ' AND ' || public.catalog_query_node_sql(jsonb_build_object('and', child), v_child, v_alias, p_catalog, p_depth + 1, 1);
+        v_where := ' AND ' || public.catalog_query_node_sql(jsonb_build_object('and', child), v_child, v_alias, p_catalog, p_depth + 1, 1, p_scope);
       END IF;
     END IF;
-    RETURN format('%sEXISTS (SELECT 1 FROM %s%s)',
+    RETURN format('%sEXISTS (SELECT 1 FROM %s%s%s)',
                   CASE WHEN COALESCE((p_node ->> 'not')::boolean, false) THEN 'NOT ' ELSE '' END,
-                  v_tmpl, v_where);
+                  v_tmpl, public.catalog_query_scope_sql(v_child, v_alias, p_catalog, p_scope), v_where);
   END IF;
 
   -- predicate -----------------------------------------------------------
@@ -391,7 +395,7 @@ BEGIN
 END;
 $function$;
 
-REVOKE ALL ON FUNCTION "public"."catalog_query_node_sql"(jsonb, text, text, text, integer, integer) FROM PUBLIC, "anon";
+REVOKE ALL ON FUNCTION "public"."catalog_query_node_sql"(jsonb, text, text, text, integer, integer, jsonb) FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.catalog_query_objects (
   p_tree                jsonb,
@@ -434,7 +438,7 @@ CREATE OR REPLACE FUNCTION public.catalog_query_objects (
 DECLARE
   v_ids integer[];
 BEGIN
-  v_ids := public.catalog_match_ids('objects', p_tree);
+  v_ids := public.catalog_match_ids('objects', p_tree, p_program_slugs, p_include_unpublished, p_viewer_id);
   IF cardinality(v_ids) = 0 THEN
     RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size, false, NULL::TEXT, NULL::DOUBLE PRECISION, NULL::TEXT[];
     RETURN;
@@ -461,7 +465,8 @@ BEGIN
     p_after_sort_num := p_after_sort_num,
     p_after_tiebreak := p_after_tiebreak,
     p_viewer_id := p_viewer_id,
-    p_object_ids := v_ids);
+    p_object_ids := v_ids,
+    p_measurements_display_only := true);
 END;
 $function$;
 
@@ -470,6 +475,50 @@ REVOKE ALL
     "public"."catalog_query_objects"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double
     precision, boolean, text, double precision, double precision, double precision, double precision)
   FROM PUBLIC, "anon";
+
+CREATE OR REPLACE FUNCTION public.catalog_query_scope_sql (
+  p_table   text,
+  p_alias   text,
+  p_catalog text,
+  p_scope   jsonb
+)
+  RETURNS text
+  LANGUAGE plpgsql
+  IMMUTABLE
+  AS $function$
+DECLARE
+  v_slugs text;
+  v_unpub text;
+  v_viewer text;
+  v_t text := CASE WHEN p_catalog = 'dr' THEN 'public.cat_' ELSE 'public.' END;
+  v_spec text;
+  v_obj text;
+BEGIN
+  IF p_scope IS NULL THEN RETURN ''; END IF;
+  v_slugs := public.catalog_query_array_literal(COALESCE(p_scope -> 'slugs', '[]'::jsonb) || CASE WHEN jsonb_array_length(COALESCE(p_scope -> 'slugs', '[]'::jsonb)) = 0 THEN '[""]'::jsonb ELSE '[]'::jsonb END, 'text');
+  v_unpub := CASE WHEN COALESCE((p_scope ->> 'unpub')::boolean, false) THEN 'true' ELSE 'false' END;
+  v_viewer := CASE WHEN p_scope ->> 'viewer' IS NULL THEN 'NULL::uuid' ELSE format('%L::uuid', (p_scope ->> 'viewer')::uuid) END;
+  -- the spectra and objects policies, as the legacy RPCs restate them
+  v_spec := format('(%%1$s.program_slug = ANY(%s) AND (%%1$s.deploy_status = ''published'' OR %s))', v_slugs, v_unpub);
+  v_obj := format('(%%1$s.programs && %s AND %%1$s.is_active AND (%%1$s.has_published_spectrum OR %s))', v_slugs, v_unpub);
+  CASE p_table
+    WHEN 'objects' THEN RETURN ' AND ' || format(v_obj, p_alias);
+    WHEN 'targets' THEN RETURN format(' AND (%1$I.program_slug = ANY(%2$s) AND (%1$I.has_published_spectrum OR %3$s))', p_alias, v_slugs, v_unpub);
+    WHEN 'spectra' THEN RETURN ' AND ' || format(v_spec, p_alias);
+    WHEN 'lines', 'line_fits' THEN
+      RETURN format(' AND EXISTS (SELECT 1 FROM %sspectra __s WHERE __s.id = %I.spectrum_id AND %s)', v_t, p_alias, format(v_spec, '__s'));
+    WHEN 'photometry', 'catalog_matches' THEN
+      RETURN format(' AND EXISTS (SELECT 1 FROM %sobjects __o WHERE __o.id = %I.object_id AND %s)', v_t, p_alias, format(v_obj, '__o'));
+    WHEN 'object_list_members' THEN
+      -- viewable_list_ids() for an explicit viewer: own, public, or shared with
+      RETURN format(' AND EXISTS (SELECT 1 FROM public.object_lists __l WHERE __l.id = %1$I.list_id AND (__l.visibility IN (''public_read'', ''public_edit'') OR __l.created_by = %2$s OR __l.id IN (SELECT __sh.list_id FROM public.object_list_shares __sh WHERE __sh.user_id = %2$s)))', p_alias, v_viewer);
+    ELSE
+      RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: no access scope for %s', p_table);
+  END CASE;
+END;
+$function$;
+
+REVOKE ALL ON FUNCTION "public"."catalog_query_scope_sql"(text, text, text, jsonb) FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.catalog_query_spectra (
   p_tree                jsonb,
@@ -493,7 +542,8 @@ CREATE OR REPLACE FUNCTION public.catalog_query_spectra (
   p_band_mag_min        double precision DEFAULT NULL::double precision,
   p_band_mag_max        double precision DEFAULT NULL::double precision,
   p_band_snr_min        double precision DEFAULT NULL::double precision,
-  p_band_snr_max        double precision DEFAULT NULL::double precision
+  p_band_snr_max        double precision DEFAULT NULL::double precision,
+  p_viewer_id           uuid             DEFAULT NULL::uuid
 )
   RETURNS TABLE (
     targets        jsonb,
@@ -512,7 +562,7 @@ CREATE OR REPLACE FUNCTION public.catalog_query_spectra (
 DECLARE
   v_ids integer[];
 BEGIN
-  v_ids := public.catalog_match_ids('spectra', p_tree);
+  v_ids := public.catalog_match_ids('spectra', p_tree, p_program_slugs, p_include_unpublished, p_viewer_id);
   IF cardinality(v_ids) = 0 THEN
     RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size, false, NULL::TEXT, NULL::DOUBLE PRECISION, NULL::TEXT[];
     RETURN;
@@ -539,14 +589,15 @@ BEGIN
     p_after_sort_text := p_after_sort_text,
     p_after_sort_num := p_after_sort_num,
     p_after_tiebreak := p_after_tiebreak,
-    p_spectrum_ids := v_ids);
+    p_spectrum_ids := v_ids,
+    p_measurements_display_only := true);
 END;
 $function$;
 
 REVOKE ALL
   ON FUNCTION
     "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision)
+    precision, boolean, text, double precision, double precision, double precision, double precision, uuid)
   FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.catalog_query_whitelist()
@@ -613,13 +664,20 @@ $function$;
 REVOKE ALL ON FUNCTION "public"."catalog_query_whitelist"() FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.catalog_tree_sql (
-  p_tree jsonb,
-  p_root text  DEFAULT 'objects'::text
+  p_tree                jsonb,
+  p_root                text    DEFAULT 'objects'::text,
+  p_program_slugs       text[]  DEFAULT NULL::text[],
+  p_include_unpublished boolean DEFAULT false,
+  p_viewer_id           uuid    DEFAULT NULL::uuid
 )
   RETURNS text
   LANGUAGE plpgsql
   STABLE
   AS $function$
+DECLARE
+  v_scope jsonb := CASE WHEN p_program_slugs IS NULL THEN NULL
+                        ELSE jsonb_build_object('slugs', to_jsonb(p_program_slugs), 'unpub', COALESCE(p_include_unpublished, false), 'viewer', p_viewer_id) END;
+  v_catalog text := CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END;
 BEGIN
   IF p_root NOT IN ('objects', 'spectra', 'targets') THEN
     RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: root must be objects, spectra or targets, not %s', p_root);
@@ -635,61 +693,63 @@ BEGIN
   IF (p_tree ? 'and' OR p_tree ? 'or') AND (p_tree ->> 'v') IS NOT NULL AND (p_tree ->> 'v') <> '1' THEN
     RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: unknown tree version %s', p_tree ->> 'v');
   END IF;
-  RETURN public.catalog_query_node_sql(CASE WHEN p_tree ? 'and' OR p_tree ? 'or' THEN p_tree - 'v' ELSE p_tree END, p_root, 'r',
-                                       CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END, 0, 1);
+  -- the root's own scope, then the tree (each exists child carries its own)
+  RETURN public.catalog_query_node_sql(CASE WHEN p_tree ? 'and' OR p_tree ? 'or' THEN p_tree - 'v' ELSE p_tree END, p_root, 'r', v_catalog, 0, 1, v_scope)
+         || public.catalog_query_scope_sql(p_root, 'r', v_catalog, v_scope);
 END;
 $function$;
 
-REVOKE ALL ON FUNCTION "public"."catalog_tree_sql"(jsonb, text) FROM PUBLIC, "anon";
+REVOKE ALL ON FUNCTION "public"."catalog_tree_sql"(jsonb, text, text[], boolean, uuid) FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated (
-  p_program_slugs         text[],
-  p_filter_programs       text[]           DEFAULT NULL::text[],
-  p_fields                text[]           DEFAULT NULL::text[],
-  p_gratings              text[]           DEFAULT NULL::text[],
-  p_gratings_mode         text             DEFAULT 'any'::text,
-  p_observations          text[]           DEFAULT NULL::text[],
-  p_redshift_quality      integer[]        DEFAULT NULL::integer[],
-  p_redshift_min          double precision DEFAULT NULL::double precision,
-  p_redshift_max          double precision DEFAULT NULL::double precision,
-  p_max_snr_min           double precision DEFAULT NULL::double precision,
-  p_max_snr_max           double precision DEFAULT NULL::double precision,
-  p_max_exposure_time_min double precision DEFAULT NULL::double precision,
-  p_max_exposure_time_max double precision DEFAULT NULL::double precision,
-  p_search                text             DEFAULT NULL::text,
-  p_inspected_only        boolean          DEFAULT NULL::boolean,
-  p_needs_review          boolean          DEFAULT NULL::boolean,
-  p_list_ids              integer[]        DEFAULT NULL::integer[],
-  p_list_ids_mode         text             DEFAULT 'any'::text,
-  p_coord_ra              double precision DEFAULT NULL::double precision,
-  p_coord_dec             double precision DEFAULT NULL::double precision,
-  p_radius_degrees        double precision DEFAULT NULL::double precision,
-  p_has_photometry        boolean          DEFAULT NULL::boolean,
-  p_photo_z_min           double precision DEFAULT NULL::double precision,
-  p_photo_z_max           double precision DEFAULT NULL::double precision,
-  p_comment_search        text             DEFAULT NULL::text,
-  p_comment_search_scope  text             DEFAULT NULL::text,
-  p_comment_user_id       uuid             DEFAULT NULL::uuid,
-  p_sort_column           text             DEFAULT 'object_id'::text,
-  p_sort_direction        text             DEFAULT 'asc'::text,
-  p_page                  integer          DEFAULT 1,
-  p_page_size             integer          DEFAULT 50,
-  p_include_unpublished   boolean          DEFAULT false,
-  p_line                  text             DEFAULT NULL::text,
-  p_line_snr_min          double precision DEFAULT NULL::double precision,
-  p_line_snr_max          double precision DEFAULT NULL::double precision,
-  p_line_include_stale    boolean          DEFAULT false,
-  p_band                  text             DEFAULT NULL::text,
-  p_band_mag_min          double precision DEFAULT NULL::double precision,
-  p_band_mag_max          double precision DEFAULT NULL::double precision,
-  p_band_snr_min          double precision DEFAULT NULL::double precision,
-  p_band_snr_max          double precision DEFAULT NULL::double precision,
-  p_include_count         boolean          DEFAULT true,
-  p_after_sort_text       text             DEFAULT NULL::text,
-  p_after_sort_num        double precision DEFAULT NULL::double precision,
-  p_after_tiebreak        text[]           DEFAULT NULL::text[],
-  p_viewer_id             uuid             DEFAULT NULL::uuid,
-  p_object_ids            integer[]        DEFAULT NULL::integer[]
+  p_program_slugs             text[],
+  p_filter_programs           text[]           DEFAULT NULL::text[],
+  p_fields                    text[]           DEFAULT NULL::text[],
+  p_gratings                  text[]           DEFAULT NULL::text[],
+  p_gratings_mode             text             DEFAULT 'any'::text,
+  p_observations              text[]           DEFAULT NULL::text[],
+  p_redshift_quality          integer[]        DEFAULT NULL::integer[],
+  p_redshift_min              double precision DEFAULT NULL::double precision,
+  p_redshift_max              double precision DEFAULT NULL::double precision,
+  p_max_snr_min               double precision DEFAULT NULL::double precision,
+  p_max_snr_max               double precision DEFAULT NULL::double precision,
+  p_max_exposure_time_min     double precision DEFAULT NULL::double precision,
+  p_max_exposure_time_max     double precision DEFAULT NULL::double precision,
+  p_search                    text             DEFAULT NULL::text,
+  p_inspected_only            boolean          DEFAULT NULL::boolean,
+  p_needs_review              boolean          DEFAULT NULL::boolean,
+  p_list_ids                  integer[]        DEFAULT NULL::integer[],
+  p_list_ids_mode             text             DEFAULT 'any'::text,
+  p_coord_ra                  double precision DEFAULT NULL::double precision,
+  p_coord_dec                 double precision DEFAULT NULL::double precision,
+  p_radius_degrees            double precision DEFAULT NULL::double precision,
+  p_has_photometry            boolean          DEFAULT NULL::boolean,
+  p_photo_z_min               double precision DEFAULT NULL::double precision,
+  p_photo_z_max               double precision DEFAULT NULL::double precision,
+  p_comment_search            text             DEFAULT NULL::text,
+  p_comment_search_scope      text             DEFAULT NULL::text,
+  p_comment_user_id           uuid             DEFAULT NULL::uuid,
+  p_sort_column               text             DEFAULT 'object_id'::text,
+  p_sort_direction            text             DEFAULT 'asc'::text,
+  p_page                      integer          DEFAULT 1,
+  p_page_size                 integer          DEFAULT 50,
+  p_include_unpublished       boolean          DEFAULT false,
+  p_line                      text             DEFAULT NULL::text,
+  p_line_snr_min              double precision DEFAULT NULL::double precision,
+  p_line_snr_max              double precision DEFAULT NULL::double precision,
+  p_line_include_stale        boolean          DEFAULT false,
+  p_band                      text             DEFAULT NULL::text,
+  p_band_mag_min              double precision DEFAULT NULL::double precision,
+  p_band_mag_max              double precision DEFAULT NULL::double precision,
+  p_band_snr_min              double precision DEFAULT NULL::double precision,
+  p_band_snr_max              double precision DEFAULT NULL::double precision,
+  p_include_count             boolean          DEFAULT true,
+  p_after_sort_text           text             DEFAULT NULL::text,
+  p_after_sort_num            double precision DEFAULT NULL::double precision,
+  p_after_tiebreak            text[]           DEFAULT NULL::text[],
+  p_viewer_id                 uuid             DEFAULT NULL::uuid,
+  p_object_ids                integer[]        DEFAULT NULL::integer[],
+  p_measurements_display_only boolean          DEFAULT false
 )
   RETURNS TABLE (
     targets        jsonb,
@@ -866,8 +926,8 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-      AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
-      AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
+      AND (p_line IS NULL OR p_measurements_display_only OR o.id = ANY(v_line_object_ids))
+      AND (p_band IS NULL OR p_measurements_display_only OR o.id = ANY(v_band_object_ids))
       AND (p_object_ids IS NULL OR o.id = ANY(p_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.cat_objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
@@ -1037,8 +1097,8 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-      AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
-      AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
+      AND (p_line IS NULL OR p_measurements_display_only OR o.id = ANY(v_line_object_ids))
+      AND (p_band IS NULL OR p_measurements_display_only OR o.id = ANY(v_band_object_ids))
       AND (p_object_ids IS NULL OR o.id = ANY(p_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.cat_objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
@@ -1310,58 +1370,59 @@ REVOKE ALL
     boolean,
     text,
     double precision,
-    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[])
+    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], boolean)
   FROM PUBLIC, "anon";
 
 CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated (
-  p_program_slugs         text[],
-  p_filter_programs       text[]           DEFAULT NULL::text[],
-  p_fields                text[]           DEFAULT NULL::text[],
-  p_gratings              text[]           DEFAULT NULL::text[],
-  p_gratings_mode         text             DEFAULT 'any'::text,
-  p_observations          text[]           DEFAULT NULL::text[],
-  p_redshift_quality      integer[]        DEFAULT NULL::integer[],
-  p_redshift_min          double precision DEFAULT NULL::double precision,
-  p_redshift_max          double precision DEFAULT NULL::double precision,
-  p_max_snr_min           double precision DEFAULT NULL::double precision,
-  p_max_snr_max           double precision DEFAULT NULL::double precision,
-  p_max_exposure_time_min double precision DEFAULT NULL::double precision,
-  p_max_exposure_time_max double precision DEFAULT NULL::double precision,
-  p_dq_flags_include_any  integer          DEFAULT NULL::integer,
-  p_dq_flags_include_all  integer          DEFAULT NULL::integer,
-  p_dq_flags_exclude      integer          DEFAULT NULL::integer,
-  p_list_ids              integer[]        DEFAULT NULL::integer[],
-  p_list_ids_mode         text             DEFAULT 'any'::text,
-  p_search                text             DEFAULT NULL::text,
-  p_inspected_only        boolean          DEFAULT NULL::boolean,
-  p_needs_review          boolean          DEFAULT NULL::boolean,
-  p_has_photometry        boolean          DEFAULT NULL::boolean,
-  p_comment_search        text             DEFAULT NULL::text,
-  p_comment_search_scope  text             DEFAULT NULL::text,
-  p_comment_user_id       uuid             DEFAULT NULL::uuid,
-  p_coord_ra              double precision DEFAULT NULL::double precision,
-  p_coord_dec             double precision DEFAULT NULL::double precision,
-  p_radius_degrees        double precision DEFAULT NULL::double precision,
-  p_sort_column           text             DEFAULT 'target_id'::text,
-  p_sort_direction        text             DEFAULT 'asc'::text,
-  p_page                  integer          DEFAULT 1,
-  p_page_size             integer          DEFAULT 50,
-  p_include_thumbnails    boolean          DEFAULT false,
-  p_include_unpublished   boolean          DEFAULT false,
-  p_line                  text             DEFAULT NULL::text,
-  p_line_snr_min          double precision DEFAULT NULL::double precision,
-  p_line_snr_max          double precision DEFAULT NULL::double precision,
-  p_line_include_stale    boolean          DEFAULT false,
-  p_band                  text             DEFAULT NULL::text,
-  p_band_mag_min          double precision DEFAULT NULL::double precision,
-  p_band_mag_max          double precision DEFAULT NULL::double precision,
-  p_band_snr_min          double precision DEFAULT NULL::double precision,
-  p_band_snr_max          double precision DEFAULT NULL::double precision,
-  p_include_count         boolean          DEFAULT true,
-  p_after_sort_text       text             DEFAULT NULL::text,
-  p_after_sort_num        double precision DEFAULT NULL::double precision,
-  p_after_tiebreak        text[]           DEFAULT NULL::text[],
-  p_spectrum_ids          integer[]        DEFAULT NULL::integer[]
+  p_program_slugs             text[],
+  p_filter_programs           text[]           DEFAULT NULL::text[],
+  p_fields                    text[]           DEFAULT NULL::text[],
+  p_gratings                  text[]           DEFAULT NULL::text[],
+  p_gratings_mode             text             DEFAULT 'any'::text,
+  p_observations              text[]           DEFAULT NULL::text[],
+  p_redshift_quality          integer[]        DEFAULT NULL::integer[],
+  p_redshift_min              double precision DEFAULT NULL::double precision,
+  p_redshift_max              double precision DEFAULT NULL::double precision,
+  p_max_snr_min               double precision DEFAULT NULL::double precision,
+  p_max_snr_max               double precision DEFAULT NULL::double precision,
+  p_max_exposure_time_min     double precision DEFAULT NULL::double precision,
+  p_max_exposure_time_max     double precision DEFAULT NULL::double precision,
+  p_dq_flags_include_any      integer          DEFAULT NULL::integer,
+  p_dq_flags_include_all      integer          DEFAULT NULL::integer,
+  p_dq_flags_exclude          integer          DEFAULT NULL::integer,
+  p_list_ids                  integer[]        DEFAULT NULL::integer[],
+  p_list_ids_mode             text             DEFAULT 'any'::text,
+  p_search                    text             DEFAULT NULL::text,
+  p_inspected_only            boolean          DEFAULT NULL::boolean,
+  p_needs_review              boolean          DEFAULT NULL::boolean,
+  p_has_photometry            boolean          DEFAULT NULL::boolean,
+  p_comment_search            text             DEFAULT NULL::text,
+  p_comment_search_scope      text             DEFAULT NULL::text,
+  p_comment_user_id           uuid             DEFAULT NULL::uuid,
+  p_coord_ra                  double precision DEFAULT NULL::double precision,
+  p_coord_dec                 double precision DEFAULT NULL::double precision,
+  p_radius_degrees            double precision DEFAULT NULL::double precision,
+  p_sort_column               text             DEFAULT 'target_id'::text,
+  p_sort_direction            text             DEFAULT 'asc'::text,
+  p_page                      integer          DEFAULT 1,
+  p_page_size                 integer          DEFAULT 50,
+  p_include_thumbnails        boolean          DEFAULT false,
+  p_include_unpublished       boolean          DEFAULT false,
+  p_line                      text             DEFAULT NULL::text,
+  p_line_snr_min              double precision DEFAULT NULL::double precision,
+  p_line_snr_max              double precision DEFAULT NULL::double precision,
+  p_line_include_stale        boolean          DEFAULT false,
+  p_band                      text             DEFAULT NULL::text,
+  p_band_mag_min              double precision DEFAULT NULL::double precision,
+  p_band_mag_max              double precision DEFAULT NULL::double precision,
+  p_band_snr_min              double precision DEFAULT NULL::double precision,
+  p_band_snr_max              double precision DEFAULT NULL::double precision,
+  p_include_count             boolean          DEFAULT true,
+  p_after_sort_text           text             DEFAULT NULL::text,
+  p_after_sort_num            double precision DEFAULT NULL::double precision,
+  p_after_tiebreak            text[]           DEFAULT NULL::text[],
+  p_spectrum_ids              integer[]        DEFAULT NULL::integer[],
+  p_measurements_display_only boolean          DEFAULT false
 )
   RETURNS TABLE (
     targets        jsonb,
@@ -1556,8 +1617,8 @@ BEGIN
       AND (p_max_snr_max IS NULL OR s.signal_to_noise <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR s.exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR s.exposure_time <= p_max_exposure_time_max)
-      AND (p_line IS NULL OR s.id = ANY(v_line_spectrum_ids))
-      AND (p_band IS NULL OR t.object_id = ANY(v_band_object_ids))
+      AND (p_line IS NULL OR p_measurements_display_only OR s.id = ANY(v_line_spectrum_ids))
+      AND (p_band IS NULL OR p_measurements_display_only OR t.object_id = ANY(v_band_object_ids))
       AND (p_spectrum_ids IS NULL OR s.id = ANY(p_spectrum_ids))
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
@@ -1792,32 +1853,33 @@ REVOKE ALL
     boolean,
     boolean,
     text,
-    double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[])
+    double precision,
+    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], boolean)
   FROM PUBLIC, "anon";
 
-COMMENT ON FUNCTION "public"."catalog_match_ids"(text, jsonb) IS 'The ids of the objects / spectra / targets a predicate tree selects (Catalog Read Model phase 3), evaluated under the caller''s RLS against the live tables or the browsed release. Feeds the list RPCs'' p_object_ids / p_spectrum_ids.';
+COMMENT ON FUNCTION "public"."catalog_match_ids"(text, jsonb, text[], boolean, uuid) IS 'The ids of the objects / spectra / targets a predicate tree selects (Catalog Read Model phase 3), evaluated under the caller''s RLS against the live tables or the browsed release, plus the explicit scope (p_program_slugs / p_include_unpublished / p_viewer_id) a service-role caller must pass. Feeds the list RPCs'' p_object_ids / p_spectrum_ids.';
 
 COMMENT ON FUNCTION "public"."catalog_query_correlations"() IS 'How an exists node joins its child table to the row it is evaluated against (Catalog Read Model phase 3): the FROM ... WHERE fragment per (parent, child), with the parent key on the parent alias.';
 
 COMMENT ON FUNCTION
   "public"."catalog_query_objects"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double
-  precision, boolean, text, double precision, double precision, double precision, double precision) IS 'The objects list for a predicate tree (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_objects_paginated(p_object_ids := ...), so the row shape, sort, paging and cursor are the legacy RPC''s. p_line / p_band only drive the Line S/N and Mag columns and sorts.';
+  precision, boolean, text, double precision, double precision, double precision, double precision) IS 'The objects list for a predicate tree (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_objects_paginated(p_object_ids := ...), so the row shape, sort, paging and cursor are the legacy RPC''s. p_line / p_band only drive the Line S/N and Mag columns and sorts (the legacy RPC runs with p_measurements_display_only, so they never filter). The explicit scope goes through to the tree for a service-role caller.';
 
 COMMENT ON FUNCTION
   "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
-  precision, boolean, text, double precision, double precision, double precision, double precision) IS 'The spectra list for a predicate tree rooted at spectra (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_spectra_paginated(p_spectrum_ids := ...).';
+  precision, boolean, text, double precision, double precision, double precision, double precision, uuid) IS 'The spectra list for a predicate tree rooted at spectra (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_spectra_paginated(p_spectrum_ids := ...).';
 
 COMMENT ON FUNCTION "public"."catalog_query_whitelist"() IS 'The tables, columns and value types a predicate tree may name (Catalog Read Model phase 3). The only source of identifiers in the compiled SQL; mirrored by the portal''s leaf catalogue.';
 
-COMMENT ON FUNCTION "public"."catalog_tree_sql"(jsonb, text) IS 'Compiles a predicate tree (Catalog Read Model phase 3) to the SQL WHERE text it runs as, over the root table aliased r; every identifier from the whitelist, every value quoted. Raises 22023 (invalid_parameter_value) on anything the whitelist does not allow.';
+COMMENT ON FUNCTION "public"."catalog_tree_sql"(jsonb, text, text[], boolean, uuid) IS 'Compiles a predicate tree (Catalog Read Model phase 3) to the SQL WHERE text it runs as, over the root table aliased r; every identifier from the whitelist, every value quoted. With p_program_slugs the caller''s explicit access scope is appended to every table the tree touches (the bearer routes, whose client RLS does not gate); without it RLS alone decides. Raises 22023 (invalid_parameter_value) on anything the whitelist does not allow.';
 
-GRANT EXECUTE ON FUNCTION "public"."catalog_match_ids"(text, jsonb) TO "authenticated";
+GRANT EXECUTE ON FUNCTION "public"."catalog_match_ids"(text, jsonb, text[], boolean, uuid) TO "authenticated";
 
-REVOKE ALL ON FUNCTION "public"."catalog_match_ids"(text, jsonb) FROM "postgres";
+REVOKE ALL ON FUNCTION "public"."catalog_match_ids"(text, jsonb, text[], boolean, uuid) FROM "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."catalog_match_ids"(text, jsonb) TO "postgres";
+GRANT EXECUTE ON FUNCTION "public"."catalog_match_ids"(text, jsonb, text[], boolean, uuid) TO "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."catalog_match_ids"(text, jsonb) TO "service_role";
+GRANT EXECUTE ON FUNCTION "public"."catalog_match_ids"(text, jsonb, text[], boolean, uuid) TO "service_role";
 
 GRANT EXECUTE ON FUNCTION "public"."catalog_query_array_literal"(jsonb, text) TO "authenticated";
 
@@ -1843,13 +1905,13 @@ GRANT EXECUTE ON FUNCTION "public"."catalog_query_literal"(jsonb, text) TO "post
 
 GRANT EXECUTE ON FUNCTION "public"."catalog_query_literal"(jsonb, text) TO "service_role";
 
-GRANT EXECUTE ON FUNCTION "public"."catalog_query_node_sql"(jsonb, text, text, text, integer, integer) TO "authenticated";
+GRANT EXECUTE ON FUNCTION "public"."catalog_query_node_sql"(jsonb, text, text, text, integer, integer, jsonb) TO "authenticated";
 
-REVOKE ALL ON FUNCTION "public"."catalog_query_node_sql"(jsonb, text, text, text, integer, integer) FROM "postgres";
+REVOKE ALL ON FUNCTION "public"."catalog_query_node_sql"(jsonb, text, text, text, integer, integer, jsonb) FROM "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."catalog_query_node_sql"(jsonb, text, text, text, integer, integer) TO "postgres";
+GRANT EXECUTE ON FUNCTION "public"."catalog_query_node_sql"(jsonb, text, text, text, integer, integer, jsonb) TO "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."catalog_query_node_sql"(jsonb, text, text, text, integer, integer) TO "service_role";
+GRANT EXECUTE ON FUNCTION "public"."catalog_query_node_sql"(jsonb, text, text, text, integer, integer, jsonb) TO "service_role";
 
 GRANT EXECUTE
   ON FUNCTION
@@ -1875,28 +1937,36 @@ GRANT EXECUTE
     precision, boolean, text, double precision, double precision, double precision, double precision)
   TO "service_role";
 
+GRANT EXECUTE ON FUNCTION "public"."catalog_query_scope_sql"(text, text, text, jsonb) TO "authenticated";
+
+REVOKE ALL ON FUNCTION "public"."catalog_query_scope_sql"(text, text, text, jsonb) FROM "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."catalog_query_scope_sql"(text, text, text, jsonb) TO "postgres";
+
+GRANT EXECUTE ON FUNCTION "public"."catalog_query_scope_sql"(text, text, text, jsonb) TO "service_role";
+
 GRANT EXECUTE
   ON FUNCTION
     "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision)
+    precision, boolean, text, double precision, double precision, double precision, double precision, uuid)
   TO "authenticated";
 
 REVOKE ALL
   ON FUNCTION
     "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision)
+    precision, boolean, text, double precision, double precision, double precision, double precision, uuid)
   FROM "postgres";
 
 GRANT EXECUTE
   ON FUNCTION
     "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision)
+    precision, boolean, text, double precision, double precision, double precision, double precision, uuid)
   TO "postgres";
 
 GRANT EXECUTE
   ON FUNCTION
     "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
-    precision, boolean, text, double precision, double precision, double precision, double precision)
+    precision, boolean, text, double precision, double precision, double precision, double precision, uuid)
   TO "service_role";
 
 GRANT EXECUTE ON FUNCTION "public"."catalog_query_whitelist"() TO "authenticated";
@@ -1907,13 +1977,13 @@ GRANT EXECUTE ON FUNCTION "public"."catalog_query_whitelist"() TO "postgres";
 
 GRANT EXECUTE ON FUNCTION "public"."catalog_query_whitelist"() TO "service_role";
 
-GRANT EXECUTE ON FUNCTION "public"."catalog_tree_sql"(jsonb, text) TO "authenticated";
+GRANT EXECUTE ON FUNCTION "public"."catalog_tree_sql"(jsonb, text, text[], boolean, uuid) TO "authenticated";
 
-REVOKE ALL ON FUNCTION "public"."catalog_tree_sql"(jsonb, text) FROM "postgres";
+REVOKE ALL ON FUNCTION "public"."catalog_tree_sql"(jsonb, text, text[], boolean, uuid) FROM "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."catalog_tree_sql"(jsonb, text) TO "postgres";
+GRANT EXECUTE ON FUNCTION "public"."catalog_tree_sql"(jsonb, text, text[], boolean, uuid) TO "postgres";
 
-GRANT EXECUTE ON FUNCTION "public"."catalog_tree_sql"(jsonb, text) TO "service_role";
+GRANT EXECUTE ON FUNCTION "public"."catalog_tree_sql"(jsonb, text, text[], boolean, uuid) TO "service_role";
 
 GRANT EXECUTE
   ON FUNCTION
@@ -1941,7 +2011,7 @@ GRANT EXECUTE
     boolean,
     text,
     double precision,
-    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[])
+    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], boolean)
   TO "authenticated";
 
 REVOKE ALL
@@ -1970,7 +2040,7 @@ REVOKE ALL
     boolean,
     text,
     double precision,
-    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[])
+    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], boolean)
   FROM "postgres";
 
 GRANT EXECUTE
@@ -1999,7 +2069,7 @@ GRANT EXECUTE
     boolean,
     text,
     double precision,
-    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[])
+    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], boolean)
   TO "postgres";
 
 GRANT EXECUTE
@@ -2028,7 +2098,7 @@ GRANT EXECUTE
     boolean,
     text,
     double precision,
-    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[])
+    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], uuid, integer[], boolean)
   TO "service_role";
 
 GRANT EXECUTE
@@ -2058,7 +2128,8 @@ GRANT EXECUTE
     boolean,
     boolean,
     text,
-    double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[])
+    double precision,
+    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], boolean)
   TO "authenticated";
 
 REVOKE ALL
@@ -2088,7 +2159,8 @@ REVOKE ALL
     boolean,
     boolean,
     text,
-    double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[])
+    double precision,
+    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], boolean)
   FROM "postgres";
 
 GRANT EXECUTE
@@ -2118,7 +2190,8 @@ GRANT EXECUTE
     boolean,
     boolean,
     text,
-    double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[])
+    double precision,
+    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], boolean)
   TO "postgres";
 
 GRANT EXECUTE
@@ -2148,5 +2221,6 @@ GRANT EXECUTE
     boolean,
     boolean,
     text,
-    double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[])
+    double precision,
+    double precision, boolean, text, double precision, double precision, double precision, double precision, boolean, text, double precision, text[], integer[], boolean)
   TO "service_role";

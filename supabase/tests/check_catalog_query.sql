@@ -14,7 +14,12 @@
 --   5. browsing a release: the compiled text reads cat_* views and the ids
 --      come from the frozen rows of that tag;
 --   6. catalog_query_objects returns the legacy RPC's row shape and the same
---      page, and an empty selection returns an empty page without erroring.
+--      page, an empty selection returns an empty page without erroring, and
+--      the display line / band never narrows the tree's selection (Codex on
+--      #659);
+--   7. the service role with a viewer's explicit scope selects exactly what
+--      the viewer selects under RLS, through every node kind, lists included
+--      (Codex on #659: the bearer routes run on the service-role client).
 -- Run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/check_catalog_query.sql
 \set ON_ERROR_STOP on
 BEGIN;
@@ -125,7 +130,7 @@ CREATE FUNCTION pg_temp.cq_sel(p_tree jsonb, p_root text DEFAULT 'objects') RETU
     JOIN public.objects o ON o.id = i.id
    WHERE o.object_id LIKE 'CQ-%';
 $$ LANGUAGE sql STABLE;
-GRANT EXECUTE ON FUNCTION pg_temp.cq_sel(jsonb, text) TO authenticated;
+GRANT EXECUTE ON FUNCTION pg_temp.cq_sel(jsonb, text) TO authenticated, service_role;
 
 DO $$
 BEGIN
@@ -247,6 +252,19 @@ BEGIN
   -- the Line S/N column follows the display line
   SELECT * INTO r FROM public.catalog_query_objects('{"col": "object_id", "op": "eq", "v": "CQ-A"}', ARRAY['zzz_cq_pub'], p_line := 'CIII1908', p_line_include_stale := true);
   IF (r.targets -> 0 ->> 'line_snr')::double precision <> 10.0 THEN RAISE EXCEPTION 'line_snr column: %', r.targets -> 0 ->> 'line_snr'; END IF;
+  -- the display line never filters: OR over line and photometry keeps the
+  -- photometry-only object, with a NULL Line S/N
+  SELECT * INTO r FROM public.catalog_query_objects(
+    '{"or": [{"exists": "lines", "where": [{"col": "line", "op": "eq", "v": "CIII1908"}, {"col": "snr", "op": "gte", "v": 5}]}, {"exists": "photometry", "where": [{"col": "band", "op": "eq", "v": "f444w"}, {"col": "mag", "op": "gte", "v": 26}]}]}',
+    ARRAY['zzz_cq_pub'], p_line := 'CIII1908', p_line_snr_min := 5, p_sort_column := 'object_id');
+  IF r.total_count <> 2 OR (r.targets -> 1 ->> 'object_id') <> 'CQ-C' OR (r.targets -> 1 -> 'line_snr') IS DISTINCT FROM 'null'::jsonb THEN
+    RAISE EXCEPTION 'display line narrowed the selection: total %, rows %', r.total_count, r.targets;
+  END IF;
+  -- same for the display band on a line-only tree
+  SELECT * INTO r FROM public.catalog_query_objects(
+    '{"exists": "lines", "where": [{"col": "line", "op": "eq", "v": "OIII5007"}, {"col": "snr", "op": "gte", "v": 5}]}',
+    ARRAY['zzz_cq_pub'], p_band := 'f444w', p_band_mag_max := 25, p_sort_column := 'object_id');
+  IF r.total_count <> 3 THEN RAISE EXCEPTION 'display band narrowed the selection: %', r.total_count; END IF;
   -- an empty selection is an empty page
   SELECT * INTO r FROM public.catalog_query_objects('{"col": "object_id", "op": "eq", "v": "CQ-NONE"}', ARRAY['zzz_cq_pub']);
   IF r.total_count <> 0 OR jsonb_array_length(r.targets) <> 0 OR r.has_more THEN RAISE EXCEPTION 'empty selection'; END IF;
@@ -255,5 +273,72 @@ BEGIN
   IF r.total_count <> 2 THEN RAISE EXCEPTION 'catalog_query_spectra: %', r.total_count; END IF;
   RAISE NOTICE 'OK 6: catalog_query_objects / _spectra';
 END $$;
+
+-- ------------------------------------------------------------------ 7 (the service role with an explicit scope)
+-- a private list of the admin with CQ-A in it; the seeded user must not see it
+INSERT INTO object_lists (slug, name, visibility, created_by) VALUES ('zzz-cq-private', 'CQ private list', 'private', '11111111-1111-1111-1111-111111111111');
+INSERT INTO object_list_members (list_id, object_id, ra, dec) SELECT l.id, o.id, o.ra, o.dec FROM object_lists l, objects o WHERE l.slug = 'zzz-cq-private' AND o.object_id = 'CQ-A';
+CREATE TEMP TABLE cq_scope AS SELECT NULL::text[] AS slugs;
+GRANT ALL ON pg_temp.cq_scope TO authenticated, service_role;
+SELECT set_config('request.jwt.claims', '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}', true);
+SET LOCAL ROLE authenticated;
+UPDATE pg_temp.cq_scope SET slugs = public.accessible_program_slugs();
+RESET ROLE;
+SET LOCAL ROLE service_role;
+DO $$
+DECLARE
+  slugs text[] := (SELECT s.slugs FROM pg_temp.cq_scope s);
+  viewer uuid := '22222222-2222-2222-2222-222222222222';
+  admin uuid := '11111111-1111-1111-1111-111111111111';
+  trees jsonb := '[
+    {"col": "field", "op": "eq", "v": "zzz_cq_field"},
+    {"exists": "lines", "where": [{"col": "snr", "op": "gte", "v": 25}]},
+    {"exists": "spectra", "where": [{"col": "grating", "op": "eq", "v": "PRISM"}]},
+    {"exists": "targets"},
+    {"exists": "line_fits"},
+    {"exists": "photometry"},
+    {"exists": "catalog_matches"},
+    {"exists": "object_list_members"},
+    {"or": [{"exists": "lines", "where": [{"col": "snr", "op": "gte", "v": 25}]}, {"col": "redshift_quality", "op": "eq", "v": 4}]}
+  ]';
+  t jsonb; got text[];
+BEGIN
+  -- no scope: the service role sees everything, as it should
+  IF NOT ('CQ-P' = ANY (pg_temp.cq_sel('{"col": "field", "op": "eq", "v": "zzz_cq_field"}'))) THEN
+    RAISE EXCEPTION 'the service role without a scope should see the private object';
+  END IF;
+  -- with the viewer's scope: never the private object, through any node
+  FOR t IN SELECT jsonb_array_elements(trees) LOOP
+    SELECT COALESCE(array_agg(o.object_id ORDER BY o.object_id), '{}') INTO got
+      FROM unnest(public.catalog_match_ids('objects', t, slugs, false, viewer)) i(id)
+      JOIN public.objects o ON o.id = i.id WHERE o.object_id LIKE 'CQ-%';
+    IF 'CQ-P' = ANY (got) THEN RAISE EXCEPTION 'private object leaked through % under the viewer''s scope', t; END IF;
+  END LOOP;
+  -- the admin's private list is invisible to the viewer, visible to its owner
+  SELECT COALESCE(array_agg(o.object_id), '{}') INTO got
+    FROM unnest(public.catalog_match_ids('objects', '{"exists": "object_list_members"}', slugs, false, viewer)) i(id)
+    JOIN public.objects o ON o.id = i.id WHERE o.object_id LIKE 'CQ-%';
+  IF 'CQ-A' = ANY (got) THEN RAISE EXCEPTION 'a private list leaked to the viewer'; END IF;
+  SELECT COALESCE(array_agg(o.object_id), '{}') INTO got
+    FROM unnest(public.catalog_match_ids('objects', '{"exists": "object_list_members"}', slugs, false, admin)) i(id)
+    JOIN public.objects o ON o.id = i.id WHERE o.object_id LIKE 'CQ-%';
+  IF NOT ('CQ-A' = ANY (got)) THEN RAISE EXCEPTION 'the owner does not see their own list'; END IF;
+  -- unpublished stays hidden unless asked
+  UPDATE public.spectra SET deploy_status = 'draft' WHERE fits_path = '/tmp/cq_cq-c.fits';
+  SELECT COALESCE(array_agg(o.object_id), '{}') INTO got
+    FROM unnest(public.catalog_match_ids('objects', '{"exists": "spectra", "where": [{"col": "grating", "op": "eq", "v": "PRISM"}]}', slugs, false, viewer)) i(id)
+    JOIN public.objects o ON o.id = i.id WHERE o.object_id LIKE 'CQ-%';
+  IF 'CQ-C' = ANY (got) THEN RAISE EXCEPTION 'a draft spectrum reached the viewer''s scope'; END IF;
+  SELECT COALESCE(array_agg(o.object_id), '{}') INTO got
+    FROM unnest(public.catalog_match_ids('objects', '{"exists": "spectra", "where": [{"col": "grating", "op": "eq", "v": "PRISM"}]}', slugs, true, viewer)) i(id)
+    JOIN public.objects o ON o.id = i.id WHERE o.object_id LIKE 'CQ-%';
+  IF NOT ('CQ-C' = ANY (got)) THEN RAISE EXCEPTION 'include_unpublished did not admit the draft'; END IF;
+  -- the wrapper carries the scope through
+  SELECT COALESCE(array_agg(e ->> 'object_id'), '{}') INTO got
+    FROM public.catalog_query_spectra('{"exists": "objects", "where": [{"col": "field", "op": "eq", "v": "zzz_cq_field"}]}', slugs, p_page_size := 100) g, jsonb_array_elements(g.targets) e;
+  IF 'CQ-P' = ANY (got) THEN RAISE EXCEPTION 'catalog_query_spectra leaked the private object to the service role'; END IF;
+  RAISE NOTICE 'OK 7: the service role with a viewer''s scope selects what the viewer selects';
+END $$;
+RESET ROLE;
 
 ROLLBACK;

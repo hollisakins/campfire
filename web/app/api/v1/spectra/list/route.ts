@@ -217,6 +217,9 @@ export async function GET(request: NextRequest) {
           ...cursorRpcParams(cursor),
           ...lineFilterRpcParams(searchParams),
           ...bandFilterRpcParams(searchParams),
+          // the tree runs on the service-role client: the key's user is the
+          // explicit scope for lists (programs + publication go as above)
+          p_viewer_id: userId,
         })
       : await supabase.rpc('get_filtered_spectra_paginated', rpcParams);
     const rejected = treeRejection(error);

@@ -3504,7 +3504,11 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   -- Catalog Read Model phase 3: the spectra a predicate tree selected
   -- (catalog_query_spectra); NULL = no tree. The tree ran under RLS already,
   -- so this is a plain membership test on top of the legacy conjuncts.
-  p_spectrum_ids INTEGER[] DEFAULT NULL
+  p_spectrum_ids INTEGER[] DEFAULT NULL,
+  -- With a tree, p_line / p_band only choose the displayed measurement (the
+  -- Line S/N / Mag columns and sort keys); they must not narrow the tree's
+  -- selection (Codex on #659).
+  p_measurements_display_only BOOLEAN DEFAULT false
 )
 RETURNS TABLE(
   targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER,
@@ -3694,8 +3698,8 @@ BEGIN
       AND (p_max_snr_max IS NULL OR s.signal_to_noise <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR s.exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR s.exposure_time <= p_max_exposure_time_max)
-      AND (p_line IS NULL OR s.id = ANY(v_line_spectrum_ids))
-      AND (p_band IS NULL OR t.object_id = ANY(v_band_object_ids))
+      AND (p_line IS NULL OR p_measurements_display_only OR s.id = ANY(v_line_spectrum_ids))
+      AND (p_band IS NULL OR p_measurements_display_only OR t.object_id = ANY(v_band_object_ids))
       AND (p_spectrum_ids IS NULL OR s.id = ANY(p_spectrum_ids))
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
@@ -3979,7 +3983,11 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   -- Catalog Read Model phase 3: the objects a predicate tree selected
   -- (catalog_query_objects); NULL = no tree. The tree ran under RLS already,
   -- so this is a plain membership test on top of the legacy conjuncts.
-  p_object_ids INTEGER[] DEFAULT NULL
+  p_object_ids INTEGER[] DEFAULT NULL,
+  -- With a tree, p_line / p_band only choose the displayed measurement (the
+  -- Line S/N / Mag columns and sort keys); they must not narrow the tree's
+  -- selection (Codex on #659).
+  p_measurements_display_only BOOLEAN DEFAULT false
 )
 RETURNS TABLE(
   targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER,
@@ -4149,8 +4157,8 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-      AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
-      AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
+      AND (p_line IS NULL OR p_measurements_display_only OR o.id = ANY(v_line_object_ids))
+      AND (p_band IS NULL OR p_measurements_display_only OR o.id = ANY(v_band_object_ids))
       AND (p_object_ids IS NULL OR o.id = ANY(p_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.cat_objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
@@ -4320,8 +4328,8 @@ BEGIN
       AND (p_max_snr_max IS NULL OR o.max_snr <= p_max_snr_max)
       AND (p_max_exposure_time_min IS NULL OR o.max_exposure_time >= p_max_exposure_time_min)
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
-      AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
-      AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
+      AND (p_line IS NULL OR p_measurements_display_only OR o.id = ANY(v_line_object_ids))
+      AND (p_band IS NULL OR p_measurements_display_only OR o.id = ANY(v_band_object_ids))
       AND (p_object_ids IS NULL OR o.id = ANY(p_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.cat_objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
@@ -4783,13 +4791,60 @@ BEGIN
 END;
 $$;
 
+-- The caller's explicit access scope on one table (Catalog Read Model phase
+-- 3; Codex on #659). The tree runs SECURITY INVOKER, so a signed-in caller's
+-- RLS already gates every table it touches; the v1 bearer routes, though, run
+-- on the service-role client, which RLS does not touch. They pass the key's
+-- user's scope explicitly, exactly as the legacy list RPCs take it
+-- (p_program_slugs / p_include_unpublished, plus the viewer for lists), and
+-- this appends a copy of each table's read policy to every table reference:
+-- the root and every exists child. NULL scope = RLS alone. Keep in step with
+-- policies.sql (check_catalog_query.sql asserts the service role with a
+-- viewer's scope selects what the viewer selects).
+CREATE OR REPLACE FUNCTION public.catalog_query_scope_sql(p_table text, p_alias text, p_catalog text, p_scope jsonb)
+RETURNS text
+LANGUAGE plpgsql IMMUTABLE
+AS $$
+DECLARE
+  v_slugs text;
+  v_unpub text;
+  v_viewer text;
+  v_t text := CASE WHEN p_catalog = 'dr' THEN 'public.cat_' ELSE 'public.' END;
+  v_spec text;
+  v_obj text;
+BEGIN
+  IF p_scope IS NULL THEN RETURN ''; END IF;
+  v_slugs := public.catalog_query_array_literal(COALESCE(p_scope -> 'slugs', '[]'::jsonb) || CASE WHEN jsonb_array_length(COALESCE(p_scope -> 'slugs', '[]'::jsonb)) = 0 THEN '[""]'::jsonb ELSE '[]'::jsonb END, 'text');
+  v_unpub := CASE WHEN COALESCE((p_scope ->> 'unpub')::boolean, false) THEN 'true' ELSE 'false' END;
+  v_viewer := CASE WHEN p_scope ->> 'viewer' IS NULL THEN 'NULL::uuid' ELSE format('%L::uuid', (p_scope ->> 'viewer')::uuid) END;
+  -- the spectra and objects policies, as the legacy RPCs restate them
+  v_spec := format('(%%1$s.program_slug = ANY(%s) AND (%%1$s.deploy_status = ''published'' OR %s))', v_slugs, v_unpub);
+  v_obj := format('(%%1$s.programs && %s AND %%1$s.is_active AND (%%1$s.has_published_spectrum OR %s))', v_slugs, v_unpub);
+  CASE p_table
+    WHEN 'objects' THEN RETURN ' AND ' || format(v_obj, p_alias);
+    WHEN 'targets' THEN RETURN format(' AND (%1$I.program_slug = ANY(%2$s) AND (%1$I.has_published_spectrum OR %3$s))', p_alias, v_slugs, v_unpub);
+    WHEN 'spectra' THEN RETURN ' AND ' || format(v_spec, p_alias);
+    WHEN 'lines', 'line_fits' THEN
+      RETURN format(' AND EXISTS (SELECT 1 FROM %sspectra __s WHERE __s.id = %I.spectrum_id AND %s)', v_t, p_alias, format(v_spec, '__s'));
+    WHEN 'photometry', 'catalog_matches' THEN
+      RETURN format(' AND EXISTS (SELECT 1 FROM %sobjects __o WHERE __o.id = %I.object_id AND %s)', v_t, p_alias, format(v_obj, '__o'));
+    WHEN 'object_list_members' THEN
+      -- viewable_list_ids() for an explicit viewer: own, public, or shared with
+      RETURN format(' AND EXISTS (SELECT 1 FROM public.object_lists __l WHERE __l.id = %1$I.list_id AND (__l.visibility IN (''public_read'', ''public_edit'') OR __l.created_by = %2$s OR __l.id IN (SELECT __sh.list_id FROM public.object_list_shares __sh WHERE __sh.user_id = %2$s)))', p_alias, v_viewer);
+    ELSE
+      RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: no access scope for %s', p_table);
+  END CASE;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.catalog_query_scope_sql(text, text, text, jsonb) FROM PUBLIC, anon;
+
 -- One node, evaluated against table p_table under alias p_alias. p_catalog is
 -- 'live' or 'dr' (which table names the {T:...} tokens render to); p_depth
 -- bounds nesting, p_idx is the node's index among its siblings (aliases are
 -- x<depth>_<idx>: unique within a scope, and each nesting level is its own
 -- subquery scope).
 CREATE OR REPLACE FUNCTION public.catalog_query_node_sql(
-  p_node jsonb, p_table text, p_alias text, p_catalog text, p_depth integer, p_idx integer
+  p_node jsonb, p_table text, p_alias text, p_catalog text, p_depth integer, p_idx integer, p_scope jsonb DEFAULT NULL
 )
 RETURNS text
 LANGUAGE plpgsql STABLE
@@ -4834,7 +4889,7 @@ BEGIN
     END IF;
     FOR v_val IN SELECT jsonb_array_elements(child) LOOP
       i := i + 1;
-      parts := array_append(parts, public.catalog_query_node_sql(v_val, p_table, p_alias, p_catalog, p_depth + 1, i));
+      parts := array_append(parts, public.catalog_query_node_sql(v_val, p_table, p_alias, p_catalog, p_depth + 1, i, p_scope));
     END LOOP;
     RETURN '(' || array_to_string(parts, CASE WHEN p_node ? 'and' THEN ' AND ' ELSE ' OR ' END) || ')';
   END IF;
@@ -4883,12 +4938,12 @@ BEGIN
         RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: "where" is an array of nodes';
       END IF;
       IF jsonb_array_length(child) > 0 THEN
-        v_where := ' AND ' || public.catalog_query_node_sql(jsonb_build_object('and', child), v_child, v_alias, p_catalog, p_depth + 1, 1);
+        v_where := ' AND ' || public.catalog_query_node_sql(jsonb_build_object('and', child), v_child, v_alias, p_catalog, p_depth + 1, 1, p_scope);
       END IF;
     END IF;
-    RETURN format('%sEXISTS (SELECT 1 FROM %s%s)',
+    RETURN format('%sEXISTS (SELECT 1 FROM %s%s%s)',
                   CASE WHEN COALESCE((p_node ->> 'not')::boolean, false) THEN 'NOT ' ELSE '' END,
-                  v_tmpl, v_where);
+                  v_tmpl, public.catalog_query_scope_sql(v_child, v_alias, p_catalog, p_scope), v_where);
   END IF;
 
   -- predicate -----------------------------------------------------------
@@ -4980,10 +5035,17 @@ $$;
 -- The compiled WHERE predicate of a tree over root table p_root, aliased r,
 -- for the catalog the caller is browsing. What the portal shows under
 -- "copy as SQL".
-CREATE OR REPLACE FUNCTION public.catalog_tree_sql(p_tree jsonb, p_root text DEFAULT 'objects')
+CREATE OR REPLACE FUNCTION public.catalog_tree_sql(
+  p_tree jsonb, p_root text DEFAULT 'objects',
+  p_program_slugs text[] DEFAULT NULL, p_include_unpublished boolean DEFAULT false, p_viewer_id uuid DEFAULT NULL
+)
 RETURNS text
 LANGUAGE plpgsql STABLE
 AS $$
+DECLARE
+  v_scope jsonb := CASE WHEN p_program_slugs IS NULL THEN NULL
+                        ELSE jsonb_build_object('slugs', to_jsonb(p_program_slugs), 'unpub', COALESCE(p_include_unpublished, false), 'viewer', p_viewer_id) END;
+  v_catalog text := CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END;
 BEGIN
   IF p_root NOT IN ('objects', 'spectra', 'targets') THEN
     RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: root must be objects, spectra or targets, not %s', p_root);
@@ -4999,26 +5061,30 @@ BEGIN
   IF (p_tree ? 'and' OR p_tree ? 'or') AND (p_tree ->> 'v') IS NOT NULL AND (p_tree ->> 'v') <> '1' THEN
     RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: unknown tree version %s', p_tree ->> 'v');
   END IF;
-  RETURN public.catalog_query_node_sql(CASE WHEN p_tree ? 'and' OR p_tree ? 'or' THEN p_tree - 'v' ELSE p_tree END, p_root, 'r',
-                                       CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END, 0, 1);
+  -- the root's own scope, then the tree (each exists child carries its own)
+  RETURN public.catalog_query_node_sql(CASE WHEN p_tree ? 'and' OR p_tree ? 'or' THEN p_tree - 'v' ELSE p_tree END, p_root, 'r', v_catalog, 0, 1, v_scope)
+         || public.catalog_query_scope_sql(p_root, 'r', v_catalog, v_scope);
 END;
 $$;
 
-COMMENT ON FUNCTION public.catalog_tree_sql(jsonb, text) IS 'Compiles a predicate tree (Catalog Read Model phase 3) to the SQL WHERE text it runs as, over the root table aliased r; every identifier from the whitelist, every value quoted. Raises 22023 (invalid_parameter_value) on anything the whitelist does not allow.';
-REVOKE ALL ON FUNCTION public.catalog_tree_sql(jsonb, text) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.catalog_tree_sql(jsonb, text) TO authenticated, service_role;
+COMMENT ON FUNCTION public.catalog_tree_sql(jsonb, text, text[], boolean, uuid) IS 'Compiles a predicate tree (Catalog Read Model phase 3) to the SQL WHERE text it runs as, over the root table aliased r; every identifier from the whitelist, every value quoted. With p_program_slugs the caller''s explicit access scope is appended to every table the tree touches (the bearer routes, whose client RLS does not gate); without it RLS alone decides. Raises 22023 (invalid_parameter_value) on anything the whitelist does not allow.';
+REVOKE ALL ON FUNCTION public.catalog_tree_sql(jsonb, text, text[], boolean, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_tree_sql(jsonb, text, text[], boolean, uuid) TO authenticated, service_role;
 REVOKE ALL ON FUNCTION public.catalog_query_whitelist() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.catalog_query_whitelist() TO authenticated, service_role;
 REVOKE ALL ON FUNCTION public.catalog_query_correlations() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.catalog_query_correlations() TO authenticated, service_role;
 REVOKE ALL ON FUNCTION public.catalog_query_literal(jsonb, text) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.catalog_query_array_literal(jsonb, text) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.catalog_query_node_sql(jsonb, text, text, text, integer, integer) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.catalog_query_node_sql(jsonb, text, text, text, integer, integer, jsonb) FROM PUBLIC, anon;
 
 -- The ids of the root rows a tree selects, under the caller's RLS, from the
 -- live tables or the browsed release. SECURITY INVOKER on purpose: this is
 -- the query a scientist could type, and it must see what they see.
-CREATE OR REPLACE FUNCTION public.catalog_match_ids(p_root text, p_tree jsonb)
+CREATE OR REPLACE FUNCTION public.catalog_match_ids(
+  p_root text, p_tree jsonb,
+  p_program_slugs text[] DEFAULT NULL, p_include_unpublished boolean DEFAULT false, p_viewer_id uuid DEFAULT NULL
+)
 RETURNS integer[]
 LANGUAGE plpgsql STABLE
 SET search_path = public
@@ -5028,21 +5094,24 @@ DECLARE
   v_pred text;
   v_ids integer[];
 BEGIN
-  v_pred := public.catalog_tree_sql(p_tree, p_root);
+  v_pred := public.catalog_tree_sql(p_tree, p_root, p_program_slugs, p_include_unpublished, p_viewer_id);
   v_from := CASE WHEN public.dr_browse_tag() IS NULL THEN 'public.' || p_root ELSE 'public.cat_' || p_root END;
   EXECUTE format('SELECT COALESCE(array_agg(r.id), ''{}''::integer[]) FROM %s r WHERE %s', v_from, v_pred) INTO v_ids;
   RETURN v_ids;
 END;
 $$;
 
-COMMENT ON FUNCTION public.catalog_match_ids(text, jsonb) IS 'The ids of the objects / spectra / targets a predicate tree selects (Catalog Read Model phase 3), evaluated under the caller''s RLS against the live tables or the browsed release. Feeds the list RPCs'' p_object_ids / p_spectrum_ids.';
-REVOKE ALL ON FUNCTION public.catalog_match_ids(text, jsonb) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.catalog_match_ids(text, jsonb) TO authenticated, service_role;
+COMMENT ON FUNCTION public.catalog_match_ids(text, jsonb, text[], boolean, uuid) IS 'The ids of the objects / spectra / targets a predicate tree selects (Catalog Read Model phase 3), evaluated under the caller''s RLS against the live tables or the browsed release, plus the explicit scope (p_program_slugs / p_include_unpublished / p_viewer_id) a service-role caller must pass. Feeds the list RPCs'' p_object_ids / p_spectrum_ids.';
+REVOKE ALL ON FUNCTION public.catalog_match_ids(text, jsonb, text[], boolean, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_match_ids(text, jsonb, text[], boolean, uuid) TO authenticated, service_role;
 
 -- The objects list for a tree: the same rows, sort, paging, cursor and
 -- columns as get_filtered_objects_paginated, selected by the tree. p_line /
 -- p_band and their bounds are display knobs (the Line S/N and Mag columns and
--- their sort keys), the portal passes the first line / band condition's.
+-- their sort keys; p_measurements_display_only keeps them from filtering), the
+-- portal passes the first line / band condition's. p_program_slugs /
+-- p_include_unpublished / p_viewer_id are the explicit scope the tree runs
+-- under for a service-role caller (the bearer routes), as for the legacy RPC.
 CREATE OR REPLACE FUNCTION public.catalog_query_objects(
   p_tree jsonb,
   p_program_slugs TEXT[],
@@ -5077,7 +5146,7 @@ AS $$
 DECLARE
   v_ids integer[];
 BEGIN
-  v_ids := public.catalog_match_ids('objects', p_tree);
+  v_ids := public.catalog_match_ids('objects', p_tree, p_program_slugs, p_include_unpublished, p_viewer_id);
   IF cardinality(v_ids) = 0 THEN
     RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size, false, NULL::TEXT, NULL::DOUBLE PRECISION, NULL::TEXT[];
     RETURN;
@@ -5104,11 +5173,12 @@ BEGIN
     p_after_sort_num := p_after_sort_num,
     p_after_tiebreak := p_after_tiebreak,
     p_viewer_id := p_viewer_id,
-    p_object_ids := v_ids);
+    p_object_ids := v_ids,
+    p_measurements_display_only := true);
 END;
 $$;
 
-COMMENT ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) IS 'The objects list for a predicate tree (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_objects_paginated(p_object_ids := ...), so the row shape, sort, paging and cursor are the legacy RPC''s. p_line / p_band only drive the Line S/N and Mag columns and sorts.';
+COMMENT ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) IS 'The objects list for a predicate tree (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_objects_paginated(p_object_ids := ...), so the row shape, sort, paging and cursor are the legacy RPC''s. p_line / p_band only drive the Line S/N and Mag columns and sorts (the legacy RPC runs with p_measurements_display_only, so they never filter). The explicit scope goes through to the tree for a service-role caller.';
 REVOKE ALL ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) TO authenticated, service_role;
 
@@ -5135,7 +5205,8 @@ CREATE OR REPLACE FUNCTION public.catalog_query_spectra(
   p_band_mag_min DOUBLE PRECISION DEFAULT NULL,
   p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
-  p_band_snr_max DOUBLE PRECISION DEFAULT NULL
+  p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_viewer_id UUID DEFAULT NULL
 )
 RETURNS TABLE(
   targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER,
@@ -5147,7 +5218,7 @@ AS $$
 DECLARE
   v_ids integer[];
 BEGIN
-  v_ids := public.catalog_match_ids('spectra', p_tree);
+  v_ids := public.catalog_match_ids('spectra', p_tree, p_program_slugs, p_include_unpublished, p_viewer_id);
   IF cardinality(v_ids) = 0 THEN
     RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size, false, NULL::TEXT, NULL::DOUBLE PRECISION, NULL::TEXT[];
     RETURN;
@@ -5174,13 +5245,14 @@ BEGIN
     p_after_sort_text := p_after_sort_text,
     p_after_sort_num := p_after_sort_num,
     p_after_tiebreak := p_after_tiebreak,
-    p_spectrum_ids := v_ids);
+    p_spectrum_ids := v_ids,
+    p_measurements_display_only := true);
 END;
 $$;
 
-COMMENT ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) IS 'The spectra list for a predicate tree rooted at spectra (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_spectra_paginated(p_spectrum_ids := ...).';
-REVOKE ALL ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) TO authenticated, service_role;
+COMMENT ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, uuid) IS 'The spectra list for a predicate tree rooted at spectra (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_spectra_paginated(p_spectrum_ids := ...).';
+REVOKE ALL ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, uuid) TO authenticated, service_role;
 
 
 -- =============================================================================
@@ -13296,8 +13368,8 @@ REVOKE ALL ON FUNCTION public.get_download_stats(p_days integer) FROM PUBLIC, an
 REVOKE ALL ON FUNCTION public.get_field_object_markers(p_field text, p_include_unpublished boolean, p_cursor text, p_page_size integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_field_shutters(p_field text, p_cursor integer, p_page_size integer, p_ra_min double precision, p_ra_max double precision, p_dec_min double precision, p_dec_max double precision) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_filtered_object_ids(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_filtered_objects_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[], p_viewer_id uuid, p_object_ids integer[]) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_filtered_spectra_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_dq_flags_include_any integer, p_dq_flags_include_all integer, p_dq_flags_exclude integer, p_list_ids integer[], p_list_ids_mode text, p_search text, p_inspected_only boolean, p_needs_review boolean, p_has_photometry boolean, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_thumbnails boolean, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[], p_spectrum_ids integer[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_filtered_objects_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[], p_viewer_id uuid, p_object_ids integer[], p_measurements_display_only boolean) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_filtered_spectra_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_dq_flags_include_any integer, p_dq_flags_include_all integer, p_dq_flags_exclude integer, p_list_ids integer[], p_list_ids_mode text, p_search text, p_inspected_only boolean, p_needs_review boolean, p_has_photometry boolean, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_thumbnails boolean, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[], p_spectrum_ids integer[], p_measurements_display_only boolean) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_lifecycle_status() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_line_fits_for_sync(p_program_slugs text[], p_updated_since timestamp with time zone, p_limit integer, p_include_unpublished boolean, p_include_counts boolean, p_after_id integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_lists_for_sync(p_user_id uuid, p_include_unpublished boolean) FROM PUBLIC, anon;
