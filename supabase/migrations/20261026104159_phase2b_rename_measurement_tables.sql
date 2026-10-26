@@ -114,3 +114,22 @@ ALTER POLICY admin_object_photometry_bands_delete ON public.photometry RENAME TO
 ALTER POLICY select_dr_spectrum_lines ON public.dr_lines RENAME TO select_dr_lines;
 ALTER POLICY select_dr_photometry ON public.dr_catalog_matches RENAME TO select_dr_catalog_matches;
 ALTER POLICY select_dr_photometry_bands ON public.dr_photometry RENAME TO select_dr_photometry;
+
+-- Production carries a hand-made pg_cron job, weekly-analyze, that is not in
+-- the repository (created on the hosted project, carried over by
+-- ops/scripts/dump-hosted.sh) and names object_photometry. Point it at the
+-- new name where the job exists; a no-op everywhere else (no pg_cron, or no
+-- such job). EXECUTE keeps the block compilable where the cron schema is
+-- absent.
+DO $$
+DECLARE
+  v_jobid bigint;
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+    EXECUTE 'SELECT jobid FROM cron.job WHERE jobname = $1' INTO v_jobid USING 'weekly-analyze';
+    IF v_jobid IS NOT NULL THEN
+      EXECUTE 'SELECT cron.alter_job($1, command := $2)'
+        USING v_jobid, 'ANALYZE targets; ANALYZE spectra; ANALYZE objects; ANALYZE shutters; ANALYZE catalog_matches;';
+    END IF;
+  END IF;
+END $$;
