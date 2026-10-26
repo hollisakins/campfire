@@ -293,6 +293,11 @@ CREATE POLICY "select_objects_by_access"
     -- see all. has_published_spectrum is recomputed by reconcile from members.
     AND (has_published_spectrum OR (SELECT public.is_admin())
          OR (SELECT public.link_sees_drafts()))
+    -- Soft-deleted objects (is_active = false: orphans left behind when
+    -- reconciliation regroups their targets) are an admin-only sight. The RPCs
+    -- filter them too; this makes a direct read of the table correct as well
+    -- (docs: Catalog Read Model, phase 0). Share links do not see them either.
+    AND (is_active OR (SELECT public.is_admin()))
     -- Share links (docs/design-public-mirror.md §5.2). Array-overlap form: an
     -- object is a cross-observation merge, so it is in scope when the shared
     -- observation is ANY of its members. The object's OTHER members stay hidden
@@ -377,6 +382,7 @@ CREATE POLICY "select_object_photometry_by_access"
         -- B1 (#217): no photometry for objects with no published spectrum.
         AND (o.has_published_spectrum OR (SELECT public.is_admin())
              OR (SELECT public.link_sees_drafts()))
+        AND (o.is_active OR (SELECT public.is_admin()))
         AND ((SELECT NOT public.is_link_account())
              OR o.observations && ARRAY[(SELECT public.link_observation())]::text[])
     )
@@ -542,6 +548,7 @@ CREATE POLICY "select_list_members"
           -- B1 (#217): list members matched to an unpublished-only object are
           -- hidden from non-admins (the object itself is invisible).
           AND (o.has_published_spectrum OR (SELECT public.is_admin()))
+          AND (o.is_active OR (SELECT public.is_admin()))
       )
     )
   );
@@ -804,6 +811,7 @@ CREATE POLICY "select_comments_by_access"
         WHERE o.id = comments.object_id
           AND o.programs && (SELECT public.accessible_program_slugs())
           AND (o.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
+          AND (o.is_active OR (SELECT public.is_admin()))
       ))
     )
   );
@@ -860,6 +868,7 @@ CREATE POLICY "select_audit_by_access"
         SELECT o.id FROM objects o
         WHERE o.programs && (SELECT public.accessible_program_slugs())
           AND (o.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
+          AND (o.is_active OR (SELECT public.is_admin()))
       ))
       OR (spectrum_id IS NOT NULL AND spectrum_id IN (
         SELECT s.id FROM spectra s
@@ -887,6 +896,7 @@ CREATE POLICY "insert_audit_by_access"
       SELECT o.id FROM objects o
       WHERE o.programs && (SELECT public.accessible_program_slugs())
         AND (o.has_published_spectrum OR (SELECT public.is_admin()))  -- B1 (#217)
+        AND (o.is_active OR (SELECT public.is_admin()))
     ))
     OR (spectrum_id IS NOT NULL AND spectrum_id IN (
       SELECT s.id FROM spectra s
