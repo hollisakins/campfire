@@ -17,9 +17,14 @@
 // the Worker refuses to cache an upstream whose Last-Modified is newer than
 // that, which is exactly an overwrite a still-valid older url would
 // otherwise store under the old hash.
+//
+// The Worker answers on every hostname of the portal's domains, so a request
+// that came in on an alias host gets urls on the Worker's alias
+// (lib/host-aliases.ts); the token does not cover the origin.
 import 'server-only';
 
 import { resolveObjectBackends, presignResolvedStable, type ResolvedObject } from '@/lib/r2';
+import { urlForRequest } from './request-host';
 import { hmacBase64Url } from './worker-token';
 
 const TOKEN_VERSION = 'campfire-o-v2';
@@ -84,8 +89,9 @@ export async function frontUrlsForResolved(
   resolved: ResolvedObject[],
 ): Promise<Map<string, string | null>> {
   const out = new Map<string, string | null>(keys.map((k) => [k, null]));
-  const base = cdnFrontBase();
-  if (!base || keys.length === 0) return out;
+  const primaryBase = cdnFrontBase();
+  if (!primaryBase || keys.length === 0) return out;
+  const base = await urlForRequest(primaryBase);
   const secret = process.env.WORKER_JWT_SECRET as string;
 
   await Promise.all(

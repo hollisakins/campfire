@@ -67,6 +67,7 @@ import type { RulerMeasurement } from './fitsgl/ruler';
 import { GLASS } from './fitsgl/glass';
 import { formatTargetParam, parseTargetParam, type MapTarget } from '@/lib/utils/map-target';
 import { formatRA, formatDec } from '@/lib/utils/wcs';
+import { browserUrl } from '@/lib/host-aliases';
 
 /** Ruler/graticule colours drawn over the always-dark map well (theme-independent). */
 const RULER_ACCENT = '#fb923c';
@@ -309,7 +310,8 @@ export function FitsGLMapSurface({
     setConfig(null);
     setLoadError(null);
     initialApplied.current = false;
-    loadFitsglConfig(dataset.fitsgl_json_url)
+    // Stored on the primary tiles host; band urls resolve against this one.
+    loadFitsglConfig(browserUrl(dataset.fitsgl_json_url))
       .then((cfg) => {
         if (cancelled) return;
         const b = explorerBandsFromConfig(cfg);

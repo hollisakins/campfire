@@ -533,12 +533,22 @@ domain and origins in `wrangler.toml`, and the web fallbacks.
 and `deploy.sh <last sha built with the old urls>` (`deploys.log`). Re-creating
 the parking rule is optional; without it the new names serve the site directly.
 
-**Afterwards:** leave `campfire-api.hollisakins.com` aliased for at least three
-months and the old Worker route for at least 30 days; then drop the `ALT_API_HOST`
-line, the old route in `wrangler.toml`, and the `campfire-tiles` R2 custom
-domain. The redirects on `campfire.hollisakins.com` stay for as long as the
-domain exists. Moving the mail From to `team@campfire-jwst.org` is a separate,
-optional Resend domain verification.
+**Afterwards:** the hollisakins.com names are a permanent second domain, not
+a retirement path. Some networks block `campfire-jwst.org` (newly-registered-
+domain firewall categories, about 30 days from 2026-10-25 at Palo Alto sites)
+and others block `hollisakins.com` (Princeton), so `campfire.hollisakins.com`
+serves the whole portal (Caddy `portal_alias`, `X-Robots-Tag: noindex`) and the
+app keeps a visitor there on the alias of every host it links to
+(`web/lib/host-aliases.ts`, GitHub variable `DEPLOY_NEXT_PUBLIC_HOST_ALIASES` =
+comma-separated `alias=primary` pairs, `.env.example` has the value). That
+needs all four alias names live: `ALT_WEB_HOST`, `ALT_API_HOST`, the
+`campfire-download` Worker route in `wrangler.toml` and the `campfire-tiles` R2
+custom domain (its CORS policy must allow the alias portal origin). Keep them,
+and the alias origins in the Worker's `ALLOWED_ORIGINS` and in GoTrue's
+`ADDITIONAL_REDIRECT_URLS`, for as long as either domain is blocked anywhere.
+Auth emails still link to `SITE_URL` (the primary name). Moving the mail From
+to `team@campfire-jwst.org` is a separate, optional Resend domain
+verification.
 
 ## Rollback
 

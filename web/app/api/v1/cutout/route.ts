@@ -13,6 +13,7 @@ import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 import { getAssetVersions } from '@/lib/asset-version';
 import { CUTOUT_STORE_SIZES, cutoutStoreFor, cutoutStoreHas, onFovGrid, storeCutoutInBackground } from '@/lib/cutout/store';
 import { catalogIsPublic, publicProgramSlugs } from '@/lib/server/public-programs';
+import { localizeUrl } from '@/lib/host-aliases';
 
 // Tile decode + reprojection + PNG encode for up to 2048 px on a cold instance (#497).
 export const maxDuration = 60;
@@ -178,7 +179,7 @@ export async function GET(request: NextRequest) {
         );
         const store = storeFor(outputSize);
         if (store && (await cutoutStoreHas(store.key))) {
-          return NextResponse.redirect(store.url, { status: 302, headers: { 'Cache-Control': STORE_REDIRECT_CACHE } });
+          return NextResponse.redirect(localizeUrl(store.url, request.headers.get('host')), { status: 302, headers: { 'Cache-Control': STORE_REDIRECT_CACHE } });
         }
         const png = await renderDisplayCutoutPng(fitsglSrc, {
           ra: obj.ra,
@@ -228,7 +229,7 @@ export async function GET(request: NextRequest) {
     const outputSize = clampSize(requestedSize ?? Math.round(fov * pixPerArcsec));
     const store = storeFor(outputSize);
     if (store && (await cutoutStoreHas(store.key))) {
-      return NextResponse.redirect(store.url, { status: 302, headers: { 'Cache-Control': STORE_REDIRECT_CACHE } });
+      return NextResponse.redirect(localizeUrl(store.url, request.headers.get('host')), { status: 302, headers: { 'Cache-Control': STORE_REDIRECT_CACHE } });
     }
 
     // Composite the thumbnail
