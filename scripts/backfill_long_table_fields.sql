@@ -7,6 +7,8 @@
 --          <- line_fits.lines -> <line> -> <field>
 --   photometry.{wav_min, wav_max}
 --          <- catalog_matches.photometry -> 'bands' -> <band> -> <field>
+--   and the same two sets on dr_lines / dr_photometry of releases frozen
+--   before the columns existed, from the release's own frozen blobs by tag.
 --
 -- The 2c-1 unnest triggers write every field for rows written after the
 -- deploy; this fills the rows that predate it. Batched by parent id range,
@@ -96,6 +98,53 @@ BEGIN
   RAISE NOTICE 'photometry: % rows filled', total;
 END $$;
 
+-- Frozen releases that predate the columns: a release's own blobs
+-- (dr_line_fits.lines, dr_catalog_matches.photometry), joined by tag as well
+-- as parent id, never the live tables (a frozen release is a snapshot; the
+-- 2c-1 dr_freeze_job copies every field for freezes after the migration).
+-- No-op on a database with no releases.
+DO $$
+DECLARE
+  n bigint;
+BEGIN
+  UPDATE public.dr_lines l
+     SET label         = e.value ->> 'label',
+         wave_obs      = (e.value ->> 'wave_obs')::double precision,
+         cont          = (e.value ->> 'cont')::double precision,
+         cont_err      = (e.value ->> 'cont_err')::double precision,
+         dv            = (e.value ->> 'dv')::double precision,
+         dv_err        = (e.value ->> 'dv_err')::double precision,
+         sigma_v       = (e.value ->> 'sigma_v')::double precision,
+         sigma_v_err   = (e.value ->> 'sigma_v_err')::double precision,
+         sigma_lsf_kms = (e.value ->> 'sigma_lsf_kms')::double precision,
+         complex       = (e.value ->> 'complex')::integer,
+         chi2          = (e.value ->> 'chi2')::double precision,
+         dof           = (e.value ->> 'dof')::integer,
+         npix          = (e.value ->> 'npix')::integer,
+         tied_to       = e.value ->> 'tied_to',
+         members       = CASE WHEN jsonb_typeof(e.value -> 'members') = 'array'
+                              THEN ARRAY(SELECT jsonb_array_elements_text(e.value -> 'members')) END
+    FROM public.dr_line_fits f, jsonb_each(f.lines) e
+   WHERE f.tag = l.tag
+     AND f.spectrum_id = l.spectrum_id
+     AND e.key = l.line
+     AND l.label IS NULL;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RAISE NOTICE 'dr_lines: % rows filled', n;
+  COMMIT;
+  UPDATE public.dr_photometry b
+     SET wav_min = (e.value ->> 'wav_min')::double precision,
+         wav_max = (e.value ->> 'wav_max')::double precision
+    FROM public.dr_catalog_matches m, jsonb_each(m.photometry -> 'bands') e
+   WHERE m.tag = b.tag
+     AND m.id = b.match_id
+     AND e.key = b.band
+     AND e.value ? 'wav_min'
+     AND b.wav_min IS NULL;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RAISE NOTICE 'dr_photometry: % rows filled', n;
+END $$;
+
 ANALYZE public.lines;
 ANALYZE public.photometry;
 
@@ -122,5 +171,25 @@ UNION ALL
 SELECT 'photometry disagree', count(*)
   FROM public.photometry b
   JOIN public.catalog_matches m ON m.id = b.match_id
+ WHERE b.wav_min IS DISTINCT FROM (m.photometry -> 'bands' -> b.band ->> 'wav_min')::double precision
+    OR b.wav_max IS DISTINCT FROM (m.photometry -> 'bands' -> b.band ->> 'wav_max')::double precision
+UNION ALL
+SELECT 'dr_lines unfilled', count(*) FROM public.dr_lines WHERE label IS NULL
+UNION ALL
+SELECT 'dr_lines disagree', count(*)
+  FROM public.dr_lines l
+  JOIN public.dr_line_fits f ON f.tag = l.tag AND f.spectrum_id = l.spectrum_id
+ WHERE l.label IS DISTINCT FROM (f.lines -> l.line ->> 'label')
+    OR l.chi2 IS DISTINCT FROM (f.lines -> l.line ->> 'chi2')::double precision
+    OR coalesce(cardinality(l.members), 0) IS DISTINCT FROM coalesce(jsonb_array_length(f.lines -> l.line -> 'members'), 0)
+UNION ALL
+SELECT 'dr_photometry unfilled', count(*)
+  FROM public.dr_photometry b
+  JOIN public.dr_catalog_matches m ON m.tag = b.tag AND m.id = b.match_id
+ WHERE b.wav_min IS NULL AND (m.photometry -> 'bands' -> b.band) ? 'wav_min'
+UNION ALL
+SELECT 'dr_photometry disagree', count(*)
+  FROM public.dr_photometry b
+  JOIN public.dr_catalog_matches m ON m.tag = b.tag AND m.id = b.match_id
  WHERE b.wav_min IS DISTINCT FROM (m.photometry -> 'bands' -> b.band ->> 'wav_min')::double precision
     OR b.wav_max IS DISTINCT FROM (m.photometry -> 'bands' -> b.band ->> 'wav_max')::double precision;
