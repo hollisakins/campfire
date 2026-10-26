@@ -225,7 +225,12 @@ BEGIN
   DELETE FROM public.lines WHERE spectrum_id = NEW.spectrum_id;
   INSERT INTO public.lines (
     spectrum_id, line, component, wave_rest, flux, flux_err, snr,
-    ew_rest, ew_rest_err, flags, blend_into, object_id
+    ew_rest, ew_rest_err, flags, blend_into,
+    -- phase 2c-1: every remaining field of the record, so the row is the
+    -- whole measurement and the blob can be dropped in 2c-2
+    label, wave_obs, cont, cont_err, dv, dv_err, sigma_v, sigma_v_err,
+    sigma_lsf_kms, complex, chi2, dof, npix, tied_to, members,
+    object_id
   )
   SELECT
     NEW.spectrum_id,
@@ -239,6 +244,22 @@ BEGIN
     (e.value ->> 'ew_rest_err')::double precision,
     COALESCE((e.value ->> 'flags')::integer, 0),
     e.value ->> 'blend_into',
+    e.value ->> 'label',
+    (e.value ->> 'wave_obs')::double precision,
+    (e.value ->> 'cont')::double precision,
+    (e.value ->> 'cont_err')::double precision,
+    (e.value ->> 'dv')::double precision,
+    (e.value ->> 'dv_err')::double precision,
+    (e.value ->> 'sigma_v')::double precision,
+    (e.value ->> 'sigma_v_err')::double precision,
+    (e.value ->> 'sigma_lsf_kms')::double precision,
+    (e.value ->> 'complex')::integer,
+    (e.value ->> 'chi2')::double precision,
+    (e.value ->> 'dof')::integer,
+    (e.value ->> 'npix')::integer,
+    e.value ->> 'tied_to',
+    CASE WHEN jsonb_typeof(e.value -> 'members') = 'array'
+         THEN ARRAY(SELECT jsonb_array_elements_text(e.value -> 'members')) END,
     -- phase 2a: the object link, so a line row is addressable by object.
     -- FOR SHARE on the spectrum and target rows: a concurrent target regroup
     -- or spectrum move (UPDATE row locks) waits for this write, or this write
@@ -271,13 +292,15 @@ SET search_path = public
 AS $$
 BEGIN
   DELETE FROM public.photometry WHERE match_id = NEW.id;
-  INSERT INTO public.photometry (match_id, band, flux, flux_err, wav, object_id)
+  INSERT INTO public.photometry (match_id, band, flux, flux_err, wav, wav_min, wav_max, object_id)
   SELECT
     NEW.id,
     e.key,
     (e.value ->> 'flux')::double precision,
     (e.value ->> 'flux_err')::double precision,
     (e.value ->> 'wav')::double precision,
+    (e.value ->> 'wav_min')::double precision,   -- phase 2c-1: the band edges too
+    (e.value ->> 'wav_max')::double precision,
     NEW.object_id   -- phase 2a: the object link, copied from the cross-match
   FROM jsonb_each(COALESCE(NEW.photometry -> 'bands', '{}'::jsonb)) AS e
   WHERE jsonb_typeof(e.value) = 'object';
