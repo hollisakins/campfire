@@ -417,7 +417,8 @@ class Campfire:
     def iter_objects(self, **filters) -> Iterator[dict]:
         """Iterate over all matching objects with automatic pagination."""
         remote = filters.pop("remote", False)
-        use_local = self._local is not None and not remote
+        # a predicate tree (q) is evaluated by the server, so it forces the remote path
+        use_local = self._local is not None and not remote and filters.get("q") is None
 
         if use_local:
             self._log_local_use()
@@ -601,7 +602,8 @@ class Campfire:
     def iter_spectra(self, **filters) -> Iterator[dict]:
         """Iterate over all matching spectra with automatic pagination."""
         remote = filters.pop("remote", False)
-        use_local = self._local is not None and not remote
+        # a predicate tree (q) is evaluated by the server, so it forces the remote path
+        use_local = self._local is not None and not remote and filters.get("q") is None
 
         if use_local:
             self._log_local_use()

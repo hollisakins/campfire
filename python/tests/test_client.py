@@ -120,6 +120,18 @@ class TestQueryObjects:
         params = mock_api_session.get.call_args.kwargs.get("params", {})
         assert params["q"] == '{"exists":"lines","where":[{"col":"line","op":"eq","v":"CIII1908"}]}'
 
+    def test_iter_objects_predicate_tree_goes_remote_even_with_a_local_store(self, mock_api_session, sample_objects_response):
+        mock_api_session.get.return_value = _make_mock_response(
+            json_data=sample_objects_response
+        )
+        client = Campfire()
+        client._local = object()   # a synced catalog is present; the tree must bypass it
+        tree = {"col": "redshift", "op": "gt", "v": 4.9}
+        rows = list(client.iter_objects(q=tree))
+        assert rows == sample_objects_response["data"]
+        params = mock_api_session.get.call_args.kwargs.get("params", {})
+        assert params["q"] == '{"col":"redshift","op":"gt","v":4.9}'
+
 
 class TestQuerySpectra:
     def test_query_spectra_success(self, mock_api_session, sample_spectra_response):
