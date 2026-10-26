@@ -41,7 +41,9 @@ DECLARE
     '{"exists": "lines", "where": [{"cone": {"ra": 150, "dec": 2, "radius": 0.1}}]}',
     '{"v": 2, "and": [{"col": "redshift", "op": "gte", "v": 1}]}',
     '{"frob": 1}',
-    '[1, 2]'
+    '[1, 2]',
+    '{"col": "created_at", "op": "gte", "v": "not-a-date"}',
+    '{"exists": "lines", "not": "maybe"}'
   ]::jsonb[];
   t jsonb;
   got text;
@@ -55,6 +57,17 @@ BEGIN
     EXCEPTION WHEN invalid_parameter_value THEN NULL;
     END;
   END LOOP;
+  -- a literal the compiler accepts but Postgres cannot evaluate is still 22023 at run time
+  BEGIN
+    PERFORM public.catalog_match_ids('objects', '{"col": "created_at", "op": "lt", "v": "300000-01-01"}');
+    RAISE EXCEPTION 'accepted an out-of-range timestamp';
+  EXCEPTION WHEN invalid_parameter_value THEN NULL;
+  END;
+  BEGIN
+    PERFORM public.catalog_match_ids('objects', '{"col": "redshift", "op": "gte", "v": 1e400}');
+    RAISE EXCEPTION 'accepted a number out of double precision range';
+  EXCEPTION WHEN invalid_parameter_value THEN NULL;
+  END;
   -- root must be a catalog root
   BEGIN
     got := public.catalog_tree_sql('{"col": "snr", "op": "gte", "v": 1}', 'lines');
@@ -278,6 +291,18 @@ BEGIN
     '{"exists": "lines", "where": [{"col": "line", "op": "eq", "v": "OIII5007"}, {"col": "snr", "op": "gte", "v": 5}]}',
     ARRAY['zzz_cq_pub'], p_band := 'f444w', p_band_mag_max := 25, p_sort_column := 'object_id');
   IF r.total_count <> 3 THEN RAISE EXCEPTION 'display band narrowed the selection: %', r.total_count; END IF;
+  -- a cone tree sorted by distance from its centre: nearest first, distances present
+  SELECT * INTO r FROM public.catalog_query_objects('{"cone": {"ra": 158.1, "dec": 2.0, "radius": 0.15}}', ARRAY['zzz_cq_pub'],
+    p_sort_column := 'distance', p_sort_direction := 'asc', p_coord_ra := 158.1, p_coord_dec := 2.0);
+  IF r.total_count <> 3 OR (r.targets -> 0 ->> 'object_id') <> 'CQ-B' OR (r.targets -> 1 -> 'distance') IS NULL OR (r.targets -> 1 -> 'distance') = 'null'::jsonb THEN
+    RAISE EXCEPTION 'distance sort on a cone tree: total %, first %, distances %', r.total_count, r.targets -> 0 ->> 'object_id', r.targets -> 1 -> 'distance';
+  END IF;
+  -- ...and without a reference position the sort is refused, not silently replaced
+  BEGIN
+    PERFORM * FROM public.catalog_query_objects('{"cone": {"ra": 158.1, "dec": 2.0, "radius": 0.15}}', ARRAY['zzz_cq_pub'], p_sort_column := 'distance');
+    RAISE EXCEPTION 'distance sort without a reference was accepted';
+  EXCEPTION WHEN invalid_parameter_value THEN NULL;
+  END;
   -- an empty selection is an empty page
   SELECT * INTO r FROM public.catalog_query_objects('{"col": "object_id", "op": "eq", "v": "CQ-NONE"}', ARRAY['zzz_cq_pub']);
   IF r.total_count <> 0 OR jsonb_array_length(r.targets) <> 0 OR r.has_more THEN RAISE EXCEPTION 'empty selection'; END IF;

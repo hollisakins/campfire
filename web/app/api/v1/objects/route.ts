@@ -204,6 +204,10 @@ export async function GET(request: NextRequest) {
           p_page_size: limit,
           p_include_count: includeCount,
           ...cursorRpcParams(cursor),
+          // ra / dec alone are the distance reference (the distance column and
+          // sort); the tree's cone does the selecting
+          p_coord_ra: ra && dec ? parseFloat(ra) : null,
+          p_coord_dec: ra && dec ? parseFloat(dec) : null,
           p_viewer_id: userId,
           ...lineFilterRpcParams(searchParams),
           ...bandFilterRpcParams(searchParams),

@@ -103,6 +103,16 @@ describe('GET /api/v1/objects with a predicate tree', () => {
     expect(rpcCalls[0]).not.toHaveProperty('p_fields');
   });
 
+  it('passes ra / dec as the distance reference for a tree query', async () => {
+    rpcResults = [page([])];
+    const res = await GET(new NextRequest(`http://x/api/v1/objects?q=${encodeURIComponent(JSON.stringify(tree))}&ra=150.1&dec=2.2&sort=distance`, { headers: { authorization: 'Bearer sk_t' } }));
+    expect(res.status).toBe(200);
+    expect(rpcCalls[0].__rpc).toBe('catalog_query_objects');
+    expect(rpcCalls[0].p_coord_ra).toBe(150.1);
+    expect(rpcCalls[0].p_coord_dec).toBe(2.2);
+    expect(rpcCalls[0].p_sort_column).toBe('distance');
+  });
+
   it('rejects a q that is not a JSON object before any RPC', async () => {
     for (const bad of ['{not json', '[1,2]', '"x"']) {
       const res = await getQ(bad);

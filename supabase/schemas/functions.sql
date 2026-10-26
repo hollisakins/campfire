@@ -3506,8 +3506,9 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   -- so this is a plain membership test on top of the legacy conjuncts.
   p_spectrum_ids INTEGER[] DEFAULT NULL,
   -- With a tree, p_line / p_band only choose the displayed measurement (the
-  -- Line S/N / Mag columns and sort keys); they must not narrow the tree's
-  -- selection (Codex on #659).
+  -- Line S/N / Mag columns and sort keys) and p_coord_* only the distance
+  -- reference (the distance column and sort); none of them narrows the
+  -- tree's selection (Codex on #659).
   p_measurements_display_only BOOLEAN DEFAULT false
 )
 RETURNS TABLE(
@@ -3748,7 +3749,7 @@ BEGIN
         )
       )
       AND (
-        NOT v_coord_search_active
+        NOT v_coord_search_active OR p_measurements_display_only
         OR (
           -- #527: RA box widened by 1/cos(dec); a cone that reaches a pole spans
           -- every RA, so the RA bound is dropped there (the box is only the index
@@ -3763,7 +3764,7 @@ BEGIN
   distance_filtered AS NOT MATERIALIZED (
     SELECT fs.*
     FROM filtered_spectra fs
-    WHERE NOT v_coord_search_active OR fs.distance <= p_radius_degrees
+    WHERE NOT v_coord_search_active OR p_measurements_display_only OR fs.distance <= p_radius_degrees
   ),
   -- T2-F: one row = one candidate plus its sort key, materialized in exactly
   -- one of two typed slots. The ORDER BY, the keyset predicate and the
@@ -3985,8 +3986,9 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   -- so this is a plain membership test on top of the legacy conjuncts.
   p_object_ids INTEGER[] DEFAULT NULL,
   -- With a tree, p_line / p_band only choose the displayed measurement (the
-  -- Line S/N / Mag columns and sort keys); they must not narrow the tree's
-  -- selection (Codex on #659).
+  -- Line S/N / Mag columns and sort keys) and p_coord_* only the distance
+  -- reference (the distance column and sort); none of them narrows the
+  -- tree's selection (Codex on #659).
   p_measurements_display_only BOOLEAN DEFAULT false
 )
 RETURNS TABLE(
@@ -4172,7 +4174,7 @@ BEGIN
           OR o.needs_review = p_needs_review
       )
       AND (
-        NOT v_coord_search_active
+        NOT v_coord_search_active OR p_measurements_display_only
         OR (
           -- #527: RA box widened by 1/cos(dec); a cone that reaches a pole spans
           -- every RA, so the RA bound is dropped there (the box is only the index
@@ -4343,7 +4345,7 @@ BEGIN
           OR o.needs_review = p_needs_review
       )
       AND (
-        NOT v_coord_search_active
+        NOT v_coord_search_active OR p_measurements_display_only
         OR (
           -- #527: RA box widened by 1/cos(dec); a cone that reaches a pole spans
           -- every RA, so the RA bound is dropped there (the box is only the index
@@ -5072,6 +5074,13 @@ BEGIN
   -- the root's own scope, then the tree (each exists child carries its own)
   RETURN public.catalog_query_node_sql(CASE WHEN p_tree ? 'and' OR p_tree ? 'or' THEN p_tree - 'v' ELSE p_tree END, p_root, 'r', v_catalog, 0, 1, v_scope)
          || public.catalog_query_scope_sql(p_root, 'r', v_catalog, v_scope);
+EXCEPTION
+  -- a value that passed the shape check but not its cast (a timestamp that
+  -- is not one, a "not" that is not a boolean) is the caller's error too:
+  -- every data exception leaves as 22023, so the routes answer 400
+  WHEN data_exception THEN
+    IF SQLSTATE = '22023' THEN RAISE; END IF;
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: invalid value: ' || SQLERRM;
 END;
 $$;
 
@@ -5106,6 +5115,13 @@ BEGIN
   v_from := CASE WHEN public.dr_browse_tag() IS NULL THEN 'public.' || p_root ELSE 'public.cat_' || p_root END;
   EXECUTE format('SELECT COALESCE(array_agg(r.id), ''{}''::integer[]) FROM %s r WHERE %s', v_from, v_pred) INTO v_ids;
   RETURN v_ids;
+EXCEPTION
+  -- a literal the compiler accepted but Postgres cannot evaluate (a number
+  -- out of range for double precision, a timestamp out of range) is the
+  -- caller's error: leave as 22023 so the routes answer 400
+  WHEN data_exception THEN
+    IF SQLSTATE = '22023' THEN RAISE; END IF;
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: invalid value: ' || SQLERRM;
 END;
 $$;
 
@@ -5142,7 +5158,11 @@ CREATE OR REPLACE FUNCTION public.catalog_query_objects(
   p_band_mag_min DOUBLE PRECISION DEFAULT NULL,
   p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
-  p_band_snr_max DOUBLE PRECISION DEFAULT NULL
+  p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
+  -- the distance reference: the 'distance' column and sort measure from here
+  -- (the portal passes the tree's cone centre); required for sort = distance
+  p_coord_ra DOUBLE PRECISION DEFAULT NULL,
+  p_coord_dec DOUBLE PRECISION DEFAULT NULL
 )
 RETURNS TABLE(
   targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER,
@@ -5154,6 +5174,9 @@ AS $$
 DECLARE
   v_ids integer[];
 BEGIN
+  IF p_sort_column = 'distance' AND (p_coord_ra IS NULL OR p_coord_dec IS NULL) THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: sorting by distance needs p_coord_ra / p_coord_dec (the reference position)';
+  END IF;
   v_ids := public.catalog_match_ids('objects', p_tree, p_program_slugs, p_include_unpublished, p_viewer_id);
   IF cardinality(v_ids) = 0 THEN
     RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size, false, NULL::TEXT, NULL::DOUBLE PRECISION, NULL::TEXT[];
@@ -5180,15 +5203,18 @@ BEGIN
     p_after_sort_text := p_after_sort_text,
     p_after_sort_num := p_after_sort_num,
     p_after_tiebreak := p_after_tiebreak,
+    p_coord_ra := p_coord_ra,
+    p_coord_dec := p_coord_dec,
+    p_radius_degrees := CASE WHEN p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL THEN 180::double precision END,
     p_viewer_id := p_viewer_id,
     p_object_ids := v_ids,
     p_measurements_display_only := true);
 END;
 $$;
 
-COMMENT ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) IS 'The objects list for a predicate tree (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_objects_paginated(p_object_ids := ...), so the row shape, sort, paging and cursor are the legacy RPC''s. p_line / p_band only drive the Line S/N and Mag columns and sorts (the legacy RPC runs with p_measurements_display_only, so they never filter). The explicit scope goes through to the tree for a service-role caller.';
-REVOKE ALL ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) TO authenticated, service_role;
+COMMENT ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, double precision, double precision) IS 'The objects list for a predicate tree (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_objects_paginated(p_object_ids := ...), so the row shape, sort, paging and cursor are the legacy RPC''s. p_line / p_band only drive the Line S/N and Mag columns and sorts, p_coord_ra / p_coord_dec only the distance column and sort (the legacy RPC runs with p_measurements_display_only, so none of them filters). The explicit scope goes through to the tree for a service-role caller.';
+REVOKE ALL ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, double precision, double precision) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, double precision, double precision) TO authenticated, service_role;
 
 -- The spectra twin.
 CREATE OR REPLACE FUNCTION public.catalog_query_spectra(
@@ -5214,7 +5240,9 @@ CREATE OR REPLACE FUNCTION public.catalog_query_spectra(
   p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_band_snr_max DOUBLE PRECISION DEFAULT NULL,
-  p_viewer_id UUID DEFAULT NULL
+  p_viewer_id UUID DEFAULT NULL,
+  p_coord_ra DOUBLE PRECISION DEFAULT NULL,
+  p_coord_dec DOUBLE PRECISION DEFAULT NULL
 )
 RETURNS TABLE(
   targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER,
@@ -5226,6 +5254,9 @@ AS $$
 DECLARE
   v_ids integer[];
 BEGIN
+  IF p_sort_column = 'distance' AND (p_coord_ra IS NULL OR p_coord_dec IS NULL) THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: sorting by distance needs p_coord_ra / p_coord_dec (the reference position)';
+  END IF;
   v_ids := public.catalog_match_ids('spectra', p_tree, p_program_slugs, p_include_unpublished, p_viewer_id);
   IF cardinality(v_ids) = 0 THEN
     RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size, false, NULL::TEXT, NULL::DOUBLE PRECISION, NULL::TEXT[];
@@ -5253,14 +5284,17 @@ BEGIN
     p_after_sort_text := p_after_sort_text,
     p_after_sort_num := p_after_sort_num,
     p_after_tiebreak := p_after_tiebreak,
+    p_coord_ra := p_coord_ra,
+    p_coord_dec := p_coord_dec,
+    p_radius_degrees := CASE WHEN p_coord_ra IS NOT NULL AND p_coord_dec IS NOT NULL THEN 180::double precision END,
     p_spectrum_ids := v_ids,
     p_measurements_display_only := true);
 END;
 $$;
 
-COMMENT ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, uuid) IS 'The spectra list for a predicate tree rooted at spectra (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_spectra_paginated(p_spectrum_ids := ...).';
-REVOKE ALL ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, uuid) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, uuid) TO authenticated, service_role;
+COMMENT ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, uuid, double precision, double precision) IS 'The spectra list for a predicate tree rooted at spectra (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_spectra_paginated(p_spectrum_ids := ...).';
+REVOKE ALL ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, uuid, double precision, double precision) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision, uuid, double precision, double precision) TO authenticated, service_role;
 
 
 -- =============================================================================

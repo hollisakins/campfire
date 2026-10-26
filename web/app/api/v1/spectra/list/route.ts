@@ -217,6 +217,10 @@ export async function GET(request: NextRequest) {
           ...cursorRpcParams(cursor),
           ...lineFilterRpcParams(searchParams),
           ...bandFilterRpcParams(searchParams),
+          // ra / dec alone are the distance reference (the distance column and
+          // sort); the tree's cone does the selecting
+          p_coord_ra: ra && dec ? parseFloat(ra) : null,
+          p_coord_dec: ra && dec ? parseFloat(dec) : null,
           // the tree runs on the service-role client: the key's user is the
           // explicit scope for lists (programs + publication go as above)
           p_viewer_id: userId,
