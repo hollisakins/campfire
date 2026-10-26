@@ -28,6 +28,7 @@ OBS = "lfr_obs_" + SUFFIX
 OBJECT = "TEST-LFR-" + SUFFIX
 OBJECT2 = "TEST-LFR2-" + SUFFIX
 TARGET = "test-lfr-" + SUFFIX
+TARGET2 = "test-lfr2-" + SUFFIX   # a second target of OBJECT, the destination of the spectrum move
 FITS = f"/tmp/lfr_{SUFFIX}.fits"
 
 
@@ -41,7 +42,8 @@ def fixtures():
           VALUES ('{OBJECT}', 'zzz_lfr_field', 155.0, 2.0, '{{{PROGRAM}}}', '{{{OBS}}}', true, 5.0, 3),
                  ('{OBJECT2}', 'zzz_lfr_field', 155.01, 2.0, '{{{PROGRAM}}}', '{{{OBS}}}', true, 2.0, 3);
         INSERT INTO targets (target_id, field, ra, dec, program_slug, observation, object_id)
-          VALUES ('{TARGET}', 'zzz_lfr_field', 155.0, 2.0, '{PROGRAM}', '{OBS}', (SELECT id FROM objects WHERE object_id = '{OBJECT}'));
+          VALUES ('{TARGET}', 'zzz_lfr_field', 155.0, 2.0, '{PROGRAM}', '{OBS}', (SELECT id FROM objects WHERE object_id = '{OBJECT}')),
+                 ('{TARGET2}', 'zzz_lfr_field', 155.0, 2.001, '{PROGRAM}', '{OBS}', (SELECT id FROM objects WHERE object_id = '{OBJECT}'));
         INSERT INTO spectra (target_id, grating, fits_path, signal_to_noise, exposure_time, deploy_status)
           VALUES ('{TARGET}', 'PRISM', '{FITS}', 10.0, 1000.0, 'published');
         """
@@ -52,9 +54,9 @@ def fixtures():
     finally:
         run_sql(
             f"""
-            DELETE FROM spectrum_line_fits WHERE target_id = '{TARGET}';
+            DELETE FROM spectrum_line_fits WHERE target_id IN ('{TARGET}', '{TARGET2}');
             DELETE FROM spectra WHERE fits_path = '{FITS}';
-            DELETE FROM targets WHERE target_id = '{TARGET}';
+            DELETE FROM targets WHERE target_id IN ('{TARGET}', '{TARGET2}');
             DELETE FROM objects WHERE object_id IN ('{OBJECT}', '{OBJECT2}');
             DELETE FROM observations WHERE name = '{OBS}';
             DELETE FROM programs WHERE slug = '{PROGRAM}';
@@ -158,5 +160,27 @@ def test_target_regroup_then_fit_insert_serializes(fixtures):
         a.wait_for("A_INSERTED", timeout=20)
         a.send_and_wait("COMMIT;", "A_COMMITTED")
         assert _line_object() == OBJECT2, "lines written after a target regroup began kept the old object"
+    finally:
+        a.close(); b.close()
+
+
+@requires_local_db
+def test_spectrum_move_then_destination_regroup_serializes(fixtures):
+    """Fit committed on TARGET (object OBJECT). A moves the spectrum to TARGET2, also of
+    OBJECT (uncommitted; the relink holds FOR SHARE on TARGET2). B regroups TARGET2 to
+    OBJECT2 -> must wait. After A commits, B's relink sees the moved spectrum: OBJECT2."""
+    r = run_sql(_insert_fit_sql())
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _line_object() == OBJECT
+    a, b = Session("a"), Session("b")
+    try:
+        a.send_and_wait("BEGIN;", "A_BEGUN")
+        a.send_and_wait(f"UPDATE spectra SET target_id = '{TARGET2}' WHERE fits_path = '{FITS}';", "A_MOVED")
+        b.send(f"UPDATE targets SET object_id = (SELECT id FROM objects WHERE object_id = '{OBJECT2}') WHERE target_id = '{TARGET2}';")
+        b.send("\\echo B_DONE")
+        _wait_until_blocked("race_b")
+        a.send_and_wait("COMMIT;", "A_COMMITTED")
+        b.wait_for("B_DONE", timeout=20)
+        assert _line_object() == OBJECT2, "lines of a spectrum moved during a regroup of its destination kept the old object"
     finally:
         a.close(); b.close()

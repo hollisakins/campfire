@@ -1208,14 +1208,16 @@ CREATE TRIGGER propagate_program_is_public_trigger
 -- written while their object is being inspected, or while their target is
 -- being regrouped or their spectrum moved, would copy the OLD object or
 -- redshift; the inspection's / regroup's trigger cannot see the uncommitted
--- rows; and the copies would commit wrong for good. So every parent read that
--- feeds a copy takes FOR SHARE on the parent rows (the spectrum, the target
--- and the object), which conflicts with the row lock the other side's UPDATE
--- holds: the write waits and reads the committed parent, or the parent
--- change waits and its trigger sees the new rows. The two-session checks are
--- python/tests/test_line_fit_stale_race.py (inspection; target regroup). A
--- deploy refitting existing fits while the same object is inspected can
--- deadlock and is retried; both are rare.
+-- rows; and the copies would commit wrong for good. The rule, applied to
+-- every read in this block that feeds a copy: hold FOR SHARE on the row read
+-- (the spectrum, the target, the object; the destination target of a moved
+-- spectrum), which conflicts with the row lock the other side's UPDATE holds,
+-- so the write waits and reads the committed parent, or the parent change
+-- waits and its trigger sees the new rows. The two-session checks are
+-- python/tests/test_line_fit_stale_race.py (inspection; target regroup;
+-- spectrum move against a regroup of its destination). A deploy refitting
+-- existing fits while the same object is inspected can deadlock and is
+-- retried; both are rare.
 
 DROP FUNCTION IF EXISTS public.compute_line_fit_stale CASCADE;
 CREATE OR REPLACE FUNCTION public.compute_line_fit_stale() RETURNS trigger
@@ -1305,7 +1307,14 @@ LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  -- statement trigger on every spectra UPDATE: keep the rows whose target changed
+  -- statement trigger on every spectra UPDATE: keep the rows whose target changed.
+  -- Lock the destination targets first (the rule: every read that feeds a
+  -- copied link holds FOR SHARE on the row it reads), so a concurrent regroup
+  -- of the destination waits for this move or this move waits for it.
+  PERFORM 1 FROM targets t
+    WHERE t.target_id IN (SELECT n.target_id FROM new_rows n JOIN old_rows o ON o.id = n.id
+                           WHERE o.target_id IS DISTINCT FROM n.target_id)
+    FOR SHARE;
   UPDATE spectrum_lines l SET object_id = t.object_id
     FROM new_rows n
     JOIN old_rows o ON o.id = n.id AND o.target_id IS DISTINCT FROM n.target_id

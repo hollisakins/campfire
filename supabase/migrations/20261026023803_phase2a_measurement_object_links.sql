@@ -728,7 +728,14 @@ CREATE OR REPLACE FUNCTION public.relink_lines_from_spectra()
   SET search_path TO 'public'
   AS $function$
 BEGIN
-  -- statement trigger on every spectra UPDATE: keep the rows whose target changed
+  -- statement trigger on every spectra UPDATE: keep the rows whose target changed.
+  -- Lock the destination targets first (the rule: every read that feeds a
+  -- copied link holds FOR SHARE on the row it reads), so a concurrent regroup
+  -- of the destination waits for this move or this move waits for it.
+  PERFORM 1 FROM targets t
+    WHERE t.target_id IN (SELECT n.target_id FROM new_rows n JOIN old_rows o ON o.id = n.id
+                           WHERE o.target_id IS DISTINCT FROM n.target_id)
+    FOR SHARE;
   UPDATE spectrum_lines l SET object_id = t.object_id
     FROM new_rows n
     JOIN old_rows o ON o.id = n.id AND o.target_id IS DISTINCT FROM n.target_id
