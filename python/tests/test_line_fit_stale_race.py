@@ -26,6 +26,7 @@ SUFFIX = uuid.uuid4().hex[:8]
 PROGRAM = "zzz_lfr_" + SUFFIX
 OBS = "lfr_obs_" + SUFFIX
 OBJECT = "TEST-LFR-" + SUFFIX
+OBJECT2 = "TEST-LFR2-" + SUFFIX
 TARGET = "test-lfr-" + SUFFIX
 FITS = f"/tmp/lfr_{SUFFIX}.fits"
 
@@ -37,7 +38,8 @@ def fixtures():
         INSERT INTO programs (slug, program_name, is_public) VALUES ('{PROGRAM}', 'Stale race', true);
         INSERT INTO observations (name, program_slug, jwst_program_id, field) VALUES ('{OBS}', '{PROGRAM}', 9987, 'zzz_lfr_field');
         INSERT INTO objects (object_id, field, ra, dec, programs, observations, has_published_spectrum, redshift_inspected, redshift_quality)
-          VALUES ('{OBJECT}', 'zzz_lfr_field', 155.0, 2.0, '{{{PROGRAM}}}', '{{{OBS}}}', true, 5.0, 3);
+          VALUES ('{OBJECT}', 'zzz_lfr_field', 155.0, 2.0, '{{{PROGRAM}}}', '{{{OBS}}}', true, 5.0, 3),
+                 ('{OBJECT2}', 'zzz_lfr_field', 155.01, 2.0, '{{{PROGRAM}}}', '{{{OBS}}}', true, 2.0, 3);
         INSERT INTO targets (target_id, field, ra, dec, program_slug, observation, object_id)
           VALUES ('{TARGET}', 'zzz_lfr_field', 155.0, 2.0, '{PROGRAM}', '{OBS}', (SELECT id FROM objects WHERE object_id = '{OBJECT}'));
         INSERT INTO spectra (target_id, grating, fits_path, signal_to_noise, exposure_time, deploy_status)
@@ -53,7 +55,7 @@ def fixtures():
             DELETE FROM spectrum_line_fits WHERE target_id = '{TARGET}';
             DELETE FROM spectra WHERE fits_path = '{FITS}';
             DELETE FROM targets WHERE target_id = '{TARGET}';
-            DELETE FROM objects WHERE object_id = '{OBJECT}';
+            DELETE FROM objects WHERE object_id IN ('{OBJECT}', '{OBJECT2}');
             DELETE FROM observations WHERE name = '{OBS}';
             DELETE FROM programs WHERE slug = '{PROGRAM}';
             """
@@ -109,5 +111,52 @@ def test_inspection_then_fit_insert_serializes(fixtures):
         a.wait_for("A_INSERTED", timeout=20)
         a.send_and_wait("COMMIT;", "A_COMMITTED")
         assert _flag() == "t", "fit inserted after an inspection began committed fresh"
+    finally:
+        a.close(); b.close()
+
+
+def _line_object() -> str:
+    return _scalar(
+        "\\t on\n"
+        f"SELECT o.object_id FROM spectrum_lines l JOIN spectra s ON s.id = l.spectrum_id "
+        f"JOIN objects o ON o.id = l.object_id WHERE s.fits_path = '{FITS}' LIMIT 1;"
+    )
+
+
+@requires_local_db
+def test_fit_insert_then_target_regroup_serializes(fixtures):
+    """A inserts the fit and its lines (object link = OBJECT, uncommitted, FOR SHARE on
+    the target). B regroups the target to OBJECT2 -> must wait. After A commits, B's
+    relink sees the lines: they point at OBJECT2."""
+    a, b = Session("a"), Session("b")
+    try:
+        a.send_and_wait("BEGIN;", "A_BEGUN")
+        a.send_and_wait(_insert_fit_sql(), "A_INSERTED")
+        b.send(f"UPDATE targets SET object_id = (SELECT id FROM objects WHERE object_id = '{OBJECT2}') WHERE target_id = '{TARGET}';")
+        b.send("\\echo B_DONE")
+        _wait_until_blocked("race_b")
+        a.send_and_wait("COMMIT;", "A_COMMITTED")
+        b.wait_for("B_DONE", timeout=20)
+        assert _line_object() == OBJECT2, "lines written during a target regroup kept the old object"
+    finally:
+        a.close(); b.close()
+
+
+@requires_local_db
+def test_target_regroup_then_fit_insert_serializes(fixtures):
+    """B regroups the target (uncommitted, holds the targets row). A inserts the fit ->
+    its FOR SHARE on the target must wait. After B commits, A links to OBJECT2."""
+    a, b = Session("a"), Session("b")
+    try:
+        b.send_and_wait("BEGIN;", "B_BEGUN")
+        b.send_and_wait(f"UPDATE targets SET object_id = (SELECT id FROM objects WHERE object_id = '{OBJECT2}') WHERE target_id = '{TARGET}';", "B_UPDATED")
+        a.send("BEGIN;")
+        a.send(_insert_fit_sql())
+        a.send("\\echo A_INSERTED")
+        _wait_until_blocked("race_a")
+        b.send_and_wait("COMMIT;", "B_COMMITTED")
+        a.wait_for("A_INSERTED", timeout=20)
+        a.send_and_wait("COMMIT;", "A_COMMITTED")
+        assert _line_object() == OBJECT2, "lines written after a target regroup began kept the old object"
     finally:
         a.close(); b.close()

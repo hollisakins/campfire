@@ -39,7 +39,7 @@ BEGIN
        JOIN targets t ON t.target_id = s.target_id
        JOIN objects o ON o.id = t.object_id
       WHERE s.id = NEW.spectrum_id
-      FOR SHARE OF o),
+      FOR SHARE OF s, t, o),
     false);
   RETURN NEW;
 END;
@@ -841,10 +841,15 @@ BEGIN
     (e.value ->> 'ew_rest_err')::double precision,
     COALESCE((e.value ->> 'flags')::integer, 0),
     e.value ->> 'blend_into',
-    -- phase 2a: the object link, so a line row is addressable by object
+    -- phase 2a: the object link, so a line row is addressable by object.
+    -- FOR SHARE on the spectrum and target rows: a concurrent target regroup
+    -- or spectrum move (UPDATE row locks) waits for this write, or this write
+    -- waits for it; either way the link lands pointing at the committed object
+    -- (see the concurrency note in the phase 2a block below).
     (SELECT t.object_id FROM public.spectra s
        JOIN public.targets t ON t.target_id = s.target_id
-      WHERE s.id = NEW.spectrum_id)
+      WHERE s.id = NEW.spectrum_id
+      FOR SHARE OF s, t)
   FROM jsonb_each(NEW.lines) AS e
   WHERE jsonb_typeof(e.value) = 'object';
   RETURN NEW;

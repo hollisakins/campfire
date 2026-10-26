@@ -239,10 +239,15 @@ BEGIN
     (e.value ->> 'ew_rest_err')::double precision,
     COALESCE((e.value ->> 'flags')::integer, 0),
     e.value ->> 'blend_into',
-    -- phase 2a: the object link, so a line row is addressable by object
+    -- phase 2a: the object link, so a line row is addressable by object.
+    -- FOR SHARE on the spectrum and target rows: a concurrent target regroup
+    -- or spectrum move (UPDATE row locks) waits for this write, or this write
+    -- waits for it; either way the link lands pointing at the committed object
+    -- (see the concurrency note in the phase 2a block below).
     (SELECT t.object_id FROM public.spectra s
        JOIN public.targets t ON t.target_id = s.target_id
-      WHERE s.id = NEW.spectrum_id)
+      WHERE s.id = NEW.spectrum_id
+      FOR SHARE OF s, t)
   FROM jsonb_each(NEW.lines) AS e
   WHERE jsonb_typeof(e.value) = 'object';
   RETURN NEW;
@@ -1199,16 +1204,18 @@ CREATE TRIGGER propagate_program_is_public_trigger
 -- check_measurement_object_links.sql asserts each path and the catalog-wide
 -- invariants.
 --
--- Concurrency (the is_public pattern, Codex on #652): a fit written while its
--- object is being inspected would compute stale_redshift from the old
--- redshift, the inspection's recompute cannot see the uncommitted fit, and
--- the fit would commit fresh for good. So every read of the object that
--- feeds stale_redshift takes FOR SHARE on the objects row, which conflicts
--- with the row lock an inspection's UPDATE holds: the fit waits for the
--- inspection and reads the new redshift, or the inspection waits for the fit
--- and its recompute sees it. python/tests/test_line_fit_stale_race.py is the
--- two-session check. A deploy refitting existing fits while the same object
--- is inspected can deadlock and is retried; both are rare.
+-- Concurrency (the is_public pattern, Codex on #652): a fit and its lines
+-- written while their object is being inspected, or while their target is
+-- being regrouped or their spectrum moved, would copy the OLD object or
+-- redshift; the inspection's / regroup's trigger cannot see the uncommitted
+-- rows; and the copies would commit wrong for good. So every parent read that
+-- feeds a copy takes FOR SHARE on the parent rows (the spectrum, the target
+-- and the object), which conflicts with the row lock the other side's UPDATE
+-- holds: the write waits and reads the committed parent, or the parent
+-- change waits and its trigger sees the new rows. The two-session checks are
+-- python/tests/test_line_fit_stale_race.py (inspection; target regroup). A
+-- deploy refitting existing fits while the same object is inspected can
+-- deadlock and is retried; both are rare.
 
 DROP FUNCTION IF EXISTS public.compute_line_fit_stale CASCADE;
 CREATE OR REPLACE FUNCTION public.compute_line_fit_stale() RETURNS trigger
@@ -1224,7 +1231,7 @@ BEGIN
        JOIN targets t ON t.target_id = s.target_id
        JOIN objects o ON o.id = t.object_id
       WHERE s.id = NEW.spectrum_id
-      FOR SHARE OF o),
+      FOR SHARE OF s, t, o),
     false);
   RETURN NEW;
 END;
