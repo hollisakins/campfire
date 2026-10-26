@@ -108,6 +108,18 @@ class TestQueryObjects:
         assert params["dec"] == 2.5
         assert params["radius"] == 5.0
 
+    def test_query_objects_predicate_tree(self, mock_api_session, sample_objects_response):
+        # Catalog Read Model phase 3: q goes to the server as compact JSON and
+        # forces the remote path (the tree is evaluated by the database)
+        mock_api_session.get.return_value = _make_mock_response(
+            json_data=sample_objects_response
+        )
+        client = Campfire()
+        tree = {"exists": "lines", "where": [{"col": "line", "op": "eq", "v": "CIII1908"}]}
+        client.query_objects(q=tree)
+        params = mock_api_session.get.call_args.kwargs.get("params", {})
+        assert params["q"] == '{"exists":"lines","where":[{"col":"line","op":"eq","v":"CIII1908"}]}'
+
 
 class TestQuerySpectra:
     def test_query_spectra_success(self, mock_api_session, sample_spectra_response):
