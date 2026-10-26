@@ -754,8 +754,13 @@ CREATE OR REPLACE FUNCTION public.sync_object_is_public()
   SET search_path TO 'public'
   AS $function$
 BEGIN
-  NEW.is_public := EXISTS (
-    SELECT 1 FROM programs p WHERE p.is_public AND p.slug = ANY(NEW.programs));
+  -- Lock every referenced program row (public or not) so a concurrent flip
+  -- of any of them waits for this row, or this row waits for it.
+  NEW.is_public := COALESCE(
+    (SELECT bool_or(l.is_public)
+       FROM (SELECT p.is_public FROM programs p
+              WHERE p.slug = ANY(NEW.programs) FOR SHARE) l),
+    false);
   RETURN NEW;
 END;
 $function$;
@@ -770,7 +775,8 @@ CREATE OR REPLACE FUNCTION public.sync_row_is_public()
   AS $function$
 BEGIN
   NEW.is_public := COALESCE(
-    (SELECT p.is_public FROM programs p WHERE p.slug = NEW.program_slug), false);
+    (SELECT p.is_public FROM programs p WHERE p.slug = NEW.program_slug FOR SHARE),
+    false);
   RETURN NEW;
 END;
 $function$;

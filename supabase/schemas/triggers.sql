@@ -1068,6 +1068,17 @@ CREATE TRIGGER protect_archive_rows_trigger
 -- SECURITY DEFINER: the row writer (an inspector's PostgREST update, the
 -- deploy's service-role upsert) need not be able to read programs.
 --
+-- Concurrency: the row-side triggers read programs FOR SHARE. Without it a
+-- row inserted while a program is being made private could commit with the
+-- flag computed from the old value (the propagation trigger cannot see an
+-- uncommitted row) and stay public for good. FOR SHARE conflicts with the
+-- row lock an UPDATE of programs takes, so the two paths serialize: whichever
+-- starts first finishes first, and the other reads or rewrites the committed
+-- state. A deploy holding object rows while a program flips holds its
+-- program rows too, so in the worst case one side deadlocks and is retried;
+-- a program flip is a rare admin action. python/tests/test_is_public_race.py
+-- is the two-session check.
+--
 -- Spectra: program_slug is itself derived, by sync_spectra_target_scope
 -- (BEFORE INSERT / UPDATE OF target_id, program_slug, observation), from the
 -- parent target. An UPDATE OF event matches the statement's SET list, not a
@@ -1082,8 +1093,13 @@ LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  NEW.is_public := EXISTS (
-    SELECT 1 FROM programs p WHERE p.is_public AND p.slug = ANY(NEW.programs));
+  -- Lock every referenced program row (public or not) so a concurrent flip
+  -- of any of them waits for this row, or this row waits for it.
+  NEW.is_public := COALESCE(
+    (SELECT bool_or(l.is_public)
+       FROM (SELECT p.is_public FROM programs p
+              WHERE p.slug = ANY(NEW.programs) FOR SHARE) l),
+    false);
   RETURN NEW;
 END;
 $$;
@@ -1095,7 +1111,8 @@ SET search_path = public
 AS $$
 BEGIN
   NEW.is_public := COALESCE(
-    (SELECT p.is_public FROM programs p WHERE p.slug = NEW.program_slug), false);
+    (SELECT p.is_public FROM programs p WHERE p.slug = NEW.program_slug FOR SHARE),
+    false);
   RETURN NEW;
 END;
 $$;
