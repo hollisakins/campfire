@@ -43,7 +43,11 @@ DECLARE
     '{"frob": 1}',
     '[1, 2]',
     '{"col": "created_at", "op": "gte", "v": "not-a-date"}',
-    '{"exists": "lines", "not": "maybe"}'
+    '{"exists": "lines", "not": "maybe"}',
+    '{"col": "programs", "op": "overlaps", "v": ["x"]}',
+    '{"col": "gratings", "op": "has", "v": "PRISM"}',
+    '{"col": "observations", "op": "has", "v": "x"}',
+    '{"col": "n_spectra", "op": "gte", "v": 2}'
   ]::jsonb[];
   t jsonb;
   got text;
@@ -127,7 +131,7 @@ BEGIN
       'z_used', r.redshift, 'z_source', 'inspected', 'z_quality', r.redshift_quality, 'object_id', r.object_id,
       'object_version', v_ver, 'n_lines', 2, 'n_detected', 2, 'fit_version', 'test',
       'lines', CASE r.object_id
-        WHEN 'CQ-A' THEN jsonb_build_object('CIII1908', jsonb_build_object('component', 'doublet', 'snr', 10.0, 'flux', 1e-18, 'flux_err', 1e-19), 'OIII5007', jsonb_build_object('component', 'narrow', 'snr', 8.0, 'flux', 1e-18, 'flux_err', 1e-19))
+        WHEN 'CQ-A' THEN jsonb_build_object('CIII1908', jsonb_build_object('component', 'doublet', 'snr', 10.0, 'flux', 1e-18, 'flux_err', 1e-19, 'members', jsonb_build_array('CIII1907', 'CIII1909')), 'OIII5007', jsonb_build_object('component', 'narrow', 'snr', 8.0, 'flux', 1e-18, 'flux_err', 1e-19))
         WHEN 'CQ-B' THEN jsonb_build_object('CIII1908', jsonb_build_object('component', 'doublet', 'snr', 3.0, 'flux', 1e-18, 'flux_err', 1e-19), 'OIII5007', jsonb_build_object('component', 'narrow', 'snr', 12.0, 'flux', 1e-18, 'flux_err', 1e-19))
         WHEN 'CQ-C' THEN jsonb_build_object('OIII5007', jsonb_build_object('component', 'narrow', 'snr', 20.0, 'flux', 1e-18, 'flux_err', 1e-19))
         ELSE jsonb_build_object('CIII1908', jsonb_build_object('component', 'doublet', 'snr', 30.0, 'flux', 1e-18, 'flux_err', 1e-19), 'OIII5007', jsonb_build_object('component', 'narrow', 'snr', 30.0, 'flux', 1e-18, 'flux_err', 1e-19))
@@ -163,9 +167,11 @@ BEGIN
   -- nested exists: OIII5007 from a fresh fit only (B's fit is stale)
   IF pg_temp.cq_sel('{"exists": "lines", "where": [{"col": "line", "op": "eq", "v": "OIII5007"}, {"col": "snr", "op": "gte", "v": 5}, {"exists": "line_fits", "where": [{"col": "stale_redshift", "op": "eq", "v": false}]}]}')
      <> ARRAY['CQ-A', 'CQ-C', 'CQ-P'] THEN RAISE EXCEPTION 'fresh-only nested exists failed: %', pg_temp.cq_sel('{"exists": "lines", "where": [{"col": "line", "op": "eq", "v": "OIII5007"}, {"col": "snr", "op": "gte", "v": 5}, {"exists": "line_fits", "where": [{"col": "stale_redshift", "op": "eq", "v": false}]}]}'); END IF;
-  -- arrays: gratings has G395M; programs overlaps
-  IF pg_temp.cq_sel('{"col": "gratings", "op": "has", "v": "G395M"}') <> ARRAY['CQ-B'] THEN RAISE EXCEPTION 'array has failed'; END IF;
-  IF pg_temp.cq_sel('{"col": "programs", "op": "overlaps", "v": ["zzz_cq_priv", "nothing"]}') <> ARRAY['CQ-P'] THEN RAISE EXCEPTION 'array overlaps failed'; END IF;
+  -- arrays (on a table the caller sees row by row): a doublet's members
+  IF pg_temp.cq_sel('{"exists": "lines", "where": [{"col": "members", "op": "has", "v": "CIII1907"}]}') <> ARRAY['CQ-A'] THEN RAISE EXCEPTION 'array has failed'; END IF;
+  IF pg_temp.cq_sel('{"exists": "lines", "where": [{"col": "members", "op": "overlaps", "v": ["CIII1909", "nothing"]}]}') <> ARRAY['CQ-A'] THEN RAISE EXCEPTION 'array overlaps failed'; END IF;
+  -- the program / observation / grating of an object are questions about its visible members
+  IF pg_temp.cq_sel('{"exists": "targets", "where": [{"col": "program_slug", "op": "eq", "v": "zzz_cq_priv"}]}') <> ARRAY['CQ-P'] THEN RAISE EXCEPTION 'program via targets failed'; END IF;
   -- exists over spectra from objects: a G395M spectrum
   IF pg_temp.cq_sel('{"exists": "spectra", "where": [{"col": "grating", "op": "eq", "v": "G395M"}]}') <> ARRAY['CQ-B'] THEN RAISE EXCEPTION 'objects -> spectra failed'; END IF;
   -- between with an open end, in, cone

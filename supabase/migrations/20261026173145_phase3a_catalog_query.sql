@@ -3647,3 +3647,66 @@ GRANT EXECUTE
     "public"."catalog_query_spectra"(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double
     precision, boolean, text, double precision, double precision, double precision, double precision, uuid, double precision, double precision)
   TO "service_role";
+
+-- (folded: the objects' member aggregates leave the whitelist)
+SET local check_function_bodies = off;
+
+CREATE OR REPLACE FUNCTION public.catalog_query_whitelist()
+  RETURNS jsonb
+  LANGUAGE sql
+  IMMUTABLE
+  AS $function$
+  SELECT $j${
+    "objects": {
+      "id": "int", "object_id": "text", "field": "text", "ra": "num", "dec": "num",
+      "max_snr": "num", "max_exposure_time": "num",
+      "photo_z": "num", "photo_z_err_lo": "num", "photo_z_err_hi": "num", "has_photometry": "bool",
+      "redshift": "num", "redshift_quality": "int", "redshift_auto": "num", "redshift_inspected": "num",
+      "inspected_used_auto": "bool", "needs_review": "bool", "last_inspected_at": "ts",
+      "last_data_change_at": "ts", "version": "int", "is_active": "bool",
+      "has_published_spectrum": "bool", "is_public": "bool", "created_at": "ts", "updated_at": "ts"
+    },
+    "targets": {
+      "id": "int", "target_id": "text", "field": "text", "ra": "num", "dec": "num",
+      "program_slug": "text", "observation": "text", "max_snr": "num", "max_exposure_time": "num",
+      "redshift_auto": "num", "dq_flags": "bits", "spectral_features": "bits",
+      "has_published_spectrum": "bool", "is_public": "bool", "object_id": "int"
+    },
+    "spectra": {
+      "id": "int", "spectrum_id": "text", "target_id": "text", "grating": "text",
+      "signal_to_noise": "num", "exposure_time": "num", "redshift_auto": "num", "chi2_min": "num",
+      "confidence": "num", "dq_flags": "bits", "deploy_status": "text", "program_slug": "text",
+      "observation": "text", "date_obs": "text", "cfpipe_version": "text", "jwst_version": "text",
+      "crds_context": "text", "is_public": "bool", "reduced_at": "ts", "created_at": "ts", "updated_at": "ts"
+    },
+    "lines": {
+      "spectrum_id": "int", "object_id": "int", "line": "text", "component": "text",
+      "wave_rest": "num", "wave_obs": "num", "flux": "num", "flux_err": "num", "snr": "num",
+      "ew_rest": "num", "ew_rest_err": "num", "cont": "num", "cont_err": "num",
+      "dv": "num", "dv_err": "num", "sigma_v": "num", "sigma_v_err": "num", "sigma_lsf_kms": "num",
+      "complex": "int", "chi2": "num", "dof": "int", "npix": "int", "flags": "bits",
+      "blend_into": "text", "tied_to": "text", "label": "text", "members": "text[]"
+    },
+    "line_fits": {
+      "spectrum_id": "int", "target_id": "text", "grating": "text", "program_slug": "text",
+      "observation": "text", "z_used": "num", "z_source": "text", "z_quality": "int",
+      "object_id": "text", "object_version": "int", "z_fit": "num", "z_fit_err": "num",
+      "dv": "num", "dv_err": "num", "sigma_v": "num", "sigma_v_err": "num", "kin_source": "text",
+      "n_lines": "int", "n_detected": "int", "n_broad": "int", "chi2": "num", "dof": "int",
+      "fit_version": "text", "cfpipe_version": "text", "f_lsf": "num", "fitted_at": "ts",
+      "stale_redshift": "bool"
+    },
+    "photometry": {
+      "match_id": "int", "object_id": "int", "band": "text", "flux": "num", "flux_err": "num",
+      "wav": "num", "wav_min": "num", "wav_max": "num", "snr": "num", "mag": "num"
+    },
+    "catalog_matches": {
+      "id": "int", "object_id": "int", "field": "text", "ra": "num", "dec": "num",
+      "catalog_name": "text", "catalog_id": "text", "match_distance_arcsec": "num",
+      "photo_z": "num", "photo_z_err_lo": "num", "photo_z_err_hi": "num", "has_pz": "bool"
+    },
+    "object_list_members": {
+      "list_id": "int", "object_id": "int", "added_at": "ts"
+    }
+  }$j$::jsonb;
+$function$;

@@ -4616,7 +4616,12 @@ GRANT EXECUTE ON FUNCTION public.get_filtered_objects_paginated TO service_role;
 
 -- The whitelist: table -> column -> type. Types decide the operators and the
 -- literal rendering: num, int, text, bool, ts, text[], int[], bits (an
--- integer bitmask: anybits / allbits / nobits).
+-- integer bitmask: anybits / allbits / nobits). Deliberately absent from
+-- objects: programs, gratings, observations, n_targets, n_spectra. They are
+-- deploy-time aggregates over ALL members, hidden ones included, so a
+-- predicate on them would probe membership the caller cannot see (Codex on
+-- #659); the scoped form is an exists over targets or spectra, which the
+-- portal's builder emits for them.
 CREATE OR REPLACE FUNCTION public.catalog_query_whitelist()
 RETURNS jsonb
 LANGUAGE sql IMMUTABLE
@@ -4624,8 +4629,7 @@ AS $$
   SELECT $j${
     "objects": {
       "id": "int", "object_id": "text", "field": "text", "ra": "num", "dec": "num",
-      "n_targets": "int", "n_spectra": "int", "programs": "text[]", "gratings": "text[]",
-      "observations": "text[]", "max_snr": "num", "max_exposure_time": "num",
+      "max_snr": "num", "max_exposure_time": "num",
       "photo_z": "num", "photo_z_err_lo": "num", "photo_z_err_hi": "num", "has_photometry": "bool",
       "redshift": "num", "redshift_quality": "int", "redshift_auto": "num", "redshift_inspected": "num",
       "inspected_used_auto": "bool", "needs_review": "bool", "last_inspected_at": "ts",
