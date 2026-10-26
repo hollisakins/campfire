@@ -26,6 +26,8 @@ overwritten before its copy exists.
 """
 from __future__ import annotations
 
+from campfire.deploy.url_batches import url_batches
+
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,7 +45,6 @@ _ROW_COLUMNS = (
     'product_type, instrument, observation, spectrum_id, program_slug, '
     'deployment_id, cfpipe_version, updated_at'
 )
-_LOOKUP_CHUNK = 50
 
 
 class RetainError(RuntimeError):
@@ -67,8 +68,7 @@ class RetainDecision:
 
 def _fetch_live_rows(client, canonicals: list[str]) -> dict[str, dict]:
     rows: dict[str, dict] = {}
-    for i in range(0, len(canonicals), _LOOKUP_CHUNK):
-        chunk = canonicals[i:i + _LOOKUP_CHUNK]
+    for chunk in url_batches(canonicals):   # sized by encoded URL length (#657)
         resp = (client.table('storage_objects').select(_ROW_COLUMNS)
                 .in_('storage_key', chunk).eq('status', 'active').eq('root', 'live')
                 .execute())
