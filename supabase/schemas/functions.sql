@@ -1719,7 +1719,7 @@ AS $$
   ) t
   CROSS JOIN LATERAL (
     SELECT o.version, o.redshift_quality, o.redshift, o.programs,
-           o.has_published_spectrum, o.observations
+           o.has_published_spectrum, o.observations, o.is_active
     FROM public.cat_objects o WHERE o.id = t.object_id LIMIT 1
   ) o
   WHERE p_line IS NOT NULL
@@ -1749,6 +1749,7 @@ AS $$
       o.programs && (SELECT public.accessible_program_slugs())
       AND (o.has_published_spectrum OR (SELECT public.is_admin())
            OR (SELECT public.link_sees_drafts()))
+      AND (o.is_active OR (SELECT public.is_admin()))
       AND ((SELECT NOT public.is_link_account())
            OR o.observations && ARRAY[(SELECT public.link_observation())]::text[])
       -- (P6b-2) the frozen policies' extra conjuncts when a release is
@@ -1955,6 +1956,7 @@ AS $$
       o.programs && (SELECT public.accessible_program_slugs())
       AND (o.has_published_spectrum OR (SELECT public.is_admin())
            OR (SELECT public.link_sees_drafts()))
+      AND (o.is_active OR (SELECT public.is_admin()))
       AND ((SELECT NOT public.is_link_account())
            OR o.observations && ARRAY[(SELECT public.link_observation())]::text[])
       -- (P6b-2) the frozen policies' extra conjuncts when a release is
