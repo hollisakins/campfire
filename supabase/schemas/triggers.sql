@@ -130,6 +130,7 @@ BEGIN
        OR OLD.staleness_reason IS DISTINCT FROM NEW.staleness_reason
        OR OLD.inspected_used_auto IS DISTINCT FROM NEW.inspected_used_auto
        OR OLD.is_active IS DISTINCT FROM NEW.is_active
+       OR OLD.is_public IS DISTINCT FROM NEW.is_public
        OR OLD.created_at IS DISTINCT FROM NEW.created_at
        OR OLD.search_text IS DISTINCT FROM NEW.search_text
     THEN
@@ -325,6 +326,7 @@ BEGIN
        OR OLD.created_at IS DISTINCT FROM NEW.created_at
        OR OLD.program_slug IS DISTINCT FROM NEW.program_slug
        OR OLD.observation IS DISTINCT FROM NEW.observation
+       OR OLD.is_public IS DISTINCT FROM NEW.is_public
     THEN
         RAISE EXCEPTION 'Non-admin updates to spectra may only change dq_flags'
             USING ERRCODE = '42501';  -- insufficient_privilege
@@ -1046,3 +1048,123 @@ DROP TRIGGER IF EXISTS protect_archive_rows_trigger ON public.storage_objects;
 CREATE TRIGGER protect_archive_rows_trigger
   BEFORE INSERT OR UPDATE OR DELETE ON public.storage_objects
   FOR EACH ROW EXECUTE FUNCTION public.protect_archive_rows();
+
+
+-- =============================================================================
+-- is_public: planner-visible access scope (Catalog Read Model phase 1, #533)
+-- =============================================================================
+-- objects.is_public (any member program public), targets.is_public and
+-- spectra.is_public (the row's program is public) are stored copies of a fact
+-- that lives on programs, so the read policies can test a real column with
+-- statistics before falling back to the opaque accessible_program_slugs()
+-- array. Three triggers keep them exact: a BEFORE trigger on each table when
+-- its program reference changes, and an AFTER trigger on programs when a
+-- program's is_public flips (rare: `campfire config push --programs`), which
+-- rewrites the rows of that program. Nothing else may write these columns:
+-- the BEFORE triggers also fire on an explicit write of is_public itself and
+-- recompute it, so a value supplied by any writer (PostgREST, a script, a
+-- mistaken deploy) is replaced by the truth before the row lands, and the
+-- update-scope enforcers reject the attempt for non-admins outright.
+-- SECURITY DEFINER: the row writer (an inspector's PostgREST update, the
+-- deploy's service-role upsert) need not be able to read programs.
+--
+-- Concurrency: the row-side triggers read programs FOR SHARE. Without it a
+-- row inserted while a program is being made private could commit with the
+-- flag computed from the old value (the propagation trigger cannot see an
+-- uncommitted row) and stay public for good. FOR SHARE conflicts with the
+-- row lock an UPDATE of programs takes, so the two paths serialize: whichever
+-- starts first finishes first, and the other reads or rewrites the committed
+-- state. A deploy holding object rows while a program flips holds its
+-- program rows too, so in the worst case one side deadlocks and is retried;
+-- a program flip is a rare admin action. python/tests/test_is_public_race.py
+-- is the two-session check.
+--
+-- Spectra: program_slug is itself derived, by sync_spectra_target_scope
+-- (BEFORE INSERT / UPDATE OF target_id, program_slug, observation), from the
+-- parent target. An UPDATE OF event matches the statement's SET list, not a
+-- column another BEFORE trigger rewrote, so the is_public trigger lists
+-- target_id too and relies on firing AFTER the scope trigger: BEFORE ROW
+-- triggers run in name order and 'sync_spectra_target_scope_trigger' sorts
+-- before 'sync_spectrum_is_public_trigger'. Keep both names.
+
+DROP FUNCTION IF EXISTS public.sync_object_is_public CASCADE;
+CREATE OR REPLACE FUNCTION public.sync_object_is_public() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  -- Lock every referenced program row (public or not) so a concurrent flip
+  -- of any of them waits for this row, or this row waits for it.
+  NEW.is_public := COALESCE(
+    (SELECT bool_or(l.is_public)
+       FROM (SELECT p.is_public FROM programs p
+              WHERE p.slug = ANY(NEW.programs) FOR SHARE) l),
+    false);
+  RETURN NEW;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.sync_row_is_public CASCADE;
+CREATE OR REPLACE FUNCTION public.sync_row_is_public() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  NEW.is_public := COALESCE(
+    (SELECT p.is_public FROM programs p WHERE p.slug = NEW.program_slug FOR SHARE),
+    false);
+  RETURN NEW;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.propagate_program_is_public CASCADE;
+CREATE OR REPLACE FUNCTION public.propagate_program_is_public() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' AND NEW.is_public IS NOT DISTINCT FROM OLD.is_public THEN
+    RETURN NULL;
+  END IF;
+  -- Program flips serialize among themselves. Two concurrent flips of
+  -- different programs that share an object would each recompute it from a
+  -- snapshot in which the other program is still public, both leave it
+  -- public, and both commit (Codex on #651). With this transaction-scoped
+  -- advisory lock the second flip's statements below start after the first
+  -- has committed and see its value. Flips are rare admin actions; the lock
+  -- costs nothing in normal operation.
+  PERFORM pg_advisory_xact_lock(hashtext('campfire.is_public.propagate'));
+  -- Only the rows whose value changes are written, so the per-row triggers
+  -- on these tables (updated_at bumps, needs_review) see nothing else move.
+  UPDATE targets t SET is_public = NEW.is_public
+   WHERE t.program_slug = NEW.slug AND t.is_public IS DISTINCT FROM NEW.is_public;
+  UPDATE spectra s SET is_public = NEW.is_public
+   WHERE s.program_slug = NEW.slug AND s.is_public IS DISTINCT FROM NEW.is_public;
+  UPDATE objects o SET is_public = v.pub
+    FROM (SELECT o2.id,
+                 EXISTS (SELECT 1 FROM programs p WHERE p.is_public AND p.slug = ANY(o2.programs)) AS pub
+            FROM objects o2 WHERE NEW.slug = ANY(o2.programs)) v
+   WHERE v.id = o.id AND o.is_public IS DISTINCT FROM v.pub;
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS sync_object_is_public_trigger ON public.objects;
+CREATE TRIGGER sync_object_is_public_trigger
+  BEFORE INSERT OR UPDATE OF programs, is_public ON public.objects
+  FOR EACH ROW EXECUTE FUNCTION public.sync_object_is_public();
+
+DROP TRIGGER IF EXISTS sync_target_is_public_trigger ON public.targets;
+CREATE TRIGGER sync_target_is_public_trigger
+  BEFORE INSERT OR UPDATE OF program_slug, is_public ON public.targets
+  FOR EACH ROW EXECUTE FUNCTION public.sync_row_is_public();
+
+DROP TRIGGER IF EXISTS sync_spectrum_is_public_trigger ON public.spectra;
+CREATE TRIGGER sync_spectrum_is_public_trigger
+  BEFORE INSERT OR UPDATE OF target_id, program_slug, is_public ON public.spectra
+  FOR EACH ROW EXECUTE FUNCTION public.sync_row_is_public();
+
+DROP TRIGGER IF EXISTS propagate_program_is_public_trigger ON public.programs;
+CREATE TRIGGER propagate_program_is_public_trigger
+  AFTER INSERT OR UPDATE OF is_public ON public.programs
+  FOR EACH ROW EXECUTE FUNCTION public.propagate_program_is_public();

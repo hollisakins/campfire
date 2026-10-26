@@ -405,7 +405,8 @@ WITH (security_invoker = true) AS
          search_text,
          has_published_spectrum,
          reviewed_spectrum_ids,
-         needs_review
+         needs_review,
+         is_public
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
@@ -441,7 +442,8 @@ WITH (security_invoker = true) AS
            search_text,
            has_published_spectrum,
            reviewed_spectrum_ids,
-           needs_review
+           needs_review,
+           is_public
     FROM public.objects
     UNION ALL
     SELECT 'dr'::text AS cat_src,
@@ -478,7 +480,8 @@ WITH (security_invoker = true) AS
            search_text,
            has_published_spectrum,
            reviewed_spectrum_ids,
-           needs_review
+           needs_review,
+           is_public
     FROM public.dr_objects
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
@@ -514,7 +517,8 @@ WITH (security_invoker = true) AS
          program_slug,
          observation,
          object_id,
-         has_published_spectrum
+         has_published_spectrum,
+         is_public
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
@@ -538,7 +542,8 @@ WITH (security_invoker = true) AS
            program_slug,
            observation,
            object_id,
-           has_published_spectrum
+           has_published_spectrum,
+           is_public
     FROM public.targets
     UNION ALL
     SELECT 'dr'::text AS cat_src,
@@ -563,7 +568,8 @@ WITH (security_invoker = true) AS
            program_slug,
            observation,
            object_id,
-           has_published_spectrum
+           has_published_spectrum,
+           is_public
     FROM public.dr_targets
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
@@ -605,7 +611,8 @@ WITH (security_invoker = true) AS
          observation,
          chi2_min,
          confidence,
-         science_hash
+         science_hash,
+         is_public
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
@@ -635,7 +642,8 @@ WITH (security_invoker = true) AS
            observation,
            chi2_min,
            confidence,
-           science_hash
+           science_hash,
+           is_public
     FROM public.spectra
     UNION ALL
     SELECT 'dr'::text AS cat_src,
@@ -666,7 +674,8 @@ WITH (security_invoker = true) AS
            observation,
            chi2_min,
            confidence,
-           science_hash
+           science_hash,
+           is_public
     FROM public.dr_spectra
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
@@ -1742,7 +1751,10 @@ AS $$
       AND (s.deploy_status = 'published' OR (SELECT public.is_admin())
            OR (s.deploy_status = 'draft' AND (SELECT public.link_sees_drafts())))
     ))
-    -- Gate 2b: verbatim select_objects_by_access (policies.sql), same callers.
+    -- Gate 2b: select_objects_by_access (policies.sql), same callers. The
+    -- policy's `(NOT link AND is_public) OR ...` short-circuit is a planner aid
+    -- with the same row set; the scope here is the explicit array, so the
+    -- plain `programs && scope` form is kept.
     -- A separate conjunct, not `svc OR (s... AND o...)`: a predicate naming
     -- both s and o would be a join clause between them again.
     AND (COALESCE((SELECT auth.role()), '') = 'service_role' OR (
@@ -1948,7 +1960,8 @@ AS $$
     -- Gate 1: the caller's access-checked scope (what the RPCs apply themselves).
     AND o.programs && p_program_slugs
     AND (p_include_unpublished OR o.has_published_spectrum)
-    -- Gate 2: verbatim select_objects_by_access (policies.sql) for every
+    -- Gate 2: select_objects_by_access (policies.sql; its is_public
+    -- short-circuit is a planner aid with the same row set) for every
     -- caller except the service role (the JWT role claim, the same test the
     -- deploy-side RPCs use; NOT auth.uid() IS NULL, which an `authenticated`
     -- request without a subject would also satisfy).
@@ -10460,22 +10473,22 @@ BEGIN
       WHERE o.redshift_auto IS DISTINCT FROM zsrc.z
     ),
     ins_spectra AS (
-      INSERT INTO dr_spectra (tag, id, grating, fits_path, signal_to_noise, created_at, updated_at, target_id, thumbnail_svg_fnu, thumbnail_svg_flambda, file_hash, science_hash, file_size, exposure_time, crds_context, jwst_version, cfpipe_version, date_obs, reduced_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status, program_slug, observation, spectrum_id, search_text)
-      SELECT p_tag, s.id, s.grating, s.fits_path, s.signal_to_noise, s.created_at, s.updated_at, s.target_id, s.thumbnail_svg_fnu, s.thumbnail_svg_flambda, s.file_hash, s.science_hash, s.file_size, s.exposure_time, s.crds_context, s.jwst_version, s.cfpipe_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min, s.confidence, s.dq_flags, s.deploy_status, s.program_slug, s.observation, s.spectrum_id, s.search_text
+      INSERT INTO dr_spectra (tag, id, grating, fits_path, signal_to_noise, created_at, updated_at, target_id, thumbnail_svg_fnu, thumbnail_svg_flambda, file_hash, science_hash, file_size, exposure_time, crds_context, jwst_version, cfpipe_version, date_obs, reduced_at, redshift_auto, chi2_min, confidence, dq_flags, deploy_status, program_slug, observation, spectrum_id, search_text, is_public)
+      SELECT p_tag, s.id, s.grating, s.fits_path, s.signal_to_noise, s.created_at, s.updated_at, s.target_id, s.thumbnail_svg_fnu, s.thumbnail_svg_flambda, s.file_hash, s.science_hash, s.file_size, s.exposure_time, s.crds_context, s.jwst_version, s.cfpipe_version, s.date_obs, s.reduced_at, s.redshift_auto, s.chi2_min, s.confidence, s.dq_flags, s.deploy_status, s.program_slug, s.observation, s.spectrum_id, s.search_text, s.is_public
       FROM spectra s JOIN pub p ON p.id = s.id
       RETURNING 1
     ),
     ins_targets AS (
-      INSERT INTO dr_targets (tag, id, target_id, field, ra, dec, redshift_auto, redshift_quality, spectral_features, dq_flags, created_at, updated_at, redshift_inspected, last_inspected_at, last_inspected_by, max_snr, redshift, max_exposure_time, program_slug, observation, object_id, has_published_spectrum)
-      SELECT p_tag, t.id, t.target_id, t.field, t.ra, t.dec, t.redshift_auto, t.redshift_quality, t.spectral_features, t.dq_flags, t.created_at, t.updated_at, t.redshift_inspected, t.last_inspected_at, t.last_inspected_by, t.max_snr, t.redshift, t.max_exposure_time, t.program_slug, t.observation, t.object_id, t.has_published_spectrum
+      INSERT INTO dr_targets (tag, id, target_id, field, ra, dec, redshift_auto, redshift_quality, spectral_features, dq_flags, created_at, updated_at, redshift_inspected, last_inspected_at, last_inspected_by, max_snr, redshift, max_exposure_time, program_slug, observation, object_id, has_published_spectrum, is_public)
+      SELECT p_tag, t.id, t.target_id, t.field, t.ra, t.dec, t.redshift_auto, t.redshift_quality, t.spectral_features, t.dq_flags, t.created_at, t.updated_at, t.redshift_inspected, t.last_inspected_at, t.last_inspected_by, t.max_snr, t.redshift, t.max_exposure_time, t.program_slug, t.observation, t.object_id, t.has_published_spectrum, t.is_public
       FROM targets t
       WHERE EXISTS (SELECT 1 FROM pub p WHERE p.target_id = t.target_id)
       RETURNING 1
     ),
     ins_objects AS (
       -- the active objects with a published member; verbatim row + extras
-      INSERT INTO dr_objects (tag, id, object_id, field, ra, dec, created_at, n_targets, n_spectra, programs, gratings, observations, max_snr, max_exposure_time, photo_z, photo_z_err_lo, photo_z_err_hi, has_photometry, updated_at, redshift_auto, redshift_inspected, redshift_quality, inspected_used_auto, redshift, last_inspected_at, last_inspected_by, last_data_change_at, staleness_reason, reviewed_spectrum_ids, needs_review, version, is_active, has_published_spectrum, search_text, evidence_programs, z_source_spectrum_id)
-      SELECT p_tag, o.id, o.object_id, o.field, o.ra, o.dec, o.created_at, o.n_targets, o.n_spectra, o.programs, o.gratings, o.observations, o.max_snr, o.max_exposure_time, o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi, o.has_photometry, o.updated_at, o.redshift_auto, o.redshift_inspected, o.redshift_quality, o.inspected_used_auto, o.redshift, o.last_inspected_at, o.last_inspected_by, o.last_data_change_at, o.staleness_reason, o.reviewed_spectrum_ids, o.needs_review, o.version, o.is_active, o.has_published_spectrum, o.search_text,
+      INSERT INTO dr_objects (tag, id, object_id, field, ra, dec, created_at, n_targets, n_spectra, programs, gratings, observations, max_snr, max_exposure_time, photo_z, photo_z_err_lo, photo_z_err_hi, has_photometry, updated_at, redshift_auto, redshift_inspected, redshift_quality, inspected_used_auto, redshift, last_inspected_at, last_inspected_by, last_data_change_at, staleness_reason, reviewed_spectrum_ids, needs_review, version, is_active, has_published_spectrum, search_text, is_public, evidence_programs, z_source_spectrum_id)
+      SELECT p_tag, o.id, o.object_id, o.field, o.ra, o.dec, o.created_at, o.n_targets, o.n_spectra, o.programs, o.gratings, o.observations, o.max_snr, o.max_exposure_time, o.photo_z, o.photo_z_err_lo, o.photo_z_err_hi, o.has_photometry, o.updated_at, o.redshift_auto, o.redshift_inspected, o.redshift_quality, o.inspected_used_auto, o.redshift, o.last_inspected_at, o.last_inspected_by, o.last_data_change_at, o.staleness_reason, o.reviewed_spectrum_ids, o.needs_review, o.version, o.is_active, o.has_published_spectrum, o.search_text, o.is_public,
              ev.programs, zsrc.id
       FROM objects o
       JOIN ev ON ev.obj_id = o.id
