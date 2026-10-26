@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkDeviceCodeStatus, consumeDeviceCode } from '@/lib/auth/device-flow';
 import { issueTokens } from '@/lib/auth/tokens';
+import { localizeUrl } from '@/lib/host-aliases';
 
 // Track polling attempts per device code to enforce rate limiting
 const pollingAttempts = new Map<string, { lastAttempt: number; interval: number }>();
@@ -160,7 +161,8 @@ export async function POST(request: NextRequest) {
           expires_in: tokens.expiresIn,
           refresh_token: tokens.refreshToken,
           supabase_token: tokens.supabaseToken,
-          supabase_url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+          // The API's alias when the CLI is configured with an alias base url.
+          supabase_url: localizeUrl(process.env.NEXT_PUBLIC_SUPABASE_URL!, request.headers.get('host')),
           supabase_anon_key: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
         });
 

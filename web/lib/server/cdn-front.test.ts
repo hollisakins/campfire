@@ -14,6 +14,14 @@ vi.mock('@/lib/r2', () => ({
   }),
 }));
 
+// The request's Host header: an alias host moves the Worker origin to its alias.
+let requestHost: string | null = null;
+vi.mock('./request-host', async () => {
+  const { localizeUrl, parseHostAliases } = await import('@/lib/host-aliases');
+  const aliases = parseHostAliases('w-alias.example=w.example');
+  return { urlForRequest: async (url: string) => localizeUrl(url, requestHost, aliases) };
+});
+
 import { frontUrlsFor, frontUrlFor, objectTokenMessage, buildFrontUrl, cdnFrontBase } from './cdn-front';
 import { hmacBase64Url } from './worker-token';
 
@@ -22,6 +30,7 @@ const KEY = 'data/products/nirspec/obs/x_spec.json';
 beforeEach(() => {
   vi.unstubAllEnvs();
   resolved = [];
+  requestHost = null;
 });
 
 describe('cdnFrontBase', () => {
@@ -61,6 +70,18 @@ describe('frontUrlsFor', () => {
       'secret',
     );
     expect(u.searchParams.get('t')).toBe(expected);
+  });
+
+  it('mints on the Worker alias for a request on an alias host, with the same token', async () => {
+    vi.stubEnv('CDN_FRONT_URL', 'https://w.example');
+    vi.stubEnv('WORKER_JWT_SECRET', 'secret');
+    resolved = [{ backend: 'osn', key: KEY, contentHash: 'sha256:aa', registeredAt: 1_756_990_000 }];
+
+    const primary = new URL((await frontUrlFor(KEY)) as string);
+    requestHost = 'w-alias.example';
+    const alias = new URL((await frontUrlFor(KEY)) as string);
+    expect(alias.origin).toBe('https://w-alias.example');
+    expect(alias.pathname + alias.search).toBe(primary.pathname + primary.search);
   });
 
   it('is deterministic for the same inputs (the browser cache can hit)', async () => {

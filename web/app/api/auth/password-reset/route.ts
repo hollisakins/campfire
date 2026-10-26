@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import { localizeUrl } from '@/lib/host-aliases';
 
 /**
  * GET /api/auth/password-reset
@@ -34,11 +35,13 @@ export async function GET(request: NextRequest) {
   }
 
   // Build the redirect_to URL (where Supabase should send the user after verification)
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://campfire-jwst.org';
+  // A link opened on an alias host stays on the alias hosts (lib/host-aliases.ts).
+  const host = request.headers.get('host');
+  const appUrl = localizeUrl(process.env.NEXT_PUBLIC_APP_URL || 'https://campfire-jwst.org', host);
   const redirectTo = `${appUrl}/reset-password`;
 
   // Build Supabase verification URL
-  const supabaseUrl = new URL('/auth/v1/verify', process.env.NEXT_PUBLIC_SUPABASE_URL!);
+  const supabaseUrl = new URL('/auth/v1/verify', localizeUrl(process.env.NEXT_PUBLIC_SUPABASE_URL!, host));
   supabaseUrl.searchParams.set('token', token);
   supabaseUrl.searchParams.set('type', type);
   supabaseUrl.searchParams.set('redirect_to', redirectTo);
