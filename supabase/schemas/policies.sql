@@ -229,7 +229,9 @@ DROP POLICY IF EXISTS "select_targets_by_access" ON targets;
 CREATE POLICY "select_targets_by_access"
   ON targets FOR SELECT TO authenticated
   USING (
-    program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+    -- Program scope; is_public first as a planner aid (see select_objects_by_access).
+    (((SELECT NOT public.is_link_account()) AND is_public)
+     OR program_slug = ANY((SELECT public.accessible_program_slugs())::text[]))
     -- B1 (#217): hide targets whose only spectra are unpublished. Covers the
     -- target-derived readers that never join spectra (map markers, sed-plot,
     -- /api/targets/[id], tile-thumbnail). Admins see all.
@@ -288,7 +290,16 @@ DROP POLICY IF EXISTS "select_objects_by_access" ON objects;
 CREATE POLICY "select_objects_by_access"
   ON objects FOR SELECT TO authenticated
   USING (
-    programs && (SELECT public.accessible_program_slugs())
+    -- Program scope. `is_public` (trigger-maintained: any member program is
+    -- public) is tested FIRST so the planner sees a real column's statistics
+    -- (~76% true) instead of the opaque InitPlan array, whose default ~1%
+    -- selectivity made it pick idx_objects_programs over the filter's own
+    -- index (#533: 100x under-estimate, 84 ms -> 9 ms on a redshift scan).
+    -- Same row set: for every non-link caller accessible_program_slugs()
+    -- contains every public program. Link accounts are scoped to their one
+    -- program, so they take only the second disjunct.
+    (((SELECT NOT public.is_link_account()) AND is_public)
+     OR programs && (SELECT public.accessible_program_slugs()))
     -- B1 (#217): hide objects whose only member spectra are unpublished. Admins
     -- see all. has_published_spectrum is recomputed by reconcile from members.
     AND (has_published_spectrum OR (SELECT public.is_admin())
@@ -705,7 +716,9 @@ DROP POLICY IF EXISTS "select_spectra_by_access" ON spectra;
 CREATE POLICY "select_spectra_by_access"
   ON spectra FOR SELECT TO authenticated
   USING (
-    program_slug = ANY((SELECT public.accessible_program_slugs())::text[])
+    -- Program scope; is_public first as a planner aid (see select_objects_by_access).
+    (((SELECT NOT public.is_link_account()) AND is_public)
+     OR program_slug = ANY((SELECT public.accessible_program_slugs())::text[]))
     -- Share links (docs/design-public-mirror.md §5.2): narrow from the whole
     -- program to the one shared observation. The old targets subquery got this
     -- for free from select_targets_by_access; row-local means restating it.

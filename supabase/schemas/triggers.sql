@@ -1046,3 +1046,86 @@ DROP TRIGGER IF EXISTS protect_archive_rows_trigger ON public.storage_objects;
 CREATE TRIGGER protect_archive_rows_trigger
   BEFORE INSERT OR UPDATE OR DELETE ON public.storage_objects
   FOR EACH ROW EXECUTE FUNCTION public.protect_archive_rows();
+
+
+-- =============================================================================
+-- is_public: planner-visible access scope (Catalog Read Model phase 1, #533)
+-- =============================================================================
+-- objects.is_public (any member program public), targets.is_public and
+-- spectra.is_public (the row's program is public) are stored copies of a fact
+-- that lives on programs, so the read policies can test a real column with
+-- statistics before falling back to the opaque accessible_program_slugs()
+-- array. Three triggers keep them exact: a BEFORE trigger on each table when
+-- its program reference changes, and an AFTER trigger on programs when a
+-- program's is_public flips (rare: `campfire config push --programs`), which
+-- rewrites the rows of that program. Nothing else may write these columns.
+-- SECURITY DEFINER: the row writer (an inspector's PostgREST update, the
+-- deploy's service-role upsert) need not be able to read programs.
+
+DROP FUNCTION IF EXISTS public.sync_object_is_public CASCADE;
+CREATE OR REPLACE FUNCTION public.sync_object_is_public() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  NEW.is_public := EXISTS (
+    SELECT 1 FROM programs p WHERE p.is_public AND p.slug = ANY(NEW.programs));
+  RETURN NEW;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.sync_row_is_public CASCADE;
+CREATE OR REPLACE FUNCTION public.sync_row_is_public() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  NEW.is_public := COALESCE(
+    (SELECT p.is_public FROM programs p WHERE p.slug = NEW.program_slug), false);
+  RETURN NEW;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.propagate_program_is_public CASCADE;
+CREATE OR REPLACE FUNCTION public.propagate_program_is_public() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' AND NEW.is_public IS NOT DISTINCT FROM OLD.is_public THEN
+    RETURN NULL;
+  END IF;
+  -- Only the rows whose value changes are written, so the per-row triggers
+  -- on these tables (updated_at bumps, needs_review) see nothing else move.
+  UPDATE targets t SET is_public = NEW.is_public
+   WHERE t.program_slug = NEW.slug AND t.is_public IS DISTINCT FROM NEW.is_public;
+  UPDATE spectra s SET is_public = NEW.is_public
+   WHERE s.program_slug = NEW.slug AND s.is_public IS DISTINCT FROM NEW.is_public;
+  UPDATE objects o SET is_public = v.pub
+    FROM (SELECT o2.id,
+                 EXISTS (SELECT 1 FROM programs p WHERE p.is_public AND p.slug = ANY(o2.programs)) AS pub
+            FROM objects o2 WHERE NEW.slug = ANY(o2.programs)) v
+   WHERE v.id = o.id AND o.is_public IS DISTINCT FROM v.pub;
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS sync_object_is_public_trigger ON public.objects;
+CREATE TRIGGER sync_object_is_public_trigger
+  BEFORE INSERT OR UPDATE OF programs ON public.objects
+  FOR EACH ROW EXECUTE FUNCTION public.sync_object_is_public();
+
+DROP TRIGGER IF EXISTS sync_target_is_public_trigger ON public.targets;
+CREATE TRIGGER sync_target_is_public_trigger
+  BEFORE INSERT OR UPDATE OF program_slug ON public.targets
+  FOR EACH ROW EXECUTE FUNCTION public.sync_row_is_public();
+
+DROP TRIGGER IF EXISTS sync_spectrum_is_public_trigger ON public.spectra;
+CREATE TRIGGER sync_spectrum_is_public_trigger
+  BEFORE INSERT OR UPDATE OF program_slug ON public.spectra
+  FOR EACH ROW EXECUTE FUNCTION public.sync_row_is_public();
+
+DROP TRIGGER IF EXISTS propagate_program_is_public_trigger ON public.programs;
+CREATE TRIGGER propagate_program_is_public_trigger
+  AFTER INSERT OR UPDATE OF is_public ON public.programs
+  FOR EACH ROW EXECUTE FUNCTION public.propagate_program_is_public();

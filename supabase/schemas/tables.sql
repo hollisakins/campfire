@@ -377,8 +377,10 @@ CREATE TABLE IF NOT EXISTS "public"."spectra" (
         regexp_replace(COALESCE("fits_path", ''), '^.*/', ''),
         '_spec\.fits$', '', 'i'
       )
-    ) STORED
+    ) STORED,
+    "is_public" boolean NOT NULL DEFAULT false
 );
+COMMENT ON COLUMN "public"."spectra"."is_public" IS 'Planner-visible access scope (Catalog Read Model phase 1, #533): the program''s is_public, trigger-maintained (sync_row_is_public on program_slug changes; propagate_program_is_public when a program flips). select_spectra_by_access tests (NOT link AND is_public) OR program_slug = ANY(scope); same row set, real statistics.';
 
 
 ALTER TABLE "public"."spectra" OWNER TO "postgres";
@@ -459,8 +461,10 @@ END) STORED,
     -- since they never join spectra. Recomputed from member spectra by
     -- recompute_target_aggregates / deploy; always true in B1 (all published),
     -- the wiring is what B2 needs. Default true = fail-closed visible.
-    "has_published_spectrum" boolean NOT NULL DEFAULT true
+    "has_published_spectrum" boolean NOT NULL DEFAULT true,
+    "is_public" boolean NOT NULL DEFAULT false
 );
+COMMENT ON COLUMN "public"."targets"."is_public" IS 'Planner-visible access scope (Catalog Read Model phase 1, #533): the program''s is_public, trigger-maintained (sync_row_is_public on program_slug changes; propagate_program_is_public when a program flips). select_targets_by_access tests (NOT link AND is_public) OR program_slug = ANY(scope); same row set, real statistics.';
 
 
 ALTER TABLE "public"."targets" OWNER TO "postgres";
@@ -554,8 +558,10 @@ CREATE TABLE IF NOT EXISTS "public"."objects" (
     -- column; maintained by recompute_object_search_text() at the end of
     -- apply_object_reconciliation (and the legacy objects.py rebuild). Backs the
     -- trgm-indexed p_search path in get_filtered_objects_paginated / _object_ids.
-    "search_text" "text"
+    "search_text" "text",
+    "is_public" boolean NOT NULL DEFAULT false
 );
+COMMENT ON COLUMN "public"."objects"."is_public" IS 'Planner-visible access scope (Catalog Read Model phase 1, #533): true when any member program is public. Trigger-maintained (sync_object_is_public on programs[] changes; propagate_program_is_public when a program flips), never written by hand. select_objects_by_access tests (NOT link AND is_public) OR programs && accessible_program_slugs(): identical row set, but a real column with statistics instead of an opaque InitPlan array, so the planner stops choosing the programs index for a predicate that matches ~76% of rows.';
 
 
 ALTER TABLE "public"."objects" OWNER TO "postgres";
@@ -1637,6 +1643,7 @@ CREATE TABLE IF NOT EXISTS "public"."dr_spectra" (
     -- generated on the live table; the value is copied (nullable, as live)
     "spectrum_id" "text",
     "search_text" "text",
+    "is_public" boolean NOT NULL DEFAULT false,
     CONSTRAINT "dr_spectra_pkey" PRIMARY KEY ("tag", "id"),
     CONSTRAINT "dr_spectra_tag_spectrum_id_key" UNIQUE ("tag", "spectrum_id")
 );
@@ -1672,6 +1679,7 @@ CREATE TABLE IF NOT EXISTS "public"."dr_targets" (
     "observation" "text" NOT NULL,
     "object_id" integer,
     "has_published_spectrum" boolean NOT NULL,
+    "is_public" boolean NOT NULL DEFAULT false,
     CONSTRAINT "dr_targets_pkey" PRIMARY KEY ("tag", "id"),
     CONSTRAINT "dr_targets_tag_target_id_key" UNIQUE ("tag", "target_id")
 );
@@ -1724,6 +1732,7 @@ CREATE TABLE IF NOT EXISTS "public"."dr_objects" (
     -- fit anchors the compute_object_redshift_auto rule in the snapshot.
     "evidence_programs" "text"[] DEFAULT '{}'::"text"[] NOT NULL,
     "z_source_spectrum_id" integer,
+    "is_public" boolean NOT NULL DEFAULT false,
     CONSTRAINT "dr_objects_pkey" PRIMARY KEY ("tag", "id"),
     CONSTRAINT "dr_objects_tag_object_id_key" UNIQUE ("tag", "object_id")
 );
