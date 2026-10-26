@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { bandFilterRpcParams, getAccessiblePrograms, invalidLineParam, isAdminUser, lineFilterRpcParams, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
+import { bandFilterRpcParams, getAccessiblePrograms, invalidLineParam, isAdminUser, lineFilterRpcParams, parseCSV, parseIntCSV, parseTreeParam, resolveListIds, treeRejection } from '@/lib/api-helpers';
 import { createServiceClient } from '@/lib/supabase/server';
 import { authenticateApiRequest } from '@/lib/api-auth';
 import { assertBearerReleaseAccess } from '@/lib/server/bearer-release';
@@ -153,6 +153,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: lineError }, { status: 400 });
     }
 
+    // `q=`: a predicate tree rooted at spectra (Catalog Read Model phase 3)
+    // selects the spectra in place of the filter parameters; sort, paging,
+    // `search` and the `line` / `band` display columns still apply.
+    const tree = parseTreeParam(searchParams);
+    if (tree.error) {
+      return NextResponse.json({ error: tree.error }, { status: 400 });
+    }
+
     const rpcParams = {
       p_program_slugs: accessibleProgramSlugs,
       p_filter_programs: filterPrograms && filterPrograms.length > 0 ? filterPrograms : null,
@@ -194,7 +202,34 @@ export async function GET(request: NextRequest) {
       ...cursorRpcParams(cursor),
     };
 
-    const { data, error } = await supabase.rpc('get_filtered_spectra_paginated', rpcParams);
+    const { data, error } = tree.tree
+      ? await supabase.rpc('catalog_query_spectra', {
+          p_tree: tree.tree,
+          p_program_slugs: accessibleProgramSlugs,
+          p_include_unpublished: includeUnpublished,
+          p_search: searchParams.get('search') || null,
+          p_sort_column: finalSortColumn,
+          p_sort_direction: sortDirection,
+          p_page: page,
+          p_page_size: limit,
+          p_include_thumbnails: false,
+          p_include_count: includeCount,
+          ...cursorRpcParams(cursor),
+          ...lineFilterRpcParams(searchParams),
+          ...bandFilterRpcParams(searchParams),
+          // ra / dec alone are the distance reference (the distance column and
+          // sort); the tree's cone does the selecting
+          p_coord_ra: ra && dec ? parseFloat(ra) : null,
+          p_coord_dec: ra && dec ? parseFloat(dec) : null,
+          // the tree runs on the service-role client: the key's user is the
+          // explicit scope for lists (programs + publication go as above)
+          p_viewer_id: userId,
+        })
+      : await supabase.rpc('get_filtered_spectra_paginated', rpcParams);
+    const rejected = treeRejection(error);
+    if (rejected) {
+      return NextResponse.json({ error: rejected }, { status: 400 });
+    }
 
     if (error) {
       console.error('Error fetching spectra:', error);

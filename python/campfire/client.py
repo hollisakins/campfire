@@ -322,6 +322,7 @@ class Campfire:
         sort_dir: str = "asc",
         remote: bool = False,
         cursor: Optional[str] = None,
+        q: Optional[dict] = None,
     ) -> Table:
         """Query objects (cross-program grouped sky positions).
 
@@ -331,6 +332,12 @@ class Campfire:
         page, or use :meth:`iter_objects` to stream everything. ``offset`` is
         the deprecated positional form. Local (synced) queries ignore both and
         return every matching row.
+
+        ``q`` is a predicate tree (Catalog Read Model phase 3), e.g.
+        ``{"and": [{"col": "redshift", "op": "gt", "v": 4.9}, {"exists": "lines",
+        "where": [{"col": "line", "op": "eq", "v": "CIII1908"}, {"col": "snr",
+        "op": "gte", "v": 5}]}]}``. It selects the rows in place of the filter
+        arguments and is evaluated by the server, so it always queries remotely.
         """
         if fields:
             fields = [f.lower() for f in fields]
@@ -340,7 +347,8 @@ class Campfire:
             observations = [o.lower() for o in observations]
         redshift_quality = self._normalize_quality(redshift_quality)
 
-        use_local = self._local is not None and not remote
+        # a predicate tree (q) is evaluated by the server, so it forces the remote path
+        use_local = self._local is not None and not remote and q is None
 
         pagination: dict = {}
         if use_local:
@@ -385,6 +393,7 @@ class Campfire:
                 limit=remote_limit,
                 offset=offset,
                 cursor=cursor,
+                q=q,
                 sort=sort,
                 sort_dir=sort_dir,
             )
@@ -408,7 +417,8 @@ class Campfire:
     def iter_objects(self, **filters) -> Iterator[dict]:
         """Iterate over all matching objects with automatic pagination."""
         remote = filters.pop("remote", False)
-        use_local = self._local is not None and not remote
+        # a predicate tree (q) is evaluated by the server, so it forces the remote path
+        use_local = self._local is not None and not remote and filters.get("q") is None
 
         if use_local:
             self._log_local_use()
@@ -480,6 +490,7 @@ class Campfire:
         sort_dir: str = "asc",
         remote: bool = False,
         cursor: Optional[str] = None,
+        q: Optional[dict] = None,
     ) -> Table:
         """Query spectra (flat, one row per spectrum) with object-level filters.
 
@@ -510,7 +521,8 @@ class Campfire:
             observations = [o.lower() for o in observations]
         redshift_quality = self._normalize_quality(redshift_quality)
 
-        use_local = self._local is not None and not remote
+        # a predicate tree (q) is evaluated by the server, so it forces the remote path
+        use_local = self._local is not None and not remote and q is None
 
         pagination: dict = {}
         if use_local:
@@ -557,6 +569,7 @@ class Campfire:
                 limit=remote_limit,
                 offset=offset,
                 cursor=cursor,
+                q=q,
                 sort=sort,
                 sort_dir=sort_dir,
             )
@@ -589,7 +602,8 @@ class Campfire:
     def iter_spectra(self, **filters) -> Iterator[dict]:
         """Iterate over all matching spectra with automatic pagination."""
         remote = filters.pop("remote", False)
-        use_local = self._local is not None and not remote
+        # a predicate tree (q) is evaluated by the server, so it forces the remote path
+        use_local = self._local is not None and not remote and filters.get("q") is None
 
         if use_local:
             self._log_local_use()

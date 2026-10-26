@@ -26,8 +26,8 @@ let rpcCalls: Record<string, unknown>[] = [];
 let rpcResults: RpcResult[] = [];
 vi.mock('@/lib/supabase/server', () => ({
   createServiceClient: () => ({
-    rpc: async (_name: string, params: Record<string, unknown>) => {
-      rpcCalls.push(params);
+    rpc: async (name: string, params: Record<string, unknown>) => {
+      rpcCalls.push({ __rpc: name, ...params });
       return rpcResults.shift();
     },
   }),
@@ -77,6 +77,61 @@ describe('GET /api/v1/objects lists scoping', () => {
   it('does not retry on other errors', async () => {
     rpcResults = [{ data: null, error: { code: '57014', message: 'statement timeout' } }];
     const res = await get();
+    expect(res.status).toBe(500);
+    expect(rpcCalls).toHaveLength(1);
+  });
+});
+
+// `q=` (Catalog Read Model phase 3): a predicate tree goes to
+// catalog_query_objects in place of the filter parameters; the database's
+// whitelist refusal (22023) is a 400 that says what was refused.
+describe('GET /api/v1/objects with a predicate tree', () => {
+  const tree = { and: [{ col: 'redshift', op: 'gt', v: 4.9 }, { exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'CIII1908' }] }] };
+  const getQ = (q: string) =>
+    GET(new NextRequest(`http://x/api/v1/objects?q=${encodeURIComponent(q)}&sort=redshift&sort_dir=desc`, { headers: { authorization: 'Bearer sk_t' } }));
+
+  it('selects through catalog_query_objects with the tree, the sort and the viewer', async () => {
+    rpcResults = [page([])];
+    const res = await getQ(JSON.stringify(tree));
+    expect(res.status).toBe(200);
+    expect(rpcCalls).toHaveLength(1);
+    expect(rpcCalls[0].__rpc).toBe('catalog_query_objects');
+    expect(rpcCalls[0].p_tree).toEqual(tree);
+    expect(rpcCalls[0].p_program_slugs).toEqual(['pub']);
+    expect(rpcCalls[0].p_sort_column).toBe('redshift');
+    expect(rpcCalls[0].p_viewer_id).toBe(USER);
+    expect(rpcCalls[0]).not.toHaveProperty('p_fields');
+  });
+
+  it('passes ra / dec as the distance reference for a tree query', async () => {
+    rpcResults = [page([])];
+    const res = await GET(new NextRequest(`http://x/api/v1/objects?q=${encodeURIComponent(JSON.stringify(tree))}&ra=150.1&dec=2.2&sort=distance`, { headers: { authorization: 'Bearer sk_t' } }));
+    expect(res.status).toBe(200);
+    expect(rpcCalls[0].__rpc).toBe('catalog_query_objects');
+    expect(rpcCalls[0].p_coord_ra).toBe(150.1);
+    expect(rpcCalls[0].p_coord_dec).toBe(2.2);
+    expect(rpcCalls[0].p_sort_column).toBe('distance');
+  });
+
+  it('rejects a q that is not a JSON object before any RPC', async () => {
+    for (const bad of ['{not json', '[1,2]', '"x"']) {
+      const res = await getQ(bad);
+      expect(res.status).toBe(400);
+    }
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("turns the database's whitelist refusal into a 400 with its message", async () => {
+    rpcResults = [{ data: null, error: { code: '22023', message: 'catalog_query: objects has no column passwd' } }];
+    const res = await getQ(JSON.stringify({ col: 'passwd', op: 'eq', v: 1 }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('catalog_query: objects has no column passwd');
+    expect(rpcCalls).toHaveLength(1);
+  });
+
+  it('does not fall back to the legacy RPC for a tree', async () => {
+    rpcResults = [{ data: null, error: { code: 'PGRST202', message: 'no matching function' } }];
+    const res = await getQ(JSON.stringify(tree));
     expect(res.status).toBe(500);
     expect(rpcCalls).toHaveLength(1);
   });

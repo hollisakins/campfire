@@ -5,6 +5,7 @@ Centralizes all URL construction and response parsing. Used by both the
 """
 
 import warnings
+import json
 import os
 from typing import (
     Callable, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union,
@@ -147,8 +148,18 @@ def _build_query_params(
     sort_dir: str = "asc",
     cursor: Optional[str] = None,
     count: Optional[bool] = None,
+    q: Optional[dict] = None,
 ) -> dict:
     """Build query parameters dict from filter arguments.
+
+    ``q`` is a predicate tree (Catalog Read Model phase 3): a dict such as
+    ``{"and": [{"col": "redshift", "op": "gt", "v": 4.9}, {"exists": "lines",
+    "where": [{"col": "line", "op": "eq", "v": "CIII1908"}, {"col": "snr",
+    "op": "gte", "v": 5}]}]}``, sent as JSON. It selects the rows in place of
+    the filter arguments (which the server ignores when ``q`` is given); the
+    paging, sort, ``search`` and the line / band display arguments still apply.
+    The server rejects a tree that names anything outside its whitelist with a
+    400 that says what.
 
     Pagination (T2-F, #511): ``cursor`` is the opaque ``next_cursor`` returned
     in the previous page's ``pagination`` block and is the preferred way to
@@ -206,6 +217,8 @@ def _build_query_params(
         params["ra"] = ra
         params["dec"] = dec
         params["radius"] = radius_arcsec
+    if q is not None:
+        params["q"] = json.dumps(q, separators=(",", ":"))
 
     return params
 
