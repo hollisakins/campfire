@@ -21,6 +21,13 @@
 \timing on
 BEGIN;
 SET LOCAL statement_timeout = '10min';
+SET LOCAL lock_timeout = '1min';
+-- Hold the parents still for the few seconds this runs: a target regroup, a
+-- spectrum move, an inspection or a photometry re-match committing between
+-- a snapshot read below and its write would be overwritten with the old
+-- value and nothing would repair it (Codex on #652). SHARE ROW EXCLUSIVE
+-- blocks writers of these tables and nothing else; readers continue.
+LOCK TABLE objects, targets, spectra, object_photometry IN SHARE ROW EXCLUSIVE MODE;
 
 UPDATE spectrum_lines l SET object_id = t.object_id
   FROM spectra s
