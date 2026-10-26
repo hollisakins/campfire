@@ -37,7 +37,7 @@ published control) keep their ids.
 
 Besides the catalog, the seed carries the lifecycle surface the RLS work needs:
 real `storage_objects` rows (hashes and sizes) for every sampled spectrum and
-its sidecars, real `line_fits` and `catalog_matches` rows, one
+its sidecars, real `line_fits` + `lines` and `catalog_matches` + `photometry` rows, one
 published `deployments` row per sampled observation plus a draft and a revoked
 one (each with one spectrum attached), a handful of published `nircam_images`
 of one real field plus a draft one, the `fields` rows, and two share links
@@ -138,6 +138,9 @@ def sql_escape(value) -> str:
         if all(isinstance(v, int) and not isinstance(v, bool) for v in value):
             items = ', '.join(str(v) for v in value)
             return f"ARRAY[{items}]"
+        if all(isinstance(v, str) for v in value):
+            items = ', '.join(sql_escape(v) for v in value)
+            return f"ARRAY[{items}]::text[]"
         items = ', '.join(sql_escape(v) for v in value)
         return f"ARRAY[{items}]"
     if isinstance(value, dict):
@@ -515,10 +518,17 @@ def fetch_flag_audit_log(supabase, target_int_ids: list[int]) -> list[dict]:
 
 
 def fetch_line_fits(supabase, spectrum_db_ids: list[int]) -> list[dict]:
-    """Fetch line_fits rows (with their `lines` jsonb) for the sampled spectra."""
+    """Fetch line_fits rows for the sampled spectra."""
     if not spectrum_db_ids:
         return []
     return _in_batches(supabase, 'line_fits', 'spectrum_id', spectrum_db_ids)
+
+
+def fetch_lines(supabase, spectrum_db_ids: list[int]) -> list[dict]:
+    """The `lines` rows (the per-line measurements) of the sampled spectra."""
+    if not spectrum_db_ids:
+        return []
+    return _in_batches(supabase, 'lines', 'spectrum_id', spectrum_db_ids)
 
 
 def fetch_fields(supabase) -> list[dict]:
@@ -531,6 +541,13 @@ def fetch_photometry(supabase, prod_object_ids: list[int]) -> list[dict]:
     if not prod_object_ids:
         return []
     return _in_batches(supabase, 'catalog_matches', 'object_id', prod_object_ids)
+
+
+def fetch_photometry_rows(supabase, match_ids: list[int]) -> list[dict]:
+    """The `photometry` rows (one per band) of the sampled cross-matches."""
+    if not match_ids:
+        return []
+    return _in_batches(supabase, 'photometry', 'match_id', match_ids)
 
 
 def fetch_observation_deployments(supabase, obs_names: list[str]) -> dict[str, dict]:
@@ -1295,49 +1312,73 @@ def generate_storage_objects_sql(storage_rows: list[dict], missing_spectra: list
 LINE_FIT_COLUMNS = ['spectrum_id', 'target_id', 'grating', 'program_slug', 'observation', 'z_used',
                     'z_source', 'z_quality', 'object_id', 'object_version', 'z_fit', 'z_fit_err',
                     'dv', 'dv_err', 'sigma_v', 'sigma_v_err', 'kin_source', 'n_lines', 'n_detected',
-                    'n_broad', 'chi2', 'dof', 'lines', 'fit_version', 'cfpipe_version', 'f_lsf',
+                    'n_broad', 'chi2', 'dof', 'fit_version', 'cfpipe_version', 'f_lsf',
                     'spectrum_hash', 'spectrum_science_hash', 'fitted_at', 'created_at', 'updated_at']
-LINE_FIT_JSON = {'lines'}
+# the per-line measurements (lines is the source of truth since Catalog Read
+# Model phase 2c); object_id is set by trigger and deliberately not emitted
+LINES_COLUMNS = ['spectrum_id', 'line', 'component', 'wave_rest', 'flux', 'flux_err', 'snr', 'ew_rest',
+                 'ew_rest_err', 'flags', 'blend_into', 'label', 'wave_obs', 'cont', 'cont_err', 'dv',
+                 'dv_err', 'sigma_v', 'sigma_v_err', 'sigma_lsf_kms', 'complex', 'chi2', 'dof', 'npix',
+                 'tied_to', 'members']
 
 
-def generate_line_fits_sql(line_fits: list[dict], guard: PublicGuard) -> str:
-    """Generate INSERT statements for line_fits (lines filled by trigger)."""
+def _multirow_inserts(table: str, columns: list[str], rows: list[dict], chunk: int = 50) -> list[str]:
+    out = []
+    for i in range(0, len(rows), chunk):
+        values = ',\n'.join(f"\t({sql_row(r, columns)})" for r in rows[i:i + chunk])
+        out.append(f"INSERT INTO public.{table} ({', '.join(columns)}) VALUES\n{values};")
+    return out
+
+
+def generate_line_fits_sql(line_fits: list[dict], lines_rows: list[dict], guard: PublicGuard) -> str:
+    """INSERT statements for line_fits and their lines rows."""
     lines = ['-- ============================================']
-    lines.append('-- 6e. Emission-line fits (lines is derived by trigger)')
+    lines.append('-- 6e. Emission-line fits and their lines rows (lines is the source of truth')
+    lines.append('--     since Catalog Read Model phase 2c; object_id is set by trigger)')
     lines.append('-- ============================================')
     lines.append('')
     if not line_fits:
         lines.append('-- No line fits in production for the sampled spectra')
-    for fit in sorted(line_fits, key=lambda f: f['spectrum_id']):
+    fits = sorted(line_fits, key=lambda f: f['spectrum_id'])
+    for fit in fits:
         guard.slug(fit['program_slug'], f"line fit of spectrum {fit['spectrum_id']}")
-        lines.append(f"INSERT INTO public.line_fits ({', '.join(LINE_FIT_COLUMNS)})\n"
-                     f"VALUES ({sql_row(fit, LINE_FIT_COLUMNS, LINE_FIT_JSON)});")
-
+    lines.extend(_multirow_inserts('line_fits', LINE_FIT_COLUMNS, fits))
+    lines.append('')
+    lines.extend(_multirow_inserts('lines', LINES_COLUMNS,
+                                   sorted(lines_rows, key=lambda r: (r['spectrum_id'], r['line']))))
     lines.append('')
     return '\n'.join(lines)
 
 
 PHOTOMETRY_COLUMNS = ['id', 'object_id', 'field', 'ra', 'dec', 'catalog_name', 'catalog_id',
-                      'match_distance_arcsec', 'photometry', 'photo_z', 'photo_z_err_lo',
+                      'match_distance_arcsec', 'photo_z', 'photo_z_err_lo',
                       'photo_z_err_hi', 'has_pz', 'created_at', 'updated_at']
-PHOTOMETRY_JSON = {'photometry'}
+# one row per band (photometry is the source of truth since phase 2c); snr and
+# mag are generated, object_id is set by trigger: neither is emitted
+PHOTOMETRY_ROW_COLUMNS = ['match_id', 'band', 'flux', 'flux_err', 'wav', 'wav_min', 'wav_max']
 
 
-def generate_photometry_sql(photometry: list[dict], prod_to_seed_object: dict[int, int]) -> str:
-    """Generate INSERT statements for catalog_matches (bands by trigger; objects synced by RPC)."""
+def generate_photometry_sql(photometry: list[dict], photometry_rows: list[dict],
+                            prod_to_seed_object: dict[int, int]) -> str:
+    """INSERT statements for catalog_matches and their photometry rows (objects synced by RPC)."""
     lines = ['-- ============================================']
-    lines.append('-- 6f. Photometry cross-matches (photometry is derived by trigger)')
+    lines.append('-- 6f. Photometry cross-matches and their photometry rows (photometry is the')
+    lines.append('--     source of truth since phase 2c; object_id by trigger, objects synced by RPC)')
     lines.append('-- ============================================')
     lines.append('')
     if not photometry:
         lines.append('-- No photometry cross-matches in production for the sampled objects')
     fields = set()
+    matches = []
     for row in sorted(photometry, key=lambda r: r['id']):
         out = dict(row)
         out['object_id'] = prod_to_seed_object[row['object_id']]
         fields.add(row['field'])
-        lines.append(f"INSERT INTO public.catalog_matches ({', '.join(PHOTOMETRY_COLUMNS)})\n"
-                     f"VALUES ({sql_row(out, PHOTOMETRY_COLUMNS, PHOTOMETRY_JSON)});")
+        matches.append(out)
+    lines.extend(_multirow_inserts('catalog_matches', PHOTOMETRY_COLUMNS, matches))
+    lines.append('')
+    lines.extend(_multirow_inserts('photometry', PHOTOMETRY_ROW_COLUMNS,
+                                   sorted(photometry_rows, key=lambda r: (r['match_id'], r['band']))))
     if fields:
         lines.append('')
         lines.append('-- Denormalize photo_z / has_photometry onto objects (what `campfire deploy photometry` runs)')
@@ -1813,7 +1854,8 @@ def generate_sample_seed(args, project_root: Path, supabase_dir: Path, output_pa
 
     print("Fetching emission-line fits...")
     line_fits = fetch_line_fits(supabase, [s['id'] for s in spectra])
-    print(f"  Found {len(line_fits)} line fits")
+    lines_rows = fetch_lines(supabase, [f['spectrum_id'] for f in line_fits])
+    print(f"  Found {len(line_fits)} line fits, {len(lines_rows)} line rows")
 
     print("Fetching storage registry rows...")
     storage_rows, missing_finals = fetch_storage_rows(supabase, spectra)
@@ -1858,7 +1900,8 @@ def generate_sample_seed(args, project_root: Path, supabase_dir: Path, output_pa
             prod_to_seed_object[t['object_id']] = target_to_object_db_id[t['id']]
     print("Fetching photometry cross-matches...")
     photometry = fetch_photometry(supabase, sorted(prod_to_seed_object))
-    print(f"  Found {len(photometry)} rows")
+    photometry_rows = fetch_photometry_rows(supabase, [m['id'] for m in photometry])
+    print(f"  Found {len(photometry)} cross-matches, {len(photometry_rows)} band rows")
 
     # Lifecycle fixtures: one draft + one revoked spectrum with their deployments
     picks = pick_lifecycle_victims(targets, spectra, objects_by_db_id, target_to_object_db_id)
@@ -1936,8 +1979,8 @@ SET search_path TO public, auth, extensions;
     sql_parts.append(generate_nircam_images_sql(nircam))
     sql_parts.append(generate_storage_objects_sql(storage_rows, missing_finals, picks, lifecycle_ids,
                                                   nircam, obs_set, real_dep_ids, identity))
-    sql_parts.append(generate_line_fits_sql(line_fits, guard))
-    sql_parts.append(generate_photometry_sql(photometry, prod_to_seed_object))
+    sql_parts.append(generate_line_fits_sql(line_fits, lines_rows, guard))
+    sql_parts.append(generate_photometry_sql(photometry, photometry_rows, prod_to_seed_object))
     sql_parts.append(generate_user_program_access_sql(programs, guard))
     sql_parts.append(generate_share_links_sql(share_scopes, observations, guard))
     sql_parts.append(generate_comments_sql(comments, target_id_map, target_names, identity))

@@ -52,17 +52,16 @@ BEGIN
   SELECT id INTO v_sb FROM spectra WHERE fits_path = '/tmp/ml_b_g395m.fits';
   SELECT version INTO v_ver FROM objects WHERE id = v_a;
 
-  INSERT INTO line_fits (spectrum_id, target_id, grating, program_slug, observation,
-                                  z_used, z_source, z_quality, object_id, object_version,
-                                  n_lines, n_detected, lines, fit_version)
-  VALUES
-    (v_sa, 'test-ml-a', 'PRISM', 'zzz_ml_p', 'ml_obs', 5.0, 'inspected', 3, 'TEST-ML-A', v_ver, 1, 1,
-     jsonb_build_object('CIII1908', jsonb_build_object('component', 'doublet', 'wave_rest', 1907.7, 'flux', 1e-18, 'flux_err', 1e-19, 'snr', 10.0)), 'test'),
-    (v_sb, 'test-ml-b', 'G395M', 'zzz_ml_p', 'ml_obs', 2.0, 'inspected', 3, 'TEST-ML-B', (SELECT version FROM objects WHERE id = v_b), 1, 1,
-     jsonb_build_object('CIII1908', jsonb_build_object('component', 'doublet', 'wave_rest', 1907.7, 'flux', 1e-18, 'flux_err', 1e-19, 'snr', 20.0)), 'test');
-  INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, photometry)
-  VALUES (v_a, 'zzz_ml_field', 154.00, 2.00, 'zzz_ml_cat',
-          jsonb_build_object('flux_unit', 'uJy', 'bands', jsonb_build_object('f444w', jsonb_build_object('flux', 0.36308, 'flux_err', 0.018, 'wav', 4.4))));
+  PERFORM public.line_fits_upsert(jsonb_build_array(
+    jsonb_build_object('spectrum_id', v_sa, 'target_id', 'test-ml-a', 'grating', 'PRISM', 'program_slug', 'zzz_ml_p', 'observation', 'ml_obs',
+                       'z_used', 5.0, 'z_source', 'inspected', 'z_quality', 3, 'object_id', 'TEST-ML-A', 'object_version', v_ver, 'n_lines', 1, 'n_detected', 1,
+                       'lines', jsonb_build_object('CIII1908', jsonb_build_object('component', 'doublet', 'wave_rest', 1907.7, 'flux', 1e-18, 'flux_err', 1e-19, 'snr', 10.0)), 'fit_version', 'test'),
+    jsonb_build_object('spectrum_id', v_sb, 'target_id', 'test-ml-b', 'grating', 'G395M', 'program_slug', 'zzz_ml_p', 'observation', 'ml_obs',
+                       'z_used', 2.0, 'z_source', 'inspected', 'z_quality', 3, 'object_id', 'TEST-ML-B', 'object_version', (SELECT version FROM objects WHERE id = v_b), 'n_lines', 1, 'n_detected', 1,
+                       'lines', jsonb_build_object('CIII1908', jsonb_build_object('component', 'doublet', 'wave_rest', 1907.7, 'flux', 1e-18, 'flux_err', 1e-19, 'snr', 20.0)), 'fit_version', 'test')));
+  PERFORM public.catalog_matches_upsert(jsonb_build_array(jsonb_build_object(
+    'object_id', v_a, 'field', 'zzz_ml_field', 'ra', 154.00, 'dec', 2.00, 'catalog_name', 'zzz_ml_cat',
+    'photometry', jsonb_build_object('flux_unit', 'uJy', 'bands', jsonb_build_object('f444w', jsonb_build_object('flux', 0.36308, 'flux_err', 0.018, 'wav', 4.4))))));
 
   -- 1) insert-time links --------------------------------------------------------
   SELECT object_id INTO v_obj FROM lines WHERE spectrum_id = v_sa AND line = 'CIII1908';

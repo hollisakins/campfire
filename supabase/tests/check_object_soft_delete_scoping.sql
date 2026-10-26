@@ -64,11 +64,12 @@ BEGIN
 
   -- One cross-match each (the trigger unnests the band) and one non-stale
   -- line fit each (the trigger unnests the line).
-  INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, photometry)
-  SELECT o.id, o.field, o.ra, o.dec, 'zzz_sd_cat',
-         jsonb_build_object('flux_unit', 'uJy', 'bands', jsonb_build_object(
-           'f444w', jsonb_build_object('flux', 0.36308, 'flux_err', 0.018, 'wav', 4.4)))
-  FROM objects o WHERE o.id IN (v_live, v_gone);
+  PERFORM public.catalog_matches_upsert((
+    SELECT jsonb_agg(jsonb_build_object(
+             'object_id', o.id, 'field', o.field, 'ra', o.ra, 'dec', o.dec, 'catalog_name', 'zzz_sd_cat',
+             'photometry', jsonb_build_object('flux_unit', 'uJy', 'bands', jsonb_build_object(
+               'f444w', jsonb_build_object('flux', 0.36308, 'flux_err', 0.018, 'wav', 4.4)))))
+    FROM objects o WHERE o.id IN (v_live, v_gone)));
 
   FOR r IN
     SELECT s.id AS spectrum_id, s.target_id, s.grating, t.program_slug, t.observation,
@@ -78,16 +79,15 @@ BEGIN
     JOIN objects o ON o.id = t.object_id
     WHERE o.id IN (v_live, v_gone)
   LOOP
-    INSERT INTO line_fits (spectrum_id, target_id, grating, program_slug, observation,
-                                    z_used, z_source, z_quality, object_id, object_version,
-                                    n_lines, n_detected, lines, fit_version)
-    VALUES (r.spectrum_id, r.target_id, r.grating, r.program_slug, r.observation,
-            5.0, 'inspected', r.redshift_quality, r.object_id, r.version,
-            1, 1,
-            jsonb_build_object('CIII1908', jsonb_build_object(
-              'component', 'doublet', 'wave_rest', 1907.7,
-              'flux', 10e-19, 'flux_err', 1e-19, 'snr', 10.0)),
-            'test');
+    PERFORM public.line_fits_upsert(jsonb_build_array(jsonb_build_object(
+      'spectrum_id', r.spectrum_id, 'target_id', r.target_id, 'grating', r.grating,
+      'program_slug', r.program_slug, 'observation', r.observation,
+      'z_used', 5.0, 'z_source', 'inspected', 'z_quality', r.redshift_quality,
+      'object_id', r.object_id, 'object_version', r.version, 'n_lines', 1, 'n_detected', 1,
+      'lines', jsonb_build_object('CIII1908', jsonb_build_object(
+        'component', 'doublet', 'wave_rest', 1907.7,
+        'flux', 10e-19, 'flux_err', 1e-19, 'snr', 10.0)),
+      'fit_version', 'test')));
   END LOOP;
 
   IF (SELECT count(*) FROM photometry b JOIN catalog_matches p ON p.id = b.match_id

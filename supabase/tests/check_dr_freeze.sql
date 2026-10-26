@@ -153,15 +153,19 @@ UPDATE line_fits f SET program_slug = 'zzz_dr_priv'
   FROM spectra s WHERE s.id = f.spectrum_id AND s.fits_path = '/tmp/zzz_dr_pub_prism_spec.fits';
 
 -- Photometry: a row for MIX and one for the inactive object (excluded).
-INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z)
-SELECT o.id, 'zzz_drf', o.ra, o.dec, 'ZZZ CAT v1', o.object_id,
-       '{"flux_unit":"uJy","bands":{"f444w":{"flux":1.5,"flux_err":0.1,"wav":4.4},"f277w":{"flux":-0.2,"flux_err":0.3,"wav":2.77}}}'::jsonb, 2.4
-FROM objects o WHERE o.object_id IN ('ZZZ-DR-MIX', 'ZZZ-DR-INACTIVE');
+SELECT public.catalog_matches_upsert((
+  SELECT jsonb_agg(jsonb_build_object(
+           'object_id', o.id, 'field', 'zzz_drf', 'ra', o.ra, 'dec', o.dec, 'catalog_name', 'ZZZ CAT v1', 'catalog_id', o.object_id,
+           'photometry', '{"flux_unit":"uJy","bands":{"f444w":{"flux":1.5,"flux_err":0.1,"wav":4.4},"f277w":{"flux":-0.2,"flux_err":0.3,"wav":2.77}}}'::jsonb,
+           'photo_z', 2.4))
+  FROM objects o WHERE o.object_id IN ('ZZZ-DR-MIX', 'ZZZ-DR-INACTIVE')));
 -- a newer cross-match of MIX from a catalog the release does NOT select, and the
 -- denormalized live object rows pointing at it / at nothing frozen (Codex on #599)
-INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z, updated_at)
-SELECT o.id, 'zzz_drf', o.ra, o.dec, 'ZZZ CAT v2', o.object_id, '{"bands":{}}'::jsonb, 9.9, now() + interval '1 minute'
-FROM objects o WHERE o.object_id = 'ZZZ-DR-MIX';
+SELECT public.catalog_matches_upsert((
+  SELECT jsonb_agg(jsonb_build_object(
+           'object_id', o.id, 'field', 'zzz_drf', 'ra', o.ra, 'dec', o.dec, 'catalog_name', 'ZZZ CAT v2', 'catalog_id', o.object_id,
+           'photometry', '{"bands":{}}'::jsonb, 'photo_z', 9.9, 'updated_at', now() + interval '1 minute'))
+  FROM objects o WHERE o.object_id = 'ZZZ-DR-MIX'));
 UPDATE objects SET photo_z = 9.9, has_photometry = true WHERE object_id = 'ZZZ-DR-MIX';
 UPDATE objects SET photo_z = 7.0, has_photometry = true WHERE object_id = 'ZZZ-DR-PUB';
 INSERT INTO storage_objects (backend, bucket, storage_key, content_hash, size_bytes, content_type, product_type, status, field)
@@ -655,8 +659,9 @@ BEGIN
 
   -- a selected catalog whose rows are all orphans freezes nothing: refused
   -- rather than listed as an empty component (Codex on #599)
-  INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z)
-  VALUES (NULL, 'zzz_drf', 170.5, 4.5, 'ZZZ ORPHANS', 'orphan-1', '{"bands":{}}'::jsonb, 1.1);
+  PERFORM public.catalog_matches_upsert(jsonb_build_array(jsonb_build_object(
+    'object_id', NULL, 'field', 'zzz_drf', 'ra', 170.5, 'dec', 4.5, 'catalog_name', 'ZZZ ORPHANS', 'catalog_id', 'orphan-1',
+    'photometry', '{"bands":{}}'::jsonb, 'photo_z', 1.1)));
   got := pg_temp.zzz_dr_as('authenticated', admin,
     $q$SELECT (public.dr_enqueue_freeze('DR-zzz-orph', '["nirspec","photometry/zzz_drf/ZZZ ORPHANS"]', NULL, true))->>'state'$q$);
   IF got <> 'failed' OR (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-orph')

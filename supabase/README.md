@@ -78,7 +78,7 @@ production's own drafts); no production identities — every real `auth.users` u
 mapped onto `admin@` / `user@`, comment text is synthetic, the only emails are
 `@campfire.dev` and `@shared.invalid`. Besides the catalog it seeds the lifecycle
 surface: real `storage_objects` rows (hashes, sizes) for every sampled spectrum and
-its sidecars, `line_fits` (+ `lines` by trigger), `catalog_matches`
+its sidecars, `line_fits` + `lines`, `catalog_matches` + `photometry`
 (+ bands by trigger), one published deployment per observation plus a draft and a
 revoked one each with one spectrum attached, a few published `nircam_images` of one
 real field plus a draft one, the `fields` rows, and two share links (one live, one

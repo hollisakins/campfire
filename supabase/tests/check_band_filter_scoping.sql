@@ -86,10 +86,11 @@ BEGIN
 
   -- Fluxes in uJy: mag = 23.9 - 2.5 log10(flux). The sync_photometry
   -- trigger unnests these into photometry.
-  INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, photometry)
-  SELECT o.id, o.field, o.ra, o.dec, c.catalog,
-         jsonb_build_object('flux_unit', 'uJy', 'bands', jsonb_build_object(
-           'f444w', jsonb_build_object('flux', c.flux, 'flux_err', c.err, 'wav', 4.4)))
+  PERFORM public.catalog_matches_upsert((
+    SELECT jsonb_agg(jsonb_build_object(
+             'object_id', o.id, 'field', o.field, 'ra', o.ra, 'dec', o.dec, 'catalog_name', c.catalog,
+             'photometry', jsonb_build_object('flux_unit', 'uJy', 'bands', jsonb_build_object(
+               'f444w', jsonb_build_object('flux', c.flux, 'flux_err', c.err, 'wav', 4.4)))))
   FROM (VALUES
     ('TEST-BF-PUB',   'zzz_bf_cat_a',  0.36308, 0.018),   -- mag 25.00, S/N ~20
     ('TEST-BF-DUAL',  'zzz_bf_cat_a',  0.14454, 0.036),   -- mag 26.00, S/N ~4
@@ -98,7 +99,7 @@ BEGIN
     ('TEST-BF-DRAFT', 'zzz_bf_cat_a',  2.29087, 0.02),    -- mag 23.00, S/N ~115
     ('TEST-BF-PROP',  'zzz_bf_cat_a',  0.91201, 0.03)     -- mag 24.00, S/N ~30
   ) AS c(object_id, catalog, flux, err)
-  JOIN objects o ON o.object_id = c.object_id;
+  JOIN objects o ON o.object_id = c.object_id));
 
   IF (SELECT count(*) FROM photometry b JOIN catalog_matches p ON p.id = b.match_id
       WHERE p.catalog_name LIKE 'zzz\_bf\_%') <> 6 THEN

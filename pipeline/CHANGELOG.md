@@ -31,7 +31,7 @@ Release procedure: edit the `## Unreleased` section below, then run
 ### Infrastructure
 - **Catalog table names in docstrings.** `linefit` docstrings and the README now name the
   portal tables `line_fits` and `lines` (renamed from `spectrum_line_fits` / `spectrum_lines`
-  in Catalog Read Model phase 2b); no code change.
+  in Catalog Read Model phase 2b, and `lines` rows the source of truth since 2c); no code change.
 - **Tests run in CI.** `.github/workflows/python.yml` runs `pipeline/tests` on PRs that
   touch `pipeline/` or `layout/` (informational until its CI runtime is known) and the
   layout golden fixture on every client change; `[tool.pytest.ini_options] testpaths =

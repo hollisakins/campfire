@@ -66,11 +66,13 @@ def fixtures():
 
 def _insert_fit_sql() -> str:
     # a fit at the object's CURRENT redshift and version: fresh if nothing moves
+    # written as the deploy writes it: the writer RPC, fit row + lines rows
     return (
-        "INSERT INTO line_fits (spectrum_id, target_id, grating, program_slug, observation, "
-        "z_used, z_source, z_quality, object_id, object_version, n_lines, n_detected, lines, fit_version) "
-        f"SELECT s.id, '{TARGET}', 'PRISM', '{PROGRAM}', '{OBS}', 5.0, 'inspected', 3, '{OBJECT}', o.version, 1, 1, "
-        "jsonb_build_object('CIII1908', jsonb_build_object('component','doublet','wave_rest',1907.7,'flux',1e-18,'flux_err',1e-19,'snr',10.0)), 'test' "
+        "SELECT public.line_fits_upsert(jsonb_build_array(jsonb_build_object("
+        f"'spectrum_id', s.id, 'target_id', '{TARGET}', 'grating', 'PRISM', 'program_slug', '{PROGRAM}', 'observation', '{OBS}', "
+        f"'z_used', 5.0, 'z_source', 'inspected', 'z_quality', 3, 'object_id', '{OBJECT}', 'object_version', o.version, "
+        "'n_lines', 1, 'n_detected', 1, 'fit_version', 'test', "
+        "'lines', jsonb_build_object('CIII1908', jsonb_build_object('component','doublet','wave_rest',1907.7,'flux',1e-18,'flux_err',1e-19,'snr',10.0))))) "
         f"FROM spectra s, objects o WHERE s.fits_path = '{FITS}' AND o.object_id = '{OBJECT}';"
     )
 

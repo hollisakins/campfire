@@ -210,100 +210,39 @@ $$;
 DROP FUNCTION IF EXISTS public.bump_spectra_updated_at CASCADE;
 
 -- ---------------------------------------------------------------------------
--- sync_lines
---     Unnest NEW.lines (jsonb keyed by catalog line name) into lines.
---     SECURITY DEFINER: the deploy CLI writes line_fits as an admin
---     under RLS, and the derived table's own policies must not decide whether
---     the mirror is rebuilt. Only object-valued entries are rows; NaN was
---     already null in the payload, so a missing/null field is a NULL column.
+-- sync_line_object / sync_photometry_object  (Catalog Read Model phase 2c)
+--     lines and photometry are the source of truth and are written as rows
+--     (line_fits_upsert / catalog_matches_upsert, or any INSERT). Their object
+--     link is never client-supplied: a BEFORE trigger copies it from the
+--     parent, holding FOR SHARE on the rows it reads so a concurrent target
+--     regroup, spectrum move or cross-match re-point serializes with the write
+--     (the phase 2a rule; see that block below). An explicit object_id is
+--     recomputed away, like is_public. SECURITY DEFINER: the parent lookup
+--     must not depend on the caller's visibility.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.sync_lines() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.sync_line_object() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  DELETE FROM public.lines WHERE spectrum_id = NEW.spectrum_id;
-  INSERT INTO public.lines (
-    spectrum_id, line, component, wave_rest, flux, flux_err, snr,
-    ew_rest, ew_rest_err, flags, blend_into,
-    -- phase 2c-1: every remaining field of the record, so the row is the
-    -- whole measurement and the blob can be dropped in 2c-2
-    label, wave_obs, cont, cont_err, dv, dv_err, sigma_v, sigma_v_err,
-    sigma_lsf_kms, complex, chi2, dof, npix, tied_to, members,
-    object_id
-  )
-  SELECT
-    NEW.spectrum_id,
-    e.key,
-    COALESCE(e.value ->> 'component', 'narrow'),
-    (e.value ->> 'wave_rest')::double precision,
-    (e.value ->> 'flux')::double precision,
-    (e.value ->> 'flux_err')::double precision,
-    (e.value ->> 'snr')::double precision,
-    (e.value ->> 'ew_rest')::double precision,
-    (e.value ->> 'ew_rest_err')::double precision,
-    COALESCE((e.value ->> 'flags')::integer, 0),
-    e.value ->> 'blend_into',
-    e.value ->> 'label',
-    (e.value ->> 'wave_obs')::double precision,
-    (e.value ->> 'cont')::double precision,
-    (e.value ->> 'cont_err')::double precision,
-    (e.value ->> 'dv')::double precision,
-    (e.value ->> 'dv_err')::double precision,
-    (e.value ->> 'sigma_v')::double precision,
-    (e.value ->> 'sigma_v_err')::double precision,
-    (e.value ->> 'sigma_lsf_kms')::double precision,
-    (e.value ->> 'complex')::integer,
-    (e.value ->> 'chi2')::double precision,
-    (e.value ->> 'dof')::integer,
-    (e.value ->> 'npix')::integer,
-    e.value ->> 'tied_to',
-    CASE WHEN jsonb_typeof(e.value -> 'members') = 'array'
-         THEN ARRAY(SELECT jsonb_array_elements_text(e.value -> 'members')) END,
-    -- phase 2a: the object link, so a line row is addressable by object.
-    -- FOR SHARE on the spectrum and target rows: a concurrent target regroup
-    -- or spectrum move (UPDATE row locks) waits for this write, or this write
-    -- waits for it; either way the link lands pointing at the committed object
-    -- (see the concurrency note in the phase 2a block below).
-    (SELECT t.object_id FROM public.spectra s
-       JOIN public.targets t ON t.target_id = s.target_id
-      WHERE s.id = NEW.spectrum_id
-      FOR SHARE OF s, t)
-  FROM jsonb_each(NEW.lines) AS e
-  WHERE jsonb_typeof(e.value) = 'object';
+  NEW.object_id := (SELECT t.object_id
+                      FROM public.spectra s
+                      JOIN public.targets t ON t.target_id = s.target_id
+                     WHERE s.id = NEW.spectrum_id
+                     FOR SHARE OF s, t);
   RETURN NEW;
 END;
 $$;
 
--- ---------------------------------------------------------------------------
--- sync_photometry
---     Unnest NEW.photometry -> 'bands' (jsonb keyed by band name) into
---     photometry. The exact counterpart of sync_lines
---     on the photometry side, and SECURITY DEFINER for the same reason: the
---     deploy CLI upserts catalog_matches as an admin under RLS, and the
---     derived table's own policies must not decide whether the mirror is
---     rebuilt. snr and mag are generated columns, so only the raw flux pair
---     and the pivot wavelength are copied; a missing or null field is a NULL
---     column (the payload already wrote NaN as null).
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.sync_photometry() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.sync_photometry_object() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  DELETE FROM public.photometry WHERE match_id = NEW.id;
-  INSERT INTO public.photometry (match_id, band, flux, flux_err, wav, wav_min, wav_max, object_id)
-  SELECT
-    NEW.id,
-    e.key,
-    (e.value ->> 'flux')::double precision,
-    (e.value ->> 'flux_err')::double precision,
-    (e.value ->> 'wav')::double precision,
-    (e.value ->> 'wav_min')::double precision,   -- phase 2c-1: the band edges too
-    (e.value ->> 'wav_max')::double precision,
-    NEW.object_id   -- phase 2a: the object link, copied from the cross-match
-  FROM jsonb_each(COALESCE(NEW.photometry -> 'bands', '{}'::jsonb)) AS e
-  WHERE jsonb_typeof(e.value) = 'object';
+  NEW.object_id := (SELECT m.object_id
+                      FROM public.catalog_matches m
+                     WHERE m.id = NEW.match_id
+                     FOR SHARE);
   RETURN NEW;
 END;
 $$;
@@ -812,19 +751,18 @@ CREATE TRIGGER bump_line_fits_updated_at_trigger
   BEFORE UPDATE ON public.line_fits
   FOR EACH ROW EXECUTE FUNCTION public.bump_spectra_updated_at();
 
--- lines is the unnested mirror of line_fits.lines: rebuild a
--- spectrum's rows whenever its fit row is written (deploy upserts the whole
--- row; a re-fit that drops a line must drop its row too, hence delete +
--- insert rather than upsert). Deletes cascade through the FK.
-DROP TRIGGER IF EXISTS sync_lines_trigger ON public.line_fits;
-CREATE TRIGGER sync_lines_trigger
-  AFTER INSERT OR UPDATE OF lines ON public.line_fits
-  FOR EACH ROW EXECUTE FUNCTION public.sync_lines();
+-- lines / photometry rows carry their object link, copied from the parent on
+-- insert and whenever the parent key or the link itself is written (phase 2c;
+-- the row-level counterpart of the relink statement triggers below).
+DROP TRIGGER IF EXISTS sync_line_object_trigger ON public.lines;
+CREATE TRIGGER sync_line_object_trigger
+  BEFORE INSERT OR UPDATE OF spectrum_id, object_id ON public.lines
+  FOR EACH ROW EXECUTE FUNCTION public.sync_line_object();
 
-DROP TRIGGER IF EXISTS sync_photometry_trigger ON public.catalog_matches;
-CREATE TRIGGER sync_photometry_trigger
-  AFTER INSERT OR UPDATE OF photometry ON public.catalog_matches
-  FOR EACH ROW EXECUTE FUNCTION public.sync_photometry();
+DROP TRIGGER IF EXISTS sync_photometry_object_trigger ON public.photometry;
+CREATE TRIGGER sync_photometry_object_trigger
+  BEFORE INSERT OR UPDATE OF match_id, object_id ON public.photometry
+  FOR EACH ROW EXECUTE FUNCTION public.sync_photometry_object();
 
 DROP TRIGGER IF EXISTS bump_spectra_updated_at_trigger ON public.spectra;
 CREATE TRIGGER bump_spectra_updated_at_trigger
@@ -1016,10 +954,10 @@ REVOKE ALL ON FUNCTION public.log_spectrum_dq_changes() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.pin_redshift_on_signoff() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.propagate_target_publication_to_shutters() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.propagate_target_scope_to_spectra() FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.sync_photometry() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_photometry_object() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.sync_shutter_publication() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.sync_spectra_target_scope() FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.sync_lines() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_line_object() FROM PUBLIC, anon;
 -- GoTrue inserts auth.users as supabase_auth_admin; the trigger fires without an
 -- EXECUTE check, but keep the grant explicit so the intent is readable.
 GRANT EXECUTE ON FUNCTION public.handle_new_user() TO supabase_auth_admin;
@@ -1224,7 +1162,8 @@ CREATE TRIGGER propagate_program_is_public_trigger
 -- line_fit_stale_redshift(object, fit). They let the catalog filters and the
 -- object page read one indexed table each instead of a three-hop join, and
 -- they are exact because every path that can move them is covered:
---   * a line row is written            -> sync_lines sets object_id
+--   * a line row is written            -> sync_line_object (BEFORE) sets object_id
+--   * a band row is written            -> sync_photometry_object (BEFORE) sets object_id
 --   * a fit row is written             -> compute_line_fit_stale (BEFORE) sets stale_redshift
 --   * a target regroups                -> relink_lines_from_targets (lines + stale)
 --   * a spectrum moves to a target     -> relink_lines_from_spectra (lines + stale)

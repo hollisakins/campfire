@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 #   science-only NIRCam identity, and the pushed_* columns carry the PUSH-side
 #   bookkeeping (`campfire push` / deploy dedup) — the mirror now serves both
 #   transfer directions.
-SCHEMA_VERSION = 11  # 11: objects.needs_review (P3); 10: spectra.science_hash (P0b); 9: spectrum_line_fits
+SCHEMA_VERSION = 12  # 12: line_fits / catalog_matches table names (Catalog Read Model phase 2c); 11: objects.needs_review (P3); 10: spectra.science_hash (P0b); 9: line_fits
 
 
 # Product-type classes the client download engine understands. Finals are the
@@ -85,9 +85,10 @@ SPECTRA_EXPORT_COLUMNS = [
     "program_slug", "observation", "field", "local_path",
 ]
 
-# Columns of the spectrum_line_fits table (mirrors /sync/lines). The per-line
-# values stay in the `lines` JSON column; export pivots them into f_/e_/ew_/snr_
-# columns per line (see db/export.py).
+# Columns of the line_fits table (mirrors /sync/lines). The per-line values
+# arrive as the `lines` map the stream rebuilds from the server's lines rows
+# (Catalog Read Model phase 2c) and stay a JSON column here; export pivots them
+# into f_/e_/ew_/snr_ columns per line (see db/export.py).
 LINE_FIT_COLUMNS = [
     "spectrum_id", "spectrum_name", "target_id", "grating", "program_slug",
     "observation", "field", "current_object_id",
@@ -106,7 +107,8 @@ LINE_FIT_EXPORT_COLUMNS = [
     "fitted_at",
 ]
 
-# Columns for the object_photometry table (unchanged from pre-Phase-E).
+# Columns for the catalog_matches table (mirrors /sync/photometry; the
+# `photometry` map is rebuilt server-side from the photometry rows since 2c).
 PHOTOMETRY_COLUMNS = [
     "id", "object_id", "field", "catalog_name", "catalog_id",
     "match_distance_arcsec", "photometry",
@@ -253,7 +255,7 @@ CREATE INDEX IF NOT EXISTS idx_so_spectrum_id ON storage_objects(spectrum_id);
 CREATE INDEX IF NOT EXISTS idx_so_obs_product ON storage_objects(observation, product_type);
 CREATE INDEX IF NOT EXISTS idx_so_field_filter ON storage_objects(field, filter);
 
-CREATE TABLE IF NOT EXISTS object_photometry (
+CREATE TABLE IF NOT EXISTS catalog_matches (
     id INTEGER PRIMARY KEY,
     object_id TEXT,
     field TEXT,
@@ -270,9 +272,9 @@ CREATE TABLE IF NOT EXISTS object_photometry (
     _synced_at TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_ophot_object_id ON object_photometry(object_id);
+CREATE INDEX IF NOT EXISTS idx_cm_object_id ON catalog_matches(object_id);
 
-CREATE TABLE IF NOT EXISTS spectrum_line_fits (
+CREATE TABLE IF NOT EXISTS line_fits (
     spectrum_id INTEGER PRIMARY KEY,
     spectrum_name TEXT,
     target_id TEXT,
@@ -311,8 +313,8 @@ CREATE TABLE IF NOT EXISTS spectrum_line_fits (
     _synced_at TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_slf_target_id ON spectrum_line_fits(target_id);
-CREATE INDEX IF NOT EXISTS idx_slf_observation ON spectrum_line_fits(observation);
+CREATE INDEX IF NOT EXISTS idx_lf_target_id ON line_fits(target_id);
+CREATE INDEX IF NOT EXISTS idx_lf_observation ON line_fits(observation);
 
 CREATE TABLE IF NOT EXISTS object_lists (
     id INTEGER PRIMARY KEY,
@@ -746,7 +748,7 @@ class LocalStore:
             # releases (same choice as the web loader and
             # sync_photometry_to_objects). Rows deleted server-side are only
             # purged by `campfire sync --full`.
-            "SELECT * FROM object_photometry WHERE object_id = ? "
+            "SELECT * FROM catalog_matches WHERE object_id = ? "
             "ORDER BY updated_at DESC, catalog_name DESC LIMIT 1",
             (object_id,),
         ).fetchone()
@@ -1422,7 +1424,7 @@ class LocalStore:
         n = 0
         for chunk in self._chunks(ids):
             ph = ",".join("?" * len(chunk))
-            for child in ("object_list_memberships", "object_photometry"):
+            for child in ("object_list_memberships", "catalog_matches"):
                 self._conn.execute(
                     f"""DELETE FROM {child}
                         WHERE object_id IN (SELECT object_id FROM objects WHERE id IN ({ph}))""",
@@ -1445,7 +1447,7 @@ class LocalStore:
         for chunk in self._chunks(ids):
             ph = ",".join("?" * len(chunk))
             self._conn.execute(
-                f"DELETE FROM spectrum_line_fits WHERE spectrum_id IN ({ph})", chunk,
+                f"DELETE FROM line_fits WHERE spectrum_id IN ({ph})", chunk,
             )
             n += self._conn.execute(
                 f"DELETE FROM spectra WHERE id IN ({ph})", chunk,
@@ -1462,7 +1464,7 @@ class LocalStore:
         for chunk in self._chunks(ids):
             ph = ",".join("?" * len(chunk))
             n += self._conn.execute(
-                f"DELETE FROM object_photometry WHERE id IN ({ph})", chunk,
+                f"DELETE FROM catalog_matches WHERE id IN ({ph})", chunk,
             ).rowcount
         self._conn.commit()
         return n
@@ -1474,7 +1476,7 @@ class LocalStore:
         for chunk in self._chunks(spectrum_ids):
             ph = ",".join("?" * len(chunk))
             n += self._conn.execute(
-                f"DELETE FROM spectrum_line_fits WHERE spectrum_id IN ({ph})", chunk,
+                f"DELETE FROM line_fits WHERE spectrum_id IN ({ph})", chunk,
             ).rowcount
         self._conn.commit()
         return n
@@ -2018,7 +2020,7 @@ class LocalStore:
 
             self._conn.execute(
                 """
-                INSERT INTO object_photometry
+                INSERT INTO catalog_matches
                     (id, object_id, field, catalog_name, catalog_id,
                      match_distance_arcsec, photometry,
                      photo_z, photo_z_err_lo, photo_z_err_hi, has_pz,
@@ -2062,13 +2064,13 @@ class LocalStore:
 
     def get_max_photometry_updated_at(self) -> Optional[str]:
         row = self._conn.execute(
-            "SELECT MAX(updated_at) FROM object_photometry"
+            "SELECT MAX(updated_at) FROM catalog_matches"
         ).fetchone()
         return row[0] if row and row[0] else None
 
     def purge_stale_photometry(self, sync_timestamp: str) -> int:
         cursor = self._conn.execute(
-            "DELETE FROM object_photometry WHERE _synced_at < ?",
+            "DELETE FROM catalog_matches WHERE _synced_at < ?",
             (sync_timestamp,),
         )
         purged = cursor.rowcount
@@ -2079,7 +2081,7 @@ class LocalStore:
         import json as _json
 
         rows = self._conn.execute(
-            "SELECT * FROM object_photometry ORDER BY object_id, catalog_name"
+            "SELECT * FROM catalog_matches ORDER BY object_id, catalog_name"
         ).fetchall()
 
         results = []
@@ -2106,7 +2108,7 @@ class LocalStore:
         placeholders = ", ".join("?" for _ in cols) + ", ?"
         updates = ", ".join(f"{c}=excluded.{c}" for c in cols if c != "spectrum_id")
         sql = (
-            f"INSERT INTO spectrum_line_fits ({', '.join(cols)}, _synced_at) "
+            f"INSERT INTO line_fits ({', '.join(cols)}, _synced_at) "
             f"VALUES ({placeholders}) "
             f"ON CONFLICT(spectrum_id) DO UPDATE SET {updates}, _synced_at=excluded._synced_at"
         )
@@ -2128,13 +2130,13 @@ class LocalStore:
 
     def get_max_line_fits_updated_at(self) -> Optional[str]:
         row = self._conn.execute(
-            "SELECT MAX(updated_at) FROM spectrum_line_fits"
+            "SELECT MAX(updated_at) FROM line_fits"
         ).fetchone()
         return row[0] if row and row[0] else None
 
     def purge_stale_line_fits(self, sync_timestamp: str) -> int:
         cursor = self._conn.execute(
-            "DELETE FROM spectrum_line_fits WHERE _synced_at < ?",
+            "DELETE FROM line_fits WHERE _synced_at < ?",
             (sync_timestamp,),
         )
         purged = cursor.rowcount
@@ -2175,7 +2177,7 @@ class LocalStore:
             params.append(int(min_quality))
         if exclude_stale:
             where.append("stale_redshift = 0 AND stale_spectrum = 0")
-        sql = "SELECT * FROM spectrum_line_fits"
+        sql = "SELECT * FROM line_fits"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY spectrum_name"

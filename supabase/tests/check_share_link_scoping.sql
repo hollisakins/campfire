@@ -99,8 +99,8 @@ INSERT INTO spectra (target_id, grating, fits_path, deploy_status) VALUES
   ('zzz-t-open',    'PRISM', '/tmp/zzz_open_spec.fits',    'published'),
   ('zzz-t-draft',   'PRISM', '/tmp/zzz_draft_spec.fits',   'draft');
 
-INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, photometry)
-SELECT o.id, 'zzz_sl_field', o.ra, o.dec, 'zzz_cat', '{}'::jsonb FROM objects o
+INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name)
+SELECT o.id, 'zzz_sl_field', o.ra, o.dec, 'zzz_cat' FROM objects o
 WHERE o.object_id IN ('ZZZ-OBJ-SHARED', 'ZZZ-OBJ-SIBLING', 'ZZZ-OBJ-OPEN');
 
 -- NIRCam: a published mosaic in each field, plus a draft AND a revoked one in

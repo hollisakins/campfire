@@ -371,7 +371,8 @@ def _label_for(name: str) -> str:
 
 
 def lines_payload(lines: dict) -> dict:
-    """JSON-safe ``{name: record}`` (NaN/inf → null) — the ``line_fits.lines`` value."""
+    """JSON-safe ``{name: record}`` (NaN/inf → null) — the ``lines`` map ``campfire deploy
+    lines`` sends to ``line_fits_upsert``, which writes one ``lines`` row per entry."""
     out = {}
     for name, rec in lines.items():
         clean = {}

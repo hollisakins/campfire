@@ -610,7 +610,6 @@ CREATE TABLE IF NOT EXISTS "public"."catalog_matches" (
     "catalog_name" "text" NOT NULL,
     "catalog_id" "text",
     "match_distance_arcsec" double precision,
-    "photometry" jsonb NOT NULL,
     "photo_z" double precision,
     "photo_z_err_lo" double precision,
     "photo_z_err_hi" double precision,
@@ -630,8 +629,6 @@ ALTER TABLE "public"."catalog_matches" SET (autovacuum_vacuum_scale_factor = 0.0
 
 COMMENT ON TABLE "public"."catalog_matches" IS 'Photometric catalog cross-matches for objects. One row per object per catalog. Coordinates (ra, dec) are the durable positional key; object_id FK is refreshed after each objects rebuild via coordinate cross-matching. Formerly object_photometry (renamed 2026-10-26, Catalog Read Model phase 2b).';
 
-
-COMMENT ON COLUMN "public"."catalog_matches"."photometry" IS 'Per-catalog photometry payload: {flux_unit: "uJy", bands: {<band>: {flux, flux_err [uJy], wav, wav_min, wav_max [um]}}}. Built by campfire.deploy.photometry.build_photometry_payload; band names come from the per-field [field.bands] block of photometry.toml. Fluxes are in microjansky ALWAYS (the reader converts), so AB magnitude is 23.9 - 2.5*log10(flux) and a non-positive flux simply has no magnitude. The `bands` map is unnested into photometry for indexed filter/sort — see that table.';
 
 
 -- photometry: the `bands` map of catalog_matches.photometry
@@ -679,7 +676,7 @@ COMMENT ON COLUMN "public"."photometry"."object_id" IS 'The object of the parent
 ALTER TABLE "public"."photometry" OWNER TO "postgres";
 
 
-COMMENT ON TABLE "public"."photometry" IS 'catalog_matches.photometry->bands unnested: one row per (cross-match, band) for indexed filter/sort on a band''s AB magnitude or S/N. Derived by the sync_photometry trigger; never written directly. object_id is a trigger-maintained copy of the parent match''s (phase 2a), so filters read this table alone. Formerly object_photometry_bands (renamed 2026-10-26, Catalog Read Model phase 2b).';
+COMMENT ON TABLE "public"."photometry" IS 'The photometry: one row per (cross-match, band) with the flux and error in microjansky (always; AB magnitude = 23.9 - 2.5*log10(flux), NULL for a non-positive flux), the pivot wavelength and the band edges in microns, and the generated mag / snr. The source of truth since Catalog Read Model phase 2c: written with the cross-match by catalog_matches_upsert (a re-match replaces all of a match''s rows), object_id trigger-maintained, never a client-supplied value; bands_jsonb_of rebuilds the {flux_unit, bands} map for the sync stream and the exports. Band names are per-field photometry.toml config. Formerly object_photometry_bands (renamed 2026-10-26, phase 2b).';
 
 COMMENT ON COLUMN "public"."photometry"."flux" IS 'Band flux in microjansky, copied verbatim from the jsonb (catalog_matches.photometry.flux_unit is always "uJy").';
 
@@ -1203,7 +1200,6 @@ CREATE TABLE IF NOT EXISTS "public"."line_fits" (
     "n_broad" integer DEFAULT 0 NOT NULL,
     "chi2" double precision,
     "dof" integer,
-    "lines" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
     "fit_version" "text" NOT NULL,
     "cfpipe_version" "text",
     "f_lsf" double precision,
@@ -1223,9 +1219,7 @@ COMMENT ON COLUMN "public"."line_fits"."stale_redshift" IS 'Stored line_fit_stal
 ALTER TABLE "public"."line_fits" OWNER TO "postgres";
 
 
-COMMENT ON TABLE "public"."line_fits" IS 'Emission-line fluxes per spectrum, measured at the inspected redshift (cfpipe nirspec linefit -> campfire deploy lines). One row per spectrum, replaced on re-fit; per-line values in `lines` jsonb keyed by pipeline line name. z_used / z_quality / object_version record the inspection state the fit used (see line_fits_status for staleness). Formerly spectrum_line_fits (renamed 2026-10-26, Catalog Read Model phase 2b).';
-
-COMMENT ON COLUMN "public"."line_fits"."lines" IS 'Per-line records keyed by catalog name (components such as Halpha / CIII1907, accepted broad components as <line>_broad, and doublet totals such as CIII1908 / OII3727 / SII6725): {label, component (narrow|broad|doublet), wave_rest [vacuum A], wave_obs [um], flux, flux_err [erg/s/cm2], snr, ew_rest, ew_rest_err [A], cont, cont_err [erg/s/cm2/A], dv, dv_err, sigma_v, sigma_v_err, sigma_lsf_kms [km/s], complex, chi2, dof, npix, flags (bitmask: 1 tied, 2 blended, 4 blend, 8 edge, 16 kin_global, 32 kin_default, 64 broad, 128 no_continuum, 256 fit_failed, 512 masked, 1024 sigma_unresolved, 2048 resolved), blend_into, tied_to, members (doublet totals only: the two component names)}. NaN is null; a `blended` line carries no flux of its own (its blend primary reports the total). A doublet total is the covariance-propagated sum of its components where the grating resolves them (`resolved` set) and the single blended measurement where it does not, so it means the same thing in every grating: select on totals, not components. fit_version >= 2.';
+COMMENT ON TABLE "public"."line_fits" IS 'Emission-line fluxes per spectrum, measured at the inspected redshift (cfpipe nirspec linefit -> campfire deploy lines). One row per spectrum, replaced on re-fit by line_fits_upsert together with its lines rows, which hold the per-line measurements (the `lines` jsonb blob was dropped in Catalog Read Model phase 2c; lines_jsonb_of rebuilds the {line: record} map for the sync stream and the exports). z_used / z_quality / object_version record the inspection state the fit used (see line_fits_status for staleness). Formerly spectrum_line_fits (renamed 2026-10-26, Catalog Read Model phase 2b).';
 
 COMMENT ON COLUMN "public"."line_fits"."spectrum_science_hash" IS 'Science-content sha256 of the spectrum the fit was made from (the SCIHASH card cfpipe nirspec linefit writes since P0b; same definition as spectra.science_hash). line_fit_stale_spectrum compares it with spectra.science_hash when both exist, so a redeploy that only rewrote volatile header cards does not read as a stale fit (P0c); NULL on products fitted before the card existed, which fall back to spectrum_hash.';
 
@@ -1282,7 +1276,7 @@ COMMENT ON COLUMN "public"."lines"."object_id" IS 'The object this measurement b
 ALTER TABLE "public"."lines" OWNER TO "postgres";
 
 
-COMMENT ON TABLE "public"."lines" IS 'line_fits.lines unnested: one row per (spectrum, catalog line) for indexed filter/sort on a line''s S/N or flux. Derived by the sync_lines trigger; never written directly. Select on doublet totals (CIII1908, OII3727, SII6725, ...) rather than components. Formerly spectrum_lines (renamed 2026-10-26, Catalog Read Model phase 2b).';
+COMMENT ON TABLE "public"."lines" IS 'The emission-line measurements: one row per (spectrum, catalog line) with every field the pipeline measured (label, component, wavelengths, flux, S/N, equivalent width, continuum, kinematics, the fit complex''s chi2 / dof / npix, flags, blend_into / tied_to / members). The source of truth since Catalog Read Model phase 2c: written with the fit by line_fits_upsert (a re-fit replaces all of a spectrum''s rows), object_id trigger-maintained, never a client-supplied value. Select on doublet totals (CIII1908, OII3727, SII6725, ...) rather than components. Formerly spectrum_lines (renamed 2026-10-26, phase 2b).';
 
 
 CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
@@ -1832,7 +1826,6 @@ CREATE TABLE IF NOT EXISTS "public"."dr_line_fits" (
     "n_broad" integer NOT NULL,
     "chi2" double precision,
     "dof" integer,
-    "lines" "jsonb" NOT NULL,
     "fit_version" "text" NOT NULL,
     "cfpipe_version" "text",
     "f_lsf" double precision,
@@ -1900,7 +1893,6 @@ CREATE TABLE IF NOT EXISTS "public"."dr_catalog_matches" (
     "catalog_name" "text" NOT NULL,
     "catalog_id" "text",
     "match_distance_arcsec" double precision,
-    "photometry" jsonb NOT NULL,
     "photo_z" double precision,
     "photo_z_err_lo" double precision,
     "photo_z_err_hi" double precision,

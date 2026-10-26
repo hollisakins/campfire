@@ -713,7 +713,6 @@ WITH (security_invoker = true) AS
          n_broad,
          chi2,
          dof,
-         lines,
          fit_version,
          cfpipe_version,
          f_lsf,
@@ -748,7 +747,6 @@ WITH (security_invoker = true) AS
            n_broad,
            chi2,
            dof,
-           lines,
            fit_version,
            cfpipe_version,
            f_lsf,
@@ -784,7 +782,6 @@ WITH (security_invoker = true) AS
            n_broad,
            chi2,
            dof,
-           lines,
            fit_version,
            cfpipe_version,
            f_lsf,
@@ -920,7 +917,6 @@ WITH (security_invoker = true) AS
          catalog_name,
          catalog_id,
          match_distance_arcsec,
-         photometry,
          photo_z,
          photo_z_err_lo,
          photo_z_err_hi,
@@ -938,7 +934,6 @@ WITH (security_invoker = true) AS
            catalog_name,
            catalog_id,
            match_distance_arcsec,
-           photometry,
            photo_z,
            photo_z_err_lo,
            photo_z_err_hi,
@@ -957,7 +952,6 @@ WITH (security_invoker = true) AS
            catalog_name,
            catalog_id,
            match_distance_arcsec,
-           photometry,
            photo_z,
            photo_z_err_lo,
            photo_z_err_hi,
@@ -2869,6 +2863,254 @@ GRANT EXECUTE ON FUNCTION public.get_spectra_for_sync(TEXT[], UUID, TIMESTAMPTZ,
 
 
 -- =============================================================================
+-- Measurement rows (Catalog Read Model phase 2c)
+--   lines and photometry are the source of truth; line_fits and catalog_matches
+--   carry no jsonb blob any more. Two writers take the payload the deploy has
+--   always sent (one record per spectrum with its {line: record} map; one
+--   record per cross-match with its {flux_unit, bands} map) and write the
+--   parent row plus its child rows in one transaction, replacing a parent's
+--   children wholesale so a line or band dropped by a re-fit / re-match never
+--   lingers. Two readers rebuild the map shape for the consumers that still
+--   speak it (the sync streams, the data-release exports, the CSV export),
+--   from the live rows or, by tag, from a release's frozen rows.
+--   SECURITY INVOKER throughout: the admin insert/update/delete policies on
+--   the four tables gate the writers; the readers see what the caller sees.
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION public.lines_jsonb_of(p_spectrum_id integer, p_tag text DEFAULT NULL)
+RETURNS jsonb
+LANGUAGE sql STABLE
+SET search_path = public
+-- shortest-precise float output, so a double round-trips through the map
+-- exactly (the server default of 0 prints 15 digits and would turn
+-- 10.000000000000002 into 10)
+SET extra_float_digits = 1
+AS $$
+  SELECT COALESCE(jsonb_object_agg(l.line,
+           jsonb_build_object(
+             'label', l.label, 'component', l.component,
+             'wave_rest', l.wave_rest, 'wave_obs', l.wave_obs,
+             'flux', l.flux, 'flux_err', l.flux_err, 'snr', l.snr,
+             'ew_rest', l.ew_rest, 'ew_rest_err', l.ew_rest_err,
+             'cont', l.cont, 'cont_err', l.cont_err,
+             'dv', l.dv, 'dv_err', l.dv_err, 'sigma_v', l.sigma_v, 'sigma_v_err', l.sigma_v_err,
+             'sigma_lsf_kms', l.sigma_lsf_kms, 'complex', l.complex,
+             'chi2', l.chi2, 'dof', l.dof, 'npix', l.npix, 'flags', l.flags,
+             'blend_into', l.blend_into, 'tied_to', l.tied_to)
+           || CASE WHEN l.members IS NULL THEN '{}'::jsonb
+                   ELSE jsonb_build_object('members', to_jsonb(l.members)) END),
+         '{}'::jsonb)
+  FROM (
+    SELECT line, label, component, wave_rest, wave_obs, flux, flux_err, snr, ew_rest, ew_rest_err,
+           cont, cont_err, dv, dv_err, sigma_v, sigma_v_err, sigma_lsf_kms, complex, chi2, dof, npix,
+           flags, blend_into, tied_to, members
+      FROM public.lines
+     WHERE p_tag IS NULL AND spectrum_id = p_spectrum_id
+    UNION ALL
+    SELECT line, label, component, wave_rest, wave_obs, flux, flux_err, snr, ew_rest, ew_rest_err,
+           cont, cont_err, dv, dv_err, sigma_v, sigma_v_err, sigma_lsf_kms, complex, chi2, dof, npix,
+           flags, blend_into, tied_to, members
+      FROM public.dr_lines
+     WHERE p_tag IS NOT NULL AND tag = p_tag AND spectrum_id = p_spectrum_id
+  ) l;
+$$;
+
+COMMENT ON FUNCTION public.lines_jsonb_of(integer, text) IS 'The {line: record} map of a fit, rebuilt from its lines rows (live, or the frozen rows of release p_tag): the shape line_fits.lines had before Catalog Read Model phase 2c, which the sync stream and the exports still speak. members is present on doublet totals only, as the pipeline wrote it.';
+REVOKE ALL ON FUNCTION public.lines_jsonb_of(integer, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.lines_jsonb_of(integer, text) TO authenticated, service_role;
+
+CREATE OR REPLACE FUNCTION public.bands_jsonb_of(p_match_id integer, p_tag text DEFAULT NULL)
+RETURNS jsonb
+LANGUAGE sql STABLE
+SET search_path = public
+-- shortest-precise float output, so a double round-trips through the map
+-- exactly (the server default of 0 prints 15 digits and would turn
+-- 10.000000000000002 into 10)
+SET extra_float_digits = 1
+AS $$
+  SELECT jsonb_build_object(
+           'flux_unit', 'uJy',
+           'bands', COALESCE(jsonb_object_agg(b.band,
+                      jsonb_build_object('flux', b.flux, 'flux_err', b.flux_err)
+                      || CASE WHEN b.wav IS NULL THEN '{}'::jsonb
+                              ELSE jsonb_build_object('wav', b.wav, 'wav_min', b.wav_min, 'wav_max', b.wav_max) END),
+                    '{}'::jsonb))
+  FROM (
+    SELECT band, flux, flux_err, wav, wav_min, wav_max
+      FROM public.photometry
+     WHERE p_tag IS NULL AND match_id = p_match_id
+    UNION ALL
+    SELECT band, flux, flux_err, wav, wav_min, wav_max
+      FROM public.dr_photometry
+     WHERE p_tag IS NOT NULL AND tag = p_tag AND match_id = p_match_id
+  ) b;
+$$;
+
+COMMENT ON FUNCTION public.bands_jsonb_of(integer, text) IS 'The {flux_unit: "uJy", bands: {band: {flux, flux_err, wav, wav_min, wav_max}}} map of a cross-match, rebuilt from its photometry rows (live, or the frozen rows of release p_tag): the shape catalog_matches.photometry had before Catalog Read Model phase 2c, which the sync stream, the exports and the CSV export still speak. The wavelength keys are present only where the band has a pivot wavelength, as the deploy wrote it.';
+REVOKE ALL ON FUNCTION public.bands_jsonb_of(integer, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.bands_jsonb_of(integer, text) TO authenticated, service_role;
+
+-- line_fits_upsert: `campfire deploy lines`. One element per spectrum, the row
+-- the deploy has always sent (build_line_fit_row + spectrum_id) with its
+-- 'lines' map; keyed on spectrum_id. Returns the number of fits written.
+CREATE OR REPLACE FUNCTION public.line_fits_upsert(p_rows jsonb)
+RETURNS integer
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+  r jsonb;
+  v_spectrum_id integer;
+  n integer := 0;
+BEGIN
+  IF p_rows IS NULL OR jsonb_typeof(p_rows) <> 'array' THEN
+    RAISE EXCEPTION 'line_fits_upsert: p_rows must be a JSON array of fit records';
+  END IF;
+  FOR r IN SELECT jsonb_array_elements(p_rows) LOOP
+    v_spectrum_id := (r ->> 'spectrum_id')::integer;
+    IF v_spectrum_id IS NULL THEN
+      RAISE EXCEPTION 'line_fits_upsert: a record has no spectrum_id';
+    END IF;
+    INSERT INTO public.line_fits (
+      spectrum_id, target_id, grating, program_slug, observation,
+      z_used, z_source, z_quality, object_id, object_version,
+      z_fit, z_fit_err, dv, dv_err, sigma_v, sigma_v_err, kin_source,
+      n_lines, n_detected, n_broad, chi2, dof,
+      fit_version, cfpipe_version, f_lsf, spectrum_hash, spectrum_science_hash, fitted_at
+    ) VALUES (
+      v_spectrum_id, r ->> 'target_id', r ->> 'grating', r ->> 'program_slug', r ->> 'observation',
+      (r ->> 'z_used')::double precision, COALESCE(r ->> 'z_source', 'inspected'),
+      COALESCE((r ->> 'z_quality')::integer, 0), r ->> 'object_id', (r ->> 'object_version')::integer,
+      (r ->> 'z_fit')::double precision, (r ->> 'z_fit_err')::double precision,
+      (r ->> 'dv')::double precision, (r ->> 'dv_err')::double precision,
+      (r ->> 'sigma_v')::double precision, (r ->> 'sigma_v_err')::double precision, r ->> 'kin_source',
+      COALESCE((r ->> 'n_lines')::integer, 0), COALESCE((r ->> 'n_detected')::integer, 0),
+      COALESCE((r ->> 'n_broad')::integer, 0), (r ->> 'chi2')::double precision, (r ->> 'dof')::integer,
+      r ->> 'fit_version', r ->> 'cfpipe_version', (r ->> 'f_lsf')::double precision,
+      r ->> 'spectrum_hash', r ->> 'spectrum_science_hash', (r ->> 'fitted_at')::timestamptz
+    )
+    ON CONFLICT (spectrum_id) DO UPDATE SET
+      target_id = EXCLUDED.target_id, grating = EXCLUDED.grating,
+      program_slug = EXCLUDED.program_slug, observation = EXCLUDED.observation,
+      z_used = EXCLUDED.z_used, z_source = EXCLUDED.z_source, z_quality = EXCLUDED.z_quality,
+      object_id = EXCLUDED.object_id, object_version = EXCLUDED.object_version,
+      z_fit = EXCLUDED.z_fit, z_fit_err = EXCLUDED.z_fit_err,
+      dv = EXCLUDED.dv, dv_err = EXCLUDED.dv_err, sigma_v = EXCLUDED.sigma_v, sigma_v_err = EXCLUDED.sigma_v_err,
+      kin_source = EXCLUDED.kin_source,
+      n_lines = EXCLUDED.n_lines, n_detected = EXCLUDED.n_detected, n_broad = EXCLUDED.n_broad,
+      chi2 = EXCLUDED.chi2, dof = EXCLUDED.dof,
+      fit_version = EXCLUDED.fit_version, cfpipe_version = EXCLUDED.cfpipe_version, f_lsf = EXCLUDED.f_lsf,
+      spectrum_hash = EXCLUDED.spectrum_hash, spectrum_science_hash = EXCLUDED.spectrum_science_hash,
+      fitted_at = EXCLUDED.fitted_at;
+    -- a re-fit replaces the whole set: a line dropped from the catalog must not linger
+    DELETE FROM public.lines WHERE spectrum_id = v_spectrum_id;
+    INSERT INTO public.lines (
+      spectrum_id, line, component, wave_rest, flux, flux_err, snr,
+      ew_rest, ew_rest_err, flags, blend_into,
+      label, wave_obs, cont, cont_err, dv, dv_err, sigma_v, sigma_v_err,
+      sigma_lsf_kms, complex, chi2, dof, npix, tied_to, members
+    )
+    SELECT
+      v_spectrum_id,
+      e.key,
+      COALESCE(e.value ->> 'component', 'narrow'),
+      (e.value ->> 'wave_rest')::double precision,
+      (e.value ->> 'flux')::double precision,
+      (e.value ->> 'flux_err')::double precision,
+      (e.value ->> 'snr')::double precision,
+      (e.value ->> 'ew_rest')::double precision,
+      (e.value ->> 'ew_rest_err')::double precision,
+      COALESCE((e.value ->> 'flags')::integer, 0),
+      e.value ->> 'blend_into',
+      e.value ->> 'label',
+      (e.value ->> 'wave_obs')::double precision,
+      (e.value ->> 'cont')::double precision,
+      (e.value ->> 'cont_err')::double precision,
+      (e.value ->> 'dv')::double precision,
+      (e.value ->> 'dv_err')::double precision,
+      (e.value ->> 'sigma_v')::double precision,
+      (e.value ->> 'sigma_v_err')::double precision,
+      (e.value ->> 'sigma_lsf_kms')::double precision,
+      (e.value ->> 'complex')::integer,
+      (e.value ->> 'chi2')::double precision,
+      (e.value ->> 'dof')::integer,
+      (e.value ->> 'npix')::integer,
+      e.value ->> 'tied_to',
+      CASE WHEN jsonb_typeof(e.value -> 'members') = 'array'
+           THEN ARRAY(SELECT jsonb_array_elements_text(e.value -> 'members')) END
+    FROM jsonb_each(COALESCE(r -> 'lines', '{}'::jsonb)) AS e
+    WHERE jsonb_typeof(e.value) = 'object';
+    n := n + 1;
+  END LOOP;
+  RETURN n;
+END;
+$$;
+
+COMMENT ON FUNCTION public.line_fits_upsert(jsonb) IS 'Writes line fits as rows (Catalog Read Model phase 2c): one array element per spectrum, the fit''s scalar columns plus a {line: record} map under ''lines''; upserts the line_fits row on spectrum_id and replaces the spectrum''s lines rows. The deploy CLI''s only write path for fits; gated by the admin policies of both tables.';
+REVOKE ALL ON FUNCTION public.line_fits_upsert(jsonb) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.line_fits_upsert(jsonb) TO authenticated, service_role;
+
+-- catalog_matches_upsert: `campfire deploy photometry`. One element per
+-- cross-match, the record the deploy has always sent with its 'photometry'
+-- {flux_unit, bands} map; keyed on (field, catalog_name, catalog_id). Returns
+-- the number of matches written.
+CREATE OR REPLACE FUNCTION public.catalog_matches_upsert(p_rows jsonb)
+RETURNS integer
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+  r jsonb;
+  v_id integer;
+  n integer := 0;
+BEGIN
+  IF p_rows IS NULL OR jsonb_typeof(p_rows) <> 'array' THEN
+    RAISE EXCEPTION 'catalog_matches_upsert: p_rows must be a JSON array of cross-match records';
+  END IF;
+  FOR r IN SELECT jsonb_array_elements(p_rows) LOOP
+    INSERT INTO public.catalog_matches (
+      object_id, field, ra, dec, catalog_name, catalog_id, match_distance_arcsec,
+      photo_z, photo_z_err_lo, photo_z_err_hi, has_pz, updated_at
+    ) VALUES (
+      (r ->> 'object_id')::integer, r ->> 'field',
+      (r ->> 'ra')::double precision, (r ->> 'dec')::double precision,
+      r ->> 'catalog_name', r ->> 'catalog_id', (r ->> 'match_distance_arcsec')::double precision,
+      (r ->> 'photo_z')::double precision, (r ->> 'photo_z_err_lo')::double precision,
+      (r ->> 'photo_z_err_hi')::double precision, COALESCE((r ->> 'has_pz')::boolean, false),
+      COALESCE((r ->> 'updated_at')::timestamptz, now())
+    )
+    ON CONFLICT (field, catalog_name, catalog_id) DO UPDATE SET
+      object_id = EXCLUDED.object_id, ra = EXCLUDED.ra, dec = EXCLUDED.dec,
+      match_distance_arcsec = EXCLUDED.match_distance_arcsec,
+      photo_z = EXCLUDED.photo_z, photo_z_err_lo = EXCLUDED.photo_z_err_lo,
+      photo_z_err_hi = EXCLUDED.photo_z_err_hi, has_pz = EXCLUDED.has_pz,
+      updated_at = EXCLUDED.updated_at
+    RETURNING id INTO v_id;
+    -- a re-match replaces the whole set
+    DELETE FROM public.photometry WHERE match_id = v_id;
+    INSERT INTO public.photometry (match_id, band, flux, flux_err, wav, wav_min, wav_max)
+    SELECT
+      v_id,
+      e.key,
+      (e.value ->> 'flux')::double precision,
+      (e.value ->> 'flux_err')::double precision,
+      (e.value ->> 'wav')::double precision,
+      (e.value ->> 'wav_min')::double precision,
+      (e.value ->> 'wav_max')::double precision
+    FROM jsonb_each(COALESCE(r -> 'photometry' -> 'bands', '{}'::jsonb)) AS e
+    WHERE jsonb_typeof(e.value) = 'object';
+    n := n + 1;
+  END LOOP;
+  RETURN n;
+END;
+$$;
+
+COMMENT ON FUNCTION public.catalog_matches_upsert(jsonb) IS 'Writes photometric cross-matches as rows (Catalog Read Model phase 2c): one array element per match, the match''s scalar columns plus a {flux_unit, bands: {band: {flux, flux_err, wav, wav_min, wav_max}}} map under ''photometry''; upserts the catalog_matches row on (field, catalog_name, catalog_id) and replaces the match''s photometry rows. The deploy CLI''s only write path for matches; gated by the admin policies of both tables.';
+REVOKE ALL ON FUNCTION public.catalog_matches_upsert(jsonb) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_matches_upsert(jsonb) TO authenticated, service_role;
+
+
+-- =============================================================================
 -- get_photometry_for_sync
 -- (bulk fetch for Python client photometry sync)
 -- =============================================================================
@@ -2901,7 +3143,7 @@ BEGIN
   RETURN QUERY
   WITH matched AS (
     SELECT op.id, o.object_id, op.field, op.catalog_name, op.catalog_id,
-           op.match_distance_arcsec, op.photometry, op.photo_z,
+           op.match_distance_arcsec, public.bands_jsonb_of(op.id) AS photometry, op.photo_z,
            op.photo_z_err_lo, op.photo_z_err_hi, op.has_pz,
            op.created_at,
            -- Sync timestamp: the later of the row's own and its object's, so a
@@ -3012,7 +3254,8 @@ BEGIN
            s.spectrum_id AS spectrum_name, t.field, o.object_id AS current_object_id,
            f.z_used, f.z_source, f.z_quality, f.object_id, f.object_version,
            f.z_fit, f.z_fit_err, f.dv, f.dv_err, f.sigma_v, f.sigma_v_err, f.kin_source,
-           f.n_lines, f.n_detected, f.n_broad, f.chi2, f.dof, f.lines,
+           f.n_lines, f.n_detected, f.n_broad, f.chi2, f.dof,
+           public.lines_jsonb_of(f.spectrum_id) AS lines,
            f.fit_version, f.cfpipe_version, f.f_lsf, f.spectrum_hash, f.fitted_at,
            f.created_at, f.updated_at,
            -- The record's sync timestamp: the latest of the fit row and the two
@@ -5523,7 +5766,7 @@ BEGIN
   LEFT JOIN user_profiles up ON up.user_id = po.last_inspected_by
   LEFT JOIN LATERAL public.object_scoped_aggregates(po.id, v_filtered_program_slugs, p_include_unpublished) sa ON true
   LEFT JOIN LATERAL (
-    SELECT op.photometry FROM public.cat_catalog_matches op
+    SELECT public.bands_jsonb_of(op.id, public.dr_browse_tag()) AS photometry FROM public.cat_catalog_matches op
     WHERE op.object_id = po.id ORDER BY op.updated_at DESC LIMIT 1
   ) phot ON true
   ORDER BY po.object_id ASC;
@@ -10550,8 +10793,8 @@ BEGIN
       RETURNING 1
     ),
     ins_lines AS (
-      INSERT INTO dr_line_fits (tag, spectrum_id, target_id, grating, program_slug, observation, z_used, z_source, z_quality, object_id, object_version, z_fit, z_fit_err, dv, dv_err, sigma_v, sigma_v_err, kin_source, n_lines, n_detected, n_broad, chi2, dof, lines, fit_version, cfpipe_version, f_lsf, spectrum_hash, spectrum_science_hash, fitted_at, created_at, updated_at, stale_redshift, stale_spectrum)
-      SELECT p_tag, f.spectrum_id, f.target_id, f.grating, f.program_slug, f.observation, f.z_used, f.z_source, f.z_quality, f.object_id, f.object_version, f.z_fit, f.z_fit_err, f.dv, f.dv_err, f.sigma_v, f.sigma_v_err, f.kin_source, f.n_lines, f.n_detected, f.n_broad, f.chi2, f.dof, f.lines, f.fit_version, f.cfpipe_version, f.f_lsf, f.spectrum_hash, f.spectrum_science_hash, f.fitted_at, f.created_at, f.updated_at,
+      INSERT INTO dr_line_fits (tag, spectrum_id, target_id, grating, program_slug, observation, z_used, z_source, z_quality, object_id, object_version, z_fit, z_fit_err, dv, dv_err, sigma_v, sigma_v_err, kin_source, n_lines, n_detected, n_broad, chi2, dof, fit_version, cfpipe_version, f_lsf, spectrum_hash, spectrum_science_hash, fitted_at, created_at, updated_at, stale_redshift, stale_spectrum)
+      SELECT p_tag, f.spectrum_id, f.target_id, f.grating, f.program_slug, f.observation, f.z_used, f.z_source, f.z_quality, f.object_id, f.object_version, f.z_fit, f.z_fit_err, f.dv, f.dv_err, f.sigma_v, f.sigma_v_err, f.kin_source, f.n_lines, f.n_detected, f.n_broad, f.chi2, f.dof, f.fit_version, f.cfpipe_version, f.f_lsf, f.spectrum_hash, f.spectrum_science_hash, f.fitted_at, f.created_at, f.updated_at,
              -- stale_redshift is the live, trigger-maintained column since phase 2a
              -- (copied like every other live column); stale_spectrum is still
              -- evaluated in this snapshot
@@ -10576,8 +10819,8 @@ BEGIN
       WHERE (ph.field || '/' || ph.catalog_name) = ANY (comp.photometry)
     ),
     ins_phot AS (
-      INSERT INTO dr_catalog_matches (tag, id, object_id, field, ra, dec, catalog_name, catalog_id, match_distance_arcsec, photometry, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz, created_at, updated_at)
-      SELECT p_tag, ph.id, ph.object_id, ph.field, ph.ra, ph.dec, ph.catalog_name, ph.catalog_id, ph.match_distance_arcsec, ph.photometry, ph.photo_z, ph.photo_z_err_lo, ph.photo_z_err_hi, ph.has_pz, ph.created_at, ph.updated_at
+      INSERT INTO dr_catalog_matches (tag, id, object_id, field, ra, dec, catalog_name, catalog_id, match_distance_arcsec, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz, created_at, updated_at)
+      SELECT p_tag, ph.id, ph.object_id, ph.field, ph.ra, ph.dec, ph.catalog_name, ph.catalog_id, ph.match_distance_arcsec, ph.photo_z, ph.photo_z_err_lo, ph.photo_z_err_hi, ph.has_pz, ph.created_at, ph.updated_at
       FROM catalog_matches ph JOIN phot ON phot.id = ph.id
       RETURNING 1
     ),
@@ -11255,7 +11498,7 @@ BEGIN
              'z_fit', f.z_fit, 'z_fit_err', f.z_fit_err, 'dv', f.dv, 'dv_err', f.dv_err,
              'sigma_v', f.sigma_v, 'sigma_v_err', f.sigma_v_err, 'kin_source', f.kin_source,
              'n_lines', f.n_lines, 'n_detected', f.n_detected, 'n_broad', f.n_broad,
-             'chi2', f.chi2, 'dof', f.dof, 'lines', f.lines, 'fit_version', f.fit_version,
+             'chi2', f.chi2, 'dof', f.dof, 'lines', public.lines_jsonb_of(f.spectrum_id, p_tag), 'fit_version', f.fit_version,
              'cfpipe_version', f.cfpipe_version, 'f_lsf', f.f_lsf,
              'spectrum_hash', f.spectrum_hash, 'spectrum_science_hash', f.spectrum_science_hash,
              'fitted_at', f.fitted_at, 'stale_redshift', f.stale_redshift, 'stale_spectrum', f.stale_spectrum)
@@ -11275,7 +11518,7 @@ BEGIN
              'id', ph.id, 'object_id', ph.object_id, 'programs', ARRAY[p_partition],
              'field', ph.field, 'catalog_name', ph.catalog_name, 'catalog_id', ph.catalog_id,
              'ra', ph.ra, 'dec', ph.dec, 'match_distance_arcsec', ph.match_distance_arcsec,
-             'photometry', ph.photometry, 'photo_z', ph.photo_z,
+             'photometry', public.bands_jsonb_of(ph.id, p_tag), 'photo_z', ph.photo_z,
              'photo_z_err_lo', ph.photo_z_err_lo, 'photo_z_err_hi', ph.photo_z_err_hi, 'has_pz', ph.has_pz)
     FROM dr_catalog_matches ph
     JOIN dr_objects o ON o.tag = ph.tag AND o.id = ph.object_id

@@ -493,9 +493,20 @@ def test_read_catalog_rejects_unsupported_formats(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _photometry_client(rows):
-    """A fake holding *rows* of ``catalog_matches``; every RPC (the
+    """A fake holding *rows* of ``catalog_matches``. ``catalog_matches_upsert``
+    (the writer RPC since Catalog Read Model phase 2c) applies its records to
+    the table like the server does; every other RPC (the
     ``sync_photometry_to_objects`` relink) answers 0."""
-    return FakePostgrest(tables={'catalog_matches': rows}, rpc_default=0)
+    client = FakePostgrest(tables={'catalog_matches': rows}, rpc_default=0)
+
+    def _upsert(params):
+        recs = params['p_rows']
+        client.table('catalog_matches').upsert(
+            recs, on_conflict='field,catalog_name,catalog_id').execute()
+        return len(recs)
+
+    client.rpc_handlers['catalog_matches_upsert'] = _upsert
+    return client
 
 
 def test_supersede_deletes_only_other_catalogs_in_field():

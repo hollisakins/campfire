@@ -216,7 +216,7 @@ def test_bootstrap_loads_snapshot_extras_and_catches_up(tmp_path, store, monkeyp
     assert result["needs_full_sync"] is False
     assert _ids(store, "objects") == [1, 2, 3]
     assert _ids(store, "spectra") == [101, 103]
-    assert _ids(store, "object_photometry") == []            # journal deletion applied
+    assert _ids(store, "catalog_matches") == []            # journal deletion applied
     assert api.deletion_requests == [STARTED_AT]
     assert len(_ids(store, "storage_objects")) == 2
 
