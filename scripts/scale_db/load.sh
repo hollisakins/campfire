@@ -49,5 +49,5 @@ psql "$DB_URL" -v ON_ERROR_STOP=1 -q -f "$here/scrub.sql"
 psql "$DB_URL" -v ON_ERROR_STOP=1 -q -c "ANALYZE"
 t3=$(date +%s); echo "scrub + analyze: $((t3-t2)) s"
 
-psql "$DB_URL" -tA -c "SELECT 'objects '||count(*) FROM objects UNION ALL SELECT 'spectra '||count(*) FROM spectra UNION ALL SELECT 'storage_objects '||count(*) FROM storage_objects UNION ALL SELECT 'line_fits '||count(*) FROM spectrum_line_fits UNION ALL SELECT 'db_size '||pg_size_pretty(pg_database_size(current_database()))"
+psql "$DB_URL" -tA -c "SELECT 'objects '||count(*) FROM objects UNION ALL SELECT 'spectra '||count(*) FROM spectra UNION ALL SELECT 'storage_objects '||count(*) FROM storage_objects UNION ALL SELECT 'line_fits '||count(*) FROM line_fits UNION ALL SELECT 'db_size '||pg_size_pretty(pg_database_size(current_database()))"
 echo "total: $((t3-t0)) s"

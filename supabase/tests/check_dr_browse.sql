@@ -311,8 +311,8 @@ DO $$
 DECLARE
   aps text := '(SELECT public.accessible_program_slugs())';
   grat text := (SELECT gratings[1] FROM mv_filter_options);
-  line text := (SELECT l.line FROM spectrum_lines l GROUP BY l.line ORDER BY count(*) DESC, l.line LIMIT 1);
-  band text := (SELECT b.band FROM object_photometry_bands b GROUP BY b.band ORDER BY count(*) DESC, b.band LIMIT 1);
+  line text := (SELECT l.line FROM lines l GROUP BY l.line ORDER BY count(*) DESC, l.line LIMIT 1);
+  band text := (SELECT b.band FROM photometry b GROUP BY b.band ORDER BY count(*) DESC, b.band LIMIT 1);
   obj record := (SELECT o FROM objects o WHERE o.has_published_spectrum AND o.is_active ORDER BY o.object_id OFFSET 3 LIMIT 1);
   -- an object with a measured line, so the line-S/N case returns a value
   fit_oid int; fit_line text;
@@ -323,7 +323,7 @@ DECLARE
   q text;
 BEGIN
   SELECT t.object_id, l.line INTO fit_oid, fit_line
-  FROM spectrum_lines l
+  FROM lines l
   JOIN spectra s ON s.id = l.spectrum_id
   JOIN targets t ON t.target_id = s.target_id
   WHERE t.object_id IS NOT NULL AND l.snr IS NOT NULL AND s.deploy_status = 'published'

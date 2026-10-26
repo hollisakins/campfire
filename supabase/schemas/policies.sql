@@ -365,10 +365,10 @@ CREATE POLICY "admin_objects_delete"
 
 
 -- =============================================================================
--- object_photometry
+-- catalog_matches
 -- =============================================================================
 
-ALTER TABLE object_photometry ENABLE ROW LEVEL SECURITY;
+ALTER TABLE catalog_matches ENABLE ROW LEVEL SECURITY;
 
 -- Photometry visible if the linked object is accessible.
 -- The object subquery mirrors select_objects_by_access, including its share-link
@@ -382,13 +382,13 @@ ALTER TABLE object_photometry ENABLE ROW LEVEL SECURITY;
 -- the audit's crossover analysis (~2 400 rows) endorses for a table that is
 -- only ever read one object at a time -- it is not the blanket EXISTS rewrite
 -- the audit warns against for spectra, which gets a denormalized column instead.
-DROP POLICY IF EXISTS "select_object_photometry_by_access" ON object_photometry;
-CREATE POLICY "select_object_photometry_by_access"
-  ON object_photometry FOR SELECT TO authenticated
+DROP POLICY IF EXISTS "select_catalog_matches_by_access" ON catalog_matches;
+CREATE POLICY "select_catalog_matches_by_access"
+  ON catalog_matches FOR SELECT TO authenticated
   USING (
     object_id IS NOT NULL AND EXISTS (
       SELECT 1 FROM objects o
-      WHERE o.id = object_photometry.object_id
+      WHERE o.id = catalog_matches.object_id
         AND o.programs && (SELECT public.accessible_program_slugs())
         -- B1 (#217): no photometry for objects with no published spectrum.
         AND (o.has_published_spectrum OR (SELECT public.is_admin())
@@ -400,32 +400,32 @@ CREATE POLICY "select_object_photometry_by_access"
   );
 
 -- Admins can insert photometry (deploy CLI).
-DROP POLICY IF EXISTS "admin_object_photometry_insert" ON object_photometry;
-CREATE POLICY "admin_object_photometry_insert"
-  ON object_photometry FOR INSERT TO authenticated
+DROP POLICY IF EXISTS "admin_catalog_matches_insert" ON catalog_matches;
+CREATE POLICY "admin_catalog_matches_insert"
+  ON catalog_matches FOR INSERT TO authenticated
   WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can update photometry (deploy CLI).
-DROP POLICY IF EXISTS "admin_object_photometry_update" ON object_photometry;
-CREATE POLICY "admin_object_photometry_update"
-  ON object_photometry FOR UPDATE TO authenticated
+DROP POLICY IF EXISTS "admin_catalog_matches_update" ON catalog_matches;
+CREATE POLICY "admin_catalog_matches_update"
+  ON catalog_matches FOR UPDATE TO authenticated
   USING ((SELECT public.is_admin()))
   WITH CHECK ((SELECT public.is_admin()));
 
 -- Admins can delete photometry (deploy CLI).
-DROP POLICY IF EXISTS "admin_object_photometry_delete" ON object_photometry;
-CREATE POLICY "admin_object_photometry_delete"
-  ON object_photometry FOR DELETE TO authenticated
+DROP POLICY IF EXISTS "admin_catalog_matches_delete" ON catalog_matches;
+CREATE POLICY "admin_catalog_matches_delete"
+  ON catalog_matches FOR DELETE TO authenticated
   USING ((SELECT public.is_admin()));
 
 
 -- =============================================================================
--- object_photometry_bands (derived from object_photometry.photometry; same visibility)
+-- photometry (derived from catalog_matches.photometry; same visibility)
 -- =============================================================================
 -- Readable iff the parent cross-match row is (one hop, exactly the shape
--- spectrum_lines uses over spectrum_line_fits). Rows are written by the
--- sync_object_photometry_bands trigger (SECURITY DEFINER, so an admin deploy
--- upsert on object_photometry rebuilds them regardless of these policies);
+-- lines uses over line_fits). Rows are written by the
+-- sync_photometry trigger (SECURITY DEFINER, so an admin deploy
+-- upsert on catalog_matches rebuilds them regardless of these policies);
 -- the admin write policies exist only for manual repair.
 --
 -- The catalog RPCs do NOT read this table through these policies: the
@@ -437,32 +437,32 @@ CREATE POLICY "admin_object_photometry_delete"
 -- predicate inline with one join. This policy still governs direct
 -- PostgREST reads of the table.
 
-ALTER TABLE object_photometry_bands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE photometry ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "select_object_photometry_bands_by_parent" ON object_photometry_bands;
-CREATE POLICY "select_object_photometry_bands_by_parent"
-  ON object_photometry_bands FOR SELECT TO authenticated
+DROP POLICY IF EXISTS "select_photometry_by_parent" ON photometry;
+CREATE POLICY "select_photometry_by_parent"
+  ON photometry FOR SELECT TO authenticated
   USING (
     EXISTS (
-      SELECT 1 FROM public.object_photometry p
-      WHERE p.id = object_photometry_bands.photometry_id
+      SELECT 1 FROM public.catalog_matches p
+      WHERE p.id = photometry.match_id
     )
   );
 
-DROP POLICY IF EXISTS "admin_object_photometry_bands_insert" ON object_photometry_bands;
-CREATE POLICY "admin_object_photometry_bands_insert"
-  ON object_photometry_bands FOR INSERT TO authenticated
+DROP POLICY IF EXISTS "admin_photometry_insert" ON photometry;
+CREATE POLICY "admin_photometry_insert"
+  ON photometry FOR INSERT TO authenticated
   WITH CHECK ((SELECT public.is_admin()));
 
-DROP POLICY IF EXISTS "admin_object_photometry_bands_update" ON object_photometry_bands;
-CREATE POLICY "admin_object_photometry_bands_update"
-  ON object_photometry_bands FOR UPDATE TO authenticated
+DROP POLICY IF EXISTS "admin_photometry_update" ON photometry;
+CREATE POLICY "admin_photometry_update"
+  ON photometry FOR UPDATE TO authenticated
   USING ((SELECT public.is_admin()))
   WITH CHECK ((SELECT public.is_admin()));
 
-DROP POLICY IF EXISTS "admin_object_photometry_bands_delete" ON object_photometry_bands;
-CREATE POLICY "admin_object_photometry_bands_delete"
-  ON object_photometry_bands FOR DELETE TO authenticated
+DROP POLICY IF EXISTS "admin_photometry_delete" ON photometry;
+CREATE POLICY "admin_photometry_delete"
+  ON photometry FOR DELETE TO authenticated
   USING ((SELECT public.is_admin()));
 
 
@@ -1018,76 +1018,76 @@ CREATE POLICY "admin_update_nirspec_rate_exposures"
 
 
 -- =============================================================================
--- spectrum_line_fits (emission-line fluxes; visibility follows the spectrum)
+-- line_fits (emission-line fluxes; visibility follows the spectrum)
 -- =============================================================================
 -- A fit is readable iff its parent spectrum is: the EXISTS subquery runs under
 -- the caller's own spectra RLS (program access, publish gate, share-link scope),
 -- so there is exactly one place those rules live. Writes are the deploy CLI
 -- (admins) only.
 
-ALTER TABLE spectrum_line_fits ENABLE ROW LEVEL SECURITY;
+ALTER TABLE line_fits ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "select_spectrum_line_fits_by_spectrum" ON spectrum_line_fits;
-CREATE POLICY "select_spectrum_line_fits_by_spectrum"
-  ON spectrum_line_fits FOR SELECT TO authenticated
+DROP POLICY IF EXISTS "select_line_fits_by_spectrum" ON line_fits;
+CREATE POLICY "select_line_fits_by_spectrum"
+  ON line_fits FOR SELECT TO authenticated
   USING (
     EXISTS (
       SELECT 1 FROM public.spectra s
-      WHERE s.id = spectrum_line_fits.spectrum_id
+      WHERE s.id = line_fits.spectrum_id
     )
   );
 
-DROP POLICY IF EXISTS "admin_insert_spectrum_line_fits" ON spectrum_line_fits;
-CREATE POLICY "admin_insert_spectrum_line_fits"
-  ON spectrum_line_fits FOR INSERT TO authenticated
+DROP POLICY IF EXISTS "admin_insert_line_fits" ON line_fits;
+CREATE POLICY "admin_insert_line_fits"
+  ON line_fits FOR INSERT TO authenticated
   WITH CHECK ((SELECT public.is_admin()));
 
-DROP POLICY IF EXISTS "admin_update_spectrum_line_fits" ON spectrum_line_fits;
-CREATE POLICY "admin_update_spectrum_line_fits"
-  ON spectrum_line_fits FOR UPDATE TO authenticated
+DROP POLICY IF EXISTS "admin_update_line_fits" ON line_fits;
+CREATE POLICY "admin_update_line_fits"
+  ON line_fits FOR UPDATE TO authenticated
   USING ((SELECT public.is_admin()))
   WITH CHECK ((SELECT public.is_admin()));
 
-DROP POLICY IF EXISTS "admin_delete_spectrum_line_fits" ON spectrum_line_fits;
-CREATE POLICY "admin_delete_spectrum_line_fits"
-  ON spectrum_line_fits FOR DELETE TO authenticated
+DROP POLICY IF EXISTS "admin_delete_line_fits" ON line_fits;
+CREATE POLICY "admin_delete_line_fits"
+  ON line_fits FOR DELETE TO authenticated
   USING ((SELECT public.is_admin()));
 
 
 -- =============================================================================
--- spectrum_lines (derived from spectrum_line_fits.lines; same visibility)
+-- lines (derived from line_fits.lines; same visibility)
 -- =============================================================================
 -- Readable iff the parent spectrum is (one hop, same rule as the fit row).
--- Rows are written by the sync_spectrum_lines trigger (SECURITY DEFINER, so an
--- admin deploy upsert on spectrum_line_fits rebuilds them regardless of these
+-- Rows are written by the sync_lines trigger (SECURITY DEFINER, so an
+-- admin deploy upsert on line_fits rebuilds them regardless of these
 -- policies); the admin write policies only exist for manual repair.
 
-ALTER TABLE spectrum_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE lines ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "select_spectrum_lines_by_spectrum" ON spectrum_lines;
-CREATE POLICY "select_spectrum_lines_by_spectrum"
-  ON spectrum_lines FOR SELECT TO authenticated
+DROP POLICY IF EXISTS "select_lines_by_spectrum" ON lines;
+CREATE POLICY "select_lines_by_spectrum"
+  ON lines FOR SELECT TO authenticated
   USING (
     EXISTS (
       SELECT 1 FROM public.spectra s
-      WHERE s.id = spectrum_lines.spectrum_id
+      WHERE s.id = lines.spectrum_id
     )
   );
 
-DROP POLICY IF EXISTS "admin_insert_spectrum_lines" ON spectrum_lines;
-CREATE POLICY "admin_insert_spectrum_lines"
-  ON spectrum_lines FOR INSERT TO authenticated
+DROP POLICY IF EXISTS "admin_insert_lines" ON lines;
+CREATE POLICY "admin_insert_lines"
+  ON lines FOR INSERT TO authenticated
   WITH CHECK ((SELECT public.is_admin()));
 
-DROP POLICY IF EXISTS "admin_update_spectrum_lines" ON spectrum_lines;
-CREATE POLICY "admin_update_spectrum_lines"
-  ON spectrum_lines FOR UPDATE TO authenticated
+DROP POLICY IF EXISTS "admin_update_lines" ON lines;
+CREATE POLICY "admin_update_lines"
+  ON lines FOR UPDATE TO authenticated
   USING ((SELECT public.is_admin()))
   WITH CHECK ((SELECT public.is_admin()));
 
-DROP POLICY IF EXISTS "admin_delete_spectrum_lines" ON spectrum_lines;
-CREATE POLICY "admin_delete_spectrum_lines"
-  ON spectrum_lines FOR DELETE TO authenticated
+DROP POLICY IF EXISTS "admin_delete_lines" ON lines;
+CREATE POLICY "admin_delete_lines"
+  ON lines FOR DELETE TO authenticated
   USING ((SELECT public.is_admin()));
 
 
@@ -1838,9 +1838,9 @@ ALTER TABLE dr_targets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_objects ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_manifest ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_line_fits ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dr_spectrum_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dr_catalog_matches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_photometry ENABLE ROW LEVEL SECURITY;
-ALTER TABLE dr_photometry_bands ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_nircam_images ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_fields ENABLE ROW LEVEL SECURITY;
 ALTER TABLE dr_filter_options ENABLE ROW LEVEL SECURITY;
@@ -1908,7 +1908,7 @@ CREATE POLICY "select_dr_manifest"
          OR program_slug = ANY((SELECT public.accessible_program_slugs())::text[]))
   );
 
--- spectrum_line_fits: select_spectrum_line_fits_by_spectrum (the frozen parent)
+-- line_fits: select_line_fits_by_spectrum (the frozen parent)
 DROP POLICY IF EXISTS "select_dr_line_fits" ON dr_line_fits;
 CREATE POLICY "select_dr_line_fits"
   ON dr_line_fits FOR SELECT TO authenticated
@@ -1919,40 +1919,40 @@ CREATE POLICY "select_dr_line_fits"
     )
   );
 
--- spectrum_lines: select_spectrum_lines_by_spectrum
-DROP POLICY IF EXISTS "select_dr_spectrum_lines" ON dr_spectrum_lines;
-CREATE POLICY "select_dr_spectrum_lines"
-  ON dr_spectrum_lines FOR SELECT TO authenticated
+-- lines: select_lines_by_spectrum
+DROP POLICY IF EXISTS "select_dr_lines" ON dr_lines;
+CREATE POLICY "select_dr_lines"
+  ON dr_lines FOR SELECT TO authenticated
   USING (
     EXISTS (
       SELECT 1 FROM public.dr_spectra s
-      WHERE s.tag = dr_spectrum_lines.tag AND s.id = dr_spectrum_lines.spectrum_id
+      WHERE s.tag = dr_lines.tag AND s.id = dr_lines.spectrum_id
     )
   );
 
--- object_photometry: select_object_photometry_by_access (through the frozen object)
-DROP POLICY IF EXISTS "select_dr_photometry" ON dr_photometry;
-CREATE POLICY "select_dr_photometry"
-  ON dr_photometry FOR SELECT TO authenticated
+-- catalog_matches: select_catalog_matches_by_access (through the frozen object)
+DROP POLICY IF EXISTS "select_dr_catalog_matches" ON dr_catalog_matches;
+CREATE POLICY "select_dr_catalog_matches"
+  ON dr_catalog_matches FOR SELECT TO authenticated
   USING (
     (SELECT NOT public.is_link_account())
     AND tag = ANY((SELECT public.dr_visible_tags())::text[])
     AND object_id IS NOT NULL AND EXISTS (
       SELECT 1 FROM public.dr_objects o
-      WHERE o.tag = dr_photometry.tag AND o.id = dr_photometry.object_id
+      WHERE o.tag = dr_catalog_matches.tag AND o.id = dr_catalog_matches.object_id
         AND o.programs && (SELECT public.accessible_program_slugs())
         AND (o.has_published_spectrum OR (SELECT public.is_admin()))
     )
   );
 
--- object_photometry_bands: select_object_photometry_bands_by_parent
-DROP POLICY IF EXISTS "select_dr_photometry_bands" ON dr_photometry_bands;
-CREATE POLICY "select_dr_photometry_bands"
-  ON dr_photometry_bands FOR SELECT TO authenticated
+-- photometry: select_photometry_by_parent
+DROP POLICY IF EXISTS "select_dr_photometry" ON dr_photometry;
+CREATE POLICY "select_dr_photometry"
+  ON dr_photometry FOR SELECT TO authenticated
   USING (
     EXISTS (
-      SELECT 1 FROM public.dr_photometry p
-      WHERE p.tag = dr_photometry_bands.tag AND p.id = dr_photometry_bands.photometry_id
+      SELECT 1 FROM public.dr_catalog_matches p
+      WHERE p.tag = dr_photometry.tag AND p.id = dr_photometry.match_id
     )
   );
 

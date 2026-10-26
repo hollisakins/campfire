@@ -111,7 +111,7 @@ campfire download --all                            # Everything accessible
 ```bash
 campfire pull --obs ember_uds_p4            # also writes reference/nirspec/<obs>/redshifts.toml
 cfpipe nirspec linefit --obs ember_uds_p4   # pipeline: fits at the inspected redshifts
-campfire deploy lines --obs ember_uds_p4    # spectrum_line_fits rows (+ _lines.fits on OSN)
+campfire deploy lines --obs ember_uds_p4    # line_fits rows (+ _lines.fits on OSN)
 ```
 
 ### 3. Check status

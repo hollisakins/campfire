@@ -16,7 +16,7 @@ import type { ObjectHeader, ObjectMemberTarget, ObjectPhotometry, Spectrum } fro
  *                        share one lookup)
  *   loadObjectHeader   — the row plus its access-scoped member targets and
  *                        spectra; what the HTML is rendered from
- *   loadObjectPhotometry — the object_photometry row, streamed behind a
+ *   loadObjectPhotometry — the catalog_matches row, streamed behind a
  *                        Suspense boundary; never rejects
  *   loadObjectMetadata — the Open Graph fields, from the memoized row when
  *                        the viewer is signed in, else a service-role read
@@ -231,7 +231,7 @@ export async function loadObjectPhotometry(objectDbId: number): Promise<ObjectPh
   try {
     const { supabase } = await getRequestIdentity();
     const { data, error } = await supabase
-      .from('cat_photometry')
+      .from('cat_catalog_matches')
       .select('catalog_name, catalog_id, match_distance_arcsec, photometry, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz')
       .eq('object_id', objectDbId)
       .order('updated_at', { ascending: false })

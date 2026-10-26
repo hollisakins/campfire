@@ -37,7 +37,7 @@ published control) keep their ids.
 
 Besides the catalog, the seed carries the lifecycle surface the RLS work needs:
 real `storage_objects` rows (hashes and sizes) for every sampled spectrum and
-its sidecars, real `spectrum_line_fits` and `object_photometry` rows, one
+its sidecars, real `line_fits` and `catalog_matches` rows, one
 published `deployments` row per sampled observation plus a draft and a revoked
 one (each with one spectrum attached), a handful of published `nircam_images`
 of one real field plus a draft one, the `fields` rows, and two share links
@@ -454,7 +454,7 @@ def select_line_fit_targets(supabase, program_slugs: list[str], seen_target_ids:
     published targets (at most ``per_program`` each) whose spectra have a
     quality >= 3 fit with detected lines.
     """
-    rows = supabase.table('spectrum_line_fits') \
+    rows = supabase.table('line_fits') \
         .select('target_id,program_slug') \
         .in_('program_slug', sorted(program_slugs)) \
         .gte('z_quality', 3).gt('n_detected', 0) \
@@ -515,10 +515,10 @@ def fetch_flag_audit_log(supabase, target_int_ids: list[int]) -> list[dict]:
 
 
 def fetch_line_fits(supabase, spectrum_db_ids: list[int]) -> list[dict]:
-    """Fetch spectrum_line_fits rows (with their `lines` jsonb) for the sampled spectra."""
+    """Fetch line_fits rows (with their `lines` jsonb) for the sampled spectra."""
     if not spectrum_db_ids:
         return []
-    return _in_batches(supabase, 'spectrum_line_fits', 'spectrum_id', spectrum_db_ids)
+    return _in_batches(supabase, 'line_fits', 'spectrum_id', spectrum_db_ids)
 
 
 def fetch_fields(supabase) -> list[dict]:
@@ -527,10 +527,10 @@ def fetch_fields(supabase) -> list[dict]:
 
 
 def fetch_photometry(supabase, prod_object_ids: list[int]) -> list[dict]:
-    """object_photometry rows cross-matched to the production objects of the sample."""
+    """catalog_matches rows cross-matched to the production objects of the sample."""
     if not prod_object_ids:
         return []
-    return _in_batches(supabase, 'object_photometry', 'object_id', prod_object_ids)
+    return _in_batches(supabase, 'catalog_matches', 'object_id', prod_object_ids)
 
 
 def fetch_observation_deployments(supabase, obs_names: list[str]) -> dict[str, dict]:
@@ -1301,16 +1301,16 @@ LINE_FIT_JSON = {'lines'}
 
 
 def generate_line_fits_sql(line_fits: list[dict], guard: PublicGuard) -> str:
-    """Generate INSERT statements for spectrum_line_fits (spectrum_lines filled by trigger)."""
+    """Generate INSERT statements for line_fits (lines filled by trigger)."""
     lines = ['-- ============================================']
-    lines.append('-- 6e. Emission-line fits (spectrum_lines is derived by trigger)')
+    lines.append('-- 6e. Emission-line fits (lines is derived by trigger)')
     lines.append('-- ============================================')
     lines.append('')
     if not line_fits:
         lines.append('-- No line fits in production for the sampled spectra')
     for fit in sorted(line_fits, key=lambda f: f['spectrum_id']):
         guard.slug(fit['program_slug'], f"line fit of spectrum {fit['spectrum_id']}")
-        lines.append(f"INSERT INTO public.spectrum_line_fits ({', '.join(LINE_FIT_COLUMNS)})\n"
+        lines.append(f"INSERT INTO public.line_fits ({', '.join(LINE_FIT_COLUMNS)})\n"
                      f"VALUES ({sql_row(fit, LINE_FIT_COLUMNS, LINE_FIT_JSON)});")
 
     lines.append('')
@@ -1324,9 +1324,9 @@ PHOTOMETRY_JSON = {'photometry'}
 
 
 def generate_photometry_sql(photometry: list[dict], prod_to_seed_object: dict[int, int]) -> str:
-    """Generate INSERT statements for object_photometry (bands by trigger; objects synced by RPC)."""
+    """Generate INSERT statements for catalog_matches (bands by trigger; objects synced by RPC)."""
     lines = ['-- ============================================']
-    lines.append('-- 6f. Photometry cross-matches (object_photometry_bands is derived by trigger)')
+    lines.append('-- 6f. Photometry cross-matches (photometry is derived by trigger)')
     lines.append('-- ============================================')
     lines.append('')
     if not photometry:
@@ -1336,7 +1336,7 @@ def generate_photometry_sql(photometry: list[dict], prod_to_seed_object: dict[in
         out = dict(row)
         out['object_id'] = prod_to_seed_object[row['object_id']]
         fields.add(row['field'])
-        lines.append(f"INSERT INTO public.object_photometry ({', '.join(PHOTOMETRY_COLUMNS)})\n"
+        lines.append(f"INSERT INTO public.catalog_matches ({', '.join(PHOTOMETRY_COLUMNS)})\n"
                      f"VALUES ({sql_row(out, PHOTOMETRY_COLUMNS, PHOTOMETRY_JSON)});")
     if fields:
         lines.append('')
@@ -1631,7 +1631,7 @@ def generate_dr_fixture_sql() -> str:
     lines.append("         SELECT DISTINCT 'nircam/' || field FROM public.nircam_images WHERE deploy_status = 'published' UNION ALL")
     lines.append("         -- every photometry catalog with a cross-match on a frozen object (P6b-2: band filters)")
     lines.append("         SELECT DISTINCT 'photometry/' || ph.field || '/' || ph.catalog_name")
-    lines.append("         FROM public.object_photometry ph JOIN public.objects o ON o.id = ph.object_id")
+    lines.append("         FROM public.catalog_matches ph JOIN public.objects o ON o.id = ph.object_id")
     lines.append("         WHERE o.is_active AND o.has_published_spectrum) x),")
     lines.append(f"       '{ADMIN_UUID}', now(), 'Seed fixture: the seeded catalog frozen as a published release.';")
     lines.append("SELECT public.dr_freeze_job('DR-seed');")
@@ -1697,7 +1697,7 @@ def generate_sequence_resets(objects: list[dict], spectra: list[dict],
         lines.append(f"SELECT setval('public.nircam_images_id_seq', {max_img_id + 1}, false);")
     max_phot_id = max((p['id'] for p in photometry), default=0)
     if max_phot_id > 0:
-        lines.append(f"SELECT setval('public.object_photometry_id_seq', {max_phot_id + 1}, false);")
+        lines.append(f"SELECT setval('public.catalog_matches_id_seq', {max_phot_id + 1}, false);")
 
     # Object lists and members (auto-increment from whatever the migration + seed created)
     lines.append("SELECT setval('public.object_lists_id_seq', COALESCE((SELECT MAX(id) FROM public.object_lists), 0) + 1, false);")

@@ -1,7 +1,7 @@
 """Two-session check that a line fit's stored staleness serializes with an
 inspection of its object (Catalog Read Model phase 2a; Codex finding on #652).
 
-spectrum_line_fits.stale_redshift is computed by a BEFORE trigger from the
+line_fits.stale_redshift is computed by a BEFORE trigger from the
 object's redshift / quality / version, and recomputed by a statement trigger
 when the object is inspected. In isolation the two can interleave: a fit
 inserted while the object is being inspected computes "fresh" from the old
@@ -54,7 +54,7 @@ def fixtures():
     finally:
         run_sql(
             f"""
-            DELETE FROM spectrum_line_fits WHERE target_id IN ('{TARGET}', '{TARGET2}');
+            DELETE FROM line_fits WHERE target_id IN ('{TARGET}', '{TARGET2}');
             DELETE FROM spectra WHERE fits_path = '{FITS}';
             DELETE FROM targets WHERE target_id IN ('{TARGET}', '{TARGET2}');
             DELETE FROM objects WHERE object_id IN ('{OBJECT}', '{OBJECT2}');
@@ -67,7 +67,7 @@ def fixtures():
 def _insert_fit_sql() -> str:
     # a fit at the object's CURRENT redshift and version: fresh if nothing moves
     return (
-        "INSERT INTO spectrum_line_fits (spectrum_id, target_id, grating, program_slug, observation, "
+        "INSERT INTO line_fits (spectrum_id, target_id, grating, program_slug, observation, "
         "z_used, z_source, z_quality, object_id, object_version, n_lines, n_detected, lines, fit_version) "
         f"SELECT s.id, '{TARGET}', 'PRISM', '{PROGRAM}', '{OBS}', 5.0, 'inspected', 3, '{OBJECT}', o.version, 1, 1, "
         "jsonb_build_object('CIII1908', jsonb_build_object('component','doublet','wave_rest',1907.7,'flux',1e-18,'flux_err',1e-19,'snr',10.0)), 'test' "
@@ -76,7 +76,7 @@ def _insert_fit_sql() -> str:
 
 
 def _flag() -> str:
-    return _scalar(f"\\t on\nSELECT f.stale_redshift FROM spectrum_line_fits f WHERE f.target_id = '{TARGET}';")
+    return _scalar(f"\\t on\nSELECT f.stale_redshift FROM line_fits f WHERE f.target_id = '{TARGET}';")
 
 
 @requires_local_db
@@ -120,7 +120,7 @@ def test_inspection_then_fit_insert_serializes(fixtures):
 def _line_object() -> str:
     return _scalar(
         "\\t on\n"
-        f"SELECT o.object_id FROM spectrum_lines l JOIN spectra s ON s.id = l.spectrum_id "
+        f"SELECT o.object_id FROM lines l JOIN spectra s ON s.id = l.spectrum_id "
         f"JOIN objects o ON o.id = l.object_id WHERE s.fits_path = '{FITS}' LIMIT 1;"
     )
 

@@ -7,7 +7,7 @@
 -- not, so a direct read of the table (PostgREST, the object page's cat_objects
 -- lookup, the derived tables' policy chains) still showed them to every
 -- viewer. The policy now carries `is_active OR is_admin()`, as do the policies
--- that re-derive it inline (object_photometry, object_list_members, comments,
+-- that re-derive it inline (catalog_matches, object_list_members, comments,
 -- flag_audit_log) and the verbatim copies inside the two SECURITY DEFINER
 -- filter helpers (object_line_values, object_band_values), which bypass RLS
 -- and must stay in step by hand.
@@ -64,7 +64,7 @@ BEGIN
 
   -- One cross-match each (the trigger unnests the band) and one non-stale
   -- line fit each (the trigger unnests the line).
-  INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, photometry)
+  INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, photometry)
   SELECT o.id, o.field, o.ra, o.dec, 'zzz_sd_cat',
          jsonb_build_object('flux_unit', 'uJy', 'bands', jsonb_build_object(
            'f444w', jsonb_build_object('flux', 0.36308, 'flux_err', 0.018, 'wav', 4.4)))
@@ -78,7 +78,7 @@ BEGIN
     JOIN objects o ON o.id = t.object_id
     WHERE o.id IN (v_live, v_gone)
   LOOP
-    INSERT INTO spectrum_line_fits (spectrum_id, target_id, grating, program_slug, observation,
+    INSERT INTO line_fits (spectrum_id, target_id, grating, program_slug, observation,
                                     z_used, z_source, z_quality, object_id, object_version,
                                     n_lines, n_detected, lines, fit_version)
     VALUES (r.spectrum_id, r.target_id, r.grating, r.program_slug, r.observation,
@@ -90,9 +90,9 @@ BEGIN
             'test');
   END LOOP;
 
-  IF (SELECT count(*) FROM object_photometry_bands b JOIN object_photometry p ON p.id = b.photometry_id
+  IF (SELECT count(*) FROM photometry b JOIN catalog_matches p ON p.id = b.match_id
       WHERE p.object_id IN (v_live, v_gone)) <> 2
-     OR (SELECT count(*) FROM spectrum_lines l JOIN spectra s ON s.id = l.spectrum_id
+     OR (SELECT count(*) FROM lines l JOIN spectra s ON s.id = l.spectrum_id
          WHERE s.fits_path LIKE '/tmp/sd\_%') <> 2 THEN
     RAISE EXCEPTION 'fixture: triggers did not unnest one band row and one line row per object';
   END IF;
@@ -111,14 +111,14 @@ BEGIN
     RAISE EXCEPTION 'viewer: cat_objects must show only the active object, got %', v_ids;
   END IF;
   -- The derived tables reach the object through their own policy chain.
-  v_ids := ARRAY(SELECT DISTINCT p.object_id FROM object_photometry p WHERE p.object_id IN (v_live, v_gone) ORDER BY 1);
+  v_ids := ARRAY(SELECT DISTINCT p.object_id FROM catalog_matches p WHERE p.object_id IN (v_live, v_gone) ORDER BY 1);
   IF v_ids <> ARRAY[v_live] THEN
-    RAISE EXCEPTION 'viewer: object_photometry must show only the active object''s cross-match, got %', v_ids;
+    RAISE EXCEPTION 'viewer: catalog_matches must show only the active object''s cross-match, got %', v_ids;
   END IF;
-  SELECT count(*) INTO v_n FROM object_photometry_bands b JOIN object_photometry p ON p.id = b.photometry_id
+  SELECT count(*) INTO v_n FROM photometry b JOIN catalog_matches p ON p.id = b.match_id
     WHERE p.object_id IN (v_live, v_gone);
   IF v_n <> 1 THEN
-    RAISE EXCEPTION 'viewer: object_photometry_bands must show one band row (active object only), got %', v_n;
+    RAISE EXCEPTION 'viewer: photometry must show one band row (active object only), got %', v_n;
   END IF;
   -- The two SECURITY DEFINER helpers bypass RLS and carry a copy of the
   -- policy: called directly with the public slugs they must drop the orphan.
@@ -146,9 +146,9 @@ BEGIN
   IF v_ids <> ARRAY(SELECT x FROM unnest(ARRAY[v_live, v_gone]) x ORDER BY 1) THEN
     RAISE EXCEPTION 'admin: objects table must show both objects, got %', v_ids;
   END IF;
-  v_ids := ARRAY(SELECT DISTINCT p.object_id FROM object_photometry p WHERE p.object_id IN (v_live, v_gone) ORDER BY 1);
+  v_ids := ARRAY(SELECT DISTINCT p.object_id FROM catalog_matches p WHERE p.object_id IN (v_live, v_gone) ORDER BY 1);
   IF v_ids <> ARRAY(SELECT x FROM unnest(ARRAY[v_live, v_gone]) x ORDER BY 1) THEN
-    RAISE EXCEPTION 'admin: object_photometry must show both cross-matches, got %', v_ids;
+    RAISE EXCEPTION 'admin: catalog_matches must show both cross-matches, got %', v_ids;
   END IF;
   v_ids := ARRAY(SELECT v.object_id FROM public.object_line_values('CIII1908', NULL, NULL, false, c_pub) v
                  WHERE v.object_id IN (v_live, v_gone) ORDER BY 1);

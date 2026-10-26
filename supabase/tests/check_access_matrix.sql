@@ -120,7 +120,7 @@ INSERT INTO spectra (target_id, grating, fits_path, deploy_status) VALUES
   ('zzz-am-t-pub',  'PRISM', '/tmp/zzz_am_pub_spec.fits',  'published'),
   ('zzz-am-t-priv', 'PRISM', '/tmp/zzz_am_priv_spec.fits', 'published');
 
-INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, photometry)
+INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, photometry)
 SELECT o.id, 'zzz_am_field', o.ra, o.dec, 'zzz_am_cat', '{}'::jsonb FROM objects o
 WHERE o.object_id IN ('ZZZ-AM-PUB', 'ZZZ-AM-PRIV');
 
@@ -164,7 +164,7 @@ DECLARE
     ['targets',            $q$SELECT count(*) FROM targets WHERE target_id LIKE 'zzz-am-%'$q$],
     ['objects',            $q$SELECT count(*) FROM objects WHERE object_id LIKE 'ZZZ-AM-%'$q$],
     ['spectra',            $q$SELECT count(*) FROM spectra WHERE fits_path LIKE '/tmp/zzz_am_%'$q$],
-    ['object_photometry',  $q$SELECT count(*) FROM object_photometry WHERE catalog_name = 'zzz_am_cat'$q$],
+    ['catalog_matches',  $q$SELECT count(*) FROM catalog_matches WHERE catalog_name = 'zzz_am_cat'$q$],
     ['comments',           $q$SELECT count(*) FROM comments WHERE content = 'zzz am note'$q$],
     ['flag_audit_log',     $q$SELECT count(*) FROM flag_audit_log WHERE user_id = '00000000-0000-0000-0000-0000000000c2'$q$],
     ['programs',           $q$SELECT count(*) FROM programs WHERE slug LIKE 'zzz_am_%'$q$]
@@ -174,7 +174,7 @@ DECLARE
     [-1, 1, 2, 2],   -- targets
     [-1, 1, 2, 2],   -- objects
     [-1, 1, 2, 2],   -- spectra
-    [-1, 1, 2, 2],   -- object_photometry
+    [-1, 1, 2, 2],   -- catalog_matches
     [-1, 0, 1, 1],   -- comments (on the private object)
     [-1, 0, 1, 1],   -- flag_audit_log (on the private object)
     [-1, 1, 2, 2]    -- programs (private row visible only with a grant / admin)

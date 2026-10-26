@@ -387,7 +387,7 @@ def _relink_list_members(client: Client, field: str) -> dict:
 
 
 def _relink_photometry(client: Client, field: str) -> dict:
-    """Re-link object_photometry.object_id after object rebuild.
+    """Re-link catalog_matches.object_id after object rebuild.
 
     Photometry rows are keyed by (ra, dec) which survive rebuilds. This
     updates the object_id FK by spatial cross-matching against the
@@ -404,7 +404,7 @@ def _relink_photometry(client: Client, field: str) -> dict:
 
 
 def _sync_photometry(client: Client, field: str) -> int:
-    """Sync photo_z and has_photometry from object_photometry to objects."""
+    """Sync photo_z and has_photometry from catalog_matches to objects."""
     resp = client.rpc('sync_photometry_to_objects', {
         'p_field': field,
     }).execute()

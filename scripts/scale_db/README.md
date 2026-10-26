@@ -44,7 +44,7 @@ Production on 2026-10-11: 1.9 GB database, of which ~1.1 GB is data-bearing heap
 (2026-10-12, Apple-silicon laptop): dump 199 MB (45 s read-only); restore ~1 min, scrub +
 ANALYZE ~30 s, 1.7 GB loaded. Load with triggers disabled
 (`session_replication_role = replica`), so derived tables that triggers maintain
-(`spectrum_lines`, `object_photometry_bands`) come from the dump as-is. The loader
+(`lines`, `photometry`) come from the dump as-is. The loader
 truncates every table the dump carries first (the migration chain seeds system
 `object_lists` rows a data-only restore would collide with) and runs an explicit
 `ANALYZE` after the scrub: without statistics the first query to plan against the load

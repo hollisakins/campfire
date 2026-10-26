@@ -10,7 +10,7 @@ import { resolveSnapshotExtras } from '@/lib/server/sync-snapshot';
  * GET /api/v1/sync/photometry
  *
  * Bulk fetch for Python client photometry sync.
- * Returns object_photometry records (with JSONB band data) for objects
+ * Returns catalog_matches records (with JSONB band data) for objects
  * accessible by the authenticated user, paginated, with optional
  * incremental filtering via updated_since.
  *

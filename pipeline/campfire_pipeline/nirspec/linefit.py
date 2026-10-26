@@ -78,7 +78,7 @@ C_KMS = 299792.458
 FWHM_TO_SIGMA = 1.0 / (2.0 * math.sqrt(2.0 * math.log(2.0)))   # 1 / 2.3548
 
 #: Algorithm version, stamped into every product (``LFITVER``) and into
-#: ``spectrum_line_fits.fit_version``. Bump on any change to the model, the
+#: ``line_fits.fit_version``. Bump on any change to the model, the
 #: line list, or the flag semantics so downstream can tell apart re-fits.
 LINEFIT_VERSION = '2'
 

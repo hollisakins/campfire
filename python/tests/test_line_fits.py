@@ -127,7 +127,7 @@ def test_sync_apply_line_fits(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _lines.fits → spectrum_line_fits row (needs campfire_pipeline)
+# _lines.fits → line_fits row (needs campfire_pipeline)
 # ---------------------------------------------------------------------------
 
 def test_build_row_from_pipeline_product(tmp_path):

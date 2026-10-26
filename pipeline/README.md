@@ -73,7 +73,7 @@ both per component and as a total under the doublet's own name (`CIII1908`,
 `OII3727`, `SII6725`, ...) that means the same thing whether or not the grating
 resolves the pair — select on the total, not on a component.
 `campfire deploy lines --obs <obs>` (or a full deploy) publishes the rows to the
-`spectrum_line_fits` catalog. `--allow-auto` falls back to the `zfit` redshift for
+`line_fits` catalog. `--allow-auto` falls back to the `zfit` redshift for
 QA runs; those products are stamped `ZSRC=auto` and are refused by deploy unless
 `--allow-auto-z`. See `docs/design-emission-line-fitting.md`.
 

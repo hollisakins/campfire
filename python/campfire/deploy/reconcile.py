@@ -1013,7 +1013,7 @@ def _absorb_loser_state(client: Client, *, loser_id: int, survivor_id: int) -> N
 
     - Comments: re-point comments.object_id → survivor (concatenation).
     - List membership: union into survivor (deduped by list_id).
-    - Photometry: re-point object_photometry.object_id → survivor (no dedup).
+    - Photometry: re-point catalog_matches.object_id → survivor (no dedup).
     """
     # Comments
     client.table('comments').update(
@@ -1053,7 +1053,7 @@ def _absorb_loser_state(client: Client, *, loser_id: int, survivor_id: int) -> N
             client.table('object_list_members').delete().in_('id', chunk).execute()
 
     # Photometry — re-point all rows; downstream UI may surface multiple.
-    client.table('object_photometry').update(
+    client.table('catalog_matches').update(
         {'object_id': survivor_id}
     ).eq('object_id', loser_id).execute()
 
@@ -1067,7 +1067,7 @@ def _migrate_split_photometry(
     """For each photometry row attached to the pre-split object, move it to
     whichever daughter centroid it's closest to."""
     resp = (
-        client.table('object_photometry')
+        client.table('catalog_matches')
         .select('id, ra, dec')
         .eq('object_id', original_object_id)
         .execute()
@@ -1085,7 +1085,7 @@ def _migrate_split_photometry(
         d2 = ((daughter_ras - ra) * cos_dec) ** 2 + (daughter_decs - dec) ** 2
         target = int(daughter_ids[int(np.argmin(d2))])
         if target != original_object_id:
-            client.table('object_photometry').update(
+            client.table('catalog_matches').update(
                 {'object_id': target}
             ).eq('id', row['id']).execute()
 

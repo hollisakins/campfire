@@ -1142,7 +1142,7 @@ def fetch_spectrum_ids(client: Client, pairs: list[tuple[str, str]]) -> dict[tup
 
 
 def batch_upsert_line_fits(client: Client, rows: list[dict], batch_size: int = 100) -> int:
-    """Upsert ``spectrum_line_fits`` rows keyed on ``spectrum_id`` (one per spectrum).
+    """Upsert ``line_fits`` rows keyed on ``spectrum_id`` (one per spectrum).
 
     A re-fit replaces the whole row — the ``lines`` jsonb included — so a line
     dropped from the catalog never lingers from an older fit. ``updated_at``
@@ -1151,7 +1151,7 @@ def batch_upsert_line_fits(client: Client, rows: list[dict], batch_size: int = 1
     if not rows:
         return 0
     for i in range(0, len(rows), batch_size):
-        client.table('spectrum_line_fits').upsert(
+        client.table('line_fits').upsert(
             rows[i:i + batch_size], on_conflict='spectrum_id'
         ).execute()
     return len(rows)

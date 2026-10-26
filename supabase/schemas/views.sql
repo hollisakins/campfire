@@ -35,8 +35,8 @@ SELECT 1 AS id,
     -- rest of the matview, via the parent object.
     ARRAY(
         SELECT b.band
-        FROM public.object_photometry_bands b
-        JOIN public.object_photometry p ON p.id = b.photometry_id
+        FROM public.photometry b
+        JOIN public.catalog_matches p ON p.id = b.match_id
         JOIN public.objects o ON o.id = p.object_id
         WHERE o.has_published_spectrum AND o.is_active
         GROUP BY b.band
@@ -273,17 +273,17 @@ GROUP BY field, filter, detector;
 GRANT SELECT ON public.nircam_reduction_progress TO authenticated;
 
 
--- N. spectrum_line_fits_status
+-- N. line_fits_status
 --    Staleness ledger for the emission-line catalog: each fit joined to the
 --    live inspection state of its object and the current spectrum hash.
 --    stale_redshift: the object's redshift / quality / version moved since the
 --    fit (re-pull + `cfpipe nirspec linefit` refits exactly those);
 --    stale_spectrum: the spectrum's science content was re-deployed since the
 --    fit (science hash when both sides carry one, whole-file hash otherwise).
---    security_invoker: rows follow the caller's RLS on spectrum_line_fits.
-DROP VIEW IF EXISTS public.spectrum_line_fits_status;
+--    security_invoker: rows follow the caller's RLS on line_fits.
+DROP VIEW IF EXISTS public.line_fits_status;
 
-CREATE VIEW public.spectrum_line_fits_status
+CREATE VIEW public.line_fits_status
 WITH (security_invoker = true) AS
 SELECT f.spectrum_id,
        f.target_id,
@@ -313,13 +313,13 @@ SELECT f.spectrum_id,
        public.line_fit_stale_spectrum(
           s.file_hash, s.science_hash,
           f.spectrum_hash, f.spectrum_science_hash) AS stale_spectrum
-FROM public.spectrum_line_fits f
+FROM public.line_fits f
 JOIN public.spectra s ON s.id = f.spectrum_id
 LEFT JOIN public.targets t ON t.target_id = f.target_id
 LEFT JOIN public.objects o ON o.id = t.object_id
 -- soft-deleted objects are hidden everywhere else; keep the ledger consistent
 WHERE (o.id IS NULL OR o.is_active = true);
 
-REVOKE ALL ON TABLE public.spectrum_line_fits_status FROM anon;
-GRANT ALL ON TABLE public.spectrum_line_fits_status TO authenticated;
-GRANT ALL ON TABLE public.spectrum_line_fits_status TO service_role;
+REVOKE ALL ON TABLE public.line_fits_status FROM anon;
+GRANT ALL ON TABLE public.line_fits_status TO authenticated;
+GRANT ALL ON TABLE public.line_fits_status TO service_role;

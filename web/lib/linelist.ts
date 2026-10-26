@@ -3,7 +3,7 @@
  * docs/design-emission-line-fitting.md), mirrored from
  * pipeline/campfire_pipeline/nirspec/linelist.py by scripts/sync_linelist.py
  * into linelist.json (CI fails on drift). Keys are the `lines` jsonb keys of
- * spectrum_line_fits and the `line` column of spectrum_lines.
+ * line_fits and the `line` column of lines.
  *
  * Two kinds of entry: a `line` (one catalog line; `doublet` names the total it
  * is a component of, when any) and a `doublet` total (`members` = its two

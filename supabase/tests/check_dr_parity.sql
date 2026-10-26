@@ -17,10 +17,10 @@ DECLARE
     ['spectra',                 'dr_spectra',          ''],
     ['targets',                 'dr_targets',          ''],
     ['objects',                 'dr_objects',          'evidence_programs,z_source_spectrum_id'],
-    ['spectrum_line_fits',      'dr_line_fits',        'stale_spectrum'],  -- stale_redshift is live since phase 2a
-    ['spectrum_lines',          'dr_spectrum_lines',   ''],
-    ['object_photometry',       'dr_photometry',       ''],
-    ['object_photometry_bands', 'dr_photometry_bands', ''],
+    ['line_fits',      'dr_line_fits',        'stale_spectrum'],  -- stale_redshift is live since phase 2a
+    ['lines',          'dr_lines',   ''],
+    ['catalog_matches',       'dr_catalog_matches',       ''],
+    ['photometry', 'dr_photometry', ''],
     ['nircam_images',           'dr_nircam_images',    ''],
     ['fields',                  'dr_fields',           ''],
     ['mv_filter_options',       'dr_filter_options',   '']

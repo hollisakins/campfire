@@ -2,7 +2,7 @@
 Photometric catalog cross-matching and deployment.
 
 Cross-matches photometric catalogs to object centroids and populates
-the object_photometry table. Also generates P(z) + template SED
+the catalog_matches table. Also generates P(z) + template SED
 JSON sidecars for upload to R2.
 
 Config-driven via $CAMPFIRE_ROOT/config/photometry.toml with per-field
@@ -942,7 +942,7 @@ def _upsert_photometry(client: Client, records: list[dict]) -> int:
     total = 0
     for i in range(0, len(records), BATCH_SIZE):
         batch = records[i:i + BATCH_SIZE]
-        client.table('object_photometry').upsert(
+        client.table('catalog_matches').upsert(
             batch, on_conflict='field,catalog_name,catalog_id',
         ).execute()
         total += len(batch)
@@ -985,7 +985,7 @@ def _reconcile_existing_rows(
     for i in range(0, len(ids), BATCH_SIZE):
         chunk = ids[i:i + BATCH_SIZE]
         resp = (
-            client.table('object_photometry')
+            client.table('catalog_matches')
             .select('id, object_id, catalog_name, catalog_id')
             .eq('field', field)
             .eq('catalog_name', catalog_name)
@@ -1011,7 +1011,7 @@ def _reconcile_existing_rows(
         # Shouldn't happen in normal flow, but harmless — leave as-is.
 
     for row_id, new_id, new_ra, new_dec in reroutes:
-        client.table('object_photometry').update({
+        client.table('catalog_matches').update({
             'object_id': new_id,
             'ra': new_ra,
             'dec': new_dec,
@@ -1021,7 +1021,7 @@ def _reconcile_existing_rows(
     n_deleted = 0
     for i in range(0, len(rows_to_delete), BATCH_SIZE):
         chunk = rows_to_delete[i:i + BATCH_SIZE]
-        client.table('object_photometry').delete().in_('id', chunk).execute()
+        client.table('catalog_matches').delete().in_('id', chunk).execute()
         n_deleted += len(chunk)
 
     return n_deleted, len(reroutes)
@@ -1045,7 +1045,7 @@ def _prune_photometry(
     to_delete: list[int] = []
     while True:
         resp = (
-            client.table('object_photometry')
+            client.table('catalog_matches')
             .select('id, catalog_id')
             .eq('field', field)
             .eq('catalog_name', catalog_name)
@@ -1065,7 +1065,7 @@ def _prune_photometry(
 
     for i in range(0, len(to_delete), BATCH_SIZE):
         chunk = to_delete[i:i + BATCH_SIZE]
-        client.table('object_photometry').delete().in_('id', chunk).execute()
+        client.table('catalog_matches').delete().in_('id', chunk).execute()
         total += len(chunk)
     return total
 
@@ -1102,7 +1102,7 @@ def _supersede_other_catalogs(
     to_delete: dict[str, list[int]] = defaultdict(list)
     while True:
         resp = (
-            client.table('object_photometry')
+            client.table('catalog_matches')
             .select('id, catalog_name')
             .eq('field', field)
             .neq('catalog_name', keep_catalog_name)
@@ -1124,7 +1124,7 @@ def _supersede_other_catalogs(
         if not dry_run:
             for i in range(0, len(ids), BATCH_SIZE):
                 chunk = ids[i:i + BATCH_SIZE]
-                client.table('object_photometry').delete().in_('id', chunk).execute()
+                client.table('catalog_matches').delete().in_('id', chunk).execute()
         deleted[name] = len(ids)
     return deleted
 
@@ -1150,7 +1150,7 @@ def deploy_field_photometry(
     Photometry deploy for a field.
 
     Cross-matches the configured photometric catalog against object centroids
-    in the field, upserts `object_photometry` rows on
+    in the field, upserts `catalog_matches` rows on
     `(field, catalog_name, catalog_id)`, and uploads P(z) sidecars to R2.
 
     Args:

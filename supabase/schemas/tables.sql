@@ -601,7 +601,7 @@ COMMENT ON COLUMN "public"."objects"."is_active" IS 'Phase A: false = soft-delet
 
 
 
-CREATE TABLE IF NOT EXISTS "public"."object_photometry" (
+CREATE TABLE IF NOT EXISTS "public"."catalog_matches" (
     "id" integer NOT NULL,
     "object_id" integer,
     "field" "text" NOT NULL,
@@ -620,30 +620,30 @@ CREATE TABLE IF NOT EXISTS "public"."object_photometry" (
 );
 
 
-ALTER TABLE "public"."object_photometry" OWNER TO "postgres";
+ALTER TABLE "public"."catalog_matches" OWNER TO "postgres";
 
 -- Perf T1-5 (#501): this table churns (deploy overwrites rows in place) and
 -- the default 20 % dead-tuple threshold let it reach 14 % dead with the last
 -- autovacuum weeks old. 2 % keeps the heap and its indexes compact.
-ALTER TABLE "public"."object_photometry" SET (autovacuum_vacuum_scale_factor = 0.02);
+ALTER TABLE "public"."catalog_matches" SET (autovacuum_vacuum_scale_factor = 0.02);
 
 
-COMMENT ON TABLE "public"."object_photometry" IS 'Photometric catalog cross-matches for objects. One row per object per catalog. Coordinates (ra, dec) are the durable positional key; object_id FK is refreshed after each objects rebuild via coordinate cross-matching.';
+COMMENT ON TABLE "public"."catalog_matches" IS 'Photometric catalog cross-matches for objects. One row per object per catalog. Coordinates (ra, dec) are the durable positional key; object_id FK is refreshed after each objects rebuild via coordinate cross-matching. Formerly object_photometry (renamed 2026-10-26, Catalog Read Model phase 2b).';
 
 
-COMMENT ON COLUMN "public"."object_photometry"."photometry" IS 'Per-catalog photometry payload: {flux_unit: "uJy", bands: {<band>: {flux, flux_err [uJy], wav, wav_min, wav_max [um]}}}. Built by campfire.deploy.photometry.build_photometry_payload; band names come from the per-field [field.bands] block of photometry.toml. Fluxes are in microjansky ALWAYS (the reader converts), so AB magnitude is 23.9 - 2.5*log10(flux) and a non-positive flux simply has no magnitude. The `bands` map is unnested into object_photometry_bands for indexed filter/sort — see that table.';
+COMMENT ON COLUMN "public"."catalog_matches"."photometry" IS 'Per-catalog photometry payload: {flux_unit: "uJy", bands: {<band>: {flux, flux_err [uJy], wav, wav_min, wav_max [um]}}}. Built by campfire.deploy.photometry.build_photometry_payload; band names come from the per-field [field.bands] block of photometry.toml. Fluxes are in microjansky ALWAYS (the reader converts), so AB magnitude is 23.9 - 2.5*log10(flux) and a non-positive flux simply has no magnitude. The `bands` map is unnested into photometry for indexed filter/sort — see that table.';
 
 
--- object_photometry_bands: the `bands` map of object_photometry.photometry
+-- photometry: the `bands` map of catalog_matches.photometry
 -- unnested to one row per (photometry row, band), so the catalog can be
 -- FILTERED and SORTED on a band's magnitude or S/N ("everything brighter than
 -- F444W = 27 at S/N > 5") from an index instead of a jsonb scan. Exactly the
--- spectrum_lines pattern, one table over: derived, never written by deploy —
--- the sync_object_photometry_bands trigger rebuilds a photometry row's bands
+-- lines pattern, one table over: derived, never written by deploy —
+-- the sync_photometry trigger rebuilds a photometry row's bands
 -- on every insert/update of its `photometry` jsonb, and the FK cascades a
 -- dropped cross-match.
 --
--- Keyed on photometry_id, NOT object_id: object_photometry.object_id is
+-- Keyed on match_id, NOT object_id: catalog_matches.object_id is
 -- refreshed out-of-band after every objects rebuild (a plain UPDATE of that
 -- one column), so a copy of it here would need its own re-sync and could go
 -- stale between the two. Readers join through the parent row instead, which
@@ -654,8 +654,8 @@ COMMENT ON COLUMN "public"."object_photometry"."photometry" IS 'Per-catalog phot
 -- jsonb the trigger copied. mag is AB (fluxes are uJy by contract) and is
 -- NULL for a non-positive flux — a non-detection has no magnitude, and the
 -- S/N filter is the right tool for that population.
-CREATE TABLE IF NOT EXISTS "public"."object_photometry_bands" (
-    "photometry_id" integer NOT NULL,
+CREATE TABLE IF NOT EXISTS "public"."photometry" (
+    "match_id" integer NOT NULL,
     "band" "text" NOT NULL,
     "flux" double precision,
     "flux_err" double precision,
@@ -668,19 +668,19 @@ CREATE TABLE IF NOT EXISTS "public"."object_photometry_bands" (
     ) STORED,
     "object_id" integer
 );
-COMMENT ON COLUMN "public"."object_photometry_bands"."object_id" IS 'The object of the parent cross-match (Catalog Read Model phase 2a): a copy of object_photometry.object_id, set by sync_object_photometry_bands and re-pointed by relink_bands_from_photometry when the parent is re-matched; FK ON DELETE SET NULL. Lets the band filter and the object page read one indexed table.';
+COMMENT ON COLUMN "public"."photometry"."object_id" IS 'The object of the parent cross-match (Catalog Read Model phase 2a): a copy of catalog_matches.object_id, set by sync_photometry and re-pointed by relink_photometry_from_matches when the parent is re-matched; FK ON DELETE SET NULL. Lets the band filter and the object page read one indexed table.';
 
 
-ALTER TABLE "public"."object_photometry_bands" OWNER TO "postgres";
+ALTER TABLE "public"."photometry" OWNER TO "postgres";
 
 
-COMMENT ON TABLE "public"."object_photometry_bands" IS 'object_photometry.photometry->bands unnested: one row per (photometry row, band) for indexed filter/sort on a band''s AB magnitude or S/N. Derived by the sync_object_photometry_bands trigger; never written directly. Join through object_photometry to reach the object (object_id is refreshed out-of-band and is deliberately not copied here).';
+COMMENT ON TABLE "public"."photometry" IS 'catalog_matches.photometry->bands unnested: one row per (cross-match, band) for indexed filter/sort on a band''s AB magnitude or S/N. Derived by the sync_photometry trigger; never written directly. object_id is a trigger-maintained copy of the parent match''s (phase 2a), so filters read this table alone. Formerly object_photometry_bands (renamed 2026-10-26, Catalog Read Model phase 2b).';
 
-COMMENT ON COLUMN "public"."object_photometry_bands"."flux" IS 'Band flux in microjansky, copied verbatim from the jsonb (object_photometry.photometry.flux_unit is always "uJy").';
+COMMENT ON COLUMN "public"."photometry"."flux" IS 'Band flux in microjansky, copied verbatim from the jsonb (catalog_matches.photometry.flux_unit is always "uJy").';
 
-COMMENT ON COLUMN "public"."object_photometry_bands"."snr" IS 'Generated: flux / flux_err, NULL when the error is absent or non-positive. Signed — a non-detection can be negative, which is exactly what an "S/N > 3" filter should exclude.';
+COMMENT ON COLUMN "public"."photometry"."snr" IS 'Generated: flux / flux_err, NULL when the error is absent or non-positive. Signed — a non-detection can be negative, which is exactly what an "S/N > 3" filter should exclude.';
 
-COMMENT ON COLUMN "public"."object_photometry_bands"."mag" IS 'Generated: AB magnitude 23.9 - 2.5*log10(flux[uJy]), NULL for a non-positive flux (a non-detection has no magnitude and is simply absent from a magnitude-bounded selection).';
+COMMENT ON COLUMN "public"."photometry"."mag" IS 'Generated: AB magnitude 23.9 - 2.5*log10(flux[uJy]), NULL for a non-positive flux (a non-detection has no magnitude and is simply absent from a magnitude-bounded selection).';
 
 
 
@@ -1161,21 +1161,21 @@ COMMENT ON TABLE "public"."nirspec_source_review" IS 'Editable flag channel for 
 -- from the campfire_layout contract; a backfill/reconcile pass covers historical
 -- pointers and adopts bucket orphans. Additive + inert: nothing reads it as
 -- authoritative until a coverage gate proves 100% of live pointers have rows.
--- spectrum_line_fits: emission-line fluxes measured at the INSPECTED redshift
+-- line_fits: emission-line fluxes measured at the INSPECTED redshift
 -- (docs/design-emission-line-fitting.md). Produced by `cfpipe nirspec linefit`
 -- from reference/nirspec/<obs>/redshifts.toml (itself materialized from
 -- objects.redshift / redshift_quality by `campfire pull`) and published by
 -- `campfire deploy lines` / `campfire deploy --obs`. One row per spectrum,
 -- replaced wholesale on every re-fit; the per-line measurements live in the
 -- `lines` jsonb keyed by the pipeline line name (Halpha, OIII5007, ...,
--- Halpha_broad), mirroring object_photometry.photometry so the sync client
+-- Halpha_broad), mirroring catalog_matches.photometry so the sync client
 -- pivots it into a wide catalog without a schema change per line. The z_*
 -- and object_* columns are the provenance ledger: z_used is the redshift the
 -- fluxes were measured at, object_version the objects.version it came from, so
--- spectrum_line_fits_status can flag a fit whose inspected redshift has since
+-- line_fits_status can flag a fit whose inspected redshift has since
 -- moved. program_slug / observation are denormalized for row-local RLS like
 -- spectra; the SELECT policy defers to the parent spectrum's visibility.
-CREATE TABLE IF NOT EXISTS "public"."spectrum_line_fits" (
+CREATE TABLE IF NOT EXISTS "public"."line_fits" (
     "spectrum_id" integer NOT NULL,
     "target_id" "text" NOT NULL,
     "grating" "text" NOT NULL,
@@ -1208,36 +1208,36 @@ CREATE TABLE IF NOT EXISTS "public"."spectrum_line_fits" (
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "stale_redshift" boolean DEFAULT false NOT NULL,
-    CONSTRAINT "spectrum_line_fits_spectrum_science_hash_check" CHECK (("spectrum_science_hash" IS NULL OR "spectrum_science_hash" ~ '^sha256:[0-9a-f]{64}$'::"text")),
-    CONSTRAINT "spectrum_line_fits_z_source_check" CHECK (("z_source" = ANY (ARRAY['inspected'::"text", 'auto'::"text"]))),
-    CONSTRAINT "spectrum_line_fits_z_quality_check" CHECK ((("z_quality" >= 0) AND ("z_quality" <= 4)))
+    CONSTRAINT "line_fits_spectrum_science_hash_check" CHECK (("spectrum_science_hash" IS NULL OR "spectrum_science_hash" ~ '^sha256:[0-9a-f]{64}$'::"text")),
+    CONSTRAINT "line_fits_z_source_check" CHECK (("z_source" = ANY (ARRAY['inspected'::"text", 'auto'::"text"]))),
+    CONSTRAINT "line_fits_z_quality_check" CHECK ((("z_quality" >= 0) AND ("z_quality" <= 4)))
 );
-COMMENT ON COLUMN "public"."spectrum_line_fits"."stale_redshift" IS 'Stored line_fit_stale_redshift(object, fit): the object''s inspected redshift / quality / version moved since this fit (Catalog Read Model phase 2a). Trigger-maintained: computed on every write of the row (compute_line_fit_stale) and recomputed when the object is inspected or regrouped (recompute_line_fit_stale); false when the fit has no object. The catalog filters read this column; spectrum_line_fits_status still evaluates the rule live, and check_measurement_object_links.sql asserts the two agree.';
+COMMENT ON COLUMN "public"."line_fits"."stale_redshift" IS 'Stored line_fit_stale_redshift(object, fit): the object''s inspected redshift / quality / version moved since this fit (Catalog Read Model phase 2a). Trigger-maintained: computed on every write of the row (compute_line_fit_stale) and recomputed when the object is inspected or regrouped (recompute_line_fit_stale); false when the fit has no object. The catalog filters read this column; line_fits_status still evaluates the rule live, and check_measurement_object_links.sql asserts the two agree.';
 
 
-ALTER TABLE "public"."spectrum_line_fits" OWNER TO "postgres";
+ALTER TABLE "public"."line_fits" OWNER TO "postgres";
 
 
-COMMENT ON TABLE "public"."spectrum_line_fits" IS 'Emission-line fluxes per spectrum, measured at the inspected redshift (cfpipe nirspec linefit -> campfire deploy lines). One row per spectrum, replaced on re-fit; per-line values in `lines` jsonb keyed by pipeline line name. z_used / z_quality / object_version record the inspection state the fit used (see spectrum_line_fits_status for staleness).';
+COMMENT ON TABLE "public"."line_fits" IS 'Emission-line fluxes per spectrum, measured at the inspected redshift (cfpipe nirspec linefit -> campfire deploy lines). One row per spectrum, replaced on re-fit; per-line values in `lines` jsonb keyed by pipeline line name. z_used / z_quality / object_version record the inspection state the fit used (see line_fits_status for staleness). Formerly spectrum_line_fits (renamed 2026-10-26, Catalog Read Model phase 2b).';
 
-COMMENT ON COLUMN "public"."spectrum_line_fits"."lines" IS 'Per-line records keyed by catalog name (components such as Halpha / CIII1907, accepted broad components as <line>_broad, and doublet totals such as CIII1908 / OII3727 / SII6725): {label, component (narrow|broad|doublet), wave_rest [vacuum A], wave_obs [um], flux, flux_err [erg/s/cm2], snr, ew_rest, ew_rest_err [A], cont, cont_err [erg/s/cm2/A], dv, dv_err, sigma_v, sigma_v_err, sigma_lsf_kms [km/s], complex, chi2, dof, npix, flags (bitmask: 1 tied, 2 blended, 4 blend, 8 edge, 16 kin_global, 32 kin_default, 64 broad, 128 no_continuum, 256 fit_failed, 512 masked, 1024 sigma_unresolved, 2048 resolved), blend_into, tied_to, members (doublet totals only: the two component names)}. NaN is null; a `blended` line carries no flux of its own (its blend primary reports the total). A doublet total is the covariance-propagated sum of its components where the grating resolves them (`resolved` set) and the single blended measurement where it does not, so it means the same thing in every grating: select on totals, not components. fit_version >= 2.';
+COMMENT ON COLUMN "public"."line_fits"."lines" IS 'Per-line records keyed by catalog name (components such as Halpha / CIII1907, accepted broad components as <line>_broad, and doublet totals such as CIII1908 / OII3727 / SII6725): {label, component (narrow|broad|doublet), wave_rest [vacuum A], wave_obs [um], flux, flux_err [erg/s/cm2], snr, ew_rest, ew_rest_err [A], cont, cont_err [erg/s/cm2/A], dv, dv_err, sigma_v, sigma_v_err, sigma_lsf_kms [km/s], complex, chi2, dof, npix, flags (bitmask: 1 tied, 2 blended, 4 blend, 8 edge, 16 kin_global, 32 kin_default, 64 broad, 128 no_continuum, 256 fit_failed, 512 masked, 1024 sigma_unresolved, 2048 resolved), blend_into, tied_to, members (doublet totals only: the two component names)}. NaN is null; a `blended` line carries no flux of its own (its blend primary reports the total). A doublet total is the covariance-propagated sum of its components where the grating resolves them (`resolved` set) and the single blended measurement where it does not, so it means the same thing in every grating: select on totals, not components. fit_version >= 2.';
 
-COMMENT ON COLUMN "public"."spectrum_line_fits"."spectrum_science_hash" IS 'Science-content sha256 of the spectrum the fit was made from (the SCIHASH card cfpipe nirspec linefit writes since P0b; same definition as spectra.science_hash). line_fit_stale_spectrum compares it with spectra.science_hash when both exist, so a redeploy that only rewrote volatile header cards does not read as a stale fit (P0c); NULL on products fitted before the card existed, which fall back to spectrum_hash.';
+COMMENT ON COLUMN "public"."line_fits"."spectrum_science_hash" IS 'Science-content sha256 of the spectrum the fit was made from (the SCIHASH card cfpipe nirspec linefit writes since P0b; same definition as spectra.science_hash). line_fit_stale_spectrum compares it with spectra.science_hash when both exist, so a redeploy that only rewrote volatile header cards does not read as a stale fit (P0c); NULL on products fitted before the card existed, which fall back to spectrum_hash.';
 
-COMMENT ON COLUMN "public"."spectrum_line_fits"."z_source" IS 'inspected = the portal redshift (objects.redshift at quality >= the pipeline min_quality); auto = the pipeline zfit redshift (QA fits, deployed only with --allow-auto-z).';
+COMMENT ON COLUMN "public"."line_fits"."z_source" IS 'inspected = the portal redshift (objects.redshift at quality >= the pipeline min_quality); auto = the pipeline zfit redshift (QA fits, deployed only with --allow-auto-z).';
 
 
--- spectrum_lines: the `lines` jsonb of spectrum_line_fits unnested to one row
+-- lines: the `lines` jsonb of line_fits unnested to one row
 -- per (spectrum, catalog line) so the catalog can be FILTERED and SORTED on a
 -- line's S/N or flux ("all CIII] detections at S/N > 3") from an index instead
--- of a jsonb scan. Derived, never written by deploy: the sync_spectrum_lines
+-- of a jsonb scan. Derived, never written by deploy: the sync_lines
 -- trigger rebuilds a spectrum's rows on every insert/update of the parent
 -- row's `lines`, and the FK cascades a dropped fit. Columns are the subset a
 -- selection needs; the full record (kinematics, continuum, label, ...) stays
 -- in the jsonb. `line` is the catalog key exactly as in the jsonb (components
 -- such as CIII1907, broad components as <line>_broad, doublet totals such as
 -- CIII1908 — select on the totals, see the parent column comment).
-CREATE TABLE IF NOT EXISTS "public"."spectrum_lines" (
+CREATE TABLE IF NOT EXISTS "public"."lines" (
     "spectrum_id" integer NOT NULL,
     "line" "text" NOT NULL,
     "component" "text" DEFAULT 'narrow'::"text" NOT NULL,
@@ -1251,13 +1251,13 @@ CREATE TABLE IF NOT EXISTS "public"."spectrum_lines" (
     "blend_into" "text",
     "object_id" integer
 );
-COMMENT ON COLUMN "public"."spectrum_lines"."object_id" IS 'The object this measurement belongs to (Catalog Read Model phase 2a): targets.object_id through the row''s spectrum, trigger-maintained (set by sync_spectrum_lines, re-pointed by relink_lines_from_targets / relink_lines_from_spectra when a target regroups or a spectrum moves; FK ON DELETE SET NULL when objects are rebuilt). What makes "object has line L above S/N x" one indexed EXISTS instead of a three-hop join.';
+COMMENT ON COLUMN "public"."lines"."object_id" IS 'The object this measurement belongs to (Catalog Read Model phase 2a): targets.object_id through the row''s spectrum, trigger-maintained (set by sync_lines, re-pointed by relink_lines_from_targets / relink_lines_from_spectra when a target regroups or a spectrum moves; FK ON DELETE SET NULL when objects are rebuilt). What makes "object has line L above S/N x" one indexed EXISTS instead of a three-hop join.';
 
 
-ALTER TABLE "public"."spectrum_lines" OWNER TO "postgres";
+ALTER TABLE "public"."lines" OWNER TO "postgres";
 
 
-COMMENT ON TABLE "public"."spectrum_lines" IS 'spectrum_line_fits.lines unnested: one row per (spectrum, catalog line) for indexed filter/sort on a line''s S/N or flux. Derived by the sync_spectrum_lines trigger; never written directly. Select on doublet totals (CIII1908, OII3727, SII6725, ...) rather than components.';
+COMMENT ON TABLE "public"."lines" IS 'line_fits.lines unnested: one row per (spectrum, catalog line) for indexed filter/sort on a line''s S/N or flux. Derived by the sync_lines trigger; never written directly. Select on doublet totals (CIII1908, OII3727, SII6725, ...) rather than components. Formerly spectrum_lines (renamed 2026-10-26, Catalog Read Model phase 2b).';
 
 
 CREATE TABLE IF NOT EXISTS "public"."storage_objects" (
@@ -1533,8 +1533,8 @@ ALTER TABLE "public"."sync_snapshots" OWNER TO "postgres";
 CREATE TABLE IF NOT EXISTS "public"."sync_deletions" (
     "id" bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     "stream" "text" NOT NULL,
-    -- objects.id / spectra.id / storage_objects.id / object_photometry.id /
-    -- spectrum_line_fits.spectrum_id -- the keys the client mirror uses.
+    -- objects.id / spectra.id / storage_objects.id / catalog_matches.id /
+    -- line_fits.spectrum_id -- the keys the client mirror uses.
     "row_id" bigint NOT NULL,
     -- The deleting transaction's now(): later than any snapshot watermark
     -- taken while it was open (see sync_snapshot_begin).
@@ -1781,7 +1781,7 @@ ALTER TABLE "public"."dr_manifest" OWNER TO "postgres";
 
 COMMENT ON TABLE "public"."dr_manifest" IS 'Storage objects referenced by a data release (one row per live key at the freeze) and the archive copy the byte pass (P4c) makes for each: archive_key, byte_state pending → copied/stamped, stamped_hash. Program-scoped rows carry program_slug; field-level rows (mosaics) carry field.';
 
--- dr_line_fits: spectrum_line_fits.* of the frozen spectra, plus the
+-- dr_line_fits: line_fits.* of the frozen spectra, plus the
 -- staleness flags evaluated in the same snapshot.
 CREATE TABLE IF NOT EXISTS "public"."dr_line_fits" (
     "tag" "text" NOT NULL,
@@ -1816,7 +1816,7 @@ CREATE TABLE IF NOT EXISTS "public"."dr_line_fits" (
     "fitted_at" timestamp with time zone,
     "created_at" timestamp with time zone NOT NULL,
     "updated_at" timestamp with time zone NOT NULL,
-    -- frozen-only: the spectrum_line_fits_status predicates in the snapshot
+    -- frozen-only: the line_fits_status predicates in the snapshot
     "stale_redshift" boolean DEFAULT false NOT NULL,
     "stale_spectrum" boolean DEFAULT false NOT NULL,
     CONSTRAINT "dr_line_fits_pkey" PRIMARY KEY ("tag", "spectrum_id")
@@ -1824,10 +1824,10 @@ CREATE TABLE IF NOT EXISTS "public"."dr_line_fits" (
 
 ALTER TABLE "public"."dr_line_fits" OWNER TO "postgres";
 
-COMMENT ON TABLE "public"."dr_line_fits" IS 'Frozen copy of spectrum_line_fits (every live column, verbatim) for the fits of a data release''s frozen spectra, with stale_redshift / stale_spectrum computed inside the freeze snapshot. spectrum_id = the live spectra.id at the freeze.';
+COMMENT ON TABLE "public"."dr_line_fits" IS 'Frozen copy of line_fits (every live column, verbatim) for the fits of a data release''s frozen spectra, with stale_redshift / stale_spectrum computed inside the freeze snapshot. spectrum_id = the live spectra.id at the freeze.';
 
--- dr_spectrum_lines: spectrum_lines.* of the frozen fits (the line filter's table).
-CREATE TABLE IF NOT EXISTS "public"."dr_spectrum_lines" (
+-- dr_lines: lines.* of the frozen fits (the line filter's table).
+CREATE TABLE IF NOT EXISTS "public"."dr_lines" (
     "tag" "text" NOT NULL,
     "spectrum_id" integer NOT NULL,
     "line" "text" NOT NULL,
@@ -1841,16 +1841,16 @@ CREATE TABLE IF NOT EXISTS "public"."dr_spectrum_lines" (
     "flags" integer NOT NULL,
     "blend_into" "text",
     "object_id" integer,
-    CONSTRAINT "dr_spectrum_lines_pkey" PRIMARY KEY ("tag", "spectrum_id", "line")
+    CONSTRAINT "dr_lines_pkey" PRIMARY KEY ("tag", "spectrum_id", "line")
 );
 
-ALTER TABLE "public"."dr_spectrum_lines" OWNER TO "postgres";
+ALTER TABLE "public"."dr_lines" OWNER TO "postgres";
 
-COMMENT ON TABLE "public"."dr_spectrum_lines" IS 'Frozen copy of spectrum_lines (the unnested line fits the catalog filters on) for the fits of a data release.';
+COMMENT ON TABLE "public"."dr_lines" IS 'Frozen copy of lines (the unnested line fits the catalog filters on) for the fits of a data release.';
 
--- dr_photometry: object_photometry.* of the frozen objects in the selected
+-- dr_catalog_matches: catalog_matches.* of the frozen objects in the selected
 -- photometry/<field>/<catalog> components.
-CREATE TABLE IF NOT EXISTS "public"."dr_photometry" (
+CREATE TABLE IF NOT EXISTS "public"."dr_catalog_matches" (
     "tag" "text" NOT NULL,
     "id" integer NOT NULL,
     "object_id" integer,
@@ -1867,18 +1867,18 @@ CREATE TABLE IF NOT EXISTS "public"."dr_photometry" (
     "has_pz" boolean NOT NULL,
     "created_at" timestamp with time zone,
     "updated_at" timestamp with time zone,
-    CONSTRAINT "dr_photometry_pkey" PRIMARY KEY ("tag", "id")
+    CONSTRAINT "dr_catalog_matches_pkey" PRIMARY KEY ("tag", "id")
 );
 
-ALTER TABLE "public"."dr_photometry" OWNER TO "postgres";
+ALTER TABLE "public"."dr_catalog_matches" OWNER TO "postgres";
 
-COMMENT ON TABLE "public"."dr_photometry" IS 'Frozen copy of object_photometry (every live column, verbatim) for the frozen objects of a data release in its photometry/<field>/<catalog> components. Access scope is the frozen object''s, like live.';
+COMMENT ON TABLE "public"."dr_catalog_matches" IS 'Frozen copy of catalog_matches (every live column, verbatim) for the frozen objects of a data release in its photometry/<field>/<catalog> components. Access scope is the frozen object''s, like live.';
 
--- dr_photometry_bands: object_photometry_bands.* of the frozen photometry rows
+-- dr_photometry: photometry.* of the frozen photometry rows
 -- (the band filter's table; snr / mag are the generated values, copied).
-CREATE TABLE IF NOT EXISTS "public"."dr_photometry_bands" (
+CREATE TABLE IF NOT EXISTS "public"."dr_photometry" (
     "tag" "text" NOT NULL,
-    "photometry_id" integer NOT NULL,
+    "match_id" integer NOT NULL,
     "band" "text" NOT NULL,
     "flux" double precision,
     "flux_err" double precision,
@@ -1886,12 +1886,12 @@ CREATE TABLE IF NOT EXISTS "public"."dr_photometry_bands" (
     "snr" double precision,
     "mag" double precision,
     "object_id" integer,
-    CONSTRAINT "dr_photometry_bands_pkey" PRIMARY KEY ("tag", "photometry_id", "band")
+    CONSTRAINT "dr_photometry_pkey" PRIMARY KEY ("tag", "match_id", "band")
 );
 
-ALTER TABLE "public"."dr_photometry_bands" OWNER TO "postgres";
+ALTER TABLE "public"."dr_photometry" OWNER TO "postgres";
 
-COMMENT ON TABLE "public"."dr_photometry_bands" IS 'Frozen copy of object_photometry_bands (the unnested photometry the catalog filters on) for the frozen photometry rows of a data release.';
+COMMENT ON TABLE "public"."dr_photometry" IS 'Frozen copy of photometry (the unnested photometry the catalog filters on) for the frozen photometry rows of a data release.';
 
 -- dr_nircam_images: nircam_images.* of the published mosaics of the release's
 -- NIRCam field components (the files themselves are dr_manifest rows).
@@ -2276,7 +2276,7 @@ ALTER SEQUENCE "public"."object_list_members_id_seq" OWNER TO "postgres";
 ALTER SEQUENCE "public"."object_list_members_id_seq" OWNED BY "public"."object_list_members"."id";
 
 
-CREATE SEQUENCE IF NOT EXISTS "public"."object_photometry_id_seq"
+CREATE SEQUENCE IF NOT EXISTS "public"."catalog_matches_id_seq"
     AS integer
     START WITH 1
     INCREMENT BY 1
@@ -2285,9 +2285,9 @@ CREATE SEQUENCE IF NOT EXISTS "public"."object_photometry_id_seq"
     CACHE 1;
 
 
-ALTER SEQUENCE "public"."object_photometry_id_seq" OWNER TO "postgres";
+ALTER SEQUENCE "public"."catalog_matches_id_seq" OWNER TO "postgres";
 
-ALTER SEQUENCE "public"."object_photometry_id_seq" OWNED BY "public"."object_photometry"."id";
+ALTER SEQUENCE "public"."catalog_matches_id_seq" OWNED BY "public"."catalog_matches"."id";
 
 
 
@@ -2504,7 +2504,7 @@ ALTER TABLE ONLY "public"."object_lists" ALTER COLUMN "id" SET DEFAULT "nextval"
 
 ALTER TABLE ONLY "public"."object_list_members" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."object_list_members_id_seq"'::"regclass");
 
-ALTER TABLE ONLY "public"."object_photometry" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."object_photometry_id_seq"'::"regclass");
+ALTER TABLE ONLY "public"."catalog_matches" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."catalog_matches_id_seq"'::"regclass");
 
 
 
@@ -2715,19 +2715,19 @@ ALTER TABLE ONLY "public"."deployments"
 ALTER TABLE ONLY "public"."spectra"
     ADD CONSTRAINT "spectra_pkey" PRIMARY KEY ("id");
 
-ALTER TABLE ONLY "public"."spectrum_line_fits"
-    ADD CONSTRAINT "spectrum_line_fits_pkey" PRIMARY KEY ("spectrum_id");
+ALTER TABLE ONLY "public"."line_fits"
+    ADD CONSTRAINT "line_fits_pkey" PRIMARY KEY ("spectrum_id");
 
 -- Line fits follow their spectrum: a removed / re-keyed spectrum drops its fit.
-ALTER TABLE ONLY "public"."spectrum_line_fits"
-    ADD CONSTRAINT "spectrum_line_fits_spectrum_id_fkey" FOREIGN KEY ("spectrum_id") REFERENCES "public"."spectra"("id") ON DELETE CASCADE;
+ALTER TABLE ONLY "public"."line_fits"
+    ADD CONSTRAINT "line_fits_spectrum_id_fkey" FOREIGN KEY ("spectrum_id") REFERENCES "public"."spectra"("id") ON DELETE CASCADE;
 
-ALTER TABLE ONLY "public"."spectrum_lines"
-    ADD CONSTRAINT "spectrum_lines_pkey" PRIMARY KEY ("spectrum_id", "line");
+ALTER TABLE ONLY "public"."lines"
+    ADD CONSTRAINT "lines_pkey" PRIMARY KEY ("spectrum_id", "line");
 
 -- Derived rows follow their fit row (which itself follows the spectrum).
-ALTER TABLE ONLY "public"."spectrum_lines"
-    ADD CONSTRAINT "spectrum_lines_spectrum_id_fkey" FOREIGN KEY ("spectrum_id") REFERENCES "public"."spectrum_line_fits"("spectrum_id") ON DELETE CASCADE;
+ALTER TABLE ONLY "public"."lines"
+    ADD CONSTRAINT "lines_spectrum_id_fkey" FOREIGN KEY ("spectrum_id") REFERENCES "public"."line_fits"("spectrum_id") ON DELETE CASCADE;
 
 -- B2 (#218) cross-table FKs, placed after the referenced PKs (spectra_pkey above,
 -- deployments_pkey earlier) so the declarative build order resolves them.
@@ -2790,20 +2790,20 @@ ALTER TABLE ONLY "public"."object_list_shares"
     ADD CONSTRAINT "object_list_shares_list_id_user_id_key" UNIQUE ("list_id", "user_id");
 
 
-ALTER TABLE ONLY "public"."object_photometry"
-    ADD CONSTRAINT "object_photometry_pkey" PRIMARY KEY ("id");
+ALTER TABLE ONLY "public"."catalog_matches"
+    ADD CONSTRAINT "catalog_matches_pkey" PRIMARY KEY ("id");
 
 
-ALTER TABLE ONLY "public"."object_photometry"
-    ADD CONSTRAINT "object_photometry_field_catalog_name_catalog_id_key" UNIQUE ("field", "catalog_name", "catalog_id");
+ALTER TABLE ONLY "public"."catalog_matches"
+    ADD CONSTRAINT "catalog_matches_field_catalog_name_catalog_id_key" UNIQUE ("field", "catalog_name", "catalog_id");
 
 
-ALTER TABLE ONLY "public"."object_photometry_bands"
-    ADD CONSTRAINT "object_photometry_bands_pkey" PRIMARY KEY ("photometry_id", "band");
+ALTER TABLE ONLY "public"."photometry"
+    ADD CONSTRAINT "photometry_pkey" PRIMARY KEY ("match_id", "band");
 
 
-ALTER TABLE ONLY "public"."object_photometry_bands"
-    ADD CONSTRAINT "object_photometry_bands_photometry_id_fkey" FOREIGN KEY ("photometry_id") REFERENCES "public"."object_photometry"("id") ON DELETE CASCADE;
+ALTER TABLE ONLY "public"."photometry"
+    ADD CONSTRAINT "photometry_match_id_fkey" FOREIGN KEY ("match_id") REFERENCES "public"."catalog_matches"("id") ON DELETE CASCADE;
 
 
 
@@ -2961,14 +2961,14 @@ ALTER TABLE ONLY "public"."object_list_members"
     ADD CONSTRAINT "object_list_members_added_by_fkey" FOREIGN KEY ("added_by") REFERENCES "auth"."users"("id");
 
 
-ALTER TABLE ONLY "public"."object_photometry"
-    ADD CONSTRAINT "object_photometry_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
+ALTER TABLE ONLY "public"."catalog_matches"
+    ADD CONSTRAINT "catalog_matches_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
 
-ALTER TABLE ONLY "public"."object_photometry_bands"
-    ADD CONSTRAINT "object_photometry_bands_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
+ALTER TABLE ONLY "public"."photometry"
+    ADD CONSTRAINT "photometry_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
 
-ALTER TABLE ONLY "public"."spectrum_lines"
-    ADD CONSTRAINT "spectrum_lines_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
+ALTER TABLE ONLY "public"."lines"
+    ADD CONSTRAINT "lines_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
 
 
 
@@ -3202,14 +3202,14 @@ REVOKE ALL ON TABLE "public"."spectra" FROM "anon";
 GRANT ALL ON TABLE "public"."spectra" TO "authenticated";
 GRANT ALL ON TABLE "public"."spectra" TO "service_role";
 
--- spectrum_line_fits: visibility follows spectra (RLS); same grants.
-REVOKE ALL ON TABLE "public"."spectrum_line_fits" FROM "anon";
-GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "authenticated";
-GRANT ALL ON TABLE "public"."spectrum_line_fits" TO "service_role";
+-- line_fits: visibility follows spectra (RLS); same grants.
+REVOKE ALL ON TABLE "public"."line_fits" FROM "anon";
+GRANT ALL ON TABLE "public"."line_fits" TO "authenticated";
+GRANT ALL ON TABLE "public"."line_fits" TO "service_role";
 
-REVOKE ALL ON TABLE "public"."spectrum_lines" FROM "anon";
-GRANT ALL ON TABLE "public"."spectrum_lines" TO "authenticated";
-GRANT ALL ON TABLE "public"."spectrum_lines" TO "service_role";
+REVOKE ALL ON TABLE "public"."lines" FROM "anon";
+GRANT ALL ON TABLE "public"."lines" TO "authenticated";
+GRANT ALL ON TABLE "public"."lines" TO "service_role";
 
 
 
@@ -3237,14 +3237,14 @@ GRANT ALL ON TABLE "public"."object_list_members" TO "service_role";
 
 
 
-REVOKE ALL ON TABLE "public"."object_photometry" FROM "anon";
-GRANT ALL ON TABLE "public"."object_photometry" TO "authenticated";
-GRANT ALL ON TABLE "public"."object_photometry" TO "service_role";
+REVOKE ALL ON TABLE "public"."catalog_matches" FROM "anon";
+GRANT ALL ON TABLE "public"."catalog_matches" TO "authenticated";
+GRANT ALL ON TABLE "public"."catalog_matches" TO "service_role";
 
--- object_photometry_bands: visibility follows object_photometry (RLS); same grants.
-REVOKE ALL ON TABLE "public"."object_photometry_bands" FROM "anon";
-GRANT ALL ON TABLE "public"."object_photometry_bands" TO "authenticated";
-GRANT ALL ON TABLE "public"."object_photometry_bands" TO "service_role";
+-- photometry: visibility follows catalog_matches (RLS); same grants.
+REVOKE ALL ON TABLE "public"."photometry" FROM "anon";
+GRANT ALL ON TABLE "public"."photometry" TO "authenticated";
+GRANT ALL ON TABLE "public"."photometry" TO "service_role";
 
 
 
@@ -3369,22 +3369,22 @@ REVOKE ALL ON TABLE "public"."dr_line_fits" FROM "anon";
 REVOKE ALL ON TABLE "public"."dr_line_fits" FROM "authenticated";
 GRANT SELECT ON TABLE "public"."dr_line_fits" TO "authenticated";
 GRANT ALL ON TABLE "public"."dr_line_fits" TO "service_role";
-REVOKE ALL ON TABLE "public"."dr_photometry" FROM "anon";
-REVOKE ALL ON TABLE "public"."dr_photometry" FROM "authenticated";
-GRANT SELECT ON TABLE "public"."dr_photometry" TO "authenticated";
-GRANT ALL ON TABLE "public"."dr_photometry" TO "service_role";
+REVOKE ALL ON TABLE "public"."dr_catalog_matches" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_catalog_matches" FROM "authenticated";
+GRANT SELECT ON TABLE "public"."dr_catalog_matches" TO "authenticated";
+GRANT ALL ON TABLE "public"."dr_catalog_matches" TO "service_role";
 REVOKE ALL ON TABLE "public"."dr_targets" FROM "anon";
 REVOKE ALL ON TABLE "public"."dr_targets" FROM "authenticated";
 GRANT SELECT ON TABLE "public"."dr_targets" TO "authenticated";
 GRANT ALL ON TABLE "public"."dr_targets" TO "service_role";
-REVOKE ALL ON TABLE "public"."dr_spectrum_lines" FROM "anon";
-REVOKE ALL ON TABLE "public"."dr_spectrum_lines" FROM "authenticated";
-GRANT SELECT ON TABLE "public"."dr_spectrum_lines" TO "authenticated";
-GRANT ALL ON TABLE "public"."dr_spectrum_lines" TO "service_role";
-REVOKE ALL ON TABLE "public"."dr_photometry_bands" FROM "anon";
-REVOKE ALL ON TABLE "public"."dr_photometry_bands" FROM "authenticated";
-GRANT SELECT ON TABLE "public"."dr_photometry_bands" TO "authenticated";
-GRANT ALL ON TABLE "public"."dr_photometry_bands" TO "service_role";
+REVOKE ALL ON TABLE "public"."dr_lines" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_lines" FROM "authenticated";
+GRANT SELECT ON TABLE "public"."dr_lines" TO "authenticated";
+GRANT ALL ON TABLE "public"."dr_lines" TO "service_role";
+REVOKE ALL ON TABLE "public"."dr_photometry" FROM "anon";
+REVOKE ALL ON TABLE "public"."dr_photometry" FROM "authenticated";
+GRANT SELECT ON TABLE "public"."dr_photometry" TO "authenticated";
+GRANT ALL ON TABLE "public"."dr_photometry" TO "service_role";
 REVOKE ALL ON TABLE "public"."dr_nircam_images" FROM "anon";
 REVOKE ALL ON TABLE "public"."dr_nircam_images" FROM "authenticated";
 GRANT SELECT ON TABLE "public"."dr_nircam_images" TO "authenticated";
@@ -3577,9 +3577,9 @@ GRANT ALL ON SEQUENCE "public"."object_list_members_id_seq" TO "service_role";
 
 
 
-REVOKE ALL ON SEQUENCE "public"."object_photometry_id_seq" FROM "anon";
-GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "authenticated";
-GRANT ALL ON SEQUENCE "public"."object_photometry_id_seq" TO "service_role";
+REVOKE ALL ON SEQUENCE "public"."catalog_matches_id_seq" FROM "anon";
+GRANT ALL ON SEQUENCE "public"."catalog_matches_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."catalog_matches_id_seq" TO "service_role";
 
 
 

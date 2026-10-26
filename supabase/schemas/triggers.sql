@@ -210,20 +210,20 @@ $$;
 DROP FUNCTION IF EXISTS public.bump_spectra_updated_at CASCADE;
 
 -- ---------------------------------------------------------------------------
--- sync_spectrum_lines
---     Unnest NEW.lines (jsonb keyed by catalog line name) into spectrum_lines.
---     SECURITY DEFINER: the deploy CLI writes spectrum_line_fits as an admin
+-- sync_lines
+--     Unnest NEW.lines (jsonb keyed by catalog line name) into lines.
+--     SECURITY DEFINER: the deploy CLI writes line_fits as an admin
 --     under RLS, and the derived table's own policies must not decide whether
 --     the mirror is rebuilt. Only object-valued entries are rows; NaN was
 --     already null in the payload, so a missing/null field is a NULL column.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.sync_spectrum_lines() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.sync_lines() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  DELETE FROM public.spectrum_lines WHERE spectrum_id = NEW.spectrum_id;
-  INSERT INTO public.spectrum_lines (
+  DELETE FROM public.lines WHERE spectrum_id = NEW.spectrum_id;
+  INSERT INTO public.lines (
     spectrum_id, line, component, wave_rest, flux, flux_err, snr,
     ew_rest, ew_rest_err, flags, blend_into, object_id
   )
@@ -255,23 +255,23 @@ END;
 $$;
 
 -- ---------------------------------------------------------------------------
--- sync_object_photometry_bands
+-- sync_photometry
 --     Unnest NEW.photometry -> 'bands' (jsonb keyed by band name) into
---     object_photometry_bands. The exact counterpart of sync_spectrum_lines
+--     photometry. The exact counterpart of sync_lines
 --     on the photometry side, and SECURITY DEFINER for the same reason: the
---     deploy CLI upserts object_photometry as an admin under RLS, and the
+--     deploy CLI upserts catalog_matches as an admin under RLS, and the
 --     derived table's own policies must not decide whether the mirror is
 --     rebuilt. snr and mag are generated columns, so only the raw flux pair
 --     and the pivot wavelength are copied; a missing or null field is a NULL
 --     column (the payload already wrote NaN as null).
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public.sync_object_photometry_bands() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.sync_photometry() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  DELETE FROM public.object_photometry_bands WHERE photometry_id = NEW.id;
-  INSERT INTO public.object_photometry_bands (photometry_id, band, flux, flux_err, wav, object_id)
+  DELETE FROM public.photometry WHERE match_id = NEW.id;
+  INSERT INTO public.photometry (match_id, band, flux, flux_err, wav, object_id)
   SELECT
     NEW.id,
     e.key,
@@ -371,6 +371,16 @@ $$;
 --     SECURITY DEFINER: the BEFORE triggers run for non-admin DQ updates too,
 --     and those callers only see targets through RLS. The parent lookup must
 --     not depend on the caller's visibility.
+--
+--     Concurrency (the rule the is_public and phase 2a copies follow): the
+--     BEFORE trigger reads the parent target FOR SHARE. A spectrum written
+--     while its target's program_slug / observation is being changed would
+--     otherwise copy the OLD scope; propagate_target_scope_to_spectra cannot
+--     see the uncommitted spectrum; and the copy would commit wrong for good.
+--     FOR SHARE conflicts with the row lock that UPDATE holds, so the write
+--     waits and copies the committed value, or the UPDATE waits and its AFTER
+--     trigger rewrites the row. python/tests/test_target_scope_race.py drives
+--     both orderings.
 DROP FUNCTION IF EXISTS public.sync_spectra_target_scope CASCADE;
 
 CREATE OR REPLACE FUNCTION public.sync_spectra_target_scope() RETURNS trigger
@@ -381,7 +391,8 @@ BEGIN
     SELECT t.program_slug, t.observation
       INTO NEW.program_slug, NEW.observation
       FROM targets t
-     WHERE t.target_id = NEW.target_id;
+     WHERE t.target_id = NEW.target_id
+       FOR SHARE;  -- see the concurrency note above
     -- No parent row: both land NULL and the NOT NULL constraints reject the
     -- row (the FK spectra_target_id_fkey would too). No RAISE needed here.
     RETURN NEW;
@@ -770,27 +781,27 @@ CREATE TRIGGER track_spectrum_dq_changes
 -- need to re-fetch for: flags, redshift, SNR, thumbnails, file identity.
 -- A real re-reduction also changes file_hash, so refreshed provenance rides
 -- along on the next incremental sync without a provenance-only bump.
--- spectrum_line_fits.updated_at: any UPDATE (a re-fit replaces the whole row)
+-- line_fits.updated_at: any UPDATE (a re-fit replaces the whole row)
 -- must advance updated_at so get_line_fits_for_sync's incremental cursor sees it.
 -- Reuses bump_spectra_updated_at (it only sets NEW.updated_at = NOW()).
-DROP TRIGGER IF EXISTS bump_spectrum_line_fits_updated_at_trigger ON public.spectrum_line_fits;
-CREATE TRIGGER bump_spectrum_line_fits_updated_at_trigger
-  BEFORE UPDATE ON public.spectrum_line_fits
+DROP TRIGGER IF EXISTS bump_line_fits_updated_at_trigger ON public.line_fits;
+CREATE TRIGGER bump_line_fits_updated_at_trigger
+  BEFORE UPDATE ON public.line_fits
   FOR EACH ROW EXECUTE FUNCTION public.bump_spectra_updated_at();
 
--- spectrum_lines is the unnested mirror of spectrum_line_fits.lines: rebuild a
+-- lines is the unnested mirror of line_fits.lines: rebuild a
 -- spectrum's rows whenever its fit row is written (deploy upserts the whole
 -- row; a re-fit that drops a line must drop its row too, hence delete +
 -- insert rather than upsert). Deletes cascade through the FK.
-DROP TRIGGER IF EXISTS sync_spectrum_lines_trigger ON public.spectrum_line_fits;
-CREATE TRIGGER sync_spectrum_lines_trigger
-  AFTER INSERT OR UPDATE OF lines ON public.spectrum_line_fits
-  FOR EACH ROW EXECUTE FUNCTION public.sync_spectrum_lines();
+DROP TRIGGER IF EXISTS sync_lines_trigger ON public.line_fits;
+CREATE TRIGGER sync_lines_trigger
+  AFTER INSERT OR UPDATE OF lines ON public.line_fits
+  FOR EACH ROW EXECUTE FUNCTION public.sync_lines();
 
-DROP TRIGGER IF EXISTS sync_object_photometry_bands_trigger ON public.object_photometry;
-CREATE TRIGGER sync_object_photometry_bands_trigger
-  AFTER INSERT OR UPDATE OF photometry ON public.object_photometry
-  FOR EACH ROW EXECUTE FUNCTION public.sync_object_photometry_bands();
+DROP TRIGGER IF EXISTS sync_photometry_trigger ON public.catalog_matches;
+CREATE TRIGGER sync_photometry_trigger
+  AFTER INSERT OR UPDATE OF photometry ON public.catalog_matches
+  FOR EACH ROW EXECUTE FUNCTION public.sync_photometry();
 
 DROP TRIGGER IF EXISTS bump_spectra_updated_at_trigger ON public.spectra;
 CREATE TRIGGER bump_spectra_updated_at_trigger
@@ -951,14 +962,14 @@ CREATE TRIGGER journal_sync_deletions_trigger
   AFTER DELETE ON public.storage_objects REFERENCING OLD TABLE AS old_rows
   FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('storage', 'id');
 
-DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.object_photometry;
+DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.catalog_matches;
 CREATE TRIGGER journal_sync_deletions_trigger
-  AFTER DELETE ON public.object_photometry REFERENCING OLD TABLE AS old_rows
+  AFTER DELETE ON public.catalog_matches REFERENCING OLD TABLE AS old_rows
   FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('photometry', 'id');
 
-DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.spectrum_line_fits;
+DROP TRIGGER IF EXISTS journal_sync_deletions_trigger ON public.line_fits;
 CREATE TRIGGER journal_sync_deletions_trigger
-  AFTER DELETE ON public.spectrum_line_fits REFERENCING OLD TABLE AS old_rows
+  AFTER DELETE ON public.line_fits REFERENCING OLD TABLE AS old_rows
   FOR EACH STATEMENT EXECUTE FUNCTION public.journal_sync_deletions('line_fits', 'spectrum_id');
 
 -- ===========================================================================
@@ -982,10 +993,10 @@ REVOKE ALL ON FUNCTION public.log_spectrum_dq_changes() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.pin_redshift_on_signoff() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.propagate_target_publication_to_shutters() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.propagate_target_scope_to_spectra() FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.sync_object_photometry_bands() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_photometry() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.sync_shutter_publication() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.sync_spectra_target_scope() FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.sync_spectrum_lines() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.sync_lines() FROM PUBLIC, anon;
 -- GoTrue inserts auth.users as supabase_auth_admin; the trigger fires without an
 -- EXECUTE check, but keep the grant explicit so the intent is readable.
 GRANT EXECUTE ON FUNCTION public.handle_new_user() TO supabase_auth_admin;
@@ -1183,19 +1194,19 @@ CREATE TRIGGER propagate_program_is_public_trigger
 -- =============================================================================
 -- Measurement rows addressable by object (Catalog Read Model phase 2a)
 -- =============================================================================
--- spectrum_lines.object_id and object_photometry_bands.object_id are copies
+-- lines.object_id and photometry.object_id are copies
 -- of the object the row belongs to (targets.object_id through the spectrum;
--- object_photometry.object_id through the cross-match), and
--- spectrum_line_fits.stale_redshift is the stored value of
+-- catalog_matches.object_id through the cross-match), and
+-- line_fits.stale_redshift is the stored value of
 -- line_fit_stale_redshift(object, fit). They let the catalog filters and the
 -- object page read one indexed table each instead of a three-hop join, and
 -- they are exact because every path that can move them is covered:
---   * a line row is written            -> sync_spectrum_lines sets object_id
+--   * a line row is written            -> sync_lines sets object_id
 --   * a fit row is written             -> compute_line_fit_stale (BEFORE) sets stale_redshift
 --   * a target regroups                -> relink_lines_from_targets (lines + stale)
 --   * a spectrum moves to a target     -> relink_lines_from_spectra (lines + stale)
 --   * an object is inspected / bumped  -> recompute_line_fit_stale_from_objects
---   * a cross-match is re-matched      -> relink_bands_from_photometry
+--   * a cross-match is re-matched      -> relink_photometry_from_matches
 --   * objects are rebuilt              -> the FKs' ON DELETE SET NULL, then the
 --                                         target re-point above
 -- An explicit write of stale_redshift is recomputed away by the BEFORE
@@ -1258,12 +1269,12 @@ BEGIN
     WHERE o.id IN (SELECT t.object_id FROM spectra s JOIN targets t ON t.target_id = s.target_id
                     WHERE s.id = ANY(p_spectrum_ids))
     FOR SHARE;
-  UPDATE spectrum_line_fits f SET stale_redshift = v.stale
+  UPDATE line_fits f SET stale_redshift = v.stale
     FROM (SELECT f2.spectrum_id,
                  COALESCE(o.id IS NOT NULL AND public.line_fit_stale_redshift(
                    o.version, o.redshift_quality, (o.redshift)::double precision,
                    f2.object_version, f2.z_quality, f2.z_used), false) AS stale
-            FROM spectrum_line_fits f2
+            FROM line_fits f2
             JOIN spectra s ON s.id = f2.spectrum_id
             LEFT JOIN targets t ON t.target_id = s.target_id
             LEFT JOIN objects o ON o.id = t.object_id
@@ -1289,7 +1300,7 @@ BEGIN
     SELECT n.target_id FROM new_rows n JOIN old_rows o ON o.id = n.id
      WHERE o.object_id IS DISTINCT FROM n.object_id;
   IF NOT EXISTS (SELECT 1 FROM _moved_targets) THEN RETURN NULL; END IF;
-  UPDATE spectrum_lines l SET object_id = t.object_id
+  UPDATE lines l SET object_id = t.object_id
     FROM spectra s
     JOIN _moved_targets m ON m.target_id = s.target_id
     JOIN targets t ON t.target_id = s.target_id
@@ -1315,7 +1326,7 @@ BEGIN
     WHERE t.target_id IN (SELECT n.target_id FROM new_rows n JOIN old_rows o ON o.id = n.id
                            WHERE o.target_id IS DISTINCT FROM n.target_id)
     FOR SHARE;
-  UPDATE spectrum_lines l SET object_id = t.object_id
+  UPDATE lines l SET object_id = t.object_id
     FROM new_rows n
     JOIN old_rows o ON o.id = n.id AND o.target_id IS DISTINCT FROM n.target_id
     JOIN targets t ON t.target_id = n.target_id
@@ -1350,22 +1361,22 @@ BEGIN
 END;
 $$;
 
-DROP FUNCTION IF EXISTS public.relink_bands_from_photometry CASCADE;
-CREATE OR REPLACE FUNCTION public.relink_bands_from_photometry() RETURNS trigger
+DROP FUNCTION IF EXISTS public.relink_photometry_from_matches CASCADE;
+CREATE OR REPLACE FUNCTION public.relink_photometry_from_matches() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  UPDATE object_photometry_bands b SET object_id = NEW.object_id
-   WHERE b.photometry_id = NEW.id
+  UPDATE photometry b SET object_id = NEW.object_id
+   WHERE b.match_id = NEW.id
      AND b.object_id IS DISTINCT FROM NEW.object_id;
   RETURN NULL;
 END;
 $$;
 
-DROP TRIGGER IF EXISTS compute_line_fit_stale_trigger ON public.spectrum_line_fits;
+DROP TRIGGER IF EXISTS compute_line_fit_stale_trigger ON public.line_fits;
 CREATE TRIGGER compute_line_fit_stale_trigger
-  BEFORE INSERT OR UPDATE ON public.spectrum_line_fits
+  BEFORE INSERT OR UPDATE ON public.line_fits
   FOR EACH ROW EXECUTE FUNCTION public.compute_line_fit_stale();
 
 DROP TRIGGER IF EXISTS relink_lines_from_targets_trigger ON public.targets;
@@ -1389,7 +1400,7 @@ CREATE TRIGGER recompute_line_fit_stale_from_objects_trigger
   REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
   FOR EACH STATEMENT EXECUTE FUNCTION public.recompute_line_fit_stale_from_objects();
 
-DROP TRIGGER IF EXISTS relink_bands_from_photometry_trigger ON public.object_photometry;
-CREATE TRIGGER relink_bands_from_photometry_trigger
-  AFTER UPDATE OF object_id ON public.object_photometry
-  FOR EACH ROW EXECUTE FUNCTION public.relink_bands_from_photometry();
+DROP TRIGGER IF EXISTS relink_photometry_from_matches_trigger ON public.catalog_matches;
+CREATE TRIGGER relink_photometry_from_matches_trigger
+  AFTER UPDATE OF object_id ON public.catalog_matches
+  FOR EACH ROW EXECUTE FUNCTION public.relink_photometry_from_matches();
