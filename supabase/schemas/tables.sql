@@ -666,8 +666,13 @@ CREATE TABLE IF NOT EXISTS "public"."photometry" (
     "mag" double precision GENERATED ALWAYS AS (
         CASE WHEN "flux" > 0 THEN 23.9 - 2.5 * log("flux") END
     ) STORED,
-    "object_id" integer
+    "object_id" integer,
+    "wav_min" double precision,
+    "wav_max" double precision
 );
+COMMENT ON COLUMN "public"."photometry"."wav_min" IS 'Blue edge of the band in microns, from the field''s photometry.toml; NULL where the config carried only the pivot wavelength.';
+COMMENT ON COLUMN "public"."photometry"."wav_max" IS 'Red edge of the band in microns, from the field''s photometry.toml; NULL where the config carried only the pivot wavelength.';
+
 COMMENT ON COLUMN "public"."photometry"."object_id" IS 'The object of the parent cross-match (Catalog Read Model phase 2a): a copy of catalog_matches.object_id, set by sync_photometry and re-pointed by relink_photometry_from_matches when the parent is re-matched; FK ON DELETE SET NULL. Lets the band filter and the object page read one indexed table.';
 
 
@@ -1249,8 +1254,28 @@ CREATE TABLE IF NOT EXISTS "public"."lines" (
     "ew_rest_err" double precision,
     "flags" integer DEFAULT 0 NOT NULL,
     "blend_into" "text",
-    "object_id" integer
+    "object_id" integer,
+    "label" "text",
+    "wave_obs" double precision,
+    "cont" double precision,
+    "cont_err" double precision,
+    "dv" double precision,
+    "dv_err" double precision,
+    "sigma_v" double precision,
+    "sigma_v_err" double precision,
+    "sigma_lsf_kms" double precision,
+    "complex" integer,
+    "chi2" double precision,
+    "dof" integer,
+    "npix" integer,
+    "tied_to" "text",
+    "members" "text"[]
 );
+COMMENT ON COLUMN "public"."lines"."label" IS 'Display label of the line (e.g. "[O III]λ5007"), as the pipeline wrote it; a function of `line`, stored so the row is self-describing.';
+COMMENT ON COLUMN "public"."lines"."complex" IS 'Index of the fit complex (group of lines fitted together) this line belongs to within its spectrum''s fit; chi2 / dof / npix are per complex and repeat on every member.';
+COMMENT ON COLUMN "public"."lines"."members" IS 'Doublet totals only: the two component line names the total was built from; NULL on a component or a stand-alone line.';
+COMMENT ON COLUMN "public"."lines"."tied_to" IS 'Name of the line whose kinematics this line''s were tied to (flags bit 1), NULL when free.';
+
 COMMENT ON COLUMN "public"."lines"."object_id" IS 'The object this measurement belongs to (Catalog Read Model phase 2a): targets.object_id through the row''s spectrum, trigger-maintained (set by sync_lines, re-pointed by relink_lines_from_targets / relink_lines_from_spectra when a target regroups or a spectrum moves; FK ON DELETE SET NULL when objects are rebuilt). What makes "object has line L above S/N x" one indexed EXISTS instead of a three-hop join.';
 
 
@@ -1841,6 +1866,21 @@ CREATE TABLE IF NOT EXISTS "public"."dr_lines" (
     "flags" integer NOT NULL,
     "blend_into" "text",
     "object_id" integer,
+    "label" "text",
+    "wave_obs" double precision,
+    "cont" double precision,
+    "cont_err" double precision,
+    "dv" double precision,
+    "dv_err" double precision,
+    "sigma_v" double precision,
+    "sigma_v_err" double precision,
+    "sigma_lsf_kms" double precision,
+    "complex" integer,
+    "chi2" double precision,
+    "dof" integer,
+    "npix" integer,
+    "tied_to" "text",
+    "members" "text"[],
     CONSTRAINT "dr_lines_pkey" PRIMARY KEY ("tag", "spectrum_id", "line")
 );
 
@@ -1886,6 +1926,8 @@ CREATE TABLE IF NOT EXISTS "public"."dr_photometry" (
     "snr" double precision,
     "mag" double precision,
     "object_id" integer,
+    "wav_min" double precision,
+    "wav_max" double precision,
     CONSTRAINT "dr_photometry_pkey" PRIMARY KEY ("tag", "match_id", "band")
 );
 

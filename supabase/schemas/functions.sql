@@ -820,7 +820,22 @@ WITH (security_invoker = true) AS
          ew_rest_err,
          flags,
          blend_into,
-         object_id
+         object_id,
+         label,
+         wave_obs,
+         cont,
+         cont_err,
+         dv,
+         dv_err,
+         sigma_v,
+         sigma_v_err,
+         sigma_lsf_kms,
+         complex,
+         chi2,
+         dof,
+         npix,
+         tied_to,
+         members
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
@@ -835,7 +850,22 @@ WITH (security_invoker = true) AS
            ew_rest_err,
            flags,
            blend_into,
-           object_id
+           object_id,
+           label,
+           wave_obs,
+           cont,
+           cont_err,
+           dv,
+           dv_err,
+           sigma_v,
+           sigma_v_err,
+           sigma_lsf_kms,
+           complex,
+           chi2,
+           dof,
+           npix,
+           tied_to,
+           members
     FROM public.lines
     UNION ALL
     SELECT 'dr'::text AS cat_src,
@@ -851,7 +881,22 @@ WITH (security_invoker = true) AS
            ew_rest_err,
            flags,
            blend_into,
-           object_id
+           object_id,
+           label,
+           wave_obs,
+           cont,
+           cont_err,
+           dv,
+           dv_err,
+           sigma_v,
+           sigma_v_err,
+           sigma_lsf_kms,
+           complex,
+           chi2,
+           dof,
+           npix,
+           tied_to,
+           members
     FROM public.dr_lines
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
@@ -941,7 +986,9 @@ WITH (security_invoker = true) AS
          wav,
          snr,
          mag,
-         object_id
+         object_id,
+         wav_min,
+         wav_max
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
@@ -952,7 +999,9 @@ WITH (security_invoker = true) AS
            wav,
            snr,
            mag,
-           object_id
+           object_id,
+           wav_min,
+           wav_max
     FROM public.photometry
     UNION ALL
     SELECT 'dr'::text AS cat_src,
@@ -964,7 +1013,9 @@ WITH (security_invoker = true) AS
            wav,
            snr,
            mag,
-           object_id
+           object_id,
+           wav_min,
+           wav_max
     FROM public.dr_photometry
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
@@ -10512,8 +10563,8 @@ BEGIN
       RETURNING 1
     ),
     ins_slines AS (
-      INSERT INTO dr_lines (tag, spectrum_id, line, component, wave_rest, flux, flux_err, snr, ew_rest, ew_rest_err, flags, blend_into, object_id)
-      SELECT p_tag, l.spectrum_id, l.line, l.component, l.wave_rest, l.flux, l.flux_err, l.snr, l.ew_rest, l.ew_rest_err, l.flags, l.blend_into, l.object_id
+      INSERT INTO dr_lines (tag, spectrum_id, line, component, wave_rest, flux, flux_err, snr, ew_rest, ew_rest_err, flags, blend_into, object_id, label, wave_obs, cont, cont_err, dv, dv_err, sigma_v, sigma_v_err, sigma_lsf_kms, complex, chi2, dof, npix, tied_to, members)
+      SELECT p_tag, l.spectrum_id, l.line, l.component, l.wave_rest, l.flux, l.flux_err, l.snr, l.ew_rest, l.ew_rest_err, l.flags, l.blend_into, l.object_id, l.label, l.wave_obs, l.cont, l.cont_err, l.dv, l.dv_err, l.sigma_v, l.sigma_v_err, l.sigma_lsf_kms, l.complex, l.chi2, l.dof, l.npix, l.tied_to, l.members
       FROM lines l JOIN pub p ON p.id = l.spectrum_id
       RETURNING 1
     ),
@@ -10531,8 +10582,8 @@ BEGIN
       RETURNING 1
     ),
     ins_bands AS (
-      INSERT INTO dr_photometry (tag, match_id, band, flux, flux_err, wav, snr, mag, object_id)
-      SELECT p_tag, b.match_id, b.band, b.flux, b.flux_err, b.wav, b.snr, b.mag, b.object_id
+      INSERT INTO dr_photometry (tag, match_id, band, flux, flux_err, wav, snr, mag, object_id, wav_min, wav_max)
+      SELECT p_tag, b.match_id, b.band, b.flux, b.flux_err, b.wav, b.snr, b.mag, b.object_id, b.wav_min, b.wav_max
       FROM photometry b JOIN phot ON phot.id = b.match_id
       RETURNING 1
     ),
