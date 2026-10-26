@@ -270,9 +270,14 @@ BEGIN
       RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: cone radius must be in (0, 10] degrees';
     END IF;
     -- the list RPCs' cone: a box pre-filter the index can use (RA widened by
-    -- 1/cos(dec), dropped near a pole), then the Haversine cut decides
+    -- 1/cos(dec), dropped near a pole, and repeated one turn either side so a
+    -- cone straddling RA = 0 keeps both edges; Codex on #659), then the
+    -- Haversine cut decides (periodic in RA by construction)
     RETURN format(
-      '((ABS(%2$s) + %3$s >= 90 OR %1$I.ra BETWEEN (%4$s - %3$s / GREATEST(COS(RADIANS(%2$s)), 1e-6)) AND (%4$s + %3$s / GREATEST(COS(RADIANS(%2$s)), 1e-6))) '
+      '((ABS(%2$s) + %3$s >= 90 '
+      'OR %1$I.ra BETWEEN (%4$s - %3$s / GREATEST(COS(RADIANS(%2$s)), 1e-6)) AND (%4$s + %3$s / GREATEST(COS(RADIANS(%2$s)), 1e-6)) '
+      'OR %1$I.ra BETWEEN (%4$s - 360 - %3$s / GREATEST(COS(RADIANS(%2$s)), 1e-6)) AND (%4$s - 360 + %3$s / GREATEST(COS(RADIANS(%2$s)), 1e-6)) '
+      'OR %1$I.ra BETWEEN (%4$s + 360 - %3$s / GREATEST(COS(RADIANS(%2$s)), 1e-6)) AND (%4$s + 360 + %3$s / GREATEST(COS(RADIANS(%2$s)), 1e-6))) '
       'AND %1$I.dec BETWEEN (%2$s - %3$s) AND (%2$s + %3$s) '
       'AND 2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(%1$I.dec - %2$s) / 2), 2) + COS(RADIANS(%2$s)) * COS(RADIANS(%1$I.dec)) * POWER(SIN(RADIANS(%1$I.ra - %4$s) / 2), 2)))) <= %3$s)',
       p_alias, v_dec, v_r, v_ra);

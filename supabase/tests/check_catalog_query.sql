@@ -86,7 +86,9 @@ INSERT INTO objects (object_id, field, ra, dec, programs, observations, has_publ
   VALUES ('CQ-A', 'zzz_cq_field', 158.0, 2.0, '{zzz_cq_pub}', '{cq_obs_pub}', true, 5.0, 4, '{PRISM}'),
          ('CQ-B', 'zzz_cq_field', 158.1, 2.0, '{zzz_cq_pub}', '{cq_obs_pub}', true, 5.5, 3, '{PRISM,G395M}'),
          ('CQ-C', 'zzz_cq_field', 158.2, 2.0, '{zzz_cq_pub}', '{cq_obs_pub}', true, 2.0, 2, '{PRISM}'),
-         ('CQ-P', 'zzz_cq_field', 158.3, 2.0, '{zzz_cq_priv}', '{cq_obs_priv}', true, 6.0, 4, '{PRISM}');
+         ('CQ-P', 'zzz_cq_field', 158.3, 2.0, '{zzz_cq_priv}', '{cq_obs_priv}', true, 6.0, 4, '{PRISM}'),
+         -- just west of RA = 0: a cone centred at 0.02 deg must reach it (Codex on #659)
+         ('CQW-1', 'zzz_cq_wrap', 359.95, 2.0, '{zzz_cq_pub}', '{cq_obs_pub}', true, 1.0, 1, '{PRISM}');
 INSERT INTO targets (target_id, field, ra, dec, program_slug, observation, object_id)
   SELECT lower(object_id), field, ra, dec, programs[1], observations[1], id FROM objects WHERE object_id LIKE 'CQ-%';
 INSERT INTO spectra (target_id, grating, fits_path, signal_to_noise, exposure_time, deploy_status)
@@ -157,6 +159,11 @@ BEGIN
   -- the fixtures sit 0.1 deg apart in RA: a 0.06 deg cone holds B alone, 0.15 deg holds A, B, C and not P (0.2 deg away)
   IF pg_temp.cq_sel('{"cone": {"ra": 158.1, "dec": 2.0, "radius": 0.06}}') <> ARRAY['CQ-B'] THEN RAISE EXCEPTION 'cone failed: %', pg_temp.cq_sel('{"cone": {"ra": 158.1, "dec": 2.0, "radius": 0.06}}'); END IF;
   IF pg_temp.cq_sel('{"cone": {"ra": 158.1, "dec": 2.0, "radius": 0.15}}') <> ARRAY['CQ-A', 'CQ-B', 'CQ-C'] THEN RAISE EXCEPTION 'wide cone failed: %', pg_temp.cq_sel('{"cone": {"ra": 158.1, "dec": 2.0, "radius": 0.15}}'); END IF;
+  -- a cone straddling RA = 0 reaches the object at 359.95 from either side
+  IF (SELECT COALESCE(array_agg(o.object_id), '{}') FROM unnest(public.catalog_match_ids('objects', '{"cone": {"ra": 0.02, "dec": 2.0, "radius": 0.1}}')) i(id) JOIN objects o ON o.id = i.id WHERE o.object_id LIKE 'CQW-%') <> ARRAY['CQW-1']
+     OR (SELECT COALESCE(array_agg(o.object_id), '{}') FROM unnest(public.catalog_match_ids('objects', '{"cone": {"ra": 359.99, "dec": 2.0, "radius": 0.1}}')) i(id) JOIN objects o ON o.id = i.id WHERE o.object_id LIKE 'CQW-%') <> ARRAY['CQW-1'] THEN
+    RAISE EXCEPTION 'cone across RA = 0 failed';
+  END IF;
   -- spectra root: spectra of objects above z = 5 with a CIII line in the fit
   IF (SELECT count(*) FROM unnest(public.catalog_match_ids('spectra', '{"and": [{"exists": "objects", "where": [{"col": "redshift", "op": "gte", "v": 5}]}, {"exists": "lines", "where": [{"col": "line", "op": "eq", "v": "CIII1908"}]}]}')) i(id) JOIN spectra s ON s.id = i.id WHERE s.fits_path LIKE '/tmp/cq_%') <> 3 THEN
     RAISE EXCEPTION 'spectra root failed';
