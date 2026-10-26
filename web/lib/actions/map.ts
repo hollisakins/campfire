@@ -7,7 +7,7 @@ import { paginateRpc, paginateRpcKeyset, paginateQuery } from '@/lib/supabase/pa
 import type { WCSParams } from '@/lib/utils/wcs';
 import type { FilterOptions } from './filter-params';
 import { buildFilterParams } from './filter-params';
-import { hasTreeConditions } from '@/lib/catalog-query/legacy';
+import { hasTreeConditions, normalizeFilters } from '@/lib/catalog-query/legacy';
 import { matchFilterIds } from '@/lib/server/catalog-query';
 
 // ============================================
@@ -274,6 +274,7 @@ export async function getFilteredObjectIds(
     }
 
     // Build the subset of filter params applicable to objects
+    filters = normalizeFilters(filters, 'objects');
     const baseParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     const rpcParams = {

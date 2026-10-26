@@ -11,7 +11,7 @@ import { trackDownload } from './download-tracking';
 import { createClient } from '@/lib/supabase/server';
 import { paginateRpcKeyset } from '@/lib/supabase/paginate';
 import { buildFilterParams } from './filter-params';
-import { activeBandOf, activeLineOf, hasTreeConditions } from '@/lib/catalog-query/legacy';
+import { activeBandOf, activeLineOf, hasTreeConditions, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
 import { matchFilterIds } from '@/lib/server/catalog-query';
 import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
@@ -154,6 +154,7 @@ export async function generateCSV(
       return { csv: null, error: 'No accessible programs' };
     }
 
+    filters = normalizeFilters(filters, rootOf(viewMode));
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     const includeDistance = filters.coordinate_search !== null;

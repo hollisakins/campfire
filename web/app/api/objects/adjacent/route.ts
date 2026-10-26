@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { getRequestPrincipal } from '@/lib/auth/identity';
 import { buildFilterParams } from '@/lib/actions/filter-params';
 import { parseFiltersFromURL, parseSortingFromURL } from '@/lib/utils/url-params';
-import { hasTreeConditions } from '@/lib/catalog-query/legacy';
+import { hasTreeConditions, normalizeFilters } from '@/lib/catalog-query/legacy';
 import { matchFilterIds } from '@/lib/server/catalog-query';
 
 export interface AdjacentObjectsResponse {
@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
   const slugs = principal.access.accessibleSlugs;
   if (slugs.length === 0) return Response.json(EMPTY, { headers: NO_STORE });
 
-  const filters = parseFiltersFromURL(sp);
+  const filters = normalizeFilters(parseFiltersFromURL(sp), 'objects');
   const { sortColumn, sortDirection } = parseSortingFromURL(sp, 'objects');
   const rpcParams = buildFilterParams(filters, slugs, principal.user.id);
 

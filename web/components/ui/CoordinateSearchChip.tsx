@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChevronDown, X, MapPin } from 'lucide-react';
 import { parseCoordinates, convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
+import { Popover, isInsidePopover } from './Popover';
 
 export interface CoordinateSearchValue {
   ra: number;
@@ -46,7 +47,7 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+      if (!isInsidePopover(event.target, containerRef.current)) {
         setIsOpen(false);
       }
     };
@@ -157,7 +158,7 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-[320px] bg-card border border-border rounded-lg shadow-lg p-4">
+        <Popover anchorRef={containerRef} open={isOpen} className="w-[320px] bg-card border border-border rounded-lg shadow-lg p-4">
           <div className="space-y-4">
             {/* Coordinate input */}
             <div>
@@ -232,7 +233,7 @@ export const CoordinateSearchChip: React.FC<CoordinateSearchChipProps> = ({
               </button>
             </div>
           </div>
-        </div>
+        </Popover>
       )}
     </div>
   );

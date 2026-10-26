@@ -22,7 +22,7 @@ import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { useSpectraQuery } from '@/lib/hooks/useSpectraQuery';
 import { useFilterOptionsQuery } from '@/lib/hooks/useFilterOptionsQuery';
 import { useDrTag } from '@/lib/dr/client';
-import { activeBandOf, activeLineOf, distanceReferenceOf, rootOf } from '@/lib/catalog-query/legacy';
+import { activeBandOf, activeLineOf, distanceReferenceOf, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
 import { rerootNodes } from '@/lib/catalog-query/tree';
 import { DR_PARAM } from '@/lib/dr/tag';
 
@@ -265,7 +265,7 @@ function SpectraPageContent() {
           currentFilterParams={withTag(filtersToURLParams(filters, page, pageSize, sortColumn, sortDirection, viewMode))}
           loading={loading}
           error={error}
-          filters={filters}
+          filters={normalizeFilters(filters, rootOf(viewMode))}
         />
       </div>
     </div>

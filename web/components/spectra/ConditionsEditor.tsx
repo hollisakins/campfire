@@ -1,15 +1,16 @@
 'use client';
 
 /**
- * The conditions zone of the Advanced modal (Catalog Read Model phase 3b):
- * edits the free nodes of the predicate tree that the pills cannot express —
- * a property of the row, an exists over a child table ("has a line where
- * …"), an OR group, a cone — against the view's root table. Everything the
- * editor writes is one of lib/catalog-query/tree.ts's node shapes, so the
- * URL, the API and the database read it unchanged.
+ * The live predicate tree of the Advanced modal (Catalog Read Model phase
+ * 3b). The tree is the filter state: every pill drops a node into it, and
+ * every node is edited here in place — a property of the row, an exists
+ * over a child table ("has a line where …", negated as "has no line"), an
+ * OR/AND group, a cone. Everything written is one of
+ * lib/catalog-query/tree.ts's node shapes, so the URL, the API and the
+ * database read it unchanged.
  */
-import React, { useMemo, useState } from 'react';
-import { ChevronDown, Plus, X } from 'lucide-react';
+import React from 'react';
+import { X } from 'lucide-react';
 import {
   CATALOGUE, CORRELATIONS, OPS_BY_TYPE, OP_LABEL, TABLE_NOUN, hasSkyPosition, opArity,
   type LeafChoices, type LeafDef, type TreeOp, type TreeRoot, type TreeTable,
@@ -33,16 +34,9 @@ export interface ConditionChoices {
   lists: ChoiceOption[];
 }
 
-interface ConditionsEditorProps {
-  root: TreeRoot;
-  conditions: TreeNode[];
-  onChange: (conditions: TreeNode[]) => void;
-  choices: ConditionChoices;
-}
-
 const INPUT = 'px-2 py-1 text-sm border border-border rounded-md bg-background text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-transparent';
-const SELECT = `${INPUT} pr-6 appearance-none`;
-const GHOST = 'inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md text-text-secondary hover:text-text-primary hover:bg-card-hover transition-colors';
+const SELECT = `${INPUT} pr-6`;
+const ADD = 'px-2 py-1 text-xs rounded-md border border-dashed border-border text-text-secondary hover:text-text-primary hover:border-text-secondary bg-transparent cursor-pointer';
 
 const DEFAULT_COLUMN: Record<TreeTable, string> = {
   objects: 'redshift', targets: 'max_snr', spectra: 'signal_to_noise', lines: 'snr', line_fits: 'n_detected',
@@ -67,12 +61,12 @@ function defaultValue(leaf: LeafDef, op: TreeOp, choices: ConditionChoices): Pre
   const one: Scalar = leaf.type === 'bool' ? true
     : leaf.type === 'bits' ? 0
     : leaf.type === 'num' || leaf.type === 'int' || leaf.type === 'int[]' ? (typeof first === 'number' ? first : 0)
+    : op === 'ilike' ? '%'
     : (typeof first === 'string' ? first : '');
   return arity === 'many' ? [one] : one;
 }
 
-export function defaultPredicate(table: TreeTable, choices: ConditionChoices): PredicateNode {
-  const col = DEFAULT_COLUMN[table];
+export function defaultPredicate(table: TreeTable, choices: ConditionChoices, col = DEFAULT_COLUMN[table]): PredicateNode {
   const leaf = CATALOGUE[table][col];
   const op = defaultOp(leaf);
   const v = defaultValue(leaf, op, choices);
@@ -114,8 +108,19 @@ function parseScalar(raw: string, leaf: LeafDef): Scalar | undefined {
   return s;
 }
 
-function ScalarInput({ leaf, value, onChange, choices, placeholder }: {
+/** "words" shown for a `%words%` pattern, and back. */
+function patternToText(v: Scalar | undefined): string {
+  return typeof v === 'string' ? v.replace(/^%/, '').replace(/%$/, '') : '';
+}
+function textToPattern(s: string): string {
+  const t = s.trim();
+  return t.includes('%') || t.includes('_') ? t : `%${t}%`;
+}
+
+function ScalarInput({ leaf, value, onChange, choices, placeholder, pattern = false }: {
   leaf: LeafDef; value: Scalar | undefined; onChange: (v: Scalar | undefined) => void; choices: ConditionChoices; placeholder?: string;
+  /** The value is an ILIKE pattern: shown without its % wrapper, stored with one. */
+  pattern?: boolean;
 }) {
   const options = choiceOptions(leaf, choices);
   if (leaf.type === 'bool') {
@@ -126,7 +131,7 @@ function ScalarInput({ leaf, value, onChange, choices, placeholder }: {
       </select>
     );
   }
-  if (options.length > 0 && leaf.type !== 'bits') {
+  if (options.length > 0 && leaf.type !== 'bits' && !pattern) {
     const known = options.some((o) => String(o.value) === String(value));
     return (
       <select className={SELECT} value={known ? String(value) : ''}
@@ -136,23 +141,24 @@ function ScalarInput({ leaf, value, onChange, choices, placeholder }: {
       </select>
     );
   }
-  return <FreeScalarInput leaf={leaf} value={value} onChange={onChange} placeholder={placeholder} />;
+  return <FreeScalarInput leaf={leaf} value={value} onChange={onChange} placeholder={placeholder} pattern={pattern} />;
 }
 
 /** A typed free input; the value leaves on blur or Enter (remounted on a new value). */
-function FreeScalarInput({ leaf, value, onChange, placeholder }: {
-  leaf: LeafDef; value: Scalar | undefined; onChange: (v: Scalar | undefined) => void; placeholder?: string;
+function FreeScalarInput({ leaf, value, onChange, placeholder, pattern = false }: {
+  leaf: LeafDef; value: Scalar | undefined; onChange: (v: Scalar | undefined) => void; placeholder?: string; pattern?: boolean;
 }) {
   const numeric = leaf.type === 'num' || leaf.type === 'int' || leaf.type === 'int[]' || leaf.type === 'bits';
+  const shown = pattern ? patternToText(value) : value == null ? '' : String(value);
   return (
     <input
-      key={value == null ? '' : String(value)}
+      key={shown}
       type={numeric ? 'number' : 'text'}
       step={leaf.type === 'num' ? 'any' : 1}
       className={`${INPUT} ${numeric ? 'w-24' : 'w-40'}`}
-      defaultValue={value == null ? '' : String(value)}
-      placeholder={placeholder ?? (leaf.type === 'ts' ? '2026-01-01' : leaf.unit ?? '')}
-      onBlur={(e) => onChange(parseScalar(e.target.value, leaf))}
+      defaultValue={shown}
+      placeholder={placeholder ?? (pattern ? 'contains…' : leaf.type === 'ts' ? '2026-01-01' : leaf.unit ?? '')}
+      onBlur={(e) => onChange(pattern ? textToPattern(e.target.value) : parseScalar(e.target.value, leaf))}
       onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
     />
   );
@@ -161,7 +167,7 @@ function FreeScalarInput({ leaf, value, onChange, placeholder }: {
 /** A set of toggles for a bitmask or a multi-valued choice. */
 function PickMany({ options, selected, onChange }: { options: ChoiceOption[]; selected: Set<string>; onChange: (next: Set<string>) => void }) {
   return (
-    <div className="flex flex-wrap gap-1">
+    <span className="inline-flex flex-wrap gap-1">
       {options.map((o) => {
         const on = selected.has(String(o.value));
         return (
@@ -172,7 +178,7 @@ function PickMany({ options, selected, onChange }: { options: ChoiceOption[]; se
           </button>
         );
       })}
-    </div>
+    </span>
   );
 }
 
@@ -214,7 +220,7 @@ function ValueEditor({ leaf, op, value, onChange, choices }: {
   }
   return (
     <span className="inline-flex items-center gap-1">
-      <ScalarInput leaf={leaf} value={value as Scalar | undefined} choices={choices} onChange={(v) => onChange(v)} />
+      <ScalarInput leaf={leaf} value={value as Scalar | undefined} choices={choices} onChange={(v) => onChange(v)} pattern={op === 'ilike'} />
       {leaf.unit && leaf.type !== 'text' && <span className="text-xs text-text-tertiary">{leaf.unit}</span>}
     </span>
   );
@@ -230,18 +236,18 @@ function PredicateRow({ node, table, onChange, choices }: {
   const ops = OPS_BY_TYPE[leaf.type];
   const setColumn = (col: string) => {
     const next = columns[col];
-    const op = ops.includes(node.op) && OPS_BY_TYPE[next.type].includes(node.op) ? node.op : defaultOp(next);
+    const op = OPS_BY_TYPE[next.type].includes(node.op) ? node.op : defaultOp(next);
     const v = defaultValue(next, op, choices);
     onChange(v === undefined ? { col, op } : { col, op, v });
   };
   const setOp = (op: TreeOp) => {
-    const sameShape = opArity(op) === opArity(node.op) && opArity(op) !== 'none';
+    const sameShape = opArity(op) === opArity(node.op) && opArity(op) !== 'none' && !(op === 'ilike' || node.op === 'ilike');
     const v = sameShape ? node.v : defaultValue(leaf, op, choices);
     onChange(v === undefined ? { col: node.col, op } : { col: node.col, op, v });
   };
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
-      <select className={SELECT} value={node.col in columns ? node.col : DEFAULT_COLUMN[table]} onChange={(e) => setColumn(e.target.value)}>
+      <select className={`${SELECT} font-medium`} value={node.col in columns ? node.col : DEFAULT_COLUMN[table]} onChange={(e) => setColumn(e.target.value)}>
         {Object.entries(columns).map(([col, def]) => <option key={col} value={col}>{def.label}</option>)}
       </select>
       <select className={SELECT} value={node.op} onChange={(e) => setOp(e.target.value as TreeOp)}>
@@ -254,69 +260,53 @@ function PredicateRow({ node, table, onChange, choices }: {
 }
 
 function ConeRow({ node, onChange }: { node: ConeNode; onChange: (n: ConeNode) => void }) {
-  const num = (v: number, set: (n: number) => void, w = 'w-28', step = 'any') => (
-    <input type="number" step={step} className={`${INPUT} ${w}`} defaultValue={v} key={v}
+  const num = (v: number, set: (n: number) => void, w = 'w-28') => (
+    <input type="number" step="any" className={`${INPUT} ${w}`} defaultValue={v} key={v}
       onBlur={(e) => { const n = Number(e.target.value); if (Number.isFinite(n)) set(n); }}
       onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} />
   );
   const c = node.cone;
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5 text-sm text-text-secondary">
-      within {num(c.radius, (radius) => onChange({ cone: { ...c, radius: Math.min(10, Math.max(1e-6, radius)) } }), 'w-24')}
-      <span className="text-xs text-text-tertiary">deg of</span>
+      <span className="font-medium text-text-primary">within</span>
+      {num(+(c.radius * 60).toPrecision(6), (arcmin) => onChange({ cone: { ...c, radius: Math.min(10, Math.max(1e-6, arcmin / 60)) } }), 'w-20')}
+      <span className="text-xs text-text-tertiary">arcmin of</span>
       RA {num(c.ra, (ra) => onChange({ cone: { ...c, ra } }))}
       Dec {num(c.dec, (dec) => onChange({ cone: { ...c, dec } }))}
     </span>
   );
 }
 
-/** The menu that appends a node to a list in scope of `table`. */
-function AddMenu({ table, onAdd, choices, label = 'Add condition', allowGroups = true }: {
-  table: TreeTable; onAdd: (n: TreeNode) => void; choices: ConditionChoices; label?: string; allowGroups?: boolean;
+/** A native select styled as a button: never clipped by a scrolling parent. */
+function AddSelect({ table, onAdd, choices, label, allowGroups = true, className = ADD }: {
+  table: TreeTable; onAdd: (n: TreeNode) => void; choices: ConditionChoices; label: string; allowGroups?: boolean; className?: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const add = (n: TreeNode) => { onAdd(n); setOpen(false); };
   return (
-    <div className="relative inline-block">
-      <button type="button" onClick={() => setOpen((o) => !o)} className={GHOST}>
-        <Plus className="w-3.5 h-3.5" />{label}<ChevronDown className="w-3 h-3" />
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute z-20 mt-1 min-w-[220px] bg-card border border-border rounded-lg shadow-lg py-1 text-sm">
-            <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-card-hover text-text-primary" onClick={() => add(defaultPredicate(table, choices))}>
-              A property of the {TABLE_NOUN[table].singular}
-            </button>
-            {CORRELATIONS[table].map((child) => (
-              <button key={child} type="button" className="w-full text-left px-3 py-1.5 hover:bg-card-hover text-text-primary"
-                onClick={() => add({ exists: child, where: [defaultPredicate(child, choices)] })}>
-                {TABLE_NOUN[child].exists.replace(/ where$/, '')} …
-              </button>
-            ))}
-            {hasSkyPosition(table) && (
-              <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-card-hover text-text-primary"
-                onClick={() => add({ cone: { ra: 150.1, dec: 2.2, radius: 1 / 60 } })}>
-                Within a cone on the sky
-              </button>
-            )}
-            {allowGroups && (
-              <>
-                <div className="my-1 border-t border-border" />
-                <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-card-hover text-text-primary"
-                  onClick={() => add({ or: [defaultPredicate(table, choices), defaultPredicate(table, choices)] })}>
-                  Any of … (OR)
-                </button>
-                <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-card-hover text-text-primary"
-                  onClick={() => add({ and: [defaultPredicate(table, choices), defaultPredicate(table, choices)] })}>
-                  All of … (AND)
-                </button>
-              </>
-            )}
-          </div>
-        </>
-      )}
-    </div>
+    <select className={className} value="" onChange={(e) => {
+      const v = e.target.value;
+      if (v === 'prop') onAdd(defaultPredicate(table, choices));
+      else if (v.startsWith('exists:')) { const child = v.slice(7) as TreeTable; onAdd({ exists: child, where: [defaultPredicate(child, choices)] }); }
+      else if (v === 'cone') onAdd({ cone: { ra: 150.1, dec: 2.2, radius: 1 / 60 } });
+      else if (v === 'or') onAdd({ or: [defaultPredicate(table, choices), defaultPredicate(table, choices)] });
+      else if (v === 'and') onAdd({ and: [defaultPredicate(table, choices), defaultPredicate(table, choices)] });
+    }}>
+      <option value="">{label}</option>
+      <option value="prop">A property of the {TABLE_NOUN[table].singular}</option>
+      {CORRELATIONS[table].map((child) => (
+        <option key={child} value={`exists:${child}`}>{TABLE_NOUN[child].exists.replace(/ where$/, '')} …</option>
+      ))}
+      {hasSkyPosition(table) && <option value="cone">Within a cone on the sky</option>}
+      {allowGroups && <option value="or">Any of … (OR)</option>}
+      {allowGroups && <option value="and">All of … (AND)</option>}
+    </select>
+  );
+}
+
+function Remove({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="shrink-0 p-1 rounded text-text-tertiary hover:text-text-primary hover:bg-card-hover" aria-label="Remove">
+      <X className="w-3.5 h-3.5" />
+    </button>
   );
 }
 
@@ -333,9 +323,7 @@ function NodeList({ nodes, table, onChange, choices, joiner, depth }: {
           <div className="flex-1 min-w-0">
             <NodeEditor node={node} table={table} onChange={(n) => replace(i, n)} choices={choices} depth={depth} />
           </div>
-          <button type="button" onClick={() => remove(i)} className="shrink-0 p-1 mt-0.5 rounded text-text-tertiary hover:text-text-primary hover:bg-card-hover" aria-label="Remove">
-            <X className="w-3.5 h-3.5" />
-          </button>
+          <Remove onClick={() => remove(i)} />
         </div>
       ))}
     </div>
@@ -347,27 +335,27 @@ function NodeEditor({ node, table, onChange, choices, depth }: {
 }) {
   if (isPredicate(node)) return <PredicateRow node={node} table={table} onChange={onChange} choices={choices} />;
   if (isCone(node)) return <ConeRow node={node} onChange={onChange} />;
-  if (isExists(node)) return <ExistsEditor node={node} table={table} onChange={onChange} choices={choices} depth={depth} />;
+  if (isExists(node)) return <ExistsEditor node={node} onChange={onChange} choices={choices} depth={depth} />;
   const group = node as AndNode | OrNode;
   const children = isAnd(group) ? group.and : group.or;
   const joiner = isAnd(group) ? 'and' : 'or';
   const set = (next: TreeNode[]) => onChange(isAnd(group) ? { and: next } : { or: next });
   return (
     <div className="rounded-lg border border-border bg-surface-2/40 p-2">
-      <div className="flex items-center justify-between mb-1.5">
-        <select className={SELECT} value={joiner} onChange={(e) => onChange(e.target.value === 'and' ? { and: children } : { or: children })}>
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <select className={`${SELECT} font-medium`} value={joiner} onChange={(e) => onChange(e.target.value === 'and' ? { and: children } : { or: children })}>
           <option value="and">all of</option>
           <option value="or">any of</option>
         </select>
-        {depth < 4 && <AddMenu table={table} choices={choices} label="Add" onAdd={(n) => set([...children, n])} />}
+        {depth < 4 && <AddSelect table={table} choices={choices} label="+ Add" onAdd={(n) => set([...children, n])} />}
       </div>
       <NodeList nodes={children} table={table} onChange={set} choices={choices} joiner={joiner} depth={depth + 1} />
     </div>
   );
 }
 
-function ExistsEditor({ node, table, onChange, choices, depth }: {
-  node: ExistsNode; table: TreeTable; onChange: (n: ExistsNode) => void; choices: ConditionChoices; depth: number;
+function ExistsEditor({ node, onChange, choices, depth }: {
+  node: ExistsNode; onChange: (n: ExistsNode) => void; choices: ConditionChoices; depth: number;
 }) {
   const where = node.where ?? [];
   const set = (next: TreeNode[]) => {
@@ -377,71 +365,65 @@ function ExistsEditor({ node, table, onChange, choices, depth }: {
     onChange(out);
   };
   const noun = TABLE_NOUN[node.exists].exists.replace(/ where$/, '');
+  // simple clauses (predicates, cones) read inline; anything nested below
+  const inline = where.filter((w) => isPredicate(w) || isCone(w));
+  const nested = where.filter((w) => !(isPredicate(w) || isCone(w)));
+  const replaceWhere = (target: TreeNode, next: TreeNode) => set(where.map((w) => (w === target ? next : w)));
+  const removeWhere = (target: TreeNode) => set(where.filter((w) => w !== target));
   return (
-    <div className="rounded-lg border border-border bg-surface-2/40 p-2">
-      <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
-        <select className={SELECT} value={node.not ? 'not' : 'has'}
+    <div className={`rounded-lg border border-border p-2 ${node.not ? 'bg-red-500/5' : 'bg-surface-2/40'}`}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <select className={`${SELECT} font-medium`} value={node.not ? 'not' : 'has'}
           onChange={(e) => { const out: ExistsNode = { exists: node.exists, ...(where.length ? { where } : {}) }; if (e.target.value === 'not') out.not = true; onChange(out); }}>
           <option value="has">{noun}</option>
           <option value="not">{negateExists(noun)}</option>
         </select>
-        <select className={SELECT} value={node.exists}
-          onChange={(e) => { const child = e.target.value as TreeTable; onChange({ exists: child, where: [defaultPredicate(child, choices)], ...(node.not ? { not: true } : {}) }); }}>
-          {CORRELATIONS[table].map((child) => <option key={child} value={child}>{TABLE_NOUN[child].singular}</option>)}
-        </select>
         {where.length > 0 && <span className="text-sm text-text-secondary">where</span>}
-        <span className="ml-auto">
-          {depth < 4 && <AddMenu table={node.exists} choices={choices} label="And" onAdd={(n) => set([...where, n])} />}
-        </span>
+        {inline.map((w, i) => (
+          <React.Fragment key={i}>
+            {i > 0 && <span className="text-[11px] uppercase tracking-wider text-text-tertiary">and</span>}
+            <span className="inline-flex items-center gap-0.5">
+              {isCone(w)
+                ? <ConeRow node={w} onChange={(n) => replaceWhere(w, n)} />
+                : <PredicateRow node={w as PredicateNode} table={node.exists} onChange={(n) => replaceWhere(w, n)} choices={choices} />}
+              <Remove onClick={() => removeWhere(w)} />
+            </span>
+          </React.Fragment>
+        ))}
+        {depth < 4 && <AddSelect table={node.exists} choices={choices} label="+ and" onAdd={(n) => set([...where, n])} />}
       </div>
-      {where.length > 0 && <NodeList nodes={where} table={node.exists} onChange={set} choices={choices} joiner="and" depth={depth + 1} />}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------- the zone
-
-const TEMPLATES: { label: string; make: (root: TreeRoot) => TreeNode }[] = [
-  { label: 'A line with S/N ≥ 5', make: () => ({ exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'CIII1908' }, { col: 'snr', op: 'gte', v: 5 }] }) },
-  { label: 'Either of two lines', make: () => ({ or: [
-    { exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'OIII5007' }, { col: 'snr', op: 'gte', v: 3 }] },
-    { exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'Ha' }, { col: 'snr', op: 'gte', v: 3 }] },
-  ] }) },
-  { label: 'Brighter than 25 AB in a band', make: () => ({ exists: 'photometry', where: [{ col: 'band', op: 'eq', v: 'f444w' }, { col: 'mag', op: 'lte', v: 25 }] }) },
-  { label: 'No G395M spectrum', make: (root) => (root === 'spectra'
-    ? { exists: 'targets', where: [{ exists: 'spectra', not: true, where: [{ col: 'grating', op: 'eq', v: 'G395M' }] }] }
-    : { exists: 'spectra', not: true, where: [{ col: 'grating', op: 'eq', v: 'G395M' }] }) },
-];
-
-export function ConditionsEditor({ root, conditions, onChange, choices }: ConditionsEditorProps) {
-  const [templatesOpen, setTemplatesOpen] = useState(false);
-  const stableChoices = useMemo(() => choices, [choices]);
-  return (
-    <div>
-      {conditions.length > 0 && (
-        <div className="mb-2">
-          <NodeList nodes={conditions} table={root} onChange={onChange} choices={stableChoices} joiner="and" depth={0} />
+      {nested.length > 0 && (
+        <div className="mt-1.5 pl-2">
+          <NodeList nodes={nested} table={node.exists} onChange={(next) => set([...inline, ...next])} choices={choices} joiner="and" depth={depth + 1} />
         </div>
       )}
-      <div className="flex flex-wrap items-center gap-2">
-        <AddMenu table={root} choices={stableChoices} onAdd={(n) => onChange([...conditions, n])} />
-        <div className="relative inline-block">
-          <button type="button" onClick={() => setTemplatesOpen((o) => !o)} className={GHOST}>Examples<ChevronDown className="w-3 h-3" /></button>
-          {templatesOpen && (
-            <>
-              <div className="fixed inset-0 z-10" onClick={() => setTemplatesOpen(false)} />
-              <div className="absolute z-20 mt-1 min-w-[220px] bg-card border border-border rounded-lg shadow-lg py-1 text-sm">
-                {TEMPLATES.map((t) => (
-                  <button key={t.label} type="button" className="w-full text-left px-3 py-1.5 hover:bg-card-hover text-text-primary"
-                    onClick={() => { onChange([...conditions, t.make(root)]); setTemplatesOpen(false); }}>
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- the tree
+
+export interface TreeEditorProps {
+  root: TreeRoot;
+  conditions: TreeNode[];
+  onChange: (conditions: TreeNode[]) => void;
+  choices: ConditionChoices;
+}
+
+/** The whole tree, its root nodes ANDed. */
+export function TreeEditor({ root, conditions, onChange, choices }: TreeEditorProps) {
+  return (
+    <div>
+      {conditions.length > 0 ? (
+        <NodeList nodes={conditions} table={root} onChange={onChange} choices={choices} joiner="and" depth={0} />
+      ) : (
+        <p className="text-sm text-text-tertiary">No conditions. Every {TABLE_NOUN[root].singular} the catalog shows you.</p>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <AddSelect table={root} choices={choices} label="+ Add condition" onAdd={(n) => onChange([...conditions, n])} />
       </div>
     </div>
   );
 }
+
+export { AddSelect, choiceOptions };

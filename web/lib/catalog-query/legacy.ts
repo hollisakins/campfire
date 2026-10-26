@@ -10,7 +10,7 @@
  * user pastes from the API docs lands in the pills where it can, and the
  * rest stays a condition.
  */
-import type { FilterOptions } from '@/lib/actions/filter-params';
+import { DEFAULT_FILTERS, type FilterOptions } from '@/lib/actions/filter-params';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
 import { isFilterableLine } from '@/lib/linelist';
 import { encodeBitmask } from '@/lib/flags';
@@ -289,20 +289,78 @@ function liftOne(node: TreeNode, root: TreeRoot, f: Slot): Slot | null {
   return null;
 }
 
+/** What the tree holds as pills: the lifted slots, the nodes that fed them, and the rest. */
+export interface LiftResult {
+  filters: FilterOptions;
+  /** For each lifted node, its index in the input and the slot keys it filled. */
+  lifted: { index: number; keys: (keyof FilterOptions)[] }[];
+  residual: TreeNode[];
+}
+
+/**
+ * The pills a tree holds (phase 3b: the tree is the state, the pills read and
+ * write its canonical nodes). Each root node that is one of the pills' own
+ * shapes fills that pill when it is still empty; the rest is residual.
+ */
+export function liftTree(nodes: TreeNode[], root: TreeRoot, base: FilterOptions = DEFAULT_FILTERS): LiftResult {
+  let filters: FilterOptions = { ...base, conditions: [] };
+  const lifted: LiftResult['lifted'] = [];
+  const residual: TreeNode[] = [];
+  nodes.forEach((node, index) => {
+    const slot = liftOne(node, root, filters);
+    if (slot) {
+      filters = { ...filters, ...slot };
+      lifted.push({ index, keys: Object.keys(slot) as (keyof FilterOptions)[] });
+    } else {
+      residual.push(node);
+    }
+  });
+  return { filters: { ...filters, conditions: residual }, lifted, residual };
+}
+
 /**
  * Conditions a shared link carries, lifted into the pills they belong to
- * (when those pills are empty); what does not lift stays a condition. The
- * result is `filters` with the lifted slots set and `conditions` the rest.
+ * (when those pills are empty); what does not lift stays a condition.
  */
 export function liftConditions(nodes: TreeNode[], filters: FilterOptions, root: TreeRoot): FilterOptions {
-  let out: FilterOptions = { ...filters };
-  const rest: TreeNode[] = [];
-  for (const node of nodes) {
-    const slot = liftOne(node, root, out);
-    if (slot) out = { ...out, ...slot };
-    else rest.push(node);
-  }
-  return { ...out, conditions: [...(out.conditions ?? []), ...rest] };
+  const { filters: out } = liftTree(nodes, root, filters);
+  return { ...out, conditions: [...(filters.conditions ?? []), ...out.conditions] };
+}
+
+/**
+ * The filter state as the server reads it: whatever of the tree the legacy
+ * RPC parameters can carry moves into their slots, so a tree made only of
+ * pill shapes takes the legacy path and only a real residual needs the tree.
+ */
+export function normalizeFilters(filters: Partial<FilterOptions> | undefined, root: TreeRoot): FilterOptions {
+  const full: FilterOptions = { ...DEFAULT_FILTERS, ...(filters ?? {}) };
+  return liftConditions(full.conditions ?? [], { ...full, conditions: [] }, root);
+}
+
+/** The pill values a tree holds, read for the filter bar's chips. */
+export function slotFilters(nodes: TreeNode[], root: TreeRoot): FilterOptions {
+  return liftTree(nodes, root).filters;
+}
+
+/**
+ * The tree with the given pills set: the nodes that fed the patched slots are
+ * replaced (in place, the first one's position) by the patch's own nodes, or
+ * removed when the patch clears the pill.
+ */
+export function setSlots(nodes: TreeNode[], patch: Partial<FilterOptions>, root: TreeRoot): TreeNode[] {
+  const keys = new Set(Object.keys(patch) as (keyof FilterOptions)[]);
+  const { lifted } = liftTree(nodes, root);
+  const drop = new Set<number>();
+  for (const l of lifted) if (l.keys.some((k) => keys.has(k))) drop.add(l.index);
+  const fresh = legacyNodes(patch, root);
+  const out: TreeNode[] = [];
+  let placed = false;
+  nodes.forEach((node, i) => {
+    if (!drop.has(i)) { out.push(node); return; }
+    if (!placed) { out.push(...fresh); placed = true; }
+  });
+  if (!placed) out.push(...fresh);
+  return out;
 }
 
 export type { ExistsNode };

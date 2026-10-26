@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { CATALOGUE, CORRELATIONS, OPS_BY_TYPE, TREE_TABLES } from './catalogue';
 import { describeNode, encodeConditions, parseConditions, rerootNodes, validateNode, type TreeNode } from './tree';
-import { activeLineOf, distanceReferenceOf, filterNodes, legacyNodes, liftConditions } from './legacy';
+import { activeLineOf, distanceReferenceOf, filterNodes, legacyNodes, liftConditions, normalizeFilters, setSlots, slotFilters } from './legacy';
 import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
 import { filtersToURLParams, parseFiltersFromURL } from '@/lib/utils/url-params';
 
@@ -136,26 +136,37 @@ describe('free conditions', () => {
   const line: TreeNode = { exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'OIII5007' }, { col: 'snr', op: 'gte', v: 3 }, { col: 'component', op: 'eq', v: 'narrow' }] };
   const either: TreeNode = { or: [line, { exists: 'photometry', where: [{ col: 'band', op: 'eq', v: 'f444w' }, { col: 'mag', op: 'lte', v: 24 }] }] };
 
-  it('round-trip through ?q= beside the pills', () => {
-    const filters = { ...DEFAULT_FILTERS, redshift_min: 5, conditions: [either] };
+  it('is the state: the URL carries the tree, older links read as nodes', () => {
+    const filters = { ...DEFAULT_FILTERS, conditions: [{ col: 'redshift', op: 'gte', v: 5 } as TreeNode, either] };
     const params = filtersToURLParams(filters, 1, 50, 'object_id', 'asc', 'objects');
-    expect(params.get('z_min')).toBe('5');
-    expect(JSON.parse(params.get('q')!)).toEqual(either);
+    expect(params.has('z_min')).toBe(false);
+    expect(JSON.parse(params.get('q')!)).toEqual({ and: filters.conditions });
     expect(parseFiltersFromURL(params)).toEqual(filters);
-    const two = filtersToURLParams({ ...DEFAULT_FILTERS, conditions: [line, either] }, 1, 50, 'object_id', 'asc', 'objects');
-    expect(JSON.parse(two.get('q')!)).toEqual({ and: [line, either] });
-    expect(parseFiltersFromURL(two).conditions).toEqual([line, either]);
+    const one = filtersToURLParams({ ...DEFAULT_FILTERS, conditions: [either] }, 1, 50, 'object_id', 'asc', 'objects');
+    expect(JSON.parse(one.get('q')!)).toEqual(either);
     expect(encodeConditions([])).toBeNull();
+    // a pill a caller still carries in its legacy slot is folded into the tree
+    const folded = filtersToURLParams({ ...DEFAULT_FILTERS, fields: ['cosmos'], conditions: [line] }, 1, 50, 'object_id', 'asc', 'objects');
+    expect(JSON.parse(folded.get('q')!)).toEqual({ and: [{ col: 'field', op: 'in', v: ['cosmos'] }, line] });
+    // an older link: its parameters lead, then its q
+    const old = parseFiltersFromURL(new URLSearchParams({ programs: 'jades,ceers', z_min: '4', quality: '3,4', q: JSON.stringify(line) }));
+    expect(old.conditions).toEqual([
+      { exists: 'targets', where: [{ col: 'program_slug', op: 'in', v: ['jades', 'ceers'] }] },
+      { col: 'redshift_quality', op: 'in', v: [3, 4] },
+      { col: 'redshift', op: 'gte', v: 4 },
+      line,
+    ]);
+    expect(old.programs).toEqual([]);
   });
 
-  it('lifts a tree pasted from the API into the pills it fits, and keeps the rest', () => {
+  it('normalizes into the pills the legacy RPCs take, and keeps the rest', () => {
     const q = JSON.stringify({ v: 1, and: [
       { col: 'redshift', op: 'gte', v: 4.9 },
       { exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'CIII1908' }, { col: 'snr', op: 'gte', v: 5 }] },
       line,
       { exists: 'spectra', where: [{ col: 'grating', op: 'in', v: ['G395M'] }] },
     ] });
-    const f = parseFiltersFromURL(new URLSearchParams({ q }));
+    const f = normalizeFilters(parseFiltersFromURL(new URLSearchParams({ q })), 'objects');
     expect(f.redshift_min).toBe(4.9);
     expect(f.line).toBe('CIII1908');
     expect(f.line_snr_min).toBe(5);
@@ -170,13 +181,38 @@ describe('free conditions', () => {
       line,
     ]);
     // a node the pill holds exactly is the pill: `> 4.9` is not `≥ 4.9`, so it stays a condition
-    const strict = parseFiltersFromURL(new URLSearchParams({ q: '{"col":"redshift","op":"gt","v":4.9}' }));
+    const strict = normalizeFilters(parseFiltersFromURL(new URLSearchParams({ q: '{"col":"redshift","op":"gt","v":4.9}' })), 'objects');
     expect(strict.redshift_min).toBeNull();
     expect(strict.conditions).toEqual([{ col: 'redshift', op: 'gt', v: 4.9 }]);
+    // a second node of the same pill shape stays a condition too (ANDed)
+    const twice = normalizeFilters({ ...DEFAULT_FILTERS, conditions: [{ col: 'field', op: 'in', v: ['a'] }, { col: 'field', op: 'in', v: ['b'] }] }, 'objects');
+    expect(twice.fields).toEqual(['a']);
+    expect(twice.conditions).toEqual([{ col: 'field', op: 'in', v: ['b'] }]);
+  });
+
+  it('lets the pills read and write their own node of the tree', () => {
+    const lineCut: TreeNode = { exists: 'lines', where: [{ col: 'line', op: 'eq', v: 'OIII5007' }, { col: 'snr', op: 'gte', v: 3 }] };
+    let tree: TreeNode[] = [lineCut];
+    tree = setSlots(tree, { programs: ['jades'] }, 'objects');
+    expect(tree).toEqual([lineCut, { exists: 'targets', where: [{ col: 'program_slug', op: 'in', v: ['jades'] }] }]);
+    tree = setSlots(tree, { redshift_min: 4, redshift_max: null }, 'objects');
+    expect(slotFilters(tree, 'objects').programs).toEqual(['jades']);
+    expect(slotFilters(tree, 'objects').redshift_min).toBe(4);
+    // the line node is the Line pill's own shape, so it reads as that pill (stale fits admitted)
+    expect(slotFilters(tree, 'objects').line).toBe('OIII5007');
+    expect(slotFilters(tree, 'objects').line_include_stale).toBe(true);
+    expect(slotFilters(tree, 'objects').conditions).toEqual([]);
+    // rewriting a pill replaces its node in place; clearing it removes the node
+    tree = setSlots(tree, { programs: ['jades', 'ceers'] }, 'objects');
+    expect(tree[1]).toEqual({ exists: 'targets', where: [{ col: 'program_slug', op: 'in', v: ['jades', 'ceers'] }] });
+    tree = setSlots(tree, { programs: [] }, 'objects');
+    expect(tree).toEqual([lineCut, { col: 'redshift', op: 'gte', v: 4 }]);
+    // a line pill the modal adds is a node like any other: two lines are two nodes
+    expect(slotFilters([lineCut, lineCut], 'objects').conditions).toEqual([lineCut]);
   });
 
   it('drops an unreadable q whole', () => {
-    expect(parseFiltersFromURL(new URLSearchParams({ q: '{"col":"passwd","op":"eq","v":1}', z_min: '2' })).redshift_min).toBe(2);
+    expect(parseFiltersFromURL(new URLSearchParams({ q: '{"col":"passwd","op":"eq","v":1}', z_min: '2' })).conditions).toEqual([{ col: 'redshift', op: 'gte', v: 2 }]);
     expect(parseFiltersFromURL(new URLSearchParams({ q: 'not json' })).conditions).toEqual([]);
     expect(parseFiltersFromURL(new URLSearchParams({ q: '{"and":[{"col":"redshift","op":"gt","v":1},{"col":"nope","op":"gt","v":1}]}' })).conditions).toEqual([]);
     expect(parseConditions('{"v":2,"and":[{"col":"redshift","op":"gt","v":1}]}', 'objects')).toBeNull();
@@ -184,7 +220,7 @@ describe('free conditions', () => {
 
   it('read against the view root from the URL', () => {
     const f = parseFiltersFromURL(new URLSearchParams({ view: 'spectra', q: '{"col":"signal_to_noise","op":"gte","v":5}' }));
-    expect(f.max_snr_min).toBe(5);
+    expect(normalizeFilters(f, 'spectra').max_snr_min).toBe(5);
     expect(parseFiltersFromURL(new URLSearchParams({ q: '{"col":"signal_to_noise","op":"gte","v":5}' })).conditions).toEqual([]);
   });
 

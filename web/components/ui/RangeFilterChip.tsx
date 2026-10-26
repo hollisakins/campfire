@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { ChevronDown, X } from 'lucide-react';
+import { Popover, isInsidePopover } from './Popover';
 
 interface QuickRange {
   label: string;
@@ -48,7 +49,7 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+      if (!isInsidePopover(event.target, containerRef.current)) {
         setIsOpen(false);
       }
     };
@@ -120,7 +121,7 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-[280px] bg-card border border-border rounded-lg shadow-lg p-4">
+        <Popover anchorRef={containerRef} open={isOpen} className="w-[280px] bg-card border border-border rounded-lg shadow-lg p-4">
           <div className="space-y-4">
             {/* Range inputs */}
             <div className="flex items-center gap-2">
@@ -199,7 +200,7 @@ export const RangeFilterChip: React.FC<RangeFilterChipProps> = ({
               </button>
             </div>
           </div>
-        </div>
+        </Popover>
       )}
     </div>
   );

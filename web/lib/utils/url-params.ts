@@ -8,7 +8,8 @@ import type { SortColumn, SortDirection, ViewMode } from '@/lib/actions/spectra-
 import { VALID_SORT_COLUMNS, isValidSortColumn, defaultSortColumn } from '@/lib/actions/spectra-types';
 import { isFilterableLine } from '@/lib/linelist';
 import { encodeConditions, parseConditions } from '@/lib/catalog-query/tree';
-import { liftConditions, rootOf } from '@/lib/catalog-query/legacy';
+import { filterNodes, legacyNodes, rootOf } from '@/lib/catalog-query/legacy';
+import { DEFAULT_FILTERS } from '@/lib/actions/filter-params';
 
 // Valid search scope values
 const VALID_SEARCH_SCOPES: SearchScope[] = ['target_id', 'my_comments', 'all_comments'];
@@ -20,10 +21,10 @@ const VALID_FILTER_MODES: FilterMode[] = ['any', 'all', 'none'];
 export const DEFAULT_PAGE_SIZE = 50;
 
 /**
- * Parse filter options from URL search parameters. `q` carries the predicate
- * tree's free conditions (phase 3b), read against the view's root; nodes
- * that are one of the pills' own shapes land in that pill when it is empty,
- * so a tree pasted from the API docs shows up in the familiar controls.
+ * Parse filter options from URL search parameters. The tree is the state
+ * (phase 3b): `q` carries it, read against the view's root, and the legacy
+ * parameters of an older link (`programs=`, `z_min=`, `line=`, …) become its
+ * leading nodes. Only the search box lives outside the tree.
  */
 export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilterOptions {
   const parseArray = (key: string): string[] => {
@@ -114,8 +115,13 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): AdvancedFilt
   };
   // an unreadable q is dropped whole rather than half-applied
   const root = rootOf(parseViewModeFromURL(searchParams));
-  const conditions = parseConditions(searchParams.get('q'), root);
-  return conditions ? liftConditions(conditions, filters, root) : filters;
+  const conditions = parseConditions(searchParams.get('q'), root) ?? [];
+  return {
+    ...DEFAULT_FILTERS,
+    search: filters.search,
+    search_scope: filters.search_scope,
+    conditions: [...legacyNodes(filters, root), ...conditions],
+  };
 }
 
 /**
@@ -168,92 +174,11 @@ export function filtersToURLParams(
 ): URLSearchParams {
   const params = new URLSearchParams();
 
-  if (filters.programs.length > 0) {
-    params.set('programs', filters.programs.join(','));
-  }
-  if (filters.fields.length > 0) {
-    params.set('fields', filters.fields.join(','));
-  }
-  if (filters.gratings.length > 0) {
-    params.set('gratings', filters.gratings.join(','));
-  }
-  if (filters.observations.length > 0) {
-    params.set('observations', filters.observations.join(','));
-  }
-  if (filters.redshift_quality.length > 0) {
-    params.set('quality', filters.redshift_quality.join(','));
-  }
-  if (filters.coordinate_search !== null) {
-    params.set('coord_ra', filters.coordinate_search.ra.toString());
-    params.set('coord_dec', filters.coordinate_search.dec.toString());
-    params.set('coord_radius', filters.coordinate_search.radius.toString());
-    params.set('coord_unit', filters.coordinate_search.radius_unit);
-  }
-  if (filters.redshift_min !== null) {
-    params.set('z_min', filters.redshift_min.toString());
-  }
-  if (filters.redshift_max !== null) {
-    params.set('z_max', filters.redshift_max.toString());
-  }
-  if (filters.max_snr_min !== null) {
-    params.set('snr_min', filters.max_snr_min.toString());
-  }
-  if (filters.max_snr_max !== null) {
-    params.set('snr_max', filters.max_snr_max.toString());
-  }
-  if (filters.max_exposure_time_min !== null) {
-    params.set('exp_min', filters.max_exposure_time_min.toString());
-  }
-  if (filters.max_exposure_time_max !== null) {
-    params.set('exp_max', filters.max_exposure_time_max.toString());
-  }
-  // The S/N bounds and the stale toggle only mean something with a line.
-  if (filters.line) {
-    params.set('line', filters.line);
-    if (filters.line_snr_min !== null) {
-      params.set('line_snr_min', filters.line_snr_min.toString());
-    }
-    if (filters.line_snr_max !== null) {
-      params.set('line_snr_max', filters.line_snr_max.toString());
-    }
-    if (filters.line_include_stale) {
-      params.set('line_stale', 'true');
-    }
-  }
-  // The magnitude and S/N windows only mean something with a band.
-  if (filters.band) {
-    params.set('band', filters.band);
-    if (filters.band_mag_min !== null) {
-      params.set('band_mag_min', filters.band_mag_min.toString());
-    }
-    if (filters.band_mag_max !== null) {
-      params.set('band_mag_max', filters.band_mag_max.toString());
-    }
-    if (filters.band_snr_min !== null) {
-      params.set('band_snr_min', filters.band_snr_min.toString());
-    }
-    if (filters.band_snr_max !== null) {
-      params.set('band_snr_max', filters.band_snr_max.toString());
-    }
-  }
-  if (filters.list_ids.length > 0) {
-    params.set('tags', filters.list_ids.join(','));
-  }
-  const q = encodeConditions(filters.conditions ?? []);
+  // the whole filter state is the tree (any pill a caller still carries in
+  // its legacy slot is folded in)
+  const q = encodeConditions(filterNodes(filters, rootOf(viewMode)));
   if (q) {
     params.set('q', q);
-  }
-  if (filters.dq_flags.length > 0) {
-    params.set('dq_flags', filters.dq_flags.join(','));
-  }
-  if (filters.inspected_only !== null) {
-    params.set('inspected', filters.inspected_only.toString());
-  }
-  if (filters.needs_review !== null) {
-    params.set('needs_review', filters.needs_review.toString());
-  }
-  if (filters.has_photometry !== null) {
-    params.set('has_photometry', filters.has_photometry.toString());
   }
   if (filters.search) {
     params.set('search', filters.search);
@@ -261,16 +186,6 @@ export function filtersToURLParams(
   // Only include search_scope if not default
   if (filters.search_scope && filters.search_scope !== 'target_id') {
     params.set('scope', filters.search_scope);
-  }
-  // Only include filter modes if not default ('any') and filter is active
-  if (filters.gratings.length > 0 && filters.gratings_mode && filters.gratings_mode !== 'any') {
-    params.set('gratings_mode', filters.gratings_mode);
-  }
-  if (filters.dq_flags.length > 0 && filters.dq_flags_mode && filters.dq_flags_mode !== 'any') {
-    params.set('dq_flags_mode', filters.dq_flags_mode);
-  }
-  if (filters.list_ids.length > 0 && filters.list_ids_mode && filters.list_ids_mode !== 'any') {
-    params.set('tags_mode', filters.list_ids_mode);
   }
   // Only include pagination params if not default values
   if (page > 1) {

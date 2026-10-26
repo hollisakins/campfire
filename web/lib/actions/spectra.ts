@@ -7,7 +7,7 @@ import { getRequestIdentity } from '@/lib/auth/identity';
 import { paginateRpc } from '@/lib/supabase/paginate';
 import type { SpectrumTarget, Spectrum, ObjectDetail, PinnedObjectMetadata } from '@/lib/types';
 import { buildFilterParams } from './filter-params';
-import { activeBandOf, activeLineOf, distanceReferenceOf, hasTreeConditions, rootOf } from '@/lib/catalog-query/legacy';
+import { activeBandOf, activeLineOf, distanceReferenceOf, hasTreeConditions, normalizeFilters, rootOf } from '@/lib/catalog-query/legacy';
 import { filterTree, matchFilterIds, treeRejection } from '@/lib/server/catalog-query';
 import type { FilterOptions } from './filter-params';
 export type { FilterOptions, FilterMode } from './filter-params';
@@ -96,6 +96,10 @@ export async function getSpectra(
       };
     }
 
+    // the tree is the state: what its pills' nodes say moves into the legacy
+    // parameters, and only a real residual needs the tree path
+    const root = rootOf(viewMode);
+    filters = normalizeFilters(filters, root);
     const rpcParams = buildFilterParams(filters, accessibleProgramSlugs, user.id);
 
     // The tree path (phase 3b): while the state carries free conditions the
@@ -103,7 +107,6 @@ export async function getSpectra(
     // list RPC the ids. The pills' line / band / position then only drive
     // the Line S/N, Mag and distance columns and sorts.
     const treePath = hasTreeConditions(filters);
-    const root = rootOf(viewMode);
     const rpcName = treePath
       ? (viewMode === 'spectra' ? 'catalog_query_spectra' : 'catalog_query_objects')
       : (viewMode === 'spectra' ? 'get_filtered_spectra_paginated' : 'get_filtered_objects_paginated');
@@ -595,6 +598,7 @@ export async function getInspectionQueueIds(
       return { ids: [] };
     }
 
+    filters = normalizeFilters(filters, 'objects');
     const hasQualityFilter = filters?.redshift_quality && filters.redshift_quality.length > 0;
     const qualityFilter = hasQualityFilter ? filters!.redshift_quality : [0];
 

@@ -5,8 +5,9 @@ import { useRouter } from 'next/navigation';
 import { X, Search, ChevronDown, SlidersHorizontal, Map } from 'lucide-react';
 import { FilterChip, FilterOption } from '@/components/ui/FilterChip';
 import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
-import { AdvancedFiltersPanel, advancedFilterCount } from './AdvancedFiltersPanel';
+import { AdvancedFiltersPanel, BAR_SLOT_KEYS } from './AdvancedFiltersPanel';
 import { rerootNodes } from '@/lib/catalog-query/tree';
+import { liftTree, rootOf, setSlots } from '@/lib/catalog-query/legacy';
 import { REDSHIFT_QUALITY } from '@/lib/flags';
 import { filtersToURLParams } from '@/lib/utils/url-params';
 import type { Program } from '@/lib/types';
@@ -115,12 +116,15 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     setScopeDropdownOpen(false);
   };
 
-  const updateFilter = <K extends keyof AdvancedFilterOptions>(
-    key: K,
-    value: AdvancedFilterOptions[K]
-  ) => {
-    onFiltersChange({ ...filters, [key]: value });
-  };
+  // The tree is the state (phase 3b): each pill reads its own node of the
+  // tree and writes it back; the Advanced badge counts the other nodes.
+  const root = rootOf(viewMode);
+  const lift = liftTree(filters.conditions, root);
+  const slots = lift.filters;
+  const patch = (p: Partial<AdvancedFilterOptions>) =>
+    onFiltersChange({ ...filters, conditions: setSlots(filters.conditions, p, root) });
+  const updateFilter = <K extends keyof AdvancedFilterOptions>(key: K, value: AdvancedFilterOptions[K]) =>
+    patch({ [key]: value } as Partial<AdvancedFilterOptions>);
 
   // Sort programs by max JWST PID (ascending), then convert to filter options
   const sortedPrograms = [...availablePrograms].sort((a, b) => {
@@ -154,20 +158,11 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
     color: q.color,
   }));
 
-  // Count the filters only the Advanced modal shows (its badge)
-  const panelFilterCount = advancedFilterCount(filters);
+  // The nodes of the tree this bar does not show as a pill: the Advanced badge
+  const barNodes = new Set(lift.lifted.filter((l) => l.keys.some((k) => BAR_SLOT_KEYS.includes(k))).map((l) => l.index));
+  const panelFilterCount = filters.conditions.length - barNodes.size;
 
-  // Check if any filters are active (including panel filters)
-  const hasActiveFilters =
-    filters.programs.length > 0 ||
-    filters.fields.length > 0 ||
-    filters.observations.length > 0 ||
-    filters.redshift_quality.length > 0 ||
-    filters.redshift_min !== null ||
-    filters.redshift_max !== null ||
-    filters.needs_review !== null ||
-    filters.search.length > 0 ||
-    panelFilterCount > 0;
+  const hasActiveFilters = filters.conditions.length > 0 || filters.search.length > 0;
 
   const handleClearAll = () => {
     setLocalSearch('');
@@ -176,30 +171,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
 
   const clearPanelFilters = (e: React.MouseEvent) => {
     e.stopPropagation();
-    onFiltersChange({
-      ...filters,
-      coordinate_search: null,
-      gratings: [],
-      gratings_mode: 'any',
-      max_snr_min: null,
-      max_snr_max: null,
-      max_exposure_time_min: null,
-      max_exposure_time_max: null,
-      line: null,
-      line_snr_min: null,
-      line_snr_max: null,
-      line_include_stale: false,
-      band: null,
-      band_mag_min: null,
-      band_mag_max: null,
-      band_snr_min: null,
-      band_snr_max: null,
-      list_ids: [],
-      list_ids_mode: 'any',
-      dq_flags: [],
-      dq_flags_mode: 'any',
-      conditions: [],
-    });
+    onFiltersChange({ ...filters, conditions: filters.conditions.filter((_, i) => barNodes.has(i)) });
   };
 
   return (
@@ -262,7 +234,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         <FilterChip
           label="Program"
           options={programOptions}
-          selected={filters.programs}
+          selected={slots.programs}
           onChange={(selected) => updateFilter('programs', selected as string[])}
           searchable
           footerLink={{ label: "Browse all programs", href: "/nirspec/metadata" }}
@@ -272,7 +244,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         <FilterChip
           label="Field"
           options={fieldOptions}
-          selected={filters.fields}
+          selected={slots.fields}
           onChange={(selected) => updateFilter('fields', selected as string[])}
           searchable
         />
@@ -281,7 +253,7 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         <FilterChip
           label="Observation"
           options={observationOptions}
-          selected={filters.observations}
+          selected={slots.observations}
           onChange={(selected) => updateFilter('observations', selected as string[])}
           searchable
           footerLink={{ label: "Browse all programs", href: "/nirspec/metadata" }}
@@ -293,11 +265,9 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         {/* Redshift range filter */}
         <RangeFilterChip
           label="Redshift"
-          min={filters.redshift_min}
-          max={filters.redshift_max}
-          onChange={(min, max) => {
-            onFiltersChange({ ...filters, redshift_min: min, redshift_max: max });
-          }}
+          min={slots.redshift_min}
+          max={slots.redshift_max}
+          onChange={(min, max) => patch({ redshift_min: min, redshift_max: max })}
           minBound={0}
           maxBound={15}
           step={0.1}
@@ -308,12 +278,12 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
         <FilterChip
           label="Quality"
           options={qualityOptions}
-          selected={filters.redshift_quality}
+          selected={slots.redshift_quality}
           onChange={(selected) => updateFilter('redshift_quality', selected as number[])}
           shortcut={{ label: 'All inspected', values: INSPECTED_QUALITY_VALUES }}
           extraCheckbox={{
             label: 'Needs review only',
-            checked: filters.needs_review === true,
+            checked: slots.needs_review === true,
             onChange: (checked) => updateFilter('needs_review', checked ? true : null),
           }}
         />
@@ -359,8 +329,8 @@ export const SpectraFilterBar: React.FC<SpectraFilterBarProps> = ({
               : filters;
             const filterParams = filtersToURLParams(mapFilters);
             // If exactly one field is selected, also set it as the map field param
-            if (filters.fields.length === 1) {
-              filterParams.set('field', filters.fields[0]);
+            if (slots.fields.length === 1) {
+              filterParams.set('field', slots.fields[0]);
             }
             const qs = filterParams.toString();
             router.push(`/map${qs ? `?${qs}` : ''}`);

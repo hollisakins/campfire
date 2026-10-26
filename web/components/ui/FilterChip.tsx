@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChevronDown, X, Check, Search, HelpCircle } from 'lucide-react';
 import Link from 'next/link';
+import { Popover, isInsidePopover } from './Popover';
 
 export interface FilterOption {
   value: string | number;
@@ -101,7 +102,7 @@ interface FilterChipProps {
   shortcut?: ShortcutButton;
   searchable?: boolean;
   footerLink?: FooterLink;
-  /** Direction dropdown opens. Default 'bottom'. Use 'top' when chip is near bottom of viewport. */
+  /** Kept for callers; the dropdown now places itself from the viewport. */
   dropdownPlacement?: 'bottom' | 'top';
   /** Optional toggleable checkbox rendered below the options list, for filters that are
    *  conceptually related to the main filter but aren't one of its discrete values. */
@@ -119,7 +120,6 @@ export const FilterChip: React.FC<FilterChipProps> = ({
   shortcut,
   searchable = false,
   footerLink,
-  dropdownPlacement = 'bottom',
   extraCheckbox,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -130,7 +130,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+      if (!isInsidePopover(event.target, containerRef.current)) {
         setIsOpen(false);
       }
     };
@@ -226,8 +226,10 @@ export const FilterChip: React.FC<FilterChipProps> = ({
 
       {/* Dropdown */}
       {isOpen && !disabled && (
-        <div
-          className={`absolute z-50 ${dropdownPlacement === 'top' ? 'bottom-full mb-1' : 'mt-1'} ${searchable ? 'min-w-[280px] max-w-[360px]' : 'min-w-[200px] max-w-[280px]'} bg-card border border-border rounded-lg shadow-lg`}
+        <Popover
+          anchorRef={containerRef}
+          open={isOpen}
+          className={`${searchable ? 'min-w-[280px] max-w-[360px]' : 'min-w-[200px] max-w-[280px]'} bg-card border border-border rounded-lg shadow-lg`}
         >
           {/* Search input */}
           {searchable && (
@@ -356,7 +358,7 @@ export const FilterChip: React.FC<FilterChipProps> = ({
               </Link>
             </div>
           )}
-        </div>
+        </Popover>
       )}
     </div>
   );
