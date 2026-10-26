@@ -17,7 +17,7 @@ DECLARE
     ['spectra',                 'dr_spectra',          ''],
     ['targets',                 'dr_targets',          ''],
     ['objects',                 'dr_objects',          'evidence_programs,z_source_spectrum_id'],
-    ['spectrum_line_fits',      'dr_line_fits',        'stale_redshift,stale_spectrum'],
+    ['spectrum_line_fits',      'dr_line_fits',        'stale_spectrum'],  -- stale_redshift is live since phase 2a
     ['spectrum_lines',          'dr_spectrum_lines',   ''],
     ['object_photometry',       'dr_photometry',       ''],
     ['object_photometry_bands', 'dr_photometry_bands', ''],

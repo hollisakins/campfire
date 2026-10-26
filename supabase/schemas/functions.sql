@@ -721,7 +721,8 @@ WITH (security_invoker = true) AS
          fitted_at,
          created_at,
          updated_at,
-         spectrum_science_hash
+         spectrum_science_hash,
+         stale_redshift
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
@@ -755,7 +756,8 @@ WITH (security_invoker = true) AS
            fitted_at,
            created_at,
            updated_at,
-           spectrum_science_hash
+           spectrum_science_hash,
+           stale_redshift
     FROM public.spectrum_line_fits
     UNION ALL
     SELECT 'dr'::text AS cat_src,
@@ -790,7 +792,8 @@ WITH (security_invoker = true) AS
            fitted_at,
            created_at,
            updated_at,
-           spectrum_science_hash
+           spectrum_science_hash,
+           stale_redshift
     FROM public.dr_line_fits
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
@@ -816,7 +819,8 @@ WITH (security_invoker = true) AS
          ew_rest,
          ew_rest_err,
          flags,
-         blend_into
+         blend_into,
+         object_id
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
@@ -830,7 +834,8 @@ WITH (security_invoker = true) AS
            ew_rest,
            ew_rest_err,
            flags,
-           blend_into
+           blend_into,
+           object_id
     FROM public.spectrum_lines
     UNION ALL
     SELECT 'dr'::text AS cat_src,
@@ -845,7 +850,8 @@ WITH (security_invoker = true) AS
            ew_rest,
            ew_rest_err,
            flags,
-           blend_into
+           blend_into,
+           object_id
     FROM public.dr_spectrum_lines
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
@@ -934,7 +940,8 @@ WITH (security_invoker = true) AS
          flux_err,
          wav,
          snr,
-         mag
+         mag,
+         object_id
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
@@ -944,7 +951,8 @@ WITH (security_invoker = true) AS
            flux_err,
            wav,
            snr,
-           mag
+           mag,
+           object_id
     FROM public.object_photometry_bands
     UNION ALL
     SELECT 'dr'::text AS cat_src,
@@ -955,7 +963,8 @@ WITH (security_invoker = true) AS
            flux_err,
            wav,
            snr,
-           mag
+           mag,
+           object_id
     FROM public.dr_photometry_bands
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
@@ -1711,35 +1720,31 @@ LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = public
 ROWS 2000
 AS $$
-  SELECT t.object_id, max(l.snr)
+  SELECT l.object_id, max(l.snr)
   FROM public.cat_spectrum_lines l
   -- unique-key lookups, pinned with LIMIT 1 (see the plan-shape note above)
   CROSS JOIN LATERAL (
-    SELECT f.program_slug, f.object_version, f.z_quality, f.z_used
+    SELECT f.program_slug, f.stale_redshift
     FROM public.cat_line_fits f WHERE f.spectrum_id = l.spectrum_id LIMIT 1
   ) f
   CROSS JOIN LATERAL (
-    SELECT s.target_id, s.program_slug, s.observation, s.deploy_status
+    SELECT s.program_slug, s.observation, s.deploy_status
     FROM public.cat_spectra s WHERE s.id = l.spectrum_id LIMIT 1
   ) s
+  -- phase 2a: the line row carries its object; no target hop, and staleness
+  -- is a stored column of the fit, not a join clause between fit and object
   CROSS JOIN LATERAL (
-    SELECT t.object_id
-    FROM public.cat_targets t WHERE t.target_id = s.target_id LIMIT 1
-  ) t
-  CROSS JOIN LATERAL (
-    SELECT o.version, o.redshift_quality, o.redshift, o.programs,
-           o.has_published_spectrum, o.observations, o.is_active
-    FROM public.cat_objects o WHERE o.id = t.object_id LIMIT 1
+    SELECT o.programs, o.has_published_spectrum, o.observations, o.is_active
+    FROM public.cat_objects o WHERE o.id = l.object_id LIMIT 1
   ) o
   WHERE p_line IS NOT NULL
     AND l.line = p_line
     AND l.snr IS NOT NULL
+    AND l.object_id IS NOT NULL
     -- Gate 1: the caller's access-checked scope (what the RPCs apply themselves).
     AND f.program_slug = ANY(p_program_slugs)
     AND (p_include_unpublished OR s.deploy_status = 'published')
-    AND (p_include_stale OR NOT public.line_fit_stale_redshift(
-           o.version, o.redshift_quality, (o.redshift)::double precision,
-           f.object_version, f.z_quality, f.z_used))
+    AND (p_include_stale OR NOT f.stale_redshift)
     -- Gate 2a: verbatim select_spectra_by_access (policies.sql) for every
     -- caller except the service role (the JWT role claim, the same test the
     -- deploy-side RPCs use; NOT auth.uid() IS NULL, which an `authenticated`
@@ -1770,7 +1775,7 @@ AS $$
            OR ((SELECT NOT public.is_link_account())
                AND public.dr_browse_tag() = ANY ((SELECT public.dr_visible_tags())::text[])))
     ))
-  GROUP BY t.object_id
+  GROUP BY l.object_id
   HAVING (p_snr_min IS NULL OR max(l.snr) >= p_snr_min)
      AND (p_snr_max IS NULL OR max(l.snr) <= p_snr_max);
 $$;
@@ -1821,16 +1826,13 @@ AS $$
   SELECT l.spectrum_id
   FROM public.cat_spectrum_lines l
   JOIN public.cat_line_fits f ON f.spectrum_id = l.spectrum_id
-  JOIN public.cat_spectra s ON s.id = l.spectrum_id
-  LEFT JOIN public.cat_targets t ON t.target_id = s.target_id
-  LEFT JOIN public.cat_objects o ON o.id = t.object_id
   WHERE l.line = p_line
     AND l.snr IS NOT NULL
     AND (p_snr_min IS NULL OR l.snr >= p_snr_min)
     AND (p_snr_max IS NULL OR l.snr <= p_snr_max)
-    AND (p_include_stale OR o.id IS NULL OR NOT public.line_fit_stale_redshift(
-           o.version, o.redshift_quality, (o.redshift)::double precision,
-           f.object_version, f.z_quality, f.z_used));
+    -- phase 2a: stored on the fit (false when the fit has no object, which
+    -- is what the old `o.id IS NULL OR NOT stale(...)` form meant)
+    AND (p_include_stale OR NOT f.stale_redshift);
 $$;
 
 GRANT EXECUTE ON FUNCTION public.spectra_matching_line_filter(TEXT, DOUBLE PRECISION, DOUBLE PRECISION, BOOLEAN) TO authenticated;
@@ -1951,12 +1953,13 @@ LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = public
 ROWS 20000
 AS $$
-  SELECT p.object_id, min(b.mag), max(b.snr)
+  SELECT b.object_id, min(b.mag), max(b.snr)
   FROM public.cat_photometry_bands b
-  JOIN public.cat_photometry p ON p.id = b.photometry_id
-  JOIN public.cat_objects o ON o.id = p.object_id
+  -- phase 2a: the band row carries its object; no cross-match hop
+  JOIN public.cat_objects o ON o.id = b.object_id
   WHERE p_band IS NOT NULL
     AND b.band = p_band
+    AND b.object_id IS NOT NULL
     -- Gate 1: the caller's access-checked scope (what the RPCs apply themselves).
     AND o.programs && p_program_slugs
     AND (p_include_unpublished OR o.has_published_spectrum)
@@ -1978,7 +1981,7 @@ AS $$
            OR ((SELECT NOT public.is_link_account())
                AND public.dr_browse_tag() = ANY ((SELECT public.dr_visible_tags())::text[])))
     ))
-  GROUP BY p.object_id
+  GROUP BY b.object_id
   HAVING (p_mag_min IS NULL OR min(b.mag) >= p_mag_min)
      AND (p_mag_max IS NULL OR min(b.mag) <= p_mag_max)
      AND (p_snr_min IS NULL OR max(b.snr) >= p_snr_min)
@@ -10498,9 +10501,10 @@ BEGIN
     ins_lines AS (
       INSERT INTO dr_line_fits (tag, spectrum_id, target_id, grating, program_slug, observation, z_used, z_source, z_quality, object_id, object_version, z_fit, z_fit_err, dv, dv_err, sigma_v, sigma_v_err, kin_source, n_lines, n_detected, n_broad, chi2, dof, lines, fit_version, cfpipe_version, f_lsf, spectrum_hash, spectrum_science_hash, fitted_at, created_at, updated_at, stale_redshift, stale_spectrum)
       SELECT p_tag, f.spectrum_id, f.target_id, f.grating, f.program_slug, f.observation, f.z_used, f.z_source, f.z_quality, f.object_id, f.object_version, f.z_fit, f.z_fit_err, f.dv, f.dv_err, f.sigma_v, f.sigma_v_err, f.kin_source, f.n_lines, f.n_detected, f.n_broad, f.chi2, f.dof, f.lines, f.fit_version, f.cfpipe_version, f.f_lsf, f.spectrum_hash, f.spectrum_science_hash, f.fitted_at, f.created_at, f.updated_at,
-             -- the spectrum_line_fits_status predicates, in this snapshot
-             (o.id IS NOT NULL AND line_fit_stale_redshift(o.version, o.redshift_quality,
-                 o.redshift::double precision, f.object_version, f.z_quality, f.z_used)),
+             -- stale_redshift is the live, trigger-maintained column since phase 2a
+             -- (copied like every other live column); stale_spectrum is still
+             -- evaluated in this snapshot
+             f.stale_redshift,
              line_fit_stale_spectrum(p.file_hash, p.science_hash, f.spectrum_hash, f.spectrum_science_hash)
       FROM spectrum_line_fits f
       JOIN pub p ON p.id = f.spectrum_id
@@ -10508,8 +10512,8 @@ BEGIN
       RETURNING 1
     ),
     ins_slines AS (
-      INSERT INTO dr_spectrum_lines (tag, spectrum_id, line, component, wave_rest, flux, flux_err, snr, ew_rest, ew_rest_err, flags, blend_into)
-      SELECT p_tag, l.spectrum_id, l.line, l.component, l.wave_rest, l.flux, l.flux_err, l.snr, l.ew_rest, l.ew_rest_err, l.flags, l.blend_into
+      INSERT INTO dr_spectrum_lines (tag, spectrum_id, line, component, wave_rest, flux, flux_err, snr, ew_rest, ew_rest_err, flags, blend_into, object_id)
+      SELECT p_tag, l.spectrum_id, l.line, l.component, l.wave_rest, l.flux, l.flux_err, l.snr, l.ew_rest, l.ew_rest_err, l.flags, l.blend_into, l.object_id
       FROM spectrum_lines l JOIN pub p ON p.id = l.spectrum_id
       RETURNING 1
     ),
@@ -10527,8 +10531,8 @@ BEGIN
       RETURNING 1
     ),
     ins_bands AS (
-      INSERT INTO dr_photometry_bands (tag, photometry_id, band, flux, flux_err, wav, snr, mag)
-      SELECT p_tag, b.photometry_id, b.band, b.flux, b.flux_err, b.wav, b.snr, b.mag
+      INSERT INTO dr_photometry_bands (tag, photometry_id, band, flux, flux_err, wav, snr, mag, object_id)
+      SELECT p_tag, b.photometry_id, b.band, b.flux, b.flux_err, b.wav, b.snr, b.mag, b.object_id
       FROM object_photometry_bands b JOIN phot ON phot.id = b.photometry_id
       RETURNING 1
     ),

@@ -225,7 +225,7 @@ BEGIN
   DELETE FROM public.spectrum_lines WHERE spectrum_id = NEW.spectrum_id;
   INSERT INTO public.spectrum_lines (
     spectrum_id, line, component, wave_rest, flux, flux_err, snr,
-    ew_rest, ew_rest_err, flags, blend_into
+    ew_rest, ew_rest_err, flags, blend_into, object_id
   )
   SELECT
     NEW.spectrum_id,
@@ -238,7 +238,11 @@ BEGIN
     (e.value ->> 'ew_rest')::double precision,
     (e.value ->> 'ew_rest_err')::double precision,
     COALESCE((e.value ->> 'flags')::integer, 0),
-    e.value ->> 'blend_into'
+    e.value ->> 'blend_into',
+    -- phase 2a: the object link, so a line row is addressable by object
+    (SELECT t.object_id FROM public.spectra s
+       JOIN public.targets t ON t.target_id = s.target_id
+      WHERE s.id = NEW.spectrum_id)
   FROM jsonb_each(NEW.lines) AS e
   WHERE jsonb_typeof(e.value) = 'object';
   RETURN NEW;
@@ -262,13 +266,14 @@ SET search_path = public
 AS $$
 BEGIN
   DELETE FROM public.object_photometry_bands WHERE photometry_id = NEW.id;
-  INSERT INTO public.object_photometry_bands (photometry_id, band, flux, flux_err, wav)
+  INSERT INTO public.object_photometry_bands (photometry_id, band, flux, flux_err, wav, object_id)
   SELECT
     NEW.id,
     e.key,
     (e.value ->> 'flux')::double precision,
     (e.value ->> 'flux_err')::double precision,
-    (e.value ->> 'wav')::double precision
+    (e.value ->> 'wav')::double precision,
+    NEW.object_id   -- phase 2a: the object link, copied from the cross-match
   FROM jsonb_each(COALESCE(NEW.photometry -> 'bands', '{}'::jsonb)) AS e
   WHERE jsonb_typeof(e.value) = 'object';
   RETURN NEW;
@@ -1168,3 +1173,189 @@ DROP TRIGGER IF EXISTS propagate_program_is_public_trigger ON public.programs;
 CREATE TRIGGER propagate_program_is_public_trigger
   AFTER INSERT OR UPDATE OF is_public ON public.programs
   FOR EACH ROW EXECUTE FUNCTION public.propagate_program_is_public();
+
+
+-- =============================================================================
+-- Measurement rows addressable by object (Catalog Read Model phase 2a)
+-- =============================================================================
+-- spectrum_lines.object_id and object_photometry_bands.object_id are copies
+-- of the object the row belongs to (targets.object_id through the spectrum;
+-- object_photometry.object_id through the cross-match), and
+-- spectrum_line_fits.stale_redshift is the stored value of
+-- line_fit_stale_redshift(object, fit). They let the catalog filters and the
+-- object page read one indexed table each instead of a three-hop join, and
+-- they are exact because every path that can move them is covered:
+--   * a line row is written            -> sync_spectrum_lines sets object_id
+--   * a fit row is written             -> compute_line_fit_stale (BEFORE) sets stale_redshift
+--   * a target regroups                -> relink_lines_from_targets (lines + stale)
+--   * a spectrum moves to a target     -> relink_lines_from_spectra (lines + stale)
+--   * an object is inspected / bumped  -> recompute_line_fit_stale_from_objects
+--   * a cross-match is re-matched      -> relink_bands_from_photometry
+--   * objects are rebuilt              -> the FKs' ON DELETE SET NULL, then the
+--                                         target re-point above
+-- An explicit write of stale_redshift is recomputed away by the BEFORE
+-- trigger; the two object_id columns are only writable by admins (the
+-- tables' insert/update policies) and are rewritten by the relinks.
+-- check_measurement_object_links.sql asserts each path and the catalog-wide
+-- invariants.
+
+DROP FUNCTION IF EXISTS public.compute_line_fit_stale CASCADE;
+CREATE OR REPLACE FUNCTION public.compute_line_fit_stale() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  NEW.stale_redshift := COALESCE(
+    (SELECT public.line_fit_stale_redshift(
+              o.version, o.redshift_quality, (o.redshift)::double precision,
+              NEW.object_version, NEW.z_quality, NEW.z_used)
+       FROM spectra s
+       JOIN targets t ON t.target_id = s.target_id
+       JOIN objects o ON o.id = t.object_id
+      WHERE s.id = NEW.spectrum_id),
+    false);
+  RETURN NEW;
+END;
+$$;
+
+-- Recompute stale_redshift for a set of spectra (their fits), writing only
+-- rows whose value changes. Called by the statement triggers below.
+DROP FUNCTION IF EXISTS public.recompute_line_fit_stale CASCADE;
+CREATE OR REPLACE FUNCTION public.recompute_line_fit_stale(p_spectrum_ids integer[]) RETURNS integer
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  n integer;
+BEGIN
+  IF p_spectrum_ids IS NULL OR cardinality(p_spectrum_ids) = 0 THEN
+    RETURN 0;
+  END IF;
+  UPDATE spectrum_line_fits f SET stale_redshift = v.stale
+    FROM (SELECT f2.spectrum_id,
+                 COALESCE(o.id IS NOT NULL AND public.line_fit_stale_redshift(
+                   o.version, o.redshift_quality, (o.redshift)::double precision,
+                   f2.object_version, f2.z_quality, f2.z_used), false) AS stale
+            FROM spectrum_line_fits f2
+            JOIN spectra s ON s.id = f2.spectrum_id
+            LEFT JOIN targets t ON t.target_id = s.target_id
+            LEFT JOIN objects o ON o.id = t.object_id
+           WHERE f2.spectrum_id = ANY(p_spectrum_ids)) v
+   WHERE v.spectrum_id = f.spectrum_id
+     AND f.stale_redshift IS DISTINCT FROM v.stale;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.relink_lines_from_targets CASCADE;
+CREATE OR REPLACE FUNCTION public.relink_lines_from_targets() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  -- statement trigger on every targets UPDATE (a transition table cannot be
+  -- combined with UPDATE OF): keep only the rows whose object changed
+  CREATE TEMP TABLE IF NOT EXISTS _moved_targets (target_id text) ON COMMIT DROP;
+  TRUNCATE _moved_targets;
+  INSERT INTO _moved_targets
+    SELECT n.target_id FROM new_rows n JOIN old_rows o ON o.id = n.id
+     WHERE o.object_id IS DISTINCT FROM n.object_id;
+  IF NOT EXISTS (SELECT 1 FROM _moved_targets) THEN RETURN NULL; END IF;
+  UPDATE spectrum_lines l SET object_id = t.object_id
+    FROM spectra s
+    JOIN _moved_targets m ON m.target_id = s.target_id
+    JOIN targets t ON t.target_id = s.target_id
+   WHERE l.spectrum_id = s.id
+     AND l.object_id IS DISTINCT FROM t.object_id;
+  PERFORM public.recompute_line_fit_stale(ARRAY(
+    SELECT s.id FROM spectra s JOIN _moved_targets m ON m.target_id = s.target_id));
+  RETURN NULL;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.relink_lines_from_spectra CASCADE;
+CREATE OR REPLACE FUNCTION public.relink_lines_from_spectra() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  -- statement trigger on every spectra UPDATE: keep the rows whose target changed
+  UPDATE spectrum_lines l SET object_id = t.object_id
+    FROM new_rows n
+    JOIN old_rows o ON o.id = n.id AND o.target_id IS DISTINCT FROM n.target_id
+    JOIN targets t ON t.target_id = n.target_id
+   WHERE l.spectrum_id = n.id
+     AND l.object_id IS DISTINCT FROM t.object_id;
+  PERFORM public.recompute_line_fit_stale(ARRAY(
+    SELECT n.id FROM new_rows n JOIN old_rows o ON o.id = n.id
+     WHERE o.target_id IS DISTINCT FROM n.target_id));
+  RETURN NULL;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.recompute_line_fit_stale_from_objects CASCADE;
+CREATE OR REPLACE FUNCTION public.recompute_line_fit_stale_from_objects() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  -- statement trigger on every objects UPDATE: keep the rows whose redshift,
+  -- quality or version changed (redshift is generated from the inspected /
+  -- auto values and the quality)
+  PERFORM public.recompute_line_fit_stale(ARRAY(
+    SELECT s.id
+      FROM new_rows n
+      JOIN old_rows o ON o.id = n.id
+       AND (o.version IS DISTINCT FROM n.version
+            OR o.redshift_quality IS DISTINCT FROM n.redshift_quality
+            OR o.redshift IS DISTINCT FROM n.redshift)
+      JOIN targets t ON t.object_id = n.id
+      JOIN spectra s ON s.target_id = t.target_id));
+  RETURN NULL;
+END;
+$$;
+
+DROP FUNCTION IF EXISTS public.relink_bands_from_photometry CASCADE;
+CREATE OR REPLACE FUNCTION public.relink_bands_from_photometry() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  UPDATE object_photometry_bands b SET object_id = NEW.object_id
+   WHERE b.photometry_id = NEW.id
+     AND b.object_id IS DISTINCT FROM NEW.object_id;
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS compute_line_fit_stale_trigger ON public.spectrum_line_fits;
+CREATE TRIGGER compute_line_fit_stale_trigger
+  BEFORE INSERT OR UPDATE ON public.spectrum_line_fits
+  FOR EACH ROW EXECUTE FUNCTION public.compute_line_fit_stale();
+
+DROP TRIGGER IF EXISTS relink_lines_from_targets_trigger ON public.targets;
+CREATE TRIGGER relink_lines_from_targets_trigger
+  AFTER UPDATE ON public.targets
+  REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.relink_lines_from_targets();
+
+DROP TRIGGER IF EXISTS relink_lines_from_spectra_trigger ON public.spectra;
+CREATE TRIGGER relink_lines_from_spectra_trigger
+  AFTER UPDATE ON public.spectra
+  REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.relink_lines_from_spectra();
+
+-- Fires on every objects UPDATE (a transition table cannot be combined with
+-- UPDATE OF); the function keeps only the rows whose redshift, quality or
+-- version changed, which inspection and reconciliation are the writers of.
+DROP TRIGGER IF EXISTS recompute_line_fit_stale_from_objects_trigger ON public.objects;
+CREATE TRIGGER recompute_line_fit_stale_from_objects_trigger
+  AFTER UPDATE ON public.objects
+  REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows
+  FOR EACH STATEMENT EXECUTE FUNCTION public.recompute_line_fit_stale_from_objects();
+
+DROP TRIGGER IF EXISTS relink_bands_from_photometry_trigger ON public.object_photometry;
+CREATE TRIGGER relink_bands_from_photometry_trigger
+  AFTER UPDATE OF object_id ON public.object_photometry
+  FOR EACH ROW EXECUTE FUNCTION public.relink_bands_from_photometry();
