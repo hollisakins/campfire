@@ -60,7 +60,8 @@ BEGIN
     ('test-ip-a',  'zzz_ip_field', 152.00, 2.00, 'zzz_ip_p', 'ip_obs_p', v_a),
     ('test-ip-b',  'zzz_ip_field', 152.01, 2.00, 'zzz_ip_q', 'ip_obs_q', v_b),
     ('test-ip-cp', 'zzz_ip_field', 152.02, 2.00, 'zzz_ip_p', 'ip_obs_p', v_c),
-    ('test-ip-cq', 'zzz_ip_field', 152.02, 2.00, 'zzz_ip_q', 'ip_obs_q', v_c);
+    ('test-ip-cq', 'zzz_ip_field', 152.02, 2.00, 'zzz_ip_q', 'ip_obs_q', v_c),
+    ('test-ip-a2', 'zzz_ip_field', 152.00, 2.01, 'zzz_ip_p', 'ip_obs_p', v_a);   -- P, no spectrum: the move target in 3b
   INSERT INTO spectra (target_id, grating, fits_path, signal_to_noise, exposure_time, deploy_status) VALUES
     ('test-ip-a',  'PRISM', '/tmp/ip_a_prism.fits',  10.0, 1000.0, 'published'),
     ('test-ip-b',  'PRISM', '/tmp/ip_b_prism.fits',  10.0, 1000.0, 'published'),
@@ -74,8 +75,8 @@ BEGIN
       (SELECT array_agg(object_id ORDER BY object_id) FROM objects WHERE is_public AND object_id LIKE 'TEST-IP-%');
   END IF;
   IF (SELECT array_agg(target_id ORDER BY target_id) FROM targets WHERE is_public AND target_id LIKE 'test-ip-%')
-     <> ARRAY['test-ip-a', 'test-ip-cp'] THEN
-    RAISE EXCEPTION 'targets.is_public at insert: want {a, cp}';
+     <> ARRAY['test-ip-a', 'test-ip-a2', 'test-ip-cp'] THEN
+    RAISE EXCEPTION 'targets.is_public at insert: want {a, a2, cp}';
   END IF;
   IF (SELECT array_agg(s.target_id ORDER BY s.target_id) FROM spectra s WHERE s.is_public AND s.target_id LIKE 'test-ip-%')
      <> ARRAY['test-ip-a', 'test-ip-cp'] THEN
@@ -112,6 +113,48 @@ BEGIN
   SELECT is_public INTO v_pub FROM objects WHERE id = v_d;
   IF NOT v_pub THEN RAISE EXCEPTION 'a program row created after an object named it must set the object public'; END IF;
 
+  -- 3b) The flag is trigger-owned: an explicit write is recomputed away, and a
+  --     spectrum that moves to another target follows the target's program
+  --     (the scope trigger rewrites program_slug in a BEFORE trigger, which an
+  --     UPDATE OF program_slug event alone would not see).
+  UPDATE objects SET is_public = true WHERE id = v_b;
+  SELECT is_public INTO v_pub FROM objects WHERE id = v_b;
+  IF v_pub THEN RAISE EXCEPTION 'an explicit write of objects.is_public must be recomputed from programs'; END IF;
+  UPDATE targets SET is_public = true WHERE target_id = 'test-ip-b';
+  SELECT is_public INTO v_pub FROM targets WHERE target_id = 'test-ip-b';
+  IF v_pub THEN RAISE EXCEPTION 'an explicit write of targets.is_public must be recomputed from programs'; END IF;
+  UPDATE spectra SET is_public = true WHERE fits_path = '/tmp/ip_b_prism.fits';
+  SELECT is_public INTO v_pub FROM spectra WHERE fits_path = '/tmp/ip_b_prism.fits';
+  IF v_pub THEN RAISE EXCEPTION 'an explicit write of spectra.is_public must be recomputed from programs'; END IF;
+  UPDATE spectra SET target_id = 'test-ip-a2' WHERE fits_path = '/tmp/ip_b_prism.fits';  -- Q target -> P target
+  SELECT is_public INTO v_pub FROM spectra WHERE fits_path = '/tmp/ip_b_prism.fits';
+  IF NOT v_pub THEN RAISE EXCEPTION 'a spectrum moved to a public-program target must become public'; END IF;
+  UPDATE spectra SET target_id = 'test-ip-b' WHERE fits_path = '/tmp/ip_b_prism.fits';   -- and back
+  SELECT is_public INTO v_pub FROM spectra WHERE fits_path = '/tmp/ip_b_prism.fits';
+  IF v_pub THEN RAISE EXCEPTION 'a spectrum moved back to a private-program target must become private'; END IF;
+
+  -- 3c) A non-admin inspector (the grantee holds Q and can_inspect) cannot
+  --     write the flag at all: the update-scope enforcers reject it.
+  PERFORM set_config('role', 'authenticated', true);
+  PERFORM set_config('request.jwt.claims',
+    json_build_object('sub', '00000000-0000-0000-0000-0000000000d3', 'role', 'authenticated')::text, true);
+  BEGIN
+    UPDATE objects SET is_public = true WHERE id = v_b;
+    RAISE EXCEPTION 'inspector: writing objects.is_public must be rejected';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM NOT LIKE 'Non-admin updates to objects%' THEN RAISE; END IF;
+  END;
+  BEGIN
+    UPDATE spectra SET is_public = true WHERE fits_path = '/tmp/ip_b_prism.fits';
+    RAISE EXCEPTION 'inspector: writing spectra.is_public must be rejected';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM NOT LIKE 'Non-admin updates to spectra%' THEN RAISE; END IF;
+  END;
+  PERFORM set_config('role', 'postgres', true);
+  IF (SELECT is_public FROM objects WHERE id = v_b) OR (SELECT is_public FROM spectra WHERE fits_path = '/tmp/ip_b_prism.fits') THEN
+    RAISE EXCEPTION 'inspector: a rejected write must leave the flag false';
+  END IF;
+
   -- 4) No widening: the policy gives each caller the scope array''s rows -----
   PERFORM set_config('role', 'authenticated', true);
   -- viewer: public programs only
@@ -122,7 +165,7 @@ BEGIN
     RAISE EXCEPTION 'viewer: objects must be {A, C, D}, got %', v_ids;
   END IF;
   IF (SELECT array_agg(target_id ORDER BY target_id) FROM targets WHERE target_id LIKE 'test-ip-%')
-     <> ARRAY['test-ip-a', 'test-ip-cp'] THEN
+     <> ARRAY['test-ip-a', 'test-ip-a2', 'test-ip-cp'] THEN
     RAISE EXCEPTION 'viewer: targets must be the P rows only';
   END IF;
   IF (SELECT array_agg(target_id ORDER BY target_id) FROM spectra WHERE target_id LIKE 'test-ip-%')
@@ -146,7 +189,7 @@ BEGIN
   PERFORM set_config('request.jwt.claims',
     json_build_object('sub', '00000000-0000-0000-0000-0000000000d1', 'role', 'authenticated')::text, true);
   IF (SELECT count(*) FROM objects WHERE object_id LIKE 'TEST-IP-%') <> 4
-     OR (SELECT count(*) FROM targets WHERE target_id LIKE 'test-ip-%') <> 4 THEN
+     OR (SELECT count(*) FROM targets WHERE target_id LIKE 'test-ip-%') <> 5 THEN
     RAISE EXCEPTION 'admin: must see every fixture row';
   END IF;
 

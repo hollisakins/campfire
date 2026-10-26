@@ -130,6 +130,7 @@ BEGIN
        OR OLD.staleness_reason IS DISTINCT FROM NEW.staleness_reason
        OR OLD.inspected_used_auto IS DISTINCT FROM NEW.inspected_used_auto
        OR OLD.is_active IS DISTINCT FROM NEW.is_active
+       OR OLD.is_public IS DISTINCT FROM NEW.is_public
        OR OLD.created_at IS DISTINCT FROM NEW.created_at
        OR OLD.search_text IS DISTINCT FROM NEW.search_text
     THEN
@@ -325,6 +326,7 @@ BEGIN
        OR OLD.created_at IS DISTINCT FROM NEW.created_at
        OR OLD.program_slug IS DISTINCT FROM NEW.program_slug
        OR OLD.observation IS DISTINCT FROM NEW.observation
+       OR OLD.is_public IS DISTINCT FROM NEW.is_public
     THEN
         RAISE EXCEPTION 'Non-admin updates to spectra may only change dq_flags'
             USING ERRCODE = '42501';  -- insufficient_privilege
@@ -1058,9 +1060,21 @@ CREATE TRIGGER protect_archive_rows_trigger
 -- array. Three triggers keep them exact: a BEFORE trigger on each table when
 -- its program reference changes, and an AFTER trigger on programs when a
 -- program's is_public flips (rare: `campfire config push --programs`), which
--- rewrites the rows of that program. Nothing else may write these columns.
+-- rewrites the rows of that program. Nothing else may write these columns:
+-- the BEFORE triggers also fire on an explicit write of is_public itself and
+-- recompute it, so a value supplied by any writer (PostgREST, a script, a
+-- mistaken deploy) is replaced by the truth before the row lands, and the
+-- update-scope enforcers reject the attempt for non-admins outright.
 -- SECURITY DEFINER: the row writer (an inspector's PostgREST update, the
 -- deploy's service-role upsert) need not be able to read programs.
+--
+-- Spectra: program_slug is itself derived, by sync_spectra_target_scope
+-- (BEFORE INSERT / UPDATE OF target_id, program_slug, observation), from the
+-- parent target. An UPDATE OF event matches the statement's SET list, not a
+-- column another BEFORE trigger rewrote, so the is_public trigger lists
+-- target_id too and relies on firing AFTER the scope trigger: BEFORE ROW
+-- triggers run in name order and 'sync_spectra_target_scope_trigger' sorts
+-- before 'sync_spectrum_is_public_trigger'. Keep both names.
 
 DROP FUNCTION IF EXISTS public.sync_object_is_public CASCADE;
 CREATE OR REPLACE FUNCTION public.sync_object_is_public() RETURNS trigger
@@ -1112,17 +1126,17 @@ $$;
 
 DROP TRIGGER IF EXISTS sync_object_is_public_trigger ON public.objects;
 CREATE TRIGGER sync_object_is_public_trigger
-  BEFORE INSERT OR UPDATE OF programs ON public.objects
+  BEFORE INSERT OR UPDATE OF programs, is_public ON public.objects
   FOR EACH ROW EXECUTE FUNCTION public.sync_object_is_public();
 
 DROP TRIGGER IF EXISTS sync_target_is_public_trigger ON public.targets;
 CREATE TRIGGER sync_target_is_public_trigger
-  BEFORE INSERT OR UPDATE OF program_slug ON public.targets
+  BEFORE INSERT OR UPDATE OF program_slug, is_public ON public.targets
   FOR EACH ROW EXECUTE FUNCTION public.sync_row_is_public();
 
 DROP TRIGGER IF EXISTS sync_spectrum_is_public_trigger ON public.spectra;
 CREATE TRIGGER sync_spectrum_is_public_trigger
-  BEFORE INSERT OR UPDATE OF program_slug ON public.spectra
+  BEFORE INSERT OR UPDATE OF target_id, program_slug, is_public ON public.spectra
   FOR EACH ROW EXECUTE FUNCTION public.sync_row_is_public();
 
 DROP TRIGGER IF EXISTS propagate_program_is_public_trigger ON public.programs;
