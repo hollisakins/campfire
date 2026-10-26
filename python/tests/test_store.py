@@ -680,7 +680,7 @@ class TestTombstonesAndScopedPurge:
              "photometry": {"bands": {}}, "updated_at": "2026-01-01T00:00:00Z"},
         ])
         assert store.delete_objects_by_ids([1]) == 1
-        left = store._conn.execute("SELECT object_id FROM object_photometry").fetchall()
+        left = store._conn.execute("SELECT object_id FROM catalog_matches").fetchall()
         assert [r["object_id"] for r in left] == ["CAMPFIRE-J0002+0002"]
 
     def test_delete_spectra_by_ids_drops_line_fits(self, store, sample_objects, sample_spectra):
@@ -693,7 +693,7 @@ class TestTombstonesAndScopedPurge:
              "updated_at": "2026-01-01T00:00:00Z"},
         ])
         assert store.delete_spectra_by_ids([10]) == 1
-        left = store._conn.execute("SELECT spectrum_id FROM spectrum_line_fits").fetchall()
+        left = store._conn.execute("SELECT spectrum_id FROM line_fits").fetchall()
         assert [r["spectrum_id"] for r in left] == [11]
 
     def test_storage_cursor_scoped_to_product_types(self, store, sample_storage_objects):

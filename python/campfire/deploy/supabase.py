@@ -1142,18 +1142,19 @@ def fetch_spectrum_ids(client: Client, pairs: list[tuple[str, str]]) -> dict[tup
 
 
 def batch_upsert_line_fits(client: Client, rows: list[dict], batch_size: int = 100) -> int:
-    """Upsert ``line_fits`` rows keyed on ``spectrum_id`` (one per spectrum).
+    """Write line fits through ``line_fits_upsert`` (Catalog Read Model phase 2c).
 
-    A re-fit replaces the whole row — the ``lines`` jsonb included — so a line
-    dropped from the catalog never lingers from an older fit. ``updated_at``
-    is bumped by trigger so the sync client's incremental cursor sees it.
+    Each row is the fit record ``build_line_fit_row`` builds plus ``spectrum_id``,
+    with its ``lines`` map; the RPC upserts the ``line_fits`` row on
+    ``spectrum_id`` and replaces the spectrum's ``lines`` rows in the same
+    transaction, so a line dropped from the catalog never lingers from an older
+    fit. ``updated_at`` is bumped by trigger so the sync client's incremental
+    cursor sees it.
     """
     if not rows:
         return 0
     for i in range(0, len(rows), batch_size):
-        client.table('line_fits').upsert(
-            rows[i:i + batch_size], on_conflict='spectrum_id'
-        ).execute()
+        client.rpc('line_fits_upsert', {'p_rows': rows[i:i + batch_size]}).execute()
     return len(rows)
 
 

@@ -368,7 +368,10 @@ def build_photometry_payload(
     flux_unit: str,
     max_flux_err: float | None = None,
 ) -> dict:
-    """Build JSONB payload for one object's photometry.
+    """Build the ``{flux_unit, bands}`` map for one object's photometry.
+
+    Sent to ``catalog_matches_upsert`` under the record's ``photometry`` key,
+    which writes one ``photometry`` row per band (Catalog Read Model phase 2c).
 
     band_config: mapping of band_name → {flux: col, err: col}
     max_flux_err: optional ceiling on the *catalog-unit* error; a band whose
@@ -935,16 +938,17 @@ def _fetch_field_objects(client: Client, field: str) -> list[dict]:
 
 
 def _upsert_photometry(client: Client, records: list[dict]) -> int:
-    """Batch-upsert photometry records on (field, catalog_name, catalog_id).
+    """Write cross-match records through ``catalog_matches_upsert`` (phase 2c).
 
+    Each record carries its ``photometry`` ``{flux_unit, bands}`` map; the RPC
+    upserts the ``catalog_matches`` row on (field, catalog_name, catalog_id)
+    and replaces the match's ``photometry`` rows in the same transaction.
     Returns count upserted.
     """
     total = 0
     for i in range(0, len(records), BATCH_SIZE):
         batch = records[i:i + BATCH_SIZE]
-        client.table('catalog_matches').upsert(
-            batch, on_conflict='field,catalog_name,catalog_id',
-        ).execute()
+        client.rpc('catalog_matches_upsert', {'p_rows': batch}).execute()
         total += len(batch)
     return total
 

@@ -120,8 +120,8 @@ INSERT INTO spectra (target_id, grating, fits_path, deploy_status) VALUES
   ('zzz-am-t-pub',  'PRISM', '/tmp/zzz_am_pub_spec.fits',  'published'),
   ('zzz-am-t-priv', 'PRISM', '/tmp/zzz_am_priv_spec.fits', 'published');
 
-INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, photometry)
-SELECT o.id, 'zzz_am_field', o.ra, o.dec, 'zzz_am_cat', '{}'::jsonb FROM objects o
+INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name)
+SELECT o.id, 'zzz_am_field', o.ra, o.dec, 'zzz_am_cat' FROM objects o
 WHERE o.object_id IN ('ZZZ-AM-PUB', 'ZZZ-AM-PRIV');
 
 INSERT INTO comments (user_id, content, object_id)

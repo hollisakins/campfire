@@ -47,7 +47,7 @@ reference/nirspec/<obs>/redshifts.toml        ← layout kind nirspec_redshifts 
 products/nirspec/<obs>/<base>_lines.fits      ← layout kind nirspec_lines (cloud product)
         │  campfire deploy --obs X  |  campfire deploy lines --obs X
         ▼
-line_fits (one row per spectrum, lines jsonb)  +  _lines.fits on OSN
+line_fits (one row per spectrum) + lines (one row per line)  +  _lines.fits on OSN
         │  /api/v1/sync/lines  →  campfire sync
         ▼
 meta/campfire.db + meta/lines.csv (wide)  →  Campfire.query_lines()
@@ -176,21 +176,24 @@ spectra upsert, writes one `line_fits` row per fitted spectrum; `campfire deploy
 lines --obs X` does the same for an already-deployed observation (re-publish after a re-fit
 without touching the spectra). Rows are keyed on `spectra.id` and replaced wholesale on
 every re-fit, so a line dropped from the catalog never lingers; a removed spectrum cascades.
-The per-line measurements are a `lines` jsonb keyed by line name — the same shape as
-`catalog_matches.photometry` — so adding a line to the catalog is a pipeline change, not
-a schema migration, and the sync client pivots it into wide columns.
+The per-line measurements are `lines` rows, one per (spectrum, line), with every field
+the pipeline measured (Catalog Read Model phase 2c; until then a `lines` jsonb on the fit
+row). Deploy still sends one record per spectrum with its `{line: record}` map, which the
+`line_fits_upsert` RPC writes as the fit row plus its `lines` rows in one transaction;
+adding a line to the catalog is a pipeline change, not a schema migration. The sync stream
+rebuilds the map from the rows (`lines_jsonb_of`), and the sync client pivots it into wide
+columns.
 
 Provenance columns on the row: `z_used, z_source, z_quality, object_id, object_version,
 fit_version, cfpipe_version, f_lsf, spectrum_hash, fitted_at`.
 
 ### 2.4 Catalog exposure
 
-**Portal filter and sort (`lines`).** The jsonb is unnested by the
-`sync_lines` trigger into `lines(spectrum_id, line, component, flux,
-flux_err, snr, ew_rest, ew_rest_err, flags, blend_into)`, primary key `(spectrum_id, line)`,
-with a partial index on `(line, snr DESC)`, so "all CIII] detections at S/N > 3" is one
-index range scan. The table is derived (never written by deploy; the FK cascades a dropped
-fit) and visible under the parent spectrum's RLS. Every RPC on the catalog filter contract
+**Portal filter and sort (`lines`).** `lines` carries primary key `(spectrum_id, line)`,
+the object link `object_id` (trigger-maintained) and a partial index on `(line, snr DESC)`,
+so "all CIII] detections at S/N > 3" is one index range scan. A re-fit replaces all of a
+spectrum's rows (the FK cascades a dropped fit) and the rows are visible under the parent
+spectrum's RLS. Every RPC on the catalog filter contract
 (`get_filtered_objects_paginated`, `get_filtered_spectra_paginated`,
 `get_filtered_object_ids`, `get_adjacent_objects`, `get_csv_export_*`) takes `p_line`,
 `p_line_snr_min`, `p_line_snr_max`, `p_line_include_stale` and the `line_snr` sort: the

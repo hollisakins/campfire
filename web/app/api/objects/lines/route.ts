@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { getRequestPrincipal } from '@/lib/auth/identity';
 import { requestDrTag } from '@/lib/dr/server';
 
-/** One catalog line's record in a fit (line_fits.lines[<name>]). */
+/** One catalog line's record in a fit: a cat_lines row, keyed by line name. */
 export interface ObjectLineRecord {
   label?: string;
   component: 'narrow' | 'broad' | 'doublet';
@@ -84,11 +84,18 @@ export async function GET(request: NextRequest) {
     // browsed. Staleness is the live status view's call for the live catalog,
     // and the flags the freeze computed in-snapshot (dr_line_fits.stale_*)
     // for a release (P6c-2).
+    // The per-line measurements are rows of cat_lines since Catalog Read Model
+    // phase 2c (the fit's jsonb blob is gone); the response keeps the
+    // {line: record} map the section renders.
     const dr = await requestDrTag();
-    const [fitsRes, statusRes] = await Promise.all([
+    const [fitsRes, linesRes, statusRes] = await Promise.all([
       principal.supabase
         .from('cat_line_fits')
-        .select('spectrum_id, target_id, grating, z_used, z_source, z_quality, z_fit, dv, sigma_v, kin_source, n_lines, n_detected, n_broad, fit_version, cfpipe_version, fitted_at, lines')
+        .select('spectrum_id, target_id, grating, z_used, z_source, z_quality, z_fit, dv, sigma_v, kin_source, n_lines, n_detected, n_broad, fit_version, cfpipe_version, fitted_at')
+        .in('spectrum_id', ids),
+      principal.supabase
+        .from('cat_lines')
+        .select('spectrum_id, line, label, component, wave_rest, wave_obs, flux, flux_err, snr, ew_rest, ew_rest_err, cont, cont_err, dv, dv_err, sigma_v, sigma_v_err, flags, blend_into, tied_to, members')
         .in('spectrum_id', ids),
       dr
         ? principal.supabase
@@ -104,6 +111,41 @@ export async function GET(request: NextRequest) {
     if (fitsRes.error) {
       console.error('object lines error:', fitsRes.error);
       return Response.json({ error: fitsRes.error.message }, { status: 500 });
+    }
+    if (linesRes.error) {
+      console.error('object lines rows error:', linesRes.error);
+      return Response.json({ error: linesRes.error.message }, { status: 500 });
+    }
+    const linesBySpectrum = new Map<number, Record<string, ObjectLineRecord>>();
+    for (const row of linesRes.data ?? []) {
+      const sid = row.spectrum_id as number;
+      let map = linesBySpectrum.get(sid);
+      if (!map) {
+        map = {};
+        linesBySpectrum.set(sid, map);
+      }
+      const rec: ObjectLineRecord = {
+        component: row.component as ObjectLineRecord['component'],
+        wave_rest: (row.wave_rest as number | null) ?? null,
+        wave_obs: (row.wave_obs as number | null) ?? null,
+        flux: (row.flux as number | null) ?? null,
+        flux_err: (row.flux_err as number | null) ?? null,
+        snr: (row.snr as number | null) ?? null,
+        ew_rest: (row.ew_rest as number | null) ?? null,
+        ew_rest_err: (row.ew_rest_err as number | null) ?? null,
+        cont: (row.cont as number | null) ?? null,
+        cont_err: (row.cont_err as number | null) ?? null,
+        dv: (row.dv as number | null) ?? null,
+        dv_err: (row.dv_err as number | null) ?? null,
+        sigma_v: (row.sigma_v as number | null) ?? null,
+        sigma_v_err: (row.sigma_v_err as number | null) ?? null,
+        flags: (row.flags as number | null) ?? 0,
+        blend_into: (row.blend_into as string | null) ?? null,
+        tied_to: (row.tied_to as string | null) ?? null,
+      };
+      if (row.label != null) rec.label = row.label as string;
+      if (row.members != null) rec.members = row.members as string[];
+      map[row.line as string] = rec;
     }
     // A failed staleness query must not silently report every fit as fresh.
     if (statusRes.error) {
@@ -138,7 +180,7 @@ export async function GET(request: NextRequest) {
         fitted_at: (row.fitted_at as string | null) ?? null,
         stale_redshift: st?.stale_redshift ?? false,
         stale_spectrum: st?.stale_spectrum ?? false,
-        lines: (row.lines ?? {}) as Record<string, ObjectLineRecord>,
+        lines: linesBySpectrum.get(row.spectrum_id as number) ?? {},
       };
     });
     const body: ObjectLinesResponse = { fits };

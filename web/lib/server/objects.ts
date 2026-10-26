@@ -6,7 +6,7 @@ import { requestDrTag } from '@/lib/dr/server';
 import { getRequestIdentity } from '@/lib/auth/identity';
 import { getAccessContext } from '@/lib/auth/access-context';
 import { createServiceClient } from '@/lib/supabase/service';
-import type { ObjectHeader, ObjectMemberTarget, ObjectPhotometry, Spectrum } from '@/lib/types';
+import type { ObjectHeader, ObjectMemberTarget, ObjectPhotometry, PhotometryBand, Spectrum } from '@/lib/types';
 
 /**
  * The object page's data, in the order the page needs it (perf T2-E, #510):
@@ -232,7 +232,7 @@ export async function loadObjectPhotometry(objectDbId: number): Promise<ObjectPh
     const { supabase } = await getRequestIdentity();
     const { data, error } = await supabase
       .from('cat_catalog_matches')
-      .select('catalog_name, catalog_id, match_distance_arcsec, photometry, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz')
+      .select('id, catalog_name, catalog_id, match_distance_arcsec, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz')
       .eq('object_id', objectDbId)
       .order('updated_at', { ascending: false })
       .limit(1)
@@ -242,11 +242,31 @@ export async function loadObjectPhotometry(objectDbId: number): Promise<ObjectPh
       return null;
     }
     if (!data) return null;
+    // The bands are rows of cat_photometry since Catalog Read Model phase 2c
+    // (the match's jsonb blob is gone); the SED keeps its {flux_unit, bands} shape.
+    const bandsRes = await supabase
+      .from('cat_photometry')
+      .select('band, flux, flux_err, wav, wav_min, wav_max')
+      .eq('match_id', data.id);
+    if (bandsRes.error) {
+      console.error('Error fetching object photometry bands:', bandsRes.error);
+      return null;
+    }
+    const bands: Record<string, PhotometryBand> = {};
+    for (const b of bandsRes.data ?? []) {
+      const entry: PhotometryBand = { flux: b.flux as number, flux_err: b.flux_err as number };
+      if (b.wav != null) {
+        entry.wav = b.wav as number;
+        if (b.wav_min != null) entry.wav_min = b.wav_min as number;
+        if (b.wav_max != null) entry.wav_max = b.wav_max as number;
+      }
+      bands[b.band as string] = entry;
+    }
     return {
       catalog_name: data.catalog_name,
       catalog_id: data.catalog_id,
       match_distance_arcsec: data.match_distance_arcsec,
-      photometry: data.photometry,
+      photometry: { flux_unit: 'uJy', bands },
       photo_z: data.photo_z,
       photo_z_err_lo: data.photo_z_err_lo,
       photo_z_err_hi: data.photo_z_err_hi,

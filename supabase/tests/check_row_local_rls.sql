@@ -80,8 +80,8 @@ SELECT t.id, NULL, '00000000-0000-0000-0000-0000000000c1'::uuid, 'zzz_rl note' F
 UNION ALL
 SELECT NULL, o.id, '00000000-0000-0000-0000-0000000000c1'::uuid, 'zzz_rl note' FROM objects o WHERE o.object_id LIKE 'zzz\_rl\_%';
 
-INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, photometry)
-SELECT o.id, 'zzz_rl_field', o.ra, o.dec, 'zzz_rl_cat', '{}'::jsonb FROM objects o WHERE o.object_id LIKE 'zzz\_rl\_%';
+INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name)
+SELECT o.id, 'zzz_rl_field', o.ra, o.dec, 'zzz_rl_cat' FROM objects o WHERE o.object_id LIKE 'zzz\_rl\_%';
 
 -- Storage rows: one active per spectrum, plus a superseded one on the
 -- published public spectrum (admin-only under the folded policy).

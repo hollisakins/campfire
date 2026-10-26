@@ -101,7 +101,8 @@ BEGIN
     ('test-lf-mixed-a', 'PRISM', '/tmp/lf_mixed_a_prism.fits', 10.0, 1000.0, 'published'),
     ('test-lf-mixed-b', 'PRISM', '/tmp/lf_mixed_b_prism.fits', 10.0, 1000.0, 'published');
 
-  -- One fit per spectrum; the sync_lines trigger unnests `lines`.
+  -- One fit per spectrum, written as the deploy writes it (line_fits_upsert:
+  -- the fit row plus its lines rows).
   -- z_used / z_quality / object_version match the object (not stale) except
   -- for the stale fixture, which was measured at z = 4.
   FOR r IN
@@ -122,16 +123,15 @@ BEGIN
     JOIN targets t ON t.target_id = s.target_id
     JOIN objects o ON o.id = t.object_id
   LOOP
-    INSERT INTO line_fits (spectrum_id, target_id, grating, program_slug, observation,
-                                    z_used, z_source, z_quality, object_id, object_version,
-                                    n_lines, n_detected, lines, fit_version)
-    VALUES (r.spectrum_id, r.target_id, r.grating, r.program_slug, r.observation,
-            r.z_used, 'inspected', r.redshift_quality, r.object_id, r.version,
-            1, 1,
-            jsonb_build_object('CIII1908', jsonb_build_object(
-              'component', 'doublet', 'wave_rest', 1907.7,
-              'flux', r.snr * 1e-19, 'flux_err', 1e-19, 'snr', r.snr)),
-            'test');
+    PERFORM public.line_fits_upsert(jsonb_build_array(jsonb_build_object(
+      'spectrum_id', r.spectrum_id, 'target_id', r.target_id, 'grating', r.grating,
+      'program_slug', r.program_slug, 'observation', r.observation,
+      'z_used', r.z_used, 'z_source', 'inspected', 'z_quality', r.redshift_quality,
+      'object_id', r.object_id, 'object_version', r.version, 'n_lines', 1, 'n_detected', 1,
+      'lines', jsonb_build_object('CIII1908', jsonb_build_object(
+        'component', 'doublet', 'wave_rest', 1907.7,
+        'flux', r.snr * 1e-19, 'flux_err', 1e-19, 'snr', r.snr)),
+      'fit_version', 'test')));
   END LOOP;
 
   IF (SELECT count(*) FROM lines l JOIN spectra s ON s.id = l.spectrum_id
