@@ -163,3 +163,31 @@ export function invalidLineParam(searchParams: URLSearchParams): string | null {
   if (!line || isFilterableLine(line)) return null;
   return `Unknown emission line '${line}'. Use a doublet total (e.g. CIII1908, OII3727, SII6725) or a stand-alone line name (e.g. Halpha, OIII5007).`;
 }
+
+/**
+ * The predicate tree a request carries as `q=` (Catalog Read Model phase 3):
+ * JSON, at most 20 kB, an object. Only the shape is checked here; the
+ * database compiles it against its whitelist and answers 22023 with a message
+ * naming what it refused, which the routes turn into a 400.
+ */
+export function parseTreeParam(searchParams: URLSearchParams): { tree: Record<string, unknown> | null; error?: string } {
+  const raw = searchParams.get('q');
+  if (raw == null || raw.trim() === '') return { tree: null };
+  if (raw.length > 20000) return { tree: null, error: 'q is larger than 20 kB' };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { tree: null, error: 'q is not valid JSON' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { tree: null, error: 'q must be a JSON object: a predicate tree' };
+  }
+  return { tree: parsed as Record<string, unknown> };
+}
+
+/** The 400 body for a tree the database refused (SQLSTATE 22023), or null. */
+export function treeRejection(error: { code?: string; message?: string } | null): string | null {
+  if (error && error.code === '22023' && error.message) return error.message;
+  return null;
+}

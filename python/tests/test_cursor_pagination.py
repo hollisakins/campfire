@@ -187,3 +187,12 @@ def test_registry_keys_filters_server_side():
     client2 = _Client([[]])
     registry.registry_keys(client2, bucket="tiles")
     assert client2.log[0]["eq"] == [("bucket", "tiles")]
+
+
+def test_query_params_send_a_predicate_tree_as_compact_json():
+    # Catalog Read Model phase 3: q is a dict, sent as compact JSON under q=
+    tree = {"and": [{"col": "redshift", "op": "gt", "v": 4.9},
+                    {"exists": "lines", "where": [{"col": "line", "op": "eq", "v": "CIII1908"}]}]}
+    params = _build_query_params(q=tree)
+    assert params["q"] == '{"and":[{"col":"redshift","op":"gt","v":4.9},{"exists":"lines","where":[{"col":"line","op":"eq","v":"CIII1908"}]}]}'
+    assert "q" not in _build_query_params()

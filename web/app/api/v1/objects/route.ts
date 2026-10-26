@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { bandFilterRpcParams, getAccessiblePrograms, invalidLineParam, isAdminUser, lineFilterRpcParams, parseCSV, parseIntCSV, resolveListIds } from '@/lib/api-helpers';
+import { bandFilterRpcParams, getAccessiblePrograms, invalidLineParam, isAdminUser, lineFilterRpcParams, parseCSV, parseIntCSV, parseTreeParam, resolveListIds, treeRejection } from '@/lib/api-helpers';
 import { createServiceClient } from '@/lib/supabase/server';
 import { authenticateApiRequest } from '@/lib/api-auth';
 import { assertBearerReleaseAccess } from '@/lib/server/bearer-release';
@@ -146,6 +146,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: lineError }, { status: 400 });
     }
 
+    // `q=`: a predicate tree (Catalog Read Model phase 3) selects the objects
+    // in place of the filter parameters; sort, paging, `search` and the
+    // `line` / `band` display columns still apply.
+    const tree = parseTreeParam(searchParams);
+    if (tree.error) {
+      return NextResponse.json({ error: tree.error }, { status: 400 });
+    }
+
     const rpcParams = {
       p_program_slugs: accessibleProgramSlugs,
       p_filter_programs: filterPrograms && filterPrograms.length > 0 ? filterPrograms : null,
@@ -184,17 +192,37 @@ export async function GET(request: NextRequest) {
 
     // p_viewer_id scopes each object's `lists` to what this key's user may see:
     // the service-role client bypasses the RLS that does so in the portal.
-    let { data, error } = await supabase.rpc('get_filtered_objects_paginated', {
-      ...rpcParams,
-      p_viewer_id: userId,
-    });
+    let { data, error } = tree.tree
+      ? await supabase.rpc('catalog_query_objects', {
+          p_tree: tree.tree,
+          p_program_slugs: accessibleProgramSlugs,
+          p_include_unpublished: includeUnpublished,
+          p_search: searchParams.get('search') || null,
+          p_sort_column: finalSortColumn,
+          p_sort_direction: sortDirection,
+          p_page: page,
+          p_page_size: limit,
+          p_include_count: includeCount,
+          ...cursorRpcParams(cursor),
+          p_viewer_id: userId,
+          ...lineFilterRpcParams(searchParams),
+          ...bandFilterRpcParams(searchParams),
+        })
+      : await supabase.rpc('get_filtered_objects_paginated', {
+          ...rpcParams,
+          p_viewer_id: userId,
+        });
 
     // Deploy window: the Vercel build and the Supabase migration land
     // independently on merge. Against an RPC that does not know p_viewer_id yet
     // (PostgREST: no matching function), retry without it. That RPC does not
     // scope `lists` at all, so its lists are dropped below (fail closed).
     let listsUnscoped = false;
-    if (error && error.code === 'PGRST202') {
+    const rejected = treeRejection(error);
+    if (rejected) {
+      return NextResponse.json({ error: rejected }, { status: 400 });
+    }
+    if (!tree.tree && error && error.code === 'PGRST202') {
       console.warn('v1/objects: RPC without p_viewer_id; retrying without it, lists withheld');
       ({ data, error } = await supabase.rpc('get_filtered_objects_paginated', rpcParams));
       listsUnscoped = true;

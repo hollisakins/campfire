@@ -3500,7 +3500,11 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   -- JSON payload (whose aggregate columns can be viewer-scoped).
   p_after_sort_text TEXT DEFAULT NULL,
   p_after_sort_num DOUBLE PRECISION DEFAULT NULL,
-  p_after_tiebreak TEXT[] DEFAULT NULL
+  p_after_tiebreak TEXT[] DEFAULT NULL,
+  -- Catalog Read Model phase 3: the spectra a predicate tree selected
+  -- (catalog_query_spectra); NULL = no tree. The tree ran under RLS already,
+  -- so this is a plain membership test on top of the legacy conjuncts.
+  p_spectrum_ids INTEGER[] DEFAULT NULL
 )
 RETURNS TABLE(
   targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER,
@@ -3692,6 +3696,7 @@ BEGIN
       AND (p_max_exposure_time_max IS NULL OR s.exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR s.id = ANY(v_line_spectrum_ids))
       AND (p_band IS NULL OR t.object_id = ANY(v_band_object_ids))
+      AND (p_spectrum_ids IS NULL OR s.id = ANY(p_spectrum_ids))
       AND (p_dq_flags_include_any IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_any) != 0)
       AND (p_dq_flags_include_all IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_include_all) = p_dq_flags_include_all)
       AND (p_dq_flags_exclude IS NULL OR (COALESCE(s.dq_flags, 0) & p_dq_flags_exclude) = 0)
@@ -3970,7 +3975,11 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   -- Whose lists the 'lists' field may show when the service role calls
   -- (/api/v1/objects, which bypasses RLS). Ignored under a user JWT, where RLS
   -- on object_lists decides. NULL under the service role shows public lists only.
-  p_viewer_id UUID DEFAULT NULL
+  p_viewer_id UUID DEFAULT NULL,
+  -- Catalog Read Model phase 3: the objects a predicate tree selected
+  -- (catalog_query_objects); NULL = no tree. The tree ran under RLS already,
+  -- so this is a plain membership test on top of the legacy conjuncts.
+  p_object_ids INTEGER[] DEFAULT NULL
 )
 RETURNS TABLE(
   targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER,
@@ -4142,6 +4151,7 @@ BEGIN
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
       AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
+      AND (p_object_ids IS NULL OR o.id = ANY(p_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.cat_objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
@@ -4312,6 +4322,7 @@ BEGIN
       AND (p_max_exposure_time_max IS NULL OR o.max_exposure_time <= p_max_exposure_time_max)
       AND (p_line IS NULL OR o.id = ANY(v_line_object_ids))
       AND (p_band IS NULL OR o.id = ANY(v_band_object_ids))
+      AND (p_object_ids IS NULL OR o.id = ANY(p_object_ids))
       AND (p_search IS NULL OR o.id IN (SELECT __o.id FROM public.cat_objects __o WHERE __o.search_text ILIKE '%' || p_search || '%'))
       AND (
         p_inspected_only IS NULL
@@ -4558,6 +4569,618 @@ $$;
 
 GRANT EXECUTE ON FUNCTION public.get_filtered_objects_paginated TO authenticated;
 GRANT EXECUTE ON FUNCTION public.get_filtered_objects_paginated TO service_role;
+
+
+-- =============================================================================
+-- Catalog query: the predicate tree (Catalog Read Model phase 3)
+-- =============================================================================
+-- One query language for the catalog, carried as JSON in the portal URL (?q=)
+-- and on the v1 API (q=). A tree of three node kinds:
+--
+--   group      {"and": [node, ...]} | {"or": [node, ...]}
+--   predicate  {"col": "<column>", "op": "<op>", "v": <value>}
+--              on a column of the table the node is evaluated against
+--   exists     {"exists": "<child table>", "where": [node, ...], "not": bool}
+--              "the row has a <child> row such that ..." (where = implicit AND;
+--              its nodes are evaluated against the child); "not" negates
+--   cone       {"cone": {"ra": deg, "dec": deg, "radius": deg}} on a table
+--              with ra / dec
+--
+-- Compiled server-side to SQL text against a whitelist of tables, columns,
+-- operators and value types (catalog_query_whitelist), with every value
+-- rendered through quote_literal / a numeric cast and every identifier taken
+-- from the whitelist, never from the tree. Executed SECURITY INVOKER, so RLS
+-- gates every table it touches exactly as a direct query would, and the text
+-- it produces is the SQL a scientist could run against the same tables in
+-- psql ("copy as SQL" in the portal shows it). The live catalog is read from
+-- the base tables (the cat_* UNION ALL views cost 7x on the EXISTS shape); a
+-- browsed release (dr_browse_tag()) is read through the cat_* views.
+--
+-- The two list RPCs keep their row shapes: catalog_match_ids() selects the
+-- matching root ids, and catalog_query_objects / catalog_query_spectra hand
+-- them to get_filtered_objects_paginated / get_filtered_spectra_paginated as
+-- p_object_ids / p_spectrum_ids, so sorting, paging, the keyset cursor, the
+-- member aggregates and the Line S/N / Mag columns are the same code path.
+-- check_catalog_query.sql guards the whitelist, the semantics, the parity
+-- with the legacy filters and the RLS scoping.
+
+-- The whitelist: table -> column -> type. Types decide the operators and the
+-- literal rendering: num, int, text, bool, ts, text[], int[], bits (an
+-- integer bitmask: anybits / allbits / nobits).
+CREATE OR REPLACE FUNCTION public.catalog_query_whitelist()
+RETURNS jsonb
+LANGUAGE sql IMMUTABLE
+AS $$
+  SELECT $j${
+    "objects": {
+      "id": "int", "object_id": "text", "field": "text", "ra": "num", "dec": "num",
+      "n_targets": "int", "n_spectra": "int", "programs": "text[]", "gratings": "text[]",
+      "observations": "text[]", "max_snr": "num", "max_exposure_time": "num",
+      "photo_z": "num", "photo_z_err_lo": "num", "photo_z_err_hi": "num", "has_photometry": "bool",
+      "redshift": "num", "redshift_quality": "int", "redshift_auto": "num", "redshift_inspected": "num",
+      "inspected_used_auto": "bool", "needs_review": "bool", "last_inspected_at": "ts",
+      "last_data_change_at": "ts", "version": "int", "is_active": "bool",
+      "has_published_spectrum": "bool", "is_public": "bool", "created_at": "ts", "updated_at": "ts"
+    },
+    "targets": {
+      "id": "int", "target_id": "text", "field": "text", "ra": "num", "dec": "num",
+      "program_slug": "text", "observation": "text", "max_snr": "num", "max_exposure_time": "num",
+      "redshift_auto": "num", "dq_flags": "bits", "spectral_features": "bits",
+      "has_published_spectrum": "bool", "is_public": "bool", "object_id": "int"
+    },
+    "spectra": {
+      "id": "int", "spectrum_id": "text", "target_id": "text", "grating": "text",
+      "signal_to_noise": "num", "exposure_time": "num", "redshift_auto": "num", "chi2_min": "num",
+      "confidence": "num", "dq_flags": "bits", "deploy_status": "text", "program_slug": "text",
+      "observation": "text", "date_obs": "text", "cfpipe_version": "text", "jwst_version": "text",
+      "crds_context": "text", "is_public": "bool", "reduced_at": "ts", "created_at": "ts", "updated_at": "ts"
+    },
+    "lines": {
+      "spectrum_id": "int", "object_id": "int", "line": "text", "component": "text",
+      "wave_rest": "num", "wave_obs": "num", "flux": "num", "flux_err": "num", "snr": "num",
+      "ew_rest": "num", "ew_rest_err": "num", "cont": "num", "cont_err": "num",
+      "dv": "num", "dv_err": "num", "sigma_v": "num", "sigma_v_err": "num", "sigma_lsf_kms": "num",
+      "complex": "int", "chi2": "num", "dof": "int", "npix": "int", "flags": "bits",
+      "blend_into": "text", "tied_to": "text", "label": "text", "members": "text[]"
+    },
+    "line_fits": {
+      "spectrum_id": "int", "target_id": "text", "grating": "text", "program_slug": "text",
+      "observation": "text", "z_used": "num", "z_source": "text", "z_quality": "int",
+      "object_id": "text", "object_version": "int", "z_fit": "num", "z_fit_err": "num",
+      "dv": "num", "dv_err": "num", "sigma_v": "num", "sigma_v_err": "num", "kin_source": "text",
+      "n_lines": "int", "n_detected": "int", "n_broad": "int", "chi2": "num", "dof": "int",
+      "fit_version": "text", "cfpipe_version": "text", "f_lsf": "num", "fitted_at": "ts",
+      "stale_redshift": "bool"
+    },
+    "photometry": {
+      "match_id": "int", "object_id": "int", "band": "text", "flux": "num", "flux_err": "num",
+      "wav": "num", "wav_min": "num", "wav_max": "num", "snr": "num", "mag": "num"
+    },
+    "catalog_matches": {
+      "id": "int", "object_id": "int", "field": "text", "ra": "num", "dec": "num",
+      "catalog_name": "text", "catalog_id": "text", "match_distance_arcsec": "num",
+      "photo_z": "num", "photo_z_err_lo": "num", "photo_z_err_hi": "num", "has_pz": "bool"
+    },
+    "object_list_members": {
+      "list_id": "int", "object_id": "int", "added_at": "ts"
+    }
+  }$j$::jsonb;
+$$;
+
+COMMENT ON FUNCTION public.catalog_query_whitelist() IS 'The tables, columns and value types a predicate tree may name (Catalog Read Model phase 3). The only source of identifiers in the compiled SQL; mirrored by the portal''s leaf catalogue.';
+
+-- How a child table correlates with its parent, by (parent, child). Templates
+-- name tables as {T:name} (rendered live or cat_* per the browsed release),
+-- the child alias as {c} and the parent alias as {p}; helper joins take the
+-- child alias plus a suffix. The parent key is always on the parent alias.
+CREATE OR REPLACE FUNCTION public.catalog_query_correlations()
+RETURNS jsonb
+LANGUAGE sql IMMUTABLE
+AS $$
+  SELECT $j${
+    "objects": {
+      "targets":             "{T:targets} {c} WHERE {c}.object_id = {p}.id",
+      "spectra":             "{T:spectra} {c} JOIN {T:targets} {c}_t ON {c}_t.target_id = {c}.target_id WHERE {c}_t.object_id = {p}.id",
+      "lines":               "{T:lines} {c} WHERE {c}.object_id = {p}.id",
+      "line_fits":           "{T:line_fits} {c} JOIN {T:spectra} {c}_s ON {c}_s.id = {c}.spectrum_id JOIN {T:targets} {c}_t ON {c}_t.target_id = {c}_s.target_id WHERE {c}_t.object_id = {p}.id",
+      "photometry":          "{T:photometry} {c} WHERE {c}.object_id = {p}.id",
+      "catalog_matches":     "{T:catalog_matches} {c} WHERE {c}.object_id = {p}.id",
+      "object_list_members": "{T:object_list_members} {c} WHERE {c}.object_id = {p}.id"
+    },
+    "targets": {
+      "objects":             "{T:objects} {c} WHERE {c}.id = {p}.object_id",
+      "spectra":             "{T:spectra} {c} WHERE {c}.target_id = {p}.target_id",
+      "lines":               "{T:lines} {c} JOIN {T:spectra} {c}_s ON {c}_s.id = {c}.spectrum_id WHERE {c}_s.target_id = {p}.target_id",
+      "line_fits":           "{T:line_fits} {c} WHERE {c}.target_id = {p}.target_id",
+      "photometry":          "{T:photometry} {c} WHERE {c}.object_id = {p}.object_id",
+      "catalog_matches":     "{T:catalog_matches} {c} WHERE {c}.object_id = {p}.object_id",
+      "object_list_members": "{T:object_list_members} {c} WHERE {c}.object_id = {p}.object_id"
+    },
+    "spectra": {
+      "targets":             "{T:targets} {c} WHERE {c}.target_id = {p}.target_id",
+      "objects":             "{T:objects} {c} JOIN {T:targets} {c}_t ON {c}_t.object_id = {c}.id WHERE {c}_t.target_id = {p}.target_id",
+      "lines":               "{T:lines} {c} WHERE {c}.spectrum_id = {p}.id",
+      "line_fits":           "{T:line_fits} {c} WHERE {c}.spectrum_id = {p}.id",
+      "photometry":          "{T:photometry} {c} JOIN {T:targets} {c}_t ON {c}_t.object_id = {c}.object_id WHERE {c}_t.target_id = {p}.target_id",
+      "catalog_matches":     "{T:catalog_matches} {c} JOIN {T:targets} {c}_t ON {c}_t.object_id = {c}.object_id WHERE {c}_t.target_id = {p}.target_id",
+      "object_list_members": "{T:object_list_members} {c} JOIN {T:targets} {c}_t ON {c}_t.object_id = {c}.object_id WHERE {c}_t.target_id = {p}.target_id"
+    },
+    "lines": {
+      "line_fits":           "{T:line_fits} {c} WHERE {c}.spectrum_id = {p}.spectrum_id",
+      "spectra":             "{T:spectra} {c} WHERE {c}.id = {p}.spectrum_id"
+    },
+    "line_fits": {
+      "lines":               "{T:lines} {c} WHERE {c}.spectrum_id = {p}.spectrum_id",
+      "spectra":             "{T:spectra} {c} WHERE {c}.id = {p}.spectrum_id"
+    },
+    "photometry": {
+      "catalog_matches":     "{T:catalog_matches} {c} WHERE {c}.id = {p}.match_id"
+    },
+    "catalog_matches": {
+      "photometry":          "{T:photometry} {c} WHERE {c}.match_id = {p}.id"
+    }
+  }$j$::jsonb;
+$$;
+
+COMMENT ON FUNCTION public.catalog_query_correlations() IS 'How an exists node joins its child table to the row it is evaluated against (Catalog Read Model phase 3): the FROM ... WHERE fragment per (parent, child), with the parent key on the parent alias.';
+
+-- One literal of the given whitelist type, from a jsonb scalar. Numbers come
+-- out of jsonb as numeric text (never an injection vector); everything else
+-- goes through quote_literal.
+CREATE OR REPLACE FUNCTION public.catalog_query_literal(p_v jsonb, p_type text)
+RETURNS text
+LANGUAGE plpgsql IMMUTABLE
+AS $$
+DECLARE
+  t text := jsonb_typeof(p_v);
+BEGIN
+  IF p_v IS NULL OR t = 'null' THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: a null value needs is_null / not_null';
+  END IF;
+  CASE p_type
+    WHEN 'num' THEN
+      IF t <> 'number' THEN RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: expected a number, got %s', t); END IF;
+      RETURN format('(%s)::double precision', p_v #>> '{}');
+    WHEN 'int', 'bits' THEN
+      IF t <> 'number' OR (p_v #>> '{}') !~ '^-?[0-9]+$' THEN RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: expected an integer, got %s', p_v); END IF;
+      RETURN format('(%s)::integer', p_v #>> '{}');
+    WHEN 'text' THEN
+      IF t <> 'string' THEN RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: expected a string, got %s', t); END IF;
+      RETURN quote_literal(p_v #>> '{}');
+    WHEN 'bool' THEN
+      IF t <> 'boolean' THEN RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: expected a boolean, got %s', t); END IF;
+      RETURN CASE WHEN (p_v #>> '{}')::boolean THEN 'true' ELSE 'false' END;
+    WHEN 'ts' THEN
+      IF t <> 'string' THEN RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: expected a timestamp string, got %s', t); END IF;
+      RETURN format('%L::timestamptz', (p_v #>> '{}')::timestamptz);
+    ELSE
+      RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: no scalar of type %s', p_type);
+  END CASE;
+END;
+$$;
+
+-- An ARRAY[...] literal of the element type, from a non-empty jsonb array.
+CREATE OR REPLACE FUNCTION public.catalog_query_array_literal(p_v jsonb, p_elem_type text)
+RETURNS text
+LANGUAGE plpgsql IMMUTABLE
+AS $$
+DECLARE
+  parts text[];
+  e jsonb;
+BEGIN
+  IF p_v IS NULL OR jsonb_typeof(p_v) <> 'array' OR jsonb_array_length(p_v) = 0 THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: expected a non-empty array';
+  END IF;
+  IF jsonb_array_length(p_v) > 500 THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: at most 500 values in an array';
+  END IF;
+  FOR e IN SELECT jsonb_array_elements(p_v) LOOP
+    parts := array_append(parts, public.catalog_query_literal(e, p_elem_type));
+  END LOOP;
+  RETURN format('ARRAY[%s]::%s[]', array_to_string(parts, ', '),
+                CASE p_elem_type WHEN 'num' THEN 'double precision' WHEN 'int' THEN 'integer' WHEN 'bits' THEN 'integer'
+                                 WHEN 'text' THEN 'text' WHEN 'bool' THEN 'boolean' WHEN 'ts' THEN 'timestamptz' END);
+END;
+$$;
+
+-- One node, evaluated against table p_table under alias p_alias. p_catalog is
+-- 'live' or 'dr' (which table names the {T:...} tokens render to); p_depth
+-- bounds nesting, p_idx is the node's index among its siblings (aliases are
+-- x<depth>_<idx>: unique within a scope, and each nesting level is its own
+-- subquery scope).
+CREATE OR REPLACE FUNCTION public.catalog_query_node_sql(
+  p_node jsonb, p_table text, p_alias text, p_catalog text, p_depth integer, p_idx integer
+)
+RETURNS text
+LANGUAGE plpgsql STABLE
+AS $$
+DECLARE
+  wl jsonb := public.catalog_query_whitelist();
+  cols jsonb;
+  parts text[] := '{}';
+  child jsonb;
+  i integer := 0;
+  v_col text;
+  v_type text;
+  v_op text;
+  v_val jsonb;
+  v_lhs text;
+  v_child text;
+  v_tmpl text;
+  v_alias text;
+  v_where text;
+  v_cone jsonb;
+  v_ra text; v_dec text; v_r text;
+BEGIN
+  IF p_depth > 6 THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: tree nested deeper than 6 levels';
+  END IF;
+  IF p_node IS NULL OR jsonb_typeof(p_node) <> 'object' THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: every node is a JSON object';
+  END IF;
+  cols := wl -> p_table;
+  IF cols IS NULL THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: unknown table %s', p_table);
+  END IF;
+
+  -- group ---------------------------------------------------------------
+  IF p_node ? 'and' OR p_node ? 'or' THEN
+    child := COALESCE(p_node -> 'and', p_node -> 'or');
+    IF jsonb_typeof(child) <> 'array' OR jsonb_array_length(child) = 0 THEN
+      RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: a group is a non-empty array of nodes';
+    END IF;
+    IF jsonb_array_length(child) > 50 THEN
+      RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: at most 50 nodes in a group';
+    END IF;
+    FOR v_val IN SELECT jsonb_array_elements(child) LOOP
+      i := i + 1;
+      parts := array_append(parts, public.catalog_query_node_sql(v_val, p_table, p_alias, p_catalog, p_depth + 1, i));
+    END LOOP;
+    RETURN '(' || array_to_string(parts, CASE WHEN p_node ? 'and' THEN ' AND ' ELSE ' OR ' END) || ')';
+  END IF;
+
+  -- cone ----------------------------------------------------------------
+  IF p_node ? 'cone' THEN
+    IF NOT (cols ? 'ra' AND cols ? 'dec') THEN
+      RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: %s has no sky position for a cone', p_table);
+    END IF;
+    v_cone := p_node -> 'cone';
+    v_ra := public.catalog_query_literal(v_cone -> 'ra', 'num');
+    v_dec := public.catalog_query_literal(v_cone -> 'dec', 'num');
+    v_r := public.catalog_query_literal(v_cone -> 'radius', 'num');
+    IF (v_cone ->> 'radius')::double precision <= 0 OR (v_cone ->> 'radius')::double precision > 10 THEN
+      RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: cone radius must be in (0, 10] degrees';
+    END IF;
+    -- the list RPCs' cone: a box pre-filter the index can use (RA widened by
+    -- 1/cos(dec), dropped near a pole), then the Haversine cut decides
+    RETURN format(
+      '((ABS(%2$s) + %3$s >= 90 OR %1$I.ra BETWEEN (%4$s - %3$s / GREATEST(COS(RADIANS(%2$s)), 1e-6)) AND (%4$s + %3$s / GREATEST(COS(RADIANS(%2$s)), 1e-6))) '
+      'AND %1$I.dec BETWEEN (%2$s - %3$s) AND (%2$s + %3$s) '
+      'AND 2 * DEGREES(ASIN(SQRT(POWER(SIN(RADIANS(%1$I.dec - %2$s) / 2), 2) + COS(RADIANS(%2$s)) * COS(RADIANS(%1$I.dec)) * POWER(SIN(RADIANS(%1$I.ra - %4$s) / 2), 2)))) <= %3$s)',
+      p_alias, v_dec, v_r, v_ra);
+  END IF;
+
+  -- exists --------------------------------------------------------------
+  IF p_node ? 'exists' THEN
+    v_child := p_node ->> 'exists';
+    v_tmpl := public.catalog_query_correlations() -> p_table ->> v_child;
+    IF v_tmpl IS NULL THEN
+      RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: %s has no %s to test', p_table, COALESCE(v_child, '(missing)'));
+    END IF;
+    v_alias := format('x%s_%s', p_depth, p_idx);
+    v_tmpl := replace(replace(v_tmpl, '{c}', v_alias), '{p}', p_alias);
+    -- table tokens: live base tables, or the cat_* views of the browsed
+    -- release (lists are never frozen: object_list_members stays live)
+    v_tmpl := regexp_replace(v_tmpl, '\{T:([a-z_]+)\}',
+                CASE WHEN p_catalog = 'dr' THEN 'public.cat_\1' ELSE 'public.\1' END, 'g');
+    IF p_catalog = 'dr' THEN
+      v_tmpl := replace(v_tmpl, 'public.cat_object_list_members', 'public.object_list_members');
+    END IF;
+    v_where := '';
+    IF p_node ? 'where' THEN
+      child := p_node -> 'where';
+      IF jsonb_typeof(child) <> 'array' THEN
+        RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: "where" is an array of nodes';
+      END IF;
+      IF jsonb_array_length(child) > 0 THEN
+        v_where := ' AND ' || public.catalog_query_node_sql(jsonb_build_object('and', child), v_child, v_alias, p_catalog, p_depth + 1, 1);
+      END IF;
+    END IF;
+    RETURN format('%sEXISTS (SELECT 1 FROM %s%s)',
+                  CASE WHEN COALESCE((p_node ->> 'not')::boolean, false) THEN 'NOT ' ELSE '' END,
+                  v_tmpl, v_where);
+  END IF;
+
+  -- predicate -----------------------------------------------------------
+  IF NOT (p_node ? 'col' AND p_node ? 'op') THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: unrecognised node %s', left(p_node::text, 200));
+  END IF;
+  v_col := p_node ->> 'col';
+  IF position('.' in v_col) > 0 THEN
+    IF split_part(v_col, '.', 1) <> p_table THEN
+      RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: %s is not a column of %s', v_col, p_table);
+    END IF;
+    v_col := split_part(v_col, '.', 2);
+  END IF;
+  v_type := cols ->> v_col;
+  IF v_type IS NULL THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: %s has no column %s', p_table, v_col);
+  END IF;
+  v_op := p_node ->> 'op';
+  v_val := p_node -> 'v';
+  v_lhs := format('%I.%I', p_alias, v_col);
+
+  IF v_op = 'is_null' THEN RETURN v_lhs || ' IS NULL'; END IF;
+  IF v_op = 'not_null' THEN RETURN v_lhs || ' IS NOT NULL'; END IF;
+
+  CASE v_type
+    WHEN 'num', 'int', 'ts' THEN
+      CASE v_op
+        WHEN 'eq'  THEN RETURN format('%s = %s', v_lhs, public.catalog_query_literal(v_val, v_type));
+        WHEN 'neq' THEN RETURN format('%s <> %s', v_lhs, public.catalog_query_literal(v_val, v_type));
+        WHEN 'gt'  THEN RETURN format('%s > %s', v_lhs, public.catalog_query_literal(v_val, v_type));
+        WHEN 'gte' THEN RETURN format('%s >= %s', v_lhs, public.catalog_query_literal(v_val, v_type));
+        WHEN 'lt'  THEN RETURN format('%s < %s', v_lhs, public.catalog_query_literal(v_val, v_type));
+        WHEN 'lte' THEN RETURN format('%s <= %s', v_lhs, public.catalog_query_literal(v_val, v_type));
+        WHEN 'between' THEN
+          -- [lo, hi], either end null for open
+          IF jsonb_typeof(v_val) <> 'array' OR jsonb_array_length(v_val) <> 2 THEN
+            RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: between takes [lo, hi]';
+          END IF;
+          IF jsonb_typeof(v_val -> 0) = 'null' AND jsonb_typeof(v_val -> 1) = 'null' THEN
+            RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: between needs at least one bound';
+          END IF;
+          IF jsonb_typeof(v_val -> 0) = 'null' THEN
+            RETURN format('%s <= %s', v_lhs, public.catalog_query_literal(v_val -> 1, v_type));
+          ELSIF jsonb_typeof(v_val -> 1) = 'null' THEN
+            RETURN format('%s >= %s', v_lhs, public.catalog_query_literal(v_val -> 0, v_type));
+          END IF;
+          RETURN format('%s BETWEEN %s AND %s', v_lhs, public.catalog_query_literal(v_val -> 0, v_type), public.catalog_query_literal(v_val -> 1, v_type));
+        WHEN 'in'  THEN RETURN format('%s = ANY(%s)', v_lhs, public.catalog_query_array_literal(v_val, v_type));
+        WHEN 'nin' THEN RETURN format('NOT (%s = ANY(%s))', v_lhs, public.catalog_query_array_literal(v_val, v_type));
+        ELSE RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: %s does not apply to %s.%s', v_op, p_table, v_col);
+      END CASE;
+    WHEN 'text' THEN
+      CASE v_op
+        WHEN 'eq'    THEN RETURN format('%s = %s', v_lhs, public.catalog_query_literal(v_val, 'text'));
+        WHEN 'neq'   THEN RETURN format('%s <> %s', v_lhs, public.catalog_query_literal(v_val, 'text'));
+        WHEN 'in'    THEN RETURN format('%s = ANY(%s)', v_lhs, public.catalog_query_array_literal(v_val, 'text'));
+        WHEN 'nin'   THEN RETURN format('NOT (%s = ANY(%s))', v_lhs, public.catalog_query_array_literal(v_val, 'text'));
+        WHEN 'ilike' THEN RETURN format('%s ILIKE %s', v_lhs, public.catalog_query_literal(v_val, 'text'));
+        ELSE RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: %s does not apply to %s.%s', v_op, p_table, v_col);
+      END CASE;
+    WHEN 'bool' THEN
+      CASE v_op
+        WHEN 'eq'  THEN RETURN format('%s = %s', v_lhs, public.catalog_query_literal(v_val, 'bool'));
+        WHEN 'neq' THEN RETURN format('%s <> %s', v_lhs, public.catalog_query_literal(v_val, 'bool'));
+        ELSE RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: %s does not apply to %s.%s', v_op, p_table, v_col);
+      END CASE;
+    WHEN 'text[]', 'int[]' THEN
+      CASE v_op
+        WHEN 'overlaps' THEN RETURN format('%s && %s', v_lhs, public.catalog_query_array_literal(v_val, rtrim(v_type, '[]')));
+        WHEN 'contains' THEN RETURN format('%s @> %s', v_lhs, public.catalog_query_array_literal(v_val, rtrim(v_type, '[]')));
+        WHEN 'has'      THEN RETURN format('%s = ANY(%s)', public.catalog_query_literal(v_val, rtrim(v_type, '[]')), v_lhs);
+        WHEN 'nhas'     THEN RETURN format('NOT (%s = ANY(%s))', public.catalog_query_literal(v_val, rtrim(v_type, '[]')), v_lhs);
+        ELSE RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: %s does not apply to %s.%s', v_op, p_table, v_col);
+      END CASE;
+    WHEN 'bits' THEN
+      CASE v_op
+        WHEN 'anybits' THEN RETURN format('(COALESCE(%s, 0) & %s) <> 0', v_lhs, public.catalog_query_literal(v_val, 'bits'));
+        WHEN 'allbits' THEN RETURN format('(COALESCE(%s, 0) & %s) = %s', v_lhs, public.catalog_query_literal(v_val, 'bits'), public.catalog_query_literal(v_val, 'bits'));
+        WHEN 'nobits'  THEN RETURN format('(COALESCE(%s, 0) & %s) = 0', v_lhs, public.catalog_query_literal(v_val, 'bits'));
+        WHEN 'eq'      THEN RETURN format('COALESCE(%s, 0) = %s', v_lhs, public.catalog_query_literal(v_val, 'bits'));
+        ELSE RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: %s does not apply to %s.%s', v_op, p_table, v_col);
+      END CASE;
+    ELSE
+      RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: unhandled type %s', v_type);
+  END CASE;
+END;
+$$;
+
+-- The compiled WHERE predicate of a tree over root table p_root, aliased r,
+-- for the catalog the caller is browsing. What the portal shows under
+-- "copy as SQL".
+CREATE OR REPLACE FUNCTION public.catalog_tree_sql(p_tree jsonb, p_root text DEFAULT 'objects')
+RETURNS text
+LANGUAGE plpgsql STABLE
+AS $$
+BEGIN
+  IF p_root NOT IN ('objects', 'spectra', 'targets') THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: root must be objects, spectra or targets, not %s', p_root);
+  END IF;
+  IF p_tree IS NULL OR jsonb_typeof(p_tree) <> 'object' THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: the tree is a JSON object';
+  END IF;
+  IF length(p_tree::text) > 20000 THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'catalog_query: tree larger than 20 kB';
+  END IF;
+  -- "v" at the root is the tree version only on a group (a root predicate's
+  -- "v" is its value)
+  IF (p_tree ? 'and' OR p_tree ? 'or') AND (p_tree ->> 'v') IS NOT NULL AND (p_tree ->> 'v') <> '1' THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = format('catalog_query: unknown tree version %s', p_tree ->> 'v');
+  END IF;
+  RETURN public.catalog_query_node_sql(CASE WHEN p_tree ? 'and' OR p_tree ? 'or' THEN p_tree - 'v' ELSE p_tree END, p_root, 'r',
+                                       CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END, 0, 1);
+END;
+$$;
+
+COMMENT ON FUNCTION public.catalog_tree_sql(jsonb, text) IS 'Compiles a predicate tree (Catalog Read Model phase 3) to the SQL WHERE text it runs as, over the root table aliased r; every identifier from the whitelist, every value quoted. Raises 22023 (invalid_parameter_value) on anything the whitelist does not allow.';
+REVOKE ALL ON FUNCTION public.catalog_tree_sql(jsonb, text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_tree_sql(jsonb, text) TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.catalog_query_whitelist() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_query_whitelist() TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.catalog_query_correlations() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_query_correlations() TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.catalog_query_literal(jsonb, text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.catalog_query_array_literal(jsonb, text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.catalog_query_node_sql(jsonb, text, text, text, integer, integer) FROM PUBLIC, anon;
+
+-- The ids of the root rows a tree selects, under the caller's RLS, from the
+-- live tables or the browsed release. SECURITY INVOKER on purpose: this is
+-- the query a scientist could type, and it must see what they see.
+CREATE OR REPLACE FUNCTION public.catalog_match_ids(p_root text, p_tree jsonb)
+RETURNS integer[]
+LANGUAGE plpgsql STABLE
+SET search_path = public
+AS $$
+DECLARE
+  v_from text;
+  v_pred text;
+  v_ids integer[];
+BEGIN
+  v_pred := public.catalog_tree_sql(p_tree, p_root);
+  v_from := CASE WHEN public.dr_browse_tag() IS NULL THEN 'public.' || p_root ELSE 'public.cat_' || p_root END;
+  EXECUTE format('SELECT COALESCE(array_agg(r.id), ''{}''::integer[]) FROM %s r WHERE %s', v_from, v_pred) INTO v_ids;
+  RETURN v_ids;
+END;
+$$;
+
+COMMENT ON FUNCTION public.catalog_match_ids(text, jsonb) IS 'The ids of the objects / spectra / targets a predicate tree selects (Catalog Read Model phase 3), evaluated under the caller''s RLS against the live tables or the browsed release. Feeds the list RPCs'' p_object_ids / p_spectrum_ids.';
+REVOKE ALL ON FUNCTION public.catalog_match_ids(text, jsonb) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_match_ids(text, jsonb) TO authenticated, service_role;
+
+-- The objects list for a tree: the same rows, sort, paging, cursor and
+-- columns as get_filtered_objects_paginated, selected by the tree. p_line /
+-- p_band and their bounds are display knobs (the Line S/N and Mag columns and
+-- their sort keys), the portal passes the first line / band condition's.
+CREATE OR REPLACE FUNCTION public.catalog_query_objects(
+  p_tree jsonb,
+  p_program_slugs TEXT[],
+  p_include_unpublished BOOLEAN DEFAULT false,
+  p_search TEXT DEFAULT NULL,
+  p_sort_column TEXT DEFAULT 'object_id',
+  p_sort_direction TEXT DEFAULT 'asc',
+  p_page INTEGER DEFAULT 1,
+  p_page_size INTEGER DEFAULT 50,
+  p_include_count BOOLEAN DEFAULT true,
+  p_after_sort_text TEXT DEFAULT NULL,
+  p_after_sort_num DOUBLE PRECISION DEFAULT NULL,
+  p_after_tiebreak TEXT[] DEFAULT NULL,
+  p_viewer_id UUID DEFAULT NULL,
+  p_line TEXT DEFAULT NULL,
+  p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_line_include_stale BOOLEAN DEFAULT false,
+  p_band TEXT DEFAULT NULL,
+  p_band_mag_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_max DOUBLE PRECISION DEFAULT NULL
+)
+RETURNS TABLE(
+  targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER,
+  has_more BOOLEAN, next_sort_text TEXT, next_sort_num DOUBLE PRECISION, next_tiebreak TEXT[]
+)
+LANGUAGE plpgsql STABLE
+SET search_path = public
+AS $$
+DECLARE
+  v_ids integer[];
+BEGIN
+  v_ids := public.catalog_match_ids('objects', p_tree);
+  IF cardinality(v_ids) = 0 THEN
+    RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size, false, NULL::TEXT, NULL::DOUBLE PRECISION, NULL::TEXT[];
+    RETURN;
+  END IF;
+  RETURN QUERY SELECT * FROM public.get_filtered_objects_paginated(
+    p_program_slugs := p_program_slugs,
+    p_search := p_search,
+    p_sort_column := p_sort_column,
+    p_sort_direction := p_sort_direction,
+    p_page := p_page,
+    p_page_size := p_page_size,
+    p_include_unpublished := p_include_unpublished,
+    p_line := p_line,
+    p_line_snr_min := p_line_snr_min,
+    p_line_snr_max := p_line_snr_max,
+    p_line_include_stale := p_line_include_stale,
+    p_band := p_band,
+    p_band_mag_min := p_band_mag_min,
+    p_band_mag_max := p_band_mag_max,
+    p_band_snr_min := p_band_snr_min,
+    p_band_snr_max := p_band_snr_max,
+    p_include_count := p_include_count,
+    p_after_sort_text := p_after_sort_text,
+    p_after_sort_num := p_after_sort_num,
+    p_after_tiebreak := p_after_tiebreak,
+    p_viewer_id := p_viewer_id,
+    p_object_ids := v_ids);
+END;
+$$;
+
+COMMENT ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) IS 'The objects list for a predicate tree (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_objects_paginated(p_object_ids := ...), so the row shape, sort, paging and cursor are the legacy RPC''s. p_line / p_band only drive the Line S/N and Mag columns and sorts.';
+REVOKE ALL ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_query_objects(jsonb, text[], boolean, text, text, text, integer, integer, boolean, text, double precision, text[], uuid, text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) TO authenticated, service_role;
+
+-- The spectra twin.
+CREATE OR REPLACE FUNCTION public.catalog_query_spectra(
+  p_tree jsonb,
+  p_program_slugs TEXT[],
+  p_include_unpublished BOOLEAN DEFAULT false,
+  p_search TEXT DEFAULT NULL,
+  p_sort_column TEXT DEFAULT 'target_id',
+  p_sort_direction TEXT DEFAULT 'asc',
+  p_page INTEGER DEFAULT 1,
+  p_page_size INTEGER DEFAULT 50,
+  p_include_thumbnails BOOLEAN DEFAULT false,
+  p_include_count BOOLEAN DEFAULT true,
+  p_after_sort_text TEXT DEFAULT NULL,
+  p_after_sort_num DOUBLE PRECISION DEFAULT NULL,
+  p_after_tiebreak TEXT[] DEFAULT NULL,
+  p_line TEXT DEFAULT NULL,
+  p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
+  p_line_include_stale BOOLEAN DEFAULT false,
+  p_band TEXT DEFAULT NULL,
+  p_band_mag_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_mag_max DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_min DOUBLE PRECISION DEFAULT NULL,
+  p_band_snr_max DOUBLE PRECISION DEFAULT NULL
+)
+RETURNS TABLE(
+  targets JSONB, total_count BIGINT, page INTEGER, page_size INTEGER,
+  has_more BOOLEAN, next_sort_text TEXT, next_sort_num DOUBLE PRECISION, next_tiebreak TEXT[]
+)
+LANGUAGE plpgsql STABLE
+SET search_path = public
+AS $$
+DECLARE
+  v_ids integer[];
+BEGIN
+  v_ids := public.catalog_match_ids('spectra', p_tree);
+  IF cardinality(v_ids) = 0 THEN
+    RETURN QUERY SELECT '[]'::jsonb, 0::BIGINT, p_page, p_page_size, false, NULL::TEXT, NULL::DOUBLE PRECISION, NULL::TEXT[];
+    RETURN;
+  END IF;
+  RETURN QUERY SELECT * FROM public.get_filtered_spectra_paginated(
+    p_program_slugs := p_program_slugs,
+    p_search := p_search,
+    p_sort_column := p_sort_column,
+    p_sort_direction := p_sort_direction,
+    p_page := p_page,
+    p_page_size := p_page_size,
+    p_include_thumbnails := p_include_thumbnails,
+    p_include_unpublished := p_include_unpublished,
+    p_line := p_line,
+    p_line_snr_min := p_line_snr_min,
+    p_line_snr_max := p_line_snr_max,
+    p_line_include_stale := p_line_include_stale,
+    p_band := p_band,
+    p_band_mag_min := p_band_mag_min,
+    p_band_mag_max := p_band_mag_max,
+    p_band_snr_min := p_band_snr_min,
+    p_band_snr_max := p_band_snr_max,
+    p_include_count := p_include_count,
+    p_after_sort_text := p_after_sort_text,
+    p_after_sort_num := p_after_sort_num,
+    p_after_tiebreak := p_after_tiebreak,
+    p_spectrum_ids := v_ids);
+END;
+$$;
+
+COMMENT ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) IS 'The spectra list for a predicate tree rooted at spectra (Catalog Read Model phase 3): catalog_match_ids() then get_filtered_spectra_paginated(p_spectrum_ids := ...).';
+REVOKE ALL ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.catalog_query_spectra(jsonb, text[], boolean, text, text, text, integer, integer, boolean, boolean, text, double precision, text[], text, double precision, double precision, boolean, text, double precision, double precision, double precision, double precision) TO authenticated, service_role;
 
 
 -- =============================================================================
@@ -12673,8 +13296,8 @@ REVOKE ALL ON FUNCTION public.get_download_stats(p_days integer) FROM PUBLIC, an
 REVOKE ALL ON FUNCTION public.get_field_object_markers(p_field text, p_include_unpublished boolean, p_cursor text, p_page_size integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_field_shutters(p_field text, p_cursor integer, p_page_size integer, p_ra_min double precision, p_ra_max double precision, p_dec_min double precision, p_dec_max double precision) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_filtered_object_ids(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_filtered_objects_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[], p_viewer_id uuid) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION public.get_filtered_spectra_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_dq_flags_include_any integer, p_dq_flags_include_all integer, p_dq_flags_exclude integer, p_list_ids integer[], p_list_ids_mode text, p_search text, p_inspected_only boolean, p_needs_review boolean, p_has_photometry boolean, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_thumbnails boolean, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_filtered_objects_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_search text, p_inspected_only boolean, p_needs_review boolean, p_list_ids integer[], p_list_ids_mode text, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_has_photometry boolean, p_photo_z_min double precision, p_photo_z_max double precision, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[], p_viewer_id uuid, p_object_ids integer[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.get_filtered_spectra_paginated(p_program_slugs text[], p_filter_programs text[], p_fields text[], p_gratings text[], p_gratings_mode text, p_observations text[], p_redshift_quality integer[], p_redshift_min double precision, p_redshift_max double precision, p_max_snr_min double precision, p_max_snr_max double precision, p_max_exposure_time_min double precision, p_max_exposure_time_max double precision, p_dq_flags_include_any integer, p_dq_flags_include_all integer, p_dq_flags_exclude integer, p_list_ids integer[], p_list_ids_mode text, p_search text, p_inspected_only boolean, p_needs_review boolean, p_has_photometry boolean, p_comment_search text, p_comment_search_scope text, p_comment_user_id uuid, p_coord_ra double precision, p_coord_dec double precision, p_radius_degrees double precision, p_sort_column text, p_sort_direction text, p_page integer, p_page_size integer, p_include_thumbnails boolean, p_include_unpublished boolean, p_line text, p_line_snr_min double precision, p_line_snr_max double precision, p_line_include_stale boolean, p_band text, p_band_mag_min double precision, p_band_mag_max double precision, p_band_snr_min double precision, p_band_snr_max double precision, p_include_count boolean, p_after_sort_text text, p_after_sort_num double precision, p_after_tiebreak text[], p_spectrum_ids integer[]) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_lifecycle_status() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_line_fits_for_sync(p_program_slugs text[], p_updated_since timestamp with time zone, p_limit integer, p_include_unpublished boolean, p_include_counts boolean, p_after_id integer) FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION public.get_lists_for_sync(p_user_id uuid, p_include_unpublished boolean) FROM PUBLIC, anon;
