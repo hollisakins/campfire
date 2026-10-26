@@ -8,6 +8,7 @@ import {
 import { resolveFieldCutoutSourceResult, sourceMatchesDatasetVersion } from '@/lib/cutout/source';
 import { renderDisplayCutoutPng } from '@/lib/cutout/display';
 import { getAssetVersions } from '@/lib/asset-version';
+import { localizeUrl } from '@/lib/host-aliases';
 import { cutoutStoreFor, cutoutStoreHas, snapFov, storeCutoutInBackground, storeSizeFor } from '@/lib/cutout/store';
 import { catalogIsPublic, publicProgramSlugs } from '@/lib/server/public-programs';
 
@@ -136,7 +137,7 @@ export async function GET(request: NextRequest) {
       ? cutoutStoreFor({ field: obj.field, version: fieldVersion, size: storeSize, fov, ra: obj.ra, dec: obj.dec })
       : null;
     if (store && (await cutoutStoreHas(store.key))) {
-      return NextResponse.redirect(store.url, { status: 302, headers: { 'Cache-Control': STORE_REDIRECT_CACHE } });
+      return NextResponse.redirect(localizeUrl(store.url, request.headers.get('host')), { status: 302, headers: { 'Cache-Control': STORE_REDIRECT_CACHE } });
     }
 
     // Only round the render up to the store's ladder when the store is in

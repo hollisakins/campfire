@@ -18,6 +18,7 @@ import { DQ_FLAGS } from '@/lib/flags';
 import type { FlagDef } from '@/lib/flags';
 import { generateDownloadUrls } from '@/lib/r2';
 import { hmacBase64Url } from '@/lib/server/worker-token';
+import { urlForRequest } from '@/lib/server/request-host';
 import { authorizeKeysInChunks } from '@/lib/server/authorized-keys';
 import { releaseDownloadUrls, resolveReleaseMembers } from '@/lib/server/dr-files';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -42,6 +43,13 @@ async function presignForRequest(
 }
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_DOWNLOAD_URL || 'http://localhost:8787';
+
+/** The Worker origin as this request's visitor must reach it: its alias on an
+ * alias host (lib/host-aliases.ts). The signature covers the presigned url
+ * only, so either origin serves the same proxy url. */
+function workerBase(): Promise<string> {
+  return urlForRequest(WORKER_URL);
+}
 const JWT_SECRET = process.env.WORKER_JWT_SECRET;
 
 // Presigned-URL lifetime. Must outlive the WHOLE client-side download (the browser
@@ -717,10 +725,11 @@ export async function generateFitsDownloadUrl(
     if (keys.length === 0) {
       return { files: null, zipFilename: null, error: 'No FITS files found for selected objects' };
     }
+    const worker = await workerBase();
     const files: DownloadFile[] = await Promise.all(
       urls.map(async (signedUrl, i) => {
         const sig = await hmacBase64Url(signedUrl, JWT_SECRET);
-        const proxyUrl = `${WORKER_URL}/proxy?url=${encodeURIComponent(signedUrl)}&sig=${sig}`;
+        const proxyUrl = `${worker}/proxy?url=${encodeURIComponent(signedUrl)}&sig=${sig}`;
         return { proxyUrl, filename: filenames[i] };
       })
     );
@@ -829,10 +838,11 @@ export async function generateObjectFitsDownloadUrls(
     }
 
     const filenames = keys.map((k) => k.split('/').pop() || k);
+    const worker = await workerBase();
     const files: DownloadFile[] = await Promise.all(
       urls.map(async (signedUrl, i) => {
         const sig = await hmacBase64Url(signedUrl, JWT_SECRET);
-        const proxyUrl = `${WORKER_URL}/proxy?url=${encodeURIComponent(signedUrl)}&sig=${sig}`;
+        const proxyUrl = `${worker}/proxy?url=${encodeURIComponent(signedUrl)}&sig=${sig}`;
         return { proxyUrl, filename: filenames[i] };
       })
     );
@@ -919,10 +929,11 @@ export async function generateNircamMosaicDownloadUrls(
     // URLs we authorized.
     const { keys: authorizedKeys, urls: signed } = await presignForRequest(supabase, dr, authorized, { attachment: true });
     const urls: Record<string, string> = {};
+    const worker = await workerBase();
     await Promise.all(
       authorizedKeys.map(async (key, i) => {
         const sig = await hmacBase64Url(signed[i], JWT_SECRET);
-        urls[key] = `${WORKER_URL}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
+        urls[key] = `${worker}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
       })
     );
 
@@ -1001,10 +1012,11 @@ export async function generateNircamExpmapDownloadUrls(
       return { urls: {}, error: null };
     }
     const urls: Record<string, string> = {};
+    const worker = await workerBase();
     await Promise.all(
       authorizedKeys.map(async (key, i) => {
         const sig = await hmacBase64Url(signed[i], JWT_SECRET);
-        urls[key] = `${WORKER_URL}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
+        urls[key] = `${worker}/proxy?url=${encodeURIComponent(signed[i])}&sig=${sig}`;
       })
     );
 
