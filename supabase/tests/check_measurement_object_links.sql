@@ -1,8 +1,8 @@
 -- Guard: the measurement rows' object links and stored staleness are exact
 -- on every path that can move them (Catalog Read Model phase 2a).
 --
--- spectrum_lines.object_id and object_photometry_bands.object_id are copies
--- of the object the row belongs to; spectrum_line_fits.stale_redshift is the
+-- lines.object_id and photometry.object_id are copies
+-- of the object the row belongs to; line_fits.stale_redshift is the
 -- stored line_fit_stale_redshift(object, fit). The catalog filter helpers
 -- read these columns directly, so a stale copy is a wrong filter result (a
 -- detection attributed to the wrong object, or a stale fit shown as fresh).
@@ -52,7 +52,7 @@ BEGIN
   SELECT id INTO v_sb FROM spectra WHERE fits_path = '/tmp/ml_b_g395m.fits';
   SELECT version INTO v_ver FROM objects WHERE id = v_a;
 
-  INSERT INTO spectrum_line_fits (spectrum_id, target_id, grating, program_slug, observation,
+  INSERT INTO line_fits (spectrum_id, target_id, grating, program_slug, observation,
                                   z_used, z_source, z_quality, object_id, object_version,
                                   n_lines, n_detected, lines, fit_version)
   VALUES
@@ -60,83 +60,83 @@ BEGIN
      jsonb_build_object('CIII1908', jsonb_build_object('component', 'doublet', 'wave_rest', 1907.7, 'flux', 1e-18, 'flux_err', 1e-19, 'snr', 10.0)), 'test'),
     (v_sb, 'test-ml-b', 'G395M', 'zzz_ml_p', 'ml_obs', 2.0, 'inspected', 3, 'TEST-ML-B', (SELECT version FROM objects WHERE id = v_b), 1, 1,
      jsonb_build_object('CIII1908', jsonb_build_object('component', 'doublet', 'wave_rest', 1907.7, 'flux', 1e-18, 'flux_err', 1e-19, 'snr', 20.0)), 'test');
-  INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, photometry)
+  INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, photometry)
   VALUES (v_a, 'zzz_ml_field', 154.00, 2.00, 'zzz_ml_cat',
           jsonb_build_object('flux_unit', 'uJy', 'bands', jsonb_build_object('f444w', jsonb_build_object('flux', 0.36308, 'flux_err', 0.018, 'wav', 4.4))));
 
   -- 1) insert-time links --------------------------------------------------------
-  SELECT object_id INTO v_obj FROM spectrum_lines WHERE spectrum_id = v_sa AND line = 'CIII1908';
+  SELECT object_id INTO v_obj FROM lines WHERE spectrum_id = v_sa AND line = 'CIII1908';
   IF v_obj IS DISTINCT FROM v_a THEN RAISE EXCEPTION 'lines.object_id at insert: want A (%), got %', v_a, v_obj; END IF;
-  SELECT b.object_id INTO v_obj FROM object_photometry_bands b JOIN object_photometry p ON p.id = b.photometry_id WHERE p.catalog_name = 'zzz_ml_cat';
+  SELECT b.object_id INTO v_obj FROM photometry b JOIN catalog_matches p ON p.id = b.match_id WHERE p.catalog_name = 'zzz_ml_cat';
   IF v_obj IS DISTINCT FROM v_a THEN RAISE EXCEPTION 'bands.object_id at insert: want A, got %', v_obj; END IF;
-  IF (SELECT bool_or(stale_redshift) FROM spectrum_line_fits WHERE spectrum_id IN (v_sa, v_sb)) THEN
+  IF (SELECT bool_or(stale_redshift) FROM line_fits WHERE spectrum_id IN (v_sa, v_sb)) THEN
     RAISE EXCEPTION 'a fit at the object''s current redshift and version must not be stale';
   END IF;
 
   -- 2) inspection moves the redshift; a refit clears it --------------------------
   UPDATE objects SET redshift_inspected = 5.1 WHERE id = v_a;
-  SELECT stale_redshift INTO v_stale FROM spectrum_line_fits WHERE spectrum_id = v_sa;
+  SELECT stale_redshift INTO v_stale FROM line_fits WHERE spectrum_id = v_sa;
   IF NOT v_stale THEN RAISE EXCEPTION 'inspecting the object must mark its fit stale'; END IF;
-  SELECT stale_redshift INTO v_stale FROM spectrum_line_fits WHERE spectrum_id = v_sb;
+  SELECT stale_redshift INTO v_stale FROM line_fits WHERE spectrum_id = v_sb;
   IF v_stale THEN RAISE EXCEPTION 'inspecting A must not touch B''s fit'; END IF;
   SELECT version INTO v_ver FROM objects WHERE id = v_a;
-  UPDATE spectrum_line_fits SET z_used = 5.1, object_version = v_ver WHERE spectrum_id = v_sa;
-  SELECT stale_redshift INTO v_stale FROM spectrum_line_fits WHERE spectrum_id = v_sa;
+  UPDATE line_fits SET z_used = 5.1, object_version = v_ver WHERE spectrum_id = v_sa;
+  SELECT stale_redshift INTO v_stale FROM line_fits WHERE spectrum_id = v_sa;
   IF v_stale THEN RAISE EXCEPTION 'a refit at the new redshift and version must be fresh'; END IF;
 
   -- 3) a target regroups ---------------------------------------------------------
   UPDATE targets SET object_id = v_b WHERE target_id = 'test-ml-a';
-  SELECT object_id INTO v_obj FROM spectrum_lines WHERE spectrum_id = v_sa AND line = 'CIII1908';
+  SELECT object_id INTO v_obj FROM lines WHERE spectrum_id = v_sa AND line = 'CIII1908';
   IF v_obj IS DISTINCT FROM v_b THEN RAISE EXCEPTION 'regrouping the target must re-point its lines to B, got %', v_obj; END IF;
-  SELECT stale_redshift INTO v_stale FROM spectrum_line_fits WHERE spectrum_id = v_sa;
+  SELECT stale_redshift INTO v_stale FROM line_fits WHERE spectrum_id = v_sa;
   IF NOT v_stale THEN RAISE EXCEPTION 'a fit whose target regrouped to another object must be stale'; END IF;
   UPDATE targets SET object_id = v_a WHERE target_id = 'test-ml-a';
-  SELECT object_id INTO v_obj FROM spectrum_lines WHERE spectrum_id = v_sa AND line = 'CIII1908';
+  SELECT object_id INTO v_obj FROM lines WHERE spectrum_id = v_sa AND line = 'CIII1908';
   IF v_obj IS DISTINCT FROM v_a THEN RAISE EXCEPTION 'regrouping back must re-point the lines to A'; END IF;
-  SELECT stale_redshift INTO v_stale FROM spectrum_line_fits WHERE spectrum_id = v_sa;
+  SELECT stale_redshift INTO v_stale FROM line_fits WHERE spectrum_id = v_sa;
   IF v_stale THEN RAISE EXCEPTION 'back on its own object at its own version the fit is fresh again'; END IF;
 
   -- 4) a spectrum moves to another target ----------------------------------------
   UPDATE spectra SET target_id = 'test-ml-b' WHERE id = v_sa;   -- PRISM is free on test-ml-b
-  SELECT object_id INTO v_obj FROM spectrum_lines WHERE spectrum_id = v_sa AND line = 'CIII1908';
+  SELECT object_id INTO v_obj FROM lines WHERE spectrum_id = v_sa AND line = 'CIII1908';
   IF v_obj IS DISTINCT FROM v_b THEN RAISE EXCEPTION 'moving the spectrum must re-point its lines to B, got %', v_obj; END IF;
   UPDATE spectra SET target_id = 'test-ml-a' WHERE id = v_sa;
-  SELECT object_id INTO v_obj FROM spectrum_lines WHERE spectrum_id = v_sa AND line = 'CIII1908';
+  SELECT object_id INTO v_obj FROM lines WHERE spectrum_id = v_sa AND line = 'CIII1908';
   IF v_obj IS DISTINCT FROM v_a THEN RAISE EXCEPTION 'moving the spectrum back must re-point the lines to A'; END IF;
 
   -- 5) a cross-match is re-matched -----------------------------------------------
-  UPDATE object_photometry SET object_id = v_b WHERE catalog_name = 'zzz_ml_cat';
-  SELECT b.object_id INTO v_obj FROM object_photometry_bands b JOIN object_photometry p ON p.id = b.photometry_id WHERE p.catalog_name = 'zzz_ml_cat';
+  UPDATE catalog_matches SET object_id = v_b WHERE catalog_name = 'zzz_ml_cat';
+  SELECT b.object_id INTO v_obj FROM photometry b JOIN catalog_matches p ON p.id = b.match_id WHERE p.catalog_name = 'zzz_ml_cat';
   IF v_obj IS DISTINCT FROM v_b THEN RAISE EXCEPTION 're-matching the cross-match must re-point its bands to B'; END IF;
-  UPDATE object_photometry SET object_id = NULL WHERE catalog_name = 'zzz_ml_cat';
-  SELECT b.object_id INTO v_obj FROM object_photometry_bands b JOIN object_photometry p ON p.id = b.photometry_id WHERE p.catalog_name = 'zzz_ml_cat';
+  UPDATE catalog_matches SET object_id = NULL WHERE catalog_name = 'zzz_ml_cat';
+  SELECT b.object_id INTO v_obj FROM photometry b JOIN catalog_matches p ON p.id = b.match_id WHERE p.catalog_name = 'zzz_ml_cat';
   IF v_obj IS NOT NULL THEN RAISE EXCEPTION 'an unmatched cross-match must leave its bands unlinked'; END IF;
-  UPDATE object_photometry SET object_id = v_a WHERE catalog_name = 'zzz_ml_cat';
+  UPDATE catalog_matches SET object_id = v_a WHERE catalog_name = 'zzz_ml_cat';
 
   -- 6) an explicit write of the stored flag is recomputed --------------------------
-  UPDATE spectrum_line_fits SET stale_redshift = true WHERE spectrum_id = v_sa;
-  SELECT stale_redshift INTO v_stale FROM spectrum_line_fits WHERE spectrum_id = v_sa;
+  UPDATE line_fits SET stale_redshift = true WHERE spectrum_id = v_sa;
+  SELECT stale_redshift INTO v_stale FROM line_fits WHERE spectrum_id = v_sa;
   IF v_stale THEN RAISE EXCEPTION 'an explicit write of stale_redshift must be recomputed from the object'; END IF;
 
   -- 7) catalog-wide invariants and helper agreement ---------------------------------
-  SELECT count(*) INTO v_n FROM spectrum_lines l
+  SELECT count(*) INTO v_n FROM lines l
     JOIN spectra s ON s.id = l.spectrum_id JOIN targets tg ON tg.target_id = s.target_id
    WHERE l.object_id IS DISTINCT FROM tg.object_id;
-  IF v_n <> 0 THEN RAISE EXCEPTION '% spectrum_lines rows disagree with their target''s object', v_n; END IF;
-  SELECT count(*) INTO v_n FROM object_photometry_bands b JOIN object_photometry p ON p.id = b.photometry_id
+  IF v_n <> 0 THEN RAISE EXCEPTION '% lines rows disagree with their target''s object', v_n; END IF;
+  SELECT count(*) INTO v_n FROM photometry b JOIN catalog_matches p ON p.id = b.match_id
    WHERE b.object_id IS DISTINCT FROM p.object_id;
-  IF v_n <> 0 THEN RAISE EXCEPTION '% object_photometry_bands rows disagree with their cross-match', v_n; END IF;
-  SELECT count(*) INTO v_n FROM spectrum_line_fits f
+  IF v_n <> 0 THEN RAISE EXCEPTION '% photometry rows disagree with their cross-match', v_n; END IF;
+  SELECT count(*) INTO v_n FROM line_fits f
     JOIN spectra s ON s.id = f.spectrum_id
     LEFT JOIN targets tg ON tg.target_id = s.target_id
     LEFT JOIN objects o ON o.id = tg.object_id
    WHERE f.stale_redshift IS DISTINCT FROM COALESCE(o.id IS NOT NULL AND public.line_fit_stale_redshift(
            o.version, o.redshift_quality, (o.redshift)::double precision, f.object_version, f.z_quality, f.z_used), false);
-  IF v_n <> 0 THEN RAISE EXCEPTION '% spectrum_line_fits rows disagree with line_fit_stale_redshift', v_n; END IF;
+  IF v_n <> 0 THEN RAISE EXCEPTION '% line_fits rows disagree with line_fit_stale_redshift', v_n; END IF;
   -- the status view (live rule) and the stored column agree
-  SELECT count(*) INTO v_n FROM spectrum_line_fits_status st JOIN spectrum_line_fits f ON f.spectrum_id = st.spectrum_id
+  SELECT count(*) INTO v_n FROM line_fits_status st JOIN line_fits f ON f.spectrum_id = st.spectrum_id
    WHERE st.stale_redshift IS DISTINCT FROM f.stale_redshift;
-  IF v_n <> 0 THEN RAISE EXCEPTION '% rows: spectrum_line_fits_status disagrees with the stored stale_redshift', v_n; END IF;
+  IF v_n <> 0 THEN RAISE EXCEPTION '% rows: line_fits_status disagrees with the stored stale_redshift', v_n; END IF;
 
   -- helpers: make A's fit stale again and check it drops out of the non-stale set
   PERFORM set_config('request.jwt.claims', json_build_object('role', 'service_role')::text, true);

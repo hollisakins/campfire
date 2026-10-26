@@ -594,10 +594,10 @@ def zfit(ctx, config_path, obs, dry_run, local, source_ids, force_overwrite, aut
               help='Skip the confirmation prompt for products fit with a non-release pipeline version.')
 @click.pass_context
 def lines(ctx, config_path, obs, dry_run, local, source_ids, allow_auto_z, upload, auto_approve):
-    """Publish emission-line fits (spectrum_line_fits) for a deployed observation.
+    """Publish emission-line fits (line_fits) for a deployed observation.
 
     Reads the <base>_lines.fits products written by `cfpipe nirspec linefit`,
-    uploads them to OSN and upserts one spectrum_line_fits row per spectrum.
+    uploads them to OSN and upserts one line_fits row per spectrum.
     The full `campfire deploy --obs` does this automatically when the products
     exist; use this to (re)publish fits without redeploying the spectra.
     """

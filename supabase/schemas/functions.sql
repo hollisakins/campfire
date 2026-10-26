@@ -758,7 +758,7 @@ WITH (security_invoker = true) AS
            updated_at,
            spectrum_science_hash,
            stale_redshift
-    FROM public.spectrum_line_fits
+    FROM public.line_fits
     UNION ALL
     SELECT 'dr'::text AS cat_src,
            tag AS cat_tag,
@@ -802,12 +802,12 @@ WITH (security_invoker = true) AS
   WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
     AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
-COMMENT ON VIEW public.cat_line_fits IS 'Catalog source view: spectrum_line_fits for the live catalog, dr_line_fits rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+COMMENT ON VIEW public.cat_line_fits IS 'Catalog source view: line_fits for the live catalog, dr_line_fits rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
 REVOKE ALL ON TABLE public.cat_line_fits FROM PUBLIC, anon, authenticated, service_role;
 GRANT SELECT ON TABLE public.cat_line_fits TO authenticated, service_role;
 
-DROP VIEW IF EXISTS public.cat_spectrum_lines;
-CREATE VIEW public.cat_spectrum_lines
+DROP VIEW IF EXISTS public.cat_lines;
+CREATE VIEW public.cat_lines
 WITH (security_invoker = true) AS
   SELECT spectrum_id,
          line,
@@ -836,7 +836,7 @@ WITH (security_invoker = true) AS
            flags,
            blend_into,
            object_id
-    FROM public.spectrum_lines
+    FROM public.lines
     UNION ALL
     SELECT 'dr'::text AS cat_src,
            tag AS cat_tag,
@@ -852,7 +852,7 @@ WITH (security_invoker = true) AS
            flags,
            blend_into,
            object_id
-    FROM public.dr_spectrum_lines
+    FROM public.dr_lines
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
   -- note above); pushed into each arm, cat_src gates it as a One-Time
@@ -860,12 +860,12 @@ WITH (security_invoker = true) AS
   WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
     AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
-COMMENT ON VIEW public.cat_spectrum_lines IS 'Catalog source view: spectrum_lines for the live catalog, dr_spectrum_lines rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
-REVOKE ALL ON TABLE public.cat_spectrum_lines FROM PUBLIC, anon, authenticated, service_role;
-GRANT SELECT ON TABLE public.cat_spectrum_lines TO authenticated, service_role;
+COMMENT ON VIEW public.cat_lines IS 'Catalog source view: lines for the live catalog, dr_lines rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_lines FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_lines TO authenticated, service_role;
 
-DROP VIEW IF EXISTS public.cat_photometry;
-CREATE VIEW public.cat_photometry
+DROP VIEW IF EXISTS public.cat_catalog_matches;
+CREATE VIEW public.cat_catalog_matches
 WITH (security_invoker = true) AS
   SELECT id,
          object_id,
@@ -900,7 +900,7 @@ WITH (security_invoker = true) AS
            has_pz,
            created_at,
            updated_at
-    FROM public.object_photometry
+    FROM public.catalog_matches
     UNION ALL
     SELECT 'dr'::text AS cat_src,
            tag AS cat_tag,
@@ -919,7 +919,7 @@ WITH (security_invoker = true) AS
            has_pz,
            created_at,
            updated_at
-    FROM public.dr_photometry
+    FROM public.dr_catalog_matches
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
   -- note above); pushed into each arm, cat_src gates it as a One-Time
@@ -927,14 +927,14 @@ WITH (security_invoker = true) AS
   WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
     AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
-COMMENT ON VIEW public.cat_photometry IS 'Catalog source view: object_photometry for the live catalog, dr_photometry rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
-REVOKE ALL ON TABLE public.cat_photometry FROM PUBLIC, anon, authenticated, service_role;
-GRANT SELECT ON TABLE public.cat_photometry TO authenticated, service_role;
+COMMENT ON VIEW public.cat_catalog_matches IS 'Catalog source view: catalog_matches for the live catalog, dr_catalog_matches rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_catalog_matches FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_catalog_matches TO authenticated, service_role;
 
-DROP VIEW IF EXISTS public.cat_photometry_bands;
-CREATE VIEW public.cat_photometry_bands
+DROP VIEW IF EXISTS public.cat_photometry;
+CREATE VIEW public.cat_photometry
 WITH (security_invoker = true) AS
-  SELECT photometry_id,
+  SELECT match_id,
          band,
          flux,
          flux_err,
@@ -945,7 +945,7 @@ WITH (security_invoker = true) AS
   FROM (
     SELECT 'live'::text AS cat_src,
            ''::text AS cat_tag,
-           photometry_id,
+           match_id,
            band,
            flux,
            flux_err,
@@ -953,11 +953,11 @@ WITH (security_invoker = true) AS
            snr,
            mag,
            object_id
-    FROM public.object_photometry_bands
+    FROM public.photometry
     UNION ALL
     SELECT 'dr'::text AS cat_src,
            tag AS cat_tag,
-           photometry_id,
+           match_id,
            band,
            flux,
            flux_err,
@@ -965,7 +965,7 @@ WITH (security_invoker = true) AS
            snr,
            mag,
            object_id
-    FROM public.dr_photometry_bands
+    FROM public.dr_photometry
   ) u
   -- the switch is a qual on the outer subquery, never on an arm (see the
   -- note above); pushed into each arm, cat_src gates it as a One-Time
@@ -973,9 +973,9 @@ WITH (security_invoker = true) AS
   WHERE u.cat_src = CASE WHEN public.dr_browse_tag() IS NULL THEN 'live' ELSE 'dr' END
     AND u.cat_tag = COALESCE(public.dr_browse_tag(), '');
 
-COMMENT ON VIEW public.cat_photometry_bands IS 'Catalog source view: object_photometry_bands for the live catalog, dr_photometry_bands rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
-REVOKE ALL ON TABLE public.cat_photometry_bands FROM PUBLIC, anon, authenticated, service_role;
-GRANT SELECT ON TABLE public.cat_photometry_bands TO authenticated, service_role;
+COMMENT ON VIEW public.cat_photometry IS 'Catalog source view: photometry for the live catalog, dr_photometry rows of the browsed release (dr_browse_tag()) otherwise. Read by the catalog RPCs; never written.';
+REVOKE ALL ON TABLE public.cat_photometry FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.cat_photometry TO authenticated, service_role;
 
 DROP VIEW IF EXISTS public.cat_nircam_images;
 CREATE VIEW public.cat_nircam_images
@@ -1548,13 +1548,13 @@ GRANT EXECUTE ON FUNCTION public.objects_matching_grating_filter(TEXT[], TEXT, T
 
 
 -- =============================================================================
--- Emission-line catalog helpers (spectrum_lines; docs/design-emission-line-fitting.md)
+-- Emission-line catalog helpers (lines; docs/design-emission-line-fitting.md)
 -- =============================================================================
 
 -- line_fit_stale_redshift: the ONE definition of "the object's inspected
 -- redshift moved since this fit was made" — its version, quality or value
 -- differs from the provenance the fit row recorded. Used by the
--- spectrum_line_fits_status view and by the filter helpers below, so a
+-- line_fits_status view and by the filter helpers below, so a
 -- filtered catalog list and the staleness ledger cannot disagree. Callers
 -- guard the "no object" case (o.id IS NULL) themselves. IMMUTABLE SQL so the
 -- planner inlines it.
@@ -1587,7 +1587,7 @@ GRANT EXECUTE ON FUNCTION public.line_fit_stale_redshift(INTEGER, INTEGER, DOUBL
 -- fitted before linefit wrote SCIHASH) the whole-file pair decides, as before.
 -- Both sides are 'sha256:<hex>'; the scheme is stripped defensively so a bare
 -- digest from an older product still compares. Used by the
--- spectrum_line_fits_status view and get_line_fits_for_sync, so the ledger
+-- line_fits_status view and get_line_fits_for_sync, so the ledger
 -- and the mirrored record cannot disagree. IMMUTABLE SQL so the planner
 -- inlines it.
 CREATE OR REPLACE FUNCTION public.line_fit_stale_spectrum(
@@ -1614,7 +1614,7 @@ GRANT EXECUTE ON FUNCTION public.line_fit_stale_spectrum(TEXT, TEXT, TEXT, TEXT)
 
 
 -- =============================================================================
--- Emission-line catalog helpers (spectrum_lines)
+-- Emission-line catalog helpers (lines)
 -- =============================================================================
 
 -- object_line_values: for catalog line p_line, one row per caller-visible
@@ -1655,9 +1655,9 @@ GRANT EXECUTE ON FUNCTION public.line_fit_stale_spectrum(TEXT, TEXT, TEXT, TEXT)
 --     87 500 rows (actual 1 052) and 1e9 for the whole chain, and chose merge
 --     joins over full scans of the spectra / targets / objects arms.
 -- So the shape is pinned instead of estimated: the line slice is the driver
--- (one range scan on idx_spectrum_lines_line_snr), and every other table is
+-- (one range scan on idx_lines_line_snr), and every other table is
 -- reached through a LATERAL `... LIMIT 1` lookup on a key that is unique in
--- both the live and the frozen arm (spectrum_line_fits.spectrum_id; the
+-- both the live and the frozen arm (line_fits.spectrum_id; the
 -- spectra primary key; targets.target_id; the objects primary key; the dr_*
 -- twins add the tag, which the view fixes), which the planner can neither
 -- flatten nor reorder: line -> fit -> spectrum -> target -> object, four index
@@ -1667,7 +1667,7 @@ GRANT EXECUTE ON FUNCTION public.line_fit_stale_spectrum(TEXT, TEXT, TEXT, TEXT)
 -- both traps return.
 --
 -- SECURITY DEFINER, like object_band_values and for the same reason: read
--- under RLS, every spectrum_lines and spectrum_line_fits row re-ran its
+-- under RLS, every lines and line_fits row re-ran its
 -- policy (an EXISTS on the parent spectrum, planned as a hashed sub-plan that
 -- seq-scans all 81 k spectra once per statement), a 100 ms floor paid twice
 -- per list call (filter + values): 230 ms vs 55 ms for the same pinned shape.
@@ -1691,7 +1691,7 @@ GRANT EXECUTE ON FUNCTION public.line_fit_stale_spectrum(TEXT, TEXT, TEXT, TEXT)
 --     p_include_unpublished = true, still gets only the spectra and objects
 --     the policies would show them. Copied verbatim; keep them in step
 --     (supabase/tests/check_line_filter_scoping.sql guards both gates). The
---     spectrum_lines / spectrum_line_fits policies are "iff the parent
+--     lines / line_fits policies are "iff the parent
 --     spectrum is visible", which the spectra copy IS; the targets policy is
 --     implied by it (program_slug and observation are copies of the target's
 --     columns, and a target with a visible published spectrum has
@@ -1721,7 +1721,7 @@ SET search_path = public
 ROWS 2000
 AS $$
   SELECT l.object_id, max(l.snr)
-  FROM public.cat_spectrum_lines l
+  FROM public.cat_lines l
   -- unique-key lookups, pinned with LIMIT 1 (see the plan-shape note above)
   CROSS JOIN LATERAL (
     SELECT f.program_slug, f.stale_redshift
@@ -1824,7 +1824,7 @@ RETURNS SETOF INTEGER
 LANGUAGE sql STABLE
 AS $$
   SELECT l.spectrum_id
-  FROM public.cat_spectrum_lines l
+  FROM public.cat_lines l
   JOIN public.cat_line_fits f ON f.spectrum_id = l.spectrum_id
   WHERE l.line = p_line
     AND l.snr IS NOT NULL
@@ -1866,7 +1866,7 @@ GRANT EXECUTE ON FUNCTION public.object_line_snr(INTEGER, TEXT, BOOLEAN, TEXT[],
 
 
 -- =============================================================================
--- Photometry band catalog helpers (object_photometry_bands)
+-- Photometry band catalog helpers (photometry)
 -- =============================================================================
 
 -- object_band_values: for catalog band p_band, one row per caller-visible
@@ -1883,7 +1883,7 @@ GRANT EXECUTE ON FUNCTION public.object_line_snr(INTEGER, TEXT, BOOLEAN, TEXT[],
 --
 -- SECURITY DEFINER, deliberately. The first shipped version (a SECURITY
 -- INVOKER filter plus per-row object_band_mag / object_band_snr probes) timed
--- out in production: under RLS every object_photometry_bands row the scan
+-- out in production: under RLS every photometry row the scan
 -- touched re-ran the derived table's policy, a correlated EXISTS on the parent
 -- cross-match whose own policy is a correlated EXISTS on objects, so one
 -- band-filtered list call cost ~30k nested subplans (0.6-3.5 s on a 990k-row
@@ -1954,7 +1954,7 @@ SET search_path = public
 ROWS 20000
 AS $$
   SELECT b.object_id, min(b.mag), max(b.snr)
-  FROM public.cat_photometry_bands b
+  FROM public.cat_photometry b
   -- phase 2a: the band row carries its object; no cross-match hop
   JOIN public.cat_objects o ON o.id = b.object_id
   WHERE p_band IS NOT NULL
@@ -2621,8 +2621,8 @@ AS $$
       WHEN 'objects' THEN EXISTS (SELECT 1 FROM public.objects o WHERE o.id = d.row_id)
       WHEN 'spectra' THEN EXISTS (SELECT 1 FROM public.spectra s WHERE s.id = d.row_id)
       WHEN 'storage' THEN EXISTS (SELECT 1 FROM public.storage_objects so WHERE so.id = d.row_id)
-      WHEN 'photometry' THEN EXISTS (SELECT 1 FROM public.object_photometry p WHERE p.id = d.row_id)
-      WHEN 'line_fits' THEN EXISTS (SELECT 1 FROM public.spectrum_line_fits f WHERE f.spectrum_id = d.row_id)
+      WHEN 'photometry' THEN EXISTS (SELECT 1 FROM public.catalog_matches p WHERE p.id = d.row_id)
+      WHEN 'line_fits' THEN EXISTS (SELECT 1 FROM public.line_fits f WHERE f.spectrum_id = d.row_id)
     END
   GROUP BY d.stream;
 $$;
@@ -2836,7 +2836,7 @@ CREATE OR REPLACE FUNCTION public.get_photometry_for_sync(
   -- COUNT(*) scan on every subsequent page, matching the other /sync/* RPCs.
   p_include_counts BOOLEAN DEFAULT TRUE,
   -- Keyset cursor (#103): the id of the last row of the previous page, seeked
-  -- via the object_photometry PK btree. Keyset-only since T2-F (#511).
+  -- via the catalog_matches PK btree. Keyset-only since T2-F (#511).
   p_after_id INTEGER DEFAULT NULL
 )
 RETURNS TABLE(photometry_records JSONB, total_count BIGINT)
@@ -2857,7 +2857,7 @@ BEGIN
            -- row re-sent because the object changed advances the client's
            -- cursor (see get_spectra_for_sync).
            GREATEST(op.updated_at, o.updated_at) AS updated_at
-    FROM object_photometry op
+    FROM catalog_matches op
     JOIN objects o ON o.id = op.object_id
     WHERE o.programs && p_program_slugs
       -- Soft-deleted objects are tombstoned by the objects stream (which
@@ -2883,7 +2883,7 @@ BEGIN
   -- One-Time Filter: false and skips the scan/join.
   total AS (
     SELECT COUNT(*) AS cnt
-    FROM object_photometry op
+    FROM catalog_matches op
     JOIN objects o ON o.id = op.object_id
     WHERE p_include_counts
       AND o.programs && p_program_slugs
@@ -2970,7 +2970,7 @@ BEGIN
            -- re-inspection or redeploy instead of re-sending the row forever.
            GREATEST(f.updated_at, s.updated_at, o.updated_at) AS effective_updated_at,
            -- staleness vs the live inspection state: the same two functions
-           -- the spectrum_line_fits_status view calls, so the mirrored record
+           -- the line_fits_status view calls, so the mirrored record
            -- and the ledger cannot disagree.
            (o.id IS NOT NULL AND public.line_fit_stale_redshift(
               o.version, o.redshift_quality, (o.redshift)::double precision,
@@ -2978,7 +2978,7 @@ BEGIN
            public.line_fit_stale_spectrum(
               s.file_hash, s.science_hash,
               f.spectrum_hash, f.spectrum_science_hash) AS stale_spectrum
-    FROM spectrum_line_fits f
+    FROM line_fits f
     JOIN spectra s ON s.id = f.spectrum_id
     LEFT JOIN targets t ON t.target_id = f.target_id
     LEFT JOIN objects o ON o.id = t.object_id
@@ -3001,7 +3001,7 @@ BEGIN
   ),
   total AS (
     SELECT COUNT(*) AS cnt
-    FROM spectrum_line_fits f
+    FROM line_fits f
     JOIN spectra s ON s.id = f.spectrum_id
     LEFT JOIN targets t ON t.target_id = f.target_id
     LEFT JOIN objects o ON o.id = t.object_id
@@ -3171,7 +3171,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_page_size INTEGER DEFAULT 50,
   p_include_thumbnails BOOLEAN DEFAULT false,
   p_include_unpublished BOOLEAN DEFAULT false,
-  -- Emission-line filter (spectrum_lines; docs/design-emission-line-fitting.md):
+  -- Emission-line filter (lines; docs/design-emission-line-fitting.md):
   -- catalog line name (a doublet total such as CIII1908, or a single line),
   -- S/N bounds, and whether fits whose inspected redshift has since moved
   -- count. Sort column 'line_snr' is accepted only with p_line set.
@@ -3179,7 +3179,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_spectra_paginated(
   p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_line_include_stale BOOLEAN DEFAULT false,
-  -- Photometry band filter (object_photometry_bands): a catalog band name as
+  -- Photometry band filter (photometry): a catalog band name as
   -- it appears in the photometry payload (e.g. f444w), an AB-magnitude window
   -- and/or an S/N window, both open-ended when a bound is NULL. Sort columns
   -- 'band_mag' / 'band_snr' are accepted only with p_band set.
@@ -3359,7 +3359,7 @@ BEGIN
       s.file_size,
       -- the spectrum's S/N in the filtered line (sort key + 'Line S/N' column)
       CASE WHEN p_line IS NOT NULL THEN
-        (SELECT __l.snr FROM public.cat_spectrum_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
+        (SELECT __l.snr FROM public.cat_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
       END AS line_snr,
       -- the parent object's magnitude and S/N in the filtered band (sort keys
       -- + 'Mag' / 'Band S/N' columns). Object-level: photometry belongs to the
@@ -3648,7 +3648,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_page INTEGER DEFAULT 1,
   p_page_size INTEGER DEFAULT 50,
   p_include_unpublished BOOLEAN DEFAULT false,
-  -- Emission-line filter (spectrum_lines; docs/design-emission-line-fitting.md):
+  -- Emission-line filter (lines; docs/design-emission-line-fitting.md):
   -- catalog line name (a doublet total such as CIII1908, or a single line),
   -- S/N bounds, and whether fits whose inspected redshift has since moved
   -- count. Sort column 'line_snr' is accepted only with p_line set.
@@ -3656,7 +3656,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_objects_paginated(
   p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_line_include_stale BOOLEAN DEFAULT false,
-  -- Photometry band filter (object_photometry_bands): a catalog band name as
+  -- Photometry band filter (photometry): a catalog band name as
   -- it appears in the photometry payload (e.g. f444w), an AB-magnitude window
   -- and/or an S/N window, both open-ended when a bound is NULL. Sort columns
   -- 'band_mag' / 'band_snr' are accepted only with p_band set.
@@ -4304,7 +4304,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_sort_column TEXT DEFAULT 'object_id',
   p_sort_direction TEXT DEFAULT 'asc',
   p_include_unpublished BOOLEAN DEFAULT false,
-  -- Emission-line filter (spectrum_lines; docs/design-emission-line-fitting.md):
+  -- Emission-line filter (lines; docs/design-emission-line-fitting.md):
   -- catalog line name (a doublet total such as CIII1908, or a single line),
   -- S/N bounds, and whether fits whose inspected redshift has since moved
   -- count. Sort column 'line_snr' is accepted only with p_line set.
@@ -4312,7 +4312,7 @@ CREATE OR REPLACE FUNCTION public.get_filtered_object_ids(
   p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_line_include_stale BOOLEAN DEFAULT false,
-  -- Photometry band filter (object_photometry_bands): a catalog band name as
+  -- Photometry band filter (photometry): a catalog band name as
   -- it appears in the photometry payload (e.g. f444w), an AB-magnitude window
   -- and/or an S/N window, both open-ended when a bound is NULL. Sort columns
   -- 'band_mag' / 'band_snr' are accepted only with p_band set.
@@ -4651,7 +4651,7 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
   p_include_unpublished BOOLEAN DEFAULT false,
-  -- Emission-line filter (spectrum_lines; docs/design-emission-line-fitting.md):
+  -- Emission-line filter (lines; docs/design-emission-line-fitting.md):
   -- catalog line name (a doublet total such as CIII1908, or a single line),
   -- S/N bounds, and whether fits whose inspected redshift has since moved
   -- count. Sort column 'line_snr' is accepted only with p_line set.
@@ -4659,7 +4659,7 @@ CREATE OR REPLACE FUNCTION public.get_adjacent_objects(
   p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_line_include_stale BOOLEAN DEFAULT false,
-  -- Photometry band filter (object_photometry_bands): a catalog band name as
+  -- Photometry band filter (photometry): a catalog band name as
   -- it appears in the photometry payload (e.g. f444w), an AB-magnitude window
   -- and/or an S/N window, both open-ended when a bound is NULL. Sort columns
   -- 'band_mag' / 'band_snr' are accepted only with p_band set.
@@ -4984,7 +4984,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_coord_ra DOUBLE PRECISION DEFAULT NULL, p_coord_dec DOUBLE PRECISION DEFAULT NULL,
   p_radius_degrees DOUBLE PRECISION DEFAULT NULL,
   p_include_unpublished BOOLEAN DEFAULT false,
-  -- Emission-line filter (spectrum_lines; docs/design-emission-line-fitting.md):
+  -- Emission-line filter (lines; docs/design-emission-line-fitting.md):
   -- catalog line name (a doublet total such as CIII1908, or a single line),
   -- S/N bounds, and whether fits whose inspected redshift has since moved
   -- count. Sort column 'line_snr' is accepted only with p_line set.
@@ -4992,7 +4992,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_spectra(
   p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_line_include_stale BOOLEAN DEFAULT false,
-  -- Photometry band filter (object_photometry_bands): a catalog band name as
+  -- Photometry band filter (photometry): a catalog band name as
   -- it appears in the photometry payload (e.g. f444w), an AB-magnitude window
   -- and/or an S/N window, both open-ended when a bound is NULL. Sort columns
   -- 'band_mag' / 'band_snr' are accepted only with p_band set.
@@ -5083,7 +5083,7 @@ BEGIN
       COALESCE(s.dq_flags, 0) AS dq_flags,
       vl.lists,
       CASE WHEN p_line IS NOT NULL THEN
-        (SELECT __l.snr FROM public.cat_spectrum_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
+        (SELECT __l.snr FROM public.cat_lines __l WHERE __l.spectrum_id = s.id AND __l.line = p_line)
       END AS line_snr,
       bv.mag AS band_mag,
       bv.snr AS band_snr
@@ -5199,7 +5199,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_comment_search TEXT DEFAULT NULL, p_comment_search_scope TEXT DEFAULT NULL,
   p_comment_user_id UUID DEFAULT NULL,
   p_include_unpublished BOOLEAN DEFAULT false,
-  -- Emission-line filter (spectrum_lines; docs/design-emission-line-fitting.md):
+  -- Emission-line filter (lines; docs/design-emission-line-fitting.md):
   -- catalog line name (a doublet total such as CIII1908, or a single line),
   -- S/N bounds, and whether fits whose inspected redshift has since moved
   -- count. Sort column 'line_snr' is accepted only with p_line set.
@@ -5207,7 +5207,7 @@ CREATE OR REPLACE FUNCTION public.get_csv_export_objects(
   p_line_snr_min DOUBLE PRECISION DEFAULT NULL,
   p_line_snr_max DOUBLE PRECISION DEFAULT NULL,
   p_line_include_stale BOOLEAN DEFAULT false,
-  -- Photometry band filter (object_photometry_bands): a catalog band name as
+  -- Photometry band filter (photometry): a catalog band name as
   -- it appears in the photometry payload (e.g. f444w), an AB-magnitude window
   -- and/or an S/N window, both open-ended when a bound is NULL. Sort columns
   -- 'band_mag' / 'band_snr' are accepted only with p_band set.
@@ -5472,7 +5472,7 @@ BEGIN
   LEFT JOIN user_profiles up ON up.user_id = po.last_inspected_by
   LEFT JOIN LATERAL public.object_scoped_aggregates(po.id, v_filtered_program_slugs, p_include_unpublished) sa ON true
   LEFT JOIN LATERAL (
-    SELECT op.photometry FROM public.cat_photometry op
+    SELECT op.photometry FROM public.cat_catalog_matches op
     WHERE op.object_id = po.id ORDER BY op.updated_at DESC LIMIT 1
   ) phot ON true
   ORDER BY po.object_id ASC;
@@ -8918,7 +8918,7 @@ GRANT EXECUTE ON FUNCTION public.claim_deploy_scope(text, text, integer, uuid) T
 -- The function sets statement_timeout = '120s' like the sync RPCs: it runs
 -- catalog-wide aggregates, and service_role otherwise inherits authenticator's
 -- 8 s, which a Small or busy instance can exceed.
--- No per-row function calls except inside spectrum_line_fits_status (16k rows,
+-- No per-row function calls except inside line_fits_status (16k rows,
 -- the ledger's own definition of staleness — reuse, do not re-derive).
 --
 -- needs_review is the maintained objects.needs_review flag (P3,
@@ -9101,7 +9101,7 @@ BEGIN
     'stale_redshift', count(*) FILTER (WHERE stale_redshift),
     'stale_spectrum', count(*) FILTER (WHERE stale_spectrum))
   INTO v_lines
-  FROM spectrum_line_fits_status;
+  FROM line_fits_status;
 
   -- 10. science hash coverage, only once the columns exist (P0b, PR #586).
   SELECT EXISTS (SELECT 1 FROM information_schema.columns
@@ -10035,7 +10035,7 @@ GRANT EXECUTE ON FUNCTION public.relink_list_members_for_field(TEXT) TO service_
 
 -- =============================================================================
 -- relink_photometry_for_field
--- (re-link object_photometry.object_id after objects rebuild)
+-- (re-link catalog_matches.object_id after objects rebuild)
 -- =============================================================================
 
 DROP FUNCTION IF EXISTS public.relink_photometry_for_field(TEXT);
@@ -10080,7 +10080,7 @@ BEGIN
                POWER(op.dec - o.dec, 2)
              ) ASC
            ) AS rn
-    FROM object_photometry op
+    FROM catalog_matches op
     CROSS JOIN LATERAL (
       SELECT o.id, o.ra, o.dec
       FROM objects o
@@ -10096,7 +10096,7 @@ BEGIN
     WHERE rn = 1 AND dist_deg <= v_tolerance_deg
   ),
   updated AS (
-    UPDATE object_photometry op
+    UPDATE catalog_matches op
     SET object_id = bm.obj_id
     FROM best_match bm
     WHERE op.id = bm.phot_id
@@ -10105,14 +10105,14 @@ BEGIN
   SELECT COUNT(*) INTO n_relinked FROM updated;
 
   -- Set NULL for unmatched rows in this field
-  UPDATE object_photometry
+  UPDATE catalog_matches
   SET object_id = NULL
   WHERE field = p_field
-    AND id NOT IN (SELECT id FROM object_photometry WHERE field = p_field AND object_id IS NOT NULL);
+    AND id NOT IN (SELECT id FROM catalog_matches WHERE field = p_field AND object_id IS NOT NULL);
 
   -- Count orphaned
   SELECT COUNT(*) INTO n_orphaned
-  FROM object_photometry
+  FROM catalog_matches
   WHERE field = p_field AND object_id IS NULL;
 
   RETURN jsonb_build_object(
@@ -10127,7 +10127,7 @@ GRANT EXECUTE ON FUNCTION public.relink_photometry_for_field(TEXT) TO service_ro
 
 -- =============================================================================
 -- sync_photometry_to_objects
--- (copy photo_z + has_photometry from object_photometry to objects)
+-- (copy photo_z + has_photometry from catalog_matches to objects)
 -- =============================================================================
 
 DROP FUNCTION IF EXISTS public.sync_photometry_to_objects(TEXT);
@@ -10147,7 +10147,7 @@ BEGIN
       op.photo_z,
       op.photo_z_err_lo,
       op.photo_z_err_hi
-    FROM object_photometry op
+    FROM catalog_matches op
     WHERE op.field = p_field AND op.object_id IS NOT NULL
     ORDER BY op.object_id, op.updated_at DESC
   )
@@ -10170,7 +10170,7 @@ BEGIN
   WHERE o.field = p_field
     AND o.has_photometry = TRUE
     AND NOT EXISTS (
-      SELECT 1 FROM object_photometry op
+      SELECT 1 FROM catalog_matches op
       WHERE op.object_id = o.id
     );
 
@@ -10304,7 +10304,7 @@ BEGIN
     ELSIF c LIKE 'photometry/%/%' THEN
       v_field := split_part(substr(c, 12), '/', 1);
       v_catalog := substr(substr(c, 12), length(v_field) + 2);
-      IF NOT EXISTS (SELECT 1 FROM object_photometry op WHERE op.field = v_field AND op.catalog_name = v_catalog) THEN
+      IF NOT EXISTS (SELECT 1 FROM catalog_matches op WHERE op.field = v_field AND op.catalog_name = v_catalog) THEN
         RAISE EXCEPTION 'component %: no photometry rows for field % catalog %', c, v_field, v_catalog;
       END IF;
       photometry := array_append(photometry, v_field || '/' || v_catalog);
@@ -10404,10 +10404,10 @@ BEGIN
     -- document's assets (component 'page', written by dr_page_set, P6b-3) are
     -- authored independently of the catalog freeze and survive a re-freeze.
     DELETE FROM dr_manifest         WHERE tag = p_tag AND component <> 'page';
-    DELETE FROM dr_spectrum_lines   WHERE tag = p_tag;
+    DELETE FROM dr_lines   WHERE tag = p_tag;
     DELETE FROM dr_line_fits        WHERE tag = p_tag;
-    DELETE FROM dr_photometry_bands WHERE tag = p_tag;
-    DELETE FROM dr_photometry       WHERE tag = p_tag;
+    DELETE FROM dr_photometry WHERE tag = p_tag;
+    DELETE FROM dr_catalog_matches       WHERE tag = p_tag;
     DELETE FROM dr_spectra          WHERE tag = p_tag;
     DELETE FROM dr_targets          WHERE tag = p_tag;
     DELETE FROM dr_objects          WHERE tag = p_tag;
@@ -10506,34 +10506,34 @@ BEGIN
              -- evaluated in this snapshot
              f.stale_redshift,
              line_fit_stale_spectrum(p.file_hash, p.science_hash, f.spectrum_hash, f.spectrum_science_hash)
-      FROM spectrum_line_fits f
+      FROM line_fits f
       JOIN pub p ON p.id = f.spectrum_id
       LEFT JOIN objects o ON o.id = p.obj_id
       RETURNING 1
     ),
     ins_slines AS (
-      INSERT INTO dr_spectrum_lines (tag, spectrum_id, line, component, wave_rest, flux, flux_err, snr, ew_rest, ew_rest_err, flags, blend_into, object_id)
+      INSERT INTO dr_lines (tag, spectrum_id, line, component, wave_rest, flux, flux_err, snr, ew_rest, ew_rest_err, flags, blend_into, object_id)
       SELECT p_tag, l.spectrum_id, l.line, l.component, l.wave_rest, l.flux, l.flux_err, l.snr, l.ew_rest, l.ew_rest_err, l.flags, l.blend_into, l.object_id
-      FROM spectrum_lines l JOIN pub p ON p.id = l.spectrum_id
+      FROM lines l JOIN pub p ON p.id = l.spectrum_id
       RETURNING 1
     ),
     phot AS MATERIALIZED (
       -- cross-match rows of the frozen objects in the SELECTED catalogs
       SELECT ph.id
-      FROM object_photometry ph
+      FROM catalog_matches ph
       JOIN ev ON ev.obj_id = ph.object_id
       WHERE (ph.field || '/' || ph.catalog_name) = ANY (comp.photometry)
     ),
     ins_phot AS (
-      INSERT INTO dr_photometry (tag, id, object_id, field, ra, dec, catalog_name, catalog_id, match_distance_arcsec, photometry, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz, created_at, updated_at)
+      INSERT INTO dr_catalog_matches (tag, id, object_id, field, ra, dec, catalog_name, catalog_id, match_distance_arcsec, photometry, photo_z, photo_z_err_lo, photo_z_err_hi, has_pz, created_at, updated_at)
       SELECT p_tag, ph.id, ph.object_id, ph.field, ph.ra, ph.dec, ph.catalog_name, ph.catalog_id, ph.match_distance_arcsec, ph.photometry, ph.photo_z, ph.photo_z_err_lo, ph.photo_z_err_hi, ph.has_pz, ph.created_at, ph.updated_at
-      FROM object_photometry ph JOIN phot ON phot.id = ph.id
+      FROM catalog_matches ph JOIN phot ON phot.id = ph.id
       RETURNING 1
     ),
     ins_bands AS (
-      INSERT INTO dr_photometry_bands (tag, photometry_id, band, flux, flux_err, wav, snr, mag, object_id)
-      SELECT p_tag, b.photometry_id, b.band, b.flux, b.flux_err, b.wav, b.snr, b.mag, b.object_id
-      FROM object_photometry_bands b JOIN phot ON phot.id = b.photometry_id
+      INSERT INTO dr_photometry (tag, match_id, band, flux, flux_err, wav, snr, mag, object_id)
+      SELECT p_tag, b.match_id, b.band, b.flux, b.flux_err, b.wav, b.snr, b.mag, b.object_id
+      FROM photometry b JOIN phot ON phot.id = b.match_id
       RETURNING 1
     ),
     ins_nircam AS (
@@ -10632,7 +10632,7 @@ BEGIN
         AND EXISTS (SELECT 1 FROM deployments d
                     WHERE d.id = so.deployment_id AND d.field = so.field AND d.status = 'published')
       -- (P(z) sidecars are not members: photometry_pz is a key-only product the
-      -- layout cannot archive; the frozen dr_photometry rows carry the catalog
+      -- layout cannot archive; the frozen dr_catalog_matches rows carry the catalog
       -- values, the sidecars stay live-only -- plan amendment D-P4-5.)
       ON CONFLICT (tag, storage_key) DO NOTHING
       RETURNING 1
@@ -10658,8 +10658,8 @@ BEGIN
       ARRAY(SELECT DISTINCT sp.grating FROM dr_spectra sp
             WHERE sp.tag = p_tag AND sp.deploy_status = 'published' ORDER BY sp.grating),
       ARRAY(SELECT b.band
-            FROM dr_photometry_bands b
-            JOIN dr_photometry ph ON ph.tag = b.tag AND ph.id = b.photometry_id
+            FROM dr_photometry b
+            JOIN dr_catalog_matches ph ON ph.tag = b.tag AND ph.id = b.match_id
             JOIN dr_objects o ON o.tag = ph.tag AND o.id = ph.object_id
             WHERE b.tag = p_tag AND o.has_published_spectrum AND o.is_active
             GROUP BY b.band
@@ -10717,7 +10717,7 @@ BEGIN
     -- listed as a component with nothing behind it (Codex on #599)
     SELECT string_agg(c, ', ' ORDER BY c) INTO v_missing
     FROM unnest(comp.photometry) c
-    WHERE NOT EXISTS (SELECT 1 FROM dr_photometry ph
+    WHERE NOT EXISTS (SELECT 1 FROM dr_catalog_matches ph
                       WHERE ph.tag = p_tag AND (ph.field || '/' || ph.catalog_name) = c);
     IF v_missing IS NOT NULL THEN
       RAISE EXCEPTION 'photometry components matching no frozen object (leave them out, or cross-match first): %',
@@ -10793,7 +10793,7 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION public.dr_freeze_job(text) IS 'Data-release freeze (P4a, full-row copies since P6b): rewrites the frozen tables of an UNPUBLISHED tag (dr_spectra, dr_targets, dr_objects, dr_line_fits, dr_spectrum_lines, dr_photometry, dr_photometry_bands, dr_nircam_images, dr_fields, dr_manifest; then dr_filter_options) in one statement (one snapshot) from the published live rows, then marks the row frozen with counts, snapshot xmin and duration; any error lands in state failed with the message. Runs as postgres from the one-shot pg_cron job dr_enqueue_freeze schedules, inline where pg_cron is absent, and from the seed. Idempotent per tag.';
+COMMENT ON FUNCTION public.dr_freeze_job(text) IS 'Data-release freeze (P4a, full-row copies since P6b): rewrites the frozen tables of an UNPUBLISHED tag (dr_spectra, dr_targets, dr_objects, dr_line_fits, dr_lines, dr_catalog_matches, dr_photometry, dr_nircam_images, dr_fields, dr_manifest; then dr_filter_options) in one statement (one snapshot) from the published live rows, then marks the row frozen with counts, snapshot xmin and duration; any error lands in state failed with the message. Runs as postgres from the one-shot pg_cron job dr_enqueue_freeze schedules, inline where pg_cron is absent, and from the seed. Idempotent per tag.';
 
 REVOKE ALL ON FUNCTION public.dr_freeze_job(text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.dr_freeze_job(text) TO service_role;
@@ -10933,10 +10933,10 @@ BEGIN
   END IF;
   PERFORM dr_cron_unschedule(p_tag);
   DELETE FROM dr_manifest         WHERE tag = p_tag; GET DIAGNOSTICS n_members = ROW_COUNT;
-  DELETE FROM dr_spectrum_lines   WHERE tag = p_tag; GET DIAGNOSTICS n_slines = ROW_COUNT;
+  DELETE FROM dr_lines   WHERE tag = p_tag; GET DIAGNOSTICS n_slines = ROW_COUNT;
   DELETE FROM dr_line_fits        WHERE tag = p_tag; GET DIAGNOSTICS n_lines = ROW_COUNT;
-  DELETE FROM dr_photometry_bands WHERE tag = p_tag; GET DIAGNOSTICS n_bands = ROW_COUNT;
-  DELETE FROM dr_photometry       WHERE tag = p_tag; GET DIAGNOSTICS n_phot = ROW_COUNT;
+  DELETE FROM dr_photometry WHERE tag = p_tag; GET DIAGNOSTICS n_bands = ROW_COUNT;
+  DELETE FROM dr_catalog_matches       WHERE tag = p_tag; GET DIAGNOSTICS n_phot = ROW_COUNT;
   DELETE FROM dr_spectra          WHERE tag = p_tag; GET DIAGNOSTICS n_spectra = ROW_COUNT;
   DELETE FROM dr_targets          WHERE tag = p_tag; GET DIAGNOSTICS n_targets = ROW_COUNT;
   DELETE FROM dr_objects          WHERE tag = p_tag; GET DIAGNOSTICS n_objects = ROW_COUNT;
@@ -11070,7 +11070,7 @@ BEGIN
     WHERE f.tag = p_tag GROUP BY s.program_slug
     UNION ALL
     SELECT 'photometry', p, count(*)
-    FROM dr_photometry ph
+    FROM dr_catalog_matches ph
     JOIN dr_objects o ON o.tag = ph.tag AND o.id = ph.object_id, unnest(o.evidence_programs) AS p
     WHERE ph.tag = p_tag GROUP BY p
     UNION ALL
@@ -11226,7 +11226,7 @@ BEGIN
              'ra', ph.ra, 'dec', ph.dec, 'match_distance_arcsec', ph.match_distance_arcsec,
              'photometry', ph.photometry, 'photo_z', ph.photo_z,
              'photo_z_err_lo', ph.photo_z_err_lo, 'photo_z_err_hi', ph.photo_z_err_hi, 'has_pz', ph.has_pz)
-    FROM dr_photometry ph
+    FROM dr_catalog_matches ph
     JOIN dr_objects o ON o.tag = ph.tag AND o.id = ph.object_id
     WHERE ph.tag = p_tag AND p_partition = ANY (o.evidence_programs)
       AND (p_after IS NULL OR ph.id > p_after::integer)
@@ -11330,7 +11330,7 @@ BEGIN
   -- exactly like one of the release's field-level components would share the
   -- open component file with its private rows (program slugs carry no format
   -- constraint). Refuse such a release rather than guess (Codex on #600).
-  -- Complete as written: dr_line_fits and dr_photometry take their program
+  -- Complete as written: dr_line_fits and dr_catalog_matches take their program
   -- slugs from these spectra and objects, so they cannot add a new one.
   IF EXISTS (SELECT 1 FROM jsonb_array_elements_text(r.components) c
              WHERE c.value LIKE '%/%'

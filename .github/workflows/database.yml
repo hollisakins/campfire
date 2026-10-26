@@ -150,6 +150,7 @@ jobs:
             python/tests/test_deploy_status_rls.py \
             python/tests/test_is_public_race.py \
             python/tests/test_line_fit_stale_race.py \
+            python/tests/test_target_scope_race.py \
             python/tests/test_lifecycle_rls.py \
             python/tests/test_multireducer_rls.py \
             python/tests/test_nircam_exposure_rls.py \

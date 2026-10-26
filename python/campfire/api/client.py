@@ -733,7 +733,7 @@ class APIClient:
     ) -> "SyncStream":
         """Fetch all photometry records via the /sync/photometry endpoint.
 
-        Keyset cursor is the integer ``id`` (object_photometry PK). The
+        Keyset cursor is the integer ``id`` (catalog_matches PK). The
         endpoint carries no accessible count, so the second return element is
         ``pagination.total`` (the shared paginator's fallback); the internal
         caller ignores it, but it's kept accurate for direct callers.

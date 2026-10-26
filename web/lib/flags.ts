@@ -45,8 +45,8 @@ export const DQ_FLAGS: FlagDef[] = [
   { key: 'grating_corrupted', bit: 8, value: 256, label: 'Grating Corrupted', short: 'G-BAD', icon: '🔴❌', color: '#ffcdd2', description: 'Grating data corrupted or unusable' },
 ];
 
-// Per-line flags of the emission-line catalog (spectrum_line_fits.lines[<line>].flags,
-// spectrum_lines.flags) — set by `cfpipe nirspec linefit`; mirrors
+// Per-line flags of the emission-line catalog (line_fits.lines[<line>].flags,
+// lines.flags) — set by `cfpipe nirspec linefit`; mirrors
 // campfire.flags.LineFlags / linefit.FLAG_* (docs/design-emission-line-fitting.md).
 export const LINE_FLAGS: FlagDef[] = [
   { key: 'tied', bit: 0, value: 1, label: 'Tied', short: 'TIED', icon: '🔗', color: '#e0e0e0', description: 'Flux ratio-tied to its doublet primary ([OIII], [NII], [OI])' },

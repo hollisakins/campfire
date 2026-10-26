@@ -214,7 +214,7 @@ class RedshiftQuality(IntEnum):
 class LineFlags(IntFlag):
     """
     Per-line flags in the emission-line catalog (``lines.csv`` ``flag_<line>``
-    columns / ``spectrum_line_fits.lines[<line>].flags``).
+    columns / ``line_fits.lines[<line>].flags``).
 
     Set by ``cfpipe nirspec linefit``; see docs/design-emission-line-fitting.md.
     """

@@ -8,7 +8,7 @@ import { streamSidecar } from '@/lib/server/sidecar-stream';
 /**
  * One fitted line of the sidecar's summary: enough to place and label it on
  * the plot. The full record (EWs, kinematics, errors of everything) is on the
- * `spectrum_line_fits` row, served by /api/objects/lines. Non-finite values in
+ * `line_fits` row, served by /api/objects/lines. Non-finite values in
  * the deploy-side FITS are JSON null (python/campfire/deploy/generate.py).
  */
 export interface LineFitLine {
@@ -35,7 +35,7 @@ export interface LineFitData {
   z_used: number | null;
   z_source: string;
   z_quality: number | null;
-  /** Provenance the `spectrum_line_fits` row also carries: which inspection
+  /** Provenance the `line_fits` row also carries: which inspection
    *  (object version) and which spectrum bytes the fit belongs to. Whether
    *  the fit is *stale* against the live inspection state is the status
    *  view's call (`/api/objects/lines` → `stale_redshift` / `stale_spectrum`),

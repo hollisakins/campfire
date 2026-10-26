@@ -135,7 +135,7 @@ FROM spectra s WHERE s.fits_path = '/tmp/zzz_dr_pub_prism_spec.fits';
 -- Line fits: PUB's fit at the current object state (q4, z=1.0, version 1: fresh); MIX's fit made
 -- at object version 2 (stale_redshift) and against an older spectrum hash
 -- (stale_spectrum); the revoked spectrum's fit (must not freeze).
-INSERT INTO spectrum_line_fits (spectrum_id, target_id, grating, program_slug, observation, z_used, z_source, z_quality,
+INSERT INTO line_fits (spectrum_id, target_id, grating, program_slug, observation, z_used, z_source, z_quality,
                                 object_id, object_version, fit_version, spectrum_hash, spectrum_science_hash)
 SELECT s.id, s.target_id, s.grating, t.program_slug, t.observation,
        CASE WHEN t.target_id = 'zzz-dr-t-mixp' THEN 2.5 ELSE 1.0 END, 'inspected',
@@ -149,17 +149,17 @@ FROM spectra s JOIN targets t ON t.target_id = s.target_id JOIN objects o ON o.i
 WHERE s.fits_path IN ('/tmp/zzz_dr_pub_prism_spec.fits', '/tmp/zzz_dr_pub_g395m_spec.fits', '/tmp/zzz_dr_mixp_prism_spec.fits');
 -- the PUB fit's denormalized program is stale (a metadata correction after the
 -- fit): the frozen fit must take its spectrum's program (Codex on #599)
-UPDATE spectrum_line_fits f SET program_slug = 'zzz_dr_priv'
+UPDATE line_fits f SET program_slug = 'zzz_dr_priv'
   FROM spectra s WHERE s.id = f.spectrum_id AND s.fits_path = '/tmp/zzz_dr_pub_prism_spec.fits';
 
 -- Photometry: a row for MIX and one for the inactive object (excluded).
-INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z)
+INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z)
 SELECT o.id, 'zzz_drf', o.ra, o.dec, 'ZZZ CAT v1', o.object_id,
        '{"flux_unit":"uJy","bands":{"f444w":{"flux":1.5,"flux_err":0.1,"wav":4.4},"f277w":{"flux":-0.2,"flux_err":0.3,"wav":2.77}}}'::jsonb, 2.4
 FROM objects o WHERE o.object_id IN ('ZZZ-DR-MIX', 'ZZZ-DR-INACTIVE');
 -- a newer cross-match of MIX from a catalog the release does NOT select, and the
 -- denormalized live object rows pointing at it / at nothing frozen (Codex on #599)
-INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z, updated_at)
+INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z, updated_at)
 SELECT o.id, 'zzz_drf', o.ra, o.dec, 'ZZZ CAT v2', o.object_id, '{"bands":{}}'::jsonb, 9.9, now() + interval '1 minute'
 FROM objects o WHERE o.object_id = 'ZZZ-DR-MIX';
 UPDATE objects SET photo_z = 9.9, has_photometry = true WHERE object_id = 'ZZZ-DR-MIX';
@@ -404,43 +404,43 @@ BEGIN
   IF got <> 'zzz_dr_pub,zzz_dr_pub' THEN RAISE EXCEPTION 'exported fits should carry their spectrum program, got %', got; END IF;
   -- the frozen fit is the live row verbatim (minus the in-snapshot stale_spectrum;
   -- stale_redshift is a live column since phase 2a and is copied like the rest)
-  IF EXISTS (SELECT 1 FROM dr_line_fits d JOIN spectrum_line_fits f ON f.spectrum_id = d.spectrum_id
+  IF EXISTS (SELECT 1 FROM dr_line_fits d JOIN line_fits f ON f.spectrum_id = d.spectrum_id
              WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' - 'stale_spectrum' <> to_jsonb(f)) THEN
     RAISE EXCEPTION 'a frozen line fit differs from its live row';
   END IF;
   -- the unnested lines follow their fits (the fixture's fits have none; the
   -- seed's rows are frozen too, since DR-zzz spans the whole catalog) and are
   -- the live rows verbatim
-  IF (SELECT count(*) FROM dr_spectrum_lines WHERE tag = 'DR-zzz')
-     <> (SELECT count(*) FROM spectrum_lines l JOIN dr_line_fits f ON f.tag = 'DR-zzz' AND f.spectrum_id = l.spectrum_id) THEN
+  IF (SELECT count(*) FROM dr_lines WHERE tag = 'DR-zzz')
+     <> (SELECT count(*) FROM lines l JOIN dr_line_fits f ON f.tag = 'DR-zzz' AND f.spectrum_id = l.spectrum_id) THEN
     RAISE EXCEPTION 'frozen lines do not match the frozen fits';
   END IF;
-  IF (SELECT count(*) FROM dr_spectrum_lines WHERE tag = 'DR-zzz') = 0 THEN
-    RAISE EXCEPTION 'fixture: expected the seed''s spectrum_lines to be frozen under DR-zzz';
+  IF (SELECT count(*) FROM dr_lines WHERE tag = 'DR-zzz') = 0 THEN
+    RAISE EXCEPTION 'fixture: expected the seed''s lines to be frozen under DR-zzz';
   END IF;
-  IF EXISTS (SELECT 1 FROM dr_spectrum_lines d JOIN spectrum_lines l ON l.spectrum_id = d.spectrum_id AND l.line = d.line
+  IF EXISTS (SELECT 1 FROM dr_lines d JOIN lines l ON l.spectrum_id = d.spectrum_id AND l.line = d.line
              WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' <> to_jsonb(l)) THEN
     RAISE EXCEPTION 'a frozen line row differs from its live row';
   END IF;
 
   -- photometry: the SELECTED catalog's row of MIX only (verbatim), its bands
   -- with it; the object row keeps its live photo-z fields
-  SELECT count(*) INTO n FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1';
-  IF n <> 1 OR (SELECT object_id FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1') <> mix
-     OR EXISTS (SELECT 1 FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name <> 'ZZZ CAT v1' AND field = 'zzz_drf') THEN
+  SELECT count(*) INTO n FROM dr_catalog_matches WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1';
+  IF n <> 1 OR (SELECT object_id FROM dr_catalog_matches WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1') <> mix
+     OR EXISTS (SELECT 1 FROM dr_catalog_matches WHERE tag = 'DR-zzz' AND catalog_name <> 'ZZZ CAT v1' AND field = 'zzz_drf') THEN
     RAISE EXCEPTION 'photometry freeze wrong (n=%)', n;
   END IF;
-  IF EXISTS (SELECT 1 FROM dr_photometry d JOIN object_photometry p ON p.id = d.id
+  IF EXISTS (SELECT 1 FROM dr_catalog_matches d JOIN catalog_matches p ON p.id = d.id
              WHERE d.tag = 'DR-zzz' AND d.catalog_name = 'ZZZ CAT v1' AND to_jsonb(d) - 'tag' <> to_jsonb(p)) THEN
     RAISE EXCEPTION 'frozen photometry row differs from live';
   END IF;
-  SELECT count(*) INTO n FROM dr_photometry_bands b WHERE b.tag = 'DR-zzz'
-     AND b.photometry_id IN (SELECT id FROM dr_photometry WHERE tag = 'DR-zzz');
-  IF n <> 2 OR n <> (SELECT count(*) FROM object_photometry_bands b WHERE b.photometry_id IN (SELECT id FROM dr_photometry WHERE tag = 'DR-zzz')) THEN
+  SELECT count(*) INTO n FROM dr_photometry b WHERE b.tag = 'DR-zzz'
+     AND b.match_id IN (SELECT id FROM dr_catalog_matches WHERE tag = 'DR-zzz');
+  IF n <> 2 OR n <> (SELECT count(*) FROM photometry b WHERE b.match_id IN (SELECT id FROM dr_catalog_matches WHERE tag = 'DR-zzz')) THEN
     RAISE EXCEPTION 'frozen bands do not match the frozen photometry rows (n=%)', n;
   END IF;
   -- verbatim, including the generated snr / mag values
-  IF EXISTS (SELECT 1 FROM dr_photometry_bands d JOIN object_photometry_bands b ON b.photometry_id = d.photometry_id AND b.band = d.band
+  IF EXISTS (SELECT 1 FROM dr_photometry d JOIN photometry b ON b.match_id = d.match_id AND b.band = d.band
              WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' <> to_jsonb(b)) THEN
     RAISE EXCEPTION 'a frozen band row differs from its live row';
   END IF;
@@ -655,7 +655,7 @@ BEGIN
 
   -- a selected catalog whose rows are all orphans freezes nothing: refused
   -- rather than listed as an empty component (Codex on #599)
-  INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z)
+  INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, catalog_id, photometry, photo_z)
   VALUES (NULL, 'zzz_drf', 170.5, 4.5, 'ZZZ ORPHANS', 'orphan-1', '{"bands":{}}'::jsonb, 1.1);
   got := pg_temp.zzz_dr_as('authenticated', admin,
     $q$SELECT (public.dr_enqueue_freeze('DR-zzz-orph', '["nirspec","photometry/zzz_drf/ZZZ ORPHANS"]', NULL, true))->>'state'$q$);
@@ -664,7 +664,7 @@ BEGIN
     RAISE EXCEPTION 'an all-orphan catalog should fail the freeze: % / %', got, (SELECT error FROM dr_releases WHERE tag = 'DR-zzz-orph');
   END IF;
   DELETE FROM dr_releases WHERE tag = 'DR-zzz-orph';
-  DELETE FROM object_photometry WHERE catalog_name = 'ZZZ ORPHANS';
+  DELETE FROM catalog_matches WHERE catalog_name = 'ZZZ ORPHANS';
 
   -- nirspec selected with nothing published: refused, not an empty release
   -- (Codex on #599). Triggers off so the objects are left exactly as they were.
@@ -702,7 +702,7 @@ DECLARE
     ['dr_objects',       $q$SELECT count(*)::text FROM dr_objects WHERE tag = 'DR-zzz' AND object_id LIKE 'ZZZ-DR-%'$q$],
     ['dr_manifest',      $q$SELECT count(*)::text FROM dr_manifest WHERE tag = 'DR-zzz' AND (storage_key LIKE 'data/products/nirspec/zzz_dr_%' OR storage_key LIKE 'data/products/nircam/zzz_drf/%')$q$],
     ['dr_line_fits',     $q$SELECT count(*)::text FROM dr_line_fits WHERE tag = 'DR-zzz' AND target_id LIKE 'zzz-dr-t-%'$q$],
-    ['dr_photometry',    $q$SELECT count(*)::text FROM dr_photometry WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1'$q$],
+    ['dr_catalog_matches',    $q$SELECT count(*)::text FROM dr_catalog_matches WHERE tag = 'DR-zzz' AND catalog_name = 'ZZZ CAT v1'$q$],
     ['dr_nircam_images', $q$SELECT count(*)::text FROM dr_nircam_images WHERE tag = 'DR-zzz' AND field = 'zzz_drf'$q$],
     ['dr_fields',        $q$SELECT count(*)::text FROM dr_fields WHERE tag = 'DR-zzz' AND name LIKE 'zzz_drf%'$q$],
     ['dr_filter_options',$q$SELECT count(*)::text FROM dr_filter_options WHERE tag = 'DR-zzz'$q$],
@@ -802,9 +802,9 @@ BEGIN
   SELECT count(*) INTO n FROM (
     SELECT tag FROM dr_releases WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_spectra WHERE tag = 'DR-zzz'
     UNION ALL SELECT tag FROM dr_objects WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_manifest WHERE tag = 'DR-zzz'
-    UNION ALL SELECT tag FROM dr_line_fits WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_photometry WHERE tag = 'DR-zzz'
-    UNION ALL SELECT tag FROM dr_targets WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_spectrum_lines WHERE tag = 'DR-zzz'
-    UNION ALL SELECT tag FROM dr_photometry_bands WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_nircam_images WHERE tag = 'DR-zzz'
+    UNION ALL SELECT tag FROM dr_line_fits WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_catalog_matches WHERE tag = 'DR-zzz'
+    UNION ALL SELECT tag FROM dr_targets WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_lines WHERE tag = 'DR-zzz'
+    UNION ALL SELECT tag FROM dr_photometry WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_nircam_images WHERE tag = 'DR-zzz'
     UNION ALL SELECT tag FROM dr_fields WHERE tag = 'DR-zzz' UNION ALL SELECT tag FROM dr_filter_options WHERE tag = 'DR-zzz'
     UNION ALL SELECT tag FROM dr_exports WHERE tag = 'DR-zzz') x;
   IF n <> 0 THEN RAISE EXCEPTION 'purge left % rows', n; END IF;

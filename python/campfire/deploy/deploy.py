@@ -508,7 +508,7 @@ def deploy_observation(
         for v in non_release_versions:
             print(f"    - {v}")
         print("  These will be preserved verbatim in spectra.cfpipe_version /")
-        print("  spectrum_line_fits.cfpipe_version.")
+        print("  line_fits.cfpipe_version.")
         print("  Prefer deploying from a tagged release (see /pipeline-release).")
         if not dry_run and not auto_approve:
             resp = input("  Continue? [y/N]: ")
@@ -855,7 +855,7 @@ def deploy_observation(
         n_spec, changed_hashes = batch_upsert_spectra(sb, spectra)
         print(f"  {n_spec} spectra ({len(changed_hashes)} with hash changes)")
 
-        # Emission-line catalog rows (spectrum_line_fits) for whichever spectra
+        # Emission-line catalog rows (line_fits) for whichever spectra
         # carry a _lines.fits product. Inspected-redshift fits only; fits made
         # at the auto redshift are refused here (campfire deploy lines
         # --allow-auto-z is the explicit path).

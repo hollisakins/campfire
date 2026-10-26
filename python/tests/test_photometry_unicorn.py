@@ -493,9 +493,9 @@ def test_read_catalog_rejects_unsupported_formats(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _photometry_client(rows):
-    """A fake holding *rows* of ``object_photometry``; every RPC (the
+    """A fake holding *rows* of ``catalog_matches``; every RPC (the
     ``sync_photometry_to_objects`` relink) answers 0."""
-    return FakePostgrest(tables={'object_photometry': rows}, rpc_default=0)
+    return FakePostgrest(tables={'catalog_matches': rows}, rpc_default=0)
 
 
 def test_supersede_deletes_only_other_catalogs_in_field():
@@ -508,10 +508,10 @@ def test_supersede_deletes_only_other_catalogs_in_field():
     client = _photometry_client(rows)
     deleted = _supersede_other_catalogs(client, 'egs', 'UNICORN EGS v0.98')
     assert deleted == {'UNICORN EGS v0.9': 1200, 'other': 1}
-    remaining = {(r['field'], r['catalog_name']) for r in client.tables['object_photometry']}
+    remaining = {(r['field'], r['catalog_name']) for r in client.tables['catalog_matches']}
     assert remaining == {('egs', 'UNICORN EGS v0.98'), ('goods-s', 'UNICORN GOODS-S v0.91')}
     assert len(client.deleted_rows()) == 1201
-    assert {c.table for c in client.calls} == {'object_photometry'}
+    assert {c.table for c in client.calls} == {'catalog_matches'}
 
 
 def test_supersede_dry_run_counts_without_deleting():
@@ -522,7 +522,7 @@ def test_supersede_dry_run_counts_without_deleting():
     client = _photometry_client(rows)
     assert _supersede_other_catalogs(client, 'egs', 'UNICORN EGS v0.98', dry_run=True) == {
         'UNICORN EGS v0.9': 10}
-    assert client.deleted_rows() == [] and len(client.tables['object_photometry']) == 11
+    assert client.deleted_rows() == [] and len(client.tables['catalog_matches']) == 11
 
 
 def _supersede_setup(tmp_path, monkeypatch, catalog_ra, n_old, flux_col='FLUX_F444W'):
@@ -565,7 +565,7 @@ def test_supersede_is_skipped_when_nothing_was_upserted(tmp_path, monkeypatch, c
     mod, client, cfg = _supersede_setup(tmp_path, monkeypatch, catalog_ra=200.0, n_old=3)
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
     assert result['n_matched'] == 0 and result['n_superseded'] == 0
-    assert len(client.tables['object_photometry']) == 3 and client.deleted_rows() == []
+    assert len(client.tables['catalog_matches']) == 3 and client.deleted_rows() == []
     assert 'skipping --supersede' in capsys.readouterr().out
 
 
@@ -575,20 +575,20 @@ def test_supersede_refuses_a_collapse_unless_forced(tmp_path, monkeypatch, capsy
     assert SUPERSEDE_MIN_RATIO * 10 > 1
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
     assert result['n_matched'] == 1 and result['n_superseded'] == 0
-    assert len(client.tables['object_photometry']) == 10 and client.deleted_rows() == []
+    assert len(client.tables['catalog_matches']) == 10 and client.deleted_rows() == []
     assert 'Pass --force' in capsys.readouterr().out
 
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
                                          supersede=True, supersede_force=True)
     assert result['n_superseded'] == 10
-    assert client.tables['object_photometry'] == [] and len(client.deleted_rows()) == 10
+    assert client.tables['catalog_matches'] == [] and len(client.deleted_rows()) == 10
 
 
 def test_supersede_runs_when_the_new_catalog_covers_the_old(tmp_path, monkeypatch):
     mod, client, cfg = _supersede_setup(tmp_path, monkeypatch, catalog_ra=214.9, n_old=1)
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
     assert result['n_matched'] == 1 and result['n_superseded'] == 1
-    assert client.tables['object_photometry'] == []
+    assert client.tables['catalog_matches'] == []
 
 
 def test_supersede_refuses_when_the_new_rows_carry_no_bands(tmp_path, monkeypatch, capsys):
@@ -599,7 +599,7 @@ def test_supersede_refuses_when_the_new_rows_carry_no_bands(tmp_path, monkeypatc
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False, supersede=True)
     out = capsys.readouterr().out
     assert result['n_matched'] == 1 and result['n_superseded'] == 0
-    assert len(client.tables['object_photometry']) == 1 and client.deleted_rows() == []
+    assert len(client.tables['catalog_matches']) == 1 and client.deleted_rows() == []
     assert 'carry no bands' in out and 'Pass --force' in out
 
     # Dry run agrees: nothing would be retired.
@@ -634,4 +634,4 @@ def test_dry_run_reports_supersede_outcome(tmp_path, monkeypatch, capsys):
     mod, client, cfg = _supersede_setup(tmp_path / 'c', monkeypatch, catalog_ra=214.9, n_old=1)
     result = mod.deploy_field_photometry(client, 'egs', cfg, {}, include_photoz=False,
                                          supersede=True, dry_run=True)
-    assert result['n_superseded'] == 1 and client.deleted_rows() == [] and len(client.tables['object_photometry']) == 1
+    assert result['n_superseded'] == 1 and client.deleted_rows() == [] and len(client.tables['catalog_matches']) == 1

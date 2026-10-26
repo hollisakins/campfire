@@ -3,7 +3,7 @@
 --
 -- object_line_values() (functions.sql) is SECURITY DEFINER: the filter's
 -- five-way join timed out in production (37 s) and, read under RLS, every
--- spectrum_lines / spectrum_line_fits row re-ran its policy (an EXISTS on
+-- lines / line_fits row re-ran its policy (an EXISTS on
 -- the parent spectrum planned as a hashed sub-plan over all spectra). It
 -- scopes its rows with two gates instead: the caller's explicit
 -- p_program_slugs / p_include_unpublished (the only gate for a service-role
@@ -101,7 +101,7 @@ BEGIN
     ('test-lf-mixed-a', 'PRISM', '/tmp/lf_mixed_a_prism.fits', 10.0, 1000.0, 'published'),
     ('test-lf-mixed-b', 'PRISM', '/tmp/lf_mixed_b_prism.fits', 10.0, 1000.0, 'published');
 
-  -- One fit per spectrum; the sync_spectrum_lines trigger unnests `lines`.
+  -- One fit per spectrum; the sync_lines trigger unnests `lines`.
   -- z_used / z_quality / object_version match the object (not stale) except
   -- for the stale fixture, which was measured at z = 4.
   FOR r IN
@@ -122,7 +122,7 @@ BEGIN
     JOIN targets t ON t.target_id = s.target_id
     JOIN objects o ON o.id = t.object_id
   LOOP
-    INSERT INTO spectrum_line_fits (spectrum_id, target_id, grating, program_slug, observation,
+    INSERT INTO line_fits (spectrum_id, target_id, grating, program_slug, observation,
                                     z_used, z_source, z_quality, object_id, object_version,
                                     n_lines, n_detected, lines, fit_version)
     VALUES (r.spectrum_id, r.target_id, r.grating, r.program_slug, r.observation,
@@ -134,7 +134,7 @@ BEGIN
             'test');
   END LOOP;
 
-  IF (SELECT count(*) FROM spectrum_lines l JOIN spectra s ON s.id = l.spectrum_id
+  IF (SELECT count(*) FROM lines l JOIN spectra s ON s.id = l.spectrum_id
       WHERE s.fits_path LIKE '/tmp/lf\_%' AND l.line = 'CIII1908') <> 8 THEN
     RAISE EXCEPTION 'fixture: trigger did not unnest 8 line rows';
   END IF;

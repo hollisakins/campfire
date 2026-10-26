@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import { getRequestPrincipal } from '@/lib/auth/identity';
 import { requestDrTag } from '@/lib/dr/server';
 
-/** One catalog line's record in a fit (spectrum_line_fits.lines[<name>]). */
+/** One catalog line's record in a fit (line_fits.lines[<name>]). */
 export interface ObjectLineRecord {
   label?: string;
   component: 'narrow' | 'broad' | 'doublet';
@@ -60,9 +60,9 @@ const CACHE = { 'Cache-Control': 'private, max-age=60', Vary: 'Cookie' };
 /**
  * GET /api/objects/lines?spectra=<id>,<id>,...
  *
- * The emission-line fits of an object's member spectra (spectrum_line_fits
+ * The emission-line fits of an object's member spectra (line_fits
  * rows keyed by spectra.id, with the staleness flags of
- * spectrum_line_fits_status), for the object page's "Emission lines"
+ * line_fits_status), for the object page's "Emission lines"
  * section. Queried under the caller's RLS: a fit is visible iff its spectrum
  * is, so an id the viewer may not read simply does not come back. A GET
  * route, not an action (decision D-C, #506): the section fetches when it
@@ -97,7 +97,7 @@ export async function GET(request: NextRequest) {
             .eq('tag', dr)
             .in('spectrum_id', ids)
         : principal.supabase
-            .from('spectrum_line_fits_status')
+            .from('line_fits_status')
             .select('spectrum_id, stale_redshift, stale_spectrum')
             .in('spectrum_id', ids),
     ]);

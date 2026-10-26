@@ -2,7 +2,7 @@
 -- helper bypasses RLS.
 --
 -- object_band_values() (functions.sql) is SECURITY DEFINER: read under RLS,
--- every object_photometry_bands row re-ran the derived table's two-hop policy
+-- every photometry row re-ran the derived table's two-hop policy
 -- chain (parent cross-match -> object) and the band filter timed out in
 -- production. It scopes its rows with two gates instead: the caller's explicit
 -- p_program_slugs / p_include_unpublished (the only gate for a service-role
@@ -84,9 +84,9 @@ BEGIN
     ('test-bf-draft', 'PRISM', '/tmp/bf_draft_prism.fits', 10.0, 1000.0, 'draft'),
     ('test-bf-prop',  'PRISM', '/tmp/bf_prop_prism.fits',  10.0, 1000.0, 'published');
 
-  -- Fluxes in uJy: mag = 23.9 - 2.5 log10(flux). The sync_object_photometry_bands
-  -- trigger unnests these into object_photometry_bands.
-  INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, photometry)
+  -- Fluxes in uJy: mag = 23.9 - 2.5 log10(flux). The sync_photometry
+  -- trigger unnests these into photometry.
+  INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, photometry)
   SELECT o.id, o.field, o.ra, o.dec, c.catalog,
          jsonb_build_object('flux_unit', 'uJy', 'bands', jsonb_build_object(
            'f444w', jsonb_build_object('flux', c.flux, 'flux_err', c.err, 'wav', 4.4)))
@@ -100,7 +100,7 @@ BEGIN
   ) AS c(object_id, catalog, flux, err)
   JOIN objects o ON o.object_id = c.object_id;
 
-  IF (SELECT count(*) FROM object_photometry_bands b JOIN object_photometry p ON p.id = b.photometry_id
+  IF (SELECT count(*) FROM photometry b JOIN catalog_matches p ON p.id = b.match_id
       WHERE p.catalog_name LIKE 'zzz\_bf\_%') <> 6 THEN
     RAISE EXCEPTION 'fixture: trigger did not unnest 6 band rows';
   END IF;

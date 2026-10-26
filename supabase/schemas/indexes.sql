@@ -97,36 +97,36 @@ CREATE INDEX IF NOT EXISTS idx_objects_updated_at
     ON public.objects USING btree (updated_at);
 
 -- =============================================================================
--- object_photometry
+-- catalog_matches
 -- =============================================================================
 
-CREATE INDEX IF NOT EXISTS idx_object_photometry_field
-    ON public.object_photometry USING btree (field);
+CREATE INDEX IF NOT EXISTS idx_catalog_matches_field
+    ON public.catalog_matches USING btree (field);
 
-CREATE INDEX IF NOT EXISTS idx_object_photometry_object_id
-    ON public.object_photometry USING btree (object_id) WHERE (object_id IS NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_catalog_matches_object_id
+    ON public.catalog_matches USING btree (object_id) WHERE (object_id IS NOT NULL);
 
--- object_photometry_bands: "band X brighter than mag m" / "band X at S/N >= y"
+-- photometry: "band X brighter than mag m" / "band X at S/N >= y"
 -- are each one range scan on their index for a direct row-level query. The
 -- catalog's own band filter (object_band_values(), functions.sql) does NOT
 -- range-scan them: it tests the bounds on per-object aggregates (min(mag) /
 -- max(snr) across an object's cross-matches), so it reads one band's whole
 -- slice and hash-joins it to the viewer-visible objects. The PK
--- (photometry_id, band) serves the trigger's per-row rebuild and the FK
--- cascade. Partial, like idx_spectrum_lines_line_snr: a row with no magnitude
+-- (match_id, band) serves the trigger's per-row rebuild and the FK
+-- cascade. Partial, like idx_lines_line_snr: a row with no magnitude
 -- (non-positive flux) or no S/N (missing error) can never match a bounded
 -- selection on it.
--- object_photometry_bands by object: the object page's SED, the per-object
+-- photometry by object: the object page's SED, the per-object
 -- band aggregates, and the FK's ON DELETE SET NULL (phase 2a).
-CREATE INDEX IF NOT EXISTS idx_object_photometry_bands_object_id_band
-    ON public.object_photometry_bands USING btree (object_id, band);
+CREATE INDEX IF NOT EXISTS idx_photometry_object_id_band
+    ON public.photometry USING btree (object_id, band);
 
-CREATE INDEX IF NOT EXISTS idx_object_photometry_bands_band_mag
-    ON public.object_photometry_bands USING btree (band, mag)
+CREATE INDEX IF NOT EXISTS idx_photometry_band_mag
+    ON public.photometry USING btree (band, mag)
     WHERE mag IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_object_photometry_bands_band_snr
-    ON public.object_photometry_bands USING btree (band, snr DESC)
+CREATE INDEX IF NOT EXISTS idx_photometry_band_snr
+    ON public.photometry USING btree (band, snr DESC)
     WHERE snr IS NOT NULL;
 
 
@@ -463,33 +463,33 @@ CREATE INDEX IF NOT EXISTS idx_spectrum_exposures_review
 
 
 -- =============================================================================
--- spectrum_line_fits (emission-line fluxes)
+-- line_fits (emission-line fluxes)
 -- =============================================================================
 
-CREATE INDEX IF NOT EXISTS idx_spectrum_line_fits_observation
-    ON public.spectrum_line_fits USING btree (observation);
+CREATE INDEX IF NOT EXISTS idx_line_fits_observation
+    ON public.line_fits USING btree (observation);
 
-CREATE INDEX IF NOT EXISTS idx_spectrum_line_fits_program_slug
-    ON public.spectrum_line_fits USING btree (program_slug);
+CREATE INDEX IF NOT EXISTS idx_line_fits_program_slug
+    ON public.line_fits USING btree (program_slug);
 
-CREATE INDEX IF NOT EXISTS idx_spectrum_line_fits_target_id
-    ON public.spectrum_line_fits USING btree (target_id);
+CREATE INDEX IF NOT EXISTS idx_line_fits_target_id
+    ON public.line_fits USING btree (target_id);
 
 -- Incremental sync (get_line_fits_for_sync p_updated_since).
-CREATE INDEX IF NOT EXISTS idx_spectrum_line_fits_updated_at
-    ON public.spectrum_line_fits USING btree (updated_at);
+CREATE INDEX IF NOT EXISTS idx_line_fits_updated_at
+    ON public.line_fits USING btree (updated_at);
 
--- spectrum_lines: "line X at S/N >= y" is one range scan on this index; the
+-- lines: "line X at S/N >= y" is one range scan on this index; the
 -- PK (spectrum_id, line) serves the per-spectrum lookups. Partial: rows
 -- without a measurement (blended companions) can never match an S/N cut.
--- spectrum_lines by object: the object page's line table, the per-object
+-- lines by object: the object page's line table, the per-object
 -- EXISTS the catalog filters compile to, and the FK's ON DELETE SET NULL on an
 -- objects rebuild (phase 2a).
-CREATE INDEX IF NOT EXISTS idx_spectrum_lines_object_id_line
-    ON public.spectrum_lines USING btree (object_id, line);
+CREATE INDEX IF NOT EXISTS idx_lines_object_id_line
+    ON public.lines USING btree (object_id, line);
 
-CREATE INDEX IF NOT EXISTS idx_spectrum_lines_line_snr
-    ON public.spectrum_lines USING btree (line, snr DESC)
+CREATE INDEX IF NOT EXISTS idx_lines_line_snr
+    ON public.lines USING btree (line, snr DESC)
     WHERE snr IS NOT NULL;
 
 
@@ -816,20 +816,20 @@ CREATE INDEX IF NOT EXISTS idx_dr_manifest_science_hash
     ON public.dr_manifest USING btree (science_hash) WHERE (science_hash IS NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_dr_manifest_spectrum
     ON public.dr_manifest USING btree (spectrum_id) WHERE (spectrum_id IS NOT NULL);
--- dr_line_fits / dr_spectrum_lines
+-- dr_line_fits / dr_lines
 CREATE INDEX IF NOT EXISTS idx_dr_line_fits_tag_target
     ON public.dr_line_fits USING btree (tag, target_id);
-CREATE INDEX IF NOT EXISTS idx_dr_spectrum_lines_tag_line_snr
-    ON public.dr_spectrum_lines USING btree (tag, line, snr DESC);
--- dr_photometry / dr_photometry_bands
-CREATE INDEX IF NOT EXISTS idx_dr_photometry_tag_object
-    ON public.dr_photometry USING btree (tag, object_id);
-CREATE INDEX IF NOT EXISTS idx_dr_photometry_tag_field_catalog
-    ON public.dr_photometry USING btree (tag, field, catalog_name);
-CREATE INDEX IF NOT EXISTS idx_dr_photometry_bands_tag_band_mag
-    ON public.dr_photometry_bands USING btree (tag, band, mag);
-CREATE INDEX IF NOT EXISTS idx_dr_photometry_bands_tag_band_snr
-    ON public.dr_photometry_bands USING btree (tag, band, snr DESC);
+CREATE INDEX IF NOT EXISTS idx_dr_lines_tag_line_snr
+    ON public.dr_lines USING btree (tag, line, snr DESC);
+-- dr_catalog_matches / dr_photometry
+CREATE INDEX IF NOT EXISTS idx_dr_catalog_matches_tag_object
+    ON public.dr_catalog_matches USING btree (tag, object_id);
+CREATE INDEX IF NOT EXISTS idx_dr_catalog_matches_tag_field_catalog
+    ON public.dr_catalog_matches USING btree (tag, field, catalog_name);
+CREATE INDEX IF NOT EXISTS idx_dr_photometry_tag_band_mag
+    ON public.dr_photometry USING btree (tag, band, mag);
+CREATE INDEX IF NOT EXISTS idx_dr_photometry_tag_band_snr
+    ON public.dr_photometry USING btree (tag, band, snr DESC);
 -- dr_nircam_images
 CREATE INDEX IF NOT EXISTS idx_dr_nircam_images_tag_field
     ON public.dr_nircam_images USING btree (tag, field);

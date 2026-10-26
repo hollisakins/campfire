@@ -1,7 +1,7 @@
 -- Guard: line_fit_stale_spectrum decides "the spectrum changed since the fit"
 -- on the SCIENCE hash when both sides carry one, and on the whole-file hash
 -- otherwise (P0c, docs/design-data-releases-impl-plan.md §2) -- and the
--- spectrum_line_fits_status view and get_line_fits_for_sync agree, because
+-- line_fits_status view and get_line_fits_for_sync agree, because
 -- both call the same function.
 --
 -- Why it matters: a redeploy that only rewrote volatile header cards (CMPFRTIM,
@@ -91,7 +91,7 @@ INSERT INTO spectra (target_id, grating, fits_path, deploy_status, file_hash, sc
   ('zzz-lfs-fresh',   'PRISM', '/tmp/zzz_lfs_fresh_spec.fits',   'published',
      'sha256:' || repeat('1', 64), 'sha256:' || repeat('a', 64));
 
-INSERT INTO spectrum_line_fits
+INSERT INTO line_fits
   (spectrum_id, target_id, grating, program_slug, observation, z_used, z_source, z_quality,
    fit_version, spectrum_hash, spectrum_science_hash)
 SELECT s.id, s.target_id, s.grating, 'zzz_lfs_prog', 'zzz_lfs_obs', 5.0, 'inspected', 4,
@@ -109,10 +109,10 @@ DECLARE
 BEGIN
   SELECT COALESCE(array_agg(target_id ORDER BY target_id), '{}')
   INTO v_stale
-  FROM spectrum_line_fits_status
+  FROM line_fits_status
   WHERE target_id LIKE 'zzz-lfs-%' AND stale_spectrum;
   IF v_stale <> ARRAY['zzz-lfs-oldfit', 'zzz-lfs-science'] THEN
-    RAISE EXCEPTION 'spectrum_line_fits_status: expected stale_spectrum on {oldfit, science}, got %', v_stale;
+    RAISE EXCEPTION 'line_fits_status: expected stale_spectrum on {oldfit, science}, got %', v_stale;
   END IF;
 END $$;
 
@@ -131,13 +131,13 @@ BEGIN
          jsonb_array_elements(g.line_fit_records) r
   )
   SELECT count(*) INTO v_disagree
-  FROM spectrum_line_fits_status v
+  FROM line_fits_status v
   JOIN rpc ON rpc.spectrum_id = v.spectrum_id
   WHERE v.target_id LIKE 'zzz-lfs-%'
     AND (v.stale_spectrum IS DISTINCT FROM rpc.stale_spectrum
          OR v.stale_redshift IS DISTINCT FROM rpc.stale_redshift);
   IF v_disagree <> 0 THEN
-    RAISE EXCEPTION 'get_line_fits_for_sync disagrees with spectrum_line_fits_status on % fit(s)', v_disagree;
+    RAISE EXCEPTION 'get_line_fits_for_sync disagrees with line_fits_status on % fit(s)', v_disagree;
   END IF;
   -- and the RPC saw all four
   SELECT 4 - count(*) INTO v_disagree
@@ -154,9 +154,9 @@ END $$;
 DO $$
 BEGIN
   BEGIN
-    UPDATE spectrum_line_fits SET spectrum_science_hash = 'abc'
+    UPDATE line_fits SET spectrum_science_hash = 'abc'
     WHERE target_id = 'zzz-lfs-fresh';
-    RAISE EXCEPTION 'spectrum_line_fits_spectrum_science_hash_check did not fire';
+    RAISE EXCEPTION 'line_fits_spectrum_science_hash_check did not fire';
   EXCEPTION WHEN check_violation THEN
     NULL;
   END;

@@ -1,7 +1,7 @@
 """Emission-line catalog for the NIRSpec line fitter (``cfpipe nirspec linefit``).
 
 One declarative table — the single list of what ``linefit`` measures and what
-``spectrum_line_fits.lines`` is keyed by. Rest wavelengths are **vacuum
+``line_fits.lines`` is keyed by. Rest wavelengths are **vacuum
 Angstroms** (the web overlay in ``web/components/spectra/plotting-utils.ts``
 carries the same values in microns; the redshift-fitting templates in
 ``templates.py`` are a separate, air→vac converted basis and are not changed

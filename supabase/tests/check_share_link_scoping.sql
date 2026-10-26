@@ -99,7 +99,7 @@ INSERT INTO spectra (target_id, grating, fits_path, deploy_status) VALUES
   ('zzz-t-open',    'PRISM', '/tmp/zzz_open_spec.fits',    'published'),
   ('zzz-t-draft',   'PRISM', '/tmp/zzz_draft_spec.fits',   'draft');
 
-INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, photometry)
+INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, photometry)
 SELECT o.id, 'zzz_sl_field', o.ra, o.dec, 'zzz_cat', '{}'::jsonb FROM objects o
 WHERE o.object_id IN ('ZZZ-OBJ-SHARED', 'ZZZ-OBJ-SIBLING', 'ZZZ-OBJ-OPEN');
 
@@ -184,7 +184,7 @@ LANGUAGE sql STABLE AS $$
     'targets',     (SELECT count(*) FROM targets         WHERE target_id LIKE 'zzz%'),
     'spectra',     (SELECT count(*) FROM spectra         WHERE target_id LIKE 'zzz%'),
     'objects',     (SELECT count(*) FROM objects         WHERE object_id LIKE 'ZZZ%'),
-    'photometry',  (SELECT count(*) FROM object_photometry WHERE catalog_name = 'zzz_cat'),
+    'photometry',  (SELECT count(*) FROM catalog_matches WHERE catalog_name = 'zzz_cat'),
     'nircam',      (SELECT count(*) FROM nircam_images   WHERE field LIKE 'zzz%'),
     'fields',      (SELECT count(*) FROM fields          WHERE name LIKE 'zzz%'),
     'map_layers',  (SELECT count(*) FROM map_layers      WHERE field LIKE 'zzz%'),

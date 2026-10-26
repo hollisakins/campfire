@@ -134,7 +134,7 @@ active object), `object_db_id`, `grating`, `fits_path`, `file_hash`,
 
 ### photometry
 
-`id` (live `object_photometry.id`), `object_id` (live `objects.id`),
+`id` (live `catalog_matches.id`), `object_id` (live `objects.id`),
 `programs` (`[<file program>]`, as on the objects stream), `field`, `catalog_name`, `catalog_id`,
 `ra`, `dec`, `match_distance_arcsec`, `photometry`, `photo_z`,
 `photo_z_err_lo`, `photo_z_err_hi`, `has_pz`.

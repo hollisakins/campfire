@@ -80,7 +80,7 @@ SELECT t.id, NULL, '00000000-0000-0000-0000-0000000000c1'::uuid, 'zzz_rl note' F
 UNION ALL
 SELECT NULL, o.id, '00000000-0000-0000-0000-0000000000c1'::uuid, 'zzz_rl note' FROM objects o WHERE o.object_id LIKE 'zzz\_rl\_%';
 
-INSERT INTO object_photometry (object_id, field, ra, dec, catalog_name, photometry)
+INSERT INTO catalog_matches (object_id, field, ra, dec, catalog_name, photometry)
 SELECT o.id, 'zzz_rl_field', o.ra, o.dec, 'zzz_rl_cat', '{}'::jsonb FROM objects o WHERE o.object_id LIKE 'zzz\_rl\_%';
 
 -- Storage rows: one active per spectrum, plus a superseded one on the
@@ -109,7 +109,7 @@ LANGUAGE sql STABLE AS $$
   SELECT jsonb_build_object(
     'spectra',    (SELECT count(*) FROM spectra           WHERE target_id LIKE 'zzz\_rl\_%'),
     'comments',   (SELECT count(*) FROM comments          WHERE content = 'zzz_rl note'),
-    'photometry', (SELECT count(*) FROM object_photometry WHERE catalog_name = 'zzz_rl_cat'),
+    'photometry', (SELECT count(*) FROM catalog_matches WHERE catalog_name = 'zzz_rl_cat'),
     'shutters',   (SELECT count(*) FROM shutters          WHERE field = 'zzz_rl_field'),
     'storage',    (SELECT count(*) FROM storage_objects   WHERE storage_key LIKE '/zzz\_rl/%'),
     -- The RPC the object page calls (SECURITY INVOKER: this policy is its gate).

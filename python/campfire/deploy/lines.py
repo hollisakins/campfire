@@ -1,9 +1,9 @@
-"""Emission-line catalog publication: ``_lines.fits`` products → ``spectrum_line_fits``.
+"""Emission-line catalog publication: ``_lines.fits`` products → ``line_fits``.
 
 The local→cloud half of the emission-line loop
 (docs/design-emission-line-fitting.md §4). ``cfpipe nirspec linefit`` writes
 one ``<base>_lines.fits`` next to each spectrum it fit; this module turns
-those into ``spectrum_line_fits`` rows (one per spectrum, per-line values in
+those into ``line_fits`` rows (one per spectrum, per-line values in
 the ``lines`` jsonb) and upserts them keyed on the spectrum's catalog id,
 plus uploads the FITS products themselves to OSN under the
 ``nirspec_lines`` layout key so the full fit (model, complexes) is
@@ -90,7 +90,7 @@ def confirm_non_release_line_fits(lines_paths, *, dry_run: bool, auto_approve: b
     print("  cfpipe_version strings present:")
     for v in versions:
         print(f"    - {v}")
-    print("  These will be preserved verbatim in spectrum_line_fits.cfpipe_version.")
+    print("  These will be preserved verbatim in line_fits.cfpipe_version.")
     print("  Prefer fitting with a tagged release (see /pipeline-release).")
     if not dry_run and not auto_approve:
         resp = input("  Continue? [y/N]: ")
@@ -111,7 +111,7 @@ def _hdr_get(hdr, key, cast=None):
 
 
 def build_line_fit_row(product: dict, *, program_slug: str, observation: str) -> dict:
-    """One ``spectrum_line_fits`` row (minus ``spectrum_id``) from a read product."""
+    """One ``line_fits`` row (minus ``spectrum_id``) from a read product."""
     _read, lines_payload = _pipeline_io()
     h = product['header']
     return {
@@ -178,7 +178,7 @@ def publish_line_fits(sb, obs_name: str, lines_paths, *, program_slug: str,
               f"— pass --allow-auto-z to publish them: {', '.join(refused[:3])}"
               f"{' …' if len(refused) > 3 else ''}")
     if dry_run:
-        print(f"  Would upsert {len(rows)} spectrum_line_fits rows")
+        print(f"  Would upsert {len(rows)} line_fits rows")
         return dict(rows=len(rows), refused_auto=len(refused), missing_spectra=0)
     ids = fetch_spectrum_ids(sb, [(r['target_id'], r['grating']) for r in rows])
     keyed, missing = [], []
@@ -192,7 +192,7 @@ def publish_line_fits(sb, obs_name: str, lines_paths, *, program_slug: str,
         print(f"  {len(missing)} line fit(s) skipped: no catalog spectrum row for "
               f"{', '.join(missing[:3])}{' …' if len(missing) > 3 else ''} (deploy the spectra first)")
     n = batch_upsert_line_fits(sb, keyed)
-    print(f"  {n} spectrum_line_fits rows")
+    print(f"  {n} line_fits rows")
     return dict(rows=n, refused_auto=len(refused), missing_spectra=len(missing))
 
 

@@ -21,10 +21,10 @@ DECLARE
     ['objects',                 'cat_objects'],
     ['targets',                 'cat_targets'],
     ['spectra',                 'cat_spectra'],
-    ['spectrum_line_fits',      'cat_line_fits'],
-    ['spectrum_lines',          'cat_spectrum_lines'],
-    ['object_photometry',       'cat_photometry'],
-    ['object_photometry_bands', 'cat_photometry_bands'],
+    ['line_fits',      'cat_line_fits'],
+    ['lines',          'cat_lines'],
+    ['catalog_matches',       'cat_catalog_matches'],
+    ['photometry', 'cat_photometry'],
     ['nircam_images',           'cat_nircam_images'],
     ['fields',                  'cat_fields'],
     ['mv_filter_options',       'cat_filter_options']
@@ -73,7 +73,7 @@ BEGIN
   SELECT string_agg(p.proname, ', ') INTO bad
   FROM pg_proc p
   WHERE p.pronamespace = 'public'::regnamespace AND p.provolatile = 'v'
-    AND p.prosrc ~* '\mcat_(objects|targets|spectra|line_fits|spectrum_lines|photometry|photometry_bands|nircam_images|fields|filter_options)\M';
+    AND p.prosrc ~* '\mcat_(objects|targets|spectra|line_fits|lines|photometry|photometry_bands|nircam_images|fields|filter_options)\M';
   IF bad IS NOT NULL THEN
     RAISE EXCEPTION 'cat views: VOLATILE function(s) read a cat_* view: %', bad;
   END IF;
@@ -83,8 +83,8 @@ BEGIN
     SELECT count(*) INTO n FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = fn;
     IF n = 0 THEN RAISE EXCEPTION 'cat views: switched function % does not exist', fn; END IF;
     IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = fn
-               AND (p.prosrc ~* '\m(from|join)\s+(only\s+)?("?public"?\.)?"?(objects|spectra|targets|spectrum_line_fits|spectrum_lines|object_photometry|object_photometry_bands|nircam_images|fields|mv_filter_options|spectrum_line_fits_status)"?\M'
-                    OR p.prosrc ~* ',\s*("?public"?\.)?"?(objects|spectra|targets|spectrum_line_fits|spectrum_lines|object_photometry|object_photometry_bands|nircam_images|fields|mv_filter_options|spectrum_line_fits_status)"?\s+\w')) THEN
+               AND (p.prosrc ~* '\m(from|join)\s+(only\s+)?("?public"?\.)?"?(objects|spectra|targets|line_fits|lines|catalog_matches|photometry|nircam_images|fields|mv_filter_options|line_fits_status)"?\M'
+                    OR p.prosrc ~* ',\s*("?public"?\.)?"?(objects|spectra|targets|line_fits|lines|catalog_matches|photometry|nircam_images|fields|mv_filter_options|line_fits_status)"?\s+\w')) THEN
       RAISE EXCEPTION 'cat views: % still reads a live catalog table directly', fn;
     END IF;
     IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.proname = fn AND p.provolatile = 'v') THEN
@@ -243,9 +243,9 @@ DO $$
 DECLARE
   pairs text[][] := ARRAY[
     ['objects','dr_objects','cat_objects'], ['targets','dr_targets','cat_targets'],
-    ['spectra','dr_spectra','cat_spectra'], ['spectrum_line_fits','dr_line_fits','cat_line_fits'],
-    ['spectrum_lines','dr_spectrum_lines','cat_spectrum_lines'], ['object_photometry','dr_photometry','cat_photometry'],
-    ['object_photometry_bands','dr_photometry_bands','cat_photometry_bands'], ['nircam_images','dr_nircam_images','cat_nircam_images'],
+    ['spectra','dr_spectra','cat_spectra'], ['line_fits','dr_line_fits','cat_line_fits'],
+    ['lines','dr_lines','cat_lines'], ['catalog_matches','dr_catalog_matches','cat_catalog_matches'],
+    ['photometry','dr_photometry','cat_photometry'], ['nircam_images','dr_nircam_images','cat_nircam_images'],
     ['fields','dr_fields','cat_fields'], ['mv_filter_options','dr_filter_options','cat_filter_options']];
   i int; live text; frz text; v text; line text; plan text; mode text;
 BEGIN

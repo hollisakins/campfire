@@ -19,11 +19,11 @@ PSQL=(psql "$DB_URL" -X -q -v ON_ERROR_STOP=1 -tA)
 echo "== catalog"
 "${PSQL[@]}" -c "SELECT 'published spectra '||count(*) FROM spectra WHERE deploy_status='published'
 UNION ALL SELECT 'active objects '||count(*) FROM objects WHERE is_active
-UNION ALL SELECT 'line fits '||count(*) FROM spectrum_line_fits
+UNION ALL SELECT 'line fits '||count(*) FROM line_fits
 UNION ALL SELECT 'registry rows '||count(*) FROM storage_objects
 UNION ALL SELECT 'db size '||pg_size_pretty(pg_database_size(current_database()))"
 
-"${PSQL[@]}" -c "DELETE FROM dr_manifest WHERE tag='$TAG'; DELETE FROM dr_line_fits WHERE tag='$TAG'; DELETE FROM dr_photometry WHERE tag='$TAG'; DELETE FROM dr_spectra WHERE tag='$TAG'; DELETE FROM dr_objects WHERE tag='$TAG'; DELETE FROM dr_exports WHERE tag='$TAG'; DELETE FROM dr_releases WHERE tag='$TAG';" >/dev/null
+"${PSQL[@]}" -c "DELETE FROM dr_manifest WHERE tag='$TAG'; DELETE FROM dr_line_fits WHERE tag='$TAG'; DELETE FROM dr_catalog_matches WHERE tag='$TAG'; DELETE FROM dr_spectra WHERE tag='$TAG'; DELETE FROM dr_objects WHERE tag='$TAG'; DELETE FROM dr_exports WHERE tag='$TAG'; DELETE FROM dr_releases WHERE tag='$TAG';" >/dev/null
 # nirspec + every NIRCam field with published mosaics
 COMPONENTS=$("${PSQL[@]}" -c "SELECT jsonb_agg(c)::text FROM (SELECT 'nirspec' AS c UNION ALL SELECT DISTINCT 'nircam/'||field FROM nircam_images WHERE deploy_status='published') x")
 echo "== components: $COMPONENTS"
@@ -51,8 +51,8 @@ SELECT 'counts '||counts::text FROM dr_releases WHERE tag='$TAG';
 SELECT 'wal written '||pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), lsn)) FROM h0;
 SELECT 'temp bytes delta '||pg_size_pretty(((SELECT sum(temp_bytes) FROM pg_stat_database WHERE datname = current_database()) - temp0)::bigint) FROM h0;
 SELECT 'wall '||round(extract(epoch FROM clock_timestamp() - t0)::numeric, 1)||' s' FROM h0;
-SELECT 'size '||relname||' '||pg_size_pretty(pg_total_relation_size('public.'||relname)) FROM (VALUES ('dr_spectra'),('dr_objects'),('dr_manifest'),('dr_line_fits'),('dr_photometry')) v(relname);
-SELECT 'frozen tables total '||pg_size_pretty(sum(pg_total_relation_size('public.'||relname))::bigint) FROM (VALUES ('dr_spectra'),('dr_objects'),('dr_manifest'),('dr_line_fits'),('dr_photometry')) v(relname);
+SELECT 'size '||relname||' '||pg_size_pretty(pg_total_relation_size('public.'||relname)) FROM (VALUES ('dr_spectra'),('dr_objects'),('dr_manifest'),('dr_line_fits'),('dr_catalog_matches')) v(relname);
+SELECT 'frozen tables total '||pg_size_pretty(sum(pg_total_relation_size('public.'||relname))::bigint) FROM (VALUES ('dr_spectra'),('dr_objects'),('dr_manifest'),('dr_line_fits'),('dr_catalog_matches')) v(relname);
 SQL
 
 if [ -n "$reader_pid" ]; then

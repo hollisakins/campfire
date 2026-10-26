@@ -82,7 +82,7 @@ BEGIN
   -- (seed.sql §13, P6b-2), so the photometry stream has partitions: one per
   -- program of the frozen photometry rows' objects, each with rows
   SELECT count(*) INTO n FROM dr_export_partitions('DR-seed') p WHERE p.stream = 'photometry';
-  IF n = 0 OR n <> (SELECT count(DISTINCT e) FROM dr_photometry ph
+  IF n = 0 OR n <> (SELECT count(DISTINCT e) FROM dr_catalog_matches ph
                     JOIN dr_objects o ON o.tag = ph.tag AND o.id = ph.object_id
                     CROSS JOIN LATERAL unnest(o.evidence_programs) e WHERE ph.tag = 'DR-seed') THEN
     RAISE EXCEPTION 'photometry partitions do not match the frozen rows'' programs: %', n;
@@ -153,7 +153,7 @@ BEGIN
   IF bad <> 0 THEN RAISE EXCEPTION '% objects rows leak another program''s membership or spectra', bad; END IF;
   -- ...and the same for the photometry files
   SELECT count(*) INTO bad
-  FROM (SELECT DISTINCT unnest(o.evidence_programs) AS p FROM dr_photometry ph
+  FROM (SELECT DISTINCT unnest(o.evidence_programs) AS p FROM dr_catalog_matches ph
         JOIN dr_objects o ON o.tag = ph.tag AND o.id = ph.object_id WHERE ph.tag = 'DR-seed') pp
   CROSS JOIN LATERAL dr_export_rows('DR-seed', 'photometry', pp.p, NULL, 10000) r
   WHERE r.row_json->'programs' <> jsonb_build_array(pp.p);

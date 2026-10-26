@@ -354,7 +354,7 @@ def generate_zfit_json(zfit_path: Path, output_dir: Path) -> Path:
 
 # Columns of the _lines.fits LINES table that go into the sidecar's `lines`
 # list: what a plot needs to place and label a fitted line. The full record
-# (EWs, kinematics, per-complex chi2) lives on the spectrum_line_fits row.
+# (EWs, kinematics, per-complex chi2) lives on the line_fits row.
 LINES_JSON_COLUMNS = ('name', 'component', 'wave_obs', 'flux', 'flux_err', 'snr', 'flags', 'blend_into')
 
 

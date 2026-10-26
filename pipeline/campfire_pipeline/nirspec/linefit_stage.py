@@ -26,7 +26,7 @@ The ``_lines.fits`` product::
     COMPLEXES the fitted windows
 
 :func:`read_lines_file` and :func:`lines_payload` are what ``campfire deploy
-lines`` uses to turn the product into a ``spectrum_line_fits`` row.
+lines`` uses to turn the product into a ``line_fits`` row.
 """
 
 from __future__ import annotations
@@ -371,7 +371,7 @@ def _label_for(name: str) -> str:
 
 
 def lines_payload(lines: dict) -> dict:
-    """JSON-safe ``{name: record}`` (NaN/inf → null) — the ``spectrum_line_fits.lines`` value."""
+    """JSON-safe ``{name: record}`` (NaN/inf → null) — the ``line_fits.lines`` value."""
     out = {}
     for name, rec in lines.items():
         clean = {}
