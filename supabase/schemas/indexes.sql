@@ -116,6 +116,11 @@ CREATE INDEX IF NOT EXISTS idx_object_photometry_object_id
 -- cascade. Partial, like idx_spectrum_lines_line_snr: a row with no magnitude
 -- (non-positive flux) or no S/N (missing error) can never match a bounded
 -- selection on it.
+-- object_photometry_bands by object: the object page's SED, the per-object
+-- band aggregates, and the FK's ON DELETE SET NULL (phase 2a).
+CREATE INDEX IF NOT EXISTS idx_object_photometry_bands_object_id_band
+    ON public.object_photometry_bands USING btree (object_id, band);
+
 CREATE INDEX IF NOT EXISTS idx_object_photometry_bands_band_mag
     ON public.object_photometry_bands USING btree (band, mag)
     WHERE mag IS NOT NULL;
@@ -477,6 +482,12 @@ CREATE INDEX IF NOT EXISTS idx_spectrum_line_fits_updated_at
 -- spectrum_lines: "line X at S/N >= y" is one range scan on this index; the
 -- PK (spectrum_id, line) serves the per-spectrum lookups. Partial: rows
 -- without a measurement (blended companions) can never match an S/N cut.
+-- spectrum_lines by object: the object page's line table, the per-object
+-- EXISTS the catalog filters compile to, and the FK's ON DELETE SET NULL on an
+-- objects rebuild (phase 2a).
+CREATE INDEX IF NOT EXISTS idx_spectrum_lines_object_id_line
+    ON public.spectrum_lines USING btree (object_id, line);
+
 CREATE INDEX IF NOT EXISTS idx_spectrum_lines_line_snr
     ON public.spectrum_lines USING btree (line, snr DESC)
     WHERE snr IS NOT NULL;

@@ -665,8 +665,10 @@ CREATE TABLE IF NOT EXISTS "public"."object_photometry_bands" (
     ) STORED,
     "mag" double precision GENERATED ALWAYS AS (
         CASE WHEN "flux" > 0 THEN 23.9 - 2.5 * log("flux") END
-    ) STORED
+    ) STORED,
+    "object_id" integer
 );
+COMMENT ON COLUMN "public"."object_photometry_bands"."object_id" IS 'The object of the parent cross-match (Catalog Read Model phase 2a): a copy of object_photometry.object_id, set by sync_object_photometry_bands and re-pointed by relink_bands_from_photometry when the parent is re-matched; FK ON DELETE SET NULL. Lets the band filter and the object page read one indexed table.';
 
 
 ALTER TABLE "public"."object_photometry_bands" OWNER TO "postgres";
@@ -1205,10 +1207,12 @@ CREATE TABLE IF NOT EXISTS "public"."spectrum_line_fits" (
     "fitted_at" timestamp with time zone,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "stale_redshift" boolean DEFAULT false NOT NULL,
     CONSTRAINT "spectrum_line_fits_spectrum_science_hash_check" CHECK (("spectrum_science_hash" IS NULL OR "spectrum_science_hash" ~ '^sha256:[0-9a-f]{64}$'::"text")),
     CONSTRAINT "spectrum_line_fits_z_source_check" CHECK (("z_source" = ANY (ARRAY['inspected'::"text", 'auto'::"text"]))),
     CONSTRAINT "spectrum_line_fits_z_quality_check" CHECK ((("z_quality" >= 0) AND ("z_quality" <= 4)))
 );
+COMMENT ON COLUMN "public"."spectrum_line_fits"."stale_redshift" IS 'Stored line_fit_stale_redshift(object, fit): the object''s inspected redshift / quality / version moved since this fit (Catalog Read Model phase 2a). Trigger-maintained: computed on every write of the row (compute_line_fit_stale) and recomputed when the object is inspected or regrouped (recompute_line_fit_stale); false when the fit has no object. The catalog filters read this column; spectrum_line_fits_status still evaluates the rule live, and check_measurement_object_links.sql asserts the two agree.';
 
 
 ALTER TABLE "public"."spectrum_line_fits" OWNER TO "postgres";
@@ -1244,8 +1248,10 @@ CREATE TABLE IF NOT EXISTS "public"."spectrum_lines" (
     "ew_rest" double precision,
     "ew_rest_err" double precision,
     "flags" integer DEFAULT 0 NOT NULL,
-    "blend_into" "text"
+    "blend_into" "text",
+    "object_id" integer
 );
+COMMENT ON COLUMN "public"."spectrum_lines"."object_id" IS 'The object this measurement belongs to (Catalog Read Model phase 2a): targets.object_id through the row''s spectrum, trigger-maintained (set by sync_spectrum_lines, re-pointed by relink_lines_from_targets / relink_lines_from_spectra when a target regroups or a spectrum moves; FK ON DELETE SET NULL when objects are rebuilt). What makes "object has line L above S/N x" one indexed EXISTS instead of a three-hop join.';
 
 
 ALTER TABLE "public"."spectrum_lines" OWNER TO "postgres";
@@ -1834,6 +1840,7 @@ CREATE TABLE IF NOT EXISTS "public"."dr_spectrum_lines" (
     "ew_rest_err" double precision,
     "flags" integer NOT NULL,
     "blend_into" "text",
+    "object_id" integer,
     CONSTRAINT "dr_spectrum_lines_pkey" PRIMARY KEY ("tag", "spectrum_id", "line")
 );
 
@@ -1878,6 +1885,7 @@ CREATE TABLE IF NOT EXISTS "public"."dr_photometry_bands" (
     "wav" double precision,
     "snr" double precision,
     "mag" double precision,
+    "object_id" integer,
     CONSTRAINT "dr_photometry_bands_pkey" PRIMARY KEY ("tag", "photometry_id", "band")
 );
 
@@ -2955,6 +2963,12 @@ ALTER TABLE ONLY "public"."object_list_members"
 
 ALTER TABLE ONLY "public"."object_photometry"
     ADD CONSTRAINT "object_photometry_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
+
+ALTER TABLE ONLY "public"."object_photometry_bands"
+    ADD CONSTRAINT "object_photometry_bands_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
+
+ALTER TABLE ONLY "public"."spectrum_lines"
+    ADD CONSTRAINT "spectrum_lines_object_id_fkey" FOREIGN KEY ("object_id") REFERENCES "public"."objects"("id") ON DELETE SET NULL;
 
 
 

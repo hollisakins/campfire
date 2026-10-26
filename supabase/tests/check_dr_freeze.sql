@@ -402,9 +402,10 @@ BEGIN
   got := pg_temp.zzz_dr_as('authenticated', admin,
     $q$SELECT string_agg(r.row_json->>'program_slug', ',') FROM public.dr_export_rows('DR-zzz', 'line_fits', 'zzz_dr_pub', NULL, 10) r$q$);
   IF got <> 'zzz_dr_pub,zzz_dr_pub' THEN RAISE EXCEPTION 'exported fits should carry their spectrum program, got %', got; END IF;
-  -- the frozen fit is the live row verbatim (minus the two in-snapshot flags)
+  -- the frozen fit is the live row verbatim (minus the in-snapshot stale_spectrum;
+  -- stale_redshift is a live column since phase 2a and is copied like the rest)
   IF EXISTS (SELECT 1 FROM dr_line_fits d JOIN spectrum_line_fits f ON f.spectrum_id = d.spectrum_id
-             WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' - 'stale_redshift' - 'stale_spectrum' <> to_jsonb(f)) THEN
+             WHERE d.tag = 'DR-zzz' AND to_jsonb(d) - 'tag' - 'stale_spectrum' <> to_jsonb(f)) THEN
     RAISE EXCEPTION 'a frozen line fit differs from its live row';
   END IF;
   -- the unnested lines follow their fits (the fixture's fits have none; the
