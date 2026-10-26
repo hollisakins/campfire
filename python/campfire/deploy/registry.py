@@ -22,6 +22,8 @@ byte-aggregated in ``map_layers.total_size_bytes`` (the budget RPC unions both).
 
 from __future__ import annotations
 
+from campfire.deploy.url_batches import url_batches
+
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -341,8 +343,7 @@ def set_active_deployment(client, keys: list[str], deployment_id: int) -> int:
     """
     if not keys:
         return 0
-    for i in range(0, len(keys), 200):
-        chunk = keys[i:i + 200]
+    for chunk in url_batches(keys):
         (client.table('storage_objects')
          .update({'deployment_id': deployment_id})
          .in_('storage_key', chunk).eq('status', 'active').execute())
@@ -374,8 +375,7 @@ def backfill_wcs_hashes(client, pairs: list[tuple[str, str]]) -> int:
             by_hash.setdefault(wcs, []).append(key)
     written = 0
     for wcs, keys in by_hash.items():
-        for i in range(0, len(keys), 200):
-            chunk = keys[i:i + 200]
+        for chunk in url_batches(keys):
             resp = (client.table('storage_objects')
                     .update({'wcs_hash': wcs})
                     .in_('storage_key', chunk)
@@ -397,8 +397,7 @@ def fetch_active_content_hashes(client, keys: list[str]) -> dict[str, str]:
     if not keys:
         return {}
     out: dict[str, str] = {}
-    for i in range(0, len(keys), 200):
-        chunk = keys[i:i + 200]
+    for chunk in url_batches(keys):
         resp = (
             client.table('storage_objects')
             .select('storage_key, content_hash')
@@ -425,8 +424,7 @@ def fetch_active_sci_dq_hashes(client, keys: list[str]) -> dict[str, str]:
     if not keys:
         return {}
     out: dict[str, str] = {}
-    for i in range(0, len(keys), 200):
-        chunk = keys[i:i + 200]
+    for chunk in url_batches(keys):
         resp = (
             client.table('storage_objects')
             .select('storage_key, sci_dq_hash')

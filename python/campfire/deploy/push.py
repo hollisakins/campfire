@@ -34,6 +34,8 @@ the server registry, so a stale mirror can never mis-skip.
 
 from __future__ import annotations
 
+from campfire.deploy.url_batches import url_batches
+
 import os
 import time
 from pathlib import Path
@@ -162,9 +164,9 @@ def fetch_registry_rows(client, keys: list[str], *, backend: str) -> dict[str, d
     (a legacy R2 twin row must not satisfy an OSN push).
     """
     out: dict[str, dict] = {}
-    CHUNK = 200
-    for i in range(0, len(keys), CHUNK):
-        chunk = keys[i:i + CHUNK]
+    # batches sized by encoded URL length, not key count: a fixed 200 keys
+    # blew past the gateway's request-line limit (414, #657)
+    for chunk in url_batches(keys):
         resp = (
             client.table('storage_objects')
             .select(_PLAN_COLUMNS)
