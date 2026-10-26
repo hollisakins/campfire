@@ -38,7 +38,8 @@ BEGIN
        FROM spectra s
        JOIN targets t ON t.target_id = s.target_id
        JOIN objects o ON o.id = t.object_id
-      WHERE s.id = NEW.spectrum_id),
+      WHERE s.id = NEW.spectrum_id
+      FOR SHARE OF o),
     false);
   RETURN NEW;
 END;
@@ -654,6 +655,12 @@ BEGIN
   IF p_spectrum_ids IS NULL OR cardinality(p_spectrum_ids) = 0 THEN
     RETURN 0;
   END IF;
+  -- serialize with an in-flight inspection of any of these objects (see the
+  -- concurrency note above); the LEFT JOIN below cannot carry the lock itself
+  PERFORM 1 FROM objects o
+    WHERE o.id IN (SELECT t.object_id FROM spectra s JOIN targets t ON t.target_id = s.target_id
+                    WHERE s.id = ANY(p_spectrum_ids))
+    FOR SHARE;
   UPDATE spectrum_line_fits f SET stale_redshift = v.stale
     FROM (SELECT f2.spectrum_id,
                  COALESCE(o.id IS NOT NULL AND public.line_fit_stale_redshift(

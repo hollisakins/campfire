@@ -1198,6 +1198,17 @@ CREATE TRIGGER propagate_program_is_public_trigger
 -- tables' insert/update policies) and are rewritten by the relinks.
 -- check_measurement_object_links.sql asserts each path and the catalog-wide
 -- invariants.
+--
+-- Concurrency (the is_public pattern, Codex on #652): a fit written while its
+-- object is being inspected would compute stale_redshift from the old
+-- redshift, the inspection's recompute cannot see the uncommitted fit, and
+-- the fit would commit fresh for good. So every read of the object that
+-- feeds stale_redshift takes FOR SHARE on the objects row, which conflicts
+-- with the row lock an inspection's UPDATE holds: the fit waits for the
+-- inspection and reads the new redshift, or the inspection waits for the fit
+-- and its recompute sees it. python/tests/test_line_fit_stale_race.py is the
+-- two-session check. A deploy refitting existing fits while the same object
+-- is inspected can deadlock and is retried; both are rare.
 
 DROP FUNCTION IF EXISTS public.compute_line_fit_stale CASCADE;
 CREATE OR REPLACE FUNCTION public.compute_line_fit_stale() RETURNS trigger
@@ -1212,7 +1223,8 @@ BEGIN
        FROM spectra s
        JOIN targets t ON t.target_id = s.target_id
        JOIN objects o ON o.id = t.object_id
-      WHERE s.id = NEW.spectrum_id),
+      WHERE s.id = NEW.spectrum_id
+      FOR SHARE OF o),
     false);
   RETURN NEW;
 END;
@@ -1231,6 +1243,12 @@ BEGIN
   IF p_spectrum_ids IS NULL OR cardinality(p_spectrum_ids) = 0 THEN
     RETURN 0;
   END IF;
+  -- serialize with an in-flight inspection of any of these objects (see the
+  -- concurrency note above); the LEFT JOIN below cannot carry the lock itself
+  PERFORM 1 FROM objects o
+    WHERE o.id IN (SELECT t.object_id FROM spectra s JOIN targets t ON t.target_id = s.target_id
+                    WHERE s.id = ANY(p_spectrum_ids))
+    FOR SHARE;
   UPDATE spectrum_line_fits f SET stale_redshift = v.stale
     FROM (SELECT f2.spectrum_id,
                  COALESCE(o.id IS NOT NULL AND public.line_fit_stale_redshift(
