@@ -730,6 +730,14 @@ BEGIN
   IF TG_OP = 'UPDATE' AND NEW.is_public IS NOT DISTINCT FROM OLD.is_public THEN
     RETURN NULL;
   END IF;
+  -- Program flips serialize among themselves. Two concurrent flips of
+  -- different programs that share an object would each recompute it from a
+  -- snapshot in which the other program is still public, both leave it
+  -- public, and both commit (Codex on #651). With this transaction-scoped
+  -- advisory lock the second flip's statements below start after the first
+  -- has committed and see its value. Flips are rare admin actions; the lock
+  -- costs nothing in normal operation.
+  PERFORM pg_advisory_xact_lock(hashtext('campfire.is_public.propagate'));
   -- Only the rows whose value changes are written, so the per-row triggers
   -- on these tables (updated_at bumps, needs_review) see nothing else move.
   UPDATE targets t SET is_public = NEW.is_public

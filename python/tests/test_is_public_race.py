@@ -27,8 +27,10 @@ import pytest
 from ._localdb import _psql_cmd, requires_local_db, run_sql
 
 PROGRAM = "zzz_race_" + uuid.uuid4().hex[:8]
+PROGRAM2 = "zzz_race2_" + uuid.uuid4().hex[:8]
 OBJECT_A = "TEST-RACE-A-" + uuid.uuid4().hex[:6]
 OBJECT_B = "TEST-RACE-B-" + uuid.uuid4().hex[:6]
+OBJECT_C = "TEST-RACE-C-" + uuid.uuid4().hex[:6]
 
 
 class Session:
@@ -115,15 +117,16 @@ def _wait_until_blocked(app_name: str, timeout: float = 10.0):
 @pytest.fixture
 def fixtures():
     r = run_sql(
-        f"INSERT INTO programs (slug, program_name, is_public) VALUES ('{PROGRAM}', 'Race test', true);"
+        f"INSERT INTO programs (slug, program_name, is_public) VALUES "
+        f"('{PROGRAM}', 'Race test', true), ('{PROGRAM2}', 'Race test 2', true);"
     )
     assert r.returncode == 0, r.stdout + r.stderr
     try:
         yield
     finally:
         run_sql(
-            f"DELETE FROM objects WHERE object_id IN ('{OBJECT_A}', '{OBJECT_B}');\n"
-            f"DELETE FROM programs WHERE slug = '{PROGRAM}';"
+            f"DELETE FROM objects WHERE object_id IN ('{OBJECT_A}', '{OBJECT_B}', '{OBJECT_C}');\n"
+            f"DELETE FROM programs WHERE slug IN ('{PROGRAM}', '{PROGRAM2}');"
         )
 
 
@@ -178,5 +181,35 @@ def test_program_flip_then_row_insert_serializes(fixtures):
 
         flag = _scalar(f"\\t on\nSELECT is_public FROM objects WHERE object_id = '{OBJECT_B}';")
         assert flag == "f", f"row inserted after a privacy flip began committed public (is_public={flag!r})"
+    finally:
+        a.close(); b.close()
+
+
+@requires_local_db
+def test_concurrent_flips_of_shared_object_serialize(fixtures):
+    """C belongs to P and Q, both public. A makes P private (uncommitted); B makes
+    Q private -> must wait on the propagation lock, not skip C as "already true"
+    from a snapshot where P is still public. After both commit, C is private."""
+    r = run_sql(
+        "INSERT INTO objects (object_id, field, ra, dec, programs, observations, has_published_spectrum) "
+        f"VALUES ('{OBJECT_C}', 'zzz_race_field', 153.0, 2.0, '{{{PROGRAM},{PROGRAM2}}}', '{{}}', true);"
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _scalar(f"\\t on\nSELECT is_public FROM objects WHERE object_id = '{OBJECT_C}';") == "t"
+
+    a, b = Session("a"), Session("b")
+    try:
+        a.send_and_wait("BEGIN;", "A_BEGUN")
+        a.send_and_wait(f"UPDATE programs SET is_public = false WHERE slug = '{PROGRAM}';", "A_FLIPPED")
+
+        b.send(f"UPDATE programs SET is_public = false WHERE slug = '{PROGRAM2}';")
+        b.send("\\echo B_DONE")
+        _wait_until_blocked("race_b")
+
+        a.send_and_wait("COMMIT;", "A_COMMITTED")
+        b.wait_for("B_DONE", timeout=20)
+
+        flag = _scalar(f"\\t on\nSELECT is_public FROM objects WHERE object_id = '{OBJECT_C}';")
+        assert flag == "f", f"object shared by two programs stayed public after both flipped private (is_public={flag!r})"
     finally:
         a.close(); b.close()
