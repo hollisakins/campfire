@@ -119,7 +119,7 @@ export const PROPERTIES: PropertyDef[] = [
   { key: 'z_fit', scope: 'spectrum', label: 'Fitted redshift', kind: 'range', range: { min: 0, max: 15, step: 0.1, precision: 3 }, shapes: { spectra: via(['line_fits'], 'z_fit') } },
   { key: 'sigma_v', scope: 'spectrum', label: 'Velocity dispersion', kind: 'range', unit: 'km/s', range: { min: 0, max: 5000, step: 10, precision: 0 }, shapes: { spectra: via(['line_fits'], 'sigma_v') } },
   // Line (the clauses of a line measurement)
-  { key: 'snr', scope: 'line', label: 'S/N', kind: 'range', primary: true, range: { min: 0, max: 1000, step: 1, precision: 1, side: 'min' }, shapes: { lines: direct('snr') } },
+  { key: 'snr', scope: 'line', label: 'S/N', kind: 'range', primary: true, range: { min: 0, max: 1000, step: 1, precision: 1, side: 'min', quick: snrQuick }, shapes: { lines: direct('snr') } },
   { key: 'flux', scope: 'line', label: 'Flux', kind: 'range', unit: 'erg/s/cm²', range: { min: 0, max: 1e-12, step: 1e-18, precision: 3, side: 'min' }, shapes: { lines: direct('flux') } },
   { key: 'ew_rest', scope: 'line', label: 'Rest EW', kind: 'range', unit: 'Å', range: { min: 0, max: 10000, step: 1, precision: 1, side: 'min' }, shapes: { lines: direct('ew_rest') } },
   { key: 'component', scope: 'line', label: 'Component', kind: 'choice', choices: 'component', shapes: { lines: direct('component') } },
@@ -128,8 +128,8 @@ export const PROPERTIES: PropertyDef[] = [
   { key: 'flags', scope: 'line', label: 'Line flags', kind: 'flags', choices: 'line_flags', shapes: { lines: direct('flags') } },
   { key: 'fresh', scope: 'line', label: 'Fresh fit', kind: 'bool', shapes: { lines: { via: ['line_fits'], col: 'stale_redshift', invert: true } } },
   // Band (the clauses of a band measurement)
-  { key: 'mag', scope: 'band', label: 'mag', kind: 'range', primary: true, unit: 'AB', range: { min: 15, max: 35, step: 0.1, precision: 1, side: 'max' }, shapes: { photometry: direct('mag') } },
-  { key: 'snr', scope: 'band', label: 'S/N', kind: 'range', primary: true, range: { min: 0, max: 10000, step: 1, precision: 1, side: 'min' }, shapes: { photometry: direct('snr') } },
+  { key: 'mag', scope: 'band', label: 'mag', kind: 'range', primary: true, unit: 'AB', range: { min: 15, max: 35, step: 0.1, precision: 1, side: 'max', quick: [{ label: '≤ 25', min: null, max: 25 }, { label: '≤ 27', min: null, max: 27 }, { label: '≤ 29', min: null, max: 29 }] }, shapes: { photometry: direct('mag') } },
+  { key: 'snr', scope: 'band', label: 'S/N', kind: 'range', primary: true, range: { min: 0, max: 10000, step: 1, precision: 1, side: 'min', quick: snrQuick }, shapes: { photometry: direct('snr') } },
   { key: 'flux', scope: 'band', label: 'Flux', kind: 'range', unit: 'µJy', range: { min: 0, max: 1e6, step: 0.01, precision: 3, side: 'min' }, shapes: { photometry: direct('flux') } },
 ];
 

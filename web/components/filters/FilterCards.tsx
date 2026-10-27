@@ -16,6 +16,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Lock, Plus, X } from 'lucide-react';
 import { FilterChip, type FilterOption } from '@/components/ui/FilterChip';
 import { RangeFilterChip } from '@/components/ui/RangeFilterChip';
+import { RangeEditor, rangeText } from '@/components/ui/RangeEditor';
 import { CoordinateSearchChip, type CoordinateSearchValue } from '@/components/ui/CoordinateSearchChip';
 import { Popover, isInsidePopover } from '@/components/ui/Popover';
 import { convertRadiusToDegrees } from '@/lib/utils/coordinate-parser';
@@ -224,7 +225,7 @@ export function PropertyChip({ def, items, level, ctx, extraCheckbox, onOpenAdva
           min={current?.min ?? null}
           max={current?.max ?? null}
           onChange={(min, max) => commitOne(min === null && max === null ? null : { kind: 'range', min, max })}
-          minBound={r?.min} maxBound={r?.max} step={r?.step} precision={r?.precision}
+          minBound={r?.min} maxBound={r?.max} precision={r?.precision} unit={def.unit} side={r?.side}
           quickRanges={r?.quick}
           defaultOpen={defaultOpen}
         />
@@ -343,22 +344,34 @@ function PickPropertyMenu({ defs, onPick, label, plus = false, disabled = false 
 
 // ---------------------------------------------------------------- measurement tables
 
-/** A min – max pair typed inline; the value leaves on blur or Enter. */
+/** A range as a cell: its bounds as text at rest ("≥ 3", "any"), the
+ *  shared range editor in a popover on click. The whole cell is the target. */
 function RangeCell({ def, value, onCommit }: { def: PropertyDef; value: { min: number | null; max: number | null } | null; onCommit: (min: number | null, max: number | null) => void }) {
-  const minRef = useRef<HTMLInputElement>(null);
-  const maxRef = useRef<HTMLInputElement>(null);
-  const read = (el: HTMLInputElement | null) => { const s = el?.value.trim() ?? ''; if (s === '') return null; const n = Number(s); return Number.isFinite(n) ? n : null; };
-  const commit = () => onCommit(read(minRef.current), read(maxRef.current));
-  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); };
-  const w = def.range && def.range.step < 1e-6 ? 'w-[5.5rem]' : 'w-14';
-  const show = (n: number | null | undefined) => (n == null ? '' : String(n));
-  const cls = `${INPUT} ${w} py-0.5 text-xs font-mono text-right`;
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => { if (!isInsidePopover(e.target, ref.current)) setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, []);
+  const min = value?.min ?? null;
+  const max = value?.max ?? null;
+  const set = min !== null || max !== null;
+  const r = def.range;
   return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap">
-      <input key={`min-${show(value?.min)}`} ref={minRef} type="number" step="any" defaultValue={show(value?.min)} placeholder="min" className={cls} onBlur={commit} onKeyDown={onKey} aria-label={`${def.label} min`} />
-      <span className="text-text-tertiary text-xs">–</span>
-      <input key={`max-${show(value?.max)}`} ref={maxRef} type="number" step="any" defaultValue={show(value?.max)} placeholder="max" className={cls} onBlur={commit} onKeyDown={onKey} aria-label={`${def.label} max`} />
-    </span>
+    <div ref={ref} className="relative inline-block">
+      <button type="button" onClick={() => setOpen(!open)} aria-label={`${def.label} range`}
+        className={`min-w-[4.5rem] min-h-[2rem] px-2.5 py-1 rounded-md border text-sm font-mono text-left transition-colors ${set ? 'border-primary/50 bg-primary/5 text-text-primary' : 'border-transparent text-text-tertiary hover:border-border hover:text-text-secondary'}`}>
+        {rangeText(min, max, r?.precision ?? 2)}
+      </button>
+      {open && (
+        <Popover anchorRef={ref} open={open} className="w-[300px] bg-card border border-border rounded-lg shadow-lg p-4">
+          <div className="text-xs font-medium text-text-secondary mb-3">{def.label}{def.unit ? ` (${def.unit})` : ''}</div>
+          <RangeEditor min={min} max={max} minBound={r?.min} maxBound={r?.max} precision={r?.precision} unit={def.unit} side={r?.side} quickRanges={r?.quick}
+            onApply={(lo, hi) => { onCommit(lo, hi); setOpen(false); }} />
+        </Popover>
+      )}
+    </div>
   );
 }
 
